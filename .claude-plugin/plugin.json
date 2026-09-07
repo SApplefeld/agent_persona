@@ -1,0 +1,37 @@
+{
+  "name": "agentic-plugin",
+  "version": "0.6.2",
+  "description": "PIANO-esque cognitive layer: persona-keyed state, heartbeat liveness, controller with classify/actuate",
+  "userConfig": {
+    "heartbeatMs": {
+      "type": "number",
+      "default": 30000,
+      "title": "Heartbeat interval (ms)",
+      "description": "How often the owner refreshes its heartbeat (ms). Default 30s."
+    },
+    "staleAfterMs": {
+      "type": "number",
+      "default": 90000,
+      "title": "Stale threshold (ms)",
+      "description": "How long before a heartbeat is considered stale (ms). Default 90s."
+    },
+    "controllerTickMs": {
+      "type": "number",
+      "default": 30000,
+      "title": "Controller tick (ms)",
+      "description": "How often the controller evaluates the goal (ms). Default 30s."
+    },
+    "nudgeFloorMs": {
+      "type": "number",
+      "default": 300000,
+      "title": "Nudge floor (ms)",
+      "description": "Minimum time between nudges (ms). Default 5min."
+    },
+    "nudgeIdleMs": {
+      "type": "number",
+      "default": 120000,
+      "title": "Nudge idle gate (ms)",
+      "description": "Session must be idle this long before a nudge is eligible (ms). Default 2min."
+    }
+  }
+}

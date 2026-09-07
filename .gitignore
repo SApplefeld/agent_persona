@@ -1,0 +1,19 @@
+# Persona state
+.agentic-*.json
+.agentic-*.log
+.agentic-yields.log
+
+# Test artifacts
+.kit/*.out.jsonl
+.kit/*.err.log
+.kit/*.exit
+.kit/*.decisions.log
+.kit/yield-hb.samples
+.kit/RUNNING
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
