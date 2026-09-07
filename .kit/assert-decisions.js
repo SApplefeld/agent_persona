@@ -188,6 +188,28 @@ switch (testName) {
     forbidden(["planning_created"], "planfail");
     break;
   }
+  case "gitprobe": {
+    // C6: first probe at first tick (~30s) sees dirty 0; dirty 1 at ~150s; dirty 0 at ~270s.
+    const envGitLines = details.filter(d => d.action === "env_git" || d.action === "env_git_null" || d.action === "env_git_error");
+    check2("env_git first sample found", envGitLines.some(d => d.detail.includes("dirty 0")));
+    check2("env_git dirty 1 found", envGitLines.some(d => d.detail.includes("dirty 1")));
+    check2("env_git dirty 0 after dirty 1", envGitLines.some(d => d.detail.includes("dirty 0") && d.timestamp > envGitLines.find(d => d.detail.includes("dirty 1"))?.timestamp));
+    break;
+  }
+  case "health": {
+    // C5: health run at completeLeaf site.
+    const healthLines = details.filter(d => d.action === "health_green" || d.action === "health_red");
+    check2("health run found", healthLines.length > 0);
+    check2("health_red found (fail flag set)", healthLines.some(d => d.action === "health_red"));
+    break;
+  }
+  case "errorstreak": {
+    // C5: error streak after 3 consecutive error turns.
+    const streakLines = details.filter(d => d.action === "error_streak");
+    check2("error_streak found", streakLines.length > 0);
+    check2("error_streak after 3 turns", streakLines.some(d => d.detail.includes("3 turns")));
+    break;
+  }
   default:
     console.error(`FAIL: unknown test name: ${testName}`);
     process.exit(1);

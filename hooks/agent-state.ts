@@ -53,6 +53,36 @@ export interface GoalNode {
   blockedReason?: string;
 }
 
+export interface EnvErrors {
+  consecutiveErrorTurns: number;
+  toolErrorsLastTurn: number;
+  lastErrorAt?: number;
+  handledAt?: number;
+}
+
+export interface EnvGit {
+  branch: string;
+  dirty: number;
+  ahead: number;
+  behind: number;
+  lastCommitAt: number;
+  sampledAt: number;
+}
+
+export interface EnvHealth {
+  command: string[];
+  exitCode: number;
+  tail: string;
+  ranAt: number;
+  forNodeId: string | null;
+}
+
+export interface EnvState {
+  git: EnvGit | null;
+  health: EnvHealth | null;
+  errors: EnvErrors;
+}
+
 export interface MonitorState {
   sessionStart: number;
   turnCount: number;
@@ -60,6 +90,7 @@ export interface MonitorState {
   lastTurnComplete?: number;
   totalToolCalls: number;
   errors: number;
+  env: EnvState;
 }
 
 export interface NudgeBudget {
@@ -68,7 +99,7 @@ export interface NudgeBudget {
 }
 
 export interface AgentState {
-  version: 3;
+  version: 4;
   persona: string;
   activeSessionId: string;
   epoch: number;
@@ -94,7 +125,7 @@ const DECISIONS_MAX = 200;
 export function createDefaultState(persona: string, sessionId: string): AgentState {
   const now = Date.now();
   return {
-    version: 3,
+    version: 4,
     persona,
     activeSessionId: sessionId,
     epoch: 1,
@@ -106,6 +137,11 @@ export function createDefaultState(persona: string, sessionId: string): AgentSta
       turnCount: 0,
       totalToolCalls: 0,
       errors: 0,
+      env: {
+        git: null,
+        health: null,
+        errors: { consecutiveErrorTurns: 0, toolErrorsLastTurn: 0 },
+      },
     },
     nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
     decisions: [],
@@ -206,7 +242,7 @@ export function parseState(json: string): AgentState {
     }
 
     const state: AgentState = {
-      version: 3,
+      version: 4,
       persona: old.persona,
       activeSessionId: old.activeSessionId,
       epoch: old.epoch,
@@ -230,7 +266,25 @@ export function parseState(json: string): AgentState {
     return state;
   }
 
-  if (parsed.version !== 3) {
+  if (parsed.version === 3) {
+    // v3 to v4 migration: add env to monitor.
+    const state = parsed as unknown as AgentState;
+    if (!state.monitor.env) {
+      state.monitor.env = {
+        git: null,
+        health: null,
+        errors: { consecutiveErrorTurns: 0, toolErrorsLastTurn: 0 },
+      };
+    }
+    state.version = 4;
+    if (!state.nudge) {
+      state.nudge = { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 };
+    }
+    enforceInvariants(state);
+    return state;
+  }
+
+  if (parsed.version !== 4) {
     throw new Error(`Unsupported AgentState version: ${parsed.version}`);
   }
 
@@ -239,6 +293,15 @@ export function parseState(json: string): AgentState {
   // Migrate: add nudge budget if missing (v3.0 stores predate this field).
   if (!state.nudge) {
     state.nudge = { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 };
+  }
+
+  // E11: fill env with defaults whenever it is absent, whatever the version.
+  if (!state.monitor.env) {
+    state.monitor.env = {
+      git: null,
+      health: null,
+      errors: { consecutiveErrorTurns: 0, toolErrorsLastTurn: 0 },
+    };
   }
 
   // L10: invariant block runs on both v2 and v3 branches.
@@ -429,6 +492,29 @@ export function planningCapReached(
     return `Planning cap reached (consecutiveBlockedPlannings=${consecutiveBlockedPlannings})`;
   }
   return null;
+}
+
+// --- Pure helpers for the error streak (C3). ---
+
+export function applyTurnToErrors(
+  prev: EnvErrors,
+  turn: { reason: string; toolErrors: number },
+): EnvErrors {
+  const isErrorTurn = turn.reason === "error" || turn.toolErrors > 0;
+  if (isErrorTurn) {
+    return {
+      consecutiveErrorTurns: prev.consecutiveErrorTurns + 1,
+      toolErrorsLastTurn: turn.toolErrors,
+      lastErrorAt: Date.now(),
+      handledAt: prev.handledAt,
+    };
+  }
+  return {
+    consecutiveErrorTurns: 0,
+    toolErrorsLastTurn: 0,
+    lastErrorAt: prev.lastErrorAt,
+    handledAt: prev.handledAt,
+  };
 }
 
 // --- Pure helpers for the guarded-write (yield) path. ---

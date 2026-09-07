@@ -20,6 +20,8 @@ feed() {
   sleep 90
 }
 PLUGIN_DIR=$(cygpath -w /d/DeepSeekHarness/agentic-plugin)
+[ -f "$RUNNING" ] && { echo "RUNNING exists, refusing"; exit 8; }
+echo "DeepSeekHarness $0 $(date -u +%FT%TZ)" > "$RUNNING"
 feed | claude -p --input-format stream-json --output-format stream-json --verbose \
   --plugin-dir "$PLUGIN_DIR" \
   --allowedTools "mcp__agentic-plugin__goal_create,mcp__agentic-plugin__goal_add,mcp__agentic-plugin__goal_done,mcp__agentic-plugin__goal_status,mcp__agentic-plugin__memory_add,mcp__agentic-plugin__agentic_identity" \

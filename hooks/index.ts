@@ -29,8 +29,9 @@ import {
   isPlanningDue,
   previousRoundBlocked,
   planningCapReached,
+  applyTurnToErrors,
 } from "./agent-state";
-import type { AgentState, GoalNode, NudgeBudget } from "./agent-state";
+import type { AgentState, GoalNode, NudgeBudget, EnvGit } from "./agent-state";
 
 // --- Module-scope session identity ---
 // The loader requires `persist` and `activate` to be top-level functions.
@@ -45,6 +46,7 @@ const sess: {
   yieldLogPath: string;
   lastNudgeAt: number;
   consecutiveNudgesWithoutOnGoal: number;
+  options: { healthTimeoutMs?: number; gitProbeMs?: number };
 } = {
   persona: "default",
   mySessionId: "pending",
@@ -55,7 +57,63 @@ const sess: {
   yieldLogPath: ".agentic-yields.log",
   lastNudgeAt: 0,
   consecutiveNudgesWithoutOnGoal: 0,
+  options: {},
 };
+
+// Reentrancy flag for the git probe (E4).
+let gitProbeInFlight = false;
+
+// C4: tool error counter for the current turn (reset at turn.start, folded at turn.complete).
+let toolErrorsThisTurn = 0;
+
+// Health run helper (E2).
+async function runHealth(dp: any, forNodeId: string | null): Promise<void> {
+  const healthPath = ".agentic-health";
+  try {
+    if (!(await dp.fs.exists(healthPath))) {
+      return;
+    }
+    const raw = await dp.fs.readFile(healthPath, "utf8");
+    const argv: string[] = raw.trim().split(/\s+/).filter((t: string) => t);
+    if (argv.length === 0) {
+      return;
+    }
+    const healthTimeoutMs = sess.options.healthTimeoutMs ?? 60000;
+    const res = await dp.process.run(argv, { timeoutMs: healthTimeoutMs });
+    const tail = (res.stdout || "").split("\n").slice(-20).join("\n");
+    const health = {
+      command: argv,
+      exitCode: res.exitCode,
+      tail: tail.slice(-500),
+      ranAt: Date.now(),
+      forNodeId,
+    };
+    sess.state.monitor.env.health = health;
+    if (res.exitCode === 0) {
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "health_green",
+        detail: `health_green ${argv.join(" ")} for ${forNodeId || "no-node"}`,
+      });
+    } else {
+      const firstLine = (res.stdout || "").split("\n")[0] || "no output";
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "health_red",
+        detail: `health_red exit ${res.exitCode} ${firstLine} for ${forNodeId || "no-node"}`,
+      });
+    }
+  } catch (err) {
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "monitor",
+      action: "health_red",
+      detail: `health_red error ${(err as Error).message} for ${forNodeId || "no-node"}`,
+    });
+  }
+}
 
 // L26: the yield action (log the decision, drop ownership, append a single
 // well-formed line to the yield log) is one code path shared by every site
@@ -162,6 +220,9 @@ export const register: Register = async (on, options) => {
   const controllerTickMs = typeof cfg.controllerTickMs === "number" ? (cfg.controllerTickMs as number) : 30_000;
   const nudgeFloorMs = typeof cfg.nudgeFloorMs === "number" ? (cfg.nudgeFloorMs as number) : 5 * 60_000;
   const nudgeIdleMs = typeof cfg.nudgeIdleMs === "number" ? (cfg.nudgeIdleMs as number) : 2 * 60_000;
+  const healthTimeoutMs = typeof cfg.healthTimeoutMs === "number" ? Math.min(cfg.healthTimeoutMs as number, 120_000) : 60_000;
+  const gitProbeMs = typeof cfg.gitProbeMs === "number" ? Math.min(cfg.gitProbeMs as number, 300_000) : 120_000;
+  sess.options = { healthTimeoutMs, gitProbeMs };
 
   // --- session.start: register tools, claim or join the persona ---
   on("session.start", async ($, e, next) => {
@@ -505,6 +566,70 @@ export const register: Register = async (on, options) => {
       // 2. In-flight check.
       if (turnInFlight) return;
 
+      // 2b. Git probe (E4, C6): time-based cadence, fire-and-forget.
+      if (!gitProbeInFlight) {
+        const env = sess.state.monitor.env;
+        const now = Date.now();
+        const gitProbeMs = sess.options.gitProbeMs ?? 120000;
+        if (env.git === null || now - env.git.sampledAt >= gitProbeMs) {
+          gitProbeInFlight = true;
+          $.process.run(["git", "status", "--porcelain=v1", "-b"])
+            .then((res) => {
+              if (res.exitCode === 0) {
+                const lines = (res.stdout || "").split("\n").filter((l) => l.trim());
+                const branchLine = lines.find((l) => l.startsWith("## "));
+                const branch = branchLine ? branchLine.slice(3).split(" ")[0] : "unknown";
+                const dirty = lines.filter((l) => !l.startsWith("## ") && l.trim()).length;
+                let ahead = 0;
+                let behind = 0;
+                // Parse ahead/behind from the branch line if present.
+                if (branchLine) {
+                  const aheadMatch = branchLine.match(/ahead (\d+)/);
+                  const behindMatch = branchLine.match(/behind (\d+)/);
+                  if (aheadMatch) ahead = parseInt(aheadMatch[1], 10);
+                  if (behindMatch) behind = parseInt(behindMatch[1], 10);
+                }
+                return $.process.run(["git", "log", "-1", "--format=%ct"]).then((logRes) => {
+                  const lastCommitAt = logRes.exitCode === 0 ? parseInt((logRes.stdout || "0").trim(), 10) * 1000 : 0;
+                  const newGit: EnvGit = { branch, dirty, ahead, behind, lastCommitAt, sampledAt: Date.now() };
+                  const prevGit = env.git;
+                  if (prevGit === null || prevGit.dirty !== dirty || prevGit.branch !== branch) {
+                    const detail = prevGit === null
+                      ? `env_git first sample: dirty ${dirty} branch ${branch}`
+                      : `env_git dirty ${prevGit.dirty} -> ${dirty} branch ${branch}`;
+                    sess.state.decisions.push({
+                      timestamp: Date.now(),
+                      loop: "monitor",
+                      action: "env_git",
+                      detail,
+                    });
+                  }
+                  sess.state.monitor.env.git = newGit;
+                });
+              } else if (res.exitCode === 128) {
+                // Non-git cwd.
+                sess.state.decisions.push({
+                  timestamp: Date.now(),
+                  loop: "monitor",
+                  action: "env_git_null",
+                  detail: `env_git_null exit 128`,
+                });
+              } else {
+                sess.state.decisions.push({
+                  timestamp: Date.now(),
+                  loop: "monitor",
+                  action: "env_git_error",
+                  detail: `env_git_error exit ${res.exitCode}`,
+                });
+              }
+              gitProbeInFlight = false;
+            })
+            .catch(() => {
+              gitProbeInFlight = false;
+            });
+        }
+      }
+
       // Get the active node.
       const activeNode = sess.state.activeGoalId
         ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
@@ -785,6 +910,20 @@ export const register: Register = async (on, options) => {
       const hasSwitch = pendingPlans.length > 0;
       const switchLabel = hasSwitch ? `switch: switch to a different pending plan: ${pendingPlans.map((p) => p.title.slice(0, 30)).join("; ")}\n` : "";
 
+      // C7: Environment line only when env.git or env.health is non-null.
+      const env = sess.state.monitor.env;
+      let envLine = "";
+      if (env.git !== null || env.health !== null) {
+        const parts: string[] = [];
+        if (env.git !== null) {
+          parts.push(`git: ${env.git.branch} dirty ${env.git.dirty} ahead ${env.git.ahead} behind ${env.git.behind}`);
+        }
+        if (env.health !== null) {
+          parts.push(`health: exit ${env.health.exitCode} for ${env.health.forNodeId || "no-node"}`);
+        }
+        envLine = `Environment: ${parts.join(", ")}\n`;
+      }
+
       const summary =
         `Objective: ${g.objective}\n` +
         `Node: ${g.id} (${g.kind}), status ${g.status}, round ${g.completedRounds}/${g.maxRounds}\n` +
@@ -793,7 +932,9 @@ export const register: Register = async (on, options) => {
         `Minutes since last turn: ${minutesSinceLastTurn}\n` +
         `Consecutive nudges sent: ${sess.consecutiveNudgesWithoutOnGoal}\n` +
         `Decisions tail: ${sess.state.decisions.slice(-5).map((d) => `${d.loop}:${d.action}`).join(", ")}\n` +
-        `Memory: ${sess.state.memory.length} entries\n\n` +
+        `Memory: ${sess.state.memory.length} entries\n` +
+        envLine +
+        `\n` +
         `The session has been idle for ${minutesSinceLastTurn} minutes.\n` +
         `Choose the best decision:\n` +
         `nudge: prompt the worker to take the next concrete step toward the goal\n` +
@@ -809,6 +950,44 @@ export const register: Register = async (on, options) => {
       // Fire-and-forget: the timer callback is sync, so we schedule async work.
       Promise.resolve().then(async () => {
         try {
+          // C3: error streak branch (before the cap check).
+          const envErrors = sess.state.monitor.env.errors;
+          if (envErrors.consecutiveErrorTurns >= 3 && (!envErrors.handledAt || Date.now() - envErrors.handledAt > 60_000)) {
+            const streakTs = Date.now();
+            const streakReason = `Error streak ${envErrors.consecutiveErrorTurns} turns; escalating`;
+            envErrors.handledAt = streakTs;
+            sess.state.decisions.push({
+              timestamp: streakTs,
+              loop: "monitor",
+              action: "error_streak",
+              detail: `${g.id}: ${streakReason}`,
+            });
+            sess.state.decisions.push({
+              timestamp: streakTs,
+              loop: "monitor",
+              action: "controller_tick",
+              detail: `${g.id}: ask-operator: ${streakReason} (idle ${minutesSinceLastTurn}min)`,
+            });
+            try { $.ui.toast(`Agentic: ${streakReason}`); } catch { /* non-fatal */ }
+            if (g.status === "active") {
+              g.status = "blocked";
+              g.blockedReason = streakReason;
+              g.updatedAt = streakTs;
+              sess.state.decisions.push({
+                timestamp: streakTs,
+                loop: "goal",
+                action: "block",
+                detail: `${g.id}: ${streakReason}`,
+              });
+              const nextId = activateNext(sess.state, g.id);
+              activate($, nextId, `${g.id} blocked (error streak)`);
+              try { $.ui.status(""); } catch { /* non-fatal */ }
+            }
+            sess.state.updatedAt = streakTs;
+            await persist($);
+            return;
+          }
+
           // Cap check before spending a classify call.
           if (sess.consecutiveNudgesWithoutOnGoal >= MAX_CONSECUTIVE_NUDGES) {
             const capTs = Date.now();
@@ -982,6 +1161,8 @@ export const register: Register = async (on, options) => {
             // R3: use completeLeaf + activateNext.
             const completedId = g.id;
             completeLeaf(sess.state, completedId, finalReason || "controller complete");
+            // E2: health run at completeLeaf site (controller complete).
+            await runHealth($, completedId);
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "goal",
@@ -1025,6 +1206,8 @@ export const register: Register = async (on, options) => {
     turnInFlight = true;
     // H2: record the active leaf at turn start for scoring.
     turnLeafId = sess.state.activeGoalId;
+    // C4: reset tool error counter for this turn.
+    toolErrorsThisTurn = 0;
     sess.state.decisions.push({
       timestamp: Date.now(),
       loop: "monitor",
@@ -1045,6 +1228,14 @@ export const register: Register = async (on, options) => {
     // nudged turn is aborted or the goal is not active).
     const wasNudged = nudgedTurn;
     nudgedTurn = false;
+
+    // C3: error streak fold.
+    const toolErrors = toolErrorsThisTurn;
+    toolErrorsThisTurn = 0;
+    sess.state.monitor.env.errors = applyTurnToErrors(
+      sess.state.monitor.env.errors,
+      { reason: e.reason || "unknown", toolErrors },
+    );
 
     // Skip scoring on aborted or errored turns (no answer to judge).
     const skipped = e.aborted || e.reason === "aborted" || e.reason === "error" || e.reason === "refusal" || !e.answer;
@@ -1107,6 +1298,8 @@ export const register: Register = async (on, options) => {
           // R3: use completeLeaf + activateNext.
           const completedId = g.id;
           completeLeaf(sess.state, completedId, "scorer complete");
+          // E2: health run at completeLeaf site (scorer complete).
+          await runHealth($, completedId);
           sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "goal",
@@ -1274,10 +1467,12 @@ export const register: Register = async (on, options) => {
     // Serve goal_create (v3: creates the root node, NO planning in handler: R1).
     if (e.tool === "mcp__agentic-plugin__goal_create") {
       if (!sess.isOwner) {
+        toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
       }
       const objective = String((e as any).objective || "").trim();
       if (!objective) {
+        toolErrorsThisTurn++;
         return { deny: "goal_create requires a non-empty 'objective'." };
       }
       const maxRounds = Math.min(Math.max(parseInt(String((e as any).maxRounds || "10"), 10) || 10, 1), 50);
@@ -1326,17 +1521,20 @@ export const register: Register = async (on, options) => {
           result: `Root created; planning runs at the next controller tick.`,
         };
       }
+      toolErrorsThisTurn++;
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
     // Serve goal_add (R4: parent resolution).
     if (e.tool === "mcp__agentic-plugin__goal_add") {
       if (!sess.isOwner) {
+        toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
       }
       const title = String((e as any).title || "").trim();
       const objective = String((e as any).objective || "").trim();
       if (!title || !objective) {
+        toolErrorsThisTurn++;
         return { deny: "goal_add requires non-empty 'title' and 'objective'." };
       }
       const kind = String((e as any).kind || "task").trim() === "plan" ? "plan" : "task";
@@ -1345,6 +1543,7 @@ export const register: Register = async (on, options) => {
 
       const root = sess.state.goals.find((g) => g.parentId === null);
       if (!root) {
+        toolErrorsThisTurn++;
         return { deny: "No goal tree exists. Call goal_create first." };
       }
 
@@ -1353,9 +1552,11 @@ export const register: Register = async (on, options) => {
       if (explicitParent) {
         const parent = sess.state.goals.find((g) => g.id === explicitParent);
         if (!parent) {
+          toolErrorsThisTurn++;
           return { deny: `parentId "${explicitParent}" not found in goal tree.` };
         }
         if (kind === "plan" && parent.parentId !== null) {
+          toolErrorsThisTurn++;
           return { deny: 'kind "plan" is only allowed under the root.' };
         }
         parentId = explicitParent;
@@ -1378,10 +1579,12 @@ export const register: Register = async (on, options) => {
       // Validate kind under parent.
       const parentNode = sess.state.goals.find((g) => g.id === parentId)!;
       if (kind === "plan" && parentNode.parentId !== null) {
+        toolErrorsThisTurn++;
         return { deny: 'kind "plan" is only allowed under the root.' };
       }
       // M6: deny goal_add whose resolved parent is a task (three levels max: root > plan > task).
       if (parentNode.kind === "task") {
+        toolErrorsThisTurn++;
         return { deny: "Cannot add a node under a task. The tree is root > plan > task; nothing deeper." };
       }
 
@@ -1438,12 +1641,14 @@ export const register: Register = async (on, options) => {
             : `Added ${kind} "${title.slice(0, 50)}". No active goal; planning or activation will occur at the next tick.`,
         };
       }
+      toolErrorsThisTurn++;
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
     // Serve goal_done (R3: use completeLeaf + activateNext).
     if (e.tool === "mcp__agentic-plugin__goal_done") {
       if (!sess.isOwner) {
+        toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
       }
       const note = String((e as any).note || "").trim();
@@ -1451,11 +1656,14 @@ export const register: Register = async (on, options) => {
         ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
         : null;
       if (!active || active.status !== "active") {
+        toolErrorsThisTurn++;
         return { deny: "No active goal leaf to complete." };
       }
       const completedId = active.id;
       const completedTitle = active.title;
       completeLeaf(sess.state, completedId, note || "goal_done");
+      // E2: health run at completeLeaf site (goal_done).
+      await runHealth($, completedId);
       // M11: credit the round and score in goal_done, not turn.complete.
       active.scores.push({ round: active.scores.length + 1, result: "on-goal" });
       active.completedRounds += 1;
@@ -1485,6 +1693,7 @@ export const register: Register = async (on, options) => {
         }
         return { result: `Complete: "${completedTitle}". No pending goals; planning runs at the next tick.` };
       }
+      toolErrorsThisTurn++;
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
@@ -1515,6 +1724,7 @@ export const register: Register = async (on, options) => {
     // M5: Serve goal_resume (owner only: resumes paused leaf, resets nudge budget).
     if (e.tool === "mcp__agentic-plugin__goal_resume") {
       if (!sess.isOwner) {
+        toolErrorsThisTurn++;
         return { deny: "goal_resume requires ownership of this persona." };
       }
       const nodeId = String((e as any).nodeId || "").trim();
@@ -1566,10 +1776,12 @@ export const register: Register = async (on, options) => {
     // Serve memory_add.
     if (e.tool === "mcp__agentic-plugin__memory_add") {
       if (!sess.isOwner) {
+        toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
       }
       const text = String((e as any).text || "").trim();
       if (!text) {
+        toolErrorsThisTurn++;
         return { deny: "memory_add requires a non-empty 'text'." };
       }
       const kind = (String((e as any).kind || "fact").trim() as "fact" | "preference" | "lesson") || "fact";
@@ -1597,6 +1809,7 @@ export const register: Register = async (on, options) => {
           result: `Memory saved (${kind}, confidence ${confidence}): "${text.slice(0, 80)}"`,
         };
       }
+      toolErrorsThisTurn++;
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
@@ -1604,6 +1817,7 @@ export const register: Register = async (on, options) => {
     const rootForConstraint = sess.state.goals.find((g) => g.parentId === null);
     if (rootForConstraint &&
         e.tool === "Bash" && rootForConstraint.objective.toLowerCase().includes("no bash")) {
+      toolErrorsThisTurn++;
       sess.state.decisions.push({
         timestamp: Date.now(),
         loop: "goal",
@@ -1672,6 +1886,21 @@ export const register: Register = async (on, options) => {
         contextBlocks.push(pausedBlock);
         try { $.ui.log(`Agentic: [GOAL TREE paused] injected`); } catch { /* non-fatal */ }
       }
+    }
+
+    // --- [ENV] block injection (C7: only when env.git or env.health is non-null) ---
+    const env = sess.state.monitor.env;
+    if (env.git !== null || env.health !== null) {
+      const parts: string[] = [];
+      if (env.git !== null) {
+        parts.push(`git: ${env.git.branch} dirty ${env.git.dirty} ahead ${env.git.ahead} behind ${env.git.behind}`);
+      }
+      if (env.health !== null) {
+        parts.push(`health: exit ${env.health.exitCode} for ${env.health.forNodeId || "no-node"}`);
+      }
+      const envBlock = `[ENV] ${parts.join(", ")}\nEnvironment state above is current; act on it when it affects your plan.`;
+      contextBlocks.push(envBlock);
+      try { $.ui.log(`Agentic: [ENV] injected`); } catch { /* non-fatal */ }
     }
 
     // --- Memory injection (MEMQ seam) ---

@@ -29,6 +29,8 @@ rm -f .agentic-heartbeat.json .agentic-yields.log
 rm -f "$K"/yield-hb.samples
 ( for i in $(seq 1 28); do echo "$(date +%s) $(tr -d '\n ' < .agentic-heartbeat.json 2>/dev/null)"; sleep 5; done ) > "$K"/yield-hb.samples &
 PLUGIN_DIR=$(cygpath -w /d/DeepSeekHarness/agentic-plugin)
+[ -f "$RUNNING" ] && { echo "RUNNING exists, refusing"; exit 8; }
+echo "DeepSeekHarness $0 $(date -u +%FT%TZ)" > "$RUNNING"
 feedA | claude -p --input-format stream-json --output-format stream-json --verbose \
   --plugin-dir "$PLUGIN_DIR" --allowedTools "$TOOLS" --model haiku \
   > "$K"/yield-A.out.jsonl 2> "$K"/yield-A.err.log &

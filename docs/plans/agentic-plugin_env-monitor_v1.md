@@ -1,6 +1,6 @@
 # agentic-plugin: environment monitor, v0.7.0
 
-Status: Draft (awaiting Reviewer review). Target version v0.7.0. Written before any code. The plan is the contract: the completion entry for v0.7.0 quotes the assertions this plan names.
+Status: Complete (v0.7.0). Target version v0.7.0. Written before any code. The plan is the contract: the completion entry for v0.7.0 quotes the assertions this plan names.
 
 Stage 1 (goal tree and plan selection) is Complete at v0.6.4 (commit 2ef521d). This plan is Stage 2: the environment monitor.
 
@@ -329,3 +329,15 @@ The implementation order is:
 | E10 | `RUNNING` is written before the run: `[ -f "$RUNNING" ] && { echo "RUNNING exists, refusing"; exit 8; }; echo "DeepSeekHarness $0 $(date -u +%FT%TZ)" > "$RUNNING"` before the `claude` line in every script. (Section 8.4, scripts.) |
 | E11 | Migration: `parseState` fills `env` with defaults whenever it is absent, whatever the version number says. `enforceInvariants` tolerates a v3 store without `env`. (Section 3.) |
 | E12 | Header clock: the entry header uses `date -u` (the command is in the script that writes the entry, and in the plan doc's completion-entry checklist). (This entry.) |
+
+### Revision 2 (C1 to C7)
+
+| Label | Change |
+|-------|--------|
+| C1 | Execution order: move step 8 (debug runs for Q2 and Q3) to step 1. The git probe depends on Q3 and the error streak on Q2. Quote both store lines in the completion entry. (Section 10.) |
+| C2 | E10 in the first implementation commit: add the guard-and-write lines to all five scripts plus the three new ones. Paste `grep -n 'RUNNING' .kit/*.sh` in the completion entry. (Section 8.4, scripts.) |
+| C3 | Error streak helper is a fold, not a replay: define `applyTurnToErrors(prev: EnvErrors, turn: { reason: string; toolErrors: number }): EnvErrors` in agent-state.ts and call it once per `turn.complete`. (Section 2.3.) |
+| C4 | The plugin's own denies count: every plugin-side `deny` return site also increments `toolErrorsThisTurn`. (Section 2.3.) |
+| C5 | Test 8.3 needs Bash in `--allowedTools`: add `Bash` to the allow list; the plugin's deny is what stops it running. Leave at least 45 s between message 4 and `done`. (Section 8.3.) |
+| C6 | Test 8.1 timing: the first probe runs at the first tick (about 30 s, `env.git` null), so the sequence is `env_git dirty 0`, `dirty 1` at about 150 s, `dirty 0` at about 270 s. Hold the session 390 s, not 330. (Section 8.1.) |
+| C7 | Stage 1 controller test: the summary gains an `Environment:` line only when `env.git` or `env.health` is non-null, so in the harness root (a non-git directory, exit 128) the line is absent and the controller test is unaffected. Confirm that in the completion entry with the `env_git_null` store line. (Section 8.4.) |

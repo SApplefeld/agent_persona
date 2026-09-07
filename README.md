@@ -2,7 +2,7 @@
 
 PIANO-esque cognitive layer on Claude Code's Function Hooks API. One plugin module, one `register(on, options)` export, no Agent SDK, no external supervisor. Modules observe at hook boundaries and write to shared `AgentState`; the Controller : the sole actuator : runs on a clock, classifies the situation, and then (and only then) actuates through exactly three channels.
 
-**Status: v0.6.4 : Stage 1 closure.** `tsc --noEmit` clean. H6 (git claims proven by pasted commands; `roadmap-test.md` tracked in `.kit`), M13 (planner failure cap: 3 consecutive failures block the root, `consecutivePlanningFailures` reset on success), M14 (single cwd-relative `.agentic-planner-fault` flag path, no absolute paths), M15 (planning cap re-anchored to the previous round via `previousRoundBlocked` + `planningCapReached`), L23 (Revision 6 line refs), L24 (em dashes removed from live scripts), L25 (separate `activate_none` action, no `activated` carrying "No node to activate"), L26 (single `yieldNow(dp, onDisk)` helper, one newline rule), L27 (header timestamp from `date -u`) all implemented. 5 live tests in `.kit/`.
+**Status: v0.7.0 : Stage 2 (environment monitor).** `tsc --noEmit` clean. C1 (git probe time-based cadence, `gitProbeMs` config), C2 (health probe at `completeLeaf` sites only, `healthTimeoutMs` config), C3 (error streak: `consecutiveErrorTurns` + `toolErrorsLastTurn` fold), C4 (all plugin-side deny sites increment `toolErrorsThisTurn`), C5 (error streak controller actuation with `handledAt` marker), C6 (git probe fire-and-forget with `gitProbeInFlight` guard), C7 (controller summary `Environment:` line). 8 live tests in `.kit/`.
 
 ## Architecture
 

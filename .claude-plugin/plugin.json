@@ -1,6 +1,6 @@
 {
   "name": "agentic-plugin",
-  "version": "0.6.4",
+  "version": "0.7.0",
   "description": "PIANO-esque cognitive layer: persona-keyed state, heartbeat liveness, controller with classify/actuate",
   "userConfig": {
     "heartbeatMs": {
@@ -32,6 +32,18 @@
       "default": 120000,
       "title": "Nudge idle gate (ms)",
       "description": "Session must be idle this long before a nudge is eligible (ms). Default 2min."
+    },
+    "healthTimeoutMs": {
+      "type": "number",
+      "default": 60000,
+      "title": "Health timeout (ms)",
+      "description": "Timeout for the health probe (ms). Default 60s, cap 120s."
+    },
+    "gitProbeMs": {
+      "type": "number",
+      "default": 120000,
+      "title": "Git probe interval (ms)",
+      "description": "How often the git probe runs (ms). Default 120s, cap 300s."
     }
   }
 }
