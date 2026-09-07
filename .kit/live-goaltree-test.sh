@@ -2,7 +2,7 @@
 # Live test 3: goal tree + plan selection (R9 acceptance test).
 # One user message: goal_create with roadmap + "ok". Then 6 min silence
 # (controller ticks fire: planning → activate → nudge → score → done → activate).
-# Then "done" — scores nothing.
+# Then "done" (scores nothing).
 # Expected chain: create → plan(3) → activate → nudge_sent → score → done →
 #                  activate → (repeat ×3) → plan(0) → root complete.
 set -u

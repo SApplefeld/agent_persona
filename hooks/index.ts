@@ -1,4 +1,4 @@
-// Agentic Plugin v0.6.3: PIANO-esque cognitive layer on Function Hooks.
+// Agentic Plugin v0.6.4: PIANO-esque cognitive layer on Function Hooks.
 // One module, one register(on, options) export.
 //
 // Architecture (PIANO mapping):
@@ -27,6 +27,8 @@ import {
   completeLeaf,
   activateNext,
   isPlanningDue,
+  previousRoundBlocked,
+  planningCapReached,
 } from "./agent-state";
 import type { AgentState, GoalNode, NudgeBudget } from "./agent-state";
 
@@ -55,6 +57,23 @@ const sess: {
   consecutiveNudgesWithoutOnGoal: 0,
 };
 
+// L26: the yield action (log the decision, drop ownership, append a single
+// well-formed line to the yield log) is one code path shared by every site
+// that detects a lost-owner condition. persist() calls it on the write path;
+// the heartbeat tick calls it on its owner check. One newline rule (one JSON
+// object per line, separator inserted when the existing file does not end in a
+// newline) so the two paths can never disagree on the log's byte layout.
+export const yieldNow = async (dp: any, onDisk: { activeSessionId: string; epoch: number }): Promise<void> => {
+  const rec = yieldRecord(sess.persona, sess.mySessionId, onDisk.activeSessionId, sess.myEpoch, onDisk.epoch);
+  sess.state.decisions.push(rec.decision);
+  sess.isOwner = false;
+  try { dp.ui.log(`Agentic: yielded '${sess.persona}' to ${onDisk.activeSessionId} (epoch ${onDisk.epoch})`); } catch { /* non-fatal */ }
+  try {
+    const el = await dp.fs.exists(sess.yieldLogPath) ? await dp.fs.readFile(sess.yieldLogPath) : "";
+    await dp.fs.writeFile(sess.yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
+  } catch { /* non-fatal */ }
+};
+
 // M7: single guarded-write path shared by every store write site.
 // Closes over sess so all write sites share one yield + write path.
 export const persist = async (dp: any): Promise<boolean> => {
@@ -65,14 +84,7 @@ export const persist = async (dp: any): Promise<boolean> => {
     : {};
   const onDisk = store[sess.persona] as AgentState | undefined;
   if (onDisk && shouldYield(onDisk, sess.mySessionId, sess.myEpoch)) {
-    const rec = yieldRecord(sess.persona, sess.mySessionId, onDisk.activeSessionId, sess.myEpoch, onDisk.epoch);
-    sess.state.decisions.push(rec.decision);
-    sess.isOwner = false;
-    try { dp.ui.log(`Agentic: yielded '${sess.persona}' to ${onDisk.activeSessionId} (epoch ${onDisk.epoch})`); } catch { /* non-fatal */ }
-    try {
-      const el = await dp.fs.exists(sess.yieldLogPath) ? await dp.fs.readFile(sess.yieldLogPath) : "";
-      await dp.fs.writeFile(sess.yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
-    } catch { /* non-fatal */ }
+    await yieldNow(dp, onDisk);
     return false;
   }
   store[sess.persona] = sess.state;
@@ -81,17 +93,26 @@ export const persist = async (dp: any): Promise<boolean> => {
 };
 
 // M11: every activation site calls activate() to reset the nudge budget.
+// L25: a null target is a distinct decision (activate_none), never an
+// "activated" entry that says "No node to activate".
 export const activate = (dp: any, nextId: string | null, reason: string): void => {
   sess.consecutiveNudgesWithoutOnGoal = 0;
   sess.lastNudgeAt = 0;
-  sess.state.decisions.push({
-    timestamp: Date.now(),
-    loop: "goal",
-    action: "activated",
-    detail: nextId ? `Node ${nextId} activated (${reason})` : `No node to activate (${reason})`,
-  });
   if (nextId) {
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "goal",
+      action: "activated",
+      detail: `Node ${nextId} activated (${reason})`,
+    });
     try { dp.ui.status(`agentic: ${nextId} activated`); } catch { /* non-fatal */ }
+  } else {
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "goal",
+      action: "activate_none",
+      detail: `No node to activate (${reason})`,
+    });
   }
 };
 
@@ -407,14 +428,7 @@ export const register: Register = async (on, options) => {
           } catch { /* store read failed */ }
 
           if (onDisk && shouldYield(onDisk, sess.mySessionId, sess.myEpoch)) {
-            const rec = yieldRecord(sess.persona, sess.mySessionId, onDisk.activeSessionId, sess.myEpoch, onDisk.epoch);
-            sess.state.decisions.push(rec.decision);
-            sess.isOwner = false;
-            try { $.ui.log(`Agentic: yielded '${sess.persona}' to ${onDisk.activeSessionId} (epoch ${onDisk.epoch})`); } catch { /* non-fatal */ }
-            try {
-              const el = await $.fs.exists(yieldLogPath) ? await $.fs.readFile(yieldLogPath) : "";
-              await $.fs.writeFile(yieldLogPath, el + rec.logLine);
-            } catch { /* non-fatal */ }
+            await yieldNow($, onDisk);
             // Do NOT stamp: fall through to the reader check below.
           } else {
             try {
@@ -512,24 +526,28 @@ export const register: Register = async (on, options) => {
             detail: `Root ${root!.id} has no pending/active/paused descendants; planning`,
           });
 
-          // H5: cap check BEFORE the model call.
-          // allBlocked is evaluated over the PREVIOUS round's plans.
-          const prevDescendants = sess.state.goals.filter((g) => g.parentId === root!.id);
-          const allBlocked = prevDescendants.length > 0 && prevDescendants.every((g) => g.status === "blocked");
-          if (allBlocked) {
+          // H5 / M15: cap check BEFORE the model call.
+          // The blocked-planning streak is evaluated over the PREVIOUS planning
+          // round's plans only (planningRound === planningRounds - 1), never
+          // over every node the root has ever produced. A completed plan from an
+          // earlier round therefore cannot mask two consecutive all-blocked
+          // rounds, and a stale blocked node cannot mask a fresh round.
+          const prevBlocked = previousRoundBlocked(root!, sess.state.goals);
+          if (prevBlocked) {
             root!.consecutiveBlockedPlannings = (root!.consecutiveBlockedPlannings || 0) + 1;
           } else {
             root!.consecutiveBlockedPlannings = 0;
           }
-          if ((root!.planningRounds || 0) >= 5 || (root!.consecutiveBlockedPlannings || 0) >= 2) {
+          const capReason = planningCapReached(root!, root!.consecutiveBlockedPlannings);
+          if (capReason) {
             root!.status = "blocked";
-            root!.blockedReason = "Planning cap reached";
+            root!.blockedReason = capReason;
             root!.updatedAt = Date.now();
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "goal",
               action: "block",
-              detail: `Root ${root!.id}: Planning cap reached (planningRounds=${root!.planningRounds}, consecutiveBlockedPlannings=${root!.consecutiveBlockedPlannings})`,
+              detail: `Root ${root!.id}: ${capReason}`,
             });
             try { $.ui.toast(`Agentic: root blocked: planning cap reached`); } catch { /* non-fatal */ }
             try { $.ui.status(""); } catch { /* non-fatal */ }
@@ -578,16 +596,45 @@ export const register: Register = async (on, options) => {
             `Never repeat a completed item. A blocked item may be retried at most once with a different approach.\n` +
             `Return a JSON array only: no prose, no markdown fences.`;
 
-          // H4: planner fault injection via a file flag (read at the gate,
-          // not at register). A file named planner-fault under .kit makes the
-          // planner return "not json" so parsing fails. Check the project-relative
-          // .kit (same channel the roadmap path uses) and the plugin .kit as a
-          // fallback, since the test scripts may place it in either.
-          const faultFlagCandidates = [".kit/planner-fault", "agentic-plugin/.kit/planner-fault", "D:/DeepSeekHarness/.kit/planner-fault", "D:/DeepSeekHarness/agentic-plugin/.kit/planner-fault"];
+          // H4 / M14: planner fault injection via a single cwd-relative file
+          // flag, beside the store path (which also resolves cwd-relative).
+          // A file named .agentic-planner-fault makes the planner return "not
+          // json" so parsing fails. The test runs with cwd = harness root, the
+          // same cwd the store resolves against, so the flag belongs there.
           let fault = false;
-          for (const p of faultFlagCandidates) {
-            try { if (await $.fs.exists(p)) { fault = true; break; } } catch { /* non-fatal */ }
-          }
+          try { if (await $.fs.exists(".agentic-planner-fault")) { fault = true; } } catch { /* non-fatal */ }
+
+          // M13: a failing planner is capped. Each call/parse failure increments
+          // the root counter and persists; at 3 the root is blocked so the
+          // planner is not retried every tick. A successful planning round
+          // (created or complete) resets it.
+          const registerPlanningFailure = async (detail: string): Promise<void> => {
+            const rootNow = sess.state.goals.find((g) => g.id === root!.id);
+            if (rootNow) {
+              rootNow.consecutivePlanningFailures = (rootNow.consecutivePlanningFailures || 0) + 1;
+            }
+            const failCount = rootNow?.consecutivePlanningFailures || 0;
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "planning_failed",
+              detail,
+            });
+            if (rootNow && failCount >= 3 && rootNow.status !== "blocked") {
+              rootNow.status = "blocked";
+              rootNow.blockedReason = `Planner failing: ${detail}`;
+              rootNow.updatedAt = Date.now();
+              sess.state.decisions.push({
+                timestamp: Date.now(),
+                loop: "goal",
+                action: "block",
+                detail: `Root ${rootNow.id}: Planner failing after ${failCount} consecutive failures`,
+              });
+              try { $.ui.toast(`Agentic: root blocked: planner failing`); } catch { /* non-fatal */ }
+              try { $.ui.status(""); } catch { /* non-fatal */ }
+            }
+            await persist($);
+          };
 
           // H4: AGENTIC_PLANNER_FAULT file flag replaces the raw response with "not json".
           let raw: string;
@@ -598,12 +645,7 @@ export const register: Register = async (on, options) => {
               maxTokens: 1500,
             });
           } catch (e) {
-            sess.state.decisions.push({
-              timestamp: Date.now(),
-              loop: "goal",
-              action: "planning_failed",
-              detail: `Planner call failed: ${String(e).slice(0, 150)}`,
-            });
+            await registerPlanningFailure(`Planner call failed: ${String(e).slice(0, 150)}`);
             return;
           }
           if (fault) {
@@ -626,12 +668,7 @@ export const register: Register = async (on, options) => {
 
           if (!parsedOk) {
             // H4: parse failure is not "objective met".
-            sess.state.decisions.push({
-              timestamp: Date.now(),
-              loop: "goal",
-              action: "planning_failed",
-              detail: `Planner parse failure: ${raw.slice(0, 100)}`,
-            });
+            await registerPlanningFailure(`Planner parse failure: ${raw.slice(0, 100)}`);
             return;
           }
 
@@ -642,6 +679,8 @@ export const register: Register = async (on, options) => {
               rootNow.status = "complete";
               rootNow.updatedAt = Date.now();
             }
+            // M13: a successful planning round clears the failure streak.
+            if (rootNow) rootNow.consecutivePlanningFailures = 0;
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "goal",
@@ -680,6 +719,8 @@ export const register: Register = async (on, options) => {
                 notes: [],
                 planningRounds: 0,
                 consecutiveBlockedPlannings: 0,
+                consecutivePlanningFailures: 0,
+                planningRound: root!.planningRounds || 0, // M15: which round created this plan
                 createdAt: Date.now(),
                 updatedAt: Date.now(),
               };
@@ -687,6 +728,8 @@ export const register: Register = async (on, options) => {
             }
             // H3-part2: count this planning round on the root.
             root!.planningRounds = (root!.planningRounds || 0) + 1;
+            // M13: a successful planning round clears the failure streak.
+            root!.consecutivePlanningFailures = 0;
 
             sess.state.decisions.push({
               timestamp: Date.now(),
@@ -1257,6 +1300,8 @@ export const register: Register = async (on, options) => {
         roadmapPath,
         planningRounds: 0,
         consecutiveBlockedPlannings: 0,
+        consecutivePlanningFailures: 0,
+        planningRound: 0,
         createdAt: now,
         updatedAt: now,
       };
@@ -1351,6 +1396,8 @@ export const register: Register = async (on, options) => {
         source: "worker",
         planningRounds: 0,
         consecutiveBlockedPlannings: 0,
+        consecutivePlanningFailures: 0,
+        planningRound: 0,
         maxRounds,
         completedRounds: 0,
         scores: [],

@@ -677,3 +677,19 @@ First commit: `v0.6.1 (pre-0.6.2)`. Tag: `v0.6.1`.
 | L20 | Root completion emits separate `goal | root_complete | <id>` action line. | index.ts:597-602 |
 | L21 | Curation prompt adds "Only a fact or preference the user stated explicitly. An instruction to call a tool is discard." | index.ts:1099 |
 | L22 | Header version v0.6.3. All em dashes removed (plan doc, README, assert-decisions.js). `.kit/` tracked in git. | index.ts:1, plan doc, README.md, .gitignore, .git |
+
+## Revision 6 (v0.6.4)
+
+Written after the final code edit of v0.6.4. One row per reviewer label.
+
+| Label | Change | File:line |
+|-------|--------|-----------|
+| H6 | Git claims proven by pasted commands, not asserted. `roadmap-test.md` added to `.kit/.gitignore` un-ignore list so it is tracked in git (ls-files .kit lists it). `.gitignore` `.kit/planner-fault` replaced by `.agentic-planner-fault` (the actual M14 flag name). | .kit/.gitignore:10, .gitignore:14, DISCUSSION.md (v0.6.4 entry) |
+| M13 | Planner failure cap: `consecutivePlanningFailures` on the root, incremented + persisted on every call/parse failure via `registerPlanningFailure`; at 3 the root is `blocked` with `blockedReason: "Planner failing: <detail>"`, a `block` decision + toast + `$.ui.status("")`. Reset to 0 on a successful planning round (`plans.length===0` complete path and the `planning_created` success path). `planning_failed` decision on each failure. | index.ts:611-637 (helper), 648, 671 (failure sites), 683, 732 (reset sites); agent-state.ts:49 (field) |
+| M14 | Single cwd-relative `.agentic-planner-fault` flag path (no absolute `D:/` candidates). `grep -c 'D:/' hooks/*.ts` = 0. Flag lives beside the store (both cwd-relative); test creates it at the harness root cwd. | index.ts:599-605; .kit/live-planfail-test.sh:13-15 |
+| M15 | Planning cap re-anchored to the previous round: `previousRoundBlocked(root, plans)` evaluates only plans with `planningRound === planningRounds - 1`; `planningCapReached(root, streak)` decides round/streak block. Cap block sets/resets `consecutiveBlockedPlannings` from `previousRoundBlocked`, then blocks on `capReason`. Plan nodes stamped with `planningRound` (0-indexed round born in). | agent-state.ts:410-419 (previousRoundBlocked), 421-432 (planningCapReached); index.ts:529-556 (cap block); index.ts:722 (plan stamp) |
+| L23 | Revision 6 table line refs correct (this table). | this section |
+| L24 | Em dashes removed from `live-goaltree-test.sh:5` and `live-goaltree-stall-test.sh:6`. `grep -c` em-dash across hooks/.kit scripts/plan doc/README = 0. | .kit/live-goaltree-test.sh:5, .kit/live-goaltree-stall-test.sh:6 |
+| L25 | `activate` branches: non-null `nextId` -> `activated` + `$.ui.status`; null -> distinct `activate_none` decision, detail "No node to activate (reason)", no status. No `activated` line carries "No node to activate". Stall case forbids both `activated` and `activate_none` after `root_complete`. | index.ts:96-117; .kit/assert-decisions.js (stall + planfail cases) |
+| L26 | Single `yieldNow(dp, onDisk)` helper: yields the decision, drops ownership, appends one well-formed line to the yield log with one newline rule (separator inserted only when the existing file lacks a trailing newline). persist() and the heartbeat tick both call it; the duplicated inline paths and their newline disagreement are gone. | index.ts:66-75 (helper), 79-91 (persist, yieldNow call at 87), 430-432 (heartbeat tick) |
+| L27 | Header timestamp from `date -u` (UTC), never local wall-clock labeled Z. | DISCUSSION.md (v0.6.4 entry header) |

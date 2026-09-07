@@ -46,6 +46,8 @@ export interface GoalNode {
   roadmapPath?: string; // root only: the roadmap file path
   planningRounds: number; // root only: number of planning events
   consecutiveBlockedPlannings: number; // root only: consecutive all-blocked plannings
+  consecutivePlanningFailures: number; // root only (M13): consecutive planner call/parse failures
+  planningRound: number; // plan only (M15): which planning round created this node
   createdAt: number;
   updatedAt: number;
   blockedReason?: string;
@@ -169,6 +171,8 @@ export function parseState(json: string): AgentState {
         notes: [],
         planningRounds: 0,
         consecutiveBlockedPlannings: 0,
+        consecutivePlanningFailures: 0,
+        planningRound: 0,
         createdAt: g.createdAt,
         updatedAt: g.updatedAt,
         blockedReason: g.blockedReason,
@@ -188,6 +192,8 @@ export function parseState(json: string): AgentState {
         notes: [],
         planningRounds: 0,
         consecutiveBlockedPlannings: 0,
+        consecutivePlanningFailures: 0,
+        planningRound: 0,
         createdAt: g.createdAt,
         updatedAt: g.updatedAt,
         blockedReason: g.blockedReason,
@@ -386,6 +392,43 @@ export function isPlanningDue(state: AgentState): boolean {
     (g) => g.status === "pending" || g.status === "active" || g.status === "paused"
   );
   return !hasWork;
+}
+
+// M15: the blocked-planning cap must be evaluated over the PREVIOUS planning
+// round only, not over every node the root has ever produced. A completed plan
+// in an earlier round must not clear a two-consecutive-all-blocked streak, nor
+// let an old blocked node linger against a fresh round's plans. The round a
+// plan was created in is captured on the plan node (planningRound) at creation
+// time. The previous round, at the moment a NEW round is about to start, is
+// the one just completed: planningRounds - 1.
+//
+// planningCapReached returns a block reason, or null when the cap is not
+// reached. The cap is: the root has already done 5+ planning rounds, OR two
+// consecutive previous rounds were fully blocked. The streak (consecutive
+// all-blocked rounds) is tracked by the caller on the root; this helper
+// decides whether the most recent completed round counts as all-blocked.
+export function previousRoundBlocked(
+  root: GoalNode,
+  plans: GoalNode[],
+): boolean {
+  const prevRound = (root.planningRounds || 0) - 1;
+  if (prevRound < 0) return false; // no previous round yet
+  const prevPlans = plans.filter((g) => g.planningRound === prevRound);
+  if (prevPlans.length === 0) return false;
+  return prevPlans.every((g) => g.status === "blocked");
+}
+
+export function planningCapReached(
+  root: GoalNode,
+  consecutiveBlockedPlannings: number,
+): string | null {
+  if ((root.planningRounds || 0) >= 5) {
+    return `Planning cap reached (planningRounds=${root.planningRounds})`;
+  }
+  if (consecutiveBlockedPlannings >= 2) {
+    return `Planning cap reached (consecutiveBlockedPlannings=${consecutiveBlockedPlannings})`;
+  }
+  return null;
 }
 
 // --- Pure helpers for the guarded-write (yield) path. ---

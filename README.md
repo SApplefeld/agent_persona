@@ -2,7 +2,7 @@
 
 PIANO-esque cognitive layer on Claude Code's Function Hooks API. One plugin module, one `register(on, options)` export, no Agent SDK, no external supervisor. Modules observe at hook boundaries and write to shared `AgentState`; the Controller : the sole actuator : runs on a clock, classifies the situation, and then (and only then) actuates through exactly three channels.
 
-**Status: v0.6.3 : Stage 2 closure.** `tsc --noEmit` clean. H4 (planner fault via file flag `.kit/planner-fault`), H5 (planning cap timing), M7 (single `persist($)` closure), M11 (single `activate($, id, why)` closure), M12 (assert-decisions.js ordered-subsequence + forbidden lists), L18 (goal_resume captures reason before clearing), L19 (isOwner check in goal_create and memory_add), L20 (separate `root_complete` action), L21 (curation prompt discard instruction), L22 (hygiene: no em dashes, `.kit` tracked in git) all implemented. 5 live tests in `.kit/`.
+**Status: v0.6.4 : Stage 1 closure.** `tsc --noEmit` clean. H6 (git claims proven by pasted commands; `roadmap-test.md` tracked in `.kit`), M13 (planner failure cap: 3 consecutive failures block the root, `consecutivePlanningFailures` reset on success), M14 (single cwd-relative `.agentic-planner-fault` flag path, no absolute paths), M15 (planning cap re-anchored to the previous round via `previousRoundBlocked` + `planningCapReached`), L23 (Revision 6 line refs), L24 (em dashes removed from live scripts), L25 (separate `activate_none` action, no `activated` carrying "No node to activate"), L26 (single `yieldNow(dp, onDisk)` helper, one newline rule), L27 (header timestamp from `date -u`) all implemented. 5 live tests in `.kit/`.
 
 ## Architecture
 

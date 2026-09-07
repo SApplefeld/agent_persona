@@ -1,21 +1,25 @@
 #!/usr/bin/env bash
-# Live test 5: planner parse failure (pins H4).
-# .kit/planner-fault file flag replaces the raw planner response with "not json".
-# Expected: planning_failed at first tick, root still pending,
-#           planning_fired again at the next tick (retries).
+# Live test 5: planner parse failure (pins H4 + M13).
+# M14: the fault flag is a single cwd-relative file, .agentic-planner-fault,
+#      created in the harness root (the cwd the store resolves against).
+# M13: a failing planner is capped at 3 consecutive failures, then the root is
+#      blocked. The run must last long enough (>=150s) for 3 planning ticks to
+#      fire so the cap is reached and the root is blocked.
 set -u
 cd /d/DeepSeekHarness || exit 9
 K=/d/DeepSeekHarness/agentic-plugin/.kit
 rm -f "$K"/planfail.out.jsonl "$K"/planfail.err.log "$K"/planfail.exit
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 unset CLAUDECODE
-# H4: create the fault flag file, delete on exit.
-touch "$K/planner-fault"
-trap 'rm -f "$K/planner-fault"' EXIT
+# H4 / M14: create the fault flag file in the cwd (harness root), delete on exit.
+FLAG=/d/DeepSeekHarness/.agentic-planner-fault
+touch "$FLAG"
+trap 'rm -f "$FLAG"' EXIT
 
 feed() {
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"Write one haiku about the moon\" maxRounds 5. Then reply with the single word: ok"}}'
-  sleep 120
+  # >=150s: 3 planning ticks (30s cadence) so the failure cap of 3 is reached.
+  sleep 150
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Reply with the single word: done"}}'
   sleep 20
 }

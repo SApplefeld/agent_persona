@@ -3,7 +3,7 @@
 # One user message: goal_create (no roadmap) + goal_add (plan) + "ok".
 # Then 240s silence: tick activates the pending plan (H1), nudge, done,
 # planning fires with 0 plans → root complete (H3: root NOT completed by completeLeaf).
-# Then "done" — scores nothing.
+# Then "done" (scores nothing).
 set -u
 cd /d/DeepSeekHarness || exit 9
 K=/d/DeepSeekHarness/agentic-plugin/.kit

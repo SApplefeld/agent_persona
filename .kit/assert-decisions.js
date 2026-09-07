@@ -139,7 +139,10 @@ switch (testName) {
       "stall"
     );
     forbiddenBefore("planning_fired", "activated", "stall");
-    forbiddenAfter("activated", "root_complete", "stall");
+    // L25: after the root is complete there must be no activation of any kind,
+    // whether a real activation (activated) or a no-op one (activate_none).
+    forbiddenAfter("activated", "root_complete", "stall: activated");
+    forbiddenAfter("activate_none", "root_complete", "stall: activate_none");
     break;
   }
   case "controller": {
@@ -162,10 +165,26 @@ switch (testName) {
     break;
   }
   case "planfail": {
-    check2("planning_failed present", decisions.includes("planning_failed"));
+    // M13: a failing planner is capped at 3 consecutive failures, then the
+    // root is blocked. Assert the full sequence, not just "a failure happened".
     const root = (state.goals || []).find(g => g.parentId === null);
-    check2("root is pending", root && root.status === "pending");
-    check2("two planning_fired", decisions.filter(a => a === "planning_fired").length >= 2);
+    check2("root exists", !!root);
+    check2("root is blocked", !!root && root.status === "blocked");
+    check2("root blockedReason names planner failing", !!root && /Planner failing/.test(root.blockedReason || ""));
+    const pfCount = decisions.filter(a => a === "planning_failed").length;
+    check2("exactly 3 planning_failed", pfCount === 3);
+    const blockIdx = decisions.indexOf("block");
+    check2("block present", blockIdx !== -1);
+    // All three failures precede the block.
+    const pfAfterBlock = blockIdx !== -1
+      ? decisions.slice(blockIdx + 1).filter(a => a === "planning_failed").length
+      : pfCount;
+    check2("no planning_failed after block", pfAfterBlock === 0);
+    // No planner call may fire after the root is blocked.
+    const firedAfterBlock = blockIdx !== -1
+      ? decisions.slice(blockIdx + 1).filter(a => a === "planning_fired").length
+      : decisions.filter(a => a === "planning_fired").length;
+    check2("no planning_fired after block", firedAfterBlock === 0);
     forbidden(["planning_created"], "planfail");
     break;
   }
