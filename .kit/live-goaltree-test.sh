@@ -8,6 +8,8 @@
 set -u
 cd /d/DeepSeekHarness || exit 9
 K=/d/DeepSeekHarness/agentic-plugin/.kit
+RUNNING="$K"/RUNNING
+trap 'rm -f "$RUNNING"' EXIT
 rm -f "$K"/goaltree.out.jsonl "$K"/goaltree.err.log "$K"/goaltree.exit
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 unset CLAUDECODE

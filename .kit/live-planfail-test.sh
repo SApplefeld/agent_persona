@@ -14,7 +14,8 @@ unset CLAUDECODE
 # H4 / M14: create the fault flag file in the cwd (harness root), delete on exit.
 FLAG=/d/DeepSeekHarness/.agentic-planner-fault
 touch "$FLAG"
-trap 'rm -f "$FLAG"' EXIT
+RUNNING=/d/DeepSeekHarness/agentic-plugin/.kit/RUNNING
+trap 'rm -f "$FLAG" "$RUNNING"' EXIT
 
 feed() {
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"Write one haiku about the moon\" maxRounds 5. Then reply with the single word: ok"}}'

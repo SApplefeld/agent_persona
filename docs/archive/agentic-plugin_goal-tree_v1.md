@@ -1,8 +1,10 @@
 # Stage 1 Plan: Goal Tree and Plan Selection
 
+Status: Complete (v0.6.4, commit 2ef521d)
+
 Revision: 4
 
-Version target: **0.6.2** · State version: **3** · Plugin: `agentic-plugin`
+Version target: **0.6.2** (final: v0.6.4) · State version: **3** · Plugin: `agentic-plugin`
 
 ## Purpose
 
