@@ -1,4 +1,4 @@
-// Agentic Plugin v0.6.1: PIANO-esque cognitive layer on Function Hooks.
+// Agentic Plugin v0.6.2: PIANO-esque cognitive layer on Function Hooks.
 // One module, one register(on, options) export.
 //
 // Architecture (PIANO mapping):
@@ -65,6 +65,32 @@ export const register: Register = async (on, options) => {
 
   // M8: planning reentrancy guard.
   let planningInFlight = false;
+
+  // M7: single guarded-write path shared by every store write site.
+  // Closes over the mutable session vars so all write sites share one
+  // yield + write path. dp: the hook context ($), which provides $.fs, $.ui.
+  const guardedWrite = async (dp: any): Promise<boolean> => {
+    if (!isOwner) return false;
+    state.updatedAt = Date.now();
+    const store: Record<string, unknown> = await dp.fs.exists(storePath)
+      ? (JSON.parse(await dp.fs.readFile(storePath)) as Record<string, unknown>)
+      : {};
+    const onDisk = store[persona] as AgentState | undefined;
+    if (onDisk && shouldYield(onDisk, mySessionId, myEpoch)) {
+      const rec = yieldRecord(persona, mySessionId, onDisk.activeSessionId, myEpoch, onDisk.epoch);
+      state.decisions.push(rec.decision);
+      isOwner = false;
+      try { dp.ui.log(`Agentic: yielded '${persona}' to ${onDisk.activeSessionId} (epoch ${onDisk.epoch})`); } catch { /* non-fatal */ }
+      try {
+        const el = await dp.fs.exists(yieldLogPath) ? await dp.fs.readFile(yieldLogPath) : "";
+        await dp.fs.writeFile(yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
+      } catch { /* non-fatal */ }
+      return false;
+    }
+    store[persona] = state;
+    await dp.fs.writeFile(storePath, JSON.stringify(store, null, 2));
+    return true;
+  };
 
   // Options carry userConfig fields declared in plugin.json.
   // Read as options.<name> per the types doc (lines 2540–2547).
@@ -297,13 +323,7 @@ export const register: Register = async (on, options) => {
     // first tick look like hours of idle time.
     state.monitor.lastTurnComplete = Date.now();
 
-    if (isOwner) {
-      const store: Record<string, unknown> = await $.fs.exists(storePath)
-        ? JSON.parse(await $.fs.readFile(storePath))
-        : {};
-      store[persona] = state;
-      await $.fs.writeFile(storePath, JSON.stringify(store, null, 2));
-    }
+    await guardedWrite($);
 
     // Write the initial heartbeat. L3: owner-only, a passive reader must not
     // stamp its own id over the holder's heartbeat.
@@ -424,7 +444,7 @@ export const register: Register = async (on, options) => {
     //   "no active leaf, return" → idle gate → classify.
     // Eligibility in code. The model decides WHAT, never WHETHER.
     // Cap counts *sent* nudges only, resets only on on-goal or complete.
-    $.clock.every(controllerTickMs, () => {
+    $.clock.every(controllerTickMs, async () => {
       // 1. Owner check.
       if (!isOwner) return;
       // 2. In-flight check.
@@ -442,233 +462,209 @@ export const register: Register = async (on, options) => {
       // M8: reentrancy guard: a planner call slower than one tick must not fire twice.
       if (isPlanningDue(state) && !planningInFlight) {
         planningInFlight = true;
-        Promise.resolve().then(async () => {
+        try {
+          const planTs = Date.now();
+          state.decisions.push({
+            timestamp: planTs,
+            loop: "goal",
+            action: "planning_fired",
+            detail: `Root ${root!.id} has no pending/active/paused descendants; planning`,
+          });
+
+          // R2: re-read the roadmap file at every planning event.
+          let roadmapText = "";
+          const rp = root!.roadmapPath;
+          if (rp) {
+            try {
+              if (await $.fs.exists(rp)) {
+                roadmapText = await $.fs.readFile(rp);
+              }
+            } catch { /* roadmap unreadable; planner gets empty text */ }
+          }
+
+          // Planning call: Haiku complete, JSON array of plans.
+          // H3-part2: carry history and a cap in the prompt.
+          const completedPlans = state.goals.filter((g) => g.parentId === root!.id && g.status === "complete");
+          const blockedPlans = state.goals.filter((g) => g.parentId === root!.id && g.status === "blocked");
+          const abandonedPlans = state.goals.filter((g) => g.parentId === root!.id && g.status === "abandoned");
+          const historyLines: string[] = [];
+          for (const cp of completedPlans) {
+            const lastNote = cp.notes.length > 0 ? cp.notes[cp.notes.length - 1] : "no note";
+            historyLines.push(`Completed: ${cp.title}: ${lastNote}`);
+          }
+          for (const bp of blockedPlans) {
+            historyLines.push(`Blocked: ${bp.title}: ${bp.blockedReason || "unknown"}`);
+          }
+          for (const ap of abandonedPlans) {
+            historyLines.push(`Abandoned: ${ap.title}`);
+          }
+          const historyBlock = historyLines.length > 0 ? `\n${historyLines.join("\n")}\n\n` : "";
+          const planPrompt =
+            `You are the planner for an agentic plugin. ` +
+            `The operator's objective is: "${root!.objective}".\n\n` +
+            (roadmapText
+              ? `Roadmap file content:\n${roadmapText}\n\n`
+              : "") +
+            historyBlock +
+            `Create a plan of 0 to 7 steps to accomplish the objective.\n` +
+            `Return a JSON array. Each element: {"title": string, "objective": string, "maxRounds": number (5-20)}.\n` +
+            `Return [] (empty array) if the objective and roadmap are fully met by the completed items.\n` +
+            `Never repeat a completed item. A blocked item may be retried at most once with a different approach.\n` +
+            `Return a JSON array only: no prose, no markdown fences.`;
+
+          // H4: AGENTIC_PLANNER_FAULT=1 replaces the raw response with "not json".
+          let raw: string;
           try {
-            const planTs = Date.now();
+            raw = await $.model.complete({
+              model: "haiku",
+              prompt: planPrompt,
+              maxTokens: 1500,
+            });
+          } catch (e) {
             state.decisions.push({
-              timestamp: planTs,
+              timestamp: Date.now(),
               loop: "goal",
-              action: "planning_fired",
-              detail: `Root ${root!.id} has no pending/active/paused descendants; planning`,
+              action: "planning_failed",
+              detail: `Planner call failed: ${String(e).slice(0, 150)}`,
+            });
+            return;
+          }
+          // H4: test fault injection (env var read at runtime).
+          const g = globalThis as any;
+          const faultEnv = g.process?.env?.AGENTIC_PLANNER_FAULT;
+          try { $.ui.log(`Agentic: AGENTIC_PLANNER_FAULT=${faultEnv}`); } catch { /* non-fatal */ }
+          if (faultEnv === "1") {
+            raw = "not json";
+          }
+
+          // H4: parsed flag set only when JSON.parse returns an array.
+          let plans: Array<{ title: string; objective: string }> = [];
+          let parsedOk = false;
+          try {
+            const trimmed = raw.trim().replace(/^```(?:json)?\n?/m, "").replace(/\n?```$/m, "").trim();
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed)) {
+              plans = parsed
+                .filter((p) => p && typeof p.title === "string" && typeof p.objective === "string")
+                .slice(0, 7);
+              parsedOk = true;
+            }
+          } catch { /* parse failed */ }
+
+          if (!parsedOk) {
+            // H4: parse failure is not "objective met".
+            state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "planning_failed",
+              detail: `Planner parse failure: ${raw.slice(0, 100)}`,
+            });
+            return;
+          }
+
+          if (plans.length === 0) {
+            // Objective met or nothing to plan: complete the root.
+            const rootNow = state.goals.find((g) => g.id === root!.id);
+            if (rootNow && rootNow.status !== "complete" && rootNow.status !== "abandoned") {
+              rootNow.status = "complete";
+              rootNow.updatedAt = Date.now();
+            }
+            state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "planning_complete",
+              detail: `Planner returned 0 plans; root ${root!.id} marked complete`,
+            });
+            try { await $.audio.speak("Goal complete"); } catch { /* no audio */ }
+            consecutiveNudgesWithoutOnGoal = 0;
+            lastNudgeAt = 0;
+            try { $.ui.status(""); } catch { /* non-fatal */ }
+          } else {
+            // Create plan nodes under the root.
+            // L9: per-plan maxRounds from the planner, defaulting to root.maxRounds.
+            // H3-part2: increment planningRounds on the root.
+            for (const p of plans) {
+              const perPlanMaxRounds = typeof (p as any).maxRounds === "number"
+                ? Math.min(Math.max((p as any).maxRounds, 5), 20)
+                : (root!.maxRounds > 0 ? root!.maxRounds : 10);
+              const node: GoalNode = {
+                id: `plan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+                parentId: root!.id,
+                kind: "plan",
+                title: p.title.slice(0, 80),
+                objective: p.objective.slice(0, 500),
+                status: "pending",
+                source: "controller",
+                maxRounds: perPlanMaxRounds,
+                completedRounds: 0,
+                scores: [],
+                notes: [],
+                planningRounds: 0,
+                consecutiveBlockedPlannings: 0,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+              };
+              state.goals.push(node);
+            }
+            // H3-part2: count this planning round on the root.
+            root!.planningRounds = (root!.planningRounds || 0) + 1;
+
+            // H3-cap: 5th planning event, or 2nd consecutive all-blocked.
+            const allBlocked = state.goals
+              .filter((g) => g.parentId === root!.id)
+              .every((g) => g.status === "blocked");
+            if (allBlocked) {
+              root!.consecutiveBlockedPlannings = (root!.consecutiveBlockedPlannings || 0) + 1;
+            } else {
+              root!.consecutiveBlockedPlannings = 0;
+            }
+            if (root!.planningRounds >= 5 || root!.consecutiveBlockedPlannings >= 2) {
+              root!.status = "blocked";
+              root!.blockedReason = "Planning cap reached";
+              root!.updatedAt = Date.now();
+              state.decisions.push({
+                timestamp: Date.now(),
+                loop: "goal",
+                action: "block",
+                detail: `Root ${root!.id}: Planning cap reached (planningRounds=${root!.planningRounds}, consecutiveBlockedPlannings=${root!.consecutiveBlockedPlannings})`,
+              });
+              try { $.ui.toast(`Agentic: root blocked: planning cap reached`); } catch { /* non-fatal */ }
+              try { $.ui.status(""); } catch { /* non-fatal */ }
+              await guardedWrite($);
+              return;
+            }
+
+            state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "planning_created",
+              detail: `${plans.length} plans under root ${root!.id}: ${plans.map((p) => p.title.slice(0, 30)).join("; ")}`,
             });
 
-            // R2: re-read the roadmap file at every planning event.
-            let roadmapText = "";
-            const rp = root!.roadmapPath;
-            if (rp) {
-              try {
-                if (await $.fs.exists(rp)) {
-                  roadmapText = await $.fs.readFile(rp);
-                }
-              } catch { /* roadmap unreadable; planner gets empty text */ }
-            }
-
-            // Planning call: Haiku complete, JSON array of plans.
-            // H3-part2: carry history and a cap in the prompt.
-            const completedPlans = state.goals.filter((g) => g.parentId === root!.id && g.status === "complete");
-            const blockedPlans = state.goals.filter((g) => g.parentId === root!.id && g.status === "blocked");
-            const abandonedPlans = state.goals.filter((g) => g.parentId === root!.id && g.status === "abandoned");
-            const historyLines: string[] = [];
-            for (const cp of completedPlans) {
-              const lastNote = cp.notes.length > 0 ? cp.notes[cp.notes.length - 1] : "no note";
-              historyLines.push(`Completed: ${cp.title}: ${lastNote}`);
-            }
-            for (const bp of blockedPlans) {
-              historyLines.push(`Blocked: ${bp.title}: ${bp.blockedReason || "unknown"}`);
-            }
-            for (const ap of abandonedPlans) {
-              historyLines.push(`Abandoned: ${ap.title}`);
-            }
-            const historyBlock = historyLines.length > 0 ? `\n${historyLines.join("\n")}\n\n` : "";
-            const planPrompt =
-              `You are the planner for an agentic plugin. ` +
-              `The operator's objective is: "${root!.objective}".\n\n` +
-              (roadmapText
-                ? `Roadmap file content:\n${roadmapText}\n\n`
-                : "") +
-              historyBlock +
-              `Create a plan of 0 to 7 steps to accomplish the objective.\n` +
-              `Return a JSON array. Each element: {"title": string, "objective": string, "maxRounds": number (5-20)}.\n` +
-              `Return [] (empty array) if the objective and roadmap are fully met by the completed items.\n` +
-              `Never repeat a completed item. A blocked item may be retried at most once with a different approach.\n` +
-              `Return a JSON array only: no prose, no markdown fences.`;
-
-            // H4: AGENTIC_PLANNER_FAULT=1 replaces the raw response with "not json".
-            let raw: string;
-            try {
-              raw = await $.model.complete({
-                model: "haiku",
-                prompt: planPrompt,
-                maxTokens: 1500,
-              });
-            } catch (e) {
-              state.decisions.push({
-                timestamp: Date.now(),
-                loop: "goal",
-                action: "planning_failed",
-                detail: `Planner call failed: ${String(e).slice(0, 150)}`,
-              });
-              return;
-            }
-            if (process.env.AGENTIC_PLANNER_FAULT === "1") {
-              raw = "not json";
-            }
-
-            // H4: parsed flag set only when JSON.parse returns an array.
-            let plans: Array<{ title: string; objective: string }> = [];
-            let parsedOk = false;
-            try {
-              const trimmed = raw.trim().replace(/^```(?:json)?\n?/m, "").replace(/\n?```$/m, "").trim();
-              const parsed = JSON.parse(trimmed);
-              if (Array.isArray(parsed)) {
-                plans = parsed
-                  .filter((p) => p && typeof p.title === "string" && typeof p.objective === "string")
-                  .slice(0, 7);
-                parsedOk = true;
-              }
-            } catch { /* parse failed */ }
-
-            if (!parsedOk) {
-              // H4: parse failure is not "objective met".
-              state.decisions.push({
-                timestamp: Date.now(),
-                loop: "goal",
-                action: "planning_failed",
-                detail: `Planner parse failure: ${raw.slice(0, 100)}`,
-              });
-              return;
-            }
-
-            if (plans.length === 0) {
-              // Objective met or nothing to plan: complete the root.
-              const rootNow = state.goals.find((g) => g.id === root!.id);
-              if (rootNow && rootNow.status !== "complete" && rootNow.status !== "abandoned") {
-                rootNow.status = "complete";
-                rootNow.updatedAt = Date.now();
-              }
-              state.decisions.push({
-                timestamp: Date.now(),
-                loop: "goal",
-                action: "planning_complete",
-                detail: `Planner returned 0 plans; root ${root!.id} marked complete`,
-              });
-              try { await $.audio.speak("Goal complete"); } catch { /* no audio */ }
+            // Activate the first plan.
+            const firstPlan = state.goals.find((g) => g.parentId === root!.id && g.status === "pending");
+            if (firstPlan) {
+              firstPlan.status = "active";
+              firstPlan.updatedAt = Date.now();
+              state.activeGoalId = firstPlan.id;
+              // R3: activation resets the nudge budget.
               consecutiveNudgesWithoutOnGoal = 0;
               lastNudgeAt = 0;
-              try { $.ui.status(""); } catch { /* non-fatal */ }
-            } else {
-              // Create plan nodes under the root.
-              // L9: per-plan maxRounds from the planner, defaulting to root.maxRounds.
-              // H3-part2: increment planningRounds on the root.
-              for (const p of plans) {
-                const perPlanMaxRounds = typeof (p as any).maxRounds === "number"
-                  ? Math.min(Math.max((p as any).maxRounds, 5), 20)
-                  : (root!.maxRounds > 0 ? root!.maxRounds : 10);
-                const node: GoalNode = {
-                  id: `plan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-                  parentId: root!.id,
-                  kind: "plan",
-                  title: p.title.slice(0, 80),
-                  objective: p.objective.slice(0, 500),
-                  status: "pending",
-                  source: "controller",
-                  maxRounds: perPlanMaxRounds,
-                  completedRounds: 0,
-                  scores: [],
-                  notes: [],
-                  planningRounds: 0,
-                  consecutiveBlockedPlannings: 0,
-                  createdAt: Date.now(),
-                  updatedAt: Date.now(),
-                };
-                state.goals.push(node);
-              }
-              // H3-part2: count this planning round on the root.
-              root!.planningRounds = (root!.planningRounds || 0) + 1;
-
-              // H3-cap: 5th planning event, or 2nd consecutive all-blocked.
-              const allBlocked = state.goals
-                .filter((g) => g.parentId === root!.id)
-                .every((g) => g.status === "blocked");
-              if (allBlocked) {
-                root!.consecutiveBlockedPlannings = (root!.consecutiveBlockedPlannings || 0) + 1;
-              } else {
-                root!.consecutiveBlockedPlannings = 0;
-              }
-              if (root!.planningRounds >= 5 || root!.consecutiveBlockedPlannings >= 2) {
-                root!.status = "blocked";
-                root!.blockedReason = "Planning cap reached";
-                root!.updatedAt = Date.now();
-                state.decisions.push({
-                  timestamp: Date.now(),
-                  loop: "goal",
-                  action: "block",
-                  detail: `Root ${root!.id}: Planning cap reached (planningRounds=${root!.planningRounds}, consecutiveBlockedPlannings=${root!.consecutiveBlockedPlannings})`,
-                });
-                try { $.ui.toast(`Agentic: root blocked: planning cap reached`); } catch { /* non-fatal */ }
-                try { $.ui.status(""); } catch { /* non-fatal */ }
-                state.updatedAt = Date.now();
-                if (isOwner) {
-                  const store2: Record<string, unknown> = await $.fs.exists(storePath)
-                    ? (JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>)
-                    : {};
-                  store2[persona] = state;
-                  await $.fs.writeFile(storePath, JSON.stringify(store2, null, 2));
-                }
-                return;
-              }
-
               state.decisions.push({
                 timestamp: Date.now(),
                 loop: "goal",
-                action: "planning_created",
-                detail: `${plans.length} plans under root ${root!.id}: ${plans.map((p) => p.title.slice(0, 30)).join("; ")}`,
+                action: "activated",
+                detail: `Plan ${firstPlan.id} "${firstPlan.title}" activated`,
               });
-
-              // Activate the first plan.
-              const firstPlan = state.goals.find((g) => g.parentId === root!.id && g.status === "pending");
-              if (firstPlan) {
-                firstPlan.status = "active";
-                firstPlan.updatedAt = Date.now();
-                state.activeGoalId = firstPlan.id;
-                // R3: activation resets the nudge budget.
-                consecutiveNudgesWithoutOnGoal = 0;
-                lastNudgeAt = 0;
-                state.decisions.push({
-                  timestamp: Date.now(),
-                  loop: "goal",
-                  action: "activated",
-                  detail: `Plan ${firstPlan.id} "${firstPlan.title}" activated`,
-                });
-              }
             }
-
-            state.updatedAt = Date.now();
-            if (isOwner) {
-              const store: Record<string, unknown> = await $.fs.exists(storePath)
-                ? (JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>)
-                : {};
-              const onDisk = store[persona] as AgentState | undefined;
-              if (onDisk && shouldYield(onDisk, mySessionId, myEpoch)) {
-                const rec = yieldRecord(persona, mySessionId, onDisk.activeSessionId, myEpoch, onDisk.epoch);
-                state.decisions.push(rec.decision);
-                isOwner = false;
-                try { $.ui.log(`Agentic: yielded '${persona}' to ${onDisk.activeSessionId} (epoch ${onDisk.epoch})`); } catch { /* non-fatal */ }
-                try {
-                  const el = await $.fs.exists(yieldLogPath) ? await $.fs.readFile(yieldLogPath) : "";
-                  await $.fs.writeFile(yieldLogPath, el + rec.logLine);
-                } catch { /* non-fatal */ }
-              } else {
-                store[persona] = state;
-                await $.fs.writeFile(storePath, JSON.stringify(store, null, 2));
-              }
-            }
-          } catch {
-            // Planning failed; non-fatal.
-          } finally {
-            planningInFlight = false;
           }
-        });
+
+          await guardedWrite($);
+        } catch {
+          // Planning failed; non-fatal.
+        } finally {
+          planningInFlight = false;
+        }
         return; // Planning gate consumed this tick.
       }
 
@@ -682,19 +678,7 @@ export const register: Register = async (on, options) => {
             action: "activated",
             detail: `Node ${nextId} activated (no active leaf, pending work found)`,
           });
-          state.updatedAt = Date.now();
-          // Persist and return (async).
-          if (isOwner) {
-            Promise.resolve().then(async () => {
-              try {
-                const store: Record<string, unknown> = await $.fs.exists(storePath)
-                  ? (JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>)
-                  : {};
-                store[persona] = state;
-                await $.fs.writeFile(storePath, JSON.stringify(store, null, 2));
-              } catch { /* non-fatal */ }
-            });
-          }
+          await guardedWrite($);
         }
         return;
       }
@@ -785,25 +769,7 @@ export const register: Register = async (on, options) => {
               try { $.ui.status(""); } catch { /* non-fatal */ }
             }
             state.updatedAt = capTs;
-            if (isOwner) {
-              const store: Record<string, unknown> = await $.fs.exists(storePath)
-                ? (JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>)
-                : {};
-              const onDisk = store[persona] as AgentState | undefined;
-              if (onDisk && shouldYield(onDisk, mySessionId, myEpoch)) {
-                const rec = yieldRecord(persona, mySessionId, onDisk.activeSessionId, myEpoch, onDisk.epoch);
-                state.decisions.push(rec.decision);
-                isOwner = false;
-                try { $.ui.log(`Agentic: yielded '${persona}' to ${onDisk.activeSessionId} (epoch ${onDisk.epoch})`); } catch { /* non-fatal */ }
-                try {
-                  const el = await $.fs.exists(yieldLogPath) ? await $.fs.readFile(yieldLogPath) : "";
-                  await $.fs.writeFile(yieldLogPath, el + rec.logLine);
-                } catch { /* non-fatal */ }
-              } else {
-                store[persona] = state;
-                await $.fs.writeFile(storePath, JSON.stringify(store, null, 2));
-              }
-            }
+            await guardedWrite($);
             return;
           }
 
@@ -979,27 +945,9 @@ export const register: Register = async (on, options) => {
             } catch { /* non-fatal */ }
           }
 
-          // Persist (owner only, inline guarded write).
+          // Persist (owner only, guarded write).
           state.updatedAt = Date.now();
-          if (isOwner) {
-            const store: Record<string, unknown> = await $.fs.exists(storePath)
-              ? (JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>)
-              : {};
-            const onDisk = store[persona] as AgentState | undefined;
-            if (onDisk && shouldYield(onDisk, mySessionId, myEpoch)) {
-              const rec = yieldRecord(persona, mySessionId, onDisk.activeSessionId, myEpoch, onDisk.epoch);
-              state.decisions.push(rec.decision);
-              isOwner = false;
-              try { $.ui.log(`Agentic: yielded '${persona}' to ${onDisk.activeSessionId} (epoch ${onDisk.epoch})`); } catch { /* non-fatal */ }
-              try {
-                const el = await $.fs.exists(yieldLogPath) ? await $.fs.readFile(yieldLogPath) : "";
-                await $.fs.writeFile(yieldLogPath, el + rec.logLine);
-              } catch { /* non-fatal */ }
-            } else {
-              store[persona] = state;
-              await $.fs.writeFile(storePath, JSON.stringify(store, null, 2));
-            }
-          }
+          await guardedWrite($);
         } catch {
           // Controller tick failed; non-fatal.
         }
@@ -1225,27 +1173,8 @@ export const register: Register = async (on, options) => {
       }
     }
 
-    // Guarded save (owner only, inline). M10: use shouldYield/yieldRecord.
-    state.updatedAt = Date.now();
-    if (isOwner) {
-      const store: Record<string, unknown> = await $.fs.exists(storePath)
-        ? (JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>)
-        : {};
-      const onDisk = store[persona] as AgentState | undefined;
-      if (onDisk && shouldYield(onDisk, mySessionId, myEpoch)) {
-        const rec = yieldRecord(persona, mySessionId, onDisk.activeSessionId, myEpoch, onDisk.epoch);
-        state.decisions.push(rec.decision);
-        isOwner = false;
-        try { $.ui.log(`Agentic: yielded '${persona}' to ${onDisk.activeSessionId} (epoch ${onDisk.epoch})`); } catch { /* non-fatal */ }
-        try {
-          const el = await $.fs.exists(yieldLogPath) ? await $.fs.readFile(yieldLogPath) : "";
-          await $.fs.writeFile(yieldLogPath, el + rec.logLine);
-        } catch { /* non-fatal */ }
-      } else {
-        store[persona] = state;
-        await $.fs.writeFile(storePath, JSON.stringify(store, null, 2));
-      }
-    }
+    // M7: single guarded-write path (shared helper).
+    await guardedWrite($);
 
     return next(e);
   });
@@ -1258,10 +1187,10 @@ export const register: Register = async (on, options) => {
     if (e.tool === "mcp__agentic-plugin__agentic_identity") {
       const name = String((e as any).persona || "default").trim() || "default";
       persona = name;
-      const store = await $.fs.exists(storePath)
-        ? JSON.parse(await $.fs.readFile(storePath))
+      const store: Record<string, unknown> = await $.fs.exists(storePath)
+        ? (JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>)
         : {};
-      const existing = store[name];
+      const existing = store[name] as AgentState | undefined;
       if (existing) {
         state = parseState(JSON.stringify(existing));
         state.persona = name;
@@ -1284,9 +1213,7 @@ export const register: Register = async (on, options) => {
         action: "identity_set",
         detail: `Persona '${persona}' (session ${mySessionId}, epoch ${myEpoch}, forced claim)`,
       });
-      state.updatedAt = Date.now();
-      store[persona] = state;
-      await $.fs.writeFile(storePath, JSON.stringify(store, null, 2));
+      await guardedWrite($);
       // Write the heartbeat for the new persona (inline).
       try {
         const hb: Record<string, { sessionId: string; epoch: number; lastSeen: number }> =
@@ -1345,28 +1272,7 @@ export const register: Register = async (on, options) => {
       consecutiveNudgesWithoutOnGoal = 0;
       lastNudgeAt = 0;
 
-      let writeOk = false;
-      if (isOwner) {
-        state.updatedAt = Date.now();
-        const store: Record<string, unknown> = await $.fs.exists(storePath)
-          ? (JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>)
-          : {};
-        const onDisk = store[persona] as AgentState | undefined;
-        if (onDisk && shouldYield(onDisk, mySessionId, myEpoch)) {
-          const rec = yieldRecord(persona, mySessionId, onDisk.activeSessionId, myEpoch, onDisk.epoch);
-          state.decisions.push(rec.decision);
-          isOwner = false;
-          try { $.ui.log(`Agentic: yielded '${persona}' to ${onDisk.activeSessionId} (epoch ${onDisk.epoch})`); } catch { /* non-fatal */ }
-          try {
-            const el = await $.fs.exists(yieldLogPath) ? await $.fs.readFile(yieldLogPath) : "";
-            await $.fs.writeFile(yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
-          } catch { /* non-fatal */ }
-        } else {
-          store[persona] = state;
-          await $.fs.writeFile(storePath, JSON.stringify(store, null, 2));
-          writeOk = true;
-        }
-      }
+      const writeOk = await guardedWrite($);
       if (writeOk) {
         return {
           result: `Root created; planning runs at the next controller tick.`,
@@ -1478,21 +1384,7 @@ export const register: Register = async (on, options) => {
         }
       }
 
-      let writeOk = false;
-      state.updatedAt = Date.now();
-      const store: Record<string, unknown> = await $.fs.exists(storePath)
-        ? (JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>)
-        : {};
-      const onDisk = store[persona] as AgentState | undefined;
-      if (onDisk && shouldYield(onDisk, mySessionId, myEpoch)) {
-        const rec = yieldRecord(persona, mySessionId, onDisk.activeSessionId, myEpoch, onDisk.epoch);
-        state.decisions.push(rec.decision);
-        isOwner = false;
-      } else {
-        store[persona] = state;
-        await $.fs.writeFile(storePath, JSON.stringify(store, null, 2));
-        writeOk = true;
-      }
+      const writeOk = await guardedWrite($);
       if (writeOk) {
         const nextActive = state.activeGoalId
           ? state.goals.find((g) => g.id === state.activeGoalId)
@@ -1541,21 +1433,7 @@ export const register: Register = async (on, options) => {
         state.activeGoalId = null;
       }
 
-      let writeOk = false;
-      state.updatedAt = Date.now();
-      const store: Record<string, unknown> = await $.fs.exists(storePath)
-        ? (JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>)
-        : {};
-      const onDisk = store[persona] as AgentState | undefined;
-      if (onDisk && shouldYield(onDisk, mySessionId, myEpoch)) {
-        const rec = yieldRecord(persona, mySessionId, onDisk.activeSessionId, myEpoch, onDisk.epoch);
-        state.decisions.push(rec.decision);
-        isOwner = false;
-      } else {
-        store[persona] = state;
-        await $.fs.writeFile(storePath, JSON.stringify(store, null, 2));
-        writeOk = true;
-      }
+      const writeOk = await guardedWrite($);
       if (writeOk) {
         // R8: goal_done result names newly active leaf OR planning message.
         if (nextId) {
@@ -1638,14 +1516,8 @@ export const register: Register = async (on, options) => {
         action: "resume",
         detail: `Node ${target.id} resumed (paused: ${target.blockedReason || "unknown"})`,
       });
-      if (isOwner) {
-        state.updatedAt = Date.now();
-        const store: Record<string, unknown> = await $.fs.exists(storePath)
-          ? (JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>)
-          : {};
-        store[persona] = state;
-        await $.fs.writeFile(storePath, JSON.stringify(store, null, 2));
-      }
+      state.updatedAt = Date.now();
+      await guardedWrite($);
       return { result: `Resumed ${target.id} (${target.kind}) "${target.title}". Nudge budget reset.` };
     }
 
@@ -1674,28 +1546,7 @@ export const register: Register = async (on, options) => {
         action: "remember",
         detail: `${kind}: ${text.slice(0, 80)}`,
       });
-      let writeOk = false;
-      if (isOwner) {
-        state.updatedAt = Date.now();
-        const store: Record<string, unknown> = await $.fs.exists(storePath)
-          ? (JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>)
-          : {};
-        const onDisk = store[persona] as AgentState | undefined;
-        if (onDisk && shouldYield(onDisk, mySessionId, myEpoch)) {
-          const rec = yieldRecord(persona, mySessionId, onDisk.activeSessionId, myEpoch, onDisk.epoch);
-          state.decisions.push(rec.decision);
-          isOwner = false;
-          try { $.ui.log(`Agentic: yielded '${persona}' to ${onDisk.activeSessionId} (epoch ${onDisk.epoch})`); } catch { /* non-fatal */ }
-          try {
-            const el = await $.fs.exists(yieldLogPath) ? await $.fs.readFile(yieldLogPath) : "";
-            await $.fs.writeFile(yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
-          } catch { /* non-fatal */ }
-        } else {
-          store[persona] = state;
-          await $.fs.writeFile(storePath, JSON.stringify(store, null, 2));
-          writeOk = true;
-        }
-      }
+      const writeOk = await guardedWrite($);
       if (writeOk) {
         return {
           result: `Memory saved (${kind}, confidence ${confidence}): "${text.slice(0, 80)}"`,
@@ -1714,26 +1565,7 @@ export const register: Register = async (on, options) => {
         action: "deny",
         detail: `${rootForConstraint.id}: Bash denied by root constraint`,
       });
-      if (isOwner) {
-        state.updatedAt = Date.now();
-        const store: Record<string, unknown> = await $.fs.exists(storePath)
-          ? (JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>)
-          : {};
-        const onDisk = store[persona] as AgentState | undefined;
-        if (onDisk && shouldYield(onDisk, mySessionId, myEpoch)) {
-          const rec = yieldRecord(persona, mySessionId, onDisk.activeSessionId, myEpoch, onDisk.epoch);
-          state.decisions.push(rec.decision);
-          isOwner = false;
-          try { $.ui.log(`Agentic: yielded '${persona}' to ${onDisk.activeSessionId} (epoch ${onDisk.epoch})`); } catch { /* non-fatal */ }
-          try {
-            const el = await $.fs.exists(yieldLogPath) ? await $.fs.readFile(yieldLogPath) : "";
-            await $.fs.writeFile(yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
-          } catch { /* non-fatal */ }
-        } else {
-          store[persona] = state;
-          await $.fs.writeFile(storePath, JSON.stringify(store, null, 2));
-        }
-      }
+      await guardedWrite($);
       return { deny: "Bash is not allowed by the current goal" };
     }
 
