@@ -2,7 +2,7 @@
 
 PIANO-esque cognitive layer on Claude Code's Function Hooks API. One plugin module, one `register(on, options)` export, no Agent SDK, no external supervisor. Modules observe at hook boundaries and write to shared `AgentState`; the Controller — the sole actuator — runs on a clock, classifies the situation, and then (and only then) actuates through exactly three channels.
 
-**Status: v0.5 — Round-4 corrections complete.** `tsc --noEmit` clean. H5 (myEpoch on create), H6 (heartbeat pre-stamp yield + simplified promotion), H7 (JSONL yield log), H8 (nudged-turn scoring), H2b (reset on goal_create), M11 (idle-clock reset), M12 (single tick timestamp), M13 (cap before classify, plain-text reason), M14 (comment cleanup), M15 (cast removal) all implemented.
+**Status: v0.6.2 — Stage 1 closure.** `tsc --noEmit` clean. Goal tree v3 (root/plan/task, single active leaf), H3 (root completion via planner), H4 (planner fault injection → `planning_failed`), M4 (nudge cap → blocked), M7 (single `guardedWrite()` helper), M9/M10 (goal_resume pauses active leaf), L14–L17 (goal_done score, curation prompt, yield-test cleanup, memory injection log), P3 (decision-log assertions in all 5 live tests), P4 (git init + `v0.6.1` tag) all implemented. 5 live tests in `.kit/`.
 
 ## Architecture
 
