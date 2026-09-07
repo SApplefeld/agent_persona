@@ -1,4 +1,4 @@
-// Agentic Plugin v0.6.2: PIANO-esque cognitive layer on Function Hooks.
+// Agentic Plugin v0.6.3: PIANO-esque cognitive layer on Function Hooks.
 // One module, one register(on, options) export.
 //
 // Architecture (PIANO mapping):
@@ -28,22 +28,94 @@ import {
   activateNext,
   isPlanningDue,
 } from "./agent-state";
-import type { AgentState, GoalNode } from "./agent-state";
+import type { AgentState, GoalNode, NudgeBudget } from "./agent-state";
+
+// --- Module-scope session identity ---
+// The loader requires `persist` and `activate` to be top-level functions.
+// A mutable object carries the per-session values; hooks update it on session.start.
+const sess: {
+  persona: string;
+  mySessionId: string;
+  myEpoch: number;
+  isOwner: boolean;
+  state: AgentState;
+  storePath: string;
+  yieldLogPath: string;
+  lastNudgeAt: number;
+  consecutiveNudgesWithoutOnGoal: number;
+} = {
+  persona: "default",
+  mySessionId: "pending",
+  myEpoch: 0,
+  isOwner: false,
+  state: createDefaultState("default", "pending"),
+  storePath: ".agentic-personas.json",
+  yieldLogPath: ".agentic-yields.log",
+  lastNudgeAt: 0,
+  consecutiveNudgesWithoutOnGoal: 0,
+};
+
+// M7: single guarded-write path shared by every store write site.
+// Closes over sess so all write sites share one yield + write path.
+export const persist = async (dp: any): Promise<boolean> => {
+  if (!sess.isOwner) return false;
+  sess.state.updatedAt = Date.now();
+  const store: Record<string, unknown> = await dp.fs.exists(sess.storePath)
+    ? (JSON.parse(await dp.fs.readFile(sess.storePath)) as Record<string, unknown>)
+    : {};
+  const onDisk = store[sess.persona] as AgentState | undefined;
+  if (onDisk && shouldYield(onDisk, sess.mySessionId, sess.myEpoch)) {
+    const rec = yieldRecord(sess.persona, sess.mySessionId, onDisk.activeSessionId, sess.myEpoch, onDisk.epoch);
+    sess.state.decisions.push(rec.decision);
+    sess.isOwner = false;
+    try { dp.ui.log(`Agentic: yielded '${sess.persona}' to ${onDisk.activeSessionId} (epoch ${onDisk.epoch})`); } catch { /* non-fatal */ }
+    try {
+      const el = await dp.fs.exists(sess.yieldLogPath) ? await dp.fs.readFile(sess.yieldLogPath) : "";
+      await dp.fs.writeFile(sess.yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
+    } catch { /* non-fatal */ }
+    return false;
+  }
+  store[sess.persona] = sess.state;
+  await dp.fs.writeFile(sess.storePath, JSON.stringify(store, null, 2));
+  return true;
+};
+
+// M11: every activation site calls activate() to reset the nudge budget.
+export const activate = (dp: any, nextId: string | null, reason: string): void => {
+  sess.consecutiveNudgesWithoutOnGoal = 0;
+  sess.lastNudgeAt = 0;
+  sess.state.decisions.push({
+    timestamp: Date.now(),
+    loop: "goal",
+    action: "activated",
+    detail: nextId ? `Node ${nextId} activated (${reason})` : `No node to activate (${reason})`,
+  });
+  if (nextId) {
+    try { dp.ui.status(`agentic: ${nextId} activated`); } catch { /* non-fatal */ }
+  }
+};
 
 export const register: Register = async (on, options) => {
-  // --- Identity: a durable PERSONA is the key, not the session. ---
-  const storePath = ".agentic-personas.json";
-  const yieldLogPath = ".agentic-yields.log";
+  // --- Identity: a durable persona is the key, not the session. ---
+  // Session vars live in the module-scope `sess` object so persist() and
+  // activate() can see them. These local aliases keep existing code readable.
+  const storePath = sess.storePath;
+  const yieldLogPath = sess.yieldLogPath;
   const heartbeatPath = ".agentic-heartbeat.json";
 
-  let persona = "default";
-  let mySessionId = "pending";
-  let myEpoch = 0;
-  let state: AgentState = createDefaultState(persona, mySessionId);
+  // Local aliases: read/write go through sess so persist() and activate()
+  // see the same values.
+  const getPersona = () => sess.persona;
+  const setPersona = (v: string) => { sess.persona = v; };
+  const getSessionId = () => sess.mySessionId;
+  const getEpoch = () => sess.myEpoch;
+  const setEpoch = (v: number) => { sess.myEpoch = v; };
+  const getState = () => sess.state;
+  const setState = (v: AgentState) => { sess.state = v; };
+  const getOwner = () => sess.isOwner;
+  const setOwner = (v: boolean) => { sess.isOwner = v; };
 
-  // Liveness: heartbeat sidecar. Not a liveness proof: a holder that stops
-  // stamping is considered stale, but that only proves it stopped stamping.
-  let isOwner = false;
+  const MAX_CONSECUTIVE_NUDGES = 3;
 
   // Track the user prompt for the current turn (the goal scorer needs it).
   let currentPrompt = "";
@@ -58,39 +130,8 @@ export const register: Register = async (on, options) => {
   // mid-turn by goal_done / scorer complete).
   let turnLeafId: string | null = null;
 
-  // Nudge safety: floor and cap.
-  let lastNudgeAt = 0;
-  let consecutiveNudgesWithoutOnGoal = 0;
-  const MAX_CONSECUTIVE_NUDGES = 3;
-
   // M8: planning reentrancy guard.
   let planningInFlight = false;
-
-  // M7: single guarded-write path shared by every store write site.
-  // Closes over the mutable session vars so all write sites share one
-  // yield + write path. dp: the hook context ($), which provides $.fs, $.ui.
-  const guardedWrite = async (dp: any): Promise<boolean> => {
-    if (!isOwner) return false;
-    state.updatedAt = Date.now();
-    const store: Record<string, unknown> = await dp.fs.exists(storePath)
-      ? (JSON.parse(await dp.fs.readFile(storePath)) as Record<string, unknown>)
-      : {};
-    const onDisk = store[persona] as AgentState | undefined;
-    if (onDisk && shouldYield(onDisk, mySessionId, myEpoch)) {
-      const rec = yieldRecord(persona, mySessionId, onDisk.activeSessionId, myEpoch, onDisk.epoch);
-      state.decisions.push(rec.decision);
-      isOwner = false;
-      try { dp.ui.log(`Agentic: yielded '${persona}' to ${onDisk.activeSessionId} (epoch ${onDisk.epoch})`); } catch { /* non-fatal */ }
-      try {
-        const el = await dp.fs.exists(yieldLogPath) ? await dp.fs.readFile(yieldLogPath) : "";
-        await dp.fs.writeFile(yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
-      } catch { /* non-fatal */ }
-      return false;
-    }
-    store[persona] = state;
-    await dp.fs.writeFile(storePath, JSON.stringify(store, null, 2));
-    return true;
-  };
 
   // Options carry userConfig fields declared in plugin.json.
   // Read as options.<name> per the types doc (lines 2540–2547).
@@ -104,11 +145,11 @@ export const register: Register = async (on, options) => {
   // --- session.start: register tools, claim or join the persona ---
   on("session.start", async ($, e, next) => {
     try {
-      mySessionId = String(await $.session.id());
+      sess.mySessionId = String(await $.session.id());
     } catch {
       // $.session.id unavailable; single-session still works
     }
-    $.ui.log(`Agentic: session.start (${mySessionId})`);
+    $.ui.log(`Agentic: session.start (${sess.mySessionId})`);
 
     // Register tools.
     await $.tool.register({
@@ -260,85 +301,85 @@ export const register: Register = async (on, options) => {
     const existing = await $.fs.exists(storePath)
       ? JSON.parse(await $.fs.readFile(storePath))
       : {};
-    const existingPersona = existing[persona];
+    const existingPersona = existing[sess.persona];
 
     if (existingPersona) {
-      state = parseState(JSON.stringify(existingPersona));
-      state.persona = persona;
+      sess.state = parseState(JSON.stringify(existingPersona));
+      sess.state.persona = sess.persona;
 
       // Check the heartbeat sidecar for liveness (not the store).
       let holderHb: { sessionId: string; epoch: number; lastSeen: number } | null = null;
       try {
         if (await $.fs.exists(heartbeatPath)) {
           const hb = JSON.parse(await $.fs.readFile(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>;
-          holderHb = hb[persona] ?? null;
+          holderHb = hb[sess.persona] ?? null;
         }
       } catch { /* heartbeat read failed */ }
       const now = Date.now();
       const holderAlive = holderHb
-        && holderHb.sessionId !== mySessionId
+        && holderHb.sessionId !== sess.mySessionId
         && (now - holderHb.lastSeen) <= staleAfterMs;
 
       if (!holderAlive) {
         // Claim: stale holder, no heartbeat, or already ours.
-        state.activeSessionId = mySessionId;
-        state.epoch += 1;
-        myEpoch = state.epoch;
-        isOwner = true;
+        sess.state.activeSessionId = sess.mySessionId;
+        sess.state.epoch += 1;
+        sess.myEpoch = sess.state.epoch;
+        sess.isOwner = true;
         const prevId = holderHb?.sessionId ?? existingPersona.activeSessionId;
-        state.decisions.push({
+        sess.state.decisions.push({
           timestamp: now,
           loop: "monitor",
           action: "persona_claim",
-          detail: `Claimed '${persona}' (prev ${prevId}, epoch ${existingPersona.epoch}${holderAlive ? "" : ", stale"})`,
+          detail: `Claimed '${sess.persona}' (prev ${prevId}, epoch ${existingPersona.epoch}${holderAlive ? "" : ", stale"})`,
         });
       } else {
         // Passive reader: another session holds it and is alive.
-        isOwner = false;
-        myEpoch = existingPersona.epoch;
-        state.decisions.push({
+        sess.isOwner = false;
+        sess.myEpoch = existingPersona.epoch;
+        sess.state.decisions.push({
           timestamp: now,
           loop: "monitor",
           action: "passive_reader",
-          detail: `Joining '${persona}' as reader (holder: ${holderHb!.sessionId}, epoch ${existingPersona.epoch})`,
+          detail: `Joining '${sess.persona}' as reader (holder: ${holderHb!.sessionId}, epoch ${existingPersona.epoch})`,
         });
       }
     } else {
-      state = createDefaultState(persona, mySessionId);
-      isOwner = true;
-      myEpoch = state.epoch;
-      state.decisions.push({
+      sess.state = createDefaultState(sess.persona, sess.mySessionId);
+      sess.isOwner = true;
+      sess.myEpoch = sess.state.epoch;
+      sess.state.decisions.push({
         timestamp: Date.now(),
         loop: "monitor",
         action: "persona_create",
-        detail: `Created persona '${persona}'`,
+        detail: `Created persona '${sess.persona}'`,
       });
     }
 
-    state.monitor.sessionStart = Date.now();
-    state.monitor.turnCount = 0;
-    state.monitor.totalToolCalls = 0;
-    state.monitor.errors = 0;
+    sess.state.monitor.sessionStart = Date.now();
+    sess.state.monitor.turnCount = 0;
+    sess.state.monitor.totalToolCalls = 0;
+    sess.state.monitor.errors = 0;
     // Reset the idle clock: a persisted lastTurnComplete would make the
     // first tick look like hours of idle time.
-    state.monitor.lastTurnComplete = Date.now();
+    sess.state.monitor.lastTurnComplete = Date.now();
 
-    await guardedWrite($);
+    await persist($);
 
     // Write the initial heartbeat. L3: owner-only, a passive reader must not
     // stamp its own id over the holder's heartbeat.
-    if (isOwner) {
+    if (sess.isOwner) {
       try {
         const hb: Record<string, { sessionId: string; epoch: number; lastSeen: number }> =
           await $.fs.exists(heartbeatPath)
             ? (JSON.parse(await $.fs.readFile(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>)
             : {};
-        hb[persona] = { sessionId: mySessionId, epoch: myEpoch, lastSeen: Date.now() };
+        hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now() };
         await $.fs.writeFile(heartbeatPath, JSON.stringify(hb, null, 2));
       } catch { /* heartbeat write failed; non-fatal */ }
     }
 
-    $.ui.log(`Agentic: persona '${persona}', ${state.memory.length} memories, ${isOwner ? "owner" : "passive reader"}`);
+    $.ui.log(`Agentic: persona '${sess.persona}', ${sess.state.memory.length} memories, ${sess.isOwner ? "owner" : "passive reader"}`);
 
     // Note: $ is available in the timer callback scope (session.start hook).
 
@@ -355,21 +396,21 @@ export const register: Register = async (on, options) => {
         // here, not on its next guarded write. Without this check a demoted
         // owner keeps stamping its own id over the new owner's heartbeat,
         // and the sidecar ends up naming a session the store does not.
-        if (isOwner) {
+        if (sess.isOwner) {
           let onDisk: { activeSessionId: string; epoch: number } | null = null;
           try {
             if (await $.fs.exists(storePath)) {
               const store = JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>;
-              const existing = store[persona] as AgentState | undefined;
+              const existing = store[sess.persona] as AgentState | undefined;
               if (existing) onDisk = existing;
             }
           } catch { /* store read failed */ }
 
-          if (onDisk && shouldYield(onDisk, mySessionId, myEpoch)) {
-            const rec = yieldRecord(persona, mySessionId, onDisk.activeSessionId, myEpoch, onDisk.epoch);
-            state.decisions.push(rec.decision);
-            isOwner = false;
-            try { $.ui.log(`Agentic: yielded '${persona}' to ${onDisk.activeSessionId} (epoch ${onDisk.epoch})`); } catch { /* non-fatal */ }
+          if (onDisk && shouldYield(onDisk, sess.mySessionId, sess.myEpoch)) {
+            const rec = yieldRecord(sess.persona, sess.mySessionId, onDisk.activeSessionId, sess.myEpoch, onDisk.epoch);
+            sess.state.decisions.push(rec.decision);
+            sess.isOwner = false;
+            try { $.ui.log(`Agentic: yielded '${sess.persona}' to ${onDisk.activeSessionId} (epoch ${onDisk.epoch})`); } catch { /* non-fatal */ }
             try {
               const el = await $.fs.exists(yieldLogPath) ? await $.fs.readFile(yieldLogPath) : "";
               await $.fs.writeFile(yieldLogPath, el + rec.logLine);
@@ -381,7 +422,7 @@ export const register: Register = async (on, options) => {
                 await $.fs.exists(heartbeatPath)
                   ? (JSON.parse(await $.fs.readFile(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>)
                   : {};
-              hb[persona] = { sessionId: mySessionId, epoch: myEpoch, lastSeen: Date.now() };
+              hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now() };
               await $.fs.writeFile(heartbeatPath, JSON.stringify(hb, null, 2));
             } catch { /* heartbeat write failed */ }
           }
@@ -391,34 +432,34 @@ export const register: Register = async (on, options) => {
         // With the shouldYield check above, the sidecar is only ever
         // written by the store's current owner, so a stale sidecar means no
         // live owner, no store-owner comparison needed.
-        if (!isOwner) {
+        if (!sess.isOwner) {
           let holderHb: { sessionId: string; epoch: number; lastSeen: number } | null = null;
           try {
             if (await $.fs.exists(heartbeatPath)) {
               const hb = JSON.parse(await $.fs.readFile(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>;
-              holderHb = hb[persona] ?? null;
+              holderHb = hb[sess.persona] ?? null;
             }
           } catch { /* heartbeat read failed */ }
 
           const now = Date.now();
           const holderIsStale = holderHb && (now - holderHb.lastSeen) > staleAfterMs;
-          const holderIsSelf = holderHb?.sessionId === mySessionId;
+          const holderIsSelf = holderHb?.sessionId === sess.mySessionId;
           if (holderIsStale && !holderIsSelf) {
             const store: Record<string, unknown> = await $.fs.exists(storePath)
               ? (JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>)
               : {};
-            const existing = store[persona] as AgentState | undefined;
+            const existing = store[sess.persona] as AgentState | undefined;
             if (existing) {
-              state = parseState(JSON.stringify(existing));
-              state.persona = persona;
+              sess.state = parseState(JSON.stringify(existing));
+              sess.state.persona = sess.persona;
             } else {
-              state = createDefaultState(persona, mySessionId);
+              sess.state = createDefaultState(sess.persona, sess.mySessionId);
             }
-            state.activeSessionId = mySessionId;
-            state.epoch += 1;
-            myEpoch = state.epoch;
-            isOwner = true;
-            state.decisions.push({
+            sess.state.activeSessionId = sess.mySessionId;
+            sess.state.epoch += 1;
+            sess.myEpoch = sess.state.epoch;
+            sess.isOwner = true;
+            sess.state.decisions.push({
               timestamp: now,
               loop: "monitor",
               action: "reader_promoted",
@@ -430,10 +471,10 @@ export const register: Register = async (on, options) => {
                 await $.fs.exists(heartbeatPath)
                   ? (JSON.parse(await $.fs.readFile(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>)
                   : {};
-              hb[persona] = { sessionId: mySessionId, epoch: myEpoch, lastSeen: Date.now() };
+              hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now() };
               await $.fs.writeFile(heartbeatPath, JSON.stringify(hb, null, 2));
             } catch { /* non-fatal */ }
-            $.ui.log(`Agentic: promoted to owner of '${persona}' (previous holder stale)`);
+            $.ui.log(`Agentic: promoted to owner of '${sess.persona}' (previous holder stale)`);
           }
         }
       });
@@ -446,30 +487,55 @@ export const register: Register = async (on, options) => {
     // Cap counts *sent* nudges only, resets only on on-goal or complete.
     $.clock.every(controllerTickMs, async () => {
       // 1. Owner check.
-      if (!isOwner) return;
+      if (!sess.isOwner) return;
       // 2. In-flight check.
       if (turnInFlight) return;
 
       // Get the active node.
-      const activeNode = state.activeGoalId
-        ? state.goals.find((g) => g.id === state.activeGoalId)
+      const activeNode = sess.state.activeGoalId
+        ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
         : null;
-      const root = state.goals.find((g) => g.parentId === null);
+      const root = sess.state.goals.find((g) => g.parentId === null);
 
       // 3. Planning gate (R1, R5): planning runs here, NOT in a tool handler.
       // Due when root exists, not complete/abandoned, and no
       // pending/active/paused descendants.
       // M8: reentrancy guard: a planner call slower than one tick must not fire twice.
-      if (isPlanningDue(state) && !planningInFlight) {
+      if (isPlanningDue(sess.state) && !planningInFlight) {
         planningInFlight = true;
         try {
           const planTs = Date.now();
-          state.decisions.push({
+          sess.state.decisions.push({
             timestamp: planTs,
             loop: "goal",
             action: "planning_fired",
             detail: `Root ${root!.id} has no pending/active/paused descendants; planning`,
           });
+
+          // H5: cap check BEFORE the model call.
+          // allBlocked is evaluated over the PREVIOUS round's plans.
+          const prevDescendants = sess.state.goals.filter((g) => g.parentId === root!.id);
+          const allBlocked = prevDescendants.length > 0 && prevDescendants.every((g) => g.status === "blocked");
+          if (allBlocked) {
+            root!.consecutiveBlockedPlannings = (root!.consecutiveBlockedPlannings || 0) + 1;
+          } else {
+            root!.consecutiveBlockedPlannings = 0;
+          }
+          if ((root!.planningRounds || 0) >= 5 || (root!.consecutiveBlockedPlannings || 0) >= 2) {
+            root!.status = "blocked";
+            root!.blockedReason = "Planning cap reached";
+            root!.updatedAt = Date.now();
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "block",
+              detail: `Root ${root!.id}: Planning cap reached (planningRounds=${root!.planningRounds}, consecutiveBlockedPlannings=${root!.consecutiveBlockedPlannings})`,
+            });
+            try { $.ui.toast(`Agentic: root blocked: planning cap reached`); } catch { /* non-fatal */ }
+            try { $.ui.status(""); } catch { /* non-fatal */ }
+            await persist($);
+            return;
+          }
 
           // R2: re-read the roadmap file at every planning event.
           let roadmapText = "";
@@ -484,9 +550,9 @@ export const register: Register = async (on, options) => {
 
           // Planning call: Haiku complete, JSON array of plans.
           // H3-part2: carry history and a cap in the prompt.
-          const completedPlans = state.goals.filter((g) => g.parentId === root!.id && g.status === "complete");
-          const blockedPlans = state.goals.filter((g) => g.parentId === root!.id && g.status === "blocked");
-          const abandonedPlans = state.goals.filter((g) => g.parentId === root!.id && g.status === "abandoned");
+          const completedPlans = sess.state.goals.filter((g) => g.parentId === root!.id && g.status === "complete");
+          const blockedPlans = sess.state.goals.filter((g) => g.parentId === root!.id && g.status === "blocked");
+          const abandonedPlans = sess.state.goals.filter((g) => g.parentId === root!.id && g.status === "abandoned");
           const historyLines: string[] = [];
           for (const cp of completedPlans) {
             const lastNote = cp.notes.length > 0 ? cp.notes[cp.notes.length - 1] : "no note";
@@ -512,7 +578,18 @@ export const register: Register = async (on, options) => {
             `Never repeat a completed item. A blocked item may be retried at most once with a different approach.\n` +
             `Return a JSON array only: no prose, no markdown fences.`;
 
-          // H4: AGENTIC_PLANNER_FAULT=1 replaces the raw response with "not json".
+          // H4: planner fault injection via a file flag (read at the gate,
+          // not at register). A file named planner-fault under .kit makes the
+          // planner return "not json" so parsing fails. Check the project-relative
+          // .kit (same channel the roadmap path uses) and the plugin .kit as a
+          // fallback, since the test scripts may place it in either.
+          const faultFlagCandidates = [".kit/planner-fault", "agentic-plugin/.kit/planner-fault", "D:/DeepSeekHarness/.kit/planner-fault", "D:/DeepSeekHarness/agentic-plugin/.kit/planner-fault"];
+          let fault = false;
+          for (const p of faultFlagCandidates) {
+            try { if (await $.fs.exists(p)) { fault = true; break; } } catch { /* non-fatal */ }
+          }
+
+          // H4: AGENTIC_PLANNER_FAULT file flag replaces the raw response with "not json".
           let raw: string;
           try {
             raw = await $.model.complete({
@@ -521,7 +598,7 @@ export const register: Register = async (on, options) => {
               maxTokens: 1500,
             });
           } catch (e) {
-            state.decisions.push({
+            sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "goal",
               action: "planning_failed",
@@ -529,11 +606,7 @@ export const register: Register = async (on, options) => {
             });
             return;
           }
-          // H4: test fault injection (env var read at runtime).
-          const g = globalThis as any;
-          const faultEnv = g.process?.env?.AGENTIC_PLANNER_FAULT;
-          try { $.ui.log(`Agentic: AGENTIC_PLANNER_FAULT=${faultEnv}`); } catch { /* non-fatal */ }
-          if (faultEnv === "1") {
+          if (fault) {
             raw = "not json";
           }
 
@@ -553,7 +626,7 @@ export const register: Register = async (on, options) => {
 
           if (!parsedOk) {
             // H4: parse failure is not "objective met".
-            state.decisions.push({
+            sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "goal",
               action: "planning_failed",
@@ -564,20 +637,26 @@ export const register: Register = async (on, options) => {
 
           if (plans.length === 0) {
             // Objective met or nothing to plan: complete the root.
-            const rootNow = state.goals.find((g) => g.id === root!.id);
+            const rootNow = sess.state.goals.find((g) => g.id === root!.id);
             if (rootNow && rootNow.status !== "complete" && rootNow.status !== "abandoned") {
               rootNow.status = "complete";
               rootNow.updatedAt = Date.now();
             }
-            state.decisions.push({
+            sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "goal",
               action: "planning_complete",
-              detail: `Planner returned 0 plans; root ${root!.id} marked complete`,
+              detail: `Planner returned 0 plans`,
+            });
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "root_complete",
+              detail: `Root ${root!.id} marked complete`,
             });
             try { await $.audio.speak("Goal complete"); } catch { /* no audio */ }
-            consecutiveNudgesWithoutOnGoal = 0;
-            lastNudgeAt = 0;
+            sess.consecutiveNudgesWithoutOnGoal = 0;
+            sess.lastNudgeAt = 0;
             try { $.ui.status(""); } catch { /* non-fatal */ }
           } else {
             // Create plan nodes under the root.
@@ -604,37 +683,12 @@ export const register: Register = async (on, options) => {
                 createdAt: Date.now(),
                 updatedAt: Date.now(),
               };
-              state.goals.push(node);
+              sess.state.goals.push(node);
             }
             // H3-part2: count this planning round on the root.
             root!.planningRounds = (root!.planningRounds || 0) + 1;
 
-            // H3-cap: 5th planning event, or 2nd consecutive all-blocked.
-            const allBlocked = state.goals
-              .filter((g) => g.parentId === root!.id)
-              .every((g) => g.status === "blocked");
-            if (allBlocked) {
-              root!.consecutiveBlockedPlannings = (root!.consecutiveBlockedPlannings || 0) + 1;
-            } else {
-              root!.consecutiveBlockedPlannings = 0;
-            }
-            if (root!.planningRounds >= 5 || root!.consecutiveBlockedPlannings >= 2) {
-              root!.status = "blocked";
-              root!.blockedReason = "Planning cap reached";
-              root!.updatedAt = Date.now();
-              state.decisions.push({
-                timestamp: Date.now(),
-                loop: "goal",
-                action: "block",
-                detail: `Root ${root!.id}: Planning cap reached (planningRounds=${root!.planningRounds}, consecutiveBlockedPlannings=${root!.consecutiveBlockedPlannings})`,
-              });
-              try { $.ui.toast(`Agentic: root blocked: planning cap reached`); } catch { /* non-fatal */ }
-              try { $.ui.status(""); } catch { /* non-fatal */ }
-              await guardedWrite($);
-              return;
-            }
-
-            state.decisions.push({
+            sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "goal",
               action: "planning_created",
@@ -642,24 +696,16 @@ export const register: Register = async (on, options) => {
             });
 
             // Activate the first plan.
-            const firstPlan = state.goals.find((g) => g.parentId === root!.id && g.status === "pending");
+            const firstPlan = sess.state.goals.find((g) => g.parentId === root!.id && g.status === "pending");
             if (firstPlan) {
               firstPlan.status = "active";
               firstPlan.updatedAt = Date.now();
-              state.activeGoalId = firstPlan.id;
-              // R3: activation resets the nudge budget.
-              consecutiveNudgesWithoutOnGoal = 0;
-              lastNudgeAt = 0;
-              state.decisions.push({
-                timestamp: Date.now(),
-                loop: "goal",
-                action: "activated",
-                detail: `Plan ${firstPlan.id} "${firstPlan.title}" activated`,
-              });
+              sess.state.activeGoalId = firstPlan.id;
+              activate($, firstPlan.id, `Plan ${firstPlan.id} "${firstPlan.title}" activated`);
             }
           }
 
-          await guardedWrite($);
+          await persist($);
         } catch {
           // Planning failed; non-fatal.
         } finally {
@@ -670,15 +716,10 @@ export const register: Register = async (on, options) => {
 
       // 4. No active leaf: activate pending work if any exists (H1), else return.
       if (!activeNode || activeNode.status !== "active") {
-        const nextId = activateNext(state);
+        const nextId = activateNext(sess.state);
         if (nextId) {
-          state.decisions.push({
-            timestamp: Date.now(),
-            loop: "goal",
-            action: "activated",
-            detail: `Node ${nextId} activated (no active leaf, pending work found)`,
-          });
-          await guardedWrite($);
+          activate($, nextId, "no active leaf, pending work found");
+          await persist($);
         }
         return;
       }
@@ -686,9 +727,9 @@ export const register: Register = async (on, options) => {
 
       // 5. Idle gate.
       const now = Date.now();
-      const idleMs = state.monitor.lastTurnComplete
-        ? now - state.monitor.lastTurnComplete
-        : now - state.monitor.sessionStart;
+      const idleMs = sess.state.monitor.lastTurnComplete
+        ? now - sess.state.monitor.lastTurnComplete
+        : now - sess.state.monitor.sessionStart;
       const eligible = idleMs >= nudgeIdleMs;
       if (!eligible) return;
 
@@ -697,7 +738,7 @@ export const register: Register = async (on, options) => {
       const onGoalCount = g.scores.filter((s) => s.result === "on-goal").length;
 
       // R6: switch label offered only when ≥1 pending plan exists.
-      const pendingPlans = state.goals.filter((x) => x.kind === "plan" && x.status === "pending");
+      const pendingPlans = sess.state.goals.filter((x) => x.kind === "plan" && x.status === "pending");
       const hasSwitch = pendingPlans.length > 0;
       const switchLabel = hasSwitch ? `switch: switch to a different pending plan: ${pendingPlans.map((p) => p.title.slice(0, 30)).join("; ")}\n` : "";
 
@@ -707,9 +748,9 @@ export const register: Register = async (on, options) => {
         `Last 5 scores: ${last5}\n` +
         `On-goal count: ${onGoalCount} of ${g.scores.length}\n` +
         `Minutes since last turn: ${minutesSinceLastTurn}\n` +
-        `Consecutive nudges sent: ${consecutiveNudgesWithoutOnGoal}\n` +
-        `Decisions tail: ${state.decisions.slice(-5).map((d) => `${d.loop}:${d.action}`).join(", ")}\n` +
-        `Memory: ${state.memory.length} entries\n\n` +
+        `Consecutive nudges sent: ${sess.consecutiveNudgesWithoutOnGoal}\n` +
+        `Decisions tail: ${sess.state.decisions.slice(-5).map((d) => `${d.loop}:${d.action}`).join(", ")}\n` +
+        `Memory: ${sess.state.memory.length} entries\n\n` +
         `The session has been idle for ${minutesSinceLastTurn} minutes.\n` +
         `Choose the best decision:\n` +
         `nudge: prompt the worker to take the next concrete step toward the goal\n` +
@@ -726,16 +767,16 @@ export const register: Register = async (on, options) => {
       Promise.resolve().then(async () => {
         try {
           // Cap check before spending a classify call.
-          if (consecutiveNudgesWithoutOnGoal >= MAX_CONSECUTIVE_NUDGES) {
+          if (sess.consecutiveNudgesWithoutOnGoal >= MAX_CONSECUTIVE_NUDGES) {
             const capTs = Date.now();
-            const capReason = `Nudged ${consecutiveNudgesWithoutOnGoal} times without on-goal; escalating`;
-            state.decisions.push({
+            const capReason = `Nudged ${sess.consecutiveNudgesWithoutOnGoal} times without on-goal; escalating`;
+            sess.state.decisions.push({
               timestamp: capTs,
               loop: "monitor",
               action: "nudge_cap_reached",
               detail: `${g.id}: ${capReason}`,
             });
-            state.decisions.push({
+            sess.state.decisions.push({
               timestamp: capTs,
               loop: "monitor",
               action: "controller_tick",
@@ -747,29 +788,18 @@ export const register: Register = async (on, options) => {
               g.status = "blocked";
               g.blockedReason = capReason;
               g.updatedAt = capTs;
-              state.decisions.push({
+              sess.state.decisions.push({
                 timestamp: capTs,
                 loop: "goal",
                 action: "block",
                 detail: `${g.id}: ${capReason}`,
               });
-              const nextId = activateNext(state, g.id);
-              if (nextId) {
-                consecutiveNudgesWithoutOnGoal = 0;
-                lastNudgeAt = 0;
-                state.decisions.push({
-                  timestamp: capTs,
-                  loop: "goal",
-                  action: "activated",
-                  detail: `Node ${nextId} activated after ${g.id} blocked (nudge cap)`,
-                });
-              } else {
-                state.activeGoalId = null;
-              }
+              const nextId = activateNext(sess.state, g.id);
+              activate($, nextId, `${g.id} blocked (nudge cap)`);
               try { $.ui.status(""); } catch { /* non-fatal */ }
             }
-            state.updatedAt = capTs;
-            await guardedWrite($);
+            sess.state.updatedAt = capTs;
+            await persist($);
             return;
           }
 
@@ -800,7 +830,7 @@ export const register: Register = async (on, options) => {
                 g.status = "paused";
                 g.blockedReason = "Switched to another plan";
                 g.updatedAt = Date.now();
-                state.decisions.push({
+                sess.state.decisions.push({
                   timestamp: Date.now(),
                   loop: "goal",
                   action: "switch_from",
@@ -809,10 +839,10 @@ export const register: Register = async (on, options) => {
                 // Activate target.
                 target.status = "active";
                 target.updatedAt = Date.now();
-                state.activeGoalId = target.id;
-                consecutiveNudgesWithoutOnGoal = 0;
-                lastNudgeAt = 0;
-                state.decisions.push({
+                sess.state.activeGoalId = target.id;
+                sess.consecutiveNudgesWithoutOnGoal = 0;
+                sess.lastNudgeAt = 0;
+                sess.state.decisions.push({
                   timestamp: Date.now(),
                   loop: "goal",
                   action: "switch_to",
@@ -820,7 +850,7 @@ export const register: Register = async (on, options) => {
                 });
                 finalDecision = "nudge"; // Fall through to nudge the new plan.
               } else {
-                state.decisions.push({
+                sess.state.decisions.push({
                   timestamp: Date.now(),
                   loop: "goal",
                   action: "switch_failed",
@@ -846,7 +876,7 @@ export const register: Register = async (on, options) => {
             } catch { /* reason call failed; non-fatal */ }
           }
 
-          state.decisions.push({
+          sess.state.decisions.push({
             timestamp: tickTs,
             loop: "monitor",
             action: "controller_tick",
@@ -856,7 +886,7 @@ export const register: Register = async (on, options) => {
           // Actuate (controller only: the three actuators).
           if (finalDecision === "nudge" && g.status === "active") {
             // Nudge floor.
-            if (now - lastNudgeAt >= nudgeFloorMs) {
+            if (now - sess.lastNudgeAt >= nudgeFloorMs) {
               try {
                 // R8: nudge text appends goal_done instruction.
                 const nudgeText =
@@ -868,13 +898,13 @@ export const register: Register = async (on, options) => {
                 await $.prompt.submit({ text: nudgeText });
                 currentPrompt = nudgeText;
                 nudgedTurn = true;
-                lastNudgeAt = now;
-                consecutiveNudgesWithoutOnGoal += 1;
-                state.decisions.push({
+                sess.lastNudgeAt = now;
+                sess.consecutiveNudgesWithoutOnGoal += 1;
+                sess.state.decisions.push({
                   timestamp: tickTs,
                   loop: "monitor",
                   action: "nudge_sent",
-                  detail: `${g.id}: idle ${minutesSinceLastTurn}min, nudge #${consecutiveNudgesWithoutOnGoal}`,
+                  detail: `${g.id}: idle ${minutesSinceLastTurn}min, nudge #${sess.consecutiveNudgesWithoutOnGoal}`,
                 });
               } catch { /* nudge failed; non-fatal */ }
             }
@@ -886,7 +916,7 @@ export const register: Register = async (on, options) => {
               g.status = "paused";
               g.blockedReason = finalReason;
               g.updatedAt = Date.now();
-              state.decisions.push({
+              sess.state.decisions.push({
                 timestamp: Date.now(),
                 loop: "goal",
                 action: "paused_by_controller",
@@ -898,7 +928,7 @@ export const register: Register = async (on, options) => {
             g.status = "paused";
             g.blockedReason = finalReason || "controller pause";
             g.updatedAt = Date.now();
-            state.decisions.push({
+            sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "goal",
               action: "paused_by_controller",
@@ -908,36 +938,24 @@ export const register: Register = async (on, options) => {
           } else if (finalDecision === "complete" && g.status === "active") {
             // R3: use completeLeaf + activateNext.
             const completedId = g.id;
-            completeLeaf(state, completedId, finalReason || "controller complete");
-            state.decisions.push({
+            completeLeaf(sess.state, completedId, finalReason || "controller complete");
+            sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "goal",
               action: "completed_by_controller",
               detail: `${completedId}: ${finalReason || "controller complete"}`,
             });
             // R3: activate next.
-            const nextId = activateNext(state, completedId);
-            if (nextId) {
-              consecutiveNudgesWithoutOnGoal = 0;
-              lastNudgeAt = 0;
-              state.decisions.push({
-                timestamp: Date.now(),
-                loop: "goal",
-                action: "activated",
-                detail: `Node ${nextId} activated after ${completedId} complete`,
-              });
-            } else {
-              state.activeGoalId = null;
-            }
+            const nextId = activateNext(sess.state, completedId);
+            activate($, nextId, `${completedId} complete`);
             // L11: plan completion is a log line, not a speech.
             try { $.ui.log(`Agentic: ${completedId} plan complete (controller)`); } catch { /* non-fatal */ }
-            consecutiveNudgesWithoutOnGoal = 0;
             try { $.ui.status(""); } catch { /* non-fatal */ }
           }
 
           // Visible status line while a goal is actively driving.
-          const currentActive = state.activeGoalId
-            ? state.goals.find((x) => x.id === state.activeGoalId)
+          const currentActive = sess.state.activeGoalId
+            ? sess.state.goals.find((x) => x.id === sess.state.activeGoalId)
             : null;
           if (currentActive && currentActive.status === "active") {
             try {
@@ -946,8 +964,8 @@ export const register: Register = async (on, options) => {
           }
 
           // Persist (owner only, guarded write).
-          state.updatedAt = Date.now();
-          await guardedWrite($);
+          sess.state.updatedAt = Date.now();
+          await persist($);
         } catch {
           // Controller tick failed; non-fatal.
         }
@@ -959,24 +977,24 @@ export const register: Register = async (on, options) => {
 
   // --- turn.start: track turn ---
   on("turn.start", async ($, e, next) => {
-    state.monitor.turnCount += 1;
-    state.monitor.lastTurnId = e.turnId;
+    sess.state.monitor.turnCount += 1;
+    sess.state.monitor.lastTurnId = e.turnId;
     turnInFlight = true;
     // H2: record the active leaf at turn start for scoring.
-    turnLeafId = state.activeGoalId;
-    state.decisions.push({
+    turnLeafId = sess.state.activeGoalId;
+    sess.state.decisions.push({
       timestamp: Date.now(),
       loop: "monitor",
       action: "turn_start",
-      detail: `Turn ${state.monitor.turnCount}`,
+      detail: `Turn ${sess.state.monitor.turnCount} leaf ${turnLeafId || "none"}`,
     });
     return next(e);
   });
 
   // --- turn.complete: goal scoring, memory curation, guarded save ---
-  // Modules write to state. The Controller (clock.tick) reads state and decides.
+  // Modules write to sess.state. The Controller (clock.tick) reads sess.state and decides.
   on("turn.complete", async ($, e, next) => {
-    state.monitor.lastTurnComplete = Date.now();
+    sess.state.monitor.lastTurnComplete = Date.now();
     turnInFlight = false;
 
     // Read and clear the nudge flag once, up front. This prevents
@@ -992,22 +1010,19 @@ export const register: Register = async (on, options) => {
     // not whichever node is active now (which may have been activated mid-turn
     // by goal_done or the scorer).
     const turnLeaf = turnLeafId
-      ? state.goals.find((g) => g.id === turnLeafId)
+      ? sess.state.goals.find((g) => g.id === turnLeafId)
       : null;
     if (!skipped && turnLeaf) {
       if (turnLeaf.status === "complete") {
-        // goal_done ran during this turn: the work is already scored by the
-        // worker's own action. No classify call needed.
-        // L14: push score + increment completedRounds (same as classify path).
-        turnLeaf.scores.push({ round: turnLeaf.scores.length + 1, result: "on-goal" });
-        turnLeaf.completedRounds += 1;
-        state.decisions.push({
+        // M11: goal_done ran during this turn, the credit is already in the
+        // goal_done handler. Log score_skipped here.
+        sess.state.decisions.push({
           timestamp: Date.now(),
           loop: "goal",
-          action: "score",
-          detail: `${turnLeaf.id} Round ${turnLeaf.scores.length}: on-goal (goal_done)`,
+          action: "score_skipped",
+          detail: `${turnLeaf.id} already complete (goal_done)`,
         });
-        consecutiveNudgesWithoutOnGoal = 0;
+        sess.consecutiveNudgesWithoutOnGoal = 0;
         turnLeafId = null;
       } else if (turnLeaf.status === "active") {
         // Still active at turn end: classify as before.
@@ -1033,7 +1048,7 @@ export const register: Register = async (on, options) => {
           g.completedRounds += 1;
         }
 
-        state.decisions.push({
+        sess.state.decisions.push({
           timestamp: Date.now(),
           loop: "goal",
           action: "score",
@@ -1042,32 +1057,21 @@ export const register: Register = async (on, options) => {
 
         // Reset consecutive nudges when on-goal.
         if (label === "on-goal") {
-          consecutiveNudgesWithoutOnGoal = 0;
+          sess.consecutiveNudgesWithoutOnGoal = 0;
         }
 
         if (label === "complete") {
           // R3: use completeLeaf + activateNext.
           const completedId = g.id;
-          completeLeaf(state, completedId, "scorer complete");
-          state.decisions.push({
+          completeLeaf(sess.state, completedId, "scorer complete");
+          sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "goal",
             action: "complete",
             detail: `${completedId}: Goal completed in ${g.completedRounds} rounds`,
           });
-          const nextId = activateNext(state, completedId);
-          if (nextId) {
-            consecutiveNudgesWithoutOnGoal = 0;
-            lastNudgeAt = 0;
-            state.decisions.push({
-              timestamp: Date.now(),
-              loop: "goal",
-              action: "activated",
-              detail: `Node ${nextId} activated after ${completedId} complete`,
-            });
-          } else {
-            state.activeGoalId = null;
-          }
+          const nextId = activateNext(sess.state, completedId);
+          activate($, nextId, `${completedId} complete`);
           // L11: plan completion is a log line, not a speech.
           try { $.ui.log(`Agentic: ${completedId} plan complete`); } catch { /* non-fatal */ }
           try { $.ui.status(""); } catch { /* non-fatal */ }
@@ -1076,31 +1080,20 @@ export const register: Register = async (on, options) => {
           g.status = "blocked";
           g.blockedReason = "Max rounds reached";
           g.updatedAt = Date.now();
-          state.decisions.push({
+          sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "goal",
             action: "block",
             detail: `${g.id}: Max rounds reached`,
           });
           try { $.ui.toast(`Agentic: ${g.id} blocked: max rounds reached`); } catch { /* non-fatal */ }
-          const nextId = activateNext(state, g.id);
-          if (nextId) {
-            consecutiveNudgesWithoutOnGoal = 0;
-            lastNudgeAt = 0;
-            state.decisions.push({
-              timestamp: Date.now(),
-              loop: "goal",
-              action: "activated",
-              detail: `Node ${nextId} activated after ${g.id} blocked`,
-            });
-          } else {
-            state.activeGoalId = null;
-          }
+          const nextId = activateNext(sess.state, g.id);
+          activate($, nextId, `${g.id} blocked`);
           try { $.ui.status(""); } catch { /* non-fatal */ }
         }
         g.updatedAt = Date.now();
         } catch (err) {
-          state.decisions.push({
+          sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "goal",
             action: "score_failed",
@@ -1110,7 +1103,7 @@ export const register: Register = async (on, options) => {
         turnLeafId = null;
       } else {
         // H2: node is paused, blocked, or switched: skip scoring.
-        state.decisions.push({
+        sess.state.decisions.push({
           timestamp: Date.now(),
           loop: "goal",
           action: "score_skipped",
@@ -1128,6 +1121,7 @@ export const register: Register = async (on, options) => {
         const kind = await $.model.classify(
           `What kind of memorable content is in this exchange? Answer with exactly one label.\n` +
           `A description of what happened this turn is "discard".\n` +
+          `Only a fact or preference the user stated explicitly. An instruction to call a tool is discard.\n` +
           `User asked: ${currentPrompt.slice(0, 300)}\nWorker answered: ${e.answer.slice(0, 500)}`,
           ["fact", "preference", "lesson", "discard"],
           { model: "haiku" }
@@ -1144,11 +1138,11 @@ export const register: Register = async (on, options) => {
           const distilled = rawDistilled.trim();
           if (distilled.length > 0 && distilled.toUpperCase() !== "NONE") {
             const normalized = distilled.toLowerCase().trim();
-            const isDupe = state.memory.some(
+            const isDupe = sess.state.memory.some(
               (m) => m.text.toLowerCase().trim() === normalized
             );
             if (!isDupe) {
-              state.memory.push({
+              sess.state.memory.push({
                 id: `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
                 kind: kind as "fact" | "preference" | "lesson",
                 text: distilled,
@@ -1159,7 +1153,7 @@ export const register: Register = async (on, options) => {
                 accessCount: 0,
                 pinned: false,
               });
-              state.decisions.push({
+              sess.state.decisions.push({
                 timestamp: Date.now(),
                 loop: "memory",
                 action: "remember",
@@ -1174,62 +1168,71 @@ export const register: Register = async (on, options) => {
     }
 
     // M7: single guarded-write path (shared helper).
-    await guardedWrite($);
+    await persist($);
 
     return next(e);
   });
 
   // --- tool.call: serve tools, enforce constraints ---
   on("tool.call", async ($, e, next) => {
-    state.monitor.totalToolCalls += 1;
+    sess.state.monitor.totalToolCalls += 1;
 
     // Serve agentic_identity (forceful claim: always takes ownership).
     if (e.tool === "mcp__agentic-plugin__agentic_identity") {
       const name = String((e as any).persona || "default").trim() || "default";
-      persona = name;
+      sess.persona = name;
       const store: Record<string, unknown> = await $.fs.exists(storePath)
         ? (JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>)
         : {};
       const existing = store[name] as AgentState | undefined;
       if (existing) {
-        state = parseState(JSON.stringify(existing));
-        state.persona = name;
+        sess.state = parseState(JSON.stringify(existing));
+        sess.state.persona = name;
       } else {
-        state = createDefaultState(name, mySessionId);
+        sess.state = createDefaultState(name, sess.mySessionId);
       }
       // Forceful claim: always take ownership.
-      state.activeSessionId = mySessionId;
-      state.epoch += 1;
-      myEpoch = state.epoch;
-      isOwner = true;
-      state.monitor.sessionStart = Date.now();
-      state.monitor.turnCount = 0;
-      state.monitor.totalToolCalls = 0;
-      state.monitor.errors = 0;
-      state.monitor.lastTurnComplete = Date.now();
-      state.decisions.push({
+      sess.state.activeSessionId = sess.mySessionId;
+      sess.state.epoch += 1;
+      sess.myEpoch = sess.state.epoch;
+      sess.isOwner = true;
+      sess.state.monitor.sessionStart = Date.now();
+      sess.state.monitor.turnCount = 0;
+      sess.state.monitor.totalToolCalls = 0;
+      sess.state.monitor.errors = 0;
+      sess.state.monitor.lastTurnComplete = Date.now();
+      sess.state.decisions.push({
         timestamp: Date.now(),
         loop: "monitor",
         action: "identity_set",
-        detail: `Persona '${persona}' (session ${mySessionId}, epoch ${myEpoch}, forced claim)`,
+        detail: `persona '${sess.persona}' (session ${sess.mySessionId}, epoch ${sess.myEpoch}, forced claim)`,
       });
-      await guardedWrite($);
+      // Forceful claim: the one write site allowed to bypass persist's yield check,
+      // because the claimant has already taken ownership (activeSessionId = self).
+      // persist would read the on-disk store (still the previous holder) and wrongly
+      // yield. Write the keyed store directly.
+      sess.state.updatedAt = Date.now();
+      store[sess.persona] = sess.state;
+      await $.fs.writeFile(storePath, JSON.stringify(store, null, 2));
       // Write the heartbeat for the new persona (inline).
       try {
         const hb: Record<string, { sessionId: string; epoch: number; lastSeen: number }> =
           await $.fs.exists(heartbeatPath)
             ? (JSON.parse(await $.fs.readFile(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>)
             : {};
-        hb[persona] = { sessionId: mySessionId, epoch: myEpoch, lastSeen: Date.now() };
+        hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now() };
         await $.fs.writeFile(heartbeatPath, JSON.stringify(hb, null, 2));
       } catch { /* non-fatal */ }
       return {
-        result: `Persona '${persona}' active (epoch ${myEpoch}, owner). ${state.memory.length} memories.`,
+        result: `persona '${sess.persona}' active (epoch ${sess.myEpoch}, owner). ${sess.state.memory.length} memories.`,
       };
     }
 
     // Serve goal_create (v3: creates the root node, NO planning in handler: R1).
     if (e.tool === "mcp__agentic-plugin__goal_create") {
+      if (!sess.isOwner) {
+        return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+      }
       const objective = String((e as any).objective || "").trim();
       if (!objective) {
         return { deny: "goal_create requires a non-empty 'objective'." };
@@ -1259,32 +1262,32 @@ export const register: Register = async (on, options) => {
       };
 
       // Replace any existing tree.
-      state.goals = [root];
-      state.activeGoalId = null;
+      sess.state.goals = [root];
+      sess.state.activeGoalId = null;
 
-      state.decisions.push({
+      sess.state.decisions.push({
         timestamp: now,
         loop: "goal",
         action: "create",
         detail: `Root ${rootId} "${objective.slice(0, 80)}" created (max ${maxRounds} rounds)`,
       });
       // H2b: a new goal inherits a clean nudge budget.
-      consecutiveNudgesWithoutOnGoal = 0;
-      lastNudgeAt = 0;
+      sess.consecutiveNudgesWithoutOnGoal = 0;
+      sess.lastNudgeAt = 0;
 
-      const writeOk = await guardedWrite($);
+      const writeOk = await persist($);
       if (writeOk) {
         return {
           result: `Root created; planning runs at the next controller tick.`,
         };
       }
-      return { deny: `Persona '${persona}' is held by a live session; this write was not saved.` };
+      return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
     // Serve goal_add (R4: parent resolution).
     if (e.tool === "mcp__agentic-plugin__goal_add") {
-      if (!isOwner) {
-        return { deny: `Persona '${persona}' is held by a live session; this write was not saved.` };
+      if (!sess.isOwner) {
+        return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
       }
       const title = String((e as any).title || "").trim();
       const objective = String((e as any).objective || "").trim();
@@ -1295,7 +1298,7 @@ export const register: Register = async (on, options) => {
       const maxRounds = Math.min(Math.max(parseInt(String((e as any).maxRounds || "10"), 10) || 10, 1), 50);
       const explicitParent = String((e as any).parentId || "").trim();
 
-      const root = state.goals.find((g) => g.parentId === null);
+      const root = sess.state.goals.find((g) => g.parentId === null);
       if (!root) {
         return { deny: "No goal tree exists. Call goal_create first." };
       }
@@ -1303,7 +1306,7 @@ export const register: Register = async (on, options) => {
       // R4: parent resolution.
       let parentId: string;
       if (explicitParent) {
-        const parent = state.goals.find((g) => g.id === explicitParent);
+        const parent = sess.state.goals.find((g) => g.id === explicitParent);
         if (!parent) {
           return { deny: `parentId "${explicitParent}" not found in goal tree.` };
         }
@@ -1312,8 +1315,8 @@ export const register: Register = async (on, options) => {
         }
         parentId = explicitParent;
       } else {
-        const active = state.activeGoalId
-          ? state.goals.find((g) => g.id === state.activeGoalId)
+        const active = sess.state.activeGoalId
+          ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
           : null;
         if (active) {
           if (active.kind === "plan") {
@@ -1328,7 +1331,7 @@ export const register: Register = async (on, options) => {
       }
 
       // Validate kind under parent.
-      const parentNode = state.goals.find((g) => g.id === parentId)!;
+      const parentNode = sess.state.goals.find((g) => g.id === parentId)!;
       if (kind === "plan" && parentNode.parentId !== null) {
         return { deny: 'kind "plan" is only allowed under the root.' };
       }
@@ -1355,9 +1358,9 @@ export const register: Register = async (on, options) => {
         createdAt: now,
         updatedAt: now,
       };
-      state.goals.push(newNode);
+      sess.state.goals.push(newNode);
 
-      state.decisions.push({
+      sess.state.decisions.push({
         timestamp: now,
         loop: "goal",
         action: "add",
@@ -1367,27 +1370,20 @@ export const register: Register = async (on, options) => {
       // R4: adding a task under the active plan demotes the plan to pending
       // and activates the new task.
       if (kind === "task") {
-        const parent = state.goals.find((g) => g.id === parentId)!;
+        const parent = sess.state.goals.find((g) => g.id === parentId)!;
         if (parent.status === "active") {
           parent.status = "pending";
           parent.updatedAt = now;
           newNode.status = "active";
-          state.activeGoalId = newNode.id;
-          consecutiveNudgesWithoutOnGoal = 0;
-          lastNudgeAt = 0;
-          state.decisions.push({
-            timestamp: now,
-            loop: "goal",
-            action: "activated",
-            detail: `${parent.id} demoted to pending; ${newNode.id} activated`,
-          });
+          sess.state.activeGoalId = newNode.id;
+          activate($, newNode.id, `${parent.id} demoted to pending; ${newNode.id} activated`);
         }
       }
 
-      const writeOk = await guardedWrite($);
+      const writeOk = await persist($);
       if (writeOk) {
-        const nextActive = state.activeGoalId
-          ? state.goals.find((g) => g.id === state.activeGoalId)
+        const nextActive = sess.state.activeGoalId
+          ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
           : null;
         return {
           result: nextActive
@@ -1395,72 +1391,70 @@ export const register: Register = async (on, options) => {
             : `Added ${kind} "${title.slice(0, 50)}". No active goal; planning or activation will occur at the next tick.`,
         };
       }
-      return { deny: `Persona '${persona}' is held by a live session; this write was not saved.` };
+      return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
     // Serve goal_done (R3: use completeLeaf + activateNext).
     if (e.tool === "mcp__agentic-plugin__goal_done") {
-      if (!isOwner) {
-        return { deny: `Persona '${persona}' is held by a live session; this write was not saved.` };
+      if (!sess.isOwner) {
+        return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
       }
       const note = String((e as any).note || "").trim();
-      const active = state.activeGoalId
-        ? state.goals.find((g) => g.id === state.activeGoalId)
+      const active = sess.state.activeGoalId
+        ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
         : null;
       if (!active || active.status !== "active") {
         return { deny: "No active goal leaf to complete." };
       }
       const completedId = active.id;
       const completedTitle = active.title;
-      completeLeaf(state, completedId, note || "goal_done");
-      state.decisions.push({
+      completeLeaf(sess.state, completedId, note || "goal_done");
+      // M11: credit the round and score in goal_done, not turn.complete.
+      active.scores.push({ round: active.scores.length + 1, result: "on-goal" });
+      active.completedRounds += 1;
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "goal",
+        action: "score",
+        detail: `${completedId} Round ${active.scores.length}: on-goal (goal_done)`,
+      });
+      sess.state.decisions.push({
         timestamp: Date.now(),
         loop: "goal",
         action: "done",
         detail: `${completedId} "${completedTitle.slice(0, 50)}" marked complete${note ? `: ${note.slice(0, 80)}` : ""}`,
       });
-      const nextId = activateNext(state, completedId);
-      if (nextId) {
-        consecutiveNudgesWithoutOnGoal = 0;
-        lastNudgeAt = 0;
-        state.decisions.push({
-          timestamp: Date.now(),
-          loop: "goal",
-          action: "activated",
-          detail: `Node ${nextId} activated after ${completedId} done`,
-        });
-      } else {
-        state.activeGoalId = null;
-      }
+      const nextId = activateNext(sess.state, completedId);
+      activate($, nextId, `${completedId} done`);
 
-      const writeOk = await guardedWrite($);
+      const writeOk = await persist($);
       if (writeOk) {
         // R8: goal_done result names newly active leaf OR planning message.
         if (nextId) {
-          const nextNode = state.goals.find((g) => g.id === nextId)!;
+          const nextNode = sess.state.goals.find((g) => g.id === nextId)!;
           return {
             result: `Complete: "${completedTitle}". Next active: ${nextId} "${nextNode.title}".`,
           };
         }
         return { result: `Complete: "${completedTitle}". No pending goals; planning runs at the next tick.` };
       }
-      return { deny: `Persona '${persona}' is held by a live session; this write was not saved.` };
+      return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
     // Serve goal_status (read-only, passive-reader OK).
     if (e.tool === "mcp__agentic-plugin__goal_status") {
-      const root = state.goals.find((g) => g.parentId === null);
+      const root = sess.state.goals.find((g) => g.parentId === null);
       if (!root) {
         return { result: "No goal tree exists." };
       }
       const lines: string[] = [];
       const statusOf = (id: string) => {
-        const n = state.goals.find((g) => g.id === id)!;
+        const n = sess.state.goals.find((g) => g.id === id)!;
         return `[${n.status}] ${n.id} (${n.kind}) "${n.title}"`;
       };
       lines.push(statusOf(root.id));
       const children = (pid: string) =>
-        state.goals.filter((g) => g.parentId === pid).sort((a, b) => a.createdAt - b.createdAt);
+        sess.state.goals.filter((g) => g.parentId === pid).sort((a, b) => a.createdAt - b.createdAt);
       const render = (pid: string, indent: string) => {
         for (const c of children(pid)) {
           lines.push(indent + statusOf(c.id));
@@ -1473,15 +1467,15 @@ export const register: Register = async (on, options) => {
 
     // M5: Serve goal_resume (owner only: resumes paused leaf, resets nudge budget).
     if (e.tool === "mcp__agentic-plugin__goal_resume") {
-      if (!isOwner) {
+      if (!sess.isOwner) {
         return { deny: "goal_resume requires ownership of this persona." };
       }
       const nodeId = String((e as any).nodeId || "").trim();
       let target: GoalNode | undefined;
       if (nodeId) {
-        target = state.goals.find((g) => g.id === nodeId && g.status === "paused");
+        target = sess.state.goals.find((g) => g.id === nodeId && g.status === "paused");
       } else {
-        target = state.goals
+        target = sess.state.goals
           .filter((g) => g.status === "paused")
           .sort((a, b) => b.updatedAt - a.updatedAt)[0];
       }
@@ -1489,13 +1483,13 @@ export const register: Register = async (on, options) => {
         return { result: "No paused nodes to resume." };
       }
       // M9: if a different node is active, pause it first (M10: write blockedReason).
-      if (state.activeGoalId && state.activeGoalId !== target.id) {
-        const activeNode = state.goals.find((g) => g.id === state.activeGoalId);
+      if (sess.state.activeGoalId && sess.state.activeGoalId !== target.id) {
+        const activeNode = sess.state.goals.find((g) => g.id === sess.state.activeGoalId);
         if (activeNode && activeNode.status === "active") {
           activeNode.status = "paused";
           activeNode.blockedReason = `Paused by goal_resume of ${target.id}`;
           activeNode.updatedAt = Date.now();
-          state.decisions.push({
+          sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "goal",
             action: "paused_by_resume",
@@ -1504,32 +1498,36 @@ export const register: Register = async (on, options) => {
         }
       }
       // M10: clear blockedReason on resume.
+      const pausedReason = target.blockedReason || "unknown";
       target.blockedReason = undefined;
       target.status = "active";
       target.updatedAt = Date.now();
-      state.activeGoalId = target.id;
-      consecutiveNudgesWithoutOnGoal = 0;
-      lastNudgeAt = 0;
-      state.decisions.push({
+      sess.state.activeGoalId = target.id;
+      sess.consecutiveNudgesWithoutOnGoal = 0;
+      sess.lastNudgeAt = 0;
+      sess.state.decisions.push({
         timestamp: Date.now(),
         loop: "goal",
         action: "resume",
-        detail: `Node ${target.id} resumed (paused: ${target.blockedReason || "unknown"})`,
+        detail: `Node ${target.id} resumed (paused: ${pausedReason})`,
       });
-      state.updatedAt = Date.now();
-      await guardedWrite($);
+      sess.state.updatedAt = Date.now();
+      await persist($);
       return { result: `Resumed ${target.id} (${target.kind}) "${target.title}". Nudge budget reset.` };
     }
 
     // Serve memory_add.
     if (e.tool === "mcp__agentic-plugin__memory_add") {
+      if (!sess.isOwner) {
+        return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+      }
       const text = String((e as any).text || "").trim();
       if (!text) {
         return { deny: "memory_add requires a non-empty 'text'." };
       }
       const kind = (String((e as any).kind || "fact").trim() as "fact" | "preference" | "lesson") || "fact";
       const confidence = Math.min(Math.max(parseFloat(String((e as any).confidence || "0.7")) || 0.7, 0), 1);
-      state.memory.push({
+      sess.state.memory.push({
         id: `mem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         kind,
         text,
@@ -1540,32 +1538,32 @@ export const register: Register = async (on, options) => {
         accessCount: 0,
         pinned: false,
       });
-      state.decisions.push({
+      sess.state.decisions.push({
         timestamp: Date.now(),
         loop: "memory",
         action: "remember",
         detail: `${kind}: ${text.slice(0, 80)}`,
       });
-      const writeOk = await guardedWrite($);
+      const writeOk = await persist($);
       if (writeOk) {
         return {
           result: `Memory saved (${kind}, confidence ${confidence}): "${text.slice(0, 80)}"`,
         };
       }
-      return { deny: `Persona '${persona}' is held by a live session; this write was not saved.` };
+      return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
     // Goal constraint: deny Bash if the ROOT objective says so (R10).
-    const rootForConstraint = state.goals.find((g) => g.parentId === null);
+    const rootForConstraint = sess.state.goals.find((g) => g.parentId === null);
     if (rootForConstraint &&
         e.tool === "Bash" && rootForConstraint.objective.toLowerCase().includes("no bash")) {
-      state.decisions.push({
+      sess.state.decisions.push({
         timestamp: Date.now(),
         loop: "goal",
         action: "deny",
         detail: `${rootForConstraint.id}: Bash denied by root constraint`,
       });
-      await guardedWrite($);
+      await persist($);
       return { deny: "Bash is not allowed by the current goal" };
     }
 
@@ -1574,7 +1572,7 @@ export const register: Register = async (on, options) => {
 
   // --- prompt.submit: inject memory + active goal as hidden context ---
   // Actuator 1: context injection (always on, free, cannot be refused).
-  // Both owner and passive reader can inject (read-only access to state).
+  // Both owner and passive reader can inject (read-only access to sess.state).
   on("prompt.submit", async ($, e, next) => {
     // Capture the prompt text for the goal scorer.
     currentPrompt = e.text;
@@ -1587,19 +1585,19 @@ export const register: Register = async (on, options) => {
     const contextBlocks: string[] = [...(r.context ?? [])];
 
     // --- Active goal injection (M5: [GOAL TREE] shape per plan lines 349-354) ---
-    const activeNode = state.activeGoalId
-      ? state.goals.find((g) => g.id === state.activeGoalId)
+    const activeNode = sess.state.activeGoalId
+      ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
       : null;
     if (activeNode && activeNode.status === "active") {
       // Build the [GOAL TREE] block: Active, Path, Pending siblings, Last note.
       const parent = activeNode.parentId
-        ? state.goals.find((g) => g.id === activeNode.parentId)
+        ? sess.state.goals.find((g) => g.id === activeNode.parentId)
         : null;
       const path = parent
         ? `root > ${parent.title.slice(0, 40)} > ${activeNode.title.slice(0, 40)}`
         : `root > ${activeNode.title.slice(0, 40)}`;
       const siblings = activeNode.parentId
-        ? state.goals.filter((g) => g.parentId === activeNode.parentId && g.id !== activeNode.id && g.status === "pending")
+        ? sess.state.goals.filter((g) => g.parentId === activeNode.parentId && g.id !== activeNode.id && g.status === "pending")
         : [];
       const siblingLine = siblings.length > 0
         ? `Pending siblings: ${siblings.map((s) => s.title.slice(0, 30)).join("; ")}\n`
@@ -1621,7 +1619,7 @@ export const register: Register = async (on, options) => {
       try { $.ui.log(`Agentic: [GOAL TREE] injected for ${activeNode.id}`); } catch { /* non-fatal */ }
     } else {
       // M5: when the tree is paused, inject a one-line reminder.
-      const pausedNode = state.goals.find((g) => g.status === "paused");
+      const pausedNode = sess.state.goals.find((g) => g.status === "paused");
       if (pausedNode) {
         const pausedBlock = `Goal tree paused: ${pausedNode.blockedReason || "paused by controller"}. Call goal_resume to continue or goal_create to replace.`;
         contextBlocks.push(pausedBlock);
@@ -1630,7 +1628,7 @@ export const register: Register = async (on, options) => {
     }
 
     // --- Memory injection (MEMQ seam) ---
-    const candidates = state.memory.filter((m) => m.confidence > 0.3);
+    const candidates = sess.state.memory.filter((m) => m.confidence > 0.3);
     if (candidates.length > 0) {
       let entries: typeof candidates | undefined;
 

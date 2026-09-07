@@ -60,6 +60,11 @@ export interface MonitorState {
   errors: number;
 }
 
+export interface NudgeBudget {
+  lastNudgeAt: number;
+  consecutiveNudgesWithoutOnGoal: number;
+}
+
 export interface AgentState {
   version: 3;
   persona: string;
@@ -69,6 +74,7 @@ export interface AgentState {
   goals: GoalNode[];
   activeGoalId: string | null;
   monitor: MonitorState;
+  nudge: NudgeBudget;
   decisions: Array<{
     timestamp: number;
     loop: "memory" | "goal" | "monitor" | "worker";
@@ -99,6 +105,7 @@ export function createDefaultState(persona: string, sessionId: string): AgentSta
       totalToolCalls: 0,
       errors: 0,
     },
+    nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
     decisions: [],
     createdAt: now,
     updatedAt: now,
@@ -206,6 +213,7 @@ export function parseState(json: string): AgentState {
         totalToolCalls: 0,
         errors: 0,
       },
+      nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
       decisions: old.decisions ?? [],
       createdAt: old.createdAt ?? now,
       updatedAt: now,
@@ -221,6 +229,11 @@ export function parseState(json: string): AgentState {
   }
 
   const state = parsed as AgentState;
+
+  // Migrate: add nudge budget if missing (v3.0 stores predate this field).
+  if (!state.nudge) {
+    state.nudge = { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 };
+  }
 
   // L10: invariant block runs on both v2 and v3 branches.
   enforceInvariants(state);
@@ -367,7 +380,7 @@ export function activateNext(state: AgentState, completedId?: string): string | 
 export function isPlanningDue(state: AgentState): boolean {
   const root = state.goals.find((g) => g.parentId === null);
   if (!root) return false;
-  if (root.status === "complete" || root.status === "abandoned") return false;
+  if (root.status === "complete" || root.status === "abandoned" || root.status === "blocked") return false;
   const descendants = state.goals.filter((g) => g.parentId !== null);
   const hasWork = descendants.some(
     (g) => g.status === "pending" || g.status === "active" || g.status === "paused"

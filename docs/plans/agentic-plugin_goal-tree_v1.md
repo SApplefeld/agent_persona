@@ -29,7 +29,7 @@ interface GoalNode {
   completedRounds: number;
   scores: Array<{ round: number; result: string }>;
   notes: string[];         // short, appended by worker or controller
-  roadmapPath?: string;    // root only — the roadmap file path (R2)
+  roadmapPath?: string;    // root only : the roadmap file path (R2)
   planningRounds: number;  // H3-part2: count of planning events on this node
   consecutiveBlockedPlannings: number; // H3-part2: consecutive blocked planning results
   createdAt: number;
@@ -58,7 +58,7 @@ In `parseState`, when `parsed.version === 2`:
 1. Read `parsed.goal`.
 2. If it is `null` → `goals: []`, `activeGoalId: null`.
 3. If it is a `GoalState`:
-   - Create a root node: `kind: "root"`, `title: goal.objective`, `objective: goal.objective`, `status: goal.status` (mapped: `active` → `pending` per L10 — the root is never active; the plan child carries the active state), `source: "operator"`, `maxRounds: goal.maxRounds` (L9), `completedRounds: 0`, `scores: []`.
+   - Create a root node: `kind: "root"`, `title: goal.objective`, `objective: goal.objective`, `status: goal.status` (mapped: `active` → `pending` per L10 : the root is never active; the plan child carries the active state), `source: "operator"`, `maxRounds: goal.maxRounds` (L9), `completedRounds: 0`, `scores: []`.
    - Create one plan child: `kind: "plan"`, `parentId: root.id`, `title: goal.objective` (same), `objective: goal.objective`, `status: goal.status === "active" ? "active" : goal.status`, `source: "operator"`, `maxRounds: goal.maxRounds`, `completedRounds: goal.completedRounds`, `scores: goal.scores`.
    - If the plan is `active`, set `activeGoalId = plan.id`.
    - If the plan is `complete`, set the root to `complete` as well.
@@ -71,7 +71,7 @@ This preserves the goal's progress (rounds, scores) without losing data.
 
 - Exactly one node has `status: "active"` at any time, and it is always a leaf (a plan with no children, or a task).
 - The root is never `active` (L10: enforced in `enforceInvariants()` on both v2 and v3 parse paths).
-- A node's children are derived from `parentId` — no separate array.
+- A node's children are derived from `parentId` : no separate array.
 - `parseState` enforces the invariants via `enforceInvariants()`: if multiple nodes are `active`, keep the first (lowest id) and demote the rest to `pending`. If the root is active, demote it to `pending`.
 
 ---
@@ -81,14 +81,14 @@ This preserves the goal's progress (rounds, scores) without losing data.
 `goal_create` gains an optional `roadmapPath` (string, project-relative).
 
 - **With `roadmapPath`:**
-  - The root node stores `roadmapPath` (R2). The file is **not** read at creation time — it is re-read through `$.fs.readFile` at every planning event.
+  - The root node stores `roadmapPath` (R2). The file is **not** read at creation time : it is re-read through `$.fs.readFile` at every planning event.
   - The root's `title` and `objective` are the operator's `objective` argument (unchanged).
   - `goal_create` returns "Root created; planning runs at the next controller tick." (R1)
 - **Without `roadmapPath`:**
   - The root is created with the objective alone.
   - Planning is still available (the worker or controller can add plans via `goal_add`).
 
-The planning gate does not depend on `roadmapPath` being present — it fires whenever the planning predicate (§3.1) is true. If `roadmapPath` is set, the file is re-read and passed to the model as additional context. If the file is missing or unreadable at planning time, log `roadmap_read_failed` and plan from the root objective alone.
+The planning gate does not depend on `roadmapPath` being present : it fires whenever the planning predicate (§3.1) is true. If `roadmapPath` is set, the file is re-read and passed to the model as additional context. If the file is missing or unreadable at planning time, log `roadmap_read_failed` and plan from the root objective alone.
 
 ---
 
@@ -147,7 +147,7 @@ const raw = await $.model.complete({ model: "haiku", prompt, maxTokens: 2000 });
 const jsonText = raw.trim().replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
 const plans = JSON.parse(jsonText);
 // Validate: must be an array of 0–7 objects with title (string), objective (string), maxRounds (number).
-// 0 plans is valid — it means "no more work" and the root is complete.
+// 0 plans is valid : it means "no more work" and the root is complete.
 // Create GoalNode for each, parentId = root.id, kind = "plan", source = "controller", status = "pending".
 // If plans.length > 0: activate the first plan (status = "active", activeGoalId = first.id).
 // If plans.length === 0: mark root complete, clear activeGoalId.
@@ -157,8 +157,8 @@ If parsing fails, log a `planning_failed` decision and do **not** activate anyth
 
 ### 3.5 Decision log entries
 
-- `goal | plan` — "Planned N plans from roadmap" (or "from root objective"). N may be 0.
-- `goal | activate` — "Activated plan '<title>' (id <id>)".
+- `goal | plan` : "Planned N plans from roadmap" (or "from root objective"). N may be 0.
+- `goal | activate` : "Activated plan '<title>' (id <id>)".
 
 ### 3.6 Planning is a controller act (R1)
 
@@ -187,7 +187,7 @@ When the controller chooses `switch`:
 1. A second gated call (`$.model.complete`, Haiku) sees the full tree, the pending plan titles, and the last five decisions. It returns the id of the pending plan to activate.
 2. **Validate the id against the pending set.** On a miss, log `switch_failed` and do nothing.
 3. On a hit: the current active leaf is demoted to `paused` (resumable). The chosen plan is activated (`status: "active"`, `activeGoalId = chosen.id`).
-4. Decision log: `goal | switch` — "Switched from '<old>' to '<new>'".
+4. Decision log: `goal | switch` : "Switched from '<old>' to '<new>'".
 
 ### 4.2 Complete (R3)
 
@@ -199,7 +199,7 @@ When the active leaf's `completedRounds` reaches `maxRounds`:
 1. Mark the leaf `blocked`, `blockedReason: "Max rounds reached"`.
 2. Fire `$.ui.toast` once (best-effort).
 3. Call `activateNext(state)`.
-4. Decision log: `goal | blocked` — "[<id>] Max rounds reached (N rounds)".
+4. Decision log: `goal | blocked` : "[<id>] Max rounds reached (N rounds)".
 5. The root never blocks.
 
 ### 4.4 `completeLeaf` and `activateNext` (R3, H3, M6)
@@ -256,7 +256,7 @@ export function activateNext(state: AgentState, completedId?: string): string | 
 - Mark the leaf complete.
 - Walk up while the parent is a plan whose children are all complete, abandoned, or blocked → mark parent complete. **H3:** if any child is blocked, the parent becomes blocked (not complete).
 - **H3:** `completeLeaf` never touches the root. Root completion is the planner's job (0 plans) or the controller's complete actuator.
-- Then activate: **M6:** leaf-only DFS — prefer a pending task under the same plan (siblings first), then DFS from the root. Only nodes with no children are activated.
+- Then activate: **M6:** leaf-only DFS : prefer a pending task under the same plan (siblings first), then DFS from the root. Only nodes with no children are activated.
 - If nothing to activate, leave `activeGoalId` null (the planning predicate becomes true).
 - **Activation resets** `lastNudgeAt = 0` and `consecutiveNudgesWithoutOnGoal = 0`, because the floor and cap guard repeats on one leaf, not the next one. (R3)
 
@@ -272,7 +272,7 @@ Added: `roadmapPath` (string, optional).
 Behavior:
 - Create the root node. If `roadmapPath` is provided, store it on the root (R2). Do **not** read the file.
 - Do **not** fire planning (R1). Return: `"Root created; planning runs at the next controller tick."`
-- Decision log: `goal | create` — root.
+- Decision log: `goal | create` : root.
 
 ### 5.2 `goal_add` (new, R4)
 
@@ -299,7 +299,7 @@ Behavior:
 - **M6: depth guard:** deny if the resolved parent is a task. The tree is root > plan > task; nothing deeper.
 - **Leaf invariant (R4):** when a task is added under the active plan, that plan is no longer a leaf → demote the plan to `pending`, activate the new task. Later tasks under that plan are `pending` (not activated).
 - Create the node, `source: "worker"`, `status: "pending"` (or `active` if it is the first task under the active plan, per the above). Include `planningRounds: 0` and `consecutiveBlockedPlannings: 0`.
-- Decision log: `goal | add` — "Added <kind> '<title>' under <parentId>".
+- Decision log: `goal | add` : "Added <kind> '<title>' under <parentId>".
 
 ### 5.3 `goal_done` (new, R3, R8)
 
@@ -318,7 +318,7 @@ Behavior:
 - Call `completeLeaf(state, activeLeaf.id, note)` (R3).
 - Call `activateNext(state)` (R3).
 - **Result text (R8):** if a new leaf was activated, the result is `"Completed '<old>'. Active: '<new>'."`. If nothing was activated, the result is `"Completed '<old>'. No pending goals; planning runs at the next tick."`
-- Decision log: `goal | done` — "Completed '<title>' (id <id>)".
+- Decision log: `goal | done` : "Completed '<title>' (id <id>)".
 
 ### 5.4 `goal_status` (new)
 
@@ -331,8 +331,8 @@ Behavior:
 - Return the tree as formatted text:
   ```
   [root] <title> (status: <status>)
-    [plan] <title> (status: <status>) — N rounds done
-      [task] <title> (status: <status>) — note
+    [plan] <title> (status: <status>) : N rounds done
+      [task] <title> (status: <status>) : note
   ```
 - Decision log: none (read-only).
 
@@ -351,7 +351,7 @@ Behavior:
 - Owner only.
 - Resume the specified paused node (or the most recently paused one if omitted).
 - Reset `consecutiveNudgesWithoutOnGoal = 0` and `lastNudgeAt = 0`.
-- Decision log: `goal | resume` — "Node <id> resumed (paused: <reason>)".
+- Decision log: `goal | resume` : "Node <id> resumed (paused: <reason>)".
 
 ### 5.6 No `goal_switch` for the worker
 
@@ -365,10 +365,10 @@ On `prompt.submit`, inject (for the active leaf):
 
 ```
 [GOAL TREE]
-Active: <leaf.title> — <leaf.objective>
+Active: <leaf.title> : <leaf.objective>
 Path: <root.title> > <parent.title (if any)> > <leaf.title>
 Pending siblings: N
-Last note: <leaf.notes[leaf.notes.length - 1] or "—">
+Last note: <leaf.notes[leaf.notes.length - 1] or ".">
 Follow the user if they conflict with this goal.
 ```
 
@@ -497,11 +497,11 @@ Fixture: none (single haiku objective).
 
 ## 11. Questions and answers
 
-### Q1: Migration — wrap-as-root-plus-one-plan or discard v2 goals?
+### Q1: Migration : wrap-as-root-plus-one-plan or discard v2 goals?
 
 **Answer: Wrap (as proposed).** The v2 goal has `completedRounds`, `scores`, and a status that represent real progress. Discarding it would lose that history. Wrapping it as a root with one plan child preserves the data and keeps the migration simple. The plan inherits the goal's `maxRounds`, `completedRounds`, and `scores`.
 
-### Q2: Planning call — fork or complete-with-JSON?
+### Q2: Planning call : fork or complete-with-JSON?
 
 **Answer: `$.model.complete` with Haiku and a strict JSON schema.**
 
@@ -513,7 +513,7 @@ Planning is a structured extraction (roadmap → plans), not a contextual judgme
 
 **Fork's role:** none in this stage. The switch decision also uses `$.model.complete` with Haiku, passing the tree and last five decisions explicitly in the prompt. Fork's advantages (shared prompt cache, transcript context) are not needed.
 
-### Q3: When the worker calls `goal_done` on the last pending plan — root complete immediately or one more planning call?
+### Q3: When the worker calls `goal_done` on the last pending plan : root complete immediately or one more planning call?
 
 **Answer: One more planning call (as proposed).** The roadmap may have items that were not decomposed into plans, or the worker may have finished faster than expected. A final planning call checks for missed items. If the planning call returns zero plans, the root is marked complete. This is cheap (one Haiku call) and prevents premature completion.
 
@@ -550,13 +550,13 @@ Planning is a structured extraction (roadmap → plans), not a contextual judgme
 | Worker calls `goal_done` when no active leaf | Deny with "No active goal to complete." |
 | Multiple active nodes (bug) | `parseState` keeps only the first, demotes the rest. Logged as a warning. |
 | Switch id not in pending set | Validate; on miss, log `switch_failed`, do nothing. |
-| Paused tree replanned | Planning predicate (R5) includes paused descendants as work — planning is not due. |
+| Paused tree replanned | Planning predicate (R5) includes paused descendants as work : planning is not due. |
 
 ---
 
 ## 14. Revision 4 (v0.6.2)
 
-### H3 fix — root never completed by cascade
+### H3 fix : root never completed by cascade
 
 `completeLeaf` (agent-state.ts) now breaks at the root:
 
@@ -567,7 +567,7 @@ if (parent.kind === "root") break;
 The `All goals complete. Objective met.` branch in the `goal_done` handler is deleted.
 Root completion belongs to the planner (0 plans) or the controller's complete actuator.
 
-### H4 — planner parse failure does not complete the root
+### H4 : planner parse failure does not complete the root
 
 - `parsedOk` flag: set only when `JSON.parse` returns an array.
 - If `!parsedOk`: log `planning_failed`, return. Root stays `pending`.
@@ -575,7 +575,7 @@ Root completion belongs to the planner (0 plans) or the controller's complete ac
 - `AGENTIC_PLANNER_FAULT=1` env var (read from `process.env` in the planner) replaces
   the raw response with `"not json"` for testing.
 
-### H3-cap — planning cap
+### H3-cap : planning cap
 
 After each planning round:
 - `root.planningRounds` incremented.
@@ -586,7 +586,7 @@ After each planning round:
   - Toast once.
   - Return (no further planning).
 
-### M4 — nudge cap → blocked (not paused)
+### M4 : nudge cap → blocked (not paused)
 
 When `consecutiveNudgesWithoutOnGoal >= MAX_CONSECUTIVE_NUDGES`:
 - Active leaf → `blocked` (not `paused`), `blockedReason = capReason`.
@@ -595,13 +595,13 @@ When `consecutiveNudgesWithoutOnGoal >= MAX_CONSECUTIVE_NUDGES`:
 - `activateNext` to the next pending leaf.
 - Reset `consecutiveNudgesWithoutOnGoal = 0`, `lastNudgeAt = 0`.
 
-### M9 — goal_resume with a different active leaf
+### M9 : goal_resume with a different active leaf
 
 If `goal_resume` targets a paused node while a different node is `active`:
 - The active node is demoted to `paused` with `blockedReason = "Paused by goal_resume of <target>"`.
 - The target is resumed.
 
-### M10 — blockedReason at every pause site
+### M10 : blockedReason at every pause site
 
 Every site that sets `status = "paused"` now also writes `blockedReason`:
 - Controller `ask-operator` → `blockedReason = finalReason`.
@@ -610,29 +610,29 @@ Every site that sets `status = "paused"` now also writes `blockedReason`:
 - `goal_resume` demotion → `blockedReason = "Paused by goal_resume of <target>"`.
 - `goal_resume` resume → `blockedReason = undefined` (cleared).
 
-### L14 — goal_done score increments completedRounds
+### L14 : goal_done score increments completedRounds
 
 The `goal_done` branch in turn.complete scoring now:
 - Pushes `{ round, result: "on-goal" }` to `turnLeaf.scores`.
 - Increments `turnLeaf.completedRounds`.
 - Logs the round number from `scores.length`.
 
-### L15 — curation prompt already has L12
+### L15 : curation prompt already has L12
 
 The curation classify prompt already says "A description of what happened this turn is discard."
 No change needed.
 
-### L16 — yield test guards heartbeat file
+### L16 : yield test guards heartbeat file
 
 `live-yield-test.sh` now removes `.agentic-heartbeat.json` and `.agentic-yields.log`
 before the sample loop starts.
 
-### L17 — $.ui.log per injected block
+### L17 : $.ui.log per injected block
 
 Each injected context block (goal tree, paused reminder, memory) is logged
 via `$.ui.log` before being pushed to `contextBlocks`.
 
-### P3 — assert-decisions.js
+### P3 : assert-decisions.js
 
 New script `.kit/assert-decisions.js` validates the decision log for each test:
 - `goaltree`: create → planning_fired → planning_created 3 → activated → nudge → done×3 → score goal_done → root complete.
@@ -643,7 +643,7 @@ New script `.kit/assert-decisions.js` validates the decision log for each test:
 
 All test scripts write `.decisions.log` and run assertions before exiting.
 
-### P4 — git init
+### P4 : git init
 
 New `.gitignore`:
 - `.agentic-*.json`
@@ -659,6 +659,21 @@ First commit: `v0.6.1 (pre-0.6.2)`. Tag: `v0.6.1`.
 
 ### New test: live-planfail-test.sh
 
-- `AGENTIC_PLANNER_FAULT=1` env var.
+- `.kit/planner-fault` file flag (H4).
 - goal_create + "ok", sleep 120, "done".
 - Expected: `planning_failed` at first tick, root `pending`, `planning_fired` again at next tick.
+
+## Revision 5 (v0.6.3)
+
+| Label | Change | File:line |
+|-------|--------|-----------|
+| H4 | Planner fault injection via file flag `.kit/planner-fault` (was env var). Flag read at the gate, checked across the project `.kit` and plugin `.kit` candidate paths so the test script's location is honored. Removed `ui.log` at the fault site. | index.ts:584-592 |
+| H5 | `isPlanningDue` excludes `blocked` root. Cap check moved before the model call; `allBlocked` evaluated over previous round's plans. | agent-state.ts:380, index.ts:515-534 |
+| M7 | Single `persist` guarded-write path (top-level, `dp` param): yield check then keyed write `store[persona] = state`. `agentic_identity` keeps its own inline write (index.ts:1215-1216) as the forceful-claim site (reviewer M7 allowance). | index.ts:60-81, 1210-1216 |
+| M11 | `activate(dp, id, why)` (top-level): resets nudge budget, `activated` decision, `$.ui.status`. Goal_done credit moved into the goal_done handler; turn.complete logs `score_skipped`. | index.ts:84-96, 1015-1026, 1412 |
+| M12 | `assert-decisions.js`: ordered-subsequence + forbidden-list checks. `turn_start` detail = `Turn n leaf <id\|none>`. Log written once, synchronously (no async-flush loss on exit). Yield test checks exactly one line in `.agentic-yields.log`. Goaltree forbidden-score allows `(goal_done)` credits (M11). | assert-decisions.js (full), index.ts:989, all .sh tests |
+| L18 | `turn_start` decision captures the turn-start leaf id (`Turn n leaf <id\|none>`); scoring targets that leaf (H2). | index.ts:989, 1009-1026 |
+| L19 | `goal_create` and `memory_add` check `isOwner` before mutating in-memory state. | index.ts:1195-1197, 1473-1475 |
+| L20 | Root completion emits separate `goal | root_complete | <id>` action line. | index.ts:597-602 |
+| L21 | Curation prompt adds "Only a fact or preference the user stated explicitly. An instruction to call a tool is discard." | index.ts:1099 |
+| L22 | Header version v0.6.3. All em dashes removed (plan doc, README, assert-decisions.js). `.kit/` tracked in git. | index.ts:1, plan doc, README.md, .gitignore, .git |

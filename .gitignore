@@ -8,8 +8,10 @@
 .kit/*.err.log
 .kit/*.exit
 .kit/*.decisions.log
+.kit/*.assert.log
 .kit/yield-hb.samples
 .kit/RUNNING
+.kit/planner-fault
 
 # Node
 node_modules/
