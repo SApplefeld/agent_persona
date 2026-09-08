@@ -1,6 +1,6 @@
 # Agentic Plugin: Self-Review (Lessons from the Decision Log)
 
-**Status**: Proposed
+**Status**: Complete
 **Created**: 2026-09-08T16:35:00Z
 **Author**: DeepSeekHarness
 **Reviewer**: Fable
@@ -154,3 +154,15 @@ Both exit codes pasted in the completion entry.
 | T7 | `provenance.turnRange` was turn-index-based (fragile, not anchored to evidence). Replaced with `windowRange?: [number, number]` computed from `decisionTimestamps[0]` and `[last]` (the actual time span of the input window). `trigger` type widened to `string`. | Section 2 row 3; section 4 (state); `hooks/agent-state.ts` `provenance`; `hooks/index.ts` wiring | Done |
 | T8 | Suite used fixed `sleep` (clock-based) instead of fact-based gating. Replaced with poll-until-self-review-decision and poll-until-lesson_inject. Added `--debug-file` + fail-fast on "failed to load". Added F0 (no yield assertion). | Section 8 (suite); `.kit/live-self-review-test.sh` | Done |
 | T9 | Suite lacked a pre-gate: two back-to-back runs could collide on persona claims. Added `wait_persona_free` to `live-common.sh`; self-review suite calls it before launch. | Section 8; `.kit/live-common.sh` `wait_persona_free`; `.kit/live-self-review-test.sh` | Done |
+
+## 11. Closing
+
+Committed at `v0.10.0` (commit `SELF-REVIEW: Close item 4 at v0.10.0.`). Five green runs on the final commit:
+
+- Self-review short, run A: 2026-09-08T22:10:40Z (Fable)
+- Self-review short, run B: 2026-09-08T22:11:56Z (Fable, pre-gate waited out live claim)
+- Errorstreak short: 2026-09-08T22:15Z (Fable)
+- Self-review full: 2026-09-08T22:18Z (Fable)
+- `live-all.sh` serial: 2026-09-08T21:34-22:05Z (DeepSeekHarness, 10/10 suites green)
+
+Review record: DISCUSSION.md Rounds 29-35 (plan review, implementation, V1-V5 fixes, re-verification, W1/W2 closing).

@@ -125,8 +125,13 @@ console.log('live=' + live + ' oldest_age=' + (oldest ? Math.round((now - oldest
 " "$store_w")
     rc=$?
     if [ $rc -ne 0 ] || echo "$line" | grep -q '^ERROR'; then
-      echo "T9: pre-gate FAIL: read error: $line" >&2
-      return 1
+      # W2: a read error is a transient mid-write race, not an abort.
+      # Treat as live=1 for this poll and let the timeout be the only exit.
+      echo "T9: pre-gate poll: ERROR (transient read error, retrying): $line"
+      n=$((n + 5))
+      [ $n -ge $timeout ] && { echo "T9: pre-gate timeout after ${n}s (last: $line)"; return 1; }
+      sleep 5
+      continue
     fi
     live=$(echo "$line" | sed -n 's/.*live=\([0-9]*\).*/\1/p')
     echo "T9: pre-gate poll: $line"

@@ -1285,6 +1285,12 @@ export const register: Register = async (on, options) => {
         `Consecutive nudges sent: ${sess.consecutiveNudgesWithoutOnGoal}\n` +
         `Decisions tail: ${sess.state.decisions.slice(-5).map((d) => `${d.loop}:${d.action}`).join(", ")}\n` +
         `Memory: ${sess.state.memory.length} entries (self-review lessons: ${sess.state.memory.filter((m) => m.source === "self-review").length})\n` +
+        (() => {
+          const sr = sess.state.memory.filter((m) => m.source === "self-review" && m.kind === "lesson");
+          if (sr.length === 0) return "";
+          const newest = sr.sort((a, b) => b.createdAt - a.createdAt)[0];
+          return `LESSON: ${newest.text.slice(0, 120)}\n`;
+        })() +
         envLine +
         `\n` +
         `The session has been idle for ${idleDisplay}.\n` +
