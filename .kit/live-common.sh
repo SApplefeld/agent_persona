@@ -73,8 +73,8 @@ wait_for_fact() {  # $1 = fact text to wait for; $2 = store path (optional)
   script_file=$(mktemp)
   cat > "$script_file" <<'NODE'
 const fs = require('fs');
-const fact = process.argv[1];
-const store = process.argv[2];
+const fact = process.argv[2];
+const store = process.argv[3];
 if (!fs.existsSync(store)) process.exit(1);
 const s = JSON.parse(fs.readFileSync(store,'utf8'));
 const p = Object.keys(s)[0];
