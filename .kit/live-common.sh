@@ -68,11 +68,16 @@ wait_for_fact() {  # $1 = fact text to wait for; $2 = store path (optional)
   local fact="$1"
   local store="${2:-.agentic-personas.json}"
   local n=0
-  until node -e "
-    const s = JSON.parse(require('fs').readFileSync('$store','utf8'));
+  # Use environment variable to avoid shell interpolation issues
+  until FACT_TO_FIND="$fact" STORE_FILE="$store" node -e "
+    const fs = require('fs');
+    const fact = process.env.FACT_TO_FIND;
+    const store = process.env.STORE_FILE;
+    if (!fs.existsSync(store)) process.exit(1);
+    const s = JSON.parse(fs.readFileSync(store,'utf8'));
     const p = Object.keys(s)[0];
     const m = (s[p].memory||[]);
-    const found = m.some(x => x.text === '$fact');
+    const found = m.some(x => x.text === fact);
     process.exit(found ? 0 : 1);
   " 2>/dev/null; do
     sleep 2; n=$((n+2)); [ $n -ge 180 ] && return 1
