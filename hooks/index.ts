@@ -48,6 +48,13 @@ const sess: {
   lastNudgeAt: number;
   consecutiveNudgesWithoutOnGoal: number;
   options: { healthTimeoutMs?: number; gitProbeMs?: number };
+  contextBudgetEnabled: boolean;
+  contextBudgetInfoTokens: number;
+  contextBudgetCloseoutTokens: number;
+  contextBudgetCriticalTokens: number;
+  contextBudgetReadEveryNTicks: number;
+  contextBudgetTickCount: number;
+  contextBudgetLatched: { info: boolean; closeout: boolean; critical: boolean };
 } = {
   persona: "default",
   mySessionId: "pending",
@@ -59,6 +66,13 @@ const sess: {
   lastNudgeAt: 0,
   consecutiveNudgesWithoutOnGoal: 0,
   options: {},
+  contextBudgetEnabled: false,
+  contextBudgetInfoTokens: 100_000,
+  contextBudgetCloseoutTokens: 250_000,
+  contextBudgetCriticalTokens: 350_000,
+  contextBudgetReadEveryNTicks: 3,
+  contextBudgetTickCount: 0,
+  contextBudgetLatched: { info: false, closeout: false, critical: false },
 };
 
 // Reentrancy flag for the git probe (E4).
@@ -228,6 +242,13 @@ export const register: Register = async (on, options) => {
   const healthTimeoutMs = typeof cfg.healthTimeoutMs === "number" ? Math.min(cfg.healthTimeoutMs as number, 120_000) : 60_000;
   const gitProbeMs = typeof cfg.gitProbeMs === "number" ? Math.min(cfg.gitProbeMs as number, 300_000) : 120_000;
   sess.options = { healthTimeoutMs, gitProbeMs };
+  
+  // Context budget (2b).
+  sess.contextBudgetEnabled = cfg.contextBudgetEnabled === true;
+  sess.contextBudgetInfoTokens = typeof cfg.contextBudgetInfoTokens === "number" ? (cfg.contextBudgetInfoTokens as number) : 100_000;
+  sess.contextBudgetCloseoutTokens = typeof cfg.contextBudgetCloseoutTokens === "number" ? (cfg.contextBudgetCloseoutTokens as number) : 250_000;
+  sess.contextBudgetCriticalTokens = typeof cfg.contextBudgetCriticalTokens === "number" ? (cfg.contextBudgetCriticalTokens as number) : 350_000;
+  sess.contextBudgetReadEveryNTicks = typeof cfg.contextBudgetReadEveryNTicks === "number" ? (cfg.contextBudgetReadEveryNTicks as number) : 3;
 
   // --- session.start: register tools, claim or join the persona ---
   on("session.start", async ($, e, next) => {
@@ -939,6 +960,83 @@ export const register: Register = async (on, options) => {
         return;
       }
       const g = activeNode;
+
+      // 4.5. Context budget (2b): read on a sub-cadence, latch on crossing, nudge above close-out.
+      if (sess.contextBudgetEnabled) {
+        sess.contextBudgetTickCount += 1;
+        if (sess.contextBudgetTickCount % sess.contextBudgetReadEveryNTicks === 0) {
+          try {
+            const messages = await $.session.messages();
+            // Estimate tokens: sum text, toolUses input, toolResults output.
+            let chars = 0;
+            for (const m of messages) {
+              chars += m.text.length;
+              for (const tu of m.toolUses) {
+                chars += tu.name.length;
+                try { chars += JSON.stringify(tu.input).length; } catch { chars += 100; }
+              }
+              if (m.toolResults) {
+                for (const tr of m.toolResults) {
+                  chars += tr.text.length;
+                }
+              }
+            }
+            const estimatedTokens = Math.floor(chars / 4);
+            
+            // Re-arm with hysteresis: only when the estimate falls 5% below the threshold.
+            const hysteresis = 0.95;
+            if (estimatedTokens < sess.contextBudgetInfoTokens * hysteresis) sess.contextBudgetLatched.info = false;
+            if (estimatedTokens < sess.contextBudgetCloseoutTokens * hysteresis) sess.contextBudgetLatched.closeout = false;
+            if (estimatedTokens < sess.contextBudgetCriticalTokens * hysteresis) sess.contextBudgetLatched.critical = false;
+            
+            // Latch on crossing (highest first).
+            const budgetTs = Date.now();
+            if (!sess.contextBudgetLatched.critical && estimatedTokens >= sess.contextBudgetCriticalTokens) {
+              sess.contextBudgetLatched.critical = true;
+              sess.state.decisions.push({
+                timestamp: budgetTs,
+                loop: "monitor",
+                action: "context_budget_crossed",
+                detail: `critical: ${estimatedTokens} tokens`,
+              });
+            }
+            if (!sess.contextBudgetLatched.closeout && estimatedTokens >= sess.contextBudgetCloseoutTokens) {
+              sess.contextBudgetLatched.closeout = true;
+              sess.state.decisions.push({
+                timestamp: budgetTs,
+                loop: "monitor",
+                action: "context_budget_crossed",
+                detail: `closeout: ${estimatedTokens} tokens`,
+              });
+              // D1: deliver a close-out nudge through $.prompt.submit.
+              try {
+                const nudgeText =
+                  `[BUDGET] Context is at ${estimatedTokens} tokens (close-out threshold: ${sess.contextBudgetCloseoutTokens}).\n` +
+                  `Bank your current state to memory and the plan doc, then reach a clean stopping point. ` +
+                  `Do not start new work until the operator compacts.`;
+                await $.prompt.submit({ text: nudgeText });
+                sess.state.decisions.push({
+                  timestamp: budgetTs,
+                  loop: "monitor",
+                  action: "context_budget_nudge",
+                  detail: `${estimatedTokens} tokens, close-out nudge sent`,
+                });
+              } catch { /* nudge failed; non-fatal */ }
+            }
+            if (!sess.contextBudgetLatched.info && estimatedTokens >= sess.contextBudgetInfoTokens) {
+              sess.contextBudgetLatched.info = true;
+              sess.state.decisions.push({
+                timestamp: budgetTs,
+                loop: "monitor",
+                action: "context_budget_crossed",
+                detail: `info: ${estimatedTokens} tokens`,
+              });
+            }
+            sess.state.updatedAt = budgetTs;
+            await persist($);
+          } catch { /* budget read failed; non-fatal */ }
+        }
+      }
 
       // 5. Idle gate.
       const now = Date.now();

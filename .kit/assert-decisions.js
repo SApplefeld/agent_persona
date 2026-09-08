@@ -227,6 +227,26 @@ switch (testName) {
     forbidden(["block"], "errorstreak: no block (ask-operator path, not blocked)");
     break;
   }
+  case "budget": {
+    // D2: assert through the decision log: context_budget_crossed once per threshold,
+    // context_budget_nudge once above close-out. Latch pin: drive the estimate up past
+    // a threshold, hold it, assert the crossing logged exactly once.
+    const crossings = decisions.filter(a => a === "context_budget_crossed");
+    const nudges = decisions.filter(a => a === "context_budget_nudge");
+    check2("budget: at least 3 crossings", crossings.length >= 3);
+    check2("budget: exactly 1 closeout nudge", nudges.length === 1);
+    
+    // Check that each threshold was crossed exactly once (latch pin).
+    const budgetDetails = details.filter(d => d.action === "context_budget_crossed");
+    const infoCrossings = budgetDetails.filter(d => /info:/.test(d.detail)).length;
+    const closeoutCrossings = budgetDetails.filter(d => /closeout:/.test(d.detail)).length;
+    const criticalCrossings = budgetDetails.filter(d => /critical:/.test(d.detail)).length;
+    check2("budget: info crossed exactly once", infoCrossings === 1);
+    check2("budget: closeout crossed exactly once", closeoutCrossings === 1);
+    check2("budget: critical crossed exactly once", criticalCrossings === 1);
+    
+    break;
+  }
   default:
     console.error(`FAIL: unknown test name: ${testName}`);
     process.exit(1);

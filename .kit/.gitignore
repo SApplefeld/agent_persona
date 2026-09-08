@@ -11,6 +11,7 @@
 !/live-errorstreak-test.sh
 !/live-gitprobe-test.sh
 !/live-health-test.sh
+!/live-budget-test.sh
 !/health-probe.js
 !/assert-decisions.js
 !/roadmap-test.md
