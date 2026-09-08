@@ -185,6 +185,18 @@ export const persist = async (dp: any): Promise<boolean> => {
           if (a.claimedAt !== b.claimedAt) return a.claimedAt - b.claimedAt;
           return a.holder < b.holder ? -1 : a.holder > b.holder ? 1 : 0;
         })[0]?.holder;
+      // Write to the yield log for observability (same as epoch-based yield).
+      const rec = yieldRecord(
+        sess.persona,
+        sess.mySessionId,
+        winner ?? "unknown",
+        sess.myEpoch,
+        0, // No epoch in commons; use 0 as a sentinel
+      );
+      try {
+        const el = await dp.fs.exists(sess.yieldLogPath) ? await dp.fs.readFile(sess.yieldLogPath) : "";
+        await dp.fs.writeFile(sess.yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
+      } catch { /* non-fatal */ }
       dp.state.decisions.push({
         timestamp: Date.now(),
         loop: "monitor",
