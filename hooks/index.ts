@@ -33,6 +33,12 @@ import {
   envNotable,
 } from "./agent-state";
 import type { AgentState, GoalNode, NudgeBudget, EnvGit, EnvState } from "./agent-state";
+import {
+  claimResource,
+  readAllClaims,
+  shouldYieldCommons,
+  releaseResource,
+} from "./commons";
 
 // --- Module-scope session identity ---
 // The loader requires `persist` and `activate` to be top-level functions.
@@ -167,6 +173,29 @@ export const persist = async (dp: any): Promise<boolean> => {
     await yieldNow(dp, onDisk);
     return false;
   }
+  // Commons: check machine-global arbitration (Stage 2 integration).
+  // If a live competitor has an earlier claim on this persona, yield.
+  try {
+    const resource = `persona:${sess.persona}`;
+    const claims = readAllClaims(dp.store as any);
+    if (shouldYieldCommons(claims, resource, sess.mySessionId)) {
+      const winner = claims
+        .filter((c: any) => c.resource === resource)
+        .sort((a: any, b: any) => {
+          if (a.claimedAt !== b.claimedAt) return a.claimedAt - b.claimedAt;
+          return a.holder < b.holder ? -1 : a.holder > b.holder ? 1 : 0;
+        })[0]?.holder;
+      dp.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "persona_yield_commons",
+        detail: `Yielded ${resource} to ${winner} (commons arbitration)`,
+      });
+      sess.isOwner = false;
+      try { dp.ui.log(`Agentic: yielded '${sess.persona}' to ${winner} (commons)`); } catch { /* non-fatal */ }
+      return false;
+    }
+  } catch { /* non-fatal: commons is a coordination layer */ }
   store[sess.persona] = sess.state;
   await dp.fs.writeFile(sess.storePath, JSON.stringify(store, null, 2));
   return true;
@@ -529,6 +558,11 @@ export const register: Register = async (on, options) => {
               hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now() };
               await $.fs.writeFile(heartbeatPath, JSON.stringify(hb, null, 2));
             } catch { /* heartbeat write failed */ }
+            // Commons: refresh lastSeen to signal liveness (Stage 2 integration).
+            try {
+              const resource = `persona:${sess.persona}`;
+              claimResource($ as any, resource, sess.mySessionId);
+            } catch { /* non-fatal */ }
           }
         }
 
@@ -1576,6 +1610,17 @@ export const register: Register = async (on, options) => {
         hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now() };
         await $.fs.writeFile(heartbeatPath, JSON.stringify(hb, null, 2));
       } catch { /* non-fatal */ }
+      // Commons: claim the persona in the machine-global store (Stage 2 integration).
+      try {
+        const resource = `persona:${sess.persona}`;
+        claimResource($ as any, resource, sess.mySessionId);
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "persona_claim_commons",
+          detail: `Claimed ${resource} in commons (session ${sess.mySessionId})`,
+        });
+      } catch { /* non-fatal: commons is a coordination layer, not a hard dependency */ }
       return {
         result: `persona '${sess.persona}' active (epoch ${sess.myEpoch}, owner). ${sess.state.memory.length} memories.`,
       };
