@@ -53,7 +53,7 @@ if [ -f .agentic-personas.json ]; then
 const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
 const p = Object.keys(s)[0];
 const d = (s[p].decisions||[]).map(x => new Date(x.timestamp).toISOString().slice(11,19) + ' ' + x.loop + ' | ' + x.action + ' | ' + x.detail);
-require('fs').writeFileSync('$K/goaltree-stall.decisions.log', d.join('\n') + '\n');
+require('fs').writeFileSync('goaltree-stall.decisions.log', d.join('\n') + '\n');
 "
   node "$SCRIPT_DIR/assert-decisions.js" stall .agentic-personas.json "$K/goaltree-stall.assert.log"
   ASSERT_EXIT=$?

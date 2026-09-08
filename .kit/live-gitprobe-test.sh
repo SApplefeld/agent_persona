@@ -28,7 +28,16 @@ unset CLAUDECODE
 
 # G1: create scratch git repo in the suite directory
 git init --quiet
-echo ".agentic-*" > .gitignore
+# L2: gitignore everything the suite and runner write there
+cat > .gitignore << 'EOF'
+.agentic-*
+settings.json
+*.jsonl
+*.log
+*.exit
+RUNNING
+.dirty-cycle-done
+EOF
 git add .gitignore
 git -c user.name="test" -c user.email="test@test" commit --quiet -m "init"
 
@@ -95,7 +104,7 @@ if [ -f .agentic-personas.json ]; then
 const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
 const p = Object.keys(s)[0];
 const d = (s[p].decisions||[]).map(x => new Date(x.timestamp).toISOString().slice(11,19) + ' ' + x.loop + ' | ' + x.action + ' | ' + x.detail);
-require('fs').writeFileSync('$SUITE_DIR/gitprobe.decisions.log', d.join('\n') + '\n');
+require('fs').writeFileSync('gitprobe.decisions.log', d.join('\n') + '\n');
 "
   node "$SCRIPT_DIR/assert-decisions.js" gitprobe .agentic-personas.json "$SUITE_DIR/gitprobe.assert.log"
   ASSERT_EXIT=$?

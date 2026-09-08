@@ -51,6 +51,7 @@ One tracked script: `agentic-plugin/.kit/live-all.sh [suite...]`.
 - Each suite's artifacts (`.decisions.log`, `.assert.log`, `.exit`, stdout) are copied into `agentic-plugin/.kit/runs/<utc-stamp>/<suite>.*`.
 - One summary file in the same form as the Reviewer's `v070e-run.summary`: one line per suite: `script_exit`, `started`, `ended`, exit file, assert log.
 - Exit code: non-zero when any suite fails.
+- **L4 (runner):** When any suite fails, the run directory is the evidence and stays. It stays today, so nothing to change, but say so here.
 
 ## 5. The short-cadence profile
 

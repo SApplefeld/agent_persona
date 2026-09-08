@@ -78,7 +78,7 @@ if [ -f .agentic-personas.json ]; then
 const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
 const p = Object.keys(s)[0];
 const d = (s[p].decisions||[]).map(x => new Date(x.timestamp).toISOString().slice(11,19) + ' ' + x.loop + ' | ' + x.action + ' | ' + x.detail);
-require('fs').writeFileSync('$SUITE_DIR/health.decisions.log', d.join('\n') + '\n');
+require('fs').writeFileSync('health.decisions.log', d.join('\n') + '\n');
 "
   node "$SCRIPT_DIR/assert-decisions.js" health .agentic-personas.json "$SUITE_DIR/health.assert.log"
   ASSERT_EXIT=$?

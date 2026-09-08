@@ -35,7 +35,7 @@ feed() {
   wait_turn 2
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Use the Bash tool now to run exactly: echo world. Make the tool call even if you expect it to be denied; do not explain, report the result in one line."}}'
   wait_turn 3
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Use the Bash tool now to run exactly: echo done. Make the tool call even if you expect it to be denied; do not explain, report the result in one line."}}'
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Use the Bash tool now to run exactly: echo third. Make the tool call even if you expect it to be denied; do not explain, report the result in one line."}}'
   wait_turn 4
   # I1: tick window (turn 4 closes with streak 3, next tick fires the branch)
   # Derive from TICK_MS: TICK_MS/1000 + 15 s
@@ -53,7 +53,7 @@ emit_settings_json "settings.json"
 feed | claude -p --input-format stream-json --output-format stream-json --verbose \
   --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" \
   --settings "$(cygpath -w "$SUITE_DIR/settings.json")" \
-  --allowedTools "mcp__agentic-plugin__goal_create,mcp__agentic-plugin__goal_done,mcp__agentic-plugin__memory_add,mcp__agentic-plugin__agentic_identity,Bash" \
+  --allowedTools "mcp__agentic-plugin__goal_create,mcp__agentic-plugin__memory_add,mcp__agentic-plugin__agentic_identity,Bash" \
   --model haiku \
   > "$OUT" 2> "$ERR"
 EXIT_CODE=$?
@@ -72,7 +72,7 @@ if [ -f .agentic-personas.json ]; then
 const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
 const p = Object.keys(s)[0];
 const d = (s[p].decisions||[]).map(x => new Date(x.timestamp).toISOString().slice(11,19) + ' ' + x.loop + ' | ' + x.action + ' | ' + x.detail);
-require('fs').writeFileSync('$SUITE_DIR/errorstreak.decisions.log', d.join('\n') + '\n');
+require('fs').writeFileSync('errorstreak.decisions.log', d.join('\n') + '\n');
 "
   node "$SCRIPT_DIR/assert-decisions.js" errorstreak .agentic-personas.json "$SUITE_DIR/errorstreak.assert.log"
   ASSERT_EXIT=$?

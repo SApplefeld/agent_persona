@@ -27,12 +27,17 @@ export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 unset CLAUDECODE
 
 feed() {
+  # L5: follow the I1 rule everywhere
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"Write one haiku about rivers, then one about mountains, then one about deserts, one per turn\" and maxRounds 5. Then write the rivers haiku only and stop."}}'
+  wait_turn 1
   # Derive idle wait from NUDGE_IDLE_MS and TICK_MS: (NUDGE_IDLE_MS + TICK_MS + 10000) / 1000
   IDLE_WAIT_S=$(( (NUDGE_IDLE_MS + TICK_MS + 10000) / 1000 ))
   sleep $IDLE_WAIT_S
+  # L5: wait for the nudge turn to complete (ceiling 180s)
+  wait_turn 2
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Reply with the single word: done"}}'
-  sleep 20
+  wait_turn 3
+  sleep 5
 }
 
 [ -f "$RUNNING" ] && { echo "RUNNING exists, refusing"; exit 8; }
@@ -56,7 +61,7 @@ if [ -f .agentic-personas.json ]; then
 const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
 const p = Object.keys(s)[0];
 const d = (s[p].decisions||[]).map(x => new Date(x.timestamp).toISOString().slice(11,19) + ' ' + x.loop + ' | ' + x.action + ' | ' + x.detail);
-require('fs').writeFileSync('$SUITE_DIR/controller.decisions.log', d.join('\n') + '\n');
+require('fs').writeFileSync('controller.decisions.log', d.join('\n') + '\n');
 "
   node "$SCRIPT_DIR/assert-decisions.js" controller .agentic-personas.json "$SUITE_DIR/controller.assert.log"
   ASSERT_EXIT=$?

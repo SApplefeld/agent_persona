@@ -24,7 +24,8 @@ export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 unset CLAUDECODE
 
 feed() {
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"Write three haikus as per the roadmap file\" maxRounds 10 and roadmapPath \"D:/DeepSeekHarness/agentic-plugin/.kit/roadmap-test.md\". Then reply with the single word: ok"}}'
+  # L7: align the objective with the fixture so the planner does not invent meta-plans
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"Write three haikus, one about rivers, one about mountains, one about deserts\" maxRounds 10 and roadmapPath \"D:/DeepSeekHarness/agentic-plugin/.kit/roadmap-test.md\". Then reply with the single word: ok"}}'
   # Derive idle wait from TICK_MS: 13 * TICK_MS/1000 (13 ticks to cover the chain)
   IDLE_WAIT_S=$(( 13 * TICK_MS / 1000 ))
   sleep $IDLE_WAIT_S
@@ -53,7 +54,7 @@ if [ -f .agentic-personas.json ]; then
 const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
 const p = Object.keys(s)[0];
 const d = (s[p].decisions||[]).map(x => new Date(x.timestamp).toISOString().slice(11,19) + ' ' + x.loop + ' | ' + x.action + ' | ' + x.detail);
-require('fs').writeFileSync('$K/goaltree.decisions.log', d.join('\n') + '\n');
+require('fs').writeFileSync('goaltree.decisions.log', d.join('\n') + '\n');
 "
   node "$SCRIPT_DIR/assert-decisions.js" goaltree .agentic-personas.json "$K/goaltree.assert.log"
   ASSERT_EXIT=$?

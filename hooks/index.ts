@@ -948,7 +948,8 @@ export const register: Register = async (on, options) => {
       const eligible = idleMs >= nudgeIdleMs;
       if (!eligible) return;
 
-      const minutesSinceLastTurn = Math.floor(idleMs / 60_000);
+      // L6: print seconds below one minute, minutes otherwise
+      const idleDisplay = idleMs < 60_000 ? `${Math.floor(idleMs / 1000)}s` : `${Math.floor(idleMs / 60_000)}min`;
       const last5 = g.scores.slice(-5).map((s) => s.result).join(", ") || "none";
       const onGoalCount = g.scores.filter((s) => s.result === "on-goal").length;
 
@@ -976,13 +977,13 @@ export const register: Register = async (on, options) => {
         `Node: ${g.id} (${g.kind}), status ${g.status}, round ${g.completedRounds}/${g.maxRounds}\n` +
         `Last 5 scores: ${last5}\n` +
         `On-goal count: ${onGoalCount} of ${g.scores.length}\n` +
-        `Minutes since last turn: ${minutesSinceLastTurn}\n` +
+        `Idle time: ${idleDisplay}\n` +
         `Consecutive nudges sent: ${sess.consecutiveNudgesWithoutOnGoal}\n` +
         `Decisions tail: ${sess.state.decisions.slice(-5).map((d) => `${d.loop}:${d.action}`).join(", ")}\n` +
         `Memory: ${sess.state.memory.length} entries\n` +
         envLine +
         `\n` +
-        `The session has been idle for ${minutesSinceLastTurn} minutes.\n` +
+        `The session has been idle for ${idleDisplay}.\n` +
         `Choose the best decision:\n` +
         `nudge: prompt the worker to take the next concrete step toward the goal\n` +
         `pause: repeated drift or off-goal-by-instruction suggests the operator changed direction\n` +
@@ -1011,7 +1012,7 @@ export const register: Register = async (on, options) => {
               timestamp: capTs,
               loop: "monitor",
               action: "controller_tick",
-              detail: `${g.id}: ask-operator: ${capReason} (idle ${minutesSinceLastTurn}min)`,
+              detail: `${g.id}: ask-operator: ${capReason} (idle ${idleDisplay})`,
             });
             try { $.ui.toast(`Agentic: ${capReason}`); } catch { /* non-fatal */ }
             if (g.status === "active") {
@@ -1111,7 +1112,7 @@ export const register: Register = async (on, options) => {
             timestamp: tickTs,
             loop: "monitor",
             action: "controller_tick",
-            detail: `${g.id}: ${finalDecision}: ${finalReason || "no reason"} (idle ${minutesSinceLastTurn}min)`,
+            detail: `${g.id}: ${finalDecision}: ${finalReason || "no reason"} (idle ${idleDisplay})`,
           });
 
           // Actuate (controller only: the three actuators).
@@ -1122,7 +1123,7 @@ export const register: Register = async (on, options) => {
                 // R8: nudge text appends goal_done instruction.
                 const nudgeText =
                   `[GOAL] The active goal is: ${g.objective}\n` +
-                  `The Controller detected ${minutesSinceLastTurn} minutes of idle time. ` +
+                  `The Controller detected ${idleDisplay} of idle time. ` +
                   `Re-read the objective and take the next concrete step toward it.\n` +
                   `When this step is done, call goal_done with a one-line note. ` +
                   `If the result names a next goal, continue with it.`;
@@ -1135,7 +1136,7 @@ export const register: Register = async (on, options) => {
                   timestamp: tickTs,
                   loop: "monitor",
                   action: "nudge_sent",
-                  detail: `${g.id}: idle ${minutesSinceLastTurn}min, nudge #${sess.consecutiveNudgesWithoutOnGoal}`,
+                  detail: `${g.id}: idle ${idleDisplay}, nudge #${sess.consecutiveNudgesWithoutOnGoal}`,
                 });
               } catch { /* nudge failed; non-fatal */ }
             }
