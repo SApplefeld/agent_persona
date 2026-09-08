@@ -78,6 +78,9 @@ const sess: {
 // Reentrancy flag for the git probe (E4).
 let gitProbeInFlight = false;
 
+// B1: reentrancy flag for the budget read (serialize to prevent race conditions).
+let budgetReadInFlight = false;
+
 // F7: once the cwd is confirmed non-git (exit 128), stop probing for the
 // life of the session. The flag lives in the hook module, not in state.
 let gitUnavailable = false;
@@ -952,9 +955,11 @@ export const register: Register = async (on, options) => {
 
       // 3.5. Context budget (2b): read on a sub-cadence, latch on crossing, nudge above close-out.
       // Runs regardless of whether there's an active goal.
-      if (sess.contextBudgetEnabled) {
+      // B1: guard the whole block to serialize reads and prevent race conditions.
+      if (sess.contextBudgetEnabled && !budgetReadInFlight) {
         sess.contextBudgetTickCount += 1;
         if (sess.contextBudgetTickCount % sess.contextBudgetReadEveryNTicks === 0) {
+          budgetReadInFlight = true;
           try {
             const messages = await $.session.messages();
             // Estimate tokens: sum text, toolUses input, toolResults output.
@@ -1025,6 +1030,9 @@ export const register: Register = async (on, options) => {
             sess.state.updatedAt = budgetTs;
             await persist($);
           } catch { /* budget read failed; non-fatal */ }
+          finally {
+            budgetReadInFlight = false;
+          }
         }
       }
 
