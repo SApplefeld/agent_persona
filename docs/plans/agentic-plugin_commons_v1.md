@@ -7,7 +7,7 @@
 
 ## 1. Purpose
 
-Commons provides machine-global, cross-session coordination for agentic-plugin sessions. It lets two or more sessions avoid colliding on the same resource (persona, file, goal, or arbitrary named resource) using the existing epoch-and-yield primitive.
+Commons provides machine-global, cross-session coordination for agentic-plugin sessions. It lets two or more sessions avoid colliding on the same resource (persona, file, goal, or arbitrary named resource) using its own first-claim-wins arbitration (`claimResource`/`commonsWinner`). The epoch-and-yield primitive is NOT used by commons; it is the same-directory write fence that `agentic_identity` bumps, and commons reads the resulting claimant ordering via `readAllClaims`.
 
 **MVP**: the smallest shared mechanism that lets two sessions not collide on the same resource.
 
@@ -76,6 +76,18 @@ Instead, deterministic first-claim-wins:
 - This is deterministic, total (no ties), works with per-session keys, and gives real mutual exclusion: exactly one session wins R.
 
 The `epoch` field is dropped from the claim shape (it no longer earns a job in this model).
+
+### 3.4a F9 rule: commons arbitrates, epoch is the same-directory write fence
+
+The F9 design establishes the relationship between commons arbitration and the epoch-and-yield primitive:
+
+1. **`agentic_identity` claims first, then reads**: the identity hook calls `claimResource('persona:default', sessionId)` to register its claim in the commons store, then calls `readAllClaims()` + `commonsWinner()` to determine whether it won. If it lost, it takes the reader path (`isOwner=false`, no epoch bump, no yield log line). This is the F9 fix: the reader is determined by commons arbitration, not by epoch comparison.
+
+2. **The epoch is the same-directory write fence**: the epoch bump (`sess.epoch++`) in `agentic_identity` serves as a same-directory write fence — it ensures that within a single CWD, only the winner writes `.agentic-personas.json` and `.agentic-heartbeat.json`. It is NOT the arbitration mechanism; that is commons.
+
+3. **Three sites raise the epoch**: the epoch is raised at exactly three sites in the codebase: (a) `agentic_identity` on successful claim (the winner), (b) the persona activation path when a new persona takes ownership, and (c) the goal-creation path when a goal is assigned. Commons does not raise the epoch; it reads the claim ordering.
+
+4. **Liveness is `lastSeen`, not `claimedAt`**: `readAllClaims` filters entries by `entry.lastSeen` (refreshed by heartbeats), not by `claimedAt` (the original claim time). This is critical: a long-running holder that claimed five minutes ago but ticked one second ago is LIVE. The F13a/F13b pre-gate in the test suite mirrors this: it checks `entry.lastSeen` against the staleness threshold (must match `DEFAULT_STALE_AFTER_MS` in `hooks/commons.ts:47`, 90 000 ms).
 
 ### 3.5 Resource-path screening (stranger-supplied data)
 
@@ -250,7 +262,7 @@ function releaseResource(resource: string, mySessionId: string) {
 
 | Finding | Fix | File:line | Status |
 |---------|-----|-----------|--------|
-| F9 | Commons is the single arbiter: `agentic_identity` calls `claimResource` FIRST, then `readAllClaims` + `commonsWinner`; non-winner → reader path (no epoch bump, no heartbeat, `isOwner=false`). | `hooks/index.ts:1637-1639` | Done (v0.7.0) |
+| F9 | Commons is the single arbiter: `agentic_identity` calls `claimResource` FIRST, then `readAllClaims` + `commonsWinner`; non-winner → reader path (no epoch bump, no heartbeat, `isOwner=false`). Design text in §3.4a. | `hooks/index.ts:1637-1639` | Done |
 | F9a | `staleAfterMs` single-sourced via `sess.staleAfterMs` field (set in `activate` from `cfg.staleAfterMs`); both `readAllClaims` call sites pass it; invariant comment names the three epoch-raising sites. | `hooks/index.ts:67,318,210,1637,198-203` | Done |
 | F10a | Yield-log extraction uses node JSON parse of `rec.yielded` (not `grep -o "yielded=[a-zA-Z0-9-]*"` which matches nothing in JSONL); absent yield log is acceptable (reader path writes no yield line); suite must prove red before green. | `.kit/live-commons-test.sh:~350`, `.kit/live-commons-test.ps1:~370` | Done |
 | F10b | Primary assertions on `out.jsonl` content: (1) exactly one child "active (epoch N, owner)" + one "joined as reader"; (2) reader is later `claimedAt`; (3) writes. Yield-log secondary: 0 or 1 distinct yielder, never 2. Cross-directory variant (`SUITE_DIR_B` sibling) is the acceptance gate; same-directory is epoch-fence regression. | `.kit/live-commons-test.sh:~280-400`, `.kit/live-commons-test.ps1:~330-420` | Done |
@@ -260,6 +272,11 @@ function releaseResource(resource: string, mySessionId: string) {
 | F14 | `gcStaleClaims` in commons.ts; unit test 9 covers GC. | `hooks/commons.ts:~180`, `.kit/commons-unit-test.mjs:~180` | Done |
 | F15 | Store glob: `agentic-plugin_*.json` (not first `*.json`). | `.kit/live-commons-test.sh:~91`, `.kit/live-commons-test.ps1:~72` | Done |
 | F16 | `wait_turn` (poll `"type":"result"` count in `$OUT`) between prompts in feeds; `.ps1` feeds now include `memory_add` second prompt. | `.kit/live-commons-test.sh:~63-78`, `.kit/live-commons-test.ps1:~64-77` | Done |
+| F10c | F10(2) bash assertion: read reader's `session_id` from READER out.jsonl (node JSON parse of init line), pass to store-checking node block, FAIL unless reader is the later `claimedAt`. Red-proof required. | `.kit/live-commons-test.sh:~355-395` | Done |
+| F10d | Cross-directory run: launch B with CWD = B's dir (subshell `cd`); post-run assertions: B has own `.agentic-personas.json` and `.agentic-heartbeat.json`; loader check covers B's debug.log in `B_OUT_DIR`; clean B's `.agentic-*` before run. This is the acceptance gate. | `.kit/live-commons-test.sh:~140-175,~230-248` | Done |
+| F12b | PID mismatch between scripts: `.sh` writes `$$` (Cygwin PID), `.ps1` writes `$PID` (Windows PID) — cross-script reclaim broken. Fix: both write WINDOWS PIDs (bash: `ps -p $$` per Reviewer); both check liveness against Windows PIDs (bash via `tasklist`). Prove both directions. | `.kit/live-commons-test.sh:~55-85,~30-65`, `.kit/live-commons-test.ps1:~24-40,~58` | Done |
+| F13b | Pre-gate liveness: count claims live by `entry.lastSeen` (not `claimedAt`); threshold from same source as commons.ts (`DEFAULT_STALE_AFTER_MS = 90_000`, `hooks/commons.ts:47`). | `.kit/live-commons-test.sh:~130-170`, `.kit/live-commons-test.ps1:~87-120` | Done |
+| F10e | Evidence retention: copy `commons*.{out.jsonl,debug.log,err.log,exit,assert.log}` and `.agentic-*` to `.kit/runs/<utc-stamp>/commons[-crossdir]/` at exit. Assert-log append (not overwrite) in Step 2 node block. `wait_turn` default count to 0. | `.kit/live-commons-test.sh:~500-520,~338-342`, `.kit/live-common.sh:~40-47` | Done |
 
 ## 11. Future: release-on-exit
 

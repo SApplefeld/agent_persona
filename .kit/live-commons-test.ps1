@@ -85,28 +85,42 @@ if (Test-Path $storeDir) {
   if ($STORE_FILE) { $STORE_FILE = $STORE_FILE.FullName }
 }
 if ($STORE_FILE -and (Test-Path $STORE_FILE)) {
-  Write-Host "F13a: pre-gate — waiting for persona:default to have no live claim..."
+  # F13b: threshold must match commons.ts DEFAULT_STALE_AFTER_MS (90_000 ms, hooks/commons.ts:47)
+  # Read from plugin config if available, else default to 90000.
+  $staleThresholdMs = 90000
+  $cfgPath = Join-Path (Split-Path $PSScriptRoot -Parent) "agentic-plugin.json"
+  if (Test-Path $cfgPath) {
+    try {
+      $cfgStale = & node -e "try{const c=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));console.log(c.staleAfterMs||90000)}catch{console.log(90000)}" $cfgPath 2>$null
+      if ($cfgStale -and [int]$cfgStale -gt 0) { $staleThresholdMs = [int]$cfgStale }
+    } catch {}
+  }
+  Write-Host "F13a: pre-gate — waiting for persona:default to have no live claim (threshold: ${staleThresholdMs}ms)..."
   $preGateN = 0
   while ($true) {
+    $storeFileEsc = $STORE_FILE -replace '\\','\\\\'
     $liveClaims = & node -e @"
 const fs = require('fs');
 try {
-  const store = JSON.parse(fs.readFileSync('$($STORE_FILE -replace '\\','\\\\')', 'utf8'));
+  const store = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
   const keys = Object.keys(store).filter(k => k.startsWith('commons:'));
   const now = Date.now();
-  const stale = 90000;
+  const stale = parseInt(process.argv[2], 10) || 90000;
   let live = 0;
   for (const key of keys) {
     const entry = store[key];
-    if (entry.claims) {
-      for (const c of entry.claims) {
-        if (c.resource === 'persona:default' && (now - c.claimedAt) < stale) live++;
+    // F13b: use entry.lastSeen (heartbeat liveness), NOT claimedAt
+    if (entry.lastSeen && (now - entry.lastSeen) < stale) {
+      if (entry.claims) {
+        for (const c of entry.claims) {
+          if (c.resource === 'persona:default') live++;
+        }
       }
     }
   }
   console.log(live);
 } catch { console.log(0); }
-"@ 2>$null
+"@ $storeFileEsc "$staleThresholdMs" 2>$null
     if ("$liveClaims" -eq "0") {
       "F13a: pre-gate passed (no live claims)" | Out-File -FilePath (Join-Path $K "commons.assert.log") -Append -Encoding utf8
       break

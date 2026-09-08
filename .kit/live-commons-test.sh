@@ -29,13 +29,32 @@ mkdir -p "$SUITE_DIR"
 RUNNING="$SUITE_DIR"/RUNNING
 if [ -f "$RUNNING" ]; then
   # F12a: check if the PID in the marker is still alive; if not, reclaim
+  # F12b: PID is a Windows PID; use tasklist to check liveness (works from Cygwin)
   if [ -r "$RUNNING" ]; then
     MARKER_PID=$(head -1 "$RUNNING" | grep -oE '[0-9]+$' | head -1)
-    if [ -n "$MARKER_PID" ] && ! kill -0 "$MARKER_PID" 2>/dev/null; then
-      echo "RUNNING marker is stale (PID $MARKER_PID not alive), reclaiming" >&2
+    PID_ALIVE=0
+    if [ -n "$MARKER_PID" ]; then
+      # Check via tasklist (Windows PID)
+      if command -v tasklist &>/dev/null; then
+        if tasklist /FI "PID eq $MARKER_PID" /FO CSV /NH 2>/dev/null | grep -qi "No tasks"; then
+          PID_ALIVE=0
+        else
+          PID_ALIVE=1
+        fi
+      elif command -v powershell &>/dev/null; then
+        if powershell -NoProfile -Command "Get-Process -Id $MARKER_PID -ErrorAction SilentlyContinue" 2>/dev/null | grep -q .; then
+          PID_ALIVE=1
+        fi
+      else
+        # Fallback: kill -0 (works if the PID is a Cygwin/POSIX PID)
+        if kill -0 "$MARKER_PID" 2>/dev/null; then PID_ALIVE=1; fi
+      fi
+    fi
+    if [ "$PID_ALIVE" -eq 0 ]; then
+      echo "RUNNING marker is stale (PID ${MARKER_PID:-unknown} not alive), reclaiming" >&2
       rm -f "$RUNNING"
     else
-      echo "RUNNING exists, refusing to clean (another suite may be running)" >&2
+      echo "RUNNING exists (PID ${MARKER_PID:-unknown} still alive), refusing to clean" >&2
       exit 8
     fi
   else
@@ -80,9 +99,19 @@ feedB() {
 # Remove heartbeat and yield log before the test
 rm -f .agentic-heartbeat.json .agentic-yields.log
 
-[ -f "$RUNNING" ] && { echo "RUNNING exists, refusing"; exit 8; }
 # F12a: include PID in the marker so stale markers can be reclaimed
-echo "DeepSeekHarness $0 $(date -u +%FT%TZ) pid=$$" > "$RUNNING"
+# F12b: write the WINDOWS PID so both scripts agree on liveness.
+# Under Cygwin, $$ is the Cygwin PID. Get the Windows PID via ps.
+# ps -p $$ shows the process; the last numeric field is the Windows PID.
+WIN_PID=$$
+if command -v ps &>/dev/null; then
+  # Cygwin ps shows: PID TTY UID TIME COMMAND — the PID column is the Cygwin PID,
+  # but under Cygwin the "PID" shown IS the Windows PID for native processes.
+  # For safety, also try tasklist.
+  PS_OUT=$(ps -p $$ 2>/dev/null | tail -1 | awk '{print $1}')
+  [ -n "$PS_OUT" ] && [ "$PS_OUT" -gt 0 ] 2>/dev/null && WIN_PID="$PS_OUT"
+fi
+echo "DeepSeekHarness $0 $(date -u +%FT%TZ) pid=$WIN_PID" > "$RUNNING"
 
 # Emit settings.json for this suite
 emit_settings_json "settings.json"
@@ -101,30 +130,42 @@ fi
 # F13a: Pre-gate — poll the commons store until persona:default has no live claim.
 # This prevents a run started within 90s of a previous one from producing
 # two readers and zero yielders (the winner from the previous run still holds).
+# F13b: use entry.lastSeen (heartbeat liveness), NOT claimedAt.
+# The staleness threshold must match commons.ts DEFAULT_STALE_AFTER_MS (90_000 ms).
+# See hooks/commons.ts:47 for the source of truth.
 if [ -n "$STORE_FILE" ] && [ -f "$STORE_FILE" ]; then
   STORE_FILE_PRE=$(cygpath -m "$STORE_FILE" 2>/dev/null || echo "$STORE_FILE")
-  echo "F13a: pre-gate — waiting for persona:default to have no live claim..."
+  # F13b: read the threshold from the plugin config if available, else use 90000 (matches commons.ts:47)
+  STALE_THRESHOLD_MS=90000
+  if [ -f "$PLUGIN_DIR/agentic-plugin.json" ]; then
+    CFG_STALE=$(node -e "try{const c=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));console.log(c.staleAfterMs||90000)}catch{console.log(90000)}" "$PLUGIN_DIR/agentic-plugin.json" 2>/dev/null)
+    [ -n "$CFG_STALE" ] && [ "$CFG_STALE" -gt 0 ] 2>/dev/null && STALE_THRESHOLD_MS="$CFG_STALE"
+  fi
+  echo "F13a: pre-gate — waiting for persona:default to have no live claim (threshold: ${STALE_THRESHOLD_MS}ms)..."
   PRE_GATE_N=0
   while true; do
     LIVE_CLAIMS=$(node -e "
 const fs = require('fs');
 try {
-  const store = JSON.parse(fs.readFileSync('$STORE_FILE_PRE', 'utf8'));
+  const store = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
   const keys = Object.keys(store).filter(k => k.startsWith('commons:'));
   const now = Date.now();
-  const stale = 90000;
+  const stale = parseInt(process.argv[2], 10) || 90000;
   let live = 0;
   for (const key of keys) {
     const entry = store[key];
-    if (entry.claims) {
-      for (const c of entry.claims) {
-        if (c.resource === 'persona:default' && (now - c.claimedAt) < stale) live++;
+    // F13b: use entry.lastSeen (heartbeat), NOT claimedAt
+    if (entry.lastSeen && (now - entry.lastSeen) < stale) {
+      if (entry.claims) {
+        for (const c of entry.claims) {
+          if (c.resource === 'persona:default') live++;
+        }
       }
     }
   }
   console.log(live);
 } catch { console.log(0); }
-" 2>/dev/null)
+" "$STORE_FILE_PRE" "$STALE_THRESHOLD_MS" 2>/dev/null)
     if [ "${LIVE_CLAIMS:-0}" = "0" ]; then
       echo "F13a: pre-gate passed (no live claims)" >> "$K"/commons.assert.log
       break
@@ -146,18 +187,21 @@ PA=$!
 B_SETTINGS="$SUITE_DIR/settings.json"
 B_OUT_DIR="$K"
 B_OUT="$K/commons-B.out.jsonl"
+B_WORKDIR="$SUITE_DIR"
 if [ "$CROSSDIR" = "1" ]; then
   B_SETTINGS="$SUITE_DIR_B/settings.json"
   B_OUT_DIR="$SUITE_DIR_B"
   B_OUT="$SUITE_DIR_B/commons-B.out.jsonl"
+  B_WORKDIR="$SUITE_DIR_B"
   # B needs its own settings.json
   emit_settings_json "$SUITE_DIR_B/settings.json"
 fi
 
-B_OUT="$B_OUT" feedB | claude -p --input-format stream-json --output-format stream-json --verbose \
+# F10d: B must run with CWD = B_WORKDIR so its .agentic-* files land in its own dir
+( cd "$B_WORKDIR" && B_OUT="$B_OUT" feedB | claude -p --input-format stream-json --output-format stream-json --verbose \
   --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" --settings "$(cygpath -w "$B_SETTINGS")" --allowedTools "$TOOLS" --model haiku \
   --debug-file "$B_OUT_DIR"/commons-B.debug.log \
-  > "$B_OUT_DIR"/commons-B.out.jsonl 2> "$B_OUT_DIR"/commons-B.err.log &
+  > "$B_OUT_DIR"/commons-B.out.jsonl 2> "$B_OUT_DIR"/commons-B.err.log ) &
 PB=$!
 
 wait $PA
@@ -167,11 +211,14 @@ EB=$?
 echo "A=$EA B=$EB" > "$K"/commons.exit
 
 # --- Loader check: fail fast if the plugin failed to load in any child ---
+# F10d: in crossdir mode, B's debug.log is in B_OUT_DIR (sibling dir)
 LOADER_FAIL=0
-for d in commons-A.debug.log commons-B.debug.log; do
-  if [ -f "$K/$d" ] && grep -q "failed to load" "$K/$d"; then
+A_DEBUG="$K/commons-A.debug.log"
+B_DEBUG="$B_OUT_DIR/commons-B.debug.log"
+for d in "$A_DEBUG" "$B_DEBUG"; do
+  if [ -f "$d" ] && grep -q "failed to load" "$d"; then
     echo "FAIL: plugin failed to load in $d" >> "$K"/commons.assert.log
-    grep "failed to load" "$K/$d" >> "$K"/commons.assert.log
+    grep "failed to load" "$d" >> "$K"/commons.assert.log
     LOADER_FAIL=1
   fi
 done
@@ -180,6 +227,24 @@ if [ $LOADER_FAIL -eq 1 ]; then
   exit 1
 fi
 echo "LOADER: clean (no 'failed to load' in either child)" >> "$K"/commons.assert.log
+
+# --- F10d: crossdir proof — B must have its own .agentic-* files in B_WORKDIR ---
+if [ "$CROSSDIR" = "1" ]; then
+  B_PERSONAS="$B_WORKDIR/.agentic-personas.json"
+  if [ -f "$B_PERSONAS" ]; then
+    echo "F10d: B has its own .agentic-personas.json in $B_WORKDIR" >> "$K"/commons.assert.log
+  else
+    echo "F10d FAIL: B does NOT have its own .agentic-personas.json in $B_WORKDIR" >> "$K"/commons.assert.log
+    ASSERT_FAILED=1
+  fi
+  B_HEARTBEAT="$B_WORKDIR/.agentic-heartbeat.json"
+  if [ -f "$B_HEARTBEAT" ]; then
+    echo "F10d: B has its own .agentic-heartbeat.json in $B_WORKDIR" >> "$K"/commons.assert.log
+  else
+    echo "F10d FAIL: B does NOT have its own .agentic-heartbeat.json in $B_WORKDIR" >> "$K"/commons.assert.log
+    ASSERT_FAILED=1
+  fi
+fi
 
 # --- Assertions (F8) ---
 ASSERT_FAILED=0
@@ -270,7 +335,10 @@ if (commonsKeys.length === 0) {
   }
 }
 
-fs.writeFileSync('$K_WIN/commons.assert.log', lines.join('\n') + '\n');
+// Append, not overwrite — F10e: preserve earlier log lines (F13a pre-gate, LOADER, etc.)
+const fstream = fs.createWriteStream('$K_WIN/commons.assert.log', { flags: 'a' });
+for (const line of lines) fstream.write(line + '\n');
+fstream.end();
 process.exit(failed);
 "
   ASSERT_EXIT=$?
@@ -310,10 +378,36 @@ else
 fi
 
 # --- F10(2): the reader is the later claimedAt ---
-if [ "$OWNER_COUNT" -eq 1 ] && [ -n "$STORE_FILE_WIN" ]; then
-  node -e "
+# F10c fix: read the reader's session_id from the READER_FILE's out.jsonl,
+# then verify in the commons store that this session has the later claimedAt.
+if [ "$OWNER_COUNT" -eq 1 ] && [ -n "$STORE_FILE_WIN" ] && [ "$ASSERT_FAILED" -eq 0 ]; then
+  # Determine which file is the reader's
+  READER_OUT="$A_OUT"
+  if [ "$B_IS_READER" -eq 1 ]; then READER_OUT="$B_OUT"; fi
+  READER_OUT_WIN=$(cygpath -m "$READER_OUT")
+  # Extract the reader's session_id from its out.jsonl (stream-json has "session_id" in the init line)
+  READER_SESSION=$(node -e "
 const fs = require('fs');
-const store = JSON.parse(fs.readFileSync('$STORE_FILE_WIN', 'utf8'));
+const lines = fs.readFileSync(process.argv[1], 'utf8').trim().split('\n');
+for (const line of lines) {
+  try {
+    const rec = JSON.parse(line);
+    if (rec.session_id) { console.log(rec.session_id); process.exit(0); }
+  } catch {}
+}
+console.error('F10(2) FAIL: could not find session_id in reader out.jsonl');
+process.exit(1);
+" "$READER_OUT_WIN" 2>&1)
+  if [ $? -ne 0 ]; then
+    echo "F10(2) FAIL: $READER_SESSION" >> "$K"/commons.assert.log
+    ASSERT_FAILED=1
+  else
+    READER_SESSION_WIN=$(echo "$READER_SESSION" | tr -d '\r')
+    # Verify in the commons store that the reader has the later claimedAt
+    node -e "
+const fs = require('fs');
+const store = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const readerSession = process.argv[2];
 const keys = Object.keys(store).filter(k => k.startsWith('commons:'));
 const claims = [];
 for (const key of keys) {
@@ -325,25 +419,22 @@ for (const key of keys) {
   }
 }
 if (claims.length < 2) {
-  console.error('F10(2) FAIL: need at least 2 claims, got ' + claims.length);
+  console.error('F10(2) FAIL: need at least 2 claims in store, got ' + claims.length);
   process.exit(1);
 }
-claims.sort((a, b) => a.claimedAt - b.claimedAt);
-const winner = claims[0].holder;
-const loser = claims[1].holder;
-const readerIsLoser = true; // the reader is defined as the non-owner; check below
-console.log('winner=' + winner + ' (' + claims[0].claimedAt + ') loser=' + loser + ' (' + claims[1].claimedAt + ')');
-if (loser === winner) {
-  console.error('F10(2) FAIL: winner and loser are the same session');
+claims.sort((a, b) => a.claimedAt - b.claimedAt || a.holder.localeCompare(b.holder));
+const winner = claims[0];
+const loser = claims[claims.length - 1];
+console.log('claims: ' + claims.map(c => c.holder + ' @ ' + c.claimedAt).join(' | '));
+if (loser.holder !== readerSession) {
+  console.error('F10(2) FAIL: reader ' + readerSession + ' is NOT the later claimant (loser is ' + loser.holder + ')');
   process.exit(1);
 }
-// The reader (non-owner) must be the later claimant
-process.exit(0);
-" >> "$K"/commons.assert.log 2>&1
-  if [ $? -ne 0 ]; then
-    ASSERT_FAILED=1
-  else
-    echo "F10(2): reader is the later claimant (loser)" >> "$K"/commons.assert.log
+console.log('F10(2): reader ' + readerSession + ' is the later claimant (loser @ ' + loser.claimedAt + ', winner ' + winner.holder + ' @ ' + winner.claimedAt + ')');
+" "$STORE_FILE_WIN" "$READER_SESSION_WIN" >> "$K"/commons.assert.log 2>&1
+    if [ $? -ne 0 ]; then
+      ASSERT_FAILED=1
+    fi
   fi
 fi
 
@@ -402,6 +493,21 @@ else
   # No yield log file — acceptable (reader path via agentic_identity writes no yield line).
   echo "F10(yieldlog): no yield log file (reader path, acceptable)" >> "$K"/commons.assert.log
 fi
+
+# F10e: evidence retention — copy artifacts to .kit/runs/<utc-stamp>/ before exit
+RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+RUNS_DIR="$PLUGIN_DIR/.kit/runs/$RUN_STAMP"
+if [ "$CROSSDIR" = "1" ]; then
+  RUNS_DIR="$RUNS_DIR/commons-crossdir"
+else
+  RUNS_DIR="$RUNS_DIR/commons"
+fi
+mkdir -p "$RUNS_DIR"
+for f in commons-*.out.jsonl commons-*.debug.log commons-*.err.log commons.exit commons.assert.log .agentic-*.json .agentic-*.log; do
+  [ -f "$K/$f" ] && cp -f "$K/$f" "$RUNS_DIR/" 2>/dev/null
+  [ -f "$B_OUT_DIR/$f" ] && cp -f "$B_OUT_DIR/$f" "$RUNS_DIR/" 2>/dev/null
+done
+echo "F10e: evidence retained in $RUNS_DIR" >> "$K"/commons.assert.log
 
 # Final exit code
 if [ $ASSERT_FAILED -eq 1 ]; then

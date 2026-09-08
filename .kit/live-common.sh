@@ -39,7 +39,10 @@ EOF
 
 wait_turn() {  # $1 = number of result lines to wait for
   local n=0
-  until [ "$(grep -c '"type":"result"' "$OUT" 2>/dev/null)" -ge "$1" ]; do
+  local count
+  until [ "${count:-0}" -ge "$1" ]; do
+    count=$(grep -c '"type":"result"' "$OUT" 2>/dev/null || true)
+    count="${count:-0}"
     sleep 2; n=$((n+2)); [ $n -ge 180 ] && return 1
   done
   sleep 3
