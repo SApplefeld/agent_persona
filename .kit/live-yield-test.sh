@@ -67,5 +67,8 @@ require('fs').writeFileSync('D:/DeepSeekHarness/agentic-plugin/.kit/yield.decisi
     echo "Assertion failed" >> "D:/DeepSeekHarness/agentic-plugin/.kit/yield.exit"
     exit 1
   fi
+else
+  echo "no store at $PWD" >> "$K/yield.exit"
+  exit 1
 fi
 exit $EA

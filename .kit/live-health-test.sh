@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Live test 8.2: health run.
+# G3: sleep 60 before first goal_done (activation tick lands at first 30s tick after turn 1).
 # F4: plan 8.2 feed: goal_create, goal_done (red), flag removed at t+20s,
 #     goal_done (green) at t+40s, done.
-# F5: assert env_inject present after health_red (notable: health exit non-zero).
+# G3: assert activated before health_red (race is named if it recurs).
+# F4: Bash removed from allow list.
+# G1: no-store guard.
 set -u
 cd /d/DeepSeekHarness || exit 9
 OUT=/d/DeepSeekHarness/agentic-plugin/.kit/health-test.out.jsonl
@@ -21,7 +24,8 @@ touch .agentic-health-fail
 feed() {
   # Plan 8.2: goal_create, then two goal_done calls with flag removal in between.
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"Write one haiku\" and maxRounds 3. Then add two plans. Then reply ok."}}'
-  sleep 30
+  # G3: 60s for activation to land (first 30s tick after turn 1 ends; 60s clears with margin)
+  sleep 60
   # goal_done for plan 1 (health_red: fail flag exists)
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_done with note \"plan 1 done\"."}}'
   sleep 20
@@ -40,13 +44,14 @@ PLUGIN_DIR=$(cygpath -w /d/DeepSeekHarness/agentic-plugin)
 echo "DeepSeekHarness $0 $(date -u +%FT%TZ)" > "$RUNNING"
 feed | claude -p --input-format stream-json --output-format stream-json --verbose \
   --plugin-dir "$PLUGIN_DIR" \
-  --allowedTools "mcp__agentic-plugin__goal_create,mcp__agentic-plugin__goal_done,mcp__agentic-plugin__memory_add,mcp__agentic-plugin__agentic_identity,Bash" \
+  --allowedTools "mcp__agentic-plugin__goal_create,mcp__agentic-plugin__goal_done,mcp__agentic-plugin__memory_add,mcp__agentic-plugin__agentic_identity" \
   --model haiku \
   > "$OUT" 2> "$ERR"
 EXIT_CODE=$?
 echo $EXIT_CODE > "$EXIT"
 
 # P3: write .decisions.log and run assertions.
+# G1: no-store guard.
 if [ -f .agentic-personas.json ]; then
   node -e "
 const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
@@ -61,6 +66,9 @@ require('fs').writeFileSync('D:/DeepSeekHarness/agentic-plugin/.kit/health-test.
     echo "Assertion failed" >> "D:/DeepSeekHarness/agentic-plugin/.kit/health-test.exit"
     exit 1
   fi
+else
+  echo "no store at $PWD" >> "$EXIT"
+  exit 1
 fi
 rm -f .agentic-health .agentic-health-fail .agentic-personas.json
 exit $EXIT_CODE

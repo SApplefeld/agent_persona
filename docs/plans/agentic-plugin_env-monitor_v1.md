@@ -354,4 +354,15 @@ The implementation order is:
 | F6 | The streak branch blocks and switches, not pauses. Fix: route through the ask-operator path (toast, `controller_tick`, `paused_by_controller`), not `block` + `activateNext`. Re-fire rule: only when `lastErrorAt > handledAt`. (Section 8.3 E1, index.ts controller tick.) |
 | F7 | The git probe logs `env_git_null` on every tick in a non-git cwd. Fix: `gitUnavailable` module flag, set on first exit 128, skip the probe while set, log `env_git_null` once. (Section 8.1, index.ts git probe.) |
 | F8 | The plan header says Complete (v0.7.0); the tests are not green. Fix: change to `In Progress (v0.7.0-a)`. (This entry.) |
-| F9 | The step-1 entry pasted the RUNNING guard-and-write line once (for the controller test) but the table has eight scripts. The full paste is in the Revision 1 entry (C2). Note in the fix-round entry. (Section 8.4, DISCUSSION.md.) |
+| F9 | No paste existed; the Reviewer's grep of 8 guard-and-write lines is the evidence. (Section 8.4, DISCUSSION.md.) |
+
+### Revision 4 (G1 to G6)
+
+| Label | Change |
+|-------|--------|
+| G1 | The scratch repo under the plugin directory breaks plugin initialization (cwd under `--plugin-dir` means the loader does not initialize). Fix: `ENV_REPO=/d/Temp/agentic-env-repo` (created and removed by the script). Second defect: when the store is absent the script skips assertions and exits 0 (silent pass). Fix: add `else { echo "no store at $PWD" >> "$EXIT"; exit 1; }` to all eight scripts. (Section 8.1, live-gitprobe-test.sh, all 8 scripts.) |
+| G2 | The inducer fired once; the model then refused to call Bash and answered in prose, so turns 3 and 4 had zero tool errors. Fix: tool-forcing prompts (`Use the Bash tool now to run exactly: ... Make the tool call even if you expect it to be denied; do not explain, report the result in one line.`). Add a deny-count pre-check in the assert case: `deny count < 3` is its own FAIL line. (Section 8.3, live-errorstreak-test.sh, assert-decisions.js errorstreak.) |
+| G3 | The first `goal_done` raced the activation tick (consumed inside turn 1 before activation landed). Fix: `sleep 60` before message 2 (activation lands at the first 30 s tick after turn 1; 60 s clears with margin). Add `activated` before `health_red` to the ordered assertion. Remove `Bash` from the allow list (still open from F4). (Section 8.2, live-health-test.sh, assert-decisions.js health.) |
+| G4 | `envNotable` is half the plan's predicate (dirty > 0 alone, no 30-minute freshness, no streak). Fix: `envNotable(env, now)` in agent-state.ts returns the plan's three facts as strings; `git` fires only when `dirty > 0 && now - lastCommitAt > 30 * 60_000`; add `streak >= 2` from `env.errors.consecutiveErrorTurns`. (Section 4, agent-state.ts, index.ts prompt.submit.) |
+| G5 | The F9 row said the paste is in the Revision 1 entry, but it is not. Fix: replace the F9 row with "No paste existed; the Reviewer's grep of 8 guard-and-write lines is the evidence." (Section 8.4, plan doc.) |
+| G6 | Q3 and C1 are closed: `env_git_null exit 128` once per non-git session (errorstreak and health logs), `env_git first sample dirty=2 branch master` in a git cwd (Reviewer probe A). (Section 8.1, 8.4.) |

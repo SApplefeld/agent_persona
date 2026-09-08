@@ -45,5 +45,8 @@ require('fs').writeFileSync('D:/DeepSeekHarness/agentic-plugin/.kit/goaltree.dec
     echo "Assertion failed" >> "D:/DeepSeekHarness/agentic-plugin/.kit/goaltree.exit"
     exit 1
   fi
+else
+  echo "no store at $PWD" >> "$K/goaltree.exit"
+  exit 1
 fi
 exit $EXIT_CODE

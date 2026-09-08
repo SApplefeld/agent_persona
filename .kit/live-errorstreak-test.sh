@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Live test 8.3: error streak.
-# F1: root objective "no bash" makes the plugin deny every Bash call.
+# G2: tool-forcing prompts that make haiku actually call Bash (Reviewer's Q2 probe pattern).
 # F6: assert ordered deny, deny, deny, error_streak, controller_tick, paused_by_controller.
-# C5: Bash in --allowedTools; 45s between message 4 and done.
+# G2: deny-count pre-check in assert case (inducer failure distinguishable from plugin failure).
+# C5: Bash in --allowedTools; 45s before done.
+# G1: no-store guard.
 set -u
 cd /d/DeepSeekHarness || exit 9
 OUT=/d/DeepSeekHarness/agentic-plugin/.kit/errorstreak-test.out.jsonl
@@ -18,12 +20,12 @@ feed() {
   # Plan 8.3: root objective contains "no bash" so the plugin denies Bash calls.
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"no bash: Write one haiku\" and maxRounds 5. Then reply ok."}}'
   sleep 30
-  # Three Bash calls, each denied by the plugin (counts as tool error).
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Run the command: echo hello"}}'
+  # G2: tool-forcing prompts (haiku obeys these per Reviewer Q2 probe)
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Use the Bash tool now to run exactly: echo hello. Make the tool call even if you expect it to be denied; do not explain, report the result in one line."}}'
   sleep 30
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Run the command: echo world"}}'
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Use the Bash tool now to run exactly: echo world. Make the tool call even if you expect it to be denied; do not explain, report the result in one line."}}'
   sleep 30
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Run the command: echo done"}}'
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Use the Bash tool now to run exactly: echo done. Make the tool call even if you expect it to be denied; do not explain, report the result in one line."}}'
   # C5: 45s before done (controller tick fires ask-operator).
   sleep 45
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Reply with the single word: done"}}'
@@ -42,6 +44,7 @@ EXIT_CODE=$?
 echo $EXIT_CODE > "$EXIT"
 
 # P3: write .decisions.log and run assertions.
+# G1: no-store guard.
 if [ -f .agentic-personas.json ]; then
   node -e "
 const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
@@ -56,6 +59,9 @@ require('fs').writeFileSync('D:/DeepSeekHarness/agentic-plugin/.kit/errorstreak-
     echo "Assertion failed" >> "D:/DeepSeekHarness/agentic-plugin/.kit/errorstreak-test.exit"
     exit 1
   fi
+else
+  echo "no store at $PWD" >> "$EXIT"
+  exit 1
 fi
 rm -f .agentic-personas.json
 exit $EXIT_CODE

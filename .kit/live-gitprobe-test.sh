@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 # Live test 8.1: git probe.
-# F2: scratch git repo under .kit/env-repo/ (init, commit, dirty at 60s, commit at 200s).
+# G1: scratch repo in /d/Temp/agentic-env-repo (outside plugin dir, where the plugin initializes).
 # F3: assert ordered dirty=0, dirty=1, dirty=0 (new detail format).
 # F7: env_git_null absent (cwd is a git repo).
+# G1: no-store guard: if store is absent, FAIL (not silent pass).
 set -u
 cd /d/DeepSeekHarness || exit 9
 OUT=/d/DeepSeekHarness/agentic-plugin/.kit/gitprobe-test.out.jsonl
 ERR=/d/DeepSeekHarness/agentic-plugin/.kit/gitprobe-test.err.log
 EXIT=/d/DeepSeekHarness/agentic-plugin/.kit/gitprobe-test.exit
 RUNNING=/d/DeepSeekHarness/agentic-plugin/.kit/RUNNING
-ENV_REPO=/d/DeepSeekHarness/agentic-plugin/.kit/env-repo
+ENV_REPO=/d/Temp/agentic-env-repo
 trap 'rm -f "$RUNNING"' EXIT
 rm -f "$OUT" "$ERR" "$EXIT"
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 unset CLAUDECODE
 
-# F2: create scratch git repo under .kit/env-repo/
+# G1: create scratch git repo in /d/Temp (outside the plugin directory)
 rm -rf "$ENV_REPO"
 mkdir -p "$ENV_REPO"
 cd "$ENV_REPO"
@@ -51,6 +52,7 @@ wait $DIRTY_PID 2>/dev/null
 echo $EXIT_CODE > "$EXIT"
 
 # P3: write .decisions.log and run assertions.
+# G1: no-store guard: if store is absent, FAIL.
 if [ -f .agentic-personas.json ]; then
   node -e "
 const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
@@ -65,6 +67,9 @@ require('fs').writeFileSync('D:/DeepSeekHarness/agentic-plugin/.kit/gitprobe-tes
     echo "Assertion failed" >> "D:/DeepSeekHarness/agentic-plugin/.kit/gitprobe-test.exit"
     exit 1
   fi
+else
+  echo "no store at $PWD" >> "$EXIT"
+  exit 1
 fi
 rm -f .agentic-personas.json
 rm -rf "$ENV_REPO"

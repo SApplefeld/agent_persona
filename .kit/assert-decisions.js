@@ -204,12 +204,13 @@ switch (testName) {
     break;
   }
   case "health": {
-    // F4: ordered health_red, health_green. F5: env_inject present after health_red.
-    const healthIdx = details.map((d, i) => ({ d, i })).filter(x => x.d.action === "health_red" || x.d.action === "health_green");
-    check2("health: health_red found", healthIdx.some(x => x.d.action === "health_red"));
-    check2("health: health_green found", healthIdx.some(x => x.d.action === "health_green"));
+    // G3: activated before health_red (race is named if it recurs).
+    const actIdx = details.findIndex(d => d.action === "activated");
     const redIdx = details.findIndex(d => d.action === "health_red");
     const greenIdx = details.findIndex(d => d.action === "health_green");
+    check2("health: health_red found", redIdx !== -1);
+    check2("health: health_green found", greenIdx !== -1);
+    check2("health: activated before health_red", actIdx !== -1 && redIdx !== -1 && actIdx < redIdx);
     check2("health: red before green", redIdx !== -1 && greenIdx !== -1 && redIdx < greenIdx);
     // F5: env_inject present (after health_red, when health exit is non-zero = notable).
     const injectIdx = details.findIndex(d => d.action === "env_inject");
@@ -218,6 +219,9 @@ switch (testName) {
     break;
   }
   case "errorstreak": {
+    // G2: deny-count pre-check (inducer failure distinguishable from plugin failure).
+    const denyCount = decisions.filter(a => a === "deny").length;
+    check2("errorstreak: deny count >= 3", denyCount >= 3);
     // F6: ordered deny, deny, deny, error_streak, controller_tick, paused_by_controller.
     orderedSubsequence(["deny", "deny", "deny", "error_streak", "controller_tick", "paused_by_controller"], "errorstreak: ordered deny-deny-deny-streak-tick-paused");
     forbidden(["block"], "errorstreak: no block (ask-operator path, not blocked)");

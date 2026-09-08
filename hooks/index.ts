@@ -30,6 +30,7 @@ import {
   previousRoundBlocked,
   planningCapReached,
   applyTurnToErrors,
+  envNotable,
 } from "./agent-state";
 import type { AgentState, GoalNode, NudgeBudget, EnvGit, EnvState } from "./agent-state";
 
@@ -69,13 +70,6 @@ let gitUnavailable = false;
 
 // C4: tool error counter for the current turn (reset at turn.start, folded at turn.complete).
 let toolErrorsThisTurn = 0;
-
-// F5: an env state is notable when it carries a fact the worker should act on.
-function envNotable(env: EnvState): boolean {
-  if (env.git && env.git.dirty > 0) return true;
-  if (env.health && env.health.exitCode !== 0) return true;
-  return false;
-}
 
 // Health run helper (E2).
 async function runHealth(dp: any, forNodeId: string | null): Promise<void> {
@@ -1911,23 +1905,17 @@ export const register: Register = async (on, options) => {
       }
     }
 
-    // --- [ENV] block injection (F5: only when notable; push env_inject) ---
+    // --- [ENV] block injection (G4: only when notable per plan section 4; push env_inject) ---
     const env = sess.state.monitor.env;
-    if (envNotable(env)) {
-      const parts: string[] = [];
-      if (env.git !== null) {
-        parts.push(`git: ${env.git.branch} dirty ${env.git.dirty} ahead ${env.git.ahead} behind ${env.git.behind}`);
-      }
-      if (env.health !== null) {
-        parts.push(`health: exit ${env.health.exitCode} for ${env.health.forNodeId || "no-node"}`);
-      }
-      const envBlock = `[ENV] ${parts.join(", ")}\nEnvironment state above is current; act on it when it affects your plan.`;
+    const facts = envNotable(env, Date.now());
+    if (facts.length > 0) {
+      const envBlock = `[ENV] ${facts.join(", ")}\nEnvironment state above is current; act on it when it affects your plan.`;
       contextBlocks.push(envBlock);
       sess.state.decisions.push({
         timestamp: Date.now(),
         loop: "monitor",
         action: "env_inject",
-        detail: `env_inject: ${parts.join(", ")}`,
+        detail: `env_inject: ${facts.join(", ")}`,
       });
       try { $.ui.log(`Agentic: [ENV] injected`); } catch { /* non-fatal */ }
     }
