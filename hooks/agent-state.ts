@@ -14,7 +14,7 @@ export interface MemoryEntry {
   pinned: boolean; // pinned entries survive decay
   provenance?: {
     decisionTimestamps: number[];
-    turnRange: [number, number];
+    windowRange?: [number, number];
     streak: number;
     trigger: string;
   };

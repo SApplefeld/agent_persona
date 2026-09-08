@@ -781,7 +781,9 @@ export const register: Register = async (on, options) => {
                   pinned: false,
                   provenance: {
                     decisionTimestamps: input.decisionTimestamps,
-                    turnRange: [Math.max(0, sess.state.monitor.turnCount - input.decisionTimestamps.length), sess.state.monitor.turnCount],
+                    windowRange: input.decisionTimestamps.length > 0
+                      ? [input.decisionTimestamps[0], input.decisionTimestamps[input.decisionTimestamps.length - 1]]
+                      : undefined,
                     streak: input.streak,
                     trigger: trigger,
                   },

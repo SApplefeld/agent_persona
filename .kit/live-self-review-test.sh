@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Live test: self-review (lessons from the decision log).
-# Reuses live-errorstreak-test.sh induction (tool denials produce error turns).
-# Assertions on persisted facts: F1-F6.
+# Induction: 3 tool denials -> error streak -> reactive self-review.
+# Assertions on persisted facts: F0-F6.
+#
+# T9: pre-gate (wait_persona_free) before launching.
+# T8: --debug-file + fail-fast on "failed to load"; poll-based gates (no fixed sleeps).
+#
 # Usage: PROFILE=short bash .kit/live-self-review-test.sh
 # Exits 0 on success, 1 on failure.
 set -u
@@ -25,31 +29,22 @@ OUT="$SUITE_DIR/self-review-test.out.jsonl"
 ERR="$SUITE_DIR/self-review-test.err.log"
 EXIT="$SUITE_DIR/self-review-test.exit"
 RUNNING="$SUITE_DIR/RUNNING"
+DEBUG="$SUITE_DIR/self-review-test.debug.log"
 trap 'rm -f "$RUNNING"' EXIT
 
-rm -f "$OUT" "$ERR" "$EXIT"
+rm -f "$OUT" "$ERR" "$EXIT" "$DEBUG"
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 unset CLAUDECODE
 
+# --- Feed: all prompts sent in one stream (no per-turn gating) ---
+# 4 prompts: goal_create + 3 Bash-forcing (error turns).
+# The tick fires within controllerTickMs of the error-streak decision; the
+# self-review decision follows in the same tick. We poll the store for it.
 feed() {
-  # Induction: reuse errorstreak pattern (tool denials produce error turns).
-  # A turn counts as an error turn when reason === "error" or toolErrors > 0 (agent-state.ts:519).
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"no bash: Write one haiku\" and maxRounds 5. Then reply ok."}}'
-  wait_turn 1
-  wait_activation
-  # Three tool-forcing prompts (denied -> error turns)
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Use the Bash tool now to run exactly: echo hello. Make the tool call even if you expect it to be denied; do not explain, report the result in one line."}}'
-  wait_turn 2
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Use the Bash tool now to run exactly: echo world. Make the tool call even if you expect it to be denied; do not explain, report the result in one line."}}'
-  wait_turn 3
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Use the Bash tool now to run exactly: echo third. Make the tool call even if you expect it to be denied; do not explain, report the result in one line."}}'
-  wait_turn 4
-  # Tick window: let the tick fire the error-streak branch + self-review
-  sleep $((TICK_MS/1000 + 20))
-  # Extra turn so lesson_inject can fire on the next prompt.submit
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Reply with the single word: done"}}'
-  wait_turn 5
-  sleep 20
 }
 
 [ -f "$RUNNING" ] && { echo "RUNNING exists, refusing"; exit 8; }
@@ -59,20 +54,61 @@ echo "DeepSeekHarness $0 $(date -u +%FT%TZ)" > "$RUNNING"
 emit_settings_json "settings.json"
 echo "settings.json: $(cat settings.json)"
 
+# T9: pre-gate — wait for no live persona claim
+if [ -f .agentic-personas.json ]; then
+  wait_persona_free .agentic-personas.json 120 || { echo "T9: pre-gate timeout, aborting"; exit 9; }
+fi
+
+# T8: --debug-file for loader diagnostics
 feed | claude -p --input-format stream-json --output-format stream-json --verbose \
   --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" \
   --settings "$(cygpath -w "$SUITE_DIR/settings.json")" \
   --allowedTools "mcp__agentic-plugin__goal_create,mcp__agentic-plugin__memory_add,mcp__agentic-plugin__agentic_identity,Bash" \
   --model haiku \
+  --debug-file "$DEBUG" \
   > "$OUT" 2> "$ERR"
 EXIT_CODE=$?
 echo $EXIT_CODE > "$EXIT"
+echo "claude exit: $EXIT_CODE"
 
-# --- Assertions (F1-F6, on persisted facts) ---
+# --- Loader check: fail fast if the plugin failed to load (T8) ---
+if [ -f "$DEBUG" ] && grep -q "failed to load" "$DEBUG"; then
+  echo "F0-LOADER: FAIL: plugin failed to load"
+  grep "failed to load" "$DEBUG"
+  echo "RESULT: exit 1"
+  exit 1
+fi
+echo "LOADER: clean (no 'failed to load')"
+
+# --- Wait for the self-review decision to appear in the store ---
+# The tick fires within controllerTickMs (10s in short profile) of the
+# error-streak decision. Poll the store for action=self-review (180s timeout).
+echo "Waiting for self-review decision (polling store)..."
+N=0
+until node -e "
+const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
+const p = Object.keys(s)[0];
+const d = (s[p].decisions||[]).some(x => x.action === 'self-review');
+process.exit(d ? 0 : 1);
+" 2>/dev/null; do
+  sleep 3; N=$((N+3)); [ $N -ge 180 ] && break
+done
+if node -e "
+const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
+const p = Object.keys(s)[0];
+const d = (s[p].decisions||[]).some(x => x.action === 'self-review');
+process.exit(d ? 0 : 1);
+" 2>/dev/null; then
+  echo "self-review decision detected (waited ~${N}s)"
+else
+  echo "self-review decision NOT found after ${N}s"
+fi
+
+# --- Assertions (F0-F6, on persisted facts) ---
 RESULT=0
 
 if [ -f .agentic-personas.json ]; then
-  # Write .decisions.log for inspection
+  # Write decisions log for inspection
   node -e "
 const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
 const p = Object.keys(s)[0];
@@ -80,10 +116,21 @@ const d = (s[p].decisions||[]).map(x => new Date(x.timestamp).toISOString().slic
 require('fs').writeFileSync('self-review.decisions.log', d.join('\n') + '\n');
 "
 
-  # F1: an error_streak decision exists (proves the streak reached >= 3 and was handled)
-  # Note: consecutiveErrorTurns is reset by turn.complete (applyTurnToErrors), so
-  # the live value at assertion time may be 0. The error_streak decision is the
-  # durable proof that the streak triggered.
+  # F0: no yield — the suite's session is owner (not reader/yielder)
+  F0=$(node -e "
+const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
+const p = Object.keys(s)[0];
+const d = (s[p].decisions||[]).some(x => x.action === 'yield');
+console.log(d ? 'FAIL' : 'PASS');
+")
+  if [ "$F0" = "PASS" ]; then
+    echo "F0: PASS (no yield decision — owner held the persona)"
+  else
+    echo "F0: FAIL (yield decision found — persona was yielded)"
+    RESULT=1
+  fi
+
+  # F1: an error_streak decision exists (proves the streak reached >= 3)
   F1=$(node -e "
 const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
 const p = Object.keys(s)[0];
@@ -152,7 +199,7 @@ console.log((s[p].monitor && s[p].monitor.selfReview && s[p].monitor.selfReview.
     RESULT=1
   fi
 
-  # F6: monitor.selfReview.lastAt > 0 (a review was executed and lastAt was set)
+  # F6: monitor.selfReview.lastAt > 0
   F6=$(node -e "
 const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
 const p = Object.keys(s)[0];
@@ -165,12 +212,12 @@ console.log((s[p].monitor && s[p].monitor.selfReview && s[p].monitor.selfReview.
     RESULT=1
   fi
 
-  # Dump decisions log tail for the completion entry
+  # Dump decisions log tail
   echo ""
   echo "--- decisions log (last 15 lines) ---"
   tail -15 "self-review.decisions.log" 2>/dev/null || echo "(no decisions log)"
 else
-  echo "F1-F6: FAIL (no .agentic-personas.json found)"
+  echo "F0-F6: FAIL (no .agentic-personas.json found)"
   RESULT=1
 fi
 

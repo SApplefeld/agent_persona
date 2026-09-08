@@ -31,7 +31,7 @@ esac
 emit_settings_json() {
   local out="$1"
   local self_review_opts=""
-  if [ -n "$SELF_REVIEW_EVERY_TURNS" ]; then
+  if [ -n "${SELF_REVIEW_EVERY_TURNS:-}" ]; then
     self_review_opts=",\"selfReviewEveryTurns\":$SELF_REVIEW_EVERY_TURNS"
   fi
   cat > "$out" <<EOF
@@ -68,6 +68,47 @@ count_turn_starts() {  # $1 = store path; returns count of turn_start decisions
     const d = (s[p].decisions||[]).filter(x => x.action === 'turn_start');
     console.log(d.length);
   " 2>/dev/null || echo 0
+}
+
+# T9: pre-gate — wait until no live persona claim exists in the commons store.
+# Mirrors the commons F13a gate (live-commons-test.sh:147-187).
+# Usage: wait_persona_free <store-path> [timeout-seconds]
+wait_persona_free() {
+  local store="${1:-.agentic-personas.json}"
+  local timeout="${2:-120}"
+  local n=0
+  local store_w
+  store_w=$(cygpath -m "$store" 2>/dev/null || echo "$store")
+  echo "T9: pre-gate: waiting for no live persona claim (store: $store, timeout: ${timeout}s)..."
+  while true; do
+    local live
+    live=$(node -e "
+const fs = require('fs');
+try {
+  const s = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+  const keys = Object.keys(s).filter(k => k.startsWith('commons:'));
+  const now = Date.now();
+  const stale = 90000;
+  let live = 0;
+  for (const key of keys) {
+    const e = s[key];
+    if (e.lastSeen && (now - e.lastSeen) < stale && e.claims) {
+      for (const c of e.claims) {
+        if (c.resource === 'persona:default') live++;
+      }
+    }
+  }
+  console.log(live);
+} catch { console.log(0); }
+" "$store_w" 2>/dev/null)
+    if [ "${live:-0}" = "0" ]; then
+      echo "T9: pre-gate passed (no live claims)"
+      return 0
+    fi
+    n=$((n + 5))
+    [ $n -ge $timeout ] && { echo "T9: pre-gate timeout after ${n}s (still $live live claims)"; return 1; }
+    sleep 5
+  done
 }
 
 # N1: wait for a specific fact to appear in memory (used by yield suite to gate Session B)

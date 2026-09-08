@@ -74,12 +74,12 @@ export function buildSelfReviewInput(
   decisionTimestamps: number[];
   streak: number;
 } {
-  // Worker-facing actions (S5: exclude noise)
+  // Noise actions: internal bookkeeping with no worker-facing signal (T5).
+  // Kept OUT of the window: deny, block, score, error_streak, paused_by_controller, done, activated.
   const NOISE_ACTIONS = new Set([
     "controller_tick", "env_inject", "heartbeat", "self-review",
-    "turn_start", "turn_complete", "score", "planning_fired",
-    "planning_created", "activated", "nudge_sent", "done",
-    "paused_by_controller", "nudge", "block", "deny", "allow",
+    "turn_start", "turn_complete", "planning_fired",
+    "planning_created", "nudge_sent", "nudge", "allow",
   ]);
 
   const workerDecisions = state.decisions.filter(
@@ -106,7 +106,7 @@ export function buildSelfReviewInput(
   const streak = state.monitor.env?.errors?.consecutiveErrorTurns ?? 0;
 
   const prompt = [
-    "Review the following worker activity and produce ONE lesson (<=200 chars) that would help the worker avoid repeating the same mistake. Be specific and actionable. If the worker is doing fine, produce a lesson about the one thing to watch out for next.",
+    "Review the following worker activity. If there is a clear, actionable lesson (a mistake worth avoiding or a pattern worth reinforcing), respond with the lesson text only (<=200 chars). If the worker is doing fine and there is nothing worth distilling, respond with exactly: NONE.",
     "",
     goalContext,
     "",
