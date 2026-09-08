@@ -148,7 +148,7 @@ if [ -n "$STORE_FILE" ] && [ -f "$STORE_FILE" ]; then
   STORE_FILE_PRE=$(cygpath -m "$STORE_FILE" 2>/dev/null || echo "$STORE_FILE")
   # F13b: threshold matches commons.ts:47 DEFAULT_STALE_AFTER_MS (90_000 ms).
   # The plugin manifest is .claude-plugin/plugin.json (not agentic-plugin.json),
-  # and options arrive via --settings pluginConfigs: there is no per-plugin config
+  # and options arrive via --settings pluginConfigs; there is no per-plugin config
   # file in $PLUGIN_DIR to read, so the threshold is the constant 90000.
   STALE_THRESHOLD_MS=90000
   echo "F13a: pre-gate: waiting for persona:default to have no live claim (threshold: ${STALE_THRESHOLD_MS}ms)..."
