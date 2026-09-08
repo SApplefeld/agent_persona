@@ -26,18 +26,19 @@ unset CLAUDECODE
 feed() {
   # Drive a session past the low test thresholds.
   # D2: Set thresholds so all three cross within about five turns.
-  # Info: 500 tokens = 2000 chars (1-2 turns)
-  # Closeout: 1000 tokens = 4000 chars (3-4 turns)
-  # Critical: 1500 tokens = 6000 chars (5 turns)
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call memory_add with content \"budget test turn 1\". Then reply with the single word: ok"}}'
+  # Info: 500 tokens = 2000 chars
+  # Closeout: 1000 tokens = 4000 chars
+  # Critical: 1500 tokens = 6000 chars
+  # Each turn adds ~1000-2000 chars of text (prompt + response + tool call/result).
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call memory_add with content \"budget test turn 1 - rivers flow through valleys carrying silt from the mountains above, shaping the land they cross and feeding the plains below with their water and their silence\". Then reply with the single word: ok"}}'
   sleep 10
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call memory_add with content \"budget test turn 2 with a bit more text to grow the transcript size for the budget test\". Then reply with the single word: ok"}}'
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call memory_add with content \"budget test turn 2 - mountains stand as ancient witnesses to the passage of time, their peaks touching clouds while their roots plunge deep into the earth, holding together the very foundations of the world\". Then reply with the single word: ok"}}'
   sleep 10
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call memory_add with content \"budget test turn 3 with even more text to grow the transcript size for the budget test and cross the info threshold\". Then reply with the single word: ok"}}'
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call memory_add with content \"budget test turn 3 - deserts stretch out in endless golden waves, their silence speaking louder than any voice, teaching us that emptiness is not void but a kind of fullness, a space where the soul can hear its own heartbeat\". Then reply with the single word: ok"}}'
   sleep 10
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call memory_add with content \"budget test turn 4 with substantial text to grow the transcript size for the budget test and cross the closeout threshold\". Then reply with the single word: ok"}}'
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call memory_add with content \"budget test turn 4 - the budget test requires substantial text to grow the transcript size and cross the closeout threshold, so we add more words here to ensure we have enough characters in the session history\". Then reply with the single word: ok"}}'
   sleep 10
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call memory_add with content \"budget test turn 5 with the most text to grow the transcript size for the budget test and cross the critical threshold\". Then reply with the single word: ok"}}'
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call memory_add with content \"budget test turn 5 - this is the final turn with the most text to cross the critical threshold, adding even more words to the session history to ensure we have well over 6000 characters total\". Then reply with the single word: ok"}}'
   sleep 90
 }
 
@@ -46,15 +47,17 @@ echo "DeepSeekHarness $0 $(date -u +%FT%TZ)" > "$RUNNING"
 
 # Emit settings.json for this suite with low budget thresholds.
 # D2: Calibrate the test thresholds to the observed per-turn growth.
+# Observed: 5 turns of haiku + memory_add adds ~800 tokens total.
+# So: info at 300, closeout at 500, critical at 700.
 cat > settings.json << 'EOF'
 {
   "pluginConfigs": {
     "agentic-plugin": {
       "options": {
         "contextBudgetEnabled": true,
-        "contextBudgetInfoTokens": 500,
-        "contextBudgetCloseoutTokens": 1000,
-        "contextBudgetCriticalTokens": 1500,
+        "contextBudgetInfoTokens": 300,
+        "contextBudgetCloseoutTokens": 500,
+        "contextBudgetCriticalTokens": 700,
         "contextBudgetReadEveryNTicks": 1,
         "controllerTickMs": 10000
       }
