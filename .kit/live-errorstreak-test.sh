@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Live test 8.3: error streak.
-# C5: 8.3 adds Bash to --allowedTools, 45s between msg 4 and done.
+# F1: root objective "no bash" makes the plugin deny every Bash call.
+# F6: assert ordered deny, deny, deny, error_streak, controller_tick, paused_by_controller.
+# C5: Bash in --allowedTools; 45s between message 4 and done.
 set -u
 cd /d/DeepSeekHarness || exit 9
 OUT=/d/DeepSeekHarness/agentic-plugin/.kit/errorstreak-test.out.jsonl
@@ -12,21 +14,22 @@ rm -f "$OUT" "$ERR" "$EXIT"
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 unset CLAUDECODE
 
-# C5: create a command that will fail (plugin deny)
-echo "exit 1" > .errorstreak-fail-cmd
-
 feed() {
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"Run a failing command\" and maxRounds 10."}}'
+  # Plan 8.3: root objective contains "no bash" so the plugin denies Bash calls.
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"no bash: Write one haiku\" and maxRounds 5. Then reply ok."}}'
   sleep 30
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Run the command: bash .errorstreak-fail-cmd"}}'
+  # Three Bash calls, each denied by the plugin (counts as tool error).
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Run the command: echo hello"}}'
   sleep 30
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Run the command: bash .errorstreak-fail-cmd"}}'
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Run the command: echo world"}}'
   sleep 30
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Run the command: bash .errorstreak-fail-cmd"}}'
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Run the command: echo done"}}'
+  # C5: 45s before done (controller tick fires ask-operator).
   sleep 45
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Reply with the single word: done"}}'
   sleep 20
 }
+
 PLUGIN_DIR=$(cygpath -w /d/DeepSeekHarness/agentic-plugin)
 [ -f "$RUNNING" ] && { echo "RUNNING exists, refusing"; exit 8; }
 echo "DeepSeekHarness $0 $(date -u +%FT%TZ)" > "$RUNNING"
@@ -54,5 +57,5 @@ require('fs').writeFileSync('D:/DeepSeekHarness/agentic-plugin/.kit/errorstreak-
     exit 1
   fi
 fi
-rm -f .errorstreak-fail-cmd
+rm -f .agentic-personas.json
 exit $EXIT_CODE

@@ -1,6 +1,6 @@
 # agentic-plugin: environment monitor, v0.7.0
 
-Status: Complete (v0.7.0). Target version v0.7.0. Written before any code. The plan is the contract: the completion entry for v0.7.0 quotes the assertions this plan names.
+Status: In Progress (v0.7.0-a). Target version v0.7.0. Written before any code. The plan is the contract: the completion entry for v0.7.0 quotes the assertions this plan names.
 
 Stage 1 (goal tree and plan selection) is Complete at v0.6.4 (commit 2ef521d). This plan is Stage 2: the environment monitor.
 
@@ -341,3 +341,17 @@ The implementation order is:
 | C5 | Test 8.3 needs Bash in `--allowedTools`: add `Bash` to the allow list; the plugin's deny is what stops it running. Leave at least 45 s between message 4 and `done`. (Section 8.3.) |
 | C6 | Test 8.1 timing: the first probe runs at the first tick (about 30 s, `env.git` null), so the sequence is `env_git dirty 0`, `dirty 1` at about 150 s, `dirty 0` at about 270 s. Hold the session 390 s, not 330. (Section 8.1.) |
 | C7 | Stage 1 controller test: the summary gains an `Environment:` line only when `env.git` or `env.health` is non-null, so in the harness root (a non-git directory, exit 128) the line is absent and the controller test is unaffected. Confirm that in the completion entry with the `env_git_null` store line. (Section 8.4.) |
+
+### Revision 3 (F1 to F9)
+
+| Label | Change |
+|-------|--------|
+| F1 | Tool errors are never counted; only plugin denies are. Fix: in the tool.call handler, after `await next(e)`, check `isError === true` on the result and increment `toolErrorsThisTurn`. Rewrite 8.3 to the plan: root "no bash", three `Run the command` prompts, `Bash` in the allow list, 45 s before `done`. Assert ordered `deny`, `deny`, `deny`, `error_streak`, `controller_tick`, `paused_by_controller`. (Section 8.3, index.ts tool.call.) |
+| F2 | The git test runs in a non-git directory and destroys a file that is not ours. Fix: create `.kit/env-repo/`, `git init`, commit a `.gitignore` with `.agentic-*`, `cd` into it for the `claude` call, one untracked file at 60 s, `git add` and `git commit` at 200 s, hold 390 s. Store lives at `.kit/env-repo/.agentic-personas.json`. (Section 8.1, live-gitprobe-test.sh.) |
+| F3 | Assertion strings cannot match the details the code writes. Fix: detail carries the new value in one token, `env_git dirty=1 (was 0) branch main` and `env_git first sample dirty=0 branch main`. Assert ordered `dirty=0`, `dirty=1`, `dirty=0`. (Section 8.1, index.ts git probe, assert-decisions.js gitprobe.) |
+| F4 | Health test does not test the plan's feed. Fix: goal_done at t (flag present, health_red), flag removed at t+20 s, second goal_done at t+40 s (health_green), done. The goal_done result text names the health command, exit code, and first tail line. Assert ordered `health_red`, `health_green`, `env_inject` after `health_red`. (Section 8.2, live-health-test.sh, index.ts goal_done, assert-decisions.js health.) |
+| F5 | The [ENV] block injects on every turn once a sample exists. Fix: `envNotable()` helper returns true only when `git.dirty > 0` or `health.exitCode !== 0`. Gate the [ENV] injection on notability. Push an `env_inject` decision when the block is injected. (Section 8.2 E6, index.ts prompt.submit.) |
+| F6 | The streak branch blocks and switches, not pauses. Fix: route through the ask-operator path (toast, `controller_tick`, `paused_by_controller`), not `block` + `activateNext`. Re-fire rule: only when `lastErrorAt > handledAt`. (Section 8.3 E1, index.ts controller tick.) |
+| F7 | The git probe logs `env_git_null` on every tick in a non-git cwd. Fix: `gitUnavailable` module flag, set on first exit 128, skip the probe while set, log `env_git_null` once. (Section 8.1, index.ts git probe.) |
+| F8 | The plan header says Complete (v0.7.0); the tests are not green. Fix: change to `In Progress (v0.7.0-a)`. (This entry.) |
+| F9 | The step-1 entry pasted the RUNNING guard-and-write line once (for the controller test) but the table has eight scripts. The full paste is in the Revision 1 entry (C2). Note in the fix-round entry. (Section 8.4, DISCUSSION.md.) |

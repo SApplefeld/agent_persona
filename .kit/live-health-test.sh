@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Live test 8.2: health run.
-# C5: 8.3 adds Bash to --allowedTools, 45s between msg 4 and done.
+# F4: plan 8.2 feed: goal_create, goal_done (red), flag removed at t+20s,
+#     goal_done (green) at t+40s, done.
+# F5: assert env_inject present after health_red (notable: health exit non-zero).
 set -u
 cd /d/DeepSeekHarness || exit 9
 OUT=/d/DeepSeekHarness/agentic-plugin/.kit/health-test.out.jsonl
@@ -12,17 +14,27 @@ rm -f "$OUT" "$ERR" "$EXIT"
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 unset CLAUDECODE
 
-# C5: .agentic-health-fail exists (health probe exits 1)
-touch .agentic-health-fail
-# C5: .agentic-health = node agentic-plugin/.kit/health-probe.js
+# Setup: health probe file and fail flag (in the harness root cwd)
 echo "node agentic-plugin/.kit/health-probe.js" > .agentic-health
+touch .agentic-health-fail
 
 feed() {
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"Run the health probe\" and maxRounds 5. Then call goal_done with note \"health run complete\"."}}'
-  sleep 60
+  # Plan 8.2: goal_create, then two goal_done calls with flag removal in between.
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"Write one haiku\" and maxRounds 3. Then add two plans. Then reply ok."}}'
+  sleep 30
+  # goal_done for plan 1 (health_red: fail flag exists)
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_done with note \"plan 1 done\"."}}'
+  sleep 20
+  # Flag removed at t+20s
+  rm -f .agentic-health-fail
+  sleep 20
+  # goal_done for plan 2 (health_green: fail flag removed)
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_done with note \"plan 2 done\"."}}'
+  sleep 20
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Reply with the single word: done"}}'
-  sleep 45
+  sleep 20
 }
+
 PLUGIN_DIR=$(cygpath -w /d/DeepSeekHarness/agentic-plugin)
 [ -f "$RUNNING" ] && { echo "RUNNING exists, refusing"; exit 8; }
 echo "DeepSeekHarness $0 $(date -u +%FT%TZ)" > "$RUNNING"
@@ -50,5 +62,5 @@ require('fs').writeFileSync('D:/DeepSeekHarness/agentic-plugin/.kit/health-test.
     exit 1
   fi
 fi
-rm -f .agentic-health-fail .agentic-health
+rm -f .agentic-health .agentic-health-fail .agentic-personas.json
 exit $EXIT_CODE

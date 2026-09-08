@@ -31,7 +31,7 @@ import {
   planningCapReached,
   applyTurnToErrors,
 } from "./agent-state";
-import type { AgentState, GoalNode, NudgeBudget, EnvGit } from "./agent-state";
+import type { AgentState, GoalNode, NudgeBudget, EnvGit, EnvState } from "./agent-state";
 
 // --- Module-scope session identity ---
 // The loader requires `persist` and `activate` to be top-level functions.
@@ -63,8 +63,19 @@ const sess: {
 // Reentrancy flag for the git probe (E4).
 let gitProbeInFlight = false;
 
+// F7: once the cwd is confirmed non-git (exit 128), stop probing for the
+// life of the session. The flag lives in the hook module, not in state.
+let gitUnavailable = false;
+
 // C4: tool error counter for the current turn (reset at turn.start, folded at turn.complete).
 let toolErrorsThisTurn = 0;
+
+// F5: an env state is notable when it carries a fact the worker should act on.
+function envNotable(env: EnvState): boolean {
+  if (env.git && env.git.dirty > 0) return true;
+  if (env.health && env.health.exitCode !== 0) return true;
+  return false;
+}
 
 // Health run helper (E2).
 async function runHealth(dp: any, forNodeId: string | null): Promise<void> {
@@ -567,7 +578,7 @@ export const register: Register = async (on, options) => {
       if (turnInFlight) return;
 
       // 2b. Git probe (E4, C6): time-based cadence, fire-and-forget.
-      if (!gitProbeInFlight) {
+      if (!gitProbeInFlight && !gitUnavailable) {
         const env = sess.state.monitor.env;
         const now = Date.now();
         const gitProbeMs = sess.options.gitProbeMs ?? 120000;
@@ -595,8 +606,8 @@ export const register: Register = async (on, options) => {
                   const prevGit = env.git;
                   if (prevGit === null || prevGit.dirty !== dirty || prevGit.branch !== branch) {
                     const detail = prevGit === null
-                      ? `env_git first sample: dirty ${dirty} branch ${branch}`
-                      : `env_git dirty ${prevGit.dirty} -> ${dirty} branch ${branch}`;
+                      ? `env_git first sample dirty=${dirty} branch ${branch}`
+                      : `env_git dirty=${dirty} (was ${prevGit.dirty}) branch ${branch}`;
                     sess.state.decisions.push({
                       timestamp: Date.now(),
                       loop: "monitor",
@@ -607,13 +618,16 @@ export const register: Register = async (on, options) => {
                   sess.state.monitor.env.git = newGit;
                 });
               } else if (res.exitCode === 128) {
-                // Non-git cwd.
-                sess.state.decisions.push({
-                  timestamp: Date.now(),
-                  loop: "monitor",
-                  action: "env_git_null",
-                  detail: `env_git_null exit 128`,
-                });
+                // F7: non-git cwd confirmed; stop probing for the session.
+                if (!gitUnavailable) {
+                  gitUnavailable = true;
+                  sess.state.decisions.push({
+                    timestamp: Date.now(),
+                    loop: "monitor",
+                    action: "env_git_null",
+                    detail: `env_git_null exit 128`,
+                  });
+                }
               } else {
                 sess.state.decisions.push({
                   timestamp: Date.now(),
@@ -951,8 +965,10 @@ export const register: Register = async (on, options) => {
       Promise.resolve().then(async () => {
         try {
           // C3: error streak branch (before the cap check).
+          // F6: route through the ask-operator path (paused, not blocked).
+          // Re-fire rule: only when a new error occurred after handledAt.
           const envErrors = sess.state.monitor.env.errors;
-          if (envErrors.consecutiveErrorTurns >= 3 && (!envErrors.handledAt || Date.now() - envErrors.handledAt > 60_000)) {
+          if (envErrors.consecutiveErrorTurns >= 3 && (!envErrors.handledAt || (envErrors.lastErrorAt && envErrors.lastErrorAt > envErrors.handledAt))) {
             const streakTs = Date.now();
             const streakReason = `Error streak ${envErrors.consecutiveErrorTurns} turns; escalating`;
             envErrors.handledAt = streakTs;
@@ -970,17 +986,15 @@ export const register: Register = async (on, options) => {
             });
             try { $.ui.toast(`Agentic: ${streakReason}`); } catch { /* non-fatal */ }
             if (g.status === "active") {
-              g.status = "blocked";
+              g.status = "paused";
               g.blockedReason = streakReason;
               g.updatedAt = streakTs;
               sess.state.decisions.push({
                 timestamp: streakTs,
                 loop: "goal",
-                action: "block",
+                action: "paused_by_controller",
                 detail: `${g.id}: ${streakReason}`,
               });
-              const nextId = activateNext(sess.state, g.id);
-              activate($, nextId, `${g.id} blocked (error streak)`);
               try { $.ui.status(""); } catch { /* non-fatal */ }
             }
             sess.state.updatedAt = streakTs;
@@ -1684,14 +1698,21 @@ export const register: Register = async (on, options) => {
 
       const writeOk = await persist($);
       if (writeOk) {
+        // F4: goal_done result names the health command, exit code, and first tail line.
+        const health = sess.state.monitor.env.health;
+        let healthText = "";
+        if (health) {
+          const firstLine = health.tail.split("\n")[0] || "no output";
+          healthText = ` Health: ${health.command.join(" ")} exit ${health.exitCode} (${firstLine}).`;
+        }
         // R8: goal_done result names newly active leaf OR planning message.
         if (nextId) {
           const nextNode = sess.state.goals.find((g) => g.id === nextId)!;
           return {
-            result: `Complete: "${completedTitle}". Next active: ${nextId} "${nextNode.title}".`,
+            result: `Complete: "${completedTitle}". Next active: ${nextId} "${nextNode.title}".${healthText}`,
           };
         }
-        return { result: `Complete: "${completedTitle}". No pending goals; planning runs at the next tick.` };
+        return { result: `Complete: "${completedTitle}". No pending goals; planning runs at the next tick.${healthText}` };
       }
       toolErrorsThisTurn++;
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
@@ -1828,7 +1849,9 @@ export const register: Register = async (on, options) => {
       return { deny: "Bash is not allowed by the current goal" };
     }
 
-    return next(e);
+    const r = await next(e);
+    if ((r as { isError?: boolean }).isError === true) toolErrorsThisTurn++;
+    return r;
   });
 
   // --- prompt.submit: inject memory + active goal as hidden context ---
@@ -1888,9 +1911,9 @@ export const register: Register = async (on, options) => {
       }
     }
 
-    // --- [ENV] block injection (C7: only when env.git or env.health is non-null) ---
+    // --- [ENV] block injection (F5: only when notable; push env_inject) ---
     const env = sess.state.monitor.env;
-    if (env.git !== null || env.health !== null) {
+    if (envNotable(env)) {
       const parts: string[] = [];
       if (env.git !== null) {
         parts.push(`git: ${env.git.branch} dirty ${env.git.dirty} ahead ${env.git.ahead} behind ${env.git.behind}`);
@@ -1900,6 +1923,12 @@ export const register: Register = async (on, options) => {
       }
       const envBlock = `[ENV] ${parts.join(", ")}\nEnvironment state above is current; act on it when it affects your plan.`;
       contextBlocks.push(envBlock);
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "env_inject",
+        detail: `env_inject: ${parts.join(", ")}`,
+      });
       try { $.ui.log(`Agentic: [ENV] injected`); } catch { /* non-fatal */ }
     }
 

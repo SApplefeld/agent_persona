@@ -189,25 +189,38 @@ switch (testName) {
     break;
   }
   case "gitprobe": {
-    // C6: first probe at first tick (~30s) sees dirty 0; dirty 1 at ~150s; dirty 0 at ~270s.
-    const envGitLines = details.filter(d => d.action === "env_git" || d.action === "env_git_null" || d.action === "env_git_error");
-    check2("env_git first sample found", envGitLines.some(d => d.detail.includes("dirty 0")));
-    check2("env_git dirty 1 found", envGitLines.some(d => d.detail.includes("dirty 1")));
-    check2("env_git dirty 0 after dirty 1", envGitLines.some(d => d.detail.includes("dirty 0") && d.timestamp > envGitLines.find(d => d.detail.includes("dirty 1"))?.timestamp));
+    // F3: assert ordered dirty=0, dirty=1, dirty=0 (new detail format).
+    // F7: env_git_null absent (cwd is a git repo).
+    const gitLines = details.filter(d => d.action === "env_git");
+    const dirtySeq = gitLines.map(d => {
+      const m = d.detail.match(/dirty=(\d+)/);
+      return m ? m[1] : null;
+    }).filter(x => x !== null);
+    check2("gitprobe: at least 3 env_git samples", dirtySeq.length >= 3);
+    check2("gitprobe: dirty=0 first", dirtySeq[0] === "0");
+    check2("gitprobe: dirty=1 second", dirtySeq[1] === "1");
+    check2("gitprobe: dirty=0 third", dirtySeq[2] === "0");
+    forbidden(["env_git_null", "env_git_error"], "gitprobe: no env_git_null or env_git_error");
     break;
   }
   case "health": {
-    // C5: health run at completeLeaf site.
-    const healthLines = details.filter(d => d.action === "health_green" || d.action === "health_red");
-    check2("health run found", healthLines.length > 0);
-    check2("health_red found (fail flag set)", healthLines.some(d => d.action === "health_red"));
+    // F4: ordered health_red, health_green. F5: env_inject present after health_red.
+    const healthIdx = details.map((d, i) => ({ d, i })).filter(x => x.d.action === "health_red" || x.d.action === "health_green");
+    check2("health: health_red found", healthIdx.some(x => x.d.action === "health_red"));
+    check2("health: health_green found", healthIdx.some(x => x.d.action === "health_green"));
+    const redIdx = details.findIndex(d => d.action === "health_red");
+    const greenIdx = details.findIndex(d => d.action === "health_green");
+    check2("health: red before green", redIdx !== -1 && greenIdx !== -1 && redIdx < greenIdx);
+    // F5: env_inject present (after health_red, when health exit is non-zero = notable).
+    const injectIdx = details.findIndex(d => d.action === "env_inject");
+    check2("health: env_inject present", injectIdx !== -1);
+    check2("health: env_inject after health_red", redIdx !== -1 && injectIdx !== -1 && injectIdx > redIdx);
     break;
   }
   case "errorstreak": {
-    // C5: error streak after 3 consecutive error turns.
-    const streakLines = details.filter(d => d.action === "error_streak");
-    check2("error_streak found", streakLines.length > 0);
-    check2("error_streak after 3 turns", streakLines.some(d => d.detail.includes("3 turns")));
+    // F6: ordered deny, deny, deny, error_streak, controller_tick, paused_by_controller.
+    orderedSubsequence(["deny", "deny", "deny", "error_streak", "controller_tick", "paused_by_controller"], "errorstreak: ordered deny-deny-deny-streak-tick-paused");
+    forbidden(["block"], "errorstreak: no block (ask-operator path, not blocked)");
     break;
   }
   default:
