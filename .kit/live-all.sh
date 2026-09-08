@@ -76,8 +76,18 @@ run_suite() {
   end_ts="$(date -u +%FT%TZ)"
 
   # Read the artifacts the suite wrote
-  local exit_file="$suite_dir/$suite.exit"
-  local assert_log="$suite_dir/$suite.assert.log"
+  # The suite scripts write their exit file with various names:
+  # health-test.exit, errorstreak-test.exit, gitprobe-test.exit, ctrl-test.exit,
+  # goaltree.exit, goaltree-stall.exit, planfail.exit, yield.exit
+  # and their assert log as <suite>.assert.log
+  local exit_file=""
+  for candidate in "$suite_dir/${suite}-test.exit" "$suite_dir/${suite}.exit" "$suite_dir/ctrl-test.exit"; do
+    if [ -f "$candidate" ]; then
+      exit_file="$candidate"
+      break
+    fi
+  done
+  local assert_log="$suite_dir/${suite}.assert.log"
   local exit_content="missing"
   local assert_content="missing"
 
