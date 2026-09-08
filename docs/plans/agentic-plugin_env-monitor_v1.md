@@ -366,3 +366,10 @@ The implementation order is:
 | G4 | `envNotable` is half the plan's predicate (dirty > 0 alone, no 30-minute freshness, no streak). Fix: `envNotable(env, now)` in agent-state.ts returns the plan's three facts as strings; `git` fires only when `dirty > 0 && now - lastCommitAt > 30 * 60_000`; add `streak >= 2` from `env.errors.consecutiveErrorTurns`. (Section 4, agent-state.ts, index.ts prompt.submit.) |
 | G5 | The F9 row said the paste is in the Revision 1 entry, but it is not. Fix: replace the F9 row with "No paste existed; the Reviewer's grep of 8 guard-and-write lines is the evidence." (Section 8.4, plan doc.) |
 | G6 | Q3 and C1 are closed: `env_git_null exit 128` once per non-git session (errorstreak and health logs), `env_git first sample dirty=2 branch master` in a git cwd (Reviewer probe A). (Section 8.1, 8.4.) |
+
+### Revision 5 (H1, H2)
+
+| Label | Change |
+|-------|--------|
+| H1 | The error-streak branch sat behind the nudge idle gate (`idleMs >= 120 s`), so it was unreachable in the test's 45 s window and in practice only fired when the worker was also idle for two minutes. Fix: move the whole streak block to directly after `if (turnInFlight) return;`, before the git probe, with its own active-node lookup; if no node is active, still log `error_streak` and `controller_tick`, toast, and set `handledAt`, skipping only the pause. (Section 7, index.ts controller tick.) |
+| H2 | `gitProbeInFlight` was never reset after a successful probe: the `exitCode === 0` branch does `return $.process.run(...).then(...)`, which leaves the callback before the `gitProbeInFlight = false` line. The flag stayed true for the session, blocking every later probe. Fix: delete the two `gitProbeInFlight = false` lines and append `.finally(() => { gitProbeInFlight = false; })` to the chain. (Section 2.1, index.ts git probe.) |

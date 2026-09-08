@@ -571,6 +571,47 @@ export const register: Register = async (on, options) => {
       // 2. In-flight check.
       if (turnInFlight) return;
 
+      // 2a. C3: error streak branch (before the idle gate; H1: move out of the classify path).
+      // F6: route through the ask-operator path (paused, not blocked).
+      // Re-fire rule: only when a new error occurred after handledAt.
+      const envErrors = sess.state.monitor.env.errors;
+      if (envErrors.consecutiveErrorTurns >= 3 && (!envErrors.handledAt || (envErrors.lastErrorAt && envErrors.lastErrorAt > envErrors.handledAt))) {
+        const streakTs = Date.now();
+        const streakReason = `Error streak ${envErrors.consecutiveErrorTurns} turns; escalating`;
+        envErrors.handledAt = streakTs;
+        // Look up the active node for the decision detail; if none, still log + toast + handledAt.
+        const activeForStreak = sess.state.goals.find((n) => n.status === "active");
+        const nodeId = activeForStreak ? activeForStreak.id : "no-active-node";
+        sess.state.decisions.push({
+          timestamp: streakTs,
+          loop: "monitor",
+          action: "error_streak",
+          detail: `${nodeId}: ${streakReason}`,
+        });
+        sess.state.decisions.push({
+          timestamp: streakTs,
+          loop: "monitor",
+          action: "controller_tick",
+          detail: `${nodeId}: ask-operator: ${streakReason}`,
+        });
+        try { $.ui.toast(`Agentic: ${streakReason}`); } catch { /* non-fatal */ }
+        if (activeForStreak && activeForStreak.status === "active") {
+          activeForStreak.status = "paused";
+          activeForStreak.blockedReason = streakReason;
+          activeForStreak.updatedAt = streakTs;
+          sess.state.decisions.push({
+            timestamp: streakTs,
+            loop: "goal",
+            action: "paused_by_controller",
+            detail: `${nodeId}: ${streakReason}`,
+          });
+          try { $.ui.status(""); } catch { /* non-fatal */ }
+        }
+        sess.state.updatedAt = streakTs;
+        await persist($);
+        return;
+      }
+
       // 2b. Git probe (E4, C6): time-based cadence, fire-and-forget.
       if (!gitProbeInFlight && !gitUnavailable) {
         const env = sess.state.monitor.env;
@@ -630,11 +671,9 @@ export const register: Register = async (on, options) => {
                   detail: `env_git_error exit ${res.exitCode}`,
                 });
               }
-              gitProbeInFlight = false;
             })
-            .catch(() => {
-              gitProbeInFlight = false;
-            });
+            .catch(() => { /* non-fatal */ })
+            .finally(() => { gitProbeInFlight = false; });
         }
       }
 
@@ -958,44 +997,6 @@ export const register: Register = async (on, options) => {
       // Fire-and-forget: the timer callback is sync, so we schedule async work.
       Promise.resolve().then(async () => {
         try {
-          // C3: error streak branch (before the cap check).
-          // F6: route through the ask-operator path (paused, not blocked).
-          // Re-fire rule: only when a new error occurred after handledAt.
-          const envErrors = sess.state.monitor.env.errors;
-          if (envErrors.consecutiveErrorTurns >= 3 && (!envErrors.handledAt || (envErrors.lastErrorAt && envErrors.lastErrorAt > envErrors.handledAt))) {
-            const streakTs = Date.now();
-            const streakReason = `Error streak ${envErrors.consecutiveErrorTurns} turns; escalating`;
-            envErrors.handledAt = streakTs;
-            sess.state.decisions.push({
-              timestamp: streakTs,
-              loop: "monitor",
-              action: "error_streak",
-              detail: `${g.id}: ${streakReason}`,
-            });
-            sess.state.decisions.push({
-              timestamp: streakTs,
-              loop: "monitor",
-              action: "controller_tick",
-              detail: `${g.id}: ask-operator: ${streakReason} (idle ${minutesSinceLastTurn}min)`,
-            });
-            try { $.ui.toast(`Agentic: ${streakReason}`); } catch { /* non-fatal */ }
-            if (g.status === "active") {
-              g.status = "paused";
-              g.blockedReason = streakReason;
-              g.updatedAt = streakTs;
-              sess.state.decisions.push({
-                timestamp: streakTs,
-                loop: "goal",
-                action: "paused_by_controller",
-                detail: `${g.id}: ${streakReason}`,
-              });
-              try { $.ui.status(""); } catch { /* non-fatal */ }
-            }
-            sess.state.updatedAt = streakTs;
-            await persist($);
-            return;
-          }
-
           // Cap check before spending a classify call.
           if (sess.consecutiveNudgesWithoutOnGoal >= MAX_CONSECUTIVE_NUDGES) {
             const capTs = Date.now();
