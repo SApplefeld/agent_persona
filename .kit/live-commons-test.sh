@@ -81,7 +81,7 @@ ASSERT_FAILED=0
 # The plugin's store is at ~/.claude/plugins/store/<plugin-name>.json
 # or similar. We need to find it.
 STORE_FILE=""
-if [ -f "$HOME/.claude/plugins/store" ]; then
+if [ -d "$HOME/.claude/plugins/store" ]; then
   # Look for a JSON file in the store directory
   for f in "$HOME/.claude/plugins/store"/*.json; do
     if [ -f "$f" ]; then
@@ -182,21 +182,38 @@ process.exit(failed);
   fi
 fi
 
-# Step 4: Check the session logs for persona_yield_commons decisions
-# Look in both session output logs for the decision
+# Step 4: Check for persona_yield_commons decisions (mutual exclusion proof).
+# The yield decision is written to the persona store and .agentic-yields.log,
+# NOT to the session stdout jsonl. Check both sources.
 YIELD_FOUND=0
-for LOG in "$K"/commons-A.out.jsonl "$K"/commons-B.out.jsonl; do
-  if [ -f "$LOG" ]; then
-    if grep -q "persona_yield_commons" "$LOG"; then
-      YIELD_FOUND=1
-      echo "Found persona_yield_commons in: $LOG" >> "$K"/commons.assert.log
-    fi
+YIELD_EVIDENCE=""
+
+# Check the yield log first (most direct evidence)
+if [ -f ".agentic-yields.log" ]; then
+  if grep -q "persona_yield_commons" ".agentic-yields.log"; then
+    YIELD_FOUND=1
+    YIELD_EVIDENCE=$(grep "persona_yield_commons" ".agentic-yields.log" | head -1)
+    echo "Yield log evidence: $YIELD_EVIDENCE" >> "$K"/commons.assert.log
   fi
-done
+fi
+
+# Also check the persona store for the decision (secondary source)
+if [ -f ".agentic-personas.json" ]; then
+  if grep -q "persona_yield_commons" ".agentic-personas.json"; then
+    YIELD_FOUND=1
+    if [ -z "$YIELD_EVIDENCE" ]; then
+      YIELD_EVIDENCE=$(grep "persona_yield_commons" ".agentic-personas.json" | head -1)
+    fi
+    echo "Persona store evidence: $YIELD_EVIDENCE" >> "$K"/commons.assert.log
+  fi
+fi
 
 if [ $YIELD_FOUND -eq 0 ]; then
-  # Not necessarily a failure if there was no race, but log it
-  echo "NOTE: no persona_yield_commons decision found in session logs" >> "$K"/commons.assert.log
+  # NO yield found: this is a FAILURE (mutual exclusion not proven)
+  echo "FAIL: no persona_yield_commons decision found in yield log or persona store" >> "$K"/commons.assert.log
+  ASSERT_FAILED=1
+else
+  echo "OK: persona_yield_commons decision confirmed (mutual exclusion proven)" >> "$K"/commons.assert.log
 fi
 
 # Final exit code
