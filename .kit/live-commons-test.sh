@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
 # Live test: commons two-session race suite (Stage 2 acceptance gate).
 # Two concurrent sessions both try to claim the same persona via agentic_identity.
-# Commons arbitration (first-claim-wins) determines the winner.
+# Commons arbitration (claim-then-read, compareHolders) determines the winner;
+# the loser takes the reader path and its writes are refused.
 #
-# F8 fix: reads the REAL $.store (not the persona store's decisions).
-# Asserts: (1) BOTH sessions wrote a commons:<sessionId> claim entry,
-#          (2) EXACTLY ONE is the winner,
-#          (3) the loser's decision log shows persona_yield_commons.
+# Asserts:
+#   F8:   Both sessions wrote a commons:<sessionId> claim entry; exactly one winner.
+#   F10c: The reader's session_id (read from its own out.jsonl) is the LATER
+#         claimant in the store. The earlier claimant is the winner (F9 rule).
+#   F10d: CROSSDIR=1 — B ran in its own directory and has its own
+#         .agentic-personas.json and .agentic-heartbeat.json there.
+#   F12b: Stale RUNNING markers are reclaimed by Windows-PID liveness check
+#         (tasklist //FI under Git Bash).
+#   F13b: Pre-gate waits for persona:default to have no live claim, using
+#         entry.lastSeen (heartbeat liveness) and the 90 000 ms threshold
+#         from commons.ts:47.
+#   F16:  Each child produces ≥1 "result" line (wait_turn gates between prompts).
 # Exit code: non-zero on any assertion failure.
 set -u
 
@@ -34,9 +43,11 @@ if [ -f "$RUNNING" ]; then
     MARKER_PID=$(head -1 "$RUNNING" | grep -oE '[0-9]+$' | head -1)
     PID_ALIVE=0
     if [ -n "$MARKER_PID" ]; then
-      # Check via tasklist (Windows PID)
+      # Check via tasklist (Windows PID).
+      # Under MSYS/Git Bash, single-slash args are path-converted (/FI → C:/Program Files/Git/FI),
+      # so use double-slash form: //FI, //FO, //NH.
       if command -v tasklist &>/dev/null; then
-        if tasklist /FI "PID eq $MARKER_PID" /FO CSV /NH 2>/dev/null | grep -qi "No tasks"; then
+        if tasklist //FI "PID eq $MARKER_PID" //FO CSV //NH 2>/dev/null | grep -qi "No tasks"; then
           PID_ALIVE=0
         else
           PID_ALIVE=1
@@ -101,14 +112,14 @@ rm -f .agentic-heartbeat.json .agentic-yields.log
 
 # F12a: include PID in the marker so stale markers can be reclaimed
 # F12b: write the WINDOWS PID so both scripts agree on liveness.
-# Under Cygwin, $$ is the Cygwin PID. Get the Windows PID via ps.
-# ps -p $$ shows the process; the last numeric field is the Windows PID.
+# Under Git Bash (MSYS), ps -p $$ shows:
+#   PID TTY UID TIME WINPID COMMAND
+# Column 1 is the MSYS PID; column 4 ($4 in awk) is the Windows PID.
+# The marker must carry the Windows PID so PowerShell's Get-Process -Id
+# and bash's tasklist //FI both resolve it against the same PID namespace.
 WIN_PID=$$
 if command -v ps &>/dev/null; then
-  # Cygwin ps shows: PID TTY UID TIME COMMAND — the PID column is the Cygwin PID,
-  # but under Cygwin the "PID" shown IS the Windows PID for native processes.
-  # For safety, also try tasklist.
-  PS_OUT=$(ps -p $$ 2>/dev/null | tail -1 | awk '{print $1}')
+  PS_OUT=$(ps -p $$ 2>/dev/null | tail -1 | awk '{print $4}')
   [ -n "$PS_OUT" ] && [ "$PS_OUT" -gt 0 ] 2>/dev/null && WIN_PID="$PS_OUT"
 fi
 echo "DeepSeekHarness $0 $(date -u +%FT%TZ) pid=$WIN_PID" > "$RUNNING"
@@ -135,12 +146,11 @@ fi
 # See hooks/commons.ts:47 for the source of truth.
 if [ -n "$STORE_FILE" ] && [ -f "$STORE_FILE" ]; then
   STORE_FILE_PRE=$(cygpath -m "$STORE_FILE" 2>/dev/null || echo "$STORE_FILE")
-  # F13b: read the threshold from the plugin config if available, else use 90000 (matches commons.ts:47)
+  # F13b: threshold matches commons.ts:47 DEFAULT_STALE_AFTER_MS (90_000 ms).
+  # The plugin manifest is .claude-plugin/plugin.json (not agentic-plugin.json),
+  # and options arrive via --settings pluginConfigs — there is no per-plugin config
+  # file in $PLUGIN_DIR to read, so the threshold is the constant 90000.
   STALE_THRESHOLD_MS=90000
-  if [ -f "$PLUGIN_DIR/agentic-plugin.json" ]; then
-    CFG_STALE=$(node -e "try{const c=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));console.log(c.staleAfterMs||90000)}catch{console.log(90000)}" "$PLUGIN_DIR/agentic-plugin.json" 2>/dev/null)
-    [ -n "$CFG_STALE" ] && [ "$CFG_STALE" -gt 0 ] 2>/dev/null && STALE_THRESHOLD_MS="$CFG_STALE"
-  fi
   echo "F13a: pre-gate — waiting for persona:default to have no live claim (threshold: ${STALE_THRESHOLD_MS}ms)..."
   PRE_GATE_N=0
   while true; do
@@ -228,7 +238,13 @@ if [ $LOADER_FAIL -eq 1 ]; then
 fi
 echo "LOADER: clean (no 'failed to load' in either child)" >> "$K"/commons.assert.log
 
+ASSERT_FAILED=0
+
 # --- F10d: crossdir proof — B must have its own .agentic-* files in B_WORKDIR ---
+# B's session.start creates the persona as owner in its own (empty) directory
+# BEFORE agentic_identity demotes it to reader. A reader that never owned
+# anything would write no heartbeat, so this assertion depends on B being
+# owner-at-creation, which is the correct F9 path.
 if [ "$CROSSDIR" = "1" ]; then
   B_PERSONAS="$B_WORKDIR/.agentic-personas.json"
   if [ -f "$B_PERSONAS" ]; then
@@ -247,7 +263,6 @@ if [ "$CROSSDIR" = "1" ]; then
 fi
 
 # --- Assertions (F8) ---
-ASSERT_FAILED=0
 
 # Step 1: STORE_FILE was found earlier (F15). Verify it still exists.
 if [ -z "$STORE_FILE" ] || [ ! -f "$STORE_FILE" ]; then
