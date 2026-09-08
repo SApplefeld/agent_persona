@@ -11,6 +11,7 @@ OUT=/d/DeepSeekHarness/agentic-plugin/.kit/errorstreak-test.out.jsonl
 ERR=/d/DeepSeekHarness/agentic-plugin/.kit/errorstreak-test.err.log
 EXIT=/d/DeepSeekHarness/agentic-plugin/.kit/errorstreak-test.exit
 RUNNING=/d/DeepSeekHarness/agentic-plugin/.kit/RUNNING
+source /d/DeepSeekHarness/agentic-plugin/.kit/live-common.sh
 trap 'rm -f "$RUNNING"' EXIT
 rm -f "$OUT" "$ERR" "$EXIT"
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
@@ -18,15 +19,17 @@ unset CLAUDECODE
 
 feed() {
   # Plan 8.3: root objective contains "no bash" so the plugin denies Bash calls.
+  # I1: gate each prompt on the previous turn's result line (live-common.sh).
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"no bash: Write one haiku\" and maxRounds 5. Then reply ok."}}'
-  sleep 30
+  wait_turn 1
   # G2: tool-forcing prompts (haiku obeys these per Reviewer Q2 probe)
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Use the Bash tool now to run exactly: echo hello. Make the tool call even if you expect it to be denied; do not explain, report the result in one line."}}'
-  sleep 30
+  wait_turn 2
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Use the Bash tool now to run exactly: echo world. Make the tool call even if you expect it to be denied; do not explain, report the result in one line."}}'
-  sleep 30
+  wait_turn 3
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Use the Bash tool now to run exactly: echo done. Make the tool call even if you expect it to be denied; do not explain, report the result in one line."}}'
-  # C5: 45s before done (controller tick fires ask-operator).
+  wait_turn 4
+  # I1: tick window (turn 4 closes with streak 3, next tick fires the branch)
   sleep 45
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Reply with the single word: done"}}'
   sleep 20
@@ -46,6 +49,12 @@ echo $EXIT_CODE > "$EXIT"
 # P3: write .decisions.log and run assertions.
 # G1: no-store guard.
 if [ -f .agentic-personas.json ]; then
+  # I1 precheck: turn_start decisions must number >= 4 (feed collapse detector)
+  TS_COUNT=$(count_turn_starts .agentic-personas.json)
+  if [ "$TS_COUNT" -lt 4 ]; then
+    echo "PRECHECK FAIL: turn_start count $TS_COUNT < 4 (feed collapse)" >> "$EXIT"
+    exit 1
+  fi
   node -e "
 const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
 const p = Object.keys(s)[0];

@@ -7,6 +7,7 @@ set -u
 cd /d/DeepSeekHarness || exit 9
 K=/d/DeepSeekHarness/agentic-plugin/.kit
 RUNNING="$K"/RUNNING
+source /d/DeepSeekHarness/agentic-plugin/.kit/live-common.sh
 trap 'rm -f "$RUNNING"' EXIT
 rm -f "$K"/yield-A.out.jsonl "$K"/yield-A.err.log "$K"/yield-B.out.jsonl "$K"/yield-B.err.log "$K"/yield.exit
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1

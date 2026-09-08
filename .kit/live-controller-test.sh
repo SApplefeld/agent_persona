@@ -7,6 +7,7 @@ OUT=/d/DeepSeekHarness/agentic-plugin/.kit/ctrl-test.out.jsonl
 ERR=/d/DeepSeekHarness/agentic-plugin/.kit/ctrl-test.err.log
 EXIT=/d/DeepSeekHarness/agentic-plugin/.kit/ctrl-test.exit
 RUNNING=/d/DeepSeekHarness/agentic-plugin/.kit/RUNNING
+source /d/DeepSeekHarness/agentic-plugin/.kit/live-common.sh
 trap 'rm -f "$RUNNING"' EXIT
 rm -f "$OUT" "$ERR" "$EXIT"
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1

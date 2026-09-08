@@ -84,7 +84,7 @@ export interface EnvState {
 }
 
 // G4: envNotable per plan section 4: dirty > 0 AND last commit older than 30 min;
-// health exit non-zero; error streak at least 2.
+// health exit non-zero; error streak at least 3 (I2: aligned with controller escalation threshold).
 export function envNotable(env: EnvState, now: number): string[] {
   const facts: string[] = [];
   if (env.git && env.git.dirty > 0 && now - env.git.lastCommitAt > 30 * 60_000) {
@@ -93,7 +93,7 @@ export function envNotable(env: EnvState, now: number): string[] {
   if (env.health && env.health.exitCode !== 0) {
     facts.push(`health: exit ${env.health.exitCode} for ${env.health.forNodeId || "no-node"}`);
   }
-  if (env.errors.consecutiveErrorTurns >= 2) {
+  if (env.errors.consecutiveErrorTurns >= 3) {
     facts.push(`errors: streak ${env.errors.consecutiveErrorTurns}`);
   }
   return facts;

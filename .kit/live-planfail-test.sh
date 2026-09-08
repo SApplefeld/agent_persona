@@ -9,6 +9,7 @@ set -u
 cd /d/DeepSeekHarness || exit 9
 K=/d/DeepSeekHarness/agentic-plugin/.kit
 rm -f "$K"/planfail.out.jsonl "$K"/planfail.err.log "$K"/planfail.exit
+source /d/DeepSeekHarness/agentic-plugin/.kit/live-common.sh
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 unset CLAUDECODE
 # H4 / M14: create the fault flag file in the cwd (harness root), delete on exit.

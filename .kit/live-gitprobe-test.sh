@@ -25,18 +25,42 @@ echo ".agentic-*" > .gitignore
 git add .gitignore
 git -c user.name="test" -c user.email="test@test" commit --quiet -m "init"
 
-# Feed: hold the session long enough for the probes to fire.
-# gitProbeMs=120000: first probe at ~120s (dirty 0), dirty file at 60s seen at ~120s (dirty 1),
-# commit at 200s seen at ~240s (dirty 0). Hold 390s to be safe.
+# I3: anchor git mutations on the observed first sample.
+# Poll the store until it holds env_git first sample, then write untracked file,
+# sleep 160 (120s cadence + 30s tick + 10s slack), commit, sleep 160, touch marker.
+MARKER="$ENV_REPO/.dirty-cycle-done"
+rm -f "$MARKER"
+
 feed() {
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"Write one haiku\" and maxRounds 3. Then reply ok."}}'
-  sleep 390
+  # I3: wait for the dirty-cycle marker (ceiling 480s)
+  _n=0
+  until [ -f "$MARKER" ]; do
+    sleep 2; _n=$((_n+2)); [ $_n -ge 480 ] && break
+  done
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Reply with the single word: done"}}'
   sleep 20
 }
 
-# F2: dirty file at 60s, commit at 200s (in the env-repo dir)
-( sleep 60; echo "untracked" > "$ENV_REPO/untracked.txt"; sleep 140; cd "$ENV_REPO" && git add untracked.txt && git -c user.name="test" -c user.email="test@test" commit --quiet -m "add untracked"; ) &
+# I3: anchored dirty cycle job
+(
+  # Poll the store until it holds env_git first sample
+  _store="$ENV_REPO/.agentic-personas.json"
+  _n=0
+  until grep -q '"env_git"' "$_store" 2>/dev/null; do
+    sleep 2; _n=$((_n+2)); [ $_n -ge 180 ] && exit 1
+  done
+  # Write untracked file (dirty state)
+  echo "untracked" > "$ENV_REPO/untracked.txt"
+  # Hold dirty state for one probe interval + tick + slack
+  sleep 160
+  # Commit (clean state)
+  cd "$ENV_REPO" && git add untracked.txt && git -c user.name="test" -c user.email="test@test" commit --quiet -m "add untracked"
+  # Hold clean state for one probe interval + tick + slack
+  sleep 160
+  # Touch marker
+  touch "$MARKER"
+) &
 DIRTY_PID=$!
 
 PLUGIN_DIR=$(cygpath -w /d/DeepSeekHarness/agentic-plugin)
