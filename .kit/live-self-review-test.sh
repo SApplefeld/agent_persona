@@ -3,8 +3,10 @@
 # Induction: 3 tool denials -> error streak -> reactive self-review.
 # Assertions on persisted facts: F0-F6.
 #
-# T9: pre-gate (wait_persona_free) before launching.
-# T8: --debug-file + fail-fast on "failed to load"; poll-based gates (no fixed sleeps).
+# U2: feed uses wait_turn between prompts (errorstreak-style).
+# U3: pre-gate uses global store path (F15 lookup).
+# U4: F0 asserts on persona_yield_commons and persona_yield.
+# U6: no em dashes.
 #
 # Usage: PROFILE=short bash .kit/live-self-review-test.sh
 # Exits 0 on success, 1 on failure.
@@ -36,15 +38,59 @@ rm -f "$OUT" "$ERR" "$EXIT" "$DEBUG"
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 unset CLAUDECODE
 
-# --- Feed: all prompts sent in one stream (no per-turn gating) ---
-# 4 prompts: goal_create + 3 Bash-forcing (error turns).
-# The tick fires within controllerTickMs of the error-streak decision; the
-# self-review decision follows in the same tick. We poll the store for it.
+# --- U3: pre-gate - wait for no live persona claim ---
+# Find the global store (same lookup as commons F15)
+GLOBAL_STORE=""
+if [ -d "$HOME/.claude/plugins/store" ]; then
+  for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
+    if [ -f "$f" ]; then
+      GLOBAL_STORE="$f"
+      break
+    fi
+  done
+fi
+if [ -n "$GLOBAL_STORE" ] && [ -f "$GLOBAL_STORE" ]; then
+  wait_persona_free "$GLOBAL_STORE" 120 || { echo "T9: pre-gate timeout, aborting"; exit 9; }
+else
+  echo "T9: no global store found, skipping pre-gate"
+fi
+
+# --- Feed: wait_turn between prompts (errorstreak-style) ---
 feed() {
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"no bash: Write one haiku\" and maxRounds 5. Then reply ok."}}'
+  wait_turn 1
+  wait_activation
+  # 3 Bash-forcing prompts (error turns)
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Use the Bash tool now to run exactly: echo hello. Make the tool call even if you expect it to be denied; do not explain, report the result in one line."}}'
+  wait_turn 2
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Use the Bash tool now to run exactly: echo world. Make the tool call even if you expect it to be denied; do not explain, report the result in one line."}}'
+  wait_turn 3
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Use the Bash tool now to run exactly: echo third. Make the tool call even if you expect it to be denied; do not explain, report the result in one line."}}'
+  wait_turn 4
+  # Poll for self-review decision (the tick fires within controllerTickMs of the streak)
+  echo "Waiting for self-review decision (polling store)..."
+  N=0
+  until node -e "
+const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
+const p = Object.keys(s)[0];
+const d = (s[p].decisions||[]).some(x => x.action === 'self-review');
+process.exit(d ? 0 : 1);
+" 2>/dev/null; do
+    sleep 3; N=$((N+3)); [ $N -ge 120 ] && break
+  done
+  # One more prompt for lesson_inject
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Reply with the single word: done"}}'
+  wait_turn 5
+  # Poll for lesson_inject (the next prompt triggers the injection)
+  M=0
+  until node -e "
+const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
+const p = Object.keys(s)[0];
+const d = (s[p].decisions||[]).some(x => x.action === 'lesson_inject');
+process.exit(d ? 0 : 1);
+" 2>/dev/null; do
+    sleep 3; M=$((M+3)); [ $M -ge 120 ] && break
+  done
 }
 
 [ -f "$RUNNING" ] && { echo "RUNNING exists, refusing"; exit 8; }
@@ -53,11 +99,6 @@ echo "DeepSeekHarness $0 $(date -u +%FT%TZ)" > "$RUNNING"
 # Emit settings.json for this suite (short profile: selfReviewEveryTurns=3)
 emit_settings_json "settings.json"
 echo "settings.json: $(cat settings.json)"
-
-# T9: pre-gate — wait for no live persona claim
-if [ -f .agentic-personas.json ]; then
-  wait_persona_free .agentic-personas.json 120 || { echo "T9: pre-gate timeout, aborting"; exit 9; }
-fi
 
 # T8: --debug-file for loader diagnostics
 feed | claude -p --input-format stream-json --output-format stream-json --verbose \
@@ -80,30 +121,6 @@ if [ -f "$DEBUG" ] && grep -q "failed to load" "$DEBUG"; then
 fi
 echo "LOADER: clean (no 'failed to load')"
 
-# --- Wait for the self-review decision to appear in the store ---
-# The tick fires within controllerTickMs (10s in short profile) of the
-# error-streak decision. Poll the store for action=self-review (180s timeout).
-echo "Waiting for self-review decision (polling store)..."
-N=0
-until node -e "
-const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
-const p = Object.keys(s)[0];
-const d = (s[p].decisions||[]).some(x => x.action === 'self-review');
-process.exit(d ? 0 : 1);
-" 2>/dev/null; do
-  sleep 3; N=$((N+3)); [ $N -ge 180 ] && break
-done
-if node -e "
-const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
-const p = Object.keys(s)[0];
-const d = (s[p].decisions||[]).some(x => x.action === 'self-review');
-process.exit(d ? 0 : 1);
-" 2>/dev/null; then
-  echo "self-review decision detected (waited ~${N}s)"
-else
-  echo "self-review decision NOT found after ${N}s"
-fi
-
 # --- Assertions (F0-F6, on persisted facts) ---
 RESULT=0
 
@@ -116,17 +133,17 @@ const d = (s[p].decisions||[]).map(x => new Date(x.timestamp).toISOString().slic
 require('fs').writeFileSync('self-review.decisions.log', d.join('\n') + '\n');
 "
 
-  # F0: no yield — the suite's session is owner (not reader/yielder)
+  # F0: no yield decisions (U4: check both real names)
   F0=$(node -e "
 const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
 const p = Object.keys(s)[0];
-const d = (s[p].decisions||[]).some(x => x.action === 'yield');
+const d = (s[p].decisions||[]).some(x => x.action === 'yield' || x.action === 'persona_yield' || x.action === 'persona_yield_commons');
 console.log(d ? 'FAIL' : 'PASS');
 ")
   if [ "$F0" = "PASS" ]; then
-    echo "F0: PASS (no yield decision — owner held the persona)"
+    echo "F0: PASS (no yield decision - owner held the persona)"
   else
-    echo "F0: FAIL (yield decision found — persona was yielded)"
+    echo "F0: FAIL (yield decision found - persona was yielded)"
     RESULT=1
   fi
 

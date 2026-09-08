@@ -70,7 +70,7 @@ count_turn_starts() {  # $1 = store path; returns count of turn_start decisions
   " 2>/dev/null || echo 0
 }
 
-# T9: pre-gate — wait until no live persona claim exists in the commons store.
+# T9: pre-gate - wait until no live persona claim exists in the commons store.
 # Mirrors the commons F13a gate (live-commons-test.sh:147-187).
 # Usage: wait_persona_free <store-path> [timeout-seconds]
 wait_persona_free() {
