@@ -57,14 +57,16 @@ echo "DeepSeekHarness $0 $(date -u +%FT%TZ)" > "$RUNNING"
 # Emit settings.json for this suite
 emit_settings_json "settings.json"
 
-# Launch both sessions concurrently
+# Launch both sessions concurrently (with --debug-file for loader diagnostics)
 feedA | claude -p --input-format stream-json --output-format stream-json --verbose \
   --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" --settings "$(cygpath -w "$SUITE_DIR/settings.json")" --allowedTools "$TOOLS" --model haiku \
+  --debug-file "$K"/commons-A.debug.log \
   > "$K"/commons-A.out.jsonl 2> "$K"/commons-A.err.log &
 PA=$!
 
 feedB | claude -p --input-format stream-json --output-format stream-json --verbose \
   --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" --settings "$(cygpath -w "$SUITE_DIR/settings.json")" --allowedTools "$TOOLS" --model haiku \
+  --debug-file "$K"/commons-B.debug.log \
   > "$K"/commons-B.out.jsonl 2> "$K"/commons-B.err.log &
 PB=$!
 
@@ -73,6 +75,21 @@ EA=$?
 wait $PB
 EB=$?
 echo "A=$EA B=$EB" > "$K"/commons.exit
+
+# --- Loader check: fail fast if the plugin failed to load in any child ---
+LOADER_FAIL=0
+for d in commons-A.debug.log commons-B.debug.log; do
+  if [ -f "$K/$d" ] && grep -q "failed to load" "$K/$d"; then
+    echo "FAIL: plugin failed to load in $d" >> "$K"/commons.assert.log
+    grep "failed to load" "$K/$d" >> "$K"/commons.assert.log
+    LOADER_FAIL=1
+  fi
+done
+if [ $LOADER_FAIL -eq 1 ]; then
+  echo "ASSERT: 1 (LOADER FAILED)" >> "$K"/commons.exit
+  exit 1
+fi
+echo "LOADER: clean (no 'failed to load' in either child)" >> "$K"/commons.assert.log
 
 # --- Assertions (F8) ---
 ASSERT_FAILED=0

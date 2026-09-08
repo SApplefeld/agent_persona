@@ -45,6 +45,25 @@ import type { CommonsStore } from "./commons";
 // --- Module-scope session identity ---
 // The loader requires `persist` and `activate` to be top-level functions.
 // A mutable object carries the per-session values; hooks update it on session.start.
+//
+// Loader rule: `$` and its nouns (`$.store`, `$.fs`, `$.ui`, ...) may never be
+// bound, passed, or read as values. Every use must be a full call spelled
+// `$.noun.verb(...)` at the site. Passing `$` itself to a function is allowed
+// only when that function is declared at the top level of the same file.
+
+/**
+ * Adapter: wrap a hook- or persist-bound `$` into the `CommonsStore` interface
+ * that `commons.ts` expects. Each arrow is a full `dp.store.verb(...)` call
+ * at its site, which is what the validator accepts.
+ */
+function commonsStoreOf(dp: any): CommonsStore {
+  return {
+    get: (k: string) => dp.store.get(k),
+    set: (k: string, v: unknown) => dp.store.set(k, v),
+    delete: (k: string) => dp.store.delete(k),
+    keys: () => dp.store.keys(),
+  };
+}
 const sess: {
   persona: string;
   mySessionId: string;
@@ -179,7 +198,7 @@ export const persist = async (dp: any): Promise<boolean> => {
   // If a live competitor has an earlier claim on this persona, yield.
   try {
     const resource = `persona:${sess.persona}`;
-    const claims = await readAllClaims(dp.store);
+    const claims = await readAllClaims(commonsStoreOf(dp));
     if (shouldYieldCommons(claims, resource, sess.mySessionId)) {
       const winner = commonsWinner(claims, resource);
       // Write to the yield log for observability (same as epoch-based yield).
@@ -194,7 +213,7 @@ export const persist = async (dp: any): Promise<boolean> => {
         const el = await dp.fs.exists(sess.yieldLogPath) ? await dp.fs.readFile(sess.yieldLogPath) : "";
         await dp.fs.writeFile(sess.yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
       } catch { /* non-fatal */ }
-      dp.state.decisions.push({
+      sess.state.decisions.push({
         timestamp: Date.now(),
         loop: "monitor",
         action: "persona_yield_commons",
@@ -202,6 +221,12 @@ export const persist = async (dp: any): Promise<boolean> => {
       });
       sess.isOwner = false;
       try { dp.ui.log(`Agentic: yielded '${sess.persona}' to ${winner} (commons)`); } catch { /* non-fatal */ }
+      // Persist the yield decision to disk before returning
+      const store2: Record<string, unknown> = await dp.fs.exists(sess.storePath)
+        ? (JSON.parse(await dp.fs.readFile(sess.storePath)) as Record<string, unknown>)
+        : {};
+      store2[sess.persona] = sess.state;
+      await dp.fs.writeFile(sess.storePath, JSON.stringify(store2, null, 2));
       return false;
     }
   } catch { /* non-fatal: commons is a coordination layer */ }
@@ -570,7 +595,7 @@ export const register: Register = async (on, options) => {
             // Commons: refresh lastSeen to signal liveness (Stage 2 integration).
             try {
               const resource = `persona:${sess.persona}`;
-              await claimResource($.store, resource, sess.mySessionId);
+              await claimResource(commonsStoreOf($), resource, sess.mySessionId);
             } catch { /* non-fatal */ }
           }
         }
@@ -1622,7 +1647,7 @@ export const register: Register = async (on, options) => {
       // Commons: claim the persona in the machine-global store (Stage 2 integration).
       try {
         const resource = `persona:${sess.persona}`;
-        await claimResource($.store, resource, sess.mySessionId);
+        await claimResource(commonsStoreOf($), resource, sess.mySessionId);
         sess.state.decisions.push({
           timestamp: Date.now(),
           loop: "monitor",
@@ -2139,3 +2164,5 @@ export const register: Register = async (on, options) => {
   });
 
 };
+
+
