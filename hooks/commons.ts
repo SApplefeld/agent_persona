@@ -1,5 +1,5 @@
 // Commons: machine-global, cross-session coordination for agentic-plugin sessions.
-// Substrate: $.store (per plugin, global across sessions, JSON values).
+// Substrate: $.store (per plugin, global across sessions, async JSON values).
 //
 // Key layout: one writer per key. Each session owns `commons:<its-session-id>`.
 // A reader enumerates keys(), filters to commons:*, reads every such key, and unions them.
@@ -10,6 +10,9 @@
 //
 // Invariant: claimResource(R) is idempotent with respect to ownership -
 // re-invoking it on a resource you hold never changes who holds R.
+//
+// F7 fix: all store calls are async (await). The store param is typed to the
+// REAL $.store shape (async methods). No `as any` needed at call sites.
 
 // --- Types ---
 
@@ -26,6 +29,16 @@ export interface CommonsEntry {
 
 export interface UnionedClaim extends CommonsClaim {
   holder: string; // sessionId
+}
+
+/**
+ * The REAL $.store shape (async). Matched to claude-code.d.ts:941-961.
+ */
+export interface CommonsStore {
+  get(key: string): Promise<unknown>;
+  set(key: string, value: unknown): Promise<void>;
+  delete(key: string): Promise<void>;
+  keys(): Promise<string[]>;
 }
 
 // --- Constants ---
@@ -59,14 +72,14 @@ export function compareHolders(a: string, b: string): number {
  * update claimedAt (first-claim-wins arbitration depends on the original claim time).
  * Only refreshes lastSeen.
  */
-export function claimResource(
-  store: { get(key: string): unknown; set(key: string, value: unknown): void },
+export async function claimResource(
+  store: CommonsStore,
   resource: string,
   mySessionId: string,
   now: number = Date.now(),
-): void {
+): Promise<void> {
   const key = commonsKey(mySessionId);
-  const raw = store.get(key);
+  const raw = await store.get(key);
   const existing: CommonsEntry = raw
     ? (raw as CommonsEntry)
     : { sessionId: mySessionId, lastSeen: now, claims: [] };
@@ -84,20 +97,20 @@ export function claimResource(
   existing.lastSeen = now;
 
   // Write back (we own this key, no race)
-  store.set(key, existing);
+  await store.set(key, existing);
 }
 
 /**
  * Release a resource. Removes the claim from the array.
  */
-export function releaseResource(
-  store: { get(key: string): unknown; set(key: string, value: unknown): void },
+export async function releaseResource(
+  store: CommonsStore,
   resource: string,
   mySessionId: string,
   now: number = Date.now(),
-): void {
+): Promise<void> {
   const key = commonsKey(mySessionId);
-  const raw = store.get(key);
+  const raw = await store.get(key);
   if (!raw) return;
 
   const existing: CommonsEntry = raw as CommonsEntry;
@@ -109,23 +122,24 @@ export function releaseResource(
   existing.lastSeen = now;
 
   // Write back (we own this key, no race)
-  store.set(key, existing);
+  await store.set(key, existing);
 }
 
 /**
  * Read all claims from all sessions (union).
  * Filters out stale sessions (lastSeen older than stalenessThreshold).
  */
-export function readAllClaims(
-  store: { keys(): string[]; get(key: string): unknown },
+export async function readAllClaims(
+  store: CommonsStore,
   stalenessThresholdMs: number = DEFAULT_STALE_AFTER_MS,
   now: number = Date.now(),
-): UnionedClaim[] {
-  const keys = store.keys().filter((k) => k.startsWith(COMMONS_PREFIX));
+): Promise<UnionedClaim[]> {
+  const allKeys = await store.keys();
+  const keys = allKeys.filter((k) => k.startsWith(COMMONS_PREFIX));
   const claims: UnionedClaim[] = [];
 
   for (const key of keys) {
-    const raw = store.get(key);
+    const raw = await store.get(key);
     if (!raw) continue;
 
     const entry: CommonsEntry = raw as CommonsEntry;
@@ -154,6 +168,7 @@ export function readAllClaims(
  * Yield check: does any live competitor have an earlier claim on the same resource?
  * First-claim-wins: a session holds resource R if and only if no LIVE competitor
  * has an earlier claim on R, ordered by (claimedAt, then sessionId as tiebreaker).
+ * Pure function over already-read claims - stays sync.
  */
 export function shouldYieldCommons(
   claims: UnionedClaim[],
@@ -185,6 +200,7 @@ export function shouldYieldCommons(
 /**
  * Determine the winner (holder) of a resource among live claims.
  * Returns null if no live claim exists.
+ * Pure function over already-read claims - stays sync.
  */
 export function commonsWinner(
   claims: UnionedClaim[],

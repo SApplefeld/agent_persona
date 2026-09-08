@@ -40,6 +40,7 @@ import {
   releaseResource,
   commonsWinner,
 } from "./commons";
+import type { CommonsStore } from "./commons";
 
 // --- Module-scope session identity ---
 // The loader requires `persist` and `activate` to be top-level functions.
@@ -178,7 +179,7 @@ export const persist = async (dp: any): Promise<boolean> => {
   // If a live competitor has an earlier claim on this persona, yield.
   try {
     const resource = `persona:${sess.persona}`;
-    const claims = readAllClaims(dp.store as any);
+    const claims = await readAllClaims(dp.store);
     if (shouldYieldCommons(claims, resource, sess.mySessionId)) {
       const winner = commonsWinner(claims, resource);
       // Write to the yield log for observability (same as epoch-based yield).
@@ -569,7 +570,7 @@ export const register: Register = async (on, options) => {
             // Commons: refresh lastSeen to signal liveness (Stage 2 integration).
             try {
               const resource = `persona:${sess.persona}`;
-              claimResource($ as any, resource, sess.mySessionId);
+              await claimResource($.store, resource, sess.mySessionId);
             } catch { /* non-fatal */ }
           }
         }
@@ -1621,7 +1622,7 @@ export const register: Register = async (on, options) => {
       // Commons: claim the persona in the machine-global store (Stage 2 integration).
       try {
         const resource = `persona:${sess.persona}`;
-        claimResource($ as any, resource, sess.mySessionId);
+        await claimResource($.store, resource, sess.mySessionId);
         sess.state.decisions.push({
           timestamp: Date.now(),
           loop: "monitor",
