@@ -197,7 +197,7 @@ export const persist = async (dp: any): Promise<boolean> => {
     ? (JSON.parse(await dp.fs.readFile(sess.storePath)) as Record<string, unknown>)
     : {};
   const onDisk = store[sess.persona] as AgentState | undefined;
-  // F9 invariant: three sites raise the epoch — agentic_identity (commons winner),
+  // F9 invariant: three sites raise the epoch: agentic_identity (commons winner),
   // session.start claim (heartbeat stale), and controller-tick promotion (heartbeat
   // stale). The two heartbeat-based sites and the commons check all use the same
   // staleAfterMs threshold (F9a: single-sourced via sess.staleAfterMs), so they

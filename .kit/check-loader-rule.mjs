@@ -48,7 +48,7 @@ function checkFile(path) {
       while ((m = re.exec(line)) !== null) {
         const col = m.index + 1;
         const matched = m[0];
-        console.error(`VIOLATION [${rule}] ${rel}:${i + 1}:${col}: "${matched}" — $-noun used as a value, not as $.noun.verb(...)`);
+        console.error(`VIOLATION [${rule}] ${rel}:${i + 1}:${col}: "${matched}" - $-noun used as a value, not as $.noun.verb(...)`);
         violations++;
       }
     }

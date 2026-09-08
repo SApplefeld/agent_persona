@@ -1,7 +1,8 @@
 # Agentic Plugin: Commons (Shared Claims & Coordination)
 
-**Status**: Proposed
+**Status**: Complete
 **Created**: 2026-09-08T08:26:00Z
+**Completed**: 2026-09-08T16:25:00Z
 **Author**: DeepSeekHarness
 **Reviewer**: Fable
 
@@ -83,7 +84,7 @@ The F9 design establishes the relationship between commons arbitration and the e
 
 1. **`agentic_identity` claims first, then reads**: the identity hook calls `claimResource('persona:default', sessionId)` to register its claim in the commons store, then calls `readAllClaims()` + `commonsWinner()` to determine whether it won. If it lost, it takes the reader path (`isOwner=false`, no epoch bump, no yield log line). This is the F9 fix: the reader is determined by commons arbitration, not by epoch comparison.
 
-2. **The epoch is the same-directory write fence**: the epoch bump (`sess.epoch++`) in `agentic_identity` serves as a same-directory write fence — it ensures that within a single CWD, only the winner writes `.agentic-personas.json` and `.agentic-heartbeat.json`. It is NOT the arbitration mechanism; that is commons.
+2. **The epoch is the same-directory write fence**: the epoch bump (`sess.epoch++`) in `agentic_identity` serves as a same-directory write fence: it ensures that within a single CWD, only the winner writes `.agentic-personas.json` and `.agentic-heartbeat.json`. It is NOT the arbitration mechanism; that is commons.
 
 3. **Three sites raise the epoch**: the epoch is raised at exactly three sites in the codebase: (a) `agentic_identity` on successful claim (the winner), (b) the persona activation path when a new persona takes ownership, and (c) the goal-creation path when a goal is assigned. Commons does not raise the epoch; it reads the claim ordering.
 
@@ -268,13 +269,13 @@ function releaseResource(resource: string, mySessionId: string) {
 | F10b | Primary assertions on `out.jsonl` content: (1) exactly one child "active (epoch N, owner)" + one "joined as reader"; (2) reader is later `claimedAt`; (3) writes. Yield-log secondary: 0 or 1 distinct yielder, never 2. Cross-directory variant (`SUITE_DIR_B` sibling) is the acceptance gate; same-directory is epoch-fence regression. | `.kit/live-commons-test.sh:~280-400`, `.kit/live-commons-test.ps1:~330-420` | Done |
 | F11 | `cygpath -m` for Windows path conversion in Cygwin bash. | `.kit/live-commons-test.sh:~190` | Done |
 | F12a | RUNNING marker: `try/finally` removal; PID in marker (`$$` / `$PID`); reclaim-if-PID-dead with log line; `(Get-Date).ToUniversalTime()` for UTC. | `.kit/live-commons-test.sh:~80-90,85`, `.kit/live-commons-test.ps1:~24-58,58,~370` | Done |
-| F13a | Pre-launch poll: loop until `persona:default` has no live claim (bounded 120s, 5s polls). No session-end event exists in the engine — release-on-exit deferred to Future. | `.kit/live-commons-test.sh:~90-125`, `.kit/live-commons-test.ps1:~70-100` | Done |
+| F13a | Pre-launch poll: loop until `persona:default` has no live claim (bounded 120s, 5s polls). No session-end event exists in the engine: release-on-exit deferred to Future. | `.kit/live-commons-test.sh:~90-125` | Done |
 | F14 | `gcStaleClaims` in commons.ts; unit test 9 covers GC. | `hooks/commons.ts:~180`, `.kit/commons-unit-test.mjs:~180` | Done |
 | F15 | Store glob: `agentic-plugin_*.json` (not first `*.json`). | `.kit/live-commons-test.sh:~91`, `.kit/live-commons-test.ps1:~72` | Done |
 | F16 | `wait_turn` (poll `"type":"result"` count in `$OUT`) between prompts in feeds; `.ps1` feeds now include `memory_add` second prompt. | `.kit/live-commons-test.sh:~63-78`, `.kit/live-commons-test.ps1:~64-77` | Done |
 | F10c | F10(2) bash assertion: read reader's `session_id` from READER out.jsonl (node JSON parse of init line), pass to store-checking node block, FAIL unless reader is the later `claimedAt`. Red-proof required. | `.kit/live-commons-test.sh:~355-395` | Done |
 | F10d | Cross-directory run: launch B with CWD = B's dir (subshell `cd`); post-run assertions: B has own `.agentic-personas.json` and `.agentic-heartbeat.json`; loader check covers B's debug.log in `B_OUT_DIR`; clean B's `.agentic-*` before run. This is the acceptance gate. | `.kit/live-commons-test.sh:~140-175,~230-248` | Done |
-| F12b | PID mismatch: `.sh` wrote `$$` (MSYS PID), `.ps1` wrote `$PID` (Windows PID) — cross-script reclaim broken. Fix: `.sh` writes Windows PID (`ps -p $$ \| awk '{print $4}'` = WINPID column); reclaim via `tasklist //FI` (double-slash for MSYS arg conv). `.ps1` deleted (Round 24) — one suite, one set of assertions. | `.kit/live-commons-test.sh:~30-65,~103-113` | Done |
+| F12b | PID mismatch: `.sh` wrote `$$` (MSYS PID), `.ps1` wrote `$PID` (Windows PID): cross-script reclaim broken. Fix: `.sh` writes Windows PID (`ps -p $$ \| awk '{print $4}'` = WINPID column); reclaim via `tasklist //FI` (double-slash for MSYS arg conv). `.ps1` deleted (Round 24): one suite, one set of assertions. | `.kit/live-commons-test.sh:~30-65,~103-113` | Done |
 | F13b | Pre-gate liveness: count claims live by `entry.lastSeen` (not `claimedAt`); threshold from same source as commons.ts (`DEFAULT_STALE_AFTER_MS = 90_000`, `hooks/commons.ts:47`). | `.kit/live-commons-test.sh:~130-170`, `.kit/live-commons-test.ps1:~87-120` | Done |
 | F10e | Evidence retention: copy `commons*.{out.jsonl,debug.log,err.log,exit,assert.log}` and `.agentic-*` to `.kit/runs/<utc-stamp>/commons[-crossdir]/` at exit. Assert-log append (not overwrite) in Step 2 node block. `wait_turn` default count to 0. | `.kit/live-commons-test.sh:~500-520,~338-342`, `.kit/live-common.sh:~40-47` | Done |
 | F10d-red | F10d assertion red-proof: `ASSERT_FAILED=0` was after the F10d block, erasing failures. Fixed: initializer moved above the block. Red-proof: empty `B_WORKDIR` → exit 1 (proven via Git Bash). | `.kit/live-commons-test.sh:~231-250` | Done |
@@ -290,3 +291,18 @@ function releaseResource(resource: string, mySessionId: string) {
 **Workaround (implemented)**: the suite pre-gates (F13a) by polling the commons store until `persona:default` has no live claim before launching children. This handles the 90s staleness window without requiring a release event.
 
 **Future**: if/when the engine adds a `session.end` event, add a `releaseResource` call in the `on("session.end")` handler for all held commons claims. This would make the 90s staleness window unnecessary for clean handoffs.
+
+## 12. Closing
+
+**Closed at**: v0.9.0 (commit pending)
+
+**Acceptance runs** (Reviewer, 2026-09-08T16:19:06Z):
+
+| Run | Mode | Result |
+|---|---|---|
+| `20260908T161358Z` | CROSSDIR=1 | exit 0, B owner / A reader, 2 result lines each, 0 load failures |
+| `20260908T161700Z` | same-dir | exit 0, A owner / B reader, 2 result lines each, 0 load failures |
+
+Both runs passed all assertions (F8, F10c, F10d, F12b, F13b, F16). The F10d red-proof (empty `B_WORKDIR` → exit 1) and F12b two-direction PID proof (bash→PS, PS→bash) were verified in Round 24.
+
+**What commons provides**: first-claim-wins arbitration for `persona:default` across sessions. The epoch is the same-directory write fence; commons reads claim ordering via `(claimedAt, sessionId)`. Stale claims are GC'd after 90s. The suite proves all of this in a single pass, with evidence retained in `.kit/runs/`.

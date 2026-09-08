@@ -8,14 +8,14 @@
 #   F8:   Both sessions wrote a commons:<sessionId> claim entry; exactly one winner.
 #   F10c: The reader's session_id (read from its own out.jsonl) is the LATER
 #         claimant in the store. The earlier claimant is the winner (F9 rule).
-#   F10d: CROSSDIR=1 — B ran in its own directory and has its own
+#   F10d: CROSSDIR=1: B ran in its own directory and has its own
 #         .agentic-personas.json and .agentic-heartbeat.json there.
 #   F12b: Stale RUNNING markers are reclaimed by Windows-PID liveness check
 #         (tasklist //FI under Git Bash).
 #   F13b: Pre-gate waits for persona:default to have no live claim, using
 #         entry.lastSeen (heartbeat liveness) and the 90 000 ms threshold
 #         from commons.ts:47.
-#   F16:  Each child produces ≥1 "result" line (wait_turn gates between prompts).
+#   F16:  Each child produces 2 "result" lines (wait_turn gates between prompts).
 # Exit code: non-zero on any assertion failure.
 set -u
 
@@ -138,7 +138,7 @@ if [ -d "$HOME/.claude/plugins/store" ]; then
   done
 fi
 
-# F13a: Pre-gate — poll the commons store until persona:default has no live claim.
+# F13a: Pre-gate: poll the commons store until persona:default has no live claim.
 # This prevents a run started within 90s of a previous one from producing
 # two readers and zero yielders (the winner from the previous run still holds).
 # F13b: use entry.lastSeen (heartbeat liveness), NOT claimedAt.
@@ -148,10 +148,10 @@ if [ -n "$STORE_FILE" ] && [ -f "$STORE_FILE" ]; then
   STORE_FILE_PRE=$(cygpath -m "$STORE_FILE" 2>/dev/null || echo "$STORE_FILE")
   # F13b: threshold matches commons.ts:47 DEFAULT_STALE_AFTER_MS (90_000 ms).
   # The plugin manifest is .claude-plugin/plugin.json (not agentic-plugin.json),
-  # and options arrive via --settings pluginConfigs — there is no per-plugin config
+  # and options arrive via --settings pluginConfigs: there is no per-plugin config
   # file in $PLUGIN_DIR to read, so the threshold is the constant 90000.
   STALE_THRESHOLD_MS=90000
-  echo "F13a: pre-gate — waiting for persona:default to have no live claim (threshold: ${STALE_THRESHOLD_MS}ms)..."
+  echo "F13a: pre-gate: waiting for persona:default to have no live claim (threshold: ${STALE_THRESHOLD_MS}ms)..."
   PRE_GATE_N=0
   while true; do
     LIVE_CLAIMS=$(node -e "
@@ -240,7 +240,7 @@ echo "LOADER: clean (no 'failed to load' in either child)" >> "$K"/commons.asser
 
 ASSERT_FAILED=0
 
-# --- F10d: crossdir proof — B must have its own .agentic-* files in B_WORKDIR ---
+# --- F10d: crossdir proof: B must have its own .agentic-* files in B_WORKDIR ---
 # B's session.start creates the persona as owner in its own (empty) directory
 # BEFORE agentic_identity demotes it to reader. A reader that never owned
 # anything would write no heartbeat, so this assertion depends on B being
@@ -350,7 +350,7 @@ if (commonsKeys.length === 0) {
   }
 }
 
-// Append, not overwrite — F10e: preserve earlier log lines (F13a pre-gate, LOADER, etc.)
+// Append, not overwrite: F10e: preserve earlier log lines (F13a pre-gate, LOADER, etc.)
 const fstream = fs.createWriteStream('$K_WIN/commons.assert.log', { flags: 'a' });
 for (const line of lines) fstream.write(line + '\n');
 fstream.end();
@@ -505,11 +505,11 @@ console.log([...ids].join('\n'));
     ASSERT_FAILED=1
   fi
 else
-  # No yield log file — acceptable (reader path via agentic_identity writes no yield line).
+  # No yield log file: acceptable (reader path via agentic_identity writes no yield line).
   echo "F10(yieldlog): no yield log file (reader path, acceptable)" >> "$K"/commons.assert.log
 fi
 
-# F10e: evidence retention — copy artifacts to .kit/runs/<utc-stamp>/ before exit
+# F10e: evidence retention: copy artifacts to .kit/runs/<utc-stamp>/ before exit
 RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 RUNS_DIR="$PLUGIN_DIR/.kit/runs/$RUN_STAMP"
 if [ "$CROSSDIR" = "1" ]; then
@@ -518,10 +518,23 @@ else
   RUNS_DIR="$RUNS_DIR/commons"
 fi
 mkdir -p "$RUNS_DIR"
-for f in commons-*.out.jsonl commons-*.debug.log commons-*.err.log commons.exit commons.assert.log .agentic-*.json .agentic-*.log; do
+# Copy A's artifacts
+for f in commons-A.out.jsonl commons-A.debug.log commons-A.err.log commons.exit commons.assert.log; do
   [ -f "$K/$f" ] && cp -f "$K/$f" "$RUNS_DIR/" 2>/dev/null
-  [ -f "$B_OUT_DIR/$f" ] && cp -f "$B_OUT_DIR/$f" "$RUNS_DIR/" 2>/dev/null
 done
+for f in .agentic-*.json .agentic-*.log; do
+  [ -f "$K/$f" ] && cp -f "$K/$f" "$RUNS_DIR/" 2>/dev/null
+done
+# Copy B's artifacts (CROSSDIR: B is in a different directory)
+if [ -n "$B_OUT_DIR" ] && [ -d "$B_OUT_DIR" ]; then
+  mkdir -p "$RUNS_DIR/B"
+  for f in commons-B.out.jsonl commons-B.debug.log commons-B.err.log; do
+    [ -f "$B_OUT_DIR/$f" ] && cp -f "$B_OUT_DIR/$f" "$RUNS_DIR/B/" 2>/dev/null
+  done
+  for f in .agentic-*.json .agentic-*.log; do
+    [ -f "$B_OUT_DIR/$f" ] && cp -f "$B_OUT_DIR/$f" "$RUNS_DIR/B/" 2>/dev/null
+  done
+fi
 echo "F10e: evidence retained in $RUNS_DIR" >> "$K"/commons.assert.log
 
 # Final exit code
