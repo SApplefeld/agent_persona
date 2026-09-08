@@ -1,6 +1,6 @@
 # agentic-plugin: context budget, v1
 
-Status: Draft. Written before any code. The plan is the contract: the completion entry quotes the assertions this plan names.
+Status: Independent part Complete; checkpoint section BLOCKED-on-operator.
 
 ## 1. Purpose
 
@@ -68,7 +68,39 @@ A live suite (call it `budget`) that drives a session past a low test threshold 
 - `action: "context_budget_nudge"` appears once above the close-out threshold.
 - **Latch pin**: Drive the estimate up past a threshold, hold it, and assert the crossing logged exactly once, not once per tick.
 
-## 7. Revisions
+## 7. Close-out: Independent Part (2026-09-08)
+
+### What shipped
+
+- **Budget read** (section 2): `$.session.messages()` read on controller tick with sub-cadence (`contextBudgetReadEveryNTicks`, default 3). Token estimate sums `SessionMessage.text`, `ToolUseSummary.name`, `JSON.stringify(ToolUseSummary.input)`, and `ToolResultSummary.text` (chars/4, lower bound by design).
+- **Three latched thresholds** (section 2.3): `contextBudgetInfoTokens=100000`, `contextBudgetCloseoutTokens=250000`, `contextBudgetCriticalTokens=350000`. Each crossed once, logged as `context_budget_crossed` with detail `<level>: <N> tokens`. Latch on highest crossed.
+- **Hysteresis re-arm** (section 2.4): Re-arm only when estimate falls below threshold × 0.95 (5% band).
+- **Close-out nudge** (section 3): Fires via `$.prompt.submit({ text })` above close-out threshold. Latched, does not consume idle nudge budget. Logged as `context_budget_nudge`.
+- **Feature gate** (section 4): `contextBudgetEnabled` option (default `false`).
+- **B1 race guard**: `budgetReadInFlight` flag serializes budget reads, preventing decision-reorder and double-nudge flake (Reviewer finding, round 18).
+- **Budget test suite**: 5 turns of haiku + `memory_add`, calibrated thresholds (info=300, closeout=500, critical=700). Asserts: ≥3 crossings, exactly 1 closeout nudge, each threshold crossed exactly once (latch pin).
+
+### Lanes that gated it
+
+- **Short cadence**: budget + controller + errorstreak (regression pin), all green, `script_exit=0`, ASSERT 0, EXIT 0. Run `20260908T073743Z`.
+- **Full cadence**: budget green, `script_exit=0`, ASSERT 0, EXIT 0. Crossed at 07:41:44 (1381 tokens), order correct. Run `20260908T074040Z`.
+
+### B1 finding and fix
+
+Reviewer's run crossed thresholds across separate ticks and exposed a race: two ticks entering the budget block concurrently could log decisions out of order or double-nudge. Fix: `budgetReadInFlight` guard (line 81), set before first await, cleared in `finally`. Verified: all three crossings logged atomically at same timestamp.
+
+### What's left
+
+Checkpoint section (section 5) remains BLOCKED-on-operator (Paths A/B/C). Not built. Path C open question (does `kit-compact-checkpoint.js boundary` defer auto-compaction or only mark a role edge) is the operator's to settle.
+
+### Commits
+
+- `a288c2f` 2b: context budget implementation (independent part)
+- `35b6265` Fix: move budget check before active leaf check
+- `2303db1` Calibrate budget test thresholds to observed per-turn growth
+- `3072690` B1: add budgetReadInFlight guard to serialize budget reads
+
+## 8. Revisions
 
 ### Revision 1 (2026-09-08)
 
