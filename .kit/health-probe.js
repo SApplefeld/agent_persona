@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const failPath = path.join(__dirname, '..', '..', '.agentic-health-fail');
+const failPath = path.join(process.cwd(), '.agentic-health-fail');
 if (fs.existsSync(failPath)) {
   process.exit(1);
 }
