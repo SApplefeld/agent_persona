@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Live test runner: runs the eight suites in parallel at concurrency 3.
+# Live test runner: runs the ten suites in parallel at concurrency 3.
 # Usage: live-all.sh [suite...]
-#   Suites: errorstreak, health, gitprobe, controller, goaltree, goaltree-stall, planfail, yield
-#   Default: all eight.
+#   Suites: errorstreak, health, gitprobe, controller, goaltree, goaltree-stall, planfail, yield, budget, commons
+#   Default: all ten.
 #
 # Concurrency: CONCURRENCY=3 (variable at top).
 # Wall clock targets: full <= 25 min, short <= 12 min.
@@ -24,7 +24,7 @@ RUN_DIR="$RUNS_DIR/$STAMP"
 HEAD_SHORT="$(cd "$PLUGIN_DIR" && git log -1 --format=%h)"
 
 # --- Suite list ---
-ALL_SUITES=(errorstreak health gitprobe controller goaltree goaltree-stall planfail yield budget)
+ALL_SUITES=(errorstreak health gitprobe controller goaltree goaltree-stall planfail yield budget commons)
 if [ $# -eq 0 ]; then
   SUITES=("${ALL_SUITES[@]}")
 else

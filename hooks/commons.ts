@@ -43,6 +43,18 @@ export function commonsKey(sessionId: string): string {
 }
 
 /**
+ * F6: Single-source holder comparison. Both shouldYieldCommons and commonsWinner
+ * must use the same comparator to avoid divergence (deadlock or double-hold).
+ * Uses UTF-16 code-unit order (JS `<`), which is deterministic and locale-independent.
+ * Returns negative if a < b, positive if a > b, 0 if equal.
+ */
+export function compareHolders(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
+/**
  * Claim a resource. Idempotent: re-claiming a resource you already hold does not
  * update claimedAt (first-claim-wins arbitration depends on the original claim time).
  * Only refreshes lastSeen.
@@ -161,7 +173,7 @@ export function shouldYieldCommons(
     }
     if (
       competitor.claimedAt === myClaim.claimedAt &&
-      competitor.holder < mySessionId
+      compareHolders(competitor.holder, mySessionId) < 0
     ) {
       return true; // Tiebreaker: lexicographically smaller sessionId wins
     }
@@ -186,7 +198,7 @@ export function commonsWinner(
     if (a.claimedAt !== b.claimedAt) {
       return a.claimedAt - b.claimedAt;
     }
-    return a.holder.localeCompare(b.holder);
+    return compareHolders(a.holder, b.holder);
   });
 
   return resourceClaims[0].holder;

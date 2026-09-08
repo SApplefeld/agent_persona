@@ -38,6 +38,7 @@ import {
   readAllClaims,
   shouldYieldCommons,
   releaseResource,
+  commonsWinner,
 } from "./commons";
 
 // --- Module-scope session identity ---
@@ -179,12 +180,7 @@ export const persist = async (dp: any): Promise<boolean> => {
     const resource = `persona:${sess.persona}`;
     const claims = readAllClaims(dp.store as any);
     if (shouldYieldCommons(claims, resource, sess.mySessionId)) {
-      const winner = claims
-        .filter((c: any) => c.resource === resource)
-        .sort((a: any, b: any) => {
-          if (a.claimedAt !== b.claimedAt) return a.claimedAt - b.claimedAt;
-          return a.holder < b.holder ? -1 : a.holder > b.holder ? 1 : 0;
-        })[0]?.holder;
+      const winner = commonsWinner(claims, resource);
       // Write to the yield log for observability (same as epoch-based yield).
       const rec = yieldRecord(
         sess.persona,
