@@ -7,11 +7,17 @@ export interface MemoryEntry {
   kind: "fact" | "preference" | "lesson" | "goal" | "eval";
   text: string;
   confidence: number; // 0..1
-  source: "worker" | "user" | "distilled";
+  source: "worker" | "user" | "distilled" | "self-review";
   createdAt: number; // ms
   lastAccessed: number;
   accessCount: number;
   pinned: boolean; // pinned entries survive decay
+  provenance?: {
+    decisionTimestamps: number[];
+    turnRange: [number, number];
+    streak: number;
+    trigger: string;
+  };
 }
 
 // v2 goal shape (retained for migration only).
@@ -107,6 +113,14 @@ export interface MonitorState {
   totalToolCalls: number;
   errors: number;
   env: EnvState;
+  selfReview: {
+    count: number;          // reviews in the current hourly window
+    lastAt: number;         // 0 = never
+    turnsSince: number;     // turns since last review (0 = fresh / just reviewed)
+    windowStart: number;    // ms; reset count when now - windowStart >= 3600000
+    pendingPeriodic: boolean; // set by goal_done, consumed by tick (S9)
+    lastInjectAt: number;   // 0 = never; gates lesson_inject (S11)
+  };
 }
 
 export interface NudgeBudget {
@@ -158,6 +172,7 @@ export function createDefaultState(persona: string, sessionId: string): AgentSta
         health: null,
         errors: { consecutiveErrorTurns: 0, toolErrorsLastTurn: 0 },
       },
+      selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: false, lastInjectAt: 0 },
     },
     nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
     decisions: [],
@@ -317,6 +332,14 @@ export function parseState(json: string): AgentState {
       git: null,
       health: null,
       errors: { consecutiveErrorTurns: 0, toolErrorsLastTurn: 0 },
+    };
+  }
+
+  // S12: fill selfReview with defaults at the E11 site, no version bump.
+  if (!state.monitor.selfReview) {
+    state.monitor.selfReview = {
+      count: 0, lastAt: 0, turnsSince: 0, windowStart: 0,
+      pendingPeriodic: false, lastInjectAt: 0,
     };
   }
 

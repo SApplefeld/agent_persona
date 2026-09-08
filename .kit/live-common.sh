@@ -30,8 +30,12 @@ esac
 # Usage: emit_settings_json <output-file>
 emit_settings_json() {
   local out="$1"
+  local self_review_opts=""
+  if [ -n "$SELF_REVIEW_EVERY_TURNS" ]; then
+    self_review_opts=",\"selfReviewEveryTurns\":$SELF_REVIEW_EVERY_TURNS"
+  fi
   cat > "$out" <<EOF
-{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":$TICK_MS,"nudgeIdleMs":$NUDGE_IDLE_MS,"gitProbeMs":$GIT_PROBE_MS}}}}
+{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":$TICK_MS,"nudgeIdleMs":$NUDGE_IDLE_MS,"gitProbeMs":$GIT_PROBE_MS$self_review_opts}}}}
 EOF
 }
 

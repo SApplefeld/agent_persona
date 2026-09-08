@@ -12,6 +12,8 @@
 !/live-gitprobe-test.sh
 !/live-health-test.sh
 !/live-budget-test.sh
+!/live-self-review-test.sh
+!/self-review-unit-test.mjs
 !/health-probe.js
 !/assert-decisions.js
 !/roadmap-test.md

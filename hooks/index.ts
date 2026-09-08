@@ -41,6 +41,12 @@ import {
   commonsWinner,
 } from "./commons";
 import type { CommonsStore } from "./commons";
+import {
+  shouldSelfReview,
+  buildSelfReviewInput,
+  dedupeSelfReview,
+  evictSelfReview,
+} from "./self-review";
 
 // --- Module-scope session identity ---
 // The loader requires `persist` and `activate` to be top-level functions.
@@ -327,6 +333,12 @@ export const register: Register = async (on, options) => {
   const healthTimeoutMs = typeof cfg.healthTimeoutMs === "number" ? Math.min(cfg.healthTimeoutMs as number, 120_000) : 60_000;
   const gitProbeMs = typeof cfg.gitProbeMs === "number" ? Math.min(cfg.gitProbeMs as number, 300_000) : 120_000;
   sess.options = { healthTimeoutMs, gitProbeMs };
+
+  // Self-review options (S6: options arrive through --settings pluginConfigs).
+  const selfReviewStreak = typeof cfg.selfReviewStreak === "number" ? (cfg.selfReviewStreak as number) : 3;
+  const selfReviewEveryTurns = typeof cfg.selfReviewEveryTurns === "number" ? (cfg.selfReviewEveryTurns as number) : 20;
+  const selfReviewDebounceTurns = typeof cfg.selfReviewDebounceTurns === "number" ? (cfg.selfReviewDebounceTurns as number) : 5;
+  const selfReviewMaxPerHour = typeof cfg.selfReviewMaxPerHour === "number" ? (cfg.selfReviewMaxPerHour as number) : 2;
   
   // Context budget (2b).
   sess.contextBudgetEnabled = cfg.contextBudgetEnabled === true;
@@ -720,7 +732,103 @@ export const register: Register = async (on, options) => {
         }
         sess.state.updatedAt = streakTs;
         await persist($);
-        return;
+      }
+
+      // 2a2. Self-review (S9: single execution site in the tick handler).
+      if (sess.state.monitor.selfReview) {
+        const sr = sess.state.monitor.selfReview;
+        const now = Date.now();
+
+        // S10: reset the hourly cap when the window has expired.
+        if (sr.windowStart > 0 && now - sr.windowStart >= 3600000) {
+          sr.count = 0;
+          sr.windowStart = now;
+        }
+
+        const srOpts = { selfReviewStreak, selfReviewEveryTurns, selfReviewDebounceTurns, selfReviewMaxPerHour };
+        // Reactive check (error streak trigger).
+        const reactive = shouldSelfReview(
+          { monitor: sess.state.monitor, decisions: sess.state.decisions, memory: sess.state.memory, goals: sess.state.goals, activeGoalId: sess.state.activeGoalId },
+          srOpts, now, "reactive",
+        );
+        // Periodic check (pendingPeriodic or turnsSince >= everyTurns).
+        const periodic = shouldSelfReview(
+          { monitor: sess.state.monitor, decisions: sess.state.decisions, memory: sess.state.memory, goals: sess.state.goals, activeGoalId: sess.state.activeGoalId },
+          srOpts, now, "periodic",
+        );
+
+        if (reactive.eligible || periodic.eligible) {
+          const trigger = reactive.eligible ? reactive.reason : periodic.reason;
+          try {
+            const input = buildSelfReviewInput(
+              { monitor: sess.state.monitor, decisions: sess.state.decisions, memory: sess.state.memory, goals: sess.state.goals, activeGoalId: sess.state.activeGoalId },
+              now,
+            );
+            const raw = await $.model.complete({ model: "haiku", prompt: input.prompt, maxTokens: 80 });
+            const lesson = raw.trim();
+            if (lesson.length > 0 && lesson.toUpperCase() !== "NONE") {
+              if (!dedupeSelfReview(sess.state.memory, lesson)) {
+                const entryId = `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                sess.state.memory.push({
+                  id: entryId,
+                  kind: "lesson",
+                  text: lesson,
+                  confidence: 0.5,
+                  source: "self-review",
+                  createdAt: Date.now(),
+                  lastAccessed: Date.now(),
+                  accessCount: 0,
+                  pinned: false,
+                  provenance: {
+                    decisionTimestamps: input.decisionTimestamps,
+                    turnRange: [Math.max(0, sess.state.monitor.turnCount - input.decisionTimestamps.length), sess.state.monitor.turnCount],
+                    streak: input.streak,
+                    trigger: trigger,
+                  },
+                });
+                // Evict old self-review lessons (S8: keep max 5, never touch pinned).
+                evictSelfReview(sess.state.memory, 5);
+                sess.state.decisions.push({
+                  timestamp: Date.now(),
+                  loop: "monitor",
+                  action: "self-review",
+                  detail: `${trigger}: ${lesson.slice(0, 80)}`,
+                });
+              } else {
+                sess.state.decisions.push({
+                  timestamp: Date.now(),
+                  loop: "monitor",
+                  action: "self-review",
+                  detail: `${trigger}: dupe, skipped`,
+                });
+              }
+            } else {
+              sess.state.decisions.push({
+                timestamp: Date.now(),
+                loop: "monitor",
+                action: "self-review",
+                detail: `${trigger}: NONE`,
+              });
+            }
+            // Update selfReview state after review.
+            sr.count += 1;
+            if (sr.windowStart === 0) sr.windowStart = now;
+            sr.lastAt = now;
+            sr.turnsSince = 0;
+            sr.pendingPeriodic = false;
+          } catch {
+            // Self-review failed; non-fatal.
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "monitor",
+              action: "self-review",
+              detail: `${trigger}: error`,
+            });
+          }
+          sess.state.updatedAt = now;
+          await persist($);
+          return;
+        }
       }
 
       // 2b. Git probe (E4, C6): time-based cadence, fire-and-forget.
@@ -1174,7 +1282,7 @@ export const register: Register = async (on, options) => {
         `Idle time: ${idleDisplay}\n` +
         `Consecutive nudges sent: ${sess.consecutiveNudgesWithoutOnGoal}\n` +
         `Decisions tail: ${sess.state.decisions.slice(-5).map((d) => `${d.loop}:${d.action}`).join(", ")}\n` +
-        `Memory: ${sess.state.memory.length} entries\n` +
+        `Memory: ${sess.state.memory.length} entries (self-review lessons: ${sess.state.memory.filter((m) => m.source === "self-review").length})\n` +
         envLine +
         `\n` +
         `The session has been idle for ${idleDisplay}.\n` +
@@ -1607,6 +1715,11 @@ export const register: Register = async (on, options) => {
       }
     }
 
+    // S12: increment turnsSince for self-review debounce.
+    if (sess.state.monitor.selfReview) {
+      sess.state.monitor.selfReview.turnsSince += 1;
+    }
+
     // M7: single guarded-write path (shared helper).
     await persist($);
 
@@ -1925,6 +2038,11 @@ export const register: Register = async (on, options) => {
       const nextId = activateNext(sess.state, completedId);
       activate($, nextId, `${completedId} done`);
 
+      // S9: goal_done sets pendingPeriodic; the tick runs the review.
+      if (sess.state.monitor.selfReview) {
+        sess.state.monitor.selfReview.pendingPeriodic = true;
+      }
+
       const writeOk = await persist($);
       if (writeOk) {
         // F4: goal_done result names the health command, exit code, and first tail line.
@@ -2153,6 +2271,27 @@ export const register: Register = async (on, options) => {
         detail: `env_inject: ${facts.join(", ")}`,
       });
       try { $.ui.log(`Agentic: [ENV] injected`); } catch { /* non-fatal */ }
+    }
+
+    // --- Lesson injection (S11: gated on lastInjectAt) ---
+    const recentLessons = sess.state.memory
+      .filter((m) => m.source === "self-review" && m.kind === "lesson")
+      .sort((a, b) => b.createdAt - a.createdAt);
+    if (recentLessons.length > 0) {
+      const newest = recentLessons[0];
+      const sr = sess.state.monitor.selfReview;
+      if (sr && newest.createdAt > sr.lastInjectAt) {
+        const lessonBlock = `[LESSON] ${newest.text}\nA self-review lesson from recent activity. Avoid repeating the same mistake.`;
+        contextBlocks.push(lessonBlock);
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "lesson_inject",
+          detail: `lesson_inject: ${newest.text.slice(0, 80)}`,
+        });
+        sr.lastInjectAt = Date.now();
+        try { $.ui.log(`Agentic: [LESSON] injected`); } catch { /* non-fatal */ }
+      }
     }
 
     // --- Memory injection (MEMQ seam) ---
