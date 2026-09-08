@@ -51,6 +51,8 @@ run_suite() {
   # Check that the suite script exists and has been refactored (v0.8.0+)
   if [ ! -f "$script" ]; then
     echo "FAIL: suite script not found: $script"
+    start_ts="$(date -u +%FT%TZ)"
+    end_ts="$start_ts"
     echo "$suite script_exit=2 started=$start_ts ended=$end_ts exitfile=[missing] assert=[missing]" >> "$SUMMARY"
     return 2
   fi
@@ -58,6 +60,8 @@ run_suite() {
   # Check for the v0.8.0 refactor marker (SUITE_DIR)
   if ! grep -q "SUITE_DIR" "$script" 2>/dev/null; then
     echo "FAIL: suite not refactored: $suite (missing SUITE_DIR)"
+    start_ts="$(date -u +%FT%TZ)"
+    end_ts="$start_ts"
     echo "$suite script_exit=2 started=$start_ts ended=$end_ts exitfile=[not refactored] assert=[not refactored]" >> "$SUMMARY"
     return 2
   fi
@@ -89,10 +93,7 @@ run_suite() {
   # Copy artifacts to the runs directory
   [ -f "$exit_file" ] && cp -f "$exit_file" "$RUN_DIR/$suite.exit"
   [ -f "$assert_log" ] && cp -f "$assert_log" "$RUN_DIR/$suite.assert.log"
-  [ -f "$stdout_log" ] && cp -f "$stdout_log" "$RUN_DIR/$suite.stdout.log"
-  if [ -f "$suite_dir/.agentic-personas.json" ]; then
-    cp -f "$suite_dir/.agentic-personas.json" "$RUN_DIR/$suite.store.json"
-  fi
+  [ -f "$suite_dir/.agentic-personas.json" ] && cp -f "$suite_dir/.agentic-personas.json" "$RUN_DIR/$suite.store.json"
 
   # Write the summary line
   echo "$suite script_exit=$rc started=$start_ts ended=$end_ts exitfile=[$exit_content] assert=[$assert_content]" >> "$SUMMARY"
@@ -110,38 +111,31 @@ echo "Concurrency: $CONCURRENCY"
 echo "Suites: ${SUITES[*]}"
 echo ""
 
-running=()
+# Launch suites in batches of CONCURRENCY
 idx=0
 failures=0
-declare -A suite_rc
+total=${#SUITES[@]}
 
-while [ $idx -lt ${#SUITES[@]} ] || [ ${#running[@]} -gt 0 ]; do
-  # Launch new suites if slots are available
-  while [ ${#running[@]} -lt $CONCURRENCY ] && [ $idx -lt ${#SUITES[@]} ]; do
+while [ $idx -lt $total ]; do
+  # Launch a batch of up to CONCURRENCY suites
+  batch=()
+  while [ ${#batch[@]} -lt $CONCURRENCY ] && [ $idx -lt $total ]; do
     suite="${SUITES[$idx]}"
     run_suite "$suite" &
-    running+=("$!")
+    batch+=("$!")
     idx=$((idx+1))
-    [ $idx -lt ${#SUITES[@]} ] && sleep $STAGGER_S
+    [ $idx -lt $total ] && [ ${#batch[@]} -lt $CONCURRENCY ] && sleep $STAGGER_S
   done
 
-  # Reap finished jobs
-  new_running=()
-  for pid in "${running[@]}"; do
-    if kill -0 "$pid" 2>/dev/null; then
-      new_running+=("$pid")
-    else
-      wait "$pid"
-      rc=$?
-      if [ $rc -ne 0 ]; then
-        failures=$((failures+1))
-        echo "FAIL: pid=$pid rc=$rc"
-      fi
+  # Wait for the batch to complete
+  for pid in "${batch[@]}"; do
+    wait "$pid"
+    rc=$?
+    if [ $rc -ne 0 ]; then
+      failures=$((failures+1))
+      echo "FAIL: pid=$pid rc=$rc"
     fi
   done
-  running=("${new_running[@]:-}")
-
-  [ ${#running[@]} -gt 0 ] && sleep 5
 done
 
 # --- Summary ---
