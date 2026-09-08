@@ -30,6 +30,8 @@ feed() {
   # Plan 8.3: root objective contains "no bash" so the plugin denies Bash calls.
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"no bash: Write one haiku\" and maxRounds 5. Then reply ok."}}'
   wait_turn 1
+  # M1: wait for plan activation before the denials (forces a plan active at either cadence)
+  wait_activation
   # G2: tool-forcing prompts (haiku obeys these per Reviewer Q2 probe)
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Use the Bash tool now to run exactly: echo hello. Make the tool call even if you expect it to be denied; do not explain, report the result in one line."}}'
   wait_turn 2
