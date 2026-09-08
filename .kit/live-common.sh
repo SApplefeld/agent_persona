@@ -20,6 +20,8 @@ case "$PROFILE" in
     ;;
   *)
     echo "Unknown PROFILE: $PROFILE (use full or short)" >&2
+    # Note: exit 1 inside a sourced file terminates the sourcing script.
+    # This is the intended behavior: a bad profile is a fatal error.
     exit 1
     ;;
 esac

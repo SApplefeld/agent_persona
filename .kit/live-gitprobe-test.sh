@@ -1,25 +1,32 @@
 #!/usr/bin/env bash
 # Live test 8.1: git probe.
-# G1: scratch repo in /d/Temp/agentic-env-repo (outside plugin dir, where the plugin initializes).
-# F3: assert ordered dirty=0, dirty=1, dirty=0 (new detail format).
-# F7: env_git_null absent (cwd is a git repo).
-# G1: no-store guard: if store is absent, FAIL (not silent pass).
+# v0.8.0: per-suite directory (also the scratch repo), profile-driven timing, --settings.
 set -u
-cd /d/DeepSeekHarness || exit 9
-OUT=/d/DeepSeekHarness/agentic-plugin/.kit/gitprobe-test.out.jsonl
-ERR=/d/DeepSeekHarness/agentic-plugin/.kit/gitprobe-test.err.log
-EXIT=/d/DeepSeekHarness/agentic-plugin/.kit/gitprobe-test.exit
-RUNNING=/d/DeepSeekHarness/agentic-plugin/.kit/RUNNING
-ENV_REPO=/d/Temp/agentic-env-repo
+
+# --- Configuration ---
+SUITE_DIR="${SUITE_DIR:-/d/Temp/agentic-live/gitprobe}"
+PROFILE="${PROFILE:-short}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# --- Setup ---
+rm -rf "$SUITE_DIR"
+mkdir -p "$SUITE_DIR"
+cd "$SUITE_DIR" || exit 9
+
+source "$SCRIPT_DIR/live-common.sh"
+
+OUT="$SUITE_DIR/gitprobe-test.out.jsonl"
+ERR="$SUITE_DIR/gitprobe-test.err.log"
+EXIT="$SUITE_DIR/gitprobe-test.exit"
+RUNNING="$SUITE_DIR/RUNNING"
 trap 'rm -f "$RUNNING"' EXIT
+
 rm -f "$OUT" "$ERR" "$EXIT"
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 unset CLAUDECODE
 
-# G1: create scratch git repo in /d/Temp (outside the plugin directory)
-rm -rf "$ENV_REPO"
-mkdir -p "$ENV_REPO"
-cd "$ENV_REPO"
+# G1: create scratch git repo in the suite directory
 git init --quiet
 echo ".agentic-*" > .gitignore
 git add .gitignore
@@ -27,8 +34,8 @@ git -c user.name="test" -c user.email="test@test" commit --quiet -m "init"
 
 # I3: anchor git mutations on the observed first sample.
 # Poll the store until it holds env_git first sample, then write untracked file,
-# sleep 160 (120s cadence + 30s tick + 10s slack), commit, sleep 160, touch marker.
-MARKER="$ENV_REPO/.dirty-cycle-done"
+# sleep (GIT_PROBE_MS + TICK_MS + 10s), commit, sleep (GIT_PROBE_MS + TICK_MS + 10s), touch marker.
+MARKER="$SUITE_DIR/.dirty-cycle-done"
 rm -f "$MARKER"
 
 feed() {
@@ -43,32 +50,38 @@ feed() {
 }
 
 # I3: anchored dirty cycle job
+# Derive hold time from GIT_PROBE_MS and TICK_MS: (GIT_PROBE_MS + TICK_MS + 10000) / 1000
+HOLD_S=$(( (GIT_PROBE_MS + TICK_MS + 10000) / 1000 ))
 (
   # Poll the store until it holds env_git first sample
-  _store="$ENV_REPO/.agentic-personas.json"
+  _store="$SUITE_DIR/.agentic-personas.json"
   _n=0
   until grep -q '"env_git"' "$_store" 2>/dev/null; do
     sleep 2; _n=$((_n+2)); [ $_n -ge 180 ] && exit 1
   done
   # Write untracked file (dirty state)
-  echo "untracked" > "$ENV_REPO/untracked.txt"
+  echo "untracked" > "$SUITE_DIR/untracked.txt"
   # Hold dirty state for one probe interval + tick + slack
-  sleep 160
+  sleep $HOLD_S
   # Commit (clean state)
-  cd "$ENV_REPO" && git add untracked.txt && git -c user.name="test" -c user.email="test@test" commit --quiet -m "add untracked"
+  cd "$SUITE_DIR" && git add untracked.txt && git -c user.name="test" -c user.email="test@test" commit --quiet -m "add untracked"
   # Hold clean state for one probe interval + tick + slack
-  sleep 160
+  sleep $HOLD_S
   # Touch marker
   touch "$MARKER"
 ) &
 DIRTY_PID=$!
 
-PLUGIN_DIR=$(cygpath -w /d/DeepSeekHarness/agentic-plugin)
 [ -f "$RUNNING" ] && { echo "RUNNING exists, refusing"; exit 8; }
 echo "DeepSeekHarness $0 $(date -u +%FT%TZ)" > "$RUNNING"
+
+# Emit settings.json for this suite
+emit_settings_json "settings.json"
+
 feed | claude -p --input-format stream-json --output-format stream-json --verbose \
-  --plugin-dir "$PLUGIN_DIR" \
-  --allowedTools "mcp__agentic-plugin__goal_create,mcp__agentic-plugin__memory_add,mcp__agentic-plugin__agentic_identity" \
+  --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" \
+  --settings "$(cygpath -w "$SUITE_DIR/settings.json")" \
+  --allowedTools "mcp__agentic-plugin__goal_create,mcp__agentic-plugin__goal_done,mcp__agentic-plugin__memory_add,mcp__agentic-plugin__agentic_identity" \
   --model haiku \
   > "$OUT" 2> "$ERR"
 EXIT_CODE=$?
@@ -82,13 +95,13 @@ if [ -f .agentic-personas.json ]; then
 const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
 const p = Object.keys(s)[0];
 const d = (s[p].decisions||[]).map(x => new Date(x.timestamp).toISOString().slice(11,19) + ' ' + x.loop + ' | ' + x.action + ' | ' + x.detail);
-require('fs').writeFileSync('D:/DeepSeekHarness/agentic-plugin/.kit/gitprobe-test.decisions.log', d.join('\n') + '\n');
+require('fs').writeFileSync('$SUITE_DIR/gitprobe.decisions.log', d.join('\n') + '\n');
 "
-  node "D:/DeepSeekHarness/agentic-plugin/.kit/assert-decisions.js" gitprobe .agentic-personas.json "D:/DeepSeekHarness/agentic-plugin/.kit/gitprobe-test.assert.log"
+  node "$SCRIPT_DIR/assert-decisions.js" gitprobe .agentic-personas.json "$SUITE_DIR/gitprobe.assert.log"
   ASSERT_EXIT=$?
-  echo "ASSERT: $ASSERT_EXIT" >> "D:/DeepSeekHarness/agentic-plugin/.kit/gitprobe-test.exit"
+  echo "ASSERT: $ASSERT_EXIT" >> "$EXIT"
   if [ $ASSERT_EXIT -ne 0 ]; then
-    echo "Assertion failed" >> "D:/DeepSeekHarness/agentic-plugin/.kit/gitprobe-test.exit"
+    echo "Assertion failed" >> "$EXIT"
     exit 1
   fi
 else
@@ -96,5 +109,4 @@ else
   exit 1
 fi
 rm -f .agentic-personas.json
-rm -rf "$ENV_REPO"
 exit $EXIT_CODE
