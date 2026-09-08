@@ -245,3 +245,26 @@ function releaseResource(resource: string, mySessionId: string) {
 - **v1 (2026-09-08T08:26:00Z)**: Initial proposal on `$.store` substrate with per-session keys and self-contained liveness.
 - **v2 (2026-09-08T08:32:00Z)**: Fixed F1 (first-claim-wins arbitration, not epoch comparison), F2 (live two-session suite as acceptance test in Stage 1), F3 (explicit release semantics), F4 (staleness aligned to `staleAfterMs`, 90s not 10 minutes).
 - **v3 (2026-09-08T08:38:00Z)**: Fixed F5 (re-claim must not touch `claimedAt`; the `if (existingClaim)` branch is a no-op for arbitration, liveness is refreshed by `lastSeen`). Pinned the idempotent-re-claim invariant: `claimResource(R)` is idempotent with respect to ownership - re-invoking it on a resource you hold never changes who holds R.
+
+## 10. Revision table (F9–F16)
+
+| Finding | Fix | File:line | Status |
+|---------|-----|-----------|--------|
+| F9 | Commons is the single arbiter: `agentic_identity` calls `claimResource` FIRST, then `readAllClaims` + `commonsWinner`; non-winner → reader path (no epoch bump, no heartbeat, `isOwner=false`). | `hooks/index.ts:1637-1639` | Done (v0.7.0) |
+| F9a | `staleAfterMs` single-sourced via `sess.staleAfterMs` field (set in `activate` from `cfg.staleAfterMs`); both `readAllClaims` call sites pass it; invariant comment names the three epoch-raising sites. | `hooks/index.ts:67,318,210,1637,198-203` | Done |
+| F10a | Yield-log extraction uses node JSON parse of `rec.yielded` (not `grep -o "yielded=[a-zA-Z0-9-]*"` which matches nothing in JSONL); absent yield log is acceptable (reader path writes no yield line); suite must prove red before green. | `.kit/live-commons-test.sh:~350`, `.kit/live-commons-test.ps1:~370` | Done |
+| F10b | Primary assertions on `out.jsonl` content: (1) exactly one child "active (epoch N, owner)" + one "joined as reader"; (2) reader is later `claimedAt`; (3) writes. Yield-log secondary: 0 or 1 distinct yielder, never 2. Cross-directory variant (`SUITE_DIR_B` sibling) is the acceptance gate; same-directory is epoch-fence regression. | `.kit/live-commons-test.sh:~280-400`, `.kit/live-commons-test.ps1:~330-420` | Done |
+| F11 | `cygpath -m` for Windows path conversion in Cygwin bash. | `.kit/live-commons-test.sh:~190` | Done |
+| F12a | RUNNING marker: `try/finally` removal; PID in marker (`$$` / `$PID`); reclaim-if-PID-dead with log line; `(Get-Date).ToUniversalTime()` for UTC. | `.kit/live-commons-test.sh:~80-90,85`, `.kit/live-commons-test.ps1:~24-58,58,~370` | Done |
+| F13a | Pre-launch poll: loop until `persona:default` has no live claim (bounded 120s, 5s polls). No session-end event exists in the engine — release-on-exit deferred to Future. | `.kit/live-commons-test.sh:~90-125`, `.kit/live-commons-test.ps1:~70-100` | Done |
+| F14 | `gcStaleClaims` in commons.ts; unit test 9 covers GC. | `hooks/commons.ts:~180`, `.kit/commons-unit-test.mjs:~180` | Done |
+| F15 | Store glob: `agentic-plugin_*.json` (not first `*.json`). | `.kit/live-commons-test.sh:~91`, `.kit/live-commons-test.ps1:~72` | Done |
+| F16 | `wait_turn` (poll `"type":"result"` count in `$OUT`) between prompts in feeds; `.ps1` feeds now include `memory_add` second prompt. | `.kit/live-commons-test.sh:~63-78`, `.kit/live-commons-test.ps1:~64-77` | Done |
+
+## 11. Future: release-on-exit
+
+**Blocker**: the engine has no session-end event. The event list in `agentic-plugin/.claude/types/claude-code.d.ts` includes: `agent.offer, attribution.text, prompt.context, prompt.section, session.start, skill.prompt, tool.call, tool.describe, turn.start, ui.input, ui.press, ui.select`. There is no `session.end` or `session.close` event, so a normally-exiting winner cannot release its commons claim on exit.
+
+**Workaround (implemented)**: the suite pre-gates (F13a) by polling the commons store until `persona:default` has no live claim before launching children. This handles the 90s staleness window without requiring a release event.
+
+**Future**: if/when the engine adds a `session.end` event, add a `releaseResource` call in the `on("session.end")` handler for all held commons claims. This would make the 90s staleness window unnecessary for clean handoffs.

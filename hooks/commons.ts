@@ -126,14 +126,41 @@ export async function releaseResource(
 }
 
 /**
+ * F14: garbage-collect stale commons entries (lastSeen older than
+ * stalenessThreshold). Called opportunistically on read.
+ */
+export async function gcStaleClaims(
+  store: CommonsStore,
+  stalenessThresholdMs: number = DEFAULT_STALE_AFTER_MS,
+  now: number = Date.now(),
+): Promise<void> {
+  const allKeys = await store.keys();
+  const keys = allKeys.filter((k) => k.startsWith(COMMONS_PREFIX));
+  for (const key of keys) {
+    const raw = await store.get(key);
+    if (!raw) continue;
+    const entry: CommonsEntry = raw as CommonsEntry;
+    if (now - entry.lastSeen > stalenessThresholdMs) {
+      await store.delete(key);
+    }
+  }
+}
+
+/**
  * Read all claims from all sessions (union).
  * Filters out stale sessions (lastSeen older than stalenessThreshold).
+ * F14: also garbage-collects stale entries on read.
  */
 export async function readAllClaims(
   store: CommonsStore,
   stalenessThresholdMs: number = DEFAULT_STALE_AFTER_MS,
   now: number = Date.now(),
 ): Promise<UnionedClaim[]> {
+  // F14: opportunistic GC of stale entries
+  try {
+    await gcStaleClaims(store, stalenessThresholdMs, now);
+  } catch { /* non-fatal */ }
+
   const allKeys = await store.keys();
   const keys = allKeys.filter((k) => k.startsWith(COMMONS_PREFIX));
   const claims: UnionedClaim[] = [];

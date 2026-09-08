@@ -169,6 +169,61 @@ function check(name, cond) { if (cond) ok(name); else fail(name); }
   check("Test 7: winner is A (tiebreaker)", winner === "session-A");
 }
 
+// --- Test 8: F13 - claim, release, second claimant wins immediately ---
+{
+  const store = createMockStore();
+  const t1 = 1000;
+  const t2 = 2000;
+  const t3 = 3000;
+
+  // A claims first
+  await claimResource(store, "persona:default", "session-A", t1);
+
+  // B claims later (should yield to A)
+  await claimResource(store, "persona:default", "session-B", t2);
+
+  let claims = await readAllClaims(store, 90_000, t2 + 1);
+  let winner = commonsWinner(claims, "persona:default");
+  check("Test 8: A holds before release", winner === "session-A");
+
+  // A releases (session A exits)
+  await releaseResource(store, "persona:default", "session-A", t3);
+
+  // B should now be the winner (A released)
+  claims = await readAllClaims(store, 90_000, t3 + 1);
+  winner = commonsWinner(claims, "persona:default");
+  check("Test 8: B wins after A releases (F13)", winner === "session-B");
+  check("Test 8: B does not yield after A releases", !shouldYieldCommons(claims, "persona:default", "session-B"));
+}
+
+// --- Test 9: F14 - GC stale entries ---
+{
+  const store = createMockStore();
+  const now = Date.now();
+  const stale = now - 100_000; // 100s old, exceeds 90s threshold
+
+  // A claims (will become stale)
+  await claimResource(store, "persona:default", "session-A", stale);
+
+  // B claims (fresh)
+  await claimResource(store, "persona:default", "session-B", now);
+
+  // Read all claims (triggers GC)
+  const claims = await readAllClaims(store, 90_000, now);
+
+  // A's entry should be deleted by GC
+  const entryA = await store.get(commonsKey("session-A"));
+  check("Test 9: stale entry A deleted by GC (F14)", entryA === null);
+
+  // B's entry should remain
+  const entryB = await store.get(commonsKey("session-B"));
+  check("Test 9: fresh entry B remains (F14)", entryB !== null);
+
+  // Winner is B (A was stale and GC'd)
+  const winner = commonsWinner(claims, "persona:default");
+  check("Test 9: winner is B (A GC'd)", winner === "session-B");
+}
+
 // --- Summary ---
 console.log(`\n${failed === 0 ? "All tests passed" : failed + " test(s) FAILED"}`);
 process.exit(failed === 0 ? 0 : 1);

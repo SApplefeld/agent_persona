@@ -82,6 +82,7 @@ const sess: {
   contextBudgetReadEveryNTicks: number;
   contextBudgetTickCount: number;
   contextBudgetLatched: { info: boolean; closeout: boolean; critical: boolean };
+  staleAfterMs: number; // F9a: single-source the staleness threshold
 } = {
   persona: "default",
   mySessionId: "pending",
@@ -100,6 +101,7 @@ const sess: {
   contextBudgetReadEveryNTicks: 3,
   contextBudgetTickCount: 0,
   contextBudgetLatched: { info: false, closeout: false, critical: false },
+  staleAfterMs: 90_000,
 };
 
 // Reentrancy flag for the git probe (E4).
@@ -179,6 +181,11 @@ export const yieldNow = async (dp: any, onDisk: { activeSessionId: string; epoch
     const el = await dp.fs.exists(sess.yieldLogPath) ? await dp.fs.readFile(sess.yieldLogPath) : "";
     await dp.fs.writeFile(sess.yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
   } catch { /* non-fatal */ }
+  // F13: release the commons claim so an exited session does not lock the
+  // persona for the full 90s staleness window.
+  try {
+    await releaseResource(commonsStoreOf(dp), `persona:${sess.persona}`, sess.mySessionId);
+  } catch { /* non-fatal */ }
 };
 
 // M7: single guarded-write path shared by every store write site.
@@ -190,6 +197,12 @@ export const persist = async (dp: any): Promise<boolean> => {
     ? (JSON.parse(await dp.fs.readFile(sess.storePath)) as Record<string, unknown>)
     : {};
   const onDisk = store[sess.persona] as AgentState | undefined;
+  // F9 invariant: three sites raise the epoch — agentic_identity (commons winner),
+  // session.start claim (heartbeat stale), and controller-tick promotion (heartbeat
+  // stale). The two heartbeat-based sites and the commons check all use the same
+  // staleAfterMs threshold (F9a: single-sourced via sess.staleAfterMs), so they
+  // cannot disagree on liveness. The epoch check and commons check here remain as
+  // defense in depth.
   if (onDisk && shouldYield(onDisk, sess.mySessionId, sess.myEpoch)) {
     await yieldNow(dp, onDisk);
     return false;
@@ -198,7 +211,7 @@ export const persist = async (dp: any): Promise<boolean> => {
   // If a live competitor has an earlier claim on this persona, yield.
   try {
     const resource = `persona:${sess.persona}`;
-    const claims = await readAllClaims(commonsStoreOf(dp));
+    const claims = await readAllClaims(commonsStoreOf(dp), sess.staleAfterMs);
     if (shouldYieldCommons(claims, resource, sess.mySessionId)) {
       const winner = commonsWinner(claims, resource);
       // Write to the yield log for observability (same as epoch-based yield).
@@ -221,6 +234,11 @@ export const persist = async (dp: any): Promise<boolean> => {
       });
       sess.isOwner = false;
       try { dp.ui.log(`Agentic: yielded '${sess.persona}' to ${winner} (commons)`); } catch { /* non-fatal */ }
+      // F13: release the commons claim so an exited session does not lock the
+      // persona for the full 90s staleness window.
+      try {
+        await releaseResource(commonsStoreOf(dp), resource, sess.mySessionId);
+      } catch { /* non-fatal */ }
       // Persist the yield decision to disk before returning
       const store2: Record<string, unknown> = await dp.fs.exists(sess.storePath)
         ? (JSON.parse(await dp.fs.readFile(sess.storePath)) as Record<string, unknown>)
@@ -302,6 +320,7 @@ export const register: Register = async (on, options) => {
   const cfg = (options ?? {}) as Record<string, unknown>;
   const heartbeatMs = typeof cfg.heartbeatMs === "number" ? (cfg.heartbeatMs as number) : 30_000;
   const staleAfterMs = typeof cfg.staleAfterMs === "number" ? (cfg.staleAfterMs as number) : 90_000;
+  sess.staleAfterMs = staleAfterMs; // F9a: single-source the threshold
   const controllerTickMs = typeof cfg.controllerTickMs === "number" ? (cfg.controllerTickMs as number) : 30_000;
   const nudgeFloorMs = typeof cfg.nudgeFloorMs === "number" ? (cfg.nudgeFloorMs as number) : 5 * 60_000;
   const nudgeIdleMs = typeof cfg.nudgeIdleMs === "number" ? (cfg.nudgeIdleMs as number) : 2 * 60_000;
@@ -1598,7 +1617,9 @@ export const register: Register = async (on, options) => {
   on("tool.call", async ($, e, next) => {
     sess.state.monitor.totalToolCalls += 1;
 
-    // Serve agentic_identity (forceful claim: always takes ownership).
+    // Serve agentic_identity (F9: single arbiter = commons; epoch is only the
+    // same-directory write fence). Claim in commons FIRST; if a live earlier
+    // holder exists, join as reader (no epoch bump, no ownership).
     if (e.tool === "mcp__agentic-plugin__agentic_identity") {
       const name = String((e as any).persona || "default").trim() || "default";
       sess.persona = name;
@@ -1612,7 +1633,46 @@ export const register: Register = async (on, options) => {
       } else {
         sess.state = createDefaultState(name, sess.mySessionId);
       }
-      // Forceful claim: always take ownership.
+      // F9: commons is the single arbiter. Claim first, then check if a live
+      // earlier holder exists. Only the commons winner takes ownership.
+      const resource = `persona:${sess.persona}`;
+      let winnerId = sess.mySessionId; // default: we are the winner
+      let shouldYieldTo: string | null = null;
+      try {
+        await claimResource(commonsStoreOf($), resource, sess.mySessionId);
+        const claims = await readAllClaims(commonsStoreOf($), sess.staleAfterMs);
+        const winner = commonsWinner(claims, resource);
+        if (winner && winner !== sess.mySessionId) {
+          shouldYieldTo = winner;
+        } else {
+          winnerId = winner ?? sess.mySessionId;
+        }
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "persona_claim_commons",
+          detail: `Claimed ${resource} in commons (session ${sess.mySessionId}, winner ${winnerId})`,
+        });
+      } catch { /* non-fatal: commons is a coordination layer, not a hard dependency */ }
+
+      if (shouldYieldTo) {
+        // F9: a live earlier holder exists. Join as reader, do NOT bump epoch,
+        // do NOT set isOwner, do NOT write the heartbeat.
+        sess.isOwner = false;
+        sess.myEpoch = existing?.epoch ?? 0;
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "passive_reader",
+          detail: `Joining '${sess.persona}' as reader (holder: ${shouldYieldTo}, commons arbitration)`,
+        });
+        try { $.ui.log(`Agentic: joined '${sess.persona}' as reader (held by ${shouldYieldTo})`); } catch { /* non-fatal */ }
+        return {
+          result: `persona '${sess.persona}' is held by session ${shouldYieldTo}; joined as reader. ${sess.state.memory.length} memories.`,
+        };
+      }
+
+      // Commons winner: take ownership, bump epoch, write heartbeat.
       sess.state.activeSessionId = sess.mySessionId;
       sess.state.epoch += 1;
       sess.myEpoch = sess.state.epoch;
@@ -1626,12 +1686,10 @@ export const register: Register = async (on, options) => {
         timestamp: Date.now(),
         loop: "monitor",
         action: "identity_set",
-        detail: `persona '${sess.persona}' (session ${sess.mySessionId}, epoch ${sess.myEpoch}, forced claim)`,
+        detail: `persona '${sess.persona}' (session ${sess.mySessionId}, epoch ${sess.myEpoch}, commons winner)`,
       });
-      // Forceful claim: the one write site allowed to bypass persist's yield check,
-      // because the claimant has already taken ownership (activeSessionId = self).
-      // persist would read the on-disk store (still the previous holder) and wrongly
-      // yield. Write the keyed store directly.
+      // Commons winner: the one write site allowed to bypass persist's yield check,
+      // because the claimant is the commons winner (activeSessionId = self).
       sess.state.updatedAt = Date.now();
       store[sess.persona] = sess.state;
       await $.fs.writeFile(storePath, JSON.stringify(store, null, 2));
@@ -1644,17 +1702,6 @@ export const register: Register = async (on, options) => {
         hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now() };
         await $.fs.writeFile(heartbeatPath, JSON.stringify(hb, null, 2));
       } catch { /* non-fatal */ }
-      // Commons: claim the persona in the machine-global store (Stage 2 integration).
-      try {
-        const resource = `persona:${sess.persona}`;
-        await claimResource(commonsStoreOf($), resource, sess.mySessionId);
-        sess.state.decisions.push({
-          timestamp: Date.now(),
-          loop: "monitor",
-          action: "persona_claim_commons",
-          detail: `Claimed ${resource} in commons (session ${sess.mySessionId})`,
-        });
-      } catch { /* non-fatal: commons is a coordination layer, not a hard dependency */ }
       return {
         result: `persona '${sess.persona}' active (epoch ${sess.myEpoch}, owner). ${sess.state.memory.length} memories.`,
       };
