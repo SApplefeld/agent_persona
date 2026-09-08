@@ -950,18 +950,8 @@ export const register: Register = async (on, options) => {
         return; // Planning gate consumed this tick.
       }
 
-      // 4. No active leaf: activate pending work if any exists (H1), else return.
-      if (!activeNode || activeNode.status !== "active") {
-        const nextId = activateNext(sess.state);
-        if (nextId) {
-          activate($, nextId, "no active leaf, pending work found");
-          await persist($);
-        }
-        return;
-      }
-      const g = activeNode;
-
-      // 4.5. Context budget (2b): read on a sub-cadence, latch on crossing, nudge above close-out.
+      // 3.5. Context budget (2b): read on a sub-cadence, latch on crossing, nudge above close-out.
+      // Runs regardless of whether there's an active goal.
       if (sess.contextBudgetEnabled) {
         sess.contextBudgetTickCount += 1;
         if (sess.contextBudgetTickCount % sess.contextBudgetReadEveryNTicks === 0) {
@@ -1037,6 +1027,17 @@ export const register: Register = async (on, options) => {
           } catch { /* budget read failed; non-fatal */ }
         }
       }
+
+      // 4. No active leaf: activate pending work if any exists (H1), else return.
+      if (!activeNode || activeNode.status !== "active") {
+        const nextId = activateNext(sess.state);
+        if (nextId) {
+          activate($, nextId, "no active leaf, pending work found");
+          await persist($);
+        }
+        return;
+      }
+      const g = activeNode;
 
       // 5. Idle gate.
       const now = Date.now();
