@@ -1,6 +1,6 @@
 # agentic-plugin: live-test runner, v1
 
-Status: Draft. Written before any code. The plan is the contract: the completion entry quotes the assertions this plan names.
+Status: Complete. Written before any code. The plan is the contract: the completion entry quotes the assertions this plan names.
 
 ## 1. Purpose
 
@@ -116,3 +116,38 @@ Quoted in the completion entry:
 | J4 | Section 2 states the removal order: suite writes artifacts → runner copies to `runs/<stamp>/` → runner removes directory. |
 | J5 | Section 2.2 cites the whitespace split (index.ts:82) and states the path contains no spaces. |
 | J6 | Commit the plan before building (this commit). |
+
+---
+
+## Closing (v0.8.0)
+
+### What shipped
+
+1. **Parallel runner** (`.kit/live-all.sh`): concurrency-3 parallel execution of the eight live suites, with a job-slot loop and exit-file lookup. The runner copies artifacts to `runs/<stamp>/` and removes suite directories (kept on red batches, documented in section 4).
+
+2. **Per-suite scratch directories**: each suite runs from `/d/Temp/agentic-live/<suite>/` with its own `.agentic-personas.json`, `.agentic-heartbeat.json`, `.agentic-yields.log`, and flag files. This isolated the suites and made parallel execution safe.
+
+3. **Cadence profiles** (`PROFILE=full|short`): `live-common.sh` defines `TICK_MS`, `NUDGE_IDLE_MS`, and `GIT_PROBE_MS` for both profiles. The `--settings` flag passes the profile to the plugin via `pluginConfigs`. The short profile (10s tick) cuts wall clock from ~50 min serial to 8m46s (target 12m); the full profile (30s tick) runs in 18m40s (target 25m).
+
+### Fixes (M1, N1)
+
+Both were live-session ordering races gated on observed state, not a clock:
+
+| Label | Suite | Root cause | Fix |
+|---|---|---|---|
+| M1 | errorstreak | At full cadence (30s tick), the planning tick fires after all three denied Bash turns, so the streak fires against `no-active-node` and pauses nothing. The plan activates 30s later. Short cadence (10s tick) passes by luck. | Added `wait_activation` after `wait_turn 1` in `feed()` (`.kit/live-errorstreak-test.sh:33`), forcing a plan active before the denials at either cadence. |
+| N1 | yield | Two concurrent `claude -p` sessions (A and B) launched ~`STAGGER_S` apart each take 45-60s to reach turn 1, so which one writes first is a startup race. When B wins, A's write is denied and the ordered assertion fails. | Added `wait_for_fact` helper (`.kit/live-common.sh:73-92`) that polls `.agentic-personas.json` until Session A's first write is observed. Replaced `sleep $STAGGER_S` with `wait_for_fact "Session A owns default"` in `feedB` launch (`.kit/live-yield-test.sh:56`). |
+
+### Gate
+
+Full-cadence 8-suite gate at commit `3f316ec`, run `20260908T061726Z`: **8/8 green, exit 0**. Wall clock 18m40s (target 25m). Short profile: 8m46s (target 12m). Both fixes (M1, N1) confirmed at full cadence.
+
+### Revision table (final)
+
+| Label | Status | File:line | Note |
+|---|---|---|---|
+| J1-J6 | shipped | `.kit/live-all.sh`, `.kit/live-common.sh`, all suites | Plan revisions 1-6 |
+| K1-K5 | shipped | `.kit/live-all.sh` | Runner fixes (honesty gate, job-slot loop, exit-file lookup, summary form, run dir on red) |
+| L1-L7 | shipped | `.kit/live-*.sh`, `hooks/index.ts`, `roadmap-test.md` | Test-construction fixes (errorstreak allowedTools, gitprobe .gitignore, MSYS path bug, runner doc, controller feed, nudge display, goaltree objective) |
+| M1 | shipped | `.kit/live-errorstreak-test.sh:33` | `wait_activation` gate before denials |
+| N1 | shipped | `.kit/live-common.sh:73-92`, `.kit/live-yield-test.sh:56` | `wait_for_fact` gate before Session B launch |
