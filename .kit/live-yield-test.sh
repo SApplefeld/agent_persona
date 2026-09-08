@@ -52,9 +52,8 @@ feedA | claude -p --input-format stream-json --output-format stream-json --verbo
   --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" --settings "$(cygpath -w "$SUITE_DIR/settings.json")" --allowedTools "$TOOLS" --model haiku \
   > "$K"/yield-A.out.jsonl 2> "$K"/yield-A.err.log &
 PA=$!
-# Derive from TICK_MS: 1 * TICK_MS/1000
-STAGGER_S=$(( TICK_MS / 1000 ))
-sleep $STAGGER_S
+# N1: gate Session B on Session A's first write being observed (removes startup race)
+wait_for_fact "Session A owns default" || { echo "FAIL: Session A fact not observed" > "$K"/yield.exit; exit 1; }
 feedB | claude -p --input-format stream-json --output-format stream-json --verbose \
   --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" --settings "$(cygpath -w "$SUITE_DIR/settings.json")" --allowedTools "$TOOLS" --model haiku \
   > "$K"/yield-B.out.jsonl 2> "$K"/yield-B.err.log

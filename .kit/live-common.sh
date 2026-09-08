@@ -62,3 +62,19 @@ count_turn_starts() {  # $1 = store path; returns count of turn_start decisions
     console.log(d.length);
   " 2>/dev/null || echo 0
 }
+
+# N1: wait for a specific fact to appear in memory (used by yield suite to gate Session B)
+wait_for_fact() {  # $1 = fact text to wait for; $2 = store path (optional)
+  local fact="$1"
+  local store="${2:-.agentic-personas.json}"
+  local n=0
+  until node -e "
+    const s = JSON.parse(require('fs').readFileSync('$store','utf8'));
+    const p = Object.keys(s)[0];
+    const m = (s[p].memory||[]);
+    const found = m.some(x => x.text === '$fact');
+    process.exit(found ? 0 : 1);
+  " 2>/dev/null; do
+    sleep 2; n=$((n+2)); [ $n -ge 180 ] && return 1
+  done
+}
