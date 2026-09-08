@@ -70,8 +70,24 @@ count_turn_starts() {  # $1 = store path; returns count of turn_start decisions
   " 2>/dev/null || echo 0
 }
 
-# T9: pre-gate - wait until no live persona claim exists in the commons store.
-# Mirrors the commons F13a gate (live-commons-test.sh:147-187).
+# V3: find the global commons store (same lookup as commons F15).
+# Echoes the store path, or empty if not found.
+find_global_store() {
+  local f
+  if [ -d "$HOME/.claude/plugins/store" ]; then
+    for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
+      if [ -f "$f" ]; then
+        echo "$f"
+        return 0
+      fi
+    done
+  fi
+  echo ""
+  return 0
+}
+
+# T9/V3: pre-gate - wait until no live persona claim exists in the commons store.
+# Fails closed on a read error (V3). Prints live=/oldest_age= per poll (V3).
 # Usage: wait_persona_free <store-path> [timeout-seconds]
 wait_persona_free() {
   local store="${1:-.agentic-personas.json}"
@@ -79,34 +95,47 @@ wait_persona_free() {
   local n=0
   local store_w
   store_w=$(cygpath -m "$store" 2>/dev/null || echo "$store")
+  [ -f "$store" ] || { echo "T9: pre-gate FAIL: store not found: $store" >&2; return 1; }
   echo "T9: pre-gate: waiting for no live persona claim (store: $store, timeout: ${timeout}s)..."
   while true; do
-    local live
-    live=$(node -e "
+    local line live rc
+    # node prints "live=N oldest_age=Ss" or "ERROR: <msg>" on read failure (V3: fail closed)
+    line=$(node -e "
 const fs = require('fs');
+let s;
 try {
-  const s = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
-  const keys = Object.keys(s).filter(k => k.startsWith('commons:'));
-  const now = Date.now();
-  const stale = 90000;
-  let live = 0;
-  for (const key of keys) {
-    const e = s[key];
-    if (e.lastSeen && (now - e.lastSeen) < stale && e.claims) {
-      for (const c of e.claims) {
-        if (c.resource === 'persona:default') live++;
-      }
+  s = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+} catch (e) {
+  console.log('ERROR: ' + e.message);
+  process.exit(2);
+}
+const keys = Object.keys(s).filter(k => k.startsWith('commons:'));
+const now = Date.now();
+const stale = 90000;
+let live = 0, oldest = 0;
+for (const key of keys) {
+  const e = s[key];
+  if (e.lastSeen && (now - e.lastSeen) < stale && e.claims) {
+    for (const c of e.claims) {
+      if (c.resource === 'persona:default') { live++; if (oldest === 0 || e.lastSeen < oldest) oldest = e.lastSeen; }
     }
   }
-  console.log(live);
-} catch { console.log(0); }
-" "$store_w" 2>/dev/null)
+}
+console.log('live=' + live + ' oldest_age=' + (oldest ? Math.round((now - oldest) / 1000) : 0) + 's');
+" "$store_w")
+    rc=$?
+    if [ $rc -ne 0 ] || echo "$line" | grep -q '^ERROR'; then
+      echo "T9: pre-gate FAIL: read error: $line" >&2
+      return 1
+    fi
+    live=$(echo "$line" | sed -n 's/.*live=\([0-9]*\).*/\1/p')
+    echo "T9: pre-gate poll: $line"
     if [ "${live:-0}" = "0" ]; then
       echo "T9: pre-gate passed (no live claims)"
       return 0
     fi
     n=$((n + 5))
-    [ $n -ge $timeout ] && { echo "T9: pre-gate timeout after ${n}s (still $live live claims)"; return 1; }
+    [ $n -ge $timeout ] && { echo "T9: pre-gate timeout after ${n}s ($line)"; return 1; }
     sleep 5
   done
 }

@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
-# Live test runner: runs the ten suites in parallel at concurrency 3.
+# Live test runner: runs the ten suites serially (V4: CONCURRENCY=1).
 # Usage: live-all.sh [suite...]
 #   Suites: errorstreak, health, gitprobe, controller, goaltree, goaltree-stall, planfail, yield, budget, commons
 #   Default: all ten.
 #
-# Concurrency: CONCURRENCY=3 (variable at top).
-# Wall clock targets: full <= 25 min, short <= 12 min.
-
+# V4: serial execution (one suite at a time, no stagger).
+# Wall clock targets: full <= 25 min, short <= 12 min (serial, no overlap).
 set -u
 
 # --- Configuration ---
-CONCURRENCY=3
-STAGGER_S=30
+CONCURRENCY=1   # V4: serial - one suite at a time
+STAGGER_S=0
 PROFILE="${PROFILE:-short}"
 
 # --- Paths ---
@@ -41,6 +40,15 @@ echo "DeepSeekHarness live-all.sh $STAMP" > "$GLOBAL_RUNNING"
 SUMMARY="$RUN_DIR/summary.txt"
 echo "start $(date -u +%FT%TZ) HEAD $HEAD_SHORT PROFILE $PROFILE" > "$SUMMARY"
 
+# V3: find the global commons store for the pre-gate
+source "$SCRIPT_DIR/live-common.sh"
+GLOBAL_STORE="$(find_global_store)"
+if [ -z "$GLOBAL_STORE" ]; then
+  echo "ERROR: no global commons store found (cannot run live suites)" >&2
+  rm -f "$GLOBAL_RUNNING"
+  exit 9
+fi
+
 # --- Helper: run one suite in its private directory ---
 run_suite() {
   local suite="$1"
@@ -68,6 +76,10 @@ run_suite() {
 
   start_ts="$(date -u +%FT%TZ)"
 
+  # V4: pre-gate for every suite (not just the persona suites)
+  echo "live-all: pre-gate for $suite..."
+  wait_persona_free "$GLOBAL_STORE" 120 || { echo "FAIL: pre-gate for $suite"; return 1; }
+
   # Run the suite
   local stdout_log="$RUN_DIR/$suite.stdout.log"
   SUITE_DIR="$suite_dir" PROFILE="$PROFILE" bash "$script" > "$stdout_log" 2>&1
@@ -76,10 +88,6 @@ run_suite() {
   end_ts="$(date -u +%FT%TZ)"
 
   # Read the artifacts the suite wrote
-  # The suite scripts write their exit file with various names:
-  # health-test.exit, errorstreak-test.exit, gitprobe-test.exit, ctrl-test.exit,
-  # goaltree.exit, goaltree-stall.exit, planfail.exit, yield.exit
-  # and their assert log as <suite>.assert.log
   local exit_file=""
   for candidate in "$suite_dir/${suite}-test.exit" "$suite_dir/${suite}.exit" "$suite_dir/ctrl-test.exit"; do
     if [ -f "$candidate" ]; then
@@ -92,20 +100,20 @@ run_suite() {
   local assert_content="missing"
 
   if [ -f "$exit_file" ]; then
-    # Replace newlines with spaces for the summary
     exit_content="$(tr '\n' ' ' < "$exit_file")"
   fi
   if [ -f "$assert_log" ]; then
-    # Replace newlines with semicolons for the summary
     assert_content="$(tr '\n' ';' < "$assert_log")"
   fi
 
-  # Copy artifacts to the runs directory
+  # V4: preserve failure logs before rm -rf (copy key artifacts to RUN_DIR)
   [ -f "$exit_file" ] && cp -f "$exit_file" "$RUN_DIR/$suite.exit"
   [ -f "$assert_log" ] && cp -f "$assert_log" "$RUN_DIR/$suite.assert.log"
   [ -f "$suite_dir/.agentic-personas.json" ] && cp -f "$suite_dir/.agentic-personas.json" "$RUN_DIR/$suite.store.json"
-  # L3: copy the decisions log
   [ -f "$suite_dir/$suite.decisions.log" ] && cp -f "$suite_dir/$suite.decisions.log" "$RUN_DIR/$suite.decisions.log"
+  [ -f "$suite_dir/$suite-test.err.log" ] && cp -f "$suite_dir/$suite-test.err.log" "$RUN_DIR/$suite.err.log"
+  [ -f "$suite_dir/$suite-test.out.jsonl" ] && cp -f "$suite_dir/$suite-test.out.jsonl" "$RUN_DIR/$suite.out.jsonl"
+  [ -f "$suite_dir/$suite-test.debug.log" ] && cp -f "$suite_dir/$suite-test.debug.log" "$RUN_DIR/$suite.debug.log"
 
   # Write the summary line
   echo "$suite script_exit=$rc started=$start_ts ended=$end_ts exitfile=[$exit_content] assert=[$assert_content]" >> "$SUMMARY"
@@ -116,38 +124,30 @@ run_suite() {
   return $rc
 }
 
-# --- Job-slot loop (concurrency 3, 30s stagger) ---
+# --- Serial loop (V4: CONCURRENCY=1) ---
 echo "=== live-all.sh start $STAMP ==="
 echo "Profile: $PROFILE"
-echo "Concurrency: $CONCURRENCY"
+echo "Concurrency: $CONCURRENCY (serial)"
 echo "Suites: ${SUITES[*]}"
+echo "Global store: $GLOBAL_STORE"
 echo ""
 
-# Launch suites in batches of CONCURRENCY
-idx=0
 failures=0
 total=${#SUITES[@]}
+idx=0
 
 while [ $idx -lt $total ]; do
-  # Launch a batch of up to CONCURRENCY suites
-  batch=()
-  while [ ${#batch[@]} -lt $CONCURRENCY ] && [ $idx -lt $total ]; do
-    suite="${SUITES[$idx]}"
-    run_suite "$suite" &
-    batch+=("$!")
-    idx=$((idx+1))
-    [ $idx -lt $total ] && [ ${#batch[@]} -lt $CONCURRENCY ] && sleep $STAGGER_S
-  done
-
-  # Wait for the batch to complete
-  for pid in "${batch[@]}"; do
-    wait "$pid"
-    rc=$?
-    if [ $rc -ne 0 ]; then
-      failures=$((failures+1))
-      echo "FAIL: pid=$pid rc=$rc"
-    fi
-  done
+  suite="${SUITES[$idx]}"
+  echo "--- [$((idx+1))/$total] $suite ---"
+  run_suite "$suite"
+  rc=$?
+  if [ $rc -ne 0 ]; then
+    failures=$((failures+1))
+    echo "FAIL: $suite rc=$rc"
+  else
+    echo "PASS: $suite"
+  fi
+  idx=$((idx+1))
 done
 
 # --- Summary ---
