@@ -1,6 +1,6 @@
 # agentic-plugin: environment monitor, v0.7.0
 
-Status: In Progress (v0.7.0-a). Target version v0.7.0. Written before any code. The plan is the contract: the completion entry for v0.7.0 quotes the assertions this plan names.
+Status: Complete (v0.7.0, a271805 plus this commit). Target version v0.7.0. Written before any code. The plan is the contract: the completion entry for v0.7.0 quotes the assertions this plan names.
 
 Stage 1 (goal tree and plan selection) is Complete at v0.6.4 (commit 2ef521d). This plan is Stage 2: the environment monitor.
 
@@ -381,3 +381,5 @@ The implementation order is:
 | I1 | The live test feeds used fixed sleeps between prompts, which raced `claude` startup (45 to 60 s) and turn length (47 to 63 s), so prompts written while a turn was open were appended into that turn and the fold counted fewer turns than intended. Fix: add a shared `live-common.sh` with a `wait_turn` helper that gates each feed prompt on the previous turn's `result` line; source it in all eight live suites and use it between every pair of prompts. Where a suite deliberately waits for a controller tick with no prompt in between, the sleep stays. (Section 8, live test scripts.) |
 | I2 | `envNotable` (agent-state.ts:96) pushed the `errors: streak N` fact at `>= 2`, while the controller escalation branch (index.ts:578) fires at `>= 3`. The agent was told one turn before the controller escalated. Fix: align both at `>= 3`; the `[ENV]` fact now appears in the same tick the controller pauses. (Section 4, agent-state.ts envNotable.) |
 | I3 | The gitprobe test anchored mutations on script start (untracked at +60 s, commit at +200 s), but the first probe sample lands at +45 to 60 s (startup), shifting every later probe and leaving the 140 s dirty window between samples. Fix: anchor the mutations on the observed first sample; poll the store until it holds `env_git`, then write the untracked file, hold 160 s (120 s cadence + 30 s tick + 10 s slack), commit, hold 160 s, touch a marker; the feed waits for the marker (ceiling 480 s) before sending `done`. (Section 8.1, live-gitprobe-test.sh.) |
+
+**Scoring note (I1):** The scorer marks each forced-Bash turn `off-goal-by-instruction`, so denied turns count as rounds. In the errorstreak test, three denied turns consumed three of the root's five rounds before the streak paused the plan. This is by design (a denied call is off-goal by construction); documented here so it is not later filed as a bug.
