@@ -243,23 +243,23 @@ One section per commit, each with its gate:
 
 | Tick | Time | Idle | Turn completes at | Hash | Nudge cap | Expected decision |
 |------|------|------|-------------------|------|-----------|-------------------|
-| 1 | 0 s | 0 s | — | H1 | 0/2 | `controller_tick` (classify, reason) |
-| 2 | 10 s | 10 s | — | H1 | 0/2 | `controller_tick` (unchanged, skipped) |
-| 3 | 20 s | 20 s | — | H1 | 0/2 | `cost_summary` (classify 1, reason 1, nudge 0) |
-| 4 | 30 s | 30 s | — | H1 | 0/2 | `controller_tick` (unchanged, skipped) |
-| 5 | 40 s | 40 s | — | H1 | 0/2 | `controller_tick` (unchanged, skipped) |
-| 6 | 50 s | 50 s | — | H1 | 0/2 | `cost_summary` (classify 1, reason 1, nudge 0) |
+| 1 | 0 s | 0 s | - | H1 | 0/2 | `controller_tick` (classify, reason) |
+| 2 | 10 s | 10 s | - | H1 | 0/2 | `controller_tick` (unchanged, skipped) |
+| 3 | 20 s | 20 s | - | H1 | 0/2 | `cost_summary` (classify 1, reason 1, nudge 0) |
+| 4 | 30 s | 30 s | - | H1 | 0/2 | `controller_tick` (unchanged, skipped) |
+| 5 | 40 s | 40 s | - | H1 | 0/2 | `controller_tick` (unchanged, skipped) |
+| 6 | 50 s | 50 s | - | H1 | 0/2 | `cost_summary` (classify 1, reason 1, nudge 0) |
 | 7 | 60 s | 60 s | ~75 s | H1 | 0/2 | `controller_tick` (classify, reason, nudge sent) |
-| 8 | 70 s | ~5 s | — | H1 | 1/2 | `controller_tick` (unchanged, skipped) |
-| 9 | 80 s | ~15 s | — | H1 | 1/2 | `cost_summary` (classify 2, reason 2, nudge 1) |
-| 10 | 90 s | ~25 s | — | H1 | 1/2 | `controller_tick` (unchanged, skipped) |
-| 11 | 100 s | ~35 s | — | H1 | 1/2 | `controller_tick` (unchanged, skipped) |
-| 12 | 110 s | ~45 s | — | H1 | 1/2 | `cost_summary` (classify 2, reason 2, nudge 1) |
-| 13 | 120 s | ~55 s | — | H1 | 1/2 | `controller_tick` (unchanged, skipped) |
+| 8 | 70 s | ~5 s | - | H1 | 1/2 | `controller_tick` (unchanged, skipped) |
+| 9 | 80 s | ~15 s | - | H1 | 1/2 | `cost_summary` (classify 2, reason 2, nudge 1) |
+| 10 | 90 s | ~25 s | - | H1 | 1/2 | `controller_tick` (unchanged, skipped) |
+| 11 | 100 s | ~35 s | - | H1 | 1/2 | `controller_tick` (unchanged, skipped) |
+| 12 | 110 s | ~45 s | - | H1 | 1/2 | `cost_summary` (classify 2, reason 2, nudge 1) |
+| 13 | 120 s | ~55 s | - | H1 | 1/2 | `controller_tick` (unchanged, skipped) |
 | 14 | 130 s | ~65 s | ~145 s | H1 | 1/2 | `controller_tick` (classify, reason, nudge sent) |
-| 15 | 140 s | ~5 s | — | H2 | 2/2 | `cost_cap_reached` (nudge cap latched) |
-| 16 | 150 s | ~15 s | — | H2 | 2/2 | `controller_tick` (skipped, cap latched) |
-| 17 | 160 s | ~25 s | — | H2 | 2/2 | `cost_summary` (classify 3, reason 3, nudge 2) |
+| 15 | 140 s | ~5 s | - | H2 | 2/2 | `cost_cap_reached` (nudge cap latched) |
+| 16 | 150 s | ~15 s | - | H2 | 2/2 | `controller_tick` (skipped, cap latched) |
+| 17 | 160 s | ~25 s | - | H2 | 2/2 | `cost_summary` (classify 3, reason 3, nudge 2) |
 
 **Assertions (order-based, not tick-based):**
 - Two `nudge_sent` decisions

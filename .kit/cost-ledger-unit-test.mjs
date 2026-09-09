@@ -9,6 +9,7 @@ const {
   isCapReached,
   backoffFactor,
   estimateTokens,
+  bumpWindow,
 } = await import("../hooks/cost-ledger.ts");
 
 let failed = 0;
@@ -107,6 +108,27 @@ check("estimateTokens: zero maxTokens",
 
 check("estimateTokens: both zero",
   estimateTokens(0, 0) === 0);
+
+// --- Bump window ---
+// Fresh window (start = 0): set start to now, count = 1
+check("bumpWindow: fresh window starts at now",
+  JSON.stringify(bumpWindow({ start: 0, count: 0 }, 5000)) === JSON.stringify({ start: 5000, count: 1 }));
+
+// Active window, within 1 hour: increment count
+check("bumpWindow: active window increments count",
+  JSON.stringify(bumpWindow({ start: 1000, count: 5 }, 3000000)) === JSON.stringify({ start: 1000, count: 6 }));
+
+// Expired window (now - start >= 3600000): roll to new window
+check("bumpWindow: expired window rolls",
+  JSON.stringify(bumpWindow({ start: 1000, count: 5 }, 3601000)) === JSON.stringify({ start: 3601000, count: 1 }));
+
+// Exactly at the boundary (now - start = 3600000): rolls
+check("bumpWindow: exactly at boundary rolls",
+  JSON.stringify(bumpWindow({ start: 1000, count: 5 }, 3601000)) === JSON.stringify({ start: 3601000, count: 1 }));
+
+// Just before the boundary (now - start = 3599999): does not roll
+check("bumpWindow: just before boundary increments",
+  JSON.stringify(bumpWindow({ start: 1000, count: 5 }, 3600999)) === JSON.stringify({ start: 1000, count: 6 }));
 
 // --- Summary ---
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"}: ${failed} failures`);

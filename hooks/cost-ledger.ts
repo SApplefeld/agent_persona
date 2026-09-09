@@ -59,3 +59,19 @@ export function estimateTokens(
 ): number {
   return Math.floor(promptChars / 4) + maxTokens;
 }
+
+// --- Window bump ---
+// Rolls the window when now - start >= 3600000, then increments count, returns the new window.
+// If start is 0 (no window started), set start to now.
+export function bumpWindow(
+  window: { start: number; count: number },
+  now: number,
+): { start: number; count: number } {
+  if (window.start === 0) {
+    return { start: now, count: 1 };
+  }
+  if (now - window.start >= 3600000) {
+    return { start: now, count: 1 };
+  }
+  return { start: window.start, count: window.count + 1 };
+}
