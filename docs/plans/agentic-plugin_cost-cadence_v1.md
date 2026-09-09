@@ -1,6 +1,6 @@
 # agentic-plugin : cost and cadence (item 6)
 
-**Status:** Draft (v2, for Reviewer review)
+**Status:** Draft (v3, for Reviewer review)
 **Created:** 2026-09-09T13:40:33Z (commit `4fa322d`)
 **Program item:** 6 (cost and cadence)
 **Supersedes:** N/A (new item)
@@ -16,7 +16,7 @@ All read at commit `a8fb23f`.
 - No hook event carries API usage. `TurnCompleteInput` (`.claude/types/claude-code.d.ts:4200`) has a reason and nothing else. The `usage` block at `:5031` belongs to the SDK result message, which hooks never see. So per-turn main-model cost cannot be read. It can only be estimated from the transcript, which the budget monitor already does at `hooks/index.ts:1184-1198`.
 - `$.model.complete` and `$.model.classify` return text only (`:629`, `:664`). Only `$.model.fork` returns `ModelForkUsage` (`:2034`). The plugin's own model calls therefore have no exact cost either. They have a known count and a known cap: classify at `:1371` and the reason call at `:1432` with `maxTokens: 30` on every controller tick, self-review at `:789` with `maxTokens: 80`, planner at `:1057` with `maxTokens: 1500`.
 - Cadence knobs today (`:352-373`): heartbeat 30 s, controller tick 30 s, nudge floor 5 min, nudge idle 2 min, budget read every 3 ticks, git probe 120 s, health timeout 60 s.
-- The controller pays two haiku calls every 30 s whether or not anything changed since the last tick. On an idle session that is 240 calls an hour to reach the same decision.
+- The controller pays two calls per 30 s tick whether or not anything changed since the last tick. On an idle session that is 240 calls an hour to reach the same decision.
 - Each nudge starts a full main-model turn. That is the expensive unit, and the plugin decides when it happens.
 
 ## 3. Design
@@ -25,7 +25,9 @@ All read at commit `a8fb23f`.
 
 Add `monitor.cost` to the state: counts by site (`classify`, `reason`, `selfReview`, `planner`, `nudge`) and an estimated token total per site computed as prompt chars over 4 plus the `maxTokens` cap. Label it an estimate in the field name (`estTokens`). Emit a `cost_summary` decision every N ticks (config `costSummaryEveryNTicks`, default 20) with the counts and the running estimate. Fork usage, where fork is ever used, is exact and goes in a separate field so exact and estimated are never summed.
 
-**Ledger increments (AG1):**
+The `nudge` site is count-only because the nudge's cost is a main-model turn the hooks cannot measure.
+
+**Ledger increments:**
 
 | Site | Location | Field incremented |
 |------|----------|-------------------|
@@ -33,48 +35,58 @@ Add `monitor.cost` to the state: counts by site (`classify`, `reason`, `selfRevi
 | planner | `hooks/index.ts:1057` | `monitor.cost.planner.count`, `monitor.cost.planner.estTokens` |
 | classify | `hooks/index.ts:1371` | `monitor.cost.classify.count`, `monitor.cost.classify.estTokens` |
 | reason | `hooks/index.ts:1432` | `monitor.cost.reason.count`, `monitor.cost.reason.estTokens` |
-| nudge | `hooks/index.ts:1470` | `monitor.cost.nudge.count`, `monitor.cost.nudge.estTokens` |
+| nudge | `hooks/index.ts:1470` | `monitor.cost.nudge.count` (count-only, no estTokens) |
 
 **Emission:** Every `costSummaryEveryNTicks` ticks (default 20), emit `cost_summary` decision with detail string:
 ```
 classify 40, reason 40, selfReview 2, planner 1, nudge 3; est 9800 tokens
 ```
 
-**State shape (AG2):**
+**Interface:** Add the `cost` member to the `monitor` interface at `hooks/agent-state.ts:112-124` (where `selfReview` shows the shape and comment style):
 
 ```typescript
-// hooks/agent-state.ts:165 (fresh-state constructor)
-monitor: {
-  cost: {
+// hooks/agent-state.ts:112-124 (monitor interface)
+cost: {
+  classify: { count: number; estTokens: number };
+  reason: { count: number; estTokens: number };
+  selfReview: { count: number; estTokens: number };
+  planner: { count: number; estTokens: number };
+  nudge: { count: number }; // count-only, no estTokens
+  forkUsage: null | { inputTokens: number; outputTokens: number };
+  lastCostSummaryTick: number;
+  consecutiveSkips: number; // used by D2 and D4
+  nudgeWindow: { start: number; count: number }; // fixed 1-hour window
+  callWindow: { start: number; count: number }; // fixed 1-hour window
+}
+```
+
+**Migration:** Put the `cost` default at `hooks/agent-state.ts:329` (third in the list after `env` at `:329` and `selfReview` at `:338`), filling it "whenever it is absent, whatever the version" like E11 and S12:
+
+```typescript
+// hooks/agent-state.ts:329 (migration, after env and selfReview)
+if (!parsed.state.monitor.cost) {
+  parsed.state.monitor.cost = {
     classify: { count: 0, estTokens: 0 },
     reason: { count: 0, estTokens: 0 },
     selfReview: { count: 0, estTokens: 0 },
     planner: { count: 0, estTokens: 0 },
-    nudge: { count: 0, estTokens: 0 },
-    forkUsage: null as null | { inputTokens: number; outputTokens: number },
+    nudge: { count: 0 },
+    forkUsage: null,
     lastCostSummaryTick: 0,
-  }
-}
-
-// hooks/agent-state.ts:307 (migration defaults)
-cost: {
-  classify: { count: 0, estTokens: 0 },
-  reason: { count: 0, estTokens: 0 },
-  selfReview: { count: 0, estTokens: 0 },
-  planner: { count: 0, estTokens: 0 },
-  nudge: { count: 0, estTokens: 0 },
-  forkUsage: null,
-  lastCostSummaryTick: 0,
+    consecutiveSkips: 0,
+    nudgeWindow: { start: 0, count: 0 },
+    callWindow: { start: 0, count: 0 },
+  };
 }
 ```
 
-**Test that proves migration:** Load a v0.11.0 store fixture, assert `cost` present (not undefined).
+**Migration test:** Load a version 4 fixture without `cost` at `.kit/fixtures/state-v4-no-cost.json` (a new directory, since none exists), call the loader, and assert `cost` present.
 
 ### D2. Idle tick skip
 
 Before calling classify, hash the controller summary. If the hash equals the previous tick's and no turn has completed since, skip both haiku calls and record `controller_tick` with detail `unchanged, skipped`. The nudge decision from the previous tick carries forward. This is where most of the saving is and it changes no behavior on an active session.
 
-**Hash input (AG3):** The controller summary at `hooks/index.ts:1301-1320` includes fields that change every tick (`Idle time`, `Consecutive nudges sent`, `Decisions tail`). Hash only a stable subset:
+**Hash input:** The controller summary at `hooks/index.ts:1301-1320` includes fields that change every tick (`Idle time`, `Consecutive nudges sent`, `Decisions tail`). Hash only a stable subset:
 - objective
 - node id, kind, status, round
 - last 5 scores
@@ -93,19 +105,35 @@ Exclude: idle time, nudge count, decisions tail.
 
 When both have elapsed, run classify as today. This ensures the skip never silences a due nudge.
 
-**Skip counter (AG1):** The skip counter lives at `sess.state.monitor.cost.consecutiveSkips`. The timer at `:713` consults it to determine the effective interval.
+**Skip counter:** The skip counter lives at `sess.state.monitor.cost.consecutiveSkips`. The timer at `:713` consults it to determine the effective interval.
 
 ### D3. Caps
 
-Two caps with rolling one-hour windows: `costMaxNudgesPerHour` (default 12) and `costMaxPluginCallsPerHour` (default 600). When a cap is hit, record `cost_cap_reached` once per window, stop the capped action until the window rolls, and keep the ledger running. The supervisor does not need to read this; it is an inner-loop brake.
+Two caps with fixed one-hour windows: `costMaxNudgesPerHour` (default 12) and `costMaxPluginCallsPerHour` (default 600). When a cap is hit, record `cost_cap_reached` once per window, stop the capped action until the window rolls, and keep the ledger running. The supervisor does not need to read this; it is an inner-loop brake.
 
-**Arithmetic (AG4):** The controller pays two calls per 30 s tick, which is 240 calls/hour on an active session. The default of 600 allows for 2.5 hours of continuous activity before tripping. Count only calls actually made (skipped ticks do not count).
+Because the cap lives in the persisted state, a cap latched by child 1 still holds for child 2 under the supervisor, which is the behavior a cap is for.
+
+**Arithmetic:** The controller pays two calls per 30 s tick, which is 240 calls/hour on an active session. The default of 600 allows for 2.5 hours of continuous activity before tripping. Count only calls actually made (skipped ticks do not count).
+
+**Window data structure:** Use the same fixed-window shape as `selfReview.windowStart` and `count` at `:116-119`, reset when `now - windowStart >= 3600000`:
+
+```typescript
+// Inside monitor.cost
+nudgeWindow: { start: number; count: number }; // fixed 1-hour window
+callWindow: { start: number; count: number }; // fixed 1-hour window
+```
+
+Fixed windows are bounded memory and one comparison; a timestamp ring is neither.
+
+**Nudge cap latch:** Once the nudge cap is latched, the controller also skips classify, because there is nothing left to actuate and paying for the decision is the waste D2 exists to stop.
 
 ### D4. Backoff
 
-After K consecutive skipped ticks (config `costBackoffAfterTicks`, default 10) double the effective controller interval up to `costBackoffMaxMs` (default 5 min), and reset to `controllerTickMs` on the next turn start. Implement as a skip count inside the existing 30 s timer, not a second timer, so the heartbeat cadence is untouched.
+After K consecutive skipped ticks (config `costBackoffAfterTicks`, default 10), the controller skips the classify-and-nudge section more often. Implement as a skip count inside the existing 30 s timer, not a second timer, so the heartbeat cadence is untouched.
 
-**Skip counter location (AG1):** `sess.state.monitor.cost.consecutiveSkips` (number, starts at 0). The timer at `hooks/index.ts:713` reads this value and doubles the interval until `costBackoffMaxMs` is reached.
+**Mechanism:** An in-session `tickIndex` incremented at the top of the callback; `factor = min(2 ^ floor(consecutiveSkips / costBackoffAfterTicks), floor(costBackoffMaxMs / controllerTickMs))`; the classify-and-nudge section runs only when `tickIndex % factor === 0`. Reset `consecutiveSkips` to 0 in the `turn.start` handler at `:1545`.
+
+**Safety:** The same callback also runs the error-streak branch (2a), self-review (2a2), the budget read (3.5), and the planning gate (3). Backoff must gate only the idle classify section from step 5 at `:1269` onward. If the factor skips the whole callback, a backed-off session stops reading its context budget and the supervisor's critical trigger goes dark.
 
 ## 4. Config
 
@@ -119,6 +147,8 @@ Six new options, read from `cfg` at `:351` like the budget options:
 | `costBackoffAfterTicks` | 10 | No | Internal tuning, not operator-facing |
 | `costBackoffMaxMs` | 300000 | No | Internal tuning, not operator-facing |
 | `costEnabled` | true | Yes | Master switch, operator should be able to disable |
+
+**`costEnabled` behavior:** When `costEnabled` is `false`, disable the skip (D2), the caps (D3), and the backoff (D4); the ledger (D1) always runs, because it is cheap and the suite and the summary read it.
 
 ## 5. Out of scope
 
@@ -148,23 +178,22 @@ nohup bash .kit/live-all.sh > .kit/runs/liveall-$(date -u +%Y%m%dT%H%M%SZ).log 2
 
 Then poll in separate short calls until the newest `summary.txt` has its `done` line, and read `Failures:` from the log. Paste that summary. Never paste a wrapper timeout as a suite result.
 
-### Red-run statement (AG5)
+### Red-run statement
 
 A red run is any suite with `script_exit != 0` or `ASSERT:` count > 0 in the summary. Paste the full summary line for the red suite, the run dir, and the exit code. Do not close over a red.
 
 **Before code:** `.kit/live-cost-test.sh` at HEAD fails at assertion 1, `cost_summary` absent, exit 1. Paste this in the hand-back.
 
-### Commit convention (AG5)
+### Commit convention
 
 Use the repository's existing conventions:
 - `PLAN:` for plan doc changes
 - `PLUGIN:` for `hooks/` changes
-- `SUITE:` for `.kit/` changes
-- `TEST:` for test file changes
+- `SUITE:` for `.kit/` changes (including unit tests in `.kit/`)
 - `README:` for README changes
 - `CLOSE:` for closing commits
 
-## 8. Build order (AG6)
+## 8. Build order
 
 One section per commit, each with its gate:
 
@@ -194,7 +223,7 @@ One section per commit, each with its gate:
 
 ### 5. Backoff (D4)
 
-**Commit:** `PLUGIN: cost backoff (consecutive skips, double interval).`
+**Commit:** `PLUGIN: cost backoff (consecutive skips, tickIndex % factor).`
 
 **Gate:** Unit test on the schedule green, live suite green.
 
@@ -205,20 +234,48 @@ One section per commit, each with its gate:
 **Gate:** Full live-all green, close.
 
 **Live suite settings:**
-- `nudgeIdleMs`: 5000 (like the supervisor suite)
+- `nudgeIdleMs`: 60000
 - `nudgeFloorMs`: 5000
 - `controllerTickMs`: 10000
 - `costMaxNudgesPerHour`: 2
 - `costSummaryEveryNTicks`: 3
 
+**Timeline table:**
+
+| Tick | Time | Idle | Hash | Nudge cap | Expected decision |
+|------|------|------|------|-----------|-------------------|
+| 1 | 0 s | 0 s | H1 | 0/2 | `controller_tick` (classify, reason) |
+| 2 | 10 s | 10 s | H1 | 0/2 | `controller_tick` (unchanged, skipped) |
+| 3 | 20 s | 20 s | H1 | 0/2 | `cost_summary` (classify 1, reason 1, nudge 0) |
+| 4 | 30 s | 30 s | H1 | 0/2 | `controller_tick` (unchanged, skipped) |
+| 5 | 40 s | 40 s | H1 | 0/2 | `controller_tick` (unchanged, skipped) |
+| 6 | 50 s | 50 s | H1 | 0/2 | `cost_summary` (classify 1, reason 1, nudge 0) |
+| 7 | 60 s | 60 s | H1 | 0/2 | `controller_tick` (classify, reason, nudge sent) |
+| 8 | 70 s | 70 s | H2 | 1/2 | `controller_tick` (unchanged, skipped) |
+| 9 | 80 s | 80 s | H2 | 1/2 | `cost_summary` (classify 2, reason 2, nudge 1) |
+| 10 | 90 s | 90 s | H2 | 1/2 | `controller_tick` (unchanged, skipped) |
+| 11 | 100 s | 100 s | H2 | 1/2 | `controller_tick` (unchanged, skipped) |
+| 12 | 110 s | 110 s | H2 | 1/2 | `cost_summary` (classify 2, reason 2, nudge 1) |
+| 13 | 120 s | 120 s | H2 | 1/2 | `controller_tick` (classify, reason, nudge sent) |
+| 14 | 130 s | 130 s | H3 | 2/2 | `cost_cap_reached` (nudge cap latched) |
+| 15 | 140 s | 140 s | H3 | 2/2 | `controller_tick` (skipped, cap latched) |
+| 16 | 150 s | 150 s | H3 | 2/2 | `cost_summary` (classify 3, reason 3, nudge 2) |
+
 ## 9. Revision table
 
 | Label | Finding | Resolution |
 |---|---|---|
-| AG1 | Brief not resolved into anchors | Section 3 names exact code locations for each design element (D1 ledger increments, D1 emission, D2 hash input, D4 skip counter, config) |
-| AG2 | State shape and migration not specified | Section 3 D1 has exact TypeScript for `monitor.cost` in both fresh-state constructor and migration defaults; test named |
-| AG3 | D2 hashes a string that changes every tick | Section 3 D2 defines hash input as stable subset (objective, node, scores, memory, lesson, environment); excludes idle time, nudge count, decisions tail; FNV-1a hash; nudge rule ensures skip never silences due nudge |
-| AG4 | D3 default silences controller | Section 3 D3 default changed to 600, arithmetic stated (240 calls/hour on active session, 600 allows 2.5 hours) |
-| AG5 | Red-run statement and commit convention invented | Section 7 has before-code red statement (assertion 1, cost_summary absent, exit 1); commit convention uses repository's existing labels (PLUGIN, SUITE, TEST, PLAN, README, CLOSE) |
+| AG1 | Brief not resolved into anchors | Section 3 names exact code locations for each design element |
+| AG2 | State shape and migration not specified | Section 3 D1 has exact TypeScript for `monitor.cost`; migration at `:329` |
+| AG3 | D2 hashes a string that changes every tick | Section 3 D2 defines hash input as stable subset; FNV-1a hash; nudge rule ensures skip never silences due nudge |
+| AG4 | D3 default silences controller | Section 3 D3 default changed to 600, arithmetic stated |
+| AG5 | Red-run statement and commit convention invented | Section 7 has before-code red statement; commit convention uses repository's existing labels |
 | AG6 | Order and tests missing | Section 8 has build order (6 commits), each with gate; live suite settings stated |
-| AG7 | Invented clock | Created stamp fixed to commit time (2026-09-09T13:40:33Z, read from `git log -1 --format=%cI`) |
+| AG7 | Invented clock | Created stamp fixed to commit time |
+| AH1 | Migration site is the wrong one | Section 3 D1 migration at `:329` (after `env` and `selfReview`), version 4 fixture at `.kit/fixtures/state-v4-no-cost.json` |
+| AH2 | The interface is missing | Section 3 D1 interface at `:112-124` with all fields including `consecutiveSkips`, `nudgeWindow`, `callWindow` |
+| AH3 | Rolling windows have no data structure | Section 3 D3 uses fixed-window shape: `nudgeWindow: { start, count }` and `callWindow: { start, count }`; cap latched by child 1 holds for child 2 |
+| AH4 | `$.clock.every` has a fixed interval | Section 3 D4 uses `tickIndex % factor === 0`; backoff gates only the idle classify section, not the whole callback |
+| AH5 | Live suite settings cannot produce a skip | Section 8 sets `nudgeIdleMs: 60000`; timeline table shows expected decisions; `nudge` count-only |
+| AH6 | `costEnabled` false is undefined | Section 4 defines `costEnabled` behavior: false disables D2, D3, D4; ledger always runs |
+| AH7 | `TEST:` is still in the convention | Section 7 commit convention uses `SUITE:` for tests (zero commits with `TEST:` prefix in history) |
