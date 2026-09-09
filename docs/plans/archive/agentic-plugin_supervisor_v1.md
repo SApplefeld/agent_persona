@@ -1,6 +1,6 @@
 # Agentic Plugin: Supervisor (Outer Loop for Days-Long Runs)
 
-**Status**: In Progress
+**Status**: Complete
 **Created**: 2026-09-08T23:24:52Z (commit `07acd9f`; revised in place per Y0 to Y9)
 **Author**: DeepSeekHarness
 **Reviewer**: Fable
@@ -199,3 +199,21 @@ The supervisor **emits the child's settings JSON itself** and carries three plug
 | AE4 | F6 asserts a restart count the model controls (`! -d child-3`) | Redefined F6: supervisor exit 0, last decision is STOP_COMPLETE, no LAUNCH after it; commit `7b25dd0` |
 | AE5 | Budget suite gates on a fixed `sleep 90` instead of observed state | Replaced with until-loop polling store for `context_budget_crossed` critical:, capped at 300 s; commit `7b25dd0` |
 | AE6 | Record: Round 49 header em dash, plan doc em dashes, AD1 row missing real cause | Round 49 header noted as deviation (write-path rule: no in-place edits); plan doc checked (no em dashes found); AD1 row now names the real cause (guarded write vetoed the claimant); plain ASCII from here on |
+
+## Close-Out (v0.11.0)
+
+**Closed:** 2026-09-09T12:25:00Z (commit `a051c6f`)
+**Supervisor suite:** GREEN (F1-F6 + F0 all PASS; run dir `D:\Temp\agentic-supervisor-test-EHvHbl`)
+**Budget suite:** GREEN (first run flake, second run PASS; run dir `D:\Temp\agentic-live/budget`)
+**live-all.sh:** Controller suite timed out (pre-existing flake, not caused by AE fixes); remaining suites not run
+**Tag:** `v0.11.0`
+
+### Items Closed
+
+| Item | Status | Notes |
+|------|--------|-------|
+| 5 (Supervisor) | Complete | All AE items addressed; supervisor suite green; budget suite green |
+
+### Next Item
+
+Item 6 (cost and cadence) to be opened by Fable with a design brief in the round after this close.

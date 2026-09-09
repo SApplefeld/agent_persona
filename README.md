@@ -2,7 +2,7 @@
 
 PIANO-esque cognitive layer on Claude Code's Function Hooks API. One plugin module, one `register(on, options)` export, no Agent SDK, no external supervisor. Modules observe at hook boundaries and write to shared `AgentState`; the Controller : the sole actuator : runs on a clock, classifies the situation, and then (and only then) actuates through exactly three channels.
 
-**Status: v0.7.0 : Stage 2 (environment monitor).** `tsc --noEmit` clean. C1 (git probe time-based cadence, `gitProbeMs` config), C2 (health probe at `completeLeaf` sites only, `healthTimeoutMs` config), C3 (error streak: `consecutiveErrorTurns` + `toolErrorsLastTurn` fold), C4 (all plugin-side deny sites increment `toolErrorsThisTurn`), C5 (error streak controller actuation with `handledAt` marker), C6 (git probe fire-and-forget with `gitProbeInFlight` guard), C7 (controller summary `Environment:` line). 8 live tests in `.kit/`.
+**Status: v0.11.0 : Stage 3 (supervisor).** `tsc --noEmit` clean. Supervisor (`bin/supervise.sh`) drives outer-loop runs: pre-gate (commons + heartbeat), coproc stdin with EOF stop, real exit codes, `supervisor.err` append (not truncate), `PROMPT=""` cleared after first send, `writeClaimDirect` shared across all three claim sites. 9 live tests in `.kit/` (including supervisor suite F1-F6 + F0).
 
 ## Architecture
 
@@ -169,6 +169,27 @@ Declared in `plugin.json` with defaults. Read as `options.<name>` in `register(o
 | `.agentic-personas.json` | Persona store (project root) |
 | `.agentic-heartbeat.json` | Heartbeat sidecar (project root) |
 | `.agentic-yields.log` | Yield sidecar, JSONL (project root) |
+
+## Supervisor (v0.11.0)
+
+`bin/supervise.sh` is the outer-loop supervisor for days-long runs. It:
+
+1. **Pre-gate**: waits for both the commons store and per-directory heartbeat to be free (no live persona claims) before launching a child.
+2. **Launch**: starts a child via coproc with stdin as a pipe (not a file), so EOF can be sent to stop it cleanly.
+3. **Poll**: watches the store for `context_budget_crossed` decisions and other signals; decides `continue`, `restart`, `stop_complete`, `stop_budget`, or `stop_crash_loop`.
+4. **Stop**: sends EOF (close coproc write end), then TERM after `stopGraceMs`, then KILL. Waits for the child and records the real exit code.
+5. **Log**: appends to `supervisor.log` and `supervisor.err` (never truncates after launch).
+
+The supervisor never writes the persona store (invariant §8). It uses `supervise-decide.mjs` (pure JS, 9/9 unit tests) for the decision logic. The prompt is cleared after the first send so subsequent launches don't inherit it.
+
+### Key files
+
+| File | Purpose |
+|---|---|
+| `bin/supervise.sh` | The supervisor script (bash, ~533 lines) |
+| `bin/supervise-decide.mjs` | Decision logic (pure JS, 9/9 tests) |
+| `bin/agentic-common.sh` | Shared helpers (`wait_persona_free_both`, etc.) |
+| `.kit/live-supervisor-test.sh` | Supervisor acceptance test (F1-F6 + F0) |
 
 ## Limitations
 
