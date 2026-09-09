@@ -47,7 +47,7 @@ import {
   dedupeSelfReview,
   evictSelfReview,
 } from "./self-review";
-import { estimateTokens } from "./cost-ledger";
+import { estimateTokens, fnv1aHash, effectiveWindowCount, bumpWindow } from "./cost-ledger";
 
 // --- Module-scope session identity ---
 // The loader requires `persist` and `activate` to be top-level functions.
@@ -374,6 +374,13 @@ export const register: Register = async (on, options) => {
   sess.contextBudgetCloseoutTokens = typeof cfg.contextBudgetCloseoutTokens === "number" ? (cfg.contextBudgetCloseoutTokens as number) : 250_000;
   sess.contextBudgetCriticalTokens = typeof cfg.contextBudgetCriticalTokens === "number" ? (cfg.contextBudgetCriticalTokens as number) : 350_000;
   sess.contextBudgetReadEveryNTicks = typeof cfg.contextBudgetReadEveryNTicks === "number" ? (cfg.contextBudgetReadEveryNTicks as number) : 3;
+
+  // Cost and cadence (item 6).
+  const costEnabled = cfg.costEnabled !== false; // default true
+  const costMaxNudgesPerHour = typeof cfg.costMaxNudgesPerHour === "number" ? (cfg.costMaxNudgesPerHour as number) : 12;
+  const costMaxPluginCallsPerHour = typeof cfg.costMaxPluginCallsPerHour === "number" ? (cfg.costMaxPluginCallsPerHour as number) : 600;
+  const costBackoffAfterTicks = typeof cfg.costBackoffAfterTicks === "number" ? (cfg.costBackoffAfterTicks as number) : 10;
+  const costBackoffMaxMs = typeof cfg.costBackoffMaxMs === "number" ? (cfg.costBackoffMaxMs as number) : 300_000;
 
   // --- session.start: register tools, claim or join the persona ---
   on("session.start", async ($, e, next) => {
@@ -1395,6 +1402,62 @@ export const register: Register = async (on, options) => {
           }
 
           const tickTs = Date.now();
+
+          // D3: Call cap check. If the call window is latched, skip classify.
+          if (costEnabled && costMaxPluginCallsPerHour > 0) {
+            const callWin = sess.state.monitor.cost.callWindow;
+            const callWinCount = effectiveWindowCount(callWin, now);
+            if (callWinCount >= costMaxPluginCallsPerHour) {
+              sess.state.decisions.push({
+                timestamp: tickTs,
+                loop: "monitor",
+                action: "cost_cap_reached",
+                detail: `${g.id}: call cap reached (${callWinCount}/${costMaxPluginCallsPerHour} per hour), skipping classify`,
+              });
+              sess.state.updatedAt = tickTs;
+              await persist($);
+              return;
+            }
+          }
+
+          // D2: Idle tick skip. Hash the stable subset of the summary.
+          // Skip classify+reason only when the hash is unchanged AND the nudge is not due.
+          if (costEnabled) {
+            // Build the stable subset string (exclude idle time, nudge count, decisions tail).
+            const stableSubset =
+              `Objective: ${g.objective}\n` +
+              `Node: ${g.id} (${g.kind}), status ${g.status}, round ${g.completedRounds}/${g.maxRounds}\n` +
+              `Last 5 scores: ${last5}\n` +
+              `On-goal count: ${onGoalCount} of ${g.scores.length}\n` +
+              `Memory: ${sess.state.memory.length} entries\n` +
+              (() => {
+                const sr = sess.state.memory.filter((m) => m.source === "self-review" && m.kind === "lesson");
+                if (sr.length === 0) return "";
+                const newest = sr.sort((a, b) => b.createdAt - a.createdAt)[0];
+                return `LESSON: ${newest.text.slice(0, 120)}\n`;
+              })() +
+              envLine;
+            const currentHash = fnv1aHash(stableSubset);
+            const prevHash = sess.state.monitor.cost.lastSummaryHash;
+            const nudgeDue = (now - sess.lastNudgeAt >= nudgeFloorMs) || (sess.lastNudgeAt === 0);
+            if (currentHash === prevHash && !nudgeDue) {
+              // Skip classify and reason; carry forward the previous decision.
+              sess.state.monitor.cost.consecutiveSkips += 1;
+              sess.state.decisions.push({
+                timestamp: tickTs,
+                loop: "monitor",
+                action: "controller_tick",
+                detail: `${g.id}: unchanged, skipped`,
+              });
+              sess.state.updatedAt = tickTs;
+              await persist($);
+              return;
+            }
+            // Hash changed or nudge due: reset skip counter, update hash, run classify.
+            sess.state.monitor.cost.consecutiveSkips = 0;
+            sess.state.monitor.cost.lastSummaryHash = currentHash;
+          }
+
           const decision = await $.model.classify(
             summary,
             classifyLabels,
@@ -1403,6 +1466,8 @@ export const register: Register = async (on, options) => {
           // D1: increment classify ledger
           sess.state.monitor.cost.classify.count += 1;
           sess.state.monitor.cost.classify.estTokens += estimateTokens(summary.length, 30);
+          // D3: update call window (count the classify call)
+          sess.state.monitor.cost.callWindow = bumpWindow(sess.state.monitor.cost.callWindow, Date.now());
           let finalDecision: string = decision ?? "nudge";
 
           // R6: switch, second Haiku call to pick a plan id.
@@ -1469,6 +1534,8 @@ export const register: Register = async (on, options) => {
               // D1: increment reason ledger
               sess.state.monitor.cost.reason.count += 1;
               sess.state.monitor.cost.reason.estTokens += estimateTokens(summary.length, 30);
+              // D3: update call window (count the reason call)
+              sess.state.monitor.cost.callWindow = bumpWindow(sess.state.monitor.cost.callWindow, Date.now());
               finalReason = reason.trim().replace(/\*{1,2}/g, "").slice(0, 100);
             } catch { /* reason call failed; non-fatal */ }
           }
@@ -1484,6 +1551,22 @@ export const register: Register = async (on, options) => {
           if (finalDecision === "nudge" && g.status === "active") {
             // Nudge floor.
             if (now - sess.lastNudgeAt >= nudgeFloorMs) {
+              // D3: Nudge cap check. If the nudge window is latched, refuse the nudge.
+              if (costEnabled && costMaxNudgesPerHour > 0) {
+                const nudgeWin = sess.state.monitor.cost.nudgeWindow;
+                const nudgeWinCount = effectiveWindowCount(nudgeWin, now);
+                if (nudgeWinCount >= costMaxNudgesPerHour) {
+                  sess.state.decisions.push({
+                    timestamp: tickTs,
+                    loop: "monitor",
+                    action: "cost_cap_reached",
+                    detail: `${g.id}: nudge cap reached (${nudgeWinCount}/${costMaxNudgesPerHour} per hour), refusing nudge`,
+                  });
+                  sess.state.updatedAt = tickTs;
+                  await persist($);
+                  return;
+                }
+              }
               try {
                 // R8: nudge text appends goal_done instruction.
                 const nudgeText =
@@ -1499,6 +1582,10 @@ export const register: Register = async (on, options) => {
                 sess.consecutiveNudgesWithoutOnGoal += 1;
                 // D1: increment nudge ledger (count only, no token estimate)
                 sess.state.monitor.cost.nudge.count += 1;
+                // D3: update nudge window
+                sess.state.monitor.cost.nudgeWindow = bumpWindow(sess.state.monitor.cost.nudgeWindow, now);
+                // D3: update call window (count the classify call that just happened)
+                sess.state.monitor.cost.callWindow = bumpWindow(sess.state.monitor.cost.callWindow, now);
                 sess.state.decisions.push({
                   timestamp: tickTs,
                   loop: "monitor",

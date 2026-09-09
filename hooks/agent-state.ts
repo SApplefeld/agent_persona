@@ -131,6 +131,7 @@ export interface MonitorState {
     consecutiveSkips: number;
     nudgeWindow: { start: number; count: number };
     callWindow: { start: number; count: number };
+    lastSummaryHash: number; // FNV-1a hash of the stable summary subset for D2
   };
 }
 
@@ -194,6 +195,7 @@ export function createDefaultState(persona: string, sessionId: string): AgentSta
         consecutiveSkips: 0,
         nudgeWindow: { start: 0, count: 0 },
         callWindow: { start: 0, count: 0 },
+        lastSummaryHash: 0,
       },
     },
     nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
@@ -377,7 +379,12 @@ export function parseState(json: string): AgentState {
       consecutiveSkips: 0,
       nudgeWindow: { start: 0, count: 0 },
       callWindow: { start: 0, count: 0 },
+      lastSummaryHash: 0,
     };
+  }
+  // D2: ensure lastSummaryHash exists (for states created before this field).
+  if (typeof state.monitor.cost.lastSummaryHash !== "number") {
+    state.monitor.cost.lastSummaryHash = 0;
   }
 
   // L10: invariant block runs on both v2 and v3 branches.
