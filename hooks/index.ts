@@ -88,6 +88,7 @@ const sess: {
   contextBudgetReadEveryNTicks: number;
   contextBudgetTickCount: number;
   contextBudgetLatched: { info: boolean; closeout: boolean; critical: boolean };
+  controllerTickCount: number; // D4: in-session tick counter for backoff and cost_summary
   staleAfterMs: number; // F9a: single-source the staleness threshold
 } = {
   persona: "default",
@@ -107,6 +108,7 @@ const sess: {
   contextBudgetReadEveryNTicks: 3,
   contextBudgetTickCount: 0,
   contextBudgetLatched: { info: false, closeout: false, critical: false },
+  controllerTickCount: 0,
   staleAfterMs: 90_000,
 };
 
@@ -716,6 +718,10 @@ export const register: Register = async (on, options) => {
       // 2. In-flight check.
       if (turnInFlight) return;
 
+      // D4: increment tick index for backoff and cost_summary cadence.
+      sess.controllerTickCount = (sess.controllerTickCount ?? 0) + 1;
+      const tickIndex = sess.controllerTickCount;
+
       // 2a. C3: error streak branch (before the idle gate; H1: move out of the classify path).
       // F6: route through the ask-operator path (paused, not blocked).
       // Re-fire rule: only when a new error occurred after handledAt.
@@ -787,6 +793,9 @@ export const register: Register = async (on, options) => {
               now,
             );
             const raw = await $.model.complete({ model: "haiku", prompt: input.prompt, maxTokens: 80 });
+            // D1: increment self-review ledger
+            sess.state.monitor.cost.selfReview.count += 1;
+            sess.state.monitor.cost.selfReview.estTokens += Math.floor(input.prompt.length / 4) + 80;
             const lesson = raw.trim();
             if (lesson.length > 0 && lesson.toUpperCase() !== "NONE") {
               if (!dedupeSelfReview(sess.state.memory, lesson)) {
@@ -1059,6 +1068,9 @@ export const register: Register = async (on, options) => {
               prompt: planPrompt,
               maxTokens: 1500,
             });
+            // D1: increment planner ledger
+            sess.state.monitor.cost.planner.count += 1;
+            sess.state.monitor.cost.planner.estTokens += Math.floor(planPrompt.length / 4) + 1500;
           } catch (e) {
             await registerPlanningFailure(`Planner call failed: ${String(e).slice(0, 150)}`);
             return;
@@ -1373,6 +1385,9 @@ export const register: Register = async (on, options) => {
             classifyLabels,
             { model: "haiku" }
           );
+          // D1: increment classify ledger
+          sess.state.monitor.cost.classify.count += 1;
+          sess.state.monitor.cost.classify.estTokens += Math.floor(summary.length / 4) + 30;
           let finalDecision: string = decision ?? "nudge";
 
           // R6: switch, second Haiku call to pick a plan id.
@@ -1436,6 +1451,9 @@ export const register: Register = async (on, options) => {
                   `Give a one-line plain-text reason (under 20 words). Do not use Markdown formatting.\n` + summary,
                 maxTokens: 30,
               });
+              // D1: increment reason ledger
+              sess.state.monitor.cost.reason.count += 1;
+              sess.state.monitor.cost.reason.estTokens += Math.floor(summary.length / 4) + 30;
               finalReason = reason.trim().replace(/\*{1,2}/g, "").slice(0, 100);
             } catch { /* reason call failed; non-fatal */ }
           }
@@ -1446,6 +1464,20 @@ export const register: Register = async (on, options) => {
             action: "controller_tick",
             detail: `${g.id}: ${finalDecision}: ${finalReason || "no reason"} (idle ${idleDisplay})`,
           });
+
+          // D1: emit cost_summary on cadence.
+          const costSummaryEveryNTicks = typeof cfg.costSummaryEveryNTicks === "number" ? (cfg.costSummaryEveryNTicks as number) : 20;
+          if (tickIndex % costSummaryEveryNTicks === 0) {
+            const cost = sess.state.monitor.cost;
+            const totalEstTokens = cost.classify.estTokens + cost.reason.estTokens + cost.selfReview.estTokens + cost.planner.estTokens;
+            const totalCalls = cost.classify.count + cost.reason.count + cost.selfReview.count + cost.planner.count + cost.nudge.count;
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "monitor",
+              action: "cost_summary",
+              detail: `classify:${cost.classify.count} reason:${cost.reason.count} selfReview:${cost.selfReview.count} planner:${cost.planner.count} nudge:${cost.nudge.count} estTokens:${totalEstTokens} totalCalls:${totalCalls}`,
+            });
+          }
 
           // Actuate (controller only: the three actuators).
           if (finalDecision === "nudge" && g.status === "active") {
@@ -1464,6 +1496,8 @@ export const register: Register = async (on, options) => {
                 nudgedTurn = true;
                 sess.lastNudgeAt = now;
                 sess.consecutiveNudgesWithoutOnGoal += 1;
+                // D1: increment nudge ledger (count only, no token estimate)
+                sess.state.monitor.cost.nudge.count += 1;
                 sess.state.decisions.push({
                   timestamp: tickTs,
                   loop: "monitor",

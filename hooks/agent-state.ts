@@ -121,6 +121,17 @@ export interface MonitorState {
     pendingPeriodic: boolean; // set by goal_done, consumed by tick (S9)
     lastInjectAt: number;   // 0 = never; gates lesson_inject (S11)
   };
+  cost: {
+    classify: { count: number; estTokens: number };
+    reason: { count: number; estTokens: number };
+    selfReview: { count: number; estTokens: number };
+    planner: { count: number; estTokens: number };
+    nudge: { count: number };
+    forkUsage: null | { inputTokens: number; outputTokens: number };
+    consecutiveSkips: number;
+    nudgeWindow: { start: number; count: number };
+    callWindow: { start: number; count: number };
+  };
 }
 
 export interface NudgeBudget {
@@ -173,6 +184,17 @@ export function createDefaultState(persona: string, sessionId: string): AgentSta
         errors: { consecutiveErrorTurns: 0, toolErrorsLastTurn: 0 },
       },
       selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: false, lastInjectAt: 0 },
+      cost: {
+        classify: { count: 0, estTokens: 0 },
+        reason: { count: 0, estTokens: 0 },
+        selfReview: { count: 0, estTokens: 0 },
+        planner: { count: 0, estTokens: 0 },
+        nudge: { count: 0 },
+        forkUsage: null,
+        consecutiveSkips: 0,
+        nudgeWindow: { start: 0, count: 0 },
+        callWindow: { start: 0, count: 0 },
+      },
     },
     nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
     decisions: [],
@@ -340,6 +362,21 @@ export function parseState(json: string): AgentState {
     state.monitor.selfReview = {
       count: 0, lastAt: 0, turnsSince: 0, windowStart: 0,
       pendingPeriodic: false, lastInjectAt: 0,
+    };
+  }
+
+  // Cost ledger: fill with defaults at the E11 site, no version bump.
+  if (!state.monitor.cost) {
+    state.monitor.cost = {
+      classify: { count: 0, estTokens: 0 },
+      reason: { count: 0, estTokens: 0 },
+      selfReview: { count: 0, estTokens: 0 },
+      planner: { count: 0, estTokens: 0 },
+      nudge: { count: 0 },
+      forkUsage: null,
+      consecutiveSkips: 0,
+      nudgeWindow: { start: 0, count: 0 },
+      callWindow: { start: 0, count: 0 },
     };
   }
 
