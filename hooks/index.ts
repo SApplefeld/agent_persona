@@ -1831,20 +1831,11 @@ export const register: Register = async (on, options) => {
         action: "identity_set",
         detail: `persona '${sess.persona}' (session ${sess.mySessionId}, epoch ${sess.myEpoch}, commons winner)`,
       });
-      // Commons winner: the one write site allowed to bypass persist's yield check,
-      // because the claimant is the commons winner (activeSessionId = self).
-      sess.state.updatedAt = Date.now();
-      store[sess.persona] = sess.state;
-      await $.fs.writeFile(storePath, JSON.stringify(store, null, 2));
-      // Write the heartbeat for the new persona (inline).
-      try {
-        const hb: Record<string, { sessionId: string; epoch: number; lastSeen: number }> =
-          await $.fs.exists(heartbeatPath)
-            ? (JSON.parse(await $.fs.readFile(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>)
-            : {};
-        hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now() };
-        await $.fs.writeFile(heartbeatPath, JSON.stringify(hb, null, 2));
-      } catch { /* non-fatal */ }
+      // Commons winner: one of the three claim sites that share writeClaimDirect
+      // (the other two are session.start and the heartbeat tick promotion).
+      // The claimant is the commons winner (activeSessionId = self), so the write
+      // must not go through persist's yield check.
+      await writeClaimDirect($);
       return {
         result: `persona '${sess.persona}' active (epoch ${sess.myEpoch}, owner). ${sess.state.memory.length} memories.`,
       };
