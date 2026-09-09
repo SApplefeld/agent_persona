@@ -98,7 +98,7 @@ CHILD_IN=""  # coproc write fd number
 cleanup() {
   local exit_code=$?
   # Stop the child gracefully if it's still running.
-  if [ -n "$CHILD_PID" ] && kill -0 "$CHILD_PID" 2>/dev/null; then
+  if [ -n "${CHILD_PID:-}" ] && kill -0 "$CHILD_PID" 2>/dev/null; then
     log "CLEANUP: stopping child-$CHILD_INDEX (pid $CHILD_PID)"
     stop_child "cleanup"
   fi
@@ -113,6 +113,12 @@ trap 'exit 143' TERM
 # Sets STOP_PATH to "eof" | "term" | "kill" based on what actually worked.
 stop_child() {
   local label="$1"
+  # If CHILD_PID is not set or empty, there's nothing to stop.
+  local pid="${CHILD_PID:-}"
+  if [ -z "$pid" ]; then
+    log "STOP[$label]: no child to stop (CHILD_PID empty or unbound)"
+    return 0
+  fi
   # Phase 1: EOF - close the write end of the coproc pipe.
   # The child should finish its current turn and exit 0 within a few seconds.
   if [ -n "$CHILD_IN" ]; then
@@ -121,29 +127,29 @@ stop_child() {
   # Poll for up to stopGraceMs for the child to exit on its own.
   local grace=$((SUPERVISOR_STOP_GRACE_MS / 1000))
   local n=0
-  while kill -0 "$CHILD_PID" 2>/dev/null && [ $n -lt $grace ]; do
+  while kill -0 "$pid" 2>/dev/null && [ $n -lt $grace ]; do
     sleep 1
     n=$((n + 1))
   done
-  if ! kill -0 "$CHILD_PID" 2>/dev/null; then
+  if ! kill -0 "$pid" 2>/dev/null; then
     STOP_PATH="eof"
     return 0
   fi
   # Phase 2: TERM - send SIGTERM after grace expired.
-  log "STOP[$label]: EOF grace expired, sending TERM to pid $CHILD_PID"
-  kill -TERM "$CHILD_PID" 2>/dev/null
+  log "STOP[$label]: EOF grace expired, sending TERM to pid $pid"
+  kill -TERM "$pid" 2>/dev/null
   n=0
-  while kill -0 "$CHILD_PID" 2>/dev/null && [ $n -lt $grace ]; do
+  while kill -0 "$pid" 2>/dev/null && [ $n -lt $grace ]; do
     sleep 1
     n=$((n + 1))
   done
-  if ! kill -0 "$CHILD_PID" 2>/dev/null; then
+  if ! kill -0 "$pid" 2>/dev/null; then
     STOP_PATH="term"
     return 0
   fi
   # Phase 3: KILL - send SIGKILL after a second grace.
-  log "STOP[$label]: TERM grace expired, sending KILL to pid $CHILD_PID"
-  kill -9 "$CHILD_PID" 2>/dev/null
+  log "STOP[$label]: TERM grace expired, sending KILL to pid $pid"
+  kill -9 "$pid" 2>/dev/null
   STOP_PATH="kill"
   return 0
 }
@@ -287,6 +293,11 @@ while true; do
   HEARTBEAT="$WORKDIR/.agentic-heartbeat.json"
   CHILD_SESSION_ID=""
 
+  if [ -z "${CHILD_PID:-}" ]; then
+    log "ERROR: CHILD_PID not set after coproc launch"
+    exit 1
+  fi
+
   while kill -0 "$CHILD_PID" 2>/dev/null; do
     sleep $((SUPERVISOR_POLL_MS / 1000))
 
@@ -398,7 +409,11 @@ console.log(o.reason || '');
       stop_complete)
         log "STOP_COMPLETE: $DECIDE_REASON"
         stop_child "stop_complete"
-        wait "$CHILD_PID"; EXIT_CODE=$?
+        if [ -n "${CHILD_PID:-}" ]; then
+          wait "$CHILD_PID"; EXIT_CODE=$?
+        else
+          EXIT_CODE=0
+        fi
         echo "$EXIT_CODE" > "$EXIT_MARKER"
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         exit 0
@@ -406,7 +421,11 @@ console.log(o.reason || '');
       stop_crash_loop)
         log "STOP_CRASH_LOOP: $DECIDE_REASON"
         stop_child "stop_crash_loop"
-        wait "$CHILD_PID"; EXIT_CODE=$?
+        if [ -n "${CHILD_PID:-}" ]; then
+          wait "$CHILD_PID"; EXIT_CODE=$?
+        else
+          EXIT_CODE=0
+        fi
         echo "$EXIT_CODE" > "$EXIT_MARKER"
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         exit 3
@@ -414,7 +433,11 @@ console.log(o.reason || '');
       stop_budget)
         log "STOP_BUDGET: $DECIDE_REASON"
         stop_child "stop_budget"
-        wait "$CHILD_PID"; EXIT_CODE=$?
+        if [ -n "${CHILD_PID:-}" ]; then
+          wait "$CHILD_PID"; EXIT_CODE=$?
+        else
+          EXIT_CODE=0
+        fi
         echo "$EXIT_CODE" > "$EXIT_MARKER"
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         exit 4
@@ -422,7 +445,11 @@ console.log(o.reason || '');
       restart)
         log "RESTART: $DECIDE_REASON"
         stop_child "restart"
-        wait "$CHILD_PID"; EXIT_CODE=$?
+        if [ -n "${CHILD_PID:-}" ]; then
+          wait "$CHILD_PID"; EXIT_CODE=$?
+        else
+          EXIT_CODE=0
+        fi
         echo "$EXIT_CODE" > "$EXIT_MARKER"
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
 
@@ -453,7 +480,11 @@ console.log(o.reason || '');
 
   # Child exited on its own (not via decide).
   # With coproc, we can use wait() to get the real exit code.
-  wait "$CHILD_PID"; EXIT_CODE=$?
+  if [ -n "${CHILD_PID:-}" ]; then
+    wait "$CHILD_PID"; EXIT_CODE=$?
+  else
+    EXIT_CODE=0
+  fi
   echo "$EXIT_CODE" > "$EXIT_MARKER"
 
   log "EXIT child-$CHILD_INDEX code=$EXIT_CODE (natural)"

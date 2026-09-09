@@ -561,7 +561,7 @@ export const register: Register = async (on, options) => {
           timestamp: now,
           loop: "monitor",
           action: "persona_claim",
-          detail: `Claimed '${sess.persona}' (prev ${prevId}, epoch ${existingPersona.epoch}${holderAlive ? "" : ", stale"})`,
+          detail: `Claimed '${sess.persona}' (new ${sess.mySessionId}, prev ${prevId}, epoch ${existingPersona.epoch}${holderAlive ? "" : ", stale"})`,
         });
         // AD1: Write the stale-takeover claim directly to the store so that
         // the subsequent persist() call finds the new holder, not the dead one.
