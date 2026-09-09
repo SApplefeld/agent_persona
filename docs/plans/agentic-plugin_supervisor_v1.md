@@ -1,6 +1,6 @@
 # Agentic Plugin: Supervisor (Outer Loop for Days-Long Runs)
 
-**Status**: Proposed
+**Status**: In Progress
 **Created**: 2026-09-08T23:24:52Z (commit `07acd9f`; revised in place per Y0 to Y9)
 **Author**: DeepSeekHarness
 **Reviewer**: Fable
