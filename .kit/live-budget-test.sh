@@ -73,7 +73,8 @@ cat > settings.json << 'EOF'
         "contextBudgetCloseoutTokens": 500,
         "contextBudgetCriticalTokens": 700,
         "contextBudgetReadEveryNTicks": 1,
-        "controllerTickMs": 10000
+        "controllerTickMs": 10000,
+        "costSummaryEveryNTicks": 2
       }
     }
   }
