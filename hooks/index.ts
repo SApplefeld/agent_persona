@@ -1205,7 +1205,7 @@ export const register: Register = async (on, options) => {
                 const nudgeText =
                   `[BUDGET] Context is at ${estimatedTokens} tokens (close-out threshold: ${sess.contextBudgetCloseoutTokens}).\n` +
                   `Bank your current state to memory and the plan doc, then reach a clean stopping point. ` +
-                  `Do not start new work until the operator compacts.`;
+                  `The session will be restarted at the critical threshold; bank state now.`;
                 await $.prompt.submit({ text: nudgeText });
                 sess.state.decisions.push({
                   timestamp: budgetTs,
