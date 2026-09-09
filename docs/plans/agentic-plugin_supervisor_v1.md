@@ -30,14 +30,16 @@ All read at `c7722e3` except where noted.
 Restart on:
 - Child exit (any code, including 0 after a non-`root_complete` reason).
 - `context_budget_crossed` with `critical:` newer than the child's start timestamp (read from `<workdir>/.agentic-personas.json` under the persona key, with W2 read-error semantics).
-- Heartbeat `lastSeen` older than 3 x `heartbeatMs` while the child is alive (hung session).
+- Heartbeat `lastSeen` older than `staleAfterMs` **and** the sidecar's `sessionId` for the persona equals the current child's session id **and** the child is past its startup grace (hung session; Z5, Z6).
 
 Stop, do not restart, on:
 - `root_complete` newer than the child's start timestamp. The run is over. Supervisor exit 0.
 
 Alternative weighed: restart on the close-out crossing instead of critical. Rejected: the close-out nudge is the worker's chance to bank state; critical is the point where it has had that chance.
 
-The "is a restart due" question is code, not prose (Y9). It lives in `bin/supervise-decide.mjs`: input JSON (child start timestamp, the newest signal timestamps, the decision log, the crash-loop and restart-budget counters), output `{action, reason}` where `action` is one of `restart`, `stop_complete`, `stop_crash_loop`, `stop_budget`. The bash loop calls it and acts on `action`. This is the same stage rule as everywhere else: the code decides.
+The "is a restart due" question is code, not prose (Y9). It lives in `bin/supervise-decide.mjs`: input JSON (child start timestamp, the newest signal timestamps, the decision log, the crash-loop and restart-budget counters, **`childSessionId`** (from the stream-json init line's `session_id` field, `live-commons-test.sh:403-410`), **`heartbeatSessionId`** (the sidecar's `sessionId` for the persona), **`launchedAt`** (for the startup grace)), output `{action, reason}` where `action` is one of `restart`, `stop_complete`, `stop_crash_loop`, `stop_budget`. The bash loop calls it and acts on `action`. This is the same stage rule as everywhere else: the code decides.
+
+Two rules for the hung check (Z6). The heartbeat is written owner-only (`index.ts:576`, `if (sess.isOwner)`), so a child that starts while the previous holder's heartbeat is not yet stale becomes a passive reader and writes no heartbeat until the controller-tick promotion at `index.ts:680`. In that window a naive `lastSeen`-only check sees a stale heartbeat from the previous child and kills a healthy one. (1) **Identity key**: the hung check fires only when `heartbeatSessionId` equals `childSessionId`; a sidecar naming another session means the child has not been promoted yet and is "waiting", never "hung". (2) **Startup grace** of `staleAfterMs` after launch: during that window the hung check does not run at all, so a child promoted late is not judged before its first heartbeat write.
 
 ### D2. Graceful stop
 
@@ -69,7 +71,7 @@ Each child gets `<rundir>/child-<n>/` with stdout, stderr, the debug file, and a
 
 ### D8. What the first prompt is
 
-The supervisor takes the persona name and an optional opening prompt. With a tree already in the store it sends nothing and lets the tick nudge. With an empty tree it sends the opening prompt once. The suite exercises both children (first with a prompt, second with none) (Y6, section 7).
+The supervisor takes the persona name and an optional opening prompt. With a tree already in `.agentic-personas.json` it sends nothing and lets the tick nudge. With an empty tree it sends the opening prompt once. The suite exercises both children (first with a prompt, second with none) (Y6, section 7).
 
 ## 4. State additions
 
@@ -96,18 +98,24 @@ The supervisor's own state (restart count, per-hour budget, crash-loop counter, 
 ```
 claude -p --input-format stream-json --output-format stream-json --verbose \
   --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" \
-  --settings "$(cygpath -w "$SUITE_DIR/settings.json")" \
+  --settings "$(cygpath -w "$RUNDIR/settings.json")" \
   --model haiku \
-  --permission-mode acceptEdits \
+  --permission-mode "$PERMISSION_MODE" \
   --debug-file "$DEBUG" \
   > "$OUT" 2> "$ERR"
 ```
 
-run in the fixed working directory (Y0), with the permission mode as an explicit flag (`--permission-mode acceptEdits`): an unattended days-long run cannot block on a permission prompt, and the script must not rely on this machine's default mode.
+run in the fixed working directory (Y0). The permission mode is a **required argument of `bin/supervise.sh`, no default** (Z2): in headless `-p` mode no prompt can be shown, so any tool call the mode does not pre-approve is refused; `acceptEdits` pre-approves file edits and nothing else, so a persona doing real project work (Bash: git, tests, builds) would be denied on every one of those calls. The suite passes `acceptEdits` (the haiku test plans use `Write` and live with it). The runbook line for a days-long worker is `--permission-mode bypassPermissions`: the worker runs any command unattended. The alternative is an allow list in the emitted settings; it is not the default here because on this box allow-list behavior in headless mode has not been shown to discriminate, so it is not a verified control. The settings file is written to `$RUNDIR/settings.json` in the run directory (Z2), not to a suite variable.
+
+**Usage** (Z2):
+
+```
+bin/supervise.sh <workdir> <persona> <permission-mode> [--prompt TEXT] [--rundir DIR]
+```
 
 ## 6. Configuration surface
 
-`plugin.json` carries `userConfig` declarations (heartbeat, stale, tick, nudge, health, git), and the budget options are declared-but-unread there; the budget options actually arrive through `--settings` (`index.ts:326`). The `supervisor*` values are not plugin options at all: nothing in the plugin reads them, so they are **arguments or environment variables of `bin/supervise.sh` with defaults in the script** (Y3):
+`plugin.json` declares seven `userConfig` fields (heartbeat, stale, tick, nudge floor, nudge idle, health, git probe) and no budget or self-review field. The budget and self-review options are not declared in the manifest and arrive through `--settings` only (`index.ts:326`). The `supervisor*` values are not plugin options at all: nothing in the plugin reads them, so they are **arguments or environment variables of `bin/supervise.sh` with defaults in the script** (Y3):
 
 | Variable | Default | Description |
 |---|---|---|
@@ -115,10 +123,9 @@ run in the fixed working directory (Y0), with the permission mode as an explicit
 | `supervisorMinRunMs` | 120000 | Child lifetime below this counts as a crash-loop candidate. |
 | `supervisorCrashLimit` | 3 | Consecutive crashes within `minRunMs` that stop the supervisor (exit 3). |
 | `supervisorMaxRestartsPerHour` | 6 | Restart budget per rolling hour (exit 4 when exhausted). |
-| `supervisorHeartbeatStaleMult` | 3 | Heartbeat `lastSeen` older than this x `heartbeatMs` = hung. |
 | `supervisorPollMs` | 10000 | Decision-log / heartbeat poll cadence. |
 
-The supervisor **emits the child's settings JSON itself** and carries three plugin values as its own variables, so the two cannot disagree (Y3): `heartbeatMs` and `staleAfterMs` (D1 staleness and the gate read them), and **`contextBudgetEnabled: true`**. That last one is the finding: `index.ts:344` defaults it to `false`, so without it `context_budget_crossed` never fires and D1's main trigger is dead. One set of shell variables, emitted to the settings JSON and used by the supervisor's checks.
+The supervisor **emits the child's settings JSON itself** and carries three plugin values as its own variables, so the two cannot disagree (Y3): `heartbeatMs` and `staleAfterMs` (D1 staleness and the gate read them), and **`contextBudgetEnabled: true`**. That last one is the finding: `index.ts:344` defaults it to `false`, so without it `context_budget_crossed` never fires and D1's main trigger is dead. One set of shell variables, emitted to the settings JSON and used by the supervisor's checks. Staleness is single-sourced on `staleAfterMs`: the plugin's own promotion reads it (`index.ts:329`), and the supervisor's hung check does the same, so there is no separate multiplier (Z5). The settings file is written to `$RUNDIR/settings.json` in the run directory, not to a suite variable (Z2).
 
 ## 7. Acceptance test
 
@@ -134,9 +141,9 @@ The supervisor **emits the child's settings JSON itself** and carries three plug
 
 - **F0**: No `persona_yield*` in the run. The gate did its job.
 - **F1**: Supervisor launched child 1 after a gate line (`live=` printed in `supervisor.log`).
-- **F2**: `context_budget_crossed` `critical:` appears in the store during child 1.
+- **F2**: `context_budget_crossed` `critical:` appears in `.agentic-personas.json` during child 1.
 - **F3**: Child 1 exits by the graceful path (`.exit` marker present, `supervisor.log` names `stdin-close`). This is the critical path only; the hung path logs `kill` (Y8).
-- **F4**: Gate waited or passed before child 2 (`supervisor.log` line), child 2 started, same root goal id as child 1 (both in the store).
+- **F4**: Gate waited or passed before child 2 (`supervisor.log` line), child 2 started, same root goal id as child 1 (both in `.agentic-personas.json`).
 - **F5**: Child 2 continues the tree (an `activated` or `nudge_sent` decision newer than child 2's start timestamp).
 - **F6**: `root_complete` ends the run: supervisor exit 0, no child 3 (no `child-3/` directory).
 
@@ -148,8 +155,9 @@ The supervisor **emits the child's settings JSON itself** and carries three plug
 - Child exited non-zero, `root_complete` newer than start: `stop_complete`.
 - `context_budget_crossed` `critical:` newer than start: `restart`.
 - `context_budget_crossed` `closeout:` (not critical): do not restart on that signal alone.
-- Heartbeat `lastSeen` older than 3x `heartbeatMs`, child alive: `restart`.
-- Heartbeat `lastSeen` older than 2x `heartbeatMs`, child alive: do not restart.
+- Heartbeat `lastSeen` older than `staleAfterMs`, `heartbeatSessionId` equals `childSessionId`, past grace: `restart`.
+- Heartbeat `lastSeen` older than `staleAfterMs`, `heartbeatSessionId` names another session, child alive: do not restart (waiting, not hung; Z6).
+- Heartbeat `lastSeen` older than `staleAfterMs`, `heartbeatSessionId` equals `childSessionId`, within grace: do not restart (startup grace, Z6).
 - 3 consecutive exits within `minRunMs`: `stop_crash_loop`.
 - Restart budget exhausted (7th restart in the hour): `stop_budget`.
 
@@ -175,3 +183,8 @@ The supervisor **emits the child's settings JSON itself** and carries three plug
 | Y7 | Shipped script sources test dir | Section 5, D3, invariant 4: shared helper at `bin/agentic-common.sh` |
 | Y8 | Exit codes; hung child | D4: budget exit 4; D2: hung child to `kill` after `stopGraceMs`; F3 critical path only |
 | Y9 | Protocol missing: revision table, red-run, testable unit | Section 9 (this table); section 7 red-run statement; `bin/supervise-decide.mjs` named in sections 5 and 7 |
+| Z1 | Commit `08087ea` fixed an em-dash that was never there; a claimed find must paste the matching `grep -n` line | Record here is the correction; from now on a claimed find pastes the matching `grep -n` line, not a sentence |
+| Z2 | `acceptEdits` cannot run a worker for days; settings file in suite var; no usage line | Section 5: permission mode a required argument (no default); suite passes `acceptEdits`; runbook shows `bypassPermissions` with the allow-list alternative and reason; settings file to `$RUNDIR/settings.json`; usage line added |
+| Z3 | Section 6 states a declaration that does not exist; "in the store" in D8, F2, F4 | Section 6: manifest declares seven `userConfig` fields, no budget/self-review; D8, F2, F4 say `.agentic-personas.json` |
+| Z5 | Two staleness thresholds that agree by coincidence | Single-source on `staleAfterMs`; drop `supervisorHeartbeatStaleMult`; D1 hung = `lastSeen` older than `staleAfterMs`; unit cases 5-6 reworded |
+| Z6 | Hung check kills a healthy child in its reader window | D1: identity key (`heartbeatSessionId` = `childSessionId`) + startup grace (`staleAfterMs` after launch); decide unit input adds `childSessionId`, `heartbeatSessionId`, `launchedAt`; two new unit cases |
