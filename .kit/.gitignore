@@ -14,6 +14,7 @@
 !/live-budget-test.sh
 !/live-self-review-test.sh
 !/self-review-unit-test.mjs
+!/cost-ledger-unit-test.mjs
 !/supervisor-unit-test.mjs
 !/live-supervisor-test.sh
 !/health-probe.js
