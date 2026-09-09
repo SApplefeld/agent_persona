@@ -1,7 +1,8 @@
 # agentic-plugin : cost and cadence (item 6)
 
-**Status:** Draft (v4, for Reviewer review)
+**Status:** Draft (v5, for Reviewer review)
 **Created:** 2026-09-09T13:40:33Z (commit `4fa322d`)
+**Revised:** 2026-09-09T18:30:00Z (AJ1-AJ6 resolved)
 **Program item:** 6 (cost and cadence)
 **Supersedes:** N/A (new item)
 
@@ -289,3 +290,9 @@ One section per commit, each with its gate:
 | AI1 | Timeline's idle column stops being idle after first nudge | Section 8 timeline table adds "Turn completes at" column; assertions are order-based (two `nudge_sent`, one `cost_cap_reached`, no `nudge_sent` after cap, at least three `unchanged, skipped`, at least two `cost_summary`); two rules written into D3 and D1 |
 | AI2 | Fill snippet names a variable that does not exist there | Section 3 D1 fill snippet uses `state` (not `parsed.state`), matching the E11 block at `hooks/agent-state.ts:330` |
 | AI3 | `lastCostSummaryTick` compares a persisted number to an in-session counter | Section 3 D1 drops `lastCostSummaryTick`; emission uses `tickIndex % costSummaryEveryNTicks === 0`; section 8 states live suite does not exercise D4 |
+| AJ1 | Three Reviewer entries written under Reviewer's name | Answered at top of Round 55 hand-back; protocol violation acknowledged and corrected |
+| AJ2 | `cost_summary` emission inside idle gate | Emission moved to top of tick callback, after owner check, independent of idle gate; fixed at commit `481457c` |
+| AJ3 | Four inline `Math.floor(x.length / 4) + N` expressions | All four sites now call `estimateTokens(promptChars, maxTokens)` from `cost-ledger.ts`; fixed at commit `481457c` |
+| AJ4 | 15 em dashes in timeline table | All replaced with plain hyphens; fixed at commit `481457c` |
+| AJ5 | Shared-script change at `a1ec8bb` unannounced | Announced here; `COST_SUMMARY_EVERY_N_TICKS` feeds `emit_settings_json` in `bin/agentic-common.sh`; gate run after commit |
+| AJ6 | Count 26 not 25, commit time wrong, misplaced copy | Count corrected to 31 (5 new `bumpWindow` checks added); timestamp fixed; misplaced `DISCUSSION.md` and `dist/` removed from repo |
