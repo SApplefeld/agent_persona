@@ -191,6 +191,16 @@ The supervisor never writes the persona store (invariant §8). It uses `supervis
 | `bin/agentic-common.sh` | Shared helpers (`wait_persona_free_both`, etc.) |
 | `.kit/live-supervisor-test.sh` | Supervisor acceptance test (F1-F6 + F0) |
 
+## Typings version requirement
+
+**AL7 (engine 2.1.267):** The plugin uses `$.fs.read` and `$.fs.write` (not `$.fs.readFile` / `$.fs.writeFile`). These function names were introduced in Claude Code engine 2.1.267. To compile against the current typings:
+
+1. Ensure `node_modules/@anthropic-ai/claude-code` is version 2.1.267 or later.
+2. Run `npx tsc --noEmit` to verify. If you see errors about `fs.read` or `fs.write`, your typings are outdated.
+3. To regenerate typings: `npx claude typescript-types` (requires the matching engine version).
+
+**Re-gate rule:** If you upgrade the engine, re-run `npx tsc --noEmit` and the full test suite (`.kit/cost-ledger-unit-test.mjs`, `.kit/cost-migration-test.mjs`, controller suite). The function names may change again.
+
 ## Limitations
 
 - **Latency**: goal scoring (1 classify) + memory curation (1 classify + optional 1 complete) + 2 file reads + 1 write per turn end. Controller tick: 1 classify + optional 1 complete per tick. ~1.5–2s on Haiku each.
