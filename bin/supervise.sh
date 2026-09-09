@@ -191,7 +191,7 @@ const d = (p.decisions||[]).filter(x => x.action === process.argv[3]);
 if (d.length === 0) process.exit(1);
 const newest = d[d.length - 1];
 console.log(newest.timestamp || 0);
-" "$store" "$persona" "$fact" 2> "$RUNDIR/supervisor.err"
+" "$store" "$persona" "$fact" 2>> "$RUNDIR/supervisor.err"
 }
 
 # --- Helper: read child session id from stream-json init line ---
@@ -287,6 +287,7 @@ while true; do
       process.stdout.write(json + '\n');
     " "$PROMPT_FILE" >&"$CHILD_IN"
   fi
+  PROMPT=""
 
   # --- Poll loop ---
   STORE="$WORKDIR/.agentic-personas.json"
@@ -388,7 +389,7 @@ const mod = await import(pathToFileURL(decidePath).href);
 const input = JSON.parse(process.argv[1]);
 const result = mod.decide(input);
 console.log(JSON.stringify(result));
-" "$DECIDE_INPUT" "$PLUGIN_DIR" 2> "$RUNDIR/supervisor.err")
+" "$DECIDE_INPUT" "$PLUGIN_DIR" 2>> "$RUNDIR/supervisor.err")
     DECIDE_ERR=$?
 
     if [ -z "$DECIDE_RESULT" ] || [ $DECIDE_ERR -ne 0 ]; then
@@ -529,6 +530,4 @@ console.log(o.reason || '');
     exit 3
   fi
 
-  # No prompt for subsequent children (D8: let the tick nudge).
-  PROMPT=""
 done
