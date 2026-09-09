@@ -194,6 +194,31 @@ export const yieldNow = async (dp: any, onDisk: { activeSessionId: string; epoch
   } catch { /* non-fatal */ }
 };
 
+// AD1: Write a stale-takeover claim directly to the store, bypassing persist's
+// yield check. Called by the session.start claim and the heartbeat tick promotion
+// when the claimant has just established that the holder is stale. The guarded
+// write's job is to catch a foreign takeover afterwards, not to veto the
+// takeover it belongs to.
+const writeClaimDirect = async (dp: any): Promise<void> => {
+  const storePath = sess.storePath;
+  const store: Record<string, unknown> = await dp.fs.exists(storePath)
+    ? (JSON.parse(await dp.fs.readFile(storePath)) as Record<string, unknown>)
+    : {};
+  sess.state.updatedAt = Date.now();
+  store[sess.persona] = sess.state;
+  await dp.fs.writeFile(storePath, JSON.stringify(store, null, 2));
+  // Write the heartbeat for the new claim.
+  try {
+    const heartbeatPath = ".agentic-heartbeat.json";
+    const hb: Record<string, { sessionId: string; epoch: number; lastSeen: number }> =
+      await dp.fs.exists(heartbeatPath)
+        ? (JSON.parse(await dp.fs.readFile(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>)
+        : {};
+    hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now() };
+    await dp.fs.writeFile(heartbeatPath, JSON.stringify(hb, null, 2));
+  } catch { /* heartbeat write failed; non-fatal */ }
+};
+
 // M7: single guarded-write path shared by every store write site.
 // Closes over sess so all write sites share one yield + write path.
 export const persist = async (dp: any): Promise<boolean> => {
@@ -538,6 +563,9 @@ export const register: Register = async (on, options) => {
           action: "persona_claim",
           detail: `Claimed '${sess.persona}' (prev ${prevId}, epoch ${existingPersona.epoch}${holderAlive ? "" : ", stale"})`,
         });
+        // AD1: Write the stale-takeover claim directly to the store so that
+        // the subsequent persist() call finds the new holder, not the dead one.
+        await writeClaimDirect($);
       } else {
         // Passive reader: another session holds it and is alive.
         sess.isOwner = false;
@@ -668,15 +696,9 @@ export const register: Register = async (on, options) => {
               action: "reader_promoted",
               detail: `Promoted from reader to owner (prev ${holderHb?.sessionId ?? "unknown"}, stale after ${now - (holderHb?.lastSeen ?? now)}ms)`,
             });
-            // Write heartbeat for the new claim.
-            try {
-              const hb: Record<string, { sessionId: string; epoch: number; lastSeen: number }> =
-                await $.fs.exists(heartbeatPath)
-                  ? (JSON.parse(await $.fs.readFile(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>)
-                  : {};
-              hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now() };
-              await $.fs.writeFile(heartbeatPath, JSON.stringify(hb, null, 2));
-            } catch { /* non-fatal */ }
+            // AD1: Write the stale-takeover claim directly to the store so that
+            // the subsequent persist() call finds the new holder, not the dead one.
+            await writeClaimDirect($);
             $.ui.log(`Agentic: promoted to owner of '${sess.persona}' (previous holder stale)`);
           }
         }

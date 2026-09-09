@@ -117,6 +117,105 @@ console.log('live=' + live + ' oldest_age=' + (oldest ? Math.round((now - oldest
   done
 }
 
+# --- wait_persona_free_both ---
+# AD2: Wait for the persona to be free in BOTH the commons store AND the
+# per-directory heartbeat. The commons check ensures no machine-global claim;
+# the heartbeat check ensures the local holder is stale (lastSeen older than
+# staleAfterMs) or absent.
+# Usage: wait_persona_free_both <workdir> <persona> <timeout-seconds> <stale_after_ms> <global_store>
+wait_persona_free_both() {
+  local workdir="$1"
+  local persona="${2:-default}"
+  local timeout="${3:-120}"
+  local stale_after_ms="${4:-90000}"
+  local global_store="$5"
+  local n=0
+  local heartbeat_path="$workdir/.agentic-heartbeat.json"
+  
+  echo "pre-gate: waiting for persona '$persona' free in commons AND heartbeat (timeout: ${timeout}s)..."
+  
+  while true; do
+    # Check 1: commons store (machine-global)
+    local commons_ok=false
+    if [ -n "$global_store" ] && [ -f "$global_store" ]; then
+      local line live rc
+      line=$(node -e "
+const fs = require('fs');
+let s;
+try {
+  s = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+} catch (e) {
+  console.log('ERROR: ' + e.message);
+  process.exit(2);
+}
+const keys = Object.keys(s).filter(k => k.startsWith('commons:'));
+const now = Date.now();
+const stale = 90000;
+let live = 0;
+for (const key of keys) {
+  const e = s[key];
+  if (e.lastSeen && (now - e.lastSeen) < stale && e.claims) {
+    for (const c of e.claims) {
+      if (c.resource === 'persona:$persona') { live++; }
+    }
+  }
+}
+console.log('live=' + live);
+" "$global_store" 2>/dev/null)
+      rc=$?
+      if [ $rc -eq 0 ] && ! echo "$line" | grep -q '^ERROR'; then
+        live=$(echo "$line" | sed -n 's/.*live=\([0-9]*\).*/\1/p')
+        if [ "${live:-1}" = "0" ]; then
+          commons_ok=true
+        fi
+      fi
+    fi
+    
+    # Check 2: per-directory heartbeat
+    local heartbeat_ok=false
+    if [ ! -f "$heartbeat_path" ]; then
+      heartbeat_ok=true
+    else
+      local hb_status
+      hb_status=$(node -e "
+const fs = require('fs');
+let hb;
+try {
+  hb = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+} catch (e) {
+  console.log('ERROR: ' + e.message);
+  process.exit(2);
+}
+const entry = hb['$persona'];
+if (!entry) {
+  console.log('absent');
+} else {
+  const age = Date.now() - entry.lastSeen;
+  console.log(age > $stale_after_ms ? 'stale:' + Math.round(age / 1000) + 's' : 'live:' + Math.round(age / 1000) + 's');
+}
+" "$heartbeat_path" 2>/dev/null)
+      if echo "$hb_status" | grep -q '^stale\|^absent'; then
+        heartbeat_ok=true
+      fi
+    fi
+    
+    # Log which conditions are satisfied
+    local commons_msg="FAIL" heartbeat_msg="FAIL"
+    $commons_ok && commons_msg="OK"
+    $heartbeat_ok && heartbeat_msg="OK"
+    echo "pre-gate poll: commons=$commons_msg heartbeat=$heartbeat_msg"
+    
+    if $commons_ok && $heartbeat_ok; then
+      echo "pre-gate passed (commons and heartbeat both free)"
+      return 0
+    fi
+    
+    n=$((n + 5))
+    [ $n -ge $timeout ] && { echo "pre-gate timeout after ${n}s (commons=$commons_msg heartbeat=$heartbeat_msg)"; return 1; }
+    sleep 5
+  done
+}
+
 # --- poll_decisions ---
 # Read the decision log from .agentic-personas.json for a given persona key.
 # W2: a read error returns "ERROR" and no decisions (treat as not-ready).

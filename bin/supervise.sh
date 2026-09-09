@@ -10,6 +10,7 @@
 #   4 = restart budget exhausted
 
 set -u
+set -o pipefail
 
 # --- Parse arguments ---
 if [ $# -lt 3 ]; then
@@ -78,8 +79,10 @@ _COMMON="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agentic-common.sh"
 # shellcheck source=agentic-common.sh
 source "$_COMMON"
 
-# --- Emit settings JSON ---
-emit_settings_json "$SETTINGS_FILE"
+# --- Emit settings JSON (only if not already provided) ---
+if [ ! -f "$SETTINGS_FILE" ]; then
+  emit_settings_json "$SETTINGS_FILE"
+fi
 
 # --- Helper: log a line to supervisor.log ---
 log() {
@@ -87,6 +90,62 @@ log() {
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   echo "$ts $*" >> "$LOG"
   echo "$*"
+}
+
+# --- Trap: clean up on exit ---
+CHILD_PID=""
+CHILD_IN=""  # coproc write fd number
+cleanup() {
+  local exit_code=$?
+  # Stop the child gracefully if it's still running.
+  if [ -n "$CHILD_PID" ] && kill -0 "$CHILD_PID" 2>/dev/null; then
+    log "CLEANUP: stopping child-$CHILD_INDEX (pid $CHILD_PID)"
+    stop_child "cleanup"
+  fi
+  exit "$exit_code"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# --- AD3: Stop the child via EOF (close write end), then TERM, then KILL ---
+# Usage: stop_child <label>
+# Sets STOP_PATH to "eof" | "term" | "kill" based on what actually worked.
+stop_child() {
+  local label="$1"
+  # Phase 1: EOF - close the write end of the coproc pipe.
+  # The child should finish its current turn and exit 0 within a few seconds.
+  if [ -n "$CHILD_IN" ]; then
+    eval "exec $CHILD_IN>&-"
+  fi
+  # Poll for up to stopGraceMs for the child to exit on its own.
+  local grace=$((SUPERVISOR_STOP_GRACE_MS / 1000))
+  local n=0
+  while kill -0 "$CHILD_PID" 2>/dev/null && [ $n -lt $grace ]; do
+    sleep 1
+    n=$((n + 1))
+  done
+  if ! kill -0 "$CHILD_PID" 2>/dev/null; then
+    STOP_PATH="eof"
+    return 0
+  fi
+  # Phase 2: TERM - send SIGTERM after grace expired.
+  log "STOP[$label]: EOF grace expired, sending TERM to pid $CHILD_PID"
+  kill -TERM "$CHILD_PID" 2>/dev/null
+  n=0
+  while kill -0 "$CHILD_PID" 2>/dev/null && [ $n -lt $grace ]; do
+    sleep 1
+    n=$((n + 1))
+  done
+  if ! kill -0 "$CHILD_PID" 2>/dev/null; then
+    STOP_PATH="term"
+    return 0
+  fi
+  # Phase 3: KILL - send SIGKILL after a second grace.
+  log "STOP[$label]: TERM grace expired, sending KILL to pid $CHILD_PID"
+  kill -9 "$CHILD_PID" 2>/dev/null
+  STOP_PATH="kill"
+  return 0
 }
 
 # --- Helper: find the global commons store ---
@@ -126,7 +185,7 @@ const d = (p.decisions||[]).filter(x => x.action === process.argv[3]);
 if (d.length === 0) process.exit(1);
 const newest = d[d.length - 1];
 console.log(newest.timestamp || 0);
-" "$store" "$persona" "$fact" 2>/dev/null
+" "$store" "$persona" "$fact" 2> "$RUNDIR/supervisor.err"
 }
 
 # --- Helper: read child session id from stream-json init line ---
@@ -146,7 +205,7 @@ try {
   }
 } catch (e) { /* not found yet */ }
 process.exit(1);
-" "$out_file" 2>/dev/null
+" "$out_file" 2>> "$RUNDIR/supervisor.err"
 }
 
 # --- Main loop ---
@@ -166,89 +225,61 @@ while true; do
   EXIT_MARKER="$CHILD_DIR/.exit"
   rm -f "$EXIT_MARKER"
 
-  # --- D3: Pre-launch gate ---
+  # --- D3: Pre-launch gate (AD2: check both commons AND heartbeat) ---
   GLOBAL_STORE=$(find_global_store)
   if [ -z "$GLOBAL_STORE" ]; then
     log "GATE FAIL: no global commons store found"
     exit 2
   fi
-  if ! wait_persona_free "$GLOBAL_STORE" 120; then
+  if ! wait_persona_free_both "$WORKDIR" "$PERSONA" 120 "$STALE_AFTER_MS" "$GLOBAL_STORE" 2>&1 | tee -a "$LOG"; then
     log "GATE TIMEOUT: persona not free after 120s"
     exit 2
   fi
+  log "GATE PASSED: no live persona claims (commons and heartbeat both free)"
 
   # --- Take the child start timestamp BEFORE the launch call (Z6) ---
   CHILD_START_TS=$(node -e "console.log(Date.now())")
   LAUNCHED_AT=$CHILD_START_TS
 
-  # --- Launch the child ---
+  # --- Launch the child (AD3: coproc stdin, EOF stop) ---
   log "LAUNCH child-$CHILD_INDEX (start_ts=$CHILD_START_TS, prompt=${PROMPT:+set})"
+  
+  # AD5: Truncate supervisor.err once at launch; append everywhere after.
+  : > "$RUNDIR/supervisor.err"
 
-  # Hold stdin open: a background sleep feeds /dev/null into the pipe.
-  # The child stays alive with stdin open and no further input.
-  # We close stdin on the stop path (D2).
-  STDIN_HOLDER_PID=""
-
-  (
-    # Background process: keep stdin open by writing nothing.
-    # This process is killed on the stop path.
-    sleep infinity
-  ) > /dev/null 2>&1 &
-  STDIN_HOLDER_PID=$!
-
-  # Launch the child with stdin held open.
-  # The claude CLI reads from stdin in stream-json mode.
-  # We use a FIFO or a background process to keep the write end open.
-  #
-  # Approach: launch claude with stdin from a FIFO.
-  # Create the FIFO, open it for writing in a background process,
-  # then launch claude reading from it.
-  FIFO="$CHILD_DIR/stdin.fifo"
-  mkfifo "$FIFO" 2>/dev/null || {
-    # On systems where mkfifo fails, fall back to a background sleep.
-    rm -f "$FIFO"
-  }
-
-  if [ -p "$FIFO" ]; then
-    # Open the FIFO for writing in a background process (keeps it open).
-    exec 3>"$FIFO"
-    (
-      # Keep the write end open until we close it.
-      # This process is the stdin holder.
-      while true; do sleep 3600; done
-    ) &
-    STDIN_HOLDER_PID=$!
-
-    claude -p --input-format stream-json --output-format stream-json --verbose \
-      --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" \
-      --settings "$(cygpath -w "$SETTINGS_FILE")" \
-      --model "${MODEL:-haiku}" \
-      --permission-mode "$PERMISSION_MODE" \
-      --debug-file "$DEBUG" \
-      < "$FIFO" > "$OUT" 2> "$ERR" &
-  else
-    # Fallback: use a background sleep as stdin holder.
-    claude -p --input-format stream-json --output-format stream-json --verbose \
-      --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" \
-      --settings "$(cygpath -w "$SETTINGS_FILE")" \
-      --model "${MODEL:-haiku}" \
-      --permission-mode "$PERMISSION_MODE" \
-      --debug-file "$DEBUG" \
-      < /dev/null > "$OUT" 2> "$ERR" &
+  # Write the prompt to a file if child 1 and PROMPT is set.
+  PROMPT_FILE=""
+  if [ -n "$PROMPT" ] && [ "$CHILD_INDEX" -eq 1 ]; then
+    PROMPT_FILE="$RUNDIR/child-1.prompt"
+    printf '%s' "$PROMPT" > "$PROMPT_FILE"
   fi
 
-  CHILD_PID=$!
-
-  # Send the opening prompt if provided (first child only, or when PROMPT is set).
-  if [ -n "$PROMPT" ] && [ "$CHILD_INDEX" -eq 1 ]; then
-    sleep 2
-    echo "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"$PROMPT\"}]}}" > "$FIFO" 2>/dev/null || \
-      echo "$PROMPT" | claude -p --input-format text --output-format stream-json \
-        --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" \
-        --settings "$(cygpath -w "$SETTINGS_FILE")" \
-        --model "${MODEL:-haiku}" \
-        --permission-mode "$PERMISSION_MODE" \
-        --debug-file "$DEBUG" >> "$OUT" 2>> "$ERR" &
+  # Launch the child via coproc. The coproc gives us:
+  # - CHILD_PID: the claude process pid (no holder to leak)
+  # - CHILD[1]: the write-end fd number for stdin
+  # To stop the child, we close CHILD[1] (EOF), then TERM, then KILL.
+  # The child reads its first prompt from the coproc pipe, stays alive with
+  # the pipe open, and exits 0 when the write end closes.
+  
+  coproc CHILD { claude -p --input-format stream-json --output-format stream-json --verbose \
+    --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" \
+    --settings "$(cygpath -w "$SETTINGS_FILE")" \
+    --model "${MODEL:-haiku}" \
+    --permission-mode "$PERMISSION_MODE" \
+    --debug-file "$DEBUG" \
+    > "$OUT" 2> "$ERR"; }
+  
+  # Copy the fd number now: the array is unset when the coproc exits.
+  CHILD_IN=${CHILD[1]}
+  
+  # Send the first prompt (child 1 only) to the child's stdin.
+  if [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
+    node -e "
+      const fs = require('fs');
+      const p = fs.readFileSync(process.argv[1], 'utf8');
+      const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:p}]}});
+      process.stdout.write(json + '\n');
+    " "$PROMPT_FILE" >&"$CHILD_IN"
   fi
 
   # --- Poll loop ---
@@ -280,7 +311,7 @@ const d = (p.decisions||[]).filter(x => x.action === 'context_budget_crossed' &&
 if (d.length === 0) process.exit(1);
 const newest = d[d.length - 1];
 console.log(newest.timestamp || 0);
-" "$STORE" "$PERSONA" 2>/dev/null)
+" "$STORE" "$PERSONA" 2>> "$RUNDIR/supervisor.err")
     fi
 
     # Poll the heartbeat.
@@ -294,11 +325,11 @@ console.log(newest.timestamp || 0);
       HEARTBEAT_SESSION_ID=$(echo "$HEARTBEAT_JSON" | node -e "
 const o = JSON.parse(require('fs').readFileSync(0, 'utf8'));
 console.log(o.sessionId || '');
-" 2>/dev/null)
+" 2>> "$RUNDIR/supervisor.err")
       HEARTBEAT_LAST_SEEN=$(echo "$HEARTBEAT_JSON" | node -e "
 const o = JSON.parse(require('fs').readFileSync(0, 'utf8'));
 console.log(o.lastSeen || '');
-" 2>/dev/null)
+" 2>> "$RUNDIR/supervisor.err")
     fi
 
     NOW=$(node -e "console.log(Date.now())")
@@ -310,7 +341,7 @@ const criticalTs = process.argv[2] ? parseInt(process.argv[2]) : null;
 const hbSession = process.argv[3] || null;
 const hbLastSeen = process.argv[4] ? parseInt(process.argv[4]) : null;
 const now = process.argv[5] ? parseInt(process.argv[5]) : null;
-const childStartTs = process.argv[6] ? parseInt(process.argv[6]) : parseInt(process.argv[6]) : 0;
+const childStartTs = process.argv[6] ? parseInt(process.argv[6]) : 0;
 const childSessionId = process.argv[7] || null;
 const launchedAt = process.argv[8] ? parseInt(process.argv[8]) : 0;
 const staleAfterMs = process.argv[9] ? parseInt(process.argv[9]) : 90000;
@@ -334,84 +365,64 @@ console.log(JSON.stringify({
   minRunMs,
   maxRestartsPerHour,
 }));
-" "${ROOT_COMPLETE_TS:-}" "${CRITICAL_TS:-}" "${HEARTBEAT_SESSION_ID:-}" "${HEARTBEAT_LAST_SEEN:-}" "${NOW:-}" "$CHILD_START_TS" "${CHILD_SESSION_ID:-}" "$LAUNCHED_AT" "$STALE_AFTER_MS" "$SUPERVISOR_MIN_RUN_MS" "$SUPERVISOR_MAX_RESTARTS_PER_HOUR" "$CRASH_COUNT" "$RESTART_COUNT" 2>/dev/null)
+" "${ROOT_COMPLETE_TS:-}" "${CRITICAL_TS:-}" "${HEARTBEAT_SESSION_ID:-}" "${HEARTBEAT_LAST_SEEN:-}" "${NOW:-}" "$CHILD_START_TS" "${CHILD_SESSION_ID:-}" "$LAUNCHED_AT" "$STALE_AFTER_MS" "$SUPERVISOR_MIN_RUN_MS" "$SUPERVISOR_MAX_RESTARTS_PER_HOUR" "$CRASH_COUNT" "$RESTART_COUNT" 2>> "$RUNDIR/supervisor.err")
 
     # Call the decide unit.
     DECIDE_RESULT=$(node -e "
 import { pathToFileURL } from 'node:url';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-const here = dirname(fileURLToPath(import.meta.url));
-const decidePath = resolve(here, '../bin/supervise-decide.mjs');
+import { resolve } from 'node:path';
+const pluginDir = process.argv[2];
+const decidePath = resolve(pluginDir, 'bin/supervise-decide.mjs');
 const mod = await import(pathToFileURL(decidePath).href);
 const input = JSON.parse(process.argv[1]);
 const result = mod.decide(input);
 console.log(JSON.stringify(result));
-" "$DECIDE_INPUT" 2>/dev/null)
+" "$DECIDE_INPUT" "$PLUGIN_DIR" 2> "$RUNDIR/supervisor.err")
+    DECIDE_ERR=$?
 
-    if [ -z "$DECIDE_RESULT" ]; then
+    if [ -z "$DECIDE_RESULT" ] || [ $DECIDE_ERR -ne 0 ]; then
+      log "DECIDE ERR $DECIDE_ERR (see supervisor.err)"
       continue
     fi
 
     DECIDE_ACTION=$(echo "$DECIDE_RESULT" | node -e "
 const o = JSON.parse(require('fs').readFileSync(0, 'utf8'));
 console.log(o.action || 'continue');
-" 2>/dev/null)
+" 2>> "$RUNDIR/supervisor.err")
     DECIDE_REASON=$(echo "$DECIDE_RESULT" | node -e "
 const o = JSON.parse(require('fs').readFileSync(0, 'utf8'));
 console.log(o.reason || '');
-" 2>/dev/null)
+" 2>> "$RUNDIR/supervisor.err")
 
     case "$DECIDE_ACTION" in
       stop_complete)
         log "STOP_COMPLETE: $DECIDE_REASON"
-        # Close stdin (D2: graceful stop).
-        exec 3>&- 2>/dev/null
-        kill "$STDIN_HOLDER_PID" 2>/dev/null
-        wait "$CHILD_PID" 2>/dev/null
-        EXIT_CODE=$?
+        stop_child "stop_complete"
+        wait "$CHILD_PID"; EXIT_CODE=$?
         echo "$EXIT_CODE" > "$EXIT_MARKER"
-        log "EXIT child-$CHILD_INDEX code=$EXIT_CODE (stdin-close)"
+        log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         exit 0
         ;;
       stop_crash_loop)
         log "STOP_CRASH_LOOP: $DECIDE_REASON"
-        kill "$CHILD_PID" 2>/dev/null
-        wait "$CHILD_PID" 2>/dev/null
-        EXIT_CODE=$?
+        stop_child "stop_crash_loop"
+        wait "$CHILD_PID"; EXIT_CODE=$?
         echo "$EXIT_CODE" > "$EXIT_MARKER"
-        log "EXIT child-$CHILD_INDEX code=$EXIT_CODE (kill)"
+        log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         exit 3
         ;;
       stop_budget)
         log "STOP_BUDGET: $DECIDE_REASON"
-        kill "$CHILD_PID" 2>/dev/null
-        wait "$CHILD_PID" 2>/dev/null
-        EXIT_CODE=$?
+        stop_child "stop_budget"
+        wait "$CHILD_PID"; EXIT_CODE=$?
         echo "$EXIT_CODE" > "$EXIT_MARKER"
-        log "EXIT child-$CHILD_INDEX code=$EXIT_CODE (kill)"
+        log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         exit 4
         ;;
       restart)
         log "RESTART: $DECIDE_REASON"
-        # Close stdin (D2: graceful stop).
-        exec 3>&- 2>/dev/null
-        kill "$STDIN_HOLDER_PID" 2>/dev/null
-        # Wait up to stopGraceMs for exit.
-        local grace=$((SUPERVISOR_STOP_GRACE_MS / 1000))
-        local n=0
-        while kill -0 "$CHILD_PID" 2>/dev/null && [ $n -lt $grace ]; do
-          sleep 1; n=$((n + 1))
-        done
-        if kill -0 "$CHILD_PID" 2>/dev/null; then
-          kill -9 "$CHILD_PID" 2>/dev/null
-          log "KILL child-$CHILD_INDEX (grace expired)"
-          STOP_PATH="kill"
-        else
-          STOP_PATH="stdin-close"
-        fi
-        wait "$CHILD_PID" 2>/dev/null
-        EXIT_CODE=$?
+        stop_child "restart"
+        wait "$CHILD_PID"; EXIT_CODE=$?
         echo "$EXIT_CODE" > "$EXIT_MARKER"
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
 
@@ -441,13 +452,9 @@ console.log(o.reason || '');
   done
 
   # Child exited on its own (not via decide).
-  wait "$CHILD_PID" 2>/dev/null
-  EXIT_CODE=$?
+  # With coproc, we can use wait() to get the real exit code.
+  wait "$CHILD_PID"; EXIT_CODE=$?
   echo "$EXIT_CODE" > "$EXIT_MARKER"
-
-  # Close stdin.
-  exec 3>&- 2>/dev/null
-  kill "$STDIN_HOLDER_PID" 2>/dev/null
 
   log "EXIT child-$CHILD_INDEX code=$EXIT_CODE (natural)"
 
