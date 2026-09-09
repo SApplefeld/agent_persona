@@ -51,6 +51,19 @@ export function backoffFactor(
   return Math.max(1, factor); // at least 1
 }
 
+// --- Should run classify? ---
+// D4: backoff gate. Returns true if the classify section should run on this tick.
+export function shouldRunClassify(
+  tickIndex: number,
+  consecutiveSkips: number,
+  costBackoffAfterTicks: number,
+  costBackoffMaxMs: number,
+  controllerTickMs: number,
+): boolean {
+  const factor = backoffFactor(consecutiveSkips, costBackoffAfterTicks, costBackoffMaxMs, controllerTickMs);
+  return tickIndex % factor === 0;
+}
+
 // --- Estimate for a call ---
 // Estimate tokens: prompt chars / 4 + maxTokens
 export function estimateTokens(

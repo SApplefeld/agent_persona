@@ -47,7 +47,7 @@ import {
   dedupeSelfReview,
   evictSelfReview,
 } from "./self-review";
-import { estimateTokens, fnv1aHash, effectiveWindowCount, bumpWindow } from "./cost-ledger";
+import { estimateTokens, fnv1aHash, effectiveWindowCount, bumpWindow, backoffFactor, shouldRunClassify } from "./cost-ledger";
 
 // --- Module-scope session identity ---
 // The loader requires `persist` and `activate` to be top-level functions.
@@ -1443,6 +1443,24 @@ export const register: Register = async (on, options) => {
             return;
           }
 
+          // D4: Backoff gate. After K consecutive skipped ticks, run classify less often.
+          if (costEnabled) {
+            const consecutiveSkips = sess.state.monitor.cost.consecutiveSkips;
+            if (!shouldRunClassify(tickIndex, consecutiveSkips, costBackoffAfterTicks, costBackoffMaxMs, controllerTickMs)) {
+              // Skip classify and nudge; carry forward the previous decision.
+              const factor = backoffFactor(consecutiveSkips, costBackoffAfterTicks, costBackoffMaxMs, controllerTickMs);
+              sess.state.decisions.push({
+                timestamp: tickTs,
+                loop: "monitor",
+                action: "controller_tick",
+                detail: `${g.id}: backed off (factor ${factor}, tick ${tickIndex})`,
+              });
+              sess.state.updatedAt = tickTs;
+              await persist($);
+              return;
+            }
+          }
+
           // D2: Idle tick skip. Hash the stable subset of the summary.
           // Skip classify+reason only when the hash is unchanged AND the nudge is not due.
           if (costEnabled) {
@@ -1682,6 +1700,10 @@ export const register: Register = async (on, options) => {
     turnLeafId = sess.state.activeGoalId;
     // C4: reset tool error counter for this turn.
     toolErrorsThisTurn = 0;
+    // D4: reset backoff skip counter on new turn (activity breaks the skip streak).
+    if (costEnabled && sess.state.monitor.cost) {
+      sess.state.monitor.cost.consecutiveSkips = 0;
+    }
     sess.state.decisions.push({
       timestamp: Date.now(),
       loop: "monitor",

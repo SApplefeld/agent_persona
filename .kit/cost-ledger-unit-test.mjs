@@ -8,6 +8,7 @@ const {
   effectiveWindowCount,
   isCapReached,
   backoffFactor,
+  shouldRunClassify,
   estimateTokens,
   bumpWindow,
 } = await import("../hooks/cost-ledger.ts");
@@ -92,6 +93,47 @@ check("backoffFactor: 5 skips with threshold 5 returns 2",
 
 check("backoffFactor: 9 skips with threshold 10 returns 1",
   backoffFactor(9, 10, 300000, 30000) === 1);
+
+// --- shouldRunClassify (D4 backoff gate) ---
+// No skips: factor 1, so tickIndex % 1 === 0 always true
+check("shouldRunClassify: no skips, tick 1 runs",
+  shouldRunClassify(1, 0, 10, 300000, 30000) === true);
+
+check("shouldRunClassify: no skips, tick 2 runs",
+  shouldRunClassify(2, 0, 10, 300000, 30000) === true);
+
+// 10 skips: factor 2, so even ticks run, odd ticks don't
+check("shouldRunClassify: 10 skips, tick 1 does NOT run",
+  shouldRunClassify(1, 10, 10, 300000, 30000) === false);
+
+check("shouldRunClassify: 10 skips, tick 2 runs",
+  shouldRunClassify(2, 10, 10, 300000, 30000) === true);
+
+check("shouldRunClassify: 10 skips, tick 3 does NOT run",
+  shouldRunClassify(3, 10, 10, 300000, 30000) === false);
+
+check("shouldRunClassify: 10 skips, tick 4 runs",
+  shouldRunClassify(4, 10, 10, 300000, 30000) === true);
+
+// 20 skips: factor 4, so ticks 1-3 don't run, tick 4 runs
+check("shouldRunClassify: 20 skips, tick 1 does NOT run",
+  shouldRunClassify(1, 20, 10, 300000, 30000) === false);
+
+check("shouldRunClassify: 20 skips, tick 3 does NOT run",
+  shouldRunClassify(3, 20, 10, 300000, 30000) === false);
+
+check("shouldRunClassify: 20 skips, tick 4 runs",
+  shouldRunClassify(4, 20, 10, 300000, 30000) === true);
+
+// 40 skips: factor 10 (capped), so ticks 1-9 don't run, tick 10 runs
+check("shouldRunClassify: 40 skips, tick 9 does NOT run",
+  shouldRunClassify(9, 40, 10, 300000, 30000) === false);
+
+check("shouldRunClassify: 40 skips, tick 10 runs",
+  shouldRunClassify(10, 40, 10, 300000, 30000) === true);
+
+check("shouldRunClassify: 40 skips, tick 20 runs",
+  shouldRunClassify(20, 40, 10, 300000, 30000) === true);
 
 // --- Estimate tokens ---
 check("estimateTokens: basic calculation",
