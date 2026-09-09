@@ -38,7 +38,8 @@ echo "DeepSeekHarness live-all.sh $STAMP" > "$GLOBAL_RUNNING"
 
 # Summary file
 SUMMARY="$RUN_DIR/summary.txt"
-echo "start $(date -u +%FT%TZ) HEAD $HEAD_SHORT PROFILE $PROFILE" > "$SUMMARY"
+ENGINE_VERSION="$(claude --version 2>/dev/null || echo 'unknown')"
+echo "start $(date -u +%FT%TZ) HEAD $HEAD_SHORT PROFILE $PROFILE ENGINE $ENGINE_VERSION" > "$SUMMARY"
 
 # V3: find the global commons store for the pre-gate
 source "$SCRIPT_DIR/live-common.sh"
@@ -111,9 +112,22 @@ run_suite() {
   [ -f "$assert_log" ] && cp -f "$assert_log" "$RUN_DIR/$suite.assert.log"
   [ -f "$suite_dir/.agentic-personas.json" ] && cp -f "$suite_dir/.agentic-personas.json" "$RUN_DIR/$suite.store.json"
   [ -f "$suite_dir/$suite.decisions.log" ] && cp -f "$suite_dir/$suite.decisions.log" "$RUN_DIR/$suite.decisions.log"
+  # AL8: preserve both artifact name shapes
+  # Most suites: $suite-test.out.jsonl, $suite-test.err.log, $suite-test.debug.log
+  # Budget, goaltree, goaltree-stall, planfail: $suite.out.jsonl, $suite.err.log
   [ -f "$suite_dir/$suite-test.err.log" ] && cp -f "$suite_dir/$suite-test.err.log" "$RUN_DIR/$suite.err.log"
   [ -f "$suite_dir/$suite-test.out.jsonl" ] && cp -f "$suite_dir/$suite-test.out.jsonl" "$RUN_DIR/$suite.out.jsonl"
   [ -f "$suite_dir/$suite-test.debug.log" ] && cp -f "$suite_dir/$suite-test.debug.log" "$RUN_DIR/$suite.debug.log"
+  # Fallback: if the -test shape is missing, try the non-test shape
+  if [ ! -f "$RUN_DIR/$suite.err.log" ] && [ -f "$suite_dir/$suite.err.log" ]; then
+    cp -f "$suite_dir/$suite.err.log" "$RUN_DIR/$suite.err.log"
+  fi
+  if [ ! -f "$RUN_DIR/$suite.out.jsonl" ] && [ -f "$suite_dir/$suite.out.jsonl" ]; then
+    cp -f "$suite_dir/$suite.out.jsonl" "$RUN_DIR/$suite.out.jsonl"
+  fi
+  if [ ! -f "$RUN_DIR/$suite.debug.log" ] && [ -f "$suite_dir/$suite.debug.log" ]; then
+    cp -f "$suite_dir/$suite.debug.log" "$RUN_DIR/$suite.debug.log"
+  fi
 
   # Write the summary line
   echo "$suite script_exit=$rc started=$start_ts ended=$end_ts exitfile=[$exit_content] assert=[$assert_content]" >> "$SUMMARY"

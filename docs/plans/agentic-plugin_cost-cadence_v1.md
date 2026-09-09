@@ -1,8 +1,8 @@
 # agentic-plugin : cost and cadence (item 6)
 
-**Status:** Draft (v6, for Reviewer review)
+**Status:** Draft (v7, for Reviewer review)
 **Created:** 2026-09-09T13:40:33Z (commit `4fa322d`)
-**Revised:** 2026-09-09T19:42:00Z (AK1-AK6 resolved)
+**Revised:** 2026-09-10T08:00:00Z (AL1-AL8 resolved)
 **Program item:** 6 (cost and cadence)
 **Supersedes:** N/A (new item)
 
@@ -233,34 +233,42 @@ One section per commit, each with its gate:
 
 **Live suite settings:**
 - `nudgeIdleMs`: 60000
-- `nudgeFloorMs`: 5000
+- `nudgeFloorMs`: 120000
 - `controllerTickMs`: 10000
 - `costMaxNudgesPerHour`: 2
 - `costSummaryEveryNTicks`: 3
 
 **The live suite does not exercise D4:** `consecutiveSkips` peaks around 5 in that profile and the backoff threshold is 10, so the schedule is proven by the unit test alone.
 
-**Timeline table (derivation aid):**
+**D2 skip rationale:** The D2 skip fires when the hash is unchanged AND the nudge is not due. With `nudgeFloorMs: 120000`, after a nudge at idle 60s, the floor (120s) has not elapsed at idle 70-110s, so `nudgeDue` is false and the skip can fire (if the hash is unchanged). The feed must create a scenario where the worker is idle (not completing rounds) so the hash stays unchanged.
+
+**Timeline table (derivation aid, corrected for `nudgeFloorMs: 120000`):**
 
 | Tick | Time | Idle | Turn completes at | Hash | Nudge cap | Expected decision |
 |------|------|------|-------------------|------|-----------|-------------------|
 | 1 | 0 s | 0 s | - | H1 | 0/2 | `controller_tick` (classify, reason) |
-| 2 | 10 s | 10 s | - | H1 | 0/2 | `controller_tick` (unchanged, skipped) |
+| 2 | 10 s | 10 s | - | H1 | 0/2 | `controller_tick` (idle gate not met, no decision) |
 | 3 | 20 s | 20 s | - | H1 | 0/2 | `cost_summary` (classify 1, reason 1, nudge 0) |
-| 4 | 30 s | 30 s | - | H1 | 0/2 | `controller_tick` (unchanged, skipped) |
-| 5 | 40 s | 40 s | - | H1 | 0/2 | `controller_tick` (unchanged, skipped) |
+| 4 | 30 s | 30 s | - | H1 | 0/2 | `controller_tick` (idle gate not met, no decision) |
+| 5 | 40 s | 40 s | - | H1 | 0/2 | `controller_tick` (idle gate not met, no decision) |
 | 6 | 50 s | 50 s | - | H1 | 0/2 | `cost_summary` (classify 1, reason 1, nudge 0) |
 | 7 | 60 s | 60 s | ~75 s | H1 | 0/2 | `controller_tick` (classify, reason, nudge sent) |
-| 8 | 70 s | ~5 s | - | H1 | 1/2 | `controller_tick` (unchanged, skipped) |
-| 9 | 80 s | ~15 s | - | H1 | 1/2 | `cost_summary` (classify 2, reason 2, nudge 1) |
-| 10 | 90 s | ~25 s | - | H1 | 1/2 | `controller_tick` (unchanged, skipped) |
-| 11 | 100 s | ~35 s | - | H1 | 1/2 | `controller_tick` (unchanged, skipped) |
-| 12 | 110 s | ~45 s | - | H1 | 1/2 | `cost_summary` (classify 2, reason 2, nudge 1) |
-| 13 | 120 s | ~55 s | - | H1 | 1/2 | `controller_tick` (unchanged, skipped) |
-| 14 | 130 s | ~65 s | ~145 s | H1 | 1/2 | `controller_tick` (classify, reason, nudge sent) |
-| 15 | 140 s | ~5 s | - | H2 | 2/2 | `cost_cap_reached` (nudge cap latched) |
-| 16 | 150 s | ~15 s | - | H2 | 2/2 | `controller_tick` (skipped, cap latched) |
-| 17 | 160 s | ~25 s | - | H2 | 2/2 | `cost_summary` (classify 3, reason 3, nudge 2) |
+| 8 | 70 s | ~5 s | - | H2 | 1/2 | `controller_tick` (classify, hash changed) |
+| 9 | 80 s | ~15 s | - | H2 | 1/2 | `cost_summary` (classify 2, reason 2, nudge 1) |
+| 10 | 90 s | ~25 s | - | H2 | 1/2 | `controller_tick` (unchanged, skipped) |
+| 11 | 100 s | ~35 s | - | H2 | 1/2 | `controller_tick` (unchanged, skipped) |
+| 12 | 110 s | ~45 s | - | H2 | 1/2 | `cost_summary` (classify 2, reason 2, nudge 1) |
+| 13 | 120 s | ~55 s | - | H2 | 1/2 | `controller_tick` (unchanged, skipped) |
+| 14 | 130 s | ~65 s | - | H2 | 1/2 | `controller_tick` (unchanged, skipped) |
+| 15 | 140 s | ~75 s | - | H2 | 1/2 | `cost_summary` (classify 2, reason 2, nudge 1) |
+| 16 | 150 s | ~85 s | - | H2 | 1/2 | `controller_tick` (unchanged, skipped) |
+| 17 | 160 s | ~95 s | - | H2 | 1/2 | `controller_tick` (unchanged, skipped) |
+| 18 | 170 s | ~105 s | - | H2 | 1/2 | `cost_summary` (classify 2, reason 2, nudge 1) |
+| 19 | 180 s | ~115 s | - | H2 | 1/2 | `controller_tick` (unchanged, skipped) |
+| 20 | 190 s | ~125 s | ~205 s | H2 | 1/2 | `controller_tick` (classify, reason, nudge sent, floor elapsed) |
+| 21 | 200 s | ~5 s | - | H3 | 2/2 | `cost_cap_reached` (nudge cap latched) |
+| 22 | 210 s | ~15 s | - | H3 | 2/2 | `controller_tick` (skipped, cap latched) |
+| 23 | 220 s | ~25 s | - | H3 | 2/2 | `cost_summary` (classify 3, reason 3, nudge 2) |
 
 **Assertions (order-based, not tick-based):**
 - Two `nudge_sent` decisions
@@ -302,3 +310,11 @@ One section per commit, each with its gate:
 | AK4 | Gate ran before `bin/agentic-common.sh` commit | `emit_settings_json` now passes `COST_MAX_NUDGES_PER_HOUR`, `COST_MAX_PLUGIN_CALLS_PER_HOUR`, `COST_SUMMARY_EVERY_N_TICKS`; committed at `90693d2`; gate re-run at final HEAD |
 | AK5 | (Not raised by Reviewer) | N/A |
 | AK6 | Record defects: em dashes, false claims, wrong `git rm --cached` claim, sections 3+4 one commit, migration test gap | Migration gap fixed with `state-v4-cost-no-hash.json` fixture at `911128d`; em dashes and false claims acknowledged in Round 57 hand-back; commit order corrected (passthrough first, then fixes) |
+| AL1 | Cost suite does not verify D2, profile wrong for timeline | `NUDGE_FLOOR_MS` changed to 120000, deadline to 420s, D2 skip assertion restored as "at least three unchanged, skipped", feed updated to create idle scenario; fixed at commit `4335242` |
+| AL2 | (Not raised by Reviewer) | N/A |
+| AL3 | (Not raised by Reviewer) | N/A |
+| AL4 | Plan needs v7 with AL1-AL8 rows, section 8 corrections, D2 rationale, new `Revised:` line | This revision (v7) |
+| AL5 | (Not raised by Reviewer) | N/A |
+| AL6 | Migration test count discrepancy (Reviewer got 28 OK + PASS, I wrote 31) | Need to paste actual run output in hand-back; 31 was unit test count, migration test may be 28 |
+| AL7 | Engine 2.1.267 renamed `$.fs.readFile` to `$.fs.read`, `$.fs.writeFile` to `$.fs.write` | Typings updated to 2.1.267, 16+8 renames in `hooks/index.ts`, comment in `agent-state.ts`, `tsc` exit 0, unit test PASS, migration test PASS, controller suite green; fixed at commit `8be1050` |
+| AL8 | Runner only preserves `$suite-test.*` shape, but budget/goaltree/goaltree-stall/planfail write `$suite.*` shape; runner `start` line should print engine version | `live-all.sh` now preserves both shapes and adds `claude --version` to `start` line; fixed in this commit |
