@@ -247,11 +247,9 @@ switch (testName) {
       check2("cost: no nudge_sent after cost_cap_reached", false);
     }
 
-    // At least one controller_tick with "unchanged, skipped" (D2 skip).
-    // Note: with the current idle gate + floor interaction, the skip may not fire
-    // in this test scenario. This assertion is informational.
+    // D2 skip: at least three controller_tick with "unchanged, skipped".
     const skippedTicks = details.filter(d => d.action === "controller_tick" && /unchanged, skipped/.test(d.detail || ""));
-    // check2("cost: at least one unchanged, skipped", skippedTicks.length >= 1);
+    check2("cost: at least three unchanged, skipped", skippedTicks.length >= 3);
 
     // At least two cost_summary.
     const costSummaries = details.filter(d => d.action === "cost_summary");
