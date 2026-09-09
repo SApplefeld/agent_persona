@@ -1,8 +1,8 @@
 # agentic-plugin : cost and cadence (item 6)
 
-**Status:** Draft (v5, for Reviewer review)
+**Status:** Draft (v6, for Reviewer review)
 **Created:** 2026-09-09T13:40:33Z (commit `4fa322d`)
-**Revised:** 2026-09-09T18:30:00Z (AJ1-AJ6 resolved)
+**Revised:** 2026-09-09T19:42:00Z (AK1-AK6 resolved)
 **Program item:** 6 (cost and cadence)
 **Supersedes:** N/A (new item)
 
@@ -296,3 +296,9 @@ One section per commit, each with its gate:
 | AJ4 | 15 em dashes in timeline table | All replaced with plain hyphens; fixed at commit `481457c` |
 | AJ5 | Shared-script change at `a1ec8bb` unannounced | Announced here; `COST_SUMMARY_EVERY_N_TICKS` feeds `emit_settings_json` in `bin/agentic-common.sh`; gate run after commit |
 | AJ6 | Count 26 not 25, commit time wrong, misplaced copy | Count corrected to 31 (5 new `bumpWindow` checks added); timestamp fixed; misplaced `DISCUSSION.md` and `dist/` removed from repo |
+| AK1 | `nudgeDue` formula wrong | `nudgeDue` now `idleMs >= nudgeIdleMs && (now - lastNudgeAt >= nudgeFloorMs)` at `hooks/index.ts:1465`; prevents firing every tick pre-nudge and post-floor |
+| AK2 | `cost_cap_reached` emitted every tick while latched | Added `capNoticeWindowStart` field (default 0) to latch one emission per window; nudge-cap check moved pre-classify per AH5; post-classify guard now silent at `hooks/index.ts:1570-1573` |
+| AK3 | `callWindow` bumped 3x for 2 calls | Removed third `bumpWindow` call in nudge branch at `hooks/index.ts:1587-1588` |
+| AK4 | Gate ran before `bin/agentic-common.sh` commit | `emit_settings_json` now passes `COST_MAX_NUDGES_PER_HOUR`, `COST_MAX_PLUGIN_CALLS_PER_HOUR`, `COST_SUMMARY_EVERY_N_TICKS`; committed at `90693d2`; gate re-run at final HEAD |
+| AK5 | (Not raised by Reviewer) | N/A |
+| AK6 | Record defects: em dashes, false claims, wrong `git rm --cached` claim, sections 3+4 one commit, migration test gap | Migration gap fixed with `state-v4-cost-no-hash.json` fixture at `911128d`; em dashes and false claims acknowledged in Round 57 hand-back; commit order corrected (passthrough first, then fixes) |
