@@ -1,8 +1,8 @@
 # Agentic Plugin
 
-PIANO-esque cognitive layer on Claude Code's Function Hooks API. One plugin module, one `register(on, options)` export, no Agent SDK, no external supervisor. Modules observe at hook boundaries and write to shared `AgentState`; the Controller : the sole actuator : runs on a clock, classifies the situation, and then (and only then) actuates through exactly three channels.
+PIANO-esque cognitive layer on Claude Code's Function Hooks API. One plugin module, one `register(on, options)` export, no Agent SDK. The plugin needs no supervisor to run one session; `bin/supervise.sh` is the optional outer loop for runs longer than one session. Modules observe at hook boundaries and write to shared `AgentState`; the Controller : the sole actuator : runs on a clock, classifies the situation, and then (and only then) actuates through exactly three channels.
 
-**Status: v0.11.0 : Stage 3 (supervisor).** `tsc --noEmit` clean. Supervisor (`bin/supervise.sh`) drives outer-loop runs: pre-gate (commons + heartbeat), coproc stdin with EOF stop, real exit codes, `supervisor.err` append (not truncate), `PROMPT=""` cleared after first send, `writeClaimDirect` shared across all three claim sites. 9 live tests in `.kit/` (including supervisor suite F1-F6 + F0).
+**Status: v0.11.0 : Stage 3 (supervisor).** `tsc --noEmit` clean. Supervisor (`bin/supervise.sh`) drives outer-loop runs: pre-gate (commons + heartbeat), coproc stdin with EOF stop, real exit codes, `supervisor.err` append (not truncate), `PROMPT=""` cleared after first send, `writeClaimDirect` shared across all three claim sites. 12 live tests in `.kit/` (including supervisor suite F1-F6 + F0).
 
 ## Architecture
 
@@ -186,7 +186,7 @@ The supervisor never writes the persona store (invariant §8). It uses `supervis
 
 | File | Purpose |
 |---|---|
-| `bin/supervise.sh` | The supervisor script (bash, ~533 lines) |
+| `bin/supervise.sh` | The supervisor script (bash) |
 | `bin/supervise-decide.mjs` | Decision logic (pure JS, 9/9 tests) |
 | `bin/agentic-common.sh` | Shared helpers (`wait_persona_free_both`, etc.) |
 | `.kit/live-supervisor-test.sh` | Supervisor acceptance test (F1-F6 + F0) |
