@@ -52,8 +52,12 @@ emit_settings_json() {
   if [ -n "${CONTEXT_BUDGET_READ_EVERY_N_TICKS:-}" ]; then
     budget_opts="$budget_opts,\"contextBudgetReadEveryNTicks\":$CONTEXT_BUDGET_READ_EVERY_N_TICKS"
   fi
+  local cost_opts=""
+  if [ -n "${COST_SUMMARY_EVERY_N_TICKS:-}" ]; then
+    cost_opts=",\"costSummaryEveryNTicks\":$COST_SUMMARY_EVERY_N_TICKS"
+  fi
   cat > "$out" <<EOF
-{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":$TICK_MS,"nudgeIdleMs":$NUDGE_IDLE_MS,"nudgeFloorMs":${NUDGE_FLOOR_MS:-5000},"gitProbeMs":$GIT_PROBE_MS,"heartbeatMs":${HEARTBEAT_MS:-30000},"staleAfterMs":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts}}}}
+{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":$TICK_MS,"nudgeIdleMs":$NUDGE_IDLE_MS,"nudgeFloorMs":${NUDGE_FLOOR_MS:-5000},"gitProbeMs":$GIT_PROBE_MS,"heartbeatMs":${HEARTBEAT_MS:-30000},"staleAfterMs":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts$cost_opts}}}}
 EOF
 }
 

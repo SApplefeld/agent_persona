@@ -43,6 +43,8 @@ feed() {
 [ -f "$RUNNING" ] && { echo "RUNNING exists, refusing"; exit 8; }
 echo "DeepSeekHarness $0 $(date -u +%FT%TZ)" > "$RUNNING"
 
+# D1: short profile emits cost_summary every 2 ticks so the live suite exercises it
+export COST_SUMMARY_EVERY_N_TICKS="${COST_SUMMARY_EVERY_N_TICKS:-2}"
 # Emit settings.json for this suite
 emit_settings_json "settings.json"
 

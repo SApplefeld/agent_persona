@@ -150,6 +150,9 @@ switch (testName) {
       ["create", "planning_fired", "planning_created", "activated", "nudge_sent", "done", "activated", "score"],
       "controller"
     );
+    // D1: cost_summary must appear at least once in the decisions.
+    const costSummaries = details.filter(d => d.action === "cost_summary");
+    check2("cost_summary emitted at least once", costSummaries.length >= 1);
     break;
   }
   case "yield": {
