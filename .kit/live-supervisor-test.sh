@@ -2,6 +2,7 @@
 # live-supervisor-test.sh - Acceptance test for the supervisor (item 5, plan v1).
 # Short profile, thresholds low enough that critical crosses inside the first two plans.
 # Exits 0 on all-pass (F1-F6 + F0 at end), 1 on any failure.
+# AE4: F6 redefined (drop child-3 check, use STOP_COMPLETE + no-Launch-after).
 # AD4: F4 redefined (child-2 owns persona), F5 added (nudge/turn after child-2),
 #      F3 tests EOF (AD3), F0 moved to end (scoped by first LAUNCH), prompt fixed.
 
@@ -236,23 +237,31 @@ if [ "$F5_FOUND" -eq 0 ]; then
   exit 1
 fi
 
-# --- F6: root_complete ends the run: supervisor exit 0, no child 3 ---
-# Wait for the supervisor to finish
+# --- F6: root_complete ends the run (AE4: restart count is model-controlled) ---
+# Three checks: (a) supervisor exit 0, (b) last decision line is STOP_COMPLETE,
+# (c) no LAUNCH line after that STOP_COMPLETE.
 wait $SUPERVISE_PID
 SUPERVISE_EXIT=$?
 
-if [ $SUPERVISE_EXIT -eq 0 ]; then
-  # Check no child-3 directory
-  if [ ! -d "$RUNDIR/child-3" ]; then
-    echo "F6 PASS: root_complete, supervisor exit 0, no child-3"
-  else
-    echo "F6 FAIL: child-3 directory exists"
-    exit 1
-  fi
-else
+if [ $SUPERVISE_EXIT -ne 0 ]; then
   echo "F6 FAIL: supervisor exit $SUPERVISE_EXIT (expected 0)"
   exit 1
 fi
+
+LAST_DECISION=$(grep -E ' (STOP_COMPLETE|RESTART|DECIDE ERR)' "$SUPERVISE_LOG" 2>/dev/null | tail -1)
+if ! echo "$LAST_DECISION" | grep -q 'STOP_COMPLETE'; then
+  echo "F6 FAIL: last decision is not STOP_COMPLETE (got: ${LAST_DECISION:-none})"
+  exit 1
+fi
+
+STOP_LINE_NO=$(grep -nE ' STOP_COMPLETE' "$SUPERVISE_LOG" 2>/dev/null | tail -1 | cut -d: -f1)
+LATER_LAUNCH=$(awk -v stop="$STOP_LINE_NO" 'NR > stop && /LAUNCH child-/' "$SUPERVISE_LOG" 2>/dev/null)
+if [ -n "$LATER_LAUNCH" ]; then
+  echo "F6 FAIL: LAUNCH line after STOP_COMPLETE: $LATER_LAUNCH"
+  exit 1
+fi
+
+echo "F6 PASS: supervisor exit 0, last decision is STOP_COMPLETE, no LAUNCH after it"
 
 # --- F0: AD4 moved to end - no persona_yield* in the run, scoped by first LAUNCH ---
 # Run at the end, over the whole yield log, scoped by the supervisor's first LAUNCH timestamp.
@@ -273,5 +282,5 @@ else
 fi
 
 echo ""
-echo "All assertions passed (F1-F6 + F0 at end)"
+echo "All assertions passed (F1-F6 + F0 at end; F6 = exit 0 + STOP_COMPLETE + no LAUNCH after)"
 exit 0

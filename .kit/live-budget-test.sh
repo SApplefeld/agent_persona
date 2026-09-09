@@ -39,7 +39,21 @@ feed() {
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call memory_add with content \"budget test turn 4 - the budget test requires substantial text to grow the transcript size and cross the closeout threshold, so we add more words here to ensure we have enough characters in the session history\". Then reply with the single word: ok"}}'
   sleep 10
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call memory_add with content \"budget test turn 5 - this is the final turn with the most text to cross the critical threshold, adding even more words to the session history to ensure we have well over 6000 characters total\". Then reply with the single word: ok"}}'
-  sleep 90
+  # AE5: poll the store for a critical: budget crossing instead of a fixed sleep.
+  # Capped at 300 s so a genuinely broken plugin still fails the suite.
+  local deadline=$(( $(date +%s) + 300 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if node -e "
+const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json','utf8'));
+const p = Object.keys(s)[0];
+const d = (s[p].decisions||[]).filter(x => x.action === 'context_budget_crossed' && (x.detail||'').startsWith('critical:'));
+process.exit(d.length > 0 ? 0 : 1);
+" 2>/dev/null; then
+      return 0
+    fi
+    sleep 5
+  done
+  return 0
 }
 
 [ -f "$RUNNING" ] && { echo "RUNNING exists, refusing"; exit 8; }
