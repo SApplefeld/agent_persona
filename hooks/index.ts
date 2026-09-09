@@ -1404,20 +1404,43 @@ export const register: Register = async (on, options) => {
           const tickTs = Date.now();
 
           // D3: Call cap check. If the call window is latched, skip classify.
+          // AK2: emit cost_cap_reached once per window (latched by capNoticeWindowStart).
           if (costEnabled && costMaxPluginCallsPerHour > 0) {
             const callWin = sess.state.monitor.cost.callWindow;
             const callWinCount = effectiveWindowCount(callWin, now);
             if (callWinCount >= costMaxPluginCallsPerHour) {
-              sess.state.decisions.push({
-                timestamp: tickTs,
-                loop: "monitor",
-                action: "cost_cap_reached",
-                detail: `${g.id}: call cap reached (${callWinCount}/${costMaxPluginCallsPerHour} per hour), skipping classify`,
-              });
+              if (sess.state.monitor.cost.capNoticeWindowStart !== callWin.start) {
+                sess.state.decisions.push({
+                  timestamp: tickTs,
+                  loop: "monitor",
+                  action: "cost_cap_reached",
+                  detail: `${g.id}: call cap reached (${callWinCount}/${costMaxPluginCallsPerHour} per hour), skipping classify`,
+                });
+                sess.state.monitor.cost.capNoticeWindowStart = callWin.start;
+              }
               sess.state.updatedAt = tickTs;
               await persist($);
               return;
             }
+          }
+
+          // AH5: Nudge cap check before classify. If the nudge cap is latched, skip classify entirely.
+          // AK2: emit cost_cap_reached once per window (latched by capNoticeWindowStart).
+          const nudgeCapped = costEnabled && costMaxNudgesPerHour > 0 &&
+            effectiveWindowCount(sess.state.monitor.cost.nudgeWindow, now) >= costMaxNudgesPerHour;
+          if (nudgeCapped) {
+            if (sess.state.monitor.cost.capNoticeWindowStart !== sess.state.monitor.cost.nudgeWindow.start) {
+              sess.state.decisions.push({
+                timestamp: tickTs,
+                loop: "monitor",
+                action: "cost_cap_reached",
+                detail: `${g.id}: nudge cap reached (${effectiveWindowCount(sess.state.monitor.cost.nudgeWindow, now)}/${costMaxNudgesPerHour} per hour), refusing nudge`,
+              });
+              sess.state.monitor.cost.capNoticeWindowStart = sess.state.monitor.cost.nudgeWindow.start;
+            }
+            sess.state.updatedAt = tickTs;
+            await persist($);
+            return;
           }
 
           // D2: Idle tick skip. Hash the stable subset of the summary.
@@ -1439,7 +1462,7 @@ export const register: Register = async (on, options) => {
               envLine;
             const currentHash = fnv1aHash(stableSubset);
             const prevHash = sess.state.monitor.cost.lastSummaryHash;
-            const nudgeDue = (now - sess.lastNudgeAt >= nudgeFloorMs) || (sess.lastNudgeAt === 0);
+            const nudgeDue = idleMs >= nudgeIdleMs && (now - sess.lastNudgeAt >= nudgeFloorMs);
             if (currentHash === prevHash && !nudgeDue) {
               // Skip classify and reason; carry forward the previous decision.
               sess.state.monitor.cost.consecutiveSkips += 1;
@@ -1551,21 +1574,10 @@ export const register: Register = async (on, options) => {
           if (finalDecision === "nudge" && g.status === "active") {
             // Nudge floor.
             if (now - sess.lastNudgeAt >= nudgeFloorMs) {
-              // D3: Nudge cap check. If the nudge window is latched, refuse the nudge.
-              if (costEnabled && costMaxNudgesPerHour > 0) {
-                const nudgeWin = sess.state.monitor.cost.nudgeWindow;
-                const nudgeWinCount = effectiveWindowCount(nudgeWin, now);
-                if (nudgeWinCount >= costMaxNudgesPerHour) {
-                  sess.state.decisions.push({
-                    timestamp: tickTs,
-                    loop: "monitor",
-                    action: "cost_cap_reached",
-                    detail: `${g.id}: nudge cap reached (${nudgeWinCount}/${costMaxNudgesPerHour} per hour), refusing nudge`,
-                  });
-                  sess.state.updatedAt = tickTs;
-                  await persist($);
-                  return;
-                }
+              // AK2: Guard only (silent). The nudge-cap check before classify already handles the cap.
+              // If we reached here, the cap was not latched at the pre-classify check.
+              if (nudgeCapped) {
+                return;
               }
               try {
                 // R8: nudge text appends goal_done instruction.
@@ -1584,8 +1596,6 @@ export const register: Register = async (on, options) => {
                 sess.state.monitor.cost.nudge.count += 1;
                 // D3: update nudge window
                 sess.state.monitor.cost.nudgeWindow = bumpWindow(sess.state.monitor.cost.nudgeWindow, now);
-                // D3: update call window (count the classify call that just happened)
-                sess.state.monitor.cost.callWindow = bumpWindow(sess.state.monitor.cost.callWindow, now);
                 sess.state.decisions.push({
                   timestamp: tickTs,
                   loop: "monitor",

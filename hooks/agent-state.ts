@@ -132,6 +132,7 @@ export interface MonitorState {
     nudgeWindow: { start: number; count: number };
     callWindow: { start: number; count: number };
     lastSummaryHash: number; // FNV-1a hash of the stable summary subset for D2
+    capNoticeWindowStart: number; // AK2: latches cost_cap_reached to one emission per window
   };
 }
 
@@ -196,6 +197,7 @@ export function createDefaultState(persona: string, sessionId: string): AgentSta
         nudgeWindow: { start: 0, count: 0 },
         callWindow: { start: 0, count: 0 },
         lastSummaryHash: 0,
+        capNoticeWindowStart: 0,
       },
     },
     nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
@@ -380,11 +382,16 @@ export function parseState(json: string): AgentState {
       nudgeWindow: { start: 0, count: 0 },
       callWindow: { start: 0, count: 0 },
       lastSummaryHash: 0,
+      capNoticeWindowStart: 0,
     };
   }
   // D2: ensure lastSummaryHash exists (for states created before this field).
   if (typeof state.monitor.cost.lastSummaryHash !== "number") {
     state.monitor.cost.lastSummaryHash = 0;
+  }
+  // AK2: ensure capNoticeWindowStart exists (for states created before this field).
+  if (typeof state.monitor.cost.capNoticeWindowStart !== "number") {
+    state.monitor.cost.capNoticeWindowStart = 0;
   }
 
   // L10: invariant block runs on both v2 and v3 branches.
