@@ -1,6 +1,6 @@
 # agentic-plugin : cost and cadence (item 6)
 
-**Status:** Draft (v3, for Reviewer review)
+**Status:** Draft (v4, for Reviewer review)
 **Created:** 2026-09-09T13:40:33Z (commit `4fa322d`)
 **Program item:** 6 (cost and cadence)
 **Supersedes:** N/A (new item)
@@ -37,10 +37,7 @@ The `nudge` site is count-only because the nudge's cost is a main-model turn the
 | reason | `hooks/index.ts:1432` | `monitor.cost.reason.count`, `monitor.cost.reason.estTokens` |
 | nudge | `hooks/index.ts:1470` | `monitor.cost.nudge.count` (count-only, no estTokens) |
 
-**Emission:** Every `costSummaryEveryNTicks` ticks (default 20), emit `cost_summary` decision with detail string:
-```
-classify 40, reason 40, selfReview 2, planner 1, nudge 3; est 9800 tokens
-```
+**Emission:** Every `costSummaryEveryNTicks` ticks (default 20), emit `cost_summary` decision when `tickIndex % costSummaryEveryNTicks === 0`, the same shape as the budget read at `hooks/index.ts:1180`. A skipped tick still counts toward `costSummaryEveryNTicks`, so the summary cadence is wall-clock regular.
 
 **Interface:** Add the `cost` member to the `monitor` interface at `hooks/agent-state.ts:112-124` (where `selfReview` shows the shape and comment style):
 
@@ -53,7 +50,6 @@ cost: {
   planner: { count: number; estTokens: number };
   nudge: { count: number }; // count-only, no estTokens
   forkUsage: null | { inputTokens: number; outputTokens: number };
-  lastCostSummaryTick: number;
   consecutiveSkips: number; // used by D2 and D4
   nudgeWindow: { start: number; count: number }; // fixed 1-hour window
   callWindow: { start: number; count: number }; // fixed 1-hour window
@@ -64,15 +60,14 @@ cost: {
 
 ```typescript
 // hooks/agent-state.ts:329 (migration, after env and selfReview)
-if (!parsed.state.monitor.cost) {
-  parsed.state.monitor.cost = {
+if (!state.monitor.cost) {
+  state.monitor.cost = {
     classify: { count: 0, estTokens: 0 },
     reason: { count: 0, estTokens: 0 },
     selfReview: { count: 0, estTokens: 0 },
     planner: { count: 0, estTokens: 0 },
     nudge: { count: 0 },
     forkUsage: null,
-    lastCostSummaryTick: 0,
     consecutiveSkips: 0,
     nudgeWindow: { start: 0, count: 0 },
     callWindow: { start: 0, count: 0 },
@@ -126,6 +121,8 @@ callWindow: { start: number; count: number }; // fixed 1-hour window
 Fixed windows are bounded memory and one comparison; a timestamp ring is neither.
 
 **Nudge cap latch:** Once the nudge cap is latched, the controller also skips classify, because there is nothing left to actuate and paying for the decision is the waste D2 exists to stop.
+
+**`cost_cap_reached` emission:** `cost_cap_reached` is emitted at the tick where a nudge is due and refused, once per window, not on the tick that made the count reach the cap.
 
 ### D4. Backoff
 
@@ -240,26 +237,36 @@ One section per commit, each with its gate:
 - `costMaxNudgesPerHour`: 2
 - `costSummaryEveryNTicks`: 3
 
-**Timeline table:**
+**The live suite does not exercise D4:** `consecutiveSkips` peaks around 5 in that profile and the backoff threshold is 10, so the schedule is proven by the unit test alone.
 
-| Tick | Time | Idle | Hash | Nudge cap | Expected decision |
-|------|------|------|------|-----------|-------------------|
-| 1 | 0 s | 0 s | H1 | 0/2 | `controller_tick` (classify, reason) |
-| 2 | 10 s | 10 s | H1 | 0/2 | `controller_tick` (unchanged, skipped) |
-| 3 | 20 s | 20 s | H1 | 0/2 | `cost_summary` (classify 1, reason 1, nudge 0) |
-| 4 | 30 s | 30 s | H1 | 0/2 | `controller_tick` (unchanged, skipped) |
-| 5 | 40 s | 40 s | H1 | 0/2 | `controller_tick` (unchanged, skipped) |
-| 6 | 50 s | 50 s | H1 | 0/2 | `cost_summary` (classify 1, reason 1, nudge 0) |
-| 7 | 60 s | 60 s | H1 | 0/2 | `controller_tick` (classify, reason, nudge sent) |
-| 8 | 70 s | 70 s | H2 | 1/2 | `controller_tick` (unchanged, skipped) |
-| 9 | 80 s | 80 s | H2 | 1/2 | `cost_summary` (classify 2, reason 2, nudge 1) |
-| 10 | 90 s | 90 s | H2 | 1/2 | `controller_tick` (unchanged, skipped) |
-| 11 | 100 s | 100 s | H2 | 1/2 | `controller_tick` (unchanged, skipped) |
-| 12 | 110 s | 110 s | H2 | 1/2 | `cost_summary` (classify 2, reason 2, nudge 1) |
-| 13 | 120 s | 120 s | H2 | 1/2 | `controller_tick` (classify, reason, nudge sent) |
-| 14 | 130 s | 130 s | H3 | 2/2 | `cost_cap_reached` (nudge cap latched) |
-| 15 | 140 s | 140 s | H3 | 2/2 | `controller_tick` (skipped, cap latched) |
-| 16 | 150 s | 150 s | H3 | 2/2 | `cost_summary` (classify 3, reason 3, nudge 2) |
+**Timeline table (derivation aid):**
+
+| Tick | Time | Idle | Turn completes at | Hash | Nudge cap | Expected decision |
+|------|------|------|-------------------|------|-----------|-------------------|
+| 1 | 0 s | 0 s | — | H1 | 0/2 | `controller_tick` (classify, reason) |
+| 2 | 10 s | 10 s | — | H1 | 0/2 | `controller_tick` (unchanged, skipped) |
+| 3 | 20 s | 20 s | — | H1 | 0/2 | `cost_summary` (classify 1, reason 1, nudge 0) |
+| 4 | 30 s | 30 s | — | H1 | 0/2 | `controller_tick` (unchanged, skipped) |
+| 5 | 40 s | 40 s | — | H1 | 0/2 | `controller_tick` (unchanged, skipped) |
+| 6 | 50 s | 50 s | — | H1 | 0/2 | `cost_summary` (classify 1, reason 1, nudge 0) |
+| 7 | 60 s | 60 s | ~75 s | H1 | 0/2 | `controller_tick` (classify, reason, nudge sent) |
+| 8 | 70 s | ~5 s | — | H1 | 1/2 | `controller_tick` (unchanged, skipped) |
+| 9 | 80 s | ~15 s | — | H1 | 1/2 | `cost_summary` (classify 2, reason 2, nudge 1) |
+| 10 | 90 s | ~25 s | — | H1 | 1/2 | `controller_tick` (unchanged, skipped) |
+| 11 | 100 s | ~35 s | — | H1 | 1/2 | `controller_tick` (unchanged, skipped) |
+| 12 | 110 s | ~45 s | — | H1 | 1/2 | `cost_summary` (classify 2, reason 2, nudge 1) |
+| 13 | 120 s | ~55 s | — | H1 | 1/2 | `controller_tick` (unchanged, skipped) |
+| 14 | 130 s | ~65 s | ~145 s | H1 | 1/2 | `controller_tick` (classify, reason, nudge sent) |
+| 15 | 140 s | ~5 s | — | H2 | 2/2 | `cost_cap_reached` (nudge cap latched) |
+| 16 | 150 s | ~15 s | — | H2 | 2/2 | `controller_tick` (skipped, cap latched) |
+| 17 | 160 s | ~25 s | — | H2 | 2/2 | `cost_summary` (classify 3, reason 3, nudge 2) |
+
+**Assertions (order-based, not tick-based):**
+- Two `nudge_sent` decisions
+- One `cost_cap_reached` decision
+- No `nudge_sent` after `cost_cap_reached`
+- At least three `controller_tick` with `unchanged, skipped`
+- At least two `cost_summary`
 
 ## 9. Revision table
 
@@ -279,3 +286,6 @@ One section per commit, each with its gate:
 | AH5 | Live suite settings cannot produce a skip | Section 8 sets `nudgeIdleMs: 60000`; timeline table shows expected decisions; `nudge` count-only |
 | AH6 | `costEnabled` false is undefined | Section 4 defines `costEnabled` behavior: false disables D2, D3, D4; ledger always runs |
 | AH7 | `TEST:` is still in the convention | Section 7 commit convention uses `SUITE:` for tests (zero commits with `TEST:` prefix in history) |
+| AI1 | Timeline's idle column stops being idle after first nudge | Section 8 timeline table adds "Turn completes at" column; assertions are order-based (two `nudge_sent`, one `cost_cap_reached`, no `nudge_sent` after cap, at least three `unchanged, skipped`, at least two `cost_summary`); two rules written into D3 and D1 |
+| AI2 | Fill snippet names a variable that does not exist there | Section 3 D1 fill snippet uses `state` (not `parsed.state`), matching the E11 block at `hooks/agent-state.ts:330` |
+| AI3 | `lastCostSummaryTick` compares a persisted number to an in-session counter | Section 3 D1 drops `lastCostSummaryTick`; emission uses `tickIndex % costSummaryEveryNTicks === 0`; section 8 states live suite does not exercise D4 |
