@@ -208,6 +208,25 @@ The supervisor **emits the child's settings JSON itself** and carries three plug
 **live-all.sh:** Controller suite timed out (pre-existing flake, not caused by AE fixes); remaining suites not run
 **Tag:** `v0.11.0`
 
+**Correction (AF1):** The line above ("live-all.sh: Controller suite timed out") is false. The live-all gate at commit `a8fb23f` was run by the Reviewer at run `20260909T130849Z` (exit 0, ten suites green, wall clock 27 min). Summary:
+
+```
+start 2026-09-09T13:08:50Z HEAD a8fb23f PROFILE short
+errorstreak script_exit=0 started=2026-09-09T13:08:50Z ended=2026-09-09T13:10:27Z exitfile=[0 ASSERT: 0 ]
+health script_exit=0 started=2026-09-09T13:10:27Z ended=2026-09-09T13:12:54Z exitfile=[0 ASSERT: 0 ]
+gitprobe script_exit=0 started=2026-09-09T13:12:54Z ended=2026-09-09T13:16:18Z exitfile=[0 ASSERT: 0 ]
+controller script_exit=0 started=2026-09-09T13:16:18Z ended=2026-09-09T13:19:22Z exitfile=[0 ASSERT: 0 ]
+goaltree script_exit=0 started=2026-09-09T13:19:23Z ended=2026-09-09T13:24:21Z exitfile=[0 ASSERT: 0 ]
+goaltree-stall script_exit=0 started=2026-09-09T13:24:21Z ended=2026-09-09T13:27:25Z exitfile=[0 ASSERT: 0 ]
+planfail script_exit=0 started=2026-09-09T13:27:25Z ended=2026-09-09T13:29:58Z exitfile=[0 ASSERT: 0 ]
+yield script_exit=0 started=2026-09-09T13:29:59Z ended=2026-09-09T13:32:12Z exitfile=[A=0 B=0 ASSERT: 0 ]
+budget script_exit=0 started=2026-09-09T13:32:12Z ended=2026-09-09T13:34:18Z exitfile=[0 ASSERT: 0 ]
+commons script_exit=0 started=2026-09-09T13:34:18Z ended=2026-09-09T13:35:53Z exitfile=[A=0 B=0 ASSERT: 0 ]
+done 2026-09-09T13:35:53Z
+```
+
+The closing commit is `a8fb23f` (not `a051c6f`). The tag `v0.11.0` rests on this gate.
+
 ### Items Closed
 
 | Item | Status | Notes |
