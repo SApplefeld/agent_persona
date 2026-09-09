@@ -4,8 +4,7 @@
 // Exits 0 on all-pass, 1 on any failure.
 
 import { strict as assert } from 'node:assert';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -13,7 +12,7 @@ const decidePath = resolve(here, '../bin/supervise-decide.mjs');
 
 let decide;
 try {
-  const mod = await import(decidePath);
+  const mod = await import(pathToFileURL(decidePath).href);
   decide = mod.decide;
 } catch (e) {
   console.error('FAIL: could not import ' + decidePath + ': ' + e.message);
