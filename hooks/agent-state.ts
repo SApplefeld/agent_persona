@@ -1,5 +1,5 @@
 // AgentState: the on-disk persistence layer shared by all five loops.
-// Access via $.fs.* (readFile, writeFile, exists).
+// Access via $.fs.* (read, write, exists).
 // One JSON file per project, one owner at a time (the Monitor loop).
 
 export interface MemoryEntry {

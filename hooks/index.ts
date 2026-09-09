@@ -133,7 +133,7 @@ async function runHealth(dp: any, forNodeId: string | null): Promise<void> {
     if (!(await dp.fs.exists(healthPath))) {
       return;
     }
-    const raw = await dp.fs.readFile(healthPath, "utf8");
+    const raw = await dp.fs.read(healthPath, "utf8");
     const argv: string[] = raw.trim().split(/\s+/).filter((t: string) => t);
     if (argv.length === 0) {
       return;
@@ -187,8 +187,8 @@ export const yieldNow = async (dp: any, onDisk: { activeSessionId: string; epoch
   sess.isOwner = false;
   try { dp.ui.log(`Agentic: yielded '${sess.persona}' to ${onDisk.activeSessionId} (epoch ${onDisk.epoch})`); } catch { /* non-fatal */ }
   try {
-    const el = await dp.fs.exists(sess.yieldLogPath) ? await dp.fs.readFile(sess.yieldLogPath) : "";
-    await dp.fs.writeFile(sess.yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
+    const el = await dp.fs.exists(sess.yieldLogPath) ? await dp.fs.read(sess.yieldLogPath) : "";
+    await dp.fs.write(sess.yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
   } catch { /* non-fatal */ }
   // F13: release the commons claim so an exited session does not lock the
   // persona for the full 90s staleness window.
@@ -205,20 +205,20 @@ export const yieldNow = async (dp: any, onDisk: { activeSessionId: string; epoch
 const writeClaimDirect = async (dp: any): Promise<void> => {
   const storePath = sess.storePath;
   const store: Record<string, unknown> = await dp.fs.exists(storePath)
-    ? (JSON.parse(await dp.fs.readFile(storePath)) as Record<string, unknown>)
+    ? (JSON.parse(await dp.fs.read(storePath)) as Record<string, unknown>)
     : {};
   sess.state.updatedAt = Date.now();
   store[sess.persona] = sess.state;
-  await dp.fs.writeFile(storePath, JSON.stringify(store, null, 2));
+  await dp.fs.write(storePath, JSON.stringify(store, null, 2));
   // Write the heartbeat for the new claim.
   try {
     const heartbeatPath = ".agentic-heartbeat.json";
     const hb: Record<string, { sessionId: string; epoch: number; lastSeen: number }> =
       await dp.fs.exists(heartbeatPath)
-        ? (JSON.parse(await dp.fs.readFile(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>)
+        ? (JSON.parse(await dp.fs.read(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>)
         : {};
     hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now() };
-    await dp.fs.writeFile(heartbeatPath, JSON.stringify(hb, null, 2));
+    await dp.fs.write(heartbeatPath, JSON.stringify(hb, null, 2));
   } catch { /* heartbeat write failed; non-fatal */ }
 };
 
@@ -228,7 +228,7 @@ export const persist = async (dp: any): Promise<boolean> => {
   if (!sess.isOwner) return false;
   sess.state.updatedAt = Date.now();
   const store: Record<string, unknown> = await dp.fs.exists(sess.storePath)
-    ? (JSON.parse(await dp.fs.readFile(sess.storePath)) as Record<string, unknown>)
+    ? (JSON.parse(await dp.fs.read(sess.storePath)) as Record<string, unknown>)
     : {};
   const onDisk = store[sess.persona] as AgentState | undefined;
   // F9 invariant: three sites raise the epoch: agentic_identity (commons winner),
@@ -257,8 +257,8 @@ export const persist = async (dp: any): Promise<boolean> => {
         0, // No epoch in commons; use 0 as a sentinel
       );
       try {
-        const el = await dp.fs.exists(sess.yieldLogPath) ? await dp.fs.readFile(sess.yieldLogPath) : "";
-        await dp.fs.writeFile(sess.yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
+        const el = await dp.fs.exists(sess.yieldLogPath) ? await dp.fs.read(sess.yieldLogPath) : "";
+        await dp.fs.write(sess.yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
       } catch { /* non-fatal */ }
       sess.state.decisions.push({
         timestamp: Date.now(),
@@ -275,15 +275,15 @@ export const persist = async (dp: any): Promise<boolean> => {
       } catch { /* non-fatal */ }
       // Persist the yield decision to disk before returning
       const store2: Record<string, unknown> = await dp.fs.exists(sess.storePath)
-        ? (JSON.parse(await dp.fs.readFile(sess.storePath)) as Record<string, unknown>)
+        ? (JSON.parse(await dp.fs.read(sess.storePath)) as Record<string, unknown>)
         : {};
       store2[sess.persona] = sess.state;
-      await dp.fs.writeFile(sess.storePath, JSON.stringify(store2, null, 2));
+      await dp.fs.write(sess.storePath, JSON.stringify(store2, null, 2));
       return false;
     }
   } catch { /* non-fatal: commons is a coordination layer */ }
   store[sess.persona] = sess.state;
-  await dp.fs.writeFile(sess.storePath, JSON.stringify(store, null, 2));
+  await dp.fs.write(sess.storePath, JSON.stringify(store, null, 2));
   return true;
 };
 
@@ -539,7 +539,7 @@ export const register: Register = async (on, options) => {
 
     // --- Claim or join the persona based on liveness (heartbeat sidecar) ---
     const existing = await $.fs.exists(storePath)
-      ? JSON.parse(await $.fs.readFile(storePath))
+      ? JSON.parse(await $.fs.read(storePath))
       : {};
     const existingPersona = existing[sess.persona];
 
@@ -551,7 +551,7 @@ export const register: Register = async (on, options) => {
       let holderHb: { sessionId: string; epoch: number; lastSeen: number } | null = null;
       try {
         if (await $.fs.exists(heartbeatPath)) {
-          const hb = JSON.parse(await $.fs.readFile(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>;
+          const hb = JSON.parse(await $.fs.read(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>;
           holderHb = hb[sess.persona] ?? null;
         }
       } catch { /* heartbeat read failed */ }
@@ -615,10 +615,10 @@ export const register: Register = async (on, options) => {
       try {
         const hb: Record<string, { sessionId: string; epoch: number; lastSeen: number }> =
           await $.fs.exists(heartbeatPath)
-            ? (JSON.parse(await $.fs.readFile(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>)
+            ? (JSON.parse(await $.fs.read(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>)
             : {};
         hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now() };
-        await $.fs.writeFile(heartbeatPath, JSON.stringify(hb, null, 2));
+        await $.fs.write(heartbeatPath, JSON.stringify(hb, null, 2));
       } catch { /* heartbeat write failed; non-fatal */ }
     }
 
@@ -643,7 +643,7 @@ export const register: Register = async (on, options) => {
           let onDisk: { activeSessionId: string; epoch: number } | null = null;
           try {
             if (await $.fs.exists(storePath)) {
-              const store = JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>;
+              const store = JSON.parse(await $.fs.read(storePath)) as Record<string, unknown>;
               const existing = store[sess.persona] as AgentState | undefined;
               if (existing) onDisk = existing;
             }
@@ -656,10 +656,10 @@ export const register: Register = async (on, options) => {
             try {
               const hb: Record<string, { sessionId: string; epoch: number; lastSeen: number }> =
                 await $.fs.exists(heartbeatPath)
-                  ? (JSON.parse(await $.fs.readFile(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>)
+                  ? (JSON.parse(await $.fs.read(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>)
                   : {};
               hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now() };
-              await $.fs.writeFile(heartbeatPath, JSON.stringify(hb, null, 2));
+              await $.fs.write(heartbeatPath, JSON.stringify(hb, null, 2));
             } catch { /* heartbeat write failed */ }
             // Commons: refresh lastSeen to signal liveness (Stage 2 integration).
             try {
@@ -677,7 +677,7 @@ export const register: Register = async (on, options) => {
           let holderHb: { sessionId: string; epoch: number; lastSeen: number } | null = null;
           try {
             if (await $.fs.exists(heartbeatPath)) {
-              const hb = JSON.parse(await $.fs.readFile(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>;
+              const hb = JSON.parse(await $.fs.read(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>;
               holderHb = hb[sess.persona] ?? null;
             }
           } catch { /* heartbeat read failed */ }
@@ -687,7 +687,7 @@ export const register: Register = async (on, options) => {
           const holderIsSelf = holderHb?.sessionId === sess.mySessionId;
           if (holderIsStale && !holderIsSelf) {
             const store: Record<string, unknown> = await $.fs.exists(storePath)
-              ? (JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>)
+              ? (JSON.parse(await $.fs.read(storePath)) as Record<string, unknown>)
               : {};
             const existing = store[sess.persona] as AgentState | undefined;
             if (existing) {
@@ -1007,7 +1007,7 @@ export const register: Register = async (on, options) => {
           if (rp) {
             try {
               if (await $.fs.exists(rp)) {
-                roadmapText = await $.fs.readFile(rp);
+                roadmapText = await $.fs.read(rp);
               }
             } catch { /* roadmap unreadable; planner gets empty text */ }
           }
@@ -1899,7 +1899,7 @@ export const register: Register = async (on, options) => {
       const name = String((e as any).persona || "default").trim() || "default";
       sess.persona = name;
       const store: Record<string, unknown> = await $.fs.exists(storePath)
-        ? (JSON.parse(await $.fs.readFile(storePath)) as Record<string, unknown>)
+        ? (JSON.parse(await $.fs.read(storePath)) as Record<string, unknown>)
         : {};
       const existing = store[name] as AgentState | undefined;
       if (existing) {

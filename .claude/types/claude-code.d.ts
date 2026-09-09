@@ -1,4 +1,4 @@
-// Written by Claude Code 2.1.263.
+// Written by Claude Code 2.1.267.
 // Claude Code function hooks: the plugin API's TypeScript declarations.
 //
 // EARLY ACCESS: this surface may change between releases without notice.
@@ -876,7 +876,7 @@ declare module 'claude-code' {
        * The files under the session's working directory (it follows the
        * session's `cd`); anything outside rejects. Text only (UTF-8).
        *
-       * A read (`readFile`, `stat`, `listDir`, `exists`) also takes an absolute
+       * A read (`read`, `stat`, `listDir`, `exists`) also takes an absolute
        * path under the system's temp directory (`os.tmpdir()`, `/tmp`); a write
        * does not.
        */
@@ -888,9 +888,9 @@ declare module 'claude-code' {
            *   the temp directory
            * @returns the file's text
            * @example
-           * const readme = await $.fs.readFile("README.md")
+           * const readme = await $.fs.read("README.md")
            */
-          readFile: (path: string) => Promise<string>;
+          read: (path: string) => Promise<string>;
           /**
            * Writes `text` to a file under the working directory, creating it and
            * its directories as needed; the temp directory is not written.
@@ -898,7 +898,7 @@ declare module 'claude-code' {
            * @param path the file's path
            * @param text the whole new content
            */
-          writeFile: (path: string, text: string) => Promise<void>;
+          write: (path: string, text: string) => Promise<void>;
           /**
            * Lists a directory: `{ name, kind, size }` per entry.
            *
@@ -1505,7 +1505,7 @@ declare module 'claude-code' {
    * and what the call on `$` takes. Plain data, frozen to every depth.
    *
    * The events the engine raises (EngineEventOf) and the calls on `$` the host
-   * serves (OpEventOf: a plugin's `$.fs.writeFile(...)` is a dispatch the hooks
+   * serves (OpEventOf: a plugin's `$.fs.write(...)` is a dispatch the hooks
    * above it see) make one table.
    */
   export type EventOf = EngineEventOf & OpEventOf;
@@ -2359,15 +2359,15 @@ declare module 'claude-code' {
           event: InvalidatableEventName;
       };
       /**
-       * The argument of `$.fs.readFile(path)`.
+       * The argument of `$.fs.read(path)`.
        */
-      'fs.readFile': {
+      'fs.read': {
           path: string;
       };
       /**
-       * The argument of `$.fs.writeFile(path, text)`.
+       * The argument of `$.fs.write(path, text)`.
        */
-      'fs.writeFile': {
+      'fs.write': {
           path: string;
           text: string;
       };
@@ -2473,8 +2473,8 @@ declare module 'claude-code' {
       'ui.log': void;
       'ui.notice': void;
       'ui.invalidate': void;
-      'fs.readFile': string;
-      'fs.writeFile': void;
+      'fs.read': string;
+      'fs.write': void;
       'fs.listDir': FsEntry[];
       'fs.exists': boolean;
       'fs.stat': FsStat;
@@ -5130,8 +5130,8 @@ declare module 'claude-code' {
       persistedOutputPath?: string
       /** Total size of the output in bytes (set when output is too large for inline) */
       persistedOutputSize?: number
-      /** Model-facing note listing readFileState entries whose mtime bumped during this command (set when WRITE_COMMAND_MARKERS matches) */
-      staleReadFileStateHint?: string
+      /** Model-facing note listing readState entries whose mtime bumped during this command (set when WRITE_COMMAND_MARKERS matches) */
+      stalereadStateHint?: string
       /** Model-facing system-reminder appended when a gh command reports a GitHub API rate-limit error */
       ghRateLimitHint?: string
       /** Structured classification of git/gh operations detected in this command (commit/push/merge/rebase/PR). Client-facing — lets clients render git activity without re-parsing stdout; not surfaced to the model. */
