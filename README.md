@@ -193,18 +193,20 @@ The supervisor never writes the persona store (invariant §8). It uses `supervis
 
 ## Cost and cadence options (item 6)
 
-The plugin tracks its own model-call cost and caps nudge frequency. All options are configurable via environment variables or settings:
+The plugin tracks its own model-call cost and caps nudge frequency. All options are settings (`pluginConfigs`):
 
 | Option | Default | Description |
 |---|---|---|
 | `costEnabled` | `true` | Master switch for D2 (idle skip), D3 (caps), D4 (backoff). When `false`, the ledger still runs but idle ticks are not skipped and caps are not enforced. |
 | `costSummaryEveryNTicks` | `20` | Emit a `cost_summary` decision every N ticks (wall-clock regular, skipped ticks still count). |
-| `costMaxNudgesPerHour` | `12` | Maximum nudges per hour per persona. When reached, the controller escalates to `ask-operator` and pauses the goal. |
-| `costMaxPluginCallsPerHour` | `100` | Maximum plugin model calls (classify + reason + selfReview + planner) per hour per persona. |
+| `costMaxNudgesPerHour` | `12` | Maximum nudges per hour per persona. When reached, the controller logs `cost_cap_reached` once per window and returns from the tick. |
+| `costMaxPluginCallsPerHour` | `600` | Maximum plugin model calls (classify + reason + selfReview + planner) per hour per persona. |
 | `nudgeFloorMs` | `300000` (5 min) | Minimum time between nudges. |
-| `nudgeIdleMs` | `120000` (2 min) | Minimum idle time before a controller tick can fire. |
-| `COST_BACKOFF_AFTER_TICKS` | `3` | Number of consecutive unchanged ticks before backoff engages. |
-| `COST_BACKOFF_FACTOR` | `2` | Backoff factor: tick N is skipped if `N % (factor * consecutiveSkips) !== 0`. |
+| `nudgeIdleMs` | `120000` (2 min) | Idle gate on classify and nudge (the tick fires every `controllerTickMs`; this is the idle threshold for a nudge to be sent). |
+| `costBackoffAfterTicks` | `10` | Number of consecutive unchanged ticks before backoff engages. |
+| `costBackoffMaxMs` | `300000` (5 min) | Maximum backoff duration. The backoff factor is derived from this value. |
+
+**Env shorthand:** The test runner uses `COST_*` env vars (`COST_MAX_NUDGES_PER_HOUR`, etc.) that `agentic-common.sh:59-70` translates into settings. A hook module cannot read the environment directly.
 
 **Ledger:** The plugin estimates token cost per site (classify, reason, selfReview, planner) as prompt chars over 4 plus the maxTokens cap. The `nudge` site is count-only because the nudge's cost is a main-model turn the hooks cannot measure.
 
