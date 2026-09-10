@@ -234,8 +234,9 @@ switch (testName) {
     // AQ1: assert invariants, report counts.
     // D3 cap: nudge_sent must not exceed the cap (whatever the count).
     const nudgeSents = decisions.filter(a => a === "nudge_sent");
-    const COST_MAX_NUDGES_PER_HOUR = 12; // default from plan section 4
-    check2("cost: nudge_sent <= COST_MAX_NUDGES_PER_HOUR", nudgeSents.length <= COST_MAX_NUDGES_PER_HOUR);
+    const COST_MAX_NUDGES_PER_HOUR = process.env.COST_MAX_NUDGES_PER_HOUR ? parseInt(process.env.COST_MAX_NUDGES_PER_HOUR, 10) : 12;
+    check2("cost: nudge_sent <= cap in force", nudgeSents.length <= COST_MAX_NUDGES_PER_HOUR);
+    console.log(`  REPORT: cap in force: ${COST_MAX_NUDGES_PER_HOUR}`);
 
     // No nudge_sent after cost_cap_reached (vacuously true when no cap line).
     const capIdx = decisions.indexOf("cost_cap_reached");
@@ -249,6 +250,23 @@ switch (testName) {
     // D1 cadence: at least two cost_summary (deterministic).
     const costSummaries = details.filter(d => d.action === "cost_summary");
     check2("cost: at least two cost_summary", costSummaries.length >= 2);
+
+    // AR2: No classify on a fully paused tree.
+    // Find the last paused_by_controller, then check that no controller_tick with a classify verdict follows before the next activated or end of log.
+    const pausedIdxs = details.map((d, i) => d.action === "paused_by_controller" ? i : -1).filter(i => i !== -1);
+    if (pausedIdxs.length > 0) {
+      const lastPausedIdx = pausedIdxs[pausedIdxs.length - 1];
+      // Find the next activated after lastPausedIdx, or end of log.
+      let nextActivatedIdx = details.findIndex((d, i) => i > lastPausedIdx && d.action === "activated");
+      if (nextActivatedIdx === -1) nextActivatedIdx = details.length;
+      // Check for controller_tick lines with classify verdicts in between.
+      const classifyVerdicts = ["nudge", "pause", "ask-operator", "complete", "score"];
+      const badTicks = details.slice(lastPausedIdx + 1, nextActivatedIdx).filter(d =>
+        d.action === "controller_tick" &&
+        classifyVerdicts.some(v => (d.detail || "").startsWith(v))
+      );
+      check2("cost: no classify on fully paused tree", badTicks.length === 0);
+    }
 
     // REPORT: nudge_sent, cost_cap_reached, unchanged-skipped, backed-off counts.
     const capReacheds = decisions.filter(a => a === "cost_cap_reached");
