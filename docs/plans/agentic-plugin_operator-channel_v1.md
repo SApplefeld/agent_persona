@@ -1,8 +1,8 @@
 # agentic-plugin : operator channel (item 7)
 
-**Status:** Draft (v6)
+**Status:** Draft (v7)
 **Created:** 2026-09-10T06:08:09Z
-**Revised:** v6, documents d75aa8f
+**Revised:** v7, documents 538fe68
 **Program item:** 7 (operator channel)
 **Supersedes:** N/A (new item)
 
@@ -84,7 +84,7 @@ In `turn.complete`, match the delivered record whose `turnId` equals `e.turnId`.
 
 ### D5. Ask waits
 
-When the controller decides `ask-operator` (`:1738`, pauses at `:1749`), the nudge cap (`:1494`), or the error streak (`:881`), write an `ask` record, pause the leaf, and set `sess.state.pendingAskId`. While an ask is open: the planner's walk-on at `:1407` (`activateNext`) is suppressed, nudges and classify are skipped, and the tick records `ask_waiting` once per summary cadence. An inbox record with `answers: askId` closes the ask: its text is delivered as `[OPERATOR] Answer to <question>: <text>`, the leaf is reactivated, `pendingAskId` cleared. `askOperatorWaitMs` (default 0, wait indefinitely) bounds the wait; when it elapses the tick records `ask_timeout`, clears the ask, and the planner walks on as today.
+When the controller decides `ask-operator` (`:1850`, pauses at `:1865`), the nudge cap (`:1589`), or the error streak (`:915`), write an `ask` record, pause the leaf, and set `sess.state.pendingAskId`. While an ask is open: the planner's walk-on at `:1405` (`activateNext`) is suppressed, nudges and classify are skipped, and the tick records `ask_waiting` once per summary cadence. An inbox record with `answers: askId` closes the ask: its text is delivered as `[OPERATOR] Answer to <question>: <text>`, the leaf is reactivated, `pendingAskId` cleared. `askOperatorWaitMs` (default 0, wait indefinitely) bounds the wait; when it elapses the tick records `ask_timeout`, clears the ask, and the planner walks on as today.
 
 **D5 addendum, from Rounds 62 and 63.** A tree whose every plan is `paused_by_controller` is dead: no active leaf, so no nudge; paused descendants, so `planning_fired` never fires; nothing but `goal_resume` at the keyboard revives it. Runs `041708Z` (04:24:20 to 04:27:18) and `044923Z` (04:55:37 to 04:59:51) both ended that way. In item 7 a `pause` from the classifier is an ask: write the `ask` record with the classifier's reason as the question, and the reader answers it or resumes it through `agentic_say(text, answers: askId)`. `pause` and `ask-operator` then differ only in wording.
 
@@ -98,7 +98,7 @@ When the controller decides `ask-operator` (`:1738`, pauses at `:1749`), the nud
 
 - D2: the reader claim is written on the losing side of the persona arbitration (name the line in `index.ts` where the yield decision is taken) and refreshed where `commons:<sessionId>.lastSeen` is refreshed. `seq` is an in-memory counter per session seeded from the highest existing `inbox:<persona>:<sessionId>:*` key on start.
 - D3: a `say` is delivered even while an ask is open; the ask stays open until a record with `answers` closes it. Owner verifies the writer's claim by reading `commons:<from>` and checking `lastSeen` within `staleAfterMs` and a `reader:<persona>` entry in `claims`.
-- D5: `pendingAskId` lives in persisted state (`sess.state`), not module scope, so a restarted owner still waits. The suppressed walk-on at `:1297` and the skipped classify at the idle gate each log nothing per tick; `ask_waiting` once per summary cadence is the only line.
+- D5: `pendingAskId` lives in persisted state (`sess.state`), not module scope, so a restarted owner still waits. The suppressed walk-on at `:1405` and the skipped classify at the idle gate each log nothing per tick; `ask_waiting` once per summary cadence is the only line.
 - D6: the flag set by the doorbell is module scope; it is a hint, not state.
 
 ## 5. Sections and proof
@@ -113,7 +113,7 @@ When the controller decides `ask-operator` (`:1738`, pauses at `:1749`), the nud
 
 1. `PLUGIN:` D1 records and D2 reader claim and tools. Harness: reader claim written on start for a non-owner; `agentic_say` refused for the owner and for a session without a claim; record shape.
 2. `PLUGIN:` D3 drain and D4 reply. Harness cases (green at d75aa8f): `S2 drain` (oldest record delivered, one per tick), `S2 drain in-flight` (turn in flight, nothing delivered), `S2 drain no claim` (writer without a claim, skipped), `S2 reply` (matching pair answers), `S2 reply turnid` (empty answer clears `turnId`, next matching pair answers), `S2 reply unrelated` (unrelated id writes nothing).
-3. `PLUGIN:` D5 ask waits. Harness: `ask-operator` writes the ask and pauses; the planner does not activate the sibling while the ask is open; an answering record reactivates the leaf; `askOperatorWaitMs` elapsed walks on.
+3. `PLUGIN:` D5 ask waits. Built (538fe68). Harness cases: `S3 ask-operator` (classify returns `ask-operator`, ask record written, goal paused, `pendingAskId` set, ask key matches `pendingAskId`), `S3 planner no walk` (two goals, open ask, tick fires, node-002 still pending). The answering-record-reativates-leaf and `askOperatorWaitMs`-elapsed-walks-on cases require the idle-gate D5 block (index.ts:1486) which is exercised by the live suite, not the unit harness.
 4. `PLUGIN:` D6 doorbell. Harness: `session.receive` with origin peer returns consumed and the next tick drains without the idle gate. Live check: `SendMessage` to a held-open child, the child's transcript shows no peer text.
 5. `SUITE:` `live-operator-test.sh`. Owner session with the cost suite's wait objective; a second `claude -p` in the same directory as reader calls `agentic_say("Report your current goal in one line")`, polls `agentic_inbox` for the reply; asserts `operator_delivered` then `operator_answered` in the owner's decisions and a non-empty reply text. Second phase: owner feed makes the classifier ask (a blocked objective); reader answers; asserts `ask_waiting`, no `activated` between the ask and the answer, then `activated`.
 6. README (tools, records, the `[OPERATOR]` marker, the trust boundary, the two options), full `live-all.sh`, plan Complete, `CLOSE:`.
