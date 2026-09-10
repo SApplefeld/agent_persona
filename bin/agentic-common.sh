@@ -62,6 +62,12 @@ emit_settings_json() {
   if [ -n "${COST_MAX_PLUGIN_CALLS_PER_HOUR:-}" ]; then
     cost_opts="$cost_opts,\"costMaxPluginCallsPerHour\":$COST_MAX_PLUGIN_CALLS_PER_HOUR"
   fi
+  if [ -n "${COST_BACKOFF_AFTER_TICKS:-}" ]; then
+    cost_opts="$cost_opts,\"costBackoffAfterTicks\":$COST_BACKOFF_AFTER_TICKS"
+  fi
+  if [ -n "${COST_BACKOFF_MAX_MS:-}" ]; then
+    cost_opts="$cost_opts,\"costBackoffMaxMs\":$COST_BACKOFF_MAX_MS"
+  fi
   cat > "$out" <<EOF
 {"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":$TICK_MS,"nudgeIdleMs":$NUDGE_IDLE_MS,"nudgeFloorMs":${NUDGE_FLOOR_MS:-5000},"gitProbeMs":$GIT_PROBE_MS,"heartbeatMs":${HEARTBEAT_MS:-30000},"staleAfterMs":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts$cost_opts}}}}
 EOF
