@@ -151,6 +151,7 @@ export interface AgentState {
   activeGoalId: string | null;
   monitor: MonitorState;
   nudge: NudgeBudget;
+  pendingAskId?: string; // D5: ask-operator wait
   decisions: Array<{
     timestamp: number;
     loop: "memory" | "goal" | "monitor" | "worker";

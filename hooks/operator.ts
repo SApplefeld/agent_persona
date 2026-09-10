@@ -68,7 +68,7 @@ function replyKey(persona: string, msgId: string): string {
   return `${REPLY_PREFIX}${persona}:${msgId}`;
 }
 
-function askKey(persona: string, askId: string): string {
+export function askKey(persona: string, askId: string): string {
   return `${ASK_PREFIX}${persona}:${askId}`;
 }
 
