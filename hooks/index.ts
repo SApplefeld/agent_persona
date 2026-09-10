@@ -772,6 +772,57 @@ export const register: Register = async (on, options) => {
       // 2. In-flight check.
       if (turnInFlight) return;
 
+      // D3: drain operator inbox (one record per tick, owner only).
+      // List pending inbox records whose writer holds a live reader claim,
+      // take the lowest at, mark delivered, submit as [OPERATOR] prompt.
+      if (sess.isOwner) {
+        const persona = "default"; // D2: persona is always "default" in this plugin
+        const allRecords = await listInboxRecords($, persona);
+        const pending = allRecords.filter((rec) => rec.status === "pending");
+        // Filter to writers with live reader claims
+        const withClaim: typeof pending = [];
+        const withoutClaim: typeof pending = [];
+        for (const rec of pending) {
+          const alive = await hasLiveReaderClaim($, rec.from, persona);
+          if (alive) withClaim.push(rec);
+          else withoutClaim.push(rec);
+        }
+        // Push one operator_skipped_no_claim decision per record without a claim
+        for (const rec of withoutClaim) {
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "operator_skipped_no_claim",
+            detail: `record ${rec.id} writer ${rec.from} has no live reader claim`,
+          });
+        }
+        // Take the oldest record with a live claim
+        if (withClaim.length > 0) {
+          withClaim.sort((a, b) => a.at - b.at);
+          const oldest = withClaim[0];
+          oldest.status = "delivered";
+          oldest.deliveredAt = Date.now();
+          // Write back to store (listInboxRecords returns fresh objects)
+          const store = await $.store;
+          const existing = await store.get(oldest.key);
+          if (existing) {
+            const parsed = JSON.parse(existing as string);
+            parsed.status = "delivered";
+            parsed.deliveredAt = oldest.deliveredAt;
+            await store.set(oldest.key, JSON.stringify(parsed));
+          }
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "operator_delivered",
+            detail: `record ${oldest.id} submitted as [OPERATOR]`,
+          });
+          await $.prompt.submit({ text: "[OPERATOR] " + oldest.text });
+          await persist($);
+          return; // One record per tick
+        }
+      }
+
       // D4: increment tick index for backoff and cost_summary cadence.
       sess.controllerTickCount = (sess.controllerTickCount ?? 0) + 1;
       const tickIndex = sess.controllerTickCount;
@@ -1771,6 +1822,34 @@ export const register: Register = async (on, options) => {
       action: "turn_start",
       detail: `Turn ${sess.state.monitor.turnCount} leaf ${turnLeafId || "none"}`,
     });
+
+    // AS3: the first turn.start after a delivery stamps e.turnId onto the
+    // delivered record that has none.
+    if (sess.isOwner) {
+      const persona = "default";
+      const allRecords = await listInboxRecords($, persona);
+      const undelivered = allRecords.find(
+        (rec) => rec.status === "delivered" && !rec.turnId
+      );
+      if (undelivered) {
+        undelivered.turnId = e.turnId;
+        const store = await $.store;
+        const existing = await store.get(undelivered.key);
+        if (existing) {
+          const parsed = JSON.parse(existing as string);
+          parsed.turnId = e.turnId;
+          await store.set(undelivered.key, JSON.stringify(parsed));
+        }
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "operator_turn_stamped",
+          detail: `record ${undelivered.id} stamped with turn ${e.turnId}`,
+        });
+        await persist($);
+      }
+    }
+
     return next(e);
   });
 
@@ -1963,6 +2042,37 @@ export const register: Register = async (on, options) => {
     // S12: increment turnsSince for self-review debounce.
     if (sess.state.monitor.selfReview) {
       sess.state.monitor.selfReview.turnsSince += 1;
+    }
+
+    // D4: if the turn.complete turnId matches a delivered record, write the
+    // reply and mark answered.
+    if (sess.isOwner) {
+      const persona = "default";
+      const allRecords = await listInboxRecords($, persona);
+      const matching = allRecords.find(
+        (rec) => rec.status === "delivered" && rec.turnId === e.turnId
+      );
+      if (matching && e.answer) {
+        const replyKey = `reply:${persona}:${matching.id}`;
+        const store = await $.store;
+        await store.set(
+          replyKey,
+          JSON.stringify({ at: Date.now(), text: e.answer })
+        );
+        // Mark the record as answered
+        const existing = await store.get(matching.key);
+        if (existing) {
+          const parsed = JSON.parse(existing as string);
+          parsed.status = "answered";
+          await store.set(matching.key, JSON.stringify(parsed));
+        }
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "operator_answered",
+          detail: `record ${matching.id} replied`,
+        });
+      }
     }
 
     // M7: single guarded-write path (shared helper).

@@ -456,12 +456,26 @@ fi
 # --- F10(reader): the reader holds a reader:default claim ---
 # AU4: snapshot the store and assert the reader's commons entry carries
 # a claim with resource === 'reader:default'.
+# AW2: keep both the snapshot and a control derived from it (never edit the snapshot).
 if [ "$OWNER_COUNT" -eq 1 ] && [ -n "$STORE_FILE_WIN" ] && [ -n "$READER_SESSION_WIN" ] && [ "$ASSERT_FAILED" -eq 0 ]; then
   # Convert the Windows store path back to a Git Bash path for cp
   STORE_FILE_UNIX=$(cygpath -u "$STORE_FILE_WIN")
   # Snapshot the store file into the evidence directory
   cp "$STORE_FILE_UNIX" "$K"/global-store.json
-  # Assert the reader holds a reader:default claim
+  # Create a control: remove the reader's claim from a copy (never touch the snapshot)
+  node -e "
+const fs = require('fs');
+const src = process.argv[1];
+const dst = process.argv[2];
+const readerSession = process.argv[3];
+const store = JSON.parse(fs.readFileSync(src, 'utf8'));
+const entry = store['commons:' + readerSession];
+if (entry && entry.claims) {
+  entry.claims = entry.claims.filter(c => c.resource !== 'reader:default');
+}
+fs.writeFileSync(dst, JSON.stringify(store, null, 2));
+" "$K"/global-store.json "$K"/global-store-control.json "$READER_SESSION_WIN"
+  # Assert the reader holds a reader:default claim (on the snapshot)
   node -e "
 const fs = require('fs');
 const store = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
