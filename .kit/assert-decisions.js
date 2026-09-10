@@ -251,22 +251,25 @@ switch (testName) {
     const costSummaries = details.filter(d => d.action === "cost_summary");
     check2("cost: at least two cost_summary", costSummaries.length >= 2);
 
-    // AR2: No classify on a fully paused tree.
-    // Find the last paused_by_controller, then check that no controller_tick with a classify verdict follows before the next activated or end of log.
+    // AS1 (AR2 fix): No classify on a fully paused tree.
+    // Find every paused_by_controller, then for each window (from that pause to the next activated or end of log),
+    // check that no controller_tick with a classify verdict follows.
     const pausedIdxs = details.map((d, i) => d.action === "paused_by_controller" ? i : -1).filter(i => i !== -1);
-    if (pausedIdxs.length > 0) {
-      const lastPausedIdx = pausedIdxs[pausedIdxs.length - 1];
-      // Find the next activated after lastPausedIdx, or end of log.
+    // The detail format is "plan-<id>: <verdict>: <reason>", so match with a regex.
+    const classifyVerdictRe = /^[^:]+: (nudge|pause|ask-operator)\b/;
+    let badTicksTotal = 0;
+    for (const lastPausedIdx of pausedIdxs) {
+      // Find the next activated after this pause, or end of log.
       let nextActivatedIdx = details.findIndex((d, i) => i > lastPausedIdx && d.action === "activated");
       if (nextActivatedIdx === -1) nextActivatedIdx = details.length;
       // Check for controller_tick lines with classify verdicts in between.
-      const classifyVerdicts = ["nudge", "pause", "ask-operator", "complete", "score"];
       const badTicks = details.slice(lastPausedIdx + 1, nextActivatedIdx).filter(d =>
         d.action === "controller_tick" &&
-        classifyVerdicts.some(v => (d.detail || "").startsWith(v))
+        classifyVerdictRe.test(d.detail || "")
       );
-      check2("cost: no classify on fully paused tree", badTicks.length === 0);
+      badTicksTotal += badTicks.length;
     }
+    check2("cost: no classify on fully paused tree", badTicksTotal === 0);
 
     // REPORT: nudge_sent, cost_cap_reached, unchanged-skipped, backed-off counts.
     const capReacheds = decisions.filter(a => a === "cost_cap_reached");
