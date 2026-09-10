@@ -537,6 +537,45 @@ export const register: Register = async (on, options) => {
       },
     });
 
+    // D2: Reader tools
+    await $.tool.register({
+      name: "agentic_say",
+      description:
+        "Send a message to the owner session of a persona. The reader session calls this to send text to the owner. " +
+        "The owner will see the message on its next quiet tick. Use for steering, reporting, or asking questions.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          persona: {
+            type: "string",
+            description: 'The persona name (e.g. "default").',
+          },
+          text: {
+            type: "string",
+            description: "The message to send to the owner.",
+          },
+        },
+        required: ["persona", "text"],
+      },
+    });
+
+    await $.tool.register({
+      name: "agentic_inbox",
+      description:
+        "Read replies from the owner session of a persona. The reader session calls this to poll for replies to its messages. " +
+        "Returns an array of {id, from, at, text, kind, status, reply?} records.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          persona: {
+            type: "string",
+            description: 'The persona name (e.g. "default").',
+          },
+        },
+        required: ["persona"],
+      },
+    });
+
     // --- Claim or join the persona based on liveness (heartbeat sidecar) ---
     const existing = await $.fs.exists(storePath)
       ? JSON.parse(await $.fs.read(storePath))
@@ -586,6 +625,11 @@ export const register: Register = async (on, options) => {
           action: "passive_reader",
           detail: `Joining '${sess.persona}' as reader (holder: ${holderHb!.sessionId}, epoch ${existingPersona.epoch})`,
         });
+        // D2: Claim the reader role
+        try {
+          const { claimReaderRole } = await import("./operator.js");
+          await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId);
+        } catch { /* non-fatal */ }
       }
     } else {
       sess.state = createDefaultState(sess.persona, sess.mySessionId);
