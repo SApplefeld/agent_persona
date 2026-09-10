@@ -776,7 +776,7 @@ export const register: Register = async (on, options) => {
       // List pending inbox records whose writer holds a live reader claim,
       // take the lowest at, mark delivered, submit as [OPERATOR] prompt.
       if (sess.isOwner) {
-        const persona = "default"; // D2: persona is always "default" in this plugin
+        const persona = sess.persona;
         const allRecords = await listInboxRecords(commonsStoreOf($), persona);
         const pending = allRecords.filter((rec) => rec.status === "pending");
         // Filter to writers with live reader claims
@@ -1827,7 +1827,7 @@ export const register: Register = async (on, options) => {
     // AS3: the first turn.start after a delivery stamps e.turnId onto the
     // delivered record that has none.
     if (sess.isOwner) {
-      const persona = "default";
+      const persona = sess.persona;
       const allRecords = await listInboxRecords(commonsStoreOf($), persona);
       const undelivered = allRecords.find(
         (rec) => rec.status === "delivered" && !rec.turnId
@@ -2048,31 +2048,48 @@ export const register: Register = async (on, options) => {
     // D4: if the turn.complete turnId matches a delivered record, write the
     // reply and mark answered.
     if (sess.isOwner) {
-      const persona = "default";
+      const persona = sess.persona;
       const allRecords = await listInboxRecords(commonsStoreOf($), persona);
       const matching = allRecords.find(
         (rec) => rec.status === "delivered" && rec.turnId === e.turnId
       );
-      if (matching && e.answer) {
-        const replyKey = `reply:${persona}:${matching.id}`;
+      if (matching) {
         const store = commonsStoreOf($);
-        await store.set(
-          replyKey,
-          JSON.stringify({ at: Date.now(), text: e.answer })
-        );
-        // Mark the record as answered
-        const existing = await store.get(matching.key);
-        if (existing) {
-          const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
-          parsed.status = "answered";
-          await store.set(matching.key, parsed);
+        if (e.answer && e.reason !== "aborted") {
+          // AX4: write reply, mark answered
+          const replyKey = `reply:${persona}:${matching.id}`;
+          await store.set(
+            replyKey,
+            JSON.stringify({ at: Date.now(), text: e.answer })
+          );
+          const existing = await store.get(matching.key);
+          if (existing) {
+            const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
+            parsed.status = "answered";
+            await store.set(matching.key, parsed);
+          }
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "operator_answered",
+            detail: `record ${matching.id} replied`,
+          });
+        } else {
+          // AX4: empty answer or aborted. Leave delivered, clear turnId so
+          // the next turn.start re-stamps it.
+          const existing = await store.get(matching.key);
+          if (existing) {
+            const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
+            parsed.turnId = undefined;
+            await store.set(matching.key, parsed);
+          }
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "operator_turn_cleared",
+            detail: `record ${matching.id} turnId cleared (answer empty or aborted)`,
+          });
         }
-        sess.state.decisions.push({
-          timestamp: Date.now(),
-          loop: "monitor",
-          action: "operator_answered",
-          detail: `record ${matching.id} replied`,
-        });
       }
     }
 
