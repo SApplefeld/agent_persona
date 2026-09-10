@@ -20,6 +20,7 @@ export type InboxStatus = "pending" | "delivered" | "answered";
 
 export interface InboxRecord {
   id: string;
+  key: string; // full store key (for sweep)
   from: string; // writer sessionId
   at: number; // ms timestamp
   text: string;
@@ -72,7 +73,8 @@ function readerKey(persona: string): string {
 
 // --- Store interface ---
 
-import { CommonsStore } from "./commons.js";
+import type { CommonsStore } from "./commons";
+import { claimResource, releaseResource, readAllClaims } from "./commons";
 
 // --- D1: Records ---
 
@@ -90,8 +92,10 @@ export async function writeInboxRecord(
   answers?: string,
 ): Promise<string> {
   const id = `${persona}-${writerSessionId}-${seq}`;
+  const key = inboxKey(persona, writerSessionId, seq);
   const record: InboxRecord = {
     id,
+    key,
     from: writerSessionId,
     at: Date.now(),
     text,
@@ -99,7 +103,6 @@ export async function writeInboxRecord(
     answers,
     status: "pending",
   };
-  const key = inboxKey(persona, writerSessionId, seq);
   await store.set(key, record);
   return id;
 }
@@ -232,14 +235,9 @@ export async function sweepExpiredRecords(
   const inboxRecords = await listInboxRecords(store, persona);
   for (const record of inboxRecords) {
     if (record.at < cutoff) {
-      const key = inboxKey(persona, record.from, 0); // seq is in the key, but we don't have it here
-      // We need to reconstruct the key from the record
-      const parts = record.id.split("-");
-      if (parts.length >= 3) {
-        const seq = parseInt(parts[parts.length - 1], 10);
-        const writerSessionId = parts[1];
-        const key = inboxKey(persona, writerSessionId, seq);
-        await store.delete(key);
+      // Use the stored key (record.key) to delete the record
+      if (record.key) {
+        await store.delete(record.key);
         swept++;
       }
     }
@@ -291,7 +289,6 @@ export async function claimReaderRole(
   mySessionId: string,
 ): Promise<void> {
   // Use the commons claim path (same as persona claim)
-  const { claimResource } = await import("./commons.js");
   await claimResource(store, readerKey(persona), mySessionId);
 }
 
@@ -303,7 +300,6 @@ export async function releaseReaderRole(
   persona: string,
   mySessionId: string,
 ): Promise<void> {
-  const { releaseResource } = await import("./commons.js");
   await releaseResource(store, readerKey(persona), mySessionId);
 }
 
@@ -316,10 +312,9 @@ export async function hasLiveReaderClaim(
   sessionId: string,
   staleAfterMs: number = 90_000,
 ): Promise<boolean> {
-  const { readAllClaims } = await import("./commons.js");
   const claims = await readAllClaims(store, staleAfterMs);
   const readerResource = readerKey(persona);
-  return claims.some((c: any) => c.resource === readerResource && c.holder === sessionId);
+  return claims.some((c) => c.resource === readerResource && c.holder === sessionId);
 }
 
 /**

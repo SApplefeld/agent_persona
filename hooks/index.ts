@@ -41,6 +41,7 @@ import {
   commonsWinner,
 } from "./commons";
 import type { CommonsStore } from "./commons";
+import { claimReaderRole } from "./operator";
 import {
   shouldSelfReview,
   buildSelfReviewInput,
@@ -537,42 +538,37 @@ export const register: Register = async (on, options) => {
       },
     });
 
-    // D2: Reader tools
+    // D2: Reader tools (plan signatures: agentic_say(text, answers?), agentic_inbox())
     await $.tool.register({
       name: "agentic_say",
       description:
-        "Send a message to the owner session of a persona. The reader session calls this to send text to the owner. " +
+        "Send a message to the owner session of this persona. The reader session calls this to send text to the owner. " +
         "The owner will see the message on its next quiet tick. Use for steering, reporting, or asking questions.",
       inputSchema: {
         type: "object",
         properties: {
-          persona: {
-            type: "string",
-            description: 'The persona name (e.g. "default").',
-          },
           text: {
             type: "string",
             description: "The message to send to the owner.",
           },
+          answers: {
+            type: "string",
+            description: "Optional answer to a previous ask.",
+          },
         },
-        required: ["persona", "text"],
+        required: ["text"],
       },
     });
 
     await $.tool.register({
       name: "agentic_inbox",
       description:
-        "Read replies from the owner session of a persona. The reader session calls this to poll for replies to its messages. " +
+        "Read replies from the owner session of this persona. The reader session calls this to poll for replies to its messages. " +
         "Returns an array of {id, from, at, text, kind, status, reply?} records.",
       inputSchema: {
         type: "object",
-        properties: {
-          persona: {
-            type: "string",
-            description: 'The persona name (e.g. "default").',
-          },
-        },
-        required: ["persona"],
+        properties: {},
+        required: [],
       },
     });
 
@@ -626,10 +622,7 @@ export const register: Register = async (on, options) => {
           detail: `Joining '${sess.persona}' as reader (holder: ${holderHb!.sessionId}, epoch ${existingPersona.epoch})`,
         });
         // D2: Claim the reader role
-        try {
-          const { claimReaderRole } = await import("./operator.js");
-          await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId);
-        } catch { /* non-fatal */ }
+        await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId);
       }
     } else {
       sess.state = createDefaultState(sess.persona, sess.mySessionId);
@@ -787,6 +780,23 @@ export const register: Register = async (on, options) => {
           detail: `classify:${cost.classify.count} reason:${cost.reason.count} selfReview:${cost.selfReview.count} planner:${cost.planner.count} nudge:${cost.nudge.count} estTokens:${totalEstTokens} totalCalls:${totalCalls}`,
         });
         await persist($);
+
+        // AT5: Sweep expired operator records on the summary cadence (owner only)
+        if (sess.isOwner) {
+          try {
+            const { sweepExpiredRecords } = await import("./operator.js");
+            const ttlMs = typeof cfg.operatorRecordTtlMs === "number" ? (cfg.operatorRecordTtlMs as number) : 86400000;
+            const swept = await sweepExpiredRecords(commonsStoreOf($), sess.persona, ttlMs);
+            if (swept > 0) {
+              sess.state.decisions.push({
+                timestamp: Date.now(),
+                loop: "worker",
+                action: "sweep_expired_records",
+                detail: `swept ${swept} expired operator records (persona: ${sess.persona})`,
+              });
+            }
+          } catch { /* non-fatal */ }
+        }
       }
 
       // 2a. C3: error streak branch (before the idle gate; H1: move out of the classify path).
@@ -2399,6 +2409,54 @@ export const register: Register = async (on, options) => {
       }
       toolErrorsThisTurn++;
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+    }
+
+    // D2: Serve agentic_say (reader sends a message to the owner)
+    // Plan D2: agentic_say(text, answers?), persona is the session's (sess.persona)
+    if ((e as any).tool === "mcp__agentic-plugin__agentic_say") {
+      const persona = sess.persona;
+      const text = String((e as any).text || "").trim();
+      const answers = (e as any).answers as string | undefined;
+      if (!text) {
+        toolErrorsThisTurn++;
+        return { deny: "agentic_say requires a non-empty 'text'." };
+      }
+      // Check if we are a reader
+      if (sess.isOwner) {
+        toolErrorsThisTurn++;
+        return { deny: "agentic_say is for reader sessions only; the owner does not need to send itself a message." };
+      }
+      // Write the inbox record
+      const { writeInboxRecord, getHighestInboxSeq } = await import("./operator.js");
+      const seq = await getHighestInboxSeq(commonsStoreOf($), persona, sess.mySessionId) + 1;
+      const id = await writeInboxRecord(commonsStoreOf($), persona, sess.mySessionId, seq, text, "say", answers);
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "worker",
+        action: "say_sent",
+        detail: `${persona}: "${text.slice(0, 80)}" (id: ${id})`,
+      });
+      return { result: `Message sent to owner of ${persona} (id: ${id})` };
+    }
+
+    // D2: Serve agentic_inbox (reader reads replies)
+    // Plan D2: agentic_inbox(), persona is the session's (sess.persona)
+    if ((e as any).tool === "mcp__agentic-plugin__agentic_inbox") {
+      const persona = sess.persona;
+      // Check if we are a reader
+      if (sess.isOwner) {
+        toolErrorsThisTurn++;
+        return { deny: "agentic_inbox is for reader sessions only; the owner reads its own replies directly." };
+      }
+      // List inbox records for this persona
+      const { listInboxRecords, readReplyRecord } = await import("./operator.js");
+      const records = await listInboxRecords(commonsStoreOf($), persona);
+      // Attach replies to records
+      const withReplies = await Promise.all(records.map(async (rec) => {
+        const reply = await readReplyRecord(commonsStoreOf($), persona, rec.id);
+        return reply ? { ...rec, reply: reply.text } : rec;
+      }));
+      return { result: JSON.stringify(withReplies, null, 2) };
     }
 
     // Goal constraint: deny Bash if the ROOT objective says so (R10).
