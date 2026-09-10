@@ -49,6 +49,11 @@ const p = Object.keys(s)[0];
 const d = (s[p].decisions||[]).filter(x => x.action === 'context_budget_crossed' && (x.detail||'').startsWith('critical:'));
 process.exit(d.length > 0 ? 0 : 1);
 " 2>/dev/null; then
+      # AN2: hold stdin open 35 s after the critical crossing so the in-flight
+      # turn can finish and the cost_summary persist (index.ts:745) can land.
+      echo "$(date -u +%FT%TZ) AN2: holding stdin open for 35s after critical crossing" >&2
+      sleep 35
+      echo "$(date -u +%FT%TZ) AN2: stdin hold complete, closing" >&2
       return 0
     fi
     sleep 5
