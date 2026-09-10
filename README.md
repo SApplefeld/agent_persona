@@ -195,16 +195,13 @@ The supervisor never writes the persona store (invariant §8). It uses `supervis
 
 **AL7 (engine 2.1.267):** The plugin uses `$.fs.read` and `$.fs.write` (not `$.fs.readFile` / `$.fs.writeFile`). These function names were introduced in Claude Code engine 2.1.267. The engine version the typings were written by is line 1 of `.claude/types/claude-code.d.ts`.
 
-After any engine update, regenerate with the stream-json invocation:
+After any engine update, regenerate with the stream-json invocation. Set `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the environment first:
 
 ```
-claude -p --input-format stream-json --output-format stream-json \
-  --plugin-dir /path/to/agentic-plugin \
-  --settings /path/to/settings.json \
-  --model haiku
+printf '%s\n' '{"type":"user","message":{"role":"user","content":"/plugin-types"}}' | claude -p --input-format stream-json --output-format stream-json --verbose --model haiku --permission-mode bypassPermissions --plugin-dir <plugin dir>
 ```
 
-Copy both generated files to `.claude/types/`, run `npx tsc --noEmit`, and re-gate with the controller suite before trusting a green.
+The two files land in `.claude/types/` of the current directory. Copy both generated files to `.claude/types/`, run `npx tsc --noEmit`, and re-gate with the controller suite before trusting a green.
 
 **Re-gate rule:** If you upgrade the engine, re-run `npx tsc --noEmit` and the full test suite (`.kit/cost-ledger-unit-test.mjs`, `.kit/cost-migration-test.mjs`, `.kit/controller-tick-test.mjs`, controller suite). The function names may change again.
 
