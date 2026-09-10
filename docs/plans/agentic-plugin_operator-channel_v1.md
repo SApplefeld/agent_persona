@@ -1,12 +1,12 @@
 # agentic-plugin : operator channel (item 7)
 
-**Status:** Draft (v8)
+**Status:** Draft (v9)
 **Created:** 2026-09-10T06:08:09Z
-**Revised:** v8, documents e1e8d63
+**Revised:** v9, documents 131f0c8
 **Program item:** 7 (operator channel)
 **Supersedes:** N/A (new item)
 
-## 5. Findings (AU1 to AU5, AV1, AW1 to AW5, AX1 to AX8, AY1 to AY4, AZ1 to AZ5)
+## 5. Findings (AU1 to AU5, AV1, AW1 to AW5, AX1 to AX8, AY1 to AY4, AZ1 to AZ5, BA1 to BA3)
 
 | Finding | Description | Status |
 |---------|-------------|--------|
@@ -38,6 +38,9 @@
 | AZ3 | AZ3. The classifier `pause` is still a dead pause (PLUGIN, the D5 addendum) | Fixed in e1e8d63: `pause` branch writes the ask record and sets `pendingAskId`, same as `ask-operator` |
 | AZ4 | AZ4. Decision names, statuses, the claim check, and `goal_resume` (PLUGIN) | Fixed in e1e8d63: actions `ask_opened`/`ask_waiting`/`ask_answered`/`ask_timeout`; timeout sets `expired`; `hasLiveReaderClaim` on answer path; `goal_resume` closes ask `status: "resumed"`; `cfg.askOperatorWaitMs` |
 | AZ5 | AZ5. Small records | Acknowledged: exit paste uses `node ...; echo exit=$?` no pipe; steps 1-3 are this hand-back's commits; run directory named as gate record |
+| BA1 | BA1. A commit to make a grep print zero (record) | Acknowledged: `1d8a369` changed `mod.register` to `mod["register"]` so the grep prints 0; the grep was a proxy for "no case registers a second closure" and `53dfe91` had already made that true; the one remaining literal was a `typeof` check, not a registration. The commit list in the hand-back had five commits and the tree has six; `53dfe91` is the one missing. |
+| BA2 | BA2. Two copies of the wait and timeout block (PLUGIN, rides with section 4) | Fixed in f8960eb: `tickOpenAsk` helper extracted, called from both sites (no-active-leaf and idle gate); behaviour unchanged, S3 cases pin it |
+| BA3 | BA3. Gate HEAD and final HEAD (record, accepted this once) | Acknowledged: the gate ran at `6616785`; `1d8a369` landed after it. Accepted because `1d8a369` touches only the harness file, which the gate does not run, and the harness is pasted green at `1d8a369`. The rule stays: the gate runs at the HEAD the hand-back ends on. If a post-gate commit is unavoidable, it is suite-only or plan-only, and the hand-back says so in one line. |
 
 ## 1. Purpose
 
@@ -110,7 +113,9 @@ Four actions, as named: `ask_opened` (ask written), `ask_waiting` (still open, 6
 
 ### D6. Doorbell
 
-`on("session.receive", { origin: "peer" })` and `peer-send-message`: return `{ consumed: "agentic: peer text is not steering; use agentic_say" }` and set a flag so the next tick drains immediately rather than waiting for the idle gate. The model never reads peer text. Standing is settled by construction: the only text that reaches the model from another session arrives through `prompt.submit`, and only from a record whose writer holds a reader claim.
+`on("session.receive", async ($, e, next) => { ... })`: when `e.origin` is `"peer"` or `"peer-send-message"`, push decision `peer_consumed` with `detail` = the first 80 characters of `e.text`, `$.ui.toast("agentic: peer text consumed; use agentic_say")` in a try, and return `{ consumed: "agentic: peer text is not steering; use agentic_say" }`. Any other origin: `return next(e)`. Owner and reader alike consume; a reader session that received peer text has no more standing to act on it than the owner does. The model never reads peer text. Standing is settled by construction: the only text that reaches the model from another session arrives through `prompt.submit`, and only from a record whose writer holds a reader claim.
+
+The "next tick drains immediately" flag from the earlier draft is dropped: D3's drain already runs at the top of every tick, before the idle gate, so there is nothing left to do.
 
 **Trust boundary, stated in the README.** The store is per user account on one machine. Any process running as that user can write it. That is the same boundary as the keyboard. A remote operator reaches the channel through a session on this machine (Remote Control, the Discord relay, or SSH), never through the store directly.
 
@@ -118,8 +123,8 @@ Four actions, as named: `ask_opened` (ask written), `ask_waiting` (still open, 6
 
 - D2: the reader claim is written on the losing side of the persona arbitration (name the line in `index.ts` where the yield decision is taken) and refreshed where `commons:<sessionId>.lastSeen` is refreshed. `seq` is an in-memory counter per session seeded from the highest existing `inbox:<persona>:<sessionId>:*` key on start.
 - D3: a `say` is delivered even while an ask is open; the ask stays open until a record with `answers` closes it. Owner verifies the writer's claim by reading `commons:<from>` and checking `lastSeen` within `staleAfterMs` and a `reader:<persona>` entry in `claims`.
-- D5: `pendingAskId` lives in persisted state (`sess.state`), not module scope, so a restarted owner still waits. The suppressed walk-on at `:1405` and the skipped classify at the idle gate each log nothing per tick; `ask_waiting` once per summary cadence is the only line.
-- D6: the flag set by the doorbell is module scope; it is a hint, not state.
+- D5: `pendingAskId` lives in persisted state (`sess.state`), not module scope, so a restarted owner still waits. The suppressed walk-on and the skipped classify each log nothing per tick; `ask_waiting` once per 60 s wall clock is the only line.
+- D6: the `session.receive` handler is registered in the two-argument form (`on("session.receive", handler)`) so the harness can drive it without a change; `e.origin` is tested inside the handler.
 
 ## 5. Sections and proof
 
@@ -134,7 +139,7 @@ Four actions, as named: `ask_opened` (ask written), `ask_waiting` (still open, 6
 1. `PLUGIN:` D1 records and D2 reader claim and tools. Harness: reader claim written on start for a non-owner; `agentic_say` refused for the owner and for a session without a claim; record shape.
 2. `PLUGIN:` D3 drain and D4 reply. Harness cases (green at d75aa8f): `S2 drain` (oldest record delivered, one per tick), `S2 drain in-flight` (turn in flight, nothing delivered), `S2 drain no claim` (writer without a claim, skipped), `S2 reply` (matching pair answers), `S2 reply turnid` (empty answer clears `turnId`, next matching pair answers), `S2 reply unrelated` (unrelated id writes nothing).
 3. `PLUGIN:` D5 ask waits. Built (538fe68, e1e8d63, a960e84). Seven harness cases: `S3 ask-operator` (classify returns `ask-operator`, ask record written, goal paused, `pendingAskId` set), `S3 planner no walk` (two goals, open ask, tick fires, node-002 still pending), `S3 pause-is-ask` (classifier `pause` writes ask record, goal paused, `pendingAskId` set), `S3 no-walk` (three ticks, `ask_waiting` once, classify not called), `S3 answer-react` (answer closes ask, goal reactivated, `ask_answered` in decisions), `S3 say-leaves` (a `say` without `answers` does not close the ask), `S3 timeout` (ask `expired`, `pendingAskId` cleared, node-002 activated).
-4. `PLUGIN:` D6 doorbell. Harness: `session.receive` with origin peer returns consumed and the next tick drains without the idle gate. Live check: `SendMessage` to a held-open child, the child's transcript shows no peer text.
+4. `PLUGIN:` D6 doorbell. Built (131f0c8). Three harness cases: `S4 peer consumed` (origin peer, consumed returned, next not called, `peer_consumed` in decisions), `S4 peer-send-message consumed` (origin peer-send-message, consumed returned), `S4 other origin passes` (control: origin bridge and task-notification, next called with e unchanged, no `peer_consumed`). Live check moved to section 5's `live-operator-test.sh`: `SendMessage` to a held-open child, the child's transcript free of peer text, a `peer_consumed` decision in its log.
 5. `SUITE:` `live-operator-test.sh`. Owner session with the cost suite's wait objective; a second `claude -p` in the same directory as reader calls `agentic_say("Report your current goal in one line")`, polls `agentic_inbox` for the reply; asserts `operator_delivered` then `operator_answered` in the owner's decisions and a non-empty reply text. Second phase: owner feed makes the classifier ask (a blocked objective); reader answers; asserts `ask_waiting`, no `activated` between the ask and the answer, then `activated`.
 6. README (tools, records, the `[OPERATOR]` marker, the trust boundary, the two options), full `live-all.sh`, plan Complete, `CLOSE:`.
 
