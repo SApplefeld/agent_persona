@@ -41,6 +41,7 @@ READER_ERR2="$SUITE_DIR/operator-reader2.err.log"
 HANDSHAKE_READY="$SUITE_DIR/operator-hold.ready"
 HANDSHAKE_SENT="$SUITE_DIR/operator-probe.sent"
 
+RUNNING="$SUITE_DIR/RUNNING"
 OP_PID=""
 cleanup() {
   [ -n "$OP_PID" ] && kill "$OP_PID" 2>/dev/null
@@ -219,30 +220,17 @@ if [ "$LIVE" != "1" ]; then
 fi
 echo "owner persona:default claim live in commons store"
 
-# --- Phase 1+2: ONE reader process, three turns on one stream-json feed ---
-# BC4: one reader process, one session id/claim. The suite feeds messages at the
-# right times via a FIFO (named pipe) for the reader's stdin.
-READER_FIFO="$SUITE_DIR/operator-reader.fifo"
-rm -f "$READER_FIFO"
-mkfifo "$READER_FIFO" || { echo "FAIL: cannot create FIFO" >&2; kill $OP 2>/dev/null; exit 1; }
-
-# Open the FIFO for writing in this shell (fd 3) so it stays open.
-exec 3>"$READER_FIFO"
-
-# Launch the ONE reader process, reading from the FIFO.
-claude -p --input-format stream-json --output-format stream-json --verbose \
+# --- Phase 1: reader turn 1 (identity + say) ---
+echo "phase 1: launching reader..."
+reader_turn1_msg | claude -p --input-format stream-json --output-format stream-json --verbose \
   --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" \
   --settings "$(cygpath -w "$SUITE_DIR/settings.json")" \
   --allowedTools "$READER_TOOLS" \
   --model haiku \
-  < "$READER_FIFO" \
   > "$READER_OUT" 2> "$READER_ERR" &
 RP=$!
-echo "phase 1: reader launched (pid $RP)"
-
-# --- Turn 1: identity + say ---
-reader_turn1_msg >&3
-echo "turn 1 fed"
+wait $RP
+echo "phase 1 reader done"
 
 # --- Wait for operator_delivered and operator_answered ---
 wait_for_decision "operator_delivered" 60
@@ -259,11 +247,19 @@ else
   echo "FAIL: operator_answered not found after 120s" >&2
 fi
 
-# --- Turn 2: inbox, get reply ---
-reader_turn2_msg >&3
-echo "turn 2 fed"
+# --- Phase 2: reader turn 2 (inbox, get reply) ---
+echo "phase 2: launching reader turn 2..."
+reader_turn2_msg | claude -p --input-format stream-json --output-format stream-json --verbose \
+  --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" \
+  --settings "$(cygpath -w "$SUITE_DIR/settings.json")" \
+  --allowedTools "$READER_TOOLS" \
+  --model haiku \
+  > "$READER_OUT2" 2> "$READER_ERR2" &
+RP2=$!
+wait $RP2
+echo "phase 2 reader done"
 
-# --- Phase 2: wait for ask_opened (nudge cap fires) ---
+# --- Wait for ask_opened (nudge cap fires) ---
 echo "phase 2: waiting for ask_opened (nudge cap)..."
 wait_for_decision "ask_opened" 300
 if [ $? -eq 0 ]; then
@@ -274,14 +270,17 @@ else
   exit 1
 fi
 
-# --- Turn 3: answer the ask ---
-reader_turn3_msg >&3
-echo "turn 3 fed"
-
-# --- Close the FIFO so the reader process exits ---
-exec 3>&-
-wait $RP
-echo "reader done (rc=$?)"
+# --- Phase 2: reader turn 3 (answer the ask) ---
+echo "phase 2: launching reader turn 3..."
+reader_turn3_msg | claude -p --input-format stream-json --output-format stream-json --verbose \
+  --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" \
+  --settings "$(cygpath -w "$SUITE_DIR/settings.json")" \
+  --allowedTools "$READER_TOOLS" \
+  --model haiku \
+  > "$READER_OUT2" 2> "$READER_ERR2" &
+RP3=$!
+wait $RP3
+echo "phase 2 reader turn 3 done"
 
 # --- Wait for ask_answered ---
 wait_for_decision "ask_answered" 120
