@@ -166,7 +166,12 @@ export async function readReplyRecord(
 ): Promise<ReplyRecord | null> {
   const key = replyKey(persona, msgId);
   const raw = await store.get(key);
-  return raw ? (raw as ReplyRecord) : null;
+  if (!raw) return null;
+  // BE2: accept a string value by parsing it, so records already on disk still read
+  if (typeof raw === "string") {
+    try { return JSON.parse(raw) as ReplyRecord; } catch { return null; }
+  }
+  return raw as ReplyRecord;
 }
 
 /**
@@ -200,13 +205,23 @@ export async function expireOpenAsks(
   store: CommonsStore,
   persona: string,
 ): Promise<string[]> {
-  const records = await listAskRecords(store, persona);
-  const open = records.filter((r) => r.status === "open");
-  for (const rec of open) {
+  const keys = await store.keys();
+  const prefix = `${ASK_PREFIX}${persona}:`;
+  const ids: string[] = [];
+  for (const key of keys) {
+    if (!key.startsWith(prefix)) continue;
+    const raw = await store.get(key);
+    if (!raw) continue;
+    const rec = (typeof raw === "string" ? JSON.parse(raw) : raw) as AskRecord;
+    if (rec.status !== "open") continue;
+    // BE4: fall back to the key suffix after ask:<persona>: when rec.id is undefined
+    const id = rec.id ?? key.slice(prefix.length);
+    rec.id = id;
     rec.status = "expired";
-    await store.set(askKey(persona, rec.id), rec);
+    await store.set(askKey(persona, id), rec);
+    ids.push(id);
   }
-  return open.map((r) => r.id);
+  return ids;
 }
 
 /**

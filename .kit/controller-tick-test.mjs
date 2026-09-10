@@ -20,7 +20,7 @@
 // Exits 0 on success, 1 on failure.
 
 import { execSync } from "node:child_process";
-import { createTickHarness, createFake$, stubDateNow, fireTick, fireTurn, SESSION_ID, loadModule, makeState } from "./tick-harness.mjs";
+import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, loadModule, makeState } from "./tick-harness.mjs";
 
 let failures = 0;
 function check(name, cond) {
@@ -2148,6 +2148,174 @@ async function caseS6_reader_start_leaves_asks_open(clock) {
   check("S6 reader: ask still open", a1?.status === "open");
 }
 
+// S7: promotion with a live commons claim must not bump the epoch
+async function caseS7_promotion_deferred(clock) {
+  console.log("\n=== S7: promotion deferred by live commons claim ===");
+  clock.set(T0);
+  const now = T0;
+
+  const mod = await loadModule("s7_promo_defer");
+  const h = createFake$(OPTS);
+  const handlers = {};
+  await mod.register((event, handler) => { handlers[event] = handler; }, OPTS);
+
+  // Seed a live commons claim from another session (owner).
+  h.storeMap.set(`commons:other-owner`, {
+    sessionId: "other-owner",
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  // Seed the persona state with the other owner as active.
+  const state = makeState({ now });
+  state.activeSessionId = "other-owner";
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
+
+  // Seed the heartbeat with the other owner as the live holder.
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: "other-owner", epoch: 1, lastSeen: now },
+  }));
+
+  // Fire session.start to join as reader (owner is live).
+  const startH = handlers["session.start"];
+  if (startH) {
+    await startH(h.fake, {}, () => {});
+  }
+
+  // Advance time by 120s: past the 90s stale threshold for the holder's
+  // heartbeat (triggering the promotion path). The commons entry's
+  // lastSeen is also 120s old, but I'll refresh it right before the tick
+  // so the commons check sees a LIVE claim.
+  clock.set(now + 120_000);
+  
+  // Refresh the commons entry's lastSeen to keep it live (simulating
+  // the other owner's heartbeat tick refreshing their commons claim).
+  const otherEntry = h.storeMap.get(`commons:other-owner`);
+  if (otherEntry) {
+    const parsed = typeof otherEntry === 'string' ? JSON.parse(otherEntry) : otherEntry;
+    parsed.lastSeen = now + 120_000; // Set to current time
+    h.storeMap.set(`commons:other-owner`, parsed);
+  }
+  
+  // Fire the heartbeat tick. The holder's heartbeat is stale (120s > 90s),
+  // but the commons claim is live (lastSeen was just refreshed).
+  await fireHeartbeat(h);
+
+  // Read back the state.
+  const raw = h.fsMap.get(".agentic-personas.json");
+  const store = raw ? JSON.parse(raw) : {};
+  const decisions = (store.default && store.default.decisions) || [];
+  const deferred = decisions.filter(d => d.action === "promotion_deferred_commons");
+  check("S7: promotion_deferred_commons decision present", deferred.length >= 1);
+  check("S7: detail names the commons holder", deferred.some(d => (d.detail || "").includes("other-owner")));
+
+  // The epoch must NOT have been bumped (still at the other owner's epoch).
+  const rawHb = h.fsMap.get(".agentic-heartbeat.json");
+  const hb = rawHb ? JSON.parse(rawHb) : {};
+  check("S7: local heartbeat not stamped (epoch unchanged)", hb.default?.epoch === 1);
+}
+
+// S8: reader claim stays live across a 300s gap
+async function caseS8_reader_claim_stays_live(clock) {
+  console.log("\n=== S8: reader claim stays live across 300s gap ===");
+  clock.set(T0);
+  const now = T0;
+
+  const mod = await loadModule("s8_reader_claim");
+  const h = createFake$(OPTS);
+  const handlers = {};
+  await mod.register((event, handler) => { handlers[event] = handler; }, OPTS);
+
+  // Seed a live owner.
+  h.storeMap.set(`commons:owner-sid`, {
+    sessionId: "owner-sid",
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 1000 }],
+  });
+
+  // Set up the persona state so the session is a non-owner.
+  const state = makeState({ now });
+  state.activeSessionId = "owner-sid";
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: "owner-sid", epoch: 1, lastSeen: now },
+  }));
+
+  // Fire session.start to initialize the session and register clock callbacks.
+  const startH = handlers["session.start"];
+  if (startH) {
+    await startH(h.fake, {}, () => {});
+  }
+
+  // Advance time by 300s and fire the heartbeat tick.
+  clock.set(now + 300_000);
+  await fireHeartbeat(h);
+
+  // Check the reader claim is still live (lastSeen should have been refreshed).
+  const readerEntry = h.storeMap.get(`commons:${SESSION_ID}`);
+  const readerClaim = readerEntry?.claims?.find(c => c.resource === "reader:default");
+  check("S8: reader claim present after 300s tick", !!readerClaim);
+  check("S8: reader entry lastSeen refreshed", readerEntry && readerEntry.lastSeen > now);
+}
+
+// S2 serializing-fake: store.set stringifies a string value,
+// so readReplyRecord must parse the string back.
+async function caseS2_reply_serializing_fake(clock) {
+  console.log("\n=== S2: reply record via serializing store ===");
+  clock.set(T0);
+  const now = T0;
+
+  const mod = await loadModule("s2_reply_serializing");
+  const h = createFake$(OPTS);
+  const handlers = {};
+  await mod.register((event, handler) => { handlers[event] = handler; }, OPTS);
+
+  // Seed a pending inbox record.
+  h.storeMap.set(`inbox:default:${SESSION_ID}:1`, {
+    id: `${SESSION_ID}:1`,
+    from: SESSION_ID,
+    at: now,
+    text: "Hello operator",
+    status: "pending",
+  });
+
+  // Seed a reader claim so the drain path is allowed.
+  seedReaderClaim(h, SESSION_ID, now);
+
+  // Fire session.start to become owner and register clock callbacks.
+  const startH = handlers["session.start"];
+  if (startH) {
+    await startH(h.fake, {}, () => {});
+  }
+
+  // Fire the controller tick to drain.
+  clock.set(now + 60_000);
+  await fireTick(h);
+
+  // Now simulate turn.complete with an answer.
+  const turnCompleteH = handlers["turn.complete"];
+  if (turnCompleteH) {
+    // Get the turnId from the inbox record.
+    const rec = h.storeMap.get(`inbox:default:${SESSION_ID}:1`);
+    const turnId = rec?.turnId;
+    await turnCompleteH(h.fake, { answer: "Test answer", reason: "done", turnId }, () => {});
+  }
+
+  // Read the reply record back. The fake store may have stringified the value.
+  const replyKey = `reply:default:${SESSION_ID}:1`;
+  const raw = h.storeMap.get(replyKey);
+  check("S2 serializing: reply record exists", raw !== undefined && raw !== null);
+
+  // The value may be a string (if the fake store stringifies) or an object.
+  let replyText;
+  if (typeof raw === "string") {
+    try { replyText = JSON.parse(raw).text; } catch { replyText = undefined; }
+  } else {
+    replyText = raw?.text;
+  }
+  check("S2 serializing: reply text readable", replyText === "Test answer");
+}
+
 // --- Main ---
 
 async function main() {
@@ -2187,6 +2355,9 @@ async function main() {
     await caseS6_say_known_answers_writes_record(clock);
     await caseS6_owner_start_expires_prior_asks(clock);
     await caseS6_reader_start_leaves_asks_open(clock);
+    await caseS7_promotion_deferred(clock);
+    await caseS8_reader_claim_stays_live(clock);
+    await caseS2_reply_serializing_fake(clock);
   } finally {
     clock.restore();
   }

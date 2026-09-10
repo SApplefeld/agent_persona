@@ -49,6 +49,7 @@ import {
   getHighestInboxSeq,
   listInboxRecords,
   readReplyRecord,
+  writeReplyRecord,
   listAskRecords,
   writeAskRecord,
   readAskRecord,
@@ -782,8 +783,7 @@ export const register: Register = async (on, options) => {
     // overwrite the holder's heartbeat, or it will (a) mask the real holder's
     // staleness and (b) make its own promotion check compare the holder id to
     // itself and never fire.
-    $.clock.every(heartbeatMs, () => {
-      Promise.resolve().then(async () => {
+    $.clock.every(heartbeatMs, async () => {
         // The heartbeat tick verifies ownership BEFORE stamping.
         // If the store's (sessionId, epoch) no longer matches this session,
         // another session has claimed the persona and this one must yield
@@ -820,6 +820,15 @@ export const register: Register = async (on, options) => {
           }
         }
 
+        // BE3: non-owner heartbeat tick refreshes the reader claim (idempotent).
+        // Without this, the reader claim goes stale at 90s and agentic_inbox
+        // denies the reader.
+        if (!sess.isOwner) {
+          try {
+            await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId);
+          } catch { /* non-fatal */ }
+        }
+
         // Passive reader: promote if the sidecar holder is stale and not self.
         // With the shouldYield check above, the sidecar is only ever
         // written by the store's current owner, so a stale sidecar means no
@@ -837,6 +846,39 @@ export const register: Register = async (on, options) => {
           const holderIsStale = holderHb && (now - holderHb.lastSeen) > staleAfterMs;
           const holderIsSelf = holderHb?.sessionId === sess.mySessionId;
           if (holderIsStale && !holderIsSelf) {
+            // BE1: check commons before promoting. If a live claim exists
+            // on the persona from anyone, stay reader and do not bump epoch.
+            try {
+              const claims = await readAllClaims(commonsStoreOf($), staleAfterMs);
+              const personaResource = `persona:${sess.persona}`;
+              const commonsWinner = claims.find(
+                (c) => c.resource === personaResource && c.holder !== sess.mySessionId
+              );
+              if (commonsWinner) {
+                const alreadyLogged = sess.state.decisions.some(
+                  (d) => d.action === "promotion_deferred_commons" && d.detail?.includes(commonsWinner.holder)
+                );
+                if (!alreadyLogged) {
+                  sess.state.decisions.push({
+                    timestamp: now,
+                    loop: "monitor",
+                    action: "promotion_deferred_commons",
+                    detail: `Deferring promotion: live commons claim by ${commonsWinner.holder}`,
+                  });
+                  // Persist the decision to disk (reader path, so persist() won't work).
+                  try {
+                    const store: Record<string, unknown> = await $.fs.exists(storePath)
+                      ? (JSON.parse(await $.fs.read(storePath)) as Record<string, unknown>)
+                      : {};
+                    sess.state.updatedAt = now;
+                    store[sess.persona] = sess.state;
+                    const jsonStr = JSON.stringify(store, null, 2);
+                    await $.fs.write(storePath, jsonStr);
+                  } catch { /* non-fatal */ }
+                }
+                return;
+              }
+            } catch { /* commons check failed; proceed with local-only promotion */ }
             const store: Record<string, unknown> = await $.fs.exists(storePath)
               ? (JSON.parse(await $.fs.read(storePath)) as Record<string, unknown>)
               : {};
@@ -863,7 +905,6 @@ export const register: Register = async (on, options) => {
             $.ui.log(`Agentic: promoted to owner of '${sess.persona}' (previous holder stale)`);
           }
         }
-      });
     });
 
     // --- PIANO CONTROLLER TICK (v3, goal-tree) ---
@@ -2248,11 +2289,8 @@ export const register: Register = async (on, options) => {
         const store = commonsStoreOf($);
         if (e.answer && e.reason !== "aborted") {
           // AX4: write reply, mark answered
-          const replyKey = `reply:${persona}:${matching.id}`;
-          await store.set(
-            replyKey,
-            JSON.stringify({ at: Date.now(), text: e.answer })
-          );
+          // BE2: use writeReplyRecord so the value is an object, not a string
+          await writeReplyRecord(store, persona, matching.id, e.answer);
           const existing = await store.get(matching.key);
           if (existing) {
             const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;

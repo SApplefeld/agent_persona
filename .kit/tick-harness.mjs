@@ -129,6 +129,9 @@ function createFake$(opts = {}) {
     get controllerTick() {
       return clockEveryCallbacks.length >= 2 ? clockEveryCallbacks[1].fn : null;
     },
+    get heartbeatTick() {
+      return clockEveryCallbacks.length >= 1 ? clockEveryCallbacks[0].fn : null;
+    },
   };
 }
 
@@ -247,6 +250,15 @@ async function fireTick(harness) {
   await fn();
 }
 
+// --- Heartbeat driver: fires the heartbeat-tick callback ---
+
+async function fireHeartbeat(harness) {
+  const { fake } = harness;
+  const fn = harness.heartbeatTick;
+  if (!fn) throw new Error("heartbeat tick callback not registered");
+  await fn();
+}
+
 // --- Seed the fake fs with persona store + stale heartbeat ---
 
 function seedPersonaStore(harness, state) {
@@ -306,6 +318,7 @@ export {
   makeGoalNode,
   fireTurn,
   fireTick,
+  fireHeartbeat,
   seedPersonaStore,
   loadModule,
   SESSION_ID,
