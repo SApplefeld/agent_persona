@@ -20,7 +20,7 @@
 // Exits 0 on success, 1 on failure.
 
 import { execSync } from "node:child_process";
-import { createTickHarness, stubDateNow, fireTick, fireTurn, SESSION_ID, loadModule } from "./tick-harness.mjs";
+import { createTickHarness, createFake$, stubDateNow, fireTick, fireTurn, SESSION_ID, loadModule, makeState } from "./tick-harness.mjs";
 
 let failures = 0;
 function check(name, cond) {
@@ -1755,6 +1755,124 @@ async function caseS4_other_origin_passes(clock) {
   check("S4 other origin: no peer_consumed decisions", peerDecisions.length === 0);
 }
 
+// S5: BC3 - owner claims commons at start
+async function caseS5_owner_claims_commons_at_start(clock) {
+  console.log("\n=== S5: owner claims commons at start ===");
+  clock.set(T0);
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s5_owner_claims",
+  });
+
+  // After session.start, the owner should have claimed persona:default in commons.
+  const commonsKey = `commons:${SESSION_ID}`;
+  const entry = h.storeMap.get(commonsKey);
+  check("S5 owner: commons entry exists", entry !== null && entry !== undefined);
+  check("S5 owner: entry has persona:default claim", entry && entry.claims && entry.claims.some(c => c.resource === "persona:default"));
+}
+
+// S5: BC3 - reader claims reader not persona at start (control)
+async function caseS5_reader_claims_reader_not_persona(clock) {
+  console.log("\n=== S5: reader claims reader not persona (control) ===");
+  clock.set(T0);
+
+  // Manually create the harness to seed before session.start.
+  const mod = await loadModule("s5_reader_claims");
+  const h = createFake$(OPTS);
+  const handlers = {};
+  const on = (event, handler) => { handlers[event] = handler; };
+  await mod.register(on, OPTS);
+
+  const otherSessionId = "other-owner-session";
+  const now = Date.now();
+
+  // Seed the global commons store with the other session's persona claim.
+  const otherCommonsKey = `commons:${otherSessionId}`;
+  h.storeMap.set(otherCommonsKey, {
+    sessionId: otherSessionId,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 1000 }],
+  });
+
+  // Seed the local persona store with the other session as active.
+  const state = makeState({ now });
+  state.activeSessionId = otherSessionId;
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
+
+  // Seed a live heartbeat for the other session.
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: otherSessionId, epoch: 1, lastSeen: now },
+  }));
+
+  // Now fire session.start for the new session.
+  await handlers["session.start"](h.fake, {}, () => {});
+
+  // Check that the new session's commons entry has reader:default, not persona:default.
+  const commonsKey = `commons:${SESSION_ID}`;
+  const entry = h.storeMap.get(commonsKey);
+  check("S5 reader: commons entry exists", entry !== null && entry !== undefined);
+  check("S5 reader: entry has reader:default claim", entry && entry.claims && entry.claims.some(c => c.resource === "reader:default"));
+  check("S5 reader: entry has NO persona:default claim", entry && entry.claims && !entry.claims.some(c => c.resource === "persona:default"));
+}
+
+// S5: BC3 - identity joins live owner as reader
+async function caseS5_identity_joins_live_owner(clock) {
+  console.log("\n=== S5: identity joins live owner as reader ===");
+  clock.set(T0);
+
+  const mod = await loadModule("s5_identity_joins");
+  const h = createFake$(OPTS);
+  const handlers = {};
+  const on = (event, handler) => { handlers[event] = handler; };
+  await mod.register(on, OPTS);
+
+  const otherSessionId = "other-owner-session";
+  const now = Date.now();
+
+  // Seed a live earlier persona:default holder.
+  const otherCommonsKey = `commons:${otherSessionId}`;
+  h.storeMap.set(otherCommonsKey, {
+    sessionId: otherSessionId,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 1000 }],
+  });
+
+  // Seed the local persona store with the other session as active.
+  const state = makeState({ now });
+  state.activeSessionId = otherSessionId;
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
+
+  // Seed a live heartbeat for the other session.
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: otherSessionId, epoch: 1, lastSeen: now },
+  }));
+
+  // Fire session.start for the new session.
+  await handlers["session.start"](h.fake, {}, () => {});
+
+  // Fire agentic_identity tool call.
+  const toolCallH = handlers["tool.call"];
+  check("S5 identity: tool.call handler exists", typeof toolCallH === "function");
+
+  // The tool.call handler signature is (fake, event, next).
+  // The event should have `tool` (not `toolName`) and `input`.
+  const identityResult = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__agentic_identity",
+    input: {},
+  }, async (e) => ({ result: "passthrough" }));
+
+  // Check the result text.
+  const resultText = identityResult?.result || identityResult?.text || "";
+  check("S5 identity: result contains 'joined as reader'", resultText.includes("joined as reader"));
+  check("S5 identity: result does NOT contain 'identity_set'", !resultText.includes("identity_set"));
+
+  // Check that the new session's commons entry has reader:default.
+  const commonsKey = `commons:${SESSION_ID}`;
+  const entry = h.storeMap.get(commonsKey);
+  check("S5 identity: entry has reader:default claim", entry && entry.claims && entry.claims.some(c => c.resource === "reader:default"));
+}
+
 // --- Main ---
 
 async function main() {
@@ -1786,6 +1904,9 @@ async function main() {
     await caseS4_peer_consumed(clock);
     await caseS4_peer_send_message_consumed(clock);
     await caseS4_other_origin_passes(clock);
+    await caseS5_owner_claims_commons_at_start(clock);
+    await caseS5_reader_claims_reader_not_persona(clock);
+    await caseS5_identity_joins_live_owner(clock);
   } finally {
     clock.restore();
   }

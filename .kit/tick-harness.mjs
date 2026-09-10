@@ -300,6 +300,7 @@ async function createTickHarness(options = {}) {
 
 export {
   createTickHarness,
+  createFake$,
   stubDateNow,
   makeState,
   makeGoalNode,
