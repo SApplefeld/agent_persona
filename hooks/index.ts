@@ -52,6 +52,7 @@ import {
   listAskRecords,
   writeAskRecord,
   readAskRecord,
+  expireOpenAsks,
   askKey,
 } from "./operator";
 import {
@@ -641,7 +642,7 @@ export const register: Register = async (on, options) => {
           },
           answers: {
             type: "string",
-            description: "Optional answer to a previous ask.",
+            description: "Optional: the ask id (from agentic_inbox) to answer. Answer an open ask with agentic_say(text, answers: <id>).",
           },
         },
         required: ["text"],
@@ -652,7 +653,8 @@ export const register: Register = async (on, options) => {
       name: "agentic_inbox",
       description:
         "Read replies from the owner session of this persona. The reader session calls this to poll for replies to its messages. " +
-        "Returns an array of {id, from, at, text, kind, status, reply?} records.",
+        "Returns {inbox: [{id, from, at, text, kind, status, reply?}], asks: [{id, at, nodeId, question, status}]}. " +
+        "Answer an open ask with agentic_say(text, answers: <ask id>).",
       inputSchema: {
         type: "object",
         properties: {},
@@ -752,6 +754,19 @@ export const register: Register = async (on, options) => {
       try {
         const resource = `persona:${sess.persona}`;
         await claimResource(commonsStoreOf($), resource, sess.mySessionId);
+      } catch { /* non-fatal */ }
+      // BD3 part 3: expire open asks from prior owners. The owner that opened
+      // them is gone or restarted; its pendingAskId is gone with it.
+      try {
+        const expired = await expireOpenAsks(commonsStoreOf($), sess.persona);
+        for (const askId of expired) {
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "ask_expired",
+            detail: `${sess.persona}: ${askId} (owner restart)`,
+          });
+        }
       } catch { /* non-fatal */ }
     }
 
@@ -1030,7 +1045,7 @@ export const register: Register = async (on, options) => {
         });
         // D5: write an ask record and set pendingAskId
         const askId = `ask-${nodeId}-${Date.now()}`;
-        await writeAskRecord(commonsStoreOf($), sess.persona, askId, nodeId, streakReason);
+        await writeAskRecord(commonsStoreOf($), sess.persona, askId, nodeId, streakReason, sess.mySessionId);
         sess.state.pendingAskId = askId;
         sess.state.decisions.push({
           timestamp: streakTs,
@@ -1658,7 +1673,7 @@ export const register: Register = async (on, options) => {
             });
             // D5: write an ask record and set pendingAskId
             const askId = `ask-${g.id}-${capTs}`;
-            await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, capReason);
+            await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, capReason, sess.mySessionId);
             sess.state.pendingAskId = askId;
             sess.state.decisions.push({
               timestamp: capTs,
@@ -1912,7 +1927,7 @@ export const register: Register = async (on, options) => {
             // D5: write an ask record and set pendingAskId (both ask-operator and pause)
             const askId = `ask-${g.id}-${Date.now()}`;
             const question = finalReason || (finalDecision === "pause" ? "controller pause" : "operator input needed");
-            await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, question);
+            await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, question, sess.mySessionId);
             sess.state.pendingAskId = askId;
             sess.state.decisions.push({
               timestamp: Date.now(),
@@ -2755,6 +2770,16 @@ export const register: Register = async (on, options) => {
       if (!hasClaim) {
         toolErrorsThisTurn++;
         return { deny: "agentic_say requires a live reader claim; the reader role is not held by this session." };
+      }
+      // BD3 part 2: when answers is set, verify it names a live open ask.
+      if (answers) {
+        const askRec = await readAskRecord(commonsStoreOf($), persona, answers);
+        if (!askRec || askRec.status !== "open") {
+          const allAsks = await listAskRecords(commonsStoreOf($), persona);
+          const openIds = allAsks.filter((a) => a.status === "open").map((a) => a.id);
+          toolErrorsThisTurn++;
+          return { deny: `no open ask '${answers}'; open asks: ${openIds.length ? openIds.join(", ") : "(none)"}` };
+        }
       }
       // Write the inbox record
       const seq = await getHighestInboxSeq(commonsStoreOf($), persona, sess.mySessionId) + 1;

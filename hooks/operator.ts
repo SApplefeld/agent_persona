@@ -39,6 +39,8 @@ export interface ReplyRecord {
 export type AskStatus = "open" | "answered" | "expired" | "resumed";
 
 export interface AskRecord {
+  id: string;
+  ownerSessionId: string;
   at: number;
   nodeId: string;
   question: string;
@@ -176,8 +178,11 @@ export async function writeAskRecord(
   askId: string,
   nodeId: string,
   question: string,
+  ownerSessionId: string,
 ): Promise<void> {
   const record: AskRecord = {
+    id: askId,
+    ownerSessionId,
     at: Date.now(),
     nodeId,
     question,
@@ -185,6 +190,23 @@ export async function writeAskRecord(
   };
   const key = askKey(persona, askId);
   await store.set(key, record);
+}
+
+/**
+ * Mark every open ask of a persona as expired (owner restart).
+ * Returns the list of expired ask ids.
+ */
+export async function expireOpenAsks(
+  store: CommonsStore,
+  persona: string,
+): Promise<string[]> {
+  const records = await listAskRecords(store, persona);
+  const open = records.filter((r) => r.status === "open");
+  for (const rec of open) {
+    rec.status = "expired";
+    await store.set(askKey(persona, rec.id), rec);
+  }
+  return open.map((r) => r.id);
 }
 
 /**
