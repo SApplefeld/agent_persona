@@ -767,6 +767,9 @@ export const register: Register = async (on, options) => {
             detail: `${sess.persona}: ${askId} (owner restart)`,
           });
         }
+        if (expired.length > 0) {
+          await persist($);
+        }
       } catch { /* non-fatal */ }
     }
 
