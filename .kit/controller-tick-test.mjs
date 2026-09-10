@@ -244,7 +244,7 @@ async function caseAT4_link(clock) {
 
   // Just import the module to verify it resolves
   const mod = await import(`../hooks/index.ts?case=at4_link`);
-  check("AT4 link: hooks/index.ts imports successfully", typeof mod.register === "function");
+  check("AT4 link: hooks/index.ts imports successfully", typeof mod["register"] === "function");
 }
 
 // Helper: build a valid persona state for AU3 cases
