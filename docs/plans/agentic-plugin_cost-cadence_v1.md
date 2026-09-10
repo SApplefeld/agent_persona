@@ -2,7 +2,7 @@
 
 **Status:** Draft (v10, for Reviewer review)
 **Created:** 2026-09-09T13:40:33Z (commit `4fa322d`)
-**Revised:** v10, documents e1bf468
+**Revised:** v11, documents 746c58d
 **Program item:** 6 (cost and cadence)
 **Supersedes:** N/A (new item)
 
@@ -243,7 +243,7 @@ One section per commit, each with its gate:
 
 **D4 in the live suite (AM8):** With `costBackoffAfterTicks: 2`, the backoff fires within the suite's tick budget. The assertion checks for at least one `backed off` in the decision log. The combined skip assertion accepts `unchanged, skipped` or `backed off` (at least three total).
 
-**Determinism (AN7):** The live cost suite proves the nudge cap and the summary cadence. D2 and D4 are proven in the tick harness, because a live skip needs the classifier to answer `nudge` under the floor and the classifier is free to answer `pause`.
+**Determinism (AN7, AQ1):** The live cost suite proves the nudge cap invariant and the summary cadence. D2, D3, and D4 event sequences are proven in the tick harness, because a live skip needs the classifier to answer `nudge` under the floor and the classifier is free to answer `pause`. Nudge and cap counts are reported, not asserted.
 
 **Harness (AO1, AO2):** The harness runs in a fresh module per case (via import with ?case=<name> query param) and never writes to `hooks/`. Node resolve hook appends .ts to extensionless relative imports under hooks/, so the test does not need to edit the source. The test's last line asserts `git diff --quiet hooks/index.ts`.
 
@@ -348,3 +348,6 @@ One section per commit, each with its gate:
 | AO4 | The budget red is the runner pre-gate, bypassed (record and cause) | Rule stated: one gate is one `live-all.sh controller cost budget`; it runs the pre-gate; individual runs skip the pre-gate and can yield to a ghost claim |
 | AO5 | AN2 red and green still owed (SUITE) | Red/green proof pasted: `live-all.sh budget` twice, with `git diff --stat` between showing the one-line revert (sleep 35) and then nothing |
 | AO6 | "Fix applied" (record) | Acknowledged: the `__test` export was not the fix for D3; the fix was AO2 (fresh module per case); write what the commit did and the result beside it |
+| AQ0 | The cost suite flakiness is my error (record) | Round 59: "the live cost suite keeps the four assertions that held in all four runs." Four samples, and the fifth shows the four depend on the same coin as the skips. `two nudge_sent` and `one cost_cap_reached` require the classifier to answer `nudge` on two idle ticks in a row. `pause` is a legitimate answer and it took three in this run. I demoted the skip assertions for exactly this reason and kept the cap assertions by survivorship. The D3 cap is already proven deterministically in the harness (D3 case, green at `e1bf468`). The live suite's job is to prove invariants, not to make haiku behave. |
+| AQ1 | The cost suite asserts counts, not invariants (SUITE) | `assert-decisions.js` cost case updated to assert `nudge_sent <= COST_MAX_NUDGES_PER_HOUR` (the cap held, whatever the count), keep `no nudge_sent after cost_cap_reached` (vacuously true when no cap line), keep `at least two cost_summary` (cadence, deterministic), report nudge_sent, cost_cap_reached, unchanged-skipped, backed-off counts; D2, D3, D4 event sequences are proven in the harness; fixed at commit `746c58d` |
+| AQ2 | The hand-back omitted the decision log (record) | Acknowledged: the authorization said a red stops the hand-back with its decision log pasted. I pasted the assertion lines and a guess. The log shows nothing was there to cap. Paste the log; the guess was avoidable. |
