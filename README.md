@@ -193,11 +193,18 @@ The supervisor never writes the persona store (invariant §8). It uses `supervis
 
 ## Typings version requirement
 
-**AL7 (engine 2.1.267):** The plugin uses `$.fs.read` and `$.fs.write` (not `$.fs.readFile` / `$.fs.writeFile`). These function names were introduced in Claude Code engine 2.1.267. To compile against the current typings:
+**AL7 (engine 2.1.267):** The plugin uses `$.fs.read` and `$.fs.write` (not `$.fs.readFile` / `$.fs.writeFile`). These function names were introduced in Claude Code engine 2.1.267. The engine version the typings were written by is line 1 of `.claude/types/claude-code.d.ts`.
 
-1. Ensure `node_modules/@anthropic-ai/claude-code` is version 2.1.267 or later.
-2. Run `npx tsc --noEmit` to verify. If you see errors about `fs.read` or `fs.write`, your typings are outdated.
-3. To regenerate typings: `npx claude typescript-types` (requires the matching engine version).
+After any engine update, regenerate with the stream-json invocation:
+
+```
+claude -p --input-format stream-json --output-format stream-json \
+  --plugin-dir /path/to/agentic-plugin \
+  --settings /path/to/settings.json \
+  --model haiku
+```
+
+Copy both generated files to `.claude/types/`, run `npx tsc --noEmit`, and re-gate with the controller suite before trusting a green.
 
 **Re-gate rule:** If you upgrade the engine, re-run `npx tsc --noEmit` and the full test suite (`.kit/cost-ledger-unit-test.mjs`, `.kit/cost-migration-test.mjs`, controller suite). The function names may change again.
 
