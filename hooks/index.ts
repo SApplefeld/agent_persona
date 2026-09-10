@@ -84,6 +84,59 @@ function commonsStoreOf(dp: any): CommonsStore {
     keys: () => dp.store.keys(),
   };
 }
+
+/**
+ * D5: handle an open ask during a tick.
+ * Returns "waiting" if the ask is still open (persist and return),
+ * "expired" if the wait elapsed (persist, activateNext, return),
+ * "none" if no ask or the ask is not open (caller proceeds normally).
+ */
+async function tickOpenAsk(
+  dp: any,
+  state: AgentState,
+  persona: string,
+  cfg: Record<string, unknown>,
+  contextId: string | null,
+): Promise<"waiting" | "expired" | "none"> {
+  if (!state.pendingAskId) return "none";
+  const store = commonsStoreOf(dp);
+  const askRecord = await readAskRecord(store, persona, state.pendingAskId);
+  if (!askRecord || askRecord.status !== "open") return "none";
+
+  const now = Date.now();
+  const lastAskWaiting = state.decisions.findLast((d) => d.action === "ask_waiting");
+  if (!lastAskWaiting || now - lastAskWaiting.timestamp >= 60_000) {
+    state.decisions.push({
+      timestamp: now,
+      loop: "monitor",
+      action: "ask_waiting",
+      detail: `${contextId ? contextId + ": " : ""}ask ${state.pendingAskId} still open`,
+    });
+  }
+  const waitMs = typeof cfg.askOperatorWaitMs === "number" ? (cfg.askOperatorWaitMs as number) : 0;
+  if (waitMs > 0) {
+    const elapsed = now - askRecord.at;
+    if (elapsed >= waitMs) {
+      state.decisions.push({
+        timestamp: now,
+        loop: "monitor",
+        action: "ask_timeout",
+        detail: `${contextId ? contextId + ": " : ""}ask ${state.pendingAskId} expired after ${Math.round(elapsed / 1000)}s`,
+      });
+      askRecord.status = "expired";
+      await store.set(askKey(persona, state.pendingAskId), askRecord);
+      state.pendingAskId = undefined;
+      const nextId = activateNext(state);
+      if (nextId) {
+        activate(dp, nextId, "ask timeout, walking on");
+      }
+      await persist(dp);
+      return "expired";
+    }
+  }
+  await persist(dp);
+  return "waiting";
+}
 const sess: {
   persona: string;
   mySessionId: string;
@@ -1478,53 +1531,12 @@ export const register: Register = async (on, options) => {
 
       // 4. No active leaf: activate pending work if any exists (H1), else return.
       if (!activeNode || activeNode.status !== "active") {
-        // D5: if an ask is open, record ask_waiting (once per minute) and check timeout.
-        if (sess.state.pendingAskId) {
-          const now = Date.now();
-          const askRecord = await readAskRecord(commonsStoreOf($), sess.persona, sess.state.pendingAskId);
-          if (askRecord && askRecord.status === "open") {
-            const lastAskWaiting = sess.state.decisions.findLast(
-              (d) => d.action === "ask_waiting",
-            );
-            if (!lastAskWaiting || now - lastAskWaiting.timestamp >= 60_000) {
-              sess.state.decisions.push({
-                timestamp: now,
-                loop: "monitor",
-                action: "ask_waiting",
-                detail: `ask ${sess.state.pendingAskId} still open (no active leaf)`,
-              });
-            }
-            const waitMs = typeof cfg.askOperatorWaitMs === "number" ? (cfg.askOperatorWaitMs as number) : 0;
-            if (waitMs > 0) {
-              const elapsed = now - askRecord.at;
-              if (elapsed >= waitMs) {
-                sess.state.decisions.push({
-                  timestamp: now,
-                  loop: "monitor",
-                  action: "ask_timeout",
-                  detail: `ask ${sess.state.pendingAskId} expired after ${Math.round(elapsed / 1000)}s`,
-                });
-                askRecord.status = "expired";
-                await (commonsStoreOf($)).set(askKey(sess.persona, sess.state.pendingAskId), askRecord);
-                sess.state.pendingAskId = undefined;
-                const nextId = activateNext(sess.state);
-                if (nextId) {
-                  activate($, nextId, "ask timeout, walking on");
-                }
-                await persist($);
-                return;
-              }
-            }
-            await persist($);
-            return;
-          }
-        }
-        if (!sess.state.pendingAskId) {
-          const nextId = activateNext(sess.state);
-          if (nextId) {
-            activate($, nextId, "no active leaf, pending work found");
-            await persist($);
-          }
+        const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, null);
+        if (askResult !== "none") return;
+        const nextId = activateNext(sess.state);
+        if (nextId) {
+          activate($, nextId, "no active leaf, pending work found");
+          await persist($);
         }
         return;
       }
@@ -1540,48 +1552,11 @@ export const register: Register = async (on, options) => {
 
       // D5: skip nudge and classify if an ask is open; record ask_waiting once per minute.
       if (sess.state.pendingAskId) {
-        const askRecord = await readAskRecord(commonsStoreOf($), sess.persona, sess.state.pendingAskId);
-        if (askRecord && askRecord.status === "open") {
-          const lastAskWaiting = sess.state.decisions.findLast(
-            (d) => d.action === "ask_waiting",
-          );
-          if (!lastAskWaiting || now - lastAskWaiting.timestamp >= 60_000) {
-            sess.state.decisions.push({
-              timestamp: now,
-              loop: "monitor",
-              action: "ask_waiting",
-              detail: `${g.id}: ask ${sess.state.pendingAskId} still open`,
-            });
-          }
-          // D5: check for timeout
-          const waitMs = typeof cfg.askOperatorWaitMs === "number" ? (cfg.askOperatorWaitMs as number) : 0;
-          if (waitMs > 0) {
-            const elapsed = now - askRecord.at;
-            if (elapsed >= waitMs) {
-              sess.state.decisions.push({
-                timestamp: now,
-                loop: "monitor",
-                action: "ask_timeout",
-                detail: `${g.id}: ask ${sess.state.pendingAskId} expired after ${Math.round(elapsed / 1000)}s`,
-              });
-              askRecord.status = "expired";
-              await (commonsStoreOf($)).set(askKey(sess.persona, sess.state.pendingAskId), askRecord);
-              sess.state.pendingAskId = undefined;
-              // Walk on: activate the next pending work.
-              const nextId = activateNext(sess.state);
-              if (nextId) {
-                activate($, nextId, "ask timeout, walking on");
-              }
-              await persist($);
-              return;
-            }
-          }
-          await persist($);
-          return;
-        } else {
-          // Ask was closed by an answer; clear the flag.
-          sess.state.pendingAskId = undefined;
-        }
+        const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, g.id);
+        if (askResult === "waiting") return;
+        if (askResult === "expired") return;
+        // Ask was closed by an answer; clear the flag.
+        sess.state.pendingAskId = undefined;
       }
 
       // L6: print seconds below one minute, minutes otherwise
