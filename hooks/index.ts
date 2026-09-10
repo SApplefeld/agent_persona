@@ -777,13 +777,14 @@ export const register: Register = async (on, options) => {
       // take the lowest at, mark delivered, submit as [OPERATOR] prompt.
       if (sess.isOwner) {
         const persona = "default"; // D2: persona is always "default" in this plugin
-        const allRecords = await listInboxRecords($, persona);
+        const allRecords = await listInboxRecords(commonsStoreOf($), persona);
         const pending = allRecords.filter((rec) => rec.status === "pending");
         // Filter to writers with live reader claims
         const withClaim: typeof pending = [];
         const withoutClaim: typeof pending = [];
+        const store = commonsStoreOf($);
         for (const rec of pending) {
-          const alive = await hasLiveReaderClaim($, rec.from, persona);
+          const alive = await hasLiveReaderClaim(store, persona, rec.from);
           if (alive) withClaim.push(rec);
           else withoutClaim.push(rec);
         }
@@ -803,13 +804,13 @@ export const register: Register = async (on, options) => {
           oldest.status = "delivered";
           oldest.deliveredAt = Date.now();
           // Write back to store (listInboxRecords returns fresh objects)
-          const store = await $.store;
+          const store = commonsStoreOf($);
           const existing = await store.get(oldest.key);
           if (existing) {
-            const parsed = JSON.parse(existing as string);
+            const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
             parsed.status = "delivered";
             parsed.deliveredAt = oldest.deliveredAt;
-            await store.set(oldest.key, JSON.stringify(parsed));
+            await store.set(oldest.key, parsed);
           }
           sess.state.decisions.push({
             timestamp: Date.now(),
@@ -1827,18 +1828,18 @@ export const register: Register = async (on, options) => {
     // delivered record that has none.
     if (sess.isOwner) {
       const persona = "default";
-      const allRecords = await listInboxRecords($, persona);
+      const allRecords = await listInboxRecords(commonsStoreOf($), persona);
       const undelivered = allRecords.find(
         (rec) => rec.status === "delivered" && !rec.turnId
       );
       if (undelivered) {
         undelivered.turnId = e.turnId;
-        const store = await $.store;
+        const store = commonsStoreOf($);
         const existing = await store.get(undelivered.key);
         if (existing) {
-          const parsed = JSON.parse(existing as string);
+          const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
           parsed.turnId = e.turnId;
-          await store.set(undelivered.key, JSON.stringify(parsed));
+          await store.set(undelivered.key, parsed);
         }
         sess.state.decisions.push({
           timestamp: Date.now(),
@@ -2048,13 +2049,13 @@ export const register: Register = async (on, options) => {
     // reply and mark answered.
     if (sess.isOwner) {
       const persona = "default";
-      const allRecords = await listInboxRecords($, persona);
+      const allRecords = await listInboxRecords(commonsStoreOf($), persona);
       const matching = allRecords.find(
         (rec) => rec.status === "delivered" && rec.turnId === e.turnId
       );
       if (matching && e.answer) {
         const replyKey = `reply:${persona}:${matching.id}`;
-        const store = await $.store;
+        const store = commonsStoreOf($);
         await store.set(
           replyKey,
           JSON.stringify({ at: Date.now(), text: e.answer })
@@ -2062,9 +2063,9 @@ export const register: Register = async (on, options) => {
         // Mark the record as answered
         const existing = await store.get(matching.key);
         if (existing) {
-          const parsed = JSON.parse(existing as string);
+          const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
           parsed.status = "answered";
-          await store.set(matching.key, JSON.stringify(parsed));
+          await store.set(matching.key, parsed);
         }
         sess.state.decisions.push({
           timestamp: Date.now(),

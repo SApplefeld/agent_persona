@@ -579,7 +579,7 @@ async function caseS2_drain(clock) {
     caseName: "s2_drain",
   });
 
-  // Seed the commons store: mySid owns the persona, otherSid holds a live reader claim
+  // Seed the commons store: mySid owns the persona
   h.storeMap.set(`commons:${mySid}`, {
     sessionId: mySid,
     lastSeen: now,
@@ -587,6 +587,7 @@ async function caseS2_drain(clock) {
       { resource: "persona:default", claimedAt: now - 2000 },
     ],
   });
+  // otherSid holds a live reader claim
   h.storeMap.set(`commons:${otherSid}`, {
     sessionId: otherSid,
     lastSeen: now,
@@ -595,10 +596,10 @@ async function caseS2_drain(clock) {
     ],
   });
 
-  // Seed the persona store
+  // Seed the persona store with mySid as owner
   h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(mySid, now) }));
 
-  // Seed the heartbeat sidecar so the reader claim is live
+  // Seed the heartbeat sidecar with mySid as live holder (so the session claims ownership)
   h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
     default: { sessionId: mySid, epoch: 1, lastSeen: now },
   }));
@@ -606,7 +607,7 @@ async function caseS2_drain(clock) {
   // Seed two inbox records from otherSid (both pending)
   const rec1Key = `inbox:default:${otherSid}:1`;
   const rec2Key = `inbox:default:${otherSid}:2`;
-  h.storeMap.set(rec1Key, JSON.stringify({
+  h.storeMap.set(rec1Key, {
     id: "drain-rec-1",
     key: rec1Key,
     from: otherSid,
@@ -614,8 +615,8 @@ async function caseS2_drain(clock) {
     text: "First message",
     kind: "say",
     status: "pending",
-  }));
-  h.storeMap.set(rec2Key, JSON.stringify({
+  });
+  h.storeMap.set(rec2Key, {
     id: "drain-rec-2",
     key: rec2Key,
     from: otherSid,
@@ -623,7 +624,7 @@ async function caseS2_drain(clock) {
     text: "Second message",
     kind: "say",
     status: "pending",
-  }));
+  });
 
   // Load a fresh module instance
   const mod = await loadModule("s2_drain");
@@ -631,24 +632,28 @@ async function caseS2_drain(clock) {
   const on = (event, handler) => { handlers[event] = handler; };
   await mod.register(on, OPTS);
 
-  // Fire session.start
+  // Fire session.start (this should establish ownership)
   const startH = handlers["session.start"];
   if (startH) {
     await startH(h.fake, {}, () => {});
   }
 
-  // Fire one tick (D3 should drain the oldest record only)
-  const tickH = handlers["tick"];
-  if (tickH) {
-    await tickH(h.fake, {}, async (e) => ({ result: "ok" }));
+  // Debug: check the state after session.start
+  const personaState = h.fsMap.get(".agentic-personas.json");
+  if (personaState) {
+    const parsed = JSON.parse(personaState);
+    console.log("DEBUG S2 drain: persona state decisions:", JSON.stringify(parsed.default.decisions.slice(-5), null, 2));
   }
+
+  // Fire one tick (D3 should drain the oldest record only)
+  await tickAndSettle(h, clock);
 
   // Check: rec1 should be delivered, rec2 should still be pending
   const rec1 = h.storeMap.get(rec1Key);
   const rec2 = h.storeMap.get(rec2Key);
   if (rec1 && rec2) {
-    const parsed1 = JSON.parse(rec1);
-    const parsed2 = JSON.parse(rec2);
+    const parsed1 = typeof rec1 === "string" ? JSON.parse(rec1) : rec1;
+    const parsed2 = typeof rec2 === "string" ? JSON.parse(rec2) : rec2;
     check("S2 drain: oldest record is delivered", parsed1.status === "delivered");
     check("S2 drain: second record still pending", parsed2.status === "pending");
   } else {
@@ -657,8 +662,8 @@ async function caseS2_drain(clock) {
   }
 
   // Check: prompt.submit was called once with [OPERATOR]
-  const prompts = h.prompts || [];
-  const operatorPrompts = prompts.filter(p => p.text && p.text.startsWith("[OPERATOR]"));
+  const prompts = h.promptSubmits || [];
+  const operatorPrompts = prompts.filter(p => p.startsWith("[OPERATOR]"));
   check("S2 drain: one [OPERATOR] prompt submitted", operatorPrompts.length === 1);
 }
 
@@ -703,7 +708,7 @@ async function caseS2_reply(clock) {
 
   // Seed one inbox record (already delivered, stamped with turnId)
   const recKey = `inbox:default:${otherSid}:1`;
-  h.storeMap.set(recKey, JSON.stringify({
+  h.storeMap.set(recKey, {
     id: "reply-rec-1",
     key: recKey,
     from: otherSid,
@@ -713,7 +718,7 @@ async function caseS2_reply(clock) {
     status: "delivered",
     deliveredAt: now - 4000,
     turnId: turnId,
-  }));
+  });
 
   // Load a fresh module instance
   const mod = await loadModule("s2_reply");
@@ -747,7 +752,7 @@ async function caseS2_reply(clock) {
   const replyKey = `reply:default:reply-rec-1`;
   const reply = h.storeMap.get(replyKey);
   if (reply) {
-    const parsed = JSON.parse(reply);
+    const parsed = typeof reply === "string" ? JSON.parse(reply) : reply;
     check("S2 reply: reply record exists", true);
     check("S2 reply: reply text matches answer", parsed.text === "Here is my answer");
   } else {
@@ -758,7 +763,7 @@ async function caseS2_reply(clock) {
   // Check: record status is now "answered"
   const rec = h.storeMap.get(recKey);
   if (rec) {
-    const parsed = JSON.parse(rec);
+    const parsed = typeof rec === "string" ? JSON.parse(rec) : rec;
     check("S2 reply: record status is answered", parsed.status === "answered");
   } else {
     check("S2 reply: record status is answered", false);
