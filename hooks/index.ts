@@ -49,6 +49,7 @@ import {
   getHighestInboxSeq,
   listInboxRecords,
   readReplyRecord,
+  listAskRecords,
 } from "./operator";
 import {
   shouldSelfReview,
@@ -2464,14 +2465,18 @@ export const register: Register = async (on, options) => {
         toolErrorsThisTurn++;
         return { deny: "agentic_inbox requires a live reader claim; the reader role is not held by this session." };
       }
-      // List inbox records for this persona
-      const records = await listInboxRecords(commonsStoreOf($), persona);
+      // D2: List inbox records for this persona, filtered to the caller's messages
+      const allRecords = await listInboxRecords(commonsStoreOf($), persona);
+      const myRecords = allRecords.filter((rec) => rec.from === sess.mySessionId);
+      // D2: Append open asks for this persona
+      const allAsks = await listAskRecords(commonsStoreOf($), persona);
+      const openAsks = allAsks.filter((ask) => ask.status === "open");
       // Attach replies to records
-      const withReplies = await Promise.all(records.map(async (rec) => {
+      const withReplies = await Promise.all(myRecords.map(async (rec) => {
         const reply = await readReplyRecord(commonsStoreOf($), persona, rec.id);
         return reply ? { ...rec, reply: reply.text } : rec;
       }));
-      return { result: JSON.stringify(withReplies, null, 2) };
+      return { result: JSON.stringify({ inbox: withReplies, asks: openAsks }, null, 2) };
     }
 
     // Goal constraint: deny Bash if the ROOT objective says so (R10).
