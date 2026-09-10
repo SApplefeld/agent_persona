@@ -20,7 +20,7 @@
 // Exits 0 on success, 1 on failure.
 
 import { execSync } from "node:child_process";
-import { createTickHarness, stubDateNow, fireTick, fireTurn } from "./tick-harness.mjs";
+import { createTickHarness, stubDateNow, fireTick, fireTurn, SESSION_ID, loadModule } from "./tick-harness.mjs";
 
 let failures = 0;
 function check(name, cond) {
@@ -247,62 +247,322 @@ async function caseAT4_link(clock) {
   check("AT4 link: hooks/index.ts imports successfully", typeof mod.register === "function");
 }
 
+// Helper: build a valid persona state for AU3 cases
+function buildPersonaState(otherSid, now) {
+  return {
+    version: 4,
+    persona: "default",
+    activeSessionId: otherSid,
+    epoch: 1,
+    memory: [],
+    goals: [],
+    activeGoalId: null,
+    monitor: {
+      sessionStart: now,
+      turnCount: 0,
+      totalToolCalls: 0,
+      errors: 0,
+      lastTurnComplete: 0,
+      env: {
+        git: null,
+        health: null,
+        errors: { consecutiveErrorTurns: 0, toolErrorsLastTurn: 0 },
+      },
+      selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: false, lastInjectAt: 0 },
+      cost: {
+        classify: { count: 0, estTokens: 0 },
+        reason: { count: 0, estTokens: 0 },
+        selfReview: { count: 0, estTokens: 0 },
+        planner: { count: 0, estTokens: 0 },
+        nudge: { count: 0 },
+      },
+    },
+    decisions: [],
+  };
+}
+
 // Case 2: Reader claim written at start for non-owner
 async function caseAT4_reader_claim(clock) {
   console.log("\n=== AT4: Reader claim written at start for non-owner ===");
   clock.set(T0);
 
+  const otherSid = "other-session-123";
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  // Create a fresh harness
   const h = await createTickHarness({
     ...OPTS,
     caseName: "at4_reader_claim",
   });
 
-  // The harness starts as the owner by default.
-  // To test the reader claim, we need to simulate a non-owner session.
-  // For now, just verify that the claimReaderRole function is available.
-  const { claimReaderRole } = await import("../hooks/operator.ts");
-  check("AT4 reader_claim: claimReaderRole is a function", typeof claimReaderRole === "function");
+  // Seed the commons store with the other session owning the persona
+  h.storeMap.set(`commons:${otherSid}`, {
+    sessionId: otherSid,
+    lastSeen: now,
+    claims: [
+      { resource: "persona:default", claimedAt: now - 1000 },
+    ],
+  });
+
+  // Seed the persona store with the other session as owner
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(otherSid, now) }));
+
+  // Seed the heartbeat sidecar with the other session as live holder
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: otherSid, epoch: 1, lastSeen: now },
+  }));
+
+  // Load a fresh module instance
+  const mod = await loadModule("at4_reader_claim");
+  const handlers = {};
+  const on = (event, handler) => { handlers[event] = handler; };
+  await mod.register(on, OPTS);
+
+  // Fire session.start for mySid
+  const startH = handlers["session.start"];
+  if (startH) {
+    await startH(h.fake, {}, () => {});
+  }
+
+  // Check that the session is NOT the owner (passive_reader decision)
+  // The decision is in the in-memory sess.state, not persisted to the fake fs
+  // (persist() would need to be called, which the test doesn't do).
+  // Instead, verify that the reader claim was written (which only happens
+  // in the passive_reader branch at index.ts:634).
+  const myCommons = h.storeMap.get(`commons:${mySid}`);
+  const readerClaim = myCommons?.claims?.find(c => c.resource === "reader:default");
+  check("AT4 reader_claim: reader:default claim in commons store (passive_reader branch)", readerClaim !== undefined);
 }
 
-// Case 3: agentic_say refused for owner and for session without claim
-async function caseAT4_say_refused(clock) {
-  console.log("\n=== AT4: agentic_say refused for owner and for session without claim ===");
+// Case 2: Owner refusal (agentic_say denied for owner)
+async function caseAT4_owner_refusal(clock) {
+  console.log("\n=== AT4: Owner refusal (agentic_say denied for owner) ===");
   clock.set(T0);
 
+  const now = T0;
+
+  // Create a fresh harness
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "at4_owner_refusal",
+  });
+
+  // Seed the persona store with this session as owner
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(SESSION_ID, now) }));
+
+  // Load a fresh module instance
+  const mod = await loadModule("at4_owner_refusal");
+  const handlers = {};
+  const on = (event, handler) => { handlers[event] = handler; };
+  await mod.register(on, OPTS);
+
+  // Fire session.start for mySid (this will claim the persona)
+  const startH = handlers["session.start"];
+  if (startH) {
+    await startH(h.fake, {}, () => {});
+  }
+
+  // Fire tool.call for agentic_say
+  const toolCallH = handlers["tool.call"];
+  const sayResult = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__agentic_say",
+    text: "Hello, owner.",
+  }, async (e) => ({ result: "passthrough" }));
+
+  // Check that the result is a deny
+  check("AT4 owner_refusal: deny response for owner", sayResult.deny !== undefined);
+
+  // Check that no inbox key was written
+  const storeKeys = [...h.storeMap.keys()];
+  const inboxKeys = storeKeys.filter(k => k.startsWith("inbox:default:"));
+  check("AT4 owner_refusal: no inbox: key written", inboxKeys.length === 0);
+}
+
+// Case 3: agentic_say refused for session without claim
+async function caseAT4_say_refused(clock) {
+  console.log("\n=== AT4: agentic_say refused for session without claim ===");
+  clock.set(T0);
+
+  const otherSid = "other-session-456";
+  const now = T0;
+
+  // Create a fresh harness
   const h = await createTickHarness({
     ...OPTS,
     caseName: "at4_say_refused",
   });
 
-  // Simulate a tool call to agentic_say
-  const fakeToolCall = {
+  // Seed the commons store with the other session owning the persona
+  h.storeMap.set(`commons:${otherSid}`, {
+    sessionId: otherSid,
+    lastSeen: now,
+    claims: [
+      { resource: "persona:default", claimedAt: now - 1000 },
+    ],
+  });
+
+  // Seed the persona store with the other session as owner
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(otherSid, now) }));
+
+  // Seed the heartbeat sidecar with the other session as live holder
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: otherSid, epoch: 1, lastSeen: now },
+  }));
+
+  // Load a fresh module instance
+  const mod = await loadModule("at4_say_refused");
+  const handlers = {};
+  const on = (event, handler) => { handlers[event] = handler; };
+  await mod.register(on, OPTS);
+
+  // Fire session.start for mySid (this will claim the reader role)
+  const startH = handlers["session.start"];
+  if (startH) {
+    await startH(h.fake, {}, () => {});
+  }
+
+  // Remove the reader claim to simulate a session without a claim
+  const myCommons = h.storeMap.get(`commons:${SESSION_ID}`);
+  if (myCommons) {
+    myCommons.claims = myCommons.claims.filter(c => c.resource !== "reader:default");
+    h.storeMap.set(`commons:${SESSION_ID}`, myCommons);
+  }
+
+  // Fire tool.call for agentic_say
+  const toolCallH = handlers["tool.call"];
+  const sayResult = await toolCallH(h.fake, {
     tool: "mcp__agentic-plugin__agentic_say",
     text: "Hello, owner.",
-    persona: "default",
-  };
+  }, async (e) => ({ result: "passthrough" }));
 
-  // The harness doesn't have a way to directly call tools yet.
-  // For now, just verify that the tool is registered.
-  const toolRegisters = h.toolRegisters;
-  const sayTool = toolRegisters.find(t => t.name === "agentic_say");
-  check("AT4 say_refused: agentic_say tool is registered", typeof sayTool === "object");
+  // Check that the result is a deny
+  check("AT4 say_refused: deny response for session without claim", sayResult.deny !== undefined);
+
+  // Check that no inbox key was written
+  const storeKeys = [...h.storeMap.keys()];
+  const inboxKeys = storeKeys.filter(k => k.startsWith("inbox:default:"));
+  check("AT4 say_refused: no inbox: key written", inboxKeys.length === 0);
 }
 
-// Case 4: agentic_inbox returns record with its status
+// Case 4: Record shape and inbox
 async function caseAT4_inbox_status(clock) {
-  console.log("\n=== AT4: agentic_inbox returns record with its status ===");
+  console.log("\n=== AT4: Record shape and inbox ===");
   clock.set(T0);
 
+  const otherSid = "other-session-789";
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  // Create a fresh harness
   const h = await createTickHarness({
     ...OPTS,
     caseName: "at4_inbox_status",
   });
 
-  // The harness doesn't have a way to directly call tools yet.
-  // For now, just verify that the tool is registered.
-  const toolRegisters = h.toolRegisters;
-  const inboxTool = toolRegisters.find(t => t.name === "agentic_inbox");
-  check("AT4 inbox_status: agentic_inbox tool is registered", typeof inboxTool === "object");
+  // Seed the commons store with the other session owning the persona
+  h.storeMap.set(`commons:${otherSid}`, {
+    sessionId: otherSid,
+    lastSeen: now,
+    claims: [
+      { resource: "persona:default", claimedAt: now - 1000 },
+    ],
+  });
+
+  // Seed the persona store with the other session as owner
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(otherSid, now) }));
+
+  // Seed the heartbeat sidecar with the other session as live holder
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: otherSid, epoch: 1, lastSeen: now },
+  }));
+
+  // Load a fresh module instance
+  const mod = await loadModule("at4_inbox_status");
+  const handlers = {};
+  const on = (event, handler) => { handlers[event] = handler; };
+  await mod.register(on, OPTS);
+
+  // Fire session.start for mySid
+  const startH = handlers["session.start"];
+  if (startH) {
+    await startH(h.fake, {}, () => {});
+  }
+
+  // Write a fresh reader claim for this session (simulating a valid reader)
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [
+      { resource: "reader:default", claimedAt: now },
+    ],
+  });
+
+  // Fire agentic_say with text and answers
+  const toolCallH = handlers["tool.call"];
+  const sayResult = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__agentic_say",
+    text: "hello",
+    answers: "ask-1",
+  }, async (e) => ({ result: "passthrough" }));
+
+  // Check that the result is a success (not deny)
+  check("AT4 inbox_status: agentic_say succeeds for reader with claim", sayResult.result !== undefined);
+
+  // Check that an inbox record was written
+  const storeKeys = [...h.storeMap.keys()];
+  const inboxKeys = storeKeys.filter(k => k.startsWith("inbox:default:"));
+  check("AT4 inbox_status: inbox record written", inboxKeys.length === 1);
+
+  // Check the record shape
+  if (inboxKeys.length === 1) {
+    const record = h.storeMap.get(inboxKeys[0]);
+    check("AT4 inbox_status: record has id", record.id !== undefined);
+    check("AT4 inbox_status: record has key", record.key !== undefined);
+    check("AT4 inbox_status: record has from === mySid", record.from === mySid);
+    check("AT4 inbox_status: record has at", record.at !== undefined);
+    check("AT4 inbox_status: record has text === hello", record.text === "hello");
+    check("AT4 inbox_status: record has kind === say", record.kind === "say");
+    check("AT4 inbox_status: record has answers === ask-1", record.answers === "ask-1");
+    check("AT4 inbox_status: record has status === pending", record.status === "pending");
+  }
+
+  // Fire agentic_inbox
+  const inboxResult = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__agentic_inbox",
+  }, async (e) => ({ result: "passthrough" }));
+
+  // Check that the result is a success (not deny)
+  check("AT4 inbox_status: agentic_inbox succeeds for reader", inboxResult.result !== undefined);
+
+  // Parse the result and check the shape
+  if (inboxResult.result) {
+    const parsed = JSON.parse(inboxResult.result);
+    check("AT4 inbox_status: inbox array present", Array.isArray(parsed.inbox));
+    check("AT4 inbox_status: inbox has 1 record", parsed.inbox.length === 1);
+    check("AT4 inbox_status: record has status pending", parsed.inbox[0].status === "pending");
+    check("AT4 inbox_status: no reply yet", parsed.inbox[0].reply === undefined);
+  }
+
+  // Write a reply into the fake store
+  if (inboxKeys.length > 0) {
+    const inboxRecord = h.storeMap.get(inboxKeys[0]);
+    h.storeMap.set(`reply:default:${inboxRecord.id}`, {
+      at: now + 1000,
+      text: "I hear you.",
+    });
+  }
+
+  // Fire agentic_inbox again
+  const inboxResult2 = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__agentic_inbox",
+  }, async (e) => ({ result: "passthrough" }));
+
+  // Check that the reply is now present
+  if (inboxResult2.result) {
+    const parsed2 = JSON.parse(inboxResult2.result);
+    check("AT4 inbox_status: reply present after owner reply", parsed2.inbox[0].reply === "I hear you.");
+  }
 }
 
 // --- Main ---
@@ -316,6 +576,7 @@ async function main() {
     await caseD3(clock);
     await caseAT4_link(clock);
     await caseAT4_reader_claim(clock);
+    await caseAT4_owner_refusal(clock);
     await caseAT4_say_refused(clock);
     await caseAT4_inbox_status(clock);
   } finally {
