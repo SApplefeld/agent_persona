@@ -1,22 +1,21 @@
 # agentic-plugin : operator channel (item 7)
 
-**Status:** Draft (v3)
+**Status:** Draft (v4)
 **Created:** 2026-09-10T06:08:09Z
-**Revised:** v3, documents 79873ca
+**Revised:** v4, documents 90060b4
 **Program item:** 7 (operator channel)
 **Supersedes:** N/A (new item)
 
-## 5. Findings (AT1 to AT7)
+## 5. Findings (AU1 to AU5, AV1)
 
 | Finding | Description | Status |
 |---------|-------------|--------|
-| AT1 | AS1 control was inverted (record) | Fixed: doctored store FAILs, real store passes |
-| AT2 | Tools registered but never served (PLUGIN, severe) | Fixed: `tool.call` branches added for both tools |
-| AT3 | `hooks/operator.ts` cannot load (PLUGIN, severe) | Fixed: static, extensionless imports |
-| AT4 | Harness lost an assertion and gained none (SUITE, severe) | Fixed: AO1 restored, four new cases added |
-| AT5 | Sweep and wiring (PLUGIN) | Fixed: stored `seq` in record, sweep on summary cadence |
-| AT6 | Gate and pastes (record) | Fixed: commit before gate, paste all output |
-| AT7 | Six claims, four false (record) | Fixed: hand-back names the case's `OK:` lines and the `tool.call` branch by line |
+| AU1 | AU1 closed (record) | Closed by reviewer in Round 71 |
+| AU2 | AU2 half-closed in 9df7e3a (PLUGIN) | Fixed: inbox filtered to caller's records, open asks appended, response shape changed to { inbox, asks } |
+| AU3 | Four AT4 cases were false labels (SUITE, severe) | Fixed: all four cases now drive session.start and tool.call with proper seeding and assertions |
+| AU4 | Gate lacked F10(reader) line (SUITE) | Fixed: live-commons-test.sh snapshots the store and asserts the reader holds reader:default |
+| AU5 | (not specified in Round 70) | N/A |
+| AV1 | Channel is append-only; hand-backs get a new header at file end (protocol) | Acknowledged: all future hand-backs append a new header with clock at write time |
 
 ## 1. Purpose
 
