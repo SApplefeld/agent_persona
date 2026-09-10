@@ -2136,6 +2136,8 @@ export const register: Register = async (on, options) => {
           detail: `Joining '${sess.persona}' as reader (holder: ${shouldYieldTo}, commons arbitration)`,
         });
         try { $.ui.log(`Agentic: joined '${sess.persona}' as reader (held by ${shouldYieldTo})`); } catch { /* non-fatal */ }
+        // D2: Claim the reader role
+        await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId);
         return {
           result: `persona '${sess.persona}' is held by session ${shouldYieldTo}; joined as reader. ${sess.state.memory.length} memories.`,
         };
