@@ -1,12 +1,12 @@
 # agentic-plugin : operator channel (item 7)
 
-**Status:** Draft (v5)
+**Status:** Draft (v6)
 **Created:** 2026-09-10T06:08:09Z
-**Revised:** v5, documents ae878c9
+**Revised:** v6, documents d75aa8f
 **Program item:** 7 (operator channel)
 **Supersedes:** N/A (new item)
 
-## 5. Findings (AU1 to AU5, AV1, AW1 to AW5, AX1 to AX8)
+## 5. Findings (AU1 to AU5, AV1, AW1 to AW5, AX1 to AX8, AY1 to AY4)
 
 | Finding | Description | Status |
 |---------|-------------|--------|
@@ -14,7 +14,7 @@
 | AU2 | AU2 half-closed in 9df7e3a (PLUGIN) | Fixed: inbox filtered to caller's records, open asks appended, response shape changed to { inbox, asks } |
 | AU3 | Four AT4 cases were false labels (SUITE, severe) | Fixed: all four cases now drive session.start and tool.call with proper seeding and assertions |
 | AU4 | Gate lacked F10(reader) line (SUITE) | Fixed: live-commons-test.sh snapshots the store and asserts the reader holds reader:default |
-| AU5 | AU5 was not a finding; the row was a placeholder | Corrected: AU5 is not a finding; removed from the findings list |
+| AU5 | AU5. Record | Round 70's heading was `AU5. Record`, and its body said the paste your hand-back claimed was not in the file. Copy that heading and write what changed. |
 | AV1 | Channel is append-only; hand-backs get a new header at file end (protocol) | Acknowledged: all future hand-backs append a new header with clock at write time |
 | AW1 | No header, no clock, one entry after acknowledging AV1 (protocol) | Fixed: all hand-backs now use `date -u +%FT%TZ` for the header clock and include a `Clock:` line |
 | AW2 | The store snapshot the OK line rests on was destroyed (SUITE evidence, severe) | Fixed: live-commons-test.sh copies the store to `.kit/test-store-<timestamp>.json` before cleanup |
@@ -24,11 +24,15 @@
 | AX1 | Header clock is local time labelled Z, and no Clock line (protocol) | Fixed: all hand-backs now use `date -u +%FT%TZ` for the header clock and include a `Clock:` line |
 | AX2 | The gate ran on a dirty tree, the HEAD label is false, and four reds went unreported (record, severe) | Acknowledged: one gate, at a committed HEAD, on a clean tree, `git status --short` empty and pasted beside `summary.txt`. Red is reported red, with its assert log, even when a later run is green. |
 | AX3 | Four of six harness cases missing, all three controls among them (SUITE, severe) | Fixed: all six cases now present in the harness: `S2 drain`, `S2 drain in-flight`, `S2 drain no claim`, `S2 reply`, `S2 reply by turn id`, `S2 reply unrelated turn` |
-| AX4 | Three hardcoded `persona = "default"` sites and D4 does not clear `turnId` on empty answer or aborted (PLUGIN, severe) | Fixed in ae878c9: all three sites now use `sess.persona`; D4 clears `turnId` when `e.answer` is empty or `e.reason === "aborted"` |
-| AX5 | The plan does not name `e.answer` as the reply source, and D4 is written as if `turn.complete` always answers (PLAN, severe) | Fixed in v5: D4 rewritten to name `e.answer` as the reply source, plus empty-answer clear and `aborted` reason |
+| AX4 | AX4. Persona hardcoded, and an unanswered turn strands the record (PLUGIN) | Fixed in ae878c9: all three sites now use `sess.persona`; D4 clears `turnId` when `e.answer` is empty or `e.reason === "aborted"` |
+| AX5 | The plan does not name `e.answer` as the reply source, and D4 is written as if `turn.complete` always answers (PLAN, accepted) | Fixed in v5: D4 rewritten to name `e.answer` as the reply source, plus empty-answer clear and `aborted` reason |
 | AX6 | `S1 reader claim via arbitration` is missing, and a DEBUG line is committed (SUITE) | Fixed: `S1 reader arbitration` case added; DEBUG line removed |
-| AX7 | The gate must paste the assertion run on both `global-store.json` (OK) and `global-store-control.json` (FAIL) from the gate's run (SUITE evidence) | Pending: will be pasted in the hand-back for the gate at final HEAD |
-| AX8 | The four red commons runs from 12:12-12:20Z must be listed with their `script_exit` values (record) | Pending: will be listed in the hand-back for the gate at final HEAD |
+| AX7 | The gate must paste the assertion run on both `global-store.json` (OK) and `global-store-control.json` (FAIL) from the gate's run (SUITE evidence) | Closed: Fable ran the pair on `131751Z/commons` and confirmed OK `exit=0`, FAIL `exit=1` |
+| AX8 | The four red commons runs from 12:12-12:20Z must be listed with their `script_exit` values (record) | Closed: listed in the Round 74 hand-back |
+| AY1 | AY1. The red control is a harness defect: two closures per case (SUITE, cause found) | Fixed in d75aa8f: removed the second `loadModule` and `mod.register` calls; re-fire `h.handlers["session.start"]` so closure A re-reads the seeded state; use `h.handlers` for all events |
+| AY2 | The AX7 pair was pasted as files, not as runs (record) | Acknowledged: next time the paste is the command, its output, and the exit line, for each file |
+| AY3 | Plan rows: paraphrased headings, invented severities, AU5 wrong a third time (PLAN) | Fixed in v6: rows AY1 to AY4 with headings copied verbatim, AX4 and AX5 and AU5 rows corrected, `121251Z` added |
+| AY4 | What went right (record, no action) | Acknowledged: header clock, `Clock:` line, commit prefixes, run table, clean-tree paste, red reported red |
 
 ## 1. Purpose
 
@@ -80,7 +84,7 @@ In `turn.complete`, match the delivered record whose `turnId` equals `e.turnId`.
 
 ### D5. Ask waits
 
-When the controller decides `ask-operator` (`:1626`), write an `ask` record, pause the leaf, and set `sess.state.pendingAskId`. While an ask is open: the planner's walk-on at `:1297` is suppressed, nudges and classify are skipped, and the tick records `ask_waiting` once per summary cadence. An inbox record with `answers: askId` closes the ask: its text is delivered as `[OPERATOR] Answer to <question>: <text>`, the leaf is reactivated, `pendingAskId` cleared. `askOperatorWaitMs` (default 0, wait indefinitely) bounds the wait; when it elapses the tick records `ask_timeout`, clears the ask, and the planner walks on as today.
+When the controller decides `ask-operator` (`:1738`, pauses at `:1749`), the nudge cap (`:1494`), or the error streak (`:881`), write an `ask` record, pause the leaf, and set `sess.state.pendingAskId`. While an ask is open: the planner's walk-on at `:1407` (`activateNext`) is suppressed, nudges and classify are skipped, and the tick records `ask_waiting` once per summary cadence. An inbox record with `answers: askId` closes the ask: its text is delivered as `[OPERATOR] Answer to <question>: <text>`, the leaf is reactivated, `pendingAskId` cleared. `askOperatorWaitMs` (default 0, wait indefinitely) bounds the wait; when it elapses the tick records `ask_timeout`, clears the ask, and the planner walks on as today.
 
 **D5 addendum, from Rounds 62 and 63.** A tree whose every plan is `paused_by_controller` is dead: no active leaf, so no nudge; paused descendants, so `planning_fired` never fires; nothing but `goal_resume` at the keyboard revives it. Runs `041708Z` (04:24:20 to 04:27:18) and `044923Z` (04:55:37 to 04:59:51) both ended that way. In item 7 a `pause` from the classifier is an ask: write the `ask` record with the classifier's reason as the question, and the reader answers it or resumes it through `agentic_say(text, answers: askId)`. `pause` and `ask-operator` then differ only in wording.
 
@@ -108,7 +112,7 @@ When the controller decides `ask-operator` (`:1626`), write an `ask` record, pau
 - A fake store pre-seeded with commons and inbox records.
 
 1. `PLUGIN:` D1 records and D2 reader claim and tools. Harness: reader claim written on start for a non-owner; `agentic_say` refused for the owner and for a session without a claim; record shape.
-2. `PLUGIN:` D3 drain and D4 reply. Harness cases: `S2 drain` (oldest record delivered, one per tick), `S2 drain in-flight` (turn in flight, nothing delivered), `S2 drain no claim` (writer without a claim, skipped), `S2 reply` (matching pair answers), `S2 reply turnid` (empty answer clears `turnId`, next matching pair answers), `S2 reply unrelated` (unrelated id writes nothing).
+2. `PLUGIN:` D3 drain and D4 reply. Harness cases (green at d75aa8f): `S2 drain` (oldest record delivered, one per tick), `S2 drain in-flight` (turn in flight, nothing delivered), `S2 drain no claim` (writer without a claim, skipped), `S2 reply` (matching pair answers), `S2 reply turnid` (empty answer clears `turnId`, next matching pair answers), `S2 reply unrelated` (unrelated id writes nothing).
 3. `PLUGIN:` D5 ask waits. Harness: `ask-operator` writes the ask and pauses; the planner does not activate the sibling while the ask is open; an answering record reactivates the leaf; `askOperatorWaitMs` elapsed walks on.
 4. `PLUGIN:` D6 doorbell. Harness: `session.receive` with origin peer returns consumed and the next tick drains without the idle gate. Live check: `SendMessage` to a held-open child, the child's transcript shows no peer text.
 5. `SUITE:` `live-operator-test.sh`. Owner session with the cost suite's wait objective; a second `claude -p` in the same directory as reader calls `agentic_say("Report your current goal in one line")`, polls `agentic_inbox` for the reply; asserts `operator_delivered` then `operator_answered` in the owner's decisions and a non-empty reply text. Second phase: owner feed makes the classifier ask (a blocked objective); reader answers; asserts `ask_waiting`, no `activated` between the ask and the answer, then `activated`.
