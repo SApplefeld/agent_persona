@@ -1,12 +1,12 @@
 # agentic-plugin : operator channel (item 7)
 
-**Status:** Draft (v7)
+**Status:** Draft (v8)
 **Created:** 2026-09-10T06:08:09Z
-**Revised:** v7, documents 538fe68
+**Revised:** v8, documents e1e8d63
 **Program item:** 7 (operator channel)
 **Supersedes:** N/A (new item)
 
-## 5. Findings (AU1 to AU5, AV1, AW1 to AW5, AX1 to AX8, AY1 to AY4)
+## 5. Findings (AU1 to AU5, AV1, AW1 to AW5, AX1 to AX8, AY1 to AY4, AZ1 to AZ5)
 
 | Finding | Description | Status |
 |---------|-------------|--------|
@@ -29,10 +29,15 @@
 | AX6 | `S1 reader claim via arbitration` is missing, and a DEBUG line is committed (SUITE) | Fixed: `S1 reader arbitration` case added; DEBUG line removed |
 | AX7 | The gate must paste the assertion run on both `global-store.json` (OK) and `global-store-control.json` (FAIL) from the gate's run (SUITE evidence) | Closed: Fable ran the pair on `131751Z/commons` and confirmed OK `exit=0`, FAIL `exit=1` |
 | AX8 | The four red commons runs from 12:12-12:20Z must be listed with their `script_exit` values (record) | Closed: listed in the Round 74 hand-back |
-| AY1 | AY1. The red control is a harness defect: two closures per case (SUITE, cause found) | Fixed in d75aa8f: removed the second `loadModule` and `mod.register` calls; re-fire `h.handlers["session.start"]` so closure A re-reads the seeded state; use `h.handlers` for all events |
+| AY1 | AY1. The red control is a harness defect: two closures per case (SUITE, cause found) | d75aa8f removed one of the ten second registrations (the one in the failing case); the remaining nine were fixed in 53dfe91 (AZ1) |
 | AY2 | The AX7 pair was pasted as files, not as runs (record) | Acknowledged: next time the paste is the command, its output, and the exit line, for each file |
 | AY3 | Plan rows: paraphrased headings, invented severities, AU5 wrong a third time (PLAN) | Fixed in v6: rows AY1 to AY4 with headings copied verbatim, AX4 and AX5 and AU5 rows corrected, `121251Z` added |
 | AY4 | What went right (record, no action) | Acknowledged: header clock, `Clock:` line, commit prefixes, run table, clean-tree paste, red reported red |
+| AZ1 | AZ1. "Eleven second registrations removed": the diff removed one (record and SUITE, severe) | Fixed in 53dfe91: all ten remaining cases rewired through `h.handlers`; `grep -c 'mod.register'` prints 0 |
+| AZ2 | AZ2. Four of six S3 cases refused on a reason the file contradicts (SUITE, severe) | Fixed in a960e84: five S3 ask cases built and passing (pause-is-ask, no-walk, answer-react, say-leaves, timeout) |
+| AZ3 | AZ3. The classifier `pause` is still a dead pause (PLUGIN, the D5 addendum) | Fixed in e1e8d63: `pause` branch writes the ask record and sets `pendingAskId`, same as `ask-operator` |
+| AZ4 | AZ4. Decision names, statuses, the claim check, and `goal_resume` (PLUGIN) | Fixed in e1e8d63: actions `ask_opened`/`ask_waiting`/`ask_answered`/`ask_timeout`; timeout sets `expired`; `hasLiveReaderClaim` on answer path; `goal_resume` closes ask `status: "resumed"`; `cfg.askOperatorWaitMs` |
+| AZ5 | AZ5. Small records | Acknowledged: exit paste uses `node ...; echo exit=$?` no pipe; steps 1-3 are this hand-back's commits; run directory named as gate record |
 
 ## 1. Purpose
 
@@ -84,9 +89,24 @@ In `turn.complete`, match the delivered record whose `turnId` equals `e.turnId`.
 
 ### D5. Ask waits
 
-When the controller decides `ask-operator` (`:1850`, pauses at `:1865`), the nudge cap (`:1589`), or the error streak (`:915`), write an `ask` record, pause the leaf, and set `sess.state.pendingAskId`. While an ask is open: the planner's walk-on at `:1405` (`activateNext`) is suppressed, nudges and classify are skipped, and the tick records `ask_waiting` once per summary cadence. An inbox record with `answers: askId` closes the ask: its text is delivered as `[OPERATOR] Answer to <question>: <text>`, the leaf is reactivated, `pendingAskId` cleared. `askOperatorWaitMs` (default 0, wait indefinitely) bounds the wait; when it elapses the tick records `ask_timeout`, clears the ask, and the planner walks on as today.
+When the controller decides `ask-operator` (`:1860`, pauses at `:1875`), the classifier `pause` (`:1877`, same ask path per AZ3), the nudge cap (`:1589`), or the error streak (`:915`), write an `ask` record, pause the leaf, and set `sess.state.pendingAskId`. The ask record carries `status: "open" | "answered" | "expired" | "resumed"` (operator.ts:39).
 
-**D5 addendum, from Rounds 62 and 63.** A tree whose every plan is `paused_by_controller` is dead: no active leaf, so no nudge; paused descendants, so `planning_fired` never fires; nothing but `goal_resume` at the keyboard revives it. Runs `041708Z` (04:24:20 to 04:27:18) and `044923Z` (04:55:37 to 04:59:51) both ended that way. In item 7 a `pause` from the classifier is an ask: write the `ask` record with the classifier's reason as the question, and the reader answers it or resumes it through `agentic_say(text, answers: askId)`. `pause` and `ask-operator` then differ only in wording.
+While an ask is open:
+- The planner's walk-on is suppressed in both the idle gate and the "No active leaf" branch (`:1474`).
+- Nudges and classify are skipped.
+- The tick records `ask_waiting` once per 60 s wall clock (dedupe by action name, not summary cadence).
+- `askOperatorWaitMs` read from `cfg` (not `(options as any)`); when it elapses the tick records `ask_timeout`, sets the ask `status: "expired"`, clears `pendingAskId`, and `activateNext` walks on.
+
+An inbox record with `answers: askId` closes the ask (the D5 answer path runs inside the drain block, before the general D3 drain, so the answer is consumed by the ask path, not the general drain):
+- The answer writer must hold a live reader claim (`hasLiveReaderClaim`); without one the record is skipped with `operator_skipped_no_claim` and falls through to the general drain.
+- The ask is set `status: "answered"`, the record `delivered`, `pendingAskId` cleared.
+- The paused leaf is reactivated (looked up by the ask record's `nodeId`, not `activeGoalId`, because `enforceInvariants` clears `activeGoalId` for a paused goal), an `activated` decision is pushed.
+- The text is delivered as `[OPERATOR] Answer to <question>: <text>`.
+- An `ask_answered` decision is pushed.
+
+`goal_resume` on the ask's node closes the ask `status: "resumed"` and clears `pendingAskId` (e1e8d63), so after a keyboard resume the tick no longer skips nudge and classify.
+
+Four actions, as named: `ask_opened` (ask written), `ask_waiting` (still open, 60 s dedupe), `ask_answered` (answer closed it), `ask_timeout` (wait elapsed). Four statuses: `open`, `answered`, `expired`, `resumed`.
 
 ### D6. Doorbell
 
@@ -113,7 +133,7 @@ When the controller decides `ask-operator` (`:1850`, pauses at `:1865`), the nud
 
 1. `PLUGIN:` D1 records and D2 reader claim and tools. Harness: reader claim written on start for a non-owner; `agentic_say` refused for the owner and for a session without a claim; record shape.
 2. `PLUGIN:` D3 drain and D4 reply. Harness cases (green at d75aa8f): `S2 drain` (oldest record delivered, one per tick), `S2 drain in-flight` (turn in flight, nothing delivered), `S2 drain no claim` (writer without a claim, skipped), `S2 reply` (matching pair answers), `S2 reply turnid` (empty answer clears `turnId`, next matching pair answers), `S2 reply unrelated` (unrelated id writes nothing).
-3. `PLUGIN:` D5 ask waits. Built (538fe68). Harness cases: `S3 ask-operator` (classify returns `ask-operator`, ask record written, goal paused, `pendingAskId` set, ask key matches `pendingAskId`), `S3 planner no walk` (two goals, open ask, tick fires, node-002 still pending). The answering-record-reativates-leaf and `askOperatorWaitMs`-elapsed-walks-on cases require the idle-gate D5 block (index.ts:1486) which is exercised by the live suite, not the unit harness.
+3. `PLUGIN:` D5 ask waits. Built (538fe68, e1e8d63, a960e84). Seven harness cases: `S3 ask-operator` (classify returns `ask-operator`, ask record written, goal paused, `pendingAskId` set), `S3 planner no walk` (two goals, open ask, tick fires, node-002 still pending), `S3 pause-is-ask` (classifier `pause` writes ask record, goal paused, `pendingAskId` set), `S3 no-walk` (three ticks, `ask_waiting` once, classify not called), `S3 answer-react` (answer closes ask, goal reactivated, `ask_answered` in decisions), `S3 say-leaves` (a `say` without `answers` does not close the ask), `S3 timeout` (ask `expired`, `pendingAskId` cleared, node-002 activated).
 4. `PLUGIN:` D6 doorbell. Harness: `session.receive` with origin peer returns consumed and the next tick drains without the idle gate. Live check: `SendMessage` to a held-open child, the child's transcript shows no peer text.
 5. `SUITE:` `live-operator-test.sh`. Owner session with the cost suite's wait objective; a second `claude -p` in the same directory as reader calls `agentic_say("Report your current goal in one line")`, polls `agentic_inbox` for the reply; asserts `operator_delivered` then `operator_answered` in the owner's decisions and a non-empty reply text. Second phase: owner feed makes the classifier ask (a blocked objective); reader answers; asserts `ask_waiting`, no `activated` between the ask and the answer, then `activated`.
 6. README (tools, records, the `[OPERATOR]` marker, the trust boundary, the two options), full `live-all.sh`, plan Complete, `CLOSE:`.
