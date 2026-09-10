@@ -1,0 +1,37 @@
+{
+  "version": 4,
+  "persona": "test-persona",
+  "activeSessionId": "test-session-123",
+  "epoch": 1,
+  "memory": [],
+  "goals": [],
+  "activeGoalId": null,
+  "monitor": {
+    "sessionStart": 1700000000000,
+    "turnCount": 0,
+    "lastTurnId": null,
+    "lastTurnComplete": null,
+    "totalToolCalls": 0,
+    "errors": 0,
+    "env": {
+      "git": null,
+      "health": null,
+      "errors": { "consecutiveErrorTurns": 0, "toolErrorsLastTurn": 0 }
+    },
+    "selfReview": {
+      "count": 0,
+      "lastAt": 0,
+      "turnsSince": 0,
+      "windowStart": 0,
+      "pendingPeriodic": false,
+      "lastInjectAt": 0
+    }
+  },
+  "nudge": {
+    "lastNudgeAt": 0,
+    "consecutiveNudgesWithoutOnGoal": 0
+  },
+  "decisions": [],
+  "createdAt": 1700000000000,
+  "updatedAt": 1700000000000
+}

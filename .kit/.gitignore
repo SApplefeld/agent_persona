@@ -21,4 +21,9 @@
 !/health-probe.js
 !/assert-decisions.js
 !/roadmap-test.md
+!/live-cost-test.sh
+!/check-cap-reached.mjs
+!/write-decisions-log.mjs
+!/tick-harness.mjs
+!/controller-tick-test.mjs
 !/fixtures/
