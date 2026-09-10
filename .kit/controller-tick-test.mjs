@@ -817,22 +817,16 @@ async function caseS2_drain_inflight(clock) {
     status: "pending",
   });
 
-  // Load a fresh module instance
-  const mod = await loadModule("s2_drain_inflight");
-  const handlers = {};
-  const on = (event, handler) => { handlers[event] = handler; };
-  await mod.register(on, OPTS);
-
-  // Fire session.start
-  const startH = handlers["session.start"];
+  // AY1: Re-fire session.start on the existing closure (h.handlers) so it re-reads the seeded state.
+  const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
 
   // Check: sess.isOwner should be true (mySid has the persona:default claim)
   const stateAfterStart = getState(h);
   check("S2 drain in-flight: sess.isOwner is true after session.start", stateAfterStart.activeSessionId === mySid);
 
-  // Fire turn.start (turn is now in flight)
-  const turnStartH = handlers["turn.start"];
+  // Fire turn.start (turn is now in flight) on the existing closure
+  const turnStartH = h.handlers["turn.start"];
   check("S2 drain in-flight: turn.start handler is defined", !!turnStartH);
   let nextCalled = false;
   if (turnStartH) {
