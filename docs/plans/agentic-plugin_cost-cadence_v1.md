@@ -1,8 +1,8 @@
 # agentic-plugin : cost and cadence (item 6)
 
-**Status:** Draft (v8, for Reviewer review)
+**Status:** Draft (v9, for Reviewer review)
 **Created:** 2026-09-09T13:40:33Z (commit `4fa322d`)
-**Revised:** v8, documents 7958617
+**Revised:** v9, documents e5327a2
 **Program item:** 6 (cost and cadence)
 **Supersedes:** N/A (new item)
 
@@ -133,7 +133,7 @@ After K consecutive skipped ticks (config `costBackoffAfterTicks`, default 10), 
 
 **Safety:** The same callback also runs the error-streak branch (2a), self-review (2a2), the budget read (3.5), and the planning gate (3). Backoff must gate only the idle classify section from step 5 at `:1269` onward. If the factor skips the whole callback, a backed-off session stops reading its context budget and the supervisor's critical trigger goes dark.
 
-**D4 timeline in the live suite (AM8):** With `costBackoffAfterTicks: 2` (suite setting) and `tickIndex` starting at 1, the backoff fires at the 3rd tick (tickIndex 3, factor 2, 3 % 2 !== 0). `consecutiveSkips` increments per skip, so after 2 skips the factor becomes 2, and the 3rd consecutive skip is backed off. The live suite now exercises D4 directly: the assertion checks for at least one `backed off` in the decision log.
+**D4 proof in the tick harness (AN3):** The tick harness `.kit/controller-tick-test.mjs` case 2 seeds `consecutiveSkips=4` and fires 6 ticks with `costBackoffAfterTicks: 2`. The expected output shows at least 3 `backed off` decisions, at least 1 `unchanged, skipped`, and `consecutiveSkips` resets to 0 after a `turn.start`. The live cost suite reports skip and backoff counts but does not assert them, because a live skip needs the classifier to answer `nudge` under the floor and the classifier is free to answer `pause`.
 
 ## 4. Config
 
@@ -243,7 +243,9 @@ One section per commit, each with its gate:
 
 **D4 in the live suite (AM8):** With `costBackoffAfterTicks: 2`, the backoff fires within the suite's tick budget. The assertion checks for at least one `backed off` in the decision log. The combined skip assertion accepts `unchanged, skipped` or `backed off` (at least three total).
 
-**Determinism (AM6):** The cost suite's assertions are order-based, not tick-based. The haiku classifier is non-deterministic: in some runs it picks `pause` or `switch` instead of `nudge`, which changes the node ID/status and breaks the hash chain, resulting in 0 `unchanged, skipped`. This is inherent LLM non-determinism in the live test, not a D2/D3/D4 defect. The assertions pass when the classifier cooperates (2/6 gate runs, 3/5 standalone runs).
+**Determinism (AN7):** The live cost suite proves the nudge cap and the summary cadence. D2 and D4 are proven in the tick harness, because a live skip needs the classifier to answer `nudge` under the floor and the classifier is free to answer `pause`.
+
+**Nudge floor (AN7):** The nudge floor is per activation: `sess.lastNudgeAt` resets when a leaf is activated (`activate` at `index.ts:293-295`, and `:1148`, `:1545`, `:2048`, `:2308`).
 
 **D2 skip rationale:** The D2 skip fires when the hash is unchanged AND the nudge is not due. With `nudgeFloorMs: 120000`, after a nudge at idle 60s, the floor (120s) has not elapsed at idle 70-110s, so `nudgeDue` is false and the skip can fire (if the hash is unchanged). The feed must create a scenario where the worker is idle (not completing rounds) so the hash stays unchanged.
 
@@ -316,11 +318,11 @@ One section per commit, each with its gate:
 | AK5 | (Not raised by Reviewer) | N/A |
 | AK6 | Record defects: em dashes, false claims, wrong `git rm --cached` claim, sections 3+4 one commit, migration test gap | Migration gap fixed with `state-v4-cost-no-hash.json` fixture at `911128d`; em dashes and false claims acknowledged in Round 57 hand-back; commit order corrected (passthrough first, then fixes) |
 | AL1 | Cost suite does not verify D2, profile wrong for timeline | `NUDGE_FLOOR_MS` changed to 120000, deadline to 420s, D2 skip assertion restored as "at least three unchanged, skipped", feed updated to create idle scenario; fixed at commit `4335242` |
-| AL2 | Cost suite flakiness: haiku classifier non-determinism causes 0 "unchanged, skipped" in some runs | Characterized in hand-back: order-based assertions, inherent LLM non-determinism in live test, not a D2/D3/D4 bug; 2/6 gate + 3/5 standalone pass rates documented |
-| AL3 | Cost suite flakiness (same as AL2) | Same as AL2 |
+| AL2 | "AK5: Not raised by Reviewer. N/A." (record) | Row corrected to copy reviewer's heading verbatim |
+| AL3 | Header format (protocol, third time) | Header format corrected to match protocol: `## <Party> @ <ISO timestamp>` |
 | AL4 | Plan needs v7 with AL1-AL8 rows, section 8 corrections, D2 rationale, new `Revised:` line | This revision (v7) |
-| AL5 | Cost suite flakiness (same as AL2/AL3) | Same as AL2 |
-| AL6 | Migration test count discrepancy (Reviewer got 28 OK + PASS, I wrote 31) | Need to paste actual run output in hand-back; 31 was unit test count, migration test may be 28 |
+| AL5 | Two runs presented as one gate (record), and my own gate | Row corrected to copy reviewer's heading verbatim |
+| AL6 | The record table | Row corrected to copy reviewer's heading verbatim |
 | AL7 | Engine 2.1.267 renamed `$.fs.readFile` to `$.fs.read`, `$.fs.writeFile` to `$.fs.write` | Typings updated to 2.1.267, 16+8 renames in `hooks/index.ts`, comment in `agent-state.ts`, `tsc` exit 0, unit test PASS, migration test PASS, controller suite green; fixed at commit `8be1050` |
 | AL8 | Runner only preserves `$suite-test.*` shape, but budget/goaltree/goaltree-stall/planfail write `$suite.*` shape; runner `start` line should print engine version | `live-all.sh` now preserves both shapes and adds `claude --version` to `start` line; fixed in this commit |
 | AM1 | Record hygiene: hand-back inserted mid-entry, file shrank, reappeared at end; typed clock; 6 em dashes; entry ends with `---` | Append-only rule followed; header timestamp corrected; em dashes removed; no trailing `---` in hand-back entries |
@@ -331,3 +333,10 @@ One section per commit, each with its gate:
 | AM6 | Cost suite flakiness not addressed in plan | Determinism sentence added to section 8: order-based assertions, inherent LLM non-determinism, not a D2/D3/D4 defect |
 | AM7 | `cost_summary` never reaches the store on a session without an active leaf: `persist()` missing after the push at `index.ts:745` | `await persist($)` added after the `cost_summary` push; budget assertion `cost_summary >= 1` added |
 | AM8 | D4 backoff not exercised in the live suite | `COST_BACKOFF_AFTER_TICKS=2` passthrough added to `emit_settings_json`; cost suite sets it; combined skip assertion accepts `unchanged, skipped` or `backed off`; assertion `backed off >= 1` added |
+| AN1 | Typed clock, again (record) | Header timestamp read at write time, not typed ahead; sixth occurrence documented |
+| AN2 | The budget root cause is wrong (design, AM7 evidence corrected) | Budget feed holds stdin open 35 s after critical crossing so quiet ticks can fire and `cost_summary` persist lands; red/green proof pasted |
+| AN3 | The cost root cause is right, and it ends the live proof for D2 and D4 (design decision) | Tick harness `.kit/tick-harness.mjs` and `.kit/controller-tick-test.mjs` added with four cases (D2, D4, AM7, D3); live cost suite skip/backoff assertions demoted to reported lines |
+| AN4 | README invocation does not run (README, AM5 partial) | README typings section replaced with reviewer's Round 57 stream-json command including `printf` of `/plugin-types` user message, `--verbose`, `--permission-mode bypassPermissions`, and `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` note |
+| AN5 | The cost suite is not in version control (record, severe) | `.kit/.gitignore` updated to un-ignore `live-cost-test.sh`; untracked source files dispositioned; `live-cost-test.sh` tracked in commit `fb05348` |
+| AN6 | AL rows, third time (record) | AL2/AL3/AL5/AL6 rows corrected to copy reviewer's Round 57 headings verbatim |
+| AN7 | Plan section 8 timeline (PLAN) | Section 8 D4 timeline replaced with four harness sequences from AN3; determinism sentence rewritten per reviewer's exact wording; nudge floor is per activation |
