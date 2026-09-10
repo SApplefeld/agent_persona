@@ -36,7 +36,7 @@ export interface ReplyRecord {
   text: string;
 }
 
-export type AskStatus = "open" | "answered";
+export type AskStatus = "open" | "answered" | "expired" | "resumed";
 
 export interface AskRecord {
   at: number;

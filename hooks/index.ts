@@ -836,6 +836,18 @@ export const register: Register = async (on, options) => {
           const allRecords = await listInboxRecords(commonsStoreOf($), sess.persona);
           const answer = allRecords.find((rec) => rec.answers === askId && rec.status === "pending");
           if (answer) {
+            // AZ4: require a live reader claim from the answer's writer (same as D3)
+            const answerAlive = await hasLiveReaderClaim(commonsStoreOf($), sess.persona, answer.from);
+            if (!answerAlive) {
+              sess.state.decisions.push({
+                timestamp: Date.now(),
+                loop: "monitor",
+                action: "operator_skipped_no_claim",
+                detail: `answer ${answer.id} from ${answer.from} has no live reader claim`,
+              });
+            }
+          }
+          if (answer && (await hasLiveReaderClaim(commonsStoreOf($), sess.persona, answer.from))) {
             // Close the ask
             askRecord.status = "answered";
             await (commonsStoreOf($)).set(askKey(sess.persona, askId), askRecord);
@@ -869,7 +881,7 @@ export const register: Register = async (on, options) => {
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "monitor",
-              action: "operator_answered",
+              action: "ask_answered",
               detail: `ask ${askId} closed by record ${answer.id}`,
             });
             await $.prompt.submit({ text: `[OPERATOR] Answer to ${askRecord.question}: ${answer.text}` });
@@ -936,8 +948,8 @@ export const register: Register = async (on, options) => {
         sess.state.decisions.push({
           timestamp: streakTs,
           loop: "monitor",
-          action: "controller_tick",
-          detail: `${nodeId}: ask-operator: ${streakReason} (ask ${askId})`,
+          action: "ask_opened",
+          detail: `${nodeId}: error-streak: ${streakReason} (ask ${askId})`,
         });
         try { $.ui.toast(`Agentic: ${streakReason}`); } catch { /* non-fatal */ }
         if (activeForStreak && activeForStreak.status === "active") {
@@ -1488,28 +1500,28 @@ export const register: Register = async (on, options) => {
         const askRecord = await readAskRecord(commonsStoreOf($), sess.persona, sess.state.pendingAskId);
         if (askRecord && askRecord.status === "open") {
           const lastAskWaiting = sess.state.decisions.findLast(
-            (d) => d.detail?.includes("ask_waiting"),
+            (d) => d.action === "ask_waiting",
           );
           if (!lastAskWaiting || now - lastAskWaiting.timestamp >= 60_000) {
             sess.state.decisions.push({
               timestamp: now,
               loop: "monitor",
-              action: "controller_tick",
-              detail: `${g.id}: ask_waiting (ask ${sess.state.pendingAskId})`,
+              action: "ask_waiting",
+              detail: `${g.id}: ask ${sess.state.pendingAskId} still open`,
             });
           }
           // D5: check for timeout
-          const waitMs = (options as any).askOperatorWaitMs || 0;
+          const waitMs = typeof cfg.askOperatorWaitMs === "number" ? (cfg.askOperatorWaitMs as number) : 0;
           if (waitMs > 0) {
             const elapsed = now - askRecord.at;
             if (elapsed >= waitMs) {
               sess.state.decisions.push({
                 timestamp: now,
                 loop: "monitor",
-                action: "controller_tick",
-                detail: `${g.id}: ask_timeout (ask ${sess.state.pendingAskId} waited ${Math.round(elapsed / 1000)}s)`,
+                action: "ask_timeout",
+                detail: `${g.id}: ask ${sess.state.pendingAskId} expired after ${Math.round(elapsed / 1000)}s`,
               });
-              askRecord.status = "answered";
+              askRecord.status = "expired";
               await (commonsStoreOf($)).set(askKey(sess.persona, sess.state.pendingAskId), askRecord);
               sess.state.pendingAskId = undefined;
               // Walk on: activate the next pending work.
@@ -1602,8 +1614,8 @@ export const register: Register = async (on, options) => {
             sess.state.decisions.push({
               timestamp: capTs,
               loop: "monitor",
-              action: "controller_tick",
-              detail: `${g.id}: ask-operator: ${capReason} (idle ${idleDisplay}, ask ${askId})`,
+              action: "ask_opened",
+              detail: `${g.id}: nudge-cap: ${capReason} (idle ${idleDisplay}, ask ${askId})`,
             });
             try { $.ui.toast(`Agentic: ${capReason}`); } catch { /* non-fatal */ }
             if (g.status === "active") {
@@ -1847,44 +1859,33 @@ export const register: Register = async (on, options) => {
                 });
               } catch { /* nudge failed; non-fatal */ }
             }
-          } else if (finalDecision === "ask-operator") {
-            // D5: write an ask record and set pendingAskId
+          } else if (finalDecision === "ask-operator" || finalDecision === "pause") {
+            // D5: write an ask record and set pendingAskId (both ask-operator and pause)
             const askId = `ask-${g.id}-${Date.now()}`;
-            const question = finalReason || "operator input needed";
+            const question = finalReason || (finalDecision === "pause" ? "controller pause" : "operator input needed");
             await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, question);
             sess.state.pendingAskId = askId;
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "monitor",
-              action: "controller_tick",
-              detail: `${g.id}: ask-operator: ${question} (ask ${askId})`,
+              action: "ask_opened",
+              detail: `${g.id}: ${finalDecision}: ${question} (ask ${askId})`,
             });
             try {
               $.ui.toast(`Agentic: ${question}`);
             } catch { /* non-fatal */ }
             if (g.status === "active") {
               g.status = "paused";
-              g.blockedReason = finalReason;
+              g.blockedReason = question;
               g.updatedAt = Date.now();
               sess.state.decisions.push({
                 timestamp: Date.now(),
                 loop: "goal",
                 action: "paused_by_controller",
-                detail: `${g.id}: ${finalReason}`,
+                detail: `${g.id}: ${question}`,
               });
               try { $.ui.status(""); } catch { /* non-fatal */ }
             }
-          } else if (finalDecision === "pause" && g.status === "active") {
-            g.status = "paused";
-            g.blockedReason = finalReason || "controller pause";
-            g.updatedAt = Date.now();
-            sess.state.decisions.push({
-              timestamp: Date.now(),
-              loop: "goal",
-              action: "paused_by_controller",
-              detail: `${g.id}: ${finalReason || "controller pause"}`,
-            });
-            try { $.ui.status(""); } catch { /* non-fatal */ }
           } else if (finalDecision === "complete" && g.status === "active") {
             // R3: use completeLeaf + activateNext.
             const completedId = g.id;
@@ -2625,6 +2626,21 @@ export const register: Register = async (on, options) => {
         action: "resume",
         detail: `Node ${target.id} resumed (paused: ${pausedReason})`,
       });
+      // AZ4: goal_resume on the ask's node closes the ask with status "resumed"
+      if (sess.state.pendingAskId) {
+        const askRecord = await readAskRecord(commonsStoreOf($), sess.persona, sess.state.pendingAskId);
+        if (askRecord && askRecord.status === "open" && askRecord.nodeId === target.id) {
+          askRecord.status = "resumed";
+          await (commonsStoreOf($)).set(askKey(sess.persona, sess.state.pendingAskId), askRecord);
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "ask_answered",
+            detail: `ask ${sess.state.pendingAskId} closed by goal_resume (status: resumed)`,
+          });
+        }
+        sess.state.pendingAskId = undefined;
+      }
       sess.state.updatedAt = Date.now();
       await persist($);
       return { result: `Resumed ${target.id} (${target.kind}) "${target.title}". Nudge budget reset.` };
