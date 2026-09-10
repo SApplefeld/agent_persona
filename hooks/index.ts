@@ -745,6 +745,14 @@ export const register: Register = async (on, options) => {
         hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now() };
         await $.fs.write(heartbeatPath, JSON.stringify(hb, null, 2));
       } catch { /* heartbeat write failed; non-fatal */ }
+      // BC3: claim the persona in commons at start, so the owner holds the
+      // commons claim before its first turn. Without this, a reader calling
+      // agentic_identity in the first 30s (before the first heartbeat) finds
+      // no live persona:default claim and takes ownership, evicting the owner.
+      try {
+        const resource = `persona:${sess.persona}`;
+        await claimResource(commonsStoreOf($), resource, sess.mySessionId);
+      } catch { /* non-fatal */ }
     }
 
     $.ui.log(`Agentic: persona '${sess.persona}', ${sess.state.memory.length} memories, ${sess.isOwner ? "owner" : "passive reader"}`);
