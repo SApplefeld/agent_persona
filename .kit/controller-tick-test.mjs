@@ -1185,6 +1185,138 @@ async function caseS1_reader_arbitration(clock) {
   }
 }
 
+// S3: D5 ask waits - ask-operator writes ask and pauses
+async function caseS3_ask_operator(clock) {
+  console.log("\n=== S3: D5 ask-operator writes ask and pauses ===");
+  clock.set(T0);
+
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s3_ask_operator",
+  });
+
+  // Seed the commons store: mySid owns the persona
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  // Drive a single "ask-operator" classify result through the idle gate.
+  // The ask-operator path (index.ts:1850) writes an ask record, sets
+  // pendingAskId, and pauses the active goal. This is the D5 planner site,
+  // distinct from the nudge-cap site (index.ts:1589) which requires 3
+  // consecutive nudges and is hard to reach under the harness OPTS
+  // (costMaxNudgesPerHour = 2 latches before the 3rd nudge).
+  h.setClassifyValue("ask-operator");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+
+  const state = getState(h);
+
+  // Check: there should be an ask record in the store
+  const askRecords = Array.from(h.storeMap.keys()).filter(k => k.startsWith("ask:"));
+  check("S3 ask-operator: ask record written", askRecords.length > 0);
+
+  // Check: the active goal should be paused (ask-operator pauses, doesn't block)
+  const activeGoal = state.goals.find(g => g.id === state.activeGoalId);
+  check("S3 ask-operator: active goal status is paused", activeGoal && activeGoal.status === "paused");
+
+  // Check: pendingAskId should be set
+  check("S3 ask-operator: pendingAskId is set", state.pendingAskId !== null && state.pendingAskId !== undefined);
+
+  // Check: pendingAskId matches the ask record
+  if (state.pendingAskId) {
+    const askKey = `ask:default:${state.pendingAskId}`;
+    check("S3 ask-operator: ask record key matches pendingAskId", h.storeMap.has(askKey));
+  }
+}
+
+// S3: D5 ask waits - planner does not activate sibling while ask open
+async function caseS3_planner_no_walk(clock) {
+  console.log("\n=== S3: D5 planner does not activate sibling while ask open ===");
+  clock.set(T0);
+
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s3_planner_no_walk",
+  });
+
+  // Seed the commons store: mySid owns the persona
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  // Seed the persona store with two goals and a pending ask
+  const personaState = buildPersonaState(mySid, now);
+  personaState.nudge = { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 5 };
+  personaState.goals = [
+    {
+      id: "node-001",
+      kind: "leaf",
+      objective: "Test goal 1",
+      status: "active",
+      completedRounds: 0,
+      maxRounds: 3,
+      scores: [],
+      createdAt: now - 10000,
+      updatedAt: now - 5000,
+      children: [],
+    },
+    {
+      id: "node-002",
+      kind: "leaf",
+      objective: "Test goal 2",
+      status: "pending",
+      completedRounds: 0,
+      maxRounds: 3,
+      scores: [],
+      createdAt: now - 9000,
+      updatedAt: now - 5000,
+      children: [],
+    },
+  ];
+  personaState.activeGoalId = "node-001";
+  personaState.pendingAskId = "ask-test-123";
+  personaState.monitor.turnCount = 5;
+  personaState.updatedAt = now;
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+
+  // Seed the heartbeat sidecar
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: mySid, epoch: 1, lastSeen: now },
+  }));
+
+  // Seed an open ask record
+  const askKey = "ask:default:ask-test-123";
+  h.storeMap.set(askKey, {
+    id: "ask-test-123",
+    key: askKey,
+    persona: "default",
+    askId: "ask-test-123",
+    at: now - 1000,
+    nodeId: "node-001",
+    question: "What should we do?",
+    status: "open",
+  });
+
+  // Fire tick (should NOT activate node-002 because ask is open)
+  await tickAndSettle(h, clock);
+
+  // Check: node-002 should still be pending (not activated)
+  const state = getState(h);
+  const node2 = state.goals.find(g => g.id === "node-002");
+  check("S3 planner no walk: node-002 still pending", node2 && node2.status === "pending");
+}
+
 // --- Main ---
 
 async function main() {
@@ -1206,6 +1338,8 @@ async function main() {
     await caseS2_reply(clock);
     await caseS2_reply_turnid(clock);
     await caseS2_reply_unrelated(clock);
+    await caseS3_ask_operator(clock);
+    await caseS3_planner_no_walk(clock);
   } finally {
     clock.restore();
   }
