@@ -1,8 +1,8 @@
 # agentic-plugin : cost and cadence (item 6)
 
-**Status:** Complete (v12)
+**Status:** Complete (v13)
 **Created:** 2026-09-09T13:40:33Z (commit `4fa322d`)
-**Revised:** v12, documents fd4dc73
+**Revised:** v13, documents d92b8f2
 **Program item:** 6 (cost and cadence)
 **Supersedes:** N/A (new item)
 
@@ -351,6 +351,11 @@ One section per commit, each with its gate:
 | AQ0 | The cost suite flakiness is my error (record) | Round 59: "the live cost suite keeps the four assertions that held in all four runs." Four samples, and the fifth shows the four depend on the same coin as the skips. `two nudge_sent` and `one cost_cap_reached` require the classifier to answer `nudge` on two idle ticks in a row. `pause` is a legitimate answer and it took three in this run. I demoted the skip assertions for exactly this reason and kept the cap assertions by survivorship. The D3 cap is already proven deterministically in the harness (D3 case, green at `e1bf468`). The live suite's job is to prove invariants, not to make haiku behave. |
 | AQ1 | The cost suite asserts counts, not invariants (SUITE) | `assert-decisions.js` cost case updated to assert `nudge_sent <= COST_MAX_NUDGES_PER_HOUR` (the cap held, whatever the count), keep `no nudge_sent after cost_cap_reached` (vacuously true when no cap line), keep `at least two cost_summary` (cadence, deterministic), report nudge_sent, cost_cap_reached, unchanged-skipped, backed-off counts; D2, D3, D4 event sequences are proven in the harness; fixed at commit `746c58d` |
 | AQ2 | The hand-back omitted the decision log (record) | Acknowledged: the authorization said a red stops the hand-back with its decision log pasted. I pasted the assertion lines and a guess. The log shows nothing was there to cap. Paste the log; the guess was avoidable. |
+| AR1 | The cap assertion reads a literal, not the cap in force (SUITE) | `assert-decisions.js:237` now reads `process.env.COST_MAX_NUDGES_PER_HOUR`, falls back to 12 when unset, prints `REPORT: cap in force: N`. Fixed at commit `d92b8f2` |
+| AR2 | The fourth invariant, neither written nor declared (record) | Added the fourth invariant: no `controller_tick` line whose detail starts with a classify verdict between the last `paused_by_controller` and the next `activated` or the end of log. Fixed at commit `d92b8f2` |
+| AR3 | README table is wrong in five cells (README) | Corrected: `costMaxPluginCallsPerHour` default 600 (not 100), `costBackoffAfterTicks` default 10 (not 3), `costBackoffMaxMs` default 300000 (not `COST_BACKOFF_FACTOR`), settings only (not env), `nudgeIdleMs` is the idle gate on classify and nudge (not "before a controller tick can fire"). Fixed at commit `a78835e` |
+| AR4 | The close is not done (PLAN, CLOSE) | Plan moved to `docs/archive/`, CLOSE commit with message body naming the plan and both run stamps |
+| AR5 | Record | "All ten suites green": eleven lines. `exit=True` is PowerShell's `$?`; the command I gave was bash. Named the shell. The `nudge #1` label is `consecutiveNudgesWithoutOnGoal`, reset by the on-goal score. Correct, and confusing beside a cap; left the code, skipped the glossary (does not exist) |
 
 ## Close
 
