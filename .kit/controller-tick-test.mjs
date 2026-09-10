@@ -638,13 +638,6 @@ async function caseS2_drain(clock) {
     await startH(h.fake, {}, () => {});
   }
 
-  // Debug: check the state after session.start
-  const personaState = h.fsMap.get(".agentic-personas.json");
-  if (personaState) {
-    const parsed = JSON.parse(personaState);
-    console.log("DEBUG S2 drain: persona state decisions:", JSON.stringify(parsed.default.decisions.slice(-5), null, 2));
-  }
-
   // Fire one tick (D3 should drain the oldest record only)
   await tickAndSettle(h, clock);
 
@@ -770,6 +763,434 @@ async function caseS2_reply(clock) {
   }
 }
 
+// S2: D3 drain in-flight control (turn in flight, nothing delivered)
+async function caseS2_drain_inflight(clock) {
+  console.log("\n=== S2: D3 drain in-flight (turn in flight, nothing delivered) ===");
+  clock.set(T0);
+
+  const otherSid = "drain-inflight-001";
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s2_drain_inflight",
+  });
+
+  // Seed the commons store: mySid owns the persona
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  // otherSid holds a live reader claim
+  h.storeMap.set(`commons:${otherSid}`, {
+    sessionId: otherSid,
+    lastSeen: now,
+    claims: [{ resource: "reader:default", claimedAt: now - 1000 }],
+  });
+
+  // Seed the persona store with mySid as owner, turnInFlight = true
+  const personaState = buildPersonaState(mySid, now);
+  // We need to set turnInFlight. The D3 drain checks sess.state.monitor.turnInFlight
+  // or similar. Let's check what the actual gate is.
+  // Actually, looking at the code, D3 drain is gated on sess.isOwner.
+  // The in-flight control should set a state where a turn is in flight.
+  // Let's seed with turnInFlight flag if it exists, otherwise the control
+  // is that a turn.start was fired but not yet complete.
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+
+  // Seed the heartbeat sidecar
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: mySid, epoch: 1, lastSeen: now },
+  }));
+
+  // Seed one inbox record (pending)
+  const recKey = `inbox:default:${otherSid}:1`;
+  h.storeMap.set(recKey, {
+    id: "inflight-rec-1",
+    key: recKey,
+    from: otherSid,
+    at: now - 5000,
+    text: "In-flight test",
+    kind: "say",
+    status: "pending",
+  });
+
+  // Load a fresh module instance
+  const mod = await loadModule("s2_drain_inflight");
+  const handlers = {};
+  const on = (event, handler) => { handlers[event] = handler; };
+  await mod.register(on, OPTS);
+
+  // Fire session.start
+  const startH = handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  // Check: sess.isOwner should be true (mySid has the persona:default claim)
+  const stateAfterStart = getState(h);
+  check("S2 drain in-flight: sess.isOwner is true after session.start", stateAfterStart.activeSessionId === mySid);
+
+  // Fire turn.start (turn is now in flight)
+  const turnStartH = handlers["turn.start"];
+  check("S2 drain in-flight: turn.start handler is defined", !!turnStartH);
+  let nextCalled = false;
+  if (turnStartH) {
+    await turnStartH(h.fake, { turnId: "t-inflight" }, async (e) => { nextCalled = true; return { result: "ok" }; });
+  }
+  check("S2 drain in-flight: turn.start handler called next()", nextCalled);
+
+  // Fire tick (D3 should NOT drain because turn is in flight)
+  await tickAndSettle(h, clock);
+
+  // Check: record should still be pending (not delivered)
+  const rec = h.storeMap.get(recKey);
+  if (rec) {
+    const parsed = typeof rec === "string" ? JSON.parse(rec) : rec;
+    check("S2 drain in-flight: record still pending", parsed.status === "pending");
+  } else {
+    check("S2 drain in-flight: record still pending", false);
+  }
+
+  // Check: no [OPERATOR] prompt was submitted
+  const prompts = h.promptSubmits || [];
+  const operatorPrompts = prompts.filter(p => p.startsWith("[OPERATOR]"));
+  check("S2 drain in-flight: no [OPERATOR] prompt submitted", operatorPrompts.length === 0);
+}
+
+// S2: D3 drain no claim control (writer without a claim, skipped)
+async function caseS2_drain_noclaim(clock) {
+  console.log("\n=== S2: D3 drain no claim (writer without a claim, skipped) ===");
+  clock.set(T0);
+
+  const otherSid = "drain-noclaim-001";
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s2_drain_noclaim",
+  });
+
+  // Seed the commons store: mySid owns the persona
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  // otherSid has NO reader claim (no commons entry or empty claims)
+
+  // Seed the persona store with mySid as owner
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(mySid, now) }));
+
+  // Seed the heartbeat sidecar
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: mySid, epoch: 1, lastSeen: now },
+  }));
+
+  // Seed one inbox record from otherSid (pending)
+  const recKey = `inbox:default:${otherSid}:1`;
+  h.storeMap.set(recKey, {
+    id: "noclaim-rec-1",
+    key: recKey,
+    from: otherSid,
+    at: now - 5000,
+    text: "No claim test",
+    kind: "say",
+    status: "pending",
+  });
+
+  // Load a fresh module instance
+  const mod = await loadModule("s2_drain_noclaim");
+  const handlers = {};
+  const on = (event, handler) => { handlers[event] = handler; };
+  await mod.register(on, OPTS);
+
+  // Fire session.start
+  const startH = handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  // Fire tick (D3 should skip because writer has no claim)
+  await tickAndSettle(h, clock);
+
+  // Check: record should still be pending
+  const rec = h.storeMap.get(recKey);
+  if (rec) {
+    const parsed = typeof rec === "string" ? JSON.parse(rec) : rec;
+    check("S2 drain no claim: record still pending", parsed.status === "pending");
+  } else {
+    check("S2 drain no claim: record still pending", false);
+  }
+
+  // Check: no [OPERATOR] prompt was submitted
+  const prompts = h.promptSubmits || [];
+  const operatorPrompts = prompts.filter(p => p.startsWith("[OPERATOR]"));
+  check("S2 drain no claim: no [OPERATOR] prompt submitted", operatorPrompts.length === 0);
+
+  // Note: the operator_skipped_no_claim decision is pushed to in-memory state
+  // (sess.state.decisions) but not persisted to the file in this branch, so
+  // we cannot verify it via getState(h). The behavioral checks above
+  // (record still pending, no [OPERATOR] prompt) confirm the skip happened.
+}
+
+// S2: D4 reply by turn id (user-ending turn leaves delivered, next matching pair answers)
+async function caseS2_reply_turnid(clock) {
+  console.log("\n=== S2: D4 reply by turn id (next matching pair answers) ===");
+  clock.set(T0);
+
+  const otherSid = "reply-turnid-001";
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s2_reply_turnid",
+  });
+
+  // Seed the commons store
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  h.storeMap.set(`commons:${otherSid}`, {
+    sessionId: otherSid,
+    lastSeen: now,
+    claims: [{ resource: "reader:default", claimedAt: now - 1000 }],
+  });
+
+  // Seed the persona store
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(mySid, now) }));
+
+  // Seed the heartbeat sidecar
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: mySid, epoch: 1, lastSeen: now },
+  }));
+
+  // Seed one inbox record (pending)
+  const recKey = `inbox:default:${otherSid}:1`;
+  h.storeMap.set(recKey, {
+    id: "turnid-rec-1",
+    key: recKey,
+    from: otherSid,
+    at: now - 5000,
+    text: "TurnId test",
+    kind: "say",
+    status: "pending",
+  });
+
+  // Load a fresh module instance
+  const mod = await loadModule("s2_reply_turnid");
+  const handlers = {};
+  const on = (event, handler) => { handlers[event] = handler; };
+  await mod.register(on, OPTS);
+
+  // Fire session.start
+  const startH = handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  // Fire tick (D3 drains the record)
+  await tickAndSettle(h, clock);
+
+  // Fire turn.start (AS3 stamps turnId)
+  const turnId = "t-turnid-1";
+  const turnStartH = handlers["turn.start"];
+  if (turnStartH) await turnStartH(h.fake, { turnId: turnId }, () => {});
+
+  // Fire turn.complete with empty answer (AX4: clears turnId, leaves delivered)
+  const turnCompleteH = handlers["turn.complete"];
+  if (turnCompleteH) await turnCompleteH(h.fake, { turnId: turnId, answer: "", reason: "aborted" }, () => {});
+
+  // Check: record should still be delivered (not answered)
+  let rec = h.storeMap.get(recKey);
+  if (rec) {
+    const parsed = typeof rec === "string" ? JSON.parse(rec) : rec;
+    check("S2 reply turnid: record still delivered after empty answer", parsed.status === "delivered");
+    check("S2 reply turnid: turnId cleared after empty answer", !parsed.turnId);
+  } else {
+    check("S2 reply turnid: record still delivered after empty answer", false);
+    check("S2 reply turnid: turnId cleared after empty answer", false);
+  }
+
+  // Check: no reply written
+  const replyKey = `reply:default:turnid-rec-1`;
+  const reply = h.storeMap.get(replyKey);
+  check("S2 reply turnid: no reply written for empty answer", !reply);
+
+  // Fire turn.start again (AS3 re-stamps turnId)
+  const turnId2 = "t-turnid-2";
+  if (turnStartH) await turnStartH(h.fake, { turnId: turnId2 }, () => {});
+
+  // Check: turnId re-stamped
+  rec = h.storeMap.get(recKey);
+  if (rec) {
+    const parsed = typeof rec === "string" ? JSON.parse(rec) : rec;
+    check("S2 reply turnid: turnId re-stamped on second turn.start", parsed.turnId === turnId2);
+  } else {
+    check("S2 reply turnid: turnId re-stamped on second turn.start", false);
+  }
+
+  // Fire turn.complete with a real answer
+  if (turnCompleteH) await turnCompleteH(h.fake, { turnId: turnId2, answer: "Real answer", reason: "completed" }, () => {});
+
+  // Check: reply written, record answered
+  const reply2 = h.storeMap.get(replyKey);
+  if (reply2) {
+    const parsed = typeof reply2 === "string" ? JSON.parse(reply2) : reply2;
+    check("S2 reply turnid: reply written on second turn.complete", parsed.text === "Real answer");
+  } else {
+    check("S2 reply turnid: reply written on second turn.complete", false);
+  }
+
+  rec = h.storeMap.get(recKey);
+  if (rec) {
+    const parsed = typeof rec === "string" ? JSON.parse(rec) : rec;
+    check("S2 reply turnid: record answered on second turn.complete", parsed.status === "answered");
+  } else {
+    check("S2 reply turnid: record answered on second turn.complete", false);
+  }
+}
+
+// S2: D4 reply unrelated turn control (turn.complete with another id writes nothing)
+async function caseS2_reply_unrelated(clock) {
+  console.log("\n=== S2: D4 reply unrelated turn (another id writes nothing) ===");
+  clock.set(T0);
+
+  const otherSid = "reply-unrelated-001";
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s2_reply_unrelated",
+  });
+
+  // Seed the commons store
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  h.storeMap.set(`commons:${otherSid}`, {
+    sessionId: otherSid,
+    lastSeen: now,
+    claims: [{ resource: "reader:default", claimedAt: now - 1000 }],
+  });
+
+  // Seed the persona store
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(mySid, now) }));
+
+  // Seed the heartbeat sidecar
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: mySid, epoch: 1, lastSeen: now },
+  }));
+
+  // Seed one inbox record (delivered, stamped with a specific turnId)
+  const recKey = `inbox:default:${otherSid}:1`;
+  const stampedTurnId = "t-stamped-1";
+  h.storeMap.set(recKey, {
+    id: "unrelated-rec-1",
+    key: recKey,
+    from: otherSid,
+    at: now - 5000,
+    text: "Unrelated test",
+    kind: "say",
+    status: "delivered",
+    deliveredAt: now - 4000,
+    turnId: stampedTurnId,
+  });
+
+  // Load a fresh module instance
+  const mod = await loadModule("s2_reply_unrelated");
+  const handlers = {};
+  const on = (event, handler) => { handlers[event] = handler; };
+  await mod.register(on, OPTS);
+
+  // Fire session.start
+  const startH = handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  // Fire turn.complete with a DIFFERENT turnId
+  const turnCompleteH = handlers["turn.complete"];
+  if (turnCompleteH) await turnCompleteH(h.fake, { turnId: "t-different-999", answer: "Should not match", reason: "completed" }, () => {});
+
+  // Check: no reply written
+  const replyKey = `reply:default:unrelated-rec-1`;
+  const reply = h.storeMap.get(replyKey);
+  check("S2 reply unrelated: no reply written for mismatched turnId", !reply);
+
+  // Check: record still delivered (not answered)
+  const rec = h.storeMap.get(recKey);
+  if (rec) {
+    const parsed = typeof rec === "string" ? JSON.parse(rec) : rec;
+    check("S2 reply unrelated: record still delivered", parsed.status === "delivered");
+  } else {
+    check("S2 reply unrelated: record still delivered", false);
+  }
+}
+
+// S1: reader claim via arbitration (live non-owner lands in F9 branch)
+async function caseS1_reader_arbitration(clock) {
+  console.log("\n=== S1: reader claim via arbitration (F9 branch) ===");
+  clock.set(T0);
+
+  const ownerSid = "arbitration-owner-001";
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s1_reader_arbitration",
+  });
+
+  // Seed the commons store: ownerSid holds a LIVE persona:default claim
+  // (lastSeen is recent, so not stale)
+  h.storeMap.set(`commons:${ownerSid}`, {
+    sessionId: ownerSid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 1000 }],
+  });
+
+  // Seed the persona store: ownerSid is the active session
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(ownerSid, now) }));
+
+  // Seed the heartbeat sidecar: ownerSid is the live holder
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: ownerSid, epoch: 1, lastSeen: now },
+  }));
+
+  // Load a fresh module instance
+  const mod = await loadModule("s1_reader_arbitration");
+  const handlers = {};
+  const on = (event, handler) => { handlers[event] = handler; };
+  await mod.register(on, OPTS);
+
+  // Fire session.start for mySid (the non-owner)
+  const startH = handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  // Check: mySid should have written reader:default to its commons entry
+  const myCommons = h.storeMap.get(`commons:${mySid}`);
+  if (myCommons) {
+    const parsed = typeof myCommons === "string" ? JSON.parse(myCommons) : myCommons;
+    const claims = parsed.claims || [];
+    const readerClaim = claims.find(c => c.resource === "reader:default");
+    check("S1 reader arbitration: reader:default claim written", !!readerClaim);
+  } else {
+    check("S1 reader arbitration: reader:default claim written", false);
+  }
+
+  // Check: mySid should NOT hold persona:default
+  if (myCommons) {
+    const parsed = typeof myCommons === "string" ? JSON.parse(myCommons) : myCommons;
+    const claims = parsed.claims || [];
+    const personaClaim = claims.find(c => c.resource === "persona:default");
+    check("S1 reader arbitration: no persona:default claim", !personaClaim);
+  } else {
+    check("S1 reader arbitration: no persona:default claim", false);
+  }
+}
+
 // --- Main ---
 
 async function main() {
@@ -784,8 +1205,13 @@ async function main() {
     await caseAT4_owner_refusal(clock);
     await caseAT4_say_refused(clock);
     await caseAT4_inbox_status(clock);
+    await caseS1_reader_arbitration(clock);
     await caseS2_drain(clock);
+    await caseS2_drain_inflight(clock);
+    await caseS2_drain_noclaim(clock);
     await caseS2_reply(clock);
+    await caseS2_reply_turnid(clock);
+    await caseS2_reply_unrelated(clock);
   } finally {
     clock.restore();
   }
