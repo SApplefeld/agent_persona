@@ -453,6 +453,34 @@ console.log('F10(2): reader ' + readerSession + ' is the later claimant (loser @
   fi
 fi
 
+# --- F10(reader): the reader holds a reader:default claim ---
+# AU4: snapshot the store and assert the reader's commons entry carries
+# a claim with resource === 'reader:default'.
+if [ "$OWNER_COUNT" -eq 1 ] && [ -n "$STORE_FILE_WIN" ] && [ -n "$READER_SESSION_WIN" ] && [ "$ASSERT_FAILED" -eq 0 ]; then
+  # Snapshot the store file into the evidence directory
+  cp "$STORE_FILE_WIN" "$K"/global-store.json
+  # Assert the reader holds a reader:default claim
+  node -e "
+const fs = require('fs');
+const store = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const readerSession = process.argv[2];
+const entry = store['commons:' + readerSession];
+if (!entry) {
+  console.error('F10(reader) FAIL: no commons entry for reader ' + readerSession);
+  process.exit(1);
+}
+const readerClaim = (entry.claims || []).find(c => c.resource === 'reader:default');
+if (!readerClaim) {
+  console.error('F10(reader) FAIL: reader ' + readerSession + ' does not hold reader:default');
+  process.exit(1);
+}
+console.log('F10(reader): ' + readerSession + ' holds reader:default');
+" "$K"/global-store.json "$READER_SESSION_WIN" >> "$K"/commons.assert.log 2>&1
+  if [ $? -ne 0 ]; then
+    ASSERT_FAILED=1
+  fi
+fi
+
 # --- F10(3): loser's write refused, winner's saved ---
 # Identify the reader's out.jsonl (the loser)
 LOSER_FILE=""
