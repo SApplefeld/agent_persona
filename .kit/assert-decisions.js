@@ -306,38 +306,41 @@ switch (testName) {
     break;
   }
   case "operator": {
-    // Phase 1: message and reply (required)
+    // Phase 1: message and reply
     // operator_delivered then operator_answered in order.
     orderedSubsequence(["operator_delivered", "operator_answered"], "operator phase 1");
 
-    // Phase 2: ask and answer (only when present)
+    // Phase 2: ask and answer
+    // nudge_sent, cost_cap_reached, ask_opened, ask_waiting, then ask_answered, activated.
+    // No activated between ask_opened and ask_answered.
     const askOpenedIdx = decisions.indexOf("ask_opened");
     const askAnsweredIdx = decisions.indexOf("ask_answered");
     const nudgeSentIdx = decisions.indexOf("nudge_sent");
     const costCapIdx = decisions.indexOf("cost_cap_reached");
     const askWaitingIdx = decisions.indexOf("ask_waiting");
 
-    if (askOpenedIdx !== -1 || askAnsweredIdx !== -1) {
-      check2("operator: nudge_sent found", nudgeSentIdx !== -1);
-      check2("operator: cost_cap_reached found", costCapIdx !== -1);
-      check2("operator: ask_opened found", askOpenedIdx !== -1);
-      check2("operator: ask_waiting found", askWaitingIdx !== -1);
-      check2("operator: ask_answered found", askAnsweredIdx !== -1);
+    check2("operator: nudge_sent found", nudgeSentIdx !== -1);
+    check2("operator: cost_cap_reached found", costCapIdx !== -1);
+    check2("operator: ask_opened found", askOpenedIdx !== -1);
+    check2("operator: ask_waiting found", askWaitingIdx !== -1);
+    check2("operator: ask_answered found", askAnsweredIdx !== -1);
 
-      if (nudgeSentIdx !== -1 && costCapIdx !== -1 && askOpenedIdx !== -1 && askWaitingIdx !== -1) {
-        check2("operator: nudge before cap before ask before waiting",
-          nudgeSentIdx < costCapIdx && costCapIdx < askOpenedIdx && askOpenedIdx < askWaitingIdx);
-      }
+    // Ordered: nudge_sent before cost_cap_reached before ask_opened before ask_waiting
+    if (nudgeSentIdx !== -1 && costCapIdx !== -1 && askOpenedIdx !== -1 && askWaitingIdx !== -1) {
+      check2("operator: nudge before cap before ask before waiting",
+        nudgeSentIdx < costCapIdx && costCapIdx < askOpenedIdx && askOpenedIdx < askWaitingIdx);
+    }
 
-      if (askOpenedIdx !== -1 && askAnsweredIdx !== -1 && askAnsweredIdx > askOpenedIdx) {
-        const activatedBetween = decisions.slice(askOpenedIdx + 1, askAnsweredIdx).filter(a => a === "activated").length;
-        check2("operator: no activated between ask_opened and ask_answered", activatedBetween === 0);
-      }
+    // No activated between ask_opened and ask_answered
+    if (askOpenedIdx !== -1 && askAnsweredIdx !== -1 && askAnsweredIdx > askOpenedIdx) {
+      const activatedBetween = decisions.slice(askOpenedIdx + 1, askAnsweredIdx).filter(a => a === "activated").length;
+      check2("operator: no activated between ask_opened and ask_answered", activatedBetween === 0);
+    }
 
-      const activatedAfterAsk = decisions.slice(askAnsweredIdx + 1).filter(a => a === "activated").length;
-      if (askAnsweredIdx !== -1) {
-        check2("operator: activated after ask_answered", activatedAfterAsk >= 1);
-      }
+    // activated after ask_answered
+    const activatedAfterAsk = decisions.slice(askAnsweredIdx + 1).filter(a => a === "activated").length;
+    if (askAnsweredIdx !== -1) {
+      check2("operator: activated after ask_answered", activatedAfterAsk >= 1);
     }
 
     // Phase 3: peer probe (only when peer_consumed is present)
@@ -351,9 +354,10 @@ switch (testName) {
     // REPORT: counts
     const opDelivered = decisions.filter(a => a === "operator_delivered").length;
     const opAnswered = decisions.filter(a => a === "operator_answered").length;
+    const askWaitingCount = decisions.filter(a => a === "ask_waiting").length;
     console.log(`  REPORT: operator_delivered: ${opDelivered}`);
     console.log(`  REPORT: operator_answered: ${opAnswered}`);
-    console.log(`  REPORT: ask_opened: ${askOpenedIdx !== -1 ? 1 : 0}`);
+    console.log(`  REPORT: ask_waiting: ${askWaitingCount}`);
     console.log(`  REPORT: peer_consumed: ${peerConsumedIdxs.length}`);
     break;
   }

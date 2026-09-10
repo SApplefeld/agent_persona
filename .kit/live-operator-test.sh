@@ -1,64 +1,55 @@
 #!/usr/bin/env bash
-# Live test: operator channel basic smoke test.
-# Verifies that the owner can start, create a persona, and remain alive.
+# Live test: operator channel end-to-end (section 5).
+# Three phases:
+#   1. Message and reply: reader sends agentic_say, owner drains, reader gets reply
+#   2. Ask and answer: nudge cap forces ask_opened, reader answers, owner reactivated
+#   3. Peer probe: peer text consumed, model never reads it (OPERATOR_HOLD_S > 0 only)
 #
-# The full operator channel test (message/reply, ask/answer, peer probe)
-# requires a working reader and is timing-dependent. This smoke test
-# verifies the basic owner setup works.
+# Decision 1: ask is forced by the nudge cap (COST_MAX_NUDGES_PER_HOUR=1), not classifier.
+# Decision 2: reader is a real claude -p that calls the tools through the model.
+# Decision 3: peer probe is sent by the operator from their session on a file handshake.
+#
+# OPERATOR_HOLD_S=0 skips phase 3 (unattended gate).
+# OPERATOR_HOLD_S=240 (standalone) holds the owner open for the probe.
 set -u
 
+# --- Configuration ---
 SUITE_DIR="${SUITE_DIR:-/d/Temp/agentic-live/operator}"
+PROFILE="${PROFILE:-short}"
+OPERATOR_HOLD_S="${OPERATOR_HOLD_S:-0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# --- Pre-gate: wait for persona:default to have no live claim ---
-STORE_FILE=""
-if [ -d "$HOME/.claude/plugins/store" ]; then
-  for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
-    if [ -f "$f" ]; then STORE_FILE="$f"; break; fi
-  done
-fi
-if [ -n "$STORE_FILE" ] && [ -f "$STORE_FILE" ]; then
-  echo "pre-gate: waiting for persona:default to have no live claim..."
-  for i in $(seq 1 24); do
-    LIVE_COUNT=$(node -e "
-      try {
-        const s = JSON.parse(require('fs').readFileSync('$STORE_FILE','utf8'));
-        const claims = s.claims || {};
-        let live = 0;
-        for (const [k,v] of Object.entries(claims)) {
-          if (k.startsWith('persona:default') && Date.now() - v.at < 90000) live++;
-        }
-        console.log(live);
-      } catch(e) { console.log(0); }
-    " 2>/dev/null || echo 0)
-    if [ "$LIVE_COUNT" -eq 0 ]; then
-      echo "pre-gate passed (no live claims)"
-      break
-    fi
-    echo "pre-gate poll: live=$LIVE_COUNT"
-    if [ "$i" -eq 24 ]; then
-      echo "pre-gate timeout after 120s, continuing anyway"
-    fi
-    sleep 5
-  done
-fi
-
 # --- Setup ---
-rm -rf "$SUITE_DIR" 2>/dev/null
+if [ -f "$SUITE_DIR/RUNNING" ]; then
+  echo "RUNNING exists, refusing" >&2
+  exit 8
+fi
+rm -rf "$SUITE_DIR"
 mkdir -p "$SUITE_DIR"
 cd "$SUITE_DIR" || exit 9
 
 source "$SCRIPT_DIR/live-common.sh"
 
-OUT="$SUITE_DIR/operator-owner.out.jsonl"
-ERR="$SUITE_DIR/operator-owner.err.log"
-EXIT="$SUITE_DIR/operator.exit"
-RUNNING="$SUITE_DIR/RUNNING"
+OWNER_OUT="$SUITE_DIR/operator-owner.out.jsonl"
+OWNER_ERR="$SUITE_DIR/operator-owner.err.log"
+OWNER_EXIT="$SUITE_DIR/operator.exit"
+READER_OUT="$SUITE_DIR/operator-reader.out.jsonl"
+READER_ERR="$SUITE_DIR/operator-reader.err.log"
+READER_OUT2="$SUITE_DIR/operator-reader2.out.jsonl"
+READER_ERR2="$SUITE_DIR/operator-reader2.err.log"
+HANDSHAKE_READY="$SUITE_DIR/operator-hold.ready"
+HANDSHAKE_SENT="$SUITE_DIR/operator-probe.sent"
 
-trap 'rm -f "$RUNNING"' EXIT
+OP_PID=""
+cleanup() {
+  [ -n "$OP_PID" ] && kill "$OP_PID" 2>/dev/null
+  rm -f "$RUNNING" "$HANDSHAKE_READY" "$HANDSHAKE_SENT"
+}
+trap cleanup EXIT
 
-rm -f "$OUT" "$ERR" "$EXIT"
+rm -f "$OWNER_OUT" "$OWNER_ERR" "$READER_OUT" "$READER_OUT2" \
+      "$HANDSHAKE_READY" "$HANDSHAKE_SENT"
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 unset CLAUDECODE
 
@@ -70,75 +61,323 @@ export COST_MAX_NUDGES_PER_HOUR=1
 export COST_SUMMARY_EVERY_N_TICKS=3
 emit_settings_json "settings.json"
 
-[ -f "$RUNNING" ] && { echo "RUNNING exists, refusing"; exit 8; }
+OWNER_TOOLS="mcp__agentic-plugin__goal_create,mcp__agentic-plugin__goal_done,mcp__agentic-plugin__memory_add,mcp__agentic-plugin__agentic_identity,mcp__agentic-plugin__agentic_say,mcp__agentic-plugin__agentic_inbox"
+READER_TOOLS="mcp__agentic-plugin__agentic_identity,mcp__agentic-plugin__agentic_say,mcp__agentic-plugin__agentic_inbox,mcp__agentic-plugin__memory_add"
+
 echo "DeepSeekHarness $0 $(date -u +%FT%TZ)" > "$RUNNING"
 
-# --- Feed: owner (one message, then sleep infinity) ---
-feed() {
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Create a goal: Wait for a signal from the user. The task is to respond to any operator messages. Do not finish."}}'
-  sleep infinity
+# --- F13a: Pre-gate ---
+STORE_FILE=""
+if [ -d "$HOME/.claude/plugins/store" ]; then
+  for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
+    if [ -f "$f" ]; then
+      STORE_FILE="$f"
+      break
+    fi
+  done
+fi
+
+if [ -n "$STORE_FILE" ] && [ -f "$STORE_FILE" ]; then
+  STORE_FILE_PRE=$(cygpath -m "$STORE_FILE" 2>/dev/null || echo "$STORE_FILE")
+  STALE_THRESHOLD_MS=90000
+  echo "pre-gate: waiting for persona:default to have no live claim..."
+  PRE_GATE_N=0
+  while true; do
+    LIVE_CLAIMS=$(node -e "
+const fs = require('fs');
+try {
+  const store = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+  const keys = Object.keys(store).filter(k => k.startsWith('commons:'));
+  const now = Date.now();
+  const stale = parseInt(process.argv[2], 10) || 90000;
+  let live = 0;
+  for (const key of keys) {
+    const entry = store[key];
+    if (entry.lastSeen && (now - entry.lastSeen) < stale) {
+      if (entry.claims) {
+        for (const c of entry.claims) {
+          if (c.resource === 'persona:default') live++;
+        }
+      }
+    }
+  }
+  console.log(live);
+} catch { console.log(0); }
+" "$STORE_FILE_PRE" "$STALE_THRESHOLD_MS" 2>/dev/null)
+    if [ "${LIVE_CLAIMS:-0}" = "0" ]; then
+      echo "pre-gate passed (no live claims)"
+      break
+    fi
+    PRE_GATE_N=$((PRE_GATE_N + 5))
+    echo "pre-gate poll: live=${LIVE_CLAIMS} oldest_age=${PRE_GATE_N}s"
+    [ $PRE_GATE_N -ge 120 ] && { echo "pre-gate timeout after ${PRE_GATE_N}s"; break; }
+    sleep 5
+  done
+fi
+
+# --- Owner feed: create a wait goal, stay idle ---
+# The feed stays open (bounded hold) so the owner process stays alive.
+# The suite kills the owner when done (trap EXIT).
+OP_HOLD_S=$(( ${OPERATOR_HOLD_S:-0} + 900 ))
+feed_owner() {
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"Wait for a signal from the user. The task is NOT complete until the user sends a message. Do not mark the goal as done.\" and maxRounds 10. After creating the goal, stop and wait for the signal from the user. Do not take any more actions. Do not call goal_done. The task is incomplete until the user sends a message."}}'
+  OUT="$OWNER_OUT" wait_turn 1
+  sleep "$OP_HOLD_S"
 }
 
-feed | claude -p --input-format stream-json --output-format stream-json --verbose \
+# --- Phase 1: reader turn 1 (identity + say) ---
+reader_turn1_msg() {
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call agentic_identity with persona \"default\". Then call agentic_say with text \"Report your current goal in one line.\" Print SENT on its own line. Do not call agentic_inbox yet. Stop after printing SENT."}}'
+}
+
+# --- Phase 2: reader turn 2 (inbox, get reply) ---
+reader_turn2_msg() {
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call agentic_inbox once. Read the reply text from the inbox entry. Print the reply text verbatim on its own line prefixed REPLY: You must print the REPLY: line before finishing."}}'
+}
+
+# --- Phase 3: reader turn 3 (answer the ask) ---
+reader_turn3_msg() {
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call agentic_inbox. Take the id of the open ask in asks. Call agentic_say with answers set to that id and text \"Proceed with the next step.\" Print DONE on its own line."}}'
+}
+
+# --- Poll the store for a decision ---
+# Usage: wait_for_decision <action> <timeout_s>
+wait_for_decision() {
+  local action="$1"
+  local timeout_s="$2"
+  local elapsed=0
+  while [ $elapsed -lt $timeout_s ]; do
+    if [ -f .agentic-personas.json ]; then
+      FOUND=$(node -e "
+try {
+  const s = JSON.parse(require('fs').readFileSync('.agentic-personas.json', 'utf8'));
+  const d = (s.default.decisions || []);
+  console.log(d.some(x => x.action === process.argv[1]) ? '1' : '0');
+} catch { console.log('0'); }
+" "$action" 2>/dev/null)
+      if [ "$FOUND" = "1" ]; then
+        return 0
+      fi
+    fi
+    sleep 3; elapsed=$((elapsed + 3))
+  done
+  return 1
+}
+
+# --- Launch owner ---
+feed_owner | claude -p --input-format stream-json --output-format stream-json --verbose \
   --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" \
   --settings "$(cygpath -w "$SUITE_DIR/settings.json")" \
-  --allowedTools "mcp__agentic-plugin__goal_create,mcp__agentic-plugin__goal_done,mcp__agentic-plugin__memory_add,mcp__agentic-plugin__agentic_identity,mcp__agentic-plugin__agentic_say,mcp__agentic-plugin__agentic_inbox" \
+  --allowedTools "$OWNER_TOOLS" \
   --model haiku \
-  > "$OUT" 2> "$ERR" &
-CLAUDE_PID=$!
-sleep 10
+  > "$OWNER_OUT" 2> "$OWNER_ERR" &
+OP=$!
+OP_PID=$OP
 
-if ! kill -0 "$CLAUDE_PID" 2>/dev/null; then
-  echo "FAIL: claude died"
-  exit 1
+# --- Wait for owner's persona:default claim to be LIVE in the global commons store ---
+# BC4: launch the reader when the claim is live, not on persona_create (which fires
+# before the first heartbeat/claim). With BC3 the claim is written at session.start.
+STORE_FILE_LAUNCH=""
+if [ -d "$HOME/.claude/plugins/store" ]; then
+  for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
+    if [ -f "$f" ]; then STORE_FILE_LAUNCH="$f"; break; fi
+  done
 fi
-echo "owner: alive (pid $CLAUDE_PID)"
-
-# --- Wait for persona creation ---
-STORE_BASH="$SUITE_DIR/.agentic-personas.json"
-STORE_WIN="$(cygpath -w "$STORE_BASH")"
-PERSONA_FOUND=0
-for i in $(seq 1 30); do
-  if [ -f "$STORE_BASH" ]; then
-    FOUND=$(node -e "
-      const path = process.argv[1];
-      try {
-        const s = JSON.parse(require('fs').readFileSync(path, 'utf8'));
-        const d = (s.default && s.default.decisions) || [];
-        const found = d.find(x => x.action === 'persona_claim_commons' || x.action === 'persona_create');
-        console.log(found ? 'yes' : 'no');
-      } catch(e) { console.log('no'); }
-    " "$STORE_WIN" 2>/dev/null || echo "no")
-    if [ "$FOUND" = "yes" ]; then
-      PERSONA_FOUND=1
+GOAL_N=0
+while [ $GOAL_N -lt 120 ]; do
+  if [ -n "$STORE_FILE_LAUNCH" ] && [ -f "$STORE_FILE_LAUNCH" ]; then
+    STORE_PRE=$(cygpath -m "$STORE_FILE_LAUNCH" 2>/dev/null || echo "$STORE_FILE_LAUNCH")
+    LIVE=$(node -e "
+const fs = require('fs');
+try {
+  const store = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+  const keys = Object.keys(store).filter(k => k.startsWith('commons:'));
+  const now = Date.now();
+  for (const key of keys) {
+    const entry = store[key];
+    if (entry.lastSeen && (now - entry.lastSeen) < 90000) {
+      if (entry.claims) {
+        for (const c of entry.claims) {
+          if (c.resource === 'persona:default') { console.log('1'); process.exit(0); }
+        }
+      }
+    }
+  }
+  console.log('0');
+} catch { console.log('0'); }
+" "$STORE_PRE" 2>/dev/null)
+    if [ "$LIVE" = "1" ]; then
       break
     fi
   fi
-  sleep 2
+  sleep 3; GOAL_N=$((GOAL_N + 3))
 done
+if [ "$LIVE" != "1" ]; then
+  echo "FAIL: owner did not claim persona:default in commons store after ${GOAL_N}s" >&2
+  kill $OP 2>/dev/null
+  exit 1
+fi
+echo "owner persona:default claim live in commons store"
 
-if [ "$PERSONA_FOUND" -eq 1 ]; then
-  echo "persona: created"
+# --- Phase 1+2: ONE reader process, three turns on one stream-json feed ---
+# BC4: one reader process, one session id/claim. The suite feeds messages at the
+# right times via a FIFO (named pipe) for the reader's stdin.
+READER_FIFO="$SUITE_DIR/operator-reader.fifo"
+rm -f "$READER_FIFO"
+mkfifo "$READER_FIFO" || { echo "FAIL: cannot create FIFO" >&2; kill $OP 2>/dev/null; exit 1; }
+
+# Open the FIFO for writing in this shell (fd 3) so it stays open.
+exec 3>"$READER_FIFO"
+
+# Launch the ONE reader process, reading from the FIFO.
+claude -p --input-format stream-json --output-format stream-json --verbose \
+  --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" \
+  --settings "$(cygpath -w "$SUITE_DIR/settings.json")" \
+  --allowedTools "$READER_TOOLS" \
+  --model haiku \
+  < "$READER_FIFO" \
+  > "$READER_OUT" 2> "$READER_ERR" &
+RP=$!
+echo "phase 1: reader launched (pid $RP)"
+
+# --- Turn 1: identity + say ---
+reader_turn1_msg >&3
+echo "turn 1 fed"
+
+# --- Wait for operator_delivered and operator_answered ---
+wait_for_decision "operator_delivered" 60
+if [ $? -eq 0 ]; then
+  echo "phase 1: operator_delivered found"
 else
-  echo "FAIL: persona not created after 60s"
-  kill "$CLAUDE_PID" 2>/dev/null
+  echo "FAIL: operator_delivered not found after 60s" >&2
+fi
+
+wait_for_decision "operator_answered" 120
+if [ $? -eq 0 ]; then
+  echo "phase 1: operator_answered found"
+else
+  echo "FAIL: operator_answered not found after 120s" >&2
+fi
+
+# --- Turn 2: inbox, get reply ---
+reader_turn2_msg >&3
+echo "turn 2 fed"
+
+# --- Phase 2: wait for ask_opened (nudge cap fires) ---
+echo "phase 2: waiting for ask_opened (nudge cap)..."
+wait_for_decision "ask_opened" 300
+if [ $? -eq 0 ]; then
+  echo "phase 2: ask_opened found"
+else
+  echo "FAIL: ask_opened not found after 300s" >&2
+  kill $OP 2>/dev/null
   exit 1
 fi
 
-# --- Kill owner (best effort, don't block on wait) ---
-kill "$CLAUDE_PID" 2>/dev/null || true
-sleep 2
-EXIT_CODE=0
-echo $EXIT_CODE > "$EXIT"
+# --- Turn 3: answer the ask ---
+reader_turn3_msg >&3
+echo "turn 3 fed"
+
+# --- Close the FIFO so the reader process exits ---
+exec 3>&-
+wait $RP
+echo "reader done (rc=$?)"
+
+# --- Wait for ask_answered ---
+wait_for_decision "ask_answered" 120
+if [ $? -eq 0 ]; then
+  echo "phase 2: ask_answered found"
+else
+  echo "FAIL: ask_answered not found after 120s" >&2
+fi
+
+# --- Phase 3: peer probe (only when OPERATOR_HOLD_S > 0) ---
+PHASE3_SKIPPED=1
+if [ "$OPERATOR_HOLD_S" -gt 0 ]; then
+  PHASE3_SKIPPED=0
+  STAMP="$(date -u +%s)"
+  echo "$STAMP" > "$HANDSHAKE_READY"
+  echo "phase 3: holding owner open for ${OPERATOR_HOLD_S}s, waiting for probe (stamp: $STAMP)"
+
+  PROBE_N=0
+  while [ $PROBE_N -lt "$OPERATOR_HOLD_S" ]; do
+    if [ -f "$HANDSHAKE_SENT" ]; then
+      break
+    fi
+    sleep 2; PROBE_N=$((PROBE_N + 2))
+  done
+
+  if [ ! -f "$HANDSHAKE_SENT" ]; then
+    echo "REPORT: phase 3 timeout (no probe after ${OPERATOR_HOLD_S}s)"
+    PHASE3_SKIPPED=1
+  else
+    # Wait for peer_consumed decision
+    wait_for_decision "peer_consumed" 30
+    if [ $? -eq 0 ]; then
+      echo "phase 3: peer_consumed found"
+    else
+      echo "FAIL: peer_consumed not found after 30s" >&2
+    fi
+  fi
+fi
+
+# --- Kill owner ---
+kill $OP 2>/dev/null
+wait $OP 2>/dev/null
+OWNER_RC=$?
+echo $OWNER_RC > "$OWNER_EXIT"
+
+# --- Write decisions log and run assertions ---
+if [ -f .agentic-personas.json ]; then
+  node -e "
+const fs = require('fs');
+try {
+  const s = JSON.parse(fs.readFileSync('.agentic-personas.json', 'utf8'));
+  const p = Object.keys(s)[0];
+  const d = (s[p].decisions || []).map(x =>
+    new Date(x.timestamp).toISOString().slice(11, 19) + ' ' +
+    x.loop + ' | ' + x.action + ' | ' + (x.detail || '')
+  );
+  fs.writeFileSync('operator.decisions.log', d.join('\n') + '\n');
+  console.log('wrote operator.decisions.log (' + d.length + ' lines)');
+} catch (e) {
+  console.error('Failed to write decisions log:', e.message);
+  process.exit(1);
+}
+"
+  node "$SCRIPT_DIR/assert-decisions.js" operator .agentic-personas.json "$SUITE_DIR/operator.assert.log"
+  ASSERT_EXIT=$?
+  echo "ASSERT: $ASSERT_EXIT" >> "$OWNER_EXIT"
+  if [ $ASSERT_EXIT -ne 0 ]; then
+    echo "Assertion failed" >> "$OWNER_EXIT"
+    exit 1
+  fi
+else
+  echo "no store at $PWD" >> "$OWNER_EXIT"
+  exit 1
+fi
 
 # --- Evidence retention ---
-RETAIN="$PLUGIN_DIR/.kit/runs/$(date -u +%Y%m%dT%H%M%SZ)/operator"
-mkdir -p "$RETAIN"
-cp "$OUT" "$RETAIN/" 2>/dev/null || true
-cp "$ERR" "$RETAIN/" 2>/dev/null || true
-cp "$STORE_BASH" "$RETAIN/" 2>/dev/null || true
-echo "evidence: retained at $RETAIN"
+STAMP_E="$(date -u +%Y%m%dT%H%M%SZ)"
+RUNS_DIR="$PLUGIN_DIR/.kit/runs/$STAMP_E/operator"
+mkdir -p "$RUNS_DIR"
+for f in operator-owner.out.jsonl operator-owner.err.log operator-reader.out.jsonl \
+         operator-reader.err.log operator-reader2.out.jsonl operator-reader2.err.log \
+         operator.decisions.log operator.assert.log operator.exit settings.json; do
+  [ -f "$SUITE_DIR/$f" ] && cp -f "$SUITE_DIR/$f" "$RUNS_DIR/" 2>/dev/null
+done
+for f in .agentic-*.json; do
+  [ -f "$SUITE_DIR/$f" ] && cp -f "$SUITE_DIR/$f" "$RUNS_DIR/" 2>/dev/null
+done
+echo "evidence retained in $RUNS_DIR"
 
-echo "=== OPERATOR SMOKE TEST COMPLETE ==="
-echo "owner: started, persona created, alive"
-exit 0
+# --- Phase 3 REPORT ---
+if [ $PHASE3_SKIPPED -eq 1 ]; then
+  echo "REPORT: phase 3 skipped (no probe)"
+else
+  echo "REPORT: phase 3 completed (probe sent)"
+fi
+
+# --- Cleanup ---
+rm -f .agentic-personas.json .agentic-heartbeat.json
+exit $OWNER_RC
