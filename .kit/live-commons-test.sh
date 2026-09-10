@@ -563,7 +563,7 @@ else
 fi
 mkdir -p "$RUNS_DIR"
 # Copy A's artifacts
-for f in commons-A.out.jsonl commons-A.debug.log commons-A.err.log commons.exit commons.assert.log; do
+for f in commons-A.out.jsonl commons-A.debug.log commons-A.err.log commons.exit commons.assert.log global-store.json global-store-control.json; do
   [ -f "$K/$f" ] && cp -f "$K/$f" "$RUNS_DIR/" 2>/dev/null
 done
 for f in .agentic-*.json .agentic-*.log; do
