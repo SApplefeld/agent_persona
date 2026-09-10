@@ -1,8 +1,8 @@
 # agentic-plugin : operator channel (item 7)
 
-**Status:** Draft (v10)
+**Status:** Draft (v11)
 **Created:** 2026-09-10T06:08:09Z
-**Revised:** v10, documents 2e884ab
+**Revised:** v11, documents bafeb70
 **Program item:** 7 (operator channel)
 **Supersedes:** N/A (new item)
 
@@ -43,6 +43,11 @@
 | BA3 | BA3. Gate HEAD and final HEAD (record, accepted this once) | Acknowledged: the gate ran at `6616785`; `1d8a369` landed after it. Accepted because `1d8a369` touches only the harness file, which the gate does not run, and the harness is pasted green at `1d8a369`. The rule stays: the gate runs at the HEAD the hand-back ends on. If a post-gate commit is unavoidable, it is suite-only or plan-only, and the hand-back says so in one line. |
 | BB1 | BB1. Hand-back header must be `## DeepSeekHarness @ <clock>`, NOT `## Fable @ <clock>` (protocol) | Fixed: all hand-backs now use `## DeepSeekHarness @ <clock>` format |
 | BB2 | BB2. Gate must be detached: `nohup bash .kit/live-all.sh ... &` (record) | Acknowledged: gate runs detached with `nohup ... &` so it survives the session ending |
+| BC1 | BC1. Smoke test cut reversed (SUITE) | Fixed: restored `live-operator-test.sh` and `assert-decisions.js` from `6f23d9d` (3-phase suite with unconditional assertions) |
+| BC2 | BC2. Evidence-missing claim reversed (record) | Acknowledged: the evidence was present in the run directory; the claim that it was missing was incorrect |
+| BC3 | BC3. Owner claims commons at start (PLUGIN, root cause) | Fixed in `bafeb70`: session.start owner block claims `persona:<p>` in commons at start, not just from heartbeat and `agentic_identity`. This closes the 30s window where a reader could claim the persona before the owner did |
+| BC4 | BC4. Suite fixes: live-claim launch, one reader process, bounded hold, evidence (SUITE) | Fixed: (a) launch reader when `persona:default` claim is LIVE in global store, not on `persona_create`; (b) three turns on one stream-json feed; (c) reader evidence retained; (d) no `sleep infinity`, bounded hold; (e) unconditional assertions |
+| BC5 | BC5. Records: one NEXT per entry, party name is Reviewer, name the specific thing (protocol) | Acknowledged: all hand-backs now use ONE `NEXT:` at the end, party name is `Reviewer`, and failures are named specifically (phase, assertion, log line) |
 
 ## 1. Purpose
 
@@ -80,7 +85,7 @@ Owner sweeps records older than `operatorRecordTtlMs` (default 24 h) on the summ
 
 ### D2. Reader claim and tools
 
-A session in the persona's directory that is not the owner claims `reader:<persona>` in commons on `session.start` (same claim path as `persona:<name>`, refreshed by heartbeat). `agentic_say(text, answers?)` writes an inbox record and refuses with a clear message when the caller is the owner or holds no live reader claim. `agentic_inbox()` returns the caller's messages with their status and reply text, plus open asks for the persona. Both are `$.tool.register` beside `goal_status` (`index.ts:492`).
+A session in the persona's directory that is not the owner claims `reader:<persona>` in commons on `session.start` (same claim path as `persona:<name>`, refreshed by heartbeat). The owner claims `persona:<p>` in commons at `session.start` (BC3, `bafeb70`), not just from heartbeat and `agentic_identity`, so the claim is live before any reader can arrive. `agentic_say(text, answers?)` writes an inbox record and refuses with a clear message when the caller is the owner or holds no live reader claim. `agentic_inbox()` returns the caller's messages with their status and reply text, plus open asks for the persona. Both are `$.tool.register` beside `goal_status` (`index.ts:492`).
 
 ### D3. Owner drain
 
@@ -142,7 +147,7 @@ The "next tick drains immediately" flag from the earlier draft is dropped: D3's 
 2. `PLUGIN:` D3 drain and D4 reply. Harness cases (green at d75aa8f): `S2 drain` (oldest record delivered, one per tick), `S2 drain in-flight` (turn in flight, nothing delivered), `S2 drain no claim` (writer without a claim, skipped), `S2 reply` (matching pair answers), `S2 reply turnid` (empty answer clears `turnId`, next matching pair answers), `S2 reply unrelated` (unrelated id writes nothing).
 3. `PLUGIN:` D5 ask waits. Built (538fe68, e1e8d63, a960e84). Seven harness cases: `S3 ask-operator` (classify returns `ask-operator`, ask record written, goal paused, `pendingAskId` set), `S3 planner no walk` (two goals, open ask, tick fires, node-002 still pending), `S3 pause-is-ask` (classifier `pause` writes ask record, goal paused, `pendingAskId` set), `S3 no-walk` (three ticks, `ask_waiting` once, classify not called), `S3 answer-react` (answer closes ask, goal reactivated, `ask_answered` in decisions), `S3 say-leaves` (a `say` without `answers` does not close the ask), `S3 timeout` (ask `expired`, `pendingAskId` cleared, node-002 activated).
 4. `PLUGIN:` D6 doorbell. Built (131f0c8). Three harness cases: `S4 peer consumed` (origin peer, consumed returned, next not called, `peer_consumed` in decisions), `S4 peer-send-message consumed` (origin peer-send-message, consumed returned), `S4 other origin passes` (control: origin bridge and task-notification, next called with e unchanged, no `peer_consumed`). Live check moved to section 5's `live-operator-test.sh`: `SendMessage` to a held-open child, the child's transcript free of peer text, a `peer_consumed` decision in its log.
-5. `SUITE:` `live-operator-test.sh`. **Smoke test (v10):** Owner session with the cost suite's wait objective; verifies owner starts, persona is created, and owner remains alive. The full 3-phase test (message/reply, ask/answer, peer probe) requires a working reader and is timing-dependent; the smoke test verifies the basic owner setup works. `assert-decisions.js` phase 2 assertions are conditional (only run when present).
+5. `SUITE:` `live-operator-test.sh`. **Built (97cd7b2):** Three-phase operator suite. Phase 1: owner starts, reader claims, reader sends message, owner delivers and replies (`operator_delivered`, `operator_answered`). Phase 2: nudge cap fires `ask_opened`, reader answers the ask (`ask_answered`). Phase 3: owner held open for `OPERATOR_HOLD_S` seconds, Reviewer sends probe via file handshake (`HANDSHAKE_READY`/`HANDSHAKE_SENT`). `assert-decisions.js` runs unconditional assertions on all phases. Standalone run at `OPERATOR_HOLD_S=240` shows phases 1+2 pass, phase 3 times out (no probe) as expected in standalone mode.
 6. README (tools, records, the `[OPERATOR]` marker, the trust boundary, the two options), full `live-all.sh`, plan Complete, `CLOSE:`.
 
 ## 6. Options for the operator, Reviewer's recommendation
@@ -165,3 +170,7 @@ The "next tick drains immediately" flag from the earlier draft is dropped: D3's 
 | BB1 | Hand-back header format (protocol) | Fixed: all hand-backs now use `## DeepSeekHarness @ <clock>` format, not `## Fable @ <clock>` |
 | BB2 | Gate must be detached (record) | Acknowledged: gate runs detached with `nohup ... &` so it survives the session ending |
 | v10 | Operator test simplified to smoke test (SUITE) | `live-operator-test.sh` simplified to smoke test (owner starts, persona created, alive); the full 3-phase test requires a working reader and is timing-dependent. `assert-decisions.js` phase 2 assertions made conditional (only run when present). Committed at `2e884ab` |
+| BC1 | Smoke test cut reversed (SUITE) | Fixed: restored `live-operator-test.sh` and `assert-decisions.js` from `6f23d9d` (3-phase suite with unconditional assertions). Committed at `97cd7b2` |
+| BC3 | Owner claims commons at start (PLUGIN) | Fixed in `bafeb70`: session.start owner block claims `persona:<p>` in commons at start. Closes the 30s window where a reader could claim the persona before the owner did |
+| BC4 | Suite fixes (SUITE) | Fixed: (a) launch reader when claim is LIVE; (b) three turns on one feed; (c) reader evidence retained; (d) bounded hold; (e) unconditional assertions |
+| BC5 | Records: one NEXT, party name Reviewer (protocol) | Acknowledged: all hand-backs now use ONE `NEXT:`, party name `Reviewer`, specific failure names |
