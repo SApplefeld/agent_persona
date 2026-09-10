@@ -53,6 +53,11 @@ const ASK_PREFIX = "ask:";
 const READER_PREFIX = "reader:";
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
+// --- Store interface ---
+
+import type { CommonsStore } from "./commons";
+import { claimResource, releaseResource, readAllClaims } from "./commons";
+
 // --- Key helpers ---
 
 function inboxKey(persona: string, writerSessionId: string, seq: number): string {
@@ -70,11 +75,6 @@ function askKey(persona: string, askId: string): string {
 function readerKey(persona: string): string {
   return `${READER_PREFIX}${persona}`;
 }
-
-// --- Store interface ---
-
-import type { CommonsStore } from "./commons";
-import { claimResource, releaseResource, readAllClaims } from "./commons";
 
 // --- D1: Records ---
 

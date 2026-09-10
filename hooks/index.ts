@@ -41,7 +41,15 @@ import {
   commonsWinner,
 } from "./commons";
 import type { CommonsStore } from "./commons";
-import { claimReaderRole } from "./operator";
+import {
+  claimReaderRole,
+  hasLiveReaderClaim,
+  sweepExpiredRecords,
+  writeInboxRecord,
+  getHighestInboxSeq,
+  listInboxRecords,
+  readReplyRecord,
+} from "./operator";
 import {
   shouldSelfReview,
   buildSelfReviewInput,
@@ -783,19 +791,16 @@ export const register: Register = async (on, options) => {
 
         // AT5: Sweep expired operator records on the summary cadence (owner only)
         if (sess.isOwner) {
-          try {
-            const { sweepExpiredRecords } = await import("./operator.js");
-            const ttlMs = typeof cfg.operatorRecordTtlMs === "number" ? (cfg.operatorRecordTtlMs as number) : 86400000;
-            const swept = await sweepExpiredRecords(commonsStoreOf($), sess.persona, ttlMs);
-            if (swept > 0) {
-              sess.state.decisions.push({
-                timestamp: Date.now(),
-                loop: "worker",
-                action: "sweep_expired_records",
-                detail: `swept ${swept} expired operator records (persona: ${sess.persona})`,
-              });
-            }
-          } catch { /* non-fatal */ }
+          const ttlMs = typeof cfg.operatorRecordTtlMs === "number" ? (cfg.operatorRecordTtlMs as number) : 86400000;
+          const swept = await sweepExpiredRecords(commonsStoreOf($), sess.persona, ttlMs);
+          if (swept > 0) {
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "worker",
+              action: "sweep_expired_records",
+              detail: `swept ${swept} expired operator records (persona: ${sess.persona})`,
+            });
+          }
         }
       }
 
@@ -2426,8 +2431,13 @@ export const register: Register = async (on, options) => {
         toolErrorsThisTurn++;
         return { deny: "agentic_say is for reader sessions only; the owner does not need to send itself a message." };
       }
+      // D2: require a live reader claim
+      const hasClaim = await hasLiveReaderClaim(commonsStoreOf($), persona, sess.mySessionId);
+      if (!hasClaim) {
+        toolErrorsThisTurn++;
+        return { deny: "agentic_say requires a live reader claim; the reader role is not held by this session." };
+      }
       // Write the inbox record
-      const { writeInboxRecord, getHighestInboxSeq } = await import("./operator.js");
       const seq = await getHighestInboxSeq(commonsStoreOf($), persona, sess.mySessionId) + 1;
       const id = await writeInboxRecord(commonsStoreOf($), persona, sess.mySessionId, seq, text, "say", answers);
       sess.state.decisions.push({
@@ -2448,8 +2458,13 @@ export const register: Register = async (on, options) => {
         toolErrorsThisTurn++;
         return { deny: "agentic_inbox is for reader sessions only; the owner reads its own replies directly." };
       }
+      // D2: require a live reader claim
+      const hasClaim = await hasLiveReaderClaim(commonsStoreOf($), persona, sess.mySessionId);
+      if (!hasClaim) {
+        toolErrorsThisTurn++;
+        return { deny: "agentic_inbox requires a live reader claim; the reader role is not held by this session." };
+      }
       // List inbox records for this persona
-      const { listInboxRecords, readReplyRecord } = await import("./operator.js");
       const records = await listInboxRecords(commonsStoreOf($), persona);
       // Attach replies to records
       const withReplies = await Promise.all(records.map(async (rec) => {

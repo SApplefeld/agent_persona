@@ -323,14 +323,20 @@ async function main() {
   }
 
   // AO1: Assert that hooks/index.ts was not modified by the test run.
+  // The test harness may touch the file (e.g., timestamp updates), so we
+  // check that the working tree is clean relative to HEAD, not that the
+  // test itself did not write to it.
+  // NOTE: This check is only meaningful when the working tree is committed.
+  // If there are uncommitted changes (e.g., during development), this will
+  // FAIL. That is correct: the test should only pass on a clean tree.
   try {
-    execSync("git diff --quiet hooks/index.ts", {
+    execSync("git diff --quiet HEAD -- hooks/index.ts", {
       cwd: new URL("..", import.meta.url).pathname.replace(/^\/([A-Z]:)/, "$1"),
       stdio: "pipe",
     });
-    check("AO1: git diff --quiet hooks/index.ts succeeds (no modification)", true);
+    check("AO1: git diff --quiet HEAD -- hooks/index.ts succeeds (no modification)", true);
   } catch (e) {
-    check("AO1: git diff --quiet hooks/index.ts succeeds (no modification)", false);
+    check("AO1: git diff --quiet HEAD -- hooks/index.ts succeeds (no modification)", false);
   }
 
   console.log(`\n${failures === 0 ? "PASS" : "FAIL"}: ${failures} failure(s)`);
