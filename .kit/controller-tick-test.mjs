@@ -1260,6 +1260,390 @@ async function caseS3_planner_no_walk(clock) {
   check("S3 planner no walk: node-002 still pending", node2 && node2.status === "pending");
 }
 
+// ============================================================
+// S3: AZ2 - pause is an ask (classifier "pause" writes ask + pendingAskId)
+// ============================================================
+async function caseS3_pause_is_ask(clock) {
+  console.log("\n=== S3: classifier pause writes ask and pauses ===");
+  clock.set(T0);
+
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s3_pause_is_ask",
+  });
+
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  // Drive a single "pause" classify result through the idle gate.
+  h.setClassifyValue("pause");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+
+  const state = getState(h);
+
+  // Check: there should be an ask record in the store
+  const askRecords = Array.from(h.storeMap.keys()).filter(k => k.startsWith("ask:"));
+  check("S3 pause-is-ask: ask record written", askRecords.length > 0);
+
+  // Check: the active goal should be paused
+  const activeGoal = state.goals.find(g => g.id === state.activeGoalId);
+  check("S3 pause-is-ask: active goal status is paused", activeGoal && activeGoal.status === "paused");
+
+  // Check: pendingAskId should be set
+  check("S3 pause-is-ask: pendingAskId is set", state.pendingAskId !== null && state.pendingAskId !== undefined);
+}
+
+// ============================================================
+// S3: AZ2 - no walk-on while ask is open (ask_waiting once, classify not called)
+// ============================================================
+async function caseS3_no_walk_while_open(clock) {
+  console.log("\n=== S3: no walk-on while ask is open ===");
+  clock.set(T0);
+
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s3_no_walk_while_open",
+  });
+
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  // Seed persona store: active goal + pending goal + open ask
+  const personaState = buildPersonaState(mySid, now);
+  personaState.goals = [
+    { id: "node-001", kind: "leaf", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-002", kind: "leaf", objective: "Goal 2", status: "pending", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 9000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-001";
+  personaState.pendingAskId = "ask-no-walk-1";
+  personaState.monitor.turnCount = 5;
+  personaState.monitor.lastTurnComplete = now - 120_000; // idle past nudgeIdleMs
+  personaState.updatedAt = now;
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: mySid, epoch: 1, lastSeen: now },
+  }));
+
+  // Seed an open ask record
+  const askKey = "ask:default:ask-no-walk-1";
+  h.storeMap.set(askKey, {
+    id: "ask-no-walk-1",
+    key: askKey,
+    persona: "default",
+    askId: "ask-no-walk-1",
+    at: now - 1000,
+    nodeId: "node-001",
+    question: "What should we do?",
+    status: "open",
+  });
+
+  // Re-fire session.start to pick up seeded state
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  h.resetClassifyCalls();
+
+  // Fire 3 ticks; ask is open, so classify should NOT be called
+  clock.advance(65_000);
+  await tickAndSettle(h, clock, 20);
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+
+  const state = getState(h);
+
+  // Check: node-002 should still be pending (not activated)
+  const node2 = state.goals.find(g => g.id === "node-002");
+  check("S3 no-walk: node-002 still pending after 3 ticks", node2 && node2.status === "pending");
+
+  // Check: classify was never called
+  check("S3 no-walk: classify not called", h.classifyCalls.length === 0);
+
+  // Check: ask_waiting appears exactly once in decisions
+  const decisions = state.decisions || [];
+  const askWaitingCount = decisions.filter(d => d.action === "ask_waiting").length;
+  check("S3 no-walk: ask_waiting appears once", askWaitingCount === 1);
+}
+
+// ============================================================
+// S3: AZ2 - answer reactivates the paused goal
+// ============================================================
+async function caseS3_answer_reactivates(clock) {
+  console.log("\n=== S3: answer reactivates paused goal ===");
+  clock.set(T0);
+
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s3_answer_reactivates",
+  });
+
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  // Seed persona store: paused goal + open ask
+  const personaState = buildPersonaState(mySid, now);
+  personaState.goals = [
+    { id: "node-001", kind: "leaf", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-001";
+  personaState.pendingAskId = "ask-answer-1";
+  personaState.monitor.turnCount = 5;
+  personaState.updatedAt = now;
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: mySid, epoch: 1, lastSeen: now },
+  }));
+
+  // Seed an open ask record
+  const askKey = "ask:default:ask-answer-1";
+  h.storeMap.set(askKey, {
+    id: "ask-answer-1",
+    key: askKey,
+    persona: "default",
+    askId: "ask-answer-1",
+    at: now - 1000,
+    nodeId: "node-001",
+    question: "What should we do?",
+    status: "open",
+  });
+
+  // Seed an inbox answer record with answers === askId, from a session with a live reader claim
+  const answerWriter = "answer-writer-session";
+  const inboxKey = `inbox:default:${answerWriter}:1`;
+  h.storeMap.set(inboxKey, {
+    id: "default-answer-writer-session-1",
+    key: inboxKey,
+    from: answerWriter,
+    at: now - 500,
+    text: "Please continue with the fix.",
+    kind: "answer",
+    answers: "ask-answer-1",
+    status: "pending",
+  });
+
+  // Seed reader claim for the answer writer session
+  h.storeMap.set(`commons:${answerWriter}`, {
+    sessionId: answerWriter,
+    lastSeen: now - 100,
+    claims: [{ resource: "reader:default", claimedAt: now - 2000 }],
+  });
+
+  // Re-fire session.start
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  h.resetPromptSubmits();
+
+  // Fire tick - should detect the answer, close the ask, and reactivate
+  clock.advance(65_000);
+  await tickAndSettle(h, clock, 50);
+
+  const state = getState(h);
+
+  // Check: the goal should be reactivated (paused -> active)
+  const node1 = state.goals.find(g => g.id === "node-001");
+  check("S3 answer-react: goal reactivated to active", node1 && node1.status === "active");
+
+  // Check: pendingAskId cleared
+  check("S3 answer-react: pendingAskId cleared", !state.pendingAskId);
+
+  // Check: ask_answered action present
+  const decisions = state.decisions || [];
+  check("S3 answer-react: ask_answered action present", decisions.some(d => d.action === "ask_answered"));
+
+  // Check: [OPERATOR] prompt submitted
+  check("S3 answer-react: [OPERATOR] prompt submitted", h.promptSubmits.some(t => t.includes("[OPERATOR]")));
+}
+
+// ============================================================
+// S3: AZ2 - say leaves ask open (answer without reader claim is skipped)
+// ============================================================
+async function caseS3_say_leaves_ask_open(clock) {
+  console.log("\n=== S3: say without reader claim leaves ask open ===");
+  clock.set(T0);
+
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s3_say_leaves_ask_open",
+  });
+
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  // Seed persona store: paused goal + open ask
+  const personaState = buildPersonaState(mySid, now);
+  personaState.goals = [
+    { id: "node-001", kind: "leaf", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-001";
+  personaState.pendingAskId = "ask-say-1";
+  personaState.monitor.turnCount = 5;
+  personaState.updatedAt = now;
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: mySid, epoch: 1, lastSeen: now },
+  }));
+
+  // Seed an open ask record
+  const askKey = "ask:default:ask-say-1";
+  h.storeMap.set(askKey, {
+    id: "ask-say-1",
+    key: askKey,
+    persona: "default",
+    askId: "ask-say-1",
+    at: now - 1000,
+    nodeId: "node-001",
+    question: "What should we do?",
+    status: "open",
+  });
+
+  // Seed an inbox record with answers === askId but NO reader claim for the writer
+  const sayWriter = "say-writer-session";
+  const inboxKey = `inbox:default:${sayWriter}:1`;
+  h.storeMap.set(inboxKey, {
+    id: "default-say-writer-session-1",
+    key: inboxKey,
+    from: sayWriter,
+    at: now - 500,
+    text: "Just a say, not an answer.",
+    kind: "say",
+    answers: "ask-say-1",
+    status: "pending",
+  });
+
+  // NO reader claim for sayWriter (intentionally omitted)
+
+  // Re-fire session.start
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  // Fire tick
+  clock.advance(65_000);
+  await tickAndSettle(h, clock, 50);
+
+  const state = getState(h);
+
+  // Check: the ask should still be open (not closed by say)
+  const askRecord = h.storeMap.get("ask:default:ask-say-1");
+  check("S3 say-leaves: ask still open", askRecord && askRecord.status === "open");
+
+  // Check: pendingAskId still set
+  check("S3 say-leaves: pendingAskId still set", state.pendingAskId === "ask-say-1");
+
+  // Check: the goal is still paused
+  const node1 = state.goals.find(g => g.id === "node-001");
+  check("S3 say-leaves: goal still paused", node1 && node1.status === "paused");
+}
+
+// ============================================================
+// S3: AZ2 - timeout walks on (ask expires, next goal activated)
+// ============================================================
+async function caseS3_timeout_walks_on(clock) {
+  console.log("\n=== S3: timeout expires ask and walks on ===");
+  clock.set(T0);
+
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  // Override askOperatorWaitMs to 60000 for this case
+  const h = await createTickHarness({
+    ...OPTS,
+    askOperatorWaitMs: 60_000,
+    caseName: "s3_timeout_walks_on",
+  });
+
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  // Seed persona store: root + paused goal + pending goal + open ask
+  const personaState = buildPersonaState(mySid, now);
+  personaState.goals = [
+    { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001", "node-002"] },
+    { id: "node-001", kind: "leaf", parentId: "root", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-002", kind: "leaf", parentId: "root", objective: "Goal 2", status: "pending", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 9000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-001";
+  personaState.pendingAskId = "ask-timeout-1";
+  personaState.monitor.turnCount = 5;
+  personaState.monitor.lastTurnComplete = now - 120_000;
+  personaState.updatedAt = now;
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: mySid, epoch: 1, lastSeen: now },
+  }));
+
+  // Seed an open ask record (at = T0, so 61s later it will have elapsed 61s > 60s wait)
+  const askKey = "ask:default:ask-timeout-1";
+  h.storeMap.set(askKey, {
+    id: "ask-timeout-1",
+    key: askKey,
+    persona: "default",
+    askId: "ask-timeout-1",
+    at: now,
+    nodeId: "node-001",
+    question: "What should we do?",
+    status: "open",
+  });
+
+  // Re-fire session.start
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  // Advance 61 seconds past T0 (past the 60s wait)
+  clock.advance(61_000);
+  await tickAndSettle(h, clock, 50);
+
+  const state = getState(h);
+
+  // Check: ask record status is "expired"
+  const askRecord = h.storeMap.get("ask:default:ask-timeout-1");
+  check("S3 timeout: ask status is expired", askRecord && askRecord.status === "expired");
+
+  // Check: pendingAskId is undefined
+  check("S3 timeout: pendingAskId cleared", !state.pendingAskId);
+
+  // Check: ask_timeout action present
+  const decisions = state.decisions || [];
+  check("S3 timeout: ask_timeout action present", decisions.some(d => d.action === "ask_timeout"));
+
+  // Check: node-002 activated (walked on)
+  const node2 = state.goals.find(g => g.id === "node-002");
+  check("S3 timeout: node-002 activated", node2 && node2.status === "active");
+}
+
 // --- Main ---
 
 async function main() {
@@ -1283,6 +1667,11 @@ async function main() {
     await caseS2_reply_unrelated(clock);
     await caseS3_ask_operator(clock);
     await caseS3_planner_no_walk(clock);
+    await caseS3_pause_is_ask(clock);
+    await caseS3_no_walk_while_open(clock);
+    await caseS3_answer_reactivates(clock);
+    await caseS3_say_leaves_ask_open(clock);
+    await caseS3_timeout_walks_on(clock);
   } finally {
     clock.restore();
   }
