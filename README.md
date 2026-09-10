@@ -191,7 +191,24 @@ The supervisor never writes the persona store (invariant §8). It uses `supervis
 | `bin/agentic-common.sh` | Shared helpers (`wait_persona_free_both`, etc.) |
 | `.kit/live-supervisor-test.sh` | Supervisor acceptance test (F1-F6 + F0) |
 
-## Typings version requirement
+## Cost and cadence options (item 6)
+
+The plugin tracks its own model-call cost and caps nudge frequency. All options are configurable via environment variables or settings:
+
+| Option | Default | Description |
+|---|---|---|
+| `costEnabled` | `true` | Master switch for D2 (idle skip), D3 (caps), D4 (backoff). When `false`, the ledger still runs but idle ticks are not skipped and caps are not enforced. |
+| `costSummaryEveryNTicks` | `20` | Emit a `cost_summary` decision every N ticks (wall-clock regular, skipped ticks still count). |
+| `costMaxNudgesPerHour` | `12` | Maximum nudges per hour per persona. When reached, the controller escalates to `ask-operator` and pauses the goal. |
+| `costMaxPluginCallsPerHour` | `100` | Maximum plugin model calls (classify + reason + selfReview + planner) per hour per persona. |
+| `nudgeFloorMs` | `300000` (5 min) | Minimum time between nudges. |
+| `nudgeIdleMs` | `120000` (2 min) | Minimum idle time before a controller tick can fire. |
+| `COST_BACKOFF_AFTER_TICKS` | `3` | Number of consecutive unchanged ticks before backoff engages. |
+| `COST_BACKOFF_FACTOR` | `2` | Backoff factor: tick N is skipped if `N % (factor * consecutiveSkips) !== 0`. |
+
+**Ledger:** The plugin estimates token cost per site (classify, reason, selfReview, planner) as prompt chars over 4 plus the maxTokens cap. The `nudge` site is count-only because the nudge's cost is a main-model turn the hooks cannot measure.
+
+**Test coverage:** `.kit/cost-ledger-unit-test.mjs` (ledger math), `.kit/cost-migration-test.mjs` (state migration), `.kit/controller-tick-test.mjs` (D2, D4, AM7, D3 deterministic cases).
 
 **AL7 (engine 2.1.267):** The plugin uses `$.fs.read` and `$.fs.write` (not `$.fs.readFile` / `$.fs.writeFile`). These function names were introduced in Claude Code engine 2.1.267. The engine version the typings were written by is line 1 of `.claude/types/claude-code.d.ts`.
 

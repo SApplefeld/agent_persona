@@ -1,8 +1,8 @@
 # agentic-plugin : cost and cadence (item 6)
 
-**Status:** Draft (v10, for Reviewer review)
+**Status:** Complete (v12)
 **Created:** 2026-09-09T13:40:33Z (commit `4fa322d`)
-**Revised:** v11, documents 746c58d
+**Revised:** v12, documents fd4dc73
 **Program item:** 6 (cost and cadence)
 **Supersedes:** N/A (new item)
 
@@ -351,3 +351,26 @@ One section per commit, each with its gate:
 | AQ0 | The cost suite flakiness is my error (record) | Round 59: "the live cost suite keeps the four assertions that held in all four runs." Four samples, and the fifth shows the four depend on the same coin as the skips. `two nudge_sent` and `one cost_cap_reached` require the classifier to answer `nudge` on two idle ticks in a row. `pause` is a legitimate answer and it took three in this run. I demoted the skip assertions for exactly this reason and kept the cap assertions by survivorship. The D3 cap is already proven deterministically in the harness (D3 case, green at `e1bf468`). The live suite's job is to prove invariants, not to make haiku behave. |
 | AQ1 | The cost suite asserts counts, not invariants (SUITE) | `assert-decisions.js` cost case updated to assert `nudge_sent <= COST_MAX_NUDGES_PER_HOUR` (the cap held, whatever the count), keep `no nudge_sent after cost_cap_reached` (vacuously true when no cap line), keep `at least two cost_summary` (cadence, deterministic), report nudge_sent, cost_cap_reached, unchanged-skipped, backed-off counts; D2, D3, D4 event sequences are proven in the harness; fixed at commit `746c58d` |
 | AQ2 | The hand-back omitted the decision log (record) | Acknowledged: the authorization said a red stops the hand-back with its decision log pasted. I pasted the assertion lines and a guess. The log shows nothing was there to cap. Paste the log; the guess was avoidable. |
+
+## Close
+
+**What shipped:**
+
+- D1: Ledger and `cost_summary` cadence (every 20 ticks, wall-clock regular, persisted to store)
+- D2: Idle tick skip (unchanged leaf skips classify, counts toward cadence)
+- D3: Fixed windows and caps (`nudgeWindow`, `callWindow`, `cost_cap_reached` latch)
+- D4: Backoff (`tickIndex % factor === 0` gates idle classify, factor grows with consecutive skips)
+- Tick harness: `.kit/tick-harness.mjs` and `.kit/controller-tick-test.mjs` with four deterministic cases (D2, D4, AM7, D3)
+- Budget idle tail: feed holds stdin open after critical crossing so quiet ticks can fire and `cost_summary` persists
+
+**Run stamps:**
+
+- Gate at `fd4dc73`: `done 2026-09-10T05:02:41Z`, all three suites green (controller, cost, budget)
+- Full run at `fd4dc73`: `done 2026-09-10T05:39:26Z`, all ten suites green (errorstreak, health, gitprobe, controller, goaltree, goaltree-stall, planfail, yield, budget, cost, commons)
+
+**Withdrawn live proofs:**
+
+- AM6: Cost suite flakiness (order-based assertions on non-deterministic classifier) - D2, D3, D4 event sequences are now proven deterministically in the tick harness
+- AM8: D4 backoff not exercised in the live suite - backoff is proven in the tick harness (D4 case), live suite reports `backed-off` count
+
+**Revised:** v12, documents `fd4dc73`
