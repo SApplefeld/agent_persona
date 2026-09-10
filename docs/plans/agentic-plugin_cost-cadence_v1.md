@@ -1,8 +1,8 @@
 # agentic-plugin : cost and cadence (item 6)
 
-**Status:** Draft (v9, for Reviewer review)
+**Status:** Draft (v10, for Reviewer review)
 **Created:** 2026-09-09T13:40:33Z (commit `4fa322d`)
-**Revised:** v9, documents e5327a2
+**Revised:** v10, documents e1bf468
 **Program item:** 6 (cost and cadence)
 **Supersedes:** N/A (new item)
 
@@ -245,6 +245,8 @@ One section per commit, each with its gate:
 
 **Determinism (AN7):** The live cost suite proves the nudge cap and the summary cadence. D2 and D4 are proven in the tick harness, because a live skip needs the classifier to answer `nudge` under the floor and the classifier is free to answer `pause`.
 
+**Harness (AO1, AO2):** The harness runs in a fresh module per case (via import with ?case=<name> query param) and never writes to `hooks/`. Node resolve hook appends .ts to extensionless relative imports under hooks/, so the test does not need to edit the source. The test's last line asserts `git diff --quiet hooks/index.ts`.
+
 **Nudge floor (AN7):** The nudge floor is per activation: `sess.lastNudgeAt` resets when a leaf is activated (`activate` at `index.ts:293-295`, and `:1148`, `:1545`, `:2048`, `:2308`).
 
 **D2 skip rationale:** The D2 skip fires when the hash is unchanged AND the nudge is not due. With `nudgeFloorMs: 120000`, after a nudge at idle 60s, the floor (120s) has not elapsed at idle 70-110s, so `nudgeDue` is false and the skip can fire (if the hash is unchanged). The feed must create a scenario where the worker is idle (not completing rounds) so the hash stays unchanged.
@@ -340,3 +342,9 @@ One section per commit, each with its gate:
 | AN5 | The cost suite is not in version control (record, severe) | `.kit/.gitignore` updated to un-ignore `live-cost-test.sh`; untracked source files dispositioned; `live-cost-test.sh` tracked in commit `fb05348` |
 | AN6 | AL rows, third time (record) | AL2/AL3/AL5/AL6 rows corrected to copy reviewer's Round 57 headings verbatim |
 | AN7 | Plan section 8 timeline (PLAN) | Section 8 D4 timeline replaced with four harness sequences from AN3; determinism sentence rewritten per reviewer's exact wording; nudge floor is per activation |
+| AO1 | The harness rewrites the plugin source under test (SUITE, severe) | Node resolve hook appends .ts to extensionless relative imports under hooks/; test never writes to hooks/index.ts; last line asserts git diff --quiet hooks/index.ts; fixed at commit `e1bf468` |
+| AO2 | The four cases share one module instance (SUITE, the D3 cause) | Fresh module per case via import with ?case=<name> query param; drop the _modPromise cache; reads go through the fake store; fixed at commit `e1bf468` |
+| AO3 | `__test` in production code, never live-gated (PLUGIN) | `__test` export removed from hooks/index.ts; reads go through the fake store; plugin carries no test-only surface; fixed at commit `329d111` |
+| AO4 | The budget red is the runner pre-gate, bypassed (record and cause) | Rule stated: one gate is one `live-all.sh controller cost budget`; it runs the pre-gate; individual runs skip the pre-gate and can yield to a ghost claim |
+| AO5 | AN2 red and green still owed (SUITE) | Red/green proof pasted: `live-all.sh budget` twice, with `git diff --stat` between showing the one-line revert (sleep 35) and then nothing |
+| AO6 | "Fix applied" (record) | Acknowledged: the `__test` export was not the fix for D3; the fix was AO2 (fresh module per case); write what the commit did and the result beside it |
