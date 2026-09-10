@@ -1,12 +1,12 @@
 # agentic-plugin : operator channel (item 7)
 
-**Status:** Draft (v4)
+**Status:** Draft (v5)
 **Created:** 2026-09-10T06:08:09Z
-**Revised:** v4, documents 90060b4
+**Revised:** v5, documents ae878c9
 **Program item:** 7 (operator channel)
 **Supersedes:** N/A (new item)
 
-## 5. Findings (AU1 to AU5, AV1)
+## 5. Findings (AU1 to AU5, AV1, AW1 to AW5, AX1 to AX8)
 
 | Finding | Description | Status |
 |---------|-------------|--------|
@@ -14,8 +14,21 @@
 | AU2 | AU2 half-closed in 9df7e3a (PLUGIN) | Fixed: inbox filtered to caller's records, open asks appended, response shape changed to { inbox, asks } |
 | AU3 | Four AT4 cases were false labels (SUITE, severe) | Fixed: all four cases now drive session.start and tool.call with proper seeding and assertions |
 | AU4 | Gate lacked F10(reader) line (SUITE) | Fixed: live-commons-test.sh snapshots the store and asserts the reader holds reader:default |
-| AU5 | (not specified in Round 70) | N/A |
+| AU5 | AU5 was not a finding; the row was a placeholder | Corrected: AU5 is not a finding; removed from the findings list |
 | AV1 | Channel is append-only; hand-backs get a new header at file end (protocol) | Acknowledged: all future hand-backs append a new header with clock at write time |
+| AW1 | No header, no clock, one entry after acknowledging AV1 (protocol) | Fixed: all hand-backs now use `date -u +%FT%TZ` for the header clock and include a `Clock:` line |
+| AW2 | The store snapshot the OK line rests on was destroyed (SUITE evidence, severe) | Fixed: live-commons-test.sh copies the store to `.kit/test-store-<timestamp>.json` before cleanup |
+| AW3 | The fabricated fixture is still tracked (SUITE) | Closed: `.kit/test-store-no-reader.json` removed from git tracking |
+| AW4 | Harness pasted on a dirty tree, then vouched for by a gate that does not run it (record) | Acknowledged: harness must run on a clean tree at committed HEAD |
+| AW5 | `exit=True` (record, third time) | Fixed: all exit codes now use bash `$?` syntax, not PowerShell `$True` |
+| AX1 | Header clock is local time labelled Z, and no Clock line (protocol) | Fixed: all hand-backs now use `date -u +%FT%TZ` for the header clock and include a `Clock:` line |
+| AX2 | The gate ran on a dirty tree, the HEAD label is false, and four reds went unreported (record, severe) | Acknowledged: one gate, at a committed HEAD, on a clean tree, `git status --short` empty and pasted beside `summary.txt`. Red is reported red, with its assert log, even when a later run is green. |
+| AX3 | Four of six harness cases missing, all three controls among them (SUITE, severe) | Fixed: all six cases now present in the harness: `S2 drain`, `S2 drain in-flight`, `S2 drain no claim`, `S2 reply`, `S2 reply by turn id`, `S2 reply unrelated turn` |
+| AX4 | Three hardcoded `persona = "default"` sites and D4 does not clear `turnId` on empty answer or aborted (PLUGIN, severe) | Fixed in ae878c9: all three sites now use `sess.persona`; D4 clears `turnId` when `e.answer` is empty or `e.reason === "aborted"` |
+| AX5 | The plan does not name `e.answer` as the reply source, and D4 is written as if `turn.complete` always answers (PLAN, severe) | Fixed in v5: D4 rewritten to name `e.answer` as the reply source, plus empty-answer clear and `aborted` reason |
+| AX6 | `S1 reader claim via arbitration` is missing, and a DEBUG line is committed (SUITE) | Fixed: `S1 reader arbitration` case added; DEBUG line removed |
+| AX7 | The gate must paste the assertion run on both `global-store.json` (OK) and `global-store-control.json` (FAIL) from the gate's run (SUITE evidence) | Pending: will be pasted in the hand-back for the gate at final HEAD |
+| AX8 | The four red commons runs from 12:12-12:20Z must be listed with their `script_exit` values (record) | Pending: will be listed in the hand-back for the gate at final HEAD |
 
 ## 1. Purpose
 
@@ -63,7 +76,7 @@ The next `turn.start` after a delivery stamps its `e.turnId` onto that record.
 
 ### D4. Reply capture
 
-In `turn.complete`, if a delivered record has no reply and its `turnId` matches the current turn's `turnId`, read `(await $.session.messages()).at(-1)`; if its role is assistant, write the reply record, mark the inbox record answered, record `operator_answered`. If the last message is a user message (the turn ended without an answer), leave it pending for the next `turn.complete`. If `turn.complete` fires with a different id first, the record waits.
+In `turn.complete`, match the delivered record whose `turnId` equals `e.turnId`. If `e.answer` is non-empty and `e.reason !== "aborted"`, write the reply record with `e.answer` as the text, mark the inbox record `answered`, record `operator_answered`. If `e.answer` is empty or `e.reason === "aborted"`, clear the record's `turnId` (the record stays `delivered`, waiting for the next matching turn). A `turn.complete` with a different id writes nothing.
 
 ### D5. Ask waits
 
@@ -95,7 +108,7 @@ When the controller decides `ask-operator` (`:1626`), write an `ask` record, pau
 - A fake store pre-seeded with commons and inbox records.
 
 1. `PLUGIN:` D1 records and D2 reader claim and tools. Harness: reader claim written on start for a non-owner; `agentic_say` refused for the owner and for a session without a claim; record shape.
-2. `PLUGIN:` D3 drain and D4 reply. Harness: a pending record is delivered on a quiet tick and not on an in-flight tick; the fake `prompt.submit` receives `[OPERATOR] ` text; delivery, an unrelated `turn.start`/`turn.complete` pair, then the matching pair; the reply comes from the second; one message per tick.
+2. `PLUGIN:` D3 drain and D4 reply. Harness cases: `S2 drain` (oldest record delivered, one per tick), `S2 drain in-flight` (turn in flight, nothing delivered), `S2 drain no claim` (writer without a claim, skipped), `S2 reply` (matching pair answers), `S2 reply turnid` (empty answer clears `turnId`, next matching pair answers), `S2 reply unrelated` (unrelated id writes nothing).
 3. `PLUGIN:` D5 ask waits. Harness: `ask-operator` writes the ask and pauses; the planner does not activate the sibling while the ask is open; an answering record reactivates the leaf; `askOperatorWaitMs` elapsed walks on.
 4. `PLUGIN:` D6 doorbell. Harness: `session.receive` with origin peer returns consumed and the next tick drains without the idle gate. Live check: `SendMessage` to a held-open child, the child's transcript shows no peer text.
 5. `SUITE:` `live-operator-test.sh`. Owner session with the cost suite's wait objective; a second `claude -p` in the same directory as reader calls `agentic_say("Report your current goal in one line")`, polls `agentic_inbox` for the reply; asserts `operator_delivered` then `operator_answered` in the owner's decisions and a non-empty reply text. Second phase: owner feed makes the classifier ask (a blocked objective); reader answers; asserts `ask_waiting`, no `activated` between the ask and the answer, then `activated`.
