@@ -2527,4 +2527,29 @@ export const register: Register = async (on, options) => {
 
 };
 
+// Test hook: expose internal state for the tick harness.
+export const __test = {
+  getState() {
+    return sess.state;
+  },
+  isOwner() {
+    return sess.isOwner;
+  },
+  getTickCount() {
+    return sess.controllerTickCount;
+  },
+  setTickCount(n: number) {
+    sess.controllerTickCount = n;
+  },
+  resetNudge() {
+    sess.lastNudgeAt = 0;
+  },
+  setLastNudgeAt(ts: number) {
+    sess.lastNudgeAt = ts;
+  },
+  setLastTurnComplete(ts: number) {
+    sess.state.monitor.lastTurnComplete = ts;
+  },
+};
+
 
