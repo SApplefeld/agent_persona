@@ -448,6 +448,29 @@ export const register: Register = async (on, options) => {
   const costBackoffAfterTicks = typeof cfg.costBackoffAfterTicks === "number" ? (cfg.costBackoffAfterTicks as number) : 10;
   const costBackoffMaxMs = typeof cfg.costBackoffMaxMs === "number" ? (cfg.costBackoffMaxMs as number) : 300_000;
 
+  // --- D6: doorbell ---
+  // Consume peer text so the model never reads it. The only steering that
+  // reaches the model from another session comes through a record whose
+  // writer holds a reader claim.
+  on("session.receive", async ($, e, next) => {
+    if (e && (e.origin === "peer" || e.origin === "peer-send-message")) {
+      const text = typeof e.text === "string" ? e.text : "";
+      const detail = text.slice(0, 80);
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "peer_consumed",
+        detail: detail || "(empty peer text)",
+      });
+      await persist($);
+      try {
+        $.ui.toast("agentic: peer text consumed; use agentic_say");
+      } catch { /* toast unavailable; non-fatal */ }
+      return { consumed: "agentic: peer text is not steering; use agentic_say" };
+    }
+    return next(e);
+  });
+
   // --- session.start: register tools, claim or join the persona ---
   on("session.start", async ($, e, next) => {
     try {
