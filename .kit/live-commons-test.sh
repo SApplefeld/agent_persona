@@ -457,8 +457,10 @@ fi
 # AU4: snapshot the store and assert the reader's commons entry carries
 # a claim with resource === 'reader:default'.
 if [ "$OWNER_COUNT" -eq 1 ] && [ -n "$STORE_FILE_WIN" ] && [ -n "$READER_SESSION_WIN" ] && [ "$ASSERT_FAILED" -eq 0 ]; then
+  # Convert the Windows store path back to a Git Bash path for cp
+  STORE_FILE_UNIX=$(cygpath -u "$STORE_FILE_WIN")
   # Snapshot the store file into the evidence directory
-  cp "$STORE_FILE_WIN" "$K"/global-store.json
+  cp "$STORE_FILE_UNIX" "$K"/global-store.json
   # Assert the reader holds a reader:default claim
   node -e "
 const fs = require('fs');
