@@ -1644,6 +1644,117 @@ async function caseS3_timeout_walks_on(clock) {
   check("S3 timeout: node-002 activated", node2 && node2.status === "active");
 }
 
+// S4: D6 doorbell - peer consumed
+async function caseS4_peer_consumed(clock) {
+  console.log("\n=== S4: peer consumed ===");
+  clock.set(T0);
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s4_peer_consumed",
+  });
+
+  const hnd = h.handlers["session.receive"];
+  check("S4 peer consumed: session.receive handler exists", typeof hnd === "function");
+
+  let nextCalled = false;
+  let nextArg = null;
+  const next = (e) => {
+    nextCalled = true;
+    nextArg = e;
+    return { passed: true };
+  };
+
+  const e = { origin: "peer", text: "do this now" };
+  const result = await hnd(h.fake, e, next);
+
+  check("S4 peer consumed: next was NOT called", !nextCalled);
+  check("S4 peer consumed: result has consumed", result && result.consumed !== undefined);
+  check("S4 peer consumed: consumed message mentions agentic_say", result.consumed.includes("agentic_say"));
+
+  const state = getState(h);
+  const peerDecisions = (state.decisions || []).filter(d => d.action === "peer_consumed");
+  check("S4 peer consumed: peer_consumed pushed once", peerDecisions.length === 1);
+  check("S4 peer consumed: detail contains text", peerDecisions.length === 1 && peerDecisions[0].detail.includes("do this now"));
+}
+
+// S4: D6 doorbell - peer-send-message consumed
+async function caseS4_peer_send_message_consumed(clock) {
+  console.log("\n=== S4: peer-send-message consumed ===");
+  clock.set(T0);
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s4_peer_send_message",
+  });
+
+  const hnd = h.handlers["session.receive"];
+  check("S4 ps-m consumed: session.receive handler exists", typeof hnd === "function");
+
+  let nextCalled = false;
+  const next = () => {
+    nextCalled = true;
+    return { passed: true };
+  };
+
+  const e = { origin: "peer-send-message", text: "stop working" };
+  const result = await hnd(h.fake, e, next);
+
+  check("S4 ps-m consumed: next was NOT called", !nextCalled);
+  check("S4 ps-m consumed: result has consumed", result && result.consumed !== undefined);
+
+  const state = getState(h);
+  const peerDecisions = (state.decisions || []).filter(d => d.action === "peer_consumed");
+  check("S4 ps-m consumed: peer_consumed pushed once", peerDecisions.length === 1);
+  check("S4 ps-m consumed: detail contains text", peerDecisions.length === 1 && peerDecisions[0].detail.includes("stop working"));
+}
+
+// S4: D6 doorbell - other origin passes through (control)
+async function caseS4_other_origin_passes(clock) {
+  console.log("\n=== S4: other origin passes (control) ===");
+  clock.set(T0);
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s4_other_origin",
+  });
+
+  const hnd = h.handlers["session.receive"];
+  check("S4 other origin: session.receive handler exists", typeof hnd === "function");
+
+  // Test origin: "bridge"
+  let nextCalled1 = false;
+  let nextArg1 = null;
+  const e1 = { origin: "bridge", text: "bridge message" };
+  const result1 = await hnd(h.fake, e1, (e) => {
+    nextCalled1 = true;
+    nextArg1 = e;
+    return { bridge: true };
+  });
+
+  check("S4 other origin: bridge - next was called", nextCalled1);
+  check("S4 other origin: bridge - next received e unchanged", nextArg1 === e1);
+  check("S4 other origin: bridge - result has NO consumed", !result1 || result1.consumed === undefined);
+
+  // Test origin: "task-notification"
+  let nextCalled2 = false;
+  let nextArg2 = null;
+  const e2 = { origin: "task-notification", text: "task done" };
+  const result2 = await hnd(h.fake, e2, (e) => {
+    nextCalled2 = true;
+    nextArg2 = e;
+    return { task: true };
+  });
+
+  check("S4 other origin: task-notification - next was called", nextCalled2);
+  check("S4 other origin: task-notification - next received e unchanged", nextArg2 === e2);
+  check("S4 other origin: task-notification - result has NO consumed", !result2 || result2.consumed === undefined);
+
+  const state = getState(h);
+  const peerDecisions = (state.decisions || []).filter(d => d.action === "peer_consumed");
+  check("S4 other origin: no peer_consumed decisions", peerDecisions.length === 0);
+}
+
 // --- Main ---
 
 async function main() {
@@ -1672,6 +1783,9 @@ async function main() {
     await caseS3_answer_reactivates(clock);
     await caseS3_say_leaves_ask_open(clock);
     await caseS3_timeout_walks_on(clock);
+    await caseS4_peer_consumed(clock);
+    await caseS4_peer_send_message_consumed(clock);
+    await caseS4_other_origin_passes(clock);
   } finally {
     clock.restore();
   }
