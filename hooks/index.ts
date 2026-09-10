@@ -778,14 +778,83 @@ export const register: Register = async (on, options) => {
       // D3: drain operator inbox (one record per tick, owner only).
       // List pending inbox records whose writer holds a live reader claim,
       // take the lowest at, mark delivered, submit as [OPERATOR] prompt.
+      // D5: if a pending record answers the open ask, close the ask first
+      // (ask_answered path) before the general drain.
       if (sess.isOwner) {
         const persona = sess.persona;
-        const allRecords = await listInboxRecords(commonsStoreOf($), persona);
+        const store = commonsStoreOf($);
+        const allRecords = await listInboxRecords(store, persona);
         const pending = allRecords.filter((rec) => rec.status === "pending");
+
+        // D5: check for an answering record that closes the open ask (before general drain)
+        if (sess.state.pendingAskId && pending.length > 0) {
+          const askId = sess.state.pendingAskId;
+          const askRecord = await readAskRecord(store, persona, askId);
+          if (askRecord && askRecord.status === "open") {
+            const answer = pending.find((rec) => rec.answers === askId);
+            if (answer) {
+              const answerAlive = await hasLiveReaderClaim(store, persona, answer.from);
+              if (!answerAlive) {
+                sess.state.decisions.push({
+                  timestamp: Date.now(),
+                  loop: "monitor",
+                  action: "operator_skipped_no_claim",
+                  detail: `answer ${answer.id} from ${answer.from} has no live reader claim`,
+                });
+              } else {
+                // Close the ask
+                askRecord.status = "answered";
+                await store.set(askKey(persona, askId), askRecord);
+                // Mark the answer as delivered
+                answer.status = "delivered";
+                answer.deliveredAt = Date.now();
+                const existing = await store.get(answer.key);
+                if (existing) {
+                  const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
+                  parsed.status = "delivered";
+                  parsed.deliveredAt = answer.deliveredAt;
+                  await store.set(answer.key, parsed);
+                }
+                // Clear the pendingAskId
+                sess.state.pendingAskId = undefined;
+                // Deliver the answer as an [OPERATOR] prompt
+                // Look up the goal by the ask record's nodeId (more reliable than activeGoalId,
+                // which enforceInvariants may have cleared for a paused goal).
+                const askRecord2 = askRecord; // from outer scope
+                const targetNode = askRecord2?.nodeId
+                  ? sess.state.goals.find((g) => g.id === askRecord2.nodeId)
+                  : null;
+                const activeNode = targetNode || (sess.state.activeGoalId
+                  ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
+                  : null);
+                if (activeNode && activeNode.status === "paused") {
+                  activeNode.status = "active";
+                  activeNode.updatedAt = Date.now();
+                  sess.state.decisions.push({
+                    timestamp: Date.now(),
+                    loop: "goal",
+                    action: "activated",
+                    detail: `${activeNode.id}: reactivated (answer to ask ${askId})`,
+                  });
+                }
+                sess.state.decisions.push({
+                  timestamp: Date.now(),
+                  loop: "monitor",
+                  action: "ask_answered",
+                  detail: `ask ${askId} closed by record ${answer.id}`,
+                });
+                await $.prompt.submit({ text: `[OPERATOR] Answer to ${askRecord.question}: ${answer.text}` });
+                await persist($);
+                return;
+              }
+            }
+          }
+        }
+
+        // General drain (D3)
         // Filter to writers with live reader claims
         const withClaim: typeof pending = [];
         const withoutClaim: typeof pending = [];
-        const store = commonsStoreOf($);
         for (const rec of pending) {
           const alive = await hasLiveReaderClaim(store, persona, rec.from);
           if (alive) withClaim.push(rec);
@@ -806,8 +875,6 @@ export const register: Register = async (on, options) => {
           const oldest = withClaim[0];
           oldest.status = "delivered";
           oldest.deliveredAt = Date.now();
-          // Write back to store (listInboxRecords returns fresh objects)
-          const store = commonsStoreOf($);
           const existing = await store.get(oldest.key);
           if (existing) {
             const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
@@ -824,70 +891,6 @@ export const register: Register = async (on, options) => {
           await $.prompt.submit({ text: "[OPERATOR] " + oldest.text });
           await persist($);
           return; // One record per tick
-        }
-      }
-
-      // D5: check for an answering record that closes the open ask.
-      if (sess.state.pendingAskId && sess.isOwner) {
-        const askId = sess.state.pendingAskId;
-        const askRecord = await readAskRecord(commonsStoreOf($), sess.persona, askId);
-        if (askRecord && askRecord.status === "open") {
-          // List all inbox records and find one with answers === askId
-          const allRecords = await listInboxRecords(commonsStoreOf($), sess.persona);
-          const answer = allRecords.find((rec) => rec.answers === askId && rec.status === "pending");
-          if (answer) {
-            // AZ4: require a live reader claim from the answer's writer (same as D3)
-            const answerAlive = await hasLiveReaderClaim(commonsStoreOf($), sess.persona, answer.from);
-            if (!answerAlive) {
-              sess.state.decisions.push({
-                timestamp: Date.now(),
-                loop: "monitor",
-                action: "operator_skipped_no_claim",
-                detail: `answer ${answer.id} from ${answer.from} has no live reader claim`,
-              });
-            }
-          }
-          if (answer && (await hasLiveReaderClaim(commonsStoreOf($), sess.persona, answer.from))) {
-            // Close the ask
-            askRecord.status = "answered";
-            await (commonsStoreOf($)).set(askKey(sess.persona, askId), askRecord);
-            // Mark the answer as delivered
-            answer.status = "delivered";
-            answer.deliveredAt = Date.now();
-            const existing = await (commonsStoreOf($)).get(answer.key);
-            if (existing) {
-              const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
-              parsed.status = "delivered";
-              parsed.deliveredAt = answer.deliveredAt;
-              await (commonsStoreOf($)).set(answer.key, parsed);
-            }
-            // Clear the pendingAskId
-            sess.state.pendingAskId = undefined;
-            // Deliver the answer as an [OPERATOR] prompt
-            const activeNode = sess.state.activeGoalId
-              ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
-              : null;
-            if (activeNode && activeNode.status === "paused") {
-              // Reactivate the leaf
-              activeNode.status = "active";
-              activeNode.updatedAt = Date.now();
-              sess.state.decisions.push({
-                timestamp: Date.now(),
-                loop: "goal",
-                action: "activated",
-                detail: `${activeNode.id}: reactivated (answer to ask ${askId})`,
-              });
-            }
-            sess.state.decisions.push({
-              timestamp: Date.now(),
-              loop: "monitor",
-              action: "ask_answered",
-              detail: `ask ${askId} closed by record ${answer.id}`,
-            });
-            await $.prompt.submit({ text: `[OPERATOR] Answer to ${askRecord.question}: ${answer.text}` });
-            await persist($);
-            return;
-          }
         }
       }
 
@@ -1475,7 +1478,47 @@ export const register: Register = async (on, options) => {
 
       // 4. No active leaf: activate pending work if any exists (H1), else return.
       if (!activeNode || activeNode.status !== "active") {
-        // D5: suppress walk-on if an ask is open (planner waits for the operator).
+        // D5: if an ask is open, record ask_waiting (once per minute) and check timeout.
+        if (sess.state.pendingAskId) {
+          const now = Date.now();
+          const askRecord = await readAskRecord(commonsStoreOf($), sess.persona, sess.state.pendingAskId);
+          if (askRecord && askRecord.status === "open") {
+            const lastAskWaiting = sess.state.decisions.findLast(
+              (d) => d.action === "ask_waiting",
+            );
+            if (!lastAskWaiting || now - lastAskWaiting.timestamp >= 60_000) {
+              sess.state.decisions.push({
+                timestamp: now,
+                loop: "monitor",
+                action: "ask_waiting",
+                detail: `ask ${sess.state.pendingAskId} still open (no active leaf)`,
+              });
+            }
+            const waitMs = typeof cfg.askOperatorWaitMs === "number" ? (cfg.askOperatorWaitMs as number) : 0;
+            if (waitMs > 0) {
+              const elapsed = now - askRecord.at;
+              if (elapsed >= waitMs) {
+                sess.state.decisions.push({
+                  timestamp: now,
+                  loop: "monitor",
+                  action: "ask_timeout",
+                  detail: `ask ${sess.state.pendingAskId} expired after ${Math.round(elapsed / 1000)}s`,
+                });
+                askRecord.status = "expired";
+                await (commonsStoreOf($)).set(askKey(sess.persona, sess.state.pendingAskId), askRecord);
+                sess.state.pendingAskId = undefined;
+                const nextId = activateNext(sess.state);
+                if (nextId) {
+                  activate($, nextId, "ask timeout, walking on");
+                }
+                await persist($);
+                return;
+              }
+            }
+            await persist($);
+            return;
+          }
+        }
         if (!sess.state.pendingAskId) {
           const nextId = activateNext(sess.state);
           if (nextId) {
