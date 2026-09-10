@@ -5,11 +5,33 @@
 // The test fires the controller-tick callback by hand with stubbed Date.now,
 // model.classify, and an in-memory fs.
 //
-// The module-scope `sess` in hooks/index.ts is shared across test cases.
-// Each createTickHarness call re-claims the persona via a stale heartbeat,
-// which re-sets sess.state from the seeded store.
+// AO1: Use a Node resolve hook instead of rewriting hooks/index.ts.
+// AO2: Fresh module per case using `import(\`../hooks/index.ts?case=${name}\`)`.
+// Reads go through the fake store (fs.write receives the persisted persona JSON).
+
+import { registerHooks } from "node:module";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 
 const SESSION_ID = "harness-session";
+
+// AO1: Resolve hook - when specifier starts with "./", has no extension, and
+// parent URL is under hooks/, append ".ts" and defer to next resolver.
+const resolveHook = (specifier, context, nextResolve) => {
+  // Only apply to extensionless relative imports from within hooks/
+  if (
+    specifier.startsWith("./") &&
+    !path.extname(specifier) &&
+    context.parentURL &&
+    context.parentURL.includes("hooks")
+  ) {
+    return nextResolve(specifier + ".ts", context);
+  }
+  return nextResolve(specifier, context);
+};
+
+// Register the resolve hook once.
+registerHooks({ resolve: resolveHook });
 
 // --- Fake $ factory ---
 
@@ -177,6 +199,7 @@ function makeState(opts = {}) {
       turnCount: 0,
       totalToolCalls: 0,
       errors: 0,
+      lastTurnComplete: opts.lastTurnComplete || 0,
       env: {
         git: null,
         health: null,
@@ -190,7 +213,7 @@ function makeState(opts = {}) {
         planner: { count: 0, estTokens: 0 },
         nudge: { count: 0 },
         forkUsage: null,
-        consecutiveSkips: 0,
+        consecutiveSkips: opts.consecutiveSkips || 0,
         nudgeWindow: { start: 0, count: 0 },
         callWindow: { start: 0, count: 0 },
         lastSummaryHash: 0,
@@ -228,7 +251,8 @@ async function fireTick(harness) {
 
 function seedPersonaStore(harness, state) {
   const storePath = ".agentic-personas.json";
-  harness.fsMap.set(storePath, JSON.stringify({ default: state }));
+  const store = { default: state };
+  harness.fsMap.set(storePath, JSON.stringify(store));
   const hbPath = ".agentic-heartbeat.json";
   // Stale heartbeat: lastSeen far in the past so session.start claims.
   harness.fsMap.set(hbPath, JSON.stringify({
@@ -236,37 +260,12 @@ function seedPersonaStore(harness, state) {
   }));
 }
 
-// --- Access the module's __test hook ---
-// After loadModule(), the module exports __test which provides direct
-// access to sess.state, sess.isOwner, sess.controllerTickCount, etc.
+// AO2: Fresh module per case. Drop the _modPromise cache.
+// Each createTickHarness call gets a fresh module instance via query param.
 
-async function getTestHook() {
-  const mod = await loadModule();
-  return mod.__test;
-}
-
-let _modPromise = null;
-
-function loadModule() {
-  if (_modPromise) return _modPromise;
-  _modPromise = (async () => {
-    // Node ESM requires explicit file extensions for relative imports.
-    // hooks/index.ts uses extensionless specifiers ("./agent-state") which the
-    // PIANO loader resolves but Node does not. Patch them to explicit .ts
-    // (idempotent: already-patched lines are unchanged).
-    const fs = await import("node:fs");
-    const path = await import("node:path");
-    const { fileURLToPath } = await import("node:url");
-    const indexPath = path.resolve(fileURLToPath(new URL("../hooks/index.ts", import.meta.url)));
-    let src = fs.readFileSync(indexPath, "utf-8");
-    const patched = src.replace(
-      /from "\.\/(agent-state|commons|self-review|cost-ledger)"/g,
-      'from "./$1.ts"'
-    );
-    if (patched !== src) fs.writeFileSync(indexPath, patched, "utf-8");
-    return import("../hooks/index.ts");
-  })();
-  return _modPromise;
+async function loadModule(caseName) {
+  const query = `?case=${encodeURIComponent(caseName || "default")}`;
+  return import(`../hooks/index.ts${query}`);
 }
 
 async function createTickHarness(options = {}) {
@@ -276,7 +275,8 @@ async function createTickHarness(options = {}) {
   const state = makeState(options.stateOpts || {});
   seedPersonaStore(h, state);
 
-  const mod = await loadModule();
+  const caseName = options.caseName || "default";
+  const mod = await loadModule(caseName);
   const handlers = {};
 
   const on = (event, handler) => {
@@ -306,7 +306,6 @@ export {
   fireTurn,
   fireTick,
   seedPersonaStore,
-  getTestHook,
   loadModule,
   SESSION_ID,
 };
