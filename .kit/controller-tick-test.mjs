@@ -313,14 +313,9 @@ async function caseAT4_reader_claim(clock) {
     default: { sessionId: otherSid, epoch: 1, lastSeen: now },
   }));
 
-  // Load a fresh module instance
-  const mod = await loadModule("at4_reader_claim");
-  const handlers = {};
-  const on = (event, handler) => { handlers[event] = handler; };
-  await mod.register(on, OPTS);
-
-  // Fire session.start for mySid
-  const startH = handlers["session.start"];
+  // Re-fire session.start on the existing closure (h.handlers) so closure A
+  // re-reads the seeded state. No second loadModule/register (AY1).
+  const startH = h.handlers["session.start"];
   if (startH) {
     await startH(h.fake, {}, () => {});
   }
@@ -351,20 +346,15 @@ async function caseAT4_owner_refusal(clock) {
   // Seed the persona store with this session as owner
   h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(SESSION_ID, now) }));
 
-  // Load a fresh module instance
-  const mod = await loadModule("at4_owner_refusal");
-  const handlers = {};
-  const on = (event, handler) => { handlers[event] = handler; };
-  await mod.register(on, OPTS);
-
-  // Fire session.start for mySid (this will claim the persona)
-  const startH = handlers["session.start"];
+  // Re-fire session.start on the existing closure (h.handlers) so closure A
+  // re-reads the seeded owner state (AY1).
+  const startH = h.handlers["session.start"];
   if (startH) {
     await startH(h.fake, {}, () => {});
   }
 
-  // Fire tool.call for agentic_say
-  const toolCallH = handlers["tool.call"];
+  // Fire tool.call for agentic_say through the existing closure
+  const toolCallH = h.handlers["tool.call"];
   const sayResult = await toolCallH(h.fake, {
     tool: "mcp__agentic-plugin__agentic_say",
     text: "Hello, owner.",
@@ -410,14 +400,9 @@ async function caseAT4_say_refused(clock) {
     default: { sessionId: otherSid, epoch: 1, lastSeen: now },
   }));
 
-  // Load a fresh module instance
-  const mod = await loadModule("at4_say_refused");
-  const handlers = {};
-  const on = (event, handler) => { handlers[event] = handler; };
-  await mod.register(on, OPTS);
-
-  // Fire session.start for mySid (this will claim the reader role)
-  const startH = handlers["session.start"];
+  // Re-fire session.start on the existing closure (h.handlers) so closure A
+  // re-reads the seeded reader state (AY1).
+  const startH = h.handlers["session.start"];
   if (startH) {
     await startH(h.fake, {}, () => {});
   }
@@ -429,8 +414,8 @@ async function caseAT4_say_refused(clock) {
     h.storeMap.set(`commons:${SESSION_ID}`, myCommons);
   }
 
-  // Fire tool.call for agentic_say
-  const toolCallH = handlers["tool.call"];
+  // Fire tool.call for agentic_say through the existing closure
+  const toolCallH = h.handlers["tool.call"];
   const sayResult = await toolCallH(h.fake, {
     tool: "mcp__agentic-plugin__agentic_say",
     text: "Hello, owner.",
@@ -477,14 +462,8 @@ async function caseAT4_inbox_status(clock) {
     default: { sessionId: otherSid, epoch: 1, lastSeen: now },
   }));
 
-  // Load a fresh module instance
-  const mod = await loadModule("at4_inbox_status");
-  const handlers = {};
-  const on = (event, handler) => { handlers[event] = handler; };
-  await mod.register(on, OPTS);
-
-  // Fire session.start for mySid
-  const startH = handlers["session.start"];
+  // Re-fire session.start on the existing closure (h.handlers) (AY1).
+  const startH = h.handlers["session.start"];
   if (startH) {
     await startH(h.fake, {}, () => {});
   }
@@ -498,8 +477,8 @@ async function caseAT4_inbox_status(clock) {
     ],
   });
 
-  // Fire agentic_say with text and answers
-  const toolCallH = handlers["tool.call"];
+  // Fire agentic_say with text and answers through the existing closure
+  const toolCallH = h.handlers["tool.call"];
   const sayResult = await toolCallH(h.fake, {
     tool: "mcp__agentic-plugin__agentic_say",
     text: "hello",
@@ -626,14 +605,8 @@ async function caseS2_drain(clock) {
     status: "pending",
   });
 
-  // Load a fresh module instance
-  const mod = await loadModule("s2_drain");
-  const handlers = {};
-  const on = (event, handler) => { handlers[event] = handler; };
-  await mod.register(on, OPTS);
-
-  // Fire session.start (this should establish ownership)
-  const startH = handlers["session.start"];
+  // Re-fire session.start on the existing closure (h.handlers) (AY1).
+  const startH = h.handlers["session.start"];
   if (startH) {
     await startH(h.fake, {}, () => {});
   }
@@ -713,26 +686,20 @@ async function caseS2_reply(clock) {
     turnId: turnId,
   });
 
-  // Load a fresh module instance
-  const mod = await loadModule("s2_reply");
-  const handlers = {};
-  const on = (event, handler) => { handlers[event] = handler; };
-  await mod.register(on, OPTS);
-
-  // Fire session.start
-  const startH = handlers["session.start"];
+  // Re-fire session.start on the existing closure (h.handlers) (AY1).
+  const startH = h.handlers["session.start"];
   if (startH) {
     await startH(h.fake, {}, () => {});
   }
 
   // Fire turn.start (to set up the turn)
-  const turnStartH = handlers["turn.start"];
+  const turnStartH = h.handlers["turn.start"];
   if (turnStartH) {
     await turnStartH(h.fake, { turnId: turnId }, async (e) => ({ result: "ok" }));
   }
 
   // Fire turn.complete with a matching answer
-  const turnCompleteH = handlers["turn.complete"];
+  const turnCompleteH = h.handlers["turn.complete"];
   if (turnCompleteH) {
     await turnCompleteH(h.fake, {
       turnId: turnId,
@@ -894,14 +861,8 @@ async function caseS2_drain_noclaim(clock) {
     status: "pending",
   });
 
-  // Load a fresh module instance
-  const mod = await loadModule("s2_drain_noclaim");
-  const handlers = {};
-  const on = (event, handler) => { handlers[event] = handler; };
-  await mod.register(on, OPTS);
-
-  // Fire session.start
-  const startH = handlers["session.start"];
+  // Re-fire session.start on the existing closure (h.handlers) (AY1).
+  const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
 
   // Fire tick (D3 should skip because writer has no claim)
@@ -973,14 +934,8 @@ async function caseS2_reply_turnid(clock) {
     status: "pending",
   });
 
-  // Load a fresh module instance
-  const mod = await loadModule("s2_reply_turnid");
-  const handlers = {};
-  const on = (event, handler) => { handlers[event] = handler; };
-  await mod.register(on, OPTS);
-
-  // Fire session.start
-  const startH = handlers["session.start"];
+  // Re-fire session.start on the existing closure (h.handlers) (AY1).
+  const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
 
   // Fire tick (D3 drains the record)
@@ -988,11 +943,11 @@ async function caseS2_reply_turnid(clock) {
 
   // Fire turn.start (AS3 stamps turnId)
   const turnId = "t-turnid-1";
-  const turnStartH = handlers["turn.start"];
+  const turnStartH = h.handlers["turn.start"];
   if (turnStartH) await turnStartH(h.fake, { turnId: turnId }, () => {});
 
   // Fire turn.complete with empty answer (AX4: clears turnId, leaves delivered)
-  const turnCompleteH = handlers["turn.complete"];
+  const turnCompleteH = h.handlers["turn.complete"];
   if (turnCompleteH) await turnCompleteH(h.fake, { turnId: turnId, answer: "", reason: "aborted" }, () => {});
 
   // Check: record should still be delivered (not answered)
@@ -1094,18 +1049,12 @@ async function caseS2_reply_unrelated(clock) {
     turnId: stampedTurnId,
   });
 
-  // Load a fresh module instance
-  const mod = await loadModule("s2_reply_unrelated");
-  const handlers = {};
-  const on = (event, handler) => { handlers[event] = handler; };
-  await mod.register(on, OPTS);
-
-  // Fire session.start
-  const startH = handlers["session.start"];
+  // Re-fire session.start on the existing closure (h.handlers) (AY1).
+  const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
 
   // Fire turn.complete with a DIFFERENT turnId
-  const turnCompleteH = handlers["turn.complete"];
+  const turnCompleteH = h.handlers["turn.complete"];
   if (turnCompleteH) await turnCompleteH(h.fake, { turnId: "t-different-999", answer: "Should not match", reason: "completed" }, () => {});
 
   // Check: no reply written
@@ -1153,14 +1102,8 @@ async function caseS1_reader_arbitration(clock) {
     default: { sessionId: ownerSid, epoch: 1, lastSeen: now },
   }));
 
-  // Load a fresh module instance
-  const mod = await loadModule("s1_reader_arbitration");
-  const handlers = {};
-  const on = (event, handler) => { handlers[event] = handler; };
-  await mod.register(on, OPTS);
-
-  // Fire session.start for mySid (the non-owner)
-  const startH = handlers["session.start"];
+  // Re-fire session.start on the existing closure (h.handlers) (AY1).
+  const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
 
   // Check: mySid should have written reader:default to its commons entry
