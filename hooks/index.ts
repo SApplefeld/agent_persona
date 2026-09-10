@@ -742,6 +742,7 @@ export const register: Register = async (on, options) => {
           action: "cost_summary",
           detail: `classify:${cost.classify.count} reason:${cost.reason.count} selfReview:${cost.selfReview.count} planner:${cost.planner.count} nudge:${cost.nudge.count} estTokens:${totalEstTokens} totalCalls:${totalCalls}`,
         });
+        await persist($);
       }
 
       // 2a. C3: error streak branch (before the idle gate; H1: move out of the classify path).

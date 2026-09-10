@@ -247,13 +247,17 @@ switch (testName) {
       check2("cost: no nudge_sent after cost_cap_reached", false);
     }
 
-    // D2 skip: at least three controller_tick with "unchanged, skipped".
-    const skippedTicks = details.filter(d => d.action === "controller_tick" && /unchanged, skipped/.test(d.detail || ""));
-    check2("cost: at least three unchanged, skipped", skippedTicks.length >= 3);
+    // D2 skip: at least three controller_tick with "unchanged, skipped" or "backed off".
+    const skippedTicks = details.filter(d => d.action === "controller_tick" && (/unchanged, skipped/.test(d.detail || "") || /backed off/.test(d.detail || "")));
+    check2("cost: at least three unchanged, skipped or backed off", skippedTicks.length >= 3);
 
     // At least two cost_summary.
     const costSummaries = details.filter(d => d.action === "cost_summary");
     check2("cost: at least two cost_summary", costSummaries.length >= 2);
+
+    // AM8: D4 backoff must fire at least once.
+    const backedOffTicks = details.filter(d => d.action === "controller_tick" && /backed off/.test(d.detail || ""));
+    check2("cost: at least one backed off", backedOffTicks.length >= 1);
     break;
   }
   case "budget": {
@@ -273,7 +277,11 @@ switch (testName) {
     check2("budget: info crossed exactly once", infoCrossings === 1);
     check2("budget: closeout crossed exactly once", closeoutCrossings === 1);
     check2("budget: critical crossed exactly once", criticalCrossings === 1);
-    
+
+    // AM7: cost_summary must reach the store (persist after push).
+    const budgetCostSummaries = details.filter(d => d.action === "cost_summary");
+    check2("budget: at least one cost_summary", budgetCostSummaries.length >= 1);
+
     break;
   }
   default:
