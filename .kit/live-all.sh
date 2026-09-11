@@ -115,6 +115,7 @@ run_suite() {
   # AL8: preserve both artifact name shapes
   # Most suites: $suite-test.out.jsonl, $suite-test.err.log, $suite-test.debug.log
   # Budget, goaltree, goaltree-stall, planfail: $suite.out.jsonl, $suite.err.log
+  # Yield: yield-A.*, yield-B.*, yield-B2.* (multi-session)
   [ -f "$suite_dir/$suite-test.err.log" ] && cp -f "$suite_dir/$suite-test.err.log" "$RUN_DIR/$suite.err.log"
   [ -f "$suite_dir/$suite-test.out.jsonl" ] && cp -f "$suite_dir/$suite-test.out.jsonl" "$RUN_DIR/$suite.out.jsonl"
   [ -f "$suite_dir/$suite-test.debug.log" ] && cp -f "$suite_dir/$suite-test.debug.log" "$RUN_DIR/$suite.debug.log"
@@ -127,6 +128,15 @@ run_suite() {
   fi
   if [ ! -f "$RUN_DIR/$suite.debug.log" ] && [ -f "$suite_dir/$suite.debug.log" ]; then
     cp -f "$suite_dir/$suite.debug.log" "$RUN_DIR/$suite.debug.log"
+  fi
+  # BJ4: For the yield suite, retain all multi-session transcripts
+  if [ "$suite" = "yield" ]; then
+    mkdir -p "$RUN_DIR/yield"
+    for f in yield-A.out.jsonl yield-A.err.log yield-B.out.jsonl yield-B.err.log \
+             yield-B2.out.jsonl yield-B2.err.log yield.decisions.log yield.assert.log \
+             yield.exit settings.json .agentic-personas.json; do
+      [ -f "$suite_dir/$f" ] && cp -f "$suite_dir/$f" "$RUN_DIR/yield/" 2>/dev/null
+    done
   fi
 
   # Write the summary line
