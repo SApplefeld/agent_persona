@@ -270,16 +270,16 @@ Text reaches the model **only** through `$.prompt.submit` from a record whose wr
 When the owner opens an ask (`ask_opened` decision), it sets `pendingAskId` and waits indefinitely. While `pendingAskId` is set:
 - Nudges are skipped (the controller does not nudge while waiting for an answer)
 - Classify is skipped (the controller does not spend a model call classifying while waiting)
-- The nudge cap, the cost cap and the error streak **pause** the leaf rather than block it (see BG1 in plan v15)
+- The nudge cap, the cost cap and the error streak **pause** the leaf rather than block it
 
 When the reader answers the ask, the owner's controller is reactivated (`reactivated (answer to ask)`).
 
 ### Section 6 options (defaults in force)
 
-Two options are defined in the plan (section 6, item 6) with defaults in force:
+Two options are defined in the plan (section 6) with defaults in force:
 
 1. **Ask wait default:** Whether the owner's ask waits indefinitely for a reply or times out. Default: **indefinite** (`askOperatorWaitMs` unset, `hooks/index.ts:118`).
-2. **Peer text:** Whether peer text is consumed by the controller or passed through with a `[PEER]` prefix. Default: **consumed** (the controller reads peer text and does not pass it through).
+2. **Peer text:** Whether peer text is consumed by the `session.receive` hook or passed through with a `[PEER]` prefix. Default: **consumed** (the hook returns `{ consumed: reason }` and nothing is queued, shown, or read by the model).
 
 The operator has not yet ruled on these options; the defaults are in force.
 
