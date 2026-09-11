@@ -554,12 +554,17 @@ else
 fi
 
 # F10e: evidence retention: copy artifacts to .kit/runs/<utc-stamp>/ before exit
-RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-RUNS_DIR="$PLUGIN_DIR/.kit/runs/$RUN_STAMP"
-if [ "$CROSSDIR" = "1" ]; then
-  RUNS_DIR="$RUNS_DIR/commons-crossdir"
+# Use RUN_DIR if set (when run by live-all.sh), otherwise create own stamp
+if [ -n "${RUN_DIR:-}" ]; then
+  RUNS_DIR="$RUN_DIR/commons"
 else
-  RUNS_DIR="$RUNS_DIR/commons"
+  RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+  RUNS_DIR="$PLUGIN_DIR/.kit/runs/$RUN_STAMP"
+  if [ "$CROSSDIR" = "1" ]; then
+    RUNS_DIR="$RUNS_DIR/commons-crossdir"
+  else
+    RUNS_DIR="$RUNS_DIR/commons"
+  fi
 fi
 mkdir -p "$RUNS_DIR"
 # Copy A's artifacts

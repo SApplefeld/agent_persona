@@ -83,7 +83,7 @@ run_suite() {
 
   # Run the suite
   local stdout_log="$RUN_DIR/$suite.stdout.log"
-  SUITE_DIR="$suite_dir" PROFILE="$PROFILE" bash "$script" > "$stdout_log" 2>&1
+  SUITE_DIR="$suite_dir" PROFILE="$PROFILE" RUN_DIR="$RUN_DIR" bash "$script" > "$stdout_log" 2>&1
   rc=$?
 
   end_ts="$(date -u +%FT%TZ)"

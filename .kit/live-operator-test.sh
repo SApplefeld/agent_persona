@@ -833,8 +833,12 @@ else
 fi
 
 # --- BD5: evidence retention (BE11) ---
-# BF7: use STAMP_O for consistent stamp (not a new STAMP_E)
-RUNS_DIR="$PLUGIN_DIR/.kit/runs/$STAMP_O/operator"
+# Use RUN_DIR if set (when run by live-all.sh), otherwise use STAMP_O
+if [ -n "${RUN_DIR:-}" ]; then
+  RUNS_DIR="$RUN_DIR/operator"
+else
+  RUNS_DIR="$PLUGIN_DIR/.kit/runs/$STAMP_O/operator"
+fi
 mkdir -p "$RUNS_DIR"
 for f in operator-owner.out.jsonl operator-owner.err.log operator-reader.out.jsonl \
          operator-reader.err.log operator.decisions.log operator.assert.log \
