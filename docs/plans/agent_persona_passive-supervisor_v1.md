@@ -194,3 +194,65 @@ Next: 7. Proof lives in the suites
 Commit Model: Branch-and-PR
 
 **Proof:** live run, persona `d5bproof` (isolated to avoid the shared global commons store's live claim from a concurrent sibling session): three consecutive `agentic_inbox` calls denied to the owner opened `error_streak` -> `ask_opened` (`ask-no-active-node-<ts>`) exactly as the deterministic error-streak path always has; the fourth turn - plain text, "never mind, everything is fine, just keep going", carrying no ask id, no `[OPERATOR]` prefix, nothing naming the ask - produced `ask_answered_by_reply | ask ask-no-active-node-<ts> closed by thread reply, no ask id typed` in the very next decision. This is the plan's own acceptance exactly: an ask answered from the thread with no ask id typed. The proof child exited on its own (`feed | claude` is a blocking, synchronous pipe - the process was already gone by the time the script returned), so no separate stop step was needed for this particular run; the `stop_coproc_pid` fix above covers the abnormal-exit case this run didn't happen to hit.
+
+### Chapter 7 - 2026-09-11
+Completed: 7. Proof lives in the suites
+Implemented By: main session
+Metrics: review rounds 0 inline (this section was reviewed live, round by round, by a Reviewer session over `discussion.md`, Rounds 13-29); provenance 0 spec-traceable, 4 fix-introduced (the four real bugs the Reviewer's rounds found, below), 1 new-requirement (item 2's own sub-bullet, added mid-section); rulings 0 refused, 5 declared (each fix below), 0 asked; NEEDS_CONTEXT count 0; escalations 0; consults 0
+Decisions / Surprises: This section took five commits and five full gate runs to close, and every one of the last four gate runs turned up a real, distinct defect the run before it had not - a genuine case of "proof lives in the suites" working exactly as intended: running the whole gate for real is what found bugs a targeted lane never would have.
+
+Two new suites for item 1 and item 2 (`live-passive-test.sh`, `live-goalconvo-test.sh`) and one new suite for item 4 (`live-restartpassive-test.sh`), each launching `bin/supervise.sh --dev` directly rather than a bare `claude -p`, since these three items are about the supervisor's own behavior, not the plugin's tools in isolation. `live-supervisor-test.sh`'s existing F6 assumed the pre-item-4 meaning of `root_complete` (stop the run, `STOP_COMPLETE`, exit 0); rewritten to expect `RESTART_PASSIVE` and a fresh `LAUNCH` line instead, since item 4 intentionally changed what `root_complete` alone means. That suite stays standalone (not wired into `live-all.sh`, which requires the `SUITE_DIR` convention it predates); the three new ones are.
+
+The supervisor decision logic's own harness cases (`.kit/supervisor-unit-test.mjs`) were already built in Chapter 4 - `restart_passive` vs `stop_complete` priority, a stale-`root_complete` control - and needed no new work here; cited rather than rebuilt.
+
+Four real defects, each found by the whole gate rather than guessed at, each fixed and reverified live before the next run:
+
+1. **`find_global_store` had five copies**, not the one this plan's Item 6 Chapter believed it fixed: `bin/supervise.sh`'s own (the dev-mode-aware original), a stale duplicate in `.kit/live-common.sh`, an inline first-alphabetical-match glob in `live-commons-test.sh`'s own F15 step, and two more bare lookups in `live-operator-test.sh` (its F13a pre-gate and its BG5/owner-claim wait). On a machine where both an installed-plugin store and this checkout's `--plugin-dir` store coexist, the ambiguous copies could resolve to the wrong one, reading a stale claim as free and letting one suite's child start inside the previous suite's still-cooling persona claim - six suites failed this way on the first whole-gate run (20260911T183849Z). Fixed by moving the one correct, dev-mode-aware version into `bin/agentic-common.sh` (already sourced by every caller) and pointing every call site at it, in two rounds (the Reviewer's class-sweep control, `grep -n 'agentic-plugin_\*\.json' .kit/*.sh bin/*.sh`, caught the two `live-operator-test.sh` copies a first pass missed).
+2. **`live-operator-test.sh`'s BG4 process guard matched this checkout's path anywhere in a command line**, not specifically as the `--plugin-dir` flag's value - so this repository's own real supervised worker process (a legitimate, unrelated `--settings`/`--debug-file` path under `D:\agent_persona`) tripped it, refusing a real suite run over a process that was never a `--plugin-dir` collision at all. Narrowed the regex to require `--plugin-dir` immediately before the escaped path.
+3. **The item 2 sub-bullet** (`f016b69`, added by the Reviewer mid-section after the `goalconvo` suite's own live run reproduced it three times): a one-step, no-tool-named request does not reliably open a goal tree, because the model can read - and, live-confirmed, does read - a trivial task as not needing "the full doctrine ritual." Strengthening the `[NO GOAL]` reminder's wording alone did not change the live behavior (three identical retests). The real fix is model-independent: `turn.complete` now backfills a completed goal record whenever a turn does real tool work (a new `isWorkTool`-filtered `toolCallsThisTurn` counter) with no active root, regardless of whether the model ever called `goal_create`.
+4. **That backstop's first version was itself a live regression** (Round 28, found from a diff read before the gate reached it, not from a live failure - the `passive`/`restartpassive` suites run `--no-channel` and would have gone green over it): it fired on *any* tool call, including a channel-attached passive child's own priming-turn `reply` acknowledgment, which fabricated a completed root on an empty tree and would have restart-looped a real supervisor in production. Fixed with three changes together: a `[SUPERVISOR-PRIMING]` marker `bin/supervise.sh` puts on its own synthetic priming turn (read by the hook, never by the model); `isWorkTool` excluding the channel's `reply` tool and this plugin's own tools from counting as work; and the trigger condition changed from `goals.length === 0` to "no active root" (checking the root node's own status), since item 4's second conversational request arrives with the first root still present in the array, complete but there - an empty-array check would have silently never covered that case.
+
+The section's own commit history (`f98be07`, `2fff43a`, `a5f3f57`, `377eb76`, `de97067`) is the honest record of five gate-run/fix cycles rather than one clean pass; each commit message carries its own defect's root cause and fix in full, and this Chapter summarizes rather than repeats them.
+Assumptions: `live-supervisor-test.sh` is not wired into `live-all.sh` and stays a standalone deeper acceptance script for items 4/5's context-budget-driven restart path; item 7's own "live suite in `.kit/live-all.sh`" requirement is read as needing a suite that covers the item, not requiring every existing script covering related behavior to be migrated to the `SUITE_DIR` convention (2026-09-11). Round 28's fourth defect (the backstop's first cut) is item 7's own scope, not a new roadmap item, since it was introduced by this section's own fix for the item 2 sub-bullet and closing it is what makes that sub-bullet's fix actually safe (2026-09-11).
+Review Findings: all five defects above were found by the Reviewer session across `discussion.md` Rounds 19-28, each independently confirmed by this session against `summary.txt`, the runtime source, or a live standalone retest before the fix; none were taken on the Reviewer's word alone.
+Stamps: none surfaced
+Gate: whole gate - `.kit/live-all.sh`, stamp `20260911T214106Z`, `HEAD de97067`, all 15 suites `script_exit=0`, independently reread from `summary.txt` line by line rather than trusted from the runner's own `PASS`/`FAIL` echo (see Decisions / Surprises for why that distinction mattered this section). `npx tsc --noEmit` exit 0; `node .kit/controller-tick-test.mjs` exit 0, 206 assertions (14 new this section: 5 for the `[NO GOAL]` reminder and its control, 2 for the backfill mechanism and its no-tool control, 3 for Round 28's priming/nudge/second-request safety cases, plus their setup-sanity checks); `node .kit/supervisor-unit-test.mjs` exit 0, 12 assertions, unchanged. Summary pasted verbatim below.
+Next: the item 5 findings from Round 12 (re-raise reply-tool instruction, `askOperatorWaitMs` nonzero default, reword the live-proof sentence) plus the Round 11 persona-release harness case, in one commit; then one item 8 goal, in the order named in `discussion.md`; then the rebind PR additions in `discord-channels`.
+Commit Model: Branch-and-PR
+
+**Proof:** `summary.txt`, stamp `20260911T214106Z`, `HEAD de97067`, `PROFILE short`, `ENGINE 2.1.269 (Claude Code)`:
+```
+start 2026-09-11T21:41:06Z HEAD de97067 PROFILE short ENGINE 2.1.269 (Claude Code)
+errorstreak script_exit=0 started=2026-09-11T21:41:06Z ended=2026-09-11T21:42:35Z (All checks passed for errorstreak)
+health script_exit=0 started=2026-09-11T21:42:36Z ended=2026-09-11T21:44:48Z (All checks passed for health)
+gitprobe script_exit=0 started=2026-09-11T21:44:48Z ended=2026-09-11T21:48:43Z (All checks passed for gitprobe)
+controller script_exit=0 started=2026-09-11T21:48:43Z ended=2026-09-11T21:51:41Z (All checks passed for controller)
+goaltree script_exit=0 started=2026-09-11T21:51:41Z ended=2026-09-11T21:56:45Z (All checks passed for goaltree)
+goaltree-stall script_exit=0 started=2026-09-11T21:56:45Z ended=2026-09-11T21:59:49Z (All checks passed for stall)
+planfail script_exit=0 started=2026-09-11T21:59:49Z ended=2026-09-11T22:02:23Z (All checks passed for planfail)
+yield script_exit=0 started=2026-09-11T22:02:23Z ended=2026-09-11T22:06:04Z (All checks passed for yield)
+budget script_exit=0 started=2026-09-11T22:06:05Z ended=2026-09-11T22:10:51Z (All checks passed for budget)
+cost script_exit=0 started=2026-09-11T22:10:51Z ended=2026-09-11T22:19:24Z (All checks passed for cost)
+commons script_exit=0 started=2026-09-11T22:19:24Z ended=2026-09-11T22:21:07Z (F10(1-3) passed, correct inline store)
+operator script_exit=0 started=2026-09-11T22:21:07Z ended=2026-09-11T22:24:13Z (All checks passed for operator)
+passive script_exit=0 started=2026-09-11T22:24:13Z ended=2026-09-11T22:26:53Z (F1-F5 passed)
+goalconvo script_exit=0 started=2026-09-11T22:26:53Z ended=2026-09-11T22:27:05Z (F1-F4 passed)
+restartpassive script_exit=0 started=2026-09-11T22:27:05Z ended=2026-09-11T22:29:54Z (F1-F4 passed)
+done 2026-09-11T22:29:55Z
+```
+Separately, the live channel-attached proof Round 28's fourth defect required: `bin/supervise.sh` launched directly (persona `channelproof-r28`, `--dev`, the real Discord channel attached, no `--prompt`), watched for ten minutes forty-nine seconds:
+```
+2026-09-11T21:28:22Z GATE PASSED: no live persona claims (commons and heartbeat both free)
+2026-09-11T21:28:22Z LAUNCH child-1 (start_ts=1789162102508, prompt=)
+2026-09-11T21:29:27Z WAITING: child-1 alive, persona held, no restart triggers (poll 6)
+2026-09-11T21:30:31Z WAITING: child-1 alive, persona held, no restart triggers (poll 12)
+2026-09-11T21:31:36Z WAITING: child-1 alive, persona held, no restart triggers (poll 18)
+2026-09-11T21:32:41Z WAITING: child-1 alive, persona held, no restart triggers (poll 24)
+2026-09-11T21:33:46Z WAITING: child-1 alive, persona held, no restart triggers (poll 30)
+2026-09-11T21:34:51Z WAITING: child-1 alive, persona held, no restart triggers (poll 36)
+2026-09-11T21:35:56Z WAITING: child-1 alive, persona held, no restart triggers (poll 42)
+2026-09-11T21:37:01Z WAITING: child-1 alive, persona held, no restart triggers (poll 48)
+2026-09-11T21:38:06Z WAITING: child-1 alive, persona held, no restart triggers (poll 54)
+2026-09-11T21:39:11Z WAITING: child-1 alive, persona held, no restart triggers (poll 60)
+```
+Ten WAITING polls, zero `RESTART_PASSIVE` or `LAUNCH child-2` lines. The Reviewer independently watched the same child from the operator's own Discord side: two real turns (the priming acknowledgment and a live operator message), two `reply` tool calls, zero backfills - confirmed from a different vantage than this session's own log read.
