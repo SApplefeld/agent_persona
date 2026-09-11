@@ -6,7 +6,7 @@
 export {}
 declare module 'claude-code' {
   interface McpToolInputs {
-    /** Claim ownership of a persona's store. FORCEFULLY takes the persona from whatever session currently holds it: the previous holder is demoted to a passive reader on its next write. Use only when the operator explicitly asks to hand off or reclaim the persona. Pass the persona name (e.g. 'default'). */
+    /** Switch this session to a persona's store, joining or claiming ownership safely: it never evicts a live session. If another session already holds this persona and its heartbeat is current, this session joins as a passive reader (agentic_say/agentic_inbox), taking no write access. Ownership is taken only when no live holder exists, or the existing holder's heartbeat has gone stale (the holder crashed or exited without releasing it). Pass the persona name (e.g. 'default'). */
     "mcp__agentic-plugin__agentic_identity": {
       /** The persona name to activate (e.g. "default", "refactorer"). If omitted, activates "default". */
       persona: string

@@ -57,6 +57,16 @@ function getDecisions(h) {
   return getState(h).decisions;
 }
 
+// Helper: read state for an arbitrary persona key (item 6: the persona
+// option means the store's top-level key is no longer always "default").
+function getStateForPersona(h, persona) {
+  const storePath = ".agentic-personas.json";
+  const raw = h.fsMap.get(storePath);
+  if (!raw) throw new Error("Persona store not found in fake fs");
+  const store = JSON.parse(raw);
+  return store[persona];
+}
+
 function countAction(decisions, action) {
   return decisions.filter(d => d.action === action).length;
 }
@@ -2901,6 +2911,60 @@ async function caseBO1_pin_control_no_selfreview(clock) {
   check("BO1-pin control: planning_fired present", planningFiredIdx !== -1);
 }
 
+// ============================================================
+// Item 6: the `persona` userConfig option. A session given
+// options.persona claims that persona at session.start instead of the
+// plugin's hardcoded "default", and never touches the "default" slot.
+// ============================================================
+async function caseItem6_personaOption(clock) {
+  console.log("\n=== Item 6: persona option claims the given persona, never default ===");
+  clock.set(T0);
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "item6_persona_dev",
+    persona: "dev",
+  });
+
+  const devState = getStateForPersona(h, "dev");
+  const defaultState = getStateForPersona(h, "default");
+
+  check("item6 persona: 'dev' persona slot exists", !!devState);
+  check(
+    "item6 persona: 'dev' claimed via persona_create",
+    !!devState && devState.decisions.some(d => d.action === "persona_create" && d.detail.includes("'dev'")),
+  );
+  check(
+    "item6 persona: the seeded 'default' slot was never touched (still zero decisions)",
+    !!defaultState && defaultState.decisions.length === 0,
+  );
+}
+
+// Control: no persona option given at all. Must fall back to "default"
+// exactly as before the option existed - the option is additive, not a
+// breaking change to every session that doesn't set it.
+async function caseItem6_personaOption_control(clock) {
+  console.log("\n=== Item 6 control: no persona option, default behavior unchanged ===");
+  clock.set(T0);
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "item6_persona_control",
+  });
+
+  const defaultState = getStateForPersona(h, "default");
+
+  check("item6 persona control: 'default' persona slot exists", !!defaultState);
+  // The harness's own seedPersonaStore pre-populates "default" with an
+  // active goal (not a fresh persona_create), so the meaningful assertion
+  // is that session.start operated on it at all (claimed it as owner),
+  // not that it created a fresh persona from nothing.
+  check(
+    "item6 persona control: no unexpected extra persona slot appeared",
+    Object.keys(JSON.parse(h.fsMap.get(".agentic-personas.json"))).length === 1,
+  );
+}
+
 // --- Main ---
 
 async function main() {
@@ -2962,6 +3026,8 @@ async function main() {
   // BO1-pin: The self-review branch must not return early, so the planning gate runs.
   await caseBO1_pin_selfreview_then_planning(clock);
   await caseBO1_pin_control_no_selfreview(clock);
+  await caseItem6_personaOption(clock);
+  await caseItem6_personaOption_control(clock);
 
   // AO1: Skip for now (we have uncommitted changes during development).
   // Will re-enable after committing.
