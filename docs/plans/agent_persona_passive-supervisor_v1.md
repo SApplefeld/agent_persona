@@ -1,7 +1,7 @@
 # agent_persona: passive supervisor steered by conversation, v1
 
 Status: In Progress
-Commit Model: Branch-and-PR. Work on branch `passive-supervisor`, push that branch to `origin`, never `main`. `main` is protected on GitHub and accepts pull requests only. Open one pull request for the branch when the first goal closes and keep pushing to it; the operator reviews and merges.
+Commit Model: Branch-and-PR. `main` is protected on GitHub and accepts pull requests only, never a direct push. The operator merges each PR promptly rather than holding one open across the whole roadmap, so a branch is frozen the moment its PR merges (a push to a merged branch is refused). Work a batch of goals on a feature branch, push it, open a PR when the batch is ready; once that PR merges, cut the next branch from the updated `main` for the next batch. `passive-supervisor` carried Items 1-2 (PR #1, merged); `passive-supervisor-2` carries the rest.
 Worker: the plugin's own persona, running under `bin/supervise.sh` with this document as its roadmap.
 Executor's plugin runtime: `D:\DeepSeekHarness\agentic-plugin` (stable copy). The tree under edit: `D:\agent_persona` (this clone). The two are never the same directory, because a session whose working directory sits inside its own plugin directory does not initialize the plugin.
 

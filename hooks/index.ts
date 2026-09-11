@@ -1991,7 +1991,14 @@ export const register: Register = async (on, options) => {
           }
 
           // Get a reason with a second complete call (for non-nudge decisions).
+          // Item 3: an ask record must carry the worker's FULL question, so the
+          // model's reason is kept whole (fullReason) for that purpose. The
+          // 100-char slice (finalReason) exists only to keep the decision-log
+          // detail line terse; it must never be the text a reader sees as "the
+          // question asked" - that was the earlier defect (a reader seeing a
+          // fragment cut off mid-word).
           let finalReason = "";
+          let fullReason = "";
           if (finalDecision !== "nudge") {
             try {
               const reason = await $.model.complete({
@@ -2006,7 +2013,8 @@ export const register: Register = async (on, options) => {
               sess.state.monitor.cost.reason.estTokens += estimateTokens(summary.length, 30);
               // D3: update call window (count the reason call)
               sess.state.monitor.cost.callWindow = bumpWindow(sess.state.monitor.cost.callWindow, Date.now());
-              finalReason = reason.trim().replace(/\*{1,2}/g, "").slice(0, 100);
+              fullReason = reason.trim().replace(/\*{1,2}/g, "");
+              finalReason = fullReason.slice(0, 100);
             } catch { /* reason call failed; non-fatal */ }
           }
 
@@ -2054,7 +2062,7 @@ export const register: Register = async (on, options) => {
           } else if (finalDecision === "ask-operator" || finalDecision === "pause") {
             // D5: write an ask record and set pendingAskId (both ask-operator and pause)
             const askId = `ask-${g.id}-${Date.now()}`;
-            const question = finalReason || (finalDecision === "pause" ? "controller pause" : "operator input needed");
+            const question = fullReason || (finalDecision === "pause" ? "controller pause" : "operator input needed");
             await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, question, sess.mySessionId);
             sess.state.pendingAskId = askId;
             sess.state.decisions.push({
