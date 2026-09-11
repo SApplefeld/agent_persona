@@ -23,3 +23,7 @@ Thumbs.db
 
 # Supervisor scratch (logs, child transcripts, settings)
 run/
+
+# Reviewer channel (scratch, archived by the Reviewer)
+DISCUSSION.md
+DISCUSSION.archive-*.md
