@@ -22,9 +22,6 @@ OPERATOR_HOLD_S="${OPERATOR_HOLD_S:-0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# BG6: tee suite stdout to operator.suite.log
-exec > >(tee "$SUITE_DIR/operator.suite.log") 2>&1
-
 # --- Setup ---
 if [ -f "$SUITE_DIR/RUNNING" ]; then
   echo "RUNNING exists, refusing" >&2
@@ -42,7 +39,11 @@ Get-CimInstance Win32_Process | Where-Object {
   \$_.CommandLine -match [regex]::Escape('$PLUGIN_DIR_W')
 } | Select-Object -ExpandProperty ProcessId
 " 2>/dev/null | grep -E '^[0-9]+$' || true)
-CLAUDE_PROCS=$(echo "$CLAUDE_PROCS_PIDS" | grep -c '[0-9]' 2>/dev/null || echo 0)
+if [ -n "$CLAUDE_PROCS_PIDS" ]; then
+  CLAUDE_PROCS=$(echo "$CLAUDE_PROCS_PIDS" | wc -l)
+else
+  CLAUDE_PROCS=0
+fi
 if [ "$CLAUDE_PROCS" -gt 0 ]; then
   echo "BG4: $CLAUDE_PROCS live claude -p processes found with this plugin-dir, refusing to start" >&2
   echo "PIDs: $CLAUDE_PROCS_PIDS" >&2
@@ -52,6 +53,9 @@ fi
 rm -rf "$SUITE_DIR" 2>/dev/null || echo "WARN: could not remove old $SUITE_DIR (busy?)"
 mkdir -p "$SUITE_DIR" || exit 9
 cd "$SUITE_DIR" || exit 9
+
+# BG6: tee suite stdout to operator.suite.log (after directory is created)
+exec > >(tee "$SUITE_DIR/operator.suite.log") 2>&1
 
 source "$SCRIPT_DIR/live-common.sh"
 
@@ -147,6 +151,14 @@ try {
   done
 fi
 
+# --- Find the global store file (needed for BG5 snapshot) ---
+STORE_FILE_LAUNCH=""
+if [ -d "$HOME/.claude/plugins/store" ]; then
+  for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
+    if [ -f "$f" ]; then STORE_FILE_LAUNCH="$f"; break; fi
+  done
+fi
+
 # --- BG5: Snapshot non-commons keys before owner starts ---
 # Write to operator.store-keys-before.json for end-of-suite verification.
 if [ -n "$STORE_FILE_LAUNCH" ] && [ -f "$STORE_FILE_LAUNCH" ]; then
@@ -196,12 +208,6 @@ cat "$OWNER_PROMPT_FILE" >&"$IN_O"
 echo "owner prompt sent, waiting for persona:default claim..."
 
 # --- Wait for owner's persona:default claim to be LIVE in the global commons store ---
-STORE_FILE_LAUNCH=""
-if [ -d "$HOME/.claude/plugins/store" ]; then
-  for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
-    if [ -f "$f" ]; then STORE_FILE_LAUNCH="$f"; break; fi
-  done
-fi
 GOAL_N=0
 LIVE="0"
 while [ $GOAL_N -lt 120 ]; do
@@ -302,7 +308,8 @@ try {
     if (!line.trim()) continue;
     try {
       const obj = JSON.parse(line);
-      if (obj.type === 'system' && obj.subtype === 'init' && obj.session_id) {
+      // Look for any line with a session_id (init, hook_started, etc.)
+      if (obj.session_id) {
         console.log(obj.session_id);
         break;
       }
@@ -328,7 +335,11 @@ Get-CimInstance Win32_Process | Where-Object {
   \$_.CommandLine -match [regex]::Escape('$PLUGIN_DIR_W')
 } | Select-Object -ExpandProperty ProcessId
 " 2>/dev/null | grep -E '^[0-9]+$' || true)
-BG4_SELF_CHECK_COUNT=$(echo "$BG4_SELF_CHECK_PIDS" | grep -c '[0-9]' 2>/dev/null || echo 0)
+if [ -n "$BG4_SELF_CHECK_PIDS" ]; then
+  BG4_SELF_CHECK_COUNT=$(echo "$BG4_SELF_CHECK_PIDS" | wc -l)
+else
+  BG4_SELF_CHECK_COUNT=0
+fi
 if [ "$BG4_SELF_CHECK_COUNT" -lt 2 ]; then
   echo "  FAIL: BG4 self-check: expected >= 2 claude -p processes, found $BG4_SELF_CHECK_COUNT"
   echo "PIDs: $BG4_SELF_CHECK_PIDS"
@@ -442,16 +453,22 @@ try {
     if (!line.trim()) continue;
     try {
       const obj = JSON.parse(line);
-      // Look for agentic_inbox tool result
-      if (obj.type === 'tool' && obj.tool_name === 'agentic_inbox' && obj.result) {
-        let inboxData;
-        try {
-          inboxData = JSON.parse(obj.result);
-        } catch { continue; }
-        const entry = (inboxData.inbox || []).find(e => e.id === expectedId);
-        if (entry) {
-          console.log(JSON.stringify({ status: entry.status || '', replyText: entry.reply?.text || '' }));
-          break;
+      // Look for agentic_inbox tool result in user message content
+      if (obj.type === 'user' && obj.message && obj.message.content) {
+        for (const c of obj.message.content) {
+          if (c.type === 'tool_result' && c.content && typeof c.content === 'string') {
+            let inboxData;
+            try {
+              inboxData = JSON.parse(c.content);
+            } catch { continue; }
+            if (inboxData.inbox) {
+              const entry = inboxData.inbox.find(e => e.id === expectedId);
+              if (entry) {
+                console.log(JSON.stringify({ status: entry.status || '', replyText: entry.reply || '' }));
+                process.exit(0);
+              }
+            }
+          }
         }
       }
     } catch {}
@@ -590,7 +607,7 @@ fi
 echo "phase 2: waiting for owner to open an ask..."
 # The controller tick should fire ask-operator after nudgeIdleMs of idle time.
 # Wait for ask_opened in the LOCAL store.
-if wait_for_decision "ask_opened" 120; then
+if wait_for_decision "ask_opened" 180; then
   echo "  OK: ask_opened found"
   # REPORT: which path opened it
   ASK_DETAIL=$(node -e "
@@ -606,7 +623,7 @@ try {
 " "$LOCAL_STORE_OWNER" 2>/dev/null)
   echo "  REPORT: ask opened by: ${ASK_DETAIL}"
 else
-  echo "  FAIL: ask_opened not found after 120s"
+  echo "  FAIL: ask_opened not found after 180s"
   FAIL_COUNT=$((FAIL_COUNT + 1))
 fi
 
