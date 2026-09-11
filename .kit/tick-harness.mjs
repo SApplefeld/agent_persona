@@ -201,7 +201,7 @@ function makeState(opts = {}) {
     goals = [root, plan];
     activeGoalId = "g-plan";
   }
-  return {
+  const state = {
     version: 4,
     persona: "default",
     activeSessionId: SESSION_ID,
@@ -240,6 +240,11 @@ function makeState(opts = {}) {
     createdAt: now,
     updatedAt: now,
   };
+  // BO1-pin: allow custom selfReview state
+  if (opts.selfReview) {
+    state.monitor.selfReview = opts.selfReview;
+  }
+  return state;
 }
 
 // --- Turn driver: fires turn.start then turn.complete (aborted, no scoring) ---

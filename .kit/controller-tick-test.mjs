@@ -2774,6 +2774,133 @@ async function caseBJ1_budget_read_failed(clock) {
   check("BJ1 read_failed: no crossings", crossings.length === 0);
 }
 
+// BO1-pin: The self-review branch must not return early, so the planning gate runs.
+// State: root goal, one plan in done, selfReview.pendingPeriodic: true.
+// Model stubbed: NONE for self-review, zero plans for planner.
+// Assert: decisions carry self-review and then planning_fired.
+async function caseBO1_pin_selfreview_then_planning(clock) {
+  console.log("\n=== BO1-pin: self-review then planning ===");
+  clock.set(T0);
+
+  // Set up state: root goal (pending), one plan in done, selfReview.pendingPeriodic: true
+  const rootGoal = {
+    id: "root-goal",
+    parentId: null,
+    kind: "root",
+    title: "Test goal",
+    objective: "Test goal",
+    status: "pending",
+    source: "controller",
+    maxRounds: 10,
+    completedRounds: 0,
+    scores: [],
+    notes: [],
+    planningRounds: 0,
+    consecutiveBlockedPlannings: 0,
+    consecutivePlanningFailures: 0,
+    planningRound: 0,
+    createdAt: T0 - 10000,
+    updatedAt: T0 - 5000,
+  };
+  const donePlan = {
+    id: "plan-1",
+    parentId: "root-goal",
+    kind: "leaf",
+    objective: "Test plan",
+    status: "done",
+    createdAt: T0 - 9000,
+    updatedAt: T0 - 4000,
+    children: [],
+  };
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "bo1_pin_selfreview",
+    stateOpts: {
+      now: T0,
+      goals: [rootGoal, donePlan],
+      activeGoalId: null,
+      selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: true, lastInjectAt: 0 },
+    },
+    // Stub the model: NONE for self-review, empty array for planner
+    classifyValue: "NONE",
+    completeValue: "[]",
+  });
+
+  // Fire one tick
+  await tickAndSettle(h, clock, 100);
+
+  const decisions = getDecisions(h);
+  const selfReviewIdx = decisions.findIndex(d => d.action === "self-review");
+  const planningFiredIdx = decisions.findIndex(d => d.action === "planning_fired");
+
+  check("BO1-pin: self-review present", selfReviewIdx !== -1);
+  check("BO1-pin: planning_fired present", planningFiredIdx !== -1);
+  check("BO1-pin: self-review before planning_fired", selfReviewIdx !== -1 && planningFiredIdx !== -1 && selfReviewIdx < planningFiredIdx);
+}
+
+// BO1-pin control: same state but selfReview.pendingPeriodic: false.
+// Assert: planning_fired present and no self-review.
+async function caseBO1_pin_control_no_selfreview(clock) {
+  console.log("\n=== BO1-pin control: no self-review ===");
+  clock.set(T0);
+
+  // Set up state: root goal (pending), one plan in done, selfReview.pendingPeriodic: false
+  const rootGoal = {
+    id: "root-goal",
+    parentId: null,
+    kind: "root",
+    title: "Test goal",
+    objective: "Test goal",
+    status: "pending",
+    source: "controller",
+    maxRounds: 10,
+    completedRounds: 0,
+    scores: [],
+    notes: [],
+    planningRounds: 0,
+    consecutiveBlockedPlannings: 0,
+    consecutivePlanningFailures: 0,
+    planningRound: 0,
+    createdAt: T0 - 10000,
+    updatedAt: T0 - 5000,
+  };
+  const donePlan = {
+    id: "plan-1",
+    parentId: "root-goal",
+    kind: "leaf",
+    objective: "Test plan",
+    status: "done",
+    createdAt: T0 - 9000,
+    updatedAt: T0 - 4000,
+    children: [],
+  };
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "bo1_pin_control",
+    stateOpts: {
+      now: T0,
+      goals: [rootGoal, donePlan],
+      activeGoalId: null,
+      selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: false, lastInjectAt: 0 },
+    },
+    // Stub the model: NONE for classify, empty array for planner
+    classifyValue: "NONE",
+    completeValue: "[]",
+  });
+
+  // Fire one tick
+  await tickAndSettle(h, clock, 100);
+
+  const decisions = getDecisions(h);
+  const selfReviewIdx = decisions.findIndex(d => d.action === "self-review");
+  const planningFiredIdx = decisions.findIndex(d => d.action === "planning_fired");
+
+  check("BO1-pin control: no self-review", selfReviewIdx === -1);
+  check("BO1-pin control: planning_fired present", planningFiredIdx !== -1);
+}
+
 // --- Main ---
 
 async function main() {
@@ -2831,6 +2958,10 @@ async function main() {
   await caseBJ1_budget_268_shape(clock);
   await caseBJ1_budget_266_shape(clock);
   await caseBJ1_budget_read_failed(clock);
+
+  // BO1-pin: The self-review branch must not return early, so the planning gate runs.
+  await caseBO1_pin_selfreview_then_planning(clock);
+  await caseBO1_pin_control_no_selfreview(clock);
 
   // AO1: Skip for now (we have uncommitted changes during development).
   // Will re-enable after committing.
