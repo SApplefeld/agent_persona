@@ -131,7 +131,11 @@ async function tickOpenAsk(
       detail: `${contextId ? contextId + ": " : ""}ask ${state.pendingAskId} re-raised after ${Math.round(elapsed / 1000)}s: ${askRecord.question.slice(0, 100)}`,
     });
     try {
-      await dp.prompt.submit({ text: `[STILL WAITING] ${askRecord.question}` });
+      // D5b: re-raise carries the same reply-tool instruction that every operator-facing
+      // prompt carries (item 5, priming turn), since a child's own conversational reply
+      // is never visible to the operator through Discord.
+      const REPLY_INSTRUCTION = "You are attached to a Discord channel. When you want to say something back to the operator, call the reply tool from the channel-relay MCP server - your own conversational reply is not visible to them. ";
+      await dp.prompt.submit({ text: `${REPLY_INSTRUCTION}[STILL WAITING] ${askRecord.question}` });
     } catch { /* re-raise failed; non-fatal, the decision log still shows it */ }
   }
 
