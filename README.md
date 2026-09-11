@@ -224,6 +224,71 @@ The two files land in `.claude/types/` of the current directory. Copy both gener
 
 **Re-gate rule:** If you upgrade the engine, re-run `npx tsc --noEmit` and the full test suite (`.kit/cost-ledger-unit-test.mjs`, `.kit/cost-migration-test.mjs`, `.kit/controller-tick-test.mjs`, controller suite). The function names may change again.
 
+## Operator channel (item 7)
+
+A reader session can steer an owner session without being at the owner's keyboard. The owner can also ask the reader a question and wait for the answer instead of walking on.
+
+### Tools
+
+**`agentic_say`** (reader only)
+
+Writes an operator record into the commons store. Refused when:
+- The calling session is the owner (owners cannot message themselves)
+- The calling session does not hold a reader claim on the target persona
+
+**`agentic_inbox`** (reader only)
+
+Returns unread replies to the caller's records. Refused when:
+- The calling session is the owner
+- The calling session does not hold a reader claim on the target persona
+
+### Record shapes
+
+All records live in the global store (machine-wide, one store per plugin). Key formats:
+
+| Key format | Type | Description |
+|---|---|---|
+| `inbox:<persona>:<record-id>` | `inbox` | An operator message from a reader to an owner |
+| `reply:<persona>:<record-id>` | `reply` | The owner's reply to an inbox record |
+| `ask:<persona>:<record-id>` | `ask` | A question from the owner to a reader |
+| `reader:<persona>:<session-id>` | `reader` | A reader claim on a persona |
+
+**Record-id format:** `default-<full-uuid>-<n>` where `<n>` is a per-persona sequence number (1, 2, 3, ...).
+
+**TTL:** 24 hours, swept on the cost-summary cadence (every `costSummaryEveryNTicks` ticks). Only the owner sweeps records; readers cannot delete records they do not own.
+
+### Delivery
+
+When the owner's controller drains the inbox on a quiet tick, it submits the text through `$.prompt.submit` as an `[OPERATOR]` user turn. The `[OPERATOR]` marker is prepended to the text before submission. After that turn completes, the controller reads the last assistant message from `$.session.messages()` and writes it back as the reply.
+
+### Trust boundary
+
+Text reaches the model **only** through `$.prompt.submit` from a record whose writer holds a reader claim on the same persona. Peer messages (cross-session `SendMessage`) are consumed by the `session.receive` hook and **never** reach the model. The hook tests `e.origin.kind` against `peer` and `peer-send-message`; if either matches, it returns `{ consumed: "agentic: peer text is not steering; use agentic_say" }`, which means nothing is queued, shown, or read by the model. A peer message therefore carries no standing: it cannot steer the owner, open an ask, or trigger a nudge.
+
+### Ask wait
+
+When the owner opens an ask (`ask-operator` decision), it sets `pendingAskId` and waits indefinitely. While `pendingAskId` is set:
+- Nudges are skipped (the controller does not nudge while waiting for an answer)
+- Classify is skipped (the controller does not spend a model call classifying while waiting)
+- The cap paths (cost cap, error streak) **pause** the leaf rather than block it (see BG1 in plan v15)
+
+When the reader answers the ask, the owner's controller is reactivated (`reactivated (answer to ask)`).
+
+### Section 6 options (defaults in force)
+
+Two options are defined in the plan (section 6, item 6) with defaults in force:
+
+1. **Auto-claim reader on session start:** When a session starts with `agentic_identity` and the persona is already claimed by a live owner, the reader is auto-claimed. Default: **on** (the reader is claimed automatically).
+2. **Owner can message itself:** Whether the owner can use `agentic_say` to message itself. Default: **off** (refused; see refusal rules above).
+
+The operator has not yet ruled on these options; the defaults are in force.
+
+### Test coverage
+
+- `.kit/live-operator-test.sh` : the full live suite (phases 1, 2, 3)
+- `.kit/controller-tick-test.mjs` : S4 (peer doorbell), S9 (cost cap ask opener)
+- `.kit/assert-decisions.js` : decision log assertions (ask lifecycle, reply check)
+
 ## Limitations
 
 - **Latency**: goal scoring (1 classify) + memory curation (1 classify + optional 1 complete) + 2 file reads + 1 write per turn end. Controller tick: 1 classify + optional 1 complete per tick. ~1.5–2s on Haiku each.
