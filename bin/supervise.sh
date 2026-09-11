@@ -358,6 +358,10 @@ while true; do
 
     # Poll the decision log for signals.
     ROOT_COMPLETE_TS=$(get_fact "$WORKDIR" "$PERSONA" "root_complete")
+    # Plan item 4: a distinct signal from root_complete. root_complete means
+    # "this goal is done"; shutdown_requested means "the operator asked the
+    # supervisor itself to stop" - only the second one should exit the loop.
+    SHUTDOWN_REQUESTED_TS=$(get_fact "$WORKDIR" "$PERSONA" "shutdown_requested")
     CRITICAL_TS=""
     if [ -f "$STORE" ]; then
       CRITICAL_TS=$(node -e "
@@ -410,9 +414,11 @@ const minRunMs = process.argv[10] ? parseInt(process.argv[10]) : 120000;
 const maxRestartsPerHour = process.argv[11] ? parseInt(process.argv[11]) : 6;
 const crashCount = process.argv[12] ? parseInt(process.argv[12]) : 0;
 const restartCount = process.argv[13] ? parseInt(process.argv[13]) : 0;
+const shutdownRequestedTs = process.argv[14] ? parseInt(process.argv[14]) : null;
 console.log(JSON.stringify({
   childExitCode: null,
   rootCompleteTs,
+  shutdownRequestedTs,
   criticalTs,
   crashCount,
   restartCount,
@@ -426,7 +432,7 @@ console.log(JSON.stringify({
   minRunMs,
   maxRestartsPerHour,
 }));
-" "${ROOT_COMPLETE_TS:-}" "${CRITICAL_TS:-}" "${HEARTBEAT_SESSION_ID:-}" "${HEARTBEAT_LAST_SEEN:-}" "${NOW:-}" "$CHILD_START_TS" "${CHILD_SESSION_ID:-}" "$LAUNCHED_AT" "$STALE_AFTER_MS" "$SUPERVISOR_MIN_RUN_MS" "$SUPERVISOR_MAX_RESTARTS_PER_HOUR" "$CRASH_COUNT" "$RESTART_COUNT" 2>> "$RUNDIR/supervisor.err")
+" "${ROOT_COMPLETE_TS:-}" "${CRITICAL_TS:-}" "${HEARTBEAT_SESSION_ID:-}" "${HEARTBEAT_LAST_SEEN:-}" "${NOW:-}" "$CHILD_START_TS" "${CHILD_SESSION_ID:-}" "$LAUNCHED_AT" "$STALE_AFTER_MS" "$SUPERVISOR_MIN_RUN_MS" "$SUPERVISOR_MAX_RESTARTS_PER_HOUR" "$CRASH_COUNT" "$RESTART_COUNT" "${SHUTDOWN_REQUESTED_TS:-}" 2>> "$RUNDIR/supervisor.err")
 
     # Call the decide unit.
     DECIDE_RESULT=$(node -e "
@@ -492,6 +498,25 @@ console.log(o.reason || '');
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         exit 4
         ;;
+      restart_passive)
+        # Plan item 4: root_complete with no shutdown requested. The goal is
+        # done; the supervisor stays up and returns to item 1's passive state
+        # for a second goal, rather than exiting. Stopped the same graceful
+        # way as stop_complete (EOF path), but this is expected, healthy
+        # behavior, not a crash: it must never count toward the crash-loop or
+        # restart-budget limits meant for actual failures.
+        log "RESTART_PASSIVE: $DECIDE_REASON"
+        stop_child "restart_passive"
+        if [ -n "${CHILD_PID:-}" ]; then
+          wait "$CHILD_PID"; EXIT_CODE=$?
+        else
+          EXIT_CODE=0
+        fi
+        echo "$EXIT_CODE" > "$EXIT_MARKER"
+        log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
+        log "PASSIVE: goal complete; returning to passive state, waiting for the next goal delivered by chat"
+        continue 2  # break out of the poll loop and go to the next child; no crash/restart accounting
+        ;;
       restart)
         log "RESTART: $DECIDE_REASON"
         stop_child "restart"
@@ -539,11 +564,18 @@ console.log(o.reason || '');
 
   log "EXIT child-$CHILD_INDEX code=$EXIT_CODE (natural)"
 
-  # Check for root_complete to decide whether to restart.
+  # Check for shutdown_requested / root_complete to decide whether to stop,
+  # go passive, or restart (plan item 4: the two are distinct signals).
+  SHUTDOWN_REQUESTED_TS=$(get_fact "$WORKDIR" "$PERSONA" "shutdown_requested")
+  if [ -n "$SHUTDOWN_REQUESTED_TS" ] && [ "$SHUTDOWN_REQUESTED_TS" -gt "$CHILD_START_TS" ]; then
+    log "STOP_COMPLETE: shutdown_requested at $SHUTDOWN_REQUESTED_TS > child start $CHILD_START_TS"
+    exit 0
+  fi
   ROOT_COMPLETE_TS=$(get_fact "$WORKDIR" "$PERSONA" "root_complete")
   if [ -n "$ROOT_COMPLETE_TS" ] && [ "$ROOT_COMPLETE_TS" -gt "$CHILD_START_TS" ]; then
-    log "STOP_COMPLETE: root_complete at $ROOT_COMPLETE_TS > child start $CHILD_START_TS"
-    exit 0
+    log "RESTART_PASSIVE: root_complete at $ROOT_COMPLETE_TS > child start $CHILD_START_TS (no shutdown requested)"
+    log "PASSIVE: goal complete; returning to passive state, waiting for the next goal delivered by chat"
+    continue  # only the outer loop encloses this point; no crash/restart accounting
   fi
 
   # Update crash counter.

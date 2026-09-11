@@ -626,6 +626,24 @@ export const register: Register = async (on, options) => {
     });
 
     await $.tool.register({
+      name: "supervisor_shutdown",
+      description:
+        "Stop the supervisor itself, not just the current goal. Use ONLY when the operator " +
+        "explicitly asks to shut down, stop the supervisor, or end the session for good - never " +
+        "for a completed goal (goal_done already returns the supervisor to its passive waiting " +
+        "state for the next one). The child exits by the graceful EOF path. Owner only.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          reason: {
+            type: "string",
+            description: "Optional. Why the operator asked to shut down.",
+          },
+        },
+      },
+    });
+
+    await $.tool.register({
       name: "goal_edit",
       description:
         "Steer the goal tree in response to an operator request: drop a pending plan or task " +
@@ -2883,6 +2901,29 @@ export const register: Register = async (on, options) => {
           };
         }
         return { result: `Complete: "${completedTitle}". No pending goals; planning runs at the next tick.${healthText}` };
+      }
+      toolErrorsThisTurn++;
+      return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+    }
+
+    // Serve supervisor_shutdown (plan item 4: distinct from root_complete;
+    // supervise.sh's decide unit only exits the whole loop on this signal).
+    if (e.tool === "mcp__agentic-plugin__supervisor_shutdown") {
+      if (!sess.isOwner) {
+        toolErrorsThisTurn++;
+        return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+      }
+      const reason = String((e as any).reason || "").trim() || "operator requested shutdown";
+      const now = Date.now();
+      sess.state.decisions.push({
+        timestamp: now,
+        loop: "monitor",
+        action: "shutdown_requested",
+        detail: reason,
+      });
+      const writeOk = await persist($);
+      if (writeOk) {
+        return { result: `Shutdown requested: ${reason}. The supervisor will stop after this turn ends.` };
       }
       toolErrorsThisTurn++;
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };

@@ -38,12 +38,35 @@ const cases = [
     },
     expected: 'restart',
   },
-  // 2. Child exited non-zero, root_complete newer than start: stop_complete.
+  // 2. Child exited non-zero, root_complete newer than start, no shutdown
+  // requested: restart_passive (plan item 4 - the goal is done, but the
+  // supervisor stays up for a second goal rather than exiting).
   {
-    name: 'exit non-zero, root_complete: stop_complete',
+    name: 'exit non-zero, root_complete, no shutdown: restart_passive',
     input: {
       childExitCode: 1,
       rootCompleteTs: 2000,
+      shutdownRequestedTs: null,
+      criticalTs: null,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: null,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'restart_passive',
+  },
+  // 2b. shutdown_requested newer than start, no root_complete: stop_complete
+  // (the operator asked the supervisor itself to stop).
+  {
+    name: 'shutdown_requested, no root_complete: stop_complete',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: null,
+      shutdownRequestedTs: 2000,
       criticalTs: null,
       crashCount: 0,
       restartCount: 0,
@@ -55,6 +78,47 @@ const cases = [
       staleAfterMs: 90000,
     },
     expected: 'stop_complete',
+  },
+  // 2c. Both root_complete and shutdown_requested newer than start:
+  // shutdown_requested takes priority over restart_passive.
+  {
+    name: 'root_complete AND shutdown_requested: stop_complete wins',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: 1500,
+      shutdownRequestedTs: 2000,
+      criticalTs: null,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: null,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'stop_complete',
+  },
+  // 2d. root_complete is older than childStartTs (a stale fact from a prior
+  // goal, still sitting in the decision log): must not fire restart_passive
+  // again on a child that already restarted past it.
+  {
+    name: 'stale root_complete (older than child start): continue',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: 500,
+      shutdownRequestedTs: null,
+      criticalTs: null,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: null,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'continue',
   },
   // 3. context_budget_crossed critical newer than start: restart.
   {
