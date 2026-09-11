@@ -1,0 +1,20 @@
+=== live-all.sh start 20260909T181012Z ===
+Profile: short
+Concurrency: 1 (serial)
+Suites: controller
+Global store: /c/Users/NEO/.claude/plugins/store/agentic-plugin_inline-725b37f2a6ed.json
+
+--- [1/1] controller ---
+live-all: pre-gate for controller...
+pre-gate: waiting for no live persona claim (store: /c/Users/NEO/.claude/plugins/store/agentic-plugin_inline-725b37f2a6ed.json, timeout: 120s)...
+pre-gate poll: live=0 oldest_age=0s
+pre-gate passed (no live claims)
+PASS: controller
+
+=== Summary ===
+start 2026-09-09T18:10:12Z HEAD a1ec8bb PROFILE short
+controller script_exit=0 started=2026-09-09T18:10:12Z ended=2026-09-09T18:11:53Z exitfile=[0 ASSERT: 0 ] assert=[  OK: controller: ordered subsequence found;  OK: cost_summary emitted at least once;;All checks passed for controller;]
+done 2026-09-09T18:11:53Z
+
+Failures: 0
+live-all.sh: PASS (all suites green)
