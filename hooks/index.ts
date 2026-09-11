@@ -866,12 +866,29 @@ export const register: Register = async (on, options) => {
                     detail: `Deferring promotion: live commons claim by ${commonsWinner.holder}`,
                   });
                   // Persist the decision to disk (reader path, so persist() won't work).
+                  // Merge, never replace: read existing slot, push decision onto it, write back.
                   try {
                     const store: Record<string, unknown> = await $.fs.exists(storePath)
                       ? (JSON.parse(await $.fs.read(storePath)) as Record<string, unknown>)
                       : {};
-                    sess.state.updatedAt = now;
-                    store[sess.persona] = sess.state;
+                    const existing = store[sess.persona] as AgentState | undefined;
+                    if (existing) {
+                      // Push the new decision onto the existing slot's decisions
+                      const existingDecisions = existing.decisions ?? [];
+                      existingDecisions.push({
+                        timestamp: now,
+                        loop: "monitor",
+                        action: "promotion_deferred_commons",
+                        detail: `Deferring promotion: live commons claim by ${commonsWinner.holder}`,
+                      });
+                      existing.decisions = existingDecisions;
+                      existing.updatedAt = now;
+                      store[sess.persona] = existing;
+                    } else {
+                      // No existing slot; use current state but preserve its decisions
+                      sess.state.updatedAt = now;
+                      store[sess.persona] = sess.state;
+                    }
                     const jsonStr = JSON.stringify(store, null, 2);
                     await $.fs.write(storePath, jsonStr);
                   } catch { /* non-fatal */ }
@@ -1771,6 +1788,7 @@ export const register: Register = async (on, options) => {
 
           // AH5: Nudge cap check before classify. If the nudge cap is latched, skip classify entirely.
           // AK2: emit cost_cap_reached once per window (latched by capNoticeWindowStart).
+          // BF2: when the nudge cost cap refuses a nudge and pendingAskId is unset, open an ask.
           const nudgeCapped = costEnabled && costMaxNudgesPerHour > 0 &&
             effectiveWindowCount(sess.state.monitor.cost.nudgeWindow, now) >= costMaxNudgesPerHour;
           if (nudgeCapped) {
@@ -1782,6 +1800,34 @@ export const register: Register = async (on, options) => {
                 detail: `${g.id}: nudge cap reached (${effectiveWindowCount(sess.state.monitor.cost.nudgeWindow, now)}/${costMaxNudgesPerHour} per hour), refusing nudge`,
               });
               sess.state.monitor.cost.capNoticeWindowStart = sess.state.monitor.cost.nudgeWindow.start;
+            }
+            // BF2: open an ask if none is pending
+            if (!sess.state.pendingAskId) {
+              const askId = `ask-${g.id}-${tickTs}`;
+              const capReason = `cost-cap: nudge budget spent (${effectiveWindowCount(sess.state.monitor.cost.nudgeWindow, now)}/${costMaxNudgesPerHour} per hour)`;
+              await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, capReason, sess.mySessionId);
+              sess.state.pendingAskId = askId;
+              sess.state.decisions.push({
+                timestamp: tickTs,
+                loop: "monitor",
+                action: "ask_opened",
+                detail: `${g.id}: ${capReason} (ask ${askId})`,
+              });
+              try { $.ui.toast(`Agentic: ${capReason}`); } catch { /* non-fatal */ }
+              if (g.status === "active") {
+                g.status = "blocked";
+                g.blockedReason = capReason;
+                g.updatedAt = tickTs;
+                sess.state.decisions.push({
+                  timestamp: tickTs,
+                  loop: "goal",
+                  action: "block",
+                  detail: `${g.id}: ${capReason}`,
+                });
+                const nextId = activateNext(sess.state, g.id);
+                activate($, nextId, `${g.id} blocked (cost cap)`);
+                try { $.ui.status(""); } catch { /* non-fatal */ }
+              }
             }
             sess.state.updatedAt = tickTs;
             await persist($);
