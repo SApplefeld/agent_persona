@@ -75,9 +75,13 @@ FAIL_COUNT=0
 OWNER_PID=""
 READER_PID=""
 cleanup() {
-  # BD6: kill the claude processes
-  if [ -n "${OWNER_PID:-}" ]; then kill "$OWNER_PID" 2>/dev/null; fi
-  if [ -n "${READER_PID:-}" ]; then kill "$READER_PID" 2>/dev/null; fi
+  # BD6 / plan item 5: escalate EOF -> TERM -> KILL and verify death (see
+  # stop_coproc_pid in live-common.sh), so an early-exit run never leaves
+  # the coproc's claude process alive holding this persona's claim into
+  # the next proof. A bare "kill" here is the gap that bullet closes: it
+  # sends one SIGTERM and never checks whether the process actually died.
+  stop_coproc_pid "${OWNER_PID:-}" "${IN_O:-}" 5
+  stop_coproc_pid "${READER_PID:-}" "${IN_R:-}" 5
   wait 2>/dev/null
   rm -f "$RUNNING" "$HANDSHAKE_READY" "$HANDSHAKE_SENT"
 }

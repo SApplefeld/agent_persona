@@ -115,9 +115,28 @@ async function tickOpenAsk(
       detail: `${contextId ? contextId + ": " : ""}ask ${state.pendingAskId} still open`,
     });
   }
+  const elapsed = now - askRecord.at;
+
+  // D5b (bullet 3): a quiet channel means the operator may never see the
+  // ask_waiting log line. Past a bounded window, re-raise the question into
+  // the thread once (a real turn, not a log line) rather than sit silent.
+  const reraiseMs = typeof cfg.askReraiseWindowMs === "number" ? (cfg.askReraiseWindowMs as number) : 15 * 60_000;
+  if (reraiseMs > 0 && !askRecord.reraisedAt && elapsed >= reraiseMs) {
+    askRecord.reraisedAt = now;
+    await store.set(askKey(persona, state.pendingAskId), askRecord);
+    state.decisions.push({
+      timestamp: now,
+      loop: "monitor",
+      action: "ask_reraised",
+      detail: `${contextId ? contextId + ": " : ""}ask ${state.pendingAskId} re-raised after ${Math.round(elapsed / 1000)}s: ${askRecord.question.slice(0, 100)}`,
+    });
+    try {
+      await dp.prompt.submit({ text: `[STILL WAITING] ${askRecord.question}` });
+    } catch { /* re-raise failed; non-fatal, the decision log still shows it */ }
+  }
+
   const waitMs = typeof cfg.askOperatorWaitMs === "number" ? (cfg.askOperatorWaitMs as number) : 0;
   if (waitMs > 0) {
-    const elapsed = now - askRecord.at;
     if (elapsed >= waitMs) {
       state.decisions.push({
         timestamp: now,
@@ -127,6 +146,15 @@ async function tickOpenAsk(
       });
       askRecord.status = "expired";
       await store.set(askKey(persona, state.pendingAskId), askRecord);
+      // D5b (bullet 4): the controller's nudges resume rather than waiting
+      // forever - activateNext already walks to the next pending plan/task,
+      // which is what "nudges resume on a plan" means when this node itself
+      // has nothing left runnable without the answer.
+      const askedNode = state.goals.find((n) => n.id === askRecord.nodeId);
+      if (askedNode) {
+        askedNode.lastAskQuestion = askRecord.question;
+        askedNode.lastAskClosedAt = now;
+      }
       state.pendingAskId = undefined;
       const nextId = activateNext(state);
       if (nextId) {
@@ -138,6 +166,24 @@ async function tickOpenAsk(
   }
   await persist(dp);
   return "waiting";
+}
+
+/**
+ * D5b: an open ask never silences the worker, part 2. The classifier can
+ * propose the identical ask-operator/pause question again right after the
+ * operator (or a thread reply) just closed it, which reads as the worker
+ * ignoring the answer. Suppress a re-open of the exact same question on the
+ * exact same node within the suppress window; the caller falls through to a
+ * nudge instead so the plan keeps moving rather than pausing on a loop.
+ */
+function shouldSuppressReask(
+  node: GoalNode | undefined,
+  question: string,
+  now: number,
+  suppressMs: number,
+): boolean {
+  if (!node || !node.lastAskQuestion || node.lastAskClosedAt === undefined) return false;
+  return node.lastAskQuestion === question && now - node.lastAskClosedAt < suppressMs;
 }
 const sess: {
   persona: string;
@@ -1033,6 +1079,13 @@ export const register: Register = async (on, options) => {
                 // Close the ask
                 askRecord.status = "answered";
                 await store.set(askKey(persona, askId), askRecord);
+                // D5b: remember the closed question so the classifier does
+                // not reopen it on this node right away (bullet 2).
+                const askedNodeInbox = sess.state.goals.find((n) => n.id === askRecord.nodeId);
+                if (askedNodeInbox) {
+                  askedNodeInbox.lastAskQuestion = askRecord.question;
+                  askedNodeInbox.lastAskClosedAt = Date.now();
+                }
                 // Mark the answer as delivered
                 answer.status = "delivered";
                 answer.deliveredAt = Date.now();
@@ -2117,31 +2170,44 @@ export const register: Register = async (on, options) => {
               } catch { /* nudge failed; non-fatal */ }
             }
           } else if (finalDecision === "ask-operator" || finalDecision === "pause") {
-            // D5: write an ask record and set pendingAskId (both ask-operator and pause)
-            const askId = `ask-${g.id}-${Date.now()}`;
             const question = fullReason || (finalDecision === "pause" ? "controller pause" : "operator input needed");
-            await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, question, sess.mySessionId);
-            sess.state.pendingAskId = askId;
-            sess.state.decisions.push({
-              timestamp: Date.now(),
-              loop: "monitor",
-              action: "ask_opened",
-              detail: `${g.id}: ${finalDecision}: ${question} (ask ${askId})`,
-            });
-            try {
-              $.ui.toast(`Agentic: ${question}`);
-            } catch { /* non-fatal */ }
-            if (g.status === "active") {
-              g.status = "paused";
-              g.blockedReason = question;
-              g.updatedAt = Date.now();
+            const askReaskSuppressMs = typeof cfg.askReaskSuppressMs === "number" ? (cfg.askReaskSuppressMs as number) : 10 * 60_000;
+            if (shouldSuppressReask(g, question, tickTs, askReaskSuppressMs)) {
+              // D5b: the classifier re-proposed the identical question this
+              // node just closed. Log it and fall through without pausing;
+              // the plan keeps nudging instead of silencing the worker on a loop.
+              sess.state.decisions.push({
+                timestamp: tickTs,
+                loop: "monitor",
+                action: "ask_reask_suppressed",
+                detail: `${g.id}: suppressed identical question closed ${Math.round((tickTs - (g.lastAskClosedAt || tickTs)) / 1000)}s ago: ${question.slice(0, 80)}`,
+              });
+            } else {
+              // D5: write an ask record and set pendingAskId (both ask-operator and pause)
+              const askId = `ask-${g.id}-${Date.now()}`;
+              await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, question, sess.mySessionId);
+              sess.state.pendingAskId = askId;
               sess.state.decisions.push({
                 timestamp: Date.now(),
-                loop: "goal",
-                action: "paused_by_controller",
-                detail: `${g.id}: ${question}`,
+                loop: "monitor",
+                action: "ask_opened",
+                detail: `${g.id}: ${finalDecision}: ${question} (ask ${askId})`,
               });
-              try { $.ui.status(""); } catch { /* non-fatal */ }
+              try {
+                $.ui.toast(`Agentic: ${question}`);
+              } catch { /* non-fatal */ }
+              if (g.status === "active") {
+                g.status = "paused";
+                g.blockedReason = question;
+                g.updatedAt = Date.now();
+                sess.state.decisions.push({
+                  timestamp: Date.now(),
+                  loop: "goal",
+                  action: "paused_by_controller",
+                  detail: `${g.id}: ${question}`,
+                });
+                try { $.ui.status(""); } catch { /* non-fatal */ }
+              }
             }
           } else if (finalDecision === "complete" && g.status === "active") {
             // R3: use completeLeaf + activateNext.
@@ -3161,6 +3227,46 @@ export const register: Register = async (on, options) => {
   on("prompt.submit", async ($, e, next) => {
     // Capture the prompt text for the goal scorer.
     currentPrompt = e.text;
+
+    // D5b (bullet 1): an open ask never silences the worker. This hook fires
+    // only for a genuine external turn - the controller's own $.prompt.submit
+    // calls (nudges, operator-record delivery, the ask re-raise) bypass this
+    // handler, per the nudgedTurn comment above. So any turn that reaches
+    // here while an ask is open is the operator answering it, whether it
+    // came from the keyboard or a Discord thread reply, and whether or not
+    // it carries the ask id: close the ask and reactivate the paused node.
+    if (sess.isOwner && sess.state.pendingAskId) {
+      const askId = sess.state.pendingAskId;
+      const store = commonsStoreOf($);
+      const askRecord = await readAskRecord(store, sess.persona, askId);
+      if (askRecord && askRecord.status === "open") {
+        askRecord.status = "answered";
+        await store.set(askKey(sess.persona, askId), askRecord);
+        sess.state.pendingAskId = undefined;
+        const askedNode = sess.state.goals.find((n) => n.id === askRecord.nodeId);
+        if (askedNode) {
+          askedNode.lastAskQuestion = askRecord.question;
+          askedNode.lastAskClosedAt = Date.now();
+          if (askedNode.status === "paused") {
+            askedNode.status = "active";
+            askedNode.updatedAt = Date.now();
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "activated",
+              detail: `${askedNode.id}: reactivated (thread reply to ask ${askId})`,
+            });
+          }
+        }
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "ask_answered_by_reply",
+          detail: `ask ${askId} closed by thread reply, no ask id typed`,
+        });
+        await persist($);
+      }
+    }
 
     const r = await next(e);
     if (r.drop !== undefined) {

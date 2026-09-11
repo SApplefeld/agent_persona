@@ -45,6 +45,8 @@ export interface AskRecord {
   nodeId: string;
   question: string;
   status: AskStatus;
+  reraisedAt?: number; // plan item 5 (D5b, bullet 3): set the one time this ask
+                        // was re-raised into the thread past the bounded window.
 }
 
 // --- Constants ---

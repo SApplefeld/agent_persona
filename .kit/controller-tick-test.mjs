@@ -295,6 +295,16 @@ function buildPersonaState(otherSid, now) {
         selfReview: { count: 0, estTokens: 0 },
         planner: { count: 0, estTokens: 0 },
         nudge: { count: 0 },
+        // D5b: every prior buildPersonaState case took the "no active leaf"
+        // branch (step 4), which returns before the idle-gate/classify code
+        // that reads these. A case that reaches classify on an active node
+        // (the D5b reask-suppression case) needs the full cost shape, so
+        // it is seeded here rather than special-cased per test.
+        consecutiveSkips: 0,
+        nudgeWindow: { start: 0, count: 0 },
+        callWindow: { start: 0, count: 0 },
+        lastSummaryHash: 0,
+        capNoticeWindowStart: 0,
       },
     },
     decisions: [],
@@ -2993,6 +3003,9 @@ async function main() {
     await caseS3_answer_reactivates(clock);
     await caseS3_say_leaves_ask_open(clock);
     await caseS3_timeout_walks_on(clock);
+    await caseD5b_replyClosesAsk(clock);
+    await caseD5b_reaskSuppressed(clock);
+    await caseD5b_reraiseOnce(clock);
     await caseS4_peer_consumed(clock);
     await caseS4_peer_send_message_consumed(clock);
     await caseS4_other_origin_passes(clock);
@@ -3043,6 +3056,163 @@ async function main() {
 
   console.log(`\n${failures === 0 ? "PASS" : "FAIL"}: ${failures} failure(s)`);
   process.exit(failures);
+}
+
+// ============================================================
+// D5b (plan item 5, bullet "an open ask never silences the worker"):
+// a reply in the thread closes an open ask with no ask id typed.
+// ============================================================
+async function caseD5b_replyClosesAsk(clock) {
+  console.log("\n=== D5b: a thread reply with no ask id closes the open ask ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({ ...OPTS, caseName: "d5b_reply_closes_ask" });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  const personaState = buildPersonaState(mySid, now);
+  personaState.goals = [
+    { id: "node-001", kind: "leaf", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-001";
+  personaState.pendingAskId = "ask-reply-1";
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
+
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  const askKey = "ask:default:ask-reply-1";
+  h.storeMap.set(askKey, {
+    id: "ask-reply-1", key: askKey, persona: "default", askId: "ask-reply-1",
+    at: now, nodeId: "node-001", question: "Which branch should I use?", status: "open",
+  });
+
+  // Simulate a genuine external turn: a reply typed in the thread, carrying
+  // no ask id anywhere in its text.
+  const submitH = h.handlers["prompt.submit"];
+  await submitH(h.fake, { text: "use the passive-supervisor branch" }, async () => ({}));
+
+  const state = getState(h);
+  const askRecord = h.storeMap.get(askKey);
+  check("D5b reply: ask record closed (status answered)", askRecord && askRecord.status === "answered");
+  check("D5b reply: pendingAskId cleared", !state.pendingAskId);
+  const node1 = state.goals.find(g => g.id === "node-001");
+  check("D5b reply: node reactivated", node1 && node1.status === "active");
+  check("D5b reply: lastAskQuestion recorded on the node", node1 && node1.lastAskQuestion === "Which branch should I use?");
+  const decisions = state.decisions || [];
+  check("D5b reply: ask_answered_by_reply logged", decisions.some(d => d.action === "ask_answered_by_reply"));
+}
+
+// ============================================================
+// D5b: a closed question is not re-asked for the same node.
+// ============================================================
+async function caseD5b_reaskSuppressed(clock) {
+  console.log("\n=== D5b: identical question suppressed shortly after closing ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({ ...OPTS, caseName: "d5b_reask_suppressed" });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  const personaState = buildPersonaState(mySid, now);
+  personaState.goals = [
+    {
+      id: "node-001", kind: "leaf", objective: "Goal 1", status: "active",
+      completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [],
+      lastAskQuestion: "operator input needed", lastAskClosedAt: now - 30_000, // closed 30s ago
+    },
+  ];
+  personaState.activeGoalId = "node-001";
+  personaState.monitor.lastTurnComplete = now - 120_000; // idle past nudgeIdleMs
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
+
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  // The classifier proposes ask-operator again with the identical reason text.
+  h.setClassifyValue("ask-operator");
+  h.setCompleteValue("operator input needed");
+
+  clock.advance(65_000);
+  await tickAndSettle(h, clock, 30);
+
+  const state = getState(h);
+  const decisions = state.decisions || [];
+  check("D5b suppress: ask_reask_suppressed logged", decisions.some(d => d.action === "ask_reask_suppressed"));
+  check("D5b suppress: no ask_opened for the identical question", !decisions.some(d => d.action === "ask_opened"));
+  check("D5b suppress: pendingAskId never set", !state.pendingAskId);
+  const node1 = state.goals.find(g => g.id === "node-001");
+  check("D5b suppress: node stays active (not paused again)", node1 && node1.status === "active");
+}
+
+// ============================================================
+// D5b: an ask open past the reraise window re-raises into the thread once.
+// ============================================================
+async function caseD5b_reraiseOnce(clock) {
+  console.log("\n=== D5b: an open ask re-raises into the thread once ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "d5b_reraise_once",
+    askReraiseWindowMs: 30_000,
+    askOperatorWaitMs: 300_000, // well past the reraise window, so this tick only reraises
+  });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  const personaState = buildPersonaState(mySid, now);
+  personaState.goals = [
+    { id: "node-001", kind: "leaf", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-001";
+  personaState.pendingAskId = "ask-reraise-1";
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
+
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  const askKey = "ask:default:ask-reraise-1";
+  h.storeMap.set(askKey, {
+    id: "ask-reraise-1", key: askKey, persona: "default", askId: "ask-reraise-1",
+    at: T0, nodeId: "node-001", question: "Should I keep going on this branch?", status: "open",
+  });
+
+  h.resetPromptSubmits();
+  clock.advance(35_000); // past the 30s reraise window, well short of the 300s wait
+  await tickAndSettle(h, clock, 20);
+
+  const state = getState(h);
+  const askRecord = h.storeMap.get(askKey);
+  check("D5b reraise: ask stays open (not expired)", askRecord && askRecord.status === "open");
+  check("D5b reraise: reraisedAt is set", askRecord && typeof askRecord.reraisedAt === "number");
+  const decisions = state.decisions || [];
+  check("D5b reraise: ask_reraised logged", decisions.some(d => d.action === "ask_reraised"));
+  check("D5b reraise: a real turn was submitted into the thread", h.promptSubmits.some(t => t.includes("Should I keep going on this branch?")));
+
+  // A second tick within the window must not reraise again (once only).
+  const submitsBefore = h.promptSubmits.length;
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  check("D5b reraise: no second reraise on the next tick", h.promptSubmits.length === submitsBefore);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

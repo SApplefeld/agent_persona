@@ -87,3 +87,39 @@ NODE
   done
   rm -f "$script_file"
 }
+
+# Plan item 5 ("a proof child is stopped when its proof ends"): escalate
+# EOF -> TERM -> KILL and verify death, mirroring bin/supervise.sh's own
+# stop_child. A suite's cleanup trap on an early-exit path (an assertion
+# failure, a killed suite) must not leave the claude coproc it launched
+# still holding this persona's commons claim into the next proof - a second
+# proof child that finds the first still holding "default" comes up as a
+# reader and proves less than it seems to.
+# Usage: stop_coproc_pid <pid> [write-fd] [grace-seconds, default 5]
+stop_coproc_pid() {
+  local pid="${1:-}" fd="${2:-}" grace="${3:-5}" n
+  [ -z "$pid" ] && return 0
+  if ! kill -0 "$pid" 2>/dev/null; then
+    return 0  # already dead
+  fi
+  # Phase 1: EOF - close the write end so the child can finish its turn and exit 0.
+  if [ -n "$fd" ]; then
+    eval "exec $fd>&-" 2>/dev/null || true
+  fi
+  n=0
+  while kill -0 "$pid" 2>/dev/null && [ $n -lt "$grace" ]; do sleep 1; n=$((n+1)); done
+  kill -0 "$pid" 2>/dev/null || return 0
+  # Phase 2: TERM.
+  kill -TERM "$pid" 2>/dev/null
+  n=0
+  while kill -0 "$pid" 2>/dev/null && [ $n -lt "$grace" ]; do sleep 1; n=$((n+1)); done
+  kill -0 "$pid" 2>/dev/null || return 0
+  # Phase 3: KILL, then verify.
+  kill -KILL "$pid" 2>/dev/null
+  sleep 1
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "stop_coproc_pid: WARNING pid $pid still alive after KILL" >&2
+    return 1
+  fi
+  return 0
+}
