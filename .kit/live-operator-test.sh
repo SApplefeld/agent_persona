@@ -22,17 +22,30 @@ OPERATOR_HOLD_S="${OPERATOR_HOLD_S:-0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# BG6: tee suite stdout to operator.suite.log
+exec > >(tee "$SUITE_DIR/operator.suite.log") 2>&1
+
 # --- Setup ---
 if [ -f "$SUITE_DIR/RUNNING" ]; then
   echo "RUNNING exists, refusing" >&2
   exit 8
 fi
 
-# BF3a: process guard - refuse to start if there are live claude processes
-CLAUDE_PROCS=$(pgrep -f "claude\.exe" 2>/dev/null | wc -l)
+# BG4: process guard - refuse to start if there are live claude -p processes
+# Predicate: claude.exe whose CommandLine contains " -p " and this plugin's --plugin-dir path
+# via PowerShell (MSYS pgrep cannot see non-MSYS processes)
+PLUGIN_DIR_W="$(cygpath -w "$PLUGIN_DIR")"
+CLAUDE_PROCS_PIDS=$(pwsh -Command "
+Get-CimInstance Win32_Process | Where-Object {
+  \$_.Name -eq 'claude.exe' -and
+  \$_.CommandLine -match ' -p ' -and
+  \$_.CommandLine -match [regex]::Escape('$PLUGIN_DIR_W')
+} | Select-Object -ExpandProperty ProcessId
+" 2>/dev/null | grep -E '^[0-9]+$' || true)
+CLAUDE_PROCS=$(echo "$CLAUDE_PROCS_PIDS" | grep -c '[0-9]' 2>/dev/null || echo 0)
 if [ "$CLAUDE_PROCS" -gt 0 ]; then
-  echo "BF3a: $CLAUDE_PROCS live claude processes found, refusing to start" >&2
-  pgrep -af "claude\.exe" >&2 || true
+  echo "BG4: $CLAUDE_PROCS live claude -p processes found with this plugin-dir, refusing to start" >&2
+  echo "PIDs: $CLAUDE_PROCS_PIDS" >&2
   exit 10
 fi
 
@@ -132,6 +145,22 @@ try {
     [ $PRE_GATE_N -ge 120 ] && { echo "pre-gate timeout after ${PRE_GATE_N}s" >&2; exit 1; }
     sleep 5
   done
+fi
+
+# --- BG5: Snapshot non-commons keys before owner starts ---
+# Write to operator.store-keys-before.json for end-of-suite verification.
+if [ -n "$STORE_FILE_LAUNCH" ] && [ -f "$STORE_FILE_LAUNCH" ]; then
+  node -e "
+try {
+  const s = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
+  const nonCommonsKeys = Object.keys(s).filter(k => !k.startsWith('commons:')).sort();
+  require('fs').writeFileSync(process.argv[2], JSON.stringify(nonCommonsKeys, null, 2));
+  console.log('BG5: snapshotted ' + nonCommonsKeys.length + ' non-commons keys');
+} catch (e) {
+  console.error('BG5: failed to snapshot keys: ' + e.message);
+  process.exit(1);
+}
+" "$(cygpath -m "$STORE_FILE_LAUNCH" 2>/dev/null || echo "$STORE_FILE_LAUNCH")" "$SUITE_DIR/operator.store-keys-before.json" 2>/dev/null
 fi
 
 # --- BD6: Owner via coproc (BE6) ---
@@ -260,6 +289,54 @@ READER_PID=$READER_PID
 IN_R=${READER[1]}
 echo "reader coproc started pid=$READER_PID fd=$IN_R"
 
+# --- BG3: Read reader session id from out.jsonl (same pattern as BF6 for owner) ---
+READER_SESSION_ID=""
+SESSION_POLL_N_R=0
+while [ $SESSION_POLL_N_R -lt 30 ]; do
+  if [ -f "$READER_OUT" ]; then
+    READER_SESSION_ID=$(node -e "
+const fs = require('fs');
+try {
+  const lines = fs.readFileSync(process.argv[1], 'utf8').split('\n');
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const obj = JSON.parse(line);
+      if (obj.type === 'system' && obj.subtype === 'init' && obj.session_id) {
+        console.log(obj.session_id);
+        break;
+      }
+    } catch {}
+  }
+} catch {}
+" "$READER_OUT" 2>/dev/null)
+    if [ -n "$READER_SESSION_ID" ]; then
+      break
+    fi
+  fi
+  SESSION_POLL_N_R=$((SESSION_POLL_N_R + 1))
+  sleep 1
+done
+echo "reader session id: ${READER_SESSION_ID:-unknown}"
+
+# --- BG4: self-check - verify both coprocs are visible to the process guard ---
+# After both coprocs are up, run the same predicate and require count >= 2.
+BG4_SELF_CHECK_PIDS=$(pwsh -Command "
+Get-CimInstance Win32_Process | Where-Object {
+  \$_.Name -eq 'claude.exe' -and
+  \$_.CommandLine -match ' -p ' -and
+  \$_.CommandLine -match [regex]::Escape('$PLUGIN_DIR_W')
+} | Select-Object -ExpandProperty ProcessId
+" 2>/dev/null | grep -E '^[0-9]+$' || true)
+BG4_SELF_CHECK_COUNT=$(echo "$BG4_SELF_CHECK_PIDS" | grep -c '[0-9]' 2>/dev/null || echo 0)
+if [ "$BG4_SELF_CHECK_COUNT" -lt 2 ]; then
+  echo "  FAIL: BG4 self-check: expected >= 2 claude -p processes, found $BG4_SELF_CHECK_COUNT"
+  echo "PIDs: $BG4_SELF_CHECK_PIDS"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+else
+  echo "  OK: BG4 self-check: $BG4_SELF_CHECK_COUNT claude -p processes found (PIDs: $BG4_SELF_CHECK_PIDS)"
+fi
+
 # --- Helper: wait for a decision in the LOCAL store (BE8) ---
 # BE8: decisions live in the LOCAL store (cwd-relative .agentic-personas.json),
 # NOT in the global commons store.
@@ -329,9 +406,75 @@ cat "$READER_P2" >&"$IN_R"
 OUT="$READER_OUT" wait_turn 2
 echo "phase 1 reader turn 2 done"
 
-# --- BD5: Phase 1 transcript assertions ---
-# REPLY: line must be non-empty and equal to the reply record's text in the store
-if [ -f "$READER_OUT" ]; then
+# --- BD5: Phase 1 transcript assertions (BG3: primary + secondary) ---
+# BG3 primary: in operator-reader.out.jsonl, turn 2's agentic_inbox tool result
+#   parses as JSON, inbox entry id === default-<reader sid>-1 has status "answered"
+#   and reply.text equals the store record's text.
+# BG3 secondary: assistant's REPLY: line contains the store record's text
+#   (may add trailing words, may not drop any).
+if [ -f "$READER_OUT" ] && [ -n "$READER_SESSION_ID" ] && [ -n "$STORE_FILE_LAUNCH" ] && [ -f "$STORE_FILE_LAUNCH" ]; then
+  # Get the expected reply record: reply:default:default-<reader sid>-1
+  EXPECTED_REPLY_KEY="reply:default:default-${READER_SESSION_ID}-1"
+  STORE_REPLY_TEXT=""
+  STORE_REPLY_STATUS=""
+  if STORE_REPLY_DATA=$(node -e "
+try {
+  const s = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
+  const key = process.argv[2];
+  if (s[key]) {
+    console.log(JSON.stringify({ text: s[key].text || '', status: s[key].status || '' }));
+  }
+} catch {}
+" "$(cygpath -m "$STORE_FILE_LAUNCH" 2>/dev/null || echo "$STORE_FILE_LAUNCH")" "$EXPECTED_REPLY_KEY" 2>/dev/null); then
+    if [ -n "$STORE_REPLY_DATA" ]; then
+      STORE_REPLY_TEXT=$(echo "$STORE_REPLY_DATA" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).text||'')}catch{}})")
+      STORE_REPLY_STATUS=$(echo "$STORE_REPLY_DATA" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).status||'')}catch{}})")
+    fi
+  fi
+  
+  # BG3 primary: check inbox tool result in turn 2
+  INBOX_CHECK=$(node -e "
+const fs = require('fs');
+try {
+  const lines = fs.readFileSync(process.argv[1], 'utf8').split('\n');
+  const expectedId = process.argv[2];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const obj = JSON.parse(line);
+      // Look for agentic_inbox tool result
+      if (obj.type === 'tool' && obj.tool_name === 'agentic_inbox' && obj.result) {
+        let inboxData;
+        try {
+          inboxData = JSON.parse(obj.result);
+        } catch { continue; }
+        const entry = (inboxData.inbox || []).find(e => e.id === expectedId);
+        if (entry) {
+          console.log(JSON.stringify({ status: entry.status || '', replyText: entry.reply?.text || '' }));
+          break;
+        }
+      }
+    } catch {}
+  }
+} catch {}
+" "$READER_OUT" "default-${READER_SESSION_ID}-1" 2>/dev/null)
+  
+  if [ -n "$INBOX_CHECK" ]; then
+    INBOX_STATUS=$(echo "$INBOX_CHECK" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).status||'')}catch{}})")
+    INBOX_REPLY_TEXT=$(echo "$INBOX_CHECK" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).replyText||'')}catch{}})")
+    
+    if [ "$INBOX_STATUS" = "answered" ] && [ -n "$INBOX_REPLY_TEXT" ] && [ "$INBOX_REPLY_TEXT" = "$STORE_REPLY_TEXT" ]; then
+      echo "  OK: BG3 primary: inbox entry answered, reply.text matches store"
+    else
+      echo "  FAIL: BG3 primary: inbox entry status='$INBOX_STATUS' (expected 'answered'), replyText='$INBOX_REPLY_TEXT' (expected '$STORE_REPLY_TEXT')"
+      FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+  else
+    echo "  FAIL: BG3 primary: no agentic_inbox tool result with id default-${READER_SESSION_ID}-1"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+  
+  # BG3 secondary: REPLY: line contains the store record's text
   REPLY_LINE=""
   if grep -q 'REPLY:' "$READER_OUT" 2>/dev/null; then
     REPLY_LINE=$(node -e "
@@ -362,46 +505,29 @@ try {
 } catch {}
 " "$READER_OUT" 2>/dev/null)
   fi
+  
   if [ -n "$REPLY_LINE" ]; then
     REPLY_TEXT="${REPLY_LINE#REPLY: }"
     REPLY_TEXT="${REPLY_TEXT#REPLY:}"
     REPLY_TEXT="$(echo "$REPLY_TEXT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    if [ -n "$REPLY_TEXT" ]; then
-      # BE8: Read the reply record from the GLOBAL store (reply records are in the global store)
-      STORE_REPLY_TEXT=""
-      if [ -n "$STORE_FILE_LAUNCH" ] && [ -f "$STORE_FILE_LAUNCH" ]; then
-        STORE_REPLY_TEXT=$(node -e "
-try {
-  const s = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
-  const keys = Object.keys(s).filter(k => k.startsWith('reply:default:'));
-  // Get the latest reply record
-  if (keys.length > 0) {
-    keys.sort();
-    const rec = s[keys[keys.length - 1]];
-    console.log(rec.text || '');
-  }
-} catch {}
-" "$(cygpath -m "$STORE_FILE_LAUNCH" 2>/dev/null || echo "$STORE_FILE_LAUNCH")" 2>/dev/null)
-      fi
-      # BF5: Compare: exact match only (no prefix match)
-      REPLY_TRIMMED="$(echo "$REPLY_TEXT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      STORE_TRIMMED="$(echo "$STORE_REPLY_TEXT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      if [ "$REPLY_TRIMMED" = "$STORE_TRIMMED" ]; then
-        echo "  OK: REPLY: line exactly matches global store reply text"
+    if [ -n "$REPLY_TEXT" ] && [ -n "$STORE_REPLY_TEXT" ]; then
+      # BG3 secondary: REPLY: line CONTAINS the store text (may add trailing words)
+      if echo "$REPLY_TEXT" | grep -qF "$STORE_REPLY_TEXT"; then
+        echo "  OK: BG3 secondary: REPLY: line contains store reply text"
       else
-        echo "  FAIL: REPLY: line ('$REPLY_TEXT') does not exactly match global store reply text ('$STORE_REPLY_TEXT')"
+        echo "  FAIL: BG3 secondary: REPLY: line ('$REPLY_TEXT') does not contain store reply text ('$STORE_REPLY_TEXT')"
         FAIL_COUNT=$((FAIL_COUNT + 1))
       fi
     else
-      echo "  FAIL: REPLY: line is empty"
+      echo "  FAIL: BG3 secondary: REPLY: text or store text is empty"
       FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
   else
-    echo "  FAIL: no REPLY: line in reader transcript"
+    echo "  FAIL: BG3 secondary: no REPLY: line in reader transcript"
     FAIL_COUNT=$((FAIL_COUNT + 1))
   fi
 else
-  echo "  FAIL: reader transcript missing"
+  echo "  FAIL: BG3: missing prerequisites (reader transcript, session id, or global store)"
   FAIL_COUNT=$((FAIL_COUNT + 1))
 fi
 
@@ -621,15 +747,20 @@ try {
   if [ -n "$STORE_FILE_LAUNCH" ] && [ -f "$STORE_FILE_LAUNCH" ]; then
     GLOBAL_STORE_CYG="$(cygpath -m "$STORE_FILE_LAUNCH" 2>/dev/null || echo "$STORE_FILE_LAUNCH")"
   fi
-  node "$SCRIPT_DIR/assert-decisions.js" operator "$LOCAL_STORE_OWNER" "$SUITE_DIR/operator.assert.log" "$GLOBAL_STORE_CYG"
+  # BG2: pass reader session id as 6th arg for record id validation
+  node "$SCRIPT_DIR/assert-decisions.js" operator "$LOCAL_STORE_OWNER" "$SUITE_DIR/operator.assert.log" "$GLOBAL_STORE_CYG" "$READER_SESSION_ID"
   ASSERT_EXIT=$?
   echo "ASSERT: $ASSERT_EXIT" >> "$OWNER_EXIT"
   if [ $ASSERT_EXIT -ne 0 ]; then
     echo "Assertion failed" >> "$OWNER_EXIT"
     FAIL_COUNT=$((FAIL_COUNT + 1))
   fi
+  # BG6: append SUITE: <FAIL_COUNT> as last line
+  echo "SUITE: $FAIL_COUNT" >> "$OWNER_EXIT"
 else
   echo "no local store at $SUITE_DIR/owner/.agentic-personas.json" >> "$OWNER_EXIT"
+  # BG6: append SUITE: <FAIL_COUNT> as last line
+  echo "SUITE: $FAIL_COUNT" >> "$OWNER_EXIT"
   FAIL_COUNT=$((FAIL_COUNT + 1))
 fi
 
@@ -651,23 +782,37 @@ else
   FAIL_COUNT=$((FAIL_COUNT + 1))
 fi
 
-# --- BF8 detector: global store key preservation ---
-# Check that the global store has the expected keys (not hand-deleted)
-if [ -n "$STORE_FILE_LAUNCH" ] && [ -f "$STORE_FILE_LAUNCH" ]; then
-  KEY_COUNT=$(node -e "
+# --- BG5: Verify all snapshotted keys are still present ---
+# Read the snapshot from operator.store-keys-before.json and check each key.
+if [ -n "$STORE_FILE_LAUNCH" ] && [ -f "$STORE_FILE_LAUNCH" ] && [ -f "$SUITE_DIR/operator.store-keys-before.json" ]; then
+  BG5_RESULT=$(node -e "
 try {
   const s = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
-  console.log(Object.keys(s).length);
-} catch { console.log(0); }
-" "$(cygpath -m "$STORE_FILE_LAUNCH" 2>/dev/null || echo "$STORE_FILE_LAUNCH")" 2>/dev/null)
-  if [ "${KEY_COUNT:-0}" -gt 0 ]; then
-    echo "  OK: global store has $KEY_COUNT keys (preserved)"
+  const snapshot = JSON.parse(require('fs').readFileSync(process.argv[2], 'utf8'));
+  const missing = snapshot.filter(k => !s[k]);
+  console.log(JSON.stringify({ missing, total: snapshot.length }));
+} catch (e) {
+  console.log(JSON.stringify({ error: e.message }));
+}
+" "$(cygpath -m "$STORE_FILE_LAUNCH" 2>/dev/null || echo "$STORE_FILE_LAUNCH")" "$SUITE_DIR/operator.store-keys-before.json" 2>/dev/null)
+  
+  if [ -n "$BG5_RESULT" ]; then
+    BG5_MISSING=$(echo "$BG5_RESULT" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).missing?.length || 0)}catch{console.log(0)}})")
+    BG5_TOTAL=$(echo "$BG5_RESULT" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).total || 0)}catch{console.log(0)}})")
+    
+    if [ "$BG5_MISSING" -eq 0 ]; then
+      echo "  OK: BG5: all $BG5_TOTAL snapshotted keys still present"
+    else
+      BG5_MISSING_LIST=$(echo "$BG5_RESULT" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).missing?.join(', ') || 'unknown')}catch{console.log('unknown')}})")
+      echo "  FAIL: BG5: $BG5_MISSING of $BG5_TOTAL snapshotted keys missing: $BG5_MISSING_LIST"
+      FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
   else
-    echo "  FAIL: global store has no keys (possibly hand-deleted)"
+    echo "  FAIL: BG5: failed to verify key preservation"
     FAIL_COUNT=$((FAIL_COUNT + 1))
   fi
 else
-  echo "  WARN: no global store file to check (skipping BF8 detector)"
+  echo "  WARN: BG5: no global store or snapshot file to check (skipping)"
 fi
 
 # --- BD5: evidence retention (BE11) ---
@@ -676,14 +821,21 @@ RUNS_DIR="$PLUGIN_DIR/.kit/runs/$STAMP_O/operator"
 mkdir -p "$RUNS_DIR"
 for f in operator-owner.out.jsonl operator-owner.err.log operator-reader.out.jsonl \
          operator-reader.err.log operator.decisions.log operator.assert.log \
-         operator.exit settings.json; do
+         operator.exit settings.json operator.store-keys-before.json; do
   [ -f "$SUITE_DIR/$f" ] && cp -f "$SUITE_DIR/$f" "$RUNS_DIR/" 2>/dev/null
 done
+# BG6: retain debug logs
+[ -f "$SUITE_DIR/owner-debug.log" ] && cp -f "$SUITE_DIR/owner-debug.log" "$RUNS_DIR/owner-debug.log" 2>/dev/null
+[ -f "$SUITE_DIR/reader-debug.log" ] && cp -f "$SUITE_DIR/reader-debug.log" "$RUNS_DIR/reader-debug.log" 2>/dev/null
 # BE11: also retain the local stores and global store snapshot
 [ -f "$SUITE_DIR/owner/.agentic-personas.json" ] && cp -f "$SUITE_DIR/owner/.agentic-personas.json" "$RUNS_DIR/owner-personas.json" 2>/dev/null
 [ -f "$SUITE_DIR/reader/.agentic-personas.json" ] && cp -f "$SUITE_DIR/reader/.agentic-personas.json" "$RUNS_DIR/reader-personas.json" 2>/dev/null
 if [ -n "$STORE_FILE_LAUNCH" ] && [ -f "$STORE_FILE_LAUNCH" ]; then
   cp -f "$STORE_FILE_LAUNCH" "$RUNS_DIR/global-store-snapshot.json" 2>/dev/null
+fi
+# BG6: retain suite stdout
+if [ -f "$SUITE_DIR/operator.suite.log" ]; then
+  cp -f "$SUITE_DIR/operator.suite.log" "$RUNS_DIR/operator.suite.log" 2>/dev/null
 fi
 echo "evidence retained in $RUNS_DIR"
 

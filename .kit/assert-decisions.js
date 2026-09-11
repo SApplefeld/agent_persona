@@ -12,9 +12,11 @@ const assertLogPath = process.argv[4];
 // Optional 5th arg: global commons store path (for ask record lookups).
 // If omitted, falls back to storePath.
 const globalStorePath = process.argv[5] || storePath;
+// Optional 6th arg: reader session id (for BG2 record id validation).
+const readerSid = process.argv[6] || null;
 
 if (!testName || !storePath || !assertLogPath) {
-  process.stderr.write("Usage: node assert-decisions.js <test-name> <store-path> <assert-log-path> [global-store-path]\n");
+  process.stderr.write("Usage: node assert-decisions.js <test-name> <store-path> <assert-log-path> [global-store-path] [reader-sid]\n");
   process.exit(1);
 }
 
@@ -354,32 +356,43 @@ switch (testName) {
     }
 
     // BE9: key on ask id from ask_answered detail, not indexOf over all asks
-    // BF4: extract ask id from detail using regex (detail format: "answer to ask <ask-id>")
+    // BG2: extract ask id and record id from detail using regex
+    // Detail format (hooks/index.ts:1004): "ask <ask-id> closed by record <record-id>"
+    // Ask id format: default-<sid>-<n> (e.g., default-abc123-1)
+    // Record id format: reply:default:default-<reader-sid>-<n> (e.g., reply:default:default-def456-1)
     const askAnsweredDetail = details.find(d => d.action === "ask_answered");
     let askId = null;
+    let recordId = null;
     if (askAnsweredDetail && askAnsweredDetail.detail) {
-      const askIdMatch = askAnsweredDetail.detail.match(/\bas (ask-[a-z0-9-]+)\b/);
-      if (askIdMatch && askIdMatch[1]) {
-        askId = askIdMatch[1];
+      const match = askAnsweredDetail.detail.match(/^ask (\S+) closed by record (\S+)$/);
+      if (match && match[1] && match[2]) {
+        askId = match[1];
+        recordId = match[2];
       }
     }
-    if (askId) {
+    
+    // BG2: require record id to start with default-<reader session id>-
+    // The reader session id is passed as the 6th arg (readerSid variable)
+    if (askId && recordId) {
+      // BG2: validate record id format
+      if (readerSid) {
+        const expectedPrefix = `default-${readerSid}-`;
+        const recordPrefix = recordId.split(":").pop() || "";
+        check2("operator: record id starts with default-<reader-sid>-", recordPrefix.startsWith(expectedPrefix));
+      }
+      
       const gstore = JSON.parse(fs.readFileSync(globalStorePath, "utf8"));
       const askKey = Object.keys(gstore).find(k => k.startsWith("ask:default:") && gstore[k].id === askId);
       if (askKey) {
         check2("operator: ask record (by id) answered", gstore[askKey].status === "answered");
       } else {
-        // Fallback: check any ask record in the global store
-        const askKeys = Object.keys(gstore).filter(k => k.startsWith("ask:default:"));
-        const answeredAsks = askKeys.filter(k => gstore[k].status === "answered");
-        check2("operator: ask record answered (fallback)", answeredAsks.length >= 1);
+        // BG2: FAIL if ask id not found (no fallback)
+        check2(`operator: ask record not found for ask id ${askId}`, false);
       }
     } else {
-      // Fallback: check any ask record in the global store
-      const gstore = JSON.parse(fs.readFileSync(globalStorePath, "utf8"));
-      const askKeys = Object.keys(gstore).filter(k => k.startsWith("ask:default:"));
-      const answeredAsks = askKeys.filter(k => gstore[k].status === "answered");
-      check2("operator: ask record answered (no ask id, fallback)", answeredAsks.length >= 1);
+      // BG2: FAIL if ask id or record id cannot be parsed (no fallback)
+      const detailStr = askAnsweredDetail ? (askAnsweredDetail.detail || "null") : "no ask_answered detail";
+      check2(`operator: cannot parse ask id from detail: ${detailStr}`, false);
     }
 
     // REPORT: which path opened the ask (from ask_opened detail)
