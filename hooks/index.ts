@@ -185,6 +185,25 @@ function shouldSuppressReask(
   if (!node || !node.lastAskQuestion || node.lastAskClosedAt === undefined) return false;
   return node.lastAskQuestion === question && now - node.lastAskClosedAt < suppressMs;
 }
+
+/**
+ * Item 2 backstop (Round 28): whether a tool call counts as "did real
+ * work" for the turn.complete backstop. Built-in file/shell tools that
+ * change state; any MCP tool that is neither this plugin's own (which
+ * would have opened a goal itself, making the backstop moot) nor the
+ * channel's reply tool (a priming turn's only call, which must never look
+ * like task work - a channel-attached passive child otherwise backfills
+ * a completed goal on its own acknowledgment turn and gets restarted in
+ * a loop). Read-only tools (Read, Grep, Glob, ...) do not count: looking
+ * at something is not doing the thing the operator asked for.
+ */
+function isWorkTool(toolName: string): boolean {
+  if (["Write", "Edit", "Bash", "NotebookEdit"].includes(toolName)) return true;
+  if (!toolName.startsWith("mcp__")) return false;
+  if (toolName.startsWith("mcp__agentic-plugin__")) return false;
+  if (toolName.includes("__reply") || toolName.endsWith("_reply")) return false;
+  return true;
+}
 const sess: {
   persona: string;
   mySessionId: string;
@@ -461,6 +480,17 @@ export const register: Register = async (on, options) => {
   // own prompt.submit hook, so currentPrompt still holds the stale user text.
   // This flag tells turn.complete to score with the nudge-aware label set.
   let nudgedTurn = false;
+  // Item 2 backstop safety (Round 28): true only when the real
+  // prompt.submit hook (a genuine external turn) just saw the
+  // [SUPERVISOR-PRIMING] marker bin/supervise.sh's priming turn carries.
+  // An internal $.prompt.submit call (nudge, ask re-raise, operator-inbox
+  // delivery) bypasses this hook and so never updates this flag - it
+  // simply carries forward the last real turn's value, which is
+  // acceptable here because staleness can only make the backstop skip a
+  // turn it might have covered, never fire it on a priming turn it
+  // shouldn't have (only the real hook, seeing the actual marker, ever
+  // sets this true).
+  let isPrimingTurn = false;
   // Skip the controller tick while a turn is in flight.
   let turnInFlight = false;
   // H2: record the active leaf at turn start; score against THAT node at turn
@@ -1759,6 +1789,7 @@ export const register: Register = async (on, options) => {
                   `Bank your current state to memory and the plan doc, then reach a clean stopping point. ` +
                   `The session will be restarted at the critical threshold; bank state now.`;
                 await $.prompt.submit({ text: nudgeText });
+                nudgedTurn = true;
                 sess.state.decisions.push({
                   timestamp: budgetTs,
                   loop: "monitor",
@@ -2334,16 +2365,23 @@ export const register: Register = async (on, options) => {
     // Skip scoring on aborted or errored turns (no answer to judge).
     const skipped = e.aborted || e.reason === "aborted" || e.reason === "error" || e.reason === "refusal" || !e.answer;
 
-    // Item 2 sub-bullet (f016b69): a turn that did real work with no goal
-    // tree at all - the exact shape a cost-conscious model produces when
+    // Item 2 sub-bullet (f016b69): a turn that did real work with no
+    // active root - the exact shape a cost-conscious model produces when
     // it reads a one-step request as too small for goal_create, even
     // after the [NO GOAL] reminder names size explicitly - gets a
     // synthetic goal record after the fact, so "every request opens a
     // goal, whatever its size" holds even when the model skipped the
-    // ritual. Only fires when the tree is genuinely empty (never created,
-    // or a prior root already completed) and this turn actually used a
-    // tool; a turn that just chatted leaves the no-goal state alone.
-    if (!skipped && sess.isOwner && sess.state.goals.length === 0 && toolCallsThisTurn > 0) {
+    // ritual. The condition is "no active root", not "goals.length === 0":
+    // item 4's second conversational request arrives with the first
+    // root still sitting in state, complete but present, so an empty-
+    // array check would silently never fire for that case. Gated off
+    // real work only (isWorkTool, Round 28) and off priming/nudge turns
+    // (isPrimingTurn, wasNudged) - a channel-attached passive child's own
+    // acknowledgment turn must never look like task work, or the
+    // supervisor sees a fabricated root_complete and restart-loops it.
+    const currentRoot = sess.state.goals.find((g) => g.parentId === null);
+    const noActiveRoot = !currentRoot || currentRoot.status === "complete" || currentRoot.status === "abandoned";
+    if (!skipped && sess.isOwner && !isPrimingTurn && !wasNudged && noActiveRoot && toolCallsThisTurn > 0) {
       const backfillNow = Date.now();
       const objective = (currentPrompt || "Untitled request").slice(0, 200);
       const rootId = `root-${backfillNow.toString(36)}`;
@@ -2604,7 +2642,7 @@ export const register: Register = async (on, options) => {
   // --- tool.call: serve tools, enforce constraints ---
   on("tool.call", async ($, e, next) => {
     sess.state.monitor.totalToolCalls += 1;
-    toolCallsThisTurn += 1;
+    if (isWorkTool(e.tool)) toolCallsThisTurn += 1;
 
     // Serve agentic_identity (F9: single arbiter = commons; epoch is only the
     // same-directory write fence). Claim in commons FIRST; if a live earlier
@@ -3286,6 +3324,9 @@ export const register: Register = async (on, options) => {
   on("prompt.submit", async ($, e, next) => {
     // Capture the prompt text for the goal scorer.
     currentPrompt = e.text;
+    // Item 2 backstop safety: mark whether this genuine external turn is
+    // the supervisor's own synthetic priming message.
+    isPrimingTurn = e.text.startsWith("[SUPERVISOR-PRIMING]");
 
     // D5b (bullet 1): an open ask never silences the worker. This hook fires
     // only for a genuine external turn - the controller's own $.prompt.submit

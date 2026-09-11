@@ -3010,6 +3010,9 @@ async function main() {
     await caseItem2_noGoalReminder_control(clock);
     await caseItem2_backfillOnRealWork(clock);
     await caseItem2_backfillOnRealWork_control(clock);
+    await caseItem2_backfillSkipsPrimingTurn(clock);
+    await caseItem2_backfillSkipsNudgeTurn(clock);
+    await caseItem2_backfillFiresOnSecondRequest(clock);
     await caseS4_peer_consumed(clock);
     await caseS4_peer_send_message_consumed(clock);
     await caseS4_other_origin_passes(clock);
@@ -3352,6 +3355,119 @@ async function caseItem2_backfillOnRealWork_control(clock) {
 
   const state = getState(h);
   check("item2 backfill control: no goal fabricated for a no-tool turn", state.goals.length === 0);
+}
+
+// Round 28: the backstop must never fire on a priming turn (a channel-
+// attached passive child's own acknowledgment, whose only tool call is
+// reply) - the exact shape that would otherwise restart-loop the
+// supervisor on a fabricated root_complete.
+async function caseItem2_backfillSkipsPrimingTurn(clock) {
+  console.log("\n=== Item 2 Round 28: no backfill on a priming turn ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_backfill_priming", stateOpts: { hasActiveLeaf: false } });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  const submitH = h.handlers["prompt.submit"];
+  await submitH(h.fake, { text: "[SUPERVISOR-PRIMING] You are the passive supervisor, waiting for a goal or a steering message from the operator. Reply now with one short line acknowledging you are ready, then wait." }, async () => ({}));
+
+  const turnStartH = h.handlers["turn.start"];
+  await turnStartH(h.fake, { turnId: "t-priming" }, async () => ({ result: "ok" }));
+
+  // The priming turn's only tool call: the channel's reply tool.
+  const toolCallH = h.handlers["tool.call"];
+  await toolCallH(h.fake, { tool: "mcp__plugin_relay_channel-relay__reply", turnId: "t-priming" }, async () => ({ result: "ok" }));
+
+  const turnCompleteH = h.handlers["turn.complete"];
+  await turnCompleteH(h.fake, { turnId: "t-priming", answer: "Ready.", reason: "completed" }, async () => ({ result: "ok" }));
+
+  const state = getState(h);
+  check("item2 Round28: no goal fabricated on the priming turn", state.goals.length === 0);
+}
+
+// Round 28: the backstop must never fire on a nudge turn, even if the
+// nudged turn happens to use a real work tool.
+async function caseItem2_backfillSkipsNudgeTurn(clock) {
+  console.log("\n=== Item 2 Round 28: no backfill on a nudge turn ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  // A real nudge only ever fires with an active leaf (the idle gate needs
+  // one to classify against), which means a real root is always pending
+  // or active too - so wasNudged's own exclusion is defense-in-depth on
+  // top of noActiveRoot here, not independently isolable through the
+  // production nudge path. This proves the whole path stays quiet across
+  // a real nudge-and-answer cycle rather than isolating wasNudged alone.
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_backfill_nudge" });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  h.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  check("item2 Round28: nudge_sent fired (setup sanity)", getDecisions(h).some(d => d.action === "nudge_sent"));
+
+  const turnStartH = h.handlers["turn.start"];
+  await turnStartH(h.fake, { turnId: "t-nudge" }, async () => ({ result: "ok" }));
+  const toolCallH = h.handlers["tool.call"];
+  await toolCallH(h.fake, { tool: "Write", turnId: "t-nudge" }, async () => ({ result: "ok" }));
+  const turnCompleteH = h.handlers["turn.complete"];
+  await turnCompleteH(h.fake, { turnId: "t-nudge", answer: "Working on it.", reason: "completed" }, async () => ({ result: "ok" }));
+
+  const state = getState(h);
+  check("item2 Round28: no extra goal fabricated on the nudge-answering turn", state.goals.length === 2);
+}
+
+// Round 28: the trigger condition is "no active root", not
+// "goals.length === 0" - item 4's second conversational request arrives
+// with the first (completed) root still present in the array.
+async function caseItem2_backfillFiresOnSecondRequest(clock) {
+  console.log("\n=== Item 2 Round 28: backfill fires on a second request after a completed root ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_backfill_second_request" });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  const personaState = buildPersonaState(mySid, now);
+  personaState.goals = [
+    { id: "root-1", kind: "root", parentId: null, title: "First goal", objective: "First goal", status: "complete", completedRounds: 1, maxRounds: 1, scores: [], createdAt: now - 20000, updatedAt: now - 10000, children: [], notes: [] },
+  ];
+  personaState.activeGoalId = null;
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
+
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  const submitH = h.handlers["prompt.submit"];
+  await submitH(h.fake, { text: "Now write a limerick to limerick.txt." }, async () => ({}));
+
+  const turnStartH = h.handlers["turn.start"];
+  await turnStartH(h.fake, { turnId: "t-second" }, async () => ({ result: "ok" }));
+  const toolCallH = h.handlers["tool.call"];
+  await toolCallH(h.fake, { tool: "Write", turnId: "t-second" }, async () => ({ result: "ok" }));
+  const turnCompleteH = h.handlers["turn.complete"];
+  await turnCompleteH(h.fake, { turnId: "t-second", answer: "Wrote the limerick.", reason: "completed" }, async () => ({ result: "ok" }));
+
+  const state = getState(h);
+  check("item2 Round28: a second root was backfilled (goals.length was 1, not 0, before this turn)",
+    state.goals.length === 1 && state.goals[0].id !== "root-1" && state.goals[0].status === "complete");
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

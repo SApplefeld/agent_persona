@@ -394,10 +394,18 @@ while true; do
       process.stdout.write(json + '\n');
     " "$PROMPT_FILE" "$CHANNEL_REPLY_INSTRUCTION" >&"$CHILD_IN"
   elif [ "$NO_CHANNEL" -ne 1 ]; then
+    # [SUPERVISOR-PRIMING] marks this turn as synthetic (the child has no
+    # real goal yet) so hooks/index.ts's turn.complete backstop - which
+    # backfills a completed goal for a turn that did real tool work with
+    # no active root - never mistakes the channel's own acknowledgment
+    # turn for genuine operator content. Never strip this marker; it is
+    # read by the hook, not meant for the model's own reasoning about the
+    # task (which is why it precedes, rather than replaces, the reply
+    # instruction and the wait-quietly text).
     node -e "
       const prefix = process.argv[1] || '';
       const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:
-        prefix + 'You are the passive supervisor, waiting for a goal or a steering message from the operator. Reply now with one short line acknowledging you are ready, then wait.'
+        '[SUPERVISOR-PRIMING] ' + prefix + 'You are the passive supervisor, waiting for a goal or a steering message from the operator. Reply now with one short line acknowledging you are ready, then wait.'
       }]}});
       process.stdout.write(json + '\n');
     " "$CHANNEL_REPLY_INSTRUCTION" >&"$CHILD_IN"
