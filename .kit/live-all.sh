@@ -15,15 +15,14 @@ PROFILE="${PROFILE:-short}"
 
 # --- Paths ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HARNESS_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-PLUGIN_DIR="$HARNESS_ROOT/agentic-plugin"
+PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUNS_DIR="$PLUGIN_DIR/.kit/runs"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="$RUNS_DIR/$STAMP"
 HEAD_SHORT="$(cd "$PLUGIN_DIR" && git log -1 --format=%h)"
 
 # --- Suite list ---
-ALL_SUITES=(errorstreak health gitprobe controller goaltree goaltree-stall planfail yield budget cost commons operator)
+ALL_SUITES=(errorstreak health gitprobe controller goaltree goaltree-stall planfail yield budget cost commons operator passive goalconvo restartpassive)
 if [ $# -eq 0 ]; then
   SUITES=("${ALL_SUITES[@]}")
 else
