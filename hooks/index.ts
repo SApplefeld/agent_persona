@@ -3021,6 +3021,18 @@ export const register: Register = async (on, options) => {
         const pausedBlock = `Goal tree paused: ${pausedNode.blockedReason || "paused by controller"}. Call goal_resume to continue or goal_create to replace.`;
         contextBlocks.push(pausedBlock);
         try { $.ui.log(`Agentic: [GOAL TREE paused] injected`); } catch { /* non-fatal */ }
+      } else if (sess.state.goals.length === 0) {
+        // Passive-supervisor plan item 2: with no goal at all (never created,
+        // or the root already completed), an operator message phrased as a
+        // plain request has nothing telling the model to open a goal tree.
+        // Without this reminder a cheap-tier child can read an ordinary
+        // request as small talk and never call goal_create at all.
+        const idleBlock =
+          `No goal is active. If the message above describes something to ` +
+          `accomplish, call goal_create with that as the objective, then reply ` +
+          `in one line naming the goal you took. Otherwise just answer normally.`;
+        contextBlocks.push(idleBlock);
+        try { $.ui.log(`Agentic: [NO GOAL] reminder injected`); } catch { /* non-fatal */ }
       }
     }
 
