@@ -2,7 +2,7 @@
 
 **Status:** Draft (v14)
 **Created:** 2026-09-10T06:08:09Z
-**Revised:** v14, documents 7f5374b (PLUGIN) and b1a67e3 (SUITE)
+**Revised:** v14, documents 7f5374b (PLUGIN) and b1a67e3, ce6072e (SUITE)
 **Program item:** 7 (operator channel)
 **Supersedes:** N/A (new item)
 
