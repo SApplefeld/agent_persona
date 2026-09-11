@@ -230,8 +230,10 @@ switch (testName) {
     // G2: deny-count pre-check (inducer failure distinguishable from plugin failure).
     const denyCount = decisions.filter(a => a === "deny").length;
     check2("errorstreak: deny count >= 3", denyCount >= 3);
-    // F6: ordered deny, deny, deny, error_streak, controller_tick, paused_by_controller.
-    orderedSubsequence(["deny", "deny", "deny", "error_streak", "controller_tick", "paused_by_controller"], "errorstreak: ordered deny-deny-deny-streak-tick-paused");
+    // BJ2: ordered deny, deny, deny, error_streak, ask_opened, paused_by_controller, ask_waiting.
+    // The error streak branch opens an ask (ask_opened), not a controller_tick.
+    // ask_waiting confirms the ask holds (present at 03:00:27 in the 20260911T025912Z run).
+    orderedSubsequence(["deny", "deny", "deny", "error_streak", "ask_opened", "paused_by_controller", "ask_waiting"], "errorstreak: ordered deny-deny-deny-streak-ask-paused-waiting");
     forbidden(["block"], "errorstreak: no block (ask-operator path, not blocked)");
     break;
   }
