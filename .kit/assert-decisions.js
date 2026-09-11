@@ -128,7 +128,7 @@ switch (testName) {
       "goaltree"
     );
     
-    // BM1: Check planner variance - read the decision (not just the count)
+    // BN1: Check planner variance - a mismatch is a defect, both branches fail
     const planningCreated = details.filter(d => d.action === "planning_created");
     if (planningCreated.length > 0) {
       const lastPlanningCreated = planningCreated[planningCreated.length - 1];
@@ -139,11 +139,11 @@ switch (testName) {
         const varianceDecision = details.find(d => d.action === "planner_variance");
         if (actualPlanCount !== planCount) {
           if (varianceDecision) {
-            // The plugin flagged it
-            ok("goaltree: planner_variance decision present");
+            // The plugin flagged it, but the mismatch is still a defect
+            fail("goaltree: planner_variance: " + (varianceDecision.detail || "planner created a different count than the roadmap"));
           } else {
             // The plugin did NOT flag it - this is a defect
-            fail("goaltree: planner_variance: planner created " + actualPlanCount + " plans, roadmap has " + planCount + " items (no decision logged)");
+            fail("goaltree: planner_variance: planner created " + actualPlanCount + " plans, roadmap has " + planCount + " items (plugin logged nothing)");
           }
         } else {
           ok("goaltree: planner created exactly the roadmap's plan count");
@@ -165,8 +165,8 @@ switch (testName) {
         fail("goaltree: nudge_sent missing between first activated and first done");
       }
     } else {
-      // If there's no activated or done, the nudge_sent check is vacuously true
-      ok("goaltree: nudge_sent check skipped (no activated/done)");
+      // A goaltree run with no activation is red by definition
+      fail("goaltree: nudge_sent check failed (no activated/done decisions found)");
     }
     
     // Forbidden: a turn.complete score on a node other than the turn_start leaf.

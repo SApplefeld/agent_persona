@@ -67,5 +67,6 @@ else
   echo "no store at $PWD" >> "$K/goaltree.exit"
   exit 1
 fi
-rm -f .agentic-personas.json
+# BN2: Retain the store so live-all.sh can copy it to RUN_DIR
+# rm -f .agentic-personas.json
 exit $EXIT_CODE
