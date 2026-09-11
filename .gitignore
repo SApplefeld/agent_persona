@@ -11,6 +11,7 @@
 .kit/*.assert.log
 .kit/yield-hb.samples
 .kit/RUNNING
+.kit/runs/
 .agentic-planner-fault
 
 # Node
