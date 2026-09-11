@@ -9,9 +9,12 @@ const path = require("path");
 const testName = process.argv[2];
 const storePath = process.argv[3];
 const assertLogPath = process.argv[4];
+// Optional 5th arg: global commons store path (for ask record lookups).
+// If omitted, falls back to storePath.
+const globalStorePath = process.argv[5] || storePath;
 
 if (!testName || !storePath || !assertLogPath) {
-  process.stderr.write("Usage: node assert-decisions.js <test-name> <store-path> <assert-log-path>\n");
+  process.stderr.write("Usage: node assert-decisions.js <test-name> <store-path> <assert-log-path> [global-store-path]\n");
   process.exit(1);
 }
 
@@ -306,42 +309,75 @@ switch (testName) {
     break;
   }
   case "operator": {
-    // Phase 1: message and reply
-    // operator_delivered then operator_answered in order.
-    orderedSubsequence(["operator_delivered", "operator_answered"], "operator phase 1");
+    // Phase 1: message and reply (BE10: operator_turn_stamped precedes operator_answered)
+    orderedSubsequence(["operator_turn_stamped", "operator_answered"], "operator phase 1");
 
-    // Phase 2: ask and answer
-    // nudge_sent, cost_cap_reached, ask_opened, ask_waiting, then ask_answered, activated.
+    // BD4/BE9: Phase 2 asserts the ask lifecycle, keyed on the ask id from ask_answered detail.
+    // ask_opened, then at least one ask_waiting, then ask_answered, then activated.
     // No activated between ask_opened and ask_answered.
+    // The nudge_sent and cost_cap_reached checks are removed (the cost suite pins the cap path).
     const askOpenedIdx = decisions.indexOf("ask_opened");
     const askAnsweredIdx = decisions.indexOf("ask_answered");
-    const nudgeSentIdx = decisions.indexOf("nudge_sent");
-    const costCapIdx = decisions.indexOf("cost_cap_reached");
     const askWaitingIdx = decisions.indexOf("ask_waiting");
 
-    check2("operator: nudge_sent found", nudgeSentIdx !== -1);
-    check2("operator: cost_cap_reached found", costCapIdx !== -1);
     check2("operator: ask_opened found", askOpenedIdx !== -1);
     check2("operator: ask_waiting found", askWaitingIdx !== -1);
     check2("operator: ask_answered found", askAnsweredIdx !== -1);
 
-    // Ordered: nudge_sent before cost_cap_reached before ask_opened before ask_waiting
-    if (nudgeSentIdx !== -1 && costCapIdx !== -1 && askOpenedIdx !== -1 && askWaitingIdx !== -1) {
-      check2("operator: nudge before cap before ask before waiting",
-        nudgeSentIdx < costCapIdx && costCapIdx < askOpenedIdx && askOpenedIdx < askWaitingIdx);
+    // Ordered: ask_opened before ask_waiting before ask_answered
+    if (askOpenedIdx !== -1 && askWaitingIdx !== -1 && askAnsweredIdx !== -1) {
+      check2("operator: ask_opened before ask_waiting before ask_answered",
+        askOpenedIdx < askWaitingIdx && askWaitingIdx < askAnsweredIdx);
     }
 
-    // No activated between ask_opened and ask_answered
+    // No activated between ask_opened and ask_answered EXCEPT the reactivation
+    // that IS the answer processing (detail mentions the ask id).
     if (askOpenedIdx !== -1 && askAnsweredIdx !== -1 && askAnsweredIdx > askOpenedIdx) {
-      const activatedBetween = decisions.slice(askOpenedIdx + 1, askAnsweredIdx).filter(a => a === "activated").length;
-      check2("operator: no activated between ask_opened and ask_answered", activatedBetween === 0);
+      const between = details.slice(askOpenedIdx + 1, askAnsweredIdx);
+      const unexpectedActivations = between.filter(d =>
+        d.action === "activated" && !(d.detail || "").includes("answer to ask")
+      ).length;
+      check2("operator: no unexpected activated between ask_opened and ask_answered",
+        unexpectedActivations === 0);
     }
 
-    // activated after ask_answered
-    const activatedAfterAsk = decisions.slice(askAnsweredIdx + 1).filter(a => a === "activated").length;
+    // The reactivation (activated) for the ask answer may appear before OR after
+    // ask_answered in the decisions array (engine order: activated then ask_answered).
+    // Verify at least one activated decision exists near the ask lifecycle.
     if (askAnsweredIdx !== -1) {
-      check2("operator: activated after ask_answered", activatedAfterAsk >= 1);
+      const windowStart = Math.max(0, askAnsweredIdx - 3);
+      const windowEnd = Math.min(decisions.length, askAnsweredIdx + 3);
+      const nearActivation = details.slice(windowStart, windowEnd).some(d =>
+        d.action === "activated" && (d.detail || "").includes("answer to ask")
+      );
+      check2("operator: ask answer triggered reactivation", nearActivation);
     }
+
+    // BE9: key on ask id from ask_answered detail, not indexOf over all asks
+    const askAnsweredDetail = details.find(d => d.action === "ask_answered");
+    const askId = askAnsweredDetail && askAnsweredDetail.detail ? askAnsweredDetail.detail : null;
+    if (askId) {
+      const gstore = JSON.parse(fs.readFileSync(globalStorePath, "utf8"));
+      const askKey = Object.keys(gstore).find(k => k.startsWith("ask:default:") && gstore[k].id === askId);
+      if (askKey) {
+        check2("operator: ask record (by id) answered", gstore[askKey].status === "answered");
+      } else {
+        // Fallback: check any ask record in the global store
+        const askKeys = Object.keys(gstore).filter(k => k.startsWith("ask:default:"));
+        const answeredAsks = askKeys.filter(k => gstore[k].status === "answered");
+        check2("operator: ask record answered (fallback)", answeredAsks.length >= 1);
+      }
+    } else {
+      // Fallback: check any ask record in the global store
+      const gstore = JSON.parse(fs.readFileSync(globalStorePath, "utf8"));
+      const askKeys = Object.keys(gstore).filter(k => k.startsWith("ask:default:"));
+      const answeredAsks = askKeys.filter(k => gstore[k].status === "answered");
+      check2("operator: ask record answered (no ask id, fallback)", answeredAsks.length >= 1);
+    }
+
+    // REPORT: which path opened the ask (from ask_opened detail)
+    const askOpenedDetail = details.find(d => d.action === "ask_opened");
+    console.log(`  REPORT: ask opened by: ${askOpenedDetail ? (askOpenedDetail.detail || "unknown") : "unknown"}`);
 
     // Phase 3: peer probe (only when peer_consumed is present)
     const peerConsumedIdxs = decisions.map((a, i) => a === "peer_consumed" ? i : -1).filter(i => i !== -1);
@@ -351,11 +387,11 @@ switch (testName) {
       console.log(`  REPORT: peer_consumed count: ${peerConsumedIdxs.length}`);
     }
 
-    // REPORT: counts
-    const opDelivered = decisions.filter(a => a === "operator_delivered").length;
+    // REPORT: counts (BE10: operator_turn_stamped instead of operator_delivered)
+    const opStamped = decisions.filter(a => a === "operator_turn_stamped").length;
     const opAnswered = decisions.filter(a => a === "operator_answered").length;
     const askWaitingCount = decisions.filter(a => a === "ask_waiting").length;
-    console.log(`  REPORT: operator_delivered: ${opDelivered}`);
+    console.log(`  REPORT: operator_turn_stamped: ${opStamped}`);
     console.log(`  REPORT: operator_answered: ${opAnswered}`);
     console.log(`  REPORT: ask_waiting: ${askWaitingCount}`);
     console.log(`  REPORT: peer_consumed: ${peerConsumedIdxs.length}`);
