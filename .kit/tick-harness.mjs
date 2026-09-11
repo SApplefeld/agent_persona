@@ -69,6 +69,14 @@ function createFake$(opts = {}) {
     },
     session: {
       id() { return Promise.resolve(SESSION_ID); },
+      // BJ1: Add messages() for budget fixtures.
+      // The test can override this with its own implementation.
+      messages() {
+        if (typeof opts.sessionMessages === "function") {
+          return opts.sessionMessages();
+        }
+        return Promise.resolve([]);
+      },
     },
     model: {
       classify() {

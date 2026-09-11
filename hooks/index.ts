@@ -1578,7 +1578,10 @@ export const register: Register = async (on, options) => {
             for (const m of messages) {
               chars += m.text.length;
               for (const tu of m.toolUses) {
-                chars += tu.name.length;
+                // BJ1: tu.name is undefined on 2.1.268+ (uses tu.tool instead).
+                const tuAny = tu as any;
+                const toolName = tuAny.tool ?? tuAny.name ?? "";
+                chars += toolName.length;
                 try { chars += JSON.stringify(tu.input).length; } catch { chars += 100; }
               }
               if (m.toolResults) {
@@ -1640,7 +1643,17 @@ export const register: Register = async (on, options) => {
             }
             sess.state.updatedAt = budgetTs;
             await persist($);
-          } catch { /* budget read failed; non-fatal */ }
+          } catch (err) {
+            // BJ1: Log the failure so the next silent break names itself.
+            const errMsg = err instanceof Error ? err.message : String(err);
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "monitor",
+              action: "context_budget_read_failed",
+              detail: errMsg,
+            });
+            await persist($);
+          }
           finally {
             budgetReadInFlight = false;
           }

@@ -2526,6 +2526,127 @@ async function caseS7_reader_does_not_overwrite(clock) {
   check("S7 control: owner's goal preserved", ownerGoal.length >= 1);
 }
 
+// BJ1: Budget fixture - 2.1.268 shape (tu.tool instead of tu.name)
+async function caseBJ1_budget_268_shape(clock) {
+  console.log("\n=== BJ1: budget 2.1.268 shape ===");
+  clock.set(T0);
+
+  // Create a harness with a custom session.messages() that returns 2.1.268 shape.
+  // Enable budget and set thresholds low enough to be crossed by the test message.
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "bj1_budget_268",
+    // Budget options (passed to mod.register as options)
+    contextBudgetEnabled: true,
+    contextBudgetInfoTokens: 100,
+    contextBudgetCloseoutTokens: 200,
+    contextBudgetCriticalTokens: 300,
+    contextBudgetReadEveryNTicks: 1,
+    // 2.1.268 shape: { tool_use_id, tool, input }
+    sessionMessages: () => Promise.resolve([
+      {
+        text: "hello world this is a test message with enough text to cross the info threshold " + "x".repeat(1000),
+        toolUses: [
+          { tool_use_id: "tu-1", tool: "bash", input: { command: "ls -la" } },
+          { tool_use_id: "tu-2", tool: "read", input: { file_path: "/etc/hosts" } },
+        ],
+        toolResults: [
+          { tool_use_id: "tu-1", text: "file1\nfile2\nfile3", isError: false },
+        ],
+      },
+    ]),
+  });
+
+  // Fire a tick to trigger the budget check.
+  await tickAndSettle(h, clock, 100);
+
+  const storePath = ".agentic-personas.json";
+  const raw = h.fsMap.get(storePath);
+  const store = raw ? JSON.parse(raw) : {};
+  const decisions = (store.default && store.default.decisions) || [];
+
+  // Check for context_budget_crossed decisions.
+  const crossings = decisions.filter(d => d.action === "context_budget_crossed");
+  check("BJ1 268: at least one crossing", crossings.length >= 1);
+  check("BJ1 268: info threshold crossed", crossings.some(d => (d.detail || "").includes("info")));
+}
+
+// BJ1: Budget fixture - 2.1.266 shape (tu.name instead of tu.tool)
+async function caseBJ1_budget_266_shape(clock) {
+  console.log("\n=== BJ1: budget 2.1.266 shape (control) ===");
+  clock.set(T0);
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "bj1_budget_266",
+    // Budget options
+    contextBudgetEnabled: true,
+    contextBudgetInfoTokens: 100,
+    contextBudgetCloseoutTokens: 200,
+    contextBudgetCriticalTokens: 300,
+    contextBudgetReadEveryNTicks: 1,
+    // 2.1.266 shape: { id, name, input }
+    sessionMessages: () => Promise.resolve([
+      {
+        text: "hello world this is a test message with enough text to cross the info threshold " + "x".repeat(1000),
+        toolUses: [
+          { id: "tu-1", name: "bash", input: { command: "ls -la" } },
+          { id: "tu-2", name: "read", input: { file_path: "/etc/hosts" } },
+        ],
+        toolResults: [
+          { tool_use_id: "tu-1", text: "file1\nfile2\nfile3", isError: false },
+        ],
+      },
+    ]),
+  });
+
+  await tickAndSettle(h, clock, 100);
+
+  const storePath = ".agentic-personas.json";
+  const raw = h.fsMap.get(storePath);
+  const store = raw ? JSON.parse(raw) : {};
+  const decisions = (store.default && store.default.decisions) || [];
+
+  const crossings = decisions.filter(d => d.action === "context_budget_crossed");
+  check("BJ1 266: at least one crossing", crossings.length >= 1);
+  check("BJ1 266: info threshold crossed", crossings.some(d => (d.detail || "").includes("info")));
+}
+
+// BJ1: Budget fixture - messages() throws, should log context_budget_read_failed
+async function caseBJ1_budget_read_failed(clock) {
+  console.log("\n=== BJ1: budget read failed ===");
+  clock.set(T0);
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "bj1_budget_read_failed",
+    // Budget options
+    contextBudgetEnabled: true,
+    contextBudgetInfoTokens: 100,
+    contextBudgetCloseoutTokens: 200,
+    contextBudgetCriticalTokens: 300,
+    contextBudgetReadEveryNTicks: 1,
+    // messages() throws an error
+    sessionMessages: () => Promise.reject(new Error("simulated messages() failure")),
+  });
+
+  await tickAndSettle(h, clock, 100);
+
+  const storePath = ".agentic-personas.json";
+  const raw = h.fsMap.get(storePath);
+  const store = raw ? JSON.parse(raw) : {};
+  const decisions = (store.default && store.default.decisions) || [];
+
+  // Check for context_budget_read_failed.
+  const readFailed = decisions.filter(d => d.action === "context_budget_read_failed");
+  check("BJ1 read_failed: context_budget_read_failed present", readFailed.length >= 1);
+  check("BJ1 read_failed: detail contains error message", readFailed.some(d => (d.detail || "").includes("simulated")));
+
+  // No crossings should be present.
+  const crossings = decisions.filter(d => d.action === "context_budget_crossed");
+  check("BJ1 read_failed: no crossings", crossings.length === 0);
+}
+
 // --- Main ---
 
 async function main() {
@@ -2574,6 +2695,11 @@ async function main() {
   } finally {
     clock.restore();
   }
+
+  // BJ1: Budget fixtures - test the token estimator with different message shapes.
+  await caseBJ1_budget_268_shape(clock);
+  await caseBJ1_budget_266_shape(clock);
+  await caseBJ1_budget_read_failed(clock);
 
   // AO1: Skip for now (we have uncommitted changes during development).
   // Will re-enable after committing.
