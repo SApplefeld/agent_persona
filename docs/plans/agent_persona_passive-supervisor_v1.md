@@ -1,7 +1,7 @@
 # agent_persona: passive supervisor steered by conversation, v1
 
 Status: In Progress
-Commit Model: Branch-and-PR. Work on branch `passive-supervisor`, push that branch to `origin`, never `main`. The operator merges.
+Commit Model: Branch-and-PR. Work on branch `passive-supervisor`, push that branch to `origin`, never `main`. `main` is protected on GitHub and accepts pull requests only. Open one pull request for the branch when the first goal closes and keep pushing to it; the operator reviews and merges.
 Worker: the plugin's own persona, running under `bin/supervise.sh` with this document as its roadmap.
 Executor's plugin runtime: `D:\DeepSeekHarness\agentic-plugin` (stable copy). The tree under edit: `D:\agent_persona` (this clone). The two are never the same directory, because a session whose working directory sits inside its own plugin directory does not initialize the plugin.
 
@@ -21,6 +21,7 @@ Every numbered item below is a goal with its acceptance, not a task list. The wo
 
 3. Steering during a goal. While plans are active, operator messages can add a plan, drop one, change priority, pause, and resume, and the worker answers each with what it changed. Proof: a mid-run message produces a recorded decision naming the change and a matching change in the goal tree, for at least add, drop, and pause.
    - The roadmap file is already re-read at every planning event; a steer that edits the roadmap is one acceptable mechanism, and a steer that acts on the tree directly is another. Both are recorded.
+   - An ask record carries the worker's full question. Today the stored `question` is cut near one hundred characters, so the reader sees a fragment; the reader must see what the worker asked.
 
 4. Quiet between goals. When the root completes, the supervisor returns to the passive state of item 1 instead of exiting, and a second goal given by conversation in the same supervisor lifetime runs to completion. An explicit shutdown request from the operator stops the child by the EOF path and exits 0. Proof: two goals completed and one clean shutdown in one `supervisor.log`.
 
@@ -28,6 +29,8 @@ Every numbered item below is a goal with its acceptance, not a task list. The wo
    - Which shape to build is a material fork. Open an ask to the operator with the two shapes and a recommendation before building either.
 
 6. One command to start, and a README that says so. A fresh clone plus one command starts the supervisor in passive mode with the channel attached, on this machine and on another Windows machine with Git for Windows. The README gains a quickstart at the top: how to start, how to give a goal, how to steer, how to stop, and where the logs are. Proof: the quickstart, followed literally in a fresh clone, reaches a waiting supervisor in under two minutes.
+   - The persona the supervisor is given is the persona the child runs as. Today `plugin.json` names no persona option, the plugin starts every session as `default`, and the supervisor's second argument reaches only its own gate. A `persona` option in `userConfig`, read where the session's persona is initialized and emitted by the supervisor into the settings it writes, closes that gap; the identity tool keeps its meaning. Proof: a run given `dev` whose child claims `persona:dev` in the shared store without ever claiming `default`, and a harness case for the option with a control.
+   - The identity tool's description states what its handler does: it claims the persona in the shared store, joins as a reader with `agentic_say` and `agentic_inbox` when a live holder exists, and takes ownership only from a holder whose heartbeat is stale. Today the description says the opposite, and a model reading it refuses a safe call. The README's option table gains the `persona` row.
 
 7. Proof lives in the suites. Items 1, 2, and 4 each have a live suite in `.kit/live-all.sh`, the supervisor's decision logic for the passive and return-to-passive states has harness cases that fail without the change, and the whole gate is green on one run stamp on the branch. Proof: the stamp's `summary.txt`, pasted verbatim into the closing Chapter.
 
