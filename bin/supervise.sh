@@ -18,6 +18,8 @@ if [ $# -lt 3 ]; then
   exit 1
 fi
 
+ORIG_PWD="$(pwd)"
+
 WORKDIR="$1"
 PERSONA="$2"
 PERMISSION_MODE="$3"
@@ -42,6 +44,31 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+
+# --- Resolve workdir to an absolute path, then change into it (plan item 1) ---
+# The plugin's hooks resolve their store and heartbeat sidecar paths relative
+# to the child process's own cwd, while this script's poll loop reads them as
+# "$WORKDIR/...". Launching the supervisor from anywhere but WORKDIR used to
+# split those two: the child wrote its store next to wherever the caller's
+# shell happened to be, and the poll loop kept reading an empty WORKDIR. The
+# supervisor now owns that cd itself, so any caller cwd works.
+if [ ! -d "$WORKDIR" ]; then
+  echo "workdir not found: $WORKDIR" >&2
+  exit 1
+fi
+WORKDIR="$(cd "$WORKDIR" && pwd)"
+
+# A --rundir given as a relative path is relative to the caller's original
+# cwd, not to WORKDIR: resolve it before the cd below changes what "relative"
+# means. The default rundir (unset here) is computed from WORKDIR after the cd.
+if [ -n "$RUNDIR" ]; then
+  case "$RUNDIR" in
+    /*) : ;;  # already absolute
+    *) RUNDIR="$ORIG_PWD/$RUNDIR" ;;
+  esac
+fi
+
+cd "$WORKDIR"
 
 # --- Defaults (plan section 6) ---
 SUPERVISOR_STOP_GRACE_MS="${supervisorStopGraceMs:-60000}"
@@ -220,6 +247,18 @@ RESTART_COUNT=0
 CRASH_COUNT=0
 RESTART_TIMES=()  # array of timestamps for rolling-hour budget
 
+# Whether the FIRST child got no --prompt at all (passive start, plan item 1).
+# Captured before the loop, since PROMPT is cleared after it is sent to
+# child 1 and every restart afterward launches with an empty PROMPT anyway.
+if [ -z "$PROMPT" ]; then
+  log "PASSIVE: no prompt given at start; child will idle with its persona claimed and heartbeating, waiting for a goal delivered by chat"
+fi
+
+# How many poll iterations between "still alive" log lines while idle. At the
+# default 10s poll this is once a minute, so a ten-minute passive run leaves
+# roughly ten WAITING lines proving liveness without flooding the log.
+ALIVE_LOG_EVERY_N_POLLS=6
+
 while true; do
   CHILD_INDEX=$((CHILD_INDEX + 1))
   CHILD_DIR="$RUNDIR/child-$CHILD_INDEX"
@@ -293,6 +332,7 @@ while true; do
   STORE="$WORKDIR/.agentic-personas.json"
   HEARTBEAT="$WORKDIR/.agentic-heartbeat.json"
   CHILD_SESSION_ID=""
+  POLL_COUNT=0
 
   if [ -z "${CHILD_PID:-}" ]; then
     log "ERROR: CHILD_PID not set after coproc launch"
@@ -301,6 +341,15 @@ while true; do
 
   while kill -0 "$CHILD_PID" 2>/dev/null; do
     sleep $((SUPERVISOR_POLL_MS / 1000))
+    POLL_COUNT=$((POLL_COUNT + 1))
+
+    # Prove liveness on a cadence: idleness and an empty goal tree are not
+    # crash, restart, or completion signals (plan item 1), so this line is
+    # the only thing that should appear in the log for a run that is simply
+    # waiting on the next chat-delivered goal.
+    if [ $((POLL_COUNT % ALIVE_LOG_EVERY_N_POLLS)) -eq 0 ]; then
+      log "WAITING: child-$CHILD_INDEX alive, persona held, no restart triggers (poll $POLL_COUNT)"
+    fi
 
     # Read the child's session id from the init line.
     if [ -z "$CHILD_SESSION_ID" ] && [ -f "$OUT" ]; then
