@@ -240,6 +240,14 @@ let gitUnavailable = false;
 // C4: tool error counter for the current turn (reset at turn.start, folded at turn.complete).
 let toolErrorsThisTurn = 0;
 
+// Item 2 sub-bullet (f016b69): tool-call counter for the current turn
+// (reset at turn.start), backing the no-goal-tree backstop in
+// turn.complete - a cost-conscious model can read the [NO GOAL] reminder
+// and still skip goal_create for a task it judges too small; this counts
+// whether real tool work happened this turn regardless of what the model
+// chose to call.
+let toolCallsThisTurn = 0;
+
 // Health run helper (E2).
 async function runHealth(dp: any, forNodeId: string | null): Promise<void> {
   const healthPath = ".agentic-health";
@@ -2260,6 +2268,8 @@ export const register: Register = async (on, options) => {
     turnLeafId = sess.state.activeGoalId;
     // C4: reset tool error counter for this turn.
     toolErrorsThisTurn = 0;
+    // Item 2 sub-bullet: reset the tool-call counter for this turn.
+    toolCallsThisTurn = 0;
     // D4: reset backoff skip counter on new turn (activity breaks the skip streak).
     if (costEnabled && sess.state.monitor.cost) {
       sess.state.monitor.cost.consecutiveSkips = 0;
@@ -2323,6 +2333,54 @@ export const register: Register = async (on, options) => {
 
     // Skip scoring on aborted or errored turns (no answer to judge).
     const skipped = e.aborted || e.reason === "aborted" || e.reason === "error" || e.reason === "refusal" || !e.answer;
+
+    // Item 2 sub-bullet (f016b69): a turn that did real work with no goal
+    // tree at all - the exact shape a cost-conscious model produces when
+    // it reads a one-step request as too small for goal_create, even
+    // after the [NO GOAL] reminder names size explicitly - gets a
+    // synthetic goal record after the fact, so "every request opens a
+    // goal, whatever its size" holds even when the model skipped the
+    // ritual. Only fires when the tree is genuinely empty (never created,
+    // or a prior root already completed) and this turn actually used a
+    // tool; a turn that just chatted leaves the no-goal state alone.
+    if (!skipped && sess.isOwner && sess.state.goals.length === 0 && toolCallsThisTurn > 0) {
+      const backfillNow = Date.now();
+      const objective = (currentPrompt || "Untitled request").slice(0, 200);
+      const rootId = `root-${backfillNow.toString(36)}`;
+      const backfillRoot: GoalNode = {
+        id: rootId,
+        parentId: null,
+        kind: "root",
+        title: objective.slice(0, 80),
+        objective,
+        status: "complete",
+        source: "worker",
+        maxRounds: 1,
+        completedRounds: 1,
+        scores: [{ round: 1, result: "complete" }],
+        notes: ["Backfilled: the worker did the work without calling goal_create this turn."],
+        planningRounds: 0,
+        consecutiveBlockedPlannings: 0,
+        consecutivePlanningFailures: 0,
+        planningRound: 0,
+        createdAt: backfillNow,
+        updatedAt: backfillNow,
+      };
+      sess.state.goals = [backfillRoot];
+      sess.state.activeGoalId = null;
+      sess.state.decisions.push({
+        timestamp: backfillNow,
+        loop: "goal",
+        action: "create",
+        detail: `Root ${rootId} "${objective.slice(0, 80)}" created (max 1 rounds) - backfilled, no goal_create call this turn`,
+      });
+      sess.state.decisions.push({
+        timestamp: backfillNow,
+        loop: "goal",
+        action: "root_complete",
+        detail: `Root ${rootId} marked complete - backfilled, work already done`,
+      });
+    }
 
     // H2: Score against the leaf that was active at TURN START (turnLeafId),
     // not whichever node is active now (which may have been activated mid-turn
@@ -2546,6 +2604,7 @@ export const register: Register = async (on, options) => {
   // --- tool.call: serve tools, enforce constraints ---
   on("tool.call", async ($, e, next) => {
     sess.state.monitor.totalToolCalls += 1;
+    toolCallsThisTurn += 1;
 
     // Serve agentic_identity (F9: single arbiter = commons; epoch is only the
     // same-directory write fence). Claim in commons FIRST; if a live earlier
@@ -3323,8 +3382,12 @@ export const register: Register = async (on, options) => {
         // request as small talk and never call goal_create at all.
         const idleBlock =
           `No goal is active. If the message above describes something to ` +
-          `accomplish, call goal_create with that as the objective, then reply ` +
-          `in one line naming the goal you took. Otherwise just answer normally.`;
+          `accomplish, call goal_create with that as the objective before doing ` +
+          `any other work - even a one-step or trivial-looking request, since ` +
+          `size is not the test: a plain request that names no tool always opens ` +
+          `a goal first. Then reply in one line naming the goal you took. Only ` +
+          `skip goal_create if the message is not a request to accomplish ` +
+          `anything (small talk, a question with no task attached).`;
         contextBlocks.push(idleBlock);
         try { $.ui.log(`Agentic: [NO GOAL] reminder injected`); } catch { /* non-fatal */ }
       }

@@ -3006,6 +3006,10 @@ async function main() {
     await caseD5b_replyClosesAsk(clock);
     await caseD5b_reaskSuppressed(clock);
     await caseD5b_reraiseOnce(clock);
+    await caseItem2_noGoalReminderPushesOnSize(clock);
+    await caseItem2_noGoalReminder_control(clock);
+    await caseItem2_backfillOnRealWork(clock);
+    await caseItem2_backfillOnRealWork_control(clock);
     await caseS4_peer_consumed(clock);
     await caseS4_peer_send_message_consumed(clock);
     await caseS4_other_origin_passes(clock);
@@ -3213,6 +3217,141 @@ async function caseD5b_reraiseOnce(clock) {
   clock.advance(10_000);
   await tickAndSettle(h, clock, 20);
   check("D5b reraise: no second reraise on the next tick", h.promptSubmits.length === submitsBefore);
+}
+
+// ============================================================
+// Item 2 sub-bullet (f016b69): the [NO GOAL] reminder pushes on size,
+// so a one-step request is not read as too small for the goal tree.
+// ============================================================
+async function caseItem2_noGoalReminderPushesOnSize(clock) {
+  console.log("\n=== Item 2: [NO GOAL] reminder names size explicitly ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_no_goal_size", stateOpts: { hasActiveLeaf: false } });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  // No goals at all - the exact state the goalconvo suite hit live.
+  const submitH = h.handlers["prompt.submit"];
+  const result = await submitH(h.fake, { text: "Write a haiku to ocean.txt." }, async () => ({}));
+
+  const blocks = result.context || [];
+  const noGoalBlock = blocks.find(b => b.includes("No goal is active"));
+  check("item2 size: [NO GOAL] block injected with no goals", !!noGoalBlock);
+  check("item2 size: block names a one-step/trivial-looking request explicitly",
+    !!noGoalBlock && noGoalBlock.includes("one-step or trivial-looking request"));
+  check("item2 size: block says size is not the test",
+    !!noGoalBlock && noGoalBlock.toLowerCase().includes("size is not the test"));
+}
+
+// Control: an active goal already exists - the [NO GOAL] block must not
+// appear (the [GOAL TREE] block does instead), proving the reminder is
+// scoped to the true no-goal state, not injected unconditionally.
+async function caseItem2_noGoalReminder_control(clock) {
+  console.log("\n=== Item 2 control: [NO GOAL] absent when a goal is active ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_no_goal_control" });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  const personaState = buildPersonaState(mySid, now);
+  personaState.goals = [
+    { id: "node-001", kind: "leaf", title: "Goal 1", objective: "Goal 1", status: "active", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [], notes: [] },
+  ];
+  personaState.activeGoalId = "node-001";
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
+
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  const submitH = h.handlers["prompt.submit"];
+  const result = await submitH(h.fake, { text: "keep going" }, async () => ({}));
+
+  const blocks = result.context || [];
+  check("item2 control: no [NO GOAL] block when a goal is active", !blocks.some(b => b.includes("No goal is active")));
+  check("item2 control: [GOAL TREE] block present instead", blocks.some(b => b.includes("[GOAL TREE]")));
+}
+
+// ============================================================
+// Item 2 sub-bullet: the turn.complete backstop backfills a goal record
+// when a turn does real tool work with no goal tree at all - the shape a
+// cost-conscious model produces even after the [NO GOAL] reminder (live-
+// confirmed three times, Round 24/26, commit c0e07f5/this section).
+// ============================================================
+async function caseItem2_backfillOnRealWork(clock) {
+  console.log("\n=== Item 2: turn.complete backfills a goal when work happened with no tree ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_backfill", stateOpts: { hasActiveLeaf: false } });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  const submitH = h.handlers["prompt.submit"];
+  await submitH(h.fake, { text: "Write a haiku to ocean.txt." }, async () => ({}));
+
+  const turnStartH = h.handlers["turn.start"];
+  await turnStartH(h.fake, { turnId: "t-backfill" }, async () => ({ result: "ok" }));
+
+  // The model wrote the file directly - a real tool call, no goal_create.
+  const toolCallH = h.handlers["tool.call"];
+  await toolCallH(h.fake, { tool: "Write", turnId: "t-backfill" }, async () => ({ result: "ok" }));
+
+  const turnCompleteH = h.handlers["turn.complete"];
+  await turnCompleteH(h.fake, { turnId: "t-backfill", answer: "Wrote the haiku.", reason: "completed" }, async () => ({ result: "ok" }));
+
+  const state = getState(h);
+  check("item2 backfill: a root node now exists", state.goals.length === 1);
+  check("item2 backfill: root is marked complete", state.goals[0]?.status === "complete");
+  const decisions = state.decisions || [];
+  check("item2 backfill: create decision logged", decisions.some(d => d.action === "create" && d.detail.includes("backfilled")));
+  check("item2 backfill: root_complete decision logged", decisions.some(d => d.action === "root_complete" && d.detail.includes("backfilled")));
+}
+
+// Control: the same shape, but the turn used no tool at all (pure chat) -
+// the backstop must not fabricate a goal for a turn that did nothing.
+async function caseItem2_backfillOnRealWork_control(clock) {
+  console.log("\n=== Item 2 control: no backfill when the turn used no tool ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_backfill_control", stateOpts: { hasActiveLeaf: false } });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  const submitH = h.handlers["prompt.submit"];
+  await submitH(h.fake, { text: "What's your favorite color?" }, async () => ({}));
+
+  const turnStartH = h.handlers["turn.start"];
+  await turnStartH(h.fake, { turnId: "t-nochat" }, async () => ({ result: "ok" }));
+
+  // No tool.call fired - a pure conversational turn.
+
+  const turnCompleteH = h.handlers["turn.complete"];
+  await turnCompleteH(h.fake, { turnId: "t-nochat", answer: "I like blue.", reason: "completed" }, async () => ({ result: "ok" }));
+
+  const state = getState(h);
+  check("item2 backfill control: no goal fabricated for a no-tool turn", state.goals.length === 0);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
