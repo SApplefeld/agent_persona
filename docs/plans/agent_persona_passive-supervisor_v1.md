@@ -1,0 +1,46 @@
+# agent_persona: passive supervisor steered by conversation, v1
+
+Status: In Progress
+Commit Model: Branch-and-PR. Work on branch `passive-supervisor`, push that branch to `origin`, never `main`. The operator merges.
+Worker: the plugin's own persona, running under `bin/supervise.sh` with this document as its roadmap.
+Executor's plugin runtime: `D:\DeepSeekHarness\agentic-plugin` (stable copy). The tree under edit: `D:\agent_persona` (this clone). The two are never the same directory, because a session whose working directory sits inside its own plugin directory does not initialize the plugin.
+
+## Goal
+
+The supervisor becomes something an operator starts once and talks to. Started with no goal, it waits quietly and holds its persona. A goal arrives as a sentence in a chat, not as a tool call. During a goal the operator can redirect, pause, add, or drop work by talking. When the goal completes the supervisor goes quiet again and waits for the next one. The chat is a Discord thread or a proxy agent, and only text from a holder of a reader claim ever steers the worker.
+
+Every numbered item below is a goal with its acceptance, not a task list. The worker decides how.
+
+## Roadmap
+
+1. Passive start. `bin/supervise.sh` launched with no `--prompt` runs indefinitely: the child idles with its persona claimed and heartbeating, the supervisor logs that it is waiting, and neither idleness nor an empty goal tree is read as a crash, a restart trigger, or completion. Proof: a run with no prompt is still alive and logging after ten minutes, with zero restarts.
+   - The pre-gate, the EOF stop path, and the exit codes keep their current meaning.
+   - The supervisor also changes into the work directory itself, so launching it from elsewhere no longer splits the store from the poll.
+
+2. A goal arrives by conversation. An operator message delivered through the reader channel, phrased as a request in plain words with no tool named, leads the worker to open a goal tree and begin planning, and the worker's reply states the goal it took in one line. Proof: the decision log shows the operator turn, then `goal_create`, then `planning_fired`, and the reader's inbox holds the one-line confirmation.
+
+3. Steering during a goal. While plans are active, operator messages can add a plan, drop one, change priority, pause, and resume, and the worker answers each with what it changed. Proof: a mid-run message produces a recorded decision naming the change and a matching change in the goal tree, for at least add, drop, and pause.
+   - The roadmap file is already re-read at every planning event; a steer that edits the roadmap is one acceptable mechanism, and a steer that acts on the tree directly is another. Both are recorded.
+
+4. Quiet between goals. When the root completes, the supervisor returns to the passive state of item 1 instead of exiting, and a second goal given by conversation in the same supervisor lifetime runs to completion. An explicit shutdown request from the operator stops the child by the EOF path and exits 0. Proof: two goals completed and one clean shutdown in one `supervisor.log`.
+
+5. A chat channel. Text typed in a Discord thread reaches the worker as an operator turn, and the worker's replies and open asks appear in that thread. Acceptable shapes: a proxy session that holds the reader claim and is itself attached to the relay in `D:\discord-channels`, or a bridge from that broker to `agentic_say` and `agentic_inbox`. Text with no reader claim behind it never reaches the worker. Proof: a message from a phone produces an `[OPERATOR]` turn in the decision log and the reply is visible in the thread.
+   - Which shape to build is a material fork. Open an ask to the operator with the two shapes and a recommendation before building either.
+
+6. One command to start, and a README that says so. A fresh clone plus one command starts the supervisor in passive mode with the channel attached, on this machine and on another Windows machine with Git for Windows. The README gains a quickstart at the top: how to start, how to give a goal, how to steer, how to stop, and where the logs are. Proof: the quickstart, followed literally in a fresh clone, reaches a waiting supervisor in under two minutes.
+
+7. Proof lives in the suites. Items 1, 2, and 4 each have a live suite in `.kit/live-all.sh`, the supervisor's decision logic for the passive and return-to-passive states has harness cases that fail without the change, and the whole gate is green on one run stamp on the branch. Proof: the stamp's `summary.txt`, pasted verbatim into the closing Chapter.
+
+## Constraints
+
+- Branch `passive-supervisor` off `main`. One or more commits per goal, titles with an uppercase surface prefix (`SUPERVISOR:`, `PLUGIN:`, `SUITE:`, `README:`, `PLAN:`) and a sentence. Push the branch after each goal closes. Never commit to `main`.
+- Before every commit: `npx tsc --noEmit` exit 0 and `node .kit/controller-tick-test.mjs` exit 0. Before a goal closes: the live suite that covers it, `script_exit=0`.
+- Your own persona is `dev`. The live suites use `default`. Never claim `default` yourself, or the suites' pre-gate waits on you.
+- `D:\DeepSeekHarness\agentic-plugin` is your runtime and is not yours to edit. Edit only this clone.
+- A material design fork goes to the operator as an ask with a recommendation. Item 5's shape is one. Do not wait on trivia.
+- Documents state the current behavior, never the change story. No em dashes anywhere.
+- Append a Chapter to this document when a goal closes: what shipped, the commits, the proof, and what surprised you.
+
+## Chapters
+
+(none yet)

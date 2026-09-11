@@ -2,7 +2,7 @@
 
 ## Active plans
 
-(none)
+- `plans/agent_persona_passive-supervisor_v1.md`: the supervisor starts with no goal and waits, takes goals and steering by conversation, returns to waiting between goals, and is reachable from a chat channel. Roadmap for the plugin's own persona working on this clone. In Progress.
 
 ## Archived plans
 
