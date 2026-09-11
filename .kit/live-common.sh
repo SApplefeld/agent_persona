@@ -46,16 +46,42 @@ count_turn_starts() {  # $1 = store path; returns count of turn_start decisions
 }
 
 # V3: find the global commons store (same lookup as commons F15).
+# Single-sourced from bin/supervise.sh's own find_global_store (added
+# there for item 6's installed-vs-dev-tree switch): once both an
+# installed-plugin store and a --plugin-dir (inline) store have ever run
+# on one machine, both files coexist, and "take the first alphabetical
+# match" silently reads the wrong one. Every child this live-test harness
+# launches uses --plugin-dir (dev mode, either directly or via
+# bin/supervise.sh --dev), so this copy always passes dev_mode=1; there is
+# no installed-mode caller in .kit/*.sh. A pre-gate that reads the wrong
+# store sees live=0 while the real inline store still holds the previous
+# suite's cooling-down claim, so the next suite starts inside that claim's
+# staleness window and joins default as a reader instead of an owner -
+# confirmed live on the 20260911T183849Z run stamp (6 suites failed this
+# way; passive/goalconvo/restartpassive did not, because their claims are
+# scoped to their own persona names rather than default).
 # Echoes the store path, or empty if not found.
 find_global_store() {
+  local dev_mode="${1:-1}"
   local f
   if [ -d "$HOME/.claude/plugins/store" ]; then
-    for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
-      if [ -f "$f" ]; then
-        echo "$f"
-        return 0
-      fi
-    done
+    if [ "$dev_mode" -eq 1 ]; then
+      for f in "$HOME/.claude/plugins/store"/agentic-plugin_inline-*.json; do
+        if [ -f "$f" ]; then
+          echo "$f"
+          return 0
+        fi
+      done
+    else
+      for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
+        if [ -f "$f" ]; then
+          case "$(basename "$f")" in
+            agentic-plugin_inline-*) continue ;;
+            *) echo "$f"; return 0 ;;
+          esac
+        fi
+      done
+    fi
   fi
   echo ""
   return 0

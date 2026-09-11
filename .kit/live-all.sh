@@ -57,6 +57,21 @@ if [ -z "$GLOBAL_STORE" ]; then
   rm -f "$GLOBAL_RUNNING"
   exit 9
 fi
+# Store-name control: every child this harness launches runs under
+# --plugin-dir, so the pre-gate must be reading the inline (dev-tree)
+# store and never the installed one. A silent drift here reads live=0
+# against the wrong store while the real one still holds a fresh claim,
+# which lets the next suite start early and join default as a reader
+# instead of an owner - the exact failure this line exists to catch loudly.
+case "$(basename "$GLOBAL_STORE")" in
+  agentic-plugin_inline-*) ;;
+  *)
+    echo "ERROR: pre-gate store is not an inline (dev-tree) store: $GLOBAL_STORE" >&2
+    echo "This harness only launches --plugin-dir children; find_global_store should never resolve to an installed-plugin store here." >&2
+    rm -f "$GLOBAL_RUNNING"
+    exit 9
+    ;;
+esac
 
 # --- Helper: run one suite in its private directory ---
 run_suite() {
