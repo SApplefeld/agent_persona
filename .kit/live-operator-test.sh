@@ -27,6 +27,15 @@ if [ -f "$SUITE_DIR/RUNNING" ]; then
   echo "RUNNING exists, refusing" >&2
   exit 8
 fi
+
+# BF3a: process guard - refuse to start if there are live claude processes
+CLAUDE_PROCS=$(pgrep -f "claude\.exe" 2>/dev/null | wc -l)
+if [ "$CLAUDE_PROCS" -gt 0 ]; then
+  echo "BF3a: $CLAUDE_PROCS live claude processes found, refusing to start" >&2
+  pgrep -af "claude\.exe" >&2 || true
+  exit 10
+fi
+
 rm -rf "$SUITE_DIR" 2>/dev/null || echo "WARN: could not remove old $SUITE_DIR (busy?)"
 mkdir -p "$SUITE_DIR" || exit 9
 cd "$SUITE_DIR" || exit 9
@@ -70,7 +79,7 @@ export COST_MAX_NUDGES_PER_HOUR=1
 export COST_SUMMARY_EVERY_N_TICKS=3
 emit_settings_json "settings.json"
 
-OWNER_TOOLS="mcp__agentic-plugin__goal_create,mcp__agentic-plugin__goal_done,mcp__agentic-plugin__memory_add,mcp__agentic-plugin__agentic_identity"
+OWNER_TOOLS="mcp__agentic-plugin__goal_create,mcp__agentic-plugin__memory_add,mcp__agentic-plugin__agentic_identity"
 READER_TOOLS="mcp__agentic-plugin__agentic_identity,mcp__agentic-plugin__agentic_say,mcp__agentic-plugin__agentic_inbox,mcp__agentic-plugin__memory_add"
 
 echo "DeepSeekHarness $0 $(date -u +%FT%TZ)" > "$RUNNING"
@@ -140,6 +149,7 @@ coproc OWNER {
     --settings "$(cygpath -w "$SUITE_DIR/settings.json")" \
     --allowedTools "$OWNER_TOOLS" \
     --model haiku \
+    --debug-file "$(cygpath -w "$SUITE_DIR/owner-debug.log")" \
     > "$OWNER_OUT" 2> "$OWNER_ERR"
 }
 OWNER_PID=$OWNER_PID
@@ -199,10 +209,12 @@ if [ "$LIVE" != "1" ]; then
 fi
 echo "owner persona:default claim live in commons store"
 
-# --- BD6: Read owner session id from out.jsonl ---
+# --- BD6: Read owner session id from out.jsonl (BF6: poll for init line) ---
 OWNER_SESSION_ID=""
-if [ -f "$OWNER_OUT" ]; then
-  OWNER_SESSION_ID=$(node -e "
+SESSION_POLL_N=0
+while [ $SESSION_POLL_N -lt 30 ]; do
+  if [ -f "$OWNER_OUT" ]; then
+    OWNER_SESSION_ID=$(node -e "
 const fs = require('fs');
 try {
   const lines = fs.readFileSync(process.argv[1], 'utf8').split('\n');
@@ -218,7 +230,13 @@ try {
   }
 } catch {}
 " "$OWNER_OUT" 2>/dev/null)
-fi
+    if [ -n "$OWNER_SESSION_ID" ]; then
+      break
+    fi
+  fi
+  SESSION_POLL_N=$((SESSION_POLL_N + 1))
+  sleep 1
+done
 echo "owner session id: ${OWNER_SESSION_ID:-unknown}"
 
 # --- BD2/BE12: Reader from its OWN directory, one coproc, three turns ---
@@ -235,6 +253,7 @@ coproc READER {
     --settings "$(cygpath -w "$SUITE_DIR/settings.json")" \
     --allowedTools "$READER_TOOLS" \
     --model haiku \
+    --debug-file "$(cygpath -w "$SUITE_DIR/reader-debug.log")" \
     > "$READER_OUT" 2> "$READER_ERR"
 }
 READER_PID=$READER_PID
@@ -364,15 +383,13 @@ try {
 } catch {}
 " "$(cygpath -m "$STORE_FILE_LAUNCH" 2>/dev/null || echo "$STORE_FILE_LAUNCH")" 2>/dev/null)
       fi
-      # Compare: exact match, or prefix match (handles trailing text like SENT)
-      REPLY_TRIMMED="$(echo "$REPLY_TEXT" | sed 's/[[:space:]]*$//')"
-      STORE_TRIMMED="$(echo "$STORE_REPLY_TEXT" | sed 's/[[:space:]]*$//')"
-      if [ "$REPLY_TRIMMED" = "$STORE_TRIMMED" ] || \
-         { [ -n "$REPLY_TRIMMED" ] && [[ "$STORE_TRIMMED" == "$REPLY_TRIMMED"* ]]; } || \
-         { [ -n "$STORE_TRIMMED" ] && [[ "$REPLY_TRIMMED" == "$STORE_TRIMMED"* ]]; }; then
-        echo "  OK: REPLY: line matches global store reply text (prefix match)"
+      # BF5: Compare: exact match only (no prefix match)
+      REPLY_TRIMMED="$(echo "$REPLY_TEXT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      STORE_TRIMMED="$(echo "$STORE_REPLY_TEXT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      if [ "$REPLY_TRIMMED" = "$STORE_TRIMMED" ]; then
+        echo "  OK: REPLY: line exactly matches global store reply text"
       else
-        echo "  FAIL: REPLY: line ('$REPLY_TEXT') does not match global store reply text ('$STORE_REPLY_TEXT')"
+        echo "  FAIL: REPLY: line ('$REPLY_TEXT') does not exactly match global store reply text ('$STORE_REPLY_TEXT')"
         FAIL_COUNT=$((FAIL_COUNT + 1))
       fi
     else
@@ -496,13 +513,7 @@ else
   FAIL_COUNT=$((FAIL_COUNT + 1))
 fi
 
-# Wait for activated (owner reactivated)
-if wait_for_decision "activated" 120; then
-  echo "  OK: activated found"
-else
-  echo "  FAIL: activated not found after 120s"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-fi
+# BF3: dropped wait_for_decision activated 120 (per Round 88)
 
 # BD4: no UNEXPECTED activated between ask_opened and ask_answered (BE8: local store)
 # The reactivation that IS the answer processing (detail mentions "answer to ask") is expected.
@@ -622,9 +633,46 @@ else
   FAIL_COUNT=$((FAIL_COUNT + 1))
 fi
 
+# --- BF3c: BE12 assertion pair ---
+# 1. Reader local store exists
+READER_LOCAL_STORE="$SUITE_DIR/reader/.agentic-personas.json"
+if [ -f "$READER_LOCAL_STORE" ]; then
+  echo "  OK: reader local store exists"
+else
+  echo "  FAIL: reader local store not found"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+
+# 2. No SUITE_DIR/.agentic-yields.log (yields should be in the global store)
+if [ ! -f "$SUITE_DIR/.agentic-yields.log" ]; then
+  echo "  OK: no .agentic-yields.log in SUITE_DIR"
+else
+  echo "  FAIL: .agentic-yields.log found in SUITE_DIR"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+
+# --- BF8 detector: global store key preservation ---
+# Check that the global store has the expected keys (not hand-deleted)
+if [ -n "$STORE_FILE_LAUNCH" ] && [ -f "$STORE_FILE_LAUNCH" ]; then
+  KEY_COUNT=$(node -e "
+try {
+  const s = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
+  console.log(Object.keys(s).length);
+} catch { console.log(0); }
+" "$(cygpath -m "$STORE_FILE_LAUNCH" 2>/dev/null || echo "$STORE_FILE_LAUNCH")" 2>/dev/null)
+  if [ "${KEY_COUNT:-0}" -gt 0 ]; then
+    echo "  OK: global store has $KEY_COUNT keys (preserved)"
+  else
+    echo "  FAIL: global store has no keys (possibly hand-deleted)"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+else
+  echo "  WARN: no global store file to check (skipping BF8 detector)"
+fi
+
 # --- BD5: evidence retention (BE11) ---
-STAMP_E="$(date -u +%Y%m%dT%H%M%SZ)"
-RUNS_DIR="$PLUGIN_DIR/.kit/runs/$STAMP_E/operator"
+# BF7: use STAMP_O for consistent stamp (not a new STAMP_E)
+RUNS_DIR="$PLUGIN_DIR/.kit/runs/$STAMP_O/operator"
 mkdir -p "$RUNS_DIR"
 for f in operator-owner.out.jsonl operator-owner.err.log operator-reader.out.jsonl \
          operator-reader.err.log operator.decisions.log operator.assert.log \

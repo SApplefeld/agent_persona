@@ -354,8 +354,15 @@ switch (testName) {
     }
 
     // BE9: key on ask id from ask_answered detail, not indexOf over all asks
+    // BF4: extract ask id from detail using regex (detail format: "answer to ask <ask-id>")
     const askAnsweredDetail = details.find(d => d.action === "ask_answered");
-    const askId = askAnsweredDetail && askAnsweredDetail.detail ? askAnsweredDetail.detail : null;
+    let askId = null;
+    if (askAnsweredDetail && askAnsweredDetail.detail) {
+      const askIdMatch = askAnsweredDetail.detail.match(/\bas (ask-[a-z0-9-]+)\b/);
+      if (askIdMatch && askIdMatch[1]) {
+        askId = askIdMatch[1];
+      }
+    }
     if (askId) {
       const gstore = JSON.parse(fs.readFileSync(globalStorePath, "utf8"));
       const askKey = Object.keys(gstore).find(k => k.startsWith("ask:default:") && gstore[k].id === askId);
