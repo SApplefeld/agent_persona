@@ -318,7 +318,7 @@ When the reader answers the ask, the owner's controller is reactivated (`reactiv
 
 Two options are defined in the plan (section 6) with defaults in force:
 
-1. **Ask wait default:** Whether the owner's ask waits indefinitely for a reply or times out. Default: **indefinite** (`askOperatorWaitMs` unset, `hooks/index.ts:118`).
+1. **Ask wait default:** Whether the owner's ask waits indefinitely for a reply or times out. Default: **60 minutes** (`askOperatorWaitMs` unset, code fallback `hooks/index.ts:142`).
 2. **Peer text:** Whether peer text is consumed by the `session.receive` hook or passed through with a `[PEER]` prefix. Default: **consumed** (the hook returns `{ consumed: reason }` and nothing is queued, shown, or read by the model).
 
 The operator has not yet ruled on these options; the defaults are in force.

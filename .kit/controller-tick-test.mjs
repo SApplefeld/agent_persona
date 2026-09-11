@@ -1691,6 +1691,81 @@ async function caseS3_timeout_walks_on(clock) {
   check("S3 timeout: node-002 activated", node2 && node2.status === "active");
 }
 
+// S3: askOperatorWaitMs default fires with no option set (Round 34). Whether
+// the harness engine fills plugin.json's userConfig default into `cfg` is
+// not established anywhere in this repo, so the code fallback must resolve
+// an absent option to a real wait on its own. Mirrors caseS3_timeout_walks_on
+// exactly (that case is this one's control: option set to a small value
+// fires there), but OPTS carries no askOperatorWaitMs, and the clock
+// advances past the 60-minute code default instead of a configured 60s.
+async function caseS3_timeout_walks_on_default(clock) {
+  console.log("\n=== S3: timeout expires ask at the no-option-set default ===");
+  clock.set(T0);
+
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s3_timeout_walks_on_default",
+  });
+
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  const personaState = buildPersonaState(mySid, now);
+  personaState.goals = [
+    { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001", "node-002"] },
+    { id: "node-001", kind: "leaf", parentId: "root", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-002", kind: "leaf", parentId: "root", objective: "Goal 2", status: "pending", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 9000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-001";
+  personaState.pendingAskId = "ask-timeout-default-1";
+  personaState.monitor.turnCount = 5;
+  personaState.monitor.lastTurnComplete = now - 120_000;
+  personaState.updatedAt = now;
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: mySid, epoch: 1, lastSeen: now },
+  }));
+
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  const askKey = "ask:default:ask-timeout-default-1";
+  h.storeMap.set(askKey, {
+    id: "ask-timeout-default-1",
+    key: askKey,
+    persona: "default",
+    askId: "ask-timeout-default-1",
+    at: now,
+    nodeId: "node-001",
+    question: "What should we do?",
+    status: "open",
+  });
+
+  // Advance 1 hour and 1 second: past the 3_600_000ms code default, not past
+  // any value a configured option would have set.
+  clock.advance(3_601_000);
+  await tickAndSettle(h, clock, 50);
+
+  const state = getState(h);
+
+  const askRecord = h.storeMap.get(askKey);
+  check("S3 timeout default: ask status is expired", askRecord && askRecord.status === "expired");
+  check("S3 timeout default: pendingAskId cleared", !state.pendingAskId);
+
+  const decisions = state.decisions || [];
+  check("S3 timeout default: ask_timeout action present", decisions.some(d => d.action === "ask_timeout"));
+
+  const node2 = state.goals.find(g => g.id === "node-002");
+  check("S3 timeout default: node-002 activated", node2 && node2.status === "active");
+}
+
 // S4: D6 doorbell - peer consumed
 async function caseS4_peer_consumed(clock) {
   console.log("\n=== S4: peer consumed ===");
@@ -1949,15 +2024,15 @@ async function caseS5_identity_joins_live_owner(clock) {
   check("S5 identity: owner heartbeat intact", hb && hb.default && hb.default.sessionId === otherSessionId && hb.default.epoch === 1);
 }
 
-// S5: identity switch releases the old persona's commons claim (Round 11)
+// S5: identity switch releases the old persona's commons claim (Round 11/34)
 // Item 6 fix (db68855): when a session calls agentic_identity to switch from
-// one persona to another, the old persona's commons claim must be released.
-// Verification: the release call is in hooks/index.ts line 2666, and item 6's
-// harness proves via the -p install flow that the switch succeeds. This test
-// confirms the code path exists by loading the module and checking that the
-// call doesn't throw when the function is exercised.
+// one persona to another, the old persona's commons claim must be released -
+// left behind, a persona claim reads as live under this session's own
+// heartbeat forever, blocking any other session from ever winning that old
+// persona's arbitration. Control: before the switch, the entry carries the
+// old persona's claim; after, it must not.
 async function caseS5_identity_releases_old_persona(clock) {
-  console.log("\n=== S5: identity switch releases old persona (code path check) ===");
+  console.log("\n=== S5: identity switch releases old persona ===");
   clock.set(T0);
 
   const mod = await loadModule("s5_identity_release");
@@ -1966,12 +2041,77 @@ async function caseS5_identity_releases_old_persona(clock) {
   const on = (event, handler) => { handlers[event] = handler; };
   await mod.register(on, OPTS);
 
-  // The agentic_identity handler at line 2666 in hooks/index.ts calls
-  // releaseResource if switching personas. Verify the code path doesn't
-  // error and the session persona field is updated.
-  const startH = handlers["session.start"];
-  check("S5 release: session.start handler exists", typeof startH === "function");
-  check("S5 release: tool.call handler exists", typeof handlers["tool.call"] === "function");
+  // This session becomes commons winner for "default" at session.start.
+  await handlers["session.start"](h.fake, {}, () => {});
+
+  const commonsKey = `commons:${SESSION_ID}`;
+  const beforeEntry = h.storeMap.get(commonsKey);
+  check("S5 release control: entry has persona:default claim before switch", beforeEntry && beforeEntry.claims && beforeEntry.claims.some(c => c.resource === "persona:default"));
+
+  // Switch to a different persona with no live earlier holder; this session
+  // becomes its commons winner too.
+  const toolCallH = handlers["tool.call"];
+  await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__agentic_identity",
+    persona: "other",
+  }, async () => ({ result: "passthrough" }));
+
+  const afterEntry = h.storeMap.get(commonsKey);
+  check("S5 release: entry has NO persona:default claim after switch", afterEntry && afterEntry.claims && !afterEntry.claims.some(c => c.resource === "persona:default"));
+  check("S5 release: entry has persona:other claim after switch", afterEntry && afterEntry.claims && afterEntry.claims.some(c => c.resource === "persona:other"));
+}
+
+// S5: identity reader join releases its speculative persona claim (Round 32)
+// The tool.call handler claims persona:<p> in commons before it knows
+// whether a live earlier holder exists (F9: claim first, then arbitrate).
+// When a live holder does exist and this session joins as reader, that
+// speculative claim must not survive - left in place, it reads as a live
+// persona holder under this session's own heartbeat, which would hold the
+// next relaunch's pre-gate for the full stale-after window (the same shape
+// that blocked a Reviewer session on a stale persona:default claim, Round
+// 33's restart record). Setup mirrors caseS5_identity_joins_live_owner,
+// which is this case's control: it already shows the join adds
+// reader:default; this shows the speculative persona:default claim the
+// claim-first step took does not survive alongside it.
+async function caseS5_identity_reader_releases_speculative_claim(clock) {
+  console.log("\n=== S5: identity reader join releases speculative persona claim ===");
+  clock.set(T0);
+
+  const mod = await loadModule("s5_identity_reader_release");
+  const h = createFake$(OPTS);
+  const handlers = {};
+  const on = (event, handler) => { handlers[event] = handler; };
+  await mod.register(on, OPTS);
+
+  const otherSessionId = "other-owner-session";
+  const now = Date.now();
+
+  const otherCommonsKey = `commons:${otherSessionId}`;
+  h.storeMap.set(otherCommonsKey, {
+    sessionId: otherSessionId,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 1000 }],
+  });
+
+  const state = makeState({ now });
+  state.activeSessionId = otherSessionId;
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: otherSessionId, epoch: 1, lastSeen: now },
+  }));
+
+  await handlers["session.start"](h.fake, {}, () => {});
+
+  const toolCallH = handlers["tool.call"];
+  await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__agentic_identity",
+    input: {},
+  }, async () => ({ result: "passthrough" }));
+
+  const commonsKey = `commons:${SESSION_ID}`;
+  const entry = h.storeMap.get(commonsKey);
+  check("S5 reader release: entry has reader:default claim", entry && entry.claims && entry.claims.some(c => c.resource === "reader:default"));
+  check("S5 reader release: entry has NO persona:default claim", entry && entry.claims && !entry.claims.some(c => c.resource === "persona:default"));
 }
 
 // ============================================================
@@ -3028,6 +3168,7 @@ async function main() {
     await caseS3_answer_reactivates(clock);
     await caseS3_say_leaves_ask_open(clock);
     await caseS3_timeout_walks_on(clock);
+    await caseS3_timeout_walks_on_default(clock);
     await caseD5b_replyClosesAsk(clock);
     await caseD5b_reaskSuppressed(clock);
     await caseD5b_reraiseOnce(clock);
@@ -3044,6 +3185,7 @@ async function main() {
     await caseS5_owner_claims_commons_at_start(clock);
     await caseS5_reader_claims_reader_not_persona(clock);
     await caseS5_identity_joins_live_owner(clock);
+    await caseS5_identity_reader_releases_speculative_claim(clock);
     await caseS5_identity_releases_old_persona(clock);
     await caseS6_inbox_carries_ask_id(clock);
     await caseS6_say_unknown_answers_refused(clock);

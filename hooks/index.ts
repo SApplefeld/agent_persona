@@ -139,7 +139,12 @@ async function tickOpenAsk(
     } catch { /* re-raise failed; non-fatal, the decision log still shows it */ }
   }
 
-  const waitMs = typeof cfg.askOperatorWaitMs === "number" ? (cfg.askOperatorWaitMs as number) : 0;
+  // Round 34: an absent option must still resolve to a real wait, not to 0 -
+  // whether the engine fills plugin.json's userConfig default into `cfg` is
+  // not established anywhere in this repo, so the code fallback carries its
+  // own default (60 minutes, larger than the 15-minute re-raise window),
+  // matching how line 123's askReraiseWindowMs fallback is written in code.
+  const waitMs = typeof cfg.askOperatorWaitMs === "number" ? (cfg.askOperatorWaitMs as number) : 3_600_000;
   if (waitMs > 0) {
     if (elapsed >= waitMs) {
       state.decisions.push({
@@ -2710,6 +2715,16 @@ export const register: Register = async (on, options) => {
           detail: `Joining '${sess.persona}' as reader (holder: ${shouldYieldTo}, commons arbitration)`,
         });
         try { $.ui.log(`Agentic: joined '${sess.persona}' as reader (held by ${shouldYieldTo})`); } catch { /* non-fatal */ }
+        // Round 32: the claimResource call above speculatively claimed
+        // `persona:<p>` before the winner was known. A reader join must not
+        // keep that claim - left in place, it reads as a live persona holder
+        // under this session's own heartbeat and blocks the next relaunch's
+        // pre-gate for the full stale-after window, exactly as the stale
+        // `persona:default` claim did. Release it before claiming the reader
+        // role, so the joiner ends with reader:<p> only.
+        try {
+          await releaseResource(commonsStoreOf($), resource, sess.mySessionId);
+        } catch { /* non-fatal: commons is a coordination layer */ }
         // D2: Claim the reader role
         await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId);
         return {
