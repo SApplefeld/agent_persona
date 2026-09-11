@@ -6,14 +6,14 @@ PIANO-esque cognitive layer on Claude Code's Function Hooks API. One plugin modu
 
 A fresh clone, one command, a waiting supervisor.
 
-**Install the plugin** (once per machine, or after `git pull`):
+**Install the plugin** (once per machine):
 
 ```
-claude plugin marketplace add /path/to/this/clone
+claude plugin marketplace add SApplefeld/agent_persona
 claude plugin install agentic-plugin@agent-persona --scope user
 ```
 
-`claude plugin update` picks up later changes to this clone without reinstalling.
+`claude plugin update` re-fetches from GitHub, so the installed runtime always tracks merged `main` rather than whatever happens to be checked out in any one clone. Registering the marketplace from a local directory (`claude plugin marketplace add /path/to/this/clone`) instead makes `claude plugin update` copy that directory's working tree verbatim, uncommitted edits included - useful only for developing the plugin itself, alongside `--dev` below, never for running it.
 
 **Start the supervisor** (passive, no goal yet):
 
@@ -23,13 +23,15 @@ bin/supervise.sh /path/to/a/workdir dev bypassPermissions
 
 The workdir is where the persona store, heartbeat sidecar, and `run/` logs live; it can be this clone or any other directory. The supervisor changes into it itself, so the command above works from anywhere. It idles, holding its persona and heartbeating, until a goal arrives.
 
+By default the child is also directly reachable from Discord: it attaches to the relay in `D:\discord-channels` under a thread named `supervisor-<persona>` (stable across restarts; override with `--channel-name NAME`). Pass `--no-channel` for a scratch run with no Discord side effects.
+
 **Give it a goal**, by talking to it in plain language, no tool names needed - either as the child's first `--prompt`:
 
 ```
 bin/supervise.sh /path/to/a/workdir dev bypassPermissions --prompt "write three short essays about the sea, the mountain, and the sky"
 ```
 
-or, once it's already running passively, through whatever chat channel is attached (a reader session calling `agentic_say`, or a Discord thread once item 5 lands). The worker opens a goal tree, plans it, and replies with the one-line goal it took.
+or, once it's already running passively, by talking to its Discord thread (attached by default at launch; pass `--no-channel` to skip it). The worker opens a goal tree, plans it, and replies with the one-line goal it took.
 
 **Steer it mid-goal** by talking to it: "drop the second plan," "pause that for now," "add a task to also write a title." The worker answers each with what it changed, in the goal tree and the decision log both.
 
