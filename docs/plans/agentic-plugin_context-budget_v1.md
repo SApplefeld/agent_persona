@@ -1,6 +1,6 @@
-# agentic-plugin: context budget, v1
+# agentic-plugin: context budget, v2
 
-Status: Independent part Complete; checkpoint section BLOCKED-on-operator.
+Status: Independent part Complete; checkpoint section BLOCKED-on-operator (Path C open question resolved, 2026-09-11).
 
 ## 1. Purpose
 
@@ -53,7 +53,7 @@ Three paths, so the operator can pick:
 
 - **Path A (plugin marker file):** The plugin writes `.agentic-activation-checkpoint` (JSON: session id, timestamp) at each `activated` boundary; the operator later teaches the kit gate to read it. Ships now, no kit change, but the integration is deferred and does nothing until the operator wires the read.
 - **Path B (kit change):** The operator changes the kit so a no-goal plugin session may `open` a real compaction checkpoint. True integration, but it is a kit change the operator designs and it touches the compaction gate's safety model.
-- **Path C (existing `boundary` verb):** The plugin calls `kit-compact-checkpoint.js boundary` (no goal required, session-scoped). **Open question**: whether `boundary` actually defers auto-compaction or only marks a role edge. State that open question in the plan rather than assuming it does.
+- **Path C (existing `boundary` verb):** The plugin calls `kit-compact-checkpoint.js boundary` (no goal required, session-scoped). **Fact (read from kit source, 2026-09-11):** The `boundary` verb defers auto-compaction. It writes a role-boundary marker (`compact-role-boundary.<session>.json`) that the PreCompact gate (`kit-compact-gate.js:695-699`) reads; when the marker is valid (same session, within `ROLE_BOUNDARY_MAX_AGE_MS`, and no new turn has begun since it was written), the gate allows the next auto-compaction attempt and consumes the marker (`return decide({ verdict: 'allow', reason: 'role-boundary', consumed })`). It is not merely marking a role edge; it is actively enabling compaction at that boundary. The marker is single-shot: once the gate spends it, the boundary is done.
 
 Do not build it. The plan marks this section BLOCKED-on-operator.
 
@@ -115,3 +115,9 @@ Checkpoint section (section 5) remains BLOCKED-on-operator (Paths A/B/C). Not bu
 | D2 | Set test thresholds so all three cross within about five turns. Assert through the decision log: `context_budget_crossed` once per threshold, `context_budget_nudge` once above close-out. Latch pin: drive the estimate up past a threshold, hold it, assert the crossing logged exactly once. |
 | D3 | Name the exact fields: `SessionMessage.text`, `ToolUseSummary.name`, `JSON.stringify(ToolUseSummary.input)`, `ToolResultSummary.text`. Avoid double-counting: pick `ToolResultSummary.text` for the result, not `result`. Consider `contextBudgetReadEveryNTicks` (default a few) to reduce cost. |
 | D4 | Re-arm with hysteresis: only when the estimate falls a small margin below the threshold (say 5 percent), so an estimate hovering exactly at a threshold does not flap. |
+
+### Revision 2 (2026-09-11)
+
+| Item | Change |
+|---|---|
+| E1 | Path C open question resolved: read `kit-compact-checkpoint.js:517-566` and `kit-compact-gate.js:695-699`. The `boundary` verb defers auto-compaction by writing a role-boundary marker that the gate reads and uses to allow the next auto-compaction attempt. It is not merely marking a role edge; it is actively enabling compaction at that boundary. Stated as a fact with file and line in section 5. |
