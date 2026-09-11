@@ -161,15 +161,13 @@ switch (testName) {
     break;
   }
   case "yield": {
-    // Two-session contention: A creates and remembers; B force-claims (identity_set)
-    // and becomes owner, demoting A to passive reader. A's subsequent write is
-    // correctly denied, so the surviving on-disk store (B's) shows A's initial
-    // decisions then B's identity_set. The acceptance criterion is exit 0 + exactly
-    // one yield log line (checked by the shell script), not a 5-element sequence.
-    orderedSubsequence(
-      ["persona_create", "turn_start", "remember", "identity_set"],
-      "yield"
-    );
+    // BJ3: Two-phase test. Phase 1 (refusal): B's identity call does NOT result in
+    // identity_set (A is live, B stays a reader). Phase 2 (takeover): after A goes
+    // stale, B's identity call results in identity_set (B becomes owner).
+    // The final store should show identity_set (from phase 2), but the phase 1
+    // decisions should not. The yield log should not exist (design is refusal, not yield).
+    // Check that identity_set is present in the final store (from phase 2).
+    check2("yield: identity_set present (phase 2 takeover)", decisions.includes("identity_set"));
     break;
   }
   case "planfail": {
