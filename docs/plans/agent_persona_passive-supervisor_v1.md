@@ -35,7 +35,8 @@ Every numbered item below is a goal with its acceptance, not a task list. The wo
 
 - Branch `passive-supervisor` off `main`. One or more commits per goal, titles with an uppercase surface prefix (`SUPERVISOR:`, `PLUGIN:`, `SUITE:`, `README:`, `PLAN:`) and a sentence. Push the branch after each goal closes. Never commit to `main`.
 - Before every commit: `npx tsc --noEmit` exit 0 and `node .kit/controller-tick-test.mjs` exit 0. Before a goal closes: the live suite that covers it, `script_exit=0`.
-- Your own persona is `dev`. The live suites use `default`. Never claim `default` yourself, or the suites' pre-gate waits on you.
+- Your own persona is `dev`. The plugin starts every session as `default`, so your first tool call in any session is `agentic_identity` with persona `dev`, before `goal_create` and before any edit. The live suites use `default`. Holding `default` yourself makes every suite's pre-gate wait on you and fail.
+- The `run/` directory under this clone is the supervisor's scratch and is ignored; never commit it.
 - `D:\DeepSeekHarness\agentic-plugin` is your runtime and is not yours to edit. Edit only this clone.
 - A material design fork goes to the operator as an ask with a recommendation. Item 5's shape is one. Do not wait on trivia.
 - Documents state the current behavior, never the change story. No em dashes anywhere.
