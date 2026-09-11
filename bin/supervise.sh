@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 # bin/supervise.sh - Supervisor loop for days-long persona runs.
 #
-# Usage: bin/supervise.sh <workdir> <persona> <permission-mode> [--prompt TEXT] [--rundir DIR] [--dev]
+# Usage: bin/supervise.sh <workdir> <persona> <permission-mode> [--prompt TEXT] [--rundir DIR] [--dev] [--no-channel] [--channel-name NAME]
 #
 # By default the child loads agentic-plugin as an installed plugin (plan
 # item 6: the target runtime, installed from this repo's own marketplace
 # manifest). Pass --dev to load it from this checkout instead via
 # --plugin-dir, for working on the plugin's own code.
+#
+# By default the child is also directly reachable from Discord (plan item
+# 5: the native channel, no proxy session): --channels loads the relay
+# plugin (D:\discord-channels), CHANNEL_SESSION names the thread (stable
+# across restarts so the whole supervisor lifetime is one conversation),
+# and a fresh CHANNEL_PROCESS_TOKEN is minted per child. Pass --no-channel
+# to skip this (a scratch/proof run with no Discord side effects).
 #
 # Exit codes:
 #   0 = run complete (root_complete)
@@ -33,6 +40,8 @@ shift 3
 PROMPT=""
 RUNDIR=""
 DEV_MODE=0
+NO_CHANNEL=0
+CHANNEL_NAME=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -47,6 +56,14 @@ while [ $# -gt 0 ]; do
     --dev)
       DEV_MODE=1
       shift 1
+      ;;
+    --no-channel)
+      NO_CHANNEL=1
+      shift 1
+      ;;
+    --channel-name)
+      CHANNEL_NAME="$2"
+      shift 2
       ;;
     *)
       echo "Unknown option: $1" >&2
@@ -79,6 +96,15 @@ if [ -n "$RUNDIR" ]; then
 fi
 
 cd "$WORKDIR"
+
+# Plan item 5: one Discord thread for the supervisor's whole lifetime, not
+# one per child. CHANNEL_SESSION is the broker's binding key and must stay
+# identical across every child a restart launches; only CHANNEL_PROCESS_TOKEN
+# (minted per launch, below) changes. Default derived from the persona so two
+# supervisors on one machine don't collide on one thread name.
+if [ -z "$CHANNEL_NAME" ]; then
+  CHANNEL_NAME="supervisor-$PERSONA"
+fi
 
 # --- Defaults (plan section 6) ---
 SUPERVISOR_STOP_GRACE_MS="${supervisorStopGraceMs:-60000}"
@@ -348,8 +374,25 @@ while true; do
     PLUGIN_DIR_ARGS=(--plugin-dir "$(cygpath -w "$PLUGIN_DIR")")
   fi
 
-  coproc CHILD { claude -p --input-format stream-json --output-format stream-json --verbose \
+  # Plan item 5: attach the Discord channel directly to this child (no proxy
+  # session, no polling) unless --no-channel was given. --channels loads the
+  # relay's installed-plugin entry (confirmed live: this works with a
+  # headless `claude -p` stream-json child, same as an interactive one).
+  # CHANNEL_SESSION is the stable thread key (set above, once, from
+  # $CHANNEL_NAME); CHANNEL_PROCESS_TOKEN is minted fresh for this one child,
+  # mirroring the launch wrapper's own per-launch GUID. Mirroring is off:
+  # the thread carries operator conversation, not every turn.
+  CHANNEL_ARGS=()
+  CHANNEL_ENV=()
+  if [ "$NO_CHANNEL" -ne 1 ]; then
+    CHANNEL_ARGS=(--name "$CHANNEL_NAME" --channels "plugin:relay@sapplefeld-channels")
+    CHILD_PROCESS_TOKEN=$(node -e "console.log(require('crypto').randomUUID())")
+    CHANNEL_ENV=(CHANNEL_SESSION="$CHANNEL_NAME" CHANNEL_PROCESS_TOKEN="$CHILD_PROCESS_TOKEN" CHANNEL_SESSION_MIRROR=off)
+  fi
+
+  coproc CHILD { env "${CHANNEL_ENV[@]}" claude -p --input-format stream-json --output-format stream-json --verbose \
     "${PLUGIN_DIR_ARGS[@]}" \
+    "${CHANNEL_ARGS[@]}" \
     --settings "$(cygpath -w "$SETTINGS_FILE")" \
     --model "${MODEL:-haiku}" \
     --permission-mode "$PERMISSION_MODE" \
@@ -359,14 +402,40 @@ while true; do
   # Copy the fd number now: the array is unset when the coproc exits.
   CHILD_IN=${CHILD[1]}
   
-  # Send the first prompt (child 1 only) to the child's stdin.
+  # Send the first message to the child's stdin: the real --prompt when one
+  # was given (child 1 only), or a priming turn when the channel is attached
+  # and there is no real goal to open on (child 1's plain passive start, and
+  # every restart_passive child after it - PROMPT is always empty by then).
+  #
+  # Plan item 5 (found live, see the plan doc's Chapter 5): a headless
+  # stream-json child only registers Discord channel notifications after its
+  # first completed turn, and anything the operator sends before that turn
+  # completes is silently lost, not queued. Without a first turn, a passive
+  # child sits deaf to the channel indefinitely. Whichever message is first
+  # also carries the channel-reply instruction when the channel is attached,
+  # since the child's own conversational reply is never visible to the
+  # operator - only a real `reply` tool call is - and a real goal's own
+  # opening turn is otherwise the only turn that instruction could ride on.
+  CHANNEL_REPLY_INSTRUCTION=""
+  if [ "$NO_CHANNEL" -ne 1 ]; then
+    CHANNEL_REPLY_INSTRUCTION="You are attached to a Discord channel. When you want to say something back to the operator, call the reply tool from the channel-relay MCP server - your own conversational reply is not visible to them. "
+  fi
   if [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
     node -e "
       const fs = require('fs');
       const p = fs.readFileSync(process.argv[1], 'utf8');
-      const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:p}]}});
+      const prefix = process.argv[2] || '';
+      const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:prefix + p}]}});
       process.stdout.write(json + '\n');
-    " "$PROMPT_FILE" >&"$CHILD_IN"
+    " "$PROMPT_FILE" "$CHANNEL_REPLY_INSTRUCTION" >&"$CHILD_IN"
+  elif [ "$NO_CHANNEL" -ne 1 ]; then
+    node -e "
+      const prefix = process.argv[1] || '';
+      const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:
+        prefix + 'You are the passive supervisor, waiting for a goal or a steering message from the operator. Reply now with one short line acknowledging you are ready, then wait.'
+      }]}});
+      process.stdout.write(json + '\n');
+    " "$CHANNEL_REPLY_INSTRUCTION" >&"$CHILD_IN"
   fi
   PROMPT=""
 
