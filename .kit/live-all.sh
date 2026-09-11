@@ -31,8 +31,17 @@ else
 fi
 
 # --- Setup ---
-mkdir -p "$RUN_DIR"
+# BP2: check for an existing lock before creating a run directory
 GLOBAL_RUNNING="$PLUGIN_DIR/.kit/RUNNING"
+if [ -f "$GLOBAL_RUNNING" ]; then
+  echo "live-all.sh: .kit/RUNNING exists:"
+  cat "$GLOBAL_RUNNING"
+  echo "live-all.sh: refusing to start (another gate may be running, or a previous run was killed)."
+  echo "Recovery: confirm no claude child with --plugin-dir is running, then rm .kit/RUNNING"
+  exit 8
+fi
+
+mkdir -p "$RUN_DIR"
 touch "$GLOBAL_RUNNING"
 echo "DeepSeekHarness live-all.sh $STAMP" > "$GLOBAL_RUNNING"
 
@@ -78,8 +87,18 @@ run_suite() {
   start_ts="$(date -u +%FT%TZ)"
 
   # V4: pre-gate for every suite (not just the persona suites)
+  # BP1: capture pre-gate output and record failures in the summary
   echo "live-all: pre-gate for $suite..."
-  wait_persona_free "$GLOBAL_STORE" 120 || { echo "FAIL: pre-gate for $suite"; return 1; }
+  local pregate_log="$RUN_DIR/$suite.pregate.log"
+  if ! wait_persona_free "$GLOBAL_STORE" 120 > "$pregate_log" 2>&1; then
+    local end_ts
+    end_ts="$(date -u +%FT%TZ)"
+    local last_line
+    last_line=$(tail -1 "$pregate_log" 2>/dev/null || echo "pre-gate FAIL")
+    echo "$suite script_exit=1 started=$start_ts ended=$end_ts exitfile=[pre-gate] assert=[pre-gate FAIL: $last_line]" >> "$SUMMARY"
+    echo "FAIL: pre-gate for $suite"
+    return 1
+  fi
 
   # Run the suite
   local stdout_log="$RUN_DIR/$suite.stdout.log"

@@ -289,6 +289,8 @@ The operator has not yet ruled on these options; the defaults are in force.
 - `.kit/controller-tick-test.mjs` : S4 (peer doorbell), S9 (cost cap ask opener)
 - `.kit/assert-decisions.js` : decision log assertions (ask lifecycle, reply check)
 
+**Runner lock:** `live-all.sh` writes `.kit/RUNNING` at start and refuses to start if it already exists (exit 8). After a killed gate, confirm no `claude` child with `--plugin-dir` is running, then `rm .kit/RUNNING`.
+
 ## Limitations
 
 - **Latency**: goal scoring (1 classify) + memory curation (1 classify + optional 1 complete) + 2 file reads + 1 write per turn end. Controller tick: 1 classify + optional 1 complete per tick. ~1.5–2s on Haiku each.
