@@ -374,8 +374,11 @@ switch (testName) {
     // BG2: require record id to start with default-<reader session id>-
     // The reader session id is passed as the 6th arg (readerSid variable)
     if (askId && recordId) {
-      // BG2: validate record id format
-      if (readerSid) {
+      // BH3: FAIL if readerSid is missing or empty
+      if (!readerSid) {
+        check2("operator: readerSid is missing or empty; cannot validate record id prefix", false);
+      } else {
+        // BG2: validate record id format
         const expectedPrefix = `default-${readerSid}-`;
         const recordPrefix = recordId.split(":").pop() || "";
         check2("operator: record id starts with default-<reader-sid>-", recordPrefix.startsWith(expectedPrefix));

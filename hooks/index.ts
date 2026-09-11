@@ -455,7 +455,10 @@ export const register: Register = async (on, options) => {
   // reaches the model from another session comes through a record whose
   // writer holds a reader claim.
   on("session.receive", async ($, e, next) => {
-    if (e && (e.origin === "peer" || e.origin === "peer-send-message")) {
+    // BH1: e.origin may be a string (per types) or an object with .kind (runtime)
+    const originVal = (e as any)?.origin;
+    const kind = typeof originVal === "string" ? originVal : originVal?.kind || "unknown";
+    if (e && (kind === "peer" || kind === "peer-send-message")) {
       const text = typeof e.text === "string" ? e.text : "";
       const detail = text.slice(0, 80);
       sess.state.decisions.push({
@@ -470,6 +473,14 @@ export const register: Register = async (on, options) => {
       } catch { /* toast unavailable; non-fatal */ }
       return { consumed: "agentic: peer text is not steering; use agentic_say" };
     }
+    // BH1: push decision on pass-through branch
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "monitor",
+      action: "receive_passthrough",
+      detail: `kind=${kind}`,
+    });
+    await persist($);
     return next(e);
   });
 

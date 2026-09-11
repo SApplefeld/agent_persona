@@ -1692,7 +1692,8 @@ async function caseS4_peer_consumed(clock) {
     return { passed: true };
   };
 
-  const e = { origin: "peer", text: "do this now" };
+  // BH1: engine passes origin as an object with .kind
+  const e = { origin: { kind: "peer" }, text: "do this now" };
   const result = await hnd(h.fake, e, next);
 
   check("S4 peer consumed: next was NOT called", !nextCalled);
@@ -1724,7 +1725,8 @@ async function caseS4_peer_send_message_consumed(clock) {
     return { passed: true };
   };
 
-  const e = { origin: "peer-send-message", text: "stop working" };
+  // BH1: engine passes origin as an object with .kind
+  const e = { origin: { kind: "peer-send-message" }, text: "stop working" };
   const result = await hnd(h.fake, e, next);
 
   check("S4 ps-m consumed: next was NOT called", !nextCalled);
@@ -1749,10 +1751,11 @@ async function caseS4_other_origin_passes(clock) {
   const hnd = h.handlers["session.receive"];
   check("S4 other origin: session.receive handler exists", typeof hnd === "function");
 
-  // Test origin: "bridge"
+  // BH1: engine passes origin as an object with .kind
+  // Test origin: { kind: "bridge" }
   let nextCalled1 = false;
   let nextArg1 = null;
-  const e1 = { origin: "bridge", text: "bridge message" };
+  const e1 = { origin: { kind: "bridge" }, text: "bridge message" };
   const result1 = await hnd(h.fake, e1, (e) => {
     nextCalled1 = true;
     nextArg1 = e;
@@ -1763,10 +1766,10 @@ async function caseS4_other_origin_passes(clock) {
   check("S4 other origin: bridge - next received e unchanged", nextArg1 === e1);
   check("S4 other origin: bridge - result has NO consumed", !result1 || result1.consumed === undefined);
 
-  // Test origin: "task-notification"
+  // Test origin: { kind: "task-notification" }
   let nextCalled2 = false;
   let nextArg2 = null;
-  const e2 = { origin: "task-notification", text: "task done" };
+  const e2 = { origin: { kind: "task-notification" }, text: "task done" };
   const result2 = await hnd(h.fake, e2, (e) => {
     nextCalled2 = true;
     nextArg2 = e;
@@ -1777,9 +1780,30 @@ async function caseS4_other_origin_passes(clock) {
   check("S4 other origin: task-notification - next received e unchanged", nextArg2 === e2);
   check("S4 other origin: task-notification - result has NO consumed", !result2 || result2.consumed === undefined);
 
+  // BH1: extra control with bare string (should be consumed as peer)
+  let nextCalled3 = false;
+  let nextArg3 = null;
+  const e3 = { origin: "peer", text: "bare string peer" };
+  const result3 = await hnd(h.fake, e3, (e) => {
+    nextCalled3 = true;
+    nextArg3 = e;
+    return { bare: true };
+  });
+
+  check("S4 other origin: bare string peer - next was NOT called", !nextCalled3);
+  check("S4 other origin: bare string peer - result has consumed", result3 && result3.consumed !== undefined);
+  check("S4 other origin: bare string peer - consumed message mentions agentic_say", result3.consumed.includes("agentic_say"));
+
   const state = getState(h);
   const peerDecisions = (state.decisions || []).filter(d => d.action === "peer_consumed");
-  check("S4 other origin: no peer_consumed decisions", peerDecisions.length === 0);
+  check("S4 other origin: 1 peer_consumed decision (bare string peer)", peerDecisions.length === 1);
+  check("S4 other origin: peer_consumed detail contains bare string peer text", peerDecisions.length === 1 && peerDecisions[0].detail.includes("bare string peer"));
+  
+  // BH1: verify receive_passthrough decisions were pushed for non-peer origins
+  const passthroughDecisions = (state.decisions || []).filter(d => d.action === "receive_passthrough");
+  check("S4 other origin: 2 receive_passthrough decisions (bridge, task-notification)", passthroughDecisions.length === 2);
+  check("S4 other origin: first passthrough detail has kind=bridge", passthroughDecisions.length >= 1 && passthroughDecisions[0].detail === "kind=bridge");
+  check("S4 other origin: second passthrough detail has kind=task-notification", passthroughDecisions.length >= 2 && passthroughDecisions[1].detail === "kind=task-notification");
 }
 
 // S5: BC3 - owner claims commons at start
