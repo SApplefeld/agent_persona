@@ -248,12 +248,12 @@ All records live in the global store (machine-wide, one store per plugin). Key f
 
 | Key format | Type | Description |
 |---|---|---|
-| `inbox:<persona>:<record-id>` | `inbox` | An operator message from a reader to an owner |
-| `reply:<persona>:<record-id>` | `reply` | The owner's reply to an inbox record |
-| `ask:<persona>:<record-id>` | `ask` | A question from the owner to a reader |
-| `reader:<persona>:<session-id>` | `reader` | A reader claim on a persona |
+| `inbox:<persona>:<writer session id>:<seq>` | `inbox` | An operator message from a reader to an owner |
+| `reply:<persona>:<record id>` | `reply` | The owner's reply to an inbox record |
+| `ask:<persona>:<ask id>` | `ask` | A question from the owner to a reader |
+| `reader:<persona>` | `reader` | A reader claim on a persona (no session id in the key) |
 
-**Record-id format:** `default-<full-uuid>-<n>` where `<n>` is a per-persona sequence number (1, 2, 3, ...).
+**Record-id format:** `ask-<node id>-<ms>` where `<node id>` is the persona's node id and `<ms>` is a millisecond timestamp.
 
 **TTL:** 24 hours, swept on the cost-summary cadence (every `costSummaryEveryNTicks` ticks). Only the owner sweeps records; readers cannot delete records they do not own.
 
@@ -267,10 +267,10 @@ Text reaches the model **only** through `$.prompt.submit` from a record whose wr
 
 ### Ask wait
 
-When the owner opens an ask (`ask-operator` decision), it sets `pendingAskId` and waits indefinitely. While `pendingAskId` is set:
+When the owner opens an ask (`ask_opened` decision), it sets `pendingAskId` and waits indefinitely. While `pendingAskId` is set:
 - Nudges are skipped (the controller does not nudge while waiting for an answer)
 - Classify is skipped (the controller does not spend a model call classifying while waiting)
-- The cap paths (cost cap, error streak) **pause** the leaf rather than block it (see BG1 in plan v15)
+- The nudge cap, the cost cap and the error streak **pause** the leaf rather than block it (see BG1 in plan v15)
 
 When the reader answers the ask, the owner's controller is reactivated (`reactivated (answer to ask)`).
 
@@ -278,8 +278,8 @@ When the reader answers the ask, the owner's controller is reactivated (`reactiv
 
 Two options are defined in the plan (section 6, item 6) with defaults in force:
 
-1. **Auto-claim reader on session start:** When a session starts with `agentic_identity` and the persona is already claimed by a live owner, the reader is auto-claimed. Default: **on** (the reader is claimed automatically).
-2. **Owner can message itself:** Whether the owner can use `agentic_say` to message itself. Default: **off** (refused; see refusal rules above).
+1. **Ask wait default:** Whether the owner's ask waits indefinitely for a reply or times out. Default: **indefinite** (`askOperatorWaitMs` unset, `hooks/index.ts:118`).
+2. **Peer text:** Whether peer text is consumed by the controller or passed through with a `[PEER]` prefix. Default: **consumed** (the controller reads peer text and does not pass it through).
 
 The operator has not yet ruled on these options; the defaults are in force.
 
