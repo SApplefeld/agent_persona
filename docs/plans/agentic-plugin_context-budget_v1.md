@@ -1,6 +1,6 @@
 # agentic-plugin: context budget, v2
 
-Status: Independent part Complete; checkpoint section BLOCKED-on-operator (Path C open question resolved, 2026-09-11).
+Status: Independent part Complete; checkpoint section BLOCKED-on-operator (Path C open question resolved).
 
 ## 1. Purpose
 
@@ -53,7 +53,7 @@ Three paths, so the operator can pick:
 
 - **Path A (plugin marker file):** The plugin writes `.agentic-activation-checkpoint` (JSON: session id, timestamp) at each `activated` boundary; the operator later teaches the kit gate to read it. Ships now, no kit change, but the integration is deferred and does nothing until the operator wires the read.
 - **Path B (kit change):** The operator changes the kit so a no-goal plugin session may `open` a real compaction checkpoint. True integration, but it is a kit change the operator designs and it touches the compaction gate's safety model.
-- **Path C (existing `boundary` verb):** The plugin calls `kit-compact-checkpoint.js boundary` (no goal required, session-scoped). **Fact (read from kit source, 2026-09-11):** The `boundary` verb defers auto-compaction. It writes a role-boundary marker (`compact-role-boundary.<session>.json`) that the PreCompact gate (`kit-compact-gate.js:695-699`) reads; when the marker is valid (same session, within `ROLE_BOUNDARY_MAX_AGE_MS`, and no new turn has begun since it was written), the gate allows the next auto-compaction attempt and consumes the marker (`return decide({ verdict: 'allow', reason: 'role-boundary', consumed })`). It is not merely marking a role edge; it is actively enabling compaction at that boundary. The marker is single-shot: once the gate spends it, the boundary is done.
+- **Path C (existing `boundary` verb):** The plugin calls `kit-compact-checkpoint.js boundary` (no goal required, session-scoped). **Fact (read from kit source):** The `boundary` verb defers auto-compaction. It writes a role-boundary marker (`compact-role-boundary.<session>.json`) that the PreCompact gate (`kit-compact-gate.js:695-699`) reads; when the marker is valid (same session, within `ROLE_BOUNDARY_MAX_AGE_MS`, and no new turn has begun since it was written), the gate allows the next auto-compaction attempt and consumes the marker (`return decide({ verdict: 'allow', reason: 'role-boundary', consumed })`). It is not merely marking a role edge; it is actively enabling compaction at that boundary. The marker is single-shot: once the gate spends it, the boundary is done. **Caveat**: `cmdBoundary` writes the marker under `process.cwd()` (`kit-compact-checkpoint.js:549`), while the gate reads it under `payload.cwd || process.cwd()` (`kit-compact-gate.js:564`); the gate's `cwd` comes from the hook input JSON, not from `process.cwd()` alone. If the harness invokes the boundary hook from a session cwd that differs from the directory where the gate later runs, the marker will not be found; the seat must invoke `cmdBoundary` from the same cwd the gate will read under (in practice, the session's working directory).
 
 Do not build it. The plan marks this section BLOCKED-on-operator.
 
