@@ -28,3 +28,4 @@ run/
 DISCUSSION.md
 DISCUSSION.archive-*.md
 .kit/relay-outbox.md
+.kit/reviewer-handoff.md
