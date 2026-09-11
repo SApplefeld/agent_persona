@@ -1395,6 +1395,9 @@ export const register: Register = async (on, options) => {
               : "") +
             historyBlock +
             `Create a plan of 0 to 7 steps to accomplish the objective.\n` +
+            (roadmapText
+              ? `When a roadmap is provided, produce exactly one plan per numbered roadmap item.\n`
+              : "") +
             `Return a JSON array. Each element: {"title": string, "objective": string, "maxRounds": number (5-20)}.\n` +
             `Return [] (empty array) if the objective and roadmap are fully met by the completed items.\n` +
             `Never repeat a completed item. A blocked item may be retried at most once with a different approach.\n` +

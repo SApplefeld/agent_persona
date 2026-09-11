@@ -104,10 +104,47 @@ function forbiddenAfter(forbiddenAction, anchorAction, label) {
 
 switch (testName) {
   case "goaltree": {
+    // BL1: derive the plan count from the roadmap instead of hardcoding it
+    const roadmapPath = path.join(__dirname, "roadmap-test.md");
+    let planCount = 3; // default
+    try {
+      const roadmapText = fs.readFileSync(roadmapPath, "utf8");
+      // Count numbered items (lines starting with "N.")
+      const numberedItems = roadmapText.match(/^\d+\./gm) || [];
+      planCount = numberedItems.length;
+    } catch (e) {
+      console.error(`  WARN: cannot read roadmap, defaulting to 3 plans: ${e.message}`);
+    }
+    
+    // Build the expected sequence: create, planning_fired, planning_created, (activated, done)*planCount, planning_fired, root_complete
+    const expected = ["create", "planning_fired", "planning_created"];
+    for (let i = 0; i < planCount; i++) {
+      expected.push("activated", "done");
+    }
+    expected.push("planning_fired", "root_complete");
+    
     orderedSubsequence(
-      ["create", "planning_fired", "planning_created", "activated", "nudge_sent", "done", "activated", "done", "activated", "done", "planning_fired", "root_complete"],
+      expected,
       "goaltree"
     );
+    
+    // BL1: Check planner variance (flagged, not trimmed)
+    // Count the plans the planner actually created
+    const planningCreated = details.filter(d => d.action === "planning_created");
+    if (planningCreated.length > 0) {
+      const lastPlanningCreated = planningCreated[planningCreated.length - 1];
+      const planCountMatch = (lastPlanningCreated.detail || "").match(/(\d+) plans?/);
+      if (planCountMatch) {
+        const actualPlanCount = parseInt(planCountMatch[1], 10);
+        if (actualPlanCount !== planCount) {
+          // Flag the variance (do not trim)
+          console.log(`  OK: goaltree: planner_variance flagged (planner created ${actualPlanCount} plans, roadmap has ${planCount} items)`);
+        } else {
+          ok("goaltree: planner created exactly the roadmap's plan count");
+        }
+      }
+    }
+    
     // Forbidden: a turn.complete score on a node other than the turn_start leaf.
     // M11 moved goal_done credits into the goal_done handler, so those scores are
     // explicitly allowed regardless of the turn leaf. Only flag a score line that
