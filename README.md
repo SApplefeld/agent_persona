@@ -2,6 +2,43 @@
 
 PIANO-esque cognitive layer on Claude Code's Function Hooks API. One plugin module, one `register(on, options)` export, no Agent SDK. The plugin needs no supervisor to run one session; `bin/supervise.sh` is the optional outer loop for runs longer than one session. Modules observe at hook boundaries and write to shared `AgentState`; the Controller : the sole actuator : runs on a clock, classifies the situation, and then (and only then) actuates through exactly three channels.
 
+## Quickstart
+
+A fresh clone, one command, a waiting supervisor.
+
+**Install the plugin** (once per machine, or after `git pull`):
+
+```
+claude plugin marketplace add /path/to/this/clone
+claude plugin install agentic-plugin@agent-persona --scope user
+```
+
+`claude plugin update` picks up later changes to this clone without reinstalling.
+
+**Start the supervisor** (passive, no goal yet):
+
+```
+bin/supervise.sh /path/to/a/workdir dev bypassPermissions
+```
+
+The workdir is where the persona store, heartbeat sidecar, and `run/` logs live; it can be this clone or any other directory. The supervisor changes into it itself, so the command above works from anywhere. It idles, holding its persona and heartbeating, until a goal arrives.
+
+**Give it a goal**, by talking to it in plain language, no tool names needed - either as the child's first `--prompt`:
+
+```
+bin/supervise.sh /path/to/a/workdir dev bypassPermissions --prompt "write three short essays about the sea, the mountain, and the sky"
+```
+
+or, once it's already running passively, through whatever chat channel is attached (a reader session calling `agentic_say`, or a Discord thread once item 5 lands). The worker opens a goal tree, plans it, and replies with the one-line goal it took.
+
+**Steer it mid-goal** by talking to it: "drop the second plan," "pause that for now," "add a task to also write a title." The worker answers each with what it changed, in the goal tree and the decision log both.
+
+**Stop it.** Two ways to end a run, and only one of them ends the supervisor: an explicit "please shut down" (which the worker turns into a `supervisor_shutdown` call) exits the whole supervisor loop cleanly. Just finishing a goal does not - the supervisor returns to passive and waits for the next one. To kill it from outside, `Ctrl-C` or `kill` the `supervise.sh` process; it stops the child via the graceful EOF path first, then TERM, then KILL if it doesn't respond.
+
+**Where the logs are.** `<workdir>/run/supervisor.log` is the supervisor's own narrative (gate checks, launches, restarts, stops). `<workdir>/run/child-N/stdout.jsonl` is child N's full stream-json transcript; `stderr.log` and `claude-debug.log` sit beside it. `<workdir>/.agentic-personas.json` and `.agentic-heartbeat.json` are the persona store and liveness sidecar.
+
+**Working on the plugin's own code** instead of just running it: pass `--dev` to `supervise.sh`, which loads this checkout directly (`--plugin-dir`) instead of the installed copy, so edits here take effect on the next launch with no reinstall.
+
 **Status: v0.11.0 : Stage 3 (supervisor).** `tsc --noEmit` clean. Supervisor (`bin/supervise.sh`) drives outer-loop runs: pre-gate (commons + heartbeat), coproc stdin with EOF stop, real exit codes, `supervisor.err` append (not truncate), `PROMPT=""` cleared after first send, `writeClaimDirect` shared across all three claim sites. 12 live tests in `.kit/` (including supervisor suite F1-F6 + F0).
 
 ## Architecture
@@ -146,6 +183,7 @@ Declared in `plugin.json` with defaults. Read as `options.<name>` in `register(o
 
 | Key | Default | Description |
 |---|---|---|
+| `persona` | `default` | Which persona this session claims at start. `bin/supervise.sh`'s second positional argument is threaded into this option; without it, every session claims `default` regardless of what's passed on the command line. |
 | `heartbeatMs` | 30000 | Heartbeat interval (ms) |
 | `staleAfterMs` | 90000 | How stale before a passive reader can claim (ms) |
 | `controllerTickMs` | 30000 | Controller tick interval (ms) |

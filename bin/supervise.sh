@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # bin/supervise.sh - Supervisor loop for days-long persona runs.
 #
-# Usage: bin/supervise.sh <workdir> <persona> <permission-mode> [--prompt TEXT] [--rundir DIR]
+# Usage: bin/supervise.sh <workdir> <persona> <permission-mode> [--prompt TEXT] [--rundir DIR] [--dev]
+#
+# By default the child loads agentic-plugin as an installed plugin (plan
+# item 6: the target runtime, installed from this repo's own marketplace
+# manifest). Pass --dev to load it from this checkout instead via
+# --plugin-dir, for working on the plugin's own code.
 #
 # Exit codes:
 #   0 = run complete (root_complete)
@@ -14,7 +19,7 @@ set -o pipefail
 
 # --- Parse arguments ---
 if [ $# -lt 3 ]; then
-  echo "Usage: bin/supervise.sh <workdir> <persona> <permission-mode> [--prompt TEXT] [--rundir DIR]" >&2
+  echo "Usage: bin/supervise.sh <workdir> <persona> <permission-mode> [--prompt TEXT] [--rundir DIR] [--dev]" >&2
   exit 1
 fi
 
@@ -27,6 +32,7 @@ shift 3
 
 PROMPT=""
 RUNDIR=""
+DEV_MODE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -37,6 +43,10 @@ while [ $# -gt 0 ]; do
     --rundir)
       RUNDIR="$2"
       shift 2
+      ;;
+    --dev)
+      DEV_MODE=1
+      shift 1
       ;;
     *)
       echo "Unknown option: $1" >&2
@@ -182,15 +192,39 @@ stop_child() {
 }
 
 # --- Helper: find the global commons store ---
+# Plan item 6: the commons store's filename is load-mode-specific -
+# "agentic-plugin_inline-<hash>.json" under --plugin-dir, and
+# "agentic-plugin_<marketplace-name>-<hash>.json" for an installed plugin
+# (confirmed live: "agentic-plugin_agent-persona-<hash>.json" for this
+# repo's own marketplace). Once both load modes have ever run on one
+# machine, both files can exist at once, and "take the first match"
+# silently picks the wrong one for whichever mode this run is in. The
+# caller's own DEV_MODE (whether --dev/--plugin-dir was given) says which
+# glob is actually correct here, so filter on it rather than guess.
+# Usage: find_global_store <dev_mode: 0|1>
 find_global_store() {
+  local dev_mode="${1:-0}"
   local f
   if [ -d "$HOME/.claude/plugins/store" ]; then
-    for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
-      if [ -f "$f" ]; then
-        echo "$f"
-        return 0
-      fi
-    done
+    if [ "$dev_mode" -eq 1 ]; then
+      for f in "$HOME/.claude/plugins/store"/agentic-plugin_inline-*.json; do
+        if [ -f "$f" ]; then
+          echo "$f"
+          return 0
+        fi
+      done
+    else
+      # Installed mode: any agentic-plugin_*.json that is NOT an inline
+      # (dev-tree) store.
+      for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
+        if [ -f "$f" ]; then
+          case "$(basename "$f")" in
+            agentic-plugin_inline-*) continue ;;
+            *) echo "$f"; return 0 ;;
+          esac
+        fi
+      done
+    fi
   fi
   echo ""
   return 0
@@ -271,7 +305,7 @@ while true; do
   rm -f "$EXIT_MARKER"
 
   # --- D3: Pre-launch gate (AD2: check both commons AND heartbeat) ---
-  GLOBAL_STORE=$(find_global_store)
+  GLOBAL_STORE=$(find_global_store "$DEV_MODE")
   if [ -z "$GLOBAL_STORE" ]; then
     log "GATE FAIL: no global commons store found"
     exit 2
@@ -305,9 +339,17 @@ while true; do
   # To stop the child, we close CHILD[1] (EOF), then TERM, then KILL.
   # The child reads its first prompt from the coproc pipe, stays alive with
   # the pipe open, and exits 0 when the write end closes.
-  
+
+  # Plan item 6: --plugin-dir is opt-in (--dev), loading this checkout's own
+  # code. Without it the child loads agentic-plugin as an installed plugin
+  # (claude plugin install agentic-plugin@agent-persona), the target runtime.
+  PLUGIN_DIR_ARGS=()
+  if [ "$DEV_MODE" -eq 1 ]; then
+    PLUGIN_DIR_ARGS=(--plugin-dir "$(cygpath -w "$PLUGIN_DIR")")
+  fi
+
   coproc CHILD { claude -p --input-format stream-json --output-format stream-json --verbose \
-    --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" \
+    "${PLUGIN_DIR_ARGS[@]}" \
     --settings "$(cygpath -w "$SETTINGS_FILE")" \
     --model "${MODEL:-haiku}" \
     --permission-mode "$PERMISSION_MODE" \
