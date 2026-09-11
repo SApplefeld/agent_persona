@@ -1744,18 +1744,16 @@ export const register: Register = async (on, options) => {
             });
             try { $.ui.toast(`Agentic: ${capReason}`); } catch { /* non-fatal */ }
             if (g.status === "active") {
-              // M4: nudge cap → blocked + toast + activateNext (not paused).
-              g.status = "blocked";
+              // BG1: nudge cap → paused + no activate (ask is open, tree stays put).
+              g.status = "paused";
               g.blockedReason = capReason;
               g.updatedAt = capTs;
               sess.state.decisions.push({
                 timestamp: capTs,
                 loop: "goal",
-                action: "block",
+                action: "paused_by_controller",
                 detail: `${g.id}: ${capReason}`,
               });
-              const nextId = activateNext(sess.state, g.id);
-              activate($, nextId, `${g.id} blocked (nudge cap)`);
               try { $.ui.status(""); } catch { /* non-fatal */ }
             }
             sess.state.updatedAt = capTs;
@@ -1815,17 +1813,16 @@ export const register: Register = async (on, options) => {
               });
               try { $.ui.toast(`Agentic: ${capReason}`); } catch { /* non-fatal */ }
               if (g.status === "active") {
-                g.status = "blocked";
+                // BG1: cost cap → paused + no activate (ask is open, tree stays put).
+                g.status = "paused";
                 g.blockedReason = capReason;
                 g.updatedAt = tickTs;
                 sess.state.decisions.push({
                   timestamp: tickTs,
                   loop: "goal",
-                  action: "block",
+                  action: "paused_by_controller",
                   detail: `${g.id}: ${capReason}`,
                 });
-                const nextId = activateNext(sess.state, g.id);
-                activate($, nextId, `${g.id} blocked (cost cap)`);
                 try { $.ui.status(""); } catch { /* non-fatal */ }
               }
             }

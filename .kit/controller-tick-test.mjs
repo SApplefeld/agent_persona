@@ -231,6 +231,16 @@ async function caseD3(clock) {
   check("D3: two nudge_sent", nudgeSent === 2);
   check("D3: one cost_cap_reached", capReached === 1);
   check("D3: classify called exactly twice", cls === 2);
+
+  // BG1: the active goal should be paused, not blocked
+  const activeGoal = st.goals?.find(g => g.id === st.activeGoalId);
+  check("D3 BG1: active goal status is paused", activeGoal && activeGoal.status === "paused");
+  check("D3 BG1: no block decision", !decs.some(d => d.action === "block"));
+  check("D3 BG1: paused_by_controller decision present", decs.some(d => d.action === "paused_by_controller"));
+
+  // BG1: no other node should have changed status (no activateNext, no activate)
+  const otherGoals = st.goals?.filter(g => g.id !== st.activeGoalId) || [];
+  check("D3 BG1: no other goal activated", !otherGoals.some(g => g.status === "active"));
 }
 
 // ============================================================
@@ -2355,6 +2365,16 @@ async function caseS9_cost_cap_opens_ask(clock) {
   check("S9: ask_opened detail contains cost-cap", askOpened.some(d => (d.detail || "").includes("cost-cap")));
 
   check("S9: pendingAskId set", store.default?.pendingAskId !== undefined && store.default?.pendingAskId !== null);
+
+  // BG1: the active goal should be paused, not blocked
+  const activeGoal = store.default?.goals?.find(g => g.id === store.default?.activeGoalId);
+  check("S9 BG1: active goal status is paused", activeGoal && activeGoal.status === "paused");
+  check("S9 BG1: no block decision", !decisions.some(d => d.action === "block"));
+  check("S9 BG1: paused_by_controller decision present", decisions.some(d => d.action === "paused_by_controller"));
+
+  // BG1: no other node should have changed status (no activateNext, no activate)
+  const otherGoals = store.default?.goals?.filter(g => g.id !== store.default?.activeGoalId) || [];
+  check("S9 BG1: no other goal activated", !otherGoals.some(g => g.status === "active"));
 }
 
 // S9 control: cost cap below (no ask opened)
