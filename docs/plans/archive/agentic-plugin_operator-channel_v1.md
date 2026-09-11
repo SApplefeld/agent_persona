@@ -1,8 +1,8 @@
 # agentic-plugin : operator channel (item 7)
 
-**Status:** Complete (v16)
+**Status:** Complete (v17)
 **Created:** 2026-09-10T06:08:09Z
-**Revised:** v16, documents BJ1 to BJ5 (Round 92)
+**Revised:** v17, documents `e98c20f` (README) and `3c09f13` (SUITE)
 **Program item:** 7 (operator channel)
 **Supersedes:** N/A (new item)
 
@@ -102,7 +102,7 @@ All read at typings 2.1.267.
 
 - `$.prompt.submit({ text })` is `PromptSubmitArgs`, text plus optional attachments; the engine strips origin, turnId, wait (`claude-code.d.ts:4474`).
 - `$.session.messages()` returns `{ role, text, toolUses }` entries; the reply is the last entry with `role: "assistant"`.
-- **Entry shape (version-dependent):** At 2.1.266, `toolUses` entries are `{ id, name, input }`. At 2.1.268, they are `{ tool_use_id, tool, input }`. The budget estimator must read `tu.tool ?? tu.name ?? ""` to work on both. BJ1 (Round 92) fixed the estimator and added harness fixtures for both shapes.
+- **Entry shape (version-dependent):** At 2.1.266, `toolUses` entries are `{ id, name, input }`. At 2.1.268, they are `{ tool_use_id, tool, input }`. The budget estimator reads `tu.tool ?? tu.name ?? ""` to work on both.
 - `session.receive` fires for every delivery before it is queued, with `origin` in `bridge | task-notification | scheduled-trigger | peer | peer-send-message | projects-relay | slack-ping | unclassified` and the body as `text`. Returning `{ consumed: reason }` means nothing is queued, shown, or read by the model (`:2290-2302`). The input carries no sender id. **At runtime `e.origin` is an object with `.kind` (e.g. `{ kind: "peer" }`), not a string, even though the TypeScript type says string** (see BH1).
 - `$.store` is async, machine-global per plugin, no compare-and-swap (memory `store-api-is-fully-async`). One writer per key avoids the race.
 - There is no session-end event, so records are cleaned by age, not by exit.
@@ -187,8 +187,12 @@ The "next tick drains immediately" flag from the earlier draft is dropped: D3's 
 2. `PLUGIN:` D3 drain and D4 reply. Harness cases (green at d75aa8f): `S2 drain` (oldest record delivered, one per tick), `S2 drain in-flight` (turn in flight, nothing delivered), `S2 drain no claim` (writer without a claim, skipped), `S2 reply` (matching pair answers), `S2 reply turnid` (empty answer clears `turnId`, next matching pair answers), `S2 reply unrelated` (unrelated id writes nothing).
 3. `PLUGIN:` D5 ask waits. Built (538fe68, e1e8d63, a960e84). Seven harness cases: `S3 ask-operator` (classify returns `ask-operator`, ask record written, goal paused, `pendingAskId` set), `S3 planner no walk` (two goals, open ask, tick fires, node-002 still pending), `S3 pause-is-ask` (classifier `pause` writes ask record, goal paused, `pendingAskId` set), `S3 no-walk` (three ticks, `ask_waiting` once, classify not called), `S3 answer-react` (answer closes ask, goal reactivated, `ask_answered` in decisions), `S3 say-leaves` (a `say` without `answers` does not close the ask), `S3 timeout` (ask `expired`, `pendingAskId` cleared, node-002 activated).
 4. `PLUGIN:` D6 doorbell. Built (131f0c8). Three harness cases: `S4 peer consumed` (origin peer, consumed returned, next not called, `peer_consumed` in decisions), `S4 peer-send-message consumed` (origin peer-send-message, consumed returned), `S4 other origin passes` (control: origin bridge and task-notification, next called with e unchanged, no `peer_consumed`). Live check moved to section 5's `live-operator-test.sh`: `SendMessage` to a held-open child, the child's transcript free of peer text, a `peer_consumed` decision in its log.
-5. `SUITE:` `live-operator-test.sh`. **Built (`d078a26`, revised `00534b5`):** Three-phase operator suite with coproc shape. Phase 1: owner starts (claims `persona:default` in commons), reader claims `reader:default`, reader sends message via `agentic_say`, owner delivers and replies (`operator_turn_stamped` for record 1 precedes `operator_answered` for record 1). Phase 2: owner opens an ask via the cost-cap opener (nudge budget spent, `pendingAskId` unset, ask opened), reader answers the ask via `agentic_say` with `answers=<ask-id>` (`ask_opened` < `ask_waiting` < `ask_answered`, no unexpected `activated` between). Phase 3 (attended run pending, Reviewer's seat): owner held open for `OPERATOR_HOLD_S` seconds, Reviewer sends probe via file handshake; `peer_consumed` is the primary check. `assert-decisions.js` runs unconditional assertions; suite exit code = assertion exit code. Unattended runs at `OPERATOR_HOLD_S=0` (stamps `20260911T002238Z` and pending): PASS, all operator checks passed.
-6. README (tools, records, the `[OPERATOR]` marker, the trust boundary, the two options), full `live-all.sh`, plan Complete, `CLOSE:`.
+5. `SUITE:` `live-operator-test.sh`. **Built (`d078a26`, revised `00534b5`):** Three-phase operator suite with coproc shape. Phase 1: owner starts (claims `persona:default` in commons), reader claims `reader:default`, reader sends message via `agentic_say`, owner delivers and replies (`operator_turn_stamped` for record 1 precedes `operator_answered` for record 1). Phase 2: owner opens an ask via the cost-cap opener (nudge budget spent, `pendingAskId` unset, ask opened), reader answers the ask via `agentic_say` with `answers=<ask-id>` (`ask_opened` < `ask_waiting` < `ask_answered`, no unexpected `activated` between). Phase 3 (attended run, Reviewer's seat): owner held open for `OPERATOR_HOLD_S` seconds, Reviewer sends probe via file handshake; `peer_consumed` is the primary check. `assert-decisions.js` runs unconditional assertions; suite exit code = assertion exit code. Phase 3: pass `20260911T024918Z`, fail `20260911T021727Z` (BH1 record).
+6. README (tools, records, the `[OPERATOR]` marker, the trust boundary, the two options), full `live-all.sh`, plan Complete, `CLOSE:`. **Built (commit `e98c20f`):** README documents the operator channel (tools, records, the `[OPERATOR]` marker, the trust boundary, the two options). Full `live-all.sh` runs all twelve suites. Plan Complete (v17).
+
+### Closing Chapter
+
+Round 89 stamps: `20260911T002238Z` (unattended pass), `20260911T021727Z` (phase 3 fail), `20260911T024918Z` (phase 3 pass). Gate `20260911T041703Z`: twelve suites, every line `script_exit=0`, ENGINE 2.1.268 (Claude Code). BK2 rerun stamp: `20260911T051401Z`: three suites (yield, commons, operator), every line `script_exit=0`, ENGINE 2.1.268 (Claude Code), evidence retained in one `RUN_DIR`.
 
 ## 6. Options for the operator, Reviewer's recommendation
 
