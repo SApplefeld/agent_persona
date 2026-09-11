@@ -128,21 +128,45 @@ switch (testName) {
       "goaltree"
     );
     
-    // BL1: Check planner variance (flagged, not trimmed)
-    // Count the plans the planner actually created
+    // BM1: Check planner variance - read the decision (not just the count)
     const planningCreated = details.filter(d => d.action === "planning_created");
     if (planningCreated.length > 0) {
       const lastPlanningCreated = planningCreated[planningCreated.length - 1];
       const planCountMatch = (lastPlanningCreated.detail || "").match(/(\d+) plans?/);
       if (planCountMatch) {
         const actualPlanCount = parseInt(planCountMatch[1], 10);
+        // BM2: Read the planner_variance decision (the plugin's own statement)
+        const varianceDecision = details.find(d => d.action === "planner_variance");
         if (actualPlanCount !== planCount) {
-          // Flag the variance (do not trim)
-          console.log(`  OK: goaltree: planner_variance flagged (planner created ${actualPlanCount} plans, roadmap has ${planCount} items)`);
+          if (varianceDecision) {
+            // The plugin flagged it
+            ok("goaltree: planner_variance decision present");
+          } else {
+            // The plugin did NOT flag it - this is a defect
+            fail("goaltree: planner_variance: planner created " + actualPlanCount + " plans, roadmap has " + planCount + " items (no decision logged)");
+          }
         } else {
           ok("goaltree: planner created exactly the roadmap's plan count");
         }
       }
+    }
+    
+    // BM1: Restore nudge_sent pin - at least one nudge_sent between first activated and first done
+    const activatedIdxs = details.map((d, i) => d.action === "activated" ? i : -1).filter(i => i !== -1);
+    const doneIdxs = details.map((d, i) => d.action === "done" ? i : -1).filter(i => i !== -1);
+    if (activatedIdxs.length > 0 && doneIdxs.length > 0) {
+      const firstActivated = activatedIdxs[0];
+      const firstDone = doneIdxs[0];
+      // Find nudge_sent between first activated and first done
+      const nudgesBetween = details.slice(firstActivated + 1, firstDone).filter(d => d.action === "nudge_sent");
+      if (nudgesBetween.length >= 1) {
+        ok("goaltree: nudge_sent present between first activated and first done");
+      } else {
+        fail("goaltree: nudge_sent missing between first activated and first done");
+      }
+    } else {
+      // If there's no activated or done, the nudge_sent check is vacuously true
+      ok("goaltree: nudge_sent check skipped (no activated/done)");
     }
     
     // Forbidden: a turn.complete score on a node other than the turn_start leaf.
