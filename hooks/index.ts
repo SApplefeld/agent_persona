@@ -1240,7 +1240,6 @@ export const register: Register = async (on, options) => {
           }
           sess.state.updatedAt = now;
           await persist($);
-          return;
         }
       }
 
