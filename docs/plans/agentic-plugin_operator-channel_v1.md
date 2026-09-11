@@ -1,8 +1,8 @@
 # agentic-plugin : operator channel (item 7)
 
-**Status:** Draft (v15)
+**Status:** Complete (v16)
 **Created:** 2026-09-10T06:08:09Z
-**Revised:** v15, documents 30e6148 (PLUGIN+SUITE)
+**Revised:** v16, documents BJ1 to BJ5 (Round 92)
 **Program item:** 7 (operator channel)
 **Supersedes:** N/A (new item)
 
@@ -102,6 +102,7 @@ All read at typings 2.1.267.
 
 - `$.prompt.submit({ text })` is `PromptSubmitArgs`, text plus optional attachments; the engine strips origin, turnId, wait (`claude-code.d.ts:4474`).
 - `$.session.messages()` returns `{ role, text, toolUses }` entries; the reply is the last entry with `role: "assistant"`.
+- **Entry shape (version-dependent):** At 2.1.266, `toolUses` entries are `{ id, name, input }`. At 2.1.268, they are `{ tool_use_id, tool, input }`. The budget estimator must read `tu.tool ?? tu.name ?? ""` to work on both. BJ1 (Round 92) fixed the estimator and added harness fixtures for both shapes.
 - `session.receive` fires for every delivery before it is queued, with `origin` in `bridge | task-notification | scheduled-trigger | peer | peer-send-message | projects-relay | slack-ping | unclassified` and the body as `text`. Returning `{ consumed: reason }` means nothing is queued, shown, or read by the model (`:2290-2302`). The input carries no sender id. **At runtime `e.origin` is an object with `.kind` (e.g. `{ kind: "peer" }`), not a string, even though the TypeScript type says string** (see BH1).
 - `$.store` is async, machine-global per plugin, no compare-and-swap (memory `store-api-is-fully-async`). One writer per key avoids the race.
 - There is no session-end event, so records are cleaned by age, not by exit.
@@ -212,4 +213,9 @@ The "next tick drains immediately" flag from the earlier draft is dropped: D3's 
 | BC1 | Smoke test cut reversed (SUITE) | Fixed: restored `live-operator-test.sh` and `assert-decisions.js` from `6f23d9d` (3-phase suite with unconditional assertions). Committed at `97cd7b2` |
 | BC3 | Owner claims commons at start (PLUGIN) | Fixed in `bafeb70`: session.start owner block claims `persona:<p>` in commons at start. Closes the 30s window where a reader could claim the persona before the owner did |
 | BC4 | Suite fixes (SUITE) | Fixed: (a) launch reader when claim is LIVE; (b) three turns on one feed; (c) reader evidence retained; (d) bounded hold; (e) unconditional assertions |
+| BJ1 | Budget estimator throws on every read (PLUGIN) | Fixed in `00de813`: `hooks/index.ts:1581` now reads `tu.tool ?? tu.name ?? ""` instead of `tu.name.length`; catch block pushes `context_budget_read_failed` decision with error message. Three harness fixtures added: `caseBJ1_budget_268_shape` (2.1.268 shape), `caseBJ1_budget_266_shape` (control), `caseBJ1_budget_read_failed` (messages() throws). All pass. Gate: budget suite PASS |
+| BJ2 | Errorstreak suite expectation stale (SUITE) | Fixed in `34368f8`: `assert-decisions.js` now expects `[deny, deny, deny, error_streak, ask_opened, paused_by_controller, ask_waiting]` instead of `[deny, deny, deny, error_streak, controller_tick, paused_by_controller]`. Commit `e1e8d63` renamed the streak decision from `controller_tick` to `ask_opened`. Gate: errorstreak suite PASS |
+| BJ3 | Yield suite tests semantics the plugin no longer has (SUITE) | Fixed in `1df4571`: `live-yield-test.sh` rewritten to test refusal semantics (phase 1: B's identity call does NOT result in identity_set, A is live) and takeover semantics (phase 2: after A goes stale, B's identity call results in identity_set). `assert-decisions.js` updated to expect identity_set (from phase 2) and no yield log. Gate: yield suite PASS |
+| BJ4 | Live-all evidence retention incomplete (SUITE) | Fixed in `58bd884`: `live-all.sh` now retains the yield suite's multi-session transcripts (yield-A.*, yield-B.*, yield-B2.*) into RUN_DIR/yield/, the way the operator suite retains its transcripts. Gate: all suites PASS |
+| BJ5 | README does not match the tree (README) | Fixed in `50abd14`: (a) key table fixed to match `operator.ts:65-77` (inbox: writer session id + seq, reader: no session id, ask ids: ask-<node id>-<ms>); (b) "Section 6 options" paragraph replaced with the two real options (ask wait default: indefinite, peer text: consumed); (c) cap-paths sentence fixed to include nudge cap, ask decision name fixed to `ask_opened`. Gate: all suites PASS |
 | BC5 | Records: one NEXT, party name Reviewer (protocol) | Acknowledged: all hand-backs now use ONE `NEXT:`, party name `Reviewer`, specific failure names |
