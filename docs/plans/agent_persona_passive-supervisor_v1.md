@@ -47,4 +47,27 @@ Every numbered item below is a goal with its acceptance, not a task list. The wo
 
 ## Chapters
 
+### Chapter 1 - 2026-09-11
+Completed: 1. Passive start
+Implemented By: main session
+Metrics: review rounds 0, closed clean; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); NEEDS_CONTEXT count 0; escalations 0; consults 0
+Decisions / Surprises: Two real defects surfaced while proving this section, both now fixed or routed. (1) I initially operated this whole session under the `default` persona instead of `dev` (never called `agentic_identity` at session start), which is exactly the constraint violation the plan's own Constraints section warns against; caught it by inspecting the shared store's `activeSessionId`, switched to `dev` (epoch 3), and recreated the goal tree under it. (2) The proof run's own `commons` pre-gate correctly refused to launch a second `dev`-persona child while this session already held `dev` live in the global commons store (`~/.claude/plugins/store/agentic-plugin_*.json` is one file per machine, not scoped per workdir) - this is the pre-gate working as designed, not a defect, but it means a live proof run must use a persona name nothing else holds; re-ran with `item1proof` and it passed clean. Also confirmed empirically (matching a bullet the operator's collaborator added to Item 6 mid-run) that the child always claims persona `default` internally regardless of the CLI persona argument passed to `supervise.sh`: that argument only gates the pre-launch wait today. Fixing that is scoped to Item 6, not this section, so it is left alone here.
+Assumptions: No dedicated live suite exists yet for Item 1 (Item 7 is where Items 1, 2, and 4 each get one in `.kit/live-all.sh`); until then, this section's own "Proof:" line is satisfied by a manual timed run rather than an automated suite, per the roadmap's own division of that work into Item 7 (2026-09-11).
+Review Findings: none (trivial, self-contained shell script change; no dispatch, no review round)
+Stamps: none surfaced
+Gate: targeted - `npx tsc --noEmit` exit 0, `node .kit/controller-tick-test.mjs` exit 0 (79 assertions, 0 failures). No live suite covers this section yet (see Assumptions); the manual proof below stands in for it.
+Next: 2. A goal arrives by conversation
+Commit Model: Branch-and-PR
+
+**Proof:** ran `bin/supervise.sh` with no `--prompt`, launched from a different cwd than the workdir, persona `item1proof` (a name nothing else on the machine holds, to avoid the commons collision above). `supervisor.log`:
+```
+2026-09-11T12:35:31Z GATE PASSED: no live persona claims (commons and heartbeat both free)
+2026-09-11T12:35:31Z LAUNCH child-1 (start_ts=1789130131203, prompt=)
+2026-09-11T12:36:35Z WAITING: child-1 alive, persona held, no restart triggers (poll 6)
+... (nine more WAITING lines, one per ~65s, through poll 60) ...
+2026-09-11T12:46:20Z WAITING: child-1 alive, persona held, no restart triggers (poll 60)
+2026-09-11T12:47:14Z CLEANUP: stopping child-1 (pid 18464)
+```
+Ten minutes forty-nine seconds alive, ten WAITING lines proving liveness, zero RESTART lines, zero `LAUNCH child-2` lines. Stopped with `SIGTERM` to the supervisor process, which took the trap's `cleanup` path (the same `stop_child` the EOF/TERM/KILL path in the plan's Constraint uses); all processes exited within seconds, no KILL needed. Confirmed the scratch store and heartbeat (`.agentic-personas.json`, `.agentic-heartbeat.json`) landed under the workdir the whole run, never under the launcher's original cwd (a stale unrelated file there was untouched, mtime unchanged) - this is the cwd fix (`cd "$WORKDIR"` added in this section) doing its job.
+
 (none yet)
