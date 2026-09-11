@@ -27,3 +27,4 @@ run/
 # Reviewer channel (scratch, archived by the Reviewer)
 DISCUSSION.md
 DISCUSSION.archive-*.md
+.kit/relay-outbox.md
