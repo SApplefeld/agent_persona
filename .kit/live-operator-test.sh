@@ -113,15 +113,7 @@ echo "DeepSeekHarness $0 $(date -u +%FT%TZ)" > "$RUNNING"
 
 # --- F13a: Pre-gate ---
 # BE7: refuse to start over a live holder.
-STORE_FILE=""
-if [ -d "$HOME/.claude/plugins/store" ]; then
-  for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
-    if [ -f "$f" ]; then
-      STORE_FILE="$f"
-      break
-    fi
-  done
-fi
+STORE_FILE="$(find_global_store)"
 
 if [ -n "$STORE_FILE" ] && [ -f "$STORE_FILE" ]; then
   STORE_FILE_PRE=$(cygpath -m "$STORE_FILE" 2>/dev/null || echo "$STORE_FILE")
@@ -161,13 +153,9 @@ try {
   done
 fi
 
-# --- Find the global store file (needed for BG5 snapshot) ---
-STORE_FILE_LAUNCH=""
-if [ -d "$HOME/.claude/plugins/store" ]; then
-  for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
-    if [ -f "$f" ]; then STORE_FILE_LAUNCH="$f"; break; fi
-  done
-fi
+# --- Find the global store file (needed for BG5 snapshot and the
+# owner-claim wait below) ---
+STORE_FILE_LAUNCH="$(find_global_store)"
 
 # --- BG5: Snapshot non-commons keys before owner starts ---
 # Write to operator.store-keys-before.json for end-of-suite verification.
