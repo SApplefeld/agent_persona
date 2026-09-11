@@ -1,4 +1,4 @@
-# agentic-plugin: context budget, v2
+# agentic-plugin: context budget, v3
 
 Status: Independent part Complete; checkpoint section BLOCKED-on-operator (Path C open question resolved).
 
@@ -121,3 +121,10 @@ Checkpoint section (section 5) remains BLOCKED-on-operator (Paths A/B/C). Not bu
 | Item | Change |
 |---|---|
 | E1 | Path C open question resolved: read `kit-compact-checkpoint.js:517-566` and `kit-compact-gate.js:695-699`. The `boundary` verb defers auto-compaction by writing a role-boundary marker that the gate reads and uses to allow the next auto-compaction attempt. It is not merely marking a role edge; it is actively enabling compaction at that boundary. Stated as a fact with file and line in section 5. |
+
+### Revision 3 (2026-09-11)
+
+| Item | Change |
+|---|---|
+| F1 | Removed `2026-09-11` from the Status line and the Path C fact line (kept in Revision 2 only). |
+| F2 | Added cwd caveat to Path C: `cmdBoundary` writes the marker under `process.cwd()` (`kit-compact-checkpoint.js:549`), while the gate reads it under `payload.cwd \|\| process.cwd()` (`kit-compact-gate.js:564`); if the harness invokes the boundary hook from a session cwd that differs from the directory where the gate later runs, the marker will not be found. |
