@@ -1,0 +1,20 @@
+=== live-all.sh start 20260909T113212Z ===
+Profile: short
+Concurrency: 1 (serial)
+Suites: budget
+Global store: /c/Users/NEO/.claude/plugins/store/agentic-plugin_inline-725b37f2a6ed.json
+
+--- [1/1] budget ---
+live-all: pre-gate for budget...
+pre-gate: waiting for no live persona claim (store: /c/Users/NEO/.claude/plugins/store/agentic-plugin_inline-725b37f2a6ed.json, timeout: 120s)...
+pre-gate poll: live=0 oldest_age=0s
+pre-gate passed (no live claims)
+PASS: budget
+
+=== Summary ===
+start 2026-09-09T11:32:12Z HEAD 7d13df1 PROFILE short
+budget script_exit=0 started=2026-09-09T11:32:12Z ended=2026-09-09T11:34:23Z exitfile=[0 ASSERT: 0 ] assert=[  OK: budget: at least 3 crossings;  OK: budget: exactly 1 closeout nudge;  OK: budget: info crossed exactly once;  OK: budget: closeout crossed exactly once;  OK: budget: critical crossed exactly once;;All checks passed for budget;]
+done 2026-09-09T11:34:23Z
+
+Failures: 0
+live-all.sh: PASS (all suites green)

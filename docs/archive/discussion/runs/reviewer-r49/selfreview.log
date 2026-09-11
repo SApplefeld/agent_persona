@@ -1,0 +1,35 @@
+settings.json: {"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":10000,"nudgeIdleMs":45000,"nudgeFloorMs":5000,"gitProbeMs":30000,"heartbeatMs":30000,"staleAfterMs":90000}}}}
+pre-gate: waiting for no live persona claim (store: /c/Users/NEO/.claude/plugins/store/agentic-plugin_inline-725b37f2a6ed.json, timeout: 120s)...
+pre-gate poll: live=0 oldest_age=0s
+pre-gate passed (no live claims)
+feed: waiting for error_streak...
+feed: waiting for reactive self-review...
+feed: waiting for lesson_inject...
+claude exit: 0
+LOADER: clean (no 'failed to load')
+F0: PASS (no yield decision - owner held the persona)
+F1: PASS (error_streak decision found, streak reached >= 3)
+F2: PASS (reactive self-review decision found)
+F3: PASS (self-review lesson with provenance, text: Verify tool constraints before activating goals. Bash was denied by root constra)
+F4: PASS (lesson_inject decision found)
+F5: PASS (selfReview.count=1)
+F6: PASS (selfReview.lastAt=1788951587240, review was executed)
+
+--- decisions log (last 15 lines) ---
+10:59:27 goal | score | plan-mttzkgu3-hsdc Round 1: off-goal-by-instruction
+10:59:33 monitor | turn_start | Turn 3 leaf plan-mttzkgu3-hsdc
+10:59:35 goal | deny | root-mttzkc79: Bash denied by root constraint
+10:59:37 goal | score | plan-mttzkgu3-hsdc Round 2: off-goal-by-instruction
+10:59:42 monitor | turn_start | Turn 4 leaf plan-mttzkgu3-hsdc
+10:59:44 goal | deny | root-mttzkc79: Bash denied by root constraint
+10:59:45 goal | score | plan-mttzkgu3-hsdc Round 3: off-goal-by-instruction
+10:59:47 monitor | error_streak | plan-mttzkgu3-hsdc: Error streak 3 turns; escalating
+10:59:47 monitor | controller_tick | plan-mttzkgu3-hsdc: ask-operator: Error streak 3 turns; escalating
+10:59:47 goal | paused_by_controller | plan-mttzkgu3-hsdc: Error streak 3 turns; escalating
+10:59:48 monitor | self-review | reactive: streak 3: Verify tool constraints before activating goals. Bash was denied by root constra
+10:59:51 monitor | env_inject | env_inject: errors: streak 3
+10:59:51 monitor | lesson_inject | lesson_inject: Verify tool constraints before activating goals. Bash was denied by root constra
+10:59:51 monitor | turn_start | Turn 5 leaf plan-mttzkgu3-hsdc
+10:59:52 goal | score_skipped | plan-mttzkgu3-hsdc: status paused at turn end
+
+RESULT: exit 0

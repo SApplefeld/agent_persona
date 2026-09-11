@@ -1,0 +1,218 @@
+=== live-all.sh start 20260909T130849Z ===
+Profile: short
+Concurrency: 1 (serial)
+Suites: errorstreak health gitprobe controller goaltree goaltree-stall planfail yield budget commons
+Global store: /c/Users/NEO/.claude/plugins/store/agentic-plugin_inline-725b37f2a6ed.json
+
+--- [1/10] errorstreak ---
+live-all: pre-gate for errorstreak...
+pre-gate: waiting for no live persona claim (store: /c/Users/NEO/.claude/plugins/store/agentic-plugin_inline-725b37f2a6ed.json, timeout: 120s)...
+pre-gate poll: live=0 oldest_age=0s
+pre-gate passed (no live claims)
+PASS: errorstreak
+--- [2/10] health ---
+live-all: pre-gate for health...
+pre-gate: waiting for no live persona claim (store: /c/Users/NEO/.claude/plugins/store/agentic-plugin_inline-725b37f2a6ed.json, timeout: 120s)...
+pre-gate poll: live=1 oldest_age=4s
+pre-gate poll: live=1 oldest_age=9s
+pre-gate poll: live=1 oldest_age=14s
+pre-gate poll: live=1 oldest_age=19s
+pre-gate poll: live=1 oldest_age=25s
+pre-gate poll: live=1 oldest_age=30s
+pre-gate poll: live=1 oldest_age=35s
+pre-gate poll: live=1 oldest_age=40s
+pre-gate poll: live=1 oldest_age=45s
+pre-gate poll: live=1 oldest_age=50s
+pre-gate poll: live=1 oldest_age=55s
+pre-gate poll: live=1 oldest_age=61s
+pre-gate poll: live=1 oldest_age=66s
+pre-gate poll: live=1 oldest_age=71s
+pre-gate poll: live=1 oldest_age=76s
+pre-gate poll: live=1 oldest_age=81s
+pre-gate poll: live=1 oldest_age=86s
+pre-gate poll: live=0 oldest_age=0s
+pre-gate passed (no live claims)
+PASS: health
+--- [3/10] gitprobe ---
+live-all: pre-gate for gitprobe...
+pre-gate: waiting for no live persona claim (store: /c/Users/NEO/.claude/plugins/store/agentic-plugin_inline-725b37f2a6ed.json, timeout: 120s)...
+pre-gate poll: live=1 oldest_age=26s
+pre-gate poll: live=1 oldest_age=31s
+pre-gate poll: live=1 oldest_age=36s
+pre-gate poll: live=1 oldest_age=42s
+pre-gate poll: live=1 oldest_age=47s
+pre-gate poll: live=1 oldest_age=52s
+pre-gate poll: live=1 oldest_age=57s
+pre-gate poll: live=1 oldest_age=62s
+pre-gate poll: live=1 oldest_age=67s
+pre-gate poll: live=1 oldest_age=73s
+pre-gate poll: live=1 oldest_age=78s
+pre-gate poll: live=1 oldest_age=83s
+pre-gate poll: live=1 oldest_age=88s
+pre-gate poll: live=0 oldest_age=0s
+pre-gate passed (no live claims)
+PASS: gitprobe
+--- [4/10] controller ---
+live-all: pre-gate for controller...
+pre-gate: waiting for no live persona claim (store: /c/Users/NEO/.claude/plugins/store/agentic-plugin_inline-725b37f2a6ed.json, timeout: 120s)...
+pre-gate poll: live=1 oldest_age=14s
+pre-gate poll: live=1 oldest_age=19s
+pre-gate poll: live=1 oldest_age=24s
+pre-gate poll: live=1 oldest_age=29s
+pre-gate poll: live=1 oldest_age=34s
+pre-gate poll: live=1 oldest_age=39s
+pre-gate poll: live=1 oldest_age=44s
+pre-gate poll: live=1 oldest_age=50s
+pre-gate poll: live=1 oldest_age=55s
+pre-gate poll: live=1 oldest_age=60s
+pre-gate poll: live=1 oldest_age=65s
+pre-gate poll: live=1 oldest_age=70s
+pre-gate poll: live=1 oldest_age=75s
+pre-gate poll: live=1 oldest_age=81s
+pre-gate poll: live=1 oldest_age=86s
+pre-gate poll: live=0 oldest_age=0s
+pre-gate passed (no live claims)
+PASS: controller
+--- [5/10] goaltree ---
+live-all: pre-gate for goaltree...
+pre-gate: waiting for no live persona claim (store: /c/Users/NEO/.claude/plugins/store/agentic-plugin_inline-725b37f2a6ed.json, timeout: 120s)...
+pre-gate poll: live=1 oldest_age=14s
+pre-gate poll: live=1 oldest_age=19s
+pre-gate poll: live=1 oldest_age=24s
+pre-gate poll: live=1 oldest_age=30s
+pre-gate poll: live=1 oldest_age=35s
+pre-gate poll: live=1 oldest_age=40s
+pre-gate poll: live=1 oldest_age=45s
+pre-gate poll: live=1 oldest_age=50s
+pre-gate poll: live=1 oldest_age=55s
+pre-gate poll: live=1 oldest_age=60s
+pre-gate poll: live=1 oldest_age=66s
+pre-gate poll: live=1 oldest_age=71s
+pre-gate poll: live=1 oldest_age=76s
+pre-gate poll: live=1 oldest_age=81s
+pre-gate poll: live=1 oldest_age=86s
+pre-gate poll: live=0 oldest_age=0s
+pre-gate passed (no live claims)
+PASS: goaltree
+--- [6/10] goaltree-stall ---
+live-all: pre-gate for goaltree-stall...
+pre-gate: waiting for no live persona claim (store: /c/Users/NEO/.claude/plugins/store/agentic-plugin_inline-725b37f2a6ed.json, timeout: 120s)...
+pre-gate poll: live=1 oldest_age=8s
+pre-gate poll: live=1 oldest_age=13s
+pre-gate poll: live=1 oldest_age=18s
+pre-gate poll: live=1 oldest_age=24s
+pre-gate poll: live=1 oldest_age=29s
+pre-gate poll: live=1 oldest_age=34s
+pre-gate poll: live=1 oldest_age=39s
+pre-gate poll: live=1 oldest_age=44s
+pre-gate poll: live=1 oldest_age=49s
+pre-gate poll: live=1 oldest_age=54s
+pre-gate poll: live=1 oldest_age=60s
+pre-gate poll: live=1 oldest_age=65s
+pre-gate poll: live=1 oldest_age=70s
+pre-gate poll: live=1 oldest_age=75s
+pre-gate poll: live=1 oldest_age=80s
+pre-gate poll: live=1 oldest_age=85s
+pre-gate poll: live=0 oldest_age=0s
+pre-gate passed (no live claims)
+PASS: goaltree-stall
+--- [7/10] planfail ---
+live-all: pre-gate for planfail...
+pre-gate: waiting for no live persona claim (store: /c/Users/NEO/.claude/plugins/store/agentic-plugin_inline-725b37f2a6ed.json, timeout: 120s)...
+pre-gate poll: live=1 oldest_age=8s
+pre-gate poll: live=1 oldest_age=13s
+pre-gate poll: live=1 oldest_age=18s
+pre-gate poll: live=1 oldest_age=24s
+pre-gate poll: live=1 oldest_age=29s
+pre-gate poll: live=1 oldest_age=34s
+pre-gate poll: live=1 oldest_age=39s
+pre-gate poll: live=1 oldest_age=44s
+pre-gate poll: live=1 oldest_age=49s
+pre-gate poll: live=1 oldest_age=55s
+pre-gate poll: live=1 oldest_age=60s
+pre-gate poll: live=1 oldest_age=65s
+pre-gate poll: live=1 oldest_age=70s
+pre-gate poll: live=1 oldest_age=75s
+pre-gate poll: live=1 oldest_age=80s
+pre-gate poll: live=1 oldest_age=85s
+pre-gate poll: live=0 oldest_age=0s
+pre-gate passed (no live claims)
+PASS: planfail
+--- [8/10] yield ---
+live-all: pre-gate for yield...
+pre-gate: waiting for no live persona claim (store: /c/Users/NEO/.claude/plugins/store/agentic-plugin_inline-725b37f2a6ed.json, timeout: 120s)...
+pre-gate poll: live=1 oldest_age=8s
+pre-gate poll: live=1 oldest_age=13s
+pre-gate poll: live=1 oldest_age=18s
+pre-gate poll: live=1 oldest_age=23s
+pre-gate poll: live=1 oldest_age=28s
+pre-gate poll: live=1 oldest_age=33s
+pre-gate poll: live=1 oldest_age=38s
+pre-gate poll: live=1 oldest_age=44s
+pre-gate poll: live=1 oldest_age=49s
+pre-gate poll: live=1 oldest_age=54s
+pre-gate poll: live=1 oldest_age=59s
+pre-gate poll: live=1 oldest_age=64s
+pre-gate poll: live=1 oldest_age=69s
+pre-gate poll: live=1 oldest_age=75s
+pre-gate poll: live=1 oldest_age=80s
+pre-gate poll: live=1 oldest_age=85s
+pre-gate poll: live=1 oldest_age=90s
+pre-gate poll: live=0 oldest_age=0s
+pre-gate passed (no live claims)
+PASS: yield
+--- [9/10] budget ---
+live-all: pre-gate for budget...
+pre-gate: waiting for no live persona claim (store: /c/Users/NEO/.claude/plugins/store/agentic-plugin_inline-725b37f2a6ed.json, timeout: 120s)...
+pre-gate poll: live=1 oldest_age=27s
+pre-gate poll: live=1 oldest_age=32s
+pre-gate poll: live=1 oldest_age=37s
+pre-gate poll: live=1 oldest_age=42s
+pre-gate poll: live=1 oldest_age=48s
+pre-gate poll: live=1 oldest_age=53s
+pre-gate poll: live=1 oldest_age=58s
+pre-gate poll: live=1 oldest_age=63s
+pre-gate poll: live=1 oldest_age=68s
+pre-gate poll: live=1 oldest_age=73s
+pre-gate poll: live=1 oldest_age=79s
+pre-gate poll: live=1 oldest_age=84s
+pre-gate poll: live=1 oldest_age=89s
+pre-gate poll: live=0 oldest_age=0s
+pre-gate passed (no live claims)
+PASS: budget
+--- [10/10] commons ---
+live-all: pre-gate for commons...
+pre-gate: waiting for no live persona claim (store: /c/Users/NEO/.claude/plugins/store/agentic-plugin_inline-725b37f2a6ed.json, timeout: 120s)...
+pre-gate poll: live=1 oldest_age=26s
+pre-gate poll: live=1 oldest_age=31s
+pre-gate poll: live=1 oldest_age=36s
+pre-gate poll: live=1 oldest_age=41s
+pre-gate poll: live=1 oldest_age=46s
+pre-gate poll: live=1 oldest_age=51s
+pre-gate poll: live=1 oldest_age=57s
+pre-gate poll: live=1 oldest_age=62s
+pre-gate poll: live=1 oldest_age=67s
+pre-gate poll: live=1 oldest_age=72s
+pre-gate poll: live=1 oldest_age=77s
+pre-gate poll: live=1 oldest_age=82s
+pre-gate poll: live=1 oldest_age=88s
+pre-gate poll: live=0 oldest_age=0s
+pre-gate passed (no live claims)
+PASS: commons
+
+=== Summary ===
+start 2026-09-09T13:08:50Z HEAD a8fb23f PROFILE short
+errorstreak script_exit=0 started=2026-09-09T13:08:50Z ended=2026-09-09T13:10:27Z exitfile=[0 ASSERT: 0 ] assert=[  OK: errorstreak: deny count >= 3;  OK: errorstreak: ordered deny-deny-deny-streak-tick-paused: ordered subsequence found;  OK: errorstreak: no block (ask-operator path, not blocked): no forbidden actions;;All checks passed for errorstreak;]
+health script_exit=0 started=2026-09-09T13:10:27Z ended=2026-09-09T13:12:54Z exitfile=[0 ASSERT: 0 ] assert=[  OK: health: health_red found;  OK: health: health_green found;  OK: health: activated before health_red;  OK: health: red before green;  OK: health: env_inject present;  OK: health: env_inject after health_red;;All checks passed for health;]
+gitprobe script_exit=0 started=2026-09-09T13:12:54Z ended=2026-09-09T13:16:18Z exitfile=[0 ASSERT: 0 ] assert=[  OK: gitprobe: at least 3 env_git samples;  OK: gitprobe: dirty=0 first;  OK: gitprobe: dirty=1 second;  OK: gitprobe: dirty=0 third;  OK: gitprobe: no env_git_null or env_git_error: no forbidden actions;;All checks passed for gitprobe;]
+controller script_exit=0 started=2026-09-09T13:16:18Z ended=2026-09-09T13:19:22Z exitfile=[0 ASSERT: 0 ] assert=[  OK: controller: ordered subsequence found;;All checks passed for controller;]
+goaltree script_exit=0 started=2026-09-09T13:19:23Z ended=2026-09-09T13:24:21Z exitfile=[0 ASSERT: 0 ] assert=[  OK: goaltree: ordered subsequence found;  OK: goaltree: no score on non-turn-leaf;  OK: goaltree: all plans have completedRounds >= 1;;All checks passed for goaltree;]
+goaltree-stall script_exit=0 started=2026-09-09T13:24:21Z ended=2026-09-09T13:27:25Z exitfile=[0 ASSERT: 0 ] assert=[  OK: stall: ordered subsequence found;  OK: stall: no 'planning_fired' before 'activated';  OK: stall: activated: no 'activated' after 'root_complete';  OK: stall: activate_none: no 'activate_none' after 'root_complete';;All checks passed for stall;]
+planfail script_exit=0 started=2026-09-09T13:27:25Z ended=2026-09-09T13:29:58Z exitfile=[0 ASSERT: 0 ] assert=[  OK: root exists;  OK: root is blocked;  OK: root blockedReason names planner failing;  OK: exactly 3 planning_failed;  OK: block present;  OK: no planning_failed after block;  OK: no planning_fired after block;  OK: planfail: no forbidden actions;;All checks passed for planfail;]
+yield script_exit=0 started=2026-09-09T13:29:59Z ended=2026-09-09T13:32:12Z exitfile=[A=0 B=0 ASSERT: 0 ] assert=[  OK: yield: ordered subsequence found;;All checks passed for yield;  OK: yield log has exactly 1 line;]
+budget script_exit=0 started=2026-09-09T13:32:12Z ended=2026-09-09T13:34:18Z exitfile=[0 ASSERT: 0 ] assert=[  OK: budget: at least 3 crossings;  OK: budget: exactly 1 closeout nudge;  OK: budget: info crossed exactly once;  OK: budget: closeout crossed exactly once;  OK: budget: critical crossed exactly once;;All checks passed for budget;]
+commons script_exit=0 started=2026-09-09T13:34:18Z ended=2026-09-09T13:35:53Z exitfile=[A=0 B=0 ASSERT: 0 (PASSED) ] assert=[F13a: pre-gate passed (no live claims);LOADER: clean (no 'failed to load' in either child);Found store file: /c/Users/NEO/.claude/plugins/store/agentic-plugin_inline-725b37f2a6ed.json (win: C:/Users/NEO/.claude/plugins/store/agentic-plugin_inline-725b37f2a6ed.json);F10(1): exactly one owner, one reader;claims: a009ee6d-e149-41ef-b50c-4e1855e93382 @ 1788960934972 | 95fde093-dd30-4302-bb69-657e7bf6adce @ 1788960936402;F10(2): reader 95fde093-dd30-4302-bb69-657e7bf6adce is the later claimant (loser @ 1788960936402, winner a009ee6d-e149-41ef-b50c-4e1855e93382 @ 1788960934972);F10(3): loser's write was refused;F10(3): winner's write succeeded;F10(yieldlog): no yield log file (reader path, acceptable);F10e: evidence retained in /d/DeepSeekHarness/agentic-plugin/.kit/runs/20260909T133553Z/commons;]
+done 2026-09-09T13:35:53Z
+
+Failures: 0
+live-all.sh: PASS (all suites green)

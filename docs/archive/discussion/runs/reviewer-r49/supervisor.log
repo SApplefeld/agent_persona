@@ -1,0 +1,84 @@
+pre-gate: waiting for persona 'default' free in commons AND heartbeat (timeout: 120s)...
+pre-gate poll: commons=OK heartbeat=OK
+pre-gate passed (commons and heartbeat both free)
+GATE PASSED: no live persona claims (commons and heartbeat both free)
+LAUNCH child-1 (start_ts=1788951051522, prompt=set)
+F1 PASS: supervisor launched child 1 after gate line
+F2: polling for context_budget_crossed critical in store...
+Found context_budget_crossed critical at 1788951114815
+F2 PASS: context_budget_crossed critical found in store
+RESTART: context_budget_crossed critical: at 1788951114815 > child start 1788951051522
+EXIT child-1 code=0 (eof)
+pre-gate: waiting for persona 'default' free in commons AND heartbeat (timeout: 120s)...
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+F3 PASS: child 1 exited by eof
+F4: polling for child-2 to own the persona...
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=OK heartbeat=OK
+pre-gate passed (commons and heartbeat both free)
+GATE PASSED: no live persona claims (commons and heartbeat both free)
+LAUNCH child-2 (start_ts=1788951208783, prompt=set)
+F4 PASS: child-2 owns the persona (activeSessionId=2f9e95e8-0dcf-4d00-b2c7-62b462c2906c)
+F5: polling for nudge_sent or turn_start after child-2 launch...
+F5 PASS: child-2 continues the tree (nudge_sent or turn_start found after launch)
+RESTART: context_budget_crossed critical: at 1788951262296 > child start 1788951208783
+EXIT child-2 code=0 (eof)
+pre-gate: waiting for persona 'default' free in commons AND heartbeat (timeout: 120s)...
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=OK heartbeat=OK
+pre-gate passed (commons and heartbeat both free)
+GATE PASSED: no live persona claims (commons and heartbeat both free)
+LAUNCH child-3 (start_ts=1788951364872, prompt=set)
+RESTART: context_budget_crossed critical: at 1788951418357 > child start 1788951364872
+EXIT child-3 code=0 (eof)
+pre-gate: waiting for persona 'default' free in commons AND heartbeat (timeout: 120s)...
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=FAIL heartbeat=FAIL
+pre-gate poll: commons=OK heartbeat=OK
+pre-gate passed (commons and heartbeat both free)
+GATE PASSED: no live persona claims (commons and heartbeat both free)
+LAUNCH child-4 (start_ts=1788951521364, prompt=set)
+STOP_COMPLETE: root_complete at 1788951534991 > child start 1788951521364
+EXIT child-4 code=0 (eof)
+F6 FAIL: child-3 directory exists
