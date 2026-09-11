@@ -3,6 +3,12 @@
   "version": "0.10.0",
   "description": "PIANO-esque cognitive layer: persona-keyed state, heartbeat liveness, controller with classify/actuate",
   "userConfig": {
+    "persona": {
+      "type": "string",
+      "default": "default",
+      "title": "Persona",
+      "description": "Which persona this session claims at start (e.g. 'default', 'dev'). Defaults to 'default' when unset."
+    },
     "heartbeatMs": {
       "type": "number",
       "default": 30000,

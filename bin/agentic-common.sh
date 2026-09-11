@@ -68,8 +68,17 @@ emit_settings_json() {
   if [ -n "${COST_BACKOFF_MAX_MS:-}" ]; then
     cost_opts="$cost_opts,\"costBackoffMaxMs\":$COST_BACKOFF_MAX_MS"
   fi
+  # Plan item 6: pass the persona the supervisor was given through to the
+  # child, so it claims that persona at session.start instead of always
+  # falling back to the plugin's hardcoded "default". $PERSONA is supervise.sh's
+  # own second positional argument, visible here because this function is
+  # sourced into the caller's shell rather than run in a subshell.
+  local persona_opt=""
+  if [ -n "${PERSONA:-}" ]; then
+    persona_opt=",\"persona\":\"$PERSONA\""
+  fi
   cat > "$out" <<EOF
-{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":$TICK_MS,"nudgeIdleMs":$NUDGE_IDLE_MS,"nudgeFloorMs":${NUDGE_FLOOR_MS:-5000},"gitProbeMs":$GIT_PROBE_MS,"heartbeatMs":${HEARTBEAT_MS:-30000},"staleAfterMs":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts$cost_opts}}}}
+{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":$TICK_MS,"nudgeIdleMs":$NUDGE_IDLE_MS,"nudgeFloorMs":${NUDGE_FLOOR_MS:-5000},"gitProbeMs":$GIT_PROBE_MS,"heartbeatMs":${HEARTBEAT_MS:-30000},"staleAfterMs":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts$cost_opts$persona_opt}}}}
 EOF
 }
 
