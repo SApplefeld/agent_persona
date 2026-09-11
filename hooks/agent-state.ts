@@ -57,6 +57,9 @@ export interface GoalNode {
   createdAt: number;
   updatedAt: number;
   blockedReason?: string;
+  sortKey?: number; // plan item 3: activation order key; defaults to createdAt when absent,
+                     // so goal_edit's reprioritize can move a pending plan without lying
+                     // about when it was actually created.
 }
 
 export interface EnvErrors {
@@ -484,6 +487,10 @@ export function completeLeaf(state: AgentState, id: string, note: string): void 
 export function activateNext(state: AgentState, completedId?: string): string | null {
   const hasChildren = (id: string): boolean =>
     state.goals.some((g) => g.parentId === id);
+  // Plan item 3 (reprioritize): sortKey overrides createdAt for activation
+  // order when set; absent sortKey falls back to createdAt, so an untouched
+  // node's order is unaffected.
+  const orderKey = (g: GoalNode): number => g.sortKey ?? g.createdAt;
 
   const activate = (g: GoalNode): string => {
     g.status = "active";
@@ -503,7 +510,7 @@ export function activateNext(state: AgentState, completedId?: string): string | 
             g.status === "pending" &&
             !hasChildren(g.id)
         )
-        .sort((a, b) => a.createdAt - b.createdAt);
+        .sort((a, b) => orderKey(a) - orderKey(b));
       if (siblings.length > 0) {
         return activate(siblings[0]);
       }
@@ -516,7 +523,7 @@ export function activateNext(state: AgentState, completedId?: string): string | 
     const dfs = (parentId: string): GoalNode | null => {
       const candidates = state.goals
         .filter((g) => g.parentId === parentId && g.status === "pending")
-        .sort((a, b) => a.createdAt - b.createdAt);
+        .sort((a, b) => orderKey(a) - orderKey(b));
       for (const c of candidates) {
         if (!hasChildren(c.id)) return c;
         // Has children: descend.

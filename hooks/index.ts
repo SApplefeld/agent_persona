@@ -430,6 +430,16 @@ export const register: Register = async (on, options) => {
   const gitProbeMs = typeof cfg.gitProbeMs === "number" ? Math.min(cfg.gitProbeMs as number, 300_000) : 120_000;
   sess.options = { healthTimeoutMs, gitProbeMs };
 
+  // Plan item 6: the persona the supervisor is given is the persona the child
+  // runs as. Without this, every session starts as "default" (sess.persona's
+  // own hardcoded initial value) regardless of what was intended, so two
+  // sessions meaning to operate under different personas collide on the same
+  // shared "default" claim in commons. Read before session.start runs, since
+  // register()'s top-level statements execute before any hook fires.
+  if (typeof cfg.persona === "string" && cfg.persona.trim()) {
+    sess.persona = cfg.persona.trim();
+  }
+
   // Self-review options (S6: options arrive through --settings pluginConfigs).
   const selfReviewStreak = typeof cfg.selfReviewStreak === "number" ? (cfg.selfReviewStreak as number) : 3;
   const selfReviewEveryTurns = typeof cfg.selfReviewEveryTurns === "number" ? (cfg.selfReviewEveryTurns as number) : 20;
@@ -612,6 +622,33 @@ export const register: Register = async (on, options) => {
             description: "Optional. The id of the paused node to resume. Defaults to the most recently paused node.",
           },
         },
+      },
+    });
+
+    await $.tool.register({
+      name: "goal_edit",
+      description:
+        "Steer the goal tree in response to an operator request: drop a pending plan or task " +
+        "(marks it abandoned, it is never activated), pause an active or pending node with a " +
+        "reason (use goal_resume to continue it later), or reprioritize a pending node so it " +
+        "activates before its siblings. Owner only.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          nodeId: {
+            type: "string",
+            description: "The id of the node to change (see goal_status).",
+          },
+          action: {
+            type: "string",
+            description: '"drop" | "pause" | "reprioritize"',
+          },
+          reason: {
+            type: "string",
+            description: "Why (recorded as the node's blockedReason for pause/drop).",
+          },
+        },
+        required: ["nodeId", "action"],
       },
     });
 
@@ -2429,7 +2466,19 @@ export const register: Register = async (on, options) => {
     // holder exists, join as reader (no epoch bump, no ownership).
     if (e.tool === "mcp__agentic-plugin__agentic_identity") {
       const name = String((e as any).persona || "default").trim() || "default";
+      const previousPersona = sess.persona;
       sess.persona = name;
+      // Backlog fix (commons claim staleness): a commons session record shares
+      // one lastSeen across every claim it has ever made, so a persona claim
+      // left behind on switch reads as live for as long as this session keeps
+      // heartbeating under its NEW persona - blocking any other session from
+      // ever winning that old persona's arbitration. Release it here, the one
+      // place a session's persona actually changes.
+      if (previousPersona && previousPersona !== name) {
+        try {
+          await releaseResource(commonsStoreOf($), `persona:${previousPersona}`, sess.mySessionId);
+        } catch { /* non-fatal: commons is a coordination layer */ }
+      }
       const store: Record<string, unknown> = await $.fs.exists(storePath)
         ? (JSON.parse(await $.fs.read(storePath)) as Record<string, unknown>)
         : {};
@@ -2688,6 +2737,93 @@ export const register: Register = async (on, options) => {
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
+    // Serve goal_edit (plan item 3: drop / pause / reprioritize a node in
+    // response to an operator steer). Each branch logs a decision naming the
+    // change, so the decision log plus the resulting tree diff is the proof
+    // the operator's request actually changed something.
+    if (e.tool === "mcp__agentic-plugin__goal_edit") {
+      if (!sess.isOwner) {
+        toolErrorsThisTurn++;
+        return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+      }
+      const nodeId = String((e as any).nodeId || "").trim();
+      const action = String((e as any).action || "").trim();
+      const reason = String((e as any).reason || "").trim();
+      if (!nodeId || !["drop", "pause", "reprioritize"].includes(action)) {
+        toolErrorsThisTurn++;
+        return { deny: 'goal_edit requires a valid nodeId and action ("drop" | "pause" | "reprioritize").' };
+      }
+      const node = sess.state.goals.find((g) => g.id === nodeId);
+      if (!node) {
+        toolErrorsThisTurn++;
+        return { deny: `nodeId "${nodeId}" not found in goal tree.` };
+      }
+      if (node.parentId === null) {
+        toolErrorsThisTurn++;
+        return { deny: "Cannot edit the root; goal_create replaces the whole tree instead." };
+      }
+      const now = Date.now();
+
+      if (action === "drop") {
+        if (node.status !== "pending" && node.status !== "paused") {
+          toolErrorsThisTurn++;
+          return { deny: `Cannot drop ${nodeId}: status is "${node.status}" (only pending or paused nodes can be dropped).` };
+        }
+        node.status = "abandoned";
+        node.blockedReason = reason || "dropped by operator";
+        node.updatedAt = now;
+        sess.state.decisions.push({
+          timestamp: now,
+          loop: "goal",
+          action: "drop",
+          detail: `${nodeId}: ${node.blockedReason}`,
+        });
+      } else if (action === "pause") {
+        if (node.status !== "active" && node.status !== "pending") {
+          toolErrorsThisTurn++;
+          return { deny: `Cannot pause ${nodeId}: status is "${node.status}" (only an active or pending node can be paused).` };
+        }
+        const wasActive = node.status === "active";
+        node.status = "paused";
+        node.blockedReason = reason || "paused by operator";
+        node.updatedAt = now;
+        if (wasActive && sess.state.activeGoalId === nodeId) {
+          sess.state.activeGoalId = null;
+        }
+        sess.state.decisions.push({
+          timestamp: now,
+          loop: "goal",
+          action: "paused_by_operator",
+          detail: `${nodeId}: ${node.blockedReason}`,
+        });
+      } else {
+        // reprioritize: move nodeId to activate before its pending siblings.
+        if (node.status !== "pending") {
+          toolErrorsThisTurn++;
+          return { deny: `Cannot reprioritize ${nodeId}: status is "${node.status}" (only a pending node can be reprioritized).` };
+        }
+        const siblings = sess.state.goals.filter((g) => g.parentId === node.parentId && g.id !== nodeId);
+        const earliestKey = siblings.length > 0
+          ? Math.min(...siblings.map((g) => g.sortKey ?? g.createdAt))
+          : node.sortKey ?? node.createdAt;
+        node.sortKey = earliestKey - 1;
+        node.updatedAt = now;
+        sess.state.decisions.push({
+          timestamp: now,
+          loop: "goal",
+          action: "reprioritized",
+          detail: `${nodeId}: moved to front of ${node.parentId ?? "root"}'s pending siblings${reason ? ` (${reason})` : ""}`,
+        });
+      }
+
+      const writeOk = await persist($);
+      if (writeOk) {
+        return { result: `${action} applied to ${nodeId}. Now: [${node.status}] "${node.title}".` };
+      }
+      toolErrorsThisTurn++;
+      return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+    }
+
     // Serve goal_done (R3: use completeLeaf + activateNext).
     if (e.tool === "mcp__agentic-plugin__goal_done") {
       if (!sess.isOwner) {
@@ -2765,7 +2901,8 @@ export const register: Register = async (on, options) => {
       };
       lines.push(statusOf(root.id));
       const children = (pid: string) =>
-        sess.state.goals.filter((g) => g.parentId === pid).sort((a, b) => a.createdAt - b.createdAt);
+        sess.state.goals.filter((g) => g.parentId === pid)
+          .sort((a, b) => (a.sortKey ?? a.createdAt) - (b.sortKey ?? b.createdAt));
       const render = (pid: string, indent: string) => {
         for (const c of children(pid)) {
           lines.push(indent + statusOf(c.id));

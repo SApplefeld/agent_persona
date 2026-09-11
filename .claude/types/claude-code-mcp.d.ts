@@ -45,6 +45,15 @@ declare module 'claude-code' {
     }
     /** Show the current goal tree as formatted text. Read-only; works for passive readers. */
     "mcp__agentic-plugin__goal_status": {}
+    /** Steer the goal tree in response to an operator request: drop a pending plan or task (marks it abandoned, it is never activated), pause an active or pending node with a reason (use goal_resume to continue it later), or reprioritize a pending node so it activates before its siblings. Owner only. */
+    "mcp__agentic-plugin__goal_edit": {
+      /** The id of the node to change (see goal_status). */
+      nodeId: string
+      /** "drop" | "pause" | "reprioritize" */
+      action: string
+      /** Why (recorded as the node's blockedReason for pause/drop). */
+      reason?: string
+    }
     /** Add a memory entry to this persona's durable store. Use for facts, preferences, or lessons the worker should remember across sessions. Distill to one clear, self-contained statement. */
     "mcp__agentic-plugin__memory_add": {
       /** A short, self-contained statement (one fact, preference, or lesson). */
