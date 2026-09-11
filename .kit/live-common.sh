@@ -45,49 +45,13 @@ count_turn_starts() {  # $1 = store path; returns count of turn_start decisions
   " 2>/dev/null || echo 0
 }
 
-# V3: find the global commons store (same lookup as commons F15).
-# Single-sourced from bin/supervise.sh's own find_global_store (added
-# there for item 6's installed-vs-dev-tree switch): once both an
-# installed-plugin store and a --plugin-dir (inline) store have ever run
-# on one machine, both files coexist, and "take the first alphabetical
-# match" silently reads the wrong one. Every child this live-test harness
-# launches uses --plugin-dir (dev mode, either directly or via
-# bin/supervise.sh --dev), so this copy always passes dev_mode=1; there is
-# no installed-mode caller in .kit/*.sh. A pre-gate that reads the wrong
-# store sees live=0 while the real inline store still holds the previous
-# suite's cooling-down claim, so the next suite starts inside that claim's
-# staleness window and joins default as a reader instead of an owner -
-# confirmed live on the 20260911T183849Z run stamp (6 suites failed this
-# way; passive/goalconvo/restartpassive did not, because their claims are
-# scoped to their own persona names rather than default).
-# Echoes the store path, or empty if not found.
-find_global_store() {
-  local dev_mode="${1:-1}"
-  local f
-  if [ -d "$HOME/.claude/plugins/store" ]; then
-    if [ "$dev_mode" -eq 1 ]; then
-      for f in "$HOME/.claude/plugins/store"/agentic-plugin_inline-*.json; do
-        if [ -f "$f" ]; then
-          echo "$f"
-          return 0
-        fi
-      done
-    else
-      for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
-        if [ -f "$f" ]; then
-          case "$(basename "$f")" in
-            agentic-plugin_inline-*) continue ;;
-            *) echo "$f"; return 0 ;;
-          esac
-        fi
-      done
-    fi
-  fi
-  echo ""
-  return 0
-}
-
-# wait_persona_free is now in bin/agentic-common.sh (sourced above).
+# find_global_store is defined in bin/agentic-common.sh (sourced above),
+# shared with bin/supervise.sh so both callers filter on dev_mode the same
+# way rather than carrying their own copies (a drift between two such
+# copies is what caused 6 suites to fail on the 20260911T183849Z run
+# stamp: one copy resolved to the installed store while every child in
+# this harness runs under --plugin-dir, so the pre-gate read the wrong
+# store's claims). wait_persona_free is likewise in bin/agentic-common.sh.
 
 # N1: wait for a specific fact to appear in memory (used by yield suite to gate Session B)
 wait_for_fact() {  # $1 = fact text to wait for; $2 = store path (optional)

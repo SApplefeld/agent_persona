@@ -82,6 +82,53 @@ emit_settings_json() {
 EOF
 }
 
+# --- find_global_store ---
+# Plan item 6: the commons store's filename is load-mode-specific -
+# "agentic-plugin_inline-<hash>.json" under --plugin-dir, and
+# "agentic-plugin_<marketplace-name>-<hash>.json" for an installed plugin
+# (confirmed live: "agentic-plugin_agent-persona-<hash>.json" for this
+# repo's own marketplace). Once both load modes have ever run on one
+# machine, both files can exist at once, and "take the first match"
+# silently picks the wrong one for whichever mode this run is in. The
+# caller's own dev_mode (whether --dev/--plugin-dir was given) says which
+# glob is actually correct, so filter on it rather than guess.
+# Single-sourced here for bin/supervise.sh, .kit/live-common.sh (and every
+# live-*-test.sh through it), and any future caller - each used to carry
+# its own copy, and a live-all.sh run caught the drift live: one caller's
+# missing dev_mode filter resolved to the installed store while every
+# child in the run used --plugin-dir, so the pre-gate read the wrong
+# store's claims and let suites start inside each other's staleness window.
+# Default is dev_mode=1: every .kit/*.sh caller runs under --plugin-dir,
+# and bin/supervise.sh always passes its own DEV_MODE explicitly.
+# Usage: find_global_store [dev_mode: 0|1, default 1]
+find_global_store() {
+  local dev_mode="${1:-1}"
+  local f
+  if [ -d "$HOME/.claude/plugins/store" ]; then
+    if [ "$dev_mode" -eq 1 ]; then
+      for f in "$HOME/.claude/plugins/store"/agentic-plugin_inline-*.json; do
+        if [ -f "$f" ]; then
+          echo "$f"
+          return 0
+        fi
+      done
+    else
+      # Installed mode: any agentic-plugin_*.json that is NOT an inline
+      # (dev-tree) store.
+      for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
+        if [ -f "$f" ]; then
+          case "$(basename "$f")" in
+            agentic-plugin_inline-*) continue ;;
+            *) echo "$f"; return 0 ;;
+          esac
+        fi
+      done
+    fi
+  fi
+  echo ""
+  return 0
+}
+
 # --- wait_persona_free ---
 # T9/V3: pre-gate - wait until no live persona claim exists in the commons store.
 # Fails closed on a read error (V3). Prints live=/oldest_age= per poll (V3).

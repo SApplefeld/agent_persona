@@ -128,15 +128,13 @@ echo "DeepSeekHarness $0 $(date -u +%FT%TZ) pid=$WIN_PID" > "$RUNNING"
 emit_settings_json "settings.json"
 
 # F15: Find the REAL $.store file (needed for F13a pre-gate and assertions).
-STORE_FILE=""
-if [ -d "$HOME/.claude/plugins/store" ]; then
-  for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
-    if [ -f "$f" ]; then
-      STORE_FILE="$f"
-      break
-    fi
-  done
-fi
+# Single-sourced from live-common.sh's find_global_store rather than its
+# own first-alphabetical-match glob: once an installed-plugin store and
+# this checkout's inline (--plugin-dir) store coexist on a machine (as
+# they do here), the old inline copy could silently resolve to the wrong
+# one, which then reads as empty of live claims to F13a's pre-gate while
+# the real store still holds a fresh claim.
+STORE_FILE="$(find_global_store)"
 
 # F13a: Pre-gate: poll the commons store until persona:default has no live claim.
 # This prevents a run started within 90s of a previous one from producing
@@ -457,7 +455,7 @@ fi
 # AU4: snapshot the store and assert the reader's commons entry carries
 # a claim with resource === 'reader:default'.
 # AW2: keep both the snapshot and a control derived from it (never edit the snapshot).
-if [ "$OWNER_COUNT" -eq 1 ] && [ -n "$STORE_FILE_WIN" ] && [ -n "$READER_SESSION_WIN" ] && [ "$ASSERT_FAILED" -eq 0 ]; then
+if [ "$OWNER_COUNT" -eq 1 ] && [ -n "$STORE_FILE_WIN" ] && [ -n "${READER_SESSION_WIN:-}" ] && [ "$ASSERT_FAILED" -eq 0 ]; then
   # Convert the Windows store path back to a Git Bash path for cp
   STORE_FILE_UNIX=$(cygpath -u "$STORE_FILE_WIN")
   # Snapshot the store file into the evidence directory

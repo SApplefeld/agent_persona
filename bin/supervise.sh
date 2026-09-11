@@ -217,44 +217,9 @@ stop_child() {
   return 0
 }
 
-# --- Helper: find the global commons store ---
-# Plan item 6: the commons store's filename is load-mode-specific -
-# "agentic-plugin_inline-<hash>.json" under --plugin-dir, and
-# "agentic-plugin_<marketplace-name>-<hash>.json" for an installed plugin
-# (confirmed live: "agentic-plugin_agent-persona-<hash>.json" for this
-# repo's own marketplace). Once both load modes have ever run on one
-# machine, both files can exist at once, and "take the first match"
-# silently picks the wrong one for whichever mode this run is in. The
-# caller's own DEV_MODE (whether --dev/--plugin-dir was given) says which
-# glob is actually correct here, so filter on it rather than guess.
-# Usage: find_global_store <dev_mode: 0|1>
-find_global_store() {
-  local dev_mode="${1:-0}"
-  local f
-  if [ -d "$HOME/.claude/plugins/store" ]; then
-    if [ "$dev_mode" -eq 1 ]; then
-      for f in "$HOME/.claude/plugins/store"/agentic-plugin_inline-*.json; do
-        if [ -f "$f" ]; then
-          echo "$f"
-          return 0
-        fi
-      done
-    else
-      # Installed mode: any agentic-plugin_*.json that is NOT an inline
-      # (dev-tree) store.
-      for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
-        if [ -f "$f" ]; then
-          case "$(basename "$f")" in
-            agentic-plugin_inline-*) continue ;;
-            *) echo "$f"; return 0 ;;
-          esac
-        fi
-      done
-    fi
-  fi
-  echo ""
-  return 0
-}
+# find_global_store is defined in bin/agentic-common.sh (sourced above),
+# shared with .kit/live-common.sh so both callers filter on dev_mode the
+# same way rather than carrying their own copies.
 
 # --- Helper: read a fact from .agentic-personas.json ---
 # Usage: get_fact <workdir> <persona> <fact>

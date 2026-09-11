@@ -39,7 +39,14 @@ pass() { echo "OK: $1" | tee -a "$ASSERT_LOG"; }
 failed() { echo "FAIL: $1" | tee -a "$ASSERT_LOG"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 
 # Plain-language request, no tool named anywhere - the exact shape item 2 asks for.
-PROMPT='Please write a short haiku about the ocean to a file named ocean.txt in the working directory, then call goal_done.'
+# Item 2's own acceptance text requires "no tool named" - an earlier
+# version of this prompt named goal_done explicitly, which a haiku-tier
+# model sometimes read as license to skip goal_create entirely and just
+# do the task (reproduced twice, identically, in isolated retests: F1
+# failed, F2 and F4 passed, meaning the file got written with no goal
+# tree ever opened). Plain language only; the scorer's own on-goal/
+# complete path can close the leaf without an explicit goal_done call.
+PROMPT='Please write a short haiku about the ocean to a file named ocean.txt in the working directory.'
 
 bash "$SUPERVISE" "$WORKDIR" "goalconvo-item2-$$" acceptEdits --dev --prompt "$PROMPT" --rundir "$SUITE_DIR" --no-channel \
   > "$SUITE_DIR/supervise.stdout.log" 2>&1 &
@@ -48,7 +55,7 @@ SUPERVISE_PID=$!
 # --- F1: goal_create fired on its own (decision action "create") from a
 # plain sentence, no tool named. ---
 F1_FOUND=0
-for i in $(seq 1 40); do
+for i in $(seq 1 80); do
   if [ -f "$STORE" ] && node -e "
 const s = JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));
 const p = Object.keys(s)[0];
@@ -64,7 +71,7 @@ if [ "$F1_FOUND" -eq 1 ]; then pass "F1 goal_create fired from a plain-language 
 
 # --- F2: the plan actually ran - the file it names got written. ---
 F2_FOUND=0
-for i in $(seq 1 40); do
+for i in $(seq 1 80); do
   if [ -f "$WORKDIR/ocean.txt" ] && [ -s "$WORKDIR/ocean.txt" ]; then
     F2_FOUND=1
     break
@@ -75,7 +82,7 @@ if [ "$F2_FOUND" -eq 1 ]; then pass "F2 the requested file was actually written"
 
 # --- F3: the goal reached root_complete. ---
 F3_FOUND=0
-for i in $(seq 1 40); do
+for i in $(seq 1 80); do
   if [ -f "$STORE" ] && node -e "
 const s = JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));
 const p = Object.keys(s)[0];

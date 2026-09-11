@@ -29,14 +29,20 @@ if [ -f "$SUITE_DIR/RUNNING" ]; then
 fi
 
 # BG4: process guard - refuse to start if there are live claude -p processes
-# Predicate: claude.exe whose CommandLine contains " -p " and this plugin's --plugin-dir path
-# via PowerShell (MSYS pgrep cannot see non-MSYS processes)
+# Predicate: claude.exe whose CommandLine contains " -p " and carries THIS
+# plugin's path as the --plugin-dir flag's own value specifically - not the
+# path appearing anywhere in the command line. The bare substring match
+# used to trip on a concurrent process whose --settings (or any other
+# argument) merely happened to sit under this same repo path, refusing a
+# real run over an unrelated sibling; confirmed live (PID 6112, its own
+# --settings path, not a --plugin-dir collision).
 PLUGIN_DIR_W="$(cygpath -w "$PLUGIN_DIR")"
 CLAUDE_PROCS_PIDS=$(pwsh -Command "
+\$pattern = '--plugin-dir\s+.{0,2}' + [regex]::Escape('$PLUGIN_DIR_W')
 Get-CimInstance Win32_Process | Where-Object {
   \$_.Name -eq 'claude.exe' -and
   \$_.CommandLine -match ' -p ' -and
-  \$_.CommandLine -match [regex]::Escape('$PLUGIN_DIR_W')
+  \$_.CommandLine -match \$pattern
 } | Select-Object -ExpandProperty ProcessId
 " 2>/dev/null | grep -E '^[0-9]+$' || true)
 if [ -n "$CLAUDE_PROCS_PIDS" ]; then
@@ -333,10 +339,11 @@ echo "reader session id: ${READER_SESSION_ID:-unknown}"
 # --- BG4: self-check - verify both coprocs are visible to the process guard ---
 # After both coprocs are up, run the same predicate and require count >= 2.
 BG4_SELF_CHECK_PIDS=$(pwsh -Command "
+\$pattern = '--plugin-dir\s+.{0,2}' + [regex]::Escape('$PLUGIN_DIR_W')
 Get-CimInstance Win32_Process | Where-Object {
   \$_.Name -eq 'claude.exe' -and
   \$_.CommandLine -match ' -p ' -and
-  \$_.CommandLine -match [regex]::Escape('$PLUGIN_DIR_W')
+  \$_.CommandLine -match \$pattern
 } | Select-Object -ExpandProperty ProcessId
 " 2>/dev/null | grep -E '^[0-9]+$' || true)
 if [ -n "$BG4_SELF_CHECK_PIDS" ]; then
