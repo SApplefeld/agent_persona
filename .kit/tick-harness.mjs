@@ -191,7 +191,11 @@ function makeState(opts = {}) {
   const hasActiveLeaf = opts.hasActiveLeaf !== false;
   let goals = [];
   let activeGoalId = null;
-  if (hasActiveLeaf) {
+  // BM2: allow custom goals array (for testing planner with root-only state)
+  if (opts.goals) {
+    goals = opts.goals;
+    activeGoalId = opts.activeGoalId || null;
+  } else if (hasActiveLeaf) {
     const root = makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" });
     const plan = makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "plan", status: "active" });
     goals = [root, plan];

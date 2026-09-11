@@ -2526,6 +2526,133 @@ async function caseS7_reader_does_not_overwrite(clock) {
   check("S7 control: owner's goal preserved", ownerGoal.length >= 1);
 }
 
+// BM2: Planner variance - four plans against three-item roadmap
+async function caseBM2_planner_variance_four_plans(clock) {
+  console.log("\n=== BM2: planner_variance (four plans, three-item roadmap) ===");
+  clock.set(T0);
+
+  // BM2: Seed a root goal with a roadmap (planner will run)
+  const rootGoal = {
+    id: "root-goal",
+    parentId: null,
+    kind: "root",
+    title: "Write three haikus",
+    objective: "Write three haikus",
+    status: "active",
+    source: "controller",
+    maxRounds: 10,
+    completedRounds: 0,
+    scores: [],
+    notes: [],
+    planningRounds: 0,
+    consecutiveBlockedPlannings: 0,
+    consecutivePlanningFailures: 0,
+    planningRound: 0,
+    createdAt: T0 - 10000,
+    updatedAt: T0 - 5000,
+    roadmapPath: ".kit/roadmap-test.md",
+  };
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "bm2_planner_variance_four",
+    stateOpts: {
+      now: T0,
+      goals: [rootGoal],
+      activeGoalId: "root-goal",
+    },
+    // Stub the planner to return four plans (against a three-item roadmap)
+    completeValue: JSON.stringify([
+      { title: "Haiku 1", objective: "Write haiku 1", maxRounds: 5 },
+      { title: "Haiku 2", objective: "Write haiku 2", maxRounds: 5 },
+      { title: "Haiku 3", objective: "Write haiku 3", maxRounds: 5 },
+      { title: "Verify Syllable Counts", objective: "Verify all haikus", maxRounds: 5 },
+    ]),
+  });
+
+  // Seed the roadmap file (three numbered items) into the fake fs
+  h.fsMap.set(".kit/roadmap-test.md", "1. Write haiku 1\n2. Write haiku 2\n3. Write haiku 3\n");
+
+  // Fire a tick to trigger planning
+  await fireTick(h, T0);
+
+  // Read the state
+  const state = getState(h);
+  const decisions = state.decisions || [];
+
+  // Check: planner_variance should be present
+  const variance = decisions.find(d => d.action === "planner_variance");
+  check("BM2 four: planner_variance present", variance !== undefined);
+
+  if (variance) {
+    check("BM2 four: planner_variance detail correct", variance.detail === "planner 4, roadmap 3");
+  }
+
+  // Check: four plans should be created (flag, not trim)
+  const plans = state.goals.filter(g => g.kind === "plan");
+  check("BM2 four: four plans created", plans.length === 4);
+}
+
+// BM2: Planner variance - control (three plans, three-item roadmap)
+async function caseBM2_planner_variance_three_plans(clock) {
+  console.log("\n=== BM2: planner_variance control (three plans, three-item roadmap) ===");
+  clock.set(T0);
+
+  // BM2: Seed a root goal with a roadmap (planner will run)
+  const rootGoal = {
+    id: "root-goal",
+    parentId: null,
+    kind: "root",
+    title: "Write three haikus",
+    objective: "Write three haikus",
+    status: "active",
+    source: "controller",
+    maxRounds: 10,
+    completedRounds: 0,
+    scores: [],
+    notes: [],
+    planningRounds: 0,
+    consecutiveBlockedPlannings: 0,
+    consecutivePlanningFailures: 0,
+    planningRound: 0,
+    createdAt: T0 - 10000,
+    updatedAt: T0 - 5000,
+    roadmapPath: ".kit/roadmap-test.md",
+  };
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "bm2_planner_variance_three",
+    stateOpts: {
+      now: T0,
+      goals: [rootGoal],
+      activeGoalId: "root-goal",
+    },
+    // Stub the planner to return three plans (matching the three-item roadmap)
+    completeValue: JSON.stringify([
+      { title: "Haiku 1", objective: "Write haiku 1", maxRounds: 5 },
+      { title: "Haiku 2", objective: "Write haiku 2", maxRounds: 5 },
+      { title: "Haiku 3", objective: "Write haiku 3", maxRounds: 5 },
+    ]),
+  });
+
+  // Seed the roadmap file (three numbered items) into the fake fs
+  h.fsMap.set(".kit/roadmap-test.md", "1. Write haiku 1\n2. Write haiku 2\n3. Write haiku 3\n");
+
+  // Fire a tick to trigger planning
+  await fireTick(h, T0);
+
+  // Read the state
+  const state = getState(h);
+  const decisions = state.decisions || [];
+
+  // Check: planner_variance should NOT be present
+  const variance = decisions.find(d => d.action === "planner_variance");
+  check("BM2 three: planner_variance absent", variance === undefined);
+
+  // Check: three plans should be created
+  const plans = state.goals.filter(g => g.kind === "plan");
+  check("BM2 three: three plans created", plans.length === 3);
+}
+
 // BJ1: Budget fixture - 2.1.268 shape (tu.tool instead of tu.name)
 async function caseBJ1_budget_268_shape(clock) {
   console.log("\n=== BJ1: budget 2.1.268 shape ===");
@@ -2695,6 +2822,10 @@ async function main() {
   } finally {
     clock.restore();
   }
+
+  // BM2: Planner variance - test the planner_variance decision
+  await caseBM2_planner_variance_four_plans(clock);
+  await caseBM2_planner_variance_three_plans(clock);
 
   // BJ1: Budget fixtures - test the token estimator with different message shapes.
   await caseBJ1_budget_268_shape(clock);

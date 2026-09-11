@@ -1548,6 +1548,21 @@ export const register: Register = async (on, options) => {
               detail: `${plans.length} plans under root ${root!.id}: ${plans.map((p) => p.title.slice(0, 30)).join("; ")}`,
             });
 
+            // BM2: Check planner variance (flag, not trim)
+            if (roadmapText) {
+              // Count numbered items in the roadmap
+              const numberedItems = roadmapText.match(/^\d+\./gm) || [];
+              const roadmapCount = numberedItems.length;
+              if (plans.length !== roadmapCount) {
+                sess.state.decisions.push({
+                  timestamp: Date.now(),
+                  loop: "goal",
+                  action: "planner_variance",
+                  detail: `planner ${plans.length}, roadmap ${roadmapCount}`,
+                });
+              }
+            }
+
             // Activate the first plan.
             const firstPlan = sess.state.goals.find((g) => g.parentId === root!.id && g.status === "pending");
             if (firstPlan) {
