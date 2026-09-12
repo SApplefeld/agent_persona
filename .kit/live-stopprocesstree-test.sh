@@ -66,12 +66,23 @@ extract_fn() {
   sed -n "${start},${end}p" "$SUPERVISE" >> "$out_file"
 }
 
+# STOP_PS_SENTINEL is a global the extracted functions close over, not
+# part of any single function body - sourced from supervise.sh's own
+# assignment line rather than retyped here, so the two can't drift.
+STOP_PS_SENTINEL=$(grep '^STOP_PS_SENTINEL=' "$SUPERVISE" | head -1 | cut -d= -f2- | tr -d '"')
+if [ -z "$STOP_PS_SENTINEL" ]; then
+  echo "FAIL: could not read STOP_PS_SENTINEL's value from $SUPERVISE"
+  exit 1
+fi
+
 FN_FILE="$RUNDIR/stop-process-tree-fns.sh"
 : > "$FN_FILE"
 extract_fn "resolve_windows_pid" "$FN_FILE"
+extract_fn "run_bounded_powershell" "$FN_FILE"
 extract_fn "snapshot_process_tree" "$FN_FILE"
 extract_fn "check_snapshot_survivors" "$FN_FILE"
 extract_fn "kill_process_snapshot" "$FN_FILE"
+extract_fn "retry_stop_escalation" "$FN_FILE"
 extract_fn "stop_child" "$FN_FILE"
 # The real functions shell out to `log` and read $RUNDIR (already set,
 # above, to this test's own scratch dir - real, not stubbed, since
@@ -83,13 +94,22 @@ source "$FN_FILE"
 # renamed function upstream) must fail as an extraction problem, not
 # silently produce a no-op function that passes every check by doing
 # nothing. Check each function actually landed before trusting any of them.
-for fn in resolve_windows_pid snapshot_process_tree check_snapshot_survivors kill_process_snapshot stop_child; do
+# Reviewer Round 124 R77: this now extracts seven functions, not four or
+# five - the count has drifted upward twice since this comment was first
+# written, so it is named here rather than pinned as a literal again.
+for fn in resolve_windows_pid run_bounded_powershell snapshot_process_tree check_snapshot_survivors kill_process_snapshot retry_stop_escalation stop_child; do
   if ! declare -F "$fn" > /dev/null; then
     echo "FAIL: extraction did not define $fn - the sed range or the upstream function name has drifted"
     exit 1
   fi
 done
-pass "setup: all five functions extracted and defined"
+pass "setup: all seven functions extracted and defined"
+
+# Reviewer Round 124 R74: production runs every extracted call under
+# real shell semantics, including a pipeline whose upstream command fails
+# silently unless pipefail is set - run this test under the same
+# semantics its production callers actually use.
+set -o pipefail
 
 # --- Case: the wrapper's own exec target is killed directly by kill -9 ---
 # Confirmed shape: a bash subshell that tail-execs directly into a native
@@ -172,6 +192,36 @@ else
   else
     pass "setup: Phase-3 case's real child (winpid $REAL_CHILD_WINPID) confirmed alive before stop_child runs"
   fi
+
+  # Reviewer Round 124 R74: the prior version of this case would still
+  # pass with the CRLF fix reverted, because a `\r` landing on the ticks
+  # field (not the pid) makes the kill list valid, lets Stop-Process
+  # succeed, and only silently drops the ticks comparison downstream -
+  # the child ends up dead either way, and the test never noticed the
+  # comparison itself was broken. Assert the snapshot's own shape and a
+  # positive control (this live child reads as a survivor before the
+  # kill) so a regression here fails on its own signal, not by accident.
+  PRE_KILL_SNAPSHOT=$(snapshot_process_tree "$REAL_CHILD_WINPID")
+  SNAPSHOT_SHAPE_OK=1
+  while IFS= read -r snap_line; do
+    [ -z "$snap_line" ] && continue
+    case "$snap_line" in
+      [0-9]*,[0-9]*) : ;;
+      *) SNAPSHOT_SHAPE_OK=0 ;;
+    esac
+  done <<< "$PRE_KILL_SNAPSHOT"
+  if [ -z "$PRE_KILL_SNAPSHOT" ] || [ "$SNAPSHOT_SHAPE_OK" -ne 1 ]; then
+    failed "Phase-3 case: snapshot_process_tree's own output does not match pid,ticks per line - got: $(echo "$PRE_KILL_SNAPSHOT" | tr '\n' '|')"
+  else
+    pass "Phase-3 case: snapshot lines all match pid,ticks"
+  fi
+  PRE_KILL_SURVIVORS=$(check_snapshot_survivors "$PRE_KILL_SNAPSHOT")
+  if echo "$PRE_KILL_SURVIVORS" | grep -qx "$REAL_CHILD_WINPID"; then
+    pass "Phase-3 case: positive control - the live child reads as a survivor before any kill runs"
+  else
+    failed "Phase-3 case: positive control failed - the live child ($REAL_CHILD_WINPID) was not reported as a survivor before the kill; the instrument cannot be trusted for the assertion below"
+  fi
+
   stop_child "test-phase3"
   if [ "$STOP_PATH" = "kill" ]; then
     pass "Phase-3 case: stop_child actually escalated to Phase 3 (STOP_PATH=kill), the path this test needs to exercise"
@@ -179,8 +229,13 @@ else
     failed "Phase-3 case: stop_child never reached Phase 3 (STOP_PATH=$STOP_PATH) - the TERM-ignoring wrapper did not force escalation, this case did not reproduce"
   fi
   sleep 2
-  if [ -z "$(powershell -NoProfile -Command "Get-Process -Id $REAL_CHILD_WINPID -ErrorAction SilentlyContinue" 2>/dev/null)" ]; then
-    pass "Phase-3 case: the real child is gone after stop_child's own tree kill (the CRLF bug's exact path)"
+  # Reviewer Round 124 R74: check pid AND start time, not pid alone - a
+  # bare "is this pid gone" check cannot tell "the same process is dead"
+  # from "a different process now holds a recycled pid", which is the
+  # exact hazard R66 was fixed to guard against elsewhere in this file.
+  POST_KILL_SURVIVORS=$(check_snapshot_survivors "$PRE_KILL_SNAPSHOT")
+  if ! echo "$POST_KILL_SURVIVORS" | grep -qx "$REAL_CHILD_WINPID"; then
+    pass "Phase-3 case: the real child (matched by pid and start time) is gone after stop_child's own tree kill (the CRLF bug's exact path)"
   else
     failed "Phase-3 case: the real child SURVIVED Phase 3's tree kill - the CRLF bug or an equivalent is back"
     kill -9 "$REAL_CHILD_WINPID" 2>/dev/null

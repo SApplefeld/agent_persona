@@ -107,6 +107,19 @@ if [ -z "$CHANNEL_NAME" ]; then
 fi
 
 # --- Defaults (plan section 6) ---
+# A fixed sentinel line every PowerShell probe below writes as its own
+# last statement (Reviewer Round 124, found while fixing R72): powershell
+# -Command's exit code reflects whether the LAST statement it ran
+# succeeded, not an aggregate error count - a script whose real work ends
+# on an `if` whose condition is false (exactly what "the pid is gone,
+# checked cleanly" looks like) exits 1 with no error printed anywhere,
+# reproduced live this session. A trailing Write-Output of this sentinel
+# is a statement that always succeeds, so its presence in stdout - not
+# PowerShell's own exit code - is what a caller trusts as "the script ran
+# to completion", timed-out truncation being the one case that can never
+# produce it.
+STOP_PS_SENTINEL="___SUPERVISOR_PS_DONE___"
+
 SUPERVISOR_STOP_GRACE_MS="${supervisorStopGraceMs:-60000}"
 SUPERVISOR_MIN_RUN_MS="${supervisorMinRunMs:-120000}"
 SUPERVISOR_CRASH_LIMIT="${supervisorCrashLimit:-3}"
@@ -158,12 +171,23 @@ log() {
 # --- Trap: clean up on exit ---
 CHILD_PID=""
 CHILD_IN=""  # coproc write fd number
+LAST_STOP_SNAPSHOT=""  # set by stop_child; the process-tree snapshot its own kill acted on
 cleanup() {
   local exit_code=$?
   # Stop the child gracefully if it's still running.
   if [ -n "${CHILD_PID:-}" ] && kill -0 "$CHILD_PID" 2>/dev/null; then
     log "CLEANUP: stopping child-$CHILD_INDEX (pid $CHILD_PID)"
     stop_child "cleanup"
+    retry_stop_escalation "cleanup" $?
+  elif [ -n "$LAST_STOP_SNAPSHOT" ] && [ -n "$(check_snapshot_survivors "$LAST_STOP_SNAPSHOT" 2>/dev/null)" ]; then
+    # Reviewer Round 124 R75: the wrapper pid can be gone (an earlier
+    # stop_child call already reaped it) while its own snapshot still
+    # shows a live descendant - the exact incident shape, a dead wrapper
+    # with a surviving claude.exe. Keying this trap on the wrapper pid
+    # alone means that survivor is never revisited on this exit path; key
+    # it on the last known snapshot instead.
+    log "CLEANUP: wrapper already gone but its last known process tree still shows a survivor; force-killing it"
+    kill_process_snapshot "$LAST_STOP_SNAPSHOT"
   fi
   exit "$exit_code"
 }
@@ -196,6 +220,55 @@ resolve_windows_pid() {
     ''|*[!0-9]*) return 0 ;;  # empty or non-numeric: refuse to interpolate it anywhere
     *) echo "$winpid" ;;
   esac
+}
+
+# --- Helper: run a PowerShell -Command script under a real wall-clock bound
+# ---
+# Reviewer Round 124 R71 (Critical, reproduced): GNU `timeout` does not
+# terminate native powershell.exe on this box - `timeout 3 powershell
+# -NoProfile -Command "Start-Sleep -Seconds 12; Write-Output done"` prints
+# `done` and only then returns 124. GNU timeout signals the MSYS stub
+# process it forks; powershell.exe itself ignores that signal, and bash
+# waits for the real process regardless - so none of the four call sites
+# `timeout` previously wrapped was actually bounded, and a hung CIM query
+# still wedges stop_child (and, through the EXIT trap, the supervisor's
+# own shutdown) exactly as R53/R67 were meant to prevent.
+#
+# Launches via a tail-exec subshell instead: `( exec powershell ... )` has
+# nothing after the exec, which collapses the subshell into the native
+# process itself (confirmed, this session: `kill -9` on that subshell's
+# own pid reaches the real Windows process directly, no separate resolve
+# needed). Polls for completion in-process and force-kills on expiry,
+# returning 124 to match `timeout`'s own convention so no caller needs a
+# new status code to handle.
+# Usage: run_bounded_powershell <bound-seconds> <powershell -Command body>
+run_bounded_powershell() {
+  local bound="$1"
+  local script="$2"
+  local outfile errfile
+  outfile=$(mktemp)
+  errfile=$(mktemp)
+  ( exec powershell -NoProfile -Command "$script" >"$outfile" 2>"$errfile" ) &
+  local ps_pid=$!
+  local waited=0
+  while kill -0 "$ps_pid" 2>/dev/null && [ "$waited" -lt "$bound" ]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  local status
+  if kill -0 "$ps_pid" 2>/dev/null; then
+    kill -9 "$ps_pid" 2>/dev/null
+    wait "$ps_pid" 2>/dev/null
+    status=124
+    log "STOP: a PowerShell call exceeded its ${bound}s bound and was force-killed directly (GNU timeout cannot reach powershell.exe on this box)"
+  else
+    wait "$ps_pid"
+    status=$?
+  fi
+  cat "$outfile"
+  cat "$errfile" >> "$RUNDIR/supervisor.err"
+  rm -f "$outfile" "$errfile"
+  return "$status"
 }
 
 # --- Helper: snapshot a Windows pid's whole descendant tree, without
@@ -232,25 +305,59 @@ resolve_windows_pid() {
 # quieter failure at the per-pid liveness probe (`-ErrorAction` parsed as
 # a second statement). Stripped once, here, at the source, so nothing
 # downstream ever sees a `\r` at all.
+#
+# Reviewer Round 124 R73 (reproduced): a process whose `StartTime` is
+# unreadable (access denied, a transient race) used to emit a bare
+# `pid,` with nothing after the comma - kept on the kill list, but
+# dropped from every survivor check for failing the digit validation
+# there, so it was never confirmed dead either way. Emits the literal
+# marker `UNREADABLE` in the ticks field instead, so `check_snapshot_
+# survivors` below can treat it as an automatic, unconditional survivor
+# rather than silently discarding it.
+#
+# The pipeline's own exit status (via `pipefail`, scoped to this call
+# only) is what a caller reads to tell a timeout or PowerShell failure
+# apart from a genuinely empty tree (Reviewer Round 124 R72's ask, folded
+# in here since both share one call site).
 # Usage: snapshot_process_tree <windows-pid>
 snapshot_process_tree() {
   local winpid="$1"
   if [ -z "$winpid" ]; then
     return 0
   fi
-  timeout 30 powershell -NoProfile -Command "
-    \$visited = New-Object 'System.Collections.Generic.HashSet[int]'
-    function Get-Descendants(\$parentId) {
-      if (-not \$visited.Add(\$parentId)) { return }
-      \$children = Get-CimInstance Win32_Process -Filter \"ParentProcessId=\$parentId\" -ErrorAction SilentlyContinue
-      foreach (\$c in \$children) { \$c.ProcessId; Get-Descendants \$c.ProcessId }
-    }
-    \$ids = @($winpid) + @(Get-Descendants $winpid)
-    foreach (\$thisId in \$ids) {
-      \$proc = Get-Process -Id \$thisId -ErrorAction SilentlyContinue
-      if (\$proc) { Write-Output (\"\$thisId,\" + \$proc.StartTime.Ticks) }
-    }
-  " 2>>"$RUNDIR/supervisor.err" | tr -d '\r'
+  local raw
+  raw=$( ( set -o pipefail
+    run_bounded_powershell 30 "
+      \$visited = New-Object 'System.Collections.Generic.HashSet[int]'
+      function Get-Descendants(\$parentId) {
+        if (-not \$visited.Add(\$parentId)) { return }
+        \$children = Get-CimInstance Win32_Process -Filter \"ParentProcessId=\$parentId\" -ErrorAction SilentlyContinue
+        foreach (\$c in \$children) { \$c.ProcessId; Get-Descendants \$c.ProcessId }
+      }
+      \$ids = @($winpid) + @(Get-Descendants $winpid)
+      foreach (\$thisId in \$ids) {
+        \$proc = Get-Process -Id \$thisId -ErrorAction SilentlyContinue
+        if (\$proc) {
+          try { Write-Output (\"\$thisId,\" + \$proc.StartTime.Ticks) }
+          catch { Write-Output (\"\$thisId,UNREADABLE\") }
+        }
+      }
+      Write-Output '$STOP_PS_SENTINEL'
+    " | tr -d '\r'
+  ) )
+  if printf '%s\n' "$raw" | grep -qx "$STOP_PS_SENTINEL"; then
+    printf '%s\n' "$raw" | grep -vx "$STOP_PS_SENTINEL"
+    return 0
+  fi
+  # Reproduced live, this session: `powershell -Command`'s own exit code
+  # reflects whether its LAST statement succeeded, not an aggregate error
+  # count - a completely normal "the pid is already gone" result made a
+  # prior cut of this function's caller misread PowerShell's own exit
+  # code as a completion failure. The sentinel line above is what actually
+  # decides completion now; its absence here means the call was force-
+  # killed on the run_bounded_powershell timeout before reaching it, or
+  # genuinely crashed - either way the walk did not finish.
+  return 1
 }
 
 # --- Helper: which pids in a snapshot are still the SAME live process ---
@@ -261,29 +368,65 @@ snapshot_process_tree() {
 # right now AND whose current `StartTime.Ticks` still matches the value
 # recorded in the snapshot - a live pid with a different start time is a
 # different, unrelated process that happens to share a number.
+# Reviewer Round 124: R73 (reproduced) - a pid whose `StartTime` came back
+# `UNREADABLE` from the snapshot is reported as an unconditional survivor
+# here, never dropped, since "cannot tell" must fail closed rather than
+# open. R72 (Major) - a timed-out or failed PowerShell call previously
+# produced the same empty string a genuinely clean result does, and
+# `verify_snapshot_dead` read both as "all gone". Returns non-zero on that
+# failure and reports every pid this call meant to check as unresolved,
+# so a caller escalates on silence it cannot trust rather than on nothing.
 # Usage: check_snapshot_survivors <snapshot, "pid,ticks" per line>
 check_snapshot_survivors() {
   local snapshot="$1"
   if [ -z "$snapshot" ]; then
     return 0
   fi
-  local pairs="" sid sticks
+  local pairs="" ids="" auto="" sid sticks
   while IFS=',' read -r sid sticks; do
     case "$sid" in ''|*[!0-9]*) continue ;; esac
-    case "$sticks" in ''|*[!0-9]*) continue ;; esac
+    ids="$ids $sid"
+    case "$sticks" in
+      ''|*[!0-9]*) auto="$auto $sid"; continue ;;
+    esac
     pairs="$pairs,@{Id=$sid;Ticks=$sticks}"
   done <<< "$snapshot"
   pairs="${pairs#,}"
   if [ -z "$pairs" ]; then
+    if [ -n "$auto" ]; then
+      printf '%s\n' $auto
+      return 0
+    fi
     log "STOP: check_snapshot_survivors got no valid pid,ticks pairs to check"
     return 0
   fi
-  timeout 30 powershell -NoProfile -Command "
-    foreach (\$e in @($pairs)) {
-      \$proc = Get-Process -Id \$e.Id -ErrorAction SilentlyContinue
-      if (\$proc -and \$proc.StartTime.Ticks -eq \$e.Ticks) { Write-Output \$e.Id }
-    }
-  " 2>>"$RUNDIR/supervisor.err" | tr -d '\r'
+  local raw
+  raw=$( ( set -o pipefail
+    run_bounded_powershell 30 "
+      foreach (\$e in @($pairs)) {
+        \$proc = Get-Process -Id \$e.Id -ErrorAction SilentlyContinue
+        if (\$proc -and \$proc.StartTime.Ticks -eq \$e.Ticks) { Write-Output \$e.Id }
+      }
+      Write-Output '$STOP_PS_SENTINEL'
+    " | tr -d '\r'
+  ) )
+  if ! printf '%s\n' "$raw" | grep -qx "$STOP_PS_SENTINEL"; then
+    # As in snapshot_process_tree: PowerShell's own exit code is not
+    # trustworthy here (it reflects the last statement's own success, not
+    # completion), so the sentinel's absence - not a captured rc - is
+    # what marks this call as timed out or crashed before finishing.
+    log "STOP: check_snapshot_survivors's powershell call did not complete - reporting every checked pid as unverified rather than clean"
+    printf '%s\n' $ids
+    return 1
+  fi
+  local result
+  result=$(printf '%s\n' "$raw" | grep -vx "$STOP_PS_SENTINEL")
+  if [ -n "$auto" ]; then
+    printf '%s\n' $result $auto
+  else
+    printf '%s\n' "$result"
+  fi
+  return 0
 }
 
 # --- Helper: force-kill every pid in a snapshot, with a bounded wait and
@@ -313,26 +456,70 @@ kill_process_snapshot() {
     log "STOP: kill_process_snapshot got no valid pids to act on"
     return 0
   fi
-  timeout 30 powershell -NoProfile -Command "
+  run_bounded_powershell 30 "
     foreach (\$p in @($ids)) {
       try { Stop-Process -Id \$p -Force -ErrorAction SilentlyContinue } catch {}
     }
-  " 2>>"$RUNDIR/supervisor.err"
+  " > /dev/null
   local ps_status=$?
   if [ "$ps_status" -ne 0 ]; then
     log "STOP: kill_process_snapshot's powershell call exited $ps_status (timeout or error) for pids: $ids"
   fi
-  local survivors
-  survivors=$(check_snapshot_survivors "$snapshot" | tr '\n' ' ')
-  if [ -n "$survivors" ]; then
-    log "STOP: kill_failed - these Windows pids survived the tree kill: $survivors"
+  # Reviewer Round 124 R77 (Minor): Stop-Process -Force is asynchronous, so
+  # a survivor check run with no settle at all can read a process mid-exit
+  # as still alive. Retry a few times over a couple of seconds before
+  # declaring the kill failed, rather than on the first read.
+  local survivors rc attempt
+  for attempt in 1 2 3; do
+    survivors=$(check_snapshot_survivors "$snapshot")
+    rc=$?
+    if [ -z "$survivors" ] && [ "$rc" -eq 0 ]; then
+      return 0
+    fi
+    [ "$attempt" -lt 3 ] && sleep 1
+  done
+  log "STOP: kill_failed - these Windows pids survived the tree kill or could not be verified: $(echo "$survivors" | tr '\n' ' ')"
+  return 1
+}
+
+# --- Helper: on a stop_child failure, retry the tree kill once more before
+# the caller proceeds ---
+# Reviewer Round 124 R75: every stop_child call site discarded its return
+# value, so a caller relaunched a child (or a decide-action path walked
+# into the persona pre-gate) with a confirmed-alive survivor from the
+# stopped child's own tree, still holding the persona claim - the incident
+# this whole item exists to fix, reached through the one door left open.
+# One retry here is a caller-side backstop; it does not replace stop_child's
+# own escalation, and a caller still proceeds either way rather than
+# blocking indefinitely, since spending the full pre-gate timeout to fail
+# is worse than proceeding with the failure logged.
+# Usage: retry_stop_escalation <label> <stop_child's own return code>
+retry_stop_escalation() {
+  local label="$1"
+  local result="$2"
+  if [ "$result" -eq 0 ]; then
+    return 0
+  fi
+  log "STOP[$label]: stop_child reported failure (STOP_PATH=$STOP_PATH); retrying the tree kill once before proceeding"
+  if [ -z "$LAST_STOP_SNAPSHOT" ]; then
+    log "STOP[$label]: no snapshot to retry against (tree was never verified)"
     return 1
   fi
-  return 0
+  if kill_process_snapshot "$LAST_STOP_SNAPSHOT"; then
+    log "STOP[$label]: retry succeeded, tree confirmed dead"
+    return 0
+  fi
+  log "STOP[$label]: retry FAILED - a process from the stopped child may still be alive and holding its persona claim; proceeding anyway rather than spending the pre-gate timeout to find out"
+  return 1
 }
 
 # Usage: stop_child <label>
-# Sets STOP_PATH to "eof" | "term" | "kill" based on what actually worked.
+# Sets STOP_PATH to one of six values (Reviewer Round 124 R77): "eof",
+# "term", or "kill" when the tree is confirmed dead at that phase, or
+# "eof_kill_failed", "term_kill_failed", "kill_failed" when a survivor
+# from the snapshot remained after that phase's own escalation. Returns
+# 1 in the failed cases; callers should read that return rather than
+# trusting STOP_PATH's clean-looking values by name alone.
 stop_child() {
   local label="$1"
   # If CHILD_PID is not set or empty, there's nothing to stop.
@@ -356,33 +543,39 @@ stop_child() {
   # signaled, and is the same list checked and killed at every phase below.
   local snapshot_winpid
   snapshot_winpid=$(resolve_windows_pid "$pid")
-  local snapshot=""
+  local snapshot="" snap_rc=0
   if [ -n "$snapshot_winpid" ]; then
     snapshot=$(snapshot_process_tree "$snapshot_winpid")
+    snap_rc=$?
   fi
-  # Reviewer Round 122 R64: an empty snapshot (a failed resolve, or a CIM
-  # walk that errored - errors go only to supervisor.err, never here) must
-  # not read as "verified dead" - it means the tree was never actually
-  # looked at. Named explicitly so the operator can tell the two apart in
-  # the log, rather than a silent, indistinguishable clean report.
-  if [ -z "$snapshot" ]; then
-    log "STOP[$label]: tree not verified (no snapshot resolved for pid $pid) - stop relies on the coproc's own pid alone"
+  # Reviewer Round 122 R64 / Round 124 R71: an empty snapshot (a failed
+  # resolve) or a non-zero snap_rc (the PowerShell walk timed out or
+  # errored - errors go only to supervisor.err, never here) must not read
+  # as "verified dead" - it means the tree was never actually looked at.
+  # Named explicitly so the operator can tell the two apart in the log,
+  # rather than a silent, indistinguishable clean report.
+  if [ -z "$snapshot" ] || [ "$snap_rc" -ne 0 ]; then
+    log "STOP[$label]: tree not verified (no snapshot resolved for pid $pid, or the walk did not complete, rc=$snap_rc) - stop relies on the coproc's own pid alone"
   fi
+  LAST_STOP_SNAPSHOT="$snapshot"
 
   # Usage: verify_snapshot_dead - returns 0 if every process in $snapshot
   # is confirmed gone (matched by pid AND start time, R66 - a recycled pid
   # front does not count as a survivor); escalates via kill_process_snapshot
   # otherwise and returns 1 if that escalation itself still leaves a
   # survivor (Reviewer Round 122 R65 - this return code is read below, not
-  # discarded).
+  # discarded). Reviewer Round 124 R72: a failed or timed-out survivor
+  # check (check_snapshot_survivors returning non-zero) is treated the
+  # same as a confirmed survivor, not the same as a clean empty result.
   verify_snapshot_dead() {
     [ -z "$snapshot" ] && return 0
-    local alive
+    local alive rc
     alive=$(check_snapshot_survivors "$snapshot")
-    if [ -z "$alive" ]; then
+    rc=$?
+    if [ -z "$alive" ] && [ "$rc" -eq 0 ]; then
       return 0
     fi
-    log "STOP[$label]: the wrapper is gone but its own snapshot shows a survivor: $(echo "$alive" | tr '\n' ' ') - escalating the tree kill"
+    log "STOP[$label]: the wrapper is gone but its own snapshot shows a survivor or an unverified check: $(echo "$alive" | tr '\n' ' ') - escalating the tree kill"
     kill_process_snapshot "$snapshot"
     return $?
   }
@@ -786,6 +979,7 @@ console.log(o.reason || '');
       stop_complete)
         log "STOP_COMPLETE: $DECIDE_REASON"
         stop_child "stop_complete"
+        retry_stop_escalation "stop_complete" $?
         if [ -n "${CHILD_PID:-}" ]; then
           wait "$CHILD_PID"; EXIT_CODE=$?
         else
@@ -798,6 +992,7 @@ console.log(o.reason || '');
       stop_crash_loop)
         log "STOP_CRASH_LOOP: $DECIDE_REASON"
         stop_child "stop_crash_loop"
+        retry_stop_escalation "stop_crash_loop" $?
         if [ -n "${CHILD_PID:-}" ]; then
           wait "$CHILD_PID"; EXIT_CODE=$?
         else
@@ -810,6 +1005,7 @@ console.log(o.reason || '');
       stop_budget)
         log "STOP_BUDGET: $DECIDE_REASON"
         stop_child "stop_budget"
+        retry_stop_escalation "stop_budget" $?
         if [ -n "${CHILD_PID:-}" ]; then
           wait "$CHILD_PID"; EXIT_CODE=$?
         else
@@ -828,6 +1024,7 @@ console.log(o.reason || '');
         # restart-budget limits meant for actual failures.
         log "RESTART_PASSIVE: $DECIDE_REASON"
         stop_child "restart_passive"
+        retry_stop_escalation "restart_passive" $?
         if [ -n "${CHILD_PID:-}" ]; then
           wait "$CHILD_PID"; EXIT_CODE=$?
         else
@@ -848,6 +1045,7 @@ console.log(o.reason || '');
       restart)
         log "RESTART: $DECIDE_REASON"
         stop_child "restart"
+        retry_stop_escalation "restart" $?
         if [ -n "${CHILD_PID:-}" ]; then
           wait "$CHILD_PID"; EXIT_CODE=$?
         else
