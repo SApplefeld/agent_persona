@@ -64,6 +64,10 @@ export interface GoalNode {
                              // recently closed ask on this node, so the classifier
                              // does not reopen the identical question right away.
   lastAskClosedAt?: number; // when that ask closed (answered, by-reply, or timed out).
+  pausedByNudgeCap?: boolean; // Round 60 finding 3(b): set when the nudge cap pauses this
+                              // node, so turn.complete can reactivate it on the worker's
+                              // next completed turn that calls a real work tool, without
+                              // reactivating a node paused for any other reason.
 }
 
 export interface EnvErrors {

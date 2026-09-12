@@ -2063,14 +2063,16 @@ export const register: Register = async (on, options) => {
             // same class of defect item 8.2 removed from the classifier's ask-operator and pause
             // verdicts, just reached through a third path. The nudge cap has no concrete question to
             // ask, only an idle reading, exactly like the classifier paths: it pauses the node with
-            // the cap reason and opens nothing. The worker's own next completed turn (with a real
-            // work tool called - the goal_resume path, or simply resuming the plan) reactivates it;
-            // no ask, no pendingAskId, nothing waiting on an operator answer that was never asked for.
+            // the cap reason and opens nothing. Round 60 finding 3(b): turn.complete reactivates it
+            // on the worker's next completed turn that calls a real work tool (pausedByNudgeCap
+            // below is the marker it reads), or goal_resume reactivates it explicitly; no ask, no
+            // pendingAskId, nothing waiting on an operator answer that was never asked for.
             try { $.ui.toast(`Agentic: ${capReason}`); } catch { /* non-fatal */ }
             if (g.status === "active") {
               // BG1: nudge cap → paused + no activate (tree stays put, no ask open on it).
               g.status = "paused";
               g.blockedReason = capReason;
+              g.pausedByNudgeCap = true;
               g.updatedAt = capTs;
               sess.state.decisions.push({
                 timestamp: capTs,
@@ -2720,6 +2722,26 @@ export const register: Register = async (on, options) => {
             detail: `${g.id}: ${String(err).slice(0, 150)}`,
           });
         }
+        turnLeafId = null;
+      } else if (turnLeaf.status === "paused" && turnLeaf.pausedByNudgeCap && toolCallsThisTurn > 0) {
+        // Round 60 finding 3(b): the cap pause (above) opens no ask, so nothing but this
+        // check ever reactivates it in a headless child - goal_resume is a tool call the
+        // worker has to think to make, and a paused node otherwise never gets nudged again.
+        // A completed turn that called a real work tool while this node sits paused for
+        // the cap reason (never for a goal_edit pause, which never sets the flag) means
+        // the worker resumed the work on its own; reactivate rather than leave it stalled.
+        const cappedReason = turnLeaf.blockedReason || "nudge cap";
+        turnLeaf.status = "active";
+        turnLeaf.blockedReason = undefined;
+        turnLeaf.pausedByNudgeCap = false;
+        turnLeaf.updatedAt = Date.now();
+        sess.consecutiveNudgesWithoutOnGoal = 0;
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "goal",
+          action: "reactivated_by_work",
+          detail: `${turnLeaf.id}: work tool called while paused (${cappedReason}), reactivating`,
+        });
         turnLeafId = null;
       } else {
         // H2: node is paused, blocked, or switched: skip scoring.
@@ -3374,6 +3396,7 @@ export const register: Register = async (on, options) => {
       // M10: clear blockedReason on resume.
       const pausedReason = target.blockedReason || "unknown";
       target.blockedReason = undefined;
+      target.pausedByNudgeCap = false;
       target.status = "active";
       target.updatedAt = Date.now();
       sess.state.activeGoalId = target.id;

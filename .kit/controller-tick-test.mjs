@@ -3807,6 +3807,7 @@ async function main() {
     await caseItem81_goalEditDropStillRefusesActive_control(clock);
     await caseR58f3_nudgeInsideOpenTurnNotCounted(clock);
     await caseR58f3_capPausesWithNoAsk(clock);
+    await caseR60f3b_reactivationAfterCapPause(clock);
     await caseS4_peer_consumed(clock);
     await caseS4_peer_send_message_consumed(clock);
     await caseS4_other_origin_passes(clock);
@@ -4444,6 +4445,116 @@ async function caseR58f3_capPausesWithNoAsk(clock) {
   const plan = state.goals.find(g => g.id === "g-plan");
   check("r58f3b: the node is paused, not active", plan && plan.status === "paused");
   check("r58f3b: blockedReason names the nudge cap", plan && /Nudged \d+ times without on-goal/.test(plan.blockedReason || ""));
+}
+
+// Round 60 finding 3(b): a cap pause opens no ask (finding 3a/b above), so nothing but a
+// completed turn that calls a real work tool, or goal_resume, ever reactivates the node in a
+// headless child. Three cases: (i) a work-tool turn.complete reactivates a cap-paused node;
+// (ii) control - a turn.complete with no work tool leaves it paused; (iii) control - a node
+// paused by goal_edit pause (not the cap) is never reactivated by work.
+async function caseR60f3b_reactivationAfterCapPause(clock) {
+  console.log("\n=== Round 60 finding 3b: turn.complete reactivates a cap-paused node on real work ===");
+
+  // (i) work-tool turn.complete reactivates.
+  {
+    clock.set(T0);
+    const h = await createTickHarness({
+      ...OPTS,
+      costMaxNudgesPerHour: 20,
+      caseName: "r60f3b_reactivate",
+    });
+    h.setClassifyValue("nudge");
+    await fireTurn(h);
+    await new Promise(r => setTimeout(r, 20));
+    for (let i = 0; i < 4; i++) {
+      clock.advance(130_000);
+      await tickAndSettle(h, clock);
+    }
+    let state = getState(h);
+    let plan = state.goals.find(g => g.id === "g-plan");
+    check("r60f3b(i): cap pause landed first", plan && plan.status === "paused" && /Nudged \d+ times/.test(plan.blockedReason || ""));
+
+    const startH = h.handlers["turn.start"];
+    const toolCallH = h.handlers["tool.call"];
+    const completeH = h.handlers["turn.complete"];
+    await startH(h.fake, { turnId: "work-turn" }, () => {});
+    await toolCallH(h.fake, { tool: "Bash", command: "echo hi" }, async (e) => ({ result: "ok" }));
+    await completeH(h.fake, { aborted: false, reason: "stop", answer: "Did the work." }, () => {});
+
+    state = getState(h);
+    const decisions = state.decisions;
+    plan = state.goals.find(g => g.id === "g-plan");
+    check("r60f3b(i): reactivated_by_work present", decisions.some(d => d.action === "reactivated_by_work"));
+    check("r60f3b(i): the node is active again", plan && plan.status === "active");
+    check("r60f3b(i): blockedReason cleared", plan && !plan.blockedReason);
+    // consecutiveNudgesWithoutOnGoal lives on sess (in-memory), not sess.state; a fresh
+    // nudge_cap_reached this soon would only happen if the reset in the fix didn't take,
+    // so absence of a second cap hit on the very next tick is the reachable proxy for it.
+    clock.advance(130_000);
+    await tickAndSettle(h, clock);
+    const afterState = getState(h);
+    check("r60f3b(i): no immediate re-trip of the cap (counter was reset)",
+      afterState.decisions.filter(d => d.action === "nudge_cap_reached").length === 1);
+  }
+
+  // (ii) control: a turn.complete with no work tool leaves the node paused.
+  {
+    clock.set(T0);
+    const h = await createTickHarness({
+      ...OPTS,
+      costMaxNudgesPerHour: 20,
+      caseName: "r60f3b_control_no_work_tool",
+    });
+    h.setClassifyValue("nudge");
+    await fireTurn(h);
+    await new Promise(r => setTimeout(r, 20));
+    for (let i = 0; i < 4; i++) {
+      clock.advance(130_000);
+      await tickAndSettle(h, clock);
+    }
+    const startH = h.handlers["turn.start"];
+    const completeH = h.handlers["turn.complete"];
+    await startH(h.fake, { turnId: "no-work-turn" }, () => {});
+    // No tool.call fired this turn: toolCallsThisTurn stays 0.
+    await completeH(h.fake, { aborted: false, reason: "stop", answer: "Just talked, did nothing." }, () => {});
+
+    const state = getState(h);
+    const decisions = state.decisions;
+    const plan = state.goals.find(g => g.id === "g-plan");
+    check("r60f3b(ii): no reactivated_by_work", !decisions.some(d => d.action === "reactivated_by_work"));
+    check("r60f3b(ii): the node stays paused", plan && plan.status === "paused");
+  }
+
+  // (iii) control: a node paused by goal_edit pause (not the cap) is not reactivated by work.
+  {
+    clock.set(T0);
+    const h = await createTickHarness({
+      ...OPTS,
+      costMaxNudgesPerHour: 20,
+      caseName: "r60f3b_control_goal_edit_pause",
+    });
+    const startH0 = h.handlers["session.start"];
+    await startH0(h.fake, {}, () => {});
+    const toolCallH0 = h.handlers["tool.call"];
+    await toolCallH0(h.fake, { tool: "mcp__agentic-plugin__goal_edit", nodeId: "g-plan", action: "pause", reason: "operator asked" }, async () => ({}));
+
+    let state = getState(h);
+    let plan = state.goals.find(g => g.id === "g-plan");
+    check("r60f3b(iii): goal_edit pause landed, not the cap", plan && plan.status === "paused" && plan.blockedReason === "operator asked");
+
+    const startH = h.handlers["turn.start"];
+    const toolCallH = h.handlers["tool.call"];
+    const completeH = h.handlers["turn.complete"];
+    await startH(h.fake, { turnId: "work-turn-2" }, () => {});
+    await toolCallH(h.fake, { tool: "Bash", command: "echo hi" }, async () => ({ result: "ok" }));
+    await completeH(h.fake, { aborted: false, reason: "stop", answer: "Did other work." }, () => {});
+
+    state = getState(h);
+    const decisions = state.decisions;
+    plan = state.goals.find(g => g.id === "g-plan");
+    check("r60f3b(iii): no reactivated_by_work", !decisions.some(d => d.action === "reactivated_by_work"));
+    check("r60f3b(iii): the node stays paused (goal_edit pause is not the cap)", plan && plan.status === "paused");
+  }
 }
 
 // Round 58 finding 3's control - the worker's own ASK: marker still opens an ask record,
