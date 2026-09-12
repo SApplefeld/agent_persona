@@ -387,9 +387,12 @@ while true; do
   # since the child's own conversational reply is never visible to the
   # operator - only a real `reply` tool call is - and a real goal's own
   # opening turn is otherwise the only turn that instruction could ride on.
+  # The prose-style clause below is the same text CLAUDE.md's "Writing to
+  # the operator" section carries, kept in sync by hand with its plugin-side
+  # copy in hooks/index.ts (REPLY_INSTRUCTION).
   CHANNEL_REPLY_INSTRUCTION=""
   if [ "$NO_CHANNEL" -ne 1 ]; then
-    CHANNEL_REPLY_INSTRUCTION="You are attached to a Discord channel. When you want to say something back to the operator, call the reply tool from the channel-relay MCP server - your own conversational reply is not visible to them. "
+    CHANNEL_REPLY_INSTRUCTION="You are attached to a Discord channel. When you want to say something back to the operator, call the reply tool from the channel-relay MCP server - your own conversational reply is not visible to them. Plain prose, never mannered prose. This governs every reply-tool message the operator reads. Write for a reader on a phone with no session context. One idea per sentence, about twenty words. Answer first, then the reason, then the evidence. Never carry a second rule inside the clause of the first. Never nest a qualification in parentheses or after a semicolon. Name the concrete thing that happened rather than the class it belongs to. Keep precision by adding a sentence, never by packing one. Vary sentence length, because uniform length is its own defect and the twenty is a per-sentence check rather than a target. Use plain words for internal names unless the exact value is what the operator needs to act on. Decide before writing. Never include round numbers, steer numbers, or session ids. End the message when the content ends. "
   fi
   if [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
     node -e "
