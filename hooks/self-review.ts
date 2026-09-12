@@ -128,12 +128,19 @@ export function buildSelfReviewInput(
 }
 
 // --- dedupeSelfReview ---
-// Case-insensitive exact match against existing self-review lessons (S5).
+// Dedupe on meaning (item 8.4's own kaizen goal, node memory_quality): a
+// paraphrase that leads with the same six normalized words as a stored
+// lesson is refused, the same comparison collectEvents already used to spot
+// the pair after the fact. Case-insensitive exact match is kept as the
+// narrower case the lead comparison already subsumes for same-length text.
 export function dedupeSelfReview(memory: MemoryEntry[], text: string): boolean {
   const lower = text.toLowerCase().trim();
-  return memory.some(
-    (m) => m.source === "self-review" && m.kind === "lesson" && m.text.toLowerCase().trim() === lower,
-  );
+  const lead = normalizedLead(text);
+  return memory.some((m) => {
+    if (m.source !== "self-review" || m.kind !== "lesson") return false;
+    if (m.text.toLowerCase().trim() === lower) return true;
+    return lead.length > 0 && normalizedLead(m.text) === lead;
+  });
 }
 
 // --- isSelfScoringLesson ---

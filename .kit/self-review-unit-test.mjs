@@ -175,6 +175,17 @@ function makeState(overrides = {}) {
   // Case-insensitive
   const isDupeCI = dedupeSelfReview(memory, "USE THE BASH TOOL CAREFULLY");
   check("Test 10c: case-insensitive match is dupe", isDupeCI === true);
+  // Meaning dedupe (item 8.4's memory_quality kaizen goal): a paraphrase
+  // sharing the stored lesson's first six normalized words is a duplicate,
+  // and a distinct proof-backed lesson is kept.
+  const memoryWithLongLesson = [
+    ...memory,
+    { id: "mem-2", kind: "lesson", text: "When a reader claim is missing, investigate the root cause before retrying", confidence: 0.5, source: "self-review", createdAt: 1, lastAccessed: 1, accessCount: 0, pinned: false },
+  ];
+  const isParaphraseDupe = dedupeSelfReview(memoryWithLongLesson, "When a reader claim is missing entirely, dig into the root cause first");
+  check("Test 10d: paraphrase sharing the lead is dupe", isParaphraseDupe === true);
+  const isDistinctKept = dedupeSelfReview(memoryWithLongLesson, "Tests passed after adding the missing null check, confirmed by the harness");
+  check("Test 10e: distinct proof-backed lesson is not dupe", isDistinctKept === false);
 }
 
 // --- Test 11: evictSelfReview keeps newest 5 (S8) ---
