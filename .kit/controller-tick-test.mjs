@@ -3792,6 +3792,8 @@ async function main() {
     await caseItem2_backfillOnRealWork_control(clock);
     await caseItem2_backfillSkipsPrimingTurn(clock);
     await caseItem2_backfillSkipsNudgeTurn(clock);
+    await caseChannelBackstop_firesOnChannelOriginNoReply(clock);
+    await caseChannelBackstop_skipsKeyboardOrigin(clock);
     await caseItem2_backfillFiresOnSecondRequest(clock);
     await caseItem8p2_classifier_ask_operator_converts_unconditionally(clock);
     await caseItem8p2_pause_converts_unconditionally(clock);
@@ -4289,6 +4291,76 @@ async function caseItem2_backfillFiresOnSecondRequest(clock) {
   const state = getState(h);
   check("item2 Round28: a second root was backfilled (goals.length was 1, not 0, before this turn)",
     state.goals.length === 1 && state.goals[0].id !== "root-1" && state.goals[0].status === "complete");
+}
+
+// ============================================================
+// Steer 68/69: a channel-opened turn that answers with no reply-tool
+// call gets that answer sent through the reply tool directly by the
+// plugin (hooks/index.ts turn.complete, currentTurnIsChannelOrigin).
+// ============================================================
+async function caseChannelBackstop_firesOnChannelOriginNoReply(clock) {
+  console.log("\n=== Channel backstop: a channel-opened turn with no reply call gets backfilled ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({ ...OPTS, caseName: "channel_backstop_fires" });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  const submitH = h.handlers["prompt.submit"];
+  await submitH(h.fake, { text: "What's the status?", origin: { kind: "channel" } }, async () => ({}));
+
+  const turnStartH = h.handlers["turn.start"];
+  await turnStartH(h.fake, { turnId: "t-channel-noreply" }, async () => ({ result: "ok" }));
+
+  // The model answered in plain text; it never called the reply tool.
+
+  const turnCompleteH = h.handlers["turn.complete"];
+  await turnCompleteH(h.fake, { turnId: "t-channel-noreply", answer: "All green.", reason: "completed" }, async () => ({ result: "ok" }));
+
+  const state = getState(h);
+  const decisions = state.decisions || [];
+  check("channel backstop: exactly one reply tool.call recorded", h.toolCalls.length === 1);
+  check("channel backstop: the recorded call is the reply tool with the model's answer",
+    h.toolCalls[0]?.tool === "mcp__plugin_relay_channel-relay__reply" && h.toolCalls[0]?.message === "All green.");
+  check("channel backstop: one channel_reply_backfilled decision logged",
+    decisions.filter(d => d.action === "channel_reply_backfilled").length === 1);
+}
+
+// Control: the same shape, but the turn opened from the keyboard, not the
+// channel - the backstop must never fire, and never call reply, for an
+// ordinary interactive turn that simply chose not to call a tool.
+async function caseChannelBackstop_skipsKeyboardOrigin(clock) {
+  console.log("\n=== Channel backstop control: a keyboard-opened turn is never backfilled ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({ ...OPTS, caseName: "channel_backstop_control" });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  const submitH = h.handlers["prompt.submit"];
+  await submitH(h.fake, { text: "What's the status?", origin: { kind: "keyboard" } }, async () => ({}));
+
+  const turnStartH = h.handlers["turn.start"];
+  await turnStartH(h.fake, { turnId: "t-keyboard-noreply" }, async () => ({ result: "ok" }));
+
+  const turnCompleteH = h.handlers["turn.complete"];
+  await turnCompleteH(h.fake, { turnId: "t-keyboard-noreply", answer: "All green.", reason: "completed" }, async () => ({ result: "ok" }));
+
+  const state = getState(h);
+  const decisions = state.decisions || [];
+  check("channel backstop control: no reply tool.call recorded", h.toolCalls.length === 0);
+  check("channel backstop control: no channel_reply_backfilled decision logged",
+    decisions.filter(d => d.action === "channel_reply_backfilled").length === 0);
 }
 
 // ============================================================
