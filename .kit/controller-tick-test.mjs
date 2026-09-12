@@ -2205,6 +2205,54 @@ async function caseItem5_channelWindowRollsOverflow(clock) {
   check("item5 channel window: log entries are valid JSON with kind=inbox", logLines.every(l => { try { return JSON.parse(l).kind === "inbox"; } catch { return false; } }));
 }
 
+// Item 5 / Round 47 finding 1: a failed append must not lose records - the
+// store keys stay put when the log write throws. Direct unit test of
+// enforceChannelWindow against a minimal in-memory store, no tick harness
+// needed since the function is pure. Control: the same setup with a
+// succeeding append rolls normally (mirrors caseItem5_channelWindowRollsOverflow
+// above, restated here so the two cases sit side by side).
+function makeMiniStore(seed) {
+  const map = new Map(Object.entries(seed));
+  return {
+    async get(key) { return map.has(key) ? map.get(key) : null; },
+    async set(key, value) { map.set(key, value); },
+    async delete(key) { map.delete(key); },
+    async keys() { return [...map.keys()]; },
+    _map: map,
+  };
+}
+
+async function caseItem5_channelWindowNoDeleteOnAppendFailure() {
+  console.log("\n=== Item 5: enforceChannelWindow deletes nothing when the append throws ===");
+
+  // Dynamic import (matching the pattern the rest of this file uses for
+  // hooks/*.ts) rather than a static top-level import: a static import of
+  // operator.ts's own extensionless sibling imports (e.g. "./commons")
+  // does not resolve under plain Node ESM the way the dynamic-import path
+  // the harness already relies on does.
+  const { enforceChannelWindow } = await import("../hooks/operator.ts?case=item5_direct_unit");
+
+  const seed = {};
+  for (let i = 0; i < 6; i++) {
+    const key = `inbox:default:writer-${i}:1`;
+    seed[key] = { id: `default-writer-${i}-1`, key, from: `writer-${i}`, at: 1000 + i, text: `m${i}`, kind: "say", status: "delivered" };
+  }
+
+  // Failing case: appendLines always throws.
+  const failStore = makeMiniStore(seed);
+  const failRolled = await enforceChannelWindow(failStore, "default", 3, async () => { throw new Error("write failed"); });
+  check("item5 append-fails: enforceChannelWindow returns 0", failRolled === 0);
+  check("item5 append-fails: all 6 records remain in the store", failStore._map.size === 6);
+
+  // Control: the same setup with a succeeding append rolls exactly the overflow.
+  const okStore = makeMiniStore(seed);
+  const appended = [];
+  const okRolled = await enforceChannelWindow(okStore, "default", 3, async (lines) => { appended.push(...lines); });
+  check("item5 append-succeeds (control): enforceChannelWindow returns 3", okRolled === 3);
+  check("item5 append-succeeds (control): store holds exactly the window size", okStore._map.size === 3);
+  check("item5 append-succeeds (control): appendLines received the 3 rolled lines", appended.length === 3);
+}
+
 // Item 5 (Bounded store): the persona file's decision log is capped at push
 // time (persist()), not only when the file is parsed at a session load - a
 // long-lived child never reloads. Proof per the plan's own line: push more
@@ -3744,6 +3792,7 @@ async function main() {
     await caseItem8p2_memory_quality_self_scoring_vs_proof_backed(clock);
     await caseItem8p2_dead_writer_record_skipped_once(clock);
     await caseItem5_channelWindowRollsOverflow(clock);
+    await caseItem5_channelWindowNoDeleteOnAppendFailure();
     await caseItem5_decisionLogCappedAtPush(clock);
     await caseItem5_memoryCappedAtPush(clock);
     await caseS4_peer_consumed(clock);

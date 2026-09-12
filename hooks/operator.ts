@@ -354,7 +354,14 @@ export async function enforceChannelWindow(
   if (combined.length <= windowSize) return 0;
   const overflow = combined.slice(0, combined.length - windowSize);
   const lines = overflow.map((o) => JSON.stringify({ persona, kind: o.kind, rolledAt: Date.now(), record: o.record }));
-  await appendLines(lines);
+  // Round 47: append before delete, and never delete on a failed append -
+  // a record must have proof it landed in the log before it leaves the
+  // store, not the other way around.
+  try {
+    await appendLines(lines);
+  } catch {
+    return 0;
+  }
   for (const o of overflow) {
     await store.delete(o.key);
   }

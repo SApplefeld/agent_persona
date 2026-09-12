@@ -337,13 +337,19 @@ async function runHealth(dp: any, forNodeId: string | null): Promise<void> {
 // rewritten, so the file that grows without bound is this one, by design,
 // not the store the plugin reads and rewrites whole on every tick.
 const CHANNEL_LOG_PATH = ".agentic-channel.jsonl";
+// Round 47 finding 1: this used to swallow every write error, and
+// enforceChannelWindow deleted the rolled store keys regardless of whether
+// the append actually landed - a failed write meant the record vanished
+// with no proof it went anywhere. Callers that delete on success (the
+// commons window) must see a thrown error and skip the delete; callers
+// that only ever mutate in-memory state after a successful roll (the
+// decision/memory caps in persist()) let it propagate too, since a decision
+// or memory entry silently dropped is the same defect either way.
 const appendToChannelLog = async (dp: any, lines: string[]): Promise<void> => {
   if (lines.length === 0) return;
-  try {
-    const existing = await dp.fs.exists(CHANNEL_LOG_PATH) ? await dp.fs.read(CHANNEL_LOG_PATH) : "";
-    const sep = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-    await dp.fs.write(CHANNEL_LOG_PATH, existing + sep + lines.join("\n") + "\n");
-  } catch { /* non-fatal: the rollover log is a durability aid, not a hard dependency */ }
+  const existing = await dp.fs.exists(CHANNEL_LOG_PATH) ? await dp.fs.read(CHANNEL_LOG_PATH) : "";
+  const sep = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+  await dp.fs.write(CHANNEL_LOG_PATH, existing + sep + lines.join("\n") + "\n");
 };
 
 // L26: the yield action (log the decision, drop ownership, append a single
@@ -407,8 +413,13 @@ export const persist = async (dp: any): Promise<boolean> => {
   // silently dropped.
   if (sess.state.decisions.length > DECISIONS_MAX) {
     const overflow = sess.state.decisions.slice(0, sess.state.decisions.length - DECISIONS_MAX);
-    sess.state.decisions = sess.state.decisions.slice(-DECISIONS_MAX);
-    await appendToChannelLog(dp, overflow.map((d) => JSON.stringify({ persona: sess.persona, kind: "decision", rolledAt: Date.now(), record: d })));
+    // Round 47: append before trimming - a failed write must not lose the
+    // overflow with no record anywhere. Only drop the in-memory entries
+    // once the log actually holds them.
+    try {
+      await appendToChannelLog(dp, overflow.map((d) => JSON.stringify({ persona: sess.persona, kind: "decision", rolledAt: Date.now(), record: d, logPath: CHANNEL_LOG_PATH })));
+      sess.state.decisions = sess.state.decisions.slice(-DECISIONS_MAX);
+    } catch { /* log write failed: keep the overflow in memory rather than lose it; next persist() retries */ }
   }
   if (sess.state.memory.length > MEMORY_MAX) {
     // Evict oldest non-pinned entries first; pinned entries never roll off.
@@ -419,9 +430,11 @@ export const persist = async (dp: any): Promise<boolean> => {
     if (overflowCount > 0) {
       const overflow = unpinned.slice(0, overflowCount);
       const kept = unpinned.slice(overflowCount);
-      // Restore original relative order (createdAt) across pinned + kept.
-      sess.state.memory = [...pinned, ...kept].sort((a, b) => a.createdAt - b.createdAt);
-      await appendToChannelLog(dp, overflow.map((m) => JSON.stringify({ persona: sess.persona, kind: "memory", rolledAt: Date.now(), record: m })));
+      try {
+        await appendToChannelLog(dp, overflow.map((m) => JSON.stringify({ persona: sess.persona, kind: "memory", rolledAt: Date.now(), record: m, logPath: CHANNEL_LOG_PATH })));
+        // Restore original relative order (createdAt) across pinned + kept.
+        sess.state.memory = [...pinned, ...kept].sort((a, b) => a.createdAt - b.createdAt);
+      } catch { /* log write failed: keep the overflow in memory rather than lose it; next persist() retries */ }
     }
   }
   const store: Record<string, unknown> = await dp.fs.exists(sess.storePath)
@@ -1321,7 +1334,7 @@ export const register: Register = async (on, options) => {
               timestamp: Date.now(),
               loop: "worker",
               action: "channel_window_rolled",
-              detail: `rolled ${rolled} closed inbox/reply records to the channel log (persona: ${sess.persona})`,
+              detail: `rolled ${rolled} closed inbox/reply records to ${CHANNEL_LOG_PATH} (persona: ${sess.persona})`,
             });
           }
         }
