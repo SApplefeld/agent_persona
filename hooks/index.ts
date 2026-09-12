@@ -2097,6 +2097,11 @@ export const register: Register = async (on, options) => {
           // D3: update call window (count the classify call)
           sess.state.monitor.cost.callWindow = bumpWindow(sess.state.monitor.cost.callWindow, Date.now());
           let finalDecision: string = decision ?? "nudge";
+          // Item 8.2: Asks come from real forks. Set below if this
+          // ask-operator decision is converted to a nudge; the nudge
+          // actuator reads it to send the plan/discussion re-read text
+          // instead of the generic idle nudge.
+          let idleGapConverted = false;
 
           // R6: switch, second Haiku call to pick a plan id.
           if (finalDecision === "switch" && pendingPlans.length > 0) {
@@ -2173,6 +2178,41 @@ export const register: Register = async (on, options) => {
               sess.state.monitor.cost.callWindow = bumpWindow(sess.state.monitor.cost.callWindow, Date.now());
               fullReason = reason.trim().replace(/\*{1,2}/g, "");
               finalReason = fullReason.slice(0, 100);
+
+              // Item 8.2: Asks come from real forks. An idle-gap classification
+              // - the classifier reaching for ask-operator on a vague or
+              // repeated-confusion reading rather than a concrete blocking
+              // question - becomes a nudge, never an ask. Two independent
+              // signals, either one sufficient, so a streak with no matching
+              // keyword in the model's free-text reason still converts (the
+              // structural signal is not just a keyword pattern tuned to this
+              // reason text):
+              //   1. The reason text itself reads as a gap, not a fork:
+              //      "unclear", "scope", or "what to do next" language.
+              //   2. The active node's last 3 scores are all "off-goal" with
+              //      no escalation - a repeated confusion pattern the goal
+              //      data shows regardless of what the model said about it.
+              // A real ask (a concrete blocking question) trips neither.
+              if (finalDecision === "ask-operator") {
+                const lowerReason = fullReason.toLowerCase();
+                const reasonReadsAsGap =
+                  /unclear/.test(lowerReason) ||
+                  /scope/.test(lowerReason) ||
+                  /^what to do|next step|next concrete/.test(lowerReason) ||
+                  /repeated.*off-goal/.test(lowerReason);
+                const recentScores = g.scores.slice(-3);
+                const offGoalStreak = recentScores.length === 3 && recentScores.every((s) => s.result === "off-goal");
+                if (reasonReadsAsGap || offGoalStreak) {
+                  finalDecision = "nudge";
+                  idleGapConverted = true;
+                  sess.state.decisions.push({
+                    timestamp: Date.now(),
+                    loop: "monitor",
+                    action: "ask_idle_gap_converted",
+                    detail: `${g.id}: idle-gap ask converted to nudge (${reasonReadsAsGap ? "reason" : ""}${reasonReadsAsGap && offGoalStreak ? "+" : ""}${offGoalStreak ? "off-goal streak" : ""}): ${finalReason}`,
+                  });
+                }
+              }
             } catch { /* reason call failed; non-fatal */ }
           }
 
@@ -2193,13 +2233,23 @@ export const register: Register = async (on, options) => {
                 return;
               }
               try {
-                // R8: nudge text appends goal_done instruction.
-                const nudgeText =
-                  `[GOAL] The active goal is: ${g.objective}\n` +
-                  `The Controller detected ${idleDisplay} of idle time. ` +
-                  `Re-read the objective and take the next concrete step toward it.\n` +
-                  `When this step is done, call goal_done with a one-line note. ` +
-                  `If the result names a next goal, continue with it.`;
+                // R8: nudge text appends goal_done instruction. Item 8.2: an
+                // idle-gap conversion gets its own text - re-read the plan
+                // and the discussion file, not just "take the next step",
+                // since a vague or repeated-confusion reading means the
+                // worker has lost the thread of the plan, not that it needs
+                // a nudge to keep moving on a step it already understands.
+                const nudgeText = idleGapConverted
+                  ? `[GOAL] The active goal is: ${g.objective}\n` +
+                    `The controller read this as an idle gap rather than a real fork: no concrete blocking question, just unclear scope or a repeated off-goal pattern. ` +
+                    `Re-read the plan doc and the discussion file before continuing - the next concrete step should already be there.\n` +
+                    `When this step is done, call goal_done with a one-line note. ` +
+                    `If the result names a next goal, continue with it.`
+                  : `[GOAL] The active goal is: ${g.objective}\n` +
+                    `The Controller detected ${idleDisplay} of idle time. ` +
+                    `Re-read the objective and take the next concrete step toward it.\n` +
+                    `When this step is done, call goal_done with a one-line note. ` +
+                    `If the result names a next goal, continue with it.`;
                 await $.prompt.submit({ text: nudgeText });
                 currentPrompt = nudgeText;
                 nudgedTurn = true;

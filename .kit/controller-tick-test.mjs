@@ -1766,6 +1766,233 @@ async function caseS3_timeout_walks_on_default(clock) {
   check("S3 timeout default: node-002 activated", node2 && node2.status === "active");
 }
 
+// Item 8.2: Asks come from real forks. Idle-gap asks are converted to nudges.
+async function caseItem8p2_idle_gap_ask_converted(clock) {
+  console.log("\n=== Item 8.2: idle-gap ask converted to nudge ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "item8p2_idle_gap",
+  });
+
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  const personaState = buildPersonaState(mySid, now);
+  personaState.goals = [
+    { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
+    { id: "node-001", kind: "leaf", parentId: "root", objective: "Unclear task", status: "active", completedRounds: 0, maxRounds: 3, scores: [
+      { timestamp: now - 10000, result: "off-goal" },
+      { timestamp: now - 9000, result: "off-goal" },
+      { timestamp: now - 8000, result: "off-goal" },
+    ], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-001";
+  personaState.monitor.turnCount = 5;
+  personaState.monitor.lastTurnComplete = now - 120_000;
+  personaState.updatedAt = now;
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: mySid, epoch: 1, lastSeen: now },
+  }));
+
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  // Mock classify to return "ask-operator" for an idle-gap scenario
+  h.setClassifyValue("ask-operator");
+
+  // Mock complete (reason call) to return an idle-gap reason
+  let completeCallCount = 0;
+  const origComplete = h.fake.model.complete;
+  h.fake.model.complete = async (opts) => {
+    completeCallCount += 1;
+    // First complete call is for the reason (asking why ask-operator)
+    if (completeCallCount === 1) {
+      return "Unclear what the next concrete step should be.";
+    }
+    return origComplete ? origComplete(opts) : "unknown";
+  };
+
+  // Advance time to trigger classify. Two ticks: the first only clears the
+  // transitional "activated (no active leaf, pending work found)" decision
+  // that session.start's reseed produces (tick-harness fires session.start
+  // at creation, and this second, custom-state session.start re-activates
+  // the same node); classify runs on the second.
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+
+  // Check that the classifier was called
+  check("item8p2: classify was called", h.classifyCalls.length > 0);
+
+  // Check that an ask was NOT opened (due to idle-gap conversion)
+  const decisions = getDecisions(h);
+  const askOpenedCount = decisions.filter(d => d.action === "ask_opened").length;
+  check("item8p2: ask was NOT opened (idle-gap converted)", askOpenedCount === 0);
+
+  // Check that idle-gap conversion was recorded
+  const conversionCount = decisions.filter(d => d.action === "ask_idle_gap_converted").length;
+  check("item8p2: ask_idle_gap_converted decision present", conversionCount >= 1);
+
+  // Check that a nudge was sent instead
+  const nudgeCount = decisions.filter(d => d.action === "nudge_sent").length;
+  check("item8p2: nudge_sent decision present", nudgeCount >= 1);
+
+  // Check that the converted nudge carries the plan/discussion re-read text,
+  // not the generic idle-nudge text.
+  check("item8p2: nudge text says re-read the plan doc and discussion file", h.promptSubmits.some(t => t.includes("Re-read the plan doc and the discussion file")));
+}
+
+// Item 8.2: off-goal streak alone converts, with no keyword in the reason
+// text. This is the withheld control for the structural signal: the pattern
+// match on "unclear"/"scope"/"what to do next" never fires here (the reason
+// text is deliberately neutral), so a pass proves the off-goal-streak check
+// itself catches the case, not that the reason happened to carry a literal
+// the regex was tuned to find.
+async function caseItem8p2_offgoal_streak_alone_converts(clock) {
+  console.log("\n=== Item 8.2: off-goal streak alone converts (no reason keyword) ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "item8p2_offgoal_streak_alone",
+  });
+
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  const personaState = buildPersonaState(mySid, now);
+  personaState.goals = [
+    { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
+    { id: "node-001", kind: "leaf", parentId: "root", objective: "Streaky task", status: "active", completedRounds: 0, maxRounds: 3, scores: [
+      { timestamp: now - 10000, result: "off-goal" },
+      { timestamp: now - 9000, result: "off-goal" },
+      { timestamp: now - 8000, result: "off-goal" },
+    ], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-001";
+  personaState.monitor.turnCount = 5;
+  personaState.monitor.lastTurnComplete = now - 120_000;
+  personaState.updatedAt = now;
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: mySid, epoch: 1, lastSeen: now },
+  }));
+
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  h.setClassifyValue("ask-operator");
+
+  let completeCallCount = 0;
+  const origComplete = h.fake.model.complete;
+  h.fake.model.complete = async (opts) => {
+    completeCallCount += 1;
+    if (completeCallCount === 1) {
+      // Deliberately neutral: no "unclear", "scope", or "what to do next" text.
+      return "The worker has not made progress recently.";
+    }
+    return origComplete ? origComplete(opts) : "unknown";
+  };
+
+  // Two ticks: the first clears the transitional re-activation, the second reaches classify.
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+
+  const decisions = getDecisions(h);
+  const askOpenedCount = decisions.filter(d => d.action === "ask_opened").length;
+  check("item8p2 streak-alone: ask was NOT opened", askOpenedCount === 0);
+
+  const conversionCount = decisions.filter(d => d.action === "ask_idle_gap_converted").length;
+  check("item8p2 streak-alone: ask_idle_gap_converted decision present", conversionCount >= 1);
+}
+
+// Item 8.2 control: real ask is NOT converted
+async function caseItem8p2_real_fork_ask_not_converted(clock) {
+  console.log("\n=== Item 8.2 control: real-fork ask NOT converted ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "item8p2_real_ask",
+  });
+
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  const personaState = buildPersonaState(mySid, now);
+  personaState.goals = [
+    { id: "root", kind: "goal", parentId: null, objective: "Real fork task", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
+    { id: "node-001", kind: "leaf", parentId: "root", objective: "Blocked task", status: "active", completedRounds: 0, maxRounds: 3, scores: [
+      { timestamp: now - 10000, result: "on-goal" },
+      { timestamp: now - 9000, result: "on-goal" },
+    ], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-001";
+  personaState.monitor.turnCount = 5;
+  personaState.monitor.lastTurnComplete = now - 120_000;
+  personaState.updatedAt = now;
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: mySid, epoch: 1, lastSeen: now },
+  }));
+
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  h.setClassifyValue("ask-operator");
+
+  let completeCallCount = 0;
+  const origComplete = h.fake.model.complete;
+  h.fake.model.complete = async (opts) => {
+    completeCallCount += 1;
+    if (completeCallCount === 1) {
+      // Real fork reason: concrete blocking
+      return "Blocked waiting for operator decision on architecture approach.";
+    }
+    return origComplete ? origComplete(opts) : "unknown";
+  };
+
+  // Two ticks: the first clears the transitional re-activation, the second reaches classify.
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+
+  const decisions = getDecisions(h);
+
+  // Control: a real-fork ask SHOULD be opened
+  const askOpenedCount = decisions.filter(d => d.action === "ask_opened").length;
+  check("item8p2 control: real-fork ask WAS opened", askOpenedCount >= 1);
+
+  // Control: no conversion happened
+  const conversionCount = decisions.filter(d => d.action === "ask_idle_gap_converted").length;
+  check("item8p2 control: no idle-gap conversion (real fork)", conversionCount === 0);
+}
+
 // S4: D6 doorbell - peer consumed
 async function caseS4_peer_consumed(clock) {
   console.log("\n=== S4: peer consumed ===");
@@ -3179,6 +3406,9 @@ async function main() {
     await caseItem2_backfillSkipsPrimingTurn(clock);
     await caseItem2_backfillSkipsNudgeTurn(clock);
     await caseItem2_backfillFiresOnSecondRequest(clock);
+    await caseItem8p2_idle_gap_ask_converted(clock);
+    await caseItem8p2_offgoal_streak_alone_converts(clock);
+    await caseItem8p2_real_fork_ask_not_converted(clock);
     await caseS4_peer_consumed(clock);
     await caseS4_peer_send_message_consumed(clock);
     await caseS4_other_origin_passes(clock);
