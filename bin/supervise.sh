@@ -173,50 +173,99 @@ trap 'exit 143' TERM
 
 # --- AD3: Stop the child via EOF (close write end), then TERM, then KILL ---
 # --- Helper: resolve an MSYS pid's current Windows pid ---
-# This environment's `ps` (MSYS, not procps) has no `-o` custom-format
-# support; WINPID is column 4 of its own fixed-width default output
-# (PID PPID PGID WINPID TTY UID STIME COMMAND), confirmed live rather
-# than assumed - `ps -p <pid> -o winpid=` errors "unknown option -- o"
-# on this box. Must be called while the MSYS pid is still alive and
-# tracked - once it exits, `ps -p` finds nothing and returns empty.
+# Reviewer Round 119 R55: `/proc/<pid>/winpid` is the primary read - Cygwin
+# `ps` prints a state character in column 1 for a stopped or orphaned
+# process, which shifts WINPID to column 5 and would feed a stray `?` or a
+# state letter into the PowerShell source unquoted below. `ps` column 4 is
+# kept only as a fallback for a pid `/proc` has no entry for. Either way
+# the result is validated as pure digits before it is trusted - an
+# unvalidated read here is exactly what would let a malformed value reach
+# an interpolated PowerShell command string. Must be called while the MSYS
+# pid is still alive and tracked - once it exits, both reads find nothing.
 # Usage: resolve_windows_pid <msys-pid>
 resolve_windows_pid() {
-  ps -p "$1" 2>/dev/null | tail -n +2 | awk '{print $4}'
+  local pid="$1"
+  local winpid=""
+  if [ -r "/proc/$pid/winpid" ]; then
+    winpid=$(cat "/proc/$pid/winpid" 2>/dev/null)
+  fi
+  if [ -z "$winpid" ]; then
+    winpid=$(ps -p "$pid" 2>/dev/null | tail -n +2 | awk '{print $4}')
+  fi
+  case "$winpid" in
+    ''|*[!0-9]*) return 0 ;;  # empty or non-numeric: refuse to interpolate it anywhere
+    *) echo "$winpid" ;;
+  esac
 }
 
-# --- Helper: force-kill a Windows pid and its whole descendant tree ---
-# v2 Section 0 item 2: a live incident showed claude.exe surviving a TERM
-# to its own bash wrapper, still holding the persona claim, until the
-# pre-gate timed out. Confirmed live, this session, two distinct shapes:
-# (1) when the coproc's shell tail-execs directly into the native binary
-# with nothing after it, `kill -9` on the MSYS pid alone reaches and kills
-# the real Windows process (no separate child at all) - proven with a real
-# powershell.exe child, not assumed; (2) when the wrapper instead forks a
-# real child process (the shape a live incident can produce, e.g. from
-# output redirection or an intermediate `env` invocation not tail-execing),
-# the wrapper can die from a signal while a genuine native child survives
-# as an orphan, invisible to `kill -0` on the wrapper's own MSYS pid.
-# `stop_child` resolves the Windows pid before ever signaling the MSYS pid
-# (a resolve-after-kill race would find nothing once the wrapper is gone),
-# and this function's own descendant walk covers case (2) on top of the
-# plain `kill -9` case (1) already handles.
-# Usage: stop_process_tree <windows-pid>
-stop_process_tree() {
+# --- Helper: snapshot a Windows pid's whole descendant tree, without
+# killing anything ---
+# Reviewer Round 119 R50/R52: walking Win32_Process's ParentProcessId
+# *after* the root pid has already been signaled reads a tree that may no
+# longer exist, or worse, a *recycled* pid the OS reused for an unrelated
+# process - Windows keeps a dead process's ParentProcessId association and
+# reuses pids quickly, so a late walk from `$winpid` can find and then
+# force-kill something that was never part of this tree at all. This
+# function only ever reads; the snapshot it returns (one Windows pid per
+# line, root first) is what stop_child kills, at whatever point stop_child
+# chooses to kill it - never a live re-walk. A visited set stops a cycle
+# (a recycled pid pointing back into the same tree) from recursing forever.
+# Usage: snapshot_process_tree <windows-pid>
+snapshot_process_tree() {
   local winpid="$1"
   if [ -z "$winpid" ]; then
-    log "STOP: no Windows pid resolved; nothing to tree-kill"
     return 0
   fi
   powershell -NoProfile -Command "
+    \$visited = New-Object 'System.Collections.Generic.HashSet[int]'
     function Get-Descendants(\$parentId) {
+      if (-not \$visited.Add(\$parentId)) { return }
       \$children = Get-CimInstance Win32_Process -Filter \"ParentProcessId=\$parentId\" -ErrorAction SilentlyContinue
       foreach (\$c in \$children) { \$c.ProcessId; Get-Descendants \$c.ProcessId }
     }
-    \$all = @($winpid) + @(Get-Descendants $winpid)
-    foreach (\$p in \$all) {
+    Write-Output $winpid
+    Get-Descendants $winpid
+  " 2>>"$RUNDIR/supervisor.err"
+}
+
+# --- Helper: force-kill every pid in a snapshot, with a bounded wait and
+# a verified result ---
+# Reviewer Round 119 R53: the previous cut swallowed every PowerShell
+# error and reported success unconditionally, so a slow or hung CIM query
+# could wedge stop_child - which the EXIT trap also calls, wedging the
+# supervisor itself on shutdown. `timeout` bounds the PowerShell call;
+# its own exit status is captured (not discarded); and every pid in the
+# snapshot is re-checked with `Get-Process` afterwards rather than trusted
+# from Stop-Process's own silence. Logs `kill_failed` naming exactly which
+# pids survived, if any do.
+# Usage: kill_process_snapshot <space-separated pids>
+kill_process_snapshot() {
+  local pids="$1"
+  if [ -z "$pids" ]; then
+    return 0
+  fi
+  local ps_list
+  ps_list=$(echo "$pids" | tr ' ' ',')
+  timeout 30 powershell -NoProfile -Command "
+    foreach (\$p in @($ps_list)) {
       try { Stop-Process -Id \$p -Force -ErrorAction SilentlyContinue } catch {}
     }
   " 2>>"$RUNDIR/supervisor.err"
+  local ps_status=$?
+  if [ "$ps_status" -ne 0 ]; then
+    log "STOP: kill_process_snapshot's powershell call exited $ps_status (timeout or error) for pids: $pids"
+  fi
+  local survivors=""
+  for p in $pids; do
+    if [ -n "$(powershell -NoProfile -Command "Get-Process -Id $p -ErrorAction SilentlyContinue" 2>/dev/null)" ]; then
+      survivors="$survivors $p"
+    fi
+  done
+  if [ -n "$survivors" ]; then
+    log "STOP: kill_failed - these Windows pids survived the tree kill:$survivors"
+    return 1
+  fi
+  return 0
 }
 
 # Usage: stop_child <label>
@@ -229,6 +278,45 @@ stop_child() {
     log "STOP[$label]: no child to stop (CHILD_PID empty or unbound)"
     return 0
   fi
+
+  # Reviewer Round 119 R50/R52: the snapshot is taken HERE, before any
+  # signal at all, not after each phase's kill -0 check fails. The live
+  # incident this whole section fixes is a bash wrapper TERMed while its
+  # real child survives - Phase 1 and Phase 2 used to return the moment
+  # `kill -0 $pid` failed, which only ever checks the MSYS-tracked wrapper,
+  # never whether a real descendant is still alive. Resolving and walking
+  # the tree only in Phase 3 meant Phase 1/2's own "stopped" report was
+  # never actually checked against reality on the exact path the incident
+  # took. A snapshot taken after killing risks a recycled pid too (Windows
+  # reuses pids quickly and keeps ParentProcessId associations after a
+  # process exits) - so this list is fixed once, before anything is
+  # signaled, and is the same list checked and killed at every phase below.
+  local snapshot_winpid
+  snapshot_winpid=$(resolve_windows_pid "$pid")
+  local snapshot_pids=""
+  if [ -n "$snapshot_winpid" ]; then
+    snapshot_pids=$(snapshot_process_tree "$snapshot_winpid" | tr '\n' ' ')
+  fi
+
+  # Usage: verify_snapshot_dead - returns 0 (true) only if every pid in
+  # $snapshot_pids is actually gone; escalates (TERM then KILL) whatever
+  # survives before returning, and logs what it had to clean up.
+  verify_snapshot_dead() {
+    [ -z "$snapshot_pids" ] && return 0
+    local alive=""
+    for p in $snapshot_pids; do
+      if [ -n "$(powershell -NoProfile -Command "Get-Process -Id $p -ErrorAction SilentlyContinue" 2>/dev/null)" ]; then
+        alive="$alive $p"
+      fi
+    done
+    if [ -z "$alive" ]; then
+      return 0
+    fi
+    log "STOP[$label]: the wrapper is gone but its own snapshot shows a survivor:$alive - escalating the tree kill"
+    kill_process_snapshot "$alive"
+    return 1
+  }
+
   # Phase 1: EOF - close the write end of the coproc pipe.
   # The child should finish its current turn and exit 0 within a few seconds.
   if [ -n "$CHILD_IN" ]; then
@@ -242,6 +330,7 @@ stop_child() {
     n=$((n + 1))
   done
   if ! kill -0 "$pid" 2>/dev/null; then
+    verify_snapshot_dead
     STOP_PATH="eof"
     return 0
   fi
@@ -254,17 +343,16 @@ stop_child() {
     n=$((n + 1))
   done
   if ! kill -0 "$pid" 2>/dev/null; then
+    verify_snapshot_dead
     STOP_PATH="term"
     return 0
   fi
-  # Phase 3: KILL - resolve the Windows pid BEFORE signaling (once the MSYS
-  # pid exits, `ps -p` finds nothing and the resolve fails silently), send
-  # SIGKILL, then force-kill any real descendant that survives it.
-  local kill_winpid
-  kill_winpid=$(resolve_windows_pid "$pid")
-  log "STOP[$label]: TERM grace expired, sending KILL to pid $pid (winpid $kill_winpid) and its process tree"
+  # Phase 3: KILL - send SIGKILL to the wrapper, then force-kill the whole
+  # snapshot taken at entry (not a fresh walk from a possibly-dead or
+  # -recycled pid).
+  log "STOP[$label]: TERM grace expired, sending KILL to pid $pid (winpid $snapshot_winpid) and its process tree"
   kill -9 "$pid" 2>/dev/null
-  stop_process_tree "$kill_winpid"
+  kill_process_snapshot "$snapshot_pids"
   STOP_PATH="kill"
   return 0
 }

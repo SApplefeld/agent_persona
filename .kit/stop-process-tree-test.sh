@@ -1,33 +1,41 @@
 #!/usr/bin/env bash
 # Live test: v2 Section 0 item 2, the stop-path defect (Reviewer Round 105
-# R2, Round 111 R29, Round 113 R42). A live incident showed a bash wrapper
-# TERMed while the claude.exe process underneath it survived, still holding
-# the persona claim, until the pre-gate timed out.
+# R2, Round 111 R29, Round 113 R42, Round 119 R50-R56). A live incident
+# showed a bash wrapper TERMed while the claude.exe process underneath it
+# survived, still holding the persona claim, until the pre-gate timed out.
 #
 # Confirmed live, this session, while building this fix: an MSYS pid's
-# WINPID (column 4 of plain `ps -p <pid>`, this environment's `ps` has no
-# `-o` support) must be resolved BEFORE the MSYS pid is signaled - once it
-# exits, `ps -p` finds nothing. And a genuine native Windows child process
-# (not an MSYS-forked one, which does not expose a discoverable Win32
-# parent) is exactly what Get-CimInstance Win32_Process's ParentProcessId
-# walk correctly finds and kills.
+# WINPID (preferably /proc/<pid>/winpid; ps -p's column 4 as a fallback -
+# this environment's `ps` has no `-o` support) must be resolved BEFORE the
+# MSYS pid is signaled - once it exits, both reads find nothing. A genuine
+# native Windows child process (not an MSYS-forked one, which does not
+# expose a discoverable Win32 parent) is exactly what Get-CimInstance
+# Win32_Process's ParentProcessId walk correctly finds and kills. And
+# (Round 119 R50) the snapshot must be taken before ANY phase signals the
+# wrapper, not after Phase 1/2's own kill -0 check fails - the live
+# incident's exact shape (TERM kills the wrapper, the real child survives)
+# is invisible to a check that only ever asks about the wrapper's own pid.
 #
-# This proves the real fix against a real process and a real child, not a
-# fake or a unit-tested stand-in, without launching a full claude session
-# (which the live-* suites already do, at real cost and real contention
-# with any other live session on the box).
+# This proves the real fix against real processes, not fakes or unit-
+# tested stand-ins, without launching a full claude session (which the
+# live-* suites already do, at real cost and real contention with any
+# other live session on the box).
 #
-# Extracts resolve_windows_pid and stop_process_tree verbatim from
-# bin/supervise.sh (sed ranges between each function's own opening and
-# closing brace) rather than duplicating them, so this test exercises the
-# actual shipped functions, not a copy that can drift.
+# Extracts resolve_windows_pid, snapshot_process_tree, kill_process_snapshot,
+# and stop_child verbatim from bin/supervise.sh (sed ranges between each
+# function's own opening and closing brace) rather than duplicating them,
+# so this test exercises the actual shipped functions, not a copy that can
+# drift.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SUPERVISE="$PLUGIN_DIR/bin/supervise.sh"
-RUNDIR="$SCRIPT_DIR/../run"
-mkdir -p "$RUNDIR"
+# Reviewer Round 119 R56: a real temp dir, not this repo's own run/ (the
+# live supervisor's default RUNDIR) - a concurrent supervised run must
+# never share this test's scratch files.
+RUNDIR="$(mktemp -d)"
+trap 'rm -rf "$RUNDIR"' EXIT
 
 FAIL_COUNT=0
 CHECK_COUNT=0
@@ -51,11 +59,26 @@ extract_fn() {
 FN_FILE="$RUNDIR/stop-process-tree-fns.sh"
 : > "$FN_FILE"
 extract_fn "resolve_windows_pid" "$FN_FILE"
-extract_fn "stop_process_tree" "$FN_FILE"
-# The real functions shell out to `log`; stub it here (this test checks
-# the process tree, not the log file).
-log() { :; }
+extract_fn "snapshot_process_tree" "$FN_FILE"
+extract_fn "kill_process_snapshot" "$FN_FILE"
+extract_fn "stop_child" "$FN_FILE"
+# The real functions shell out to `log` and read $RUNDIR (already set,
+# above, to this test's own scratch dir - real, not stubbed, since
+# kill_process_snapshot writes to "$RUNDIR/supervisor.err").
+log() { echo "[log] $*"; }
 source "$FN_FILE"
+
+# Reviewer Round 119 R56: a truncated extraction (a sed range mismatch, a
+# renamed function upstream) must fail as an extraction problem, not
+# silently produce a no-op function that passes every check by doing
+# nothing. Check each function actually landed before trusting any of them.
+for fn in resolve_windows_pid snapshot_process_tree kill_process_snapshot stop_child; do
+  if ! declare -F "$fn" > /dev/null; then
+    echo "FAIL: extraction did not define $fn - the sed range or the upstream function name has drifted"
+    exit 1
+  fi
+done
+pass "setup: all four functions extracted and defined"
 
 # --- Case: the wrapper's own exec target is killed directly by kill -9 ---
 # Confirmed shape: a bash subshell that tail-execs directly into a native
@@ -68,53 +91,54 @@ DIRECT_WINPID=$(resolve_windows_pid "$DIRECT_PID")
 if [ -z "$DIRECT_WINPID" ]; then
   failed "setup: could not resolve a winpid for the direct-exec case"
 else
-  pass "setup: direct-exec case resolved a real winpid ($DIRECT_WINPID) before signaling"
+  if [ -z "$(powershell -NoProfile -Command "Get-Process -Id $DIRECT_WINPID -ErrorAction SilentlyContinue" 2>/dev/null)" ]; then
+    failed "setup: the direct-exec process was not alive at resolve time - the instrument is not proven"
+  else
+    pass "setup: direct-exec case resolved a real, live winpid ($DIRECT_WINPID) before signaling"
+  fi
   kill -9 "$DIRECT_PID" 2>/dev/null
   sleep 2
   if [ -z "$(powershell -NoProfile -Command "Get-Process -Id $DIRECT_WINPID -ErrorAction SilentlyContinue" 2>/dev/null)" ]; then
     pass "direct-exec case: kill -9 on the MSYS pid alone kills the real Windows process"
   else
     failed "direct-exec case: the real Windows process SURVIVED kill -9 on the MSYS pid"
+    kill -9 "$DIRECT_WINPID" 2>/dev/null
   fi
 fi
 
-# --- Case: a wrapper whose real child survives it needs the tree-kill ---
-# Simulates the live incident's actual shape: a wrapper process is signaled
-# and dies, while a genuine native Windows child process it launched keeps
-# running underneath it - stop_process_tree, not a bare kill, must reach it.
+# --- Case: stop_child itself (Reviewer Round 119 R51), not just the raw
+# tree-kill helper, actually stops a wrapper whose real child survives it
+# --- This is the shape the spec's own acceptance criterion asks for: a
+# child whose claude.exe outlives its wrapper is still fully stopped by
+# stop_child, end to end.
+CHILD_IN=""  # stop_child checks this; empty means Phase 1's EOF close is a no-op
+SUPERVISOR_STOP_GRACE_MS=2000  # short grace so this test doesn't wait a full minute per phase
+STOP_PATH=""
 ( powershell.exe -NoProfile -Command "Start-Sleep -Seconds 90" & echo $! > "$RUNDIR/child.pid"; wait ) &
-WRAPPER_PID=$!
+CHILD_PID=$!
 sleep 2
-CHILD_PID=$(cat "$RUNDIR/child.pid" 2>/dev/null)
-WRAPPER_WINPID=$(resolve_windows_pid "$WRAPPER_PID")
-if [ -z "$CHILD_PID" ] || [ -z "$WRAPPER_WINPID" ]; then
-  failed "setup: wrapper/child pids did not resolve for the surviving-child case"
+REAL_CHILD_PID=$(cat "$RUNDIR/child.pid" 2>/dev/null)
+if [ -z "$REAL_CHILD_PID" ]; then
+  failed "setup: stop_child case's real child pid never appeared"
 else
-  CHILD_WINPID=$(resolve_windows_pid "$CHILD_PID")
-  pass "setup: wrapper (winpid $WRAPPER_WINPID) and child (winpid $CHILD_WINPID) both resolved before signaling"
-  kill -9 "$WRAPPER_PID" 2>/dev/null
-  sleep 2
-  if [ -z "$(powershell -NoProfile -Command "Get-Process -Id $WRAPPER_WINPID -ErrorAction SilentlyContinue" 2>/dev/null)" ]; then
-    pass "surviving-child case: the wrapper is gone after kill -9"
+  REAL_CHILD_WINPID=$(resolve_windows_pid "$REAL_CHILD_PID")
+  if [ -z "$(powershell -NoProfile -Command "Get-Process -Id $REAL_CHILD_WINPID -ErrorAction SilentlyContinue" 2>/dev/null)" ]; then
+    failed "setup: stop_child case's real child was not alive before stop_child ran"
   else
-    failed "surviving-child case: the wrapper is STILL ALIVE after kill -9"
+    pass "setup: stop_child case's real child (winpid $REAL_CHILD_WINPID) confirmed alive before stop_child runs"
   fi
-  if [ -n "$(powershell -NoProfile -Command "Get-Process -Id $CHILD_WINPID -ErrorAction SilentlyContinue" 2>/dev/null)" ]; then
-    pass "surviving-child case: the child survived a bare kill -9 on the wrapper (reproduces the live incident before the fix)"
-  else
-    failed "setup: the child died on its own before stop_process_tree ran - this case did not reproduce"
-  fi
-  stop_process_tree "$WRAPPER_WINPID"
+  stop_child "test"
   sleep 2
-  if [ -z "$(powershell -NoProfile -Command "Get-Process -Id $CHILD_WINPID -ErrorAction SilentlyContinue" 2>/dev/null)" ]; then
-    pass "surviving-child case: stop_process_tree kills the surviving child (the exact defect this fixes)"
+  if [ -z "$(powershell -NoProfile -Command "Get-Process -Id $REAL_CHILD_WINPID -ErrorAction SilentlyContinue" 2>/dev/null)" ]; then
+    pass "stop_child: the real child is gone after stop_child returns (STOP_PATH=$STOP_PATH) - the exact defect this fixes"
   else
-    failed "surviving-child case: the child SURVIVED stop_process_tree - the orphan defect is not fixed"
+    failed "stop_child: the real child SURVIVED stop_child (STOP_PATH=$STOP_PATH) - the orphan defect is not fixed"
+    kill -9 "$REAL_CHILD_WINPID" 2>/dev/null
   fi
 fi
 
-rm -f "$RUNDIR/child.pid" "$FN_FILE"
-kill -9 "$DIRECT_PID" "$WRAPPER_PID" "$CHILD_PID" 2>/dev/null  # best-effort cleanup
+rm -f "$RUNDIR/child.pid"
+kill -9 "$DIRECT_PID" "$CHILD_PID" 2>/dev/null  # best-effort cleanup
 
 echo ""
 echo "$CHECK_COUNT checks run, $FAIL_COUNT failed"
