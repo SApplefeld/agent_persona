@@ -246,6 +246,40 @@ console.log(newest.timestamp || 0);
 " "$store" "$persona" "$fact" 2>> "$RUNDIR/supervisor.err"
 }
 
+# --- Helper: is the newest root_complete decision a backfilled one? ---
+# v2 Section 0 item 1: the item 2 backstop (hooks/index.ts) writes a
+# root_complete decision whose own detail text says "backfilled" when the
+# worker did real tool work with no active goal tree - that is not a real
+# goal completion, and must never trigger RESTART_PASSIVE. A sibling to
+# get_fact rather than a change to it: get_fact's existing single-token
+# output feeds bare numeric comparisons elsewhere (the -gt checks below),
+# and a two-word answer there would fail those silently.
+# Usage: get_root_complete_backfilled <workdir> <persona>
+# Prints "1" if the newest root_complete decision's detail names it
+# backfilled, otherwise empty (including when there is no root_complete at all).
+get_root_complete_backfilled() {
+  local workdir="$1"
+  local persona="$2"
+  local store="$workdir/.agentic-personas.json"
+  node -e "
+const fs = require('fs');
+let s;
+try {
+  s = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+} catch (e) {
+  process.exit(0);
+}
+const p = s[process.argv[2]];
+if (!p) process.exit(0);
+const d = (p.decisions||[]).filter(x => x.action === 'root_complete');
+if (d.length === 0) process.exit(0);
+const newest = d[d.length - 1];
+if (typeof newest.detail === 'string' && newest.detail.includes('backfilled')) {
+  console.log('1');
+}
+" "$store" "$persona" 2>> "$RUNDIR/supervisor.err"
+}
+
 # --- Helper: read child session id from stream-json init line ---
 read_child_session_id() {
   local out_file="$1"
@@ -451,6 +485,7 @@ while true; do
 
     # Poll the decision log for signals.
     ROOT_COMPLETE_TS=$(get_fact "$WORKDIR" "$PERSONA" "root_complete")
+    ROOT_COMPLETE_BACKFILLED=$(get_root_complete_backfilled "$WORKDIR" "$PERSONA")
     # Plan item 4: a distinct signal from root_complete. root_complete means
     # "this goal is done"; shutdown_requested means "the operator asked the
     # supervisor itself to stop" - only the second one should exit the loop.
@@ -513,6 +548,7 @@ const crashCount = process.argv[12] ? parseInt(process.argv[12]) : 0;
 const restartCount = process.argv[13] ? parseInt(process.argv[13]) : 0;
 const shutdownRequestedTs = process.argv[14] ? parseInt(process.argv[14]) : null;
 const restartRequestedTs = process.argv[15] ? parseInt(process.argv[15]) : null;
+const rootCompleteBackfilled = process.argv[16] === '1';
 console.log(JSON.stringify({
   childExitCode: null,
   rootCompleteTs,
@@ -530,8 +566,9 @@ console.log(JSON.stringify({
   staleAfterMs,
   minRunMs,
   maxRestartsPerHour,
+  rootCompleteBackfilled,
 }));
-" "${ROOT_COMPLETE_TS:-}" "${CRITICAL_TS:-}" "${HEARTBEAT_SESSION_ID:-}" "${HEARTBEAT_LAST_SEEN:-}" "${NOW:-}" "$CHILD_START_TS" "${CHILD_SESSION_ID:-}" "$LAUNCHED_AT" "$STALE_AFTER_MS" "$SUPERVISOR_MIN_RUN_MS" "$SUPERVISOR_MAX_RESTARTS_PER_HOUR" "$CRASH_COUNT" "$RESTART_COUNT" "${SHUTDOWN_REQUESTED_TS:-}" "${RESTART_REQUESTED_TS:-}" 2>> "$RUNDIR/supervisor.err")
+" "${ROOT_COMPLETE_TS:-}" "${CRITICAL_TS:-}" "${HEARTBEAT_SESSION_ID:-}" "${HEARTBEAT_LAST_SEEN:-}" "${NOW:-}" "$CHILD_START_TS" "${CHILD_SESSION_ID:-}" "$LAUNCHED_AT" "$STALE_AFTER_MS" "$SUPERVISOR_MIN_RUN_MS" "$SUPERVISOR_MAX_RESTARTS_PER_HOUR" "$CRASH_COUNT" "$RESTART_COUNT" "${SHUTDOWN_REQUESTED_TS:-}" "${RESTART_REQUESTED_TS:-}" "${ROOT_COMPLETE_BACKFILLED:-}" 2>> "$RUNDIR/supervisor.err")
 
     # Call the decide unit.
     DECIDE_RESULT=$(node -e "
@@ -685,9 +722,18 @@ console.log(o.reason || '');
   fi
   ROOT_COMPLETE_TS=$(get_fact "$WORKDIR" "$PERSONA" "root_complete")
   if [ -n "$ROOT_COMPLETE_TS" ] && [ "$ROOT_COMPLETE_TS" -gt "$CHILD_START_TS" ]; then
-    log "RESTART_PASSIVE: root_complete at $ROOT_COMPLETE_TS > child start $CHILD_START_TS (no shutdown requested)"
-    log "PASSIVE: goal complete; returning to passive state, waiting for the next goal delivered by chat"
-    continue  # only the outer loop encloses this point; no crash/restart accounting
+    ROOT_COMPLETE_BACKFILLED=$(get_root_complete_backfilled "$WORKDIR" "$PERSONA")
+    if [ -n "$ROOT_COMPLETE_BACKFILLED" ]; then
+      # v2 Section 0 item 1: a backfilled root_complete is real tool work
+      # with no active goal tree, not a real completion - falling through
+      # to the ordinary restart-with-accounting path below rather than
+      # treating this as a passive, unaccounted goal-complete restart.
+      log "NOTE: root_complete at $ROOT_COMPLETE_TS > child start $CHILD_START_TS is backfilled, not a real completion; not taking RESTART_PASSIVE"
+    else
+      log "RESTART_PASSIVE: root_complete at $ROOT_COMPLETE_TS > child start $CHILD_START_TS (no shutdown requested)"
+      log "PASSIVE: goal complete; returning to passive state, waiting for the next goal delivered by chat"
+      continue  # only the outer loop encloses this point; no crash/restart accounting
+    fi
   fi
 
   # Update crash counter.

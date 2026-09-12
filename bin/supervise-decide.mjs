@@ -6,6 +6,7 @@
  * @typedef {Object} DecideInput
  * @property {number|null} [childExitCode] - Exit code of the current child, or null if still running.
  * @property {number|null} [rootCompleteTs] - Timestamp of the newest root_complete decision, or null.
+ * @property {boolean} [rootCompleteBackfilled] - True when that root_complete's own detail text names it a backfilled root (the worker did real work with no active goal tree; item 2 of the v1 plan). A backfilled root_complete is not a real completion signal and must never trigger a restart.
  * @property {number|null} [shutdownRequestedTs] - Timestamp of the newest shutdown_requested decision, or null.
  * @property {number|null} [restartRequestedTs] - Timestamp of the newest restart_requested decision, or null.
  * @property {number|null} [criticalTs] - Timestamp of the newest context_budget_crossed critical: decision, or null.
@@ -46,7 +47,11 @@
  *    both are present
  * 5. restart_passive - root_complete decision newer than child start, with no
  *    shutdown requested: the goal is done, but the supervisor stays up and
- *    returns to item 1's passive state for a second goal, rather than exiting
+ *    returns to item 1's passive state for a second goal, rather than exiting.
+ *    Skipped when rootCompleteBackfilled is true (v2 Section 0 item 1): a
+ *    backfilled root_complete means the worker did real work with no active
+ *    goal tree, not that a real goal actually finished, and restarting on it
+ *    kills a child that was never done with anything.
  * 6. restart - child exited non-zero, or critical crossing, or hung (stale + own session + past grace)
  * 7. continue - none of the above
  *
@@ -71,6 +76,7 @@ export function decide(input) {
     staleAfterMs = 90000,
     minRunMs = 120000,
     maxRestartsPerHour = 6,
+    rootCompleteBackfilled = false,
   } = input;
 
   // 1. Restart budget exhausted: stop (not a restart).
@@ -98,8 +104,14 @@ export function decide(input) {
 
   // 3b. root_complete newer than child start, with no shutdown requested:
   // the goal is done, but the supervisor stays up for a second goal (plan
-  // item 4) - restart the child passively instead of exiting.
+  // item 4) - restart the child passively instead of exiting. Skipped when
+  // the root was backfilled (v2 Section 0 item 1): that is real tool work
+  // with no goal tree, not a real completion, and restarting on it kills a
+  // child mid-work.
   if (rootCompleteTs !== null && rootCompleteTs > childStartTs) {
+    if (rootCompleteBackfilled) {
+      return { action: 'continue', reason: `root_complete at ${rootCompleteTs} > child start ${childStartTs} is backfilled, not a real completion; no restart` };
+    }
     return { action: 'restart_passive', reason: `root_complete at ${rootCompleteTs} > child start ${childStartTs}` };
   }
 

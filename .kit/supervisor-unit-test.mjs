@@ -315,6 +315,49 @@ const cases = [
     },
     expected: 'stop_budget',
   },
+  // 10. v2 Section 0 item 1: a backfilled root_complete never triggers a
+  // restart - the worker did real work with no active goal tree, not a
+  // real completion.
+  {
+    name: 'backfilled root_complete: no restart',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: 2000,
+      shutdownRequestedTs: null,
+      criticalTs: null,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: null,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+      rootCompleteBackfilled: true,
+    },
+    expected: 'continue',
+  },
+  // 11. Control: the same shape, but not backfilled - still restarts as
+  // it always has (proves the new field only changes behavior when true).
+  {
+    name: 'real (non-backfilled) root_complete: still restart_passive',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: 2000,
+      shutdownRequestedTs: null,
+      criticalTs: null,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: null,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+      rootCompleteBackfilled: false,
+    },
+    expected: 'restart_passive',
+  },
 ];
 
 let pass = 0, fail = 0;
