@@ -31,6 +31,8 @@ import {
   planningCapReached,
   applyTurnToErrors,
   envNotable,
+  DECISIONS_MAX,
+  MEMORY_MAX,
 } from "./agent-state";
 import type { AgentState, GoalNode, NudgeBudget, EnvGit, EnvState } from "./agent-state";
 import {
@@ -45,6 +47,7 @@ import {
   claimReaderRole,
   hasLiveReaderClaim,
   sweepExpiredRecords,
+  enforceChannelWindow,
   writeInboxRecord,
   getHighestInboxSeq,
   listInboxRecords,
@@ -326,6 +329,23 @@ async function runHealth(dp: any, forNodeId: string | null): Promise<void> {
   }
 }
 
+// Item 5 (Bounded store): the one append-only rollover log every capped
+// store writes to when something falls off its window - the commons
+// store's closed inbox/reply records (enforceChannelWindow) and the
+// persona file's own decision log and memory cap (persist(), below). Same
+// one-JSON-object-per-line rule as the yield log, appended rather than
+// rewritten, so the file that grows without bound is this one, by design,
+// not the store the plugin reads and rewrites whole on every tick.
+const CHANNEL_LOG_PATH = ".agentic-channel.jsonl";
+const appendToChannelLog = async (dp: any, lines: string[]): Promise<void> => {
+  if (lines.length === 0) return;
+  try {
+    const existing = await dp.fs.exists(CHANNEL_LOG_PATH) ? await dp.fs.read(CHANNEL_LOG_PATH) : "";
+    const sep = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+    await dp.fs.write(CHANNEL_LOG_PATH, existing + sep + lines.join("\n") + "\n");
+  } catch { /* non-fatal: the rollover log is a durability aid, not a hard dependency */ }
+};
+
 // L26: the yield action (log the decision, drop ownership, append a single
 // well-formed line to the yield log) is one code path shared by every site
 // that detects a lost-owner condition. persist() calls it on the write path;
@@ -378,6 +398,32 @@ const writeClaimDirect = async (dp: any): Promise<void> => {
 export const persist = async (dp: any): Promise<boolean> => {
   if (!sess.isOwner) return false;
   sess.state.updatedAt = Date.now();
+
+  // Item 5 (Bounded store): cap the decision log and memory at push time,
+  // not only when the file happens to be parsed at a session load - a
+  // long-lived child never reloads, which is why the running worker's file
+  // held over 500 decisions against a cap of 200 that only ever applied on
+  // read. Overflow rolls to the append-only channel log rather than being
+  // silently dropped.
+  if (sess.state.decisions.length > DECISIONS_MAX) {
+    const overflow = sess.state.decisions.slice(0, sess.state.decisions.length - DECISIONS_MAX);
+    sess.state.decisions = sess.state.decisions.slice(-DECISIONS_MAX);
+    await appendToChannelLog(dp, overflow.map((d) => JSON.stringify({ persona: sess.persona, kind: "decision", rolledAt: Date.now(), record: d })));
+  }
+  if (sess.state.memory.length > MEMORY_MAX) {
+    // Evict oldest non-pinned entries first; pinned entries never roll off.
+    const pinned = sess.state.memory.filter((m) => m.pinned);
+    const unpinned = sess.state.memory.filter((m) => !m.pinned).sort((a, b) => a.createdAt - b.createdAt);
+    const keepUnpinnedCount = Math.max(0, MEMORY_MAX - pinned.length);
+    const overflowCount = unpinned.length - keepUnpinnedCount;
+    if (overflowCount > 0) {
+      const overflow = unpinned.slice(0, overflowCount);
+      const kept = unpinned.slice(overflowCount);
+      // Restore original relative order (createdAt) across pinned + kept.
+      sess.state.memory = [...pinned, ...kept].sort((a, b) => a.createdAt - b.createdAt);
+      await appendToChannelLog(dp, overflow.map((m) => JSON.stringify({ persona: sess.persona, kind: "memory", rolledAt: Date.now(), record: m })));
+    }
+  }
   const store: Record<string, unknown> = await dp.fs.exists(sess.storePath)
     ? (JSON.parse(await dp.fs.read(sess.storePath)) as Record<string, unknown>)
     : {};
@@ -1255,6 +1301,27 @@ export const register: Register = async (on, options) => {
               loop: "worker",
               action: "sweep_expired_records",
               detail: `swept ${swept} expired operator records (persona: ${sess.persona})`,
+            });
+          }
+
+          // Item 5 (Bounded store): the shared store keeps only a short
+          // window of recent inbox/reply records - overflow rolls to the
+          // append-only channel log instead of staying in the one JSON
+          // file forever. Open asks are untouched (a different function,
+          // a different lifecycle).
+          const channelWindowSize = typeof cfg.channelRecordWindow === "number" ? (cfg.channelRecordWindow as number) : 50;
+          const rolled = await enforceChannelWindow(
+            commonsStoreOf($),
+            sess.persona,
+            channelWindowSize,
+            (lines) => appendToChannelLog($, lines),
+          );
+          if (rolled > 0) {
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "worker",
+              action: "channel_window_rolled",
+              detail: `rolled ${rolled} closed inbox/reply records to the channel log (persona: ${sess.persona})`,
             });
           }
         }

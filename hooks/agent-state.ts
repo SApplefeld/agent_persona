@@ -170,7 +170,11 @@ export interface AgentState {
 }
 
 // Decision log cap: keep the most recent N entries.
-const DECISIONS_MAX = 200;
+export const DECISIONS_MAX = 200;
+
+// Item 5 (Bounded store): memory cap, enforced at push time in persist().
+// Pinned entries are never evicted regardless of this cap.
+export const MEMORY_MAX = 50;
 
 // Default state (per persona)
 export function createDefaultState(persona: string, sessionId: string): AgentState {

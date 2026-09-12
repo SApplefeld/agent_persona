@@ -297,6 +297,12 @@ All records live in the global store (machine-wide, one store per plugin). Key f
 
 **TTL:** 24 hours, swept on the cost-summary cadence (every `costSummaryEveryNTicks` ticks). Only the owner sweeps records; readers cannot delete records they do not own.
 
+### Bounded store (item 5)
+
+The store keeps only open asks and a short window of recent inbox/reply records per persona; everything past that window rolls to an append-only `.agentic-channel.jsonl` in the work directory rather than staying in the one rewritten-whole JSON file forever. Enforced on the same cost-summary cadence as the TTL sweep, in `enforceChannelWindow`: `inbox` records not still `pending` and every `reply` record, combined and ordered oldest-first, past `channelRecordWindow` (default 50) roll to the log. Open asks are never touched by this window - only TTL sweeping or the ask's own answer/expire/re-raise lifecycle ends one.
+
+The persona file is bounded the same way, enforced at push time in `persist()` rather than only when the file happens to be parsed at a session load (a long-lived child never reloads): the decision log past `DECISIONS_MAX` (200) and memory past `MEMORY_MAX` (50, pinned entries exempt) both roll their oldest overflow to the same `.agentic-channel.jsonl`.
+
 ### Delivery
 
 When the owner's controller drains the inbox on a quiet tick, it submits the text through `$.prompt.submit` as an `[OPERATOR]` user turn. The `[OPERATOR]` marker is prepended to the text before submission. After that turn completes, the controller reads the last assistant message from `$.session.messages()` and writes it back as the reply.

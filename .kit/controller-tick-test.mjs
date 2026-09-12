@@ -2135,6 +2135,195 @@ async function caseItem8p2_dead_writer_record_skipped_once(clock) {
   check("item8p2 point4: record status is skipped", record && record.status === "skipped");
 }
 
+// Item 5 (Bounded store): the shared commons store rolls closed inbox/reply
+// records past its window to the append-only channel log. Proof per the
+// plan's own line: send more records than the window holds, find the store
+// at the window size and the log holding the rest.
+async function caseItem5_channelWindowRollsOverflow(clock) {
+  console.log("\n=== Item 5: channel window rolls overflow to the log ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "item5_channel_window",
+    channelRecordWindow: 3,
+  });
+
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  // Seed 6 closed inbox records (already delivered, not pending) - twice the
+  // window of 3 - plus one open ask, which the window must never touch.
+  for (let i = 0; i < 6; i++) {
+    const key = `inbox:default:writer-${i}:1`;
+    h.storeMap.set(key, {
+      id: `default-writer-${i}-1`,
+      key,
+      from: `writer-${i}`,
+      at: now - (6 - i) * 1000,
+      text: `message ${i}`,
+      kind: "say",
+      status: "delivered",
+    });
+  }
+  const openAskKey = "ask:default:ask-open-1";
+  h.storeMap.set(openAskKey, {
+    id: "ask-open-1",
+    key: openAskKey,
+    persona: "default",
+    at: now - 500,
+    nodeId: "node-001",
+    question: "still open",
+    status: "open",
+  });
+
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  // costSummaryEveryNTicks is 2 in OPTS; two ticks reach the sweep cadence.
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+
+  const remainingInbox = [...h.storeMap.keys()].filter(k => k.startsWith("inbox:default:"));
+  check("item5 channel window: store holds exactly the window size", remainingInbox.length === 3);
+
+  check("item5 channel window: the open ask is untouched", h.storeMap.has(openAskKey));
+
+  const decisions = getDecisions(h);
+  check("item5 channel window: channel_window_rolled decision present", decisions.some(d => d.action === "channel_window_rolled"));
+
+  const logRaw = h.fsMap.get(".agentic-channel.jsonl") || "";
+  const logLines = logRaw.split("\n").filter(l => l.trim().length > 0);
+  check("item5 channel window: log holds the rolled records", logLines.length === 3);
+  check("item5 channel window: log entries are valid JSON with kind=inbox", logLines.every(l => { try { return JSON.parse(l).kind === "inbox"; } catch { return false; } }));
+}
+
+// Item 5 (Bounded store): the persona file's decision log is capped at push
+// time (persist()), not only when the file is parsed at a session load - a
+// long-lived child never reloads. Proof per the plan's own line: push more
+// decisions than the cap in a single session, find the file at the cap
+// with the overflow in the log.
+async function caseItem5_decisionLogCappedAtPush(clock) {
+  console.log("\n=== Item 5: decision log capped at push, overflow rolled to the log ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "item5_decision_cap",
+  });
+
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  // Seed exactly DECISIONS_MAX (200) decisions - at the cap, not over it, so
+  // the load itself does not trip parseState's own separate (silent,
+  // load-time only) trim. The overflow this case proves is one that
+  // accumulates from live, in-session growth with no reload in between -
+  // the real shape of "a long-lived child never reloads" - not one that
+  // parseState's read-time cap would have already caught.
+  const personaState = buildPersonaState(mySid, now);
+  const seeded = [];
+  for (let i = 0; i < 200; i++) {
+    seeded.push({ timestamp: now - (200 - i) * 1000, loop: "monitor", action: "seed", detail: `seed-${i}` });
+  }
+  personaState.decisions = seeded;
+  personaState.updatedAt = now;
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
+
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  // Ten ticks, each pushing at least one decision (idle/env/cost-summary
+  // logging) with no reload in between - live growth past the cap, the
+  // shape a long-lived child actually produces.
+  for (let i = 0; i < 10; i++) {
+    clock.advance(60_000);
+    await tickAndSettle(h, clock, 50);
+  }
+
+  const state = getState(h);
+  check("item5 decision cap: decisions capped at DECISIONS_MAX (200)", state.decisions.length === 200);
+
+  const logRaw = h.fsMap.get(".agentic-channel.jsonl") || "";
+  const logLines = logRaw.split("\n").filter(l => l.trim().length > 0);
+  const decisionLines = logLines.filter(l => { try { return JSON.parse(l).kind === "decision"; } catch { return false; } });
+  check("item5 decision cap: overflow rolled to the log", decisionLines.length >= 1);
+
+  // The oldest seeded entries are the ones that rolled off first; the
+  // newest seeded entry survives.
+  check("item5 decision cap: newest seeded entry survives", state.decisions.some(d => d.detail === "seed-199"));
+  check("item5 decision cap: oldest seeded entry rolled off", !state.decisions.some(d => d.detail === "seed-0"));
+}
+
+// Item 5 (Bounded store): memory is capped at push time too (MEMORY_MAX),
+// oldest unpinned entries roll to the log first; a pinned entry is the
+// control - it never rolls off regardless of the cap.
+async function caseItem5_memoryCappedAtPush(clock) {
+  console.log("\n=== Item 5: memory capped at push, pinned entry survives ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "item5_memory_cap",
+  });
+
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  // Seed MEMORY_MAX (50) unpinned entries plus one pinned entry, older than
+  // all of them - the control that must survive every roll.
+  const personaState = buildPersonaState(mySid, now);
+  const seededMemory = [{
+    id: "mem-pinned", kind: "lesson", text: "pinned lesson", confidence: 0.9,
+    source: "worker", createdAt: now - 100_000, lastAccessed: now - 100_000, accessCount: 0, pinned: true,
+  }];
+  for (let i = 0; i < 50; i++) {
+    seededMemory.push({
+      id: `mem-${i}`, kind: "fact", text: `fact ${i}`, confidence: 0.5,
+      source: "worker", createdAt: now - (50 - i) * 1000, lastAccessed: now, accessCount: 0, pinned: false,
+    });
+  }
+  personaState.memory = seededMemory;
+  personaState.updatedAt = now;
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
+
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+
+  const state = getState(h);
+  check("item5 memory cap: memory capped at MEMORY_MAX (50)", state.memory.length === 50);
+  check("item5 memory cap: pinned entry survives", state.memory.some(m => m.id === "mem-pinned"));
+  check("item5 memory cap: newest unpinned entry survives", state.memory.some(m => m.id === "mem-49"));
+  check("item5 memory cap: oldest unpinned entry rolled off", !state.memory.some(m => m.id === "mem-0"));
+
+  const logRaw = h.fsMap.get(".agentic-channel.jsonl") || "";
+  const logLines = logRaw.split("\n").filter(l => l.trim().length > 0);
+  const memoryLines = logLines.filter(l => { try { return JSON.parse(l).kind === "memory"; } catch { return false; } });
+  check("item5 memory cap: overflow rolled to the log", memoryLines.length >= 1);
+}
+
 // S4: D6 doorbell - peer consumed
 async function caseS4_peer_consumed(clock) {
   console.log("\n=== S4: peer consumed ===");
@@ -3554,6 +3743,9 @@ async function main() {
     await caseItem8p2_placeholder_marker_refused(clock);
     await caseItem8p2_memory_quality_self_scoring_vs_proof_backed(clock);
     await caseItem8p2_dead_writer_record_skipped_once(clock);
+    await caseItem5_channelWindowRollsOverflow(clock);
+    await caseItem5_decisionLogCappedAtPush(clock);
+    await caseItem5_memoryCappedAtPush(clock);
     await caseS4_peer_consumed(clock);
     await caseS4_peer_send_message_consumed(clock);
     await caseS4_other_origin_passes(clock);

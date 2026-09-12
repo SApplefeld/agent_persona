@@ -316,6 +316,51 @@ export async function sweepExpiredRecords(
   return swept;
 }
 
+/**
+ * Item 5 (Bounded store): the shared commons store keeps only open asks and
+ * a short window of recent inbox/reply records per persona - closed records
+ * beyond the window roll to an append-only log rather than staying in the
+ * one JSON file forever. This never touches `ask:` keys (an open ask has
+ * its own lifecycle - answered, expired, or re-raised - and TTL-based
+ * `sweepExpiredRecords` above is the only thing that ages one out); it
+ * covers `inbox:` records not still `"pending"` (a pending record is live
+ * work the drain has not consumed yet) and every `reply:` record, combined
+ * and ordered oldest-first, keeping the newest `windowSize` and rolling the
+ * rest. Returns the number of records rolled.
+ */
+export async function enforceChannelWindow(
+  store: CommonsStore,
+  persona: string,
+  windowSize: number,
+  appendLines: (lines: string[]) => Promise<void>,
+): Promise<number> {
+  const inbox = (await listInboxRecords(store, persona)).filter((r) => r.status !== "pending");
+  const keys = await store.keys();
+  const replyPrefix = `${REPLY_PREFIX}${persona}:`;
+  const combined: { key: string; at: number; kind: "inbox" | "reply"; record: unknown }[] = inbox.map((r) => ({
+    key: r.key,
+    at: r.at,
+    kind: "inbox" as const,
+    record: r,
+  }));
+  for (const key of keys) {
+    if (key.startsWith(replyPrefix)) {
+      const raw = await store.get(key);
+      if (raw) combined.push({ key, at: (raw as ReplyRecord).at, kind: "reply", record: raw });
+    }
+  }
+  combined.sort((a, b) => a.at - b.at);
+
+  if (combined.length <= windowSize) return 0;
+  const overflow = combined.slice(0, combined.length - windowSize);
+  const lines = overflow.map((o) => JSON.stringify({ persona, kind: o.kind, rolledAt: Date.now(), record: o.record }));
+  await appendLines(lines);
+  for (const o of overflow) {
+    await store.delete(o.key);
+  }
+  return overflow.length;
+}
+
 // --- D2: Reader claim and tools ---
 
 /**

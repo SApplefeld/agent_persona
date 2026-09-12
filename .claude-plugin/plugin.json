@@ -68,6 +68,12 @@
       "default": 600000,
       "title": "Ask re-ask suppress window (ms)",
       "description": "How long after closing an ask before the classifier can re-open the same question (ms). Default 10min."
+    },
+    "channelRecordWindow": {
+      "type": "number",
+      "default": 50,
+      "title": "Channel record window (count)",
+      "description": "How many closed inbox/reply records the shared store keeps per persona before rolling the rest to .agentic-channel.jsonl. Open asks are never rolled by this window. Default 50."
     }
   }
 }
