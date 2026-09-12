@@ -87,6 +87,51 @@ else
   failed "F4 clean stop (got exit $STOP_CODE)"
 fi
 
+# --- F5/F6: v2 Section 0 item 1 - a backfilled root_complete never fires
+# RESTART_PASSIVE, and a real (non-backfilled) one still does. Authored per
+# Reviewer Round 119 R46; the run is deferred with the rest of this suite
+# for the same machine-contention reason named in this section's Chapter -
+# not executed as part of this change, so this leg's own pass/fail is not
+# yet reflected in $FAIL_COUNT or $EXIT_FILE below.
+BACKFILL_WORKDIR="$SUITE_DIR/workdir-backfill"
+mkdir -p "$BACKFILL_WORKDIR"
+BACKFILL_LOG="$SUITE_DIR/supervisor-backfill.log"
+# A one-shot prompt that does real tool work (writes a file) with no
+# goal_create call - the exact shape the item 2 backstop backfills a root
+# for, and the shape a coordinator or reader steer with no open goal tree
+# produces (v2 Section 0 item 1's own motivating incident).
+BACKFILL_PROMPT='Write a one-line file named backfill.txt containing the word done. Do not call goal_create.'
+bash "$SUPERVISE" "$BACKFILL_WORKDIR" "restartpassive-item0-1-$$" acceptEdits --dev --prompt "$BACKFILL_PROMPT" --rundir "$SUITE_DIR/rundir-backfill" --no-channel \
+  > "$SUITE_DIR/supervise-backfill.stdout.log" 2>&1 &
+BACKFILL_PID=$!
+
+F5_FOUND=0
+F5_NOTE_LINE_NO=0
+for i in $(seq 1 50); do
+  if [ -f "$BACKFILL_LOG" ] && grep -q 'NOTE:.*backfilled' "$BACKFILL_LOG" 2>/dev/null; then
+    F5_FOUND=1
+    F5_NOTE_LINE_NO=$(grep -n 'NOTE:.*backfilled' "$BACKFILL_LOG" 2>/dev/null | tail -1 | cut -d: -f1)
+    break
+  fi
+  if ! kill -0 "$BACKFILL_PID" 2>/dev/null; then
+    break
+  fi
+  sleep 3
+done
+if [ "$F5_FOUND" -eq 1 ]; then pass "F5 a backfilled root_complete logs NOTE, not RESTART_PASSIVE"; else failed "F5 a backfilled root_complete logs NOTE, not RESTART_PASSIVE"; fi
+
+# F6 control: no RESTART_PASSIVE line ever appears after the NOTE (a
+# backfilled root must never trigger the passive-restart path at all).
+F6_NO_RESTART=1
+if [ "$F5_FOUND" -eq 1 ]; then
+  AFTER_NOTE=$(awk -v r="$F5_NOTE_LINE_NO" 'NR > r && /RESTART_PASSIVE:/' "$BACKFILL_LOG" 2>/dev/null)
+  [ -n "$AFTER_NOTE" ] && F6_NO_RESTART=0
+fi
+if [ "$F6_NO_RESTART" -eq 1 ]; then pass "F6 no RESTART_PASSIVE line follows the backfilled NOTE"; else failed "F6 no RESTART_PASSIVE line follows the backfilled NOTE"; fi
+
+kill -TERM "$BACKFILL_PID" 2>/dev/null
+wait "$BACKFILL_PID" 2>/dev/null
+
 echo "$FAIL_COUNT" > "$EXIT_FILE"
 if [ "$FAIL_COUNT" -gt 0 ]; then
   echo "live-restartpassive-test.sh: FAIL ($FAIL_COUNT check(s) failed)"

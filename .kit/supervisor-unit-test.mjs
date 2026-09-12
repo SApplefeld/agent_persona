@@ -358,6 +358,50 @@ const cases = [
     },
     expected: 'restart_passive',
   },
+  // 12. Reviewer Round 119 R45: a backfilled root must not pre-empt the
+  // hung check. A goal-less worker sitting on a backfilled root_complete
+  // forever, with a stale own-session heartbeat past grace, still restarts.
+  {
+    name: 'backfilled root_complete + stale heartbeat past grace: still restart',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: 2000,
+      shutdownRequestedTs: null,
+      criticalTs: null,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: 1000,
+      now: 100000,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+      rootCompleteBackfilled: true,
+    },
+    expected: 'restart',
+  },
+  // 13. Reviewer Round 119 R45: a backfilled root must not pre-empt the
+  // critical context-budget check either.
+  {
+    name: 'backfilled root_complete + critical crossing: still restart',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: 2000,
+      shutdownRequestedTs: null,
+      criticalTs: 2500,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: null,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+      rootCompleteBackfilled: true,
+    },
+    expected: 'restart',
+  },
 ];
 
 let pass = 0, fail = 0;

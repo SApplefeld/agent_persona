@@ -107,11 +107,13 @@ export function decide(input) {
   // item 4) - restart the child passively instead of exiting. Skipped when
   // the root was backfilled (v2 Section 0 item 1): that is real tool work
   // with no goal tree, not a real completion, and restarting on it kills a
-  // child mid-work.
-  if (rootCompleteTs !== null && rootCompleteTs > childStartTs) {
-    if (rootCompleteBackfilled) {
-      return { action: 'continue', reason: `root_complete at ${rootCompleteTs} > child start ${childStartTs} is backfilled, not a real completion; no restart` };
-    }
+  // child mid-work. Reviewer Round 119 R45 correction: this used to return
+  // early on a backfilled root, which meant a goal-less child could never
+  // be restarted at all - not by 4a (no exit), not by 4b (critical budget),
+  // not by 4c (hung check) - since none of those ever ran. A backfilled
+  // root ignores this one completion signal; it does not pre-empt every
+  // other trigger below.
+  if (rootCompleteTs !== null && rootCompleteTs > childStartTs && !rootCompleteBackfilled) {
     return { action: 'restart_passive', reason: `root_complete at ${rootCompleteTs} > child start ${childStartTs}` };
   }
 
