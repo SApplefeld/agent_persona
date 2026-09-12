@@ -798,26 +798,52 @@ else
   FAIL_COUNT=$((FAIL_COUNT + 1))
 fi
 
-# --- BG5: Verify all snapshotted keys are still present ---
+# --- BG5: Verify all snapshotted keys are still present (store or log) ---
 # Read the snapshot from operator.store-keys-before.json and check each key.
+# Round 47 finding 1: a key that left the store is only acceptable if the
+# bounded-store rollover put it in .agentic-channel.jsonl - the two suites
+# that rolled records during the gate run proved the rollover fires, but
+# the log itself never turned up anywhere, meaning the append had silently
+# failed while the delete went ahead anyway (fixed in hooks/index.ts and
+# hooks/operator.ts). BG5 now reads both: a missing key is a real failure
+# unless the owner's own channel log names it.
+CHANNEL_LOG_WIN=""
+[ -f "$SUITE_DIR/owner/.agentic-channel.jsonl" ] && CHANNEL_LOG_WIN="$(cygpath -m "$SUITE_DIR/owner/.agentic-channel.jsonl" 2>/dev/null || echo "$SUITE_DIR/owner/.agentic-channel.jsonl")"
 if [ -n "$STORE_FILE_LAUNCH" ] && [ -f "$STORE_FILE_LAUNCH" ] && [ -f "$SUITE_DIR/operator.store-keys-before.json" ]; then
   BG5_RESULT=$(node -e "
 try {
   const s = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
   const snapshot = JSON.parse(require('fs').readFileSync(process.argv[2], 'utf8'));
-  const missing = snapshot.filter(k => !s[k]);
-  console.log(JSON.stringify({ missing, total: snapshot.length }));
+  const logPath = process.argv[3];
+  const rolledKeys = new Set();
+  if (logPath) {
+    try {
+      const lines = require('fs').readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean);
+      for (const line of lines) {
+        try { const rec = JSON.parse(line); if (rec.key) rolledKeys.add(rec.key); } catch {}
+      }
+    } catch {}
+  }
+  const goneFromStore = snapshot.filter(k => !s[k]);
+  const missing = goneFromStore.filter(k => !rolledKeys.has(k));
+  const rolled = goneFromStore.filter(k => rolledKeys.has(k));
+  console.log(JSON.stringify({ missing, rolled, total: snapshot.length }));
 } catch (e) {
   console.log(JSON.stringify({ error: e.message }));
 }
-" "$(cygpath -m "$STORE_FILE_LAUNCH" 2>/dev/null || echo "$STORE_FILE_LAUNCH")" "$SUITE_DIR/operator.store-keys-before.json" 2>/dev/null)
+" "$(cygpath -m "$STORE_FILE_LAUNCH" 2>/dev/null || echo "$STORE_FILE_LAUNCH")" "$SUITE_DIR/operator.store-keys-before.json" "$CHANNEL_LOG_WIN" 2>/dev/null)
   
   if [ -n "$BG5_RESULT" ]; then
     BG5_MISSING=$(echo "$BG5_RESULT" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).missing?.length || 0)}catch{console.log(0)}})")
+    BG5_ROLLED=$(echo "$BG5_RESULT" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).rolled?.length || 0)}catch{console.log(0)}})")
     BG5_TOTAL=$(echo "$BG5_RESULT" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).total || 0)}catch{console.log(0)}})")
-    
+
     if [ "$BG5_MISSING" -eq 0 ]; then
-      echo "  OK: BG5: all $BG5_TOTAL snapshotted keys still present"
+      if [ "$BG5_ROLLED" -eq 0 ]; then
+        echo "  OK: BG5: all $BG5_TOTAL snapshotted keys still present"
+      else
+        echo "  OK: BG5: $BG5_ROLLED of $BG5_TOTAL snapshotted keys left the store, all $BG5_ROLLED found in the channel log (bounded-store rollover, accepted)"
+      fi
     else
       BG5_MISSING_LIST=$(echo "$BG5_RESULT" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).missing?.join(', ') || 'unknown')}catch{console.log('unknown')}})")
       echo "  FAIL: BG5: $BG5_MISSING of $BG5_TOTAL snapshotted keys missing: $BG5_MISSING_LIST"
@@ -850,6 +876,9 @@ done
 # BE11: also retain the local stores and global store snapshot
 [ -f "$SUITE_DIR/owner/.agentic-personas.json" ] && cp -f "$SUITE_DIR/owner/.agentic-personas.json" "$RUNS_DIR/owner-personas.json" 2>/dev/null
 [ -f "$SUITE_DIR/reader/.agentic-personas.json" ] && cp -f "$SUITE_DIR/reader/.agentic-personas.json" "$RUNS_DIR/reader-personas.json" 2>/dev/null
+# Round 47 finding 1: retain the owner's channel-rollover log too, so BG5
+# below (and any post-mortem read) can see what left the store and why.
+[ -f "$SUITE_DIR/owner/.agentic-channel.jsonl" ] && cp -f "$SUITE_DIR/owner/.agentic-channel.jsonl" "$RUNS_DIR/owner-channel.jsonl" 2>/dev/null
 if [ -n "$STORE_FILE_LAUNCH" ] && [ -f "$STORE_FILE_LAUNCH" ]; then
   cp -f "$STORE_FILE_LAUNCH" "$RUNS_DIR/global-store-snapshot.json" 2>/dev/null
 fi

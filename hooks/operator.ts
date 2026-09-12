@@ -353,7 +353,11 @@ export async function enforceChannelWindow(
 
   if (combined.length <= windowSize) return 0;
   const overflow = combined.slice(0, combined.length - windowSize);
-  const lines = overflow.map((o) => JSON.stringify({ persona, kind: o.kind, rolledAt: Date.now(), record: o.record }));
+  // Round 47 (BG5): the store key rides at the top level of the log line,
+  // not only inside `record` - a reply record carries no key field of its
+  // own, so a consumer correlating a missing store key back to this log
+  // (BG5's own job) needs it named explicitly for every kind, not just inbox.
+  const lines = overflow.map((o) => JSON.stringify({ persona, kind: o.kind, key: o.key, rolledAt: Date.now(), record: o.record }));
   // Round 47: append before delete, and never delete on a failed append -
   // a record must have proof it landed in the log before it leaves the
   // store, not the other way around.

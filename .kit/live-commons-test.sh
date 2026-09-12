@@ -416,34 +416,36 @@ process.exit(1);
     ASSERT_FAILED=1
   else
     READER_SESSION_WIN=$(echo "$READER_SESSION" | tr -d '\r')
-    # Verify in the commons store that the reader has the later claimedAt
+    # Round 47 finding 2: this used to require two persona:default claims
+    # and compare claimedAt to find the later (losing) one. Round 32's fix
+    # (8d28ee6) releases the reader's speculative persona:default claim on
+    # arbitration loss, so there is only ever one persona:default claim in
+    # the store now - the owner's - and the old check reads that fix as a
+    # failure. The real proof of arbitration order is simpler and does not
+    # need timestamps: the reader session's own commons entry must carry
+    # reader:default and must NOT carry persona:default (the winner keeps
+    # persona:default; every loser is demoted to reader:default only).
     node -e "
 const fs = require('fs');
 const store = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 const readerSession = process.argv[2];
-const keys = Object.keys(store).filter(k => k.startsWith('commons:'));
-const claims = [];
-for (const key of keys) {
-  const entry = store[key];
-  if (entry.claims) {
-    for (const c of entry.claims) {
-      if (c.resource === 'persona:default') claims.push({ holder: entry.sessionId, claimedAt: c.claimedAt });
-    }
-  }
-}
-if (claims.length < 2) {
-  console.error('F10(2) FAIL: need at least 2 claims in store, got ' + claims.length);
+const key = 'commons:' + readerSession;
+const entry = store[key];
+if (!entry || !entry.claims) {
+  console.error('F10(2) FAIL: no commons entry for reader ' + readerSession);
   process.exit(1);
 }
-claims.sort((a, b) => a.claimedAt - b.claimedAt || a.holder.localeCompare(b.holder));
-const winner = claims[0];
-const loser = claims[claims.length - 1];
-console.log('claims: ' + claims.map(c => c.holder + ' @ ' + c.claimedAt).join(' | '));
-if (loser.holder !== readerSession) {
-  console.error('F10(2) FAIL: reader ' + readerSession + ' is NOT the later claimant (loser is ' + loser.holder + ')');
+const hasReaderClaim = entry.claims.some(c => c.resource === 'reader:default');
+const hasPersonaClaim = entry.claims.some(c => c.resource === 'persona:default');
+if (!hasReaderClaim) {
+  console.error('F10(2) FAIL: reader ' + readerSession + ' has no reader:default claim');
   process.exit(1);
 }
-console.log('F10(2): reader ' + readerSession + ' is the later claimant (loser @ ' + loser.claimedAt + ', winner ' + winner.holder + ' @ ' + winner.claimedAt + ')');
+if (hasPersonaClaim) {
+  console.error('F10(2) FAIL: reader ' + readerSession + ' still carries a persona:default claim (Round 32 regression)');
+  process.exit(1);
+}
+console.log('F10(2): reader ' + readerSession + ' holds reader:default only, no persona:default');
 " "$STORE_FILE_WIN" "$READER_SESSION_WIN" >> "$K"/commons.assert.log 2>&1
     if [ $? -ne 0 ]; then
       ASSERT_FAILED=1
@@ -539,7 +541,14 @@ for (const line of lines) {
 }
 console.log([...ids].join('\n'));
 " 2>/dev/null)
-  YIELDER_COUNT=$(echo "$YIELDERS" | grep -c . 2>/dev/null || echo 0)
+  # Round 47 finding 2: `grep -c . || echo 0` prints "0" twice when there
+  # are no yielders - grep -c already prints its own zero count, but still
+  # exits 1 on zero matches, so the `||` fallback appends a second "0" line,
+  # and the two-line value breaks the integer test below. `grep -c . || true`
+  # keeps grep's own zero and lets the exit code fail silently instead of
+  # triggering a second echo.
+  YIELDER_COUNT=$(echo "$YIELDERS" | grep -c . 2>/dev/null || true)
+  YIELDER_COUNT="${YIELDER_COUNT:-0}"
   if [ "$YIELDER_COUNT" -le 1 ]; then
     echo "F10(yieldlog): $YIELDER_COUNT distinct yielder(s)" >> "$K"/commons.assert.log
   else
