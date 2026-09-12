@@ -206,26 +206,84 @@ resolve_windows_pid() {
 # process - Windows keeps a dead process's ParentProcessId association and
 # reuses pids quickly, so a late walk from `$winpid` can find and then
 # force-kill something that was never part of this tree at all. This
-# function only ever reads; the snapshot it returns (one Windows pid per
-# line, root first) is what stop_child kills, at whatever point stop_child
-# chooses to kill it - never a live re-walk. A visited set stops a cycle
-# (a recycled pid pointing back into the same tree) from recursing forever.
+# function only ever reads; the snapshot it returns is what stop_child
+# kills, at whatever point stop_child chooses to kill it - never a live
+# re-walk. A visited set stops a cycle (a recycled pid pointing back into
+# the same tree) from recursing forever.
+#
+# Reviewer Round 122 R66: a snapshot of bare pids is not enough - up to two
+# minutes can pass between this snapshot and the kill/verify that acts on
+# it (the EOF and TERM grace periods), during which a short-lived
+# descendant (a hook's own `node`, a `git`) can exit and have its pid
+# reused by an unrelated process. Each line is `pid,starttickss` -
+# `Get-Process`'s own `StartTime.Ticks` for that pid at snapshot time - so
+# every later consumer can tell a genuinely surviving process from a
+# same-numbered impostor by comparing tick values, not just pid presence.
+#
+# Reviewer Round 122 R67: this call is now `timeout`-wrapped like the kill
+# and verify calls below it - a hung CIM query here wedges stop_child
+# exactly as one in the kill path would.
+#
+# Output is piped through `tr -d '\r'` (Reviewer Round 122 R62/R63):
+# PowerShell emits CRLF even under `-NoProfile`, and an unstripped `\r`
+# ends up embedded in every pid this function hands to its callers -
+# reproduced live, this session, as a `Missing expression after unary
+# operator ','` PowerShell parse error at the kill call, and a second,
+# quieter failure at the per-pid liveness probe (`-ErrorAction` parsed as
+# a second statement). Stripped once, here, at the source, so nothing
+# downstream ever sees a `\r` at all.
 # Usage: snapshot_process_tree <windows-pid>
 snapshot_process_tree() {
   local winpid="$1"
   if [ -z "$winpid" ]; then
     return 0
   fi
-  powershell -NoProfile -Command "
+  timeout 30 powershell -NoProfile -Command "
     \$visited = New-Object 'System.Collections.Generic.HashSet[int]'
     function Get-Descendants(\$parentId) {
       if (-not \$visited.Add(\$parentId)) { return }
       \$children = Get-CimInstance Win32_Process -Filter \"ParentProcessId=\$parentId\" -ErrorAction SilentlyContinue
       foreach (\$c in \$children) { \$c.ProcessId; Get-Descendants \$c.ProcessId }
     }
-    Write-Output $winpid
-    Get-Descendants $winpid
-  " 2>>"$RUNDIR/supervisor.err"
+    \$ids = @($winpid) + @(Get-Descendants $winpid)
+    foreach (\$thisId in \$ids) {
+      \$proc = Get-Process -Id \$thisId -ErrorAction SilentlyContinue
+      if (\$proc) { Write-Output (\"\$thisId,\" + \$proc.StartTime.Ticks) }
+    }
+  " 2>>"$RUNDIR/supervisor.err" | tr -d '\r'
+}
+
+# --- Helper: which pids in a snapshot are still the SAME live process ---
+# Shared by verify_snapshot_dead (does anything need escalating) and
+# kill_process_snapshot (did the kill actually work) so the recycled-pid
+# comparison (R66) and the CR-stripped, timeout-wrapped read (R62/R63,
+# R67) live in exactly one place. A survivor is a pid that is both alive
+# right now AND whose current `StartTime.Ticks` still matches the value
+# recorded in the snapshot - a live pid with a different start time is a
+# different, unrelated process that happens to share a number.
+# Usage: check_snapshot_survivors <snapshot, "pid,ticks" per line>
+check_snapshot_survivors() {
+  local snapshot="$1"
+  if [ -z "$snapshot" ]; then
+    return 0
+  fi
+  local pairs="" sid sticks
+  while IFS=',' read -r sid sticks; do
+    case "$sid" in ''|*[!0-9]*) continue ;; esac
+    case "$sticks" in ''|*[!0-9]*) continue ;; esac
+    pairs="$pairs,@{Id=$sid;Ticks=$sticks}"
+  done <<< "$snapshot"
+  pairs="${pairs#,}"
+  if [ -z "$pairs" ]; then
+    log "STOP: check_snapshot_survivors got no valid pid,ticks pairs to check"
+    return 0
+  fi
+  timeout 30 powershell -NoProfile -Command "
+    foreach (\$e in @($pairs)) {
+      \$proc = Get-Process -Id \$e.Id -ErrorAction SilentlyContinue
+      if (\$proc -and \$proc.StartTime.Ticks -eq \$e.Ticks) { Write-Output \$e.Id }
+    }
+  " 2>>"$RUNDIR/supervisor.err" | tr -d '\r'
 }
 
 # --- Helper: force-kill every pid in a snapshot, with a bounded wait and
@@ -235,34 +293,39 @@ snapshot_process_tree() {
 # could wedge stop_child - which the EXIT trap also calls, wedging the
 # supervisor itself on shutdown. `timeout` bounds the PowerShell call;
 # its own exit status is captured (not discarded); and every pid in the
-# snapshot is re-checked with `Get-Process` afterwards rather than trusted
-# from Stop-Process's own silence. Logs `kill_failed` naming exactly which
-# pids survived, if any do.
-# Usage: kill_process_snapshot <space-separated pids>
+# snapshot is re-checked (via check_snapshot_survivors, matching both pid
+# and start time - R66) rather than trusted from Stop-Process's own
+# silence. Logs `kill_failed` naming exactly which pids survived, if any
+# do, and returns non-zero so a caller can tell (Reviewer Round 122 R65).
+# Usage: kill_process_snapshot <snapshot, "pid,ticks" per line>
 kill_process_snapshot() {
-  local pids="$1"
-  if [ -z "$pids" ]; then
+  local snapshot="$1"
+  if [ -z "$snapshot" ]; then
     return 0
   fi
-  local ps_list
-  ps_list=$(echo "$pids" | tr ' ' ',')
+  local ids="" sid sticks
+  while IFS=',' read -r sid sticks; do
+    case "$sid" in ''|*[!0-9]*) continue ;; esac
+    ids="$ids,$sid"
+  done <<< "$snapshot"
+  ids="${ids#,}"
+  if [ -z "$ids" ]; then
+    log "STOP: kill_process_snapshot got no valid pids to act on"
+    return 0
+  fi
   timeout 30 powershell -NoProfile -Command "
-    foreach (\$p in @($ps_list)) {
+    foreach (\$p in @($ids)) {
       try { Stop-Process -Id \$p -Force -ErrorAction SilentlyContinue } catch {}
     }
   " 2>>"$RUNDIR/supervisor.err"
   local ps_status=$?
   if [ "$ps_status" -ne 0 ]; then
-    log "STOP: kill_process_snapshot's powershell call exited $ps_status (timeout or error) for pids: $pids"
+    log "STOP: kill_process_snapshot's powershell call exited $ps_status (timeout or error) for pids: $ids"
   fi
-  local survivors=""
-  for p in $pids; do
-    if [ -n "$(powershell -NoProfile -Command "Get-Process -Id $p -ErrorAction SilentlyContinue" 2>/dev/null)" ]; then
-      survivors="$survivors $p"
-    fi
-  done
+  local survivors
+  survivors=$(check_snapshot_survivors "$snapshot" | tr '\n' ' ')
   if [ -n "$survivors" ]; then
-    log "STOP: kill_failed - these Windows pids survived the tree kill:$survivors"
+    log "STOP: kill_failed - these Windows pids survived the tree kill: $survivors"
     return 1
   fi
   return 0
@@ -293,28 +356,35 @@ stop_child() {
   # signaled, and is the same list checked and killed at every phase below.
   local snapshot_winpid
   snapshot_winpid=$(resolve_windows_pid "$pid")
-  local snapshot_pids=""
+  local snapshot=""
   if [ -n "$snapshot_winpid" ]; then
-    snapshot_pids=$(snapshot_process_tree "$snapshot_winpid" | tr '\n' ' ')
+    snapshot=$(snapshot_process_tree "$snapshot_winpid")
+  fi
+  # Reviewer Round 122 R64: an empty snapshot (a failed resolve, or a CIM
+  # walk that errored - errors go only to supervisor.err, never here) must
+  # not read as "verified dead" - it means the tree was never actually
+  # looked at. Named explicitly so the operator can tell the two apart in
+  # the log, rather than a silent, indistinguishable clean report.
+  if [ -z "$snapshot" ]; then
+    log "STOP[$label]: tree not verified (no snapshot resolved for pid $pid) - stop relies on the coproc's own pid alone"
   fi
 
-  # Usage: verify_snapshot_dead - returns 0 (true) only if every pid in
-  # $snapshot_pids is actually gone; escalates (TERM then KILL) whatever
-  # survives before returning, and logs what it had to clean up.
+  # Usage: verify_snapshot_dead - returns 0 if every process in $snapshot
+  # is confirmed gone (matched by pid AND start time, R66 - a recycled pid
+  # front does not count as a survivor); escalates via kill_process_snapshot
+  # otherwise and returns 1 if that escalation itself still leaves a
+  # survivor (Reviewer Round 122 R65 - this return code is read below, not
+  # discarded).
   verify_snapshot_dead() {
-    [ -z "$snapshot_pids" ] && return 0
-    local alive=""
-    for p in $snapshot_pids; do
-      if [ -n "$(powershell -NoProfile -Command "Get-Process -Id $p -ErrorAction SilentlyContinue" 2>/dev/null)" ]; then
-        alive="$alive $p"
-      fi
-    done
+    [ -z "$snapshot" ] && return 0
+    local alive
+    alive=$(check_snapshot_survivors "$snapshot")
     if [ -z "$alive" ]; then
       return 0
     fi
-    log "STOP[$label]: the wrapper is gone but its own snapshot shows a survivor:$alive - escalating the tree kill"
-    kill_process_snapshot "$alive"
-    return 1
+    log "STOP[$label]: the wrapper is gone but its own snapshot shows a survivor: $(echo "$alive" | tr '\n' ' ') - escalating the tree kill"
+    kill_process_snapshot "$snapshot"
+    return $?
   }
 
   # Phase 1: EOF - close the write end of the coproc pipe.
@@ -330,9 +400,13 @@ stop_child() {
     n=$((n + 1))
   done
   if ! kill -0 "$pid" 2>/dev/null; then
-    verify_snapshot_dead
-    STOP_PATH="eof"
-    return 0
+    if verify_snapshot_dead; then
+      STOP_PATH="eof"
+      return 0
+    fi
+    log "STOP[$label]: a snapshot survivor could not be killed after the EOF path"
+    STOP_PATH="eof_kill_failed"
+    return 1
   fi
   # Phase 2: TERM - send SIGTERM after grace expired.
   log "STOP[$label]: EOF grace expired, sending TERM to pid $pid"
@@ -343,18 +417,26 @@ stop_child() {
     n=$((n + 1))
   done
   if ! kill -0 "$pid" 2>/dev/null; then
-    verify_snapshot_dead
-    STOP_PATH="term"
-    return 0
+    if verify_snapshot_dead; then
+      STOP_PATH="term"
+      return 0
+    fi
+    log "STOP[$label]: a snapshot survivor could not be killed after the TERM path"
+    STOP_PATH="term_kill_failed"
+    return 1
   fi
   # Phase 3: KILL - send SIGKILL to the wrapper, then force-kill the whole
   # snapshot taken at entry (not a fresh walk from a possibly-dead or
   # -recycled pid).
   log "STOP[$label]: TERM grace expired, sending KILL to pid $pid (winpid $snapshot_winpid) and its process tree"
   kill -9 "$pid" 2>/dev/null
-  kill_process_snapshot "$snapshot_pids"
-  STOP_PATH="kill"
-  return 0
+  if kill_process_snapshot "$snapshot"; then
+    STOP_PATH="kill"
+    return 0
+  fi
+  log "STOP[$label]: a snapshot survivor could not be killed after the KILL path - the last escalation this function has"
+  STOP_PATH="kill_failed"
+  return 1
 }
 
 # find_global_store is defined in bin/agentic-common.sh (sourced above),

@@ -37,6 +37,16 @@ SUPERVISE="$PLUGIN_DIR/bin/supervise.sh"
 RUNDIR="$(mktemp -d)"
 trap 'rm -rf "$RUNDIR"' EXIT
 
+# Reviewer Round 122 R69: registered in .kit/live-all.sh's ALL_SUITES as
+# "stopprocesstree" - it launches no claude session and holds no persona
+# claim, so it fits the runner cheaply, and the whole gate's own summary
+# now covers it. SUITE_DIR is the convention every other live-*-test.sh
+# reads its own scratch dir from when live-all.sh drives it; standalone
+# runs (no SUITE_DIR set) fall back to their own mktemp -d.
+SUITE_DIR="${SUITE_DIR:-$(mktemp -d)}"
+mkdir -p "$SUITE_DIR"
+EXIT_FILE="$SUITE_DIR/stopprocesstree-test.exit"
+
 FAIL_COUNT=0
 CHECK_COUNT=0
 pass() { echo "OK: $1"; CHECK_COUNT=$((CHECK_COUNT + 1)); }
@@ -60,6 +70,7 @@ FN_FILE="$RUNDIR/stop-process-tree-fns.sh"
 : > "$FN_FILE"
 extract_fn "resolve_windows_pid" "$FN_FILE"
 extract_fn "snapshot_process_tree" "$FN_FILE"
+extract_fn "check_snapshot_survivors" "$FN_FILE"
 extract_fn "kill_process_snapshot" "$FN_FILE"
 extract_fn "stop_child" "$FN_FILE"
 # The real functions shell out to `log` and read $RUNDIR (already set,
@@ -72,13 +83,13 @@ source "$FN_FILE"
 # renamed function upstream) must fail as an extraction problem, not
 # silently produce a no-op function that passes every check by doing
 # nothing. Check each function actually landed before trusting any of them.
-for fn in resolve_windows_pid snapshot_process_tree kill_process_snapshot stop_child; do
+for fn in resolve_windows_pid snapshot_process_tree check_snapshot_survivors kill_process_snapshot stop_child; do
   if ! declare -F "$fn" > /dev/null; then
     echo "FAIL: extraction did not define $fn - the sed range or the upstream function name has drifted"
     exit 1
   fi
 done
-pass "setup: all four functions extracted and defined"
+pass "setup: all five functions extracted and defined"
 
 # --- Case: the wrapper's own exec target is killed directly by kill -9 ---
 # Confirmed shape: a bash subshell that tail-execs directly into a native
@@ -137,14 +148,54 @@ else
   fi
 fi
 
-rm -f "$RUNDIR/child.pid"
+# --- Case: a wrapper that ignores TERM forces stop_child to Phase 3, the
+# path where the CRLF bug (Reviewer Round 122 R62/R63) actually lived ---
+# The prior case above only ever reaches Phase 2 (a plain bash wrapper
+# dies to TERM on its own). Phase 3's own kill_process_snapshot is where
+# `Stop-Process` and the per-pid survivor probe both take a snapshot built
+# from `snapshot_process_tree`'s own output - exactly the path that broke
+# on an unstripped `\r` when this was reproduced live.
+CHILD_IN=""
+SUPERVISOR_STOP_GRACE_MS=2000
+STOP_PATH=""
+( trap '' TERM; powershell.exe -NoProfile -Command "Start-Sleep -Seconds 90" & echo $! > "$RUNDIR/child3.pid"; wait ) &
+CHILD_PID=$!
+disown "$CHILD_PID" 2>/dev/null
+sleep 2
+REAL_CHILD_PID=$(cat "$RUNDIR/child3.pid" 2>/dev/null)
+if [ -z "$REAL_CHILD_PID" ]; then
+  failed "setup: Phase-3 case's real child pid never appeared"
+else
+  REAL_CHILD_WINPID=$(resolve_windows_pid "$REAL_CHILD_PID")
+  if [ -z "$(powershell -NoProfile -Command "Get-Process -Id $REAL_CHILD_WINPID -ErrorAction SilentlyContinue" 2>/dev/null)" ]; then
+    failed "setup: Phase-3 case's real child was not alive before stop_child ran"
+  else
+    pass "setup: Phase-3 case's real child (winpid $REAL_CHILD_WINPID) confirmed alive before stop_child runs"
+  fi
+  stop_child "test-phase3"
+  if [ "$STOP_PATH" = "kill" ]; then
+    pass "Phase-3 case: stop_child actually escalated to Phase 3 (STOP_PATH=kill), the path this test needs to exercise"
+  else
+    failed "Phase-3 case: stop_child never reached Phase 3 (STOP_PATH=$STOP_PATH) - the TERM-ignoring wrapper did not force escalation, this case did not reproduce"
+  fi
+  sleep 2
+  if [ -z "$(powershell -NoProfile -Command "Get-Process -Id $REAL_CHILD_WINPID -ErrorAction SilentlyContinue" 2>/dev/null)" ]; then
+    pass "Phase-3 case: the real child is gone after stop_child's own tree kill (the CRLF bug's exact path)"
+  else
+    failed "Phase-3 case: the real child SURVIVED Phase 3's tree kill - the CRLF bug or an equivalent is back"
+    kill -9 "$REAL_CHILD_WINPID" 2>/dev/null
+  fi
+fi
+
+rm -f "$RUNDIR/child.pid" "$RUNDIR/child3.pid"
 kill -9 "$DIRECT_PID" "$CHILD_PID" 2>/dev/null  # best-effort cleanup
 
 echo ""
 echo "$CHECK_COUNT checks run, $FAIL_COUNT failed"
+echo "$FAIL_COUNT" > "$EXIT_FILE"
 if [ "$FAIL_COUNT" -gt 0 ]; then
-  echo "stop-process-tree-test.sh: FAIL"
+  echo "live-stopprocesstree-test.sh: FAIL"
   exit 1
 fi
-echo "stop-process-tree-test.sh: PASS"
+echo "live-stopprocesstree-test.sh: PASS"
 exit 0
