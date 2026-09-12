@@ -5,6 +5,8 @@ Commit Model: Branch-and-PR. `main` is protected on GitHub and accepts pull requ
 Worker: the plugin's own persona, running under `bin/supervise.sh` with this document as its roadmap.
 Executor's plugin runtime: today the stable copy at `D:\DeepSeekHarness\agentic-plugin`, loaded with `--plugin-dir`. The target runtime is this repository installed as a plugin from its own marketplace manifest, updated with `claude plugin update`, and item 6 carries the switch. The tree under edit is `D:\agent_persona` (this clone). The runtime and the edit tree are never the same directory, because a session whose working directory sits inside its own `--plugin-dir` does not initialize the plugin.
 
+Related: `docs/plans/agent_persona_coordinator_v2.md` builds on this plan's persona/commons/channel infrastructure once this one closes out; its own Section 0 is this plan's finishing pass.
+
 ## Goal
 
 The supervisor becomes something an operator starts once and talks to. Started with no goal, it waits quietly and holds its persona. A goal arrives as a sentence in a chat, not as a tool call. During a goal the operator can redirect, pause, add, or drop work by talking. When the goal completes the supervisor goes quiet again and waits for the next one. The chat is a Discord thread or a proxy agent, and only text from a holder of a reader claim ever steers the worker.

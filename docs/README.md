@@ -2,7 +2,8 @@
 
 ## Active plans
 
-- `plans/agent_persona_passive-supervisor_v1.md`: the supervisor starts with no goal and waits, takes goals and steering by conversation, returns to waiting between goals, and is reachable from a chat channel. Roadmap for the plugin's own persona working on this clone. In Progress.
+- `plans/agent_persona_passive-supervisor_v1.md`: the supervisor starts with no goal and waits, takes goals and steering by conversation, returns to waiting between goals, and is reachable from a chat channel. Roadmap for the plugin's own persona working on this clone. In Progress; the close-out finishing pass is v2's own Section 0. See also `plans/agent_persona_coordinator_v2.md`.
+- `plans/agent_persona_coordinator_v2.md`: a Fable-tier coordinator persona that directs and assists many Sonnet-tier worker personas across repos, over an extended commons-store inbox path. Builds on v1's persona/commons/channel infrastructure. In Progress.
 
 ## Archived plans
 

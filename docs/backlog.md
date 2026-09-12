@@ -1,5 +1,11 @@
 # Backlog
 
+## Arm the plugin's hooks only for sessions that want them (operator feedback, 2026-09-12)
+
+The operator's feedback, verbatim in shape: every Claude session with this plugin installed loads its function hooks and fires them on every turn - fine for a session meant to run as a persona under `bin/supervise.sh`, wrong for a plain interactive chat/analysis session that has nothing to do with goal trees, commons claims, or self-review. Wants some kind of arming flag (a `-p` flag, or a skill/command for interactive sessions) so the persona machinery only loads or fires when the session actually intends to use it.
+
+Not investigated yet: whether Claude Code's plugin system supports a per-session opt-out or lazy-registration hook (`register()` firing conditionally on an env var or settings key would be the natural shape, mirroring how `--dev`/`--plugin-dir` already gates load *mode*, not load *at all*). Needs its own brainstorming round before a spec; flagged here rather than acted on, since it's new scope outside both the v1 close-out and the v2 coordinator work in flight.
+
 ## Suite hardening
 
 _No open items. Resolved items are archived in `docs/archive/backlog-2026-09-11.md`._
