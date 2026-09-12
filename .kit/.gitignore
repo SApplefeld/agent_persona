@@ -32,4 +32,5 @@
 !/tick-harness.mjs
 !/controller-tick-test.mjs
 !/channel-reply-instruction-test.sh
+!/stop-process-tree-test.sh
 !/fixtures/

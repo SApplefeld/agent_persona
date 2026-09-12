@@ -172,6 +172,53 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # --- AD3: Stop the child via EOF (close write end), then TERM, then KILL ---
+# --- Helper: resolve an MSYS pid's current Windows pid ---
+# This environment's `ps` (MSYS, not procps) has no `-o` custom-format
+# support; WINPID is column 4 of its own fixed-width default output
+# (PID PPID PGID WINPID TTY UID STIME COMMAND), confirmed live rather
+# than assumed - `ps -p <pid> -o winpid=` errors "unknown option -- o"
+# on this box. Must be called while the MSYS pid is still alive and
+# tracked - once it exits, `ps -p` finds nothing and returns empty.
+# Usage: resolve_windows_pid <msys-pid>
+resolve_windows_pid() {
+  ps -p "$1" 2>/dev/null | tail -n +2 | awk '{print $4}'
+}
+
+# --- Helper: force-kill a Windows pid and its whole descendant tree ---
+# v2 Section 0 item 2: a live incident showed claude.exe surviving a TERM
+# to its own bash wrapper, still holding the persona claim, until the
+# pre-gate timed out. Confirmed live, this session, two distinct shapes:
+# (1) when the coproc's shell tail-execs directly into the native binary
+# with nothing after it, `kill -9` on the MSYS pid alone reaches and kills
+# the real Windows process (no separate child at all) - proven with a real
+# powershell.exe child, not assumed; (2) when the wrapper instead forks a
+# real child process (the shape a live incident can produce, e.g. from
+# output redirection or an intermediate `env` invocation not tail-execing),
+# the wrapper can die from a signal while a genuine native child survives
+# as an orphan, invisible to `kill -0` on the wrapper's own MSYS pid.
+# `stop_child` resolves the Windows pid before ever signaling the MSYS pid
+# (a resolve-after-kill race would find nothing once the wrapper is gone),
+# and this function's own descendant walk covers case (2) on top of the
+# plain `kill -9` case (1) already handles.
+# Usage: stop_process_tree <windows-pid>
+stop_process_tree() {
+  local winpid="$1"
+  if [ -z "$winpid" ]; then
+    log "STOP: no Windows pid resolved; nothing to tree-kill"
+    return 0
+  fi
+  powershell -NoProfile -Command "
+    function Get-Descendants(\$parentId) {
+      \$children = Get-CimInstance Win32_Process -Filter \"ParentProcessId=\$parentId\" -ErrorAction SilentlyContinue
+      foreach (\$c in \$children) { \$c.ProcessId; Get-Descendants \$c.ProcessId }
+    }
+    \$all = @($winpid) + @(Get-Descendants $winpid)
+    foreach (\$p in \$all) {
+      try { Stop-Process -Id \$p -Force -ErrorAction SilentlyContinue } catch {}
+    }
+  " 2>>"$RUNDIR/supervisor.err"
+}
+
 # Usage: stop_child <label>
 # Sets STOP_PATH to "eof" | "term" | "kill" based on what actually worked.
 stop_child() {
@@ -210,9 +257,14 @@ stop_child() {
     STOP_PATH="term"
     return 0
   fi
-  # Phase 3: KILL - send SIGKILL after a second grace.
-  log "STOP[$label]: TERM grace expired, sending KILL to pid $pid"
+  # Phase 3: KILL - resolve the Windows pid BEFORE signaling (once the MSYS
+  # pid exits, `ps -p` finds nothing and the resolve fails silently), send
+  # SIGKILL, then force-kill any real descendant that survives it.
+  local kill_winpid
+  kill_winpid=$(resolve_windows_pid "$pid")
+  log "STOP[$label]: TERM grace expired, sending KILL to pid $pid (winpid $kill_winpid) and its process tree"
   kill -9 "$pid" 2>/dev/null
+  stop_process_tree "$kill_winpid"
   STOP_PATH="kill"
   return 0
 }
