@@ -347,12 +347,18 @@ while true; do
   # $CHANNEL_NAME); CHANNEL_PROCESS_TOKEN is minted fresh for this one child,
   # mirroring the launch wrapper's own per-launch GUID. Mirroring is off:
   # the thread carries operator conversation, not every turn.
+  # CHANNEL_LINEAGE carries the same stable $CHANNEL_NAME across every child
+  # this supervisor launches, restarts included (discord-channels' rebind
+  # spec item 1): the registry rebinds a session announcing a lineage to
+  # that lineage's existing thread instead of opening a new one. It is not
+  # gated on --dev; a supervisor-launched child always declares its lineage
+  # whether or not the channel itself is attached this run.
   CHANNEL_ARGS=()
-  CHANNEL_ENV=()
+  CHANNEL_ENV=(CHANNEL_LINEAGE="$CHANNEL_NAME")
   if [ "$NO_CHANNEL" -ne 1 ]; then
     CHANNEL_ARGS=(--name "$CHANNEL_NAME" --channels "plugin:relay@sapplefeld-channels")
     CHILD_PROCESS_TOKEN=$(node -e "console.log(require('crypto').randomUUID())")
-    CHANNEL_ENV=(CHANNEL_SESSION="$CHANNEL_NAME" CHANNEL_PROCESS_TOKEN="$CHILD_PROCESS_TOKEN" CHANNEL_SESSION_MIRROR=off)
+    CHANNEL_ENV+=(CHANNEL_SESSION="$CHANNEL_NAME" CHANNEL_PROCESS_TOKEN="$CHILD_PROCESS_TOKEN" CHANNEL_SESSION_MIRROR=off)
   fi
 
   coproc CHILD { env "${CHANNEL_ENV[@]}" claude -p --input-format stream-json --output-format stream-json --verbose \

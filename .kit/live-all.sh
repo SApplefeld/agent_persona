@@ -185,6 +185,11 @@ run_suite() {
     done
     [ -f "$suite_dir/workdir/.agentic-personas.json" ] && \
       cp -f "$suite_dir/workdir/.agentic-personas.json" "$RUN_DIR/restartrequest/persona-store.json" 2>/dev/null
+    # Round 81: the owner's child transcripts land under $suite_dir/child-N/
+    # (bin/supervise.sh writes them there since the suite passes --rundir
+    # $SUITE_DIR), which none of the names above match, so they were lost
+    # on every exit path same as the gap the block above already closed.
+    cp -r "$suite_dir"/child-* "$RUN_DIR/restartrequest/" 2>/dev/null
   fi
 
   # Write the summary line
