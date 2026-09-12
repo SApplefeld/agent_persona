@@ -6,7 +6,7 @@
  * @typedef {Object} DecideInput
  * @property {number|null} [childExitCode] - Exit code of the current child, or null if still running.
  * @property {number|null} [rootCompleteTs] - Timestamp of the newest root_complete decision, or null.
- * @property {boolean} [rootCompleteBackfilled] - True when that root_complete's own detail text names it a backfilled root (the worker did real work with no active goal tree; item 2 of the v1 plan). A backfilled root_complete is not a real completion signal and must never trigger a restart.
+ * @property {boolean} [rootCompleteBackfilled] - True when that root_complete's own detail text names it a backfilled root (the worker did real work with no active goal tree; item 2 of the v1 plan). A backfilled root_complete is not a real completion signal and must never trigger restart_passive (it does not suppress a genuine restart trigger below it, e.g. a critical budget crossing or a hung child).
  * @property {number|null} [shutdownRequestedTs] - Timestamp of the newest shutdown_requested decision, or null.
  * @property {number|null} [restartRequestedTs] - Timestamp of the newest restart_requested decision, or null.
  * @property {number|null} [criticalTs] - Timestamp of the newest context_budget_crossed critical: decision, or null.
@@ -107,12 +107,10 @@ export function decide(input) {
   // item 4) - restart the child passively instead of exiting. Skipped when
   // the root was backfilled (v2 Section 0 item 1): that is real tool work
   // with no goal tree, not a real completion, and restarting on it kills a
-  // child mid-work. Reviewer Round 119 R45 correction: this used to return
-  // early on a backfilled root, which meant a goal-less child could never
-  // be restarted at all - not by 4a (no exit), not by 4b (critical budget),
-  // not by 4c (hung check) - since none of those ever ran. A backfilled
-  // root ignores this one completion signal; it does not pre-empt every
-  // other trigger below.
+  // child mid-work. A backfilled root ignores only this one completion
+  // signal; it never pre-empts 4a (child exit), 4b (critical budget), or
+  // 4c (hung check) below - a goal-less child stays restartable for any
+  // of those other reasons.
   if (rootCompleteTs !== null && rootCompleteTs > childStartTs && !rootCompleteBackfilled) {
     return { action: 'restart_passive', reason: `root_complete at ${rootCompleteTs} > child start ${childStartTs}` };
   }

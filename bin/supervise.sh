@@ -254,14 +254,14 @@ console.log(newest.timestamp || 0);
 # goal completion, and must never trigger RESTART_PASSIVE. A sibling to
 # get_fact rather than a change to it: get_fact's existing single-token
 # output feeds bare numeric comparisons elsewhere (the -gt checks below),
-# and a two-word answer there would fail those silently. Reviewer Round
-# 119 R48: the timestamp and the flag must come from the SAME read, not
-# two separate store reads at two different moments - a root_complete
-# decision appended between two calls would otherwise pair a real
-# timestamp with a stale flag, or the reverse. "Newest" here is last-in-
-# array, not max-by-timestamp (R49): holds today because decisions[] is
-# append-ordered and capped with slice(-DECISIONS_MAX), so a future
-# out-of-order writer would break this and get_fact identically.
+# and a two-word answer there would fail those silently. The timestamp and
+# the flag come from the SAME read, not two separate store reads at two
+# different moments - a root_complete decision appended between two calls
+# would otherwise pair a real timestamp with a stale flag, or the reverse.
+# "Newest" here is last-in-array, not max-by-timestamp: holds today
+# because decisions[] is append-ordered and capped with
+# slice(-DECISIONS_MAX), so a future out-of-order writer would break this
+# and get_fact identically.
 # Usage: get_root_complete <workdir> <persona>
 # Prints "<timestamp> <flag>" where <flag> is "1" (backfilled) or "0", or
 # empty when there is no root_complete decision at all.
@@ -729,22 +729,24 @@ console.log(o.reason || '');
   fi
   read -r ROOT_COMPLETE_TS ROOT_COMPLETE_BACKFILLED_FLAG <<< "$(get_root_complete "$WORKDIR" "$PERSONA")"
   if [ -n "$ROOT_COMPLETE_TS" ] && [ "$ROOT_COMPLETE_TS" -gt "$CHILD_START_TS" ]; then
-    if [ "$ROOT_COMPLETE_BACKFILLED_FLAG" = "1" ]; then
+    if [ "$ROOT_COMPLETE_BACKFILLED_FLAG" = "1" ] && [ "$EXIT_CODE" -eq 0 ]; then
       # v2 Section 0 item 1: a backfilled root_complete is real tool work
-      # with no active goal tree, not a real completion. Reviewer Round
-      # 119 R47: falling through to the accounted restart path (as the
-      # first cut of this fix did) counts a clean, expected exit against
-      # the restart budget; children exit naturally after backfilled turns
-      # routinely, per this Chapter's own live evidence, so a chatty hour
-      # of operator steers would trip stop_budget and kill a healthy
-      # supervisor - worse than the RESTART_PASSIVE this fix was meant to
-      # remove. Relaunch unaccounted instead, the same as restart_requested
-      # and a real root_complete above: the child did real work and exited
-      # clean, which is not a failure to count.
-      log "NOTE: root_complete at $ROOT_COMPLETE_TS > child start $CHILD_START_TS is backfilled, not a real completion; not taking RESTART_PASSIVE"
+      # with no active goal tree, not a real completion, and falling
+      # through to the accounted restart path counts a clean, expected
+      # exit against the restart budget; children exit naturally after
+      # backfilled turns routinely, so a chatty hour of operator steers
+      # would trip stop_budget and kill a healthy supervisor. Relaunch
+      # unaccounted instead, the same as restart_requested and a real
+      # root_complete above - but only when the child's own exit was
+      # actually clean: the unaccounted path exists to stop counting a
+      # healthy exit against the budget, not to exempt every backfilled
+      # turn regardless of how the child died. A child that does one
+      # backfilled tool turn and then exits non-zero falls through to the
+      # accounted path below like any other crash.
+      log "NOTE: root_complete at $ROOT_COMPLETE_TS > child start $CHILD_START_TS is backfilled, not a real completion (exit $EXIT_CODE); not taking RESTART_PASSIVE"
       log "PASSIVE: relaunching unaccounted after a backfilled root; the child exited clean, not a failure"
       continue  # only the outer loop encloses this point; no crash/restart accounting
-    else
+    elif [ "$ROOT_COMPLETE_BACKFILLED_FLAG" != "1" ]; then
       log "RESTART_PASSIVE: root_complete at $ROOT_COMPLETE_TS > child start $CHILD_START_TS (no shutdown requested)"
       log "PASSIVE: goal complete; returning to passive state, waiting for the next goal delivered by chat"
       continue  # only the outer loop encloses this point; no crash/restart accounting

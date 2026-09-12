@@ -88,14 +88,17 @@ else
 fi
 
 # --- F5/F6: v2 Section 0 item 1 - a backfilled root_complete never fires
-# RESTART_PASSIVE, and a real (non-backfilled) one still does. Authored per
-# Reviewer Round 119 R46; the run is deferred with the rest of this suite
-# for the same machine-contention reason named in this section's Chapter -
-# not executed as part of this change, so this leg's own pass/fail is not
-# yet reflected in $FAIL_COUNT or $EXIT_FILE below.
+# RESTART_PASSIVE, and a real (non-backfilled) one still does.
 BACKFILL_WORKDIR="$SUITE_DIR/workdir-backfill"
 mkdir -p "$BACKFILL_WORKDIR"
-BACKFILL_LOG="$SUITE_DIR/supervisor-backfill.log"
+# Reviewer Round 122 R57 correction: the supervisor writes its log under
+# its own --rundir, not $SUITE_DIR directly - this leg launches with
+# --rundir "$SUITE_DIR/rundir-backfill", so that is where supervisor.log
+# actually lands (bin/supervise.sh's own LOG="$RUNDIR/supervisor.log").
+# The prior path never existed, so F5 failed on every run's own 150s
+# timeout, and F6 then passed vacuously since its own check is guarded on
+# F5 having found anything at all.
+BACKFILL_LOG="$SUITE_DIR/rundir-backfill/supervisor.log"
 # A one-shot prompt that does real tool work (writes a file) with no
 # goal_create call - the exact shape the item 2 backstop backfills a root
 # for, and the shape a coordinator or reader steer with no open goal tree
@@ -120,13 +123,28 @@ for i in $(seq 1 50); do
 done
 if [ "$F5_FOUND" -eq 1 ]; then pass "F5 a backfilled root_complete logs NOTE, not RESTART_PASSIVE"; else failed "F5 a backfilled root_complete logs NOTE, not RESTART_PASSIVE"; fi
 
-# F6 control: no RESTART_PASSIVE line ever appears after the NOTE (a
-# backfilled root must never trigger the passive-restart path at all).
-F6_NO_RESTART=1
+# F6: a fresh child actually launches after the backfilled NOTE (mirroring
+# F2's own shape) and no RESTART_PASSIVE line ever follows it. Reviewer
+# Round 122 R59 correction: the prior version was one if/else's two arms
+# over the same read as F5, so it could never fail on its own - guarded on
+# F5_FOUND, it either found a real F6 pass or F5 had already failed and
+# left F6_NO_RESTART at its default 1 (a false pass). Now F6 fails outright
+# when F5 never found anything, and separately checks for the relaunch.
+F6_LAUNCH_FOUND=0
+F6_NO_RESTART=0
 if [ "$F5_FOUND" -eq 1 ]; then
+  for i in $(seq 1 40); do
+    LATER_LAUNCH=$(awk -v r="$F5_NOTE_LINE_NO" 'NR > r && /LAUNCH child-/' "$BACKFILL_LOG" 2>/dev/null)
+    if [ -n "$LATER_LAUNCH" ]; then
+      F6_LAUNCH_FOUND=1
+      break
+    fi
+    sleep 3
+  done
   AFTER_NOTE=$(awk -v r="$F5_NOTE_LINE_NO" 'NR > r && /RESTART_PASSIVE:/' "$BACKFILL_LOG" 2>/dev/null)
-  [ -n "$AFTER_NOTE" ] && F6_NO_RESTART=0
+  [ -z "$AFTER_NOTE" ] && F6_NO_RESTART=1
 fi
+if [ "$F6_LAUNCH_FOUND" -eq 1 ]; then pass "F6 a fresh child relaunches after the backfilled NOTE"; else failed "F6 a fresh child relaunches after the backfilled NOTE"; fi
 if [ "$F6_NO_RESTART" -eq 1 ]; then pass "F6 no RESTART_PASSIVE line follows the backfilled NOTE"; else failed "F6 no RESTART_PASSIVE line follows the backfilled NOTE"; fi
 
 kill -TERM "$BACKFILL_PID" 2>/dev/null

@@ -416,3 +416,13 @@ R48 (Minor): the timestamp and the backfilled flag now come from one read, not t
 R46 (Major): the live-test extension the spec names is now authored - two new legs in `.kit/live-restartpassive-test.sh` (F5, F6): a one-shot prompt that does real tool work with no `goal_create` call produces a `NOTE:... backfilled` log line and never a following `RESTART_PASSIVE:`. The existing F1 (a real completed goal still restarts) already serves as the real-root control this bullet also asked for. The run itself stays deferred with the rest of this Chapter's own live-suite gap, for the same machine-contention reason - authored and gated on a quiet-machine run, not executed here.
 
 Gate (this addendum): `bash -n bin/supervise.sh` exit 0; `bash -n .kit/live-restartpassive-test.sh` exit 0; `node .kit/supervisor-unit-test.mjs` exit 0, 19 passed (2 new for R45); `npx tsc --noEmit -p .` exit 0.
+
+Addendum (Reviewer Round 122, one Critical and one Major fixed): R57 (Critical, reproduced) - the new live leg polled `$SUITE_DIR/supervisor-backfill.log`, a path the supervisor never writes; it launches with `--rundir "$SUITE_DIR/rundir-backfill"`, so the real log is `$SUITE_DIR/rundir-backfill/supervisor.log`. F5 failed on every run's own 150-second timeout, and F6 passed vacuously since its own check was guarded on F5 having found anything at all. Fixed: the correct path, and F6 rewritten to fail outright when F5 never found the NOTE, plus a positive check (mirroring F2) that a fresh child actually relaunches after it.
+
+R58 (Major): the unaccounted relaunch never checked the child's own exit code - a child that did one backfilled tool turn and then died non-zero would relaunch with no crash-loop or budget accounting on that cycle. Fixed: the unaccounted path is taken only when the exit was actually clean (`$EXIT_CODE -eq 0`); a non-zero exit on a backfilled root falls through to the ordinary accounted path like any other crash.
+
+R59 (Minor): F6 could never fail on its own (one if/else's two arms over F5's own read); rewritten as above. R61 (Minor): the typedef now says "must never trigger restart_passive" rather than the looser "must never trigger a restart" (4b/4c can and should still restart a goal-less child); review-round citations trimmed from the code's own comments, kept as present-tense statements.
+
+Not run this addendum, same reason as the rest of this Chapter: 5 live `claude` processes on this machine as of this fix.
+
+Gate: `bash -n` on both shell files exit 0; `node .kit/supervisor-unit-test.mjs` exit 0, 19 passed, unchanged; `npx tsc --noEmit -p .` exit 0.
