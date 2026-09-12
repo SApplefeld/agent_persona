@@ -21,6 +21,7 @@
 !/live-passive-test.sh
 !/live-goalconvo-test.sh
 !/live-restartpassive-test.sh
+!/live-restartrequest-test.sh
 !/health-probe.js
 !/assert-decisions.js
 !/roadmap-test.md

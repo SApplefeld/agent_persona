@@ -446,6 +446,10 @@ while true; do
     # "this goal is done"; shutdown_requested means "the operator asked the
     # supervisor itself to stop" - only the second one should exit the loop.
     SHUTDOWN_REQUESTED_TS=$(get_fact "$WORKDIR" "$PERSONA" "shutdown_requested")
+    # Plan item 8.3: a reader asked for the child to be relaunched (written by
+    # the supervisor_restart tool). Maps to restart_passive: the goal tree is
+    # kept and the fresh child resumes the active plan.
+    RESTART_REQUESTED_TS=$(get_fact "$WORKDIR" "$PERSONA" "restart_requested")
     CRITICAL_TS=""
     if [ -f "$STORE" ]; then
       CRITICAL_TS=$(node -e "
@@ -499,10 +503,12 @@ const maxRestartsPerHour = process.argv[11] ? parseInt(process.argv[11]) : 6;
 const crashCount = process.argv[12] ? parseInt(process.argv[12]) : 0;
 const restartCount = process.argv[13] ? parseInt(process.argv[13]) : 0;
 const shutdownRequestedTs = process.argv[14] ? parseInt(process.argv[14]) : null;
+const restartRequestedTs = process.argv[15] ? parseInt(process.argv[15]) : null;
 console.log(JSON.stringify({
   childExitCode: null,
   rootCompleteTs,
   shutdownRequestedTs,
+  restartRequestedTs,
   criticalTs,
   crashCount,
   restartCount,
@@ -516,7 +522,7 @@ console.log(JSON.stringify({
   minRunMs,
   maxRestartsPerHour,
 }));
-" "${ROOT_COMPLETE_TS:-}" "${CRITICAL_TS:-}" "${HEARTBEAT_SESSION_ID:-}" "${HEARTBEAT_LAST_SEEN:-}" "${NOW:-}" "$CHILD_START_TS" "${CHILD_SESSION_ID:-}" "$LAUNCHED_AT" "$STALE_AFTER_MS" "$SUPERVISOR_MIN_RUN_MS" "$SUPERVISOR_MAX_RESTARTS_PER_HOUR" "$CRASH_COUNT" "$RESTART_COUNT" "${SHUTDOWN_REQUESTED_TS:-}" 2>> "$RUNDIR/supervisor.err")
+" "${ROOT_COMPLETE_TS:-}" "${CRITICAL_TS:-}" "${HEARTBEAT_SESSION_ID:-}" "${HEARTBEAT_LAST_SEEN:-}" "${NOW:-}" "$CHILD_START_TS" "${CHILD_SESSION_ID:-}" "$LAUNCHED_AT" "$STALE_AFTER_MS" "$SUPERVISOR_MIN_RUN_MS" "$SUPERVISOR_MAX_RESTARTS_PER_HOUR" "$CRASH_COUNT" "$RESTART_COUNT" "${SHUTDOWN_REQUESTED_TS:-}" "${RESTART_REQUESTED_TS:-}" 2>> "$RUNDIR/supervisor.err")
 
     # Call the decide unit.
     DECIDE_RESULT=$(node -e "
@@ -598,7 +604,14 @@ console.log(o.reason || '');
         fi
         echo "$EXIT_CODE" > "$EXIT_MARKER"
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
-        log "PASSIVE: goal complete; returning to passive state, waiting for the next goal delivered by chat"
+        case "$DECIDE_REASON" in
+          restart_requested*)
+            log "PASSIVE: restart requested; relaunching the child with the goal tree kept, the new child resumes the active plan"
+            ;;
+          *)
+            log "PASSIVE: goal complete; returning to passive state, waiting for the next goal delivered by chat"
+            ;;
+        esac
         continue 2  # break out of the poll loop and go to the next child; no crash/restart accounting
         ;;
       restart)
@@ -654,6 +667,12 @@ console.log(o.reason || '');
   if [ -n "$SHUTDOWN_REQUESTED_TS" ] && [ "$SHUTDOWN_REQUESTED_TS" -gt "$CHILD_START_TS" ]; then
     log "STOP_COMPLETE: shutdown_requested at $SHUTDOWN_REQUESTED_TS > child start $CHILD_START_TS"
     exit 0
+  fi
+  RESTART_REQUESTED_TS=$(get_fact "$WORKDIR" "$PERSONA" "restart_requested")
+  if [ -n "$RESTART_REQUESTED_TS" ] && [ "$RESTART_REQUESTED_TS" -gt "$CHILD_START_TS" ]; then
+    log "RESTART_PASSIVE: restart_requested at $RESTART_REQUESTED_TS > child start $CHILD_START_TS (no shutdown requested)"
+    log "PASSIVE: restart requested; relaunching the child with the goal tree kept, the new child resumes the active plan"
+    continue  # only the outer loop encloses this point; no crash/restart accounting
   fi
   ROOT_COMPLETE_TS=$(get_fact "$WORKDIR" "$PERSONA" "root_complete")
   if [ -n "$ROOT_COMPLETE_TS" ] && [ "$ROOT_COMPLETE_TS" -gt "$CHILD_START_TS" ]; then

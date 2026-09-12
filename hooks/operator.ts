@@ -6,7 +6,7 @@
 // Key layout: one writer per key.
 //
 // Records:
-// - inbox:<persona>:<writerSessionId>:<seq> = { id, from, at, text, kind, answers?, status }
+// - inbox:<persona>:<writerSessionId>:<seq> = { id, from, at, text, kind, answers?, urgent?, status }
 // - reply:<persona>:<msgId> = { at, text }
 // - ask:<persona>:<askId> = { at, nodeId, question, status }
 //
@@ -26,6 +26,7 @@ export interface InboxRecord {
   text: string;
   kind: InboxKind;
   answers?: string; // askId if kind === "answer"
+  urgent?: boolean; // plan item 8.3: delivered inside the owner's running turn, not at the next quiet tick
   status: InboxStatus;
   deliveredAt?: number; // set by owner on delivery
   turnId?: string; // set by owner on turn.start after delivery
@@ -94,6 +95,7 @@ export async function writeInboxRecord(
   text: string,
   kind: InboxKind,
   answers?: string,
+  urgent?: boolean,
 ): Promise<string> {
   const id = `${persona}-${writerSessionId}-${seq}`;
   const key = inboxKey(persona, writerSessionId, seq);
@@ -105,6 +107,7 @@ export async function writeInboxRecord(
     text,
     kind,
     answers,
+    ...(urgent ? { urgent: true } : {}),
     status: "pending",
   };
   await store.set(key, record);

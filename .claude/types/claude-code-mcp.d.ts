@@ -50,6 +50,11 @@ declare module 'claude-code' {
       /** Optional. Why the operator asked to shut down. */
       reason?: string
     }
+    /** Relaunch the supervised child without stopping the supervisor: this child exits by the graceful EOF path and a fresh one starts with the goal tree intact and resumes the active plan. Use when the operator asks for a restart, or to pick up an updated runtime (a plugin update) without ending the run. Never for a completed goal (goal_done already returns the supervisor to its passive waiting state). Owner only. */
+    "mcp__agentic-plugin__supervisor_restart": {
+      /** Optional. Why the operator asked for a restart. */
+      reason?: string
+    }
     /** Steer the goal tree in response to an operator request: drop a pending plan or task (marks it abandoned, it is never activated), pause an active or pending node with a reason (use goal_resume to continue it later), or reprioritize a pending node so it activates before its siblings. Owner only. */
     "mcp__agentic-plugin__goal_edit": {
       /** The id of the node to change (see goal_status). */
