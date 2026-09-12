@@ -1305,7 +1305,7 @@ async function caseS3_planner_no_walk(clock) {
 // S3: AZ2 - pause is an ask (classifier "pause" writes ask + pendingAskId)
 // ============================================================
 async function caseS3_pause_is_ask(clock) {
-  console.log("\n=== S3: classifier pause writes ask and pauses ===");
+  console.log("\n=== S3: classifier pause converts to a nudge, writes no ask (Round 39) ===");
   clock.set(T0);
 
   const mySid = SESSION_ID;
@@ -1322,23 +1322,32 @@ async function caseS3_pause_is_ask(clock) {
     claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
   });
 
-  // Drive a single "pause" classify result through the idle gate.
+  // Drive a single "pause" classify result through the idle gate. Item 8.2
+  // (Round 39): "pause" no longer writes an ask record or pauses the goal
+  // directly either - it converts to a nudge unconditionally, the same as
+  // "ask-operator" (caseItem8p2_pause_converts_unconditionally covers the
+  // conversion in full); this is the pre-existing S3 slot, updated to the
+  // new behavior.
   h.setClassifyValue("pause");
   clock.advance(130_000);
   await tickAndSettle(h, clock, 50);
 
   const state = getState(h);
 
-  // Check: there should be an ask record in the store
+  // Check: no ask record in the store
   const askRecords = Array.from(h.storeMap.keys()).filter(k => k.startsWith("ask:"));
-  check("S3 pause-is-ask: ask record written", askRecords.length > 0);
+  check("S3 pause-is-ask: no ask record written", askRecords.length === 0);
 
-  // Check: the active goal should be paused
+  // Check: the active goal stays active
   const activeGoal = state.goals.find(g => g.id === state.activeGoalId);
-  check("S3 pause-is-ask: active goal status is paused", activeGoal && activeGoal.status === "paused");
+  check("S3 pause-is-ask: active goal stays active", activeGoal && activeGoal.status === "active");
 
-  // Check: pendingAskId should be set
-  check("S3 pause-is-ask: pendingAskId is set", state.pendingAskId !== null && state.pendingAskId !== undefined);
+  // Check: pendingAskId is not set
+  check("S3 pause-is-ask: pendingAskId not set", state.pendingAskId === null || state.pendingAskId === undefined);
+
+  // Check: the conversion decision is present
+  const decisions = state.decisions || [];
+  check("S3 pause-is-ask: ask_idle_gap_converted decision present", decisions.some(d => d.action === "ask_idle_gap_converted"));
 }
 
 // ============================================================
@@ -1834,6 +1843,69 @@ async function caseItem8p2_classifier_ask_operator_converts_unconditionally(cloc
   check("item8p2a: nudge carries the ASK marker instruction", h.promptSubmits.some(t => t.includes("ASK: <question>? Recommend: <choice>")));
 }
 
+// Item 8.2 (Round 39 case a2): the classifier's "pause" verdict converts
+// exactly like "ask-operator" - the nineteenth ask that day arrived through
+// "pause" specifically, proving the classifier-prose problem was never
+// limited to one verdict. Proof uses that ask's own text verbatim.
+async function caseItem8p2_pause_converts_unconditionally(clock) {
+  console.log("\n=== Item 8.2(a2): classifier pause converts to nudge unconditionally ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "item8p2a2_pause_unconditional",
+  });
+
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  const personaState = buildPersonaState(mySid, now);
+  personaState.goals = [
+    { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
+    { id: "node-001", kind: "leaf", parentId: "root", objective: "Some task", status: "active", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-001";
+  personaState.monitor.turnCount = 5;
+  personaState.monitor.lastTurnComplete = now - 120_000;
+  personaState.updatedAt = now;
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: mySid, epoch: 1, lastSeen: now },
+  }));
+
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  h.setClassifyValue("pause");
+  // Today's real pause-triggered ask text, verbatim.
+  h.fake.model.complete = async () =>
+    "Repeated off-goal-by-instruction scores and operator-skipped decisions indicate systemic blocker requiring root-cause investigation before proce";
+
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+
+  const decisions = getDecisions(h);
+  const askKeys = [...h.storeMap.keys()].filter(k => k.startsWith("ask:"));
+  check("item8p2a2: no ask record written", askKeys.length === 0);
+
+  const askOpenedCount = decisions.filter(d => d.action === "ask_opened").length;
+  check("item8p2a2: no ask_opened decision", askOpenedCount === 0);
+
+  const conversionCount = decisions.filter(d => d.action === "ask_idle_gap_converted").length;
+  check("item8p2a2: ask_idle_gap_converted decision present", conversionCount >= 1);
+
+  const nudgeCount = decisions.filter(d => d.action === "nudge_sent").length;
+  check("item8p2a2: nudge_sent decision present", nudgeCount >= 1);
+}
+
 // Item 8.2 (Round 36 case b): an ask record opens only when the worker's own
 // completed turn states a real fork as the literal marker line; the stored
 // question is that line, not anything the classifier produced.
@@ -1905,6 +1977,69 @@ async function caseItem8p2_worker_states_fork_opens_ask(clock) {
 
   const decisions = state.decisions || [];
   check("item8p2b: ask_opened decision present", decisions.some(d => d.action === "ask_opened"));
+}
+
+// Item 8.2 (Round 39): a marker match that still carries the literal
+// template's angle-bracket placeholders is refused, not opened as an ask -
+// a worker that copies the nudge instruction verbatim without filling it in
+// has not stated a fork.
+async function caseItem8p2_placeholder_marker_refused(clock) {
+  console.log("\n=== Item 8.2: ASK marker with unfilled placeholders is refused ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "item8p2_placeholder_refused",
+  });
+
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  const personaState = buildPersonaState(mySid, now);
+  personaState.goals = [
+    { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
+    { id: "node-001", kind: "leaf", parentId: "root", objective: "Some task", status: "active", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-001";
+  personaState.updatedAt = now;
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: mySid, epoch: 1, lastSeen: now },
+  }));
+
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  clock.advance(1000);
+  await tickAndSettle(h, clock, 50);
+
+  const turnStartH = h.handlers["turn.start"];
+  await turnStartH(h.fake, { turnId: "t-placeholder" }, async () => ({ result: "ok" }));
+
+  const turnCompleteH = h.handlers["turn.complete"];
+  await turnCompleteH(h.fake, {
+    turnId: "t-placeholder",
+    answer: "ASK: <question>? Recommend: <choice>",
+    reason: "completed",
+  }, async () => ({ result: "ok" }));
+
+  const state = getState(h);
+  const askKeys = [...h.storeMap.keys()].filter(k => k.startsWith("ask:"));
+  check("item8p2 placeholder: no ask record written", askKeys.length === 0);
+  check("item8p2 placeholder: pendingAskId never set", !state.pendingAskId);
+
+  const decisions = state.decisions || [];
+  check("item8p2 placeholder: ask_marker_placeholder_refused decision present", decisions.some(d => d.action === "ask_marker_placeholder_refused"));
+  check("item8p2 placeholder: no ask_opened decision", !decisions.some(d => d.action === "ask_opened"));
+
+  const node1 = state.goals.find(g => g.id === "node-001");
+  check("item8p2 placeholder: node stays active (not paused)", node1 && node1.status === "active");
 }
 
 // Item 8.2 (Round 36 case c, plan bullet's memory half): a self-review
@@ -3414,7 +3549,9 @@ async function main() {
     await caseItem2_backfillSkipsNudgeTurn(clock);
     await caseItem2_backfillFiresOnSecondRequest(clock);
     await caseItem8p2_classifier_ask_operator_converts_unconditionally(clock);
+    await caseItem8p2_pause_converts_unconditionally(clock);
     await caseItem8p2_worker_states_fork_opens_ask(clock);
+    await caseItem8p2_placeholder_marker_refused(clock);
     await caseItem8p2_memory_quality_self_scoring_vs_proof_backed(clock);
     await caseItem8p2_dead_writer_record_skipped_once(clock);
     await caseS4_peer_consumed(clock);
@@ -3538,38 +3675,48 @@ async function caseD5b_reaskSuppressed(clock) {
     claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
   });
 
+  const question = "Should we keep going on this branch? Recommend: yes, continue.";
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
+    { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
     {
-      id: "node-001", kind: "leaf", objective: "Goal 1", status: "active",
+      id: "node-001", kind: "leaf", parentId: "root", objective: "Goal 1", status: "active",
       completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [],
-      lastAskQuestion: "operator input needed", lastAskClosedAt: now - 30_000, // closed 30s ago
+      lastAskQuestion: question, lastAskClosedAt: now - 30_000, // closed 30s ago
     },
   ];
   personaState.activeGoalId = "node-001";
-  personaState.monitor.lastTurnComplete = now - 120_000; // idle past nudgeIdleMs
   h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
   h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
 
   const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
 
-  // The classifier proposes the identical question again with the same
-  // reason text. Item 8.2 (Round 36): ask-operator no longer reaches the
-  // ask-writing branch at all (it converts to a nudge unconditionally), so
-  // this suppression path - still real for "pause" - is driven through
-  // "pause" here rather than through the now-converted "ask-operator".
-  h.setClassifyValue("pause");
-  h.setCompleteValue("operator input needed");
+  // Item 8.2 (Round 36/39): neither classifier verdict opens an ask
+  // directly anymore - the reask-suppression guard now runs on the marker
+  // path (turn.complete), the only place an ask still opens from the idle
+  // tick's own read of the goal. One tick re-activates the reseeded node
+  // (the same transitional step every reseed-then-refire case needs) before
+  // the worker's turn restates the identical question.
+  clock.advance(1000);
+  await tickAndSettle(h, clock, 50);
 
-  clock.advance(65_000);
-  await tickAndSettle(h, clock, 30);
+  const turnStartH = h.handlers["turn.start"];
+  await turnStartH(h.fake, { turnId: "t-reask" }, async () => ({ result: "ok" }));
+  const turnCompleteH = h.handlers["turn.complete"];
+  await turnCompleteH(h.fake, {
+    turnId: "t-reask",
+    answer: `ASK: ${question}`,
+    reason: "completed",
+  }, async () => ({ result: "ok" }));
 
   const state = getState(h);
   const decisions = state.decisions || [];
   check("D5b suppress: ask_reask_suppressed logged", decisions.some(d => d.action === "ask_reask_suppressed"));
   check("D5b suppress: no ask_opened for the identical question", !decisions.some(d => d.action === "ask_opened"));
   check("D5b suppress: pendingAskId never set", !state.pendingAskId);
+  const askKeys = [...h.storeMap.keys()].filter(k => k.startsWith("ask:"));
+  check("D5b suppress: no ask record written", askKeys.length === 0);
   const node1 = state.goals.find(g => g.id === "node-001");
   check("D5b suppress: node stays active (not paused again)", node1 && node1.status === "active");
 }

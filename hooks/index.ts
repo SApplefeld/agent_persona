@@ -2112,30 +2112,34 @@ export const register: Register = async (on, options) => {
           // D3: update call window (count the classify call)
           sess.state.monitor.cost.callWindow = bumpWindow(sess.state.monitor.cost.callWindow, Date.now());
           let finalDecision: string = decision ?? "nudge";
-          // Item 8.2 (Round 36): a classifier ask-operator decision never
-          // opens an ask record directly. Word-matching the model's reason
-          // text for "unclear"/"scope"/idle-gap language let real forks
-          // through unrecognized - eighteen different ask wordings landed
-          // in one day, none matching a keyword list - so the rule is
-          // structural: every ask-operator becomes a nudge here,
-          // unconditionally, before the reason call even runs (a failed
-          // reason call must not fall through to opening an ask with "no
-          // reason", which the old in-try conversion did). The nudge tells
-          // the worker to re-read the plan and discussion file and, if a
-          // fork truly exists, state it in its own next turn as a line
-          // `ASK: <question>? Recommend: <choice>`. Only that marker (read
-          // on turn.complete, below) opens an ask record, with the
-          // worker's own line as the stored question - never the
-          // classifier's reason.
+          // Item 8.2 (Round 36, extended Round 39): neither classifier
+          // verdict that used to open an ask directly from classifier prose
+          // - "ask-operator" nor "pause" - opens an ask record anymore.
+          // Word-matching the model's reason text for "unclear"/"scope"/
+          // idle-gap language let real forks through unrecognized (eighteen
+          // ask wordings in one day matched no keyword list), and the
+          // nineteenth ask arrived through "pause" specifically, proving
+          // the same classifier prose problem exists on that verdict too.
+          // So the rule is structural and covers both: either verdict
+          // becomes a nudge here, unconditionally, before the reason call
+          // even runs (a failed reason call must not fall through to
+          // opening an ask with "no reason", which the old in-try
+          // conversion did). The nudge tells the worker to re-read the plan
+          // and discussion file and, if a fork truly exists, state it in
+          // its own next turn as a line `ASK: <question>? Recommend:
+          // <choice>`. Only that marker (read on turn.complete, below)
+          // opens an ask record, with the worker's own line as the stored
+          // question - never the classifier's reason.
           let idleGapConverted = false;
-          if (finalDecision === "ask-operator") {
+          if (finalDecision === "ask-operator" || finalDecision === "pause") {
+            const convertedFrom = finalDecision;
             finalDecision = "nudge";
             idleGapConverted = true;
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "monitor",
               action: "ask_idle_gap_converted",
-              detail: `${g.id}: classifier ask-operator converted to nudge (worker states a real fork itself, if one exists)`,
+              detail: `${g.id}: classifier ${convertedFrom} converted to nudge (worker states a real fork itself, if one exists)`,
             });
           }
 
@@ -2268,49 +2272,6 @@ export const register: Register = async (on, options) => {
                   detail: `${g.id}: idle ${idleDisplay}, nudge #${sess.consecutiveNudgesWithoutOnGoal}`,
                 });
               } catch { /* nudge failed; non-fatal */ }
-            }
-          } else if (finalDecision === "pause") {
-            // Item 8.2 (Round 36): ask-operator no longer reaches this
-            // branch - it is converted to a nudge above, before the reason
-            // call. Only "pause" still opens an ask record directly here.
-            const question = fullReason || "controller pause";
-            const askReaskSuppressMs = typeof cfg.askReaskSuppressMs === "number" ? (cfg.askReaskSuppressMs as number) : 10 * 60_000;
-            if (shouldSuppressReask(g, question, tickTs, askReaskSuppressMs)) {
-              // D5b: the classifier re-proposed the identical question this
-              // node just closed. Log it and fall through without pausing;
-              // the plan keeps nudging instead of silencing the worker on a loop.
-              sess.state.decisions.push({
-                timestamp: tickTs,
-                loop: "monitor",
-                action: "ask_reask_suppressed",
-                detail: `${g.id}: suppressed identical question closed ${Math.round((tickTs - (g.lastAskClosedAt || tickTs)) / 1000)}s ago: ${question.slice(0, 80)}`,
-              });
-            } else {
-              // D5: write an ask record and set pendingAskId (pause path)
-              const askId = `ask-${g.id}-${Date.now()}`;
-              await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, question, sess.mySessionId);
-              sess.state.pendingAskId = askId;
-              sess.state.decisions.push({
-                timestamp: Date.now(),
-                loop: "monitor",
-                action: "ask_opened",
-                detail: `${g.id}: ${finalDecision}: ${question} (ask ${askId})`,
-              });
-              try {
-                $.ui.toast(`Agentic: ${question}`);
-              } catch { /* non-fatal */ }
-              if (g.status === "active") {
-                g.status = "paused";
-                g.blockedReason = question;
-                g.updatedAt = Date.now();
-                sess.state.decisions.push({
-                  timestamp: Date.now(),
-                  loop: "goal",
-                  action: "paused_by_controller",
-                  detail: `${g.id}: ${question}`,
-                });
-                try { $.ui.status(""); } catch { /* non-fatal */ }
-              }
             }
           } else if (finalDecision === "complete" && g.status === "active") {
             // R3: use completeLeaf + activateNext.
@@ -2484,31 +2445,63 @@ export const register: Register = async (on, options) => {
       });
     }
 
-    // Item 8.2 (Round 36): an ask record opens only when the worker's own
-    // completed turn states a real fork as a literal marker line, never from
-    // the classifier's idle-gap reading (see the ask-operator conversion
-    // above). The stored question is the worker's own line, not a reason the
-    // classifier produced.
+    // Item 8.2 (Round 36, extended Round 39): an ask record opens only when
+    // the worker's own completed turn states a real fork as a literal
+    // marker line, never from the classifier's idle-gap or pause reading
+    // (see the conversion above, which now covers both verdicts). The
+    // stored question is the worker's own line, not a reason the classifier
+    // produced. Two guards on the marker itself: refuse a match that still
+    // carries the literal template's angle-bracket placeholders (a worker
+    // that copies the nudge instruction verbatim without filling it in is
+    // not stating a fork), and suppress a re-open of the identical question
+    // this same node just closed (the D5b reask guard, driven through this
+    // path now that it is the only path that opens an ask from the idle
+    // tick's own read of the goal).
     if (!skipped && sess.isOwner && !sess.state.pendingAskId) {
       const askMarkerMatch = e.answer.match(/^ASK:\s*(.+?\?\s*Recommend:\s*.+)$/im);
       if (askMarkerMatch) {
         const question = askMarkerMatch[1].trim();
-        const nodeId = turnLeafId || sess.state.activeGoalId || "unknown";
-        const askId = `ask-${nodeId}-${Date.now()}`;
-        await writeAskRecord(commonsStoreOf($), sess.persona, askId, nodeId, question, sess.mySessionId);
-        sess.state.pendingAskId = askId;
-        sess.state.decisions.push({
-          timestamp: Date.now(),
-          loop: "monitor",
-          action: "ask_opened",
-          detail: `${nodeId}: worker-stated fork: ${question} (ask ${askId})`,
-        });
-        try { $.ui.toast(`Agentic: ${question}`); } catch { /* non-fatal */ }
-        const askedNode = sess.state.goals.find((node) => node.id === nodeId);
-        if (askedNode && askedNode.status === "active") {
-          askedNode.status = "paused";
-          askedNode.blockedReason = question;
-          askedNode.updatedAt = Date.now();
+        if (/<[^<>]+>/.test(question)) {
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "ask_marker_placeholder_refused",
+            detail: `worker's ASK line still carries a template placeholder, refused: ${question.slice(0, 100)}`,
+          });
+        } else {
+          const nodeId = turnLeafId || sess.state.activeGoalId || "unknown";
+          const askedNode = sess.state.goals.find((node) => node.id === nodeId);
+          const askReaskSuppressMs = typeof cfg.askReaskSuppressMs === "number" ? (cfg.askReaskSuppressMs as number) : 10 * 60_000;
+          if (shouldSuppressReask(askedNode, question, Date.now(), askReaskSuppressMs)) {
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "monitor",
+              action: "ask_reask_suppressed",
+              detail: `${nodeId}: suppressed identical question closed ${Math.round((Date.now() - (askedNode?.lastAskClosedAt || Date.now())) / 1000)}s ago: ${question.slice(0, 80)}`,
+            });
+          } else {
+            const askId = `ask-${nodeId}-${Date.now()}`;
+            await writeAskRecord(commonsStoreOf($), sess.persona, askId, nodeId, question, sess.mySessionId);
+            sess.state.pendingAskId = askId;
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "monitor",
+              action: "ask_opened",
+              detail: `${nodeId}: worker-stated fork: ${question} (ask ${askId})`,
+            });
+            try { $.ui.toast(`Agentic: ${question}`); } catch { /* non-fatal */ }
+            if (askedNode && askedNode.status === "active") {
+              askedNode.status = "paused";
+              askedNode.blockedReason = question;
+              askedNode.updatedAt = Date.now();
+              sess.state.decisions.push({
+                timestamp: Date.now(),
+                loop: "goal",
+                action: "paused_by_controller",
+                detail: `${nodeId}: ${question}`,
+              });
+            }
+          }
         }
       }
     }
