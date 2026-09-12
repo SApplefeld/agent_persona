@@ -3813,6 +3813,11 @@ async function main() {
     await caseItem8p3_deferredNotReportedForStaleOwner(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
     await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
+    await caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock);
+    await caseItem8p4_control_singleEventProducesNeither(clock);
+    await caseItem8p4_openKaizenGoalNotDuplicated(clock);
+    await caseItem8p4_longTurnsAdjustConfigNotGoal(clock);
+    await caseItem8p4_turnOverHourRecorded(clock);
     await caseS4_peer_consumed(clock);
     await caseS4_peer_send_message_consumed(clock);
     await caseS4_other_origin_passes(clock);
@@ -4497,6 +4502,164 @@ async function caseItem8p3_urgentBreaksIntoRunningTurn(clock) {
   // A second call in the same turn finds nothing new and adds no context.
   const r2 = await toolCallH(h.fake, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "b.txt" }, text: "b.txt" }));
   check("item8.3 urgent: second call in the turn adds no context", r2.context === undefined);
+}
+
+// ============================================================
+// Item 8.4: the worker finds the next three itself
+// ============================================================
+
+// A kaizen node is a plan under the root carrying the signal it was raised
+// for; the harness reads it back from the persisted store.
+function findKaizenNodes(h, signal) {
+  return getState(h).goals.filter(g => g.kaizenSignal === signal);
+}
+
+// Runs one periodic self-review over a seeded decision log and memory. The
+// model stub returns a proof-backed lesson, so if the model path runs at all
+// it would be kept as a memory entry; the assertions below distinguish the
+// two paths by whether that lesson landed.
+async function runOwnRecordReview(clock, caseName, seededDecisions, extra = {}) {
+  clock.set(T0);
+  const root = {
+    id: "root-goal", parentId: null, kind: "root", title: "Roadmap", objective: "Roadmap",
+    status: "pending", source: "operator", maxRounds: 0, completedRounds: 0, scores: [], notes: [],
+    planningRounds: 1, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0, planningRound: 0,
+    createdAt: T0 - 20000, updatedAt: T0 - 20000,
+  };
+  const planA = { ...root, id: "plan-a", parentId: "root-goal", kind: "plan", title: "Roadmap item A", objective: "A", maxRounds: 10, planningRounds: 0, createdAt: T0 - 19000, updatedAt: T0 - 19000 };
+  const planB = { ...planA, id: "plan-b", title: "Roadmap item B", objective: "B", createdAt: T0 - 18000, updatedAt: T0 - 18000 };
+  const goals = [root, planA, planB, ...(extra.goals || [])];
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName,
+    stateOpts: {
+      now: T0,
+      goals,
+      activeGoalId: null,
+      selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: true, lastInjectAt: 0 },
+    },
+    classifyValue: "NONE",
+  });
+  // Seed the decision log and memory into the persisted store, then reload
+  // through session.start the way the running module reads its own file.
+  const raw = JSON.parse(h.fsMap.get(".agentic-personas.json"));
+  raw.default.decisions = seededDecisions;
+  raw.default.memory = extra.memory || [];
+  h.fsMap.set(".agentic-personas.json", JSON.stringify(raw));
+  const startH = h.handlers["session.start"];
+  await startH(h.fake, {}, () => {});
+  h.fake.model.complete = async () => {
+    h.completeCalls.push(1);
+    return extra.lesson ?? "The test suite confirmed the fix: verified by a passing harness case.";
+  };
+  await tickAndSettle(h, clock, 100);
+  return h;
+}
+
+// Proof line, half one: a seeded log with a repeated weakness (two asks
+// that ran out the clock) produces a kaizen goal node with a proof line, a
+// one-line rationale posted to the thread, and no memory lesson.
+async function caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock) {
+  console.log("\n=== Item 8.4: a repeated weakness becomes a kaizen goal, not a memory lesson ===");
+  const seeded = [
+    { timestamp: T0 - 9000, loop: "monitor", action: "ask_opened", detail: "plan-a: ASK: which base? Recommend: main" },
+    { timestamp: T0 - 8000, loop: "monitor", action: "ask_timeout", detail: "plan-a: ask ask-1 expired after 3600s" },
+    { timestamp: T0 - 7000, loop: "monitor", action: "ask_opened", detail: "plan-a: ASK: which suite? Recommend: live-all" },
+    { timestamp: T0 - 6000, loop: "monitor", action: "ask_timeout", detail: "plan-a: ask ask-2 expired after 3600s" },
+  ];
+  const h = await runOwnRecordReview(clock, "item8p4_repeated", seeded);
+  const state = getState(h);
+  const nodes = findKaizenNodes(h, "asks_unresolved");
+  check("item8.4 goal: exactly one kaizen node raised for asks_unresolved", nodes.length === 1);
+  const node = nodes[0];
+  check("item8.4 goal: the node is a plan under the root", !!node && node.kind === "plan" && node.parentId === "root-goal");
+  check("item8.4 goal: the node's objective carries a proof line", !!node && /Proof:/.test(node.objective));
+  check("item8.4 goal: the node's title names it kaizen", !!node && /^Kaizen:/.test(node.title));
+  check("item8.4 goal: the node is interleaved after the next roadmap plan (sortKey between plan-a and plan-b)",
+    !!node && typeof node.sortKey === "number" && node.sortKey > (T0 - 19000) && node.sortKey < (T0 - 18000));
+  check("item8.4 goal: kaizen_goal_proposed decision names the signal",
+    state.decisions.some(d => d.action === "kaizen_goal_proposed" && d.detail.includes("asks_unresolved")));
+  check("item8.4 goal: one-line rationale posted to the thread ([KAIZEN] prompt submitted)",
+    h.promptSubmits.some(t => t.includes("[KAIZEN]") && t.includes("asks_unresolved")));
+  check("item8.4 goal: no memory lesson written (no self-review memory entry)",
+    !state.memory.some(m => m.source === "self-review"));
+  check("item8.4 goal: the model lesson call was skipped for this review", h.completeCalls.length === 0);
+  check("item8.4 goal: the review still counted against the cap (selfReview.count 1)", state.monitor.selfReview.count === 1);
+}
+
+// Proof line, half two (control): a log with the same weakness once produces
+// neither a kaizen node nor a memory lesson; the model path runs and says NONE.
+async function caseItem8p4_control_singleEventProducesNeither(clock) {
+  console.log("\n=== Item 8.4 control: one event is not repeated; neither goal nor lesson ===");
+  const seeded = [
+    { timestamp: T0 - 9000, loop: "monitor", action: "ask_opened", detail: "plan-a: ASK: which base? Recommend: main" },
+    { timestamp: T0 - 8000, loop: "monitor", action: "ask_timeout", detail: "plan-a: ask ask-1 expired after 3600s" },
+    { timestamp: T0 - 7000, loop: "monitor", action: "ask_opened", detail: "plan-a: ASK: which suite? Recommend: live-all" },
+    { timestamp: T0 - 6000, loop: "monitor", action: "ask_answered", detail: "ask ask-2 closed by record r-1" },
+  ];
+  const h = await runOwnRecordReview(clock, "item8p4_control", seeded, { lesson: "NONE" });
+  const state = getState(h);
+  check("item8.4 control: no kaizen node", !state.goals.some(g => g.kaizenSignal));
+  check("item8.4 control: no kaizen_goal_proposed decision", !state.decisions.some(d => d.action === "kaizen_goal_proposed"));
+  check("item8.4 control: no memory lesson", !state.memory.some(m => m.source === "self-review"));
+  check("item8.4 control: the model path ran (NONE recorded)",
+    h.completeCalls.length === 1 && state.decisions.some(d => d.action === "self-review" && d.detail.endsWith(": NONE")));
+  check("item8.4 control: nothing posted to the thread", !h.promptSubmits.some(t => t.includes("[KAIZEN]")));
+}
+
+// An open kaizen goal for a signal is not raised twice while it is open.
+async function caseItem8p4_openKaizenGoalNotDuplicated(clock) {
+  console.log("\n=== Item 8.4: an open kaizen goal suppresses a second one for the same signal ===");
+  const seeded = [
+    { timestamp: T0 - 8000, loop: "monitor", action: "ask_timeout", detail: "plan-a: ask ask-1 expired after 3600s" },
+    { timestamp: T0 - 6000, loop: "monitor", action: "ask_timeout", detail: "plan-a: ask ask-2 expired after 3600s" },
+  ];
+  const existing = {
+    id: "plan-kaizen-open", parentId: "root-goal", kind: "plan", title: "Kaizen: asks run out the clock", objective: "Proof: ...",
+    status: "pending", source: "controller", maxRounds: 10, completedRounds: 0, scores: [], notes: [],
+    planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0, planningRound: 0,
+    createdAt: T0 - 10000, updatedAt: T0 - 10000, kaizenSignal: "asks_unresolved",
+  };
+  const h = await runOwnRecordReview(clock, "item8p4_open_dedupe", seeded, { goals: [existing], lesson: "NONE" });
+  check("item8.4 dedupe: still exactly one kaizen node for asks_unresolved", findKaizenNodes(h, "asks_unresolved").length === 1);
+  check("item8.4 dedupe: no kaizen_goal_proposed decision", !getDecisions(h).some(d => d.action === "kaizen_goal_proposed"));
+}
+
+// A weakness the loop can fix by changing its own configuration is fixed and
+// reported, not proposed: repeated turns past an hour halve the periodic
+// review cadence (turn-counted) and post the change, with no goal node.
+async function caseItem8p4_longTurnsAdjustConfigNotGoal(clock) {
+  console.log("\n=== Item 8.4: repeated long turns adjust selfReviewEveryTurns and report, no goal ===");
+  const seeded = [
+    { timestamp: T0 - 8000, loop: "monitor", action: "turn_over_hour", detail: "Turn 3 ran 3720s" },
+    { timestamp: T0 - 6000, loop: "monitor", action: "turn_over_hour", detail: "Turn 5 ran 4100s" },
+  ];
+  const h = await runOwnRecordReview(clock, "item8p4_config_fix", seeded);
+  const state = getState(h);
+  check("item8.4 config: kaizen_config_adjusted decision names the knob and both values",
+    state.decisions.some(d => d.action === "kaizen_config_adjusted" && /selfReviewEveryTurns 20 -> 10/.test(d.detail)));
+  check("item8.4 config: no kaizen node for long_turns", findKaizenNodes(h, "long_turns").length === 0);
+  check("item8.4 config: the change is reported to the thread", h.promptSubmits.some(t => t.includes("[KAIZEN]") && t.includes("selfReviewEveryTurns")));
+  check("item8.4 config: no memory lesson written", !state.memory.some(m => m.source === "self-review"));
+}
+
+// turn.complete records a turn that ran past an hour as a decision, so the
+// own-record pass can count it; a short turn records nothing.
+async function caseItem8p4_turnOverHourRecorded(clock) {
+  console.log("\n=== Item 8.4: a turn past an hour is recorded, a short one is not ===");
+  clock.set(T0);
+  const h = await seedOwnerHarness("item8p4_turn_over_hour", T0);
+  const startH = h.handlers["turn.start"];
+  const completeH = h.handlers["turn.complete"];
+  await startH(h.fake, { turnId: "t-short" }, async () => ({ result: "ok" }));
+  clock.advance(5 * 60_000);
+  await completeH(h.fake, { turnId: "t-short", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  check("item8.4 long turn control: a five-minute turn records no turn_over_hour", !getDecisions(h).some(d => d.action === "turn_over_hour"));
+  await startH(h.fake, { turnId: "t-long" }, async () => ({ result: "ok" }));
+  clock.advance(61 * 60_000);
+  await completeH(h.fake, { turnId: "t-long", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  const rec = getDecisions(h).find(d => d.action === "turn_over_hour");
+  check("item8.4 long turn: a sixty-one-minute turn records turn_over_hour with its duration", !!rec && /3660s/.test(rec.detail));
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
