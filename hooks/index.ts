@@ -65,6 +65,9 @@ import {
   dedupeSelfReview,
   evictSelfReview,
   isSelfScoringLesson,
+  reviewOwnRecord,
+  kaizenSortKey,
+  KAIZEN_LONG_TURN_MS,
 } from "./self-review";
 import { estimateTokens, fnv1aHash, effectiveWindowCount, bumpWindow, backoffFactor, shouldRunClassify } from "./cost-ledger";
 
@@ -135,10 +138,6 @@ async function tickOpenAsk(
       detail: `${contextId ? contextId + ": " : ""}ask ${state.pendingAskId} re-raised after ${Math.round(elapsed / 1000)}s: ${askRecord.question.slice(0, 100)}`,
     });
     try {
-      // D5b: re-raise carries the same reply-tool instruction that every operator-facing
-      // prompt carries (item 5, priming turn), since a child's own conversational reply
-      // is never visible to the operator through Discord.
-      const REPLY_INSTRUCTION = "You are attached to a Discord channel. When you want to say something back to the operator, call the reply tool from the channel-relay MCP server - your own conversational reply is not visible to them. ";
       await dp.prompt.submit({ text: `${REPLY_INSTRUCTION}[STILL WAITING] ${askRecord.question}` });
     } catch { /* re-raise failed; non-fatal, the decision log still shows it */ }
   }
@@ -336,6 +335,12 @@ async function runHealth(dp: any, forNodeId: string | null): Promise<void> {
     });
   }
 }
+
+// Every prompt the plugin submits for the operator's eyes carries this, since
+// a channel-attached child's own conversational reply is never visible to
+// the operator through Discord (item 5, priming turn). Used by the ask
+// re-raise (D5b) and the kaizen announcement (item 8.4).
+const REPLY_INSTRUCTION = "You are attached to a Discord channel. When you want to say something back to the operator, call the reply tool from the channel-relay MCP server - your own conversational reply is not visible to them. ";
 
 // Item 5 (Bounded store): the one append-only rollover log every capped
 // store writes to when something falls off its window - the commons
@@ -643,7 +648,11 @@ export const register: Register = async (on, options) => {
 
   // Self-review options (S6: options arrive through --settings pluginConfigs).
   const selfReviewStreak = typeof cfg.selfReviewStreak === "number" ? (cfg.selfReviewStreak as number) : 3;
-  const selfReviewEveryTurns = typeof cfg.selfReviewEveryTurns === "number" ? (cfg.selfReviewEveryTurns as number) : 20;
+  // Plan item 8.4: mutable, because the own-record pass halves it when turns
+  // repeatedly run past an hour (a cadence counted in turns reviews too
+  // rarely then); a restart returns to the configured value and the pass
+  // re-applies the change if the record still shows the weakness.
+  let selfReviewEveryTurns = typeof cfg.selfReviewEveryTurns === "number" ? (cfg.selfReviewEveryTurns as number) : 20;
   const selfReviewDebounceTurns = typeof cfg.selfReviewDebounceTurns === "number" ? (cfg.selfReviewDebounceTurns as number) : 5;
   const selfReviewMaxPerHour = typeof cfg.selfReviewMaxPerHour === "number" ? (cfg.selfReviewMaxPerHour as number) : 2;
   
@@ -1487,77 +1496,160 @@ export const register: Register = async (on, options) => {
         if (reactive.eligible || periodic.eligible) {
           const trigger = reactive.eligible ? reactive.reason : periodic.reason;
           try {
-            const input = buildSelfReviewInput(
-              { monitor: sess.state.monitor, decisions: sess.state.decisions, memory: sess.state.memory, goals: sess.state.goals, activeGoalId: sess.state.activeGoalId },
-              now,
+            // Plan item 8.4: before asking the model for a lesson, read the
+            // worker's own record mechanically. A repeated weakness becomes a
+            // kaizen goal (a plan under the root with a proof line, announced
+            // to the operator's thread in one line), or, where the loop can
+            // answer it by changing its own configuration, a change applied
+            // here and reported. When either happens the review is spent on
+            // it and no model lesson is written: a finding about the worker's
+            // own record is exactly the class item 8.2 keeps out of memory.
+            const inboxForReview = sess.isOwner ? await listInboxRecords(commonsStoreOf($), sess.persona) : [];
+            const findings = reviewOwnRecord(
+              { decisions: sess.state.decisions, memory: sess.state.memory, goals: sess.state.goals, inbox: inboxForReview },
+              { selfReviewEveryTurns, selfReviewDebounceTurns },
             );
-            const raw = await $.model.complete({ model: "haiku", prompt: input.prompt, maxTokens: 80 });
-            // D1: increment self-review ledger
-            sess.state.monitor.cost.selfReview.count += 1;
-            sess.state.monitor.cost.selfReview.estTokens += estimateTokens(input.prompt.length, 80);
-            const lesson = raw.trim();
-            if (lesson.length > 0 && lesson.toUpperCase() !== "NONE") {
-              // Item 8.2: a memory entry comes from a proof passing or an
-              // operator correction, never from the classifier scoring its
-              // own confusion. Refuse the latter before the dedupe check.
-              if (isSelfScoringLesson(lesson)) {
+            const root = sess.state.goals.find((g) => g.parentId === null);
+            const announced: string[] = [];
+            for (const f of findings) {
+              if (f.configFix) {
+                selfReviewEveryTurns = f.configFix.to;
                 sess.state.decisions.push({
-                  timestamp: Date.now(),
-                  loop: "memory",
-                  action: "memory_lesson_refused",
-                  detail: `self-scoring lesson refused: ${lesson.slice(0, 80)}`,
-                });
-              } else if (!dedupeSelfReview(sess.state.memory, lesson)) {
-                const entryId = `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-                sess.state.memory.push({
-                  id: entryId,
-                  kind: "lesson",
-                  text: lesson,
-                  confidence: 0.5,
-                  source: "self-review",
-                  createdAt: Date.now(),
-                  lastAccessed: Date.now(),
-                  accessCount: 0,
-                  pinned: false,
-                  provenance: {
-                    decisionTimestamps: input.decisionTimestamps,
-                    windowRange: input.decisionTimestamps.length > 0
-                      ? [input.decisionTimestamps[0], input.decisionTimestamps[input.decisionTimestamps.length - 1]]
-                      : undefined,
-                    streak: input.streak,
-                    trigger: trigger,
-                  },
-                });
-                // Evict old self-review lessons (S8: keep max 5, never touch pinned).
-                evictSelfReview(sess.state.memory, 5);
-                sess.state.decisions.push({
-                  timestamp: Date.now(),
+                  timestamp: now,
                   loop: "monitor",
-                  action: "self-review",
-                  detail: `${trigger}: ${lesson.slice(0, 80)}`,
+                  action: "kaizen_config_adjusted",
+                  detail: `${f.signal} x${f.count}: ${f.configFix.knob} ${f.configFix.from} -> ${f.configFix.to}`,
                 });
+                announced.push(f.rationale);
+                continue;
+              }
+              // A goal needs a tree to live in; with no root the finding waits
+              // for the next review, when one may exist.
+              if (!root) continue;
+              const node: GoalNode = {
+                id: `plan-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+                parentId: root.id,
+                kind: "plan",
+                title: f.title.slice(0, 80),
+                objective: f.objective.slice(0, 500),
+                status: "pending",
+                source: "controller",
+                planningRounds: 0,
+                consecutiveBlockedPlannings: 0,
+                consecutivePlanningFailures: 0,
+                planningRound: 0,
+                maxRounds: 10,
+                completedRounds: 0,
+                scores: [],
+                notes: [],
+                createdAt: now,
+                updatedAt: now,
+                sortKey: kaizenSortKey(sess.state.goals, root.id, now),
+                kaizenSignal: f.signal,
+              };
+              sess.state.goals.push(node);
+              sess.state.decisions.push({
+                timestamp: now,
+                loop: "goal",
+                action: "kaizen_goal_proposed",
+                detail: `${node.id} (${f.signal} x${f.count}): "${f.title.slice(0, 50)}"`,
+              });
+              announced.push(`${f.rationale} (${f.signal}, node ${node.id})`);
+            }
+            if (announced.length > 0) {
+              sess.state.decisions.push({
+                timestamp: now,
+                loop: "monitor",
+                action: "self-review",
+                detail: `${trigger}: own record -> ${announced.length} kaizen finding(s), no lesson`,
+              });
+              sr.count += 1;
+              if (sr.windowStart === 0) sr.windowStart = now;
+              sr.lastAt = now;
+              sr.turnsSince = 0;
+              sr.pendingPeriodic = false;
+              sess.state.updatedAt = now;
+              await persist($);
+              try {
+                await $.prompt.submit({
+                  text: `${REPLY_INSTRUCTION}[KAIZEN] Post each line below to the operator's thread as written, then continue your work:\n` +
+                    announced.map((line) => `- ${line}`).join("\n"),
+                });
+              } catch { /* announcement failed; the decision log still carries the finding */ }
+            }
+            if (announced.length === 0) {
+              const input = buildSelfReviewInput(
+                { monitor: sess.state.monitor, decisions: sess.state.decisions, memory: sess.state.memory, goals: sess.state.goals, activeGoalId: sess.state.activeGoalId },
+                now,
+              );
+              const raw = await $.model.complete({ model: "haiku", prompt: input.prompt, maxTokens: 80 });
+              // D1: increment self-review ledger
+              sess.state.monitor.cost.selfReview.count += 1;
+              sess.state.monitor.cost.selfReview.estTokens += estimateTokens(input.prompt.length, 80);
+              const lesson = raw.trim();
+              if (lesson.length > 0 && lesson.toUpperCase() !== "NONE") {
+                // Item 8.2: a memory entry comes from a proof passing or an
+                // operator correction, never from the classifier scoring its
+                // own confusion. Refuse the latter before the dedupe check.
+                if (isSelfScoringLesson(lesson)) {
+                  sess.state.decisions.push({
+                    timestamp: Date.now(),
+                    loop: "memory",
+                    action: "memory_lesson_refused",
+                    detail: `self-scoring lesson refused: ${lesson.slice(0, 80)}`,
+                  });
+                } else if (!dedupeSelfReview(sess.state.memory, lesson)) {
+                  const entryId = `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                  sess.state.memory.push({
+                    id: entryId,
+                    kind: "lesson",
+                    text: lesson,
+                    confidence: 0.5,
+                    source: "self-review",
+                    createdAt: Date.now(),
+                    lastAccessed: Date.now(),
+                    accessCount: 0,
+                    pinned: false,
+                    provenance: {
+                      decisionTimestamps: input.decisionTimestamps,
+                      windowRange: input.decisionTimestamps.length > 0
+                        ? [input.decisionTimestamps[0], input.decisionTimestamps[input.decisionTimestamps.length - 1]]
+                        : undefined,
+                      streak: input.streak,
+                      trigger: trigger,
+                    },
+                  });
+                  // Evict old self-review lessons (S8: keep max 5, never touch pinned).
+                  evictSelfReview(sess.state.memory, 5);
+                  sess.state.decisions.push({
+                    timestamp: Date.now(),
+                    loop: "monitor",
+                    action: "self-review",
+                    detail: `${trigger}: ${lesson.slice(0, 80)}`,
+                  });
+                } else {
+                  sess.state.decisions.push({
+                    timestamp: Date.now(),
+                    loop: "monitor",
+                    action: "self-review",
+                    detail: `${trigger}: dupe, skipped`,
+                  });
+                }
               } else {
                 sess.state.decisions.push({
                   timestamp: Date.now(),
                   loop: "monitor",
                   action: "self-review",
-                  detail: `${trigger}: dupe, skipped`,
+                  detail: `${trigger}: NONE`,
                 });
               }
-            } else {
-              sess.state.decisions.push({
-                timestamp: Date.now(),
-                loop: "monitor",
-                action: "self-review",
-                detail: `${trigger}: NONE`,
-              });
+              // Update selfReview state after review.
+              sr.count += 1;
+              if (sr.windowStart === 0) sr.windowStart = now;
+              sr.lastAt = now;
+              sr.turnsSince = 0;
+              sr.pendingPeriodic = false;
             }
-            // Update selfReview state after review.
-            sr.count += 1;
-            if (sr.windowStart === 0) sr.windowStart = now;
-            sr.lastAt = now;
-            sr.turnsSince = 0;
-            sr.pendingPeriodic = false;
           } catch {
             // Self-review failed; non-fatal.
             sess.state.decisions.push({
@@ -2542,6 +2634,20 @@ export const register: Register = async (on, options) => {
   on("turn.complete", async ($, e, next) => {
     sess.state.monitor.lastTurnComplete = Date.now();
     turnInFlight = false;
+    // Plan item 8.4: a turn that ran past an hour is one of the weaknesses
+    // the own-record pass counts, so record it as a decision here, the only
+    // point that knows both ends of the turn.
+    if (sess.turnStartedAt !== null) {
+      const turnMs = Date.now() - sess.turnStartedAt;
+      if (turnMs >= KAIZEN_LONG_TURN_MS) {
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "turn_over_hour",
+          detail: `Turn ${sess.state.monitor.turnCount} ran ${Math.round(turnMs / 1000)}s`,
+        });
+      }
+    }
     sess.turnStartedAt = null;
     if (sess.isOwner) {
       try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }

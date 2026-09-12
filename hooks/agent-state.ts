@@ -68,6 +68,10 @@ export interface GoalNode {
                               // node, so turn.complete can reactivate it on the worker's
                               // next completed turn that calls a real work tool, without
                               // reactivating a node paused for any other reason.
+  kaizenSignal?: string; // plan item 8.4: set on a plan the self-review loop raised
+                         // from the worker's own record, naming the weakness signal
+                         // it was raised for, so the loop never raises the same
+                         // signal twice while one is open.
 }
 
 export interface EnvErrors {

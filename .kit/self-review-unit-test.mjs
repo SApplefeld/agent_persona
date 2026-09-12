@@ -9,6 +9,9 @@ const {
   buildSelfReviewInput,
   dedupeSelfReview,
   evictSelfReview,
+  reviewOwnRecord,
+  kaizenSortKey,
+  KAIZEN_MESSAGE_WAIT_MS,
 } = await import("../hooks/self-review.ts");
 
 let failed = 0;
@@ -214,6 +217,86 @@ function makeState(overrides = {}) {
   const selfReview = memory.filter(m => m.source === "self-review").sort((a, b) => a.createdAt - b.createdAt);
   check("Test 11c: oldest self-review lesson evicted", !memory.find(m => m.id === "mem-0"));
   check("Test 11d: newest self-review lesson kept", !!memory.find(m => m.id === "mem-6"));
+}
+
+// --- Test 12: reviewOwnRecord counts each signal from the worker's own record (item 8.4) ---
+{
+  const T = 1_700_000_000_000;
+  const srOpts = { selfReviewEveryTurns: 20, selfReviewDebounceTurns: 5 };
+  const lesson = (id, text, createdAt) => ({ id, kind: "lesson", text, confidence: 0.5, source: "self-review", createdAt, lastAccessed: createdAt, accountCount: 0, pinned: false });
+  const root = { id: "root", status: "pending", kind: "root", parentId: null, createdAt: T - 100, updatedAt: T - 100 };
+
+  // 12a: tree lag - two worktree-cleared samples with no tree write between them is one event,
+  // a third with a `done` in between is not; two events fire.
+  const treeLagDecisions = [
+    { timestamp: T + 1, loop: "monitor", action: "env_git", detail: "env_git dirty=0 (was 3) branch b...origin/b" },
+    { timestamp: T + 2, loop: "monitor", action: "env_git", detail: "env_git dirty=0 (was 2) branch b...origin/b" },
+    { timestamp: T + 3, loop: "monitor", action: "env_git", detail: "env_git dirty=0 (was 1) branch b...origin/b" },
+    { timestamp: T + 4, loop: "goal", action: "done", detail: "plan-x marked complete" },
+    { timestamp: T + 5, loop: "monitor", action: "env_git", detail: "env_git dirty=0 (was 4) branch b...origin/b" },
+    { timestamp: T + 6, loop: "monitor", action: "env_git", detail: "env_git dirty=0 (was 0) branch b...origin/b" },
+  ];
+  const treeLag = reviewOwnRecord({ decisions: treeLagDecisions, memory: [], goals: [root], inbox: [] }, srOpts);
+  check("Test 12a: tree_lag counts cleared samples with no tree write since the previous one (2), skips the one after `done`",
+    treeLag.length === 1 && treeLag[0].signal === "tree_lag" && treeLag[0].count === 2);
+
+  // 12b: memory quality - two lessons sharing their first six words count as two events; a distinct third does not.
+  const memory = [
+    lesson("m1", "When a reader claim is missing, investigate the root cause before retrying. Repeated skips.", T + 1),
+    lesson("m2", "When a reader claim is missing, investigate the root cause before retrying. No live reader.", T + 2),
+    lesson("m3", "Run the harness before the live suite so a loader failure shows first.", T + 3),
+  ];
+  const mem = reviewOwnRecord({ decisions: [], memory, goals: [root], inbox: [] }, srOpts);
+  check("Test 12b: memory_quality counts the duplicate pair (2) and not the distinct lesson",
+    mem.length === 1 && mem[0].signal === "memory_quality" && mem[0].count === 2 && /Proof:/.test(mem[0].objective));
+
+  // 12c: message wait - records delivered past the bound count, one under it does not.
+  const inbox = [
+    { at: T, deliveredAt: T + KAIZEN_MESSAGE_WAIT_MS },
+    { at: T, deliveredAt: T + KAIZEN_MESSAGE_WAIT_MS + 1 },
+    { at: T, deliveredAt: T + 5000 },
+    { at: T },
+  ];
+  const wait = reviewOwnRecord({ decisions: [], memory: [], goals: [root], inbox }, srOpts);
+  check("Test 12c: message_wait counts the two records at or past the bound", wait.length === 1 && wait[0].signal === "message_wait" && wait[0].count === 2);
+
+  // 12d: a closed kaizen node for a signal hides the events before it; only newer ones count.
+  const closedKaizen = { id: "k1", status: "complete", kind: "plan", parentId: "root", createdAt: T + 1, updatedAt: T + 5, kaizenSignal: "asks_unresolved" };
+  const askDecisions = [
+    { timestamp: T + 2, loop: "monitor", action: "ask_timeout", detail: "old" },
+    { timestamp: T + 3, loop: "monitor", action: "ask_reraised", detail: "old" },
+    { timestamp: T + 6, loop: "monitor", action: "ask_timeout", detail: "new" },
+  ];
+  const sinceClosed = reviewOwnRecord({ decisions: askDecisions, memory: [], goals: [root, closedKaizen], inbox: [] }, srOpts);
+  check("Test 12d: events before a closed kaizen node do not count (1 new event, no finding)", sinceClosed.length === 0);
+  const noPrior = reviewOwnRecord({ decisions: askDecisions, memory: [], goals: [root], inbox: [] }, srOpts);
+  check("Test 12d control: with no prior node all three events count", noPrior.length === 1 && noPrior[0].count === 3);
+
+  // 12e: long turns carry a config fix halving the cadence, floored at the debounce; at the floor they propose a goal instead.
+  const longTurns = [
+    { timestamp: T + 1, loop: "monitor", action: "turn_over_hour", detail: "Turn 1 ran 3700s" },
+    { timestamp: T + 2, loop: "monitor", action: "turn_over_hour", detail: "Turn 2 ran 3800s" },
+  ];
+  const fix = reviewOwnRecord({ decisions: longTurns, memory: [], goals: [root], inbox: [] }, srOpts);
+  check("Test 12e: long_turns carries configFix selfReviewEveryTurns 20 -> 10",
+    fix.length === 1 && fix[0].configFix && fix[0].configFix.from === 20 && fix[0].configFix.to === 10);
+  const atFloor = reviewOwnRecord({ decisions: longTurns, memory: [], goals: [root], inbox: [] }, { selfReviewEveryTurns: 5, selfReviewDebounceTurns: 5 });
+  check("Test 12e control: at the floor there is no configFix and the finding proposes a goal", atFloor.length === 1 && !atFloor[0].configFix);
+
+  // 12f: kaizenSortKey interleaves after the (k+1)th pending roadmap plan; past the end it is `now`.
+  const plans = [
+    root,
+    { id: "p1", status: "pending", kind: "plan", parentId: "root", createdAt: T + 10, updatedAt: T + 10 },
+    { id: "p2", status: "pending", kind: "plan", parentId: "root", createdAt: T + 20, updatedAt: T + 20 },
+    { id: "p0", status: "complete", kind: "plan", parentId: "root", createdAt: T + 5, updatedAt: T + 5 },
+  ];
+  const k0 = kaizenSortKey(plans, "root", T + 1000);
+  check("Test 12f: first kaizen sorts between the first and second pending roadmap plans", k0 > T + 10 && k0 < T + 20);
+  const withOne = [...plans, { id: "k", status: "pending", kind: "plan", parentId: "root", createdAt: T + 30, updatedAt: T + 30, sortKey: k0, kaizenSignal: "asks_unresolved" }];
+  const k1 = kaizenSortKey(withOne, "root", T + 1000);
+  check("Test 12f: second kaizen sorts after the second pending roadmap plan", k1 > T + 20 && k1 < T + 1000);
+  const k2 = kaizenSortKey([...withOne, { id: "k2", status: "pending", kind: "plan", parentId: "root", createdAt: T + 31, updatedAt: T + 31, sortKey: k1, kaizenSignal: "tree_lag" }], "root", T + 1000);
+  check("Test 12f: past the pending roadmap list the kaizen sorts at now", k2 === T + 1000);
 }
 
 // --- Summary ---
