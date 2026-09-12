@@ -2238,10 +2238,18 @@ async function caseItem5_channelWindowNoDeleteOnAppendFailure() {
     seed[key] = { id: `default-writer-${i}-1`, key, from: `writer-${i}`, at: 1000 + i, text: `m${i}`, kind: "say", status: "delivered" };
   }
 
-  // Failing case: appendLines always throws.
+  // Failing case: appendLines always throws. Round 50 point 3: enforceChannelWindow
+  // now lets the error propagate instead of swallowing it and returning 0 - the
+  // caller (index.ts) is what turns "nothing to roll" and "roll refused" into two
+  // different decisions, and a thrown error is exactly the signal it needs.
   const failStore = makeMiniStore(seed);
-  const failRolled = await enforceChannelWindow(failStore, "default", 3, async () => { throw new Error("write failed"); });
-  check("item5 append-fails: enforceChannelWindow returns 0", failRolled === 0);
+  let threw = false;
+  try {
+    await enforceChannelWindow(failStore, "default", 3, async () => { throw new Error("write failed"); });
+  } catch (err) {
+    threw = err instanceof Error && err.message === "write failed";
+  }
+  check("item5 append-fails: enforceChannelWindow throws instead of swallowing", threw);
   check("item5 append-fails: all 6 records remain in the store", failStore._map.size === 6);
 
   // Control: the same setup with a succeeding append rolls exactly the overflow.

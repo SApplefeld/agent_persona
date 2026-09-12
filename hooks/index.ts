@@ -419,7 +419,17 @@ export const persist = async (dp: any): Promise<boolean> => {
     try {
       await appendToChannelLog(dp, overflow.map((d) => JSON.stringify({ persona: sess.persona, kind: "decision", rolledAt: Date.now(), record: d, logPath: CHANNEL_LOG_PATH })));
       sess.state.decisions = sess.state.decisions.slice(-DECISIONS_MAX);
-    } catch { /* log write failed: keep the overflow in memory rather than lose it; next persist() retries */ }
+    } catch (err) {
+      // Round 50 point 3: name the refusal instead of staying silent - the
+      // overflow stays in memory for the next persist() to retry, but the
+      // next gate must be able to tell "nothing to roll" from "roll refused".
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "worker",
+        action: "channel_window_roll_failed",
+        detail: `decision cap roll refused, overflow kept in memory (persona: ${sess.persona}): ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
   }
   if (sess.state.memory.length > MEMORY_MAX) {
     // Evict oldest non-pinned entries first; pinned entries never roll off.
@@ -434,7 +444,16 @@ export const persist = async (dp: any): Promise<boolean> => {
         await appendToChannelLog(dp, overflow.map((m) => JSON.stringify({ persona: sess.persona, kind: "memory", rolledAt: Date.now(), record: m, logPath: CHANNEL_LOG_PATH })));
         // Restore original relative order (createdAt) across pinned + kept.
         sess.state.memory = [...pinned, ...kept].sort((a, b) => a.createdAt - b.createdAt);
-      } catch { /* log write failed: keep the overflow in memory rather than lose it; next persist() retries */ }
+      } catch (err) {
+        // Round 50 point 3: same naming as the decision cap above - the
+        // overflow stays in memory for the next persist() to retry.
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "worker",
+          action: "channel_window_roll_failed",
+          detail: `memory cap roll refused, overflow kept in memory (persona: ${sess.persona}): ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
     }
   }
   const store: Record<string, unknown> = await dp.fs.exists(sess.storePath)
@@ -1323,18 +1342,32 @@ export const register: Register = async (on, options) => {
           // file forever. Open asks are untouched (a different function,
           // a different lifecycle).
           const channelWindowSize = typeof cfg.channelRecordWindow === "number" ? (cfg.channelRecordWindow as number) : 50;
-          const rolled = await enforceChannelWindow(
-            commonsStoreOf($),
-            sess.persona,
-            channelWindowSize,
-            (lines) => appendToChannelLog($, lines),
-          );
-          if (rolled > 0) {
+          // Round 50 point 3: enforceChannelWindow now throws instead of
+          // swallowing a failed append, so "nothing to roll" (0, no error)
+          // and "a roll was refused" (thrown, records still in the store)
+          // read as two different decisions - the next gate can tell them
+          // apart instead of seeing the store quietly stop shrinking.
+          try {
+            const rolled = await enforceChannelWindow(
+              commonsStoreOf($),
+              sess.persona,
+              channelWindowSize,
+              (lines) => appendToChannelLog($, lines),
+            );
+            if (rolled > 0) {
+              sess.state.decisions.push({
+                timestamp: Date.now(),
+                loop: "worker",
+                action: "channel_window_rolled",
+                detail: `rolled ${rolled} closed inbox/reply records to ${CHANNEL_LOG_PATH} (persona: ${sess.persona})`,
+              });
+            }
+          } catch (err) {
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "worker",
-              action: "channel_window_rolled",
-              detail: `rolled ${rolled} closed inbox/reply records to ${CHANNEL_LOG_PATH} (persona: ${sess.persona})`,
+              action: "channel_window_roll_failed",
+              detail: `roll refused, records left in store (persona: ${sess.persona}): ${err instanceof Error ? err.message : String(err)}`,
             });
           }
         }
