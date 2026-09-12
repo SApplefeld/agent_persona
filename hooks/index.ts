@@ -243,6 +243,7 @@ const sess: {
   contextBudgetLatched: { info: boolean; closeout: boolean; critical: boolean };
   controllerTickCount: number; // D4: in-session tick counter for backoff and cost_summary
   staleAfterMs: number; // F9a: single-source the staleness threshold
+  turnStartedAt: number | null; // plan item 8.3: this session's clock at turn.start, null between turns
 } = {
   persona: "default",
   mySessionId: "pending",
@@ -263,6 +264,7 @@ const sess: {
   contextBudgetLatched: { info: false, closeout: false, critical: false },
   controllerTickCount: 0,
   staleAfterMs: 90_000,
+  turnStartedAt: null,
 };
 
 // Reentrancy flag for the git probe (E4).
@@ -403,6 +405,22 @@ const writeClaimDirect = async (dp: any): Promise<void> => {
     hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now() };
     await dp.fs.write(heartbeatPath, JSON.stringify(hb, null, 2));
   } catch { /* heartbeat write failed; non-fatal */ }
+};
+
+// Owner-only heartbeat write: sessionId, epoch, lastSeen now, and the
+// session's turnStartedAt (plan item 8.3). Every owner write site in the
+// hooks uses this so the heartbeat tick never overwrites the turn stamp
+// with an entry that lacks it. Declared at the top of the file, as
+// writeClaimDirect and persist are, because the hooks loader only lets $
+// be passed to a function declared here.
+const writeOwnerHeartbeat = async (dp: any): Promise<void> => {
+  const heartbeatPath = ".agentic-heartbeat.json";
+  const hb: Record<string, HeartbeatEntry> =
+    await dp.fs.exists(heartbeatPath)
+      ? (JSON.parse(await dp.fs.read(heartbeatPath)) as Record<string, HeartbeatEntry>)
+      : {};
+  hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now(), turnStartedAt: sess.turnStartedAt };
+  await dp.fs.write(heartbeatPath, JSON.stringify(hb, null, 2));
 };
 
 // M7: single guarded-write path shared by every store write site.
@@ -587,25 +605,10 @@ export const register: Register = async (on, options) => {
   let isPrimingTurn = false;
   // Skip the controller tick while a turn is in flight.
   let turnInFlight = false;
-  // Plan item 8.3: the owner's clock at turn.start, null between turns.
-  // Written into the heartbeat sidecar so a reader session can see it.
-  let turnStartedAt: number | null = null;
   // Plan item 8.3: an urgent inbox record is looked for on the owner's
   // passthrough tool calls; this throttles that store read to once per
   // urgentCheckMinMs, since a long turn can make a tool call every second.
   let lastUrgentCheckAt = 0;
-
-  // Owner-only heartbeat write: sessionId, epoch, lastSeen now, and the
-  // current turnStartedAt. Every owner write site uses this so the heartbeat
-  // tick never overwrites the turn stamp with an entry that lacks it.
-  const writeOwnerHeartbeat = async ($: any): Promise<void> => {
-    const hb: Record<string, HeartbeatEntry> =
-      await $.fs.exists(heartbeatPath)
-        ? (JSON.parse(await $.fs.read(heartbeatPath)) as Record<string, HeartbeatEntry>)
-        : {};
-    hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now(), turnStartedAt };
-    await $.fs.write(heartbeatPath, JSON.stringify(hb, null, 2));
-  };
   // H2: record the active leaf at turn start; score against THAT node at turn
   // end (not whichever node is active then, which may have been activated
   // mid-turn by goal_done / scorer complete).
@@ -2483,7 +2486,7 @@ export const register: Register = async (on, options) => {
     turnInFlight = true;
     // Plan item 8.3: publish the turn's start so a reader session can report
     // how long a pending record has been deferred behind this turn.
-    turnStartedAt = Date.now();
+    sess.turnStartedAt = Date.now();
     if (sess.isOwner) {
       try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }
     }
@@ -2539,7 +2542,7 @@ export const register: Register = async (on, options) => {
   on("turn.complete", async ($, e, next) => {
     sess.state.monitor.lastTurnComplete = Date.now();
     turnInFlight = false;
-    turnStartedAt = null;
+    sess.turnStartedAt = null;
     if (sess.isOwner) {
       try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }
     }
@@ -3611,13 +3614,17 @@ export const register: Register = async (on, options) => {
       // Plan item 8.3: the owner's heartbeat entry carries turnStartedAt while
       // a turn runs. A record still pending behind that turn is reported as
       // deferred, with how long the turn has run, so the sender knows the
-      // message is held rather than lost.
+      // message is held rather than lost. The stamp alone is not enough: an
+      // owner killed mid-turn never clears it, so the report also requires
+      // the heartbeat's lastSeen within staleAfterMs of now, since a stale
+      // owner is dead rather than busy.
       let ownerTurnStartedAt: number | null = null;
       try {
         if (await $.fs.exists(heartbeatPath)) {
           const hb = JSON.parse(await $.fs.read(heartbeatPath)) as Record<string, HeartbeatEntry>;
           const entry = hb[persona];
-          if (entry && typeof entry.turnStartedAt === "number") ownerTurnStartedAt = entry.turnStartedAt;
+          const ownerLive = entry && typeof entry.lastSeen === "number" && (Date.now() - entry.lastSeen) <= sess.staleAfterMs;
+          if (ownerLive && typeof entry.turnStartedAt === "number") ownerTurnStartedAt = entry.turnStartedAt;
         }
       } catch { /* heartbeat read failed; report records without the deferred view */ }
       // Attach replies to records, and the deferred view to pending ones.

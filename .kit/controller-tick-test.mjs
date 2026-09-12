@@ -3810,6 +3810,7 @@ async function main() {
     await caseR60f3b_reactivationAfterCapPause(clock);
     await caseItem8p3_ownerStampsTurnStartInHeartbeat(clock);
     await caseItem8p3_inboxReportsDeferredWhileTurnRuns(clock);
+    await caseItem8p3_deferredNotReportedForStaleOwner(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
     await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
     await caseS4_peer_consumed(clock);
@@ -4394,6 +4395,41 @@ async function caseItem8p3_inboxReportsDeferredWhileTurnRuns(clock) {
   check("item8.3 deferred control: record pending with no turn in flight", recC?.status === "pending");
   check("item8.3 deferred control: no deferred field", recC?.deferred === undefined);
   check("item8.3 deferred control: no turnRunningMs field", recC?.turnRunningMs === undefined);
+}
+
+// A turnStartedAt left behind by an owner killed mid-turn must not read as
+// "held behind a running turn": the deferred report also needs the owner's
+// heartbeat lastSeen within staleAfterMs of now. Control: the same stamp
+// with a fresh lastSeen does report deferred.
+async function caseItem8p3_deferredNotReportedForStaleOwner(clock) {
+  console.log("\n=== Item 8.3: no deferred report when the owner's heartbeat is stale ===");
+  clock.set(T0);
+  const now = T0;
+  const otherSid = "killed-owner-001";
+
+  // Join as a reader against a live owner, then age the heartbeat: the
+  // sidecar now shows a turn stamp from an owner that stopped stamping
+  // 200s ago (staleAfterMs is 90s).
+  const h = await seedReaderHarness("item8p3_deferred_stale", now, otherSid, {});
+  const toolCallH = h.handlers["tool.call"];
+  await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_say", text: "anyone home?" }, async () => ({ result: "passthrough" }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: otherSid, epoch: 1, lastSeen: now - 200_000, turnStartedAt: now - 300_000 },
+  }));
+  const inbox = await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_inbox" }, async () => ({ result: "passthrough" }));
+  const rec = inbox.result ? JSON.parse(inbox.result).inbox[0] : undefined;
+  check("item8.3 stale owner: record still pending (setup sanity)", rec?.status === "pending");
+  check("item8.3 stale owner: no deferred field", rec?.deferred === undefined);
+  check("item8.3 stale owner: no turnRunningMs field", rec?.turnRunningMs === undefined);
+
+  // Control: same stamp, heartbeat fresh.
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: otherSid, epoch: 1, lastSeen: now, turnStartedAt: now - 300_000 },
+  }));
+  const inboxC = await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_inbox" }, async () => ({ result: "passthrough" }));
+  const recC = inboxC.result ? JSON.parse(inboxC.result).inbox[0] : undefined;
+  check("item8.3 stale owner control: fresh heartbeat reports deferred", recC?.deferred === true);
+  check("item8.3 stale owner control: fresh heartbeat reports turnRunningMs", recC?.turnRunningMs === 300_000);
 }
 
 // agentic_say(urgent: true) writes urgent onto the record; a plain say does not.
