@@ -171,6 +171,21 @@ run_suite() {
       [ -f "$suite_dir/$f" ] && cp -f "$suite_dir/$f" "$RUN_DIR/yield/" 2>/dev/null
     done
   fi
+  # Round 79: restartrequest's own names (supervisor.log, the reader's transcript,
+  # the reader's debug log, the owner's persona store carrying its decision log)
+  # matched none of the generic patterns above, so the suite retained only its
+  # assert tail - the same class of gap the yield block above already closes,
+  # mirrored here since this suite is also multi-session.
+  if [ "$suite" = "restartrequest" ]; then
+    mkdir -p "$RUN_DIR/restartrequest"
+    for f in supervisor.log supervise.stdout.log reader.out.jsonl reader.err.log \
+             reader-debug.log restartrequest.assert.log restartrequest.exit \
+             settings.json reader-p1.json reader-p2.json; do
+      [ -f "$suite_dir/$f" ] && cp -f "$suite_dir/$f" "$RUN_DIR/restartrequest/" 2>/dev/null
+    done
+    [ -f "$suite_dir/workdir/.agentic-personas.json" ] && \
+      cp -f "$suite_dir/workdir/.agentic-personas.json" "$RUN_DIR/restartrequest/persona-store.json" 2>/dev/null
+  fi
 
   # Write the summary line
   echo "$suite script_exit=$rc started=$start_ts ended=$end_ts exitfile=[$exit_content] assert=[$assert_content]" >> "$SUMMARY"
