@@ -1,5 +1,13 @@
 # Backlog
 
+## A `goal_add` plan node doesn't always activate as the leaf before the work it names is done (found 2026-09-12)
+
+Reproduced four times in one session (DISCUSSION.md Rounds 108, 110, 112, 114): `goal_add({kind: "plan", ...})` returns "No active goal; planning or activation will occur at the next tick," and each time, the work named in the node's own objective finished before any controller tick activated that node as the leaf. `goal_done` then fails with "No active goal leaf to complete" - the node sits `pending` forever, never `complete`, even though the work it names is genuinely done.
+
+Not root-caused. Candidate causes, none confirmed: the controller tick may only activate a *new* plan node when the tree has no other active leaf at tick time, and this session's tree already had one; or the tick interval (10s default) may simply not have elapsed between `goal_add` and the work finishing, for work fast enough to complete in one turn. Either way, item 8.1's own "close within one controller tick" acceptance assumes activation happens promptly enough to make `goal_done` usable synchronously, and this session's experience says it does not, at least not reliably for same-turn work.
+
+Worth root-causing before the v2 coordinator's own goal handling depends on the same activation path (Reviewer Round 115, following Round 113's own goal-tree discussion): a coordinator directing many workers leans on the tree closing promptly to reflect status accurately, and this same gap would leave its own nodes stuck `pending` the same way.
+
 ## Arm the plugin's hooks only for sessions that want them (operator feedback, 2026-09-12)
 
 Promoted into `docs/plans/agent_persona_coordinator_v2.md` Section 6 (Reviewer Round 105 R5): every session loading this plugin fires its hooks and reminders every turn regardless of intent, and v2 adds more such sessions. No longer a separate future brainstorm; retire this entry when v2's Section 6 closes.
