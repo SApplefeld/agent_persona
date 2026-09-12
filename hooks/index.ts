@@ -611,6 +611,20 @@ export const register: Register = async (on, options) => {
   // shouldn't have (only the real hook, seeing the actual marker, ever
   // sets this true).
   let isPrimingTurn = false;
+  // Steer 68/69: whether the real prompt.submit hook (a genuine external
+  // turn) just saw e.origin.kind === "channel" - a message that arrived
+  // through the Discord relay, as opposed to the keyboard, an SDK caller,
+  // or one of this plugin's own internal $.prompt.submit calls (which
+  // bypass this hook and so never touch this flag). Consumed by the very
+  // next turn.start, the same one-flag handoff isPrimingTurn already uses.
+  let lastPromptWasChannelOrigin = false;
+  // Whether THIS turn (the one now running) started from a channel
+  // message, captured at turn.start from the flag above so turn.complete
+  // can act on it after the flag has already reset for the next prompt.
+  let currentTurnIsChannelOrigin = false;
+  // Whether the reply tool (channel-relay's mcp__..__reply) was called
+  // anywhere during the current turn. Reset at turn.start, set by tool.call.
+  let replyCalledThisTurn = false;
   // Skip the controller tick while a turn is in flight.
   let turnInFlight = false;
   // Plan item 8.3: an urgent inbox record is looked for on the owner's
@@ -2591,6 +2605,12 @@ export const register: Register = async (on, options) => {
     toolErrorsThisTurn = 0;
     // Item 2 sub-bullet: reset the tool-call counter for this turn.
     toolCallsThisTurn = 0;
+    // Steer 68/69: capture whether this turn opened from a channel message,
+    // then clear the handoff flag so an unrelated later turn never inherits
+    // it. Reset the reply-tracking flag for the turn now starting.
+    currentTurnIsChannelOrigin = lastPromptWasChannelOrigin;
+    lastPromptWasChannelOrigin = false;
+    replyCalledThisTurn = false;
     // D4: reset backoff skip counter on new turn (activity breaks the skip streak).
     if (costEnabled && sess.state.monitor.cost) {
       sess.state.monitor.cost.consecutiveSkips = 0;
@@ -2672,6 +2692,42 @@ export const register: Register = async (on, options) => {
 
     // Skip scoring on aborted or errored turns (no answer to judge).
     const skipped = e.aborted || e.reason === "aborted" || e.reason === "error" || e.reason === "refusal" || !e.answer;
+
+    // Steer 68/69: a Discord message opened this turn and the turn ended
+    // with an answer but no reply-tool call - exactly the shape that left
+    // an operator's question answered in the transcript and invisible on
+    // the thread, twice, because the priming instruction alone did not
+    // reliably make the model call the reply tool. Gated off priming and
+    // nudged turns for the same reason the item 2 backstop above is: an
+    // internal turn was never a Discord message and must not be treated
+    // as one. Sends the model's own leftover text directly through the
+    // reply tool rather than trusting a second instruction to work where
+    // the first already didn't; falls back to one re-prompt, carrying the
+    // exact text, only if the direct call itself fails.
+    if (!skipped && sess.isOwner && currentTurnIsChannelOrigin && !replyCalledThisTurn && !isPrimingTurn && !wasNudged) {
+      try {
+        await $.tool.call({ tool: "mcp__plugin_relay_channel-relay__reply", message: e.answer } as any);
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "channel_reply_backfilled",
+          detail: `turn ${e.turnId} answered with no reply-tool call; sent through reply directly`,
+        });
+      } catch (directErr) {
+        try {
+          await $.prompt.submit({
+            text: `${REPLY_INSTRUCTION}[REPLY BACKSTOP] Send this exact text to the operator through the reply tool now, unchanged:\n${e.answer}`,
+          });
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "channel_reply_backfill_reprompted",
+            detail: `turn ${e.turnId} direct reply call failed (${(directErr as Error).message}); re-prompted instead`,
+          });
+        } catch { /* both paths failed; nothing more to do without a live channel */ }
+      }
+    }
+    currentTurnIsChannelOrigin = false;
 
     // Item 2 sub-bullet (f016b69): a turn that did real work with no
     // active root - the exact shape a cost-conscious model produces when
@@ -3032,6 +3088,11 @@ export const register: Register = async (on, options) => {
   on("tool.call", async ($, e, next) => {
     sess.state.monitor.totalToolCalls += 1;
     if (isWorkTool(e.tool)) toolCallsThisTurn += 1;
+    // Steer 68/69: the reply tool ran somewhere in this turn, so the
+    // channel-reply backstop at turn.complete has nothing to backfill.
+    if (typeof e.tool === "string" && (e.tool.includes("__reply") || e.tool.endsWith("_reply"))) {
+      replyCalledThisTurn = true;
+    }
 
     // Serve agentic_identity (F9: single arbiter = commons; epoch is only the
     // same-directory write fence). Claim in commons FIRST; if a live earlier
@@ -3817,6 +3878,8 @@ export const register: Register = async (on, options) => {
     // Item 2 backstop safety: mark whether this genuine external turn is
     // the supervisor's own synthetic priming message.
     isPrimingTurn = e.text.startsWith("[SUPERVISOR-PRIMING]");
+    // Steer 68/69: a real Discord message carries e.origin.kind === "channel".
+    lastPromptWasChannelOrigin = (e as { origin?: { kind?: string } }).origin?.kind === "channel";
 
     // D5b (bullet 1): an open ask never silences the worker. This hook fires
     // only for a genuine external turn - the controller's own $.prompt.submit
