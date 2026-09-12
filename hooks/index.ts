@@ -31,6 +31,8 @@ import {
   planningCapReached,
   applyTurnToErrors,
   envNotable,
+  DECISIONS_MAX,
+  MEMORY_MAX,
 } from "./agent-state";
 import type { AgentState, GoalNode, NudgeBudget, EnvGit, EnvState } from "./agent-state";
 import {
@@ -45,6 +47,7 @@ import {
   claimReaderRole,
   hasLiveReaderClaim,
   sweepExpiredRecords,
+  enforceChannelWindow,
   writeInboxRecord,
   getHighestInboxSeq,
   listInboxRecords,
@@ -61,6 +64,7 @@ import {
   buildSelfReviewInput,
   dedupeSelfReview,
   evictSelfReview,
+  isSelfScoringLesson,
 } from "./self-review";
 import { estimateTokens, fnv1aHash, effectiveWindowCount, bumpWindow, backoffFactor, shouldRunClassify } from "./cost-ledger";
 
@@ -115,9 +119,37 @@ async function tickOpenAsk(
       detail: `${contextId ? contextId + ": " : ""}ask ${state.pendingAskId} still open`,
     });
   }
-  const waitMs = typeof cfg.askOperatorWaitMs === "number" ? (cfg.askOperatorWaitMs as number) : 0;
+  const elapsed = now - askRecord.at;
+
+  // D5b (bullet 3): a quiet channel means the operator may never see the
+  // ask_waiting log line. Past a bounded window, re-raise the question into
+  // the thread once (a real turn, not a log line) rather than sit silent.
+  const reraiseMs = typeof cfg.askReraiseWindowMs === "number" ? (cfg.askReraiseWindowMs as number) : 15 * 60_000;
+  if (reraiseMs > 0 && !askRecord.reraisedAt && elapsed >= reraiseMs) {
+    askRecord.reraisedAt = now;
+    await store.set(askKey(persona, state.pendingAskId), askRecord);
+    state.decisions.push({
+      timestamp: now,
+      loop: "monitor",
+      action: "ask_reraised",
+      detail: `${contextId ? contextId + ": " : ""}ask ${state.pendingAskId} re-raised after ${Math.round(elapsed / 1000)}s: ${askRecord.question.slice(0, 100)}`,
+    });
+    try {
+      // D5b: re-raise carries the same reply-tool instruction that every operator-facing
+      // prompt carries (item 5, priming turn), since a child's own conversational reply
+      // is never visible to the operator through Discord.
+      const REPLY_INSTRUCTION = "You are attached to a Discord channel. When you want to say something back to the operator, call the reply tool from the channel-relay MCP server - your own conversational reply is not visible to them. ";
+      await dp.prompt.submit({ text: `${REPLY_INSTRUCTION}[STILL WAITING] ${askRecord.question}` });
+    } catch { /* re-raise failed; non-fatal, the decision log still shows it */ }
+  }
+
+  // Round 34: an absent option must still resolve to a real wait, not to 0 -
+  // whether the engine fills plugin.json's userConfig default into `cfg` is
+  // not established anywhere in this repo, so the code fallback carries its
+  // own default (60 minutes, larger than the 15-minute re-raise window),
+  // matching how line 123's askReraiseWindowMs fallback is written in code.
+  const waitMs = typeof cfg.askOperatorWaitMs === "number" ? (cfg.askOperatorWaitMs as number) : 3_600_000;
   if (waitMs > 0) {
-    const elapsed = now - askRecord.at;
     if (elapsed >= waitMs) {
       state.decisions.push({
         timestamp: now,
@@ -127,6 +159,15 @@ async function tickOpenAsk(
       });
       askRecord.status = "expired";
       await store.set(askKey(persona, state.pendingAskId), askRecord);
+      // D5b (bullet 4): the controller's nudges resume rather than waiting
+      // forever - activateNext already walks to the next pending plan/task,
+      // which is what "nudges resume on a plan" means when this node itself
+      // has nothing left runnable without the answer.
+      const askedNode = state.goals.find((n) => n.id === askRecord.nodeId);
+      if (askedNode) {
+        askedNode.lastAskQuestion = askRecord.question;
+        askedNode.lastAskClosedAt = now;
+      }
       state.pendingAskId = undefined;
       const nextId = activateNext(state);
       if (nextId) {
@@ -138,6 +179,43 @@ async function tickOpenAsk(
   }
   await persist(dp);
   return "waiting";
+}
+
+/**
+ * D5b: an open ask never silences the worker, part 2. The classifier can
+ * propose the identical ask-operator/pause question again right after the
+ * operator (or a thread reply) just closed it, which reads as the worker
+ * ignoring the answer. Suppress a re-open of the exact same question on the
+ * exact same node within the suppress window; the caller falls through to a
+ * nudge instead so the plan keeps moving rather than pausing on a loop.
+ */
+function shouldSuppressReask(
+  node: GoalNode | undefined,
+  question: string,
+  now: number,
+  suppressMs: number,
+): boolean {
+  if (!node || !node.lastAskQuestion || node.lastAskClosedAt === undefined) return false;
+  return node.lastAskQuestion === question && now - node.lastAskClosedAt < suppressMs;
+}
+
+/**
+ * Item 2 backstop (Round 28): whether a tool call counts as "did real
+ * work" for the turn.complete backstop. Built-in file/shell tools that
+ * change state; any MCP tool that is neither this plugin's own (which
+ * would have opened a goal itself, making the backstop moot) nor the
+ * channel's reply tool (a priming turn's only call, which must never look
+ * like task work - a channel-attached passive child otherwise backfills
+ * a completed goal on its own acknowledgment turn and gets restarted in
+ * a loop). Read-only tools (Read, Grep, Glob, ...) do not count: looking
+ * at something is not doing the thing the operator asked for.
+ */
+function isWorkTool(toolName: string): boolean {
+  if (["Write", "Edit", "Bash", "NotebookEdit"].includes(toolName)) return true;
+  if (!toolName.startsWith("mcp__")) return false;
+  if (toolName.startsWith("mcp__agentic-plugin__")) return false;
+  if (toolName.includes("__reply") || toolName.endsWith("_reply")) return false;
+  return true;
 }
 const sess: {
   persona: string;
@@ -194,6 +272,14 @@ let gitUnavailable = false;
 // C4: tool error counter for the current turn (reset at turn.start, folded at turn.complete).
 let toolErrorsThisTurn = 0;
 
+// Item 2 sub-bullet (f016b69): tool-call counter for the current turn
+// (reset at turn.start), backing the no-goal-tree backstop in
+// turn.complete - a cost-conscious model can read the [NO GOAL] reminder
+// and still skip goal_create for a task it judges too small; this counts
+// whether real tool work happened this turn regardless of what the model
+// chose to call.
+let toolCallsThisTurn = 0;
+
 // Health run helper (E2).
 async function runHealth(dp: any, forNodeId: string | null): Promise<void> {
   const healthPath = ".agentic-health";
@@ -242,6 +328,29 @@ async function runHealth(dp: any, forNodeId: string | null): Promise<void> {
     });
   }
 }
+
+// Item 5 (Bounded store): the one append-only rollover log every capped
+// store writes to when something falls off its window - the commons
+// store's closed inbox/reply records (enforceChannelWindow) and the
+// persona file's own decision log and memory cap (persist(), below). Same
+// one-JSON-object-per-line rule as the yield log, appended rather than
+// rewritten, so the file that grows without bound is this one, by design,
+// not the store the plugin reads and rewrites whole on every tick.
+const CHANNEL_LOG_PATH = ".agentic-channel.jsonl";
+// Round 47 finding 1: this used to swallow every write error, and
+// enforceChannelWindow deleted the rolled store keys regardless of whether
+// the append actually landed - a failed write meant the record vanished
+// with no proof it went anywhere. Callers that delete on success (the
+// commons window) must see a thrown error and skip the delete; callers
+// that only ever mutate in-memory state after a successful roll (the
+// decision/memory caps in persist()) let it propagate too, since a decision
+// or memory entry silently dropped is the same defect either way.
+const appendToChannelLog = async (dp: any, lines: string[]): Promise<void> => {
+  if (lines.length === 0) return;
+  const existing = await dp.fs.exists(CHANNEL_LOG_PATH) ? await dp.fs.read(CHANNEL_LOG_PATH) : "";
+  const sep = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+  await dp.fs.write(CHANNEL_LOG_PATH, existing + sep + lines.join("\n") + "\n");
+};
 
 // L26: the yield action (log the decision, drop ownership, append a single
 // well-formed line to the yield log) is one code path shared by every site
@@ -295,6 +404,39 @@ const writeClaimDirect = async (dp: any): Promise<void> => {
 export const persist = async (dp: any): Promise<boolean> => {
   if (!sess.isOwner) return false;
   sess.state.updatedAt = Date.now();
+
+  // Item 5 (Bounded store): cap the decision log and memory at push time,
+  // not only when the file happens to be parsed at a session load - a
+  // long-lived child never reloads, which is why the running worker's file
+  // held over 500 decisions against a cap of 200 that only ever applied on
+  // read. Overflow rolls to the append-only channel log rather than being
+  // silently dropped.
+  if (sess.state.decisions.length > DECISIONS_MAX) {
+    const overflow = sess.state.decisions.slice(0, sess.state.decisions.length - DECISIONS_MAX);
+    // Round 47: append before trimming - a failed write must not lose the
+    // overflow with no record anywhere. Only drop the in-memory entries
+    // once the log actually holds them.
+    try {
+      await appendToChannelLog(dp, overflow.map((d) => JSON.stringify({ persona: sess.persona, kind: "decision", rolledAt: Date.now(), record: d, logPath: CHANNEL_LOG_PATH })));
+      sess.state.decisions = sess.state.decisions.slice(-DECISIONS_MAX);
+    } catch { /* log write failed: keep the overflow in memory rather than lose it; next persist() retries */ }
+  }
+  if (sess.state.memory.length > MEMORY_MAX) {
+    // Evict oldest non-pinned entries first; pinned entries never roll off.
+    const pinned = sess.state.memory.filter((m) => m.pinned);
+    const unpinned = sess.state.memory.filter((m) => !m.pinned).sort((a, b) => a.createdAt - b.createdAt);
+    const keepUnpinnedCount = Math.max(0, MEMORY_MAX - pinned.length);
+    const overflowCount = unpinned.length - keepUnpinnedCount;
+    if (overflowCount > 0) {
+      const overflow = unpinned.slice(0, overflowCount);
+      const kept = unpinned.slice(overflowCount);
+      try {
+        await appendToChannelLog(dp, overflow.map((m) => JSON.stringify({ persona: sess.persona, kind: "memory", rolledAt: Date.now(), record: m, logPath: CHANNEL_LOG_PATH })));
+        // Restore original relative order (createdAt) across pinned + kept.
+        sess.state.memory = [...pinned, ...kept].sort((a, b) => a.createdAt - b.createdAt);
+      } catch { /* log write failed: keep the overflow in memory rather than lose it; next persist() retries */ }
+    }
+  }
   const store: Record<string, unknown> = await dp.fs.exists(sess.storePath)
     ? (JSON.parse(await dp.fs.read(sess.storePath)) as Record<string, unknown>)
     : {};
@@ -407,6 +549,17 @@ export const register: Register = async (on, options) => {
   // own prompt.submit hook, so currentPrompt still holds the stale user text.
   // This flag tells turn.complete to score with the nudge-aware label set.
   let nudgedTurn = false;
+  // Item 2 backstop safety (Round 28): true only when the real
+  // prompt.submit hook (a genuine external turn) just saw the
+  // [SUPERVISOR-PRIMING] marker bin/supervise.sh's priming turn carries.
+  // An internal $.prompt.submit call (nudge, ask re-raise, operator-inbox
+  // delivery) bypasses this hook and so never updates this flag - it
+  // simply carries forward the last real turn's value, which is
+  // acceptable here because staleness can only make the backstop skip a
+  // turn it might have covered, never fire it on a priming turn it
+  // shouldn't have (only the real hook, seeing the actual marker, ever
+  // sets this true).
+  let isPrimingTurn = false;
   // Skip the controller tick while a turn is in flight.
   let turnInFlight = false;
   // H2: record the active leaf at turn start; score against THAT node at turn
@@ -507,9 +660,11 @@ export const register: Register = async (on, options) => {
     await $.tool.register({
       name: "agentic_identity",
       description:
-        "Claim ownership of a persona's store. FORCEFULLY takes the persona from whatever session " +
-        "currently holds it: the previous holder is demoted to a passive reader on its next write. " +
-        "Use only when the operator explicitly asks to hand off or reclaim the persona. " +
+        "Switch this session to a persona's store, joining or claiming ownership safely: it never " +
+        "evicts a live session. If another session already holds this persona and its heartbeat is " +
+        "current, this session joins as a passive reader (agentic_say/agentic_inbox), taking no " +
+        "write access. Ownership is taken only when no live holder exists, or the existing holder's " +
+        "heartbeat has gone stale (the holder crashed or exited without releasing it). " +
         "Pass the persona name (e.g. 'default').",
       inputSchema: {
         type: "object",
@@ -620,6 +775,24 @@ export const register: Register = async (on, options) => {
           nodeId: {
             type: "string",
             description: "Optional. The id of the paused node to resume. Defaults to the most recently paused node.",
+          },
+        },
+      },
+    });
+
+    await $.tool.register({
+      name: "supervisor_shutdown",
+      description:
+        "Stop the supervisor itself, not just the current goal. Use ONLY when the operator " +
+        "explicitly asks to shut down, stop the supervisor, or end the session for good - never " +
+        "for a completed goal (goal_done already returns the supervisor to its passive waiting " +
+        "state for the next one). The child exits by the graceful EOF path. Owner only.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          reason: {
+            type: "string",
+            description: "Optional. Why the operator asked to shut down.",
           },
         },
       },
@@ -1013,6 +1186,13 @@ export const register: Register = async (on, options) => {
                 // Close the ask
                 askRecord.status = "answered";
                 await store.set(askKey(persona, askId), askRecord);
+                // D5b: remember the closed question so the classifier does
+                // not reopen it on this node right away (bullet 2).
+                const askedNodeInbox = sess.state.goals.find((n) => n.id === askRecord.nodeId);
+                if (askedNodeInbox) {
+                  askedNodeInbox.lastAskQuestion = askRecord.question;
+                  askedNodeInbox.lastAskClosedAt = Date.now();
+                }
                 // Mark the answer as delivered
                 answer.status = "delivered";
                 answer.deliveredAt = Date.now();
@@ -1068,13 +1248,17 @@ export const register: Register = async (on, options) => {
           if (alive) withClaim.push(rec);
           else withoutClaim.push(rec);
         }
-        // Push one operator_skipped_no_claim decision per record without a claim
+        // Round 32/36: mark a dead writer's record skipped once, on its own
+        // key, rather than re-logging the same decision every tick forever -
+        // once `status` is "skipped" it drops out of `pending` above on the
+        // next `listInboxRecords` read, so the record costs one line total.
         for (const rec of withoutClaim) {
+          await store.set(rec.key, { ...rec, status: "skipped" });
           sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "monitor",
             action: "operator_skipped_no_claim",
-            detail: `record ${rec.id} writer ${rec.from} has no live reader claim`,
+            detail: `record ${rec.id} writer ${rec.from} has no live reader claim (marked skipped)`,
           });
         }
         // Take the oldest record with a live claim
@@ -1130,6 +1314,27 @@ export const register: Register = async (on, options) => {
               loop: "worker",
               action: "sweep_expired_records",
               detail: `swept ${swept} expired operator records (persona: ${sess.persona})`,
+            });
+          }
+
+          // Item 5 (Bounded store): the shared store keeps only a short
+          // window of recent inbox/reply records - overflow rolls to the
+          // append-only channel log instead of staying in the one JSON
+          // file forever. Open asks are untouched (a different function,
+          // a different lifecycle).
+          const channelWindowSize = typeof cfg.channelRecordWindow === "number" ? (cfg.channelRecordWindow as number) : 50;
+          const rolled = await enforceChannelWindow(
+            commonsStoreOf($),
+            sess.persona,
+            channelWindowSize,
+            (lines) => appendToChannelLog($, lines),
+          );
+          if (rolled > 0) {
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "worker",
+              action: "channel_window_rolled",
+              detail: `rolled ${rolled} closed inbox/reply records to ${CHANNEL_LOG_PATH} (persona: ${sess.persona})`,
             });
           }
         }
@@ -1215,7 +1420,17 @@ export const register: Register = async (on, options) => {
             sess.state.monitor.cost.selfReview.estTokens += estimateTokens(input.prompt.length, 80);
             const lesson = raw.trim();
             if (lesson.length > 0 && lesson.toUpperCase() !== "NONE") {
-              if (!dedupeSelfReview(sess.state.memory, lesson)) {
+              // Item 8.2: a memory entry comes from a proof passing or an
+              // operator correction, never from the classifier scoring its
+              // own confusion. Refuse the latter before the dedupe check.
+              if (isSelfScoringLesson(lesson)) {
+                sess.state.decisions.push({
+                  timestamp: Date.now(),
+                  loop: "memory",
+                  action: "memory_lesson_refused",
+                  detail: `self-scoring lesson refused: ${lesson.slice(0, 80)}`,
+                });
+              } else if (!dedupeSelfReview(sess.state.memory, lesson)) {
                 const entryId = `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
                 sess.state.memory.push({
                   id: entryId,
@@ -1678,6 +1893,7 @@ export const register: Register = async (on, options) => {
                   `Bank your current state to memory and the plan doc, then reach a clean stopping point. ` +
                   `The session will be restarted at the critical threshold; bank state now.`;
                 await $.prompt.submit({ text: nudgeText });
+                nudgedTurn = true;
                 sess.state.decisions.push({
                   timestamp: budgetTs,
                   loop: "monitor",
@@ -1976,6 +2192,36 @@ export const register: Register = async (on, options) => {
           // D3: update call window (count the classify call)
           sess.state.monitor.cost.callWindow = bumpWindow(sess.state.monitor.cost.callWindow, Date.now());
           let finalDecision: string = decision ?? "nudge";
+          // Item 8.2 (Round 36, extended Round 39): neither classifier
+          // verdict that used to open an ask directly from classifier prose
+          // - "ask-operator" nor "pause" - opens an ask record anymore.
+          // Word-matching the model's reason text for "unclear"/"scope"/
+          // idle-gap language let real forks through unrecognized (eighteen
+          // ask wordings in one day matched no keyword list), and the
+          // nineteenth ask arrived through "pause" specifically, proving
+          // the same classifier prose problem exists on that verdict too.
+          // So the rule is structural and covers both: either verdict
+          // becomes a nudge here, unconditionally, before the reason call
+          // even runs (a failed reason call must not fall through to
+          // opening an ask with "no reason", which the old in-try
+          // conversion did). The nudge tells the worker to re-read the plan
+          // and discussion file and, if a fork truly exists, state it in
+          // its own next turn as a line `ASK: <question>? Recommend:
+          // <choice>`. Only that marker (read on turn.complete, below)
+          // opens an ask record, with the worker's own line as the stored
+          // question - never the classifier's reason.
+          let idleGapConverted = false;
+          if (finalDecision === "ask-operator" || finalDecision === "pause") {
+            const convertedFrom = finalDecision;
+            finalDecision = "nudge";
+            idleGapConverted = true;
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "monitor",
+              action: "ask_idle_gap_converted",
+              detail: `${g.id}: classifier ${convertedFrom} converted to nudge (worker states a real fork itself, if one exists)`,
+            });
+          }
 
           // R6: switch, second Haiku call to pick a plan id.
           if (finalDecision === "switch" && pendingPlans.length > 0) {
@@ -2072,13 +2318,24 @@ export const register: Register = async (on, options) => {
                 return;
               }
               try {
-                // R8: nudge text appends goal_done instruction.
-                const nudgeText =
-                  `[GOAL] The active goal is: ${g.objective}\n` +
-                  `The Controller detected ${idleDisplay} of idle time. ` +
-                  `Re-read the objective and take the next concrete step toward it.\n` +
-                  `When this step is done, call goal_done with a one-line note. ` +
-                  `If the result names a next goal, continue with it.`;
+                // R8: nudge text appends goal_done instruction. Item 8.2
+                // (Round 36): a converted ask-operator gets its own text -
+                // re-read the plan and the discussion file, and only state a
+                // fork as a literal marker line if one truly exists, since
+                // the classifier itself never carries a concrete blocking
+                // question, only an idle reading.
+                const nudgeText = idleGapConverted
+                  ? `[GOAL] The active goal is: ${g.objective}\n` +
+                    `The controller read this as an idle gap, not a real fork: no concrete blocking question. ` +
+                    `Re-read the plan doc and DISCUSSION.md before continuing - the next concrete step should already be there.\n` +
+                    `If you genuinely hold a fork the plan doesn't resolve, state it in this turn as a line: ASK: <question>? Recommend: <choice>\n` +
+                    `Otherwise take the next concrete step. When this step is done, call goal_done with a one-line note. ` +
+                    `If the result names a next goal, continue with it.`
+                  : `[GOAL] The active goal is: ${g.objective}\n` +
+                    `The Controller detected ${idleDisplay} of idle time. ` +
+                    `Re-read the objective and take the next concrete step toward it.\n` +
+                    `When this step is done, call goal_done with a one-line note. ` +
+                    `If the result names a next goal, continue with it.`;
                 await $.prompt.submit({ text: nudgeText });
                 currentPrompt = nudgeText;
                 nudgedTurn = true;
@@ -2095,33 +2352,6 @@ export const register: Register = async (on, options) => {
                   detail: `${g.id}: idle ${idleDisplay}, nudge #${sess.consecutiveNudgesWithoutOnGoal}`,
                 });
               } catch { /* nudge failed; non-fatal */ }
-            }
-          } else if (finalDecision === "ask-operator" || finalDecision === "pause") {
-            // D5: write an ask record and set pendingAskId (both ask-operator and pause)
-            const askId = `ask-${g.id}-${Date.now()}`;
-            const question = fullReason || (finalDecision === "pause" ? "controller pause" : "operator input needed");
-            await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, question, sess.mySessionId);
-            sess.state.pendingAskId = askId;
-            sess.state.decisions.push({
-              timestamp: Date.now(),
-              loop: "monitor",
-              action: "ask_opened",
-              detail: `${g.id}: ${finalDecision}: ${question} (ask ${askId})`,
-            });
-            try {
-              $.ui.toast(`Agentic: ${question}`);
-            } catch { /* non-fatal */ }
-            if (g.status === "active") {
-              g.status = "paused";
-              g.blockedReason = question;
-              g.updatedAt = Date.now();
-              sess.state.decisions.push({
-                timestamp: Date.now(),
-                loop: "goal",
-                action: "paused_by_controller",
-                detail: `${g.id}: ${question}`,
-              });
-              try { $.ui.status(""); } catch { /* non-fatal */ }
             }
           } else if (finalDecision === "complete" && g.status === "active") {
             // R3: use completeLeaf + activateNext.
@@ -2174,6 +2404,8 @@ export const register: Register = async (on, options) => {
     turnLeafId = sess.state.activeGoalId;
     // C4: reset tool error counter for this turn.
     toolErrorsThisTurn = 0;
+    // Item 2 sub-bullet: reset the tool-call counter for this turn.
+    toolCallsThisTurn = 0;
     // D4: reset backoff skip counter on new turn (activity breaks the skip streak).
     if (costEnabled && sess.state.monitor.cost) {
       sess.state.monitor.cost.consecutiveSkips = 0;
@@ -2237,6 +2469,122 @@ export const register: Register = async (on, options) => {
 
     // Skip scoring on aborted or errored turns (no answer to judge).
     const skipped = e.aborted || e.reason === "aborted" || e.reason === "error" || e.reason === "refusal" || !e.answer;
+
+    // Item 2 sub-bullet (f016b69): a turn that did real work with no
+    // active root - the exact shape a cost-conscious model produces when
+    // it reads a one-step request as too small for goal_create, even
+    // after the [NO GOAL] reminder names size explicitly - gets a
+    // synthetic goal record after the fact, so "every request opens a
+    // goal, whatever its size" holds even when the model skipped the
+    // ritual. The condition is "no active root", not "goals.length === 0":
+    // item 4's second conversational request arrives with the first
+    // root still sitting in state, complete but present, so an empty-
+    // array check would silently never fire for that case. Gated off
+    // real work only (isWorkTool, Round 28) and off priming/nudge turns
+    // (isPrimingTurn, wasNudged) - a channel-attached passive child's own
+    // acknowledgment turn must never look like task work, or the
+    // supervisor sees a fabricated root_complete and restart-loops it.
+    const currentRoot = sess.state.goals.find((g) => g.parentId === null);
+    const noActiveRoot = !currentRoot || currentRoot.status === "complete" || currentRoot.status === "abandoned";
+    if (!skipped && sess.isOwner && !isPrimingTurn && !wasNudged && noActiveRoot && toolCallsThisTurn > 0) {
+      const backfillNow = Date.now();
+      const objective = (currentPrompt || "Untitled request").slice(0, 200);
+      const rootId = `root-${backfillNow.toString(36)}`;
+      const backfillRoot: GoalNode = {
+        id: rootId,
+        parentId: null,
+        kind: "root",
+        title: objective.slice(0, 80),
+        objective,
+        status: "complete",
+        source: "worker",
+        maxRounds: 1,
+        completedRounds: 1,
+        scores: [{ round: 1, result: "complete" }],
+        notes: ["Backfilled: the worker did the work without calling goal_create this turn."],
+        planningRounds: 0,
+        consecutiveBlockedPlannings: 0,
+        consecutivePlanningFailures: 0,
+        planningRound: 0,
+        createdAt: backfillNow,
+        updatedAt: backfillNow,
+      };
+      sess.state.goals = [backfillRoot];
+      sess.state.activeGoalId = null;
+      sess.state.decisions.push({
+        timestamp: backfillNow,
+        loop: "goal",
+        action: "create",
+        detail: `Root ${rootId} "${objective.slice(0, 80)}" created (max 1 rounds) - backfilled, no goal_create call this turn`,
+      });
+      sess.state.decisions.push({
+        timestamp: backfillNow,
+        loop: "goal",
+        action: "root_complete",
+        detail: `Root ${rootId} marked complete - backfilled, work already done`,
+      });
+    }
+
+    // Item 8.2 (Round 36, extended Round 39): an ask record opens only when
+    // the worker's own completed turn states a real fork as a literal
+    // marker line, never from the classifier's idle-gap or pause reading
+    // (see the conversion above, which now covers both verdicts). The
+    // stored question is the worker's own line, not a reason the classifier
+    // produced. Two guards on the marker itself: refuse a match that still
+    // carries the literal template's angle-bracket placeholders (a worker
+    // that copies the nudge instruction verbatim without filling it in is
+    // not stating a fork), and suppress a re-open of the identical question
+    // this same node just closed (the D5b reask guard, driven through this
+    // path now that it is the only path that opens an ask from the idle
+    // tick's own read of the goal).
+    if (!skipped && sess.isOwner && !sess.state.pendingAskId) {
+      const askMarkerMatch = e.answer.match(/^ASK:\s*(.+?\?\s*Recommend:\s*.+)$/im);
+      if (askMarkerMatch) {
+        const question = askMarkerMatch[1].trim();
+        if (/<[^<>]+>/.test(question)) {
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "ask_marker_placeholder_refused",
+            detail: `worker's ASK line still carries a template placeholder, refused: ${question.slice(0, 100)}`,
+          });
+        } else {
+          const nodeId = turnLeafId || sess.state.activeGoalId || "unknown";
+          const askedNode = sess.state.goals.find((node) => node.id === nodeId);
+          const askReaskSuppressMs = typeof cfg.askReaskSuppressMs === "number" ? (cfg.askReaskSuppressMs as number) : 10 * 60_000;
+          if (shouldSuppressReask(askedNode, question, Date.now(), askReaskSuppressMs)) {
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "monitor",
+              action: "ask_reask_suppressed",
+              detail: `${nodeId}: suppressed identical question closed ${Math.round((Date.now() - (askedNode?.lastAskClosedAt || Date.now())) / 1000)}s ago: ${question.slice(0, 80)}`,
+            });
+          } else {
+            const askId = `ask-${nodeId}-${Date.now()}`;
+            await writeAskRecord(commonsStoreOf($), sess.persona, askId, nodeId, question, sess.mySessionId);
+            sess.state.pendingAskId = askId;
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "monitor",
+              action: "ask_opened",
+              detail: `${nodeId}: worker-stated fork: ${question} (ask ${askId})`,
+            });
+            try { $.ui.toast(`Agentic: ${question}`); } catch { /* non-fatal */ }
+            if (askedNode && askedNode.status === "active") {
+              askedNode.status = "paused";
+              askedNode.blockedReason = question;
+              askedNode.updatedAt = Date.now();
+              sess.state.decisions.push({
+                timestamp: Date.now(),
+                loop: "goal",
+                action: "paused_by_controller",
+                detail: `${nodeId}: ${question}`,
+              });
+            }
+          }
+        }
+      }
+    }
 
     // H2: Score against the leaf that was active at TURN START (turnLeafId),
     // not whichever node is active now (which may have been activated mid-turn
@@ -2460,6 +2808,7 @@ export const register: Register = async (on, options) => {
   // --- tool.call: serve tools, enforce constraints ---
   on("tool.call", async ($, e, next) => {
     sess.state.monitor.totalToolCalls += 1;
+    if (isWorkTool(e.tool)) toolCallsThisTurn += 1;
 
     // Serve agentic_identity (F9: single arbiter = commons; epoch is only the
     // same-directory write fence). Claim in commons FIRST; if a live earlier
@@ -2523,6 +2872,16 @@ export const register: Register = async (on, options) => {
           detail: `Joining '${sess.persona}' as reader (holder: ${shouldYieldTo}, commons arbitration)`,
         });
         try { $.ui.log(`Agentic: joined '${sess.persona}' as reader (held by ${shouldYieldTo})`); } catch { /* non-fatal */ }
+        // Round 32: the claimResource call above speculatively claimed
+        // `persona:<p>` before the winner was known. A reader join must not
+        // keep that claim - left in place, it reads as a live persona holder
+        // under this session's own heartbeat and blocks the next relaunch's
+        // pre-gate for the full stale-after window, exactly as the stale
+        // `persona:default` claim did. Release it before claiming the reader
+        // role, so the joiner ends with reader:<p> only.
+        try {
+          await releaseResource(commonsStoreOf($), resource, sess.mySessionId);
+        } catch { /* non-fatal: commons is a coordination layer */ }
         // D2: Claim the reader role
         await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId);
         return {
@@ -2888,6 +3247,29 @@ export const register: Register = async (on, options) => {
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
+    // Serve supervisor_shutdown (plan item 4: distinct from root_complete;
+    // supervise.sh's decide unit only exits the whole loop on this signal).
+    if (e.tool === "mcp__agentic-plugin__supervisor_shutdown") {
+      if (!sess.isOwner) {
+        toolErrorsThisTurn++;
+        return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+      }
+      const reason = String((e as any).reason || "").trim() || "operator requested shutdown";
+      const now = Date.now();
+      sess.state.decisions.push({
+        timestamp: now,
+        loop: "monitor",
+        action: "shutdown_requested",
+        detail: reason,
+      });
+      const writeOk = await persist($);
+      if (writeOk) {
+        return { result: `Shutdown requested: ${reason}. The supervisor will stop after this turn ends.` };
+      }
+      toolErrorsThisTurn++;
+      return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+    }
+
     // Serve goal_status (read-only, passive-reader OK).
     if (e.tool === "mcp__agentic-plugin__goal_status") {
       const root = sess.state.goals.find((g) => g.parentId === null);
@@ -3118,6 +3500,49 @@ export const register: Register = async (on, options) => {
   on("prompt.submit", async ($, e, next) => {
     // Capture the prompt text for the goal scorer.
     currentPrompt = e.text;
+    // Item 2 backstop safety: mark whether this genuine external turn is
+    // the supervisor's own synthetic priming message.
+    isPrimingTurn = e.text.startsWith("[SUPERVISOR-PRIMING]");
+
+    // D5b (bullet 1): an open ask never silences the worker. This hook fires
+    // only for a genuine external turn - the controller's own $.prompt.submit
+    // calls (nudges, operator-record delivery, the ask re-raise) bypass this
+    // handler, per the nudgedTurn comment above. So any turn that reaches
+    // here while an ask is open is the operator answering it, whether it
+    // came from the keyboard or a Discord thread reply, and whether or not
+    // it carries the ask id: close the ask and reactivate the paused node.
+    if (sess.isOwner && sess.state.pendingAskId) {
+      const askId = sess.state.pendingAskId;
+      const store = commonsStoreOf($);
+      const askRecord = await readAskRecord(store, sess.persona, askId);
+      if (askRecord && askRecord.status === "open") {
+        askRecord.status = "answered";
+        await store.set(askKey(sess.persona, askId), askRecord);
+        sess.state.pendingAskId = undefined;
+        const askedNode = sess.state.goals.find((n) => n.id === askRecord.nodeId);
+        if (askedNode) {
+          askedNode.lastAskQuestion = askRecord.question;
+          askedNode.lastAskClosedAt = Date.now();
+          if (askedNode.status === "paused") {
+            askedNode.status = "active";
+            askedNode.updatedAt = Date.now();
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "activated",
+              detail: `${askedNode.id}: reactivated (thread reply to ask ${askId})`,
+            });
+          }
+        }
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "ask_answered_by_reply",
+          detail: `ask ${askId} closed by thread reply, no ask id typed`,
+        });
+        await persist($);
+      }
+    }
 
     const r = await next(e);
     if (r.drop !== undefined) {
@@ -3174,8 +3599,12 @@ export const register: Register = async (on, options) => {
         // request as small talk and never call goal_create at all.
         const idleBlock =
           `No goal is active. If the message above describes something to ` +
-          `accomplish, call goal_create with that as the objective, then reply ` +
-          `in one line naming the goal you took. Otherwise just answer normally.`;
+          `accomplish, call goal_create with that as the objective before doing ` +
+          `any other work - even a one-step or trivial-looking request, since ` +
+          `size is not the test: a plain request that names no tool always opens ` +
+          `a goal first. Then reply in one line naming the goal you took. Only ` +
+          `skip goal_create if the message is not a request to accomplish ` +
+          `anything (small talk, a question with no task attached).`;
         contextBlocks.push(idleBlock);
         try { $.ui.log(`Agentic: [NO GOAL] reminder injected`); } catch { /* non-fatal */ }
       }

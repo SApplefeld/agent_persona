@@ -6,7 +6,7 @@
 export {}
 declare module 'claude-code' {
   interface McpToolInputs {
-    /** Claim ownership of a persona's store. FORCEFULLY takes the persona from whatever session currently holds it: the previous holder is demoted to a passive reader on its next write. Use only when the operator explicitly asks to hand off or reclaim the persona. Pass the persona name (e.g. 'default'). */
+    /** Switch this session to a persona's store, joining or claiming ownership safely: it never evicts a live session. If another session already holds this persona and its heartbeat is current, this session joins as a passive reader (agentic_say/agentic_inbox), taking no write access. Ownership is taken only when no live holder exists, or the existing holder's heartbeat has gone stale (the holder crashed or exited without releasing it). Pass the persona name (e.g. 'default'). */
     "mcp__agentic-plugin__agentic_identity": {
       /** The persona name to activate (e.g. "default", "refactorer"). If omitted, activates "default". */
       persona: string
@@ -45,6 +45,11 @@ declare module 'claude-code' {
     }
     /** Show the current goal tree as formatted text. Read-only; works for passive readers. */
     "mcp__agentic-plugin__goal_status": {}
+    /** Stop the supervisor itself, not just the current goal. Use ONLY when the operator explicitly asks to shut down, stop the supervisor, or end the session for good - never for a completed goal (goal_done already returns the supervisor to its passive waiting state for the next one). The child exits by the graceful EOF path. Owner only. */
+    "mcp__agentic-plugin__supervisor_shutdown": {
+      /** Optional. Why the operator asked to shut down. */
+      reason?: string
+    }
     /** Steer the goal tree in response to an operator request: drop a pending plan or task (marks it abandoned, it is never activated), pause an active or pending node with a reason (use goal_resume to continue it later), or reprioritize a pending node so it activates before its siblings. Owner only. */
     "mcp__agentic-plugin__goal_edit": {
       /** The id of the node to change (see goal_status). */

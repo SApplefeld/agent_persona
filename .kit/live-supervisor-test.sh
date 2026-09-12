@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# live-supervisor-test.sh - Acceptance test for the supervisor (item 5, plan v1).
+# live-supervisor-test.sh - Acceptance test for the supervisor, covering item 4
+# (quiet between goals: root_complete alone returns to passive rather than
+# stopping the supervisor) and item 5's context-budget-driven restart.
 # Short profile, thresholds low enough that critical crosses inside the first two plans.
 # Exits 0 on all-pass (F1-F6 + F0 at end), 1 on any failure.
-# AE4: F6 redefined (drop child-3 check, use STOP_COMPLETE + no-Launch-after).
+# F6: root_complete -> RESTART_PASSIVE -> a fresh child launches, supervisor
+# stays alive; the STOP_COMPLETE/shutdown_requested path is a distinct
+# operator action, not exercised by this suite (see supervisor-unit-test.mjs
+# and the Item 4 Chapter's own live proof for that path).
 # AD4: F4 redefined (child-2 owns persona), F5 added (nudge/turn after child-2),
 #      F3 tests EOF (AD3), F0 moved to end (scoped by first LAUNCH), prompt fixed.
 
@@ -237,31 +242,59 @@ if [ "$F5_FOUND" -eq 0 ]; then
   exit 1
 fi
 
-# --- F6: root_complete ends the run (AE4: restart count is model-controlled) ---
-# Three checks: (a) supervisor exit 0, (b) last decision line is STOP_COMPLETE,
-# (c) no LAUNCH line after that STOP_COMPLETE.
-wait $SUPERVISE_PID
+# --- F6: root_complete alone returns to passive, it does not end the run ---
+# Plan item 4 redefined this: root_complete with no shutdown_requested is
+# RESTART_PASSIVE (stop child-2 gracefully, launch a fresh passive child-3),
+# never STOP_COMPLETE. Three checks: (a) RESTART_PASSIVE appears, (b) a
+# LAUNCH line for the next child follows it, (c) the supervisor process is
+# still alive throughout (a real exit here would be the old, wrong behavior).
+echo "F6: polling for RESTART_PASSIVE after root_complete..."
+F6_FOUND=0
+for i in $(seq 1 60); do
+  if [ -f "$SUPERVISE_LOG" ] && grep -q 'RESTART_PASSIVE:' "$SUPERVISE_LOG" 2>/dev/null; then
+    F6_FOUND=1
+    break
+  fi
+  if ! kill -0 "$SUPERVISE_PID" 2>/dev/null; then
+    echo "F6 FAIL: supervisor process exited before RESTART_PASSIVE appeared"
+    exit 1
+  fi
+  sleep 2
+done
+if [ "$F6_FOUND" -eq 0 ]; then
+  echo "F6 FAIL: no RESTART_PASSIVE in supervisor.log after 120s"
+  kill $SUPERVISE_PID 2>/dev/null
+  exit 1
+fi
+
+RESTART_LINE_NO=$(grep -n 'RESTART_PASSIVE:' "$SUPERVISE_LOG" 2>/dev/null | tail -1 | cut -d: -f1)
+LATER_LAUNCH=$(awk -v r="$RESTART_LINE_NO" 'NR > r && /LAUNCH child-/' "$SUPERVISE_LOG" 2>/dev/null)
+if [ -z "$LATER_LAUNCH" ]; then
+  echo "F6 FAIL: no LAUNCH line after RESTART_PASSIVE (supervisor did not return to passive)"
+  kill $SUPERVISE_PID 2>/dev/null
+  exit 1
+fi
+
+if ! kill -0 "$SUPERVISE_PID" 2>/dev/null; then
+  echo "F6 FAIL: supervisor process is not alive after RESTART_PASSIVE (it should still be running, passively)"
+  exit 1
+fi
+
+echo "F6 PASS: RESTART_PASSIVE fired, a new child launched after it, supervisor still alive"
+
+# This test's own job ends here: the supervisor is confirmed alive and
+# passive after completing a goal. Stop it deliberately (SIGTERM), which
+# the trap in bin/supervise.sh takes as an operator-style stop (exit 143,
+# not the shutdown_requested/STOP_COMPLETE path, which the live-restart
+# suite proves separately) rather than leaving it running past this test.
+kill -TERM $SUPERVISE_PID 2>/dev/null
+wait $SUPERVISE_PID 2>/dev/null
 SUPERVISE_EXIT=$?
-
-if [ $SUPERVISE_EXIT -ne 0 ]; then
-  echo "F6 FAIL: supervisor exit $SUPERVISE_EXIT (expected 0)"
+if [ "$SUPERVISE_EXIT" -ne 143 ] && [ "$SUPERVISE_EXIT" -ne 0 ]; then
+  echo "F6 FAIL: supervisor exit $SUPERVISE_EXIT after SIGTERM (expected 143 or 0)"
   exit 1
 fi
-
-LAST_DECISION=$(grep -E ' (STOP_COMPLETE|RESTART|DECIDE ERR)' "$SUPERVISE_LOG" 2>/dev/null | tail -1)
-if ! echo "$LAST_DECISION" | grep -q 'STOP_COMPLETE'; then
-  echo "F6 FAIL: last decision is not STOP_COMPLETE (got: ${LAST_DECISION:-none})"
-  exit 1
-fi
-
-STOP_LINE_NO=$(grep -nE ' STOP_COMPLETE' "$SUPERVISE_LOG" 2>/dev/null | tail -1 | cut -d: -f1)
-LATER_LAUNCH=$(awk -v stop="$STOP_LINE_NO" 'NR > stop && /LAUNCH child-/' "$SUPERVISE_LOG" 2>/dev/null)
-if [ -n "$LATER_LAUNCH" ]; then
-  echo "F6 FAIL: LAUNCH line after STOP_COMPLETE: $LATER_LAUNCH"
-  exit 1
-fi
-
-echo "F6 PASS: supervisor exit 0, last decision is STOP_COMPLETE, no LAUNCH after it"
+echo "F6 PASS: supervisor stopped cleanly after SIGTERM (exit $SUPERVISE_EXIT)"
 
 # --- F0: AD4 moved to end - no persona_yield* in the run, scoped by first LAUNCH ---
 # Run at the end, over the whole yield log, scoped by the supervisor's first LAUNCH timestamp.

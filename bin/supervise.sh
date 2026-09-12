@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
 # bin/supervise.sh - Supervisor loop for days-long persona runs.
 #
-# Usage: bin/supervise.sh <workdir> <persona> <permission-mode> [--prompt TEXT] [--rundir DIR]
+# Usage: bin/supervise.sh <workdir> <persona> <permission-mode> [--prompt TEXT] [--rundir DIR] [--dev] [--no-channel] [--channel-name NAME]
+#
+# By default the child loads agentic-plugin as an installed plugin (plan
+# item 6: the target runtime, installed from this repo's own marketplace
+# manifest). Pass --dev to load it from this checkout instead via
+# --plugin-dir, for working on the plugin's own code.
+#
+# By default the child is also directly reachable from Discord (plan item
+# 5: the native channel, no proxy session): --channels loads the relay
+# plugin (D:\discord-channels), CHANNEL_SESSION names the thread (stable
+# across restarts so the whole supervisor lifetime is one conversation),
+# and a fresh CHANNEL_PROCESS_TOKEN is minted per child. Pass --no-channel
+# to skip this (a scratch/proof run with no Discord side effects).
 #
 # Exit codes:
 #   0 = run complete (root_complete)
@@ -14,7 +26,7 @@ set -o pipefail
 
 # --- Parse arguments ---
 if [ $# -lt 3 ]; then
-  echo "Usage: bin/supervise.sh <workdir> <persona> <permission-mode> [--prompt TEXT] [--rundir DIR]" >&2
+  echo "Usage: bin/supervise.sh <workdir> <persona> <permission-mode> [--prompt TEXT] [--rundir DIR] [--dev]" >&2
   exit 1
 fi
 
@@ -27,6 +39,9 @@ shift 3
 
 PROMPT=""
 RUNDIR=""
+DEV_MODE=0
+NO_CHANNEL=0
+CHANNEL_NAME=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -36,6 +51,18 @@ while [ $# -gt 0 ]; do
       ;;
     --rundir)
       RUNDIR="$2"
+      shift 2
+      ;;
+    --dev)
+      DEV_MODE=1
+      shift 1
+      ;;
+    --no-channel)
+      NO_CHANNEL=1
+      shift 1
+      ;;
+    --channel-name)
+      CHANNEL_NAME="$2"
       shift 2
       ;;
     *)
@@ -69,6 +96,15 @@ if [ -n "$RUNDIR" ]; then
 fi
 
 cd "$WORKDIR"
+
+# Plan item 5: one Discord thread for the supervisor's whole lifetime, not
+# one per child. CHANNEL_SESSION is the broker's binding key and must stay
+# identical across every child a restart launches; only CHANNEL_PROCESS_TOKEN
+# (minted per launch, below) changes. Default derived from the persona so two
+# supervisors on one machine don't collide on one thread name.
+if [ -z "$CHANNEL_NAME" ]; then
+  CHANNEL_NAME="supervisor-$PERSONA"
+fi
 
 # --- Defaults (plan section 6) ---
 SUPERVISOR_STOP_GRACE_MS="${supervisorStopGraceMs:-60000}"
@@ -181,20 +217,9 @@ stop_child() {
   return 0
 }
 
-# --- Helper: find the global commons store ---
-find_global_store() {
-  local f
-  if [ -d "$HOME/.claude/plugins/store" ]; then
-    for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
-      if [ -f "$f" ]; then
-        echo "$f"
-        return 0
-      fi
-    done
-  fi
-  echo ""
-  return 0
-}
+# find_global_store is defined in bin/agentic-common.sh (sourced above),
+# shared with .kit/live-common.sh so both callers filter on dev_mode the
+# same way rather than carrying their own copies.
 
 # --- Helper: read a fact from .agentic-personas.json ---
 # Usage: get_fact <workdir> <persona> <fact>
@@ -271,7 +296,7 @@ while true; do
   rm -f "$EXIT_MARKER"
 
   # --- D3: Pre-launch gate (AD2: check both commons AND heartbeat) ---
-  GLOBAL_STORE=$(find_global_store)
+  GLOBAL_STORE=$(find_global_store "$DEV_MODE")
   if [ -z "$GLOBAL_STORE" ]; then
     log "GATE FAIL: no global commons store found"
     exit 2
@@ -305,9 +330,34 @@ while true; do
   # To stop the child, we close CHILD[1] (EOF), then TERM, then KILL.
   # The child reads its first prompt from the coproc pipe, stays alive with
   # the pipe open, and exits 0 when the write end closes.
-  
-  coproc CHILD { claude -p --input-format stream-json --output-format stream-json --verbose \
-    --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" \
+
+  # Plan item 6: --plugin-dir is opt-in (--dev), loading this checkout's own
+  # code. Without it the child loads agentic-plugin as an installed plugin
+  # (claude plugin install agentic-plugin@agent-persona), the target runtime.
+  PLUGIN_DIR_ARGS=()
+  if [ "$DEV_MODE" -eq 1 ]; then
+    PLUGIN_DIR_ARGS=(--plugin-dir "$(cygpath -w "$PLUGIN_DIR")")
+  fi
+
+  # Plan item 5: attach the Discord channel directly to this child (no proxy
+  # session, no polling) unless --no-channel was given. --channels loads the
+  # relay's installed-plugin entry (confirmed live: this works with a
+  # headless `claude -p` stream-json child, same as an interactive one).
+  # CHANNEL_SESSION is the stable thread key (set above, once, from
+  # $CHANNEL_NAME); CHANNEL_PROCESS_TOKEN is minted fresh for this one child,
+  # mirroring the launch wrapper's own per-launch GUID. Mirroring is off:
+  # the thread carries operator conversation, not every turn.
+  CHANNEL_ARGS=()
+  CHANNEL_ENV=()
+  if [ "$NO_CHANNEL" -ne 1 ]; then
+    CHANNEL_ARGS=(--name "$CHANNEL_NAME" --channels "plugin:relay@sapplefeld-channels")
+    CHILD_PROCESS_TOKEN=$(node -e "console.log(require('crypto').randomUUID())")
+    CHANNEL_ENV=(CHANNEL_SESSION="$CHANNEL_NAME" CHANNEL_PROCESS_TOKEN="$CHILD_PROCESS_TOKEN" CHANNEL_SESSION_MIRROR=off)
+  fi
+
+  coproc CHILD { env "${CHANNEL_ENV[@]}" claude -p --input-format stream-json --output-format stream-json --verbose \
+    "${PLUGIN_DIR_ARGS[@]}" \
+    "${CHANNEL_ARGS[@]}" \
     --settings "$(cygpath -w "$SETTINGS_FILE")" \
     --model "${MODEL:-haiku}" \
     --permission-mode "$PERMISSION_MODE" \
@@ -317,14 +367,48 @@ while true; do
   # Copy the fd number now: the array is unset when the coproc exits.
   CHILD_IN=${CHILD[1]}
   
-  # Send the first prompt (child 1 only) to the child's stdin.
+  # Send the first message to the child's stdin: the real --prompt when one
+  # was given (child 1 only), or a priming turn when the channel is attached
+  # and there is no real goal to open on (child 1's plain passive start, and
+  # every restart_passive child after it - PROMPT is always empty by then).
+  #
+  # Plan item 5 (found live, see the plan doc's Chapter 5): a headless
+  # stream-json child only registers Discord channel notifications after its
+  # first completed turn, and anything the operator sends before that turn
+  # completes is silently lost, not queued. Without a first turn, a passive
+  # child sits deaf to the channel indefinitely. Whichever message is first
+  # also carries the channel-reply instruction when the channel is attached,
+  # since the child's own conversational reply is never visible to the
+  # operator - only a real `reply` tool call is - and a real goal's own
+  # opening turn is otherwise the only turn that instruction could ride on.
+  CHANNEL_REPLY_INSTRUCTION=""
+  if [ "$NO_CHANNEL" -ne 1 ]; then
+    CHANNEL_REPLY_INSTRUCTION="You are attached to a Discord channel. When you want to say something back to the operator, call the reply tool from the channel-relay MCP server - your own conversational reply is not visible to them. "
+  fi
   if [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
     node -e "
       const fs = require('fs');
       const p = fs.readFileSync(process.argv[1], 'utf8');
-      const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:p}]}});
+      const prefix = process.argv[2] || '';
+      const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:prefix + p}]}});
       process.stdout.write(json + '\n');
-    " "$PROMPT_FILE" >&"$CHILD_IN"
+    " "$PROMPT_FILE" "$CHANNEL_REPLY_INSTRUCTION" >&"$CHILD_IN"
+  elif [ "$NO_CHANNEL" -ne 1 ]; then
+    # [SUPERVISOR-PRIMING] marks this turn as synthetic (the child has no
+    # real goal yet) so hooks/index.ts's turn.complete backstop - which
+    # backfills a completed goal for a turn that did real tool work with
+    # no active root - never mistakes the channel's own acknowledgment
+    # turn for genuine operator content. Never strip this marker; it is
+    # read by the hook, not meant for the model's own reasoning about the
+    # task (which is why it precedes, rather than replaces, the reply
+    # instruction and the wait-quietly text).
+    node -e "
+      const prefix = process.argv[1] || '';
+      const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:
+        '[SUPERVISOR-PRIMING] ' + prefix + 'You are the passive supervisor, waiting for a goal or a steering message from the operator. Reply now with one short line acknowledging you are ready, then wait.'
+      }]}});
+      process.stdout.write(json + '\n');
+    " "$CHANNEL_REPLY_INSTRUCTION" >&"$CHILD_IN"
   fi
   PROMPT=""
 
@@ -358,6 +442,10 @@ while true; do
 
     # Poll the decision log for signals.
     ROOT_COMPLETE_TS=$(get_fact "$WORKDIR" "$PERSONA" "root_complete")
+    # Plan item 4: a distinct signal from root_complete. root_complete means
+    # "this goal is done"; shutdown_requested means "the operator asked the
+    # supervisor itself to stop" - only the second one should exit the loop.
+    SHUTDOWN_REQUESTED_TS=$(get_fact "$WORKDIR" "$PERSONA" "shutdown_requested")
     CRITICAL_TS=""
     if [ -f "$STORE" ]; then
       CRITICAL_TS=$(node -e "
@@ -410,9 +498,11 @@ const minRunMs = process.argv[10] ? parseInt(process.argv[10]) : 120000;
 const maxRestartsPerHour = process.argv[11] ? parseInt(process.argv[11]) : 6;
 const crashCount = process.argv[12] ? parseInt(process.argv[12]) : 0;
 const restartCount = process.argv[13] ? parseInt(process.argv[13]) : 0;
+const shutdownRequestedTs = process.argv[14] ? parseInt(process.argv[14]) : null;
 console.log(JSON.stringify({
   childExitCode: null,
   rootCompleteTs,
+  shutdownRequestedTs,
   criticalTs,
   crashCount,
   restartCount,
@@ -426,7 +516,7 @@ console.log(JSON.stringify({
   minRunMs,
   maxRestartsPerHour,
 }));
-" "${ROOT_COMPLETE_TS:-}" "${CRITICAL_TS:-}" "${HEARTBEAT_SESSION_ID:-}" "${HEARTBEAT_LAST_SEEN:-}" "${NOW:-}" "$CHILD_START_TS" "${CHILD_SESSION_ID:-}" "$LAUNCHED_AT" "$STALE_AFTER_MS" "$SUPERVISOR_MIN_RUN_MS" "$SUPERVISOR_MAX_RESTARTS_PER_HOUR" "$CRASH_COUNT" "$RESTART_COUNT" 2>> "$RUNDIR/supervisor.err")
+" "${ROOT_COMPLETE_TS:-}" "${CRITICAL_TS:-}" "${HEARTBEAT_SESSION_ID:-}" "${HEARTBEAT_LAST_SEEN:-}" "${NOW:-}" "$CHILD_START_TS" "${CHILD_SESSION_ID:-}" "$LAUNCHED_AT" "$STALE_AFTER_MS" "$SUPERVISOR_MIN_RUN_MS" "$SUPERVISOR_MAX_RESTARTS_PER_HOUR" "$CRASH_COUNT" "$RESTART_COUNT" "${SHUTDOWN_REQUESTED_TS:-}" 2>> "$RUNDIR/supervisor.err")
 
     # Call the decide unit.
     DECIDE_RESULT=$(node -e "
@@ -492,6 +582,25 @@ console.log(o.reason || '');
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         exit 4
         ;;
+      restart_passive)
+        # Plan item 4: root_complete with no shutdown requested. The goal is
+        # done; the supervisor stays up and returns to item 1's passive state
+        # for a second goal, rather than exiting. Stopped the same graceful
+        # way as stop_complete (EOF path), but this is expected, healthy
+        # behavior, not a crash: it must never count toward the crash-loop or
+        # restart-budget limits meant for actual failures.
+        log "RESTART_PASSIVE: $DECIDE_REASON"
+        stop_child "restart_passive"
+        if [ -n "${CHILD_PID:-}" ]; then
+          wait "$CHILD_PID"; EXIT_CODE=$?
+        else
+          EXIT_CODE=0
+        fi
+        echo "$EXIT_CODE" > "$EXIT_MARKER"
+        log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
+        log "PASSIVE: goal complete; returning to passive state, waiting for the next goal delivered by chat"
+        continue 2  # break out of the poll loop and go to the next child; no crash/restart accounting
+        ;;
       restart)
         log "RESTART: $DECIDE_REASON"
         stop_child "restart"
@@ -539,11 +648,18 @@ console.log(o.reason || '');
 
   log "EXIT child-$CHILD_INDEX code=$EXIT_CODE (natural)"
 
-  # Check for root_complete to decide whether to restart.
+  # Check for shutdown_requested / root_complete to decide whether to stop,
+  # go passive, or restart (plan item 4: the two are distinct signals).
+  SHUTDOWN_REQUESTED_TS=$(get_fact "$WORKDIR" "$PERSONA" "shutdown_requested")
+  if [ -n "$SHUTDOWN_REQUESTED_TS" ] && [ "$SHUTDOWN_REQUESTED_TS" -gt "$CHILD_START_TS" ]; then
+    log "STOP_COMPLETE: shutdown_requested at $SHUTDOWN_REQUESTED_TS > child start $CHILD_START_TS"
+    exit 0
+  fi
   ROOT_COMPLETE_TS=$(get_fact "$WORKDIR" "$PERSONA" "root_complete")
   if [ -n "$ROOT_COMPLETE_TS" ] && [ "$ROOT_COMPLETE_TS" -gt "$CHILD_START_TS" ]; then
-    log "STOP_COMPLETE: root_complete at $ROOT_COMPLETE_TS > child start $CHILD_START_TS"
-    exit 0
+    log "RESTART_PASSIVE: root_complete at $ROOT_COMPLETE_TS > child start $CHILD_START_TS (no shutdown requested)"
+    log "PASSIVE: goal complete; returning to passive state, waiting for the next goal delivered by chat"
+    continue  # only the outer loop encloses this point; no crash/restart accounting
   fi
 
   # Update crash counter.

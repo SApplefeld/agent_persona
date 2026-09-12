@@ -2,6 +2,45 @@
 
 PIANO-esque cognitive layer on Claude Code's Function Hooks API. One plugin module, one `register(on, options)` export, no Agent SDK. The plugin needs no supervisor to run one session; `bin/supervise.sh` is the optional outer loop for runs longer than one session. Modules observe at hook boundaries and write to shared `AgentState`; the Controller : the sole actuator : runs on a clock, classifies the situation, and then (and only then) actuates through exactly three channels.
 
+## Quickstart
+
+A fresh clone, one command, a waiting supervisor.
+
+**Install the plugin** (once per machine):
+
+```
+claude plugin marketplace add SApplefeld/agent_persona
+claude plugin install agentic-plugin@agent-persona --scope user
+```
+
+`claude plugin update` re-fetches from GitHub, so the installed runtime always tracks merged `main` rather than whatever happens to be checked out in any one clone. Registering the marketplace from a local directory (`claude plugin marketplace add /path/to/this/clone`) instead makes `claude plugin update` copy that directory's working tree verbatim, uncommitted edits included - useful only for developing the plugin itself, alongside `--dev` below, never for running it.
+
+**Start the supervisor** (passive, no goal yet):
+
+```
+bin/supervise.sh /path/to/a/workdir dev bypassPermissions
+```
+
+The workdir is where the persona store, heartbeat sidecar, and `run/` logs live; it can be this clone or any other directory. The supervisor changes into it itself, so the command above works from anywhere. It idles, holding its persona and heartbeating, until a goal arrives.
+
+By default the child is also directly reachable from Discord: it attaches to the relay in `D:\discord-channels` under a thread named `supervisor-<persona>` (stable across restarts; override with `--channel-name NAME`). Pass `--no-channel` for a scratch run with no Discord side effects.
+
+**Give it a goal**, by talking to it in plain language, no tool names needed - either as the child's first `--prompt`:
+
+```
+bin/supervise.sh /path/to/a/workdir dev bypassPermissions --prompt "write three short essays about the sea, the mountain, and the sky"
+```
+
+or, once it's already running passively, by talking to its Discord thread (attached by default at launch; pass `--no-channel` to skip it). The worker opens a goal tree, plans it, and replies with the one-line goal it took.
+
+**Steer it mid-goal** by talking to it: "drop the second plan," "pause that for now," "add a task to also write a title." The worker answers each with what it changed, in the goal tree and the decision log both.
+
+**Stop it.** Two ways to end a run, and only one of them ends the supervisor: an explicit "please shut down" (which the worker turns into a `supervisor_shutdown` call) exits the whole supervisor loop cleanly. Just finishing a goal does not - the supervisor returns to passive and waits for the next one. To kill it from outside, `Ctrl-C` or `kill` the `supervise.sh` process; it stops the child via the graceful EOF path first, then TERM, then KILL if it doesn't respond.
+
+**Where the logs are.** `<workdir>/run/supervisor.log` is the supervisor's own narrative (gate checks, launches, restarts, stops). `<workdir>/run/child-N/stdout.jsonl` is child N's full stream-json transcript; `stderr.log` and `claude-debug.log` sit beside it. `<workdir>/.agentic-personas.json` and `.agentic-heartbeat.json` are the persona store and liveness sidecar.
+
+**Working on the plugin's own code** instead of just running it: pass `--dev` to `supervise.sh`, which loads this checkout directly (`--plugin-dir`) instead of the installed copy, so edits here take effect on the next launch with no reinstall.
+
 **Status: v0.11.0 : Stage 3 (supervisor).** `tsc --noEmit` clean. Supervisor (`bin/supervise.sh`) drives outer-loop runs: pre-gate (commons + heartbeat), coproc stdin with EOF stop, real exit codes, `supervisor.err` append (not truncate), `PROMPT=""` cleared after first send, `writeClaimDirect` shared across all three claim sites. 12 live tests in `.kit/` (including supervisor suite F1-F6 + F0).
 
 ## Architecture
@@ -146,6 +185,7 @@ Declared in `plugin.json` with defaults. Read as `options.<name>` in `register(o
 
 | Key | Default | Description |
 |---|---|---|
+| `persona` | `default` | Which persona this session claims at start. `bin/supervise.sh`'s second positional argument is threaded into this option; without it, every session claims `default` regardless of what's passed on the command line. |
 | `heartbeatMs` | 30000 | Heartbeat interval (ms) |
 | `staleAfterMs` | 90000 | How stale before a passive reader can claim (ms) |
 | `controllerTickMs` | 30000 | Controller tick interval (ms) |
@@ -257,6 +297,12 @@ All records live in the global store (machine-wide, one store per plugin). Key f
 
 **TTL:** 24 hours, swept on the cost-summary cadence (every `costSummaryEveryNTicks` ticks). Only the owner sweeps records; readers cannot delete records they do not own.
 
+### Bounded store (item 5)
+
+The store keeps only open asks and a short window of recent inbox/reply records per persona; everything past that window rolls to an append-only `.agentic-channel.jsonl` in the work directory rather than staying in the one rewritten-whole JSON file forever. Enforced on the same cost-summary cadence as the TTL sweep, in `enforceChannelWindow`: `inbox` records not still `pending` and every `reply` record, combined and ordered oldest-first, past `channelRecordWindow` (default 50) roll to the log. Open asks are never touched by this window - only TTL sweeping or the ask's own answer/expire/re-raise lifecycle ends one.
+
+The persona file is bounded the same way, enforced at push time in `persist()` rather than only when the file happens to be parsed at a session load (a long-lived child never reloads): the decision log past `DECISIONS_MAX` (200) and memory past `MEMORY_MAX` (50, pinned entries exempt) both roll their oldest overflow to the same `.agentic-channel.jsonl`.
+
 ### Delivery
 
 When the owner's controller drains the inbox on a quiet tick, it submits the text through `$.prompt.submit` as an `[OPERATOR]` user turn. The `[OPERATOR]` marker is prepended to the text before submission. After that turn completes, the controller reads the last assistant message from `$.session.messages()` and writes it back as the reply.
@@ -278,7 +324,7 @@ When the reader answers the ask, the owner's controller is reactivated (`reactiv
 
 Two options are defined in the plan (section 6) with defaults in force:
 
-1. **Ask wait default:** Whether the owner's ask waits indefinitely for a reply or times out. Default: **indefinite** (`askOperatorWaitMs` unset, `hooks/index.ts:118`).
+1. **Ask wait default:** Whether the owner's ask waits indefinitely for a reply or times out. Default: **60 minutes** (`askOperatorWaitMs` unset, code fallback `hooks/index.ts:142`).
 2. **Peer text:** Whether peer text is consumed by the `session.receive` hook or passed through with a `[PEER]` prefix. Default: **consumed** (the hook returns `{ consumed: reason }` and nothing is queued, shown, or read by the model).
 
 The operator has not yet ruled on these options; the defaults are in force.

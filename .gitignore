@@ -1,6 +1,7 @@
 # Persona state
 .agentic-*.json
 .agentic-*.log
+.agentic-*.jsonl
 .agentic-yields.log
 
 # Test artifacts
@@ -23,3 +24,9 @@ Thumbs.db
 
 # Supervisor scratch (logs, child transcripts, settings)
 run/
+
+# Reviewer channel (scratch, archived by the Reviewer)
+DISCUSSION.md
+DISCUSSION.archive-*.md
+.kit/relay-outbox.md
+.kit/reviewer-handoff.md

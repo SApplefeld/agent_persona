@@ -16,7 +16,7 @@
 // --- Types ---
 
 export type InboxKind = "say" | "answer";
-export type InboxStatus = "pending" | "delivered" | "answered";
+export type InboxStatus = "pending" | "delivered" | "answered" | "skipped";
 
 export interface InboxRecord {
   id: string;
@@ -45,6 +45,8 @@ export interface AskRecord {
   nodeId: string;
   question: string;
   status: AskStatus;
+  reraisedAt?: number; // plan item 5 (D5b, bullet 3): set the one time this ask
+                        // was re-raised into the thread past the bounded window.
 }
 
 // --- Constants ---
@@ -312,6 +314,62 @@ export async function sweepExpiredRecords(
   }
 
   return swept;
+}
+
+/**
+ * Item 5 (Bounded store): the shared commons store keeps only open asks and
+ * a short window of recent inbox/reply records per persona - closed records
+ * beyond the window roll to an append-only log rather than staying in the
+ * one JSON file forever. This never touches `ask:` keys (an open ask has
+ * its own lifecycle - answered, expired, or re-raised - and TTL-based
+ * `sweepExpiredRecords` above is the only thing that ages one out); it
+ * covers `inbox:` records not still `"pending"` (a pending record is live
+ * work the drain has not consumed yet) and every `reply:` record, combined
+ * and ordered oldest-first, keeping the newest `windowSize` and rolling the
+ * rest. Returns the number of records rolled.
+ */
+export async function enforceChannelWindow(
+  store: CommonsStore,
+  persona: string,
+  windowSize: number,
+  appendLines: (lines: string[]) => Promise<void>,
+): Promise<number> {
+  const inbox = (await listInboxRecords(store, persona)).filter((r) => r.status !== "pending");
+  const keys = await store.keys();
+  const replyPrefix = `${REPLY_PREFIX}${persona}:`;
+  const combined: { key: string; at: number; kind: "inbox" | "reply"; record: unknown }[] = inbox.map((r) => ({
+    key: r.key,
+    at: r.at,
+    kind: "inbox" as const,
+    record: r,
+  }));
+  for (const key of keys) {
+    if (key.startsWith(replyPrefix)) {
+      const raw = await store.get(key);
+      if (raw) combined.push({ key, at: (raw as ReplyRecord).at, kind: "reply", record: raw });
+    }
+  }
+  combined.sort((a, b) => a.at - b.at);
+
+  if (combined.length <= windowSize) return 0;
+  const overflow = combined.slice(0, combined.length - windowSize);
+  // Round 47 (BG5): the store key rides at the top level of the log line,
+  // not only inside `record` - a reply record carries no key field of its
+  // own, so a consumer correlating a missing store key back to this log
+  // (BG5's own job) needs it named explicitly for every kind, not just inbox.
+  const lines = overflow.map((o) => JSON.stringify({ persona, kind: o.kind, key: o.key, rolledAt: Date.now(), record: o.record }));
+  // Round 47: append before delete, and never delete on a failed append -
+  // a record must have proof it landed in the log before it leaves the
+  // store, not the other way around.
+  try {
+    await appendLines(lines);
+  } catch {
+    return 0;
+  }
+  for (const o of overflow) {
+    await store.delete(o.key);
+  }
+  return overflow.length;
 }
 
 // --- D2: Reader claim and tools ---

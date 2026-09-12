@@ -50,6 +50,30 @@
       "default": 120000,
       "title": "Git probe interval (ms)",
       "description": "How often the git probe runs (ms). Default 120s, cap 300s."
+    },
+    "askOperatorWaitMs": {
+      "type": "number",
+      "default": 3600000,
+      "title": "Ask timeout (ms)",
+      "description": "How long before an unanswered ask times out and the controller walks on to the next plan (ms). Default 60min."
+    },
+    "askReraiseWindowMs": {
+      "type": "number",
+      "default": 900000,
+      "title": "Ask re-raise window (ms)",
+      "description": "How long after opening an ask before re-raising it to the operator's thread (ms). Default 15min."
+    },
+    "askReaskSuppressMs": {
+      "type": "number",
+      "default": 600000,
+      "title": "Ask re-ask suppress window (ms)",
+      "description": "How long after closing an ask before the classifier can re-open the same question (ms). Default 10min."
+    },
+    "channelRecordWindow": {
+      "type": "number",
+      "default": 50,
+      "title": "Channel record window (count)",
+      "description": "How many closed inbox/reply records the shared store keeps per persona before rolling the rest to .agentic-channel.jsonl. Open asks are never rolled by this window. Default 50."
     }
   }
 }

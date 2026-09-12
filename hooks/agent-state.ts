@@ -60,6 +60,10 @@ export interface GoalNode {
   sortKey?: number; // plan item 3: activation order key; defaults to createdAt when absent,
                      // so goal_edit's reprioritize can move a pending plan without lying
                      // about when it was actually created.
+  lastAskQuestion?: string; // plan item 5 (D5b): the question text of the most
+                             // recently closed ask on this node, so the classifier
+                             // does not reopen the identical question right away.
+  lastAskClosedAt?: number; // when that ask closed (answered, by-reply, or timed out).
 }
 
 export interface EnvErrors {
@@ -166,7 +170,11 @@ export interface AgentState {
 }
 
 // Decision log cap: keep the most recent N entries.
-const DECISIONS_MAX = 200;
+export const DECISIONS_MAX = 200;
+
+// Item 5 (Bounded store): memory cap, enforced at push time in persist().
+// Pinned entries are never evicted regardless of this cap.
+export const MEMORY_MAX = 50;
 
 // Default state (per persona)
 export function createDefaultState(persona: string, sessionId: string): AgentState {

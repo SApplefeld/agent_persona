@@ -18,6 +18,9 @@
 !/cost-migration-test.mjs
 !/supervisor-unit-test.mjs
 !/live-supervisor-test.sh
+!/live-passive-test.sh
+!/live-goalconvo-test.sh
+!/live-restartpassive-test.sh
 !/health-probe.js
 !/assert-decisions.js
 !/roadmap-test.md
