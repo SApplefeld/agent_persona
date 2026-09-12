@@ -37,6 +37,10 @@ or, once it's already running passively, by talking to its Discord thread (attac
 
 **Stop it.** Two ways to end a run, and only one of them ends the supervisor: an explicit "please shut down" (which the worker turns into a `supervisor_shutdown` call) exits the whole supervisor loop cleanly. Just finishing a goal does not - the supervisor returns to passive and waits for the next one. To kill it from outside, `Ctrl-C` or `kill` the `supervise.sh` process; it stops the child via the graceful EOF path first, then TERM, then KILL if it doesn't respond.
 
+**Restart it without stopping it.** "Please restart" (which the worker turns into a `supervisor_restart` call) relaunches the child by the same graceful EOF path and keeps the goal tree, so the fresh child resumes the active plan. This is how a pulled runtime update (`claude plugin update`) is picked up mid-run: one message from a reader, no supervisor restart.
+
+**Reach it while it is busy.** A message sent while the worker is inside a long turn waits for that turn to end; the sender's next `agentic_inbox` shows the record as `deferred` with `turnRunningMs`, how long the turn has run. A message sent with `urgent: true` reaches the worker inside the running turn instead, as context on its next tool result.
+
 **Where the logs are.** `<workdir>/run/supervisor.log` is the supervisor's own narrative (gate checks, launches, restarts, stops). `<workdir>/run/child-N/stdout.jsonl` is child N's full stream-json transcript; `stderr.log` and `claude-debug.log` sit beside it. `<workdir>/.agentic-personas.json` and `.agentic-heartbeat.json` are the persona store and liveness sidecar.
 
 **Working on the plugin's own code** instead of just running it: pass `--dev` to `supervise.sh`, which loads this checkout directly (`--plugin-dir`) instead of the installed copy, so edits here take effect on the next launch with no reinstall.
@@ -272,13 +276,13 @@ A reader session can steer an owner session without being at the owner's keyboar
 
 **`agentic_say`** (reader only)
 
-Writes an operator record into the commons store. Refused when:
+Writes an operator record into the commons store. `urgent: true` marks the record for delivery inside the owner's running turn (see Delivery). Refused when:
 - The calling session is the owner (owners cannot message themselves)
 - The calling session does not hold a reader claim on the target persona
 
 **`agentic_inbox`** (reader only)
 
-Returns unread replies to the caller's records. Refused when:
+Returns unread replies to the caller's records. A record still `pending` while the owner's heartbeat shows a turn in flight (`turnStartedAt` in `.agentic-heartbeat.json`) comes back with `deferred: true` and `turnRunningMs`. Refused when:
 - The calling session is the owner
 - The calling session does not hold a reader claim on the target persona
 
@@ -306,6 +310,8 @@ The persona file is bounded the same way, enforced at push time in `persist()` r
 ### Delivery
 
 When the owner's controller drains the inbox on a quiet tick, it submits the text through `$.prompt.submit` as an `[OPERATOR]` user turn. The `[OPERATOR]` marker is prepended to the text before submission. After that turn completes, the controller reads the last assistant message from `$.session.messages()` and writes it back as the reply.
+
+An `urgent` record does not wait for a quiet tick. On the owner's next passthrough tool call (checked at most once per `urgentCheckMinMs`, default 5000), the record is marked delivered, stamped with the running turn, and its text is appended as `[OPERATOR, urgent] ...` context on that tool's result, which the model reads right after the result. The turn's own answer becomes the reply. A record that answers an open ask is never delivered this way; the tick owns the ask lifecycle.
 
 ### Trust boundary
 

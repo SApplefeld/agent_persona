@@ -7,6 +7,7 @@
  * @property {number|null} [childExitCode] - Exit code of the current child, or null if still running.
  * @property {number|null} [rootCompleteTs] - Timestamp of the newest root_complete decision, or null.
  * @property {number|null} [shutdownRequestedTs] - Timestamp of the newest shutdown_requested decision, or null.
+ * @property {number|null} [restartRequestedTs] - Timestamp of the newest restart_requested decision, or null.
  * @property {number|null} [criticalTs] - Timestamp of the newest context_budget_crossed critical: decision, or null.
  * @property {number} [crashCount] - Number of consecutive non-zero exits within minRunMs.
  * @property {number} [restartCount] - Number of restarts in the current hour window.
@@ -36,11 +37,18 @@
  * 3. stop_complete - an explicit shutdown_requested decision newer than child start
  *    (plan item 4: distinct from root_complete - the operator asked the
  *    supervisor itself to stop, not just the current goal)
- * 4. restart_passive - root_complete decision newer than child start, with no
+ * 4. restart_passive - a restart_requested decision newer than child start
+ *    (plan item 8.3: a reader asked for the child to be relaunched, the usual
+ *    reason being a pulled runtime update): the child is stopped by the EOF
+ *    path and a fresh one launches with the goal tree intact. Sits below
+ *    shutdown, since stopping the supervisor outranks relaunching its child,
+ *    and above root_complete, so the reason names the explicit request when
+ *    both are present
+ * 5. restart_passive - root_complete decision newer than child start, with no
  *    shutdown requested: the goal is done, but the supervisor stays up and
  *    returns to item 1's passive state for a second goal, rather than exiting
- * 5. restart - child exited non-zero, or critical crossing, or hung (stale + own session + past grace)
- * 6. continue - none of the above
+ * 6. restart - child exited non-zero, or critical crossing, or hung (stale + own session + past grace)
+ * 7. continue - none of the above
  *
  * @param {DecideInput} input
  * @returns {DecideOutput}
@@ -50,6 +58,7 @@ export function decide(input) {
     childExitCode,
     rootCompleteTs,
     shutdownRequestedTs,
+    restartRequestedTs,
     criticalTs,
     crashCount = 0,
     restartCount = 0,
@@ -78,6 +87,13 @@ export function decide(input) {
   // asked the supervisor itself to stop, not just the current goal. Stop.
   if (shutdownRequestedTs !== null && shutdownRequestedTs !== undefined && shutdownRequestedTs > childStartTs) {
     return { action: 'stop_complete', reason: `shutdown_requested at ${shutdownRequestedTs} > child start ${childStartTs}` };
+  }
+
+  // 3a. An explicit restart request newer than child start: relaunch the
+  // child with the goal tree kept (plan item 8.3). Same action as root_complete
+  // below, so supervise.sh takes one relaunch path for both.
+  if (restartRequestedTs !== null && restartRequestedTs !== undefined && restartRequestedTs > childStartTs) {
+    return { action: 'restart_passive', reason: `restart_requested at ${restartRequestedTs} > child start ${childStartTs}` };
   }
 
   // 3b. root_complete newer than child start, with no shutdown requested:

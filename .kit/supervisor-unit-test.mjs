@@ -120,6 +120,70 @@ const cases = [
     },
     expected: 'continue',
   },
+  // 2e. restart_requested newer than start (plan item 8.3: a reader asked
+  // for the child to be relaunched, the runtime was updated): restart_passive,
+  // the same relaunch-and-keep-the-tree path root_complete takes.
+  {
+    name: 'restart_requested, no root_complete: restart_passive',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: null,
+      shutdownRequestedTs: null,
+      restartRequestedTs: 2000,
+      criticalTs: null,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: null,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'restart_passive',
+  },
+  // 2f. Both restart_requested and shutdown_requested newer than start:
+  // stopping the supervisor outranks relaunching its child.
+  {
+    name: 'restart_requested AND shutdown_requested: stop_complete wins',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: null,
+      shutdownRequestedTs: 2000,
+      restartRequestedTs: 2500,
+      criticalTs: null,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: null,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'stop_complete',
+  },
+  // 2g. restart_requested older than childStartTs (the request that launched
+  // this very child, still in the decision log): must not relaunch again.
+  {
+    name: 'stale restart_requested (older than child start): continue',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: null,
+      shutdownRequestedTs: null,
+      restartRequestedTs: 500,
+      criticalTs: null,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: null,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'continue',
+  },
   // 3. context_budget_crossed critical newer than start: restart.
   {
     name: 'critical newer than start: restart',

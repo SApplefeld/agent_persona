@@ -3808,6 +3808,10 @@ async function main() {
     await caseR58f3_nudgeInsideOpenTurnNotCounted(clock);
     await caseR58f3_capPausesWithNoAsk(clock);
     await caseR60f3b_reactivationAfterCapPause(clock);
+    await caseItem8p3_ownerStampsTurnStartInHeartbeat(clock);
+    await caseItem8p3_inboxReportsDeferredWhileTurnRuns(clock);
+    await caseItem8p3_sayCarriesUrgent(clock);
+    await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
     await caseS4_peer_consumed(clock);
     await caseS4_peer_send_message_consumed(clock);
     await caseS4_other_origin_passes(clock);
@@ -4279,6 +4283,184 @@ async function caseItem2_backfillFiresOnSecondRequest(clock) {
   const state = getState(h);
   check("item2 Round28: a second root was backfilled (goals.length was 1, not 0, before this turn)",
     state.goals.length === 1 && state.goals[0].id !== "root-1" && state.goals[0].status === "complete");
+}
+
+// ============================================================
+// Item 8.3: a busy worker is reachable
+// ============================================================
+
+// Seeds an owner harness: mySid holds the persona in commons, the persona
+// store names it, and the heartbeat sidecar carries its live entry.
+async function seedOwnerHarness(caseName, now) {
+  const mySid = SESSION_ID;
+  const h = await createTickHarness({ ...OPTS, caseName });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(mySid, now) }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: mySid, epoch: 1, lastSeen: now },
+  }));
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+  return h;
+}
+
+function readHeartbeat(h) {
+  const raw = h.fsMap.get(".agentic-heartbeat.json");
+  return raw ? JSON.parse(raw) : {};
+}
+
+// The owner writes turnStartedAt into the heartbeat sidecar at turn.start,
+// the heartbeat tick keeps it while the turn runs, and turn.complete clears
+// it - this is the cross-process signal a reader's agentic_inbox reads.
+async function caseItem8p3_ownerStampsTurnStartInHeartbeat(clock) {
+  console.log("\n=== Item 8.3: owner stamps turnStartedAt in the heartbeat sidecar ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedOwnerHarness("item8p3_turn_stamp", now);
+
+  check("item8.3 stamp: turnStartedAt absent before any turn", readHeartbeat(h).default?.turnStartedAt == null);
+
+  const turnStartH = h.handlers["turn.start"];
+  await turnStartH(h.fake, { turnId: "t-busy" }, async () => ({ result: "ok" }));
+  check("item8.3 stamp: turnStartedAt === turn.start clock after turn.start", readHeartbeat(h).default?.turnStartedAt === now);
+
+  // The heartbeat tick fires mid-turn and must keep the stamp, not clobber it.
+  clock.advance(30_000);
+  await fireHeartbeat(h);
+  const midTurn = readHeartbeat(h).default;
+  check("item8.3 stamp: heartbeat tick refreshed lastSeen", midTurn?.lastSeen === now + 30_000);
+  check("item8.3 stamp: heartbeat tick kept turnStartedAt", midTurn?.turnStartedAt === now);
+
+  const turnCompleteH = h.handlers["turn.complete"];
+  await turnCompleteH(h.fake, { turnId: "t-busy", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  check("item8.3 stamp: turnStartedAt cleared to null at turn.complete", readHeartbeat(h).default?.turnStartedAt === null);
+}
+
+// Seeds a reader harness: otherSid owns the persona (commons, persona store,
+// heartbeat), this session joins as a reader and holds a live reader claim.
+// hbExtra is merged into the owner's heartbeat entry.
+async function seedReaderHarness(caseName, now, otherSid, hbExtra) {
+  const h = await createTickHarness({ ...OPTS, caseName });
+  h.storeMap.set(`commons:${otherSid}`, {
+    sessionId: otherSid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 1000 }],
+  });
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(otherSid, now) }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: otherSid, epoch: 1, lastSeen: now, ...hbExtra },
+  }));
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "reader:default", claimedAt: now }],
+  });
+  return h;
+}
+
+// A record still pending while the owner's heartbeat shows a turn in flight
+// reads back from agentic_inbox as deferred, with the turn's running time.
+// Control: the same record with no turn in flight carries no deferred field.
+async function caseItem8p3_inboxReportsDeferredWhileTurnRuns(clock) {
+  console.log("\n=== Item 8.3: agentic_inbox reports a deferred record and the turn's running time ===");
+  clock.set(T0);
+  const now = T0;
+  const turnStartedAt = now - 120_000;
+
+  const h = await seedReaderHarness("item8p3_deferred", now, "busy-owner-001", { turnStartedAt });
+  const toolCallH = h.handlers["tool.call"];
+  const say = await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_say", text: "are you there?" }, async () => ({ result: "passthrough" }));
+  check("item8.3 deferred: agentic_say accepted (setup sanity)", say.result !== undefined);
+
+  const inbox = await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_inbox" }, async () => ({ result: "passthrough" }));
+  const parsed = inbox.result ? JSON.parse(inbox.result) : { inbox: [] };
+  const rec = parsed.inbox[0];
+  check("item8.3 deferred: record still pending", rec?.status === "pending");
+  check("item8.3 deferred: record marked deferred", rec?.deferred === true);
+  check("item8.3 deferred: turnRunningMs is the owner's turn age", rec?.turnRunningMs === 120_000);
+
+  // Control: owner heartbeat with no turn in flight.
+  const hc = await seedReaderHarness("item8p3_deferred_control", now, "idle-owner-001", { turnStartedAt: null });
+  const toolCallHc = hc.handlers["tool.call"];
+  await toolCallHc(hc.fake, { tool: "mcp__agentic-plugin__agentic_say", text: "are you there?" }, async () => ({ result: "passthrough" }));
+  const inboxC = await toolCallHc(hc.fake, { tool: "mcp__agentic-plugin__agentic_inbox" }, async () => ({ result: "passthrough" }));
+  const recC = inboxC.result ? JSON.parse(inboxC.result).inbox[0] : undefined;
+  check("item8.3 deferred control: record pending with no turn in flight", recC?.status === "pending");
+  check("item8.3 deferred control: no deferred field", recC?.deferred === undefined);
+  check("item8.3 deferred control: no turnRunningMs field", recC?.turnRunningMs === undefined);
+}
+
+// agentic_say(urgent: true) writes urgent onto the record; a plain say does not.
+async function caseItem8p3_sayCarriesUrgent(clock) {
+  console.log("\n=== Item 8.3: agentic_say threads the urgent flag onto the record ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedReaderHarness("item8p3_say_urgent", now, "owner-urgent-001", {});
+  const toolCallH = h.handlers["tool.call"];
+  await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_say", text: "stop now", urgent: true }, async () => ({ result: "passthrough" }));
+  await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_say", text: "no rush" }, async () => ({ result: "passthrough" }));
+  const recs = [...h.storeMap.keys()].filter(k => k.startsWith("inbox:default:")).map(k => h.storeMap.get(k)).sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+  check("item8.3 say urgent: two records written (setup sanity)", recs.length === 2);
+  const urgentRec = recs.find(r => r.text === "stop now");
+  const plainRec = recs.find(r => r.text === "no rush");
+  check("item8.3 say urgent: urgent record carries urgent === true", urgentRec?.urgent === true);
+  check("item8.3 say urgent control: plain record carries no urgent flag", plainRec?.urgent === undefined);
+}
+
+// An urgent pending record from a live reader reaches the owner inside the
+// running turn: the next passthrough tool call's result carries the text as
+// context, the record is marked delivered and stamped with the turn, and the
+// decision log records it. Controls: a plain pending record is untouched by
+// the same call, and an urgent record from a writer with no live reader claim
+// is left for the tick's own skip path.
+async function caseItem8p3_urgentBreaksIntoRunningTurn(clock) {
+  console.log("\n=== Item 8.3: an urgent record breaks into the running turn via the tool result ===");
+  clock.set(T0);
+  const now = T0;
+  const readerSid = "urgent-reader-001";
+  const deadSid = "urgent-dead-002";
+  const h = await seedOwnerHarness("item8p3_urgent_breakin", now);
+
+  h.storeMap.set(`commons:${readerSid}`, {
+    sessionId: readerSid,
+    lastSeen: now,
+    claims: [{ resource: "reader:default", claimedAt: now - 1000 }],
+  });
+  const urgentKey = `inbox:default:${readerSid}:1`;
+  h.storeMap.set(urgentKey, { id: "urgent-1", key: urgentKey, from: readerSid, at: now - 5000, text: "Stop and commit what you have.", kind: "say", status: "pending", urgent: true });
+  const plainKey = `inbox:default:${readerSid}:2`;
+  h.storeMap.set(plainKey, { id: "plain-2", key: plainKey, from: readerSid, at: now - 4000, text: "No hurry on this one.", kind: "say", status: "pending" });
+  const deadKey = `inbox:default:${deadSid}:1`;
+  h.storeMap.set(deadKey, { id: "dead-1", key: deadKey, from: deadSid, at: now - 3000, text: "From a writer with no claim.", kind: "say", status: "pending", urgent: true });
+
+  const turnStartH = h.handlers["turn.start"];
+  await turnStartH(h.fake, { turnId: "t-long" }, async () => ({ result: "ok" }));
+
+  const toolCallH = h.handlers["tool.call"];
+  const r = await toolCallH(h.fake, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "a.txt" }, text: "a.txt" }));
+  check("item8.3 urgent: real tool result kept", r.text === "a.txt" && r.deny === undefined);
+  const ctx = Array.isArray(r.context) ? r.context.join("\n") : "";
+  check("item8.3 urgent: tool result context carries the urgent text", ctx.includes("Stop and commit what you have."));
+  check("item8.3 urgent: context names it as an urgent operator message", ctx.includes("[OPERATOR"));
+  check("item8.3 urgent: control text not folded into the context", !ctx.includes("No hurry on this one.") && !ctx.includes("From a writer with no claim."));
+
+  const urgentRec = h.storeMap.get(urgentKey);
+  check("item8.3 urgent: record marked delivered", urgentRec?.status === "delivered");
+  check("item8.3 urgent: record stamped with the running turn", urgentRec?.turnId === "t-long");
+  check("item8.3 urgent control: plain record still pending", h.storeMap.get(plainKey)?.status === "pending");
+  check("item8.3 urgent control: dead writer's urgent record still pending", h.storeMap.get(deadKey)?.status === "pending");
+  check("item8.3 urgent: operator_delivered_urgent decision logged", getDecisions(h).some(d => d.action === "operator_delivered_urgent" && d.detail.includes("urgent-1")));
+  check("item8.3 urgent: no [OPERATOR] prompt submitted (delivery rode the tool result)", !(h.promptSubmits || []).some(p => p.startsWith("[OPERATOR]")));
+
+  // A second call in the same turn finds nothing new and adds no context.
+  const r2 = await toolCallH(h.fake, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "b.txt" }, text: "b.txt" }));
+  check("item8.3 urgent: second call in the turn adds no context", r2.context === undefined);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

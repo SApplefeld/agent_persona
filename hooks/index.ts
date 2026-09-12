@@ -217,6 +217,12 @@ function isWorkTool(toolName: string): boolean {
   if (toolName.includes("__reply") || toolName.endsWith("_reply")) return false;
   return true;
 }
+// One persona's entry in the heartbeat sidecar. turnStartedAt is the owner's
+// clock at turn.start while a turn runs and null between turns (plan item
+// 8.3): a reader session in the same work directory reads it to tell a
+// sender how long the owner's turn has held their pending record.
+type HeartbeatEntry = { sessionId: string; epoch: number; lastSeen: number; turnStartedAt?: number | null };
+
 const sess: {
   persona: string;
   mySessionId: string;
@@ -390,9 +396,9 @@ const writeClaimDirect = async (dp: any): Promise<void> => {
   // Write the heartbeat for the new claim.
   try {
     const heartbeatPath = ".agentic-heartbeat.json";
-    const hb: Record<string, { sessionId: string; epoch: number; lastSeen: number }> =
+    const hb: Record<string, HeartbeatEntry> =
       await dp.fs.exists(heartbeatPath)
-        ? (JSON.parse(await dp.fs.read(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>)
+        ? (JSON.parse(await dp.fs.read(heartbeatPath)) as Record<string, HeartbeatEntry>)
         : {};
     hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now() };
     await dp.fs.write(heartbeatPath, JSON.stringify(hb, null, 2));
@@ -581,6 +587,25 @@ export const register: Register = async (on, options) => {
   let isPrimingTurn = false;
   // Skip the controller tick while a turn is in flight.
   let turnInFlight = false;
+  // Plan item 8.3: the owner's clock at turn.start, null between turns.
+  // Written into the heartbeat sidecar so a reader session can see it.
+  let turnStartedAt: number | null = null;
+  // Plan item 8.3: an urgent inbox record is looked for on the owner's
+  // passthrough tool calls; this throttles that store read to once per
+  // urgentCheckMinMs, since a long turn can make a tool call every second.
+  let lastUrgentCheckAt = 0;
+
+  // Owner-only heartbeat write: sessionId, epoch, lastSeen now, and the
+  // current turnStartedAt. Every owner write site uses this so the heartbeat
+  // tick never overwrites the turn stamp with an entry that lacks it.
+  const writeOwnerHeartbeat = async ($: any): Promise<void> => {
+    const hb: Record<string, HeartbeatEntry> =
+      await $.fs.exists(heartbeatPath)
+        ? (JSON.parse(await $.fs.read(heartbeatPath)) as Record<string, HeartbeatEntry>)
+        : {};
+    hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now(), turnStartedAt };
+    await $.fs.write(heartbeatPath, JSON.stringify(hb, null, 2));
+  };
   // H2: record the active leaf at turn start; score against THAT node at turn
   // end (not whichever node is active then, which may have been activated
   // mid-turn by goal_done / scorer complete).
@@ -596,6 +621,7 @@ export const register: Register = async (on, options) => {
   const staleAfterMs = typeof cfg.staleAfterMs === "number" ? (cfg.staleAfterMs as number) : 90_000;
   sess.staleAfterMs = staleAfterMs; // F9a: single-source the threshold
   const controllerTickMs = typeof cfg.controllerTickMs === "number" ? (cfg.controllerTickMs as number) : 30_000;
+  const urgentCheckMinMs = typeof cfg.urgentCheckMinMs === "number" ? (cfg.urgentCheckMinMs as number) : 5_000;
   const nudgeFloorMs = typeof cfg.nudgeFloorMs === "number" ? (cfg.nudgeFloorMs as number) : 5 * 60_000;
   const nudgeIdleMs = typeof cfg.nudgeIdleMs === "number" ? (cfg.nudgeIdleMs as number) : 2 * 60_000;
   const healthTimeoutMs = typeof cfg.healthTimeoutMs === "number" ? Math.min(cfg.healthTimeoutMs as number, 120_000) : 60_000;
@@ -818,6 +844,24 @@ export const register: Register = async (on, options) => {
     });
 
     await $.tool.register({
+      name: "supervisor_restart",
+      description:
+        "Relaunch the supervised child without stopping the supervisor: this child exits by the graceful EOF " +
+        "path and a fresh one starts with the goal tree intact and resumes the active plan. Use when the operator " +
+        "asks for a restart, or to pick up an updated runtime (a plugin update) without ending the run. Never for " +
+        "a completed goal (goal_done already returns the supervisor to its passive waiting state). Owner only.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          reason: {
+            type: "string",
+            description: "Optional. Why the operator asked for a restart.",
+          },
+        },
+      },
+    });
+
+    await $.tool.register({
       name: "goal_edit",
       description:
         "Steer the goal tree in response to an operator request: drop a pending plan or task " +
@@ -873,7 +917,9 @@ export const register: Register = async (on, options) => {
       name: "agentic_say",
       description:
         "Send a message to the owner session of this persona. The reader session calls this to send text to the owner. " +
-        "The owner will see the message on its next quiet tick. Use for steering, reporting, or asking questions.",
+        "The owner sees the message on its next quiet tick; while the owner is inside a turn the record waits, and agentic_inbox " +
+        "shows it as deferred with the turn's running time. Pass urgent: true to reach the owner inside the running turn instead, " +
+        "folded into its next tool result. Use for steering, reporting, or asking questions.",
       inputSchema: {
         type: "object",
         properties: {
@@ -885,6 +931,10 @@ export const register: Register = async (on, options) => {
             type: "string",
             description: "Optional: the ask id (from agentic_inbox) to answer. Answer an open ask with agentic_say(text, answers: <id>).",
           },
+          urgent: {
+            type: "boolean",
+            description: "Optional. Deliver inside the owner's current turn (as context on its next tool result) rather than waiting for a quiet tick. Not for answering an ask.",
+          },
         },
         required: ["text"],
       },
@@ -894,7 +944,8 @@ export const register: Register = async (on, options) => {
       name: "agentic_inbox",
       description:
         "Read replies from the owner session of this persona. The reader session calls this to poll for replies to its messages. " +
-        "Returns {inbox: [{id, from, at, text, kind, status, reply?}], asks: [{id, at, nodeId, question, status}]}. " +
+        "Returns {inbox: [{id, from, at, text, kind, status, reply?, deferred?, turnRunningMs?}], asks: [{id, at, nodeId, question, status}]}. " +
+        "A pending record carries deferred: true and turnRunningMs while the owner is inside a turn: it waits for that turn to end. " +
         "Answer an open ask with agentic_say(text, answers: <ask id>).",
       inputSchema: {
         type: "object",
@@ -914,10 +965,10 @@ export const register: Register = async (on, options) => {
       sess.state.persona = sess.persona;
 
       // Check the heartbeat sidecar for liveness (not the store).
-      let holderHb: { sessionId: string; epoch: number; lastSeen: number } | null = null;
+      let holderHb: HeartbeatEntry | null = null;
       try {
         if (await $.fs.exists(heartbeatPath)) {
-          const hb = JSON.parse(await $.fs.read(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>;
+          const hb = JSON.parse(await $.fs.read(heartbeatPath)) as Record<string, HeartbeatEntry>;
           holderHb = hb[sess.persona] ?? null;
         }
       } catch { /* heartbeat read failed */ }
@@ -981,12 +1032,7 @@ export const register: Register = async (on, options) => {
     // stamp its own id over the holder's heartbeat.
     if (sess.isOwner) {
       try {
-        const hb: Record<string, { sessionId: string; epoch: number; lastSeen: number }> =
-          await $.fs.exists(heartbeatPath)
-            ? (JSON.parse(await $.fs.read(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>)
-            : {};
-        hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now() };
-        await $.fs.write(heartbeatPath, JSON.stringify(hb, null, 2));
+        await writeOwnerHeartbeat($);
       } catch { /* heartbeat write failed; non-fatal */ }
       // BC3: claim the persona in commons at start, so the owner holds the
       // commons claim before its first turn. Without this, a reader calling
@@ -1045,12 +1091,7 @@ export const register: Register = async (on, options) => {
             // Do NOT stamp: fall through to the reader check below.
           } else {
             try {
-              const hb: Record<string, { sessionId: string; epoch: number; lastSeen: number }> =
-                await $.fs.exists(heartbeatPath)
-                  ? (JSON.parse(await $.fs.read(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>)
-                  : {};
-              hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now() };
-              await $.fs.write(heartbeatPath, JSON.stringify(hb, null, 2));
+              await writeOwnerHeartbeat($);
             } catch { /* heartbeat write failed */ }
             // Commons: refresh lastSeen to signal liveness (Stage 2 integration).
             try {
@@ -1074,10 +1115,10 @@ export const register: Register = async (on, options) => {
         // written by the store's current owner, so a stale sidecar means no
         // live owner, no store-owner comparison needed.
         if (!sess.isOwner) {
-          let holderHb: { sessionId: string; epoch: number; lastSeen: number } | null = null;
+          let holderHb: HeartbeatEntry | null = null;
           try {
             if (await $.fs.exists(heartbeatPath)) {
-              const hb = JSON.parse(await $.fs.read(heartbeatPath)) as Record<string, { sessionId: string; epoch: number; lastSeen: number }>;
+              const hb = JSON.parse(await $.fs.read(heartbeatPath)) as Record<string, HeartbeatEntry>;
               holderHb = hb[sess.persona] ?? null;
             }
           } catch { /* heartbeat read failed */ }
@@ -2440,6 +2481,12 @@ export const register: Register = async (on, options) => {
     sess.state.monitor.turnCount += 1;
     sess.state.monitor.lastTurnId = e.turnId;
     turnInFlight = true;
+    // Plan item 8.3: publish the turn's start so a reader session can report
+    // how long a pending record has been deferred behind this turn.
+    turnStartedAt = Date.now();
+    if (sess.isOwner) {
+      try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }
+    }
     // H2: record the active leaf at turn start for scoring.
     turnLeafId = sess.state.activeGoalId;
     // C4: reset tool error counter for this turn.
@@ -2492,6 +2539,10 @@ export const register: Register = async (on, options) => {
   on("turn.complete", async ($, e, next) => {
     sess.state.monitor.lastTurnComplete = Date.now();
     turnInFlight = false;
+    turnStartedAt = null;
+    if (sess.isOwner) {
+      try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }
+    }
 
     // Read and clear the nudge flag once, up front. This prevents
     // a stale flag from leaking into a later real user turn (e.g. if the
@@ -3335,6 +3386,30 @@ export const register: Register = async (on, options) => {
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
+    // Serve supervisor_restart (plan item 8.3: mirrors supervisor_shutdown;
+    // supervise.sh's decide unit maps this fact to restart_passive, so the
+    // child is relaunched with the goal tree kept rather than the run ending).
+    if (e.tool === "mcp__agentic-plugin__supervisor_restart") {
+      if (!sess.isOwner) {
+        toolErrorsThisTurn++;
+        return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+      }
+      const reason = String((e as any).reason || "").trim() || "operator requested restart";
+      const now = Date.now();
+      sess.state.decisions.push({
+        timestamp: now,
+        loop: "monitor",
+        action: "restart_requested",
+        detail: reason,
+      });
+      const writeOk = await persist($);
+      if (writeOk) {
+        return { result: `Restart requested: ${reason}. The supervisor will relaunch the child after this turn ends; the goal tree is kept and the new child resumes the active plan.` };
+      }
+      toolErrorsThisTurn++;
+      return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+    }
+
     // Serve goal_status (read-only, passive-reader OK).
     if (e.tool === "mcp__agentic-plugin__goal_status") {
       const root = sess.state.goals.find((g) => g.parentId === null);
@@ -3474,6 +3549,7 @@ export const register: Register = async (on, options) => {
       const persona = sess.persona;
       const text = String((e as any).text || "").trim();
       const answers = (e as any).answers as string | undefined;
+      const urgent = (e as any).urgent === true;
       if (!text) {
         toolErrorsThisTurn++;
         return { deny: "agentic_say requires a non-empty 'text'." };
@@ -3501,14 +3577,14 @@ export const register: Register = async (on, options) => {
       }
       // Write the inbox record
       const seq = await getHighestInboxSeq(commonsStoreOf($), persona, sess.mySessionId) + 1;
-      const id = await writeInboxRecord(commonsStoreOf($), persona, sess.mySessionId, seq, text, "say", answers);
+      const id = await writeInboxRecord(commonsStoreOf($), persona, sess.mySessionId, seq, text, "say", answers, urgent);
       sess.state.decisions.push({
         timestamp: Date.now(),
         loop: "worker",
         action: "say_sent",
-        detail: `${persona}: "${text.slice(0, 80)}" (id: ${id})`,
+        detail: `${persona}: "${text.slice(0, 80)}" (id: ${id}${urgent ? ", urgent" : ""})`,
       });
-      return { result: `Message sent to owner of ${persona} (id: ${id})` };
+      return { result: `Message sent to owner of ${persona} (id: ${id}${urgent ? ", urgent: delivered inside the owner's running turn if one is in flight" : ""})` };
     }
 
     // D2: Serve agentic_inbox (reader reads replies)
@@ -3532,10 +3608,26 @@ export const register: Register = async (on, options) => {
       // D2: Append open asks for this persona
       const allAsks = await listAskRecords(commonsStoreOf($), persona);
       const openAsks = allAsks.filter((ask) => ask.status === "open");
-      // Attach replies to records
+      // Plan item 8.3: the owner's heartbeat entry carries turnStartedAt while
+      // a turn runs. A record still pending behind that turn is reported as
+      // deferred, with how long the turn has run, so the sender knows the
+      // message is held rather than lost.
+      let ownerTurnStartedAt: number | null = null;
+      try {
+        if (await $.fs.exists(heartbeatPath)) {
+          const hb = JSON.parse(await $.fs.read(heartbeatPath)) as Record<string, HeartbeatEntry>;
+          const entry = hb[persona];
+          if (entry && typeof entry.turnStartedAt === "number") ownerTurnStartedAt = entry.turnStartedAt;
+        }
+      } catch { /* heartbeat read failed; report records without the deferred view */ }
+      // Attach replies to records, and the deferred view to pending ones.
       const withReplies = await Promise.all(myRecords.map(async (rec) => {
         const reply = await readReplyRecord(commonsStoreOf($), persona, rec.id);
-        return reply ? { ...rec, reply: reply.text } : rec;
+        const base = reply ? { ...rec, reply: reply.text } : rec;
+        if (rec.status === "pending" && ownerTurnStartedAt !== null) {
+          return { ...base, deferred: true, turnRunningMs: Math.max(0, Date.now() - ownerTurnStartedAt) };
+        }
+        return base;
       }));
       return { result: JSON.stringify({ inbox: withReplies, asks: openAsks }, null, 2) };
     }
@@ -3557,6 +3649,46 @@ export const register: Register = async (on, options) => {
 
     const r = await next(e);
     if ((r as { isError?: boolean }).isError === true) toolErrorsThisTurn++;
+
+    // Plan item 8.3: an urgent record from a live reader reaches the owner
+    // inside the running turn. The controller tick cannot deliver while a
+    // turn is in flight, so the record rides here instead: marked delivered
+    // and stamped with this turn (turn.complete then records the turn's
+    // answer as its reply), its text appended as context on this tool's
+    // result, which the model reads after the result itself. A record that
+    // answers an open ask is left to the tick, which owns the ask lifecycle.
+    if (sess.isOwner && r.deny === undefined && Date.now() - lastUrgentCheckAt >= urgentCheckMinMs) {
+      lastUrgentCheckAt = Date.now();
+      try {
+        const store = commonsStoreOf($);
+        const persona = sess.persona;
+        const urgentPending = (await listInboxRecords(store, persona))
+          .filter((rec) => rec.status === "pending" && rec.urgent === true && !rec.answers);
+        const lines: string[] = [];
+        for (const rec of urgentPending) {
+          if (!(await hasLiveReaderClaim(store, persona, rec.from))) continue;
+          const existing = await store.get(rec.key);
+          if (!existing) continue;
+          const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
+          parsed.status = "delivered";
+          parsed.deliveredAt = Date.now();
+          parsed.turnId = sess.state.monitor.lastTurnId;
+          await store.set(rec.key, parsed);
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "operator_delivered_urgent",
+            detail: `record ${rec.id} delivered inside the running turn as context on ${e.tool}`,
+          });
+          lines.push(`[OPERATOR, urgent] ${rec.text}`);
+        }
+        if (lines.length > 0) {
+          await persist($);
+          const prior = Array.isArray(r.context) ? r.context : [];
+          return { ...r, context: [...prior, ...lines] } as typeof r;
+        }
+      } catch { /* commons read failed; the tick delivers the record after the turn */ }
+    }
     return r;
   });
 
