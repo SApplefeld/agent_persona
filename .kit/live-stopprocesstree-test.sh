@@ -79,6 +79,7 @@ FN_FILE="$RUNDIR/stop-process-tree-fns.sh"
 : > "$FN_FILE"
 extract_fn "resolve_windows_pid" "$FN_FILE"
 extract_fn "run_bounded_powershell" "$FN_FILE"
+extract_fn "run_bounded_powershell_capture" "$FN_FILE"
 extract_fn "snapshot_process_tree" "$FN_FILE"
 extract_fn "check_snapshot_survivors" "$FN_FILE"
 extract_fn "kill_process_snapshot" "$FN_FILE"
@@ -88,22 +89,25 @@ extract_fn "stop_child" "$FN_FILE"
 # above, to this test's own scratch dir - real, not stubbed, since
 # kill_process_snapshot writes to "$RUNDIR/supervisor.err").
 log() { echo "[log] $*"; }
+log_diag() { echo "[log_diag] $*" >&2; }
 source "$FN_FILE"
 
 # Reviewer Round 119 R56: a truncated extraction (a sed range mismatch, a
 # renamed function upstream) must fail as an extraction problem, not
 # silently produce a no-op function that passes every check by doing
 # nothing. Check each function actually landed before trusting any of them.
-# Reviewer Round 124 R77: this now extracts seven functions, not four or
-# five - the count has drifted upward twice since this comment was first
-# written, so it is named here rather than pinned as a literal again.
-for fn in resolve_windows_pid run_bounded_powershell snapshot_process_tree check_snapshot_survivors kill_process_snapshot retry_stop_escalation stop_child; do
+# Reviewer Round 124 R77 / Round 126: this count has drifted upward twice
+# since this comment was first written, so it is named here rather than
+# pinned as a literal that will only go stale again.
+FNS_TO_EXTRACT="resolve_windows_pid run_bounded_powershell run_bounded_powershell_capture snapshot_process_tree check_snapshot_survivors kill_process_snapshot retry_stop_escalation stop_child"
+FN_COUNT=$(echo "$FNS_TO_EXTRACT" | wc -w)
+for fn in $FNS_TO_EXTRACT; do
   if ! declare -F "$fn" > /dev/null; then
     echo "FAIL: extraction did not define $fn - the sed range or the upstream function name has drifted"
     exit 1
   fi
 done
-pass "setup: all seven functions extracted and defined"
+pass "setup: all $FN_COUNT functions extracted and defined"
 
 # Reviewer Round 124 R74: production runs every extracted call under
 # real shell semantics, including a pipeline whose upstream command fails
@@ -111,10 +115,43 @@ pass "setup: all seven functions extracted and defined"
 # semantics its production callers actually use.
 set -o pipefail
 
-# --- Case: the wrapper's own exec target is killed directly by kill -9 ---
+# --- Case: run_bounded_powershell actually holds its bound (Reviewer
+# Round 126 R79, reproduced live: a 3s bound around a 40s sleep returned
+# after 264s, not ~3-5s, because a bare `kill -9` on the tail-exec
+# subshell's own pid did not hold under load) ---
+# Run exactly as production calls it: through run_bounded_powershell_capture,
+# inside a command substitution, since that combination - not a bare direct
+# call - is what the reproduction actually needed to surface the hang.
+R79_START=$(date +%s)
+R79_OUT=$(run_bounded_powershell_capture 3 "Start-Sleep -Seconds 40; Write-Output 'done-late'")
+R79_RC=$?
+R79_ELAPSED=$(( $(date +%s) - R79_START ))
+if [ "$R79_ELAPSED" -gt 15 ]; then
+  failed "R79 regression: run_bounded_powershell_capture took ${R79_ELAPSED}s against a 3s bound (expected under ~15s) - the bound did not hold"
+else
+  pass "R79 regression: run_bounded_powershell_capture returned in ${R79_ELAPSED}s against a 3s bound"
+fi
+if [ "$R79_RC" -eq 124 ]; then
+  pass "R79 regression: run_bounded_powershell_capture reported the timeout (rc 124)"
+else
+  failed "R79 regression: expected rc 124, got $R79_RC"
+fi
+if printf '%s' "$R79_OUT" | grep -q 'done-late'; then
+  failed "R79 regression: the sleep's own late output reached the caller (\"$R79_OUT\") - the process was not actually force-killed on the bound"
+else
+  pass "R79 regression: no late output from the bounded call - the process did not survive its own bound"
+fi
+
+# --- Case: the wrapper's own exec target is killed directly by taskkill
+# on its resolved winpid ---
 # Confirmed shape: a bash subshell that tail-execs directly into a native
-# binary with nothing after it collapses into one process; `kill -9` on
-# the MSYS pid alone reaches it.
+# binary with nothing after it collapses into one process. Re-pointed at
+# `taskkill //F //T` (Reviewer Round 126 addendum, reproduced by the
+# blind reviewer): a bare `kill -9` on the MSYS pid itself blocked 236s
+# and returned "Permission denied", twice - not a safe fallback signal
+# under load, which is why `run_bounded_powershell` no longer uses it
+# either. `resolve_windows_pid` must run before any termination attempt,
+# same as production - once the pid exits, the read finds nothing.
 ( exec powershell.exe -NoProfile -Command "Start-Sleep -Seconds 90" ) &
 DIRECT_PID=$!
 sleep 2
@@ -127,13 +164,13 @@ else
   else
     pass "setup: direct-exec case resolved a real, live winpid ($DIRECT_WINPID) before signaling"
   fi
-  kill -9 "$DIRECT_PID" 2>/dev/null
+  taskkill //F //T //PID "$DIRECT_WINPID" > /dev/null 2>&1
   sleep 2
   if [ -z "$(powershell -NoProfile -Command "Get-Process -Id $DIRECT_WINPID -ErrorAction SilentlyContinue" 2>/dev/null)" ]; then
-    pass "direct-exec case: kill -9 on the MSYS pid alone kills the real Windows process"
+    pass "direct-exec case: taskkill //F //T on the resolved winpid kills the real Windows process"
   else
-    failed "direct-exec case: the real Windows process SURVIVED kill -9 on the MSYS pid"
-    kill -9 "$DIRECT_WINPID" 2>/dev/null
+    failed "direct-exec case: the real Windows process SURVIVED taskkill //F //T on its resolved winpid"
+    taskkill //F //T //PID "$DIRECT_WINPID" > /dev/null 2>&1
   fi
 fi
 
@@ -202,13 +239,19 @@ else
   # positive control (this live child reads as a survivor before the
   # kill) so a regression here fails on its own signal, not by accident.
   PRE_KILL_SNAPSHOT=$(snapshot_process_tree "$REAL_CHILD_WINPID")
+  # Reviewer Round 126 R83: the glob `[0-9]*,[0-9]*` accepts `1234,63837\r`
+  # (the trailing `\r` falls inside the second `*`) and `1234,6x` (same
+  # reason) - it does not actually pin the shape the comment above claims.
+  # `grep -Eqx` anchors both ends of the line and pins the exact two shapes
+  # this function can legitimately emit (a numeric ticks value, or the
+  # literal `UNREADABLE` marker), catching both a stray CR and a
+  # mid-file garbage character a glob would silently pass.
   SNAPSHOT_SHAPE_OK=1
   while IFS= read -r snap_line; do
     [ -z "$snap_line" ] && continue
-    case "$snap_line" in
-      [0-9]*,[0-9]*) : ;;
-      *) SNAPSHOT_SHAPE_OK=0 ;;
-    esac
+    if ! printf '%s' "$snap_line" | grep -Eqx '[0-9]+,([0-9]+|UNREADABLE)'; then
+      SNAPSHOT_SHAPE_OK=0
+    fi
   done <<< "$PRE_KILL_SNAPSHOT"
   if [ -z "$PRE_KILL_SNAPSHOT" ] || [ "$SNAPSHOT_SHAPE_OK" -ne 1 ]; then
     failed "Phase-3 case: snapshot_process_tree's own output does not match pid,ticks per line - got: $(echo "$PRE_KILL_SNAPSHOT" | tr '\n' '|')"
