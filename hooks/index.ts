@@ -2059,19 +2059,16 @@ export const register: Register = async (on, options) => {
               action: "nudge_cap_reached",
               detail: `${g.id}: ${capReason}`,
             });
-            // D5: write an ask record and set pendingAskId
-            const askId = `ask-${g.id}-${capTs}`;
-            await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, capReason, sess.mySessionId);
-            sess.state.pendingAskId = askId;
-            sess.state.decisions.push({
-              timestamp: capTs,
-              loop: "monitor",
-              action: "ask_opened",
-              detail: `${g.id}: nudge-cap: ${capReason} (idle ${idleDisplay}, ask ${askId})`,
-            });
+            // Round 58 finding 3: this used to write an ask record from controller prose here - the
+            // same class of defect item 8.2 removed from the classifier's ask-operator and pause
+            // verdicts, just reached through a third path. The nudge cap has no concrete question to
+            // ask, only an idle reading, exactly like the classifier paths: it pauses the node with
+            // the cap reason and opens nothing. The worker's own next completed turn (with a real
+            // work tool called - the goal_resume path, or simply resuming the plan) reactivates it;
+            // no ask, no pendingAskId, nothing waiting on an operator answer that was never asked for.
             try { $.ui.toast(`Agentic: ${capReason}`); } catch { /* non-fatal */ }
             if (g.status === "active") {
-              // BG1: nudge cap → paused + no activate (ask is open, tree stays put).
+              // BG1: nudge cap → paused + no activate (tree stays put, no ask open on it).
               g.status = "paused";
               g.blockedReason = capReason;
               g.updatedAt = capTs;
@@ -2373,7 +2370,15 @@ export const register: Register = async (on, options) => {
                 currentPrompt = nudgeText;
                 nudgedTurn = true;
                 sess.lastNudgeAt = now;
-                sess.consecutiveNudgesWithoutOnGoal += 1;
+                // Round 58 finding 3: a nudge fired while a turn is open (turnInFlight) does not
+                // count toward the cap - it joins the turn already in progress rather than landing
+                // between completed turns, so the worker never saw it as an idle-gap nudge to react
+                // to. The rebind PR's own turn (71 tool calls, well past the 45s idle window) hit
+                // three such nudges and escalated on prose the worker had no chance to answer. Only
+                // a nudge delivered between completed turns advances the counter.
+                if (!turnInFlight) {
+                  sess.consecutiveNudgesWithoutOnGoal += 1;
+                }
                 // D1: increment nudge ledger (count only, no token estimate)
                 sess.state.monitor.cost.nudge.count += 1;
                 // D3: update nudge window
@@ -2382,7 +2387,7 @@ export const register: Register = async (on, options) => {
                   timestamp: tickTs,
                   loop: "monitor",
                   action: "nudge_sent",
-                  detail: `${g.id}: idle ${idleDisplay}, nudge #${sess.consecutiveNudgesWithoutOnGoal}`,
+                  detail: `${g.id}: idle ${idleDisplay}, nudge #${sess.consecutiveNudgesWithoutOnGoal}${turnInFlight ? " (inside an open turn, not counted)" : ""}`,
                 });
               } catch { /* nudge failed; non-fatal */ }
             }
@@ -3157,9 +3162,14 @@ export const register: Register = async (on, options) => {
       const now = Date.now();
 
       if (action === "drop") {
-        if (node.status !== "pending" && node.status !== "paused") {
+        // Item 8.1's own bullet in one line: a blocked node (e.g. a stale duplicate the planner
+        // left behind) could not be retired at all before this - drop refused it alongside every
+        // other status, and nothing else marks a blocked node done or dropped. Allowed here, same
+        // as pending/paused, with the reason always recorded (never optional for this status, so
+        // the tree can say why a blocked node was let go rather than just that it was).
+        if (node.status !== "pending" && node.status !== "paused" && node.status !== "blocked") {
           toolErrorsThisTurn++;
-          return { deny: `Cannot drop ${nodeId}: status is "${node.status}" (only pending or paused nodes can be dropped).` };
+          return { deny: `Cannot drop ${nodeId}: status is "${node.status}" (only pending, paused, or blocked nodes can be dropped).` };
         }
         node.status = "abandoned";
         node.blockedReason = reason || "dropped by operator";
