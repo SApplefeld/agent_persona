@@ -390,3 +390,5 @@ Real record, `node .kit/kaizen-own-record-probe.mjs` (read-only):
 == dev: live store (200 decisions, the window the running loop sees) -> asks_unresolved x2, memory_quality x2
 == dev: full record (570 decisions + 43 rolled inbox records) -> asks_unresolved x4, memory_quality x2, message_wait x7
 ```
+
+Addendum (whole-gate at the PR #7 merge): `.kit/live-all.sh`, stamp `20260912T101643Z`, `HEAD 661759c`, all 16 suites `script_exit=0`, read from each suite's own `.exit` file and `summary.txt` rather than trusted from the runner's echo: `errorstreak`, `health`, `gitprobe`, `controller`, `goaltree`, `goaltree-stall`, `planfail`, `yield`, `budget`, `cost`, `commons`, `operator`, `passive`, `goalconvo`, `restartpassive`, `restartrequest`. Evidence retained at `D:\Temp\agentic-gates\661759c-20260912T101643Z\`.
