@@ -1,6 +1,7 @@
 # Persona state
 .agentic-*.json
 .agentic-*.log
+.agentic-*.jsonl
 .agentic-yields.log
 
 # Test artifacts
