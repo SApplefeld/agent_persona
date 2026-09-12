@@ -38,6 +38,7 @@ registerHooks({ resolve: resolveHook });
 function createFake$(opts = {}) {
   const clockEveryCallbacks = [];
   const toolRegisters = [];
+  const toolCalls = [];
   const promptSubmits = [];
   const fsMap = new Map();
   const storeMap = new Map();
@@ -66,6 +67,14 @@ function createFake$(opts = {}) {
     },
     tool: {
       register(def) { toolRegisters.push(def); },
+      // Records a hook-initiated call (e.g. the channel-reply backstop's
+      // own $.tool.call({ tool: "...reply", message }) - never invoked for
+      // model tool calls, which arrive through the "tool.call" hook event
+      // instead, not through this method).
+      call(args) {
+        toolCalls.push(args);
+        return Promise.resolve({ result: "ok" });
+      },
     },
     session: {
       id() { return Promise.resolve(SESSION_ID); },
@@ -117,12 +126,14 @@ function createFake$(opts = {}) {
   fake.classifyCalls = classifyCalls;
   fake.completeCalls = completeCalls;
   fake.promptSubmits = promptSubmits;
+  fake.toolCalls = toolCalls;
   fake.uiLogs = uiLogs;
 
   return {
     fake,
     clockEveryCallbacks,
     toolRegisters,
+    toolCalls,
     promptSubmits,
     fsMap,
     storeMap,
@@ -134,6 +145,7 @@ function createFake$(opts = {}) {
     resetClassifyCalls() { classifyCalls.length = 0; },
     resetCompleteCalls() { completeCalls.length = 0; },
     resetPromptSubmits() { promptSubmits.length = 0; },
+    resetToolCalls() { toolCalls.length = 0; },
     get controllerTick() {
       return clockEveryCallbacks.length >= 2 ? clockEveryCallbacks[1].fn : null;
     },
