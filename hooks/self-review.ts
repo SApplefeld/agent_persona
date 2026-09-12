@@ -136,6 +136,24 @@ export function dedupeSelfReview(memory: MemoryEntry[], text: string): boolean {
   );
 }
 
+// --- isSelfScoringLesson ---
+// Item 8.2 (plan bullet "Asks come from real forks", memory half): a memory
+// entry comes from a proof passing or an operator correction, never from
+// the classifier scoring its own confusion. The self-review loop's raw
+// output is exactly that class by default - a lesson about the worker's own
+// decision-making pattern, with nothing to check it against - unless the
+// text itself grounds the lesson in something external (a test result, a
+// proof, an operator's own correction). Refuse the former, keep the latter.
+export function isSelfScoringLesson(text: string): boolean {
+  const lower = text.toLowerCase();
+  const selfReferential =
+    /\b(the worker|the classifier|this session|the controller)\b/.test(lower) &&
+    /\b(confus|unclear|unsure|scored?|scoring|struggl|repeated(?:ly)? (?:ask|nudg))/.test(lower);
+  const externallyGrounded =
+    /\b(test passed|tests? pass|proof|operator (?:said|corrected|confirmed|reported)|fixed|verified|confirmed by)\b/.test(lower);
+  return selfReferential && !externallyGrounded;
+}
+
 // --- evictSelfReview ---
 // Keep at most 5 self-review lessons (newest by createdAt).
 // Never touches pinned entries (S8). Mutates `memory` in place.

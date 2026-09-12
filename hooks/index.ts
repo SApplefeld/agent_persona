@@ -61,6 +61,7 @@ import {
   buildSelfReviewInput,
   dedupeSelfReview,
   evictSelfReview,
+  isSelfScoringLesson,
 } from "./self-review";
 import { estimateTokens, fnv1aHash, effectiveWindowCount, bumpWindow, backoffFactor, shouldRunClassify } from "./cost-ledger";
 
@@ -1188,13 +1189,17 @@ export const register: Register = async (on, options) => {
           if (alive) withClaim.push(rec);
           else withoutClaim.push(rec);
         }
-        // Push one operator_skipped_no_claim decision per record without a claim
+        // Round 32/36: mark a dead writer's record skipped once, on its own
+        // key, rather than re-logging the same decision every tick forever -
+        // once `status` is "skipped" it drops out of `pending` above on the
+        // next `listInboxRecords` read, so the record costs one line total.
         for (const rec of withoutClaim) {
+          await store.set(rec.key, { ...rec, status: "skipped" });
           sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "monitor",
             action: "operator_skipped_no_claim",
-            detail: `record ${rec.id} writer ${rec.from} has no live reader claim`,
+            detail: `record ${rec.id} writer ${rec.from} has no live reader claim (marked skipped)`,
           });
         }
         // Take the oldest record with a live claim
@@ -1335,7 +1340,17 @@ export const register: Register = async (on, options) => {
             sess.state.monitor.cost.selfReview.estTokens += estimateTokens(input.prompt.length, 80);
             const lesson = raw.trim();
             if (lesson.length > 0 && lesson.toUpperCase() !== "NONE") {
-              if (!dedupeSelfReview(sess.state.memory, lesson)) {
+              // Item 8.2: a memory entry comes from a proof passing or an
+              // operator correction, never from the classifier scoring its
+              // own confusion. Refuse the latter before the dedupe check.
+              if (isSelfScoringLesson(lesson)) {
+                sess.state.decisions.push({
+                  timestamp: Date.now(),
+                  loop: "memory",
+                  action: "memory_lesson_refused",
+                  detail: `self-scoring lesson refused: ${lesson.slice(0, 80)}`,
+                });
+              } else if (!dedupeSelfReview(sess.state.memory, lesson)) {
                 const entryId = `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
                 sess.state.memory.push({
                   id: entryId,
@@ -2097,11 +2112,32 @@ export const register: Register = async (on, options) => {
           // D3: update call window (count the classify call)
           sess.state.monitor.cost.callWindow = bumpWindow(sess.state.monitor.cost.callWindow, Date.now());
           let finalDecision: string = decision ?? "nudge";
-          // Item 8.2: Asks come from real forks. Set below if this
-          // ask-operator decision is converted to a nudge; the nudge
-          // actuator reads it to send the plan/discussion re-read text
-          // instead of the generic idle nudge.
+          // Item 8.2 (Round 36): a classifier ask-operator decision never
+          // opens an ask record directly. Word-matching the model's reason
+          // text for "unclear"/"scope"/idle-gap language let real forks
+          // through unrecognized - eighteen different ask wordings landed
+          // in one day, none matching a keyword list - so the rule is
+          // structural: every ask-operator becomes a nudge here,
+          // unconditionally, before the reason call even runs (a failed
+          // reason call must not fall through to opening an ask with "no
+          // reason", which the old in-try conversion did). The nudge tells
+          // the worker to re-read the plan and discussion file and, if a
+          // fork truly exists, state it in its own next turn as a line
+          // `ASK: <question>? Recommend: <choice>`. Only that marker (read
+          // on turn.complete, below) opens an ask record, with the
+          // worker's own line as the stored question - never the
+          // classifier's reason.
           let idleGapConverted = false;
+          if (finalDecision === "ask-operator") {
+            finalDecision = "nudge";
+            idleGapConverted = true;
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "monitor",
+              action: "ask_idle_gap_converted",
+              detail: `${g.id}: classifier ask-operator converted to nudge (worker states a real fork itself, if one exists)`,
+            });
+          }
 
           // R6: switch, second Haiku call to pick a plan id.
           if (finalDecision === "switch" && pendingPlans.length > 0) {
@@ -2178,41 +2214,6 @@ export const register: Register = async (on, options) => {
               sess.state.monitor.cost.callWindow = bumpWindow(sess.state.monitor.cost.callWindow, Date.now());
               fullReason = reason.trim().replace(/\*{1,2}/g, "");
               finalReason = fullReason.slice(0, 100);
-
-              // Item 8.2: Asks come from real forks. An idle-gap classification
-              // - the classifier reaching for ask-operator on a vague or
-              // repeated-confusion reading rather than a concrete blocking
-              // question - becomes a nudge, never an ask. Two independent
-              // signals, either one sufficient, so a streak with no matching
-              // keyword in the model's free-text reason still converts (the
-              // structural signal is not just a keyword pattern tuned to this
-              // reason text):
-              //   1. The reason text itself reads as a gap, not a fork:
-              //      "unclear", "scope", or "what to do next" language.
-              //   2. The active node's last 3 scores are all "off-goal" with
-              //      no escalation - a repeated confusion pattern the goal
-              //      data shows regardless of what the model said about it.
-              // A real ask (a concrete blocking question) trips neither.
-              if (finalDecision === "ask-operator") {
-                const lowerReason = fullReason.toLowerCase();
-                const reasonReadsAsGap =
-                  /unclear/.test(lowerReason) ||
-                  /scope/.test(lowerReason) ||
-                  /^what to do|next step|next concrete/.test(lowerReason) ||
-                  /repeated.*off-goal/.test(lowerReason);
-                const recentScores = g.scores.slice(-3);
-                const offGoalStreak = recentScores.length === 3 && recentScores.every((s) => s.result === "off-goal");
-                if (reasonReadsAsGap || offGoalStreak) {
-                  finalDecision = "nudge";
-                  idleGapConverted = true;
-                  sess.state.decisions.push({
-                    timestamp: Date.now(),
-                    loop: "monitor",
-                    action: "ask_idle_gap_converted",
-                    detail: `${g.id}: idle-gap ask converted to nudge (${reasonReadsAsGap ? "reason" : ""}${reasonReadsAsGap && offGoalStreak ? "+" : ""}${offGoalStreak ? "off-goal streak" : ""}): ${finalReason}`,
-                  });
-                }
-              }
             } catch { /* reason call failed; non-fatal */ }
           }
 
@@ -2233,17 +2234,18 @@ export const register: Register = async (on, options) => {
                 return;
               }
               try {
-                // R8: nudge text appends goal_done instruction. Item 8.2: an
-                // idle-gap conversion gets its own text - re-read the plan
-                // and the discussion file, not just "take the next step",
-                // since a vague or repeated-confusion reading means the
-                // worker has lost the thread of the plan, not that it needs
-                // a nudge to keep moving on a step it already understands.
+                // R8: nudge text appends goal_done instruction. Item 8.2
+                // (Round 36): a converted ask-operator gets its own text -
+                // re-read the plan and the discussion file, and only state a
+                // fork as a literal marker line if one truly exists, since
+                // the classifier itself never carries a concrete blocking
+                // question, only an idle reading.
                 const nudgeText = idleGapConverted
                   ? `[GOAL] The active goal is: ${g.objective}\n` +
-                    `The controller read this as an idle gap rather than a real fork: no concrete blocking question, just unclear scope or a repeated off-goal pattern. ` +
-                    `Re-read the plan doc and the discussion file before continuing - the next concrete step should already be there.\n` +
-                    `When this step is done, call goal_done with a one-line note. ` +
+                    `The controller read this as an idle gap, not a real fork: no concrete blocking question. ` +
+                    `Re-read the plan doc and DISCUSSION.md before continuing - the next concrete step should already be there.\n` +
+                    `If you genuinely hold a fork the plan doesn't resolve, state it in this turn as a line: ASK: <question>? Recommend: <choice>\n` +
+                    `Otherwise take the next concrete step. When this step is done, call goal_done with a one-line note. ` +
                     `If the result names a next goal, continue with it.`
                   : `[GOAL] The active goal is: ${g.objective}\n` +
                     `The Controller detected ${idleDisplay} of idle time. ` +
@@ -2267,8 +2269,11 @@ export const register: Register = async (on, options) => {
                 });
               } catch { /* nudge failed; non-fatal */ }
             }
-          } else if (finalDecision === "ask-operator" || finalDecision === "pause") {
-            const question = fullReason || (finalDecision === "pause" ? "controller pause" : "operator input needed");
+          } else if (finalDecision === "pause") {
+            // Item 8.2 (Round 36): ask-operator no longer reaches this
+            // branch - it is converted to a nudge above, before the reason
+            // call. Only "pause" still opens an ask record directly here.
+            const question = fullReason || "controller pause";
             const askReaskSuppressMs = typeof cfg.askReaskSuppressMs === "number" ? (cfg.askReaskSuppressMs as number) : 10 * 60_000;
             if (shouldSuppressReask(g, question, tickTs, askReaskSuppressMs)) {
               // D5b: the classifier re-proposed the identical question this
@@ -2281,7 +2286,7 @@ export const register: Register = async (on, options) => {
                 detail: `${g.id}: suppressed identical question closed ${Math.round((tickTs - (g.lastAskClosedAt || tickTs)) / 1000)}s ago: ${question.slice(0, 80)}`,
               });
             } else {
-              // D5: write an ask record and set pendingAskId (both ask-operator and pause)
+              // D5: write an ask record and set pendingAskId (pause path)
               const askId = `ask-${g.id}-${Date.now()}`;
               await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, question, sess.mySessionId);
               sess.state.pendingAskId = askId;
@@ -2477,6 +2482,35 @@ export const register: Register = async (on, options) => {
         action: "root_complete",
         detail: `Root ${rootId} marked complete - backfilled, work already done`,
       });
+    }
+
+    // Item 8.2 (Round 36): an ask record opens only when the worker's own
+    // completed turn states a real fork as a literal marker line, never from
+    // the classifier's idle-gap reading (see the ask-operator conversion
+    // above). The stored question is the worker's own line, not a reason the
+    // classifier produced.
+    if (!skipped && sess.isOwner && !sess.state.pendingAskId) {
+      const askMarkerMatch = e.answer.match(/^ASK:\s*(.+?\?\s*Recommend:\s*.+)$/im);
+      if (askMarkerMatch) {
+        const question = askMarkerMatch[1].trim();
+        const nodeId = turnLeafId || sess.state.activeGoalId || "unknown";
+        const askId = `ask-${nodeId}-${Date.now()}`;
+        await writeAskRecord(commonsStoreOf($), sess.persona, askId, nodeId, question, sess.mySessionId);
+        sess.state.pendingAskId = askId;
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "ask_opened",
+          detail: `${nodeId}: worker-stated fork: ${question} (ask ${askId})`,
+        });
+        try { $.ui.toast(`Agentic: ${question}`); } catch { /* non-fatal */ }
+        const askedNode = sess.state.goals.find((node) => node.id === nodeId);
+        if (askedNode && askedNode.status === "active") {
+          askedNode.status = "paused";
+          askedNode.blockedReason = question;
+          askedNode.updatedAt = Date.now();
+        }
+      }
     }
 
     // H2: Score against the leaf that was active at TURN START (turnLeafId),

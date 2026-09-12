@@ -908,24 +908,22 @@ async function caseS2_drain_noclaim(clock) {
   // Fire tick (D3 should skip because writer has no claim)
   await tickAndSettle(h, clock);
 
-  // Check: record should still be pending
+  // Round 32/36 point 4: a dead writer's record is marked skipped, once,
+  // rather than staying "pending" forever (which was the storm bug - the
+  // same record re-logging an identical decision every tick with no writer
+  // ever coming back to claim it).
   const rec = h.storeMap.get(recKey);
   if (rec) {
     const parsed = typeof rec === "string" ? JSON.parse(rec) : rec;
-    check("S2 drain no claim: record still pending", parsed.status === "pending");
+    check("S2 drain no claim: record marked skipped", parsed.status === "skipped");
   } else {
-    check("S2 drain no claim: record still pending", false);
+    check("S2 drain no claim: record marked skipped", false);
   }
 
   // Check: no [OPERATOR] prompt was submitted
   const prompts = h.promptSubmits || [];
   const operatorPrompts = prompts.filter(p => p.startsWith("[OPERATOR]"));
   check("S2 drain no claim: no [OPERATOR] prompt submitted", operatorPrompts.length === 0);
-
-  // Note: the operator_skipped_no_claim decision is pushed to in-memory state
-  // (sess.state.decisions) but not persisted to the file in this branch, so
-  // we cannot verify it via getState(h). The behavioral checks above
-  // (record still pending, no [OPERATOR] prompt) confirm the skip happened.
 }
 
 // S2: D4 reply by turn id (user-ending turn leaves delivered, next matching pair answers)
@@ -1173,9 +1171,9 @@ async function caseS1_reader_arbitration(clock) {
   }
 }
 
-// S3: D5 ask waits - ask-operator writes ask and pauses
+// S3: D5 ask-operator converts to a nudge, writes no ask (Round 36 / item 8.2)
 async function caseS3_ask_operator(clock) {
-  console.log("\n=== S3: D5 ask-operator writes ask and pauses ===");
+  console.log("\n=== S3: D5 ask-operator converts to a nudge, writes no ask ===");
   clock.set(T0);
 
   const mySid = SESSION_ID;
@@ -1194,33 +1192,31 @@ async function caseS3_ask_operator(clock) {
   });
 
   // Drive a single "ask-operator" classify result through the idle gate.
-  // The ask-operator path (index.ts:1850) writes an ask record, sets
-  // pendingAskId, and pauses the active goal. This is the D5 planner site,
-  // distinct from the nudge-cap site (index.ts:1589) which requires 3
-  // consecutive nudges and is hard to reach under the harness OPTS
-  // (costMaxNudgesPerHour = 2 latches before the 3rd nudge).
+  // Item 8.2 (Round 36): the classifier's own ask-operator decision no
+  // longer writes an ask record or pauses the goal directly - it converts
+  // to a nudge unconditionally (caseItem8p2_classifier_ask_operator_converts_unconditionally
+  // covers the conversion itself in full); this case is the pre-existing S3
+  // slot, updated to the new behavior rather than left asserting the old one.
   h.setClassifyValue("ask-operator");
   clock.advance(130_000);
   await tickAndSettle(h, clock, 50);
 
   const state = getState(h);
 
-  // Check: there should be an ask record in the store
+  // Check: no ask record in the store
   const askRecords = Array.from(h.storeMap.keys()).filter(k => k.startsWith("ask:"));
-  check("S3 ask-operator: ask record written", askRecords.length > 0);
+  check("S3 ask-operator: no ask record written", askRecords.length === 0);
 
-  // Check: the active goal should be paused (ask-operator pauses, doesn't block)
+  // Check: the active goal stays active (ask-operator no longer pauses it)
   const activeGoal = state.goals.find(g => g.id === state.activeGoalId);
-  check("S3 ask-operator: active goal status is paused", activeGoal && activeGoal.status === "paused");
+  check("S3 ask-operator: active goal stays active", activeGoal && activeGoal.status === "active");
 
-  // Check: pendingAskId should be set
-  check("S3 ask-operator: pendingAskId is set", state.pendingAskId !== null && state.pendingAskId !== undefined);
+  // Check: pendingAskId is not set
+  check("S3 ask-operator: pendingAskId not set", state.pendingAskId === null || state.pendingAskId === undefined);
 
-  // Check: pendingAskId matches the ask record
-  if (state.pendingAskId) {
-    const askKey = `ask:default:${state.pendingAskId}`;
-    check("S3 ask-operator: ask record key matches pendingAskId", h.storeMap.has(askKey));
-  }
+  // Check: the conversion decision is present
+  const decisions = state.decisions || [];
+  check("S3 ask-operator: ask_idle_gap_converted decision present", decisions.some(d => d.action === "ask_idle_gap_converted"));
 }
 
 // S3: D5 ask waits - planner does not activate sibling while ask open
@@ -1766,16 +1762,21 @@ async function caseS3_timeout_walks_on_default(clock) {
   check("S3 timeout default: node-002 activated", node2 && node2.status === "active");
 }
 
-// Item 8.2: Asks come from real forks. Idle-gap asks are converted to nudges.
-async function caseItem8p2_idle_gap_ask_converted(clock) {
-  console.log("\n=== Item 8.2: idle-gap ask converted to nudge ===");
+// Item 8.2 (Round 36 case a): a classifier ask-operator decision converts to
+// a nudge unconditionally, before the reason call even runs - not on a
+// keyword match against the reason text. Proof: the reason is set to today's
+// real eighteenth-ask text verbatim ("Blocked on reader claim mechanism..."),
+// which matches no keyword list (that's exactly why the keyword-based draft
+// missed it), and conversion still happens.
+async function caseItem8p2_classifier_ask_operator_converts_unconditionally(clock) {
+  console.log("\n=== Item 8.2(a): classifier ask-operator converts to nudge unconditionally ===");
   clock.set(T0);
   const mySid = SESSION_ID;
   const now = T0;
 
   const h = await createTickHarness({
     ...OPTS,
-    caseName: "item8p2_idle_gap",
+    caseName: "item8p2a_unconditional",
   });
 
   h.storeMap.set(`commons:${mySid}`, {
@@ -1787,11 +1788,7 @@ async function caseItem8p2_idle_gap_ask_converted(clock) {
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
     { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
-    { id: "node-001", kind: "leaf", parentId: "root", objective: "Unclear task", status: "active", completedRounds: 0, maxRounds: 3, scores: [
-      { timestamp: now - 10000, result: "off-goal" },
-      { timestamp: now - 9000, result: "off-goal" },
-      { timestamp: now - 8000, result: "off-goal" },
-    ], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-001", kind: "leaf", parentId: "root", objective: "Some task", status: "active", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
   personaState.monitor.turnCount = 5;
@@ -1806,67 +1803,49 @@ async function caseItem8p2_idle_gap_ask_converted(clock) {
   const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
 
-  // Mock classify to return "ask-operator" for an idle-gap scenario
   h.setClassifyValue("ask-operator");
+  // Today's real ask text, verbatim - matches no keyword pattern.
+  h.fake.model.complete = async () =>
+    "Blocked on reader claim mechanism, systemic issue preventing task progress despite repeated attempts";
 
-  // Mock complete (reason call) to return an idle-gap reason
-  let completeCallCount = 0;
-  const origComplete = h.fake.model.complete;
-  h.fake.model.complete = async (opts) => {
-    completeCallCount += 1;
-    // First complete call is for the reason (asking why ask-operator)
-    if (completeCallCount === 1) {
-      return "Unclear what the next concrete step should be.";
-    }
-    return origComplete ? origComplete(opts) : "unknown";
-  };
-
-  // Advance time to trigger classify. Two ticks: the first only clears the
-  // transitional "activated (no active leaf, pending work found)" decision
-  // that session.start's reseed produces (tick-harness fires session.start
-  // at creation, and this second, custom-state session.start re-activates
-  // the same node); classify runs on the second.
+  // Two ticks: the first clears the transitional re-activation the reseeded
+  // session.start produces, the second reaches classify.
   clock.advance(130_000);
   await tickAndSettle(h, clock, 50);
   clock.advance(130_000);
   await tickAndSettle(h, clock, 50);
 
-  // Check that the classifier was called
-  check("item8p2: classify was called", h.classifyCalls.length > 0);
-
-  // Check that an ask was NOT opened (due to idle-gap conversion)
   const decisions = getDecisions(h);
+  check("item8p2a: classify was called", h.classifyCalls.length > 0);
+
+  const askKeys = [...h.storeMap.keys()].filter(k => k.startsWith("ask:"));
+  check("item8p2a: no ask record written", askKeys.length === 0);
+
   const askOpenedCount = decisions.filter(d => d.action === "ask_opened").length;
-  check("item8p2: ask was NOT opened (idle-gap converted)", askOpenedCount === 0);
+  check("item8p2a: no ask_opened decision", askOpenedCount === 0);
 
-  // Check that idle-gap conversion was recorded
   const conversionCount = decisions.filter(d => d.action === "ask_idle_gap_converted").length;
-  check("item8p2: ask_idle_gap_converted decision present", conversionCount >= 1);
+  check("item8p2a: ask_idle_gap_converted decision present", conversionCount >= 1);
 
-  // Check that a nudge was sent instead
   const nudgeCount = decisions.filter(d => d.action === "nudge_sent").length;
-  check("item8p2: nudge_sent decision present", nudgeCount >= 1);
+  check("item8p2a: nudge_sent decision present", nudgeCount >= 1);
 
-  // Check that the converted nudge carries the plan/discussion re-read text,
-  // not the generic idle-nudge text.
-  check("item8p2: nudge text says re-read the plan doc and discussion file", h.promptSubmits.some(t => t.includes("Re-read the plan doc and the discussion file")));
+  check("item8p2a: nudge tells the worker to re-read the plan and DISCUSSION.md", h.promptSubmits.some(t => t.includes("DISCUSSION.md")));
+  check("item8p2a: nudge carries the ASK marker instruction", h.promptSubmits.some(t => t.includes("ASK: <question>? Recommend: <choice>")));
 }
 
-// Item 8.2: off-goal streak alone converts, with no keyword in the reason
-// text. This is the withheld control for the structural signal: the pattern
-// match on "unclear"/"scope"/"what to do next" never fires here (the reason
-// text is deliberately neutral), so a pass proves the off-goal-streak check
-// itself catches the case, not that the reason happened to carry a literal
-// the regex was tuned to find.
-async function caseItem8p2_offgoal_streak_alone_converts(clock) {
-  console.log("\n=== Item 8.2: off-goal streak alone converts (no reason keyword) ===");
+// Item 8.2 (Round 36 case b): an ask record opens only when the worker's own
+// completed turn states a real fork as the literal marker line; the stored
+// question is that line, not anything the classifier produced.
+async function caseItem8p2_worker_states_fork_opens_ask(clock) {
+  console.log("\n=== Item 8.2(b): worker's ASK marker line opens an ask record ===");
   clock.set(T0);
   const mySid = SESSION_ID;
   const now = T0;
 
   const h = await createTickHarness({
     ...OPTS,
-    caseName: "item8p2_offgoal_streak_alone",
+    caseName: "item8p2b_worker_states_fork",
   });
 
   h.storeMap.set(`commons:${mySid}`, {
@@ -1878,15 +1857,9 @@ async function caseItem8p2_offgoal_streak_alone_converts(clock) {
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
     { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
-    { id: "node-001", kind: "leaf", parentId: "root", objective: "Streaky task", status: "active", completedRounds: 0, maxRounds: 3, scores: [
-      { timestamp: now - 10000, result: "off-goal" },
-      { timestamp: now - 9000, result: "off-goal" },
-      { timestamp: now - 8000, result: "off-goal" },
-    ], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-001", kind: "leaf", parentId: "root", objective: "Some task", status: "active", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
-  personaState.monitor.turnCount = 5;
-  personaState.monitor.lastTurnComplete = now - 120_000;
   personaState.updatedAt = now;
   h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
 
@@ -1897,43 +1870,97 @@ async function caseItem8p2_offgoal_streak_alone_converts(clock) {
   const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
 
-  h.setClassifyValue("ask-operator");
-
-  let completeCallCount = 0;
-  const origComplete = h.fake.model.complete;
-  h.fake.model.complete = async (opts) => {
-    completeCallCount += 1;
-    if (completeCallCount === 1) {
-      // Deliberately neutral: no "unclear", "scope", or "what to do next" text.
-      return "The worker has not made progress recently.";
-    }
-    return origComplete ? origComplete(opts) : "unknown";
-  };
-
-  // Two ticks: the first clears the transitional re-activation, the second reaches classify.
-  clock.advance(130_000);
-  await tickAndSettle(h, clock, 50);
-  clock.advance(130_000);
+  // session.start's reload resets a reseeded "active" leaf to "pending" and
+  // relies on the next controller tick to re-activate it (the same
+  // transitional step every reseed-then-refire case in this file needs
+  // before classify) - one tick here re-activates node-001 before the turn.
+  clock.advance(1000);
   await tickAndSettle(h, clock, 50);
 
-  const decisions = getDecisions(h);
-  const askOpenedCount = decisions.filter(d => d.action === "ask_opened").length;
-  check("item8p2 streak-alone: ask was NOT opened", askOpenedCount === 0);
+  const turnStartH = h.handlers["turn.start"];
+  await turnStartH(h.fake, { turnId: "t-fork" }, async () => ({ result: "ok" }));
 
-  const conversionCount = decisions.filter(d => d.action === "ask_idle_gap_converted").length;
-  check("item8p2 streak-alone: ask_idle_gap_converted decision present", conversionCount >= 1);
+  const turnCompleteH = h.handlers["turn.complete"];
+  const markerLine = "ASK: Should we migrate to the new store format now? Recommend: yes, before the next release.";
+  await turnCompleteH(h.fake, {
+    turnId: "t-fork",
+    answer: `Here is my status update.\n${markerLine}`,
+    reason: "completed",
+  }, async () => ({ result: "ok" }));
+
+  const state = getState(h);
+  const askKeys = [...h.storeMap.keys()].filter(k => k.startsWith("ask:"));
+  check("item8p2b: exactly one ask record written", askKeys.length === 1);
+
+  const askRecord = askKeys.length === 1 ? h.storeMap.get(askKeys[0]) : null;
+  check(
+    "item8p2b: ask question is the worker's own marker line",
+    !!askRecord && askRecord.question === markerLine.replace(/^ASK:\s*/, ""),
+  );
+
+  check("item8p2b: pendingAskId is set", !!state.pendingAskId);
+
+  const node1 = state.goals.find(g => g.id === "node-001");
+  check("item8p2b: active goal paused", node1 && node1.status === "paused");
+
+  const decisions = state.decisions || [];
+  check("item8p2b: ask_opened decision present", decisions.some(d => d.action === "ask_opened"));
 }
 
-// Item 8.2 control: real ask is NOT converted
-async function caseItem8p2_real_fork_ask_not_converted(clock) {
-  console.log("\n=== Item 8.2 control: real-fork ask NOT converted ===");
+// Item 8.2 (Round 36 case c, plan bullet's memory half): a self-review
+// lesson about the worker scoring its own confusion is refused as a memory;
+// a lesson grounded in a passed test or an operator correction is kept.
+// Both shapes exercised here, one harness run per shape.
+async function caseItem8p2_memory_quality_self_scoring_vs_proof_backed(clock) {
+  console.log("\n=== Item 8.2(c): self-scoring lesson refused, proof-backed lesson kept ===");
+
+  const selfScoringLesson = "The worker was repeatedly unclear and kept scoring its own confusion instead of asking a real question.";
+  const proofBackedLesson = "The test suite confirmed the fix: askOperatorWaitMs now defaults to 60 minutes, verified by a passing harness case.";
+
+  async function runSelfReview(lessonText, caseName) {
+    clock.set(T0);
+    const rootGoal = {
+      id: "root-goal", parentId: null, kind: "root", title: "Test goal", objective: "Test goal",
+      status: "pending", source: "controller", maxRounds: 10, completedRounds: 0, scores: [], notes: [],
+      planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0, planningRound: 0,
+      createdAt: T0 - 10000, updatedAt: T0 - 5000,
+    };
+    const h = await createTickHarness({
+      ...OPTS,
+      caseName,
+      stateOpts: {
+        now: T0,
+        goals: [rootGoal],
+        activeGoalId: null,
+        selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: true, lastInjectAt: 0 },
+      },
+      classifyValue: "NONE",
+    });
+    h.fake.model.complete = async () => lessonText;
+    await tickAndSettle(h, clock, 100);
+    return getDecisions(h);
+  }
+
+  const refusedDecisions = await runSelfReview(selfScoringLesson, "item8p2c_self_scoring");
+  check("item8p2c: self-scoring lesson refused (memory_lesson_refused)", refusedDecisions.some(d => d.action === "memory_lesson_refused"));
+  check("item8p2c: self-scoring lesson NOT kept as memory (no self-review decision)", !refusedDecisions.some(d => d.action === "self-review"));
+
+  const keptDecisions = await runSelfReview(proofBackedLesson, "item8p2c_proof_backed");
+  check("item8p2c: proof-backed lesson kept (self-review decision present)", keptDecisions.some(d => d.action === "self-review"));
+  check("item8p2c: proof-backed lesson NOT refused", !keptDecisions.some(d => d.action === "memory_lesson_refused"));
+}
+
+// Round 32/36 point 4: a dead writer's pending inbox record is marked
+// skipped once, not re-logged every tick forever.
+async function caseItem8p2_dead_writer_record_skipped_once(clock) {
+  console.log("\n=== Item 8.2 point 4: dead writer's record skipped once, not every tick ===");
   clock.set(T0);
   const mySid = SESSION_ID;
   const now = T0;
 
   const h = await createTickHarness({
     ...OPTS,
-    caseName: "item8p2_real_ask",
+    caseName: "item8p2_dead_writer_skip",
   });
 
   h.storeMap.set(`commons:${mySid}`, {
@@ -1942,55 +1969,35 @@ async function caseItem8p2_real_fork_ask_not_converted(clock) {
     claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
   });
 
-  const personaState = buildPersonaState(mySid, now);
-  personaState.goals = [
-    { id: "root", kind: "goal", parentId: null, objective: "Real fork task", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
-    { id: "node-001", kind: "leaf", parentId: "root", objective: "Blocked task", status: "active", completedRounds: 0, maxRounds: 3, scores: [
-      { timestamp: now - 10000, result: "on-goal" },
-      { timestamp: now - 9000, result: "on-goal" },
-    ], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
-  ];
-  personaState.activeGoalId = "node-001";
-  personaState.monitor.turnCount = 5;
-  personaState.monitor.lastTurnComplete = now - 120_000;
-  personaState.updatedAt = now;
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
-
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
-    default: { sessionId: mySid, epoch: 1, lastSeen: now },
-  }));
+  const deadWriter = "dead-writer-session";
+  const inboxKey = `inbox:default:${deadWriter}:1`;
+  h.storeMap.set(inboxKey, {
+    id: `default-${deadWriter}-1`,
+    key: inboxKey,
+    from: deadWriter,
+    at: now - 5000,
+    text: "stale message from a dead session",
+    kind: "message",
+    status: "pending",
+  });
+  // No commons entry for deadWriter: no live reader claim.
 
   const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
 
-  h.setClassifyValue("ask-operator");
-
-  let completeCallCount = 0;
-  const origComplete = h.fake.model.complete;
-  h.fake.model.complete = async (opts) => {
-    completeCallCount += 1;
-    if (completeCallCount === 1) {
-      // Real fork reason: concrete blocking
-      return "Blocked waiting for operator decision on architecture approach.";
-    }
-    return origComplete ? origComplete(opts) : "unknown";
-  };
-
-  // Two ticks: the first clears the transitional re-activation, the second reaches classify.
-  clock.advance(130_000);
+  clock.advance(15_000);
   await tickAndSettle(h, clock, 50);
-  clock.advance(130_000);
+  clock.advance(15_000);
+  await tickAndSettle(h, clock, 50);
+  clock.advance(15_000);
   await tickAndSettle(h, clock, 50);
 
   const decisions = getDecisions(h);
+  const skipDecisions = decisions.filter(d => d.action === "operator_skipped_no_claim" && d.detail.includes(deadWriter));
+  check("item8p2 point4: skipped exactly once across three ticks", skipDecisions.length === 1);
 
-  // Control: a real-fork ask SHOULD be opened
-  const askOpenedCount = decisions.filter(d => d.action === "ask_opened").length;
-  check("item8p2 control: real-fork ask WAS opened", askOpenedCount >= 1);
-
-  // Control: no conversion happened
-  const conversionCount = decisions.filter(d => d.action === "ask_idle_gap_converted").length;
-  check("item8p2 control: no idle-gap conversion (real fork)", conversionCount === 0);
+  const record = h.storeMap.get(inboxKey);
+  check("item8p2 point4: record status is skipped", record && record.status === "skipped");
 }
 
 // S4: D6 doorbell - peer consumed
@@ -3406,9 +3413,10 @@ async function main() {
     await caseItem2_backfillSkipsPrimingTurn(clock);
     await caseItem2_backfillSkipsNudgeTurn(clock);
     await caseItem2_backfillFiresOnSecondRequest(clock);
-    await caseItem8p2_idle_gap_ask_converted(clock);
-    await caseItem8p2_offgoal_streak_alone_converts(clock);
-    await caseItem8p2_real_fork_ask_not_converted(clock);
+    await caseItem8p2_classifier_ask_operator_converts_unconditionally(clock);
+    await caseItem8p2_worker_states_fork_opens_ask(clock);
+    await caseItem8p2_memory_quality_self_scoring_vs_proof_backed(clock);
+    await caseItem8p2_dead_writer_record_skipped_once(clock);
     await caseS4_peer_consumed(clock);
     await caseS4_peer_send_message_consumed(clock);
     await caseS4_other_origin_passes(clock);
@@ -3546,8 +3554,12 @@ async function caseD5b_reaskSuppressed(clock) {
   const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
 
-  // The classifier proposes ask-operator again with the identical reason text.
-  h.setClassifyValue("ask-operator");
+  // The classifier proposes the identical question again with the same
+  // reason text. Item 8.2 (Round 36): ask-operator no longer reaches the
+  // ask-writing branch at all (it converts to a nudge unconditionally), so
+  // this suppression path - still real for "pause" - is driven through
+  // "pause" here rather than through the now-converted "ask-operator".
+  h.setClassifyValue("pause");
   h.setCompleteValue("operator input needed");
 
   clock.advance(65_000);

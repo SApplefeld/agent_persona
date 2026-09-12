@@ -16,7 +16,7 @@
 // --- Types ---
 
 export type InboxKind = "say" | "answer";
-export type InboxStatus = "pending" | "delivered" | "answered";
+export type InboxStatus = "pending" | "delivered" | "answered" | "skipped";
 
 export interface InboxRecord {
   id: string;
