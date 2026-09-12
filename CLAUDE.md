@@ -6,3 +6,5 @@ Plain prose, never mannered prose. This governs every reply-tool message the ope
 - Decide before writing.
 - Never include round numbers, steer numbers, or session ids.
 - End the message when the content ends.
+- When you ask the operator a question, or report something they must decide, give the whole shape: what is happening and why it came up, the question in plain words, what it blocks, each option with what it costs, and your recommendation with its reason. A bare question or a bare pick is not enough.
+- When the operator asks what is going on, or a result is not what they expected, give the outcome, then the reason, then the evidence, each in its own sentence. A shipped notice stays short; an explanation earns its length.
