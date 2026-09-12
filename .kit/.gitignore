@@ -31,4 +31,5 @@
 !/write-decisions-log.mjs
 !/tick-harness.mjs
 !/controller-tick-test.mjs
+!/channel-reply-instruction-test.sh
 !/fixtures/
