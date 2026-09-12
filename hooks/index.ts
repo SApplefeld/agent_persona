@@ -419,7 +419,17 @@ export const persist = async (dp: any): Promise<boolean> => {
     try {
       await appendToChannelLog(dp, overflow.map((d) => JSON.stringify({ persona: sess.persona, kind: "decision", rolledAt: Date.now(), record: d, logPath: CHANNEL_LOG_PATH })));
       sess.state.decisions = sess.state.decisions.slice(-DECISIONS_MAX);
-    } catch { /* log write failed: keep the overflow in memory rather than lose it; next persist() retries */ }
+    } catch (err) {
+      // Round 50 point 3: name the refusal instead of staying silent - the
+      // overflow stays in memory for the next persist() to retry, but the
+      // next gate must be able to tell "nothing to roll" from "roll refused".
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "worker",
+        action: "channel_window_roll_failed",
+        detail: `decision cap roll refused, overflow kept in memory (persona: ${sess.persona}): ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
   }
   if (sess.state.memory.length > MEMORY_MAX) {
     // Evict oldest non-pinned entries first; pinned entries never roll off.
@@ -434,7 +444,16 @@ export const persist = async (dp: any): Promise<boolean> => {
         await appendToChannelLog(dp, overflow.map((m) => JSON.stringify({ persona: sess.persona, kind: "memory", rolledAt: Date.now(), record: m, logPath: CHANNEL_LOG_PATH })));
         // Restore original relative order (createdAt) across pinned + kept.
         sess.state.memory = [...pinned, ...kept].sort((a, b) => a.createdAt - b.createdAt);
-      } catch { /* log write failed: keep the overflow in memory rather than lose it; next persist() retries */ }
+      } catch (err) {
+        // Round 50 point 3: same naming as the decision cap above - the
+        // overflow stays in memory for the next persist() to retry.
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "worker",
+          action: "channel_window_roll_failed",
+          detail: `memory cap roll refused, overflow kept in memory (persona: ${sess.persona}): ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
     }
   }
   const store: Record<string, unknown> = await dp.fs.exists(sess.storePath)
@@ -1323,18 +1342,32 @@ export const register: Register = async (on, options) => {
           // file forever. Open asks are untouched (a different function,
           // a different lifecycle).
           const channelWindowSize = typeof cfg.channelRecordWindow === "number" ? (cfg.channelRecordWindow as number) : 50;
-          const rolled = await enforceChannelWindow(
-            commonsStoreOf($),
-            sess.persona,
-            channelWindowSize,
-            (lines) => appendToChannelLog($, lines),
-          );
-          if (rolled > 0) {
+          // Round 50 point 3: enforceChannelWindow now throws instead of
+          // swallowing a failed append, so "nothing to roll" (0, no error)
+          // and "a roll was refused" (thrown, records still in the store)
+          // read as two different decisions - the next gate can tell them
+          // apart instead of seeing the store quietly stop shrinking.
+          try {
+            const rolled = await enforceChannelWindow(
+              commonsStoreOf($),
+              sess.persona,
+              channelWindowSize,
+              (lines) => appendToChannelLog($, lines),
+            );
+            if (rolled > 0) {
+              sess.state.decisions.push({
+                timestamp: Date.now(),
+                loop: "worker",
+                action: "channel_window_rolled",
+                detail: `rolled ${rolled} closed inbox/reply records to ${CHANNEL_LOG_PATH} (persona: ${sess.persona})`,
+              });
+            }
+          } catch (err) {
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "worker",
-              action: "channel_window_rolled",
-              detail: `rolled ${rolled} closed inbox/reply records to ${CHANNEL_LOG_PATH} (persona: ${sess.persona})`,
+              action: "channel_window_roll_failed",
+              detail: `roll refused, records left in store (persona: ${sess.persona}): ${err instanceof Error ? err.message : String(err)}`,
             });
           }
         }
@@ -2026,21 +2059,20 @@ export const register: Register = async (on, options) => {
               action: "nudge_cap_reached",
               detail: `${g.id}: ${capReason}`,
             });
-            // D5: write an ask record and set pendingAskId
-            const askId = `ask-${g.id}-${capTs}`;
-            await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, capReason, sess.mySessionId);
-            sess.state.pendingAskId = askId;
-            sess.state.decisions.push({
-              timestamp: capTs,
-              loop: "monitor",
-              action: "ask_opened",
-              detail: `${g.id}: nudge-cap: ${capReason} (idle ${idleDisplay}, ask ${askId})`,
-            });
+            // Round 58 finding 3: this used to write an ask record from controller prose here - the
+            // same class of defect item 8.2 removed from the classifier's ask-operator and pause
+            // verdicts, just reached through a third path. The nudge cap has no concrete question to
+            // ask, only an idle reading, exactly like the classifier paths: it pauses the node with
+            // the cap reason and opens nothing. Round 60 finding 3(b): turn.complete reactivates it
+            // on the worker's next completed turn that calls a real work tool (pausedByNudgeCap
+            // below is the marker it reads), or goal_resume reactivates it explicitly; no ask, no
+            // pendingAskId, nothing waiting on an operator answer that was never asked for.
             try { $.ui.toast(`Agentic: ${capReason}`); } catch { /* non-fatal */ }
             if (g.status === "active") {
-              // BG1: nudge cap → paused + no activate (ask is open, tree stays put).
+              // BG1: nudge cap → paused + no activate (tree stays put, no ask open on it).
               g.status = "paused";
               g.blockedReason = capReason;
+              g.pausedByNudgeCap = true;
               g.updatedAt = capTs;
               sess.state.decisions.push({
                 timestamp: capTs,
@@ -2340,7 +2372,15 @@ export const register: Register = async (on, options) => {
                 currentPrompt = nudgeText;
                 nudgedTurn = true;
                 sess.lastNudgeAt = now;
-                sess.consecutiveNudgesWithoutOnGoal += 1;
+                // Round 58 finding 3: a nudge fired while a turn is open (turnInFlight) does not
+                // count toward the cap - it joins the turn already in progress rather than landing
+                // between completed turns, so the worker never saw it as an idle-gap nudge to react
+                // to. The rebind PR's own turn (71 tool calls, well past the 45s idle window) hit
+                // three such nudges and escalated on prose the worker had no chance to answer. Only
+                // a nudge delivered between completed turns advances the counter.
+                if (!turnInFlight) {
+                  sess.consecutiveNudgesWithoutOnGoal += 1;
+                }
                 // D1: increment nudge ledger (count only, no token estimate)
                 sess.state.monitor.cost.nudge.count += 1;
                 // D3: update nudge window
@@ -2349,7 +2389,7 @@ export const register: Register = async (on, options) => {
                   timestamp: tickTs,
                   loop: "monitor",
                   action: "nudge_sent",
-                  detail: `${g.id}: idle ${idleDisplay}, nudge #${sess.consecutiveNudgesWithoutOnGoal}`,
+                  detail: `${g.id}: idle ${idleDisplay}, nudge #${sess.consecutiveNudgesWithoutOnGoal}${turnInFlight ? " (inside an open turn, not counted)" : ""}`,
                 });
               } catch { /* nudge failed; non-fatal */ }
             }
@@ -2682,6 +2722,26 @@ export const register: Register = async (on, options) => {
             detail: `${g.id}: ${String(err).slice(0, 150)}`,
           });
         }
+        turnLeafId = null;
+      } else if (turnLeaf.status === "paused" && turnLeaf.pausedByNudgeCap && toolCallsThisTurn > 0) {
+        // Round 60 finding 3(b): the cap pause (above) opens no ask, so nothing but this
+        // check ever reactivates it in a headless child - goal_resume is a tool call the
+        // worker has to think to make, and a paused node otherwise never gets nudged again.
+        // A completed turn that called a real work tool while this node sits paused for
+        // the cap reason (never for a goal_edit pause, which never sets the flag) means
+        // the worker resumed the work on its own; reactivate rather than leave it stalled.
+        const cappedReason = turnLeaf.blockedReason || "nudge cap";
+        turnLeaf.status = "active";
+        turnLeaf.blockedReason = undefined;
+        turnLeaf.pausedByNudgeCap = false;
+        turnLeaf.updatedAt = Date.now();
+        sess.consecutiveNudgesWithoutOnGoal = 0;
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "goal",
+          action: "reactivated_by_work",
+          detail: `${turnLeaf.id}: work tool called while paused (${cappedReason}), reactivating`,
+        });
         turnLeafId = null;
       } else {
         // H2: node is paused, blocked, or switched: skip scoring.
@@ -3124,9 +3184,14 @@ export const register: Register = async (on, options) => {
       const now = Date.now();
 
       if (action === "drop") {
-        if (node.status !== "pending" && node.status !== "paused") {
+        // Item 8.1's own bullet in one line: a blocked node (e.g. a stale duplicate the planner
+        // left behind) could not be retired at all before this - drop refused it alongside every
+        // other status, and nothing else marks a blocked node done or dropped. Allowed here, same
+        // as pending/paused, with the reason always recorded (never optional for this status, so
+        // the tree can say why a blocked node was let go rather than just that it was).
+        if (node.status !== "pending" && node.status !== "paused" && node.status !== "blocked") {
           toolErrorsThisTurn++;
-          return { deny: `Cannot drop ${nodeId}: status is "${node.status}" (only pending or paused nodes can be dropped).` };
+          return { deny: `Cannot drop ${nodeId}: status is "${node.status}" (only pending, paused, or blocked nodes can be dropped).` };
         }
         node.status = "abandoned";
         node.blockedReason = reason || "dropped by operator";
@@ -3331,6 +3396,7 @@ export const register: Register = async (on, options) => {
       // M10: clear blockedReason on resume.
       const pausedReason = target.blockedReason || "unknown";
       target.blockedReason = undefined;
+      target.pausedByNudgeCap = false;
       target.status = "active";
       target.updatedAt = Date.now();
       sess.state.activeGoalId = target.id;

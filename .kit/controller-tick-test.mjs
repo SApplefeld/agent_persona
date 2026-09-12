@@ -20,7 +20,7 @@
 // Exits 0 on success, 1 on failure.
 
 import { execSync } from "node:child_process";
-import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, loadModule, makeState } from "./tick-harness.mjs";
+import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, loadModule, makeState, makeGoalNode } from "./tick-harness.mjs";
 
 let failures = 0;
 function check(name, cond) {
@@ -2238,10 +2238,18 @@ async function caseItem5_channelWindowNoDeleteOnAppendFailure() {
     seed[key] = { id: `default-writer-${i}-1`, key, from: `writer-${i}`, at: 1000 + i, text: `m${i}`, kind: "say", status: "delivered" };
   }
 
-  // Failing case: appendLines always throws.
+  // Failing case: appendLines always throws. Round 50 point 3: enforceChannelWindow
+  // now lets the error propagate instead of swallowing it and returning 0 - the
+  // caller (index.ts) is what turns "nothing to roll" and "roll refused" into two
+  // different decisions, and a thrown error is exactly the signal it needs.
   const failStore = makeMiniStore(seed);
-  const failRolled = await enforceChannelWindow(failStore, "default", 3, async () => { throw new Error("write failed"); });
-  check("item5 append-fails: enforceChannelWindow returns 0", failRolled === 0);
+  let threw = false;
+  try {
+    await enforceChannelWindow(failStore, "default", 3, async () => { throw new Error("write failed"); });
+  } catch (err) {
+    threw = err instanceof Error && err.message === "write failed";
+  }
+  check("item5 append-fails: enforceChannelWindow throws instead of swallowing", threw);
   check("item5 append-fails: all 6 records remain in the store", failStore._map.size === 6);
 
   // Control: the same setup with a succeeding append rolls exactly the overflow.
@@ -3795,6 +3803,11 @@ async function main() {
     await caseItem5_channelWindowNoDeleteOnAppendFailure();
     await caseItem5_decisionLogCappedAtPush(clock);
     await caseItem5_memoryCappedAtPush(clock);
+    await caseItem81_goalEditDropAllowsBlocked(clock);
+    await caseItem81_goalEditDropStillRefusesActive_control(clock);
+    await caseR58f3_nudgeInsideOpenTurnNotCounted(clock);
+    await caseR58f3_capPausesWithNoAsk(clock);
+    await caseR60f3b_reactivationAfterCapPause(clock);
     await caseS4_peer_consumed(clock);
     await caseS4_peer_send_message_consumed(clock);
     await caseS4_other_origin_passes(clock);
@@ -4269,3 +4282,284 @@ async function caseItem2_backfillFiresOnSecondRequest(clock) {
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
+
+// Item 8.1 / Round 58 finding 4: goal_edit's drop action refused a blocked node outright, which is
+// exactly why the stale duplicate plan-mtwxh5jx-acm9 could not be retired - blocked was not in its
+// allowed-status list alongside pending/paused. Allowed here, with the reason always recorded.
+async function caseItem81_goalEditDropAllowsBlocked(clock) {
+  console.log("\n=== Item 8.1: goal_edit drop allows a blocked node, recording the reason ===");
+  clock.set(T0);
+
+  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const blockedPlan = makeGoalNode({
+    id: "plan-blocked",
+    parentId: "root-1",
+    kind: "plan",
+    status: "blocked",
+    blockedReason: "stale duplicate",
+  });
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "item81_drop_blocked",
+    stateOpts: { now: T0, goals: [rootGoal, blockedPlan], activeGoalId: null },
+  });
+
+  const toolCallH = h.handlers["tool.call"];
+  const result = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__goal_edit",
+    nodeId: "plan-blocked",
+    action: "drop",
+    reason: "superseded by item 7's own node",
+  }, async () => ({ result: "passthrough" }));
+
+  check("item81 drop-blocked: not denied", result.deny === undefined, result.deny);
+
+  const state = getState(h);
+  const node = state.goals.find(g => g.id === "plan-blocked");
+  check("item81 drop-blocked: status is abandoned", node.status === "abandoned");
+  check("item81 drop-blocked: reason recorded", node.blockedReason === "superseded by item 7's own node");
+
+  const decisions = getDecisions(h);
+  check("item81 drop-blocked: drop decision logged", decisions.some(d => d.action === "drop" && d.detail.includes("plan-blocked")));
+}
+
+// Control: an active node is still refused, so the widened allow-list is exactly
+// {pending, paused, blocked} and nothing broader.
+async function caseItem81_goalEditDropStillRefusesActive_control(clock) {
+  console.log("\n=== Item 8.1 control: goal_edit drop still refuses an active node ===");
+  clock.set(T0);
+
+  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const activePlan = makeGoalNode({ id: "plan-active", parentId: "root-1", kind: "plan", status: "active" });
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "item81_drop_active_control",
+    stateOpts: { now: T0, goals: [rootGoal, activePlan], activeGoalId: "plan-active" },
+  });
+
+  const toolCallH = h.handlers["tool.call"];
+  const result = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__goal_edit",
+    nodeId: "plan-active",
+    action: "drop",
+    reason: "should not apply",
+  }, async () => ({ result: "passthrough" }));
+
+  check("item81 drop-active control: denied", result.deny !== undefined);
+
+  const state = getState(h);
+  const node = state.goals.find(g => g.id === "plan-active");
+  check("item81 drop-active control: status unchanged", node.status === "active");
+}
+
+// Round 58 finding 3, part (a): a nudge fired while a turn is open (turnInFlight) must not count
+// toward the cap, since it joins the turn already in progress rather than landing between
+// completed turns the worker could react to between. Never completing the opened turn keeps
+// turnInFlight true for every tick below.
+async function caseR58f3_nudgeInsideOpenTurnNotCounted(clock) {
+  console.log("\n=== Round 58 finding 3a: nudges inside an open turn don't count toward the cap ===");
+  clock.set(T0);
+
+  const h = await createTickHarness({
+    ...OPTS,
+    // Raised well past MAX_CONSECUTIVE_NUDGES (3): OPTS's own costMaxNudgesPerHour (2) is a
+    // different, unrelated cap (D3's own test) that would otherwise trip first and mask what
+    // this case is actually proving.
+    costMaxNudgesPerHour: 20,
+    caseName: "r58f3_open_turn",
+  });
+  h.setClassifyValue("nudge");
+
+  // session.start's reload resets the reseeded "active" leaf to "pending" - a completed dummy
+  // turn (H2 scoring) re-activates g-plan before the race under test, the same transitional step
+  // caseD2/D4 use via fireTurn().
+  await fireTurn(h);
+  await new Promise(r => setTimeout(r, 20));
+
+  // The tick callback is fire-and-forget by design (its own comment: "the timer callback is sync,
+  // so we schedule async work" via an un-awaited Promise.resolve().then()). fireTick's own await
+  // only covers that synchronous scheduling, not the deferred classify/nudge work, which is why
+  // tickAndSettle sleeps afterward to let it land. That gap is exactly the race Round 58 hit live:
+  // the synchronous in-flight gate (turnInFlight false) passes and the tick is scheduled, then the
+  // real turn opens before the deferred nudge actually runs. Reproduced here by opening the turn
+  // right after firing the tick, before the settle sleep lets the nudge land.
+  const startH = h.handlers["turn.start"];
+  const completeH = h.handlers["turn.complete"];
+  for (let i = 0; i < 4; i++) {
+    clock.advance(130_000);
+    await fireTick(h);
+    await startH(h.fake, { turnId: `race-turn-${i}` }, () => {});
+    await new Promise(r => setTimeout(r, 50));
+    await completeH(h.fake, { aborted: true, reason: "aborted" }, () => {});
+    await new Promise(r => setTimeout(r, 20));
+  }
+
+  const state = getState(h);
+  const decisions = state.decisions;
+  const nudges = decisions.filter(d => d.action === "nudge_sent");
+  check("r58f3a: four nudges were sent despite the race", nudges.length === 4);
+  check("r58f3a: every nudge notes it was not counted", nudges.every(d => d.detail.includes("not counted")));
+  check("r58f3a: no nudge_cap_reached", !decisions.some(d => d.action === "nudge_cap_reached"));
+  check("r58f3a: no ask_opened", !decisions.some(d => d.action === "ask_opened"));
+  check("r58f3a: no paused_by_controller", !decisions.some(d => d.action === "paused_by_controller"));
+  const plan = state.goals.find(g => g.id === "g-plan");
+  check("r58f3a: the active leaf stays active", plan && plan.status === "active");
+}
+
+// Round 58 finding 3, part (b): the nudge cap, reached through completed-turn nudges (real idle
+// time, no turn ever open), pauses the node and opens no ask - the same shape item 8.2 already
+// gave the classifier's ask-operator and pause verdicts, reached here through a third path.
+async function caseR58f3_capPausesWithNoAsk(clock) {
+  console.log("\n=== Round 58 finding 3b: the nudge cap pauses the node and opens no ask ===");
+  clock.set(T0);
+
+  const h = await createTickHarness({
+    ...OPTS,
+    // Same reason as 3a: keep the unrelated per-hour nudge-budget cap out of the way of the
+    // consecutive-nudge cap this case actually exercises.
+    costMaxNudgesPerHour: 20,
+    caseName: "r58f3_cap_no_ask",
+  });
+  h.setClassifyValue("nudge");
+
+  // One completed turn to establish a baseline; no further turn.start below, so every tick's
+  // nudge lands with turnInFlight false - "between completed turns," per the fix.
+  await fireTurn(h);
+  await new Promise(r => setTimeout(r, 20));
+
+  for (let i = 0; i < 4; i++) {
+    clock.advance(130_000);
+    await tickAndSettle(h, clock);
+  }
+
+  const state = getState(h);
+  const decisions = state.decisions;
+  check("r58f3b: nudge_cap_reached present", decisions.some(d => d.action === "nudge_cap_reached"));
+  check("r58f3b: paused_by_controller present", decisions.some(d => d.action === "paused_by_controller"));
+  check("r58f3b: no ask_opened", !decisions.some(d => d.action === "ask_opened"));
+  const askKeys = [...h.storeMap.keys()].filter(k => k.startsWith("ask:"));
+  check("r58f3b: no ask record in the store", askKeys.length === 0);
+  check("r58f3b: pendingAskId not set", state.pendingAskId === null || state.pendingAskId === undefined);
+  const plan = state.goals.find(g => g.id === "g-plan");
+  check("r58f3b: the node is paused, not active", plan && plan.status === "paused");
+  check("r58f3b: blockedReason names the nudge cap", plan && /Nudged \d+ times without on-goal/.test(plan.blockedReason || ""));
+}
+
+// Round 60 finding 3(b): a cap pause opens no ask (finding 3a/b above), so nothing but a
+// completed turn that calls a real work tool, or goal_resume, ever reactivates the node in a
+// headless child. Three cases: (i) a work-tool turn.complete reactivates a cap-paused node;
+// (ii) control - a turn.complete with no work tool leaves it paused; (iii) control - a node
+// paused by goal_edit pause (not the cap) is never reactivated by work.
+async function caseR60f3b_reactivationAfterCapPause(clock) {
+  console.log("\n=== Round 60 finding 3b: turn.complete reactivates a cap-paused node on real work ===");
+
+  // (i) work-tool turn.complete reactivates.
+  {
+    clock.set(T0);
+    const h = await createTickHarness({
+      ...OPTS,
+      costMaxNudgesPerHour: 20,
+      caseName: "r60f3b_reactivate",
+    });
+    h.setClassifyValue("nudge");
+    await fireTurn(h);
+    await new Promise(r => setTimeout(r, 20));
+    for (let i = 0; i < 4; i++) {
+      clock.advance(130_000);
+      await tickAndSettle(h, clock);
+    }
+    let state = getState(h);
+    let plan = state.goals.find(g => g.id === "g-plan");
+    check("r60f3b(i): cap pause landed first", plan && plan.status === "paused" && /Nudged \d+ times/.test(plan.blockedReason || ""));
+
+    const startH = h.handlers["turn.start"];
+    const toolCallH = h.handlers["tool.call"];
+    const completeH = h.handlers["turn.complete"];
+    await startH(h.fake, { turnId: "work-turn" }, () => {});
+    await toolCallH(h.fake, { tool: "Bash", command: "echo hi" }, async (e) => ({ result: "ok" }));
+    await completeH(h.fake, { aborted: false, reason: "stop", answer: "Did the work." }, () => {});
+
+    state = getState(h);
+    const decisions = state.decisions;
+    plan = state.goals.find(g => g.id === "g-plan");
+    check("r60f3b(i): reactivated_by_work present", decisions.some(d => d.action === "reactivated_by_work"));
+    check("r60f3b(i): the node is active again", plan && plan.status === "active");
+    check("r60f3b(i): blockedReason cleared", plan && !plan.blockedReason);
+    // consecutiveNudgesWithoutOnGoal lives on sess (in-memory), not sess.state; a fresh
+    // nudge_cap_reached this soon would only happen if the reset in the fix didn't take,
+    // so absence of a second cap hit on the very next tick is the reachable proxy for it.
+    clock.advance(130_000);
+    await tickAndSettle(h, clock);
+    const afterState = getState(h);
+    check("r60f3b(i): no immediate re-trip of the cap (counter was reset)",
+      afterState.decisions.filter(d => d.action === "nudge_cap_reached").length === 1);
+  }
+
+  // (ii) control: a turn.complete with no work tool leaves the node paused.
+  {
+    clock.set(T0);
+    const h = await createTickHarness({
+      ...OPTS,
+      costMaxNudgesPerHour: 20,
+      caseName: "r60f3b_control_no_work_tool",
+    });
+    h.setClassifyValue("nudge");
+    await fireTurn(h);
+    await new Promise(r => setTimeout(r, 20));
+    for (let i = 0; i < 4; i++) {
+      clock.advance(130_000);
+      await tickAndSettle(h, clock);
+    }
+    const startH = h.handlers["turn.start"];
+    const completeH = h.handlers["turn.complete"];
+    await startH(h.fake, { turnId: "no-work-turn" }, () => {});
+    // No tool.call fired this turn: toolCallsThisTurn stays 0.
+    await completeH(h.fake, { aborted: false, reason: "stop", answer: "Just talked, did nothing." }, () => {});
+
+    const state = getState(h);
+    const decisions = state.decisions;
+    const plan = state.goals.find(g => g.id === "g-plan");
+    check("r60f3b(ii): no reactivated_by_work", !decisions.some(d => d.action === "reactivated_by_work"));
+    check("r60f3b(ii): the node stays paused", plan && plan.status === "paused");
+  }
+
+  // (iii) control: a node paused by goal_edit pause (not the cap) is not reactivated by work.
+  {
+    clock.set(T0);
+    const h = await createTickHarness({
+      ...OPTS,
+      costMaxNudgesPerHour: 20,
+      caseName: "r60f3b_control_goal_edit_pause",
+    });
+    const startH0 = h.handlers["session.start"];
+    await startH0(h.fake, {}, () => {});
+    const toolCallH0 = h.handlers["tool.call"];
+    await toolCallH0(h.fake, { tool: "mcp__agentic-plugin__goal_edit", nodeId: "g-plan", action: "pause", reason: "operator asked" }, async () => ({}));
+
+    let state = getState(h);
+    let plan = state.goals.find(g => g.id === "g-plan");
+    check("r60f3b(iii): goal_edit pause landed, not the cap", plan && plan.status === "paused" && plan.blockedReason === "operator asked");
+
+    const startH = h.handlers["turn.start"];
+    const toolCallH = h.handlers["tool.call"];
+    const completeH = h.handlers["turn.complete"];
+    await startH(h.fake, { turnId: "work-turn-2" }, () => {});
+    await toolCallH(h.fake, { tool: "Bash", command: "echo hi" }, async () => ({ result: "ok" }));
+    await completeH(h.fake, { aborted: false, reason: "stop", answer: "Did other work." }, () => {});
+
+    state = getState(h);
+    const decisions = state.decisions;
+    plan = state.goals.find(g => g.id === "g-plan");
+    check("r60f3b(iii): no reactivated_by_work", !decisions.some(d => d.action === "reactivated_by_work"));
+    check("r60f3b(iii): the node stays paused (goal_edit pause is not the cap)", plan && plan.status === "paused");
+  }
+}
+
+// Round 58 finding 3's control - the worker's own ASK: marker still opens an ask record,
+// unaffected by removing the nudge-cap's ask-writing - is already proven by
+// caseItem8p2_worker_states_fork_opens_ask above (item 8.2), which this round's changes do not
+// touch (the marker path lives in turn.complete; the nudge cap lives in the controller tick).
+// Re-driving the same seeding here would duplicate that case rather than add coverage, so this
+// round leans on it directly: it still passes, unchanged, per the run below.

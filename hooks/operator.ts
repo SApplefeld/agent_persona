@@ -360,12 +360,12 @@ export async function enforceChannelWindow(
   const lines = overflow.map((o) => JSON.stringify({ persona, kind: o.kind, key: o.key, rolledAt: Date.now(), record: o.record }));
   // Round 47: append before delete, and never delete on a failed append -
   // a record must have proof it landed in the log before it leaves the
-  // store, not the other way around.
-  try {
-    await appendLines(lines);
-  } catch {
-    return 0;
-  }
+  // store, not the other way around. Round 50 point 3: a failed append used
+  // to return 0 here, the same value as "nothing to roll" - the caller could
+  // not tell "no overflow this tick" from "overflow existed and the roll was
+  // refused". Let the error propagate instead, so the caller records which
+  // one happened.
+  await appendLines(lines);
   for (const o of overflow) {
     await store.delete(o.key);
   }
