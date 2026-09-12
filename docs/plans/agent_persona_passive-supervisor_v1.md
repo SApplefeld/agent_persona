@@ -360,6 +360,8 @@ Gate: targeted - `npx tsc --noEmit` exit 0; `node .kit/check-loader-rule.mjs` PA
 Next: the `discord-channels` rebind PR additions (paused node `gw3i`); then, once the runtime relaunches on this branch, the worker's own first kaizen goal (expected `memory_quality`), recorded as an addendum to this Chapter.
 Commit Model: Branch-and-PR
 
+Addendum (Round 71, Reviewer): rebased onto `item8-3-busy-worker-reachable`'s tip (`f14477d`, carrying `233d56a`'s R3 check and the Next-line fix this Chapter's own predecessor needed), so 8.4 no longer forks from a stale point on that branch. No conflict arose in the rebase; all five gates re-ran clean at the new tip (`8d61428`): tsc 0, loader PASS, `controller-tick-test.mjs` 317 OK / 0 failures, `self-review-unit-test.mjs` 33 OK, `supervisor-unit-test.mjs` 15 passed, all unchanged from before the rebase. Two notes on the pass's own limits, named so the first live run isn't read as a surprise: the first post-relaunch review is expected to raise an `asks_unresolved` kaizen goal for the nudge-cap storm on node `gw3i` that Round 58 already named, which should close with receipts pointing at that round rather than being treated as a new finding; and the pass only sees the decision log's 200-entry cap, which at this worker's typical rate bounds its lookback to roughly 100 minutes, so a weakness whose repeats are more than about 100 minutes apart will not be caught until it recurs inside that window.
+
 **Proof:** harness, `.kit/tick-8-4-commit.out` (final tree), the five item 8.4 cases:
 ```
 === Item 8.4: a repeated weakness becomes a kaizen goal, not a memory lesson ===
