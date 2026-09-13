@@ -417,9 +417,11 @@ const writeClaimDirect = async (dp: any): Promise<void> => {
 };
 
 // Owner-only heartbeat write: sessionId, epoch, lastSeen now, and the
-// session's turnStartedAt (plan item 8.3). Every owner write site in the
-// hooks uses this so the heartbeat tick never overwrites the turn stamp
-// with an entry that lacks it. Declared at the top of the file, as
+// session's turnStartedAt (plan item 8.3). Owner write sites use this so the
+// heartbeat tick does not overwrite the turn stamp with an entry that lacks
+// it. writeClaimDirect below is the exception and writes no turnStartedAt, so
+// a promotion taken mid-turn drops the published stamp until the next tick;
+// that gap is recorded in docs/backlog.md rather than fixed here. Declared at the top of the file, as
 // writeClaimDirect and persist are, because the hooks loader only lets $
 // be passed to a function declared here.
 const writeOwnerHeartbeat = async (dp: any): Promise<void> => {
@@ -643,13 +645,24 @@ export const register: Register = async (on, options) => {
   // needs no age-out: there is no state a running process can reach in which
   // an entry here is not a turn.
   //
-  // The value is that turn's own start time. No reader takes it yet; the
-  // long-turn record in turn.complete measures against the single
-  // sess.turnStartedAt instead, which whichever completion arrives first
-  // clears for every other open turn. A per-turn start is what that record
-  // actually wants, and this is it.
+  // The value is that turn's own start time. turn.complete reads it two ways:
+  // the long-turn record measures against the completing turn's own entry, and
+  // sess.turnStartedAt, the stamp a reader session sees, is derived from the
+  // earliest entry left after the delete.
   const openTurns = new Map<string, number>();
   const turnIsOpen = () => openTurns.size > 0;
+  // The published stamp names the earliest turn still open, or null when none
+  // is. Both turn handlers derive it through here rather than each writing its
+  // own value: a start that simply stamped its own clock would move the stamp
+  // forward whenever a second turn opened, and a reader in another process
+  // would watch one pending record's deferral shrink and then grow again.
+  const deriveTurnStartedAt = (): number | null => {
+    let earliest: number | null = null;
+    for (const startedAt of openTurns.values()) {
+      if (earliest === null || startedAt < earliest) earliest = startedAt;
+    }
+    return earliest;
+  };
   // Plan item 8.3: an urgent inbox record is looked for on the owner's
   // passthrough tool calls; this throttles that store read to once per
   // urgentCheckMinMs, since a long turn can make a tool call every second.
@@ -2688,9 +2701,11 @@ export const register: Register = async (on, options) => {
     sess.state.monitor.lastTurnId = e.turnId;
     // The turn is open from here until a completion carrying this same id.
     openTurns.set(e.turnId, Date.now());
-    // Plan item 8.3: publish the turn's start so a reader session can report
-    // how long a pending record has been deferred behind this turn.
-    sess.turnStartedAt = Date.now();
+    // Plan item 8.3: publish a start so a reader session can report how long a
+    // pending record has waited. The value names the earliest turn still open,
+    // which on an overlap is not this one. Derived through the helper so this
+    // handler and turn.complete agree on what the published value means.
+    sess.turnStartedAt = deriveTurnStartedAt();
     if (sess.isOwner) {
       try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }
     }
@@ -2750,25 +2765,53 @@ export const register: Register = async (on, options) => {
   // --- turn.complete: goal scoring, memory curation, guarded save ---
   // Modules write to sess.state. The Controller (clock.tick) reads sess.state and decides.
   on("turn.complete", async ($, e, next) => {
+    // Session-scoped and unconditional by design, whether or not this
+    // completion matches a turn this session saw start. The plan doc's
+    // Decisions entry on the idle anchor owns the reasoning.
     sess.state.monitor.lastTurnComplete = Date.now();
+    // This turn's own entry, read before the delete below removes it.
+    const mapStartedAt = openTurns.get(e.turnId);
     // Closing by id: a completion for a turn this session never saw start
     // removes nothing, so it cannot clear a different turn that is still open.
     openTurns.delete(e.turnId);
     // Plan item 8.4: a turn that ran past an hour is one of the weaknesses
     // the own-record pass counts, so record it as a decision here, the only
     // point that knows both ends of the turn.
-    if (sess.turnStartedAt !== null) {
-      const turnMs = Date.now() - sess.turnStartedAt;
-      if (turnMs >= KAIZEN_LONG_TURN_MS) {
+    // The harness measures the turn itself and carries the figure whatever the
+    // turn's reason, so where it arrives the record needs no hook-side clock
+    // and no open-turn entry, and still counts a turn whose start this session
+    // never saw, which is most of them on a session the harness under-reports.
+    // The map entry is kept as a defensive fallback against a contract this
+    // plugin has never exercised: the field is declared required, and no other
+    // line here reads it, so an absent one would switch this record off with
+    // nothing saying so.
+    {
+      const turnMs = typeof e.durationMs === "number"
+        ? e.durationMs
+        : mapStartedAt === undefined ? null : Date.now() - mapStartedAt;
+      if (turnMs !== null && turnMs >= KAIZEN_LONG_TURN_MS) {
         sess.state.decisions.push({
           timestamp: Date.now(),
           loop: "monitor",
           action: "turn_over_hour",
-          detail: `Turn ${sess.state.monitor.turnCount} ran ${Math.round(turnMs / 1000)}s`,
+          detail: `Turn ${e.turnId || "unknown"} ran ${Math.round(turnMs / 1000)}s`,
         });
       }
     }
-    sess.turnStartedAt = null;
+    // The deferred-status stamp is derived from what is still open rather than
+    // cleared, so it names the earliest turn still running, or null when none
+    // is. This value leaves the process: it is published to the heartbeat and
+    // read by another session to report how long a pending record has waited.
+    // A stamp cleared by whichever completion arrived first would tell that
+    // reader no turn is running while one still is, and a stamp left set by an
+    // unmatched completion would strand and report a turn that ended hours
+    // ago. Deriving it cannot strand the in-memory value, because an empty map
+    // yields null. The published file is a weaker claim: writeOwnerHeartbeat is
+    // a read-modify-write called from both turn handlers and from the heartbeat
+    // tick, so two in-flight calls can land out of build order and publish a
+    // non-null stamp just after the map emptied. The next tick repairs it, so
+    // that exposure is one heartbeat interval rather than unbounded.
+    sess.turnStartedAt = deriveTurnStartedAt();
     if (sess.isOwner) {
       try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }
     }

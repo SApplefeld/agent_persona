@@ -1,5 +1,25 @@
 # Backlog
 
+## The harness delivers far more turn completions than turn starts, so the open-turn guard is blind for most turns (found 2026-09-13)
+
+Cheap first step, not yet done: neither event is logged with its turn id, so nobody can tell whether the extra completions are unpaired turns or repeated deliveries of the same one. Log `e.turnId` on both `turn.start` and `turn.complete`, run a worker for a while, and read the pairing off a live log. Section 9 leans on that pairing: it derives the published deferral stamp from the open-turn map, so a start whose completion never arrives now pins the stamp instead of being cleared by the next completion, and the claim that this cannot happen is inferred from the map being in-process rather than confirmed from a log.
+
+`run/child-1/claude-debug.log` carries 9 `turn.start` lines against 34 `turn.complete` lines. `run/child-2/claude-debug.log` carries 5 and 5, so the asymmetry is intermittent rather than constant. Counted on a live log while the fleet was running, so the exact numbers move; the ratio is the finding.
+
+Section 11 bounds the goal nudge with an open-turn map keyed by turn id. That map can only hold a turn whose `turn.start` was delivered. On a session in the state above, `turnIsOpen()` reads false while real turns are running, and the controller tick is free to nudge into live work. Section 11 satisfies its own acceptance criterion as written and the guard is still blind for most turns in practice.
+
+Not root-caused. The open question is why `turn.start` goes undelivered while `turn.complete` does not, which is a harness event-delivery question rather than a plugin one. Worth answering before the coordinator leans on the in-flight reading across many workers, since a blind guard there means a coordinator nudging into live turns on every worker at once.
+
+Section 9 deliberately does not fix this. Its own change leaves the absorber in place: `lastTurnComplete` keeps updating on every completion, matched or not, which is what has kept the idle reading roughly honest through this all along.
+
+## A promoted owner inherits the dead owner's idle anchor and can be nudge-eligible on its first tick (found 2026-09-13)
+
+A second, separate defect on the same heartbeat surface: `writeClaimDirect` in `hooks/index.ts` writes the owner's heartbeat entry with `sessionId`, `epoch` and `lastSeen` and no `turnStartedAt`, while the comment above the shared writer claims every owner write site goes through the helper that carries the stamp. A promotion taken mid-turn therefore drops the published stamp until the next tick, and a reader in another session reports no turn running while one is. Pre-existing, and it matters more now that Section 9 makes that stamp the authoritative answer to how long a record has waited.
+
+The heartbeat tick's promotion path in `hooks/index.ts`, the branch that calls `parseState` and takes ownership when the previous owner's claim has gone stale, does not reset `sess.state.monitor.lastTurnComplete`. The two other paths that take ownership both reset it: the `session.start` handler, whose comment says a persisted value would make the first tick look like hours of idle time, and the `identity_set` ownership path. Cited by symbol rather than line, because the line numbers moved under the commit that first wrote this entry.
+
+So a session promoted to owner reads the previous owner's last completion as its own, and where that owner died a while ago the first tick sees a large idle gap and is eligible to nudge immediately. Small, self-contained, and outside Section 9's files.
+
 ## commons-unit-test.mjs once died in a libuv teardown assertion after passing (found 2026-09-13)
 
 One run printed `All tests passed` and then exited 127 on
@@ -90,6 +110,24 @@ box, so its result rests on the condition the item sets rather than on a run tha
 meet it. The whole gate does not need repeating for this. Drop this entry once that run is
 recorded in item 4's Chapter.
 
+## Design direction: let the outer loops recover a session that stopped, rather than only preventing the stop (operator dialog, 2026-09-13)
+
+Not a defect and not yet a plan. Recorded from a design conversation with the operator so it survives the session that had it.
+
+The problem it addresses, in the operator's own account: sessions are often found parked mid-effort, having declared a next action and then stopped, losing hours of wall-clock progress. The kit's stop hooks were built to prevent exactly that. The proposal is that the supervisor shell, which already launched the session and holds both ends of its pipe, could also recover one after the fact, the way a person at the keyboard types "continue".
+
+What makes it viable: `bin/supervise.sh` runs the child under a bash coproc with stream-json in both directions, so the shell can both type in and read out. The child emits exactly one result line per turn it completes, and the launcher already gates on that line before writing a prompt, because a prompt written earlier is absorbed into the open turn instead of starting its own.
+
+The discriminator is the hard part, because one keystroke helps in one state and harms in another. Idle but alive: typing is right, and is what the operator does by hand. Process gone: typing does nothing and the existing restart is the answer. Mid-turn: typing is actively harmful, because the prompt queues and joins the next turn, which is the nudge pile-up Section 11 exists to stop.
+
+The signal to build the discriminator on should be the shell's own, not the plugin's. The plugin's open-turn reading depends on `turn.start` events that are delivered for a minority of turns, per the entry above. The shell knows when it wrote a prompt and when the result line came back, and observes both halves itself.
+
+Keep the stop hooks beside this rather than replacing them. They cover different failures. A hook prevents a bad stop at no cost when it works, but cannot fire in a session that has died, since whatever killed the process took the hook with it. A loop repairs after the fact and always pays a detection delay plus a resume that re-reads the plan and re-derives what the stopped session already held.
+
+Design against one failure from the start: a loop that types "continue" on every quiet stretch will eventually type it into a session that correctly finished, which is the failure the operator described on a sibling project, many review rounds building features nobody asked for. The loop needs a predicate for whether work should still be happening, not only whether work is happening. The armed kit goal is the natural source, since it already records what the session was meant to finish.
+
+Two limits worth knowing before anyone builds this. There is no working-on-it event in the stream, because the spinner is drawn by the interactive display, so silence during a long tool call is indistinguishable from death on the pipe alone and growth is the honest liveness evidence. And prompts the plugin submits to itself are not echoed into that stream, so a shell-side monitor sees the turn a self-nudge causes but never the nudge.
+
 ## A design conversation with the operator has no capture rule, so whether it lands anywhere is a judgment call each time
 
 The outer-loop recovery conversation reached a real design direction and landed in zero
@@ -119,7 +157,3 @@ a slower form.
 Open: where the rule itself should live. Project memory holds it for this repo only. The
 doctrine holds it everywhere and is the heavier edit. The lean is the doctrine, because the
 failure is not specific to this repo. Operator's call.
-
-This entry and the outer-loop recovery entry both append to the tail of this file on
-separate branches, so whichever merges second will conflict here. The resolution is to keep
-both entries.
