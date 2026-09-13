@@ -142,7 +142,12 @@ mkdir -p "$TMP/home" "$TMP/wd" "$TMP/stub"
 printf '#!/usr/bin/env bash\ntouch "%s"\nexit 1\n' "$TMP/stub/launched" > "$TMP/stub/claude"
 chmod +x "$TMP/stub/claude"
 drive_sup() {  # env assignments...
-  env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" "$@" bash "$SCRIPT" "$TMP/wd" modelprobe default --rundir "$TMP/rd" --no-channel 2>&1
+  # Each case gets its own rundir. A shared one carries the previous case's
+  # settings.json, which sends the next case down the completion branch
+  # instead of the emit branch, so results would depend on case order.
+  local rd
+  rd=$(mktemp -d "$TMP/rd.XXXXXX")
+  env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" "$@" bash "$SCRIPT" "$TMP/wd" modelprobe default --rundir "$rd" --no-channel 2>&1
 }
 refused_by() {  # <label> <expected output text> env assignments...
   local label="$1" token="$2" out rc
@@ -166,6 +171,20 @@ accepted() {  # <label> env assignments...
     check "$label (rc=$rc, out=$out)" 1
   fi
 }
+
+# Control for the marker every case below reads as absent: with a commons
+# store that leaves the persona free, the same drive passes the gate, reaches
+# the launch, and the stub records it. Without this, "the stub never launched"
+# would be satisfied by a marker that can never appear at all.
+mkdir -p "$TMP/home-free/.claude/plugins/store" "$TMP/wd-launch"
+printf '{}' > "$TMP/home-free/.claude/plugins/store/agentic-plugin_agent-persona-modelprobe.json"
+rm -f "$TMP/stub/launched"
+OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home-free" supervisorCrashLimit=1 supervisorPollMs=1000 \
+  timeout 120 bash "$SCRIPT" "$TMP/wd-launch" modelprobe default --rundir "$TMP/rd-launch" --no-channel 2>&1)
+RC=$?
+[ "$RC" -eq 3 ] && [ -e "$TMP/stub/launched" ]
+check "control: a gate-passing run reaches the launch and the stub marker appears (rc=$RC)" "$?"
+rm -f "$TMP/stub/launched"
 
 # The model shape: a name of lowercase letters, digits, '.' and '-' starting
 # with a letter or digit, plus an optional bracketed suffix. '-opus' and

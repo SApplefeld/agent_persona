@@ -42,10 +42,14 @@ trap 'rm -rf "$TMP"' EXIT
 # decision's detail with includes(); more than one match fails the pin below.
 READER_SUBSTR=$(sed -n "s/.*newest\.detail\.includes('\([^']*\)').*/\1/p" "$SUP")
 # Each root_complete detail literal in the hooks, tagged by whether its
-# decision is timestamped backfillNow, which only the backstop uses.
+# decision is timestamped backfillNow, which only the backstop uses. The
+# search for a detail ends at the next `action:` line, so a root_complete
+# whose detail is written in another shape yields no pair at all rather than
+# taking the following decision's detail as its own.
 DETAILS=$(awk '
   /timestamp:/ { ts = $0 }
   /action: "root_complete",/ { want = 1; next }
+  /action:/ { want = 0; next }
   want && /detail: `/ {
     s = $0; sub(/^[^`]*`/, "", s); sub(/`.*$/, "", s)
     print ((ts ~ /timestamp: backfillNow,/) ? "BACKSTOP\t" : "OTHER\t") s
@@ -59,11 +63,11 @@ check "pin: exactly one backfill substring test is found in bin/supervise.sh ('$
 [ -n "$BACKSTOP_DETAIL" ] && [ "$(printf '%s\n' "$BACKSTOP_DETAIL" | wc -l)" -eq 1 ]
 check "pin: exactly one backstop root_complete detail is found in hooks/index.ts ('$BACKSTOP_DETAIL')" "$?"
 [ -n "$OTHER_DETAILS" ]; check "pin: a non-backstop root_complete detail is found in hooks/index.ts" "$?"
-# The awk above pairs each root_complete decision with the detail line that
-# follows it. Comparing the pair count against the number of root_complete
-# decisions in the file is what catches a decision written in a shape the awk
-# skips, which would otherwise leave its detail out of the check below in
-# silence.
+# The awk above pairs a root_complete decision with the backtick detail line
+# inside that same decision. A decision whose detail is written in any other
+# shape yields no pair, so this count is what turns that silence into a
+# failure: it is the check that says every root_complete in the file was
+# actually examined by the pins above, rather than skipped unnoticed.
 ROOT_COMPLETE_WRITES=$(grep -c 'action: "root_complete",' "$HOOKS")
 DETAIL_COUNT=$(printf '%s\n' "$DETAILS" | grep -c .)
 [ "$ROOT_COMPLETE_WRITES" -gt 0 ] && [ "$DETAIL_COUNT" -eq "$ROOT_COMPLETE_WRITES" ]
@@ -133,6 +137,11 @@ chmod +x "$STUB/claude"
 # Runs the supervisor to its own exit (bounded at 120s) and sets RC, LOG, OUT.
 # The crash limit is always 1. The restart budget is per case, because the
 # natural-exit path checks the budget before the crash limit.
+# SUP_OVERRIDE runs a case against a copy of the supervisor instead of the
+# tracked one, and DRIVE_CRASH_LIMIT raises the crash limit for a case that
+# needs to see a relaunch. Both are reset by their case.
+SUP_OVERRIDE=""
+DRIVE_CRASH_LIMIT=1
 drive() {
   local name="$1" plan="$2" budget="$3"; shift 3
   local dir="$TMP/$name"
@@ -140,8 +149,8 @@ drive() {
   printf '%s\n' "$plan" | tr ',' '\n' > "$dir/plan"
   printf '%s' "$dir" > "$STUB/case"
   OUT=$(env -i PATH="$STUB:$PATH" HOME="$TMP/home" \
-    supervisorPollMs=5000 supervisorCrashLimit=1 supervisorMaxRestartsPerHour="$budget" \
-    timeout 120 bash "$SUP" "$dir/wd" "$PERSONA_NAME" default --rundir "$dir/rd" --no-channel "$@" 2>&1)
+    supervisorPollMs=5000 supervisorCrashLimit="$DRIVE_CRASH_LIMIT" supervisorMaxRestartsPerHour="$budget" \
+    timeout 120 bash "${SUP_OVERRIDE:-$SUP}" "$dir/wd" "$PERSONA_NAME" default --rundir "$dir/rd" --no-channel "$@" 2>&1)
   RC=$?
   LOG="$dir/rd/supervisor.log"
   [ -f "$LOG" ] || : > "$LOG"
@@ -203,6 +212,33 @@ grep -q 'EXIT child-1 code=7 (natural)' "$LOG"; check "(e) child-1 is recorded a
 ! grep -q 'RESTART_PASSIVE:' "$LOG"; check "(e) no 'RESTART_PASSIVE:' line" "$?"
 [ "$RC" -eq 3 ] && grep -q 'STOP_CRASH_LOOP: 1 crashes' "$LOG"; check "(e) the exit is counted as a crash and ends the run (rc=$RC)" "$?"
 [ "$LAUNCHES" -eq 1 ]; check "(e) no second child launches (stub launches=$LAUNCHES)" "$?"
+
+# --- (f) a child whose stdin is already gone at launch ---
+# The window between the coproc and the copy of its write fd is too narrow for
+# a real child to die inside, so the state is injected: a copy of the
+# supervisor with the coproc array unset immediately after the launch. What
+# this case holds is the handling. An unusable stdin skips the two writes and
+# nothing more: the child's death is recorded, counted as a crash, and the
+# supervisor relaunches instead of ending the run.
+ANCHORS=$(grep -c '^  CHILD_LAUNCH_PID=\$!$' "$SUP")
+[ "$ANCHORS" -eq 1 ]; check "(f) the launch line the injection keys on appears once in bin/supervise.sh (found $ANCHORS)" "$?"
+if [ "$ANCHORS" -eq 1 ]; then
+  mkdir -p "$TMP/inject/bin"
+  cp "$ROOT"/bin/*.sh "$ROOT"/bin/*.mjs "$TMP/inject/bin/"
+  awk '{ print }
+       /^  CHILD_LAUNCH_PID=\$!$/ { print "  unset CHILD" }' "$SUP" > "$TMP/inject/bin/supervise.sh"
+  SUP_OVERRIDE="$TMP/inject/bin/supervise.sh"
+  DRIVE_CRASH_LIMIT=2
+  drive f "startup,startup" 6
+  SUP_OVERRIDE=""
+  DRIVE_CRASH_LIMIT=1
+  no_pid_abort "(f)"
+  ! grep -q 'ERROR: CHILD_IN' "$LOG"; check "(f) the missing stdin does not end the supervisor with an invocation error" "$?"
+  [ "$(grep -c 'exited before its stdin could be written to' "$LOG")" -eq 2 ]; check "(f) both children report the skipped stdin writes" "$?"
+  grep -q 'EXIT child-1 code=1 (natural)' "$LOG"; check "(f) child-1's death is recorded" "$?"
+  grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 2 ]; check "(f) the supervisor survives to relaunch (stub launches=$LAUNCHES)" "$?"
+  [ "$RC" -eq 3 ] && grep -q 'STOP_CRASH_LOOP: 2 crashes' "$LOG"; check "(f) both deaths are counted as crashes and end the run (rc=$RC)" "$?"
+fi
 
 if [ "$failed" -eq 0 ]; then
   echo "supervisor-natural-exit-test.sh: PASS"

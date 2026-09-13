@@ -334,6 +334,11 @@ console.log('live=' + live);
       heartbeat_ok=true
     else
       local hb_status
+      # The stale bound is passed as an argument rather than spliced into the
+      # program text, so a value carrying JavaScript is data the program reads
+      # instead of code it runs. A value that is not a number reads as NaN,
+      # every comparison against it is false, and the holder is treated as
+      # live, so the gate waits rather than passing on a bad bound.
       hb_status=$(node -e "
 const fs = require('fs');
 let hb;
@@ -343,14 +348,15 @@ try {
   console.log('ERROR: ' + e.message);
   process.exit(2);
 }
+const staleAfterMs = Number(process.argv[2]);
 const entry = hb['$persona'];
 if (!entry) {
   console.log('absent');
 } else {
   const age = Date.now() - entry.lastSeen;
-  console.log(age > $stale_after_ms ? 'stale:' + Math.round(age / 1000) + 's' : 'live:' + Math.round(age / 1000) + 's');
+  console.log(age > staleAfterMs ? 'stale:' + Math.round(age / 1000) + 's' : 'live:' + Math.round(age / 1000) + 's');
 }
-" "$heartbeat_path" 2>/dev/null)
+" "$heartbeat_path" "$stale_after_ms" 2>/dev/null)
       if echo "$hb_status" | grep -q '^stale\|^absent'; then
         heartbeat_ok=true
       fi

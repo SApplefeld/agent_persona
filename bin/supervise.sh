@@ -276,6 +276,17 @@ fi
 # --- Plugin values (single-sourced, emitted to settings JSON) ---
 HEARTBEAT_MS="${heartbeatMs:-30000}"
 STALE_AFTER_MS="${staleAfterMs:-90000}"
+# This one is read by the supervisor itself, not only emitted: it is the stale
+# bound the pre-launch gate hands wait_persona_free_both, and it reaches the
+# decide unit too. emit_settings_json holds every plugin value to this shape,
+# but it is skipped whenever the rundir already holds a settings file, so the
+# same rule runs here, on the path every launch takes.
+case "$STALE_AFTER_MS" in
+  ''|*[!0-9]*|0[0-9]*)
+    echo "ERROR: staleAfterMs '$STALE_AFTER_MS' is not a non-negative integer without leading zeros" >&2
+    exit 1
+    ;;
+esac
 TICK_MS="${controllerTickMs:-10000}"
 NUDGE_IDLE_MS="${nudgeIdleMs:-45000}"
 NUDGE_FLOOR_MS="${nudgeFloorMs:-5000}"
@@ -1472,21 +1483,24 @@ while true; do
     > "$OUT" 2> "$ERR"; }
   CHILD_LAUNCH_PID=$!
 
-  # Copy the fd number now: bash unsets the CHILD array the moment it reaps
-  # the coproc, and under `set -u` a bare `${CHILD[1]}` after that aborts the
-  # supervisor. The default keeps the read itself safe, and the empty check
-  # below turns a child that died before this line into a named failure
-  # rather than a write to a closed descriptor.
-  CHILD_IN=${CHILD[1]:-}
-  if [ -z "$CHILD_IN" ]; then
-    log "ERROR: CHILD_IN not set after coproc launch"
-    exit 1
-  fi
   # Reviewer Round 126 R78: a new child's launch is also the point a stale
   # snapshot from the *previous* child must stop being read - it can
   # describe pids hours old by the time anything revisits it, and every
-  # one of those numbers is a candidate for pid recycling by now.
+  # one of those numbers is a candidate for pid recycling by now. This runs
+  # before anything else in the launch block that can end the iteration, so
+  # no later path (the EXIT trap included) can act on the old snapshot.
   LAST_STOP_SNAPSHOT=""
+
+  # Copy the fd number now: bash unsets the CHILD array the moment it reaps
+  # the coproc, and under `set -u` a bare `${CHILD[1]}` after that aborts the
+  # supervisor. An empty value means the child was already reaped, so it died
+  # inside the launch window itself. That is a crash like any other, and the
+  # poll loop below is what accounts for it; the only thing that changes here
+  # is that the two stdin writes are skipped, since the pipe is gone.
+  CHILD_IN=${CHILD[1]:-}
+  if [ -z "$CHILD_IN" ]; then
+    log "NOTE: child-$CHILD_INDEX exited before its stdin could be written to; skipping the priming turn and any goal prompt"
+  fi
 
   # Send the first message to the child's stdin: the real --prompt when one
   # was given (child 1 only), or a priming turn when the channel is attached
@@ -1565,16 +1579,18 @@ while true; do
   else
     PRIMING_BODY="You are the passive supervisor. If a goal tree is active, resume it from goal_status; otherwise wait for a goal. No channel is attached, so no operator steering message will arrive here. Reply now with one short line acknowledging you are ready, then carry on."
   fi
-  node -e "
-    const prefix = process.argv[1] || '';
-    const body = process.argv[2] || '';
-    const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:
-      '[SUPERVISOR-PRIMING] ' + prefix + body
-    }]}});
-    process.stdout.write(json + '\n');
-  " "$SKILL_LOAD_INSTRUCTION$CHANNEL_REPLY_INSTRUCTION" "$PRIMING_BODY" >&"$CHILD_IN"
+  if [ -n "$CHILD_IN" ]; then
+    node -e "
+      const prefix = process.argv[1] || '';
+      const body = process.argv[2] || '';
+      const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:
+        '[SUPERVISOR-PRIMING] ' + prefix + body
+      }]}});
+      process.stdout.write(json + '\n');
+    " "$SKILL_LOAD_INSTRUCTION$CHANNEL_REPLY_INSTRUCTION" "$PRIMING_BODY" >&"$CHILD_IN"
+  fi
 
-  if [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
+  if [ -n "$CHILD_IN" ] && [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
     # A prompt written while the priming turn is still open joins that turn
     # rather than opening its own, which would put the goal prompt back
     # behind the skill-load sentence and reproduce the very shape this

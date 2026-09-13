@@ -173,6 +173,42 @@ OUT=$(drive 'bad"name' "$TMP/rd2")
 case "$OUT" in *"persona 'bad\"name' may hold only"*) check "supervise.sh refuses a persona carrying a quote" 0 ;; *) check "supervise.sh refuses a persona carrying a quote" 1 ;; esac
 [ ! -e "$TMP/rd2" ]; check "supervise.sh refuses the persona before creating the rundir" "$?"
 
+# --- staleAfterMs: checked at startup, and passed as data, not as source ---
+# The stale bound reaches a node program inside wait_persona_free_both. A
+# rundir that already holds a settings file skips emit_settings_json, which is
+# where the plugin values are otherwise checked, so the supervisor checks this
+# one itself on the path every launch takes.
+PROVIDED='{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":7}}}}'
+mkdir -p "$TMP/rd-stale" "$TMP/rd-stale-ok" "$TMP/hb"
+printf '%s' "$PROVIDED" > "$TMP/rd-stale/settings.json"
+printf '%s' "$PROVIDED" > "$TMP/rd-stale-ok/settings.json"
+OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" staleAfterMs='0;require("fs").writeFileSync("PWNED","x")' \
+  bash "$SUP" "$TMP/wd" tester default --rundir "$TMP/rd-stale" --no-channel 2>&1)
+RC=$?
+if [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q "ERROR: staleAfterMs"; then
+  check "supervise.sh refuses a staleAfterMs carrying JavaScript even with a settings file provided" 0
+else
+  check "supervise.sh refuses a staleAfterMs carrying JavaScript even with a settings file provided (rc=$RC, out=$OUT)" 1
+fi
+OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" staleAfterMs=90000 \
+  bash "$SUP" "$TMP/wd" tester default --rundir "$TMP/rd-stale-ok" --no-channel 2>&1)
+RC=$?
+[ "$RC" -eq 2 ]; check "control: the same run with a numeric staleAfterMs passes the check and reaches the gate (rc=$RC)" "$?"
+
+# The bound is an argument to the heartbeat program, so a value carrying
+# JavaScript is read rather than run. The two cases after it are the control:
+# the same call reads a 60-second-old holder as stale under a small bound and
+# as live under a large one, which only happens if the bound arrives at all.
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({probe:{lastSeen:Date.now()-60000}}))' "$TMP/hb/.agentic-heartbeat.json"
+PWN="$TMP/pwned"
+run_lib PWN="$PWN" bash -c 'source "$1/bin/agentic-common.sh" && wait_persona_free_both "$2" probe 1 "$3" ""' \
+  _ "$ROOT" "$TMP/hb" '(require("fs").writeFileSync(process.env.PWN,"x"),0)' > /dev/null 2>&1
+[ ! -e "$PWN" ]; check "a staleAfterMs carrying JavaScript never runs inside the heartbeat program" "$?"
+OUT=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && wait_persona_free_both "$2" probe 1 1 ""' _ "$ROOT" "$TMP/hb" 2>&1)
+case "$OUT" in *"heartbeat=OK"*) check "a 1ms stale bound reads the 60s-old holder as stale" 0 ;; *) check "a 1ms stale bound reads the 60s-old holder as stale (out=$OUT)" 1 ;; esac
+OUT=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && wait_persona_free_both "$2" probe 1 90000 ""' _ "$ROOT" "$TMP/hb" 2>&1)
+case "$OUT" in *"heartbeat=FAIL"*) check "a 90000ms stale bound reads the same holder as live" 0 ;; *) check "a 90000ms stale bound reads the same holder as live (out=$OUT)" 1 ;; esac
+
 if [ "$failed" -eq 0 ]; then
   echo "settings-plugin-key-test.sh: PASS"
   exit 0

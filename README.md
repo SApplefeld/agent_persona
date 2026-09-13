@@ -221,7 +221,7 @@ Declared in `plugin.json` with defaults. Read as `options.<name>` in `register(o
 1. **Pre-gate**: waits for both the commons store and per-directory heartbeat to be free (no live persona claims) before launching a child.
 2. **Launch**: starts a child via coproc with stdin as a pipe (not a file), so EOF can be sent to stop it cleanly.
 3. **Poll**: watches the store for `context_budget_crossed` decisions and other signals; decides `continue`, `restart`, `stop_complete`, `stop_budget`, or `stop_crash_loop`.
-4. **Stop**: the stop runs in phases, each ending only once every process in the snapshot is verified gone.
+4. **Stop**: the stop runs in phases. A phase counts as stopped only once every process in the snapshot is verified gone; a phase can also end unverified or failed, and the stop falls through to the next one.
    - It snapshots the child's Windows process tree first, recording each process's pid and start time.
    - It sends EOF by closing the coproc write end, then waits `stopGraceMs`.
    - It sends TERM to the wrapper, then waits another `stopGraceMs`.
