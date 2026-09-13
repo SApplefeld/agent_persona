@@ -44,6 +44,12 @@ function createFake$(opts = {}) {
   const storeMap = new Map();
   let classifyValue = opts.classifyValue || "nudge";
   const classifyCalls = [];
+  // Opt-in git answers. The default stays exit 128 (the non-git-cwd path), so a
+  // case that never calls setGitScript exercises gitUnavailable exactly as it
+  // did before this existed. Making git answers the default instead would have
+  // retired that coverage in every existing case without turning one red.
+  let gitScript = [];
+  let gitIndex = 0;
   const completeCalls = [];
   let completeValue = opts.completeValue ?? "[]";
   const uiLogs = [];
@@ -88,8 +94,11 @@ function createFake$(opts = {}) {
       },
     },
     model: {
-      classify() {
-        classifyCalls.push(1);
+      // Records the call's own arguments rather than a placeholder, so a case can
+      // assert on the summary the controller actually hands the decider. Length
+      // semantics are unchanged, so existing count-based checks still read the same.
+      classify(...args) {
+        classifyCalls.push(args);
         return Promise.resolve(classifyValue);
       },
       complete() {
@@ -116,13 +125,33 @@ function createFake$(opts = {}) {
       keys() { return Promise.resolve([...storeMap.keys()]); },
     },
     process: {
-      run() { return Promise.resolve({ exitCode: 128 }); },
+      // The git sampler issues `git status --porcelain=v1 -b` and then
+      // `git log -1 --format=%ct` as a pair. gitIndex advances on the log call,
+      // the second of the pair, so a step's timestamp stays with the status it
+      // belongs to.
+      run(argv) {
+        if (gitScript.length > 0 && Array.isArray(argv) && argv[0] === "git") {
+          const step = gitScript[Math.min(gitIndex, gitScript.length - 1)];
+          if (argv[1] === "status") {
+            const lines = ["## " + (step.branch ?? "main")];
+            for (let i = 0; i < (step.dirty ?? 0); i++) lines.push(" M file" + i + ".txt");
+            return Promise.resolve({ exitCode: 0, stdout: lines.join("\n") + "\n" });
+          }
+          if (argv[1] === "log") {
+            gitIndex += 1;
+            return Promise.resolve({ exitCode: 0, stdout: String(Math.floor(Date.now() / 1000)) + "\n" });
+          }
+        }
+        return Promise.resolve({ exitCode: 128 });
+      },
     },
   };
 
   // Attach maps to fake for convenient access (h.fake.fsMap === h.fsMap).
   fake.fsMap = fsMap;
   fake.storeMap = storeMap;
+  // steps: [{ branch?, dirty? }, ...]. The last step repeats once exhausted.
+  fake.setGitScript = (steps) => { gitScript = steps || []; gitIndex = 0; };
   fake.classifyCalls = classifyCalls;
   fake.completeCalls = completeCalls;
   fake.promptSubmits = promptSubmits;
@@ -142,6 +171,8 @@ function createFake$(opts = {}) {
     uiLogs,
     setClassifyValue(v) { classifyValue = v; },
     setCompleteValue(v) { completeValue = v; },
+    // steps: [{ branch?, dirty? }, ...]. The last step repeats once exhausted.
+    setGitScript(steps) { gitScript = steps || []; gitIndex = 0; },
     resetClassifyCalls() { classifyCalls.length = 0; },
     resetCompleteCalls() { completeCalls.length = 0; },
     resetPromptSubmits() { promptSubmits.length = 0; },

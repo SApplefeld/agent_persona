@@ -1706,8 +1706,17 @@ export const register: Register = async (on, options) => {
                 }
                 return $.process.run(["git", "log", "-1", "--format=%ct"]).then((logRes) => {
                   const lastCommitAt = logRes.exitCode === 0 ? parseInt((logRes.stdout || "0").trim(), 10) * 1000 : 0;
-                  const newGit: EnvGit = { branch, dirty, ahead, behind, lastCommitAt, sampledAt: Date.now() };
+                  const sampledAt = Date.now();
+                  const newGit: EnvGit = { branch, dirty, ahead, behind, lastCommitAt, sampledAt };
                   const prevGit = env.git;
+                  // Stamp the dirty-to-clean transition on the sample that observed
+                  // it, so the summary can name the commit rather than only the
+                  // resulting clean tree. It is deliberately not carried forward to
+                  // later samples: the signal is "a commit just landed", and a stale
+                  // one would tell the decider that on every tick afterwards.
+                  if (prevGit !== null && prevGit.dirty > 0 && dirty === 0) {
+                    newGit.clearedAt = sampledAt;
+                  }
                   if (prevGit === null || prevGit.dirty !== dirty || prevGit.branch !== branch) {
                     const detail = prevGit === null
                       ? `env_git first sample dirty=${dirty} branch ${branch}`
@@ -2163,6 +2172,11 @@ export const register: Register = async (on, options) => {
         const parts: string[] = [];
         if (env.git !== null) {
           parts.push(`git: ${env.git.branch} dirty ${env.git.dirty} ahead ${env.git.ahead} behind ${env.git.behind}`);
+          // Only on the sample that observed the transition, so the decider can tell
+          // a commit that just landed from a tree that has been clean for hours.
+          if (env.git.clearedAt !== undefined && env.git.clearedAt === env.git.sampledAt) {
+            parts.push("worktree cleared since the previous sample (a commit or reset landed)");
+          }
         }
         if (env.health !== null) {
           parts.push(`health: exit ${env.health.exitCode} for ${env.health.forNodeId || "no-node"}`);

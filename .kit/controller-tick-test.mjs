@@ -79,6 +79,111 @@ async function tickAndSettle(h, clock, ms = 50) {
 // ============================================================
 // D2: idle tick skip
 // ============================================================
+// ============================================================
+// TREELAG: a commit closes the node it completes, within one controller tick
+//
+// Kaizen goal: the `tree_lag` signal (hooks/self-review.ts:236-241) fires when an
+// env_git decision reads `dirty=0 (was N)` with no TREE_WRITE_ACTIONS entry between
+// two clears. The completion path already exists (hooks/index.ts:2549-2566 pushes
+// `completed_by_controller`, which is already in TREE_WRITE_ACTIONS). What is missing
+// is any reason for finalDecision to become "complete" when the worktree clears.
+//
+// This case is written to fail for one specific reason: the leaf is still active
+// after the cleared sample. It must NOT pass or fail on whether a git sample arrived,
+// which is why the env_git assertions are separate checks above the completion one.
+// Those two failures look identical in a count and mean opposite things.
+// ============================================================
+async function caseTreeLag_commit_closes_leaf(clock) {
+  console.log("\n=== TREELAG: a cleared worktree closes the active leaf in one tick ===");
+  clock.set(T0);
+
+  // gitProbeMs is read at hooks/index.ts:653 straight off the register options
+  // (`const cfg = (options ?? {})`), clamped only as an upper bound, so this
+  // value reaches sess.options directly. It is 1 rather than a round number on
+  // purpose: the sampler stamps sampledAt from Date.now(), which is NOT stubbed
+  // for this case in a full run, so clock.advance() moves nothing the cadence
+  // check reads. At 1ms any real elapsed time clears it, which keeps the case
+  // off the ambient clock stub entirely.
+  const h = await createTickHarness({
+    ...OPTS,
+        // Real elapsed time is what the idle gate reads here, since Date.now() is not
+    // stubbed for this case, so an idle threshold of zero is what gets the tick past
+    // that gate and as far as the decider at all.
+    nudgeIdleMs: 0,
+caseName: "treelag_commit_closes_leaf",
+    gitProbeMs: 1,
+  });
+
+  // Dirty, then clean: the transition the detector keys on.
+  h.setGitScript([
+    { branch: "main", dirty: 3 },
+    { branch: "main", dirty: 0 },
+  ]);
+  h.setClassifyValue("nudge");
+
+  // A turn has to land before the tick reaches the git probe at all: the probe
+  // sits at hooks/index.ts:1684, behind the tick's own owner and idle gates, so
+  // a tick on a session that has never completed a turn returns before it.
+  await fireTurn(h);
+  await new Promise(r => setTimeout(r, 20));
+  clock.advance(65000);
+
+  // Several ticks: a tick can return early on other work before it reaches the
+  // git probe, so the case drives enough of them for both samples to land.
+  for (let i = 0; i < 5; i++) {
+    await tickAndSettle(h, clock, 120);
+    clock.advance(2000);
+  }
+
+  const st = getState(h);
+  const decs = st.decisions;
+  const gitDecs = decs.filter(d => d.action === "env_git");
+  const cleared = gitDecs.some(d => /dirty=0 \(was [1-9]/.test(d.detail || ""));
+
+  // Instrument checks first: if these fail, the case proves nothing about the fix.
+  check("TREELAG: a git sample reached the tick at all", gitDecs.length > 0);
+  check("TREELAG: the cleared-worktree transition was sampled", cleared);
+
+  // The actual subject: the decider is told a commit landed, not merely that the
+  // worktree is currently clean. Asserting on completion instead would pass without
+  // any change, because the harness classify returns a fixed value and never reads
+  // the summary it is handed, so the assertion would be about the stub.
+  const summaries = h.classifyCalls.map(a => String((a && a[0]) || ""));
+  check("TREELAG: the decider ran after the clear", summaries.some(s => /dirty 0/.test(s)));
+  check("TREELAG: the decider is told the worktree just cleared, not only that it is clean",
+    summaries.some(s => /worktree cleared/i.test(s)));
+}
+
+// Control for the opt-in git stub: a case that never calls setGitScript must still
+// take the exit-128 non-git path. Without this, a later change could make git answers
+// the harness default and silently retire the gitUnavailable coverage every other
+// case relies on, with nothing turning red.
+async function caseTreeLag_git_stub_control(clock) {
+  console.log("\n=== TREELAG control: no git script means the non-git path ===");
+  clock.set(T0);
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "treelag_git_stub_control",
+    gitProbeMs: 1,
+  });
+  h.setClassifyValue("nudge");
+
+  await fireTurn(h);
+  await new Promise(r => setTimeout(r, 20));
+  clock.advance(65000);
+
+  await tickAndSettle(h, clock, 80);
+  clock.advance(2000);
+  await tickAndSettle(h, clock, 80);
+
+  const decs = getState(h).decisions;
+  check("TREELAG control: no env_git decision without a script",
+    !decs.some(d => d.action === "env_git"));
+  check("TREELAG control: the non-git path was taken",
+    decs.some(d => d.action === "env_git_null"));
+}
+
 async function caseD2(clock) {
   console.log("\n=== D2: idle tick skip ===");
   clock.set(T0);
@@ -3857,6 +3962,8 @@ async function main() {
   await caseBO1_pin_control_no_selfreview(clock);
   await caseItem6_personaOption(clock);
   await caseItem6_personaOption_control(clock);
+  await caseTreeLag_commit_closes_leaf(clock);
+  await caseTreeLag_git_stub_control(clock);
 
   // AO1: Skip for now (we have uncommitted changes during development).
   // Will re-enable after committing.

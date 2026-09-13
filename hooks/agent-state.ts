@@ -88,6 +88,14 @@ export interface EnvGit {
   behind: number;
   lastCommitAt: number;
   sampledAt: number;
+  /**
+   * Set to this sample's own `sampledAt` when the worktree went from dirty to
+   * clean between the previous sample and this one, and left unset otherwise.
+   * A dirty count is a level; the controller's decider needs the transition,
+   * because "currently clean" does not distinguish a commit that just landed
+   * from a tree that has been clean all along.
+   */
+  clearedAt?: number;
 }
 
 export interface EnvHealth {
