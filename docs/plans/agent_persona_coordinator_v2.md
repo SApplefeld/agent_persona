@@ -131,6 +131,31 @@ Section 7 builds only the worker-side half of FORK B. Nothing built anywhere in 
 Files in scope: `bin/supervise.sh` (the coordinator-priming-turn injection site, mirroring Section 7's own, gated on the `COORDINATOR_PERSONA` comparison above).
 Tests: a `.kit/*-test.sh` case (per Section 7's R36 correction, this is a bash-level test, not a harness case) that a launch with `$PERSONA` matching `COORDINATOR_PERSONA` injects this instruction on its own priming turn, with a control that an ordinary worker's launch (`$PERSONA` not matching) does not. The round-cap and batching *behavior* is model behavior, live-suite territory per R28's same reasoning, not a test-file assertion.
 
+### 9. An unmatched turn completion still corrupts the idle reading and the deferred-status stamp
+Model: opus
+
+Surfaced by Section 0's own work on the controller's in-flight test, and appended as approval drift rather than folded, because it needs acceptance criteria Section 0 does not carry.
+
+The controller decides a worker is idle from `sess.state.monitor.lastTurnComplete`, and a reader session reports how long an inbox record has waited from `sess.turnStartedAt`. Both are written unconditionally at the top of the `turn.complete` handler in `hooks/index.ts`, before anything checks whether this completion matches a turn that was actually open. Confirmed at `:2821` and `:2839`.
+
+The turn events are not reliably paired. One observed window carries two `turn.complete` events with no `turn.start` between them. So an unmatched completion restarts the idle clock while a turn is still running, clears the start stamp a reader needs, and leaves the long-turn record at `:2829` measuring against a different turn's start.
+
+Section 11 makes the in-flight reading survive unpaired events by keying it on turn ids. These two fields are the remainder: the same handler, the same premise, and still corrupted by the same shape.
+
+Two further defects in the same handler, routed here from Section 0's review rounds rather than fixed there.
+
+`sess.turnStartedAt` is a single value while the open-turn map is keyed by turn id. Whichever completion arrives first nulls it, so with two overlapping turns the second completion reads it as null and its long-turn record is skipped. Now that the map holds each turn's start time, the fix is to read the start from the map entry before deleting it.
+
+The third defect this section was written to fix is already closed. `currentPrompt` and `nudgedTurn` were written after `await $.prompt.submit`, so a promise settling only once the nudged turn had run would set `nudgedTurn` after the `turn.complete` that reads it and leak the flag into the following turn. Section 11 moved all three writes, the nudge floor with them, to the synchronous side of the submit (`hooks/index.ts:2576-2594`), for that same reason stated in its own comment. Nothing here is left to do, and this section does not touch that code.
+
+Files in scope: `hooks/index.ts` (the `turn.complete` handler), `.kit/controller-tick-test.mjs`.
+
+Tests: an unmatched completion leaves `sess.turnStartedAt` naming a turn that is still open, with a withheld control that a matched completion for the only open turn sets it to null; the long-turn record measures against its own turn's start across an interleaved unmatched completion, and is skipped entirely for a completion whose turn this session never saw start. `lastTurnComplete` is pinned unchanged by its own case: the Decisions entry below rules that it stays unconditional, and a later round that tightened it would re-enter the nudge pile-up, so the pin is a regression guard on the ruling rather than coverage of a change.
+
+The open question this section carried, whether `lastTurnComplete` should update on an unmatched completion, is answered under `## Decisions` below: it should, it is left exactly as it is, and only `sess.turnStartedAt` and the long-turn record change.
+
+What the harness guarantees, confirmed at `.claude/types/claude-code.d.ts:6532-6552`: `turn.complete` carries its answer, duration, interrupt flag, turn id and cost "whatever its reason", and the `aborted` flag is true when the turn ended by interruption. So an interrupted turn still completes, and a completion is not lost to an abort. That narrows the missing-completion case to a failure below the harness, such as the host process dying, and it is the citation behind Section 0's decision to bound the open-turn map rather than trust pairing.
+
 ### 10. `goal_add` activates the node it creates when nothing else is active
 Model: sonnet
 
@@ -176,6 +201,18 @@ Acceptance:
 Tests: a case per criterion, each watched red before green. Criterion 1 takes a withheld control, a completion for a turn whose start was never seen leaving the reading unchanged.
 
 ## Decisions
+
+### The idle anchor keeps updating on an unmatched turn completion - decided 2026-09-13 by a consult
+
+Section 9 was written to stop an unmatched `turn.complete` corrupting two fields. Its own text left one of the two open, asking whether `lastTurnComplete` should update anyway on the reasoning that some turn did complete, while its Tests line pre-answered the same question the other way. A consult ruled it, and the answer is that the field is left exactly as it is.
+
+Three readings decide it. `lastTurnComplete` has exactly one reader, the idle gate at `hooks/index.ts:2157`, which sits inside the controller tick whose second statement is `if (turnIsOpen()) return;` at `:1269`, so the gate is only ever read when no turn is open. The handler writes the field before it deletes the turn from the open-turn map, so a write made while a turn was still open is always superseded by the matched completion that finally empties the map. And the field is written twice more, at `:1079` on session start and at `:3282` on the ownership path, both times when no turn completed at all, which is not how a per-turn record behaves.
+
+So the harm Section 9 names for this field, an unmatched completion restarting the idle clock while a turn is still running, is unreachable on this code. Conditioning the write would be a regression rather than a tightening: on a session whose starts go undelivered, the anchor would freeze while real turns kept finishing, the idle reading would climb without bound, and the gate would pass on every tick. That is the nudge pile-up Section 11 exists to prevent, re-entered through another door.
+
+The axis that decides it generalizes to the next field in this handler, and it is not session-scope versus turn-scope. It is whether a wrong value is superseded in process before any reader sees it, or published out of the process where nothing overwrites it. `lastTurnComplete` is the first. `sess.turnStartedAt` is the second, published to the heartbeat at `:431` and read by another session at `:3935`, which is why it is the field this section changes.
+
+That also rules out the obvious shape for the fix. Skipping the clear when a completion is unmatched would let the stamp strand set forever whenever a start arrives whose own completion never does, and every reader would then report each pending record as deferred behind a turn that ended hours ago. The stamp is therefore derived from the open-turn map rather than conditionally cleared: after the delete it names the earliest turn still open, or null when none is.
 
 ### The open-turn map takes no age-out - decided 2026-09-13 by a scope ruling
 

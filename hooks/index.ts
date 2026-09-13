@@ -643,11 +643,10 @@ export const register: Register = async (on, options) => {
   // needs no age-out: there is no state a running process can reach in which
   // an entry here is not a turn.
   //
-  // The value is that turn's own start time. No reader takes it yet; the
-  // long-turn record in turn.complete measures against the single
-  // sess.turnStartedAt instead, which whichever completion arrives first
-  // clears for every other open turn. A per-turn start is what that record
-  // actually wants, and this is it.
+  // The value is that turn's own start time. turn.complete reads it two ways:
+  // the long-turn record measures against the completing turn's own entry, and
+  // sess.turnStartedAt, the stamp a reader session sees, is derived from the
+  // earliest entry left after the delete.
   const openTurns = new Map<string, number>();
   const turnIsOpen = () => openTurns.size > 0;
   // Plan item 8.3: an urgent inbox record is looked for on the owner's
@@ -2750,15 +2749,25 @@ export const register: Register = async (on, options) => {
   // --- turn.complete: goal scoring, memory curation, guarded save ---
   // Modules write to sess.state. The Controller (clock.tick) reads sess.state and decides.
   on("turn.complete", async ($, e, next) => {
+    // The idle anchor is session-scoped and unconditional by design. Its only
+    // reader is the idle gate in the controller tick, which runs only once the
+    // open-turn map is empty, and this write lands before the delete below, so
+    // a value written while another turn is still running is superseded by the
+    // completion that finally empties the map.
     sess.state.monitor.lastTurnComplete = Date.now();
+    // This turn's own start, read before the delete. A completion for a turn
+    // this session never saw start has no entry here, and null is what makes
+    // the long-turn record below skip itself rather than measure against some
+    // other turn's clock.
+    const thisTurnStartedAt = openTurns.get(e.turnId) ?? null;
     // Closing by id: a completion for a turn this session never saw start
     // removes nothing, so it cannot clear a different turn that is still open.
     openTurns.delete(e.turnId);
     // Plan item 8.4: a turn that ran past an hour is one of the weaknesses
     // the own-record pass counts, so record it as a decision here, the only
     // point that knows both ends of the turn.
-    if (sess.turnStartedAt !== null) {
-      const turnMs = Date.now() - sess.turnStartedAt;
+    if (thisTurnStartedAt !== null) {
+      const turnMs = Date.now() - thisTurnStartedAt;
       if (turnMs >= KAIZEN_LONG_TURN_MS) {
         sess.state.decisions.push({
           timestamp: Date.now(),
@@ -2768,7 +2777,19 @@ export const register: Register = async (on, options) => {
         });
       }
     }
-    sess.turnStartedAt = null;
+    // The deferred-status stamp is derived from what is still open rather than
+    // cleared, so it names the earliest turn still running, or null when none
+    // is. This value leaves the process: it is published to the heartbeat and
+    // read by another session to report how long a pending record has waited.
+    // A stamp cleared by whichever completion arrived first would tell that
+    // reader no turn is running while one still is, and a stamp left set by an
+    // unmatched completion would strand and report a turn that ended hours
+    // ago. Deriving it cannot strand, because an empty map yields null.
+    let earliestOpenTurn: number | null = null;
+    for (const startedAt of openTurns.values()) {
+      if (earliestOpenTurn === null || startedAt < earliestOpenTurn) earliestOpenTurn = startedAt;
+    }
+    sess.turnStartedAt = earliestOpenTurn;
     if (sess.isOwner) {
       try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }
     }

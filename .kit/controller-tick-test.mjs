@@ -3866,6 +3866,9 @@ async function main() {
     await caseItem8p4_openKaizenGoalNotDuplicated(clock);
     await caseItem8p4_longTurnsAdjustConfigNotGoal(clock);
     await caseItem8p4_turnOverHourRecorded(clock);
+    await caseSection9_unmatchedCompletionLeavesTheStampOnAnOpenTurn(clock);
+    await caseSection9_completingOneOfTwoLeavesTheEarlierTurnsStamp(clock);
+    await caseSection9_longTurnRecordMeasuresItsOwnTurn(clock);
     await caseS4_peer_consumed(clock);
     await caseS4_peer_send_message_consumed(clock);
     await caseS4_other_origin_passes(clock);
@@ -6128,4 +6131,149 @@ async function caseFloorStampedAtSubmit_notBeforeTheDecider(clock) {
   const expired = await waitUntil(() => countAction(getDecisions(h), "nudge_sent") >= 2);
   check("floor stamp control: once the full floor has run the nudge is sent", expired);
   check("floor stamp control: two [GOAL] prompts in total", goalPrompts(h).length === 2);
+}
+
+// ============================================================
+// Section 9: turn.complete is keyed to its own turn.
+//
+// The deferred-status stamp sess.turnStartedAt is published to the heartbeat
+// and read by another session, so a wrong value there is not superseded in
+// process: it is what the reader sees. These cases drive the shapes that used
+// to corrupt it - a completion for a turn this session never saw start, and a
+// completion for one of two turns open at once.
+// ============================================================
+
+// Criterion 1, with criterion 6 beside it and criterion 2 as the withheld
+// control: an unmatched completion leaves the stamp naming the turn that is
+// still open, while the idle anchor still moves, because its only reader runs
+// when nothing is open at all.
+async function caseSection9_unmatchedCompletionLeavesTheStampOnAnOpenTurn(clock) {
+  console.log("\n=== Section 9: an unmatched completion leaves the deferred stamp on the turn still open ===");
+  clock.set(T0);
+  const h = await seedOwnerHarness("section9_unmatched_stamp", T0);
+  const startH = h.handlers["turn.start"];
+  const completeH = h.handlers["turn.complete"];
+
+  await startH(h.fake, { turnId: "t-real" }, async () => ({ result: "ok" }));
+  check("section9 unmatched setup: the open turn's start is stamped", readHeartbeat(h).default?.turnStartedAt === T0);
+
+  clock.advance(90_000);
+  await completeH(h.fake, { turnId: "t-never-started", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  check(
+    "section9 unmatched: the stamp still names the turn that is still open",
+    readHeartbeat(h).default?.turnStartedAt === T0,
+    readHeartbeat(h).default,
+  );
+  check(
+    "section9 unmatched: the idle anchor still moves on an unmatched completion",
+    getState(h).monitor.lastTurnComplete === T0 + 90_000,
+    getState(h).monitor.lastTurnComplete,
+  );
+
+  // The control, withheld from the shapes above: a matched completion for the
+  // only open turn still clears the stamp, so the two readings above are the
+  // fix rather than a stamp that stopped being written at all.
+  clock.advance(30_000);
+  await completeH(h.fake, { turnId: "t-real", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  check(
+    "section9 control: a matched completion for the only open turn clears the stamp to null",
+    readHeartbeat(h).default?.turnStartedAt === null,
+    readHeartbeat(h).default,
+  );
+  check(
+    "section9 control: and the idle anchor moved again",
+    getState(h).monitor.lastTurnComplete === T0 + 120_000,
+    getState(h).monitor.lastTurnComplete,
+  );
+}
+
+// Criterion 3: with two turns open, completing the later one leaves the stamp
+// at the earlier turn's start - not null, and not the completed turn's own.
+// This is the reading the naive "skip the clear when unmatched" fix gets wrong,
+// because that completion is matched.
+async function caseSection9_completingOneOfTwoLeavesTheEarlierTurnsStamp(clock) {
+  console.log("\n=== Section 9: completing one of two open turns leaves the earlier turn's stamp ===");
+  clock.set(T0);
+  const h = await seedOwnerHarness("section9_two_open_stamp", T0);
+  const startH = h.handlers["turn.start"];
+  const completeH = h.handlers["turn.complete"];
+
+  await startH(h.fake, { turnId: "t-a" }, async () => ({ result: "ok" }));
+  clock.advance(45_000);
+  await startH(h.fake, { turnId: "t-b" }, async () => ({ result: "ok" }));
+
+  clock.advance(15_000);
+  await completeH(h.fake, { turnId: "t-b", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  const afterB = readHeartbeat(h).default?.turnStartedAt;
+  check("section9 two open: the stamp is the still-running turn's start", afterB === T0, afterB);
+  check("section9 two open: the stamp is not null while a turn is still open", afterB !== null, afterB);
+  check("section9 two open: the stamp is not the completed turn's own start", afterB !== T0 + 45_000, afterB);
+
+  clock.advance(20_000);
+  await completeH(h.fake, { turnId: "t-a", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  check(
+    "section9 two open: the last completion empties the map and clears the stamp",
+    readHeartbeat(h).default?.turnStartedAt === null,
+    readHeartbeat(h).default,
+  );
+}
+
+// Criteria 4 and 5: the long-turn record measures against its own turn's start.
+// An unmatched completion arriving mid-turn writes no record at all, and a
+// completion for one of two open turns is measured against the turn it names.
+async function caseSection9_longTurnRecordMeasuresItsOwnTurn(clock) {
+  console.log("\n=== Section 9: the long-turn record measures its own turn, and is skipped when unmatched ===");
+  clock.set(T0);
+  const h = await seedOwnerHarness("section9_long_turn_own_start", T0);
+  const startH = h.handlers["turn.start"];
+  const completeH = h.handlers["turn.complete"];
+
+  // A real turn runs past the hour, then a completion arrives for a turn this
+  // session never saw start. It has no entry in the open-turn map, which is
+  // the condition that skips the record; measured against the running turn's
+  // clock it would have looked like a sixty-one-minute turn of its own.
+  await startH(h.fake, { turnId: "t-a" }, async () => ({ result: "ok" }));
+  clock.advance(61 * 60_000);
+  await completeH(h.fake, { turnId: "t-never-started", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  check(
+    "section9 long turn: an unmatched completion writes no turn_over_hour record",
+    countAction(getDecisions(h), "turn_over_hour") === 0,
+    getDecisions(h).filter(d => d.action === "turn_over_hour"),
+  );
+
+  // The real turn's own completion records its own duration, sixty-six
+  // minutes, rather than the sixty-one the unmatched completion would have
+  // banked and then cleared.
+  clock.advance(5 * 60_000);
+  await completeH(h.fake, { turnId: "t-a", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  const afterA = getDecisions(h).filter(d => d.action === "turn_over_hour");
+  check("section9 long turn: the matched completion writes exactly one record", afterA.length === 1, afterA);
+  check(
+    "section9 long turn: measured against its own start, 3960s",
+    afterA.length === 1 && /\b3960s\b/.test(afterA[0].detail),
+    afterA[0]?.detail,
+  );
+
+  // Two real turns open at once: the long one completes first, while the
+  // short one is still running. Its record is its own sixty-three minutes,
+  // and the short turn that follows records nothing.
+  await startH(h.fake, { turnId: "t-c" }, async () => ({ result: "ok" }));
+  clock.advance(61 * 60_000);
+  await startH(h.fake, { turnId: "t-d" }, async () => ({ result: "ok" }));
+  clock.advance(2 * 60_000);
+  await completeH(h.fake, { turnId: "t-c", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  const afterC = getDecisions(h).filter(d => d.action === "turn_over_hour");
+  check("section9 long turn: the overlapped long turn still records", afterC.length === 2, afterC);
+  check(
+    "section9 long turn: measured against its own start, 3780s",
+    afterC.length === 2 && /\b3780s\b/.test(afterC[1].detail),
+    afterC[1]?.detail,
+  );
+  clock.advance(60_000);
+  await completeH(h.fake, { turnId: "t-d", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  check(
+    "section9 long turn control: the three-minute turn records nothing",
+    getDecisions(h).filter(d => d.action === "turn_over_hour").length === 2,
+    getDecisions(h).filter(d => d.action === "turn_over_hour"),
+  );
 }
