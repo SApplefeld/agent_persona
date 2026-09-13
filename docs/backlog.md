@@ -50,13 +50,23 @@ The runtime clone at `/d/DeepSeekHarness/agentic-plugin` is current at `0fc66d2`
 
 Nothing to fix in the tree. The remedy is relaunching each supervisor, then dropping this entry. Relaunching is destructive to whatever that supervisor's child is mid-way through, so it is taken at a quiet point rather than on sight of this entry. This is the narrowed remainder of the `aios` launcher entry and the stale-dev-clone entry, both retired in item 3's runtime-clone addendum.
 
-## live-stopprocesstree-test.sh exits 0 while recording no assertions at all
+## live-stopprocesstree-test.sh runs 15 checks that the gate summary never collects
 
-In the whole-gate run `20260913T085812Z` this suite reported `script_exit=0` with
-`assert=[missing]`, the only suite in seventeen to record no checks. A suite that exits
-clean without asserting anything cannot distinguish working code from absent code, so its
-green says nothing. It is one of the two legs covering item 2's process-tree stop, which
-makes the silence worth more than the usual. Find whether the assertions are not written,
-not reached, or written somewhere the runner does not collect, then make the leg fail when
-the behavior is absent. Confirm by mutating `stop_child` to signal a single pid and
-watching this suite go red.
+In the whole-gate run `20260913T085812Z` this suite was the only one of seventeen whose
+summary line read `assert=[missing]`. Its checks are not missing. The suite's own log ends
+`15 checks run, 0 failed` and `live-stopprocesstree-test.sh: PASS`, and its assertions are
+substantive, covering that the real child is gone after `stop_child` returns on the TERM
+path and after the tree kill.
+
+The gap is collection, not coverage. `.kit/live-stopprocesstree-test.sh` defines its
+`pass` and `failed` helpers as bare `echo`, so every check goes to stdout, while
+`.kit/live-all.sh:132` collects `$suite_dir/<suite>.assert.log`, a file this suite never
+writes. Its exit file is collected, which is why `exitfile=[0 ]` is populated beside an
+empty `assert=`.
+
+Fix: have `pass` and `failed` tee to `$SUITE_DIR/stopprocesstree.assert.log` as the other
+suites do. No new assertions are needed, and no control has to be built: the suite already
+fails if `stop_child` leaves the real child alive, so a mutation to signal a single pid
+would turn it red today. The effect of this gap is that a whole-gate summary understates
+the evidence for item 2's process-tree stop, which is exactly the fix that gate exists to
+validate.
