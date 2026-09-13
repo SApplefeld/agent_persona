@@ -92,7 +92,16 @@ case "$GOAL_WRITE" in
   *GOAL_PROMPT_FRAMING*) check "the goal-prompt write does not carry the skill-load sentence" 0 ;;
   *) check "the goal-prompt write does not carry the skill-load sentence" 1 ;;
 esac
-printf '%s\n' "$SNIPPET" | grep -q 'wait_for_result_line "\$OUT"'; check "the goal prompt waits for the priming turn's own result line first" $?
+# A presence grep for the wait is not enough: `if : wait_for_result_line ...`
+# keeps the literal, makes the call a no-op argument to `:`, and passes. So
+# assert the shape and the position instead - the call sits in an `if`
+# condition, and it sits above the goal write rather than anywhere in the
+# block.
+WAIT_LINE_NO=$(printf '%s\n' "$SNIPPET" | grep -n 'wait_for_result_line' | head -1 | cut -d: -f1)
+GOAL_WRITE_LINE_NO=$(printf '%s\n' "$SNIPPET" | grep -n 'GOAL_PROMPT_FRAMING" >&"\$CHILD_IN"' | head -1 | cut -d: -f1)
+[ -n "$WAIT_LINE_NO" ] && [ -n "$GOAL_WRITE_LINE_NO" ] && [ "$WAIT_LINE_NO" -lt "$GOAL_WRITE_LINE_NO" ]
+check "the wait for the priming turn's result line sits above the goal write" $?
+printf '%s\n' "$SNIPPET" | grep -qE '^[[:space:]]*if wait_for_result_line "\$OUT"'; check "the wait is the if condition itself, not an argument to something else" $?
 printf '%s\n' "$SNIPPET" | grep -q '^  else$'; check "the NO_CHANNEL-with-no-PROMPT_FILE priming body exists" $?
 
 # Channel attached: the guidance must be present.

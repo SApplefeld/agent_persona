@@ -48,6 +48,10 @@ PERSONA="default"
 # is not, and every live suite that does not export MODEL runs its child
 # on opus at medium effort instead of haiku.
 export MODEL="haiku"
+# Pinned beside MODEL so the suite holds its own cost and effort steady
+# against the opus/medium defaults, and so a default change cannot move
+# what these runs measure.
+export EFFORT="medium"
 PERMISSION_MODE="acceptEdits"
 
 # AD4: Fixed prompt - "call goal_create exactly once, with the three essays as the roadmap"

@@ -76,24 +76,59 @@ case "$OUT" in
   *) check "supervisorEffort override changes the setting" 1 ;;
 esac
 
-# R109/R110's own regression shape: an UNEXPORTED MODEL in the calling
-# shell must NOT reach a separate child process - this is the positive
-# control that proves the test can actually detect the bug it exists to
-# catch, not just the case that happens to pass.
+# R109/R110's own regression shape: an UNEXPORTED MODEL in the calling shell
+# must NOT reach a separate child process, and an exported one must.
+#
+# These two cases have to run under a PRESERVED environment. The earlier
+# version ran both under `env -i`, which wipes everything: the unexported
+# case then passed because nothing at all was inherited, and the "exported"
+# case set MODEL on env's own command line rather than by export, so neither
+# case exercised export semantics and the pair proved nothing. `env -u` drops
+# only the two settings variables, leaving the real inheritance intact, so
+# the pair now flips on exactly the property under test - and would both read
+# haiku if bash ever exported plain assignments.
+env_stub() { env -u supervisorModel -u supervisorEffort bash "$STUB"; }
+
+# `unset` first, and it is load-bearing: a plain assignment to a name that
+# is ALREADY in the exported environment keeps its export attribute, so
+# without the unset this case inherits whatever MODEL the calling supervisor
+# exported and passes or fails on the environment rather than on the code.
+# Caught by this very control running under a supervisor-launched shell that
+# had MODEL=opus exported.
+unset MODEL
 MODEL=haiku
-OUT=$(env -i PATH="$PATH" bash "$STUB")
+OUT=$(env_stub)
 unset MODEL
 case "$OUT" in
   *"MODEL_RESOLVED=opus"*) check "an UNEXPORTED MODEL does not reach a separate process (still opus)" 0 ;;
   *) check "an UNEXPORTED MODEL does not reach a separate process (still opus)" 1 ;;
 esac
 
-# An EXPORTED MODEL does reach a separate process - this is the actual
-# fix .kit/live-supervisor-test.sh and the other live suites now rely on.
-OUT=$(env -i PATH="$PATH" MODEL=haiku bash "$STUB")
+export MODEL=haiku
+OUT=$(env_stub)
+unset MODEL
 case "$OUT" in
   *"MODEL_RESOLVED=haiku"*) check "an EXPORTED MODEL reaches a separate process" 0 ;;
   *) check "an EXPORTED MODEL reaches a separate process" 1 ;;
+esac
+
+# The same pair for EFFORT, which reaches the launch flag by the same route
+# and was previously never covered at all.
+unset EFFORT
+EFFORT=high
+OUT=$(env_stub)
+unset EFFORT
+case "$OUT" in
+  *"EFFORT_RESOLVED=medium"*) check "an UNEXPORTED EFFORT does not reach a separate process (still medium)" 0 ;;
+  *) check "an UNEXPORTED EFFORT does not reach a separate process (still medium)" 1 ;;
+esac
+
+export EFFORT=high
+OUT=$(env_stub)
+unset EFFORT
+case "$OUT" in
+  *"EFFORT_RESOLVED=high"*) check "an EXPORTED EFFORT reaches a separate process" 0 ;;
+  *) check "an EXPORTED EFFORT reaches a separate process" 1 ;;
 esac
 
 echo

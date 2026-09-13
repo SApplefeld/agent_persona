@@ -168,16 +168,23 @@ SUPERVISOR_EFFORT="${supervisorEffort:-medium}"
 # writing the goal prompt anyway. Child startup alone is 45-60 seconds, so
 # this is deliberately generous; it bounds a wait, it does not schedule one.
 SUPERVISOR_PRIMING_WAIT_S="${supervisorPrimingWaitS:-180}"
-# Reviewer Round 141 R113 (Major): an unvalidated typo in either setting
-# was an opaque crash loop - the child fails to launch at all, `claude -p`
-# rejecting an unknown model or effort value, and the supervisor just
-# keeps retrying until it trips the crash-loop limit with no message
-# naming the actual cause. Validated once at startup instead, with a
-# clear exit.
-if [ -z "$SUPERVISOR_MODEL" ]; then
-  echo "ERROR: supervisorModel resolved empty - check the settings config" >&2
-  exit 1
-fi
+# An unvalidated typo in either setting is an opaque crash loop: the child
+# never launches, `claude -p` rejecting an unknown model or effort value, and
+# the supervisor retries until it trips the crash-loop limit with nothing in
+# the log naming the cause. Both are checked once at startup instead.
+#
+# The model cannot be validated against a known set - new model names ship
+# without this script changing - so the check is on shape. An emptiness test
+# would be dead code here: `${supervisorModel:-opus}` substitutes the default
+# for an unset OR empty value, so the variable is never empty by the time it
+# is read. What a shape check does catch is the realistic typo, `opsu` or a
+# stray quote, which reaches `claude -p` as an unknown model.
+case "$SUPERVISOR_MODEL" in
+  *[!a-z0-9.-]*|'')
+    echo "ERROR: supervisorModel '$SUPERVISOR_MODEL' is not a plausible model name (lowercase letters, digits, dots and hyphens)" >&2
+    exit 1
+    ;;
+esac
 case "$SUPERVISOR_EFFORT" in
   low|medium|high|xhigh|max) : ;;
   *)
@@ -185,6 +192,27 @@ case "$SUPERVISOR_EFFORT" in
     exit 1
     ;;
 esac
+# The env overrides are what actually reach the launch flags, and they bypass
+# both checks above, so they are validated on the same rules. A live suite
+# exporting a bad `MODEL` or `EFFORT` would otherwise produce the same silent
+# crash loop the settings checks exist to prevent.
+if [ -n "${MODEL:-}" ]; then
+  case "$MODEL" in
+    *[!a-z0-9.-]*)
+      echo "ERROR: MODEL '$MODEL' is not a plausible model name (lowercase letters, digits, dots and hyphens)" >&2
+      exit 1
+      ;;
+  esac
+fi
+if [ -n "${EFFORT:-}" ]; then
+  case "$EFFORT" in
+    low|medium|high|xhigh|max) : ;;
+    *)
+      echo "ERROR: EFFORT '$EFFORT' is not one of low|medium|high|xhigh|max" >&2
+      exit 1
+      ;;
+  esac
+fi
 # Same reasoning as R113's model/effort validation: a non-numeric wait bound
 # turns the priming wait's own arithmetic comparison into a shell error on
 # every launch. The numeric test after the digit test is what rejects an
@@ -1147,15 +1175,35 @@ stop_child() {
 # instead of opening its own, so any caller that needs its message to be a
 # separate turn gates on this first.
 #
-# Returns 0 when a result line appeared inside the bound, 1 when it did not.
-# The caller decides what a timeout means; this only reports it.
+# Returns 0 when a result line appeared inside the bound, 1 when it did not
+# and 1 when the child died while waiting. The caller decides what a failure
+# means; this only reports it.
+#
+# The liveness check is what keeps a launch failure from being read as a long
+# healthy run. A child that dies at startup emits no result line ever, so
+# without it the supervisor sleeps the whole bound, and that sleep lands
+# inside the child's measured run time - a 2-second crash reads as a
+# 181-second run, which is past `supervisorMinRunMs` and resets the crash
+# counter instead of incrementing it. A crash loop then never trips its own
+# limit.
+#
+# The result pattern is deliberately not anchored to the start of the line.
+# This stream does not put `type` first: a real turn-close record begins
+# `{"duration_api_ms":...` and carries `"type":"result"` well inside it, so
+# `^{"type":"result"` matches nothing at all and every launch would sit out
+# the whole bound. Measured on a real child's stdout.jsonl: 3 matches
+# unanchored, 0 anchored.
 wait_for_result_line() {
   local out="$1"
   local bound_s="$2"
+  local pid="$3"
   local waited=0
   while [ "$waited" -lt "$bound_s" ]; do
     if [ -f "$out" ] && grep -q '"type":"result"' "$out"; then
       return 0
+    fi
+    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+      return 1
     fi
     sleep 1
     waited=$(( waited + 1 ))
@@ -1432,9 +1480,9 @@ while true; do
   if [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
     PRIMING_BODY="Your task from the operator arrives in the next message. Reply now with one short line acknowledging you are ready, then act on it when it arrives."
   elif [ "$NO_CHANNEL" -ne 1 ]; then
-    PRIMING_BODY="You are the passive supervisor, waiting for a goal or a steering message from the operator. Reply now with one short line acknowledging you are ready, then wait."
+    PRIMING_BODY="You are the passive supervisor. If a goal tree is active, resume it from goal_status; otherwise wait for a goal or a steering message from the operator. Reply now with one short line acknowledging you are ready, then carry on."
   else
-    PRIMING_BODY="You are the passive supervisor, waiting for a goal. No channel is attached, so no operator steering message will arrive here. Reply now with one short line acknowledging you are ready, then wait."
+    PRIMING_BODY="You are the passive supervisor. If a goal tree is active, resume it from goal_status; otherwise wait for a goal. No channel is attached, so no operator steering message will arrive here. Reply now with one short line acknowledging you are ready, then carry on."
   fi
   node -e "
     const prefix = process.argv[1] || '';
@@ -1454,18 +1502,27 @@ while true; do
     # is generous; on a timeout the goal prompt is written anyway, since a
     # child that never receives its task is worse than one that receives
     # it late, and the NOTE line says which happened.
-    if wait_for_result_line "$OUT" "$SUPERVISOR_PRIMING_WAIT_S"; then
+    GOAL_WRITE_OK=1
+    if wait_for_result_line "$OUT" "$SUPERVISOR_PRIMING_WAIT_S" "${CHILD_PID:-}"; then
       log "NOTE: child-$CHILD_INDEX priming turn completed; sending the goal prompt as its own turn"
+    elif [ -n "${CHILD_PID:-}" ] && ! kill -0 "$CHILD_PID" 2>/dev/null; then
+      # The child died before it ever closed a turn. Writing into its pipe
+      # would accomplish nothing, and the poll loop below is what accounts
+      # for the crash - reaching it quickly is the point.
+      log "NOTE: child-$CHILD_INDEX died before completing its priming turn; not sending the goal prompt"
+      GOAL_WRITE_OK=0
     else
       log "NOTE: child-$CHILD_INDEX priming turn produced no result line within ${SUPERVISOR_PRIMING_WAIT_S}s; sending the goal prompt anyway"
     fi
-    node -e "
-      const fs = require('fs');
-      const p = fs.readFileSync(process.argv[1], 'utf8');
-      const framing = process.argv[2] || '';
-      const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:framing + p}]}});
-      process.stdout.write(json + '\n');
-    " "$PROMPT_FILE" "$GOAL_PROMPT_FRAMING" >&"$CHILD_IN"
+    if [ "$GOAL_WRITE_OK" -eq 1 ]; then
+      node -e "
+        const fs = require('fs');
+        const p = fs.readFileSync(process.argv[1], 'utf8');
+        const framing = process.argv[2] || '';
+        const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:framing + p}]}});
+        process.stdout.write(json + '\n');
+      " "$PROMPT_FILE" "$GOAL_PROMPT_FRAMING" >&"$CHILD_IN"
+    fi
   fi
   PROMPT=""
 
