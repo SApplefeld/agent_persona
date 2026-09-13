@@ -53,6 +53,12 @@ function createFake$(opts = {}) {
   const completeCalls = [];
   let completeValue = opts.completeValue ?? "[]";
   const uiLogs = [];
+  // Non-null while prompt submissions are held open; every submit issued in
+  // that window returns this same promise and parks on it.
+  let submitHold = null;
+  let releaseSubmitHold = null;
+  // Non-null to make every subsequent prompt submission reject with it.
+  let submitFailure = null;
 
   const fake = {
     ui: {
@@ -111,8 +117,16 @@ function createFake$(opts = {}) {
       },
     },
     prompt: {
+      // The real $.prompt.submit does not resolve until the session is next
+      // idle, so a submit issued during a long turn parks for as long as that
+      // turn runs. holdPromptSubmits() puts the stub in that shape. The text is
+      // recorded before the wait, so promptSubmits counts submissions attempted
+      // rather than submissions resolved, which is what a case asserting "only
+      // one copy was ever queued" needs to read.
       submit({ text }) {
         promptSubmits.push(text);
+        if (submitFailure) return Promise.reject(submitFailure);
+        if (submitHold) return submitHold;
         return Promise.resolve();
       },
     },
@@ -204,6 +218,24 @@ function createFake$(opts = {}) {
     resetClassifyCalls() { classifyCalls.length = 0; },
     resetCompleteCalls() { completeCalls.length = 0; },
     resetPromptSubmits() { promptSubmits.length = 0; },
+    // Make every subsequent prompt submission reject. The text is still
+    // recorded, because the real call has taken the submission by the time it
+    // can fail, and a case needs to tell a submit that was never attempted from
+    // one that was attempted and threw.
+    failPromptSubmits(err) { submitFailure = err; },
+    // Hold every subsequent prompt submission open until releasePromptSubmits().
+    holdPromptSubmits() {
+      submitHold = new Promise((resolve) => { releaseSubmitHold = resolve; });
+    },
+    // Resolve the held submissions and let later ones through immediately.
+    // Clearing the hold before resolving it is what makes a submit issued after
+    // this call return at once rather than joining the batch being released.
+    releasePromptSubmits() {
+      const resolve = releaseSubmitHold;
+      submitHold = null;
+      releaseSubmitHold = null;
+      if (resolve) resolve();
+    },
     resetToolCalls() { toolCalls.length = 0; },
     get controllerTick() {
       return clockEveryCallbacks.length >= 2 ? clockEveryCallbacks[1].fn : null;
@@ -320,13 +352,16 @@ function makeState(opts = {}) {
 
 // --- Turn driver: fires turn.start then turn.complete (aborted, no scoring) ---
 
-async function fireTurn(harness) {
+// The same turnId rides both events, because the plugin closes an open turn by
+// the id its turn.start carried; a completion under a different id (or none)
+// closes nothing and leaves the session reading as still inside a turn.
+async function fireTurn(harness, turnId = "harness-turn") {
   const { fake } = harness;
   const handlers = harness.handlers;
   const startH = handlers["turn.start"];
   const completeH = handlers["turn.complete"];
-  if (startH) await startH(fake, { turnId: "harness-turn" }, () => {});
-  if (completeH) await completeH(fake, { aborted: true, reason: "aborted" }, () => {});
+  if (startH) await startH(fake, { turnId }, () => {});
+  if (completeH) await completeH(fake, { turnId, aborted: true, reason: "aborted" }, () => {});
 }
 
 // --- Tick driver: fires the controller-tick callback ---

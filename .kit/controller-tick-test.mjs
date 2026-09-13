@@ -76,6 +76,32 @@ async function tickAndSettle(h, clock, ms = 50) {
   await new Promise(r => setTimeout(r, ms));
 }
 
+// A bounded poll on a condition the code under test actually sets, for the
+// cases that have one. It is the readable half of the alternative: a fixed
+// sleep passes by being long enough today and reds by being short tomorrow,
+// while this reports whether the condition ever held. The ceiling is polls
+// rather than milliseconds because Date.now is stubbed under these cases.
+async function waitUntil(pred, maxPolls = 400, stepMs = 5) {
+  for (let i = 0; i < maxPolls; i++) {
+    if (pred()) return true;
+    await new Promise(r => setTimeout(r, stepMs));
+  }
+  return pred();
+}
+
+// The controller tick's last act is a persisted write, so a round's own
+// controller_tick decision showing up in the persisted store is the signal that
+// the whole tick body, actuator included, has finished.
+function countPersistedTicks(h) {
+  return countAction(getDecisions(h), "controller_tick");
+}
+
+// The nudge prompts the tick queued, in submission order.
+function goalPrompts(h) {
+  return (h.promptSubmits || []).filter(p => p.startsWith("[GOAL]"));
+}
+
+
 // ============================================================
 // TREELAG: a commit is named to the decider, and can close the node
 //
@@ -1156,14 +1182,13 @@ async function caseS2_drain_inflight(clock) {
     claims: [{ resource: "reader:default", claimedAt: now - 1000 }],
   });
 
-  // Seed the persona store with mySid as owner, turnInFlight = true
+  // Seed the persona store with mySid as owner.
   const personaState = buildPersonaState(mySid, now);
-  // We need to set turnInFlight. The D3 drain checks sess.state.monitor.turnInFlight
-  // or similar. Let's check what the actual gate is.
-  // Actually, looking at the code, D3 drain is gated on sess.isOwner.
-  // The in-flight control should set a state where a turn is in flight.
-  // Let's seed with turnInFlight flag if it exists, otherwise the control
-  // is that a turn.start was fired but not yet complete.
+  // Being inside a turn is not a persisted field, so it cannot be seeded here.
+  // The plugin holds the open turns in a module-local map keyed by turn id, and
+  // the tick's in-flight check reads that map, so the only way to put this case
+  // inside a turn is to fire a real turn.start and no matching turn.complete,
+  // which is what the driver below does.
   h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
 
   // Seed the heartbeat sidecar
@@ -4171,6 +4196,13 @@ async function main() {
     await caseR58f3_nudgeInsideOpenTurnNotSent(clock);
     await caseR58f3_capPausesWithNoAsk(clock);
     await caseR60f3b_reactivationAfterCapPause(clock);
+    await caseR117a_concurrentTicksNudgeOnce(clock);
+    await caseR117b_openTurnsCloseByIdOnly(clock);
+    await caseR118_bookkeepingLandsThoughATurnOpenedUnderTheSubmit(clock);
+    await caseR119_aMetNudgeClearsItsOwnCount(clock);
+    await caseR119_noRoundMetReachesTheCap_control(clock);
+    await caseNudgeFailed_recordedAndTheFloorIsStillSpent(clock);
+    await caseFloorStampedAtSubmit_notBeforeTheDecider(clock);
     await caseItem8p3_ownerStampsTurnStartInHeartbeat(clock);
     await caseItem8p3_inboxReportsDeferredWhileTurnRuns(clock);
     await caseItem8p3_deferredNotReportedForStaleOwner(clock);
@@ -5193,12 +5225,16 @@ async function caseItem81_goalEditDropStillRefusesActive_control(clock) {
 // what the driver below reproduces.
 // ============================================================
 
-// One driver, one axis. Each round fires a tick, lets its deferred nudge work
-// land, and differs only in whether a turn opens while that work is in flight.
-// Everything else - the ticks, the clock advance, the classify verdict, the
-// settle sleeps - is identical on both sides, so a silence on the open-turn
-// side is readable only because the between-turns side speaks under the same
-// mechanism.
+// One driver, one axis. Each round fires a tick, waits for that tick's own
+// deferred work to land, and differs only in whether a turn opens while that
+// work is in flight. The two sides are not otherwise identical, and the claim
+// is narrower than that: the open-turn side also runs the turn.start and
+// turn.complete handlers in full, with their heartbeat write, their inbox read
+// and their own decisions. What is held equal is everything the nudge path
+// reads - the tick count, the clock advance, the classify verdict, the goal
+// node and the nudge budget - so a silence on the open-turn side is readable as
+// the guard rather than as a driver that never reached the path, which is what
+// the between-turns side speaking under the same driver establishes.
 //
 // The turn is opened from inside the classify stub, which is the tick's own
 // first await past the synchronous in-flight check. That is the live shape:
@@ -5207,9 +5243,9 @@ async function caseItem81_goalEditDropStillRefusesActive_control(clock) {
 // in-flight check and never reach the nudge path at all, which is why each
 // case asserts the decider was reached before it asserts the silence.
 //
-// turn.start sets the module's turnInFlight synchronously, before its own first
-// await, so the flag is up by the time the stub returns and the call needs no
-// awaiting here.
+// turn.start adds the turn's id to the module's open-turn map synchronously,
+// before its own first await, so the session reads as inside a turn by the time
+// the stub returns and the call needs no awaiting here.
 async function nudgeRaceDrive(h, clock, { openTurn, rounds }) {
   const startH = h.handlers["turn.start"];
   const completeH = h.handlers["turn.complete"];
@@ -5230,26 +5266,45 @@ async function nudgeRaceDrive(h, clock, { openTurn, rounds }) {
     return "nudge";
   });
   for (let i = 0; i < rounds; i++) {
+    const ticksBefore = countPersistedTicks(h);
     clock.advance(130_000);
     await fireTick(h);
-    await new Promise(r => setTimeout(r, 60));
-    if (openTurn) await completeH(h.fake, { aborted: true, reason: "aborted" }, () => {});
+    const landed = await waitUntil(() => countPersistedTicks(h) > ticksBefore);
+    check(`nudge race driver: round ${i + 1}'s tick body ran to its persist`, landed);
+    // Closed under the id its own turn.start carried, since the plugin closes an
+    // open turn by id: a completion under any other id closes nothing.
+    if (openTurn) await completeH(h.fake, { turnId: `race-turn-${opened - 1}`, aborted: true, reason: "aborted" }, () => {});
     await new Promise(r => setTimeout(r, 20));
   }
   await Promise.all(started);
   for (const err of startErrors) console.error(`  turn.start rejected: ${err}`);
-  check("nudge race driver: every turn.start settled without rejecting", startErrors.length === 0);
+  // Each side gets the assertion that can speak on it. On the open-turn side
+  // that is the rejection check the kept promises exist for. On the control
+  // side no turn.start is ever fired, so the same check is empty by
+  // construction and says nothing; what it asserts there instead is the axis
+  // itself, that the control really is the no-turn side of the pair.
+  if (openTurn) {
+    check("nudge race driver: every turn.start settled without rejecting", startErrors.length === 0);
+  } else {
+    check("nudge race driver: the control side opened no turn at all", opened === 0 && started.length === 0);
+  }
   return opened;
 }
 
-async function seedNudgeRaceHarness(caseName) {
+async function seedNudgeRaceHarness(caseName, extraOpts = {}) {
   const h = await createTickHarness({
     ...OPTS,
-    // Raised well past MAX_CONSECUTIVE_NUDGES (3): OPTS's own costMaxNudgesPerHour (2) is a
-    // different, unrelated cap (D3's own test) that would otherwise trip first and mask what
-    // these cases are actually proving.
+    // OPTS's own costMaxNudgesPerHour (2) is a different, unrelated cap, the
+    // per-hour nudge budget D3's own case exercises. Raised here so that a case
+    // sending more than two nudges reads the guard it is about rather than that
+    // budget. Cases that send at most one nudge take this raise inertly, and a
+    // case passing costEnabled: false turns the whole cost path off and with it
+    // this cap. It is carried in the shared seeder so every case on this driver
+    // has the same budget, rather than one case's own reach deciding what the
+    // others get.
     costMaxNudgesPerHour: 20,
     caseName,
+    ...extraOpts,
   });
   h.setClassifyValue("nudge");
   // session.start's reload resets the reseeded "active" leaf to "pending" - a completed dummy
@@ -5348,8 +5403,8 @@ async function caseR58f3_capPausesWithNoAsk(clock) {
   });
   h.setClassifyValue("nudge");
 
-  // One completed turn to establish a baseline; no further turn.start below, so every tick's
-  // nudge lands with turnInFlight false - "between completed turns," per the fix.
+  // One completed turn to establish a baseline; no further turn.start below, so the open-turn
+  // map is empty at every tick and each nudge lands between completed turns.
   await fireTurn(h);
   await new Promise(r => setTimeout(r, 20));
 
@@ -5403,7 +5458,7 @@ async function caseR60f3b_reactivationAfterCapPause(clock) {
     const completeH = h.handlers["turn.complete"];
     await startH(h.fake, { turnId: "work-turn" }, () => {});
     await toolCallH(h.fake, { tool: "Bash", command: "echo hi" }, async (e) => ({ result: "ok" }));
-    await completeH(h.fake, { aborted: false, reason: "stop", answer: "Did the work." }, () => {});
+    await completeH(h.fake, { turnId: "work-turn", aborted: false, reason: "stop", answer: "Did the work." }, () => {});
 
     state = getState(h);
     const decisions = state.decisions;
@@ -5440,7 +5495,7 @@ async function caseR60f3b_reactivationAfterCapPause(clock) {
     const completeH = h.handlers["turn.complete"];
     await startH(h.fake, { turnId: "no-work-turn" }, () => {});
     // No tool.call fired this turn: toolCallsThisTurn stays 0.
-    await completeH(h.fake, { aborted: false, reason: "stop", answer: "Just talked, did nothing." }, () => {});
+    await completeH(h.fake, { turnId: "no-work-turn", aborted: false, reason: "stop", answer: "Just talked, did nothing." }, () => {});
 
     const state = getState(h);
     const decisions = state.decisions;
@@ -5471,7 +5526,7 @@ async function caseR60f3b_reactivationAfterCapPause(clock) {
     const completeH = h.handlers["turn.complete"];
     await startH(h.fake, { turnId: "work-turn-2" }, () => {});
     await toolCallH(h.fake, { tool: "Bash", command: "echo hi" }, async () => ({ result: "ok" }));
-    await completeH(h.fake, { aborted: false, reason: "stop", answer: "Did other work." }, () => {});
+    await completeH(h.fake, { turnId: "work-turn-2", aborted: false, reason: "stop", answer: "Did other work." }, () => {});
 
     state = getState(h);
     const decisions = state.decisions;
@@ -5487,3 +5542,420 @@ async function caseR60f3b_reactivationAfterCapPause(clock) {
 // touch (the marker path lives in turn.complete; the nudge cap lives in the controller tick).
 // Re-driving the same seeding here would duplicate that case rather than add coverage, so this
 // round leans on it directly: it still passes, unchanged, per the run below.
+
+// ============================================================
+// The nudge floor is spent before the submit, and the open-turn reading is a
+// set of turn ids
+//
+// $.prompt.submit does not resolve until the session is next idle, so a submit
+// issued while a turn runs parks for the length of that turn. The controller
+// tick is fire-and-forget, so further ticks keep arriving while it parks. A
+// floor stamped after the submit is therefore never stamped at all for as long
+// as the parking lasts: each later tick reads the same stale stamp, clears the
+// floor, and queues another identical copy of the same prompt, and the pile
+// arrives together as the next turn's prompt.
+//
+// The harness's holdPromptSubmits() is that parked call. Each case asserts its
+// instrument before its subject: a submit that never parked, a second tick that
+// never ran, and a turn that never opened all fail the same way as the guard
+// working, so without them the silence is unreadable.
+// ============================================================
+
+// Two tick bodies alive at once, the first parked inside its submit. Exactly one
+// [GOAL] prompt is queued (1), a later tick inside the floor window still queues
+// none (2), and a tick past the floor queues the next one (3).
+async function caseR117a_concurrentTicksNudgeOnce(clock) {
+  console.log("\n=== R117a: two live ticks over one parked submit queue one [GOAL] prompt ===");
+  clock.set(T0);
+
+  // The cost path is off so that the second tick reaches the floor test at all.
+  // With it on, an unchanged summary and a not-due nudge send that tick to the
+  // D2 idle skip before the decider, and the floor is never the thing that
+  // turned it away, which is what this case is about.
+  const h = await seedNudgeRaceHarness("r117a_floor_spent_before_submit", { costEnabled: false });
+  h.holdPromptSubmits();
+
+  // Tick 1 clears the floor, reaches the actuator, and parks inside the submit.
+  clock.advance(130_000);
+  await fireTick(h);
+  const parked = await waitUntil(() => goalPrompts(h).length >= 1);
+  check("r117a: the first tick reached the submit and parked there", parked);
+  check("r117a: it has not finished - no nudge_sent while its submit is parked",
+    !getDecisions(h).some(d => d.action === "nudge_sent"));
+
+  // Tick 2 runs while tick 1 is still parked, on the same clock, so the floor it
+  // meets is the one tick 1 spent on its way in. With the floor spent, tick 2's
+  // decider says nudge and the floor turns it away; with the floor left for
+  // after the submit it reads as clear and tick 2 queues a second copy. Waiting
+  // on either outcome makes this readable in both directions, since a bare count
+  // of persisted ticks is satisfied by tick 1's own decision being flushed out
+  // by tick 2's first write.
+  await fireTick(h);
+  const secondSettled = await waitUntil(() =>
+    goalPrompts(h).length >= 2 ||
+    countAction(getDecisions(h), "nudge_skipped_floor") >= 1);
+  check("r117a: the second tick reached its own decision while the first was parked", secondSettled);
+  check("r117a: exactly one [GOAL] prompt queued across both ticks", goalPrompts(h).length === 1);
+  check("r117a: the second tick was turned away by the floor, not by a missing decider",
+    countAction(getDecisions(h), "nudge_skipped_floor") === 1);
+
+  // Release: the first tick resumes and finishes its own bookkeeping.
+  h.releasePromptSubmits();
+  const settled = await waitUntil(() => getDecisions(h).some(d => d.action === "nudge_sent"));
+  check("r117a: the first tick's nudge_sent lands once its submit resolves", settled);
+  check("r117a: still exactly one [GOAL] prompt after the submit resolved", goalPrompts(h).length === 1);
+
+  // (2) A tick inside the floor window, with the submit now resolved.
+  clock.advance(60_000);
+  await fireTick(h);
+  const insideFloorSettled = await waitUntil(() =>
+    goalPrompts(h).length >= 2 ||
+    countAction(getDecisions(h), "nudge_skipped_floor") >= 2);
+  check("r117a: a tick inside the floor window reached its own decision", insideFloorSettled);
+  check("r117a: it queued nothing - still one [GOAL] prompt", goalPrompts(h).length === 1);
+
+  // (3) A tick past the floor window sends the next nudge. This is the withheld
+  // control: without it the two silences above would also be produced by a
+  // driver that had stopped reaching the nudge path at all.
+  clock.advance(130_000);
+  await fireTick(h);
+  const pastFloorSent = await waitUntil(() => getDecisions(h).filter(d => d.action === "nudge_sent").length >= 2);
+  check("r117a: a tick past the floor window queues the next [GOAL] prompt", pastFloorSent);
+  check("r117a: exactly two [GOAL] prompts in total", goalPrompts(h).length === 2);
+  check("r117a: exactly two nudge_sent decisions", countAction(getDecisions(h), "nudge_sent") === 2);
+  check("r117a: the nudge ledger counted both", getState(h).monitor.cost.nudge.count === 2);
+  check("r117a: two ticks were turned away by the floor between them",
+    countAction(getDecisions(h), "nudge_skipped_floor") === 2);
+}
+
+// The open-turn reading is a set of turn ids, so a completion closes only the
+// turn it names. A completion for a turn that never started closes nothing (4),
+// and two overlapping turns need both completions before the session reads as
+// between turns (5).
+async function caseR117b_openTurnsCloseByIdOnly(clock) {
+  console.log("\n=== R117b: open turns close by id, so an unmatched completion clears nothing ===");
+  clock.set(T0);
+
+  const h = await seedNudgeRaceHarness("r117b_open_turn_ids");
+  const startH = h.handlers["turn.start"];
+  const completeH = h.handlers["turn.complete"];
+
+  // Two turns open at once.
+  clock.advance(130_000);
+  await startH(h.fake, { turnId: "turn-a" }, () => {});
+  await startH(h.fake, { turnId: "turn-b" }, () => {});
+
+  // Each leg advances the clock past the idle gate first, because turn.complete
+  // stamps lastTurnComplete whatever id it carries, so an unmatched completion
+  // still resets the idle reading the nudge path needs.
+  const tickReachedADecision = async () => {
+    const before = countPersistedTicks(h);
+    clock.advance(130_000);
+    await fireTick(h);
+    // A tick that returns at the in-flight check persists nothing, so on the
+    // open-turn legs this poll is expected to run out; its answer is the
+    // assertion rather than a precondition for one.
+    await waitUntil(() => countPersistedTicks(h) > before, 40);
+    return countPersistedTicks(h) > before;
+  };
+
+  // (4) A completion for a turn this session never saw start.
+  await completeH(h.fake, { turnId: "turn-never-started", aborted: true, reason: "aborted" }, () => {});
+  check("r117b: an unknown completion leaves the session reading as inside a turn", !(await tickReachedADecision()));
+  check("r117b: and queues no [GOAL] prompt", goalPrompts(h).length === 0);
+
+  // (5) One of the two real turns completes; the other is still running.
+  await completeH(h.fake, { turnId: "turn-a", aborted: true, reason: "aborted" }, () => {});
+  check("r117b: one completion of two leaves the session reading as inside a turn", !(await tickReachedADecision()));
+  check("r117b: and still queues no [GOAL] prompt", goalPrompts(h).length === 0);
+
+  // The control: with both completions in, the same driver nudges. Without it
+  // the two silences above would also be produced by a tick that had stopped
+  // reaching the nudge path for some unrelated reason.
+  await completeH(h.fake, { turnId: "turn-b", aborted: true, reason: "aborted" }, () => {});
+  check("r117b: the second completion lets the tick through", await tickReachedADecision());
+  const sent = await waitUntil(() => goalPrompts(h).length >= 1);
+  check("r117b: it queues the [GOAL] prompt", sent && goalPrompts(h).length === 1);
+  check("r117b: one nudge_sent decision", getDecisions(h).filter(d => d.action === "nudge_sent").length === 1);
+}
+
+// (6) A turn that opens while the submit is parked, and is still open when it
+// resolves, does not cost the nudge its own record: the ledger, the window and
+// the nudge_sent decision all still land once the submit comes back.
+async function caseR118_bookkeepingLandsThoughATurnOpenedUnderTheSubmit(clock) {
+  console.log("\n=== R118: a turn opening under the parked submit does not cost the nudge its record ===");
+  clock.set(T0);
+
+  const h = await seedNudgeRaceHarness("r118_counter_at_submit_time");
+  h.holdPromptSubmits();
+
+  clock.advance(130_000);
+  await fireTick(h);
+  const parked = await waitUntil(() => goalPrompts(h).length >= 1);
+  check("r118: the tick reached the submit and parked there", parked);
+
+  // A turn opens under the parked submit and never completes, so it is still
+  // open at the moment the submit resolves.
+  const startH = h.handlers["turn.start"];
+  await startH(h.fake, { turnId: "turn-during-submit" }, () => {});
+
+  h.releasePromptSubmits();
+  const settled = await waitUntil(() => getDecisions(h).some(d => d.action === "nudge_sent"));
+  check("r118: the nudge_sent decision lands once the submit resolves", settled);
+  check("r118: exactly one nudge_sent", countAction(getDecisions(h), "nudge_sent") === 1);
+  check("r118: the nudge ledger counted it", getState(h).monitor.cost.nudge.count === 1);
+  check("r118: the nudge window was bumped", (getState(h).monitor.cost.nudgeWindow?.count ?? 0) === 1);
+
+  // Instrument: the turn really was open across the resolution, so a reading
+  // taken after the submit would have been a different reading.
+  const before = countPersistedTicks(h);
+  clock.advance(130_000);
+  await fireTick(h);
+  await waitUntil(() => countPersistedTicks(h) > before, 40);
+  check("r118: the turn opened during the submit is still open afterwards",
+    countPersistedTicks(h) === before);
+}
+
+// ============================================================
+// A nudge's own bookkeeping is spent before the submit, like the floor
+//
+// $.prompt.submit parks until the session is next idle, so a whole worker turn
+// can run and be scored between the call and its return. Three writes ride on
+// that call: the escalation counter, the nudged-turn flag, and the prompt text
+// the scorer reads. Written after the submit, each one lands after the turn it
+// describes has already been judged - the counter after the reset an on-goal
+// score performs, the flag after the turn.complete that reads it, the text
+// after the scorer took the previous turn's prompt in its place.
+//
+// The counter's half of that is one round of credit. A nudge met on goal must
+// clear its own nudge from the counter; written after the submit it increments
+// past the reset, so the met round leaves a 1 behind and the two rounds after it
+// reach the cap that pauses the node, one round earlier than the worker earned.
+//
+// The pair below varies one axis: whether the first of four rounds is met on
+// goal. Everything else - the seeding, the goal node, the round budget, the
+// parked submit, the three unmet rounds after it - is the same on both sides.
+// ============================================================
+
+// The seeding both sides share. The harness's default leaf carries maxRounds 0,
+// which blocks it on its first scored round and ends the tree; these cases need
+// a leaf that survives four scored rounds, so the round budget is raised and
+// nothing else about the default tree is changed.
+const R119_OPTS = {
+  costEnabled: false,
+  stateOpts: {
+    goals: [
+      makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+      makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "plan", status: "active", maxRounds: 10 }),
+    ],
+    activeGoalId: "g-plan",
+  },
+};
+
+// One round: a tick reaches the actuator and parks inside its submit, the
+// worker's own turn runs and ends while it is parked, then the submit resolves.
+// Returns the number of rounds whose tick actually queued a [GOAL] prompt, so a
+// round the cap turned away is visible to the caller rather than an assertion
+// failure inside the driver.
+async function nudgeUnderParkedSubmitDrive(h, clock, { meetRounds }) {
+  const startH = h.handlers["turn.start"];
+  const completeH = h.handlers["turn.complete"];
+  const scoredLabels = [];
+  const scoredPrompts = [];
+  // One stub serves both callers, told apart by the label set each is handed:
+  // only the turn scorer offers "on-goal". The decider gets "nudge" so every
+  // round reaches the actuator.
+  h.setClassifyValue((prompt, labels) => {
+    if (Array.isArray(labels) && labels.includes("on-goal")) {
+      scoredLabels.push(labels);
+      scoredPrompts.push(String(prompt));
+      return "on-goal";
+    }
+    return "nudge";
+  });
+
+  let nudgedRounds = 0;
+  for (let i = 0; i < meetRounds.length; i++) {
+    h.holdPromptSubmits();
+    const promptsBefore = goalPrompts(h).length;
+    const sentBefore = countAction(getDecisions(h), "nudge_sent");
+    clock.advance(130_000);
+    await fireTick(h);
+    const parked = await waitUntil(() => goalPrompts(h).length > promptsBefore, 60);
+    if (!parked) {
+      // The tick never reached the submit. That is the cap turning it away on
+      // the control side; it is the assertion the caller reads, not an error.
+      h.releasePromptSubmits();
+      await new Promise(r => setTimeout(r, 20));
+      continue;
+    }
+    nudgedRounds += 1;
+
+    // The worker's own turn, opened and closed while the submit is parked. Met
+    // on goal it is a real scored completion; unmet it is aborted, which skips
+    // scoring and so resets nothing.
+    const turnId = `met-turn-${i}`;
+    await startH(h.fake, { turnId }, () => {});
+    await completeH(h.fake, meetRounds[i]
+      ? { turnId, answer: "took the next concrete step toward the objective", reason: "end_turn" }
+      : { turnId, aborted: true, reason: "aborted" }, () => {});
+
+    h.releasePromptSubmits();
+    await waitUntil(() => countAction(getDecisions(h), "nudge_sent") > sentBefore);
+  }
+  return { nudgedRounds, scoredLabels, scoredPrompts };
+}
+
+// The headline: the first round is met on goal, so it costs the counter nothing,
+// and the three unmet rounds after it all still get their nudge. The cap is
+// three, so a met round that left its own nudge on the counter would have capped
+// the fourth.
+async function caseR119_aMetNudgeClearsItsOwnCount(clock) {
+  console.log("\n=== R119: a nudge met on goal clears its own count, so the cap is not reached early ===");
+  clock.set(T0);
+
+  // The cost path is off inside R119_OPTS for the same reason caseR117a turns
+  // it off: with it on, a round can be turned away by the D2 idle skip before
+  // the actuator, and the counts below would then be reading that rather than
+  // the cap.
+  const h = await seedNudgeRaceHarness("r119_met_on_goal", R119_OPTS);
+
+  const { nudgedRounds, scoredLabels, scoredPrompts } =
+    await nudgeUnderParkedSubmitDrive(h, clock, { meetRounds: [true, false, false, false] });
+
+  check("r119: all four rounds queued their [GOAL] prompt", nudgedRounds === 4);
+  check("r119: four nudge_sent decisions", countAction(getDecisions(h), "nudge_sent") === 4);
+  check("r119: the cap was not reached", countAction(getDecisions(h), "nudge_cap_reached") === 0);
+  check("r119: the node was not paused", getState(h).goals.every(g => g.status !== "paused"));
+
+  // Instrument: the met round's turn really was scored, so the reset this case
+  // is about actually happened.
+  check("r119: the met round's turn was scored", scoredLabels.length === 1);
+  // The nudged-turn flag was spent before the submit, so the turn that ran under
+  // it is scored with the nudge-aware label set rather than the ordinary one.
+  check("r119: the scored turn saw the nudge-aware label set",
+    scoredLabels.length === 1 && !scoredLabels[0].includes("off-goal-by-instruction"));
+  // The prompt text was spent before the submit, so the scorer judges the answer
+  // against the nudge the worker was actually answering.
+  check("r119: the scorer read the nudge text as the prompt",
+    scoredPrompts.length === 1 && scoredPrompts[0].includes("[GOAL] The active goal is"));
+}
+
+// The withheld control, varying only the first round: with nothing met on goal
+// the same four rounds reach the cap at the fourth. Without it the absence
+// asserted above would also be produced by a driver that had stopped reaching
+// the cap check at all.
+async function caseR119_noRoundMetReachesTheCap_control(clock) {
+  console.log("\n=== R119 control: the same four rounds with nothing met on goal reach the cap ===");
+  clock.set(T0);
+
+  const h = await seedNudgeRaceHarness("r119_unmet_control", R119_OPTS);
+
+  const { nudgedRounds, scoredLabels } =
+    await nudgeUnderParkedSubmitDrive(h, clock, { meetRounds: [false, false, false, false] });
+
+  check("r119 control: the control side scored no turn at all", scoredLabels.length === 0);
+  check("r119 control: three rounds nudged and the fourth did not", nudgedRounds === 3);
+  check("r119 control: three nudge_sent decisions", countAction(getDecisions(h), "nudge_sent") === 3);
+  check("r119 control: the cap was reached", countAction(getDecisions(h), "nudge_cap_reached") >= 1);
+  check("r119 control: the node was paused by the cap",
+    getState(h).goals.some(g => g.status === "paused" && g.pausedByNudgeCap === true));
+}
+
+// ============================================================
+// A submit that throws is recorded, because the floor is already spent
+// ============================================================
+
+// Spending the floor before the submit means a failed submit costs a whole
+// window with nothing retrying it. The record is what keeps that from being
+// silent.
+async function caseNudgeFailed_recordedAndTheFloorIsStillSpent(clock) {
+  console.log("\n=== Nudge failed: a throwing submit is recorded and the floor is still spent ===");
+  clock.set(T0);
+
+  // Cost path off so the second tick below reaches the floor test rather than
+  // the D2 idle skip, the same reason caseR117a turns it off.
+  const h = await seedNudgeRaceHarness("nudge_failed", { costEnabled: false });
+  h.failPromptSubmits(new Error("prompt-submit budget exhausted"));
+
+  clock.advance(130_000);
+  await fireTick(h);
+  const failed = await waitUntil(() => getDecisions(h).some(d => d.action === "nudge_failed"));
+  check("nudge failed: the failure is recorded", failed);
+  check("nudge failed: the submit was attempted, so this is a throw and not a skip",
+    goalPrompts(h).length === 1);
+  check("nudge failed: no nudge_sent", !getDecisions(h).some(d => d.action === "nudge_sent"));
+  // The one detail assertion in this case. Naming the error is the whole
+  // payload of this record, and one that does not say why the nudge failed
+  // leaves an operator exactly where the silence did. The surrounding wording
+  // is deliberately not pinned.
+  const failures = getDecisions(h).filter(d => d.action === "nudge_failed");
+  check("nudge failed: the record carries the error",
+    failures.length === 1 && failures[0].detail.includes("prompt-submit budget exhausted"));
+
+  // The floor was spent before the submit, so the next tick inside the window is
+  // turned away by the floor rather than retrying into the same failure.
+  clock.advance(60_000);
+  await fireTick(h);
+  const held = await waitUntil(() => countAction(getDecisions(h), "nudge_skipped_floor") >= 1);
+  check("nudge failed: the floor was spent even though the submit threw", held);
+  check("nudge failed: no second submit attempt inside the window", goalPrompts(h).length === 1);
+}
+
+// The floor is stamped with the clock at the submit, not with the tick's own
+// `now`, which was read before the decider was called. The decider is a model
+// call, so its latency is real, and charging it to the floor shortens every
+// window by however long the decider took.
+//
+// The classify stub burns clock on its first call, which is the only way this
+// difference is observable at all: the two readings are the same instant in a
+// harness whose decider returns instantly.
+async function caseFloorStampedAtSubmit_notBeforeTheDecider(clock) {
+  console.log("\n=== Floor stamp: the decider's latency is not charged to the floor ===");
+  clock.set(T0);
+
+  const DECIDER_LATENCY_MS = 30_000;
+  const FLOOR_MS = OPTS.nudgeFloorMs; // 120_000
+
+  // Cost path off so both ticks reach the decider and the floor test.
+  const h = await seedNudgeRaceHarness("floor_stamped_at_submit", { costEnabled: false });
+  let latencyBurned = false;
+  h.setClassifyValue(() => {
+    if (!latencyBurned) {
+      latencyBurned = true;
+      clock.advance(DECIDER_LATENCY_MS);
+    }
+    return "nudge";
+  });
+
+  // Tick 1 reads its `now`, then the decider burns DECIDER_LATENCY_MS before the
+  // submit. The floor is stamped at the submit, so it expires that much later.
+  clock.advance(130_000);
+  const tick1Now = clock.get();
+  await fireTick(h);
+  const sent = await waitUntil(() => getDecisions(h).some(d => d.action === "nudge_sent"));
+  check("floor stamp: the first tick nudged", sent);
+  check("floor stamp: the decider really did burn clock", latencyBurned && clock.get() === tick1Now + DECIDER_LATENCY_MS);
+
+  // Tick 2 lands exactly one floor after tick 1's own `now`. Stamped from that
+  // `now` the floor has just expired and this tick nudges again; stamped at the
+  // submit it has DECIDER_LATENCY_MS still to run and the floor holds.
+  clock.set(tick1Now + FLOOR_MS);
+  await fireTick(h);
+  const settled = await waitUntil(() =>
+    goalPrompts(h).length >= 2 ||
+    countAction(getDecisions(h), "nudge_skipped_floor") >= 1);
+  check("floor stamp: the second tick reached its own decision", settled);
+  check("floor stamp: the floor still held, so the decider's latency was not charged to it",
+    countAction(getDecisions(h), "nudge_skipped_floor") === 1);
+  check("floor stamp: no second [GOAL] prompt", goalPrompts(h).length === 1);
+
+  // The control: one decider-latency later the floor really has expired and the
+  // same driver nudges, so the silence above is the floor rather than a tick
+  // that had stopped reaching the nudge path.
+  clock.advance(DECIDER_LATENCY_MS);
+  await fireTick(h);
+  const expired = await waitUntil(() => countAction(getDecisions(h), "nudge_sent") >= 2);
+  check("floor stamp control: once the full floor has run the nudge is sent", expired);
+  check("floor stamp control: two [GOAL] prompts in total", goalPrompts(h).length === 2);
+}
