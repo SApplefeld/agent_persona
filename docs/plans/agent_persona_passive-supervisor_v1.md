@@ -446,3 +446,17 @@ Test: `.kit/channel-reply-instruction-test.sh` (extended, not duplicated - the e
 Part B (the `supervisorModel` setting, defaulting to `opus`) is explicitly not started in this addendum: the Reviewer's own relay said not to begin it until the operator answers opus-default versus sonnet-plus-mandatory-pair, and that answer has not arrived as of this Chapter.
 
 Gate: `bash -n bin/supervise.sh` exit 0; `bash .kit/channel-reply-instruction-test.sh` exit 0, 4 of 4 checks passed (2 pre-existing, 2 new); `node .kit/supervisor-unit-test.mjs` exit 0, 19 passed, unchanged; `npx tsc --noEmit -p .` exit 0.
+
+### Addendum - 2026-09-13: worker launch discipline, Part B (operator decision, v2 spec Section 0 item 3)
+
+The operator's decision, relayed by the Reviewer: `supervisorModel` defaults to `opus`, the worker's own main thread runs at medium effort, and per-section implementer tier is unaffected - a dispatched section still takes whatever tier the plan doc's own `Model:` line names, under executing-work. This governs only the worker's own main thread, where PR #17's kill path was actually written, not the implementer tiers `executing-work` dispatches.
+
+Fix: two new settings, `SUPERVISOR_MODEL` (default `opus`) and `SUPERVISOR_EFFORT` (default `medium`), read beside `SUPERVISOR_POLL_MS`. The launch call's `--model` flag now reads `"${MODEL:-$SUPERVISOR_MODEL}"` (previously a bare `"${MODEL:-haiku}"`) and gained a new `--effort "${EFFORT:-$SUPERVISOR_EFFORT}"` flag. An explicit `MODEL` or `EFFORT` env var still wins over either setting, exactly as before - the `.kit/live-*` suites keep passing `MODEL=haiku` explicitly and are unaffected by the new default.
+
+**Not completed, disclosed rather than silently finished: the persona launchers' own `MODEL=sonnet` export.** `/d/personas/aios/relaunch-wait.sh:12` (outside this repo, a machine-local launcher) launches `/d/DeepSeekHarness/agentic-plugin/bin/supervise.sh` - a *different, stale* runtime clone, confirmed at `1911a83` as of this addendum, which does not carry this fix. Dropping that launcher's `MODEL=sonnet` export before that clone is updated would silently downgrade the `aios` worker to the old bare `haiku` default (the pre-fix fallback), not up to `opus` - the opposite of this item's own intent. Left as a named follow-up for whoever next pulls that runtime clone current, not completed here where it would cause a real regression.
+
+Test: a new `.kit/supervisor-model-test.sh` extracts the `SUPERVISOR_MODEL`/`SUPERVISOR_EFFORT` assignment lines and the `--model` flag's own resolution by anchor text (matching this file's own `channel-reply-instruction-test.sh` pattern rather than hand-copying), and asserts: the settings default to `opus`/`medium` with nothing set; a `supervisorModel`/`supervisorEffort` override changes the default; an explicit `MODEL` env var still wins over the `opus` default; with no override, the launch resolves to `opus`. Registered in `.kit/.gitignore`'s allow-list.
+
+Gate: `bash -n bin/supervise.sh` exit 0; `bash .kit/supervisor-model-test.sh` exit 0, 6 of 6 checks passed; `bash .kit/channel-reply-instruction-test.sh` exit 0, 4 of 4 checks passed, unchanged; `node .kit/supervisor-unit-test.mjs` exit 0, 19 passed, unchanged; `npx tsc --noEmit -p .` exit 0.
+
+This closes v2 spec Section 0 item 3 (Parts A and B both landed). Per the operator's own sequencing, this item's PR (#19) stays Draft until item 2's PR (#17) actually merges, then ships both parts together in the same PR - not merged ahead of it.

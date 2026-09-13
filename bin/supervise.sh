@@ -112,6 +112,16 @@ SUPERVISOR_MIN_RUN_MS="${supervisorMinRunMs:-120000}"
 SUPERVISOR_CRASH_LIMIT="${supervisorCrashLimit:-3}"
 SUPERVISOR_MAX_RESTARTS_PER_HOUR="${supervisorMaxRestartsPerHour:-6}"
 SUPERVISOR_POLL_MS="${supervisorPollMs:-10000}"
+# v2 spec Section 0 item 3 Part B (operator decision, DISCUSSION.md Round
+# 136 addendum): the worker's own main thread - where PR #17's kill path
+# was actually written - defaults to opus at medium effort, not sonnet.
+# Per-section implementer tier is unaffected; a dispatched section still
+# takes whatever tier the plan doc's own `Model:` line names, under
+# executing-work. `MODEL` (below) still overrides this default when a
+# caller sets it explicitly - the `.kit/live-*` suites keep doing exactly
+# that to pass `haiku` and hold their own cost steady.
+SUPERVISOR_MODEL="${supervisorModel:-opus}"
+SUPERVISOR_EFFORT="${supervisorEffort:-medium}"
 
 # --- Plugin values (single-sourced, emitted to settings JSON) ---
 HEARTBEAT_MS="${heartbeatMs:-30000}"
@@ -406,7 +416,8 @@ while true; do
     "${PLUGIN_DIR_ARGS[@]}" \
     "${CHANNEL_ARGS[@]}" \
     --settings "$(cygpath -w "$SETTINGS_FILE")" \
-    --model "${MODEL:-haiku}" \
+    --model "${MODEL:-$SUPERVISOR_MODEL}" \
+    --effort "${EFFORT:-$SUPERVISOR_EFFORT}" \
     --permission-mode "$PERMISSION_MODE" \
     --debug-file "$DEBUG" \
     > "$OUT" 2> "$ERR"; }
