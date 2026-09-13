@@ -340,6 +340,8 @@ The operator has not yet ruled on these options; the defaults are in force.
 - `.kit/live-operator-test.sh` : the full live suite (phases 1, 2, 3)
 - `.kit/controller-tick-test.mjs` : S4 (peer doorbell), S9 (cost cap ask opener)
 - `.kit/assert-decisions.js` : decision log assertions (ask lifecycle, reply check)
+- `.kit/supervisor-unit-test.mjs` : `bin/supervise-decide.mjs`'s decision unit, pure and offline (bonus: pre-existing coverage documented here for the first time, not part of this section's own work)
+- `.kit/live-stopprocesstree-test.sh` : `bin/supervise.sh`'s stop-path helpers and `stop_child` itself, against real Windows processes (registered in `live-all.sh`'s `ALL_SUITES` as `stopprocesstree` - launches no `claude` session and holds no persona claim)
 
 **Runner lock:** `live-all.sh` writes `.kit/RUNNING` at start and refuses to start if it already exists (exit 8). After a killed gate, confirm no `claude` child with `--plugin-dir` is running, then `rm .kit/RUNNING`.
 

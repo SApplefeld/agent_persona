@@ -33,4 +33,5 @@
 !/controller-tick-test.mjs
 !/channel-reply-instruction-test.sh
 !/supervisor-model-test.sh
+!/live-stopprocesstree-test.sh
 !/fixtures/
