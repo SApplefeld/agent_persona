@@ -64,6 +64,8 @@ Four extensions, in order of what blocks the next:
 - Completing a provided settings file under item 5 means copying the options from whichever plugin id carries them to the id that lacks them, with every option as the caller wrote it. Which persona wins when a supervisor's persona argument and a provided settings file disagree is a different surface, present identically under `--plugin-dir`, and does not ride under item 5.
 - A worker whose child exits 0 with a backfilled root_complete newer than its start is relaunched without RESTART_PASSIVE and outside the crash counter. That is what item 1's "ignores a backfilled root" means on the bash natural-exit path.
 - Bash unsets a coproc's `CHILD_PID` when it reaps the child, and `bin/supervise.sh` runs under `set -u`, so any read of `CHILD_PID` after the child exits aborts the supervisor with exit 1. Every read of the child's pid after launch uses one pid saved immediately after the coproc starts. The RESTART_PASSIVE restarts on `aios` came through the decide path's stop, not the natural-exit branch, which no run had reached.
+- The bash natural-exit path's coverage for item 1 is `.kit/supervisor-natural-exit-test.sh`, a stub-driven suite, in place of the live-restartpassive legs the Test bullet names. A live suite cannot reach that branch, because its child blocks on stdin until cleanup stops it.
+- Every numeric supervisor setting passes one shared check: digits only, no leading zero, at most 9 digits, greater than zero. Bash reads a leading zero as octal in arithmetic, and a value past 64 bits breaks `[ -lt ]`.
 - Section 6's launch shape never feeds a worker's `--prompt` from coordinator text. `bin/supervise.sh` frames `--prompt` content as the operator's trusted task, so coordinator steers reach a worker only through the labelled inbox path.
 - Section 12 runs after Sections 1 and 2 and before Section 3. Sections 7 and 8 each carry one added sentence: a worker resolves a coordinator record with `agentic_resolve` when the work is finished or declined, and the coordinator counts rounds per steer against resolutions rather than replies.
 
@@ -552,3 +554,13 @@ Gate: no code changed since Interim board 2's targeted lane, whose counts stand.
 Commit model: Branch-and-PR, on `item0-5-installed-runtime` off `74bbb76`.
 
 Next: Section 0 item 6, the finishing reviews over Section 0, then Section 1. The operator has been asked to affirm the transport pick under Open Questions before Section 1 starts.
+
+### Interim board 1 - 2026-09-13
+
+Section 0 item 6, the finishing pass, is mid-flight. Items 1 to 5 are closed by their own Chapters.
+
+- Stage: the finishing reviews over the whole Section 0 changeset have run twice. Round 1 (security plus adversarial, Fable, high) returned two Majors, both routed. Round 2 over the fix delta (adversarial, blind and security, Fable, high) returned one Major and eleven Minors.
+- Live dispatches: implementer-opus, resumed, building fix round two. It was asked for one shared numeric-settings check across the seven supervisor settings, a case (e) for the backfilled non-zero exit, stricter launcher and writer-count pins, the guarded CHILD array read, a balanced-bracket model rule, two README corrections, and the taskkill tree-flag comment rewording.
+- Gate baseline, this checkout at 406a783, 2026-09-13 22:55Z, no live suite: supervisor-natural-exit 27 OK, supervisor-model 24 OK, settings-plugin-key 32 OK, channel-reply-instruction 12 OK, supervisor-unit 19 passed. Every exit code 0. A heavy-process claim for claude-kit, started 22:49:33Z with a 120 second window, was on disk and past its window.
+- Rulings adopted since the last boundary: the saved-pid rule for every read of the child pid; the shared numeric check refusing a leading zero and more than nine digits; the natural-exit coverage living in the stub suite rather than the live legs. All three are in the Standing Brief Amendments block.
+- Next per item: adjudicate fix round two, run the Minors close pass from the section Minors list under the scratch path, dispatch the docs curator, then write the item 6 Chapter and update PR #30.
