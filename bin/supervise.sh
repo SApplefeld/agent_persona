@@ -3,6 +3,11 @@
 #
 # Usage: bin/supervise.sh <workdir> <persona> <permission-mode> [--prompt TEXT] [--rundir DIR] [--dev] [--no-channel] [--channel-name NAME]
 #
+# The priming turn's skill-load instruction (SKILL_LOAD_INSTRUCTION below)
+# assumes the claude-kit plugin is installed globally on the host running
+# this script, since it names claude-kit:operating-instructions and
+# claude-kit:executing-work by their plugin-qualified skill names.
+#
 # By default the child loads agentic-plugin as an installed plugin (plan
 # item 6: the target runtime, installed from this repo's own marketplace
 # manifest). Pass --dev to load it from this checkout instead via
@@ -122,6 +127,23 @@ SUPERVISOR_POLL_MS="${supervisorPollMs:-10000}"
 # that to pass `haiku` and hold their own cost steady.
 SUPERVISOR_MODEL="${supervisorModel:-opus}"
 SUPERVISOR_EFFORT="${supervisorEffort:-medium}"
+# Reviewer Round 141 R113 (Major): an unvalidated typo in either setting
+# was an opaque crash loop - the child fails to launch at all, `claude -p`
+# rejecting an unknown model or effort value, and the supervisor just
+# keeps retrying until it trips the crash-loop limit with no message
+# naming the actual cause. Validated once at startup instead, with a
+# clear exit.
+if [ -z "$SUPERVISOR_MODEL" ]; then
+  echo "ERROR: supervisorModel resolved empty - check the settings config" >&2
+  exit 1
+fi
+case "$SUPERVISOR_EFFORT" in
+  low|medium|high|xhigh|max) : ;;
+  *)
+    echo "ERROR: supervisorEffort '$SUPERVISOR_EFFORT' is not one of low|medium|high|xhigh|max" >&2
+    exit 1
+    ;;
+esac
 
 # --- Plugin values (single-sourced, emitted to settings JSON) ---
 HEARTBEAT_MS="${heartbeatMs:-30000}"
@@ -495,7 +517,7 @@ while true; do
     node -e "
       const prefix = process.argv[1] || '';
       const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:
-        '[SUPERVISOR-PRIMING] ' + prefix + 'You are the passive supervisor, waiting for a goal or a steering message from the operator. Reply now with one short line acknowledging you are ready, then wait.'
+        '[SUPERVISOR-PRIMING] ' + prefix + 'You are the passive supervisor, waiting for a goal. No channel is attached, so no operator steering message will arrive here. Reply now with one short line acknowledging you are ready, then wait.'
       }]}});
       process.stdout.write(json + '\n');
     " "$SKILL_LOAD_INSTRUCTION" >&"$CHILD_IN"

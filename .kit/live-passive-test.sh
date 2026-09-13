@@ -37,6 +37,11 @@ FAIL_COUNT=0
 pass() { echo "OK: $1" | tee -a "$ASSERT_LOG"; }
 failed() { echo "FAIL: $1" | tee -a "$ASSERT_LOG"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 
+# Reviewer Round 141 R109: bin/supervise.sh's own default model is now
+# opus (v2 Section 0 item 3 Part B) - export MODEL so this suite's child
+# still runs at haiku, unaffected by that new default.
+export MODEL="haiku"
+
 bash "$SUPERVISE" "$WORKDIR" "passive-item1-$$" acceptEdits --dev --rundir "$SUITE_DIR" --no-channel \
   > "$SUITE_DIR/supervise.stdout.log" 2>&1 &
 SUPERVISE_PID=$!

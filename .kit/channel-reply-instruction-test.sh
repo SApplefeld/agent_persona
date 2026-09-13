@@ -16,9 +16,31 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/../bin/supervise.sh"
 
-SNIPPET=$(sed -n '/^  SKILL_LOAD_INSTRUCTION="/,/^  fi$/p' "$SCRIPT")
+# Reviewer Round 141 R111 (Major, reproduced): the prior extraction
+# stopped at the FIRST `/^  fi$/`, which is the `NO_CHANNEL` guard's own
+# close around `CHANNEL_REPLY_INSTRUCTION` - it never reached any of the
+# three actual priming-write call sites at all. The adversarial reviewer
+# deleted `$SKILL_LOAD_INSTRUCTION` from all three and this test stayed
+# 4/4, since it only ever checked the variable's own value, never that
+# anything downstream actually uses it. This wider extraction (through
+# `PROMPT=""`, the line that reliably follows the whole if/elif/else
+# structure) is used for grep-only checks against the three real call
+# sites - never eval'd (see the narrower `VARS_SNIPPET` below for that).
+SNIPPET=$(sed -n '/^  SKILL_LOAD_INSTRUCTION="/,/^  PROMPT=""$/p' "$SCRIPT")
 if [ -z "$SNIPPET" ]; then
   echo "FAIL: could not locate the SKILL_LOAD_INSTRUCTION/CHANNEL_REPLY_INSTRUCTION block in $SCRIPT"
+  exit 1
+fi
+# The narrower range (just the two variable assignments) is what actually
+# gets eval'd for the value checks below - the wider $SNIPPET above
+# includes the three priming-write `node -e` calls themselves, which
+# reference `$PROMPT_FILE`/`$CHILD_IN` (unset in this test's own
+# environment) and would either abort under `set -u` or try to write to
+# a real fd that does not exist here. Evaluating code that sends bytes
+# to a coproc pipe is not this test's job; reading its own text is.
+VARS_SNIPPET=$(sed -n '/^  SKILL_LOAD_INSTRUCTION="/,/^  fi$/p' "$SCRIPT")
+if [ -z "$VARS_SNIPPET" ]; then
+  echo "FAIL: could not locate the SKILL_LOAD_INSTRUCTION/CHANNEL_REPLY_INSTRUCTION variable block in $SCRIPT"
   exit 1
 fi
 
@@ -33,9 +55,25 @@ check() {
   if [ "$2" = "0" ]; then echo "  OK: $1"; else echo "  FAIL: $1"; failed=1; fi
 }
 
+# Reviewer Round 141 R111 (Major, reproduced): the prior extraction
+# stopped at the FIRST `/^  fi$/`, which is the `NO_CHANNEL` guard's own
+# close around `CHANNEL_REPLY_INSTRUCTION` - it never reached any of the
+# three actual priming-write call sites at all. The adversarial reviewer
+# deleted `$SKILL_LOAD_INSTRUCTION` from all three and this test stayed
+# 4/4, since it only ever checked the variable's own value, never that
+# anything downstream actually uses it. Extraction now runs through
+# `PROMPT=""`, so eval'ing `$SNIPPET` also defines - and lets this test
+# assert against - the three real call sites, by anchor grep, not by
+# re-deriving their content.
+CALL_SITES=$(printf '%s\n' "$SNIPPET" | grep -c 'CHILD_IN"$')
+[ "$CALL_SITES" = "3" ]; check "exactly three priming-write call sites found" $?
+SITES_WITH_SKILL_LOAD=$(printf '%s\n' "$SNIPPET" | grep 'CHILD_IN"$' | grep -c 'SKILL_LOAD_INSTRUCTION')
+[ "$SITES_WITH_SKILL_LOAD" = "3" ]; check "all three call sites pass \$SKILL_LOAD_INSTRUCTION as an argument" $?
+printf '%s\n' "$SNIPPET" | grep -q '^  else$'; check "the NO_CHANNEL-with-no-PROMPT_FILE else branch exists" $?
+
 # Channel attached: the guidance must be present.
 NO_CHANNEL=0
-eval "$SNIPPET"
+eval "$VARS_SNIPPET"
 case "$CHANNEL_REPLY_INSTRUCTION" in
   *"$CONTROL"*) check "channel attached: prose guidance present" 0 ;;
   *) check "channel attached: prose guidance present" 1 ;;
@@ -49,7 +87,7 @@ esac
 # skill-load sentence must still be present - it is NO_CHANNEL-independent.
 unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION
 NO_CHANNEL=1
-eval "$SNIPPET"
+eval "$VARS_SNIPPET"
 case "${SKILL_LOAD_INSTRUCTION:-}" in
   *"$SKILL_LOAD_CONTROL"*) check "channel not attached: skill-load sentence still present" 0 ;;
   *) check "channel not attached: skill-load sentence still present" 1 ;;

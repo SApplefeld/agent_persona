@@ -39,7 +39,15 @@ HEARTBEAT_MS=30000
 STALE_AFTER_MS=90000
 
 PERSONA="default"
-MODEL="haiku"
+# Reviewer Round 141 R109 (Critical): unexported, this never reached
+# bin/supervise.sh at all - the suite launches it as a separate `bash`
+# process (below), and the launch call's own `${MODEL:-$SUPERVISOR_MODEL}`
+# resolution only sees inherited environment, never a plain shell
+# variable set in this script. Before the opus default landed, the broken
+# override was masked by supervise.sh's own bare `haiku` fallback; now it
+# is not, and every live suite that does not export MODEL runs its child
+# on opus at medium effort instead of haiku.
+export MODEL="haiku"
 PERMISSION_MODE="acceptEdits"
 
 # AD4: Fixed prompt - "call goal_create exactly once, with the three essays as the roadmap"
