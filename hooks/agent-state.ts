@@ -497,6 +497,32 @@ export function completeLeaf(state: AgentState, id: string, note: string): void 
   // completeLeaf never touches the root.
 }
 
+// Section 10 fix round: whether a single node is eligible to become the
+// active leaf. A node is eligible when its own status is "pending", it has
+// no children (the leaf invariant), and every ancestor between it and the
+// root also has status "pending" - the root itself is exempt, since
+// activateNext's own DFS starts there without testing its status. This is
+// activateNext's own DFS rule, extracted so a second caller (goal_add) reads
+// the same rule rather than reimplementing it by hand.
+export function isActivationEligible(state: AgentState, node: GoalNode): boolean {
+  if (node.status !== "pending") return false;
+  if (state.goals.some((g) => g.parentId === node.id)) return false;
+  // The walk is bounded by the node count. A parentId cycle, which the
+  // tree's shape rules do not permit but nothing here re-checks, exhausts the
+  // bound and reads as not eligible rather than spinning.
+  let current = node;
+  let steps = state.goals.length;
+  while (current.parentId) {
+    if (steps-- <= 0) return false;
+    const parent = state.goals.find((g) => g.id === current.parentId);
+    if (!parent) break;
+    if (parent.parentId === null) break; // parent is the root, exempt from the status test
+    if (parent.status !== "pending") return false;
+    current = parent;
+  }
+  return true;
+}
+
 // M6: Activate the next pending leaf (a node with no children).
 // Depth-first walk in createdAt order. Prefers the completed node's siblings.
 // Only activates nodes that have no children (leaf invariant).
@@ -541,7 +567,12 @@ export function activateNext(state: AgentState, completedId?: string): string | 
         .filter((g) => g.parentId === parentId && g.status === "pending")
         .sort((a, b) => orderKey(a) - orderKey(b));
       for (const c of candidates) {
-        if (!hasChildren(c.id)) return c;
+        // Every candidate here already descends through an all-pending
+        // ancestor chain (the level-by-level status filter above), so the
+        // eligibility predicate's ancestor test is trivially satisfied and
+        // this reduces to the leaf check - reusing it rather than repeating
+        // "no children" inline.
+        if (isActivationEligible(state, c)) return c;
         // Has children: descend.
         const child = dfs(c.id);
         if (child) return child;
