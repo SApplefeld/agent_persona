@@ -28,10 +28,6 @@ Residual caveat: the fix only takes effect for a session running the updated cod
 
 Not this repo's fix - a pointer to the kit plugin repo. A worker that never loads `operating-instructions` or `executing-work` can claim a fix landed in a Chapter sentence when the fix is not actually in the diff, because a fix round inside a review loop is never treated as its own section needing a fresh-context adversarial and blind reviewer pair before posting (see `agent_persona_passive-supervisor_v1.md`'s "worker launch discipline" addendum, which fixes the priming-turn gap on this repo's side). The `executing-work` skill itself should say in words that a fix round inside a review loop is a section under its own dispatch rules, not an exception to them - carry this lesson to that skill's own repo when next working there.
 
-## The aios persona launcher still exports MODEL=sonnet, pointed at a stale runtime clone
-
-`/d/personas/aios/relaunch-wait.sh:12` (outside this repo) launches `/d/DeepSeekHarness/agentic-plugin/bin/supervise.sh`, a runtime clone confirmed at `1911a83` as of this entry - far behind `main` and missing item 3's own `SUPERVISOR_MODEL`/`SUPERVISOR_EFFORT` fix entirely. Dropping the launcher's `MODEL=sonnet` export now, before that clone is updated, would silently fall through to the clone's own pre-fix bare default (`haiku`), downgrading the `aios` worker rather than upgrading it to `opus` as item 3 intends. Update that runtime clone to a commit carrying item 3's fix, then drop the launcher's `MODEL=sonnet` export in the same pass; verify with `.kit/supervisor-model-test.sh` against the clone's own `bin/supervise.sh` before trusting the new default there.
-
 ## A KILL-path variant of live-restartpassive-test.sh's F2 leg (Reviewer Round 126 R76 ruling, worded per R93, 2026-09-12)
 
 `.kit/live-restartpassive-test.sh` F2 proves the persona-claim-free and pre-gate-pass observables for a child that stops cleanly on the EOF path. `.kit/live-stopprocesstree-test.sh`'s own Phase-3 shape - a child that ignores both EOF and TERM, forcing `stop_child` to its final KILL escalation - has no equivalent live leg proving those same two observables; it only proves process death. Add an F2-shaped variant driving an EOF-and-TERM-ignoring child through the same claim-free/pre-gate-pass assertions when this is next picked up.
@@ -43,10 +39,6 @@ A running child never re-reads credentials, so a 429 carrying a `five_hour` limi
 ## A reader session cannot write restart_requested when the owner is the stuck process
 
 `restart_requested` is writable by the owner alone. When the owner is itself the wedged child, the one session that can see the wedge (a reader holding the same persona) is refused by the tool, and the only remaining lever is killing the process from outside. Allow a reader to write the fact when the owner's heartbeat is stale, on the same staleness bound the stale-owner arbitration already uses. Not in item 3's PR.
-
-## The dev supervisor still runs the stale runtime clone at /d/DeepSeekHarness/agentic-plugin
-
-That clone predates PR #17, so its `stop_child` still signals one pid rather than the whole Windows process tree, and a restart through it hits the `GATE TIMEOUT` that PR #17 exists to remove. Pull the clone to a commit carrying PR #17 before trusting any restart taken through it. This is the same follow-up the `aios` launcher entry above depends on.
 
 ## live-restartpassive-test.sh F5 and F6 have never been observed green, and the NOTE they grep for is on a path the suite never reaches
 
