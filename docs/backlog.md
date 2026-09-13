@@ -49,3 +49,14 @@ F5 greps the backfill supervisor log for `NOTE:.*backfilled`. The only line matc
 The runtime clone at `/d/DeepSeekHarness/agentic-plugin` is current at `0fc66d2`, but a running `bin/supervise.sh` keeps reading its original open file handle and never picks up a pull. Both supervisors live on this machine were launched before it, so two things outlive the fix. Their `stop_child` still signals one pid rather than the whole Windows process tree, and a restart taken through either still hits the `GATE TIMEOUT` PR #17 removes. The `aios` supervisor also holds `MODEL=sonnet` in its own environment from the launcher line that has since been dropped, so every child it starts stays on `sonnet` rather than taking the new `opus` default.
 
 Nothing to fix in the tree. The remedy is relaunching each supervisor, then dropping this entry. Relaunching is destructive to whatever that supervisor's child is mid-way through, so it is taken at a quiet point rather than on sight of this entry. This is the narrowed remainder of the `aios` launcher entry and the stale-dev-clone entry, both retired in item 3's runtime-clone addendum.
+
+## live-stopprocesstree-test.sh exits 0 while recording no assertions at all
+
+In the whole-gate run `20260913T085812Z` this suite reported `script_exit=0` with
+`assert=[missing]`, the only suite in seventeen to record no checks. A suite that exits
+clean without asserting anything cannot distinguish working code from absent code, so its
+green says nothing. It is one of the two legs covering item 2's process-tree stop, which
+makes the silence worth more than the usual. Find whether the assertions are not written,
+not reached, or written somewhere the runner does not collect, then make the leg fail when
+the behavior is absent. Confirm by mutating `stop_child` to signal a single pid and
+watching this suite go red.

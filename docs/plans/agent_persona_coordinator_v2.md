@@ -173,3 +173,33 @@ This Decision is recorded as the operator's ruling on the Reviewer's own thread 
 ## Chapters
 
 (none yet)
+
+## Chapter: Section 0 item 4, the whole-gate live run
+
+**Result: 16 suites green, 1 failed, and the failure is the one already on the backlog.**
+
+Run `20260913T085812Z`, started 2026-09-13T08:58:12Z, finished 09:54:09Z. Its own header line:
+
+    start 2026-09-13T08:58:12Z HEAD 3407e93 PROFILE short ENGINE 2.1.270 (Claude Code)
+
+`PROFILE short` matches the profile the last whole gate in `agent_persona_passive-supervisor_v1.md` used, so the two are comparable.
+
+**On the HEAD this ran at.** `3407e93` is the tip of `item0-3-followup-runtime-clone`, not `main`. `main` was `0fc66d2` when the run started, and `3407e93` is that commit plus two documentation-only commits, which merged to `main` as `4e2115f` during the run. No code the suites load differs between them, so this is evidence for the tip carrying Section 0's fixes 1, 2 and 3 as the item asks. The worktree also carried two uncommitted files, `.kit/tick-harness.mjs` and `.kit/controller-tick-test.mjs`, from unrelated kaizen work. No live suite loads either: `live-all.sh` runs only the `live-*-test.sh` scripts named in its own `ALL_SUITES`, and neither file is referenced by any of them.
+
+**The one failure, `restartpassive`, `script_exit=1`, 3 checks failed:**
+
+    restartpassive script_exit=1 started=2026-09-13T09:44:00Z ended=2026-09-13T09:50:11Z exitfile=[3 ] assert=[OK: F1 RESTART_PASSIVE fired on root_complete;OK: F2 a fresh passive child launched after RESTART_PASSIVE;OK: F3 supervisor still alive after returning to passive;OK: F4 clean stop (exit 143);FAIL: F5 a backfilled root_complete logs NOTE, not RESTART_PASSIVE;FAIL: F6 a fresh child relaunches after the backfilled NOTE;FAIL: F6 no RESTART_PASSIVE line follows the backfilled NOTE;]
+
+This is the defect `docs/backlog.md` already records, in the test's observable rather than in the code. F5 greps the supervisor log for a `NOTE:.*backfilled` line emitted only on the natural-exit path, which this leg never reaches, because its backfill child sits on stdin until cleanup stops it. The mechanism under test works: the leg's own store carries `root_complete ... marked complete - backfilled, work already done`, and the poll loop returns `continue` rather than `restart_passive`.
+
+Against a baseline rather than in isolation: item 3's two runs of this suite produced F1 through F4 green with F5 and F6 failing on three check lines, and this is the third consecutive sample of that exact shape. No regression, and nothing new.
+
+**Contention, declared rather than glossed.** The box was not quiet for the whole run. The gate waited 1160 seconds for a foreign `.NET` test suite in a third repository to clear, then started on three consecutive clean samples. A second foreign `.NET` run began after the gate was already going. Sixteen suites passed clean through that, so the contention does not appear to have bitten, but the honest statement is that this run was not taken on a quiet machine and `restartpassive` is worth one re-run on a genuinely quiet one before its result is treated as settled. Its failure is independently explained by the backlog entry, so this caveat is about certainty, not about the finding.
+
+**A second finding, new and routed to the backlog.** `stopprocesstree` exits 0 with `assert=[missing]`: it records no assertions at all. A suite that passes without checking anything is not evidence, and it is one of the two suites covering item 2's process-tree stop. It did not fail, so it did not block this gate, and it is not this item's fix.
+
+Gate: `.kit/live-all.sh`, all 17 suites, exit code read from the run's own marker file rather than from its output, marker `1`. 16 `script_exit=0`, 1 `script_exit=1`. Full summary retained at `.kit/runs/20260913T085812Z/summary.txt`.
+
+Commit model: Branch-and-PR, on `item0-4-whole-gate` off `4e2115f`.
+
+Next: Section 0 item 5, the runtime switch from `--plugin-dir` to the installed marketplace plugin, whose own live check is the acceptance this item's evidence deliberately does not cover.
