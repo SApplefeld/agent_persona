@@ -127,3 +127,33 @@ Keep the stop hooks beside this rather than replacing them. They cover different
 Design against one failure from the start: a loop that types "continue" on every quiet stretch will eventually type it into a session that correctly finished, which is the failure the operator described on a sibling project, many review rounds building features nobody asked for. The loop needs a predicate for whether work should still be happening, not only whether work is happening. The armed kit goal is the natural source, since it already records what the session was meant to finish.
 
 Two limits worth knowing before anyone builds this. There is no working-on-it event in the stream, because the spinner is drawn by the interactive display, so silence during a long tool call is indistinguishable from death on the pipe alone and growth is the honest liveness evidence. And prompts the plugin submits to itself are not echoed into that stream, so a shell-side monitor sees the turn a self-nudge causes but never the nudge.
+
+## A design conversation with the operator has no capture rule, so whether it lands anywhere is a judgment call each time
+
+The outer-loop recovery conversation reached a real design direction and landed in zero
+files until the operator asked whether dialog is captured automatically. It is not. Nothing
+in the tree names a destination for what a conversation produces, so capture depends on the
+session noticing that the conversation was worth capturing, which is exactly the judgment
+that failed.
+
+The remedy is a rule keyed on the shape of the conversation rather than on that judgment.
+Four shapes, worked out with the operator:
+
+- **Status or steering.** "What are you working on", "check the conflicts on PR 25". The
+  plan doc and the work itself are already the record. Nothing to capture.
+- **A question.** Capture turns on one check: did answering require establishing a fact
+  that was not already written down? If the answer came from reading code, counting log
+  lines, or tracing a rule across documents, it is a finding and belongs in memory. If it
+  came from what was already on disk, nothing new exists.
+- **A correction.** The operator correcting how the session reasons or acts. Belongs in
+  memory where it is specific to this project, in the doctrine where it is not.
+- **A design direction.** An idea worked out in dialog. Belongs in the backlog or as a plan
+  section.
+
+The last three do not end until something durable exists, and the write does not wait for
+the conversation to converge. Waiting for agreement before capturing is the same failure in
+a slower form.
+
+Open: where the rule itself should live. Project memory holds it for this repo only. The
+doctrine holds it everywhere and is the heavier edit. The lean is the doctrine, because the
+failure is not specific to this repo. Operator's call.
