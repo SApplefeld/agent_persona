@@ -49,3 +49,38 @@ F5 greps the backfill supervisor log for `NOTE:.*backfilled`. The only line matc
 The runtime clone at `/d/DeepSeekHarness/agentic-plugin` is current at `0fc66d2`, but a running `bin/supervise.sh` keeps reading its original open file handle and never picks up a pull. Both supervisors live on this machine were launched before it, so two things outlive the fix. Their `stop_child` still signals one pid rather than the whole Windows process tree, and a restart taken through either still hits the `GATE TIMEOUT` PR #17 removes. The `aios` supervisor also holds `MODEL=sonnet` in its own environment from the launcher line that has since been dropped, so every child it starts stays on `sonnet` rather than taking the new `opus` default.
 
 Nothing to fix in the tree. The remedy is relaunching each supervisor, then dropping this entry. Relaunching is destructive to whatever that supervisor's child is mid-way through, so it is taken at a quiet point rather than on sight of this entry. This is the narrowed remainder of the `aios` launcher entry and the stale-dev-clone entry, both retired in item 3's runtime-clone addendum.
+
+## live-stopprocesstree-test.sh runs 15 checks that the gate summary never collects
+
+In the whole-gate run `20260913T085812Z` this suite was the only one of seventeen whose
+summary line read `assert=[missing]`. Its checks are not missing. The suite's own log ends
+`15 checks run, 0 failed` and `live-stopprocesstree-test.sh: PASS`, and its assertions are
+substantive, covering that the real child is gone after `stop_child` returns on the TERM
+path and after the tree kill.
+
+The gap is collection, not coverage. `.kit/live-stopprocesstree-test.sh` has its
+`pass` and `failed` helpers print to stdout and bump their own counters, which is what
+produces the `15 checks run, 0 failed` line, but neither writes a file, while
+`.kit/live-all.sh:132` collects `$suite_dir/<suite>.assert.log`, a file this suite never
+writes. Its exit file is collected, which is why `exitfile=[0 ]` is populated beside an
+empty `assert=`.
+
+Fix: have `pass` and `failed` tee to `$SUITE_DIR/stopprocesstree.assert.log` as the other
+suites do. No new assertions are needed, and no control has to be built: the suite already
+fails if `stop_child` leaves the real child alive, so a mutation to signal a single pid
+would turn it red today. The effect of this gap is that a whole-gate summary understates
+the evidence for item 2's process-tree stop, which is exactly the fix that gate exists to
+validate.
+
+## Section 0 item 4's whole gate was run without its own precondition, and owes one re-run
+
+Item 4 conditions its whole-gate run on the operator confirming every other live `claude`
+process is stopped. The run `20260913T085812Z` was taken without that confirmation, with
+both supervisors and their children live, and with foreign `.NET` test runs going before
+and during it. Sixteen of seventeen suites passed clean, so the contention does not appear
+to have bitten, and the single failure is explained independently by the F5/F6 entry.
+
+What is owed is narrow: one re-run of `live-restartpassive-test.sh` on a genuinely quiet
+box, so its result rests on the condition the item sets rather than on a run that did not
+meet it. The whole gate does not need repeating for this. Drop this entry once that run is
+recorded in item 4's Chapter.
