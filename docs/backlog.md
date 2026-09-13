@@ -1,5 +1,18 @@
 # Backlog
 
+## commons-unit-test.mjs once died in a libuv teardown assertion after passing (found 2026-09-13)
+
+One run printed `All tests passed` and then exited 127 on
+`Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win\async.c:94`. The crash is in
+teardown, after every assertion had completed, so the exit code and the result disagree. It did not
+reproduce in seven further runs across two sessions on the same tree, and the change in flight did
+not touch that file.
+
+Filed rather than called a flake, because the shape matters more than the frequency: a suite that can
+exit non-zero after passing will also read as failing to any gate that trusts the exit code, which is
+every gate here. The likely cause is a handle closed twice during teardown. Worth catching the next
+occurrence with `--trace-uncaught` rather than hunting it cold.
+
 ## A `goal_add` plan node doesn't always activate as the leaf before the work it names is done (found 2026-09-12)
 
 Reproduced four times in one session (DISCUSSION.md Rounds 108, 110, 112, 114): `goal_add({kind: "plan", ...})` returns "No active goal; planning or activation will occur at the next tick," and each time, the work named in the node's own objective finished before any controller tick activated that node as the leaf. `goal_done` then fails with "No active goal leaf to complete" - the node sits `pending` forever, never `complete`, even though the work it names is genuinely done.
@@ -50,68 +63,37 @@ The runtime clone at `/d/DeepSeekHarness/agentic-plugin` is current at `0fc66d2`
 
 Nothing to fix in the tree. The remedy is relaunching each supervisor, then dropping this entry. Relaunching is destructive to whatever that supervisor's child is mid-way through, so it is taken at a quiet point rather than on sight of this entry. This is the narrowed remainder of the `aios` launcher entry and the stale-dev-clone entry, both retired in item 3's runtime-clone addendum.
 
-## The commit-landed signal says nothing about a worker who commits and keeps editing
+## live-stopprocesstree-test.sh runs 15 checks that the gate summary never collects
 
-The controller's commit-landed notice reaches a decider only while the worktree is
-clean. Both halves of the sampler's gate in `hooks/index.ts` require `dirty === 0`: the
-stamp is set only on a dirty-to-clean transition, and a stamp already set is dropped
-the moment any edit reappears. So a worker that commits and immediately resumes
-editing is never reported as having committed, and a commit whose notice has not yet
-reached a decider is lost if the worker starts the next file first.
+In the whole-gate run `20260913T085812Z` this suite was the only one of seventeen whose
+summary line read `assert=[missing]`. Its checks are not missing. The suite's own log ends
+`15 checks run, 0 failed` and `live-stopprocesstree-test.sh: PASS`, and its assertions are
+substantive, covering that the real child is gone after `stop_child` returns on the TERM
+path and after the tree kill.
 
-This is the deliberate trade. A decider told "a commit landed" beside a dirty tree is
-invited to close a node over work in progress, which is the worse failure of the two.
-Revisiting it means giving the decider the transition and the current state as separate
-facts, and showing that the classifier treats "a commit landed, and editing has since
-resumed" as a reason to keep the node open rather than to close it. That is a
-classifier-behaviour question rather than a sampler change, so it needs evidence from
-real deciders before the gate is loosened.
+The gap is collection, not coverage. `.kit/live-stopprocesstree-test.sh` has its
+`pass` and `failed` helpers print to stdout and bump their own counters, which is what
+produces the `15 checks run, 0 failed` line, but neither writes a file, while
+`.kit/live-all.sh:132` collects `$suite_dir/<suite>.assert.log`, a file this suite never
+writes. Its exit file is collected, which is why `exitfile=[0 ]` is populated beside an
+empty `assert=`.
 
-## The per-session prompt-submit budget silently disables the goal loop and every reader message
+Fix: have `pass` and `failed` tee to `$SUITE_DIR/stopprocesstree.assert.log` as the other
+suites do. No new assertions are needed, and no control has to be built: the suite already
+fails if `stop_child` leaves the real child alive, so a mutation to signal a single pid
+would turn it red today. The effect of this gap is that a whole-gate summary understates
+the evidence for item 2's process-tree stop, which is exactly the fix that gate exists to
+validate.
 
-A `claude` session reaching the harness's per-session `$.prompt.submit` budget refuses
-every later submission, logging `past budget; refused` to its debug log and nothing
-else. The controller's goal ticks, its nudges and the operator inbox drain all reach the
-session through that one call, so the session goes on answering at the keyboard while
-every automated path into it is dead, and no surface says so.
+## Section 0 item 4's whole gate was run without its own precondition, and owes one re-run
 
-The only remedy is restarting the child. The plugin should surface the first refusal to
-the operator's channel once and record it as a monitor decision, so the silence is
-visible at the moment it starts rather than discovered by a reader whose messages went
-unanswered.
+Item 4 conditions its whole-gate run on the operator confirming every other live `claude`
+process is stopped. The run `20260913T085812Z` was taken without that confirmation, with
+both supervisors and their children live, and with foreign `.NET` test runs going before
+and during it. Sixteen of seventeen suites passed clean, so the contention does not appear
+to have bitten, and the single failure is explained independently by the F5/F6 entry.
 
-## An operator record cannot reach a worker inside a running turn, so turn length is the wait
-
-`$.prompt.submit` runs once the session is idle. The harness states it twice in its own
-type definitions: the submit call's `input.text` "runs when the session is idle"
-(`.claude/types/claude-code.d.ts:1608-1609`), and a submitted prompt's `turnId` is
-"Absent for a prompt submitted while the session was idle, and for a plugin's own
-(`$.prompt.submit`), which runs once it is idle" (`:4493-4495`).
-
-So the wait an operator record sees is bounded below by however long the running turn
-lasts, and no change to when the controller submits can shorten it. Moving the inbox
-drain above the tick's in-flight check does not help, and costs: it stamps `deliveredAt`
-at queue time, which understates the real wait, and any turn id stamped at that moment
-belongs to a turn that never sees the prompt.
-
-Measured over the 101 delivered records in `.agentic-channel.jsonl`, the median wait is
-6 seconds and 8 records waited 10 minutes or more, the longest 48 minutes. The long tail
-is turn length rather than a scheduling gap.
-
-The type definitions name one channel that does reach a running turn, and it is not this
-one: "A queued delivery (a peer session's message) reaches the model inside a running
-turn" (`:4493-4494`). Whether an operator record can be routed through that channel
-rather than through `$.prompt.submit` is the open question worth answering here. Short of
-that, the remedy is shorter worker turns, which is a working-discipline question rather
-than a code change.
-
-## The supervisor's poll loop exits when its child dies externally
-
-`bin/supervise.sh` runs under `set -u` (`:31`) and polls with
-`while kill -0 "$CHILD_PID"` (`:1540`). Bash unsets a coproc's pid variable when the
-coproc dies from outside the script, so that expansion is unbound at the next iteration
-and the supervisor exits with `CHILD_PID: unbound variable` instead of taking its
-restart path. The guard at `:1535` runs once before the loop and does not reach this.
-
-The fix is expanding the loop's condition as `"${CHILD_PID:-}"` and treating the empty
-value as a dead child, with the externally-killed case added to the stop-path suite.
+What is owed is narrow: one re-run of `live-restartpassive-test.sh` on a genuinely quiet
+box, so its result rests on the condition the item sets rather than on a run that did not
+meet it. The whole gate does not need repeating for this. Drop this entry once that run is
+recorded in item 4's Chapter.
