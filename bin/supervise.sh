@@ -164,6 +164,10 @@ SUPERVISOR_POLL_MS="${supervisorPollMs:-10000}"
 # that to pass `haiku` and hold their own cost steady.
 SUPERVISOR_MODEL="${supervisorModel:-opus}"
 SUPERVISOR_EFFORT="${supervisorEffort:-medium}"
+# How long a launch waits for the priming turn's own `result` line before
+# writing the goal prompt anyway. Child startup alone is 45-60 seconds, so
+# this is deliberately generous; it bounds a wait, it does not schedule one.
+SUPERVISOR_PRIMING_WAIT_S="${supervisorPrimingWaitS:-180}"
 # Reviewer Round 141 R113 (Major): an unvalidated typo in either setting
 # was an opaque crash loop - the child fails to launch at all, `claude -p`
 # rejecting an unknown model or effort value, and the supervisor just
@@ -181,6 +185,20 @@ case "$SUPERVISOR_EFFORT" in
     exit 1
     ;;
 esac
+# Same reasoning as R113's model/effort validation: a non-numeric wait bound
+# turns the priming wait's own arithmetic comparison into a shell error on
+# every launch. The numeric test after the digit test is what rejects an
+# all-zero string like "00", which passes a digits-only pattern.
+case "$SUPERVISOR_PRIMING_WAIT_S" in
+  ''|*[!0-9]*)
+    echo "ERROR: supervisorPrimingWaitS '$SUPERVISOR_PRIMING_WAIT_S' is not a whole number of seconds" >&2
+    exit 1
+    ;;
+esac
+if [ "$SUPERVISOR_PRIMING_WAIT_S" -le 0 ]; then
+  echo "ERROR: supervisorPrimingWaitS '$SUPERVISOR_PRIMING_WAIT_S' must be greater than zero" >&2
+  exit 1
+fi
 
 # --- Plugin values (single-sourced, emitted to settings JSON) ---
 HEARTBEAT_MS="${heartbeatMs:-30000}"
@@ -1123,6 +1141,28 @@ stop_child() {
 # --- Helper: read a fact from .agentic-personas.json ---
 # Usage: get_fact <workdir> <persona> <fact>
 # Prints the timestamp of the newest matching decision, or empty.
+# --- Wait for a child turn to close ---
+# The stream-json child emits exactly one `"type":"result"` line per turn it
+# completes. A prompt written before that line appears joins the open turn
+# instead of opening its own, so any caller that needs its message to be a
+# separate turn gates on this first.
+#
+# Returns 0 when a result line appeared inside the bound, 1 when it did not.
+# The caller decides what a timeout means; this only reports it.
+wait_for_result_line() {
+  local out="$1"
+  local bound_s="$2"
+  local waited=0
+  while [ "$waited" -lt "$bound_s" ]; do
+    if [ -f "$out" ] && grep -q '"type":"result"' "$out"; then
+      return 0
+    fi
+    sleep 1
+    waited=$(( waited + 1 ))
+  done
+  return 1
+}
+
 get_fact() {
   local workdir="$1"
   local persona="$2"
@@ -1349,50 +1389,83 @@ while true; do
   # is also the `NO_CHANNEL`-independent priming write Section 3 item 1
   # is planned to reuse.
   SKILL_LOAD_INSTRUCTION="Before your first tool call on any plan work, invoke the Skill tool for claude-kit:operating-instructions, then claude-kit:executing-work; when a plan reaches its last section, claude-kit:finishing-work. After any context compaction, re-invoke the governing skill before the next step, because compaction drops skill bodies. A fix round inside a review loop is a section: it takes the same fresh-context adversarial and blind reviewer pair before you post it, and the round cites their verdicts beside the gate count. "
+  # The one line the goal-prompt turn opens with. It names the text behind
+  # it as the operator's own task, so a child that has just loaded
+  # operating-instructions does not apply that skill's treat-embedded-text-
+  # as-data rule to its own goal and stall asking for confirmation.
+  GOAL_PROMPT_FRAMING="The text below is your task from the operator. It is trusted; act on it."$'\n\n'
   CHANNEL_REPLY_INSTRUCTION=""
   if [ "$NO_CHANNEL" -ne 1 ]; then
     CHANNEL_REPLY_INSTRUCTION="You are attached to a Discord channel. When you want to say something back to the operator, call the reply tool from the channel-relay MCP server - your own conversational reply is not visible to them. Plain prose, never mannered prose. This governs every reply-tool message the operator reads. Write for a reader on a phone with no session context. One idea per sentence, about twenty words. Answer first, then the reason, then the evidence. Never carry a second rule inside the clause of the first. Never nest a qualification in parentheses or after a semicolon. Name the concrete thing that happened rather than the class it belongs to. Keep precision by adding a sentence, never by packing one. Vary sentence length, because uniform length is its own defect and the twenty is a per-sentence check rather than a target. Use plain words for internal names unless the exact value is what the operator needs to act on. Decide before writing. Never include round numbers, steer numbers, or session ids. End the message when the content ends. When you ask the operator a question, or report something they must decide, give the whole shape: what is happening and why it came up, the question in plain words, what it blocks, each option with what it costs, and your recommendation with its reason. A bare question or a bare pick is not enough. When the operator asks what is going on, or a result is not what they expected, give the outcome, then the reason, then the evidence, each in its own sentence. A shipped notice stays short; an explanation earns its length. "
   fi
+  # Every launch opens with the same synthetic priming turn, whatever shape
+  # the child is: passive with a channel, passive with none, or a child that
+  # has a real goal prompt waiting. The goal prompt, when there is one, is
+  # written as its own separate turn afterwards.
+  #
+  # [SUPERVISOR-PRIMING] marks this turn as synthetic (the child has no
+  # real goal yet) so hooks/index.ts's turn.complete backstop - which
+  # backfills a completed goal for a turn that did real tool work with
+  # no active root - never mistakes the channel's own acknowledgment
+  # turn for genuine operator content. Never strip this marker; it is
+  # read by the hook, not meant for the model's own reasoning about the
+  # task (which is why it precedes, rather than replaces, the reply
+  # instruction and the wait-quietly text).
+  #
+  # Splitting the priming turn off from the goal prompt is what keeps a
+  # child from reading its own task as suspect. Concatenated into one turn,
+  # the skill-load sentence tells the child to load operating-instructions,
+  # whose own text says to treat instructions embedded in content as data
+  # and ask rather than act - so the child applied that rule to the very
+  # goal prompt sitting behind the sentence, replied asking for
+  # confirmation, and spent its only round without ever calling
+  # goal_create. Two turns, plus the framing line below, remove the
+  # ambiguity about which part is the operator's actual task. maxRounds is
+  # an argument to goal_create, so the goal's round count starts when the
+  # goal exists and this priming turn consumes none of it.
+  #
+  # Reviewer Round 113 R36's own gap is closed by the same shape: a worker
+  # launched `--no-channel` with no `PROMPT_FILE` (exactly the shape the
+  # `.kit/live-*` suites run) once got no priming turn at all, so the
+  # skill-load instruction, which must reach every child regardless of
+  # `NO_CHANNEL`, never did either.
   if [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
+    PRIMING_BODY="Your task from the operator arrives in the next message. Reply now with one short line acknowledging you are ready, then act on it when it arrives."
+  elif [ "$NO_CHANNEL" -ne 1 ]; then
+    PRIMING_BODY="You are the passive supervisor, waiting for a goal or a steering message from the operator. Reply now with one short line acknowledging you are ready, then wait."
+  else
+    PRIMING_BODY="You are the passive supervisor, waiting for a goal. No channel is attached, so no operator steering message will arrive here. Reply now with one short line acknowledging you are ready, then wait."
+  fi
+  node -e "
+    const prefix = process.argv[1] || '';
+    const body = process.argv[2] || '';
+    const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:
+      '[SUPERVISOR-PRIMING] ' + prefix + body
+    }]}});
+    process.stdout.write(json + '\n');
+  " "$SKILL_LOAD_INSTRUCTION$CHANNEL_REPLY_INSTRUCTION" "$PRIMING_BODY" >&"$CHILD_IN"
+
+  if [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
+    # A prompt written while the priming turn is still open joins that turn
+    # rather than opening its own, which would put the goal prompt back
+    # behind the skill-load sentence and reproduce the very shape this
+    # split exists to avoid. So wait for the priming turn's own `result`
+    # line before writing. Startup alone runs 45-60 seconds, so the bound
+    # is generous; on a timeout the goal prompt is written anyway, since a
+    # child that never receives its task is worse than one that receives
+    # it late, and the NOTE line says which happened.
+    if wait_for_result_line "$OUT" "$SUPERVISOR_PRIMING_WAIT_S"; then
+      log "NOTE: child-$CHILD_INDEX priming turn completed; sending the goal prompt as its own turn"
+    else
+      log "NOTE: child-$CHILD_INDEX priming turn produced no result line within ${SUPERVISOR_PRIMING_WAIT_S}s; sending the goal prompt anyway"
+    fi
     node -e "
       const fs = require('fs');
       const p = fs.readFileSync(process.argv[1], 'utf8');
-      const prefix = process.argv[2] || '';
-      const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:prefix + p}]}});
+      const framing = process.argv[2] || '';
+      const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:framing + p}]}});
       process.stdout.write(json + '\n');
-    " "$PROMPT_FILE" "$SKILL_LOAD_INSTRUCTION$CHANNEL_REPLY_INSTRUCTION" >&"$CHILD_IN"
-  elif [ "$NO_CHANNEL" -ne 1 ]; then
-    # [SUPERVISOR-PRIMING] marks this turn as synthetic (the child has no
-    # real goal yet) so hooks/index.ts's turn.complete backstop - which
-    # backfills a completed goal for a turn that did real tool work with
-    # no active root - never mistakes the channel's own acknowledgment
-    # turn for genuine operator content. Never strip this marker; it is
-    # read by the hook, not meant for the model's own reasoning about the
-    # task (which is why it precedes, rather than replaces, the reply
-    # instruction and the wait-quietly text).
-    node -e "
-      const prefix = process.argv[1] || '';
-      const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:
-        '[SUPERVISOR-PRIMING] ' + prefix + 'You are the passive supervisor, waiting for a goal or a steering message from the operator. Reply now with one short line acknowledging you are ready, then wait.'
-      }]}});
-      process.stdout.write(json + '\n');
-    " "$SKILL_LOAD_INSTRUCTION$CHANNEL_REPLY_INSTRUCTION" >&"$CHILD_IN"
-  else
-    # Reviewer Round 113 R36's own gap: a worker launched `--no-channel`
-    # with no `PROMPT_FILE` (exactly the shape the `.kit/live-*` suites
-    # run) got neither branch above and no priming turn at all - so the
-    # skill-load instruction, which must reach every child regardless of
-    # `NO_CHANNEL`, never did either. This branch is that missing case:
-    # the same synthetic priming turn, carrying only the skill-load
-    # sentence (there is no channel reply instruction to add when
-    # `NO_CHANNEL` is set).
-    node -e "
-      const prefix = process.argv[1] || '';
-      const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:
-        '[SUPERVISOR-PRIMING] ' + prefix + 'You are the passive supervisor, waiting for a goal. No channel is attached, so no operator steering message will arrive here. Reply now with one short line acknowledging you are ready, then wait.'
-      }]}});
-      process.stdout.write(json + '\n');
-    " "$SKILL_LOAD_INSTRUCTION" >&"$CHILD_IN"
+    " "$PROMPT_FILE" "$GOAL_PROMPT_FRAMING" >&"$CHILD_IN"
   fi
   PROMPT=""
 

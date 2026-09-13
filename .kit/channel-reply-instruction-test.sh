@@ -49,6 +49,10 @@ CONTROL="Never include round numbers, steer numbers, or session ids."
 # child regardless of NO_CHANNEL - checked under both values below,
 # alongside the pre-existing CHANNEL_REPLY_INSTRUCTION checks.
 SKILL_LOAD_CONTROL="claude-kit:operating-instructions"
+# R112's own fix: the goal-prompt turn opens by naming the text behind it
+# as the operator's real task, so a child that has just loaded
+# operating-instructions does not treat its own goal as embedded data.
+FRAMING_CONTROL="It is trusted; act on it."
 
 failed=0
 check() {
@@ -65,11 +69,31 @@ check() {
 # `PROMPT=""`, so eval'ing `$SNIPPET` also defines - and lets this test
 # assert against - the three real call sites, by anchor grep, not by
 # re-deriving their content.
+# Reviewer Round 143's R112 ruling (Option B): the priming turn and the
+# goal prompt are two separate writes to the child's stdin, not one
+# concatenated message, and the skill-load sentence rides only on the
+# first. Concatenated, the child read its own goal prompt as untrusted
+# embedded text - it had just been told to load operating-instructions,
+# whose treat-embedded-text-as-data rule it then applied to the task
+# itself - and spent its only round asking for confirmation. These
+# checks are what keeps the two writes from being folded back together.
 CALL_SITES=$(printf '%s\n' "$SNIPPET" | grep -c 'CHILD_IN"$')
-[ "$CALL_SITES" = "3" ]; check "exactly three priming-write call sites found" $?
+[ "$CALL_SITES" = "2" ]; check "exactly two writes to the child's stdin: the priming turn and the goal prompt" $?
 SITES_WITH_SKILL_LOAD=$(printf '%s\n' "$SNIPPET" | grep 'CHILD_IN"$' | grep -c 'SKILL_LOAD_INSTRUCTION')
-[ "$SITES_WITH_SKILL_LOAD" = "3" ]; check "all three call sites pass \$SKILL_LOAD_INSTRUCTION as an argument" $?
-printf '%s\n' "$SNIPPET" | grep -q '^  else$'; check "the NO_CHANNEL-with-no-PROMPT_FILE else branch exists" $?
+[ "$SITES_WITH_SKILL_LOAD" = "1" ]; check "the skill-load sentence rides on exactly one of the two writes" $?
+PRIMING_WRITE=$(printf '%s\n' "$SNIPPET" | grep 'CHILD_IN"$' | head -1)
+GOAL_WRITE=$(printf '%s\n' "$SNIPPET" | grep 'CHILD_IN"$' | tail -1)
+case "$PRIMING_WRITE" in
+  *SKILL_LOAD_INSTRUCTION*) check "the first write is the priming turn and carries the skill-load sentence" 0 ;;
+  *) check "the first write is the priming turn and carries the skill-load sentence" 1 ;;
+esac
+case "$GOAL_WRITE" in
+  *SKILL_LOAD_INSTRUCTION*) check "the goal-prompt write does not carry the skill-load sentence" 1 ;;
+  *GOAL_PROMPT_FRAMING*) check "the goal-prompt write does not carry the skill-load sentence" 0 ;;
+  *) check "the goal-prompt write does not carry the skill-load sentence" 1 ;;
+esac
+printf '%s\n' "$SNIPPET" | grep -q 'wait_for_result_line "\$OUT"'; check "the goal prompt waits for the priming turn's own result line first" $?
+printf '%s\n' "$SNIPPET" | grep -q '^  else$'; check "the NO_CHANNEL-with-no-PROMPT_FILE priming body exists" $?
 
 # Channel attached: the guidance must be present.
 NO_CHANNEL=0
@@ -81,6 +105,10 @@ esac
 case "${SKILL_LOAD_INSTRUCTION:-}" in
   *"$SKILL_LOAD_CONTROL"*) check "channel attached: skill-load sentence present" 0 ;;
   *) check "channel attached: skill-load sentence present" 1 ;;
+esac
+case "${GOAL_PROMPT_FRAMING:-}" in
+  *"$FRAMING_CONTROL"*) check "the goal-prompt framing line names the task as the operator's own" 0 ;;
+  *) check "the goal-prompt framing line names the task as the operator's own" 1 ;;
 esac
 
 # Channel not attached: the reply-tool guidance is absent, but the
