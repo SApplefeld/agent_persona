@@ -438,3 +438,46 @@ Plugin copies on this machine:
 - The one live supervisor is `dev`, launched by `/d/personas/dev/relaunch.sh:6` from this checkout with `--dev`.
 
 Next action for item 5, pending the operator's call on how the relaunch is taken: the item's live check needs every live persona claim in the installed-mode store, and the only live persona is the `dev` supervisor loading this checkout through `--plugin-dir`. Passing it therefore needs that supervisor relaunched without `--dev`. Before the relaunch, confirm whether `emit_settings_json`'s `pluginConfigs` key, `"agentic-plugin"` at `bin/agentic-common.sh:81`, still reaches the plugin when it loads as `agentic-plugin@agent-persona`. The memory record `merged-supervise-sh-needs-dev-flag-for-plugin-dir-mode` says an installed child falls back to persona `default`, which is unverified on this tree.
+
+### Interim board 2 - 2026-09-13
+This entry is the handoff across the planned restart of the `dev` supervisor onto the installed plugin. It is not a Chapter and closes no section. The session that wrote it ends when the restart stops its child; the next `dev` session resumes from here.
+
+Decided 2026-09-13 by the operator: Option 1, with full authority to proceed. Prepare the switch on a branch, update both launchers, write these steps, restart the `dev` supervisor without `--dev`, and let the fresh session run the live check.
+
+Stage: Section 0 item 5 in progress on `item0-5-installed-runtime`. The prerequisite settings fix is committed and pushed, and its review loop is closed (see Review below). No pull request is open yet.
+
+Shipped on the branch: `bin/agentic-common.sh`'s `emit_settings_json` writes the plugin's options under both `agentic-plugin` and `agentic-plugin@agent-persona`, refuses a persona or cadence that could break out of the JSON, and `ensure_settings_plugin_ids` completes a settings file a rundir already holds. `bin/supervise.sh` checks the persona shape before touching the disk and completes or refuses a provided settings file, logging a refusal to `supervisor.log`. `.kit/settings-plugin-key-test.sh` pins both ids against the two manifests and drives `supervise.sh` for real with no store and a stub `claude`.
+
+The key mismatch was measured before any code changed: on engine 2.1.270 against installed 0.10.0, settings keyed `agentic-plugin` claimed persona `default`, and settings keyed `agentic-plugin@agent-persona` claimed the configured persona. After the change, one emitted file claimed its persona in both load modes, each in its own store only. That contradicts the passive-supervisor plan's Chapter 6, which recorded the bare key reaching an installed plugin on an earlier engine.
+
+Review: round 1, the code pair plus security, at fable on the Agent tool; rounds 2 to 4, one adversarial lens at opus, high effort, on Workflow.
+- Round 1: three Majors fixed (a provided settings file never gained the installed id; the persona and cadences spliced into JSON unescaped, a security Major fixed rather than parked; hand-written suite settings, resolved by the same completion and, for `.kit/live-budget-test.sh`, justified because it launches with `--plugin-dir`).
+- Round 2: two fix-introduced Majors fixed (a provided file kept a persona differing from the launch argument; the cadence guard accepted leading zeros). One new-requirement Major held and ruled refuse by the scope adjudicator: sourcing the library resets `TICK_MS`, `NUDGE_IDLE_MS` and `GIT_PROBE_MS` from `PROFILE` over exported overrides. Filed to `docs/backlog.md`; recorded in Standing Brief Amendments.
+- Round 3: one fix-introduced Major in the same mechanism as round 2's, which made a design stop on the persona overwrite in `ensure_settings_plugin_ids`. Ruling refuse by the scope adjudicator: completing the missing id is item 5's form, and which persona wins between the argument and a provided file is a separate surface. The overwrite was removed; the ruling is in Standing Brief Amendments and the persona disagreement is filed to `docs/backlog.md`.
+- Round 4: APPROVED_WITH_CONCERNS. One Major fixed below the fix-delta bar, test-only, taken as an author re-read: the driven check now gives the file a persona that differs from the argument and asserts the file's options survive; a control that makes `supervise.sh` overwrite instead of complete fails 4 checks. Minors left with the reason: the `@inline` plugin-id alias, which no caller writes; the backlog heading dates, which follow that file's format; the rundir `mkdir` guard, kept as a harmless adjacent fix.
+- Rulings: 2 refused, 0 declared, 0 asked. Consults: 0.
+
+Gate, the targeted lane on `item0-5-installed-runtime`, measured 2026-09-13 on SCOTT-CLAUDE with this repository's own dev supervisor and its child live on the box, each exit code read from its own run: `bash .kit/settings-plugin-key-test.sh` 0 with 29 checks; `bash .kit/supervisor-model-test.sh` 0; `bash .kit/channel-reply-instruction-test.sh` 0; `npx tsc --noEmit` 0; `node .kit/check-loader-rule.mjs` 0; `node .kit/commons-unit-test.mjs` 0; `node .kit/self-review-unit-test.mjs` 0; `node .kit/supervisor-unit-test.mjs` 0 with 19 passed; `node .kit/controller-tick-test.mjs` 0 with 499 checks and 0 failures, equal to Interim board 1's baseline. The last four node suites were measured at `2f1fb01`; the final commit changes only the settings test.
+
+Stamps: adjudicated 13, stamped 3 (`plugin-options-come-from-settings-pluginconfigs`, `merged-supervise-sh-needs-dev-flag-for-plugin-dir-mode`, and the operator record on section numbers); 10 skipped as reads that shaped nothing.
+
+What changed outside the repository, all on SCOTT-CLAUDE:
+- `/d/personas/dev/relaunch.sh` drops `--dev`. The pre-change copy is `.kit/scratch/preflight-newvm/dev-relaunch.sh.orig`.
+- `/d/personas/aios/relaunch-wait.sh` launches `/d/agent_persona/bin/supervise.sh` without `--dev` and waits on the installed store through `find_global_store 0`. The pre-change copy is `.kit/scratch/preflight-newvm/aios-relaunch-wait.sh.orig`. The `aios` supervisor was not running and was not started.
+- `/d/personas/dev/restart-installed.sh` is new. It waits for the old supervisor's Windows pid to exit, sleeps 100 seconds so the old claim goes stale, then runs `relaunch.sh`. It is launched through `Win32_Process.Create`, so it sits outside the old child's process tree, which `stop_child` kills whole. Its log is `/d/personas/dev/restart-installed.log`.
+- The project memory record `merged-supervise-sh-needs-dev-flag-for-plugin-dir-mode` is rewritten to the current state.
+- `npm ci` populated `node_modules`.
+
+The running supervisor executes `/d/agent_persona/bin/supervise.sh` from this checkout, so the checkout must stay on `item0-5-installed-runtime` or a descendant until the pull request merges. Its child loads the installed plugin, `agentic-plugin@agent-persona` 0.10.0 built from `74bbb76`, which carries no code from this branch. This branch changes only `bin/` and `.kit/`, which the supervisor reads from the checkout.
+
+Next action, for the fresh `dev` session:
+1. Read `/d/personas/dev/restart-installed.log` and the newest `/d/personas/dev/supervise-relaunch-*.stdout`, and confirm the relaunch ran.
+2. Confirm the live check's three parts, each read directly rather than inferred:
+   - the child `claude.exe` command line carries no `--plugin-dir` and carries `--model opus`;
+   - the installed store, `find_global_store 0`, holds a live `persona:dev` claim (lastSeen within 90 seconds) for the child's own session id;
+   - the inline store, `find_global_store 1`, holds no live `persona:dev` claim.
+3. Confirm every live persona claim in the installed store belongs to a supervisor that is actually running. Only `dev` is expected.
+4. Confirm `run/settings.json` now carries both plugin ids with persona `dev`.
+5. Write the item 5 Chapter with that evidence, open the pull request as Draft, and report the result to the operator on Discord.
+
+Rollback if the relaunch fails: restore `relaunch.sh` from its `.orig` copy and run it, which relaunches the `dev` supervisor with `--dev` on the dev tree as before.

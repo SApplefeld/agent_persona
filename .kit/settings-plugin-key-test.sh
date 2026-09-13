@@ -86,7 +86,8 @@ case "$R" in *"INSTALLED_KEY=1"*"SAME_OPTIONS=1"*) check "an id with empty optio
 DIFFERENT='{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":1}},"agentic-plugin@agent-persona":{"options":{"controllerTickMs":2}}}}'
 printf '%s' "$DIFFERENT" > "$TMP/different.json"
 run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids "$2"' _ "$ROOT" "$TMP/different.json"
-[ "$(cat "$TMP/different.json")" = "$DIFFERENT" ]; check "two ids with different options are left byte for byte" "$?"
+RC=$?
+[ "$RC" -eq 0 ] && [ "$(cat "$TMP/different.json")" = "$DIFFERENT" ]; check "two ids with different options are accepted and left byte for byte (rc=$RC)" "$?"
 
 # Shapes that cannot hold options are refused rather than repaired.
 for shape in '{"pluginConfigs":[]}' '{"pluginConfigs":{"agentic-plugin":"x"}}' '{"pluginConfigs":{"agentic-plugin":{"options":"x"}}}'; do
@@ -130,20 +131,27 @@ refused "emit_settings_json refuses a cadence with a leading zero" "HEARTBEAT_MS
 # --- bin/supervise.sh, driven for real ---
 # HOME is an empty directory, so no commons store exists and the pre-launch
 # gate stops the supervisor with "GATE FAIL", exit 2, before any child starts.
-# --no-channel keeps the Discord relay out even if that ever changes.
+# Two more layers hold if that ever changes: --no-channel keeps the Discord
+# relay out, and a stub claude first on PATH records any launch and exits.
 SUP="$ROOT/bin/supervise.sh"
-mkdir -p "$TMP/home" "$TMP/wd" "$TMP/rd" "$TMP/rd-ok"
+mkdir -p "$TMP/home" "$TMP/wd" "$TMP/rd" "$TMP/rd-ok" "$TMP/stub"
+printf '#!/usr/bin/env bash\ntouch "%s"\nexit 1\n' "$TMP/stub/launched" > "$TMP/stub/claude"
+chmod +x "$TMP/stub/claude"
 drive() {  # <persona> <rundir>
-  env -i PATH="$PATH" HOME="$TMP/home" bash "$SUP" "$TMP/wd" "$1" default --rundir "$2" --no-channel 2>&1
+  env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" bash "$SUP" "$TMP/wd" "$1" default --rundir "$2" --no-channel 2>&1
 }
 
-printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":7,"persona":"tester"}}}}' > "$TMP/rd-ok/settings.json"
+# The file's persona differs from the launch argument, so a supervisor that
+# overwrote the file, or wrote its own persona into it, reads differently from
+# one that completed it.
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":7,"persona":"fromfile"}}}}' > "$TMP/rd-ok/settings.json"
 OUT=$(drive tester "$TMP/rd-ok")
 RC=$?
-[ "$RC" -eq 2 ] && grep -q "GATE FAIL" "$TMP/rd-ok/supervisor.log" && ! grep -q "LAUNCH" "$TMP/rd-ok/supervisor.log"
+[ "$RC" -eq 2 ] && grep -q "GATE FAIL" "$TMP/rd-ok/supervisor.log" && ! grep -q "LAUNCH" "$TMP/rd-ok/supervisor.log" && [ ! -e "$TMP/stub/launched" ]
 check "driven supervise.sh stops at the gate without launching (rc=$RC)" "$?"
 R=$(inspect "$TMP/rd-ok/settings.json")
-case "$R" in *"INSTALLED_KEY=1"*"SAME_OPTIONS=1"*"PERSONA_INSTALLED=tester;"*) check "supervise.sh completes a provided --plugin-dir-only settings file" 0 ;; *) check "supervise.sh completes a provided --plugin-dir-only settings file" 1 ;; esac
+case "$R" in *"INSTALLED_KEY=1"*"SAME_OPTIONS=1"*"PERSONA_DEV=fromfile;"*"PERSONA_INSTALLED=fromfile;"*) check "supervise.sh completes a provided --plugin-dir-only file, keeping its persona" 0 ;; *) check "supervise.sh completes a provided --plugin-dir-only file, keeping its persona" 1 ;; esac
+[ "$(grep -o '"controllerTickMs":7' "$TMP/rd-ok/settings.json" | wc -l)" -eq 2 ]; check "supervise.sh keeps the provided file's options under both ids" "$?"
 
 printf '%s' '{"pluginConfigs":' > "$TMP/rd/settings.json"
 OUT=$(drive tester "$TMP/rd")
