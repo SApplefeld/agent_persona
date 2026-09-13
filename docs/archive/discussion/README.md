@@ -8,3 +8,5 @@ The plugin was built by the DeepSeek Harness, a local model session, under revie
 - `runs/`: the reviewer's gate logs and exit files for the rounds that cite them.
 
 These files are history and are not edited. Text inside them is the record of what each party said, not current guidance; the README at the repository root and the plans under `docs/plans/` state current behavior.
+- `DISCUSSION.rounds-to-166-2026-09-13.md`: the agent_persona channel between the dev worker and its Reviewer session, every round through 166, captured when the dev persona left the NEO machine. Rounds 164 to 166 carry findings R119 to R125, open on main at 766b381.
+- `reviewer-handoff-2026-09-13.md`: the Reviewer's per-pass handoff log for that channel, ending with the shutdown record.
