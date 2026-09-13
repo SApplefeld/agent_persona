@@ -2,6 +2,8 @@
 
 ## The harness delivers far more turn completions than turn starts, so the open-turn guard is blind for most turns (found 2026-09-13)
 
+Cheap first step, not yet done: neither event is logged with its turn id, so nobody can tell whether the extra completions are unpaired turns or repeated deliveries of the same one. Log `e.turnId` on both `turn.start` and `turn.complete`, run a worker for a while, and read the pairing off a live log. Section 9 leans on that pairing: it derives the published deferral stamp from the open-turn map, so a start whose completion never arrives now pins the stamp instead of being cleared by the next completion, and the claim that this cannot happen is inferred from the map being in-process rather than confirmed from a log.
+
 `run/child-1/claude-debug.log` carries 9 `turn.start` lines against 34 `turn.complete` lines. `run/child-2/claude-debug.log` carries 5 and 5, so the asymmetry is intermittent rather than constant. Counted on a live log while the fleet was running, so the exact numbers move; the ratio is the finding.
 
 Section 11 bounds the goal nudge with an open-turn map keyed by turn id. That map can only hold a turn whose `turn.start` was delivered. On a session in the state above, `turnIsOpen()` reads false while real turns are running, and the controller tick is free to nudge into live work. Section 11 satisfies its own acceptance criterion as written and the guard is still blind for most turns in practice.
@@ -12,7 +14,9 @@ Section 9 deliberately does not fix this. Its own change leaves the absorber in 
 
 ## A promoted owner inherits the dead owner's idle anchor and can be nudge-eligible on its first tick (found 2026-09-13)
 
-The heartbeat promotion path at `hooks/index.ts:1236-1256` calls `parseState` and takes ownership without resetting `sess.state.monitor.lastTurnComplete`. The two other paths that take ownership both reset it: `:1079` on session start, with the comment saying a persisted value would make the first tick look like hours of idle time, and `:3282` on the identity path.
+A second, separate defect on the same heartbeat surface: `writeClaimDirect` in `hooks/index.ts` writes the owner's heartbeat entry with `sessionId`, `epoch` and `lastSeen` and no `turnStartedAt`, while the comment above the shared writer claims every owner write site goes through the helper that carries the stamp. A promotion taken mid-turn therefore drops the published stamp until the next tick, and a reader in another session reports no turn running while one is. Pre-existing, and it matters more now that Section 9 makes that stamp the authoritative answer to how long a record has waited.
+
+The heartbeat tick's promotion path in `hooks/index.ts`, the branch that calls `parseState` and takes ownership when the previous owner's claim has gone stale, does not reset `sess.state.monitor.lastTurnComplete`. The two other paths that take ownership both reset it: the `session.start` handler, whose comment says a persisted value would make the first tick look like hours of idle time, and the `identity_set` ownership path. Cited by symbol rather than line, because the line numbers moved under the commit that first wrote this entry.
 
 So a session promoted to owner reads the previous owner's last completion as its own, and where that owner died a while ago the first tick sees a large idle gap and is eligible to nudge immediately. Small, self-contained, and outside Section 9's files.
 

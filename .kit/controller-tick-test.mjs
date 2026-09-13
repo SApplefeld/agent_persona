@@ -6231,14 +6231,14 @@ async function caseSection9_longTurnRecordMeasuresItsOwnTurn(clock) {
   const completeH = h.handlers["turn.complete"];
 
   // A real turn runs past the hour, then a completion arrives for a turn this
-  // session never saw start. It has no entry in the open-turn map, which is
-  // the condition that skips the record; measured against the running turn's
-  // clock it would have looked like a sixty-one-minute turn of its own.
+  // session never saw start, carrying its own two-minute duration as the
+  // harness sends it. Measured against the running turn's clock, which is what
+  // the old code did, it would have read as a sixty-one-minute turn of its own.
   await startH(h.fake, { turnId: "t-a" }, async () => ({ result: "ok" }));
   clock.advance(61 * 60_000);
-  await completeH(h.fake, { turnId: "t-never-started", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  await completeH(h.fake, { turnId: "t-never-started", aborted: true, reason: "aborted", durationMs: 120_000 }, async () => ({ result: "ok" }));
   check(
-    "section9 long turn: an unmatched completion writes no turn_over_hour record",
+    "section9 long turn: an unmatched short completion banks no record from the running turn",
     countAction(getDecisions(h), "turn_over_hour") === 0,
     getDecisions(h).filter(d => d.action === "turn_over_hour"),
   );
@@ -6247,7 +6247,7 @@ async function caseSection9_longTurnRecordMeasuresItsOwnTurn(clock) {
   // minutes, rather than the sixty-one the unmatched completion would have
   // banked and then cleared.
   clock.advance(5 * 60_000);
-  await completeH(h.fake, { turnId: "t-a", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  await completeH(h.fake, { turnId: "t-a", aborted: true, reason: "aborted", durationMs: 66 * 60_000 }, async () => ({ result: "ok" }));
   const afterA = getDecisions(h).filter(d => d.action === "turn_over_hour");
   check("section9 long turn: the matched completion writes exactly one record", afterA.length === 1, afterA);
   check(
@@ -6263,7 +6263,7 @@ async function caseSection9_longTurnRecordMeasuresItsOwnTurn(clock) {
   clock.advance(61 * 60_000);
   await startH(h.fake, { turnId: "t-d" }, async () => ({ result: "ok" }));
   clock.advance(2 * 60_000);
-  await completeH(h.fake, { turnId: "t-c", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  await completeH(h.fake, { turnId: "t-c", aborted: true, reason: "aborted", durationMs: 63 * 60_000 }, async () => ({ result: "ok" }));
   const afterC = getDecisions(h).filter(d => d.action === "turn_over_hour");
   check("section9 long turn: the overlapped long turn still records", afterC.length === 2, afterC);
   check(
@@ -6272,7 +6272,7 @@ async function caseSection9_longTurnRecordMeasuresItsOwnTurn(clock) {
     afterC[1]?.detail,
   );
   clock.advance(60_000);
-  await completeH(h.fake, { turnId: "t-d", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  await completeH(h.fake, { turnId: "t-d", aborted: true, reason: "aborted", durationMs: 3 * 60_000 }, async () => ({ result: "ok" }));
   check(
     "section9 long turn control: the three-minute turn records nothing",
     getDecisions(h).filter(d => d.action === "turn_over_hour").length === 2,
@@ -6329,4 +6329,15 @@ async function caseSection9_durationMsCountsAnUnmatchedLongTurn(clock) {
 
   await completeH(h.fake, { turnId: "t-unseen-3", aborted: true, reason: "aborted", durationMs: 180_000 }, async () => ({ result: "ok" }));
   check("section9 durationMs control: a three-minute harness duration records nothing", longTurns().length === 1, longTurns());
+
+  // Measuring from the event removed an accidental dedupe: the old shape read a
+  // stamp the first completion nulled, so a redelivered completion found nothing
+  // and wrote nothing. The self-review pass counts these records with no dedupe
+  // of its own, so a double count would inflate the long-turn kaizen goal.
+  await completeH(h.fake, { turnId: "t-unseen-2", aborted: true, reason: "aborted", durationMs: 4_200_000 }, async () => ({ result: "ok" }));
+  check("section9 durationMs: a redelivered completion does not record the same turn twice", longTurns().length === 1, longTurns());
+  // Withheld control on the same axis: a different id at the same duration does
+  // record, so the guard above is the id rather than the suite having gone quiet.
+  await completeH(h.fake, { turnId: "t-unseen-4", aborted: true, reason: "aborted", durationMs: 4_200_000 }, async () => ({ result: "ok" }));
+  check("section9 durationMs control: a different id at the same duration still records", longTurns().length === 2, longTurns());
 }

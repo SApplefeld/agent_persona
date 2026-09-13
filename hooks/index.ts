@@ -661,6 +661,8 @@ export const register: Register = async (on, options) => {
     }
     return earliest;
   };
+  // Turn ids this session has already counted as running past an hour.
+  const longTurnsRecorded = new Set<string>();
   // Plan item 8.3: an urgent inbox record is looked for on the owner's
   // passthrough tool calls; this throttles that store read to once per
   // urgentCheckMinMs, since a long turn can make a tool call every second.
@@ -2699,9 +2701,10 @@ export const register: Register = async (on, options) => {
     sess.state.monitor.lastTurnId = e.turnId;
     // The turn is open from here until a completion carrying this same id.
     openTurns.set(e.turnId, Date.now());
-    // Plan item 8.3: publish the turn's start so a reader session can report
-    // how long a pending record has been deferred behind this turn. Derived
-    // from the map so this handler and turn.complete agree on what it means.
+    // Plan item 8.3: publish a start so a reader session can report how long a
+    // pending record has waited. The value names the earliest turn still open,
+    // which on an overlap is not this one. Derived through the helper so this
+    // handler and turn.complete agree on what the published value means.
     sess.turnStartedAt = deriveTurnStartedAt();
     if (sess.isOwner) {
       try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }
@@ -2778,19 +2781,31 @@ export const register: Register = async (on, options) => {
     // turn's reason, so where it arrives the record needs no hook-side clock
     // and no open-turn entry, and still counts a turn whose start this session
     // never saw, which is most of them on a session the harness under-reports.
-    // No other line in this plugin reads that field, so nothing here has ever
-    // observed it arrive; the map entry stays as the fallback rather than
-    // letting an absent field turn this record off with nothing saying so.
+    // The map entry is kept as a defensive fallback against a contract this
+    // plugin has never exercised: the field is declared required, and no other
+    // line here reads it, so an absent one would switch this record off with
+    // nothing saying so.
+    // Recorded ids are remembered because the old shape deduplicated by
+    // accident: it measured against a stamp the first completion nulled, so a
+    // redelivered completion found nothing and wrote nothing. Measuring from
+    // the event removes that, and the self-review pass counts these records
+    // with no dedupe of its own. The set only grows on a turn that ran an hour.
     {
       const turnMs = typeof e.durationMs === "number"
         ? e.durationMs
         : mapStartedAt === undefined ? null : Date.now() - mapStartedAt;
-      if (turnMs !== null && turnMs >= KAIZEN_LONG_TURN_MS) {
+      // The id is declared required, so the guard is about what arrives rather
+      // than what is declared. Without it every completion missing an id would
+      // collapse into one set entry and silently suppress every later long
+      // turn, which is a worse failure than the double count it prevents.
+      const dedupeKey = typeof e.turnId === "string" && e.turnId !== "" ? e.turnId : null;
+      if (turnMs !== null && turnMs >= KAIZEN_LONG_TURN_MS && !(dedupeKey !== null && longTurnsRecorded.has(dedupeKey))) {
+        if (dedupeKey !== null) longTurnsRecorded.add(dedupeKey);
         sess.state.decisions.push({
           timestamp: Date.now(),
           loop: "monitor",
           action: "turn_over_hour",
-          detail: `Turn ${sess.state.monitor.turnCount} ran ${Math.round(turnMs / 1000)}s`,
+          detail: `Turn ${e.turnId} ran ${Math.round(turnMs / 1000)}s`,
         });
       }
     }
@@ -2801,7 +2816,12 @@ export const register: Register = async (on, options) => {
     // A stamp cleared by whichever completion arrived first would tell that
     // reader no turn is running while one still is, and a stamp left set by an
     // unmatched completion would strand and report a turn that ended hours
-    // ago. Deriving it cannot strand, because an empty map yields null.
+    // ago. Deriving it cannot strand the in-memory value, because an empty map
+    // yields null. The published file is a weaker claim: writeOwnerHeartbeat is
+    // a read-modify-write called from both turn handlers and from the heartbeat
+    // tick, so two in-flight calls can land out of build order and publish a
+    // non-null stamp just after the map emptied. The next tick repairs it, so
+    // that exposure is one heartbeat interval rather than unbounded.
     sess.turnStartedAt = deriveTurnStartedAt();
     if (sess.isOwner) {
       try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }
