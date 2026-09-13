@@ -109,15 +109,27 @@ function treeLagOpts(caseName) {
   return { ...OPTS, nudgeIdleMs: 0, gitProbeMs: 1, caseName };
 }
 
+// Committer times for the TREELAG fixtures are read off the same clock the cases
+// run under, which is the real one per the driver's note above. On a branch with no
+// upstream the sampler asks whether the commit is newer than the previous sample,
+// so a fixed past timestamp stands for a checkout of a foreign commit rather than a
+// commit that just landed here. The few seconds of margin cover the gap between a
+// case starting and its first sample landing.
+const commitJustLanded = () => Math.floor(Date.now() / 1000) + 5;
+// An older commit, for the sample a case starts from and for the foreign-HEAD
+// shapes where the advance is real but predates the sampling window.
+const commitBefore = (secondsAgo) => Math.floor(Date.now() / 1000) - secondsAgo;
+
 async function caseTreeLag_commit_is_named_to_decider(clock) {
   console.log("\n=== TREELAG: a landed commit is named to the decider ===");
   clock.set(T0);
 
   const h = await createTickHarness(treeLagOpts("treelag_commit_named"));
-  // Dirty, then clean with a NEWER commit timestamp: a commit landed.
+  // Dirty, then clean at a commit made inside the sampling window: a commit landed
+  // on a branch with no upstream, which is where the freshness rule decides.
   h.setGitScript([
-    { branch: "main", dirty: 3, commitAt: 1_700_000_000 },
-    { branch: "main", dirty: 0, commitAt: 1_700_000_500 },
+    { branch: "main", dirty: 3, commitAt: commitBefore(600) },
+    { branch: "main", dirty: 0, commitAt: commitJustLanded() },
   ]);
   h.setClassifyValue("nudge");
   await treeLagDrive(h, clock);
@@ -148,8 +160,8 @@ async function caseTreeLag_clean_without_commit_is_silent(clock) {
 
   const h = await createTickHarness(treeLagOpts("treelag_clean_no_commit"));
   h.setGitScript([
-    { branch: "main", dirty: 3, commitAt: 1_700_000_000 },
-    { branch: "main", dirty: 0, commitAt: 1_700_000_000 },
+    { branch: "main", dirty: 3, commitAt: commitBefore(600) },
+    { branch: "main", dirty: 0, commitAt: commitBefore(600) },
   ]);
   h.setClassifyValue("nudge");
   await treeLagDrive(h, clock);
@@ -175,8 +187,8 @@ async function caseTreeLag_commit_closes_the_node(clock) {
 
   const h = await createTickHarness(treeLagOpts("treelag_closes_node"));
   h.setGitScript([
-    { branch: "main", dirty: 3, commitAt: 1_700_000_000 },
-    { branch: "main", dirty: 0, commitAt: 1_700_000_500 },
+    { branch: "main", dirty: 3, commitAt: commitBefore(600) },
+    { branch: "main", dirty: 0, commitAt: commitJustLanded() },
   ]);
   // The decider answers "complete" ONLY on a summary that names the commit, and
   // "nudge" on every other. That is what makes this case discriminating: a stub
@@ -260,6 +272,167 @@ async function caseTreeLag_git_stub_control(clock) {
     !decs.some(d => d.action === "env_git"));
   check("TREELAG control: the non-git path was taken",
     decs.some(d => d.action === "env_git_null"));
+}
+
+// The upstream discriminator, positive leg. On a tracking branch the sampler reads
+// the ahead count rather than the commit timestamp, so a local commit is one that
+// raises it. This is the withheld control the three silence cases below lean on: the
+// tracking-branch shape reaches the summary at all, and their silence is the gate
+// deciding rather than an upstream branch line the sampler cannot read.
+async function caseTreeLag_upstream_local_commit_is_named(clock) {
+  console.log("\n=== TREELAG: on a tracking branch, a commit that raises ahead is named ===");
+  clock.set(T0);
+
+  const h = await createTickHarness(treeLagOpts("treelag_upstream_commit"));
+  h.setGitScript([
+    { branch: "main", upstream: true, ahead: 1, dirty: 3, commitAt: commitBefore(600) },
+    { branch: "main", upstream: true, ahead: 2, dirty: 0, commitAt: commitJustLanded() },
+  ]);
+  h.setClassifyValue("nudge");
+  await treeLagDrive(h, clock);
+
+  const gitDecs = getState(h).decisions.filter(d => d.action === "env_git");
+  const summaries = h.classifyCalls.map(a => String((a && a[0]) || ""));
+  const clean = summaries.find(s => /dirty 0/.test(s));
+
+  check("TREELAG upstream: the dirty-to-clean transition was sampled",
+    gitDecs.some(d => /dirty=0 \(was [1-9]/.test(d.detail || "")));
+  check("TREELAG upstream: the decider ran on the cleared sample", clean !== undefined);
+  check("TREELAG upstream: that summary names the commit",
+    clean !== undefined && /a commit landed since the previous sample/.test(clean));
+}
+
+// `git stash && git pull`, and `git stash && git rebase origin/main` with it. Every
+// condition the dirty-to-clean gate reads is met: same branch, dirty above zero to
+// zero, and a newer HEAD commit. No commit was made here, though, and the worker's
+// work is in the stash. The ahead count is what says so, unchanged across both
+// samples because the new commit came from the upstream rather than from this
+// checkout. Naming a commit here invites the decider to close a node over work that
+// was stashed away.
+async function caseTreeLag_stash_then_pull_is_silent(clock) {
+  console.log("\n=== TREELAG: a stash and pull is not a commit ===");
+  clock.set(T0);
+
+  const h = await createTickHarness(treeLagOpts("treelag_stash_then_pull"));
+  h.setGitScript([
+    { branch: "main", upstream: true, ahead: 1, behind: 2, dirty: 3, commitAt: commitBefore(600) },
+    { branch: "main", upstream: true, ahead: 1, behind: 0, dirty: 0, commitAt: commitJustLanded() },
+  ]);
+  h.setClassifyValue("nudge");
+  await treeLagDrive(h, clock);
+
+  const gitDecs = getState(h).decisions.filter(d => d.action === "env_git");
+  const summaries = h.classifyCalls.map(a => String((a && a[0]) || ""));
+  const clean = summaries.find(s => /dirty 0/.test(s));
+
+  check("TREELAG stash-pull: the dirty-to-clean transition was sampled",
+    gitDecs.some(d => /dirty=0 \(was [1-9]/.test(d.detail || "")));
+  check("TREELAG stash-pull: the decider ran on the cleared sample", clean !== undefined);
+  check("TREELAG stash-pull: but no commit is claimed",
+    clean !== undefined && !/a commit landed/.test(clean));
+}
+
+// `git reset --hard origin/main` with the upstream ahead. Same met conditions as the
+// stash-and-pull shape, and a worse outcome for the worker: the work is not stashed,
+// it is gone. The ahead count falls to zero, which is the opposite of what a local
+// commit does to it.
+async function caseTreeLag_reset_hard_is_silent(clock) {
+  console.log("\n=== TREELAG: a reset to the upstream is not a commit ===");
+  clock.set(T0);
+
+  const h = await createTickHarness(treeLagOpts("treelag_reset_hard"));
+  h.setGitScript([
+    { branch: "main", upstream: true, ahead: 1, behind: 2, dirty: 4, commitAt: commitBefore(600) },
+    { branch: "main", upstream: true, ahead: 0, behind: 0, dirty: 0, commitAt: commitJustLanded() },
+  ]);
+  h.setClassifyValue("nudge");
+  await treeLagDrive(h, clock);
+
+  const gitDecs = getState(h).decisions.filter(d => d.action === "env_git");
+  const summaries = h.classifyCalls.map(a => String((a && a[0]) || ""));
+  const clean = summaries.find(s => /dirty 0/.test(s));
+
+  check("TREELAG reset: the dirty-to-clean transition was sampled",
+    gitDecs.some(d => /dirty=0 \(was [1-9]/.test(d.detail || "")));
+  check("TREELAG reset: the decider ran on the cleared sample", clean !== undefined);
+  check("TREELAG reset: but no commit is claimed",
+    clean !== undefined && !/a commit landed/.test(clean));
+}
+
+// The no-upstream half of the discriminator. With no ahead count to read, the gate
+// asks whether HEAD's committer time falls inside the sampling window. A checkout of
+// an older or foreign commit advances `lastCommitAt` without that being true. The
+// withheld control for this silence is the first TREELAG case above, which drives
+// the same branch shape with a commit made inside the window and is named.
+async function caseTreeLag_foreign_head_without_upstream_is_silent(clock) {
+  console.log("\n=== TREELAG: with no upstream, a commit older than the sample is not named ===");
+  clock.set(T0);
+
+  const h = await createTickHarness(treeLagOpts("treelag_foreign_head"));
+  const foreignHead = commitBefore(1800);
+  h.setGitScript([
+    { branch: "main", dirty: 3, commitAt: commitBefore(3600) },
+    { branch: "main", dirty: 0, commitAt: foreignHead },
+  ]);
+  h.setClassifyValue("nudge");
+  await treeLagDrive(h, clock);
+
+  const gitDecs = getState(h).decisions.filter(d => d.action === "env_git");
+  const summaries = h.classifyCalls.map(a => String((a && a[0]) || ""));
+  const clean = summaries.find(s => /dirty 0/.test(s));
+
+  check("TREELAG foreign head: the dirty-to-clean transition was sampled",
+    gitDecs.some(d => /dirty=0 \(was [1-9]/.test(d.detail || "")));
+  check("TREELAG foreign head: the decider ran on the cleared sample", clean !== undefined);
+  check("TREELAG foreign head: HEAD did move to the newer commit",
+    getState(h).monitor.env.git.lastCommitAt === foreignHead * 1000);
+  check("TREELAG foreign head: but no commit is claimed",
+    clean !== undefined && !/a commit landed/.test(clean));
+}
+
+// The stamp is spent on the first decider that is handed it, and on no other. The
+// worktree stays clean for several more ticks, which is exactly when the sampler's
+// carry-forward branch would keep re-asserting a stamp nothing retired.
+//
+// `costEnabled: false` is what makes the second and third deciders observable. With
+// cost gating on, an unchanged summary hashes the same and the tick skips classify
+// altogether, so a stamp that was never consumed would reach no second decider and
+// the count would read as one either way. With it off, every tick reaches classify
+// with a byte-identical summary, so a surviving stamp is named again and again.
+async function caseTreeLag_stamp_is_spent_on_one_decider(clock) {
+  console.log("\n=== TREELAG: the commit is named to exactly one decider ===");
+  clock.set(T0);
+
+  const h = await createTickHarness({ ...treeLagOpts("treelag_stamp_spent_once"), costEnabled: false });
+  const landed = commitJustLanded();
+  h.setGitScript([
+    { branch: "main", dirty: 3, commitAt: commitBefore(600) },
+    { branch: "main", dirty: 0, commitAt: landed },
+    { branch: "main", dirty: 0, commitAt: landed },
+  ]);
+  h.setClassifyValue("nudge");
+  await fireTurn(h);
+  await new Promise(r => setTimeout(r, 20));
+  for (let i = 0; i < 8; i++) {
+    await tickAndSettle(h, clock, 120);
+    clock.advance(2000);
+  }
+
+  const summaries = h.classifyCalls.map(a => String((a && a[0]) || ""));
+  const cleanSummaries = summaries.filter(s => /dirty 0/.test(s));
+  const named = summaries.filter(s => /a commit landed/.test(s));
+  const namedIndex = summaries.findIndex(s => /a commit landed/.test(s));
+
+  // Instrument first. One decider on a clean tree, or none at all, would make the
+  // count below read as one for reasons that have nothing to do with consumption.
+  check("TREELAG spend: the cost gate is off, so every tick reached a decider",
+    summaries.length >= 4);
+  check("TREELAG spend: more than one decider saw the clean worktree",
+    cleanSummaries.length >= 3);
+  check("TREELAG spend: a decider was told the commit landed", named.length >= 1);
+  check("TREELAG spend: deciders ran after the one that was told",
+    namedIndex !== -1 && namedIndex < summaries.length - 2);
+  check("TREELAG spend: exactly one decider was told", named.length === 1);
 }
 
 // ============================================================
@@ -4048,6 +4221,11 @@ async function main() {
   await caseTreeLag_commit_closes_the_node(clock);
   await caseTreeLag_stale_stamp_is_not_named(clock);
   await caseTreeLag_git_stub_control(clock);
+  await caseTreeLag_upstream_local_commit_is_named(clock);
+  await caseTreeLag_stash_then_pull_is_silent(clock);
+  await caseTreeLag_reset_hard_is_silent(clock);
+  await caseTreeLag_foreign_head_without_upstream_is_silent(clock);
+  await caseTreeLag_stamp_is_spent_on_one_decider(clock);
 
   // AO1: Skip for now (we have uncommitted changes during development).
   // Will re-enable after committing.

@@ -50,22 +50,55 @@ The runtime clone at `/d/DeepSeekHarness/agentic-plugin` is current at `0fc66d2`
 
 Nothing to fix in the tree. The remedy is relaunching each supervisor, then dropping this entry. Relaunching is destructive to whatever that supervisor's child is mid-way through, so it is taken at a quiet point rather than on sight of this entry. This is the narrowed remainder of the `aios` launcher entry and the stale-dev-clone entry, both retired in item 3's runtime-clone addendum.
 
-## The commit stamp's consumption is not observable from the tick harness
+## The commit-landed signal says nothing about a worker who commits and keeps editing
 
-`hooks/index.ts` renders a commit-landed line into the controller's summary and
-consumes the stamp that produced it after the classify call returns. The consumption
-is correct and load-bearing, but no harness case can currently prove it, so it is
-covered by reading rather than by a test.
+The controller's commit-landed notice reaches a decider only while the worktree is
+clean. Both halves of the sampler's gate in `hooks/index.ts` require `dirty === 0`: the
+stamp is set only on a dirty-to-clean transition, and a stamp already set is dropped
+the moment any edit reappears. So a worker that commits and immediately resumes
+editing is never reported as having committed, and a commit whose notice has not yet
+reached a decider is lost if the worker starts the next file first.
 
-The reason is a second mechanism reaching the same observable. Without consumption the
-stamp stays set, every following tick builds an identical summary, and the
-unchanged-summary hash gate skips `classify` entirely. So "the commit is named to
-exactly one decider" holds either way, and a case asserting it passes with the
-consumption removed. Confirmed by mutation: deleting the consumption leaves the whole
-suite green.
+This is the deliberate trade. A decider told "a commit landed" beside a dirty tree is
+invited to close a node over work in progress, which is the worse failure of the two.
+Revisiting it means giving the decider the transition and the current state as separate
+facts, and showing that the classifier treats "a commit landed, and editing has since
+resumed" as a reason to keep the node open rather than to close it. That is a
+classifier-behaviour question rather than a sampler change, so it needs evidence from
+real deciders before the gate is loosened.
 
-A case was written for this and then deleted rather than kept, because a check that
-cannot fail reads exactly like a check that passes. What would actually discriminate is
-a run where the summary changes for an unrelated reason while the stamp is still set,
-so the hash gate does not fire and a second decider is reached. That needs a way to
-perturb the summary mid-run that the harness does not currently offer.
+## The per-session prompt-submit budget silently disables the goal loop and every reader message
+
+A `claude` session reaching the harness's per-session `$.prompt.submit` budget refuses
+every later submission, logging `past budget; refused` to its debug log and nothing
+else. The controller's goal ticks, its nudges and the operator inbox drain all reach the
+session through that one call, so the session goes on answering at the keyboard while
+every automated path into it is dead, and no surface says so.
+
+The only remedy is restarting the child. The plugin should surface the first refusal to
+the operator's channel once and record it as a monitor decision, so the silence is
+visible at the moment it starts rather than discovered by a reader whose messages went
+unanswered.
+
+## A commit-landed notice never reaches a session whose turn is long
+
+The operator inbox drain sits below the tick's in-flight check at `hooks/index.ts`, so no
+inbox record is delivered while a turn is open, and the drain then delivers one record
+per tick. A session in a turn that runs for an hour holds every record the whole time.
+Measured over the 101 delivered records in `.agentic-channel.jsonl`, the median wait is
+6 seconds and 8 records waited 10 minutes or more, the longest 48 minutes.
+
+Moving the drain above the in-flight check is not obviously right: a prompt submitted
+while a turn is open joins that turn rather than starting a new one. Deciding this needs
+a harness case that drives a mid-turn submission and observes where the text lands.
+
+## The supervisor's poll loop exits when its child dies externally
+
+`bin/supervise.sh` runs under `set -u` (`:31`) and polls with
+`while kill -0 "$CHILD_PID"` (`:1540`). Bash unsets a coproc's pid variable when the
+coproc dies from outside the script, so that expansion is unbound at the next iteration
+and the supervisor exits with `CHILD_PID: unbound variable` instead of taking its
+restart path. The guard at `:1535` runs once before the loop and does not reach this.
+
+The fix is expanding the loop's condition as `"${CHILD_PID:-}"` and treating the empty
+value as a dead child, with the externally-killed case added to the stop-path suite.

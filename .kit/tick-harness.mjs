@@ -144,7 +144,21 @@ function createFake$(opts = {}) {
         if (gitScript.length > 0 && Array.isArray(argv) && argv[0] === "git") {
           const step = gitScript[Math.min(gitIndex, gitScript.length - 1)];
           if (argv[1] === "status") {
-            const lines = ["## " + (step.branch ?? "main")];
+            // The branch line is written the way `git status --porcelain=v1 -b`
+            // writes it, upstream and ahead/behind counts included, because the
+            // sampler's commit gate reads the ahead count on a tracking branch and
+            // falls back to commit freshness on a branch with no upstream. A step
+            // with no `upstream` renders the untracked form, `## branch`.
+            const stepBranch = step.branch ?? "main";
+            let head = "## " + stepBranch;
+            if (step.upstream) {
+              head += "..." + (typeof step.upstream === "string" ? step.upstream : "origin/" + stepBranch);
+              const counts = [];
+              if (step.ahead) counts.push("ahead " + step.ahead);
+              if (step.behind) counts.push("behind " + step.behind);
+              if (counts.length > 0) head += " [" + counts.join(", ") + "]";
+            }
+            const lines = [head];
             for (let i = 0; i < (step.dirty ?? 0); i++) lines.push(" M file" + i + ".txt");
             return Promise.resolve({ exitCode: 0, stdout: lines.join("\n") + "\n" });
           }
@@ -181,8 +195,11 @@ function createFake$(opts = {}) {
     uiLogs,
     setClassifyValue(v) { classifyValue = v; },
     setCompleteValue(v) { completeValue = v; },
-    // steps: [{ branch?, dirty?, commitAt? }, ...], one per sampler status/log
-    // pair. The last step repeats once the script is exhausted.
+    // steps: [{ branch?, dirty?, commitAt?, upstream?, ahead?, behind? }, ...], one
+    // per sampler status/log pair. `upstream` is true for `origin/<branch>` or a
+    // branch name for anything else, and the ahead/behind counts are rendered only
+    // when an upstream is present, which is what real porcelain does.
+    // The last step repeats once the script is exhausted.
     setGitScript(steps) { gitScript = steps || []; gitIndex = 0; },
     resetClassifyCalls() { classifyCalls.length = 0; },
     resetCompleteCalls() { completeCalls.length = 0; },

@@ -359,6 +359,11 @@ const CHANNEL_LOG_PATH = ".agentic-channel.jsonl";
 // just before a crash would otherwise be re-asserted whenever the process came
 // back. Ten minutes is far longer than the gap between two deciders and far
 // shorter than an outage worth reporting a stale commit across.
+//
+// It is coupled to `costBackoffMaxMs` (the tick backoff ceiling, default 300000 ms):
+// a backed-off tick reaches no decider, so a deployment raising that ceiling above
+// ten minutes lets a stamp expire during routine backoff and the commit is never
+// named. Raise this bound alongside any such change.
 const COMMIT_SIGNAL_MAX_AGE_MS = 10 * 60_000;
 // Round 47 finding 1: this used to swallow every write error, and
 // enforceChannelWindow deleted the rolled store keys regardless of whether
@@ -1711,23 +1716,47 @@ export const register: Register = async (on, options) => {
                   if (aheadMatch) ahead = parseInt(aheadMatch[1], 10);
                   if (behindMatch) behind = parseInt(behindMatch[1], 10);
                 }
+                // `--porcelain=v1 -b` prints the branch line as
+                // `## branch...upstream [ahead 1, behind 2]` where the branch tracks an
+                // upstream and as `## branch` where it does not, so the `...` separator
+                // is the presence test. Read from this sample only: the commit gate
+                // below wants it only on the sample it is deciding about.
+                const hasUpstream = branchLine ? branchLine.includes("...") : false;
                 return $.process.run(["git", "log", "-1", "--format=%ct"]).then((logRes) => {
                   const lastCommitAt = logRes.exitCode === 0 ? parseInt((logRes.stdout || "0").trim(), 10) * 1000 : 0;
                   const sampledAt = Date.now();
                   const newGit: EnvGit = { branch, dirty, ahead, behind, lastCommitAt, sampledAt };
-                  const prevGit = env.git;
+                  // The previous sample is read from the live state rather than from
+                  // the `env` this probe captured when it started, because `sess.state`
+                  // is reassigned on a reload. A stale `prevGit` would let the
+                  // carry-forward branch below resurrect a stamp the live state has
+                  // already spent on a decider.
+                  const prevGit = sess.state.monitor.env.git;
                   // Stamp the sample that observed a commit landing, so the summary
                   // can name the commit rather than only the resulting clean tree.
                   //
                   // A dirty-to-clean transition alone is NOT that signal: `git stash`,
                   // `git restore .`, `git checkout -f` and `git clean` all take dirty
                   // above zero to zero with no commit, and the dirty count includes
-                  // untracked lines. Telling the decider a commit landed there would
-                  // invite it to close a node because the worker discarded its work.
-                  // So the commit itself is the discriminator, read from the same
-                  // `git log -1 --format=%ct` this sampler already issues. A branch
-                  // change is excluded too, since `lastCommitAt` jumps on a checkout
-                  // without anything having been committed here.
+                  // untracked lines. A newer `lastCommitAt` beside it is not enough
+                  // either: `git stash && git pull`, `git reset --hard origin/main` and
+                  // `git stash && git rebase origin/main` each leave a clean tree at a
+                  // newer commit that was made somewhere else, with the worker's own
+                  // work stashed or gone. Telling the decider a commit landed in any of
+                  // those invites it to close a node over discarded work.
+                  //
+                  // So the discriminator is whether this checkout gained a commit of its
+                  // own. On a branch with an upstream the ahead count answers that
+                  // directly: a local commit raises it, a fast-forward pull lowers
+                  // `behind` and leaves it, a reset to the upstream drops it to zero,
+                  // and a rebase replays the same number of commits onto a newer base
+                  // and leaves it flat. A branch with no upstream has no ahead count to
+                  // read, so the test there is freshness: a commit made here between the
+                  // two samples carries a committer time inside the sampling window,
+                  // while a checkout of an older or foreign commit does not.
+                  //
+                  // A branch change is excluded too, since `lastCommitAt` jumps on a
+                  // checkout without anything having been committed here.
                   if (
                     prevGit !== null &&
                     prevGit.branch === branch &&
@@ -1739,7 +1768,10 @@ export const register: Register = async (on, options) => {
                     // any advance look like a commit, so a stash after a transient
                     // git failure would report as finished work.
                     prevGit.lastCommitAt > 0 &&
-                    lastCommitAt > prevGit.lastCommitAt
+                    lastCommitAt > prevGit.lastCommitAt &&
+                    (hasUpstream
+                      ? ahead > prevGit.ahead
+                      : lastCommitAt >= prevGit.sampledAt)
                   ) {
                     newGit.clearedAt = sampledAt;
                   } else if (
