@@ -353,18 +353,6 @@ const REPLY_INSTRUCTION = "You are attached to a Discord channel. When you want 
 // rewritten, so the file that grows without bound is this one, by design,
 // not the store the plugin reads and rewrites whole on every tick.
 const CHANNEL_LOG_PATH = ".agentic-channel.jsonl";
-
-// How long an unconsumed commit-landed stamp stays worth telling a decider about.
-// It exists for the restart case: `monitor.env` is persisted, so a stamp written
-// just before a crash would otherwise be re-asserted whenever the process came
-// back. Ten minutes is far longer than the gap between two deciders and far
-// shorter than an outage worth reporting a stale commit across.
-//
-// It is coupled to `costBackoffMaxMs` (the tick backoff ceiling, default 300000 ms):
-// a backed-off tick reaches no decider, so a deployment raising that ceiling above
-// ten minutes lets a stamp expire during routine backoff and the commit is never
-// named. Raise this bound alongside any such change.
-const COMMIT_SIGNAL_MAX_AGE_MS = 10 * 60_000;
 // Round 47 finding 1: this used to swallow every write error, and
 // enforceChannelWindow deleted the rolled store keys regardless of whether
 // the append actually landed - a failed write meant the record vanished
@@ -1738,90 +1726,10 @@ export const register: Register = async (on, options) => {
                   if (aheadMatch) ahead = parseInt(aheadMatch[1], 10);
                   if (behindMatch) behind = parseInt(behindMatch[1], 10);
                 }
-                // `--porcelain=v1 -b` prints the branch line as
-                // `## branch...upstream [ahead 1, behind 2]` where the branch tracks an
-                // upstream and as `## branch` where it does not, so the `...` separator
-                // is the presence test. Read from this sample only: the commit gate
-                // below wants it only on the sample it is deciding about.
-                const hasUpstream = branchLine ? branchLine.includes("...") : false;
                 return $.process.run(["git", "log", "-1", "--format=%ct"]).then((logRes) => {
                   const lastCommitAt = logRes.exitCode === 0 ? parseInt((logRes.stdout || "0").trim(), 10) * 1000 : 0;
-                  const sampledAt = Date.now();
-                  const newGit: EnvGit = { branch, dirty, ahead, behind, lastCommitAt, sampledAt };
-                  // The previous sample is read from the live state rather than from
-                  // the `env` this probe captured when it started, because `sess.state`
-                  // is reassigned on a reload. A stale `prevGit` would let the
-                  // carry-forward branch below resurrect a stamp the live state has
-                  // already spent on a decider.
-                  const prevGit = sess.state.monitor.env.git;
-                  // Stamp the sample that observed a commit landing, so the summary
-                  // can name the commit rather than only the resulting clean tree.
-                  //
-                  // A dirty-to-clean transition alone is NOT that signal: `git stash`,
-                  // `git restore .`, `git checkout -f` and `git clean` all take dirty
-                  // above zero to zero with no commit, and the dirty count includes
-                  // untracked lines. A newer `lastCommitAt` beside it is not enough
-                  // either: `git stash && git pull`, `git reset --hard origin/main` and
-                  // `git stash && git rebase origin/main` each leave a clean tree at a
-                  // newer commit that was made somewhere else, with the worker's own
-                  // work stashed or gone. Telling the decider a commit landed in any of
-                  // those invites it to close a node over discarded work.
-                  //
-                  // So the discriminator is whether this checkout gained a commit of its
-                  // own. On a branch with an upstream the ahead count answers that
-                  // directly: a local commit raises it, a fast-forward pull lowers
-                  // `behind` and leaves it, a reset to the upstream drops it to zero,
-                  // and a rebase replays the same number of commits onto a newer base
-                  // and leaves it flat. A branch with no upstream has no ahead count to
-                  // read, so the test there is freshness: a commit made here between the
-                  // two samples carries a committer time inside the sampling window,
-                  // while a checkout of an older or foreign commit does not.
-                  //
-                  // A branch change is excluded too, since `lastCommitAt` jumps on a
-                  // checkout without anything having been committed here.
-                  if (
-                    prevGit !== null &&
-                    prevGit.branch === branch &&
-                    prevGit.dirty > 0 &&
-                    dirty === 0 &&
-                    // A zero means `git log` failed rather than that the repository
-                    // has no commits, since the sampler writes 0 on a non-zero exit.
-                    // Without this, a failed log followed by a recovered one makes
-                    // any advance look like a commit, so a stash after a transient
-                    // git failure would report as finished work.
-                    prevGit.lastCommitAt > 0 &&
-                    lastCommitAt > prevGit.lastCommitAt &&
-                    (hasUpstream
-                      ? ahead > prevGit.ahead
-                      : lastCommitAt >= prevGit.sampledAt)
-                  ) {
-                    newGit.clearedAt = sampledAt;
-                  } else if (
-                    prevGit !== null &&
-                    prevGit.clearedAt !== undefined &&
-                    prevGit.branch === branch &&
-                    // The tree must still be clean. Without this, a stamp set by a
-                    // commit outlives the worker starting new edits, and the summary
-                    // reads "dirty 5" beside "a commit landed", which is the exact
-                    // invitation to close a node over work in progress that the gate
-                    // above exists to prevent.
-                    dirty === 0 &&
-                    sampledAt - prevGit.clearedAt < COMMIT_SIGNAL_MAX_AGE_MS
-                  ) {
-                    // Carry an unconsumed stamp forward. The probe is
-                    // fire-and-forget and can run more than once between two
-                    // deciders; the second sample sees a worktree that is already
-                    // clean, so it fails the gate above and would rebuild the
-                    // sample without the stamp, destroying the notice before any
-                    // decider was handed it. The stamp is retired by consumption
-                    // at the decider, not by the next sample.
-                    //
-                    // The age bound is what keeps a crash from resurrecting it:
-                    // `env` is persisted, so without it a stamp written just
-                    // before a restart would be re-asserted to a decider whenever
-                    // the process came back, however much later that was.
-                    newGit.clearedAt = prevGit.clearedAt;
-                  }
+                  const newGit: EnvGit = { branch, dirty, ahead, behind, lastCommitAt, sampledAt: Date.now() };
+                  const prevGit = env.git;
                   if (prevGit === null || prevGit.dirty !== dirty || prevGit.branch !== branch) {
                     const detail = prevGit === null
                       ? `env_git first sample dirty=${dirty} branch ${branch}`
@@ -2272,37 +2180,11 @@ export const register: Register = async (on, options) => {
 
       // C7: Environment line only when env.git or env.health is non-null.
       const env = sess.state.monitor.env;
-      // Which commit stamp, if any, this tick's summary actually rendered. It is
-      // what makes the consumption below exact: clearing whatever happens to be on
-      // `env.git` after the classify call would retire a stamp the fire-and-forget
-      // probe set during this same tick, after the summary was already built, so a
-      // commit would be spent without ever having been named to anyone.
-      let renderedCommitStamp: number | undefined;
       let envLine = "";
       if (env.git !== null || env.health !== null) {
         const parts: string[] = [];
         if (env.git !== null) {
           parts.push(`git: ${env.git.branch} dirty ${env.git.dirty} ahead ${env.git.ahead} behind ${env.git.behind}`);
-          // Present only while the stamp is unconsumed, so the decider can tell a
-          // commit that just landed from a tree that has been clean for hours. The
-          // stamp is cleared once a decider has actually been handed it, below.
-          // Rendered, never consumed here. This summary is built well above several
-          // gates that still return early (the nudge cap, the call cap, the cost cap
-          // and the tick backoff), so clearing the stamp at this point would spend it
-          // on ticks that never reach a decider at all, and backoff is routine rather
-          // than rare. Consumption happens after the classify call returns.
-          //
-          // The age bound is checked here rather than only in the sampler, because
-          // `monitor.env` is persisted: after a restart this line is rendered from
-          // the restored sample before any fresh probe can land, and if the probe
-          // latches unavailable no later sample ever applies the bound at all.
-          if (
-            env.git.clearedAt !== undefined &&
-            Date.now() - env.git.clearedAt < COMMIT_SIGNAL_MAX_AGE_MS
-          ) {
-            parts.push("a commit landed since the previous sample (worktree went from dirty to clean)");
-            renderedCommitStamp = env.git.clearedAt;
-          }
         }
         if (env.health !== null) {
           parts.push(`health: exit ${env.health.exitCode} for ${env.health.forNodeId || "no-node"}`);
@@ -2511,17 +2393,6 @@ export const register: Register = async (on, options) => {
             classifyLabels,
             { model: "haiku" }
           );
-          // Consume the stamp this tick's summary actually carried, and only that
-          // one. Matching on the value rather than clearing blindly is what keeps a
-          // stamp set mid-tick, after the summary was built, alive for the next
-          // decider instead of being spent unseen.
-          if (
-            renderedCommitStamp !== undefined &&
-            sess.state.monitor.env.git !== null &&
-            sess.state.monitor.env.git.clearedAt === renderedCommitStamp
-          ) {
-            sess.state.monitor.env.git.clearedAt = undefined;
-          }
           // D1: increment classify ledger
           sess.state.monitor.cost.classify.count += 1;
           sess.state.monitor.cost.classify.estTokens += estimateTokens(summary.length, 30);
