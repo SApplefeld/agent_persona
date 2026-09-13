@@ -58,6 +58,7 @@ Four extensions, in order of what blocks the next:
 
 - Section 0 item 5's scope is which plugin copy a worker or the coordinator loads, how the settings a supervisor writes reach that copy, and whether the installed-mode store holds every live persona claim. How a supervisor's cadence values resolve between exported env vars and the library's `PROFILE` block is a different surface and does not ride under item 5.
 - Completing a provided settings file under item 5 means copying the options from whichever plugin id carries them to the id that lacks them, with every option as the caller wrote it. Which persona wins when a supervisor's persona argument and a provided settings file disagree is a different surface, present identically under `--plugin-dir`, and does not ride under item 5.
+- Section 12 runs after Sections 1 and 2 and before Section 3. Sections 7 and 8 each carry one added sentence: a worker resolves a coordinator record with `agentic_resolve` when the work is finished or declined, and the coordinator counts rounds per steer against resolutions rather than replies.
 
 ## Sections of Work
 
@@ -216,7 +217,44 @@ Acceptance:
 
 Tests: a case per criterion, each watched red before green. Criterion 1 takes a withheld control, a completion for a turn whose start was never seen leaving the reading unchanged.
 
+### 12. Inbox upkeep: a handled state, cleanup that never loses unread work, and a reply link no other turn can take
+Model: opus
+
+Appended by the operator's decision of 2026-09-13, recorded under `## Decisions`. It runs after Sections 1 and 2 and before Section 3, because Section 3 is where the coordinator starts addressing workers by name and depends on this lifecycle. The section number is its decomposition, not its build order.
+
+The inbox records read, replied and linked-reply, and it bounds its own size. Three gaps remain, each confirmed in the code on `item0-5-installed-runtime` at `97a7765`.
+
+**No handled state.** `InboxStatus` is `pending | delivered | answered | skipped` (`hooks/operator.ts:19`). `answered` is written when the turn stamped with the record ends with a non-empty answer (`hooks/index.ts:3181-3194`). That means a turn replied, not that the work finished. A steer taking three turns reads `answered` after the first. The coordinator's two-round cap per steer (Decisions, FORK B item 3) needs to count finished steers, and it cannot.
+
+**Cleanup can lose unread work, and loses it unlogged.** `sweepExpiredRecords` deletes every `inbox:` record older than the TTL, 24 hours by default, whatever its status, `pending` included (`hooks/operator.ts:277-285`). It runs before `enforceChannelWindow` on the same cadence (`hooks/index.ts:1435` then `:1457`). So a record that ages out is deleted outright and never reaches `.agentic-channel.jsonl`, and only a count survives in the decision log.
+
+**The reply link can be taken by another turn (inferred, not reproduced).** The first `turn.start` after a delivery stamps its turn id onto any `delivered` record with no turn id (`hooks/index.ts:2740-2750`). Nothing checks that this turn is the one the plugin opened for that record. A turn opened from the operator's Discord channel, or a `[GOAL]` nudge, starting first would take the stamp, and its answer would be filed as the reply. The channel-origin flag this needs already exists: `currentTurnIsChannelOrigin`, set at `turn.start` (`:2721`). Confirming the race live is part of this section's red step.
+
+Fix:
+1. **A resolution the worker sets.** An owner-side tool, `agentic_resolve`, takes a record id, an outcome of `done` or `declined`, and a short note. It writes `resolvedAt`, `outcome` and `note` onto that record and sets status `resolved`. It is refused for a record not addressed to the caller's own persona, and for a record still `pending`. `agentic_inbox` returns `outcome`, `note` and `resolvedAt` beside `reply` for each of the caller's records. The Section 7 standing instruction and the Section 8 coordinator instruction each gain one sentence: a worker resolves a coordinator record when the work is finished or declined, and the coordinator counts rounds against resolutions rather than replies.
+2. **Cleanup that keeps unread work and logs before it deletes.** The TTL sweep never touches a `pending` record. A pending record already leaves the queue by the existing route when its writer has no live claim (`skipped`, `hooks/index.ts:1380-1381`), so a pending record that survives is live work. Every record the TTL removes is appended to `.agentic-channel.jsonl` before it is deleted, on the same append-before-delete contract `enforceChannelWindow` holds (`hooks/operator.ts:364-374`), and a failed append leaves the record in the store and logs the refusal. The window roll keeps `delivered` and `answered` records that are not yet resolved in the store rather than rolling them, so an open steer's state stays readable. The TTL is the bound on those.
+3. **A reply link only the plugin's own turn can take.** A delivery records which record it submitted before it calls `$.prompt.submit`, on the synchronous side, the same reason Section 11 moved its writes there. `turn.start` stamps only that record, and only on a turn not flagged channel-origin. The mechanism is checked against the real turn event type at implementation time. Where nothing distinguishes the plugin's turn from another, the stamp is withheld rather than guessed. The record then stays `delivered` with no reply, which the sender reads as unanswered rather than as a wrong answer.
+
+Files in scope: `hooks/operator.ts`, `hooks/index.ts`, `.kit/controller-tick-test.mjs`, `.kit/tick-harness.mjs`, `.kit/commons-unit-test.mjs`, `README.md` (the Operator channel section's Tools, Record shapes, Bounded store and Delivery text, `README.md:271-314`).
+
+Acceptance:
+1. A worker's `agentic_resolve` on a delivered or answered record addressed to its persona sets status `resolved` with the outcome and note, and the sender's `agentic_inbox` returns them.
+2. `agentic_resolve` is refused for a `pending` record and for a record addressed to another persona.
+3. A `pending` record older than the TTL is still in the store after the sweep.
+4. Every record the TTL sweep removes appears in `.agentic-channel.jsonl` first, and a failed append leaves it in the store.
+5. The window roll does not remove a `delivered` or `answered` record that is not resolved.
+6. A turn flagged channel-origin, or a turn the plugin did not open for the record, starting after a delivery does not take the record's stamp, and its answer is not written as that record's reply.
+7. The plugin's own delivery turn still takes the stamp and writes the reply, as today.
+
+Tests: a case per acceptance bullet, each watched red before green. Bullet 3 and bullet 6 each take a withheld control: an old non-pending record is swept, and the plugin's own turn is stamped.
+
 ## Decisions
+
+### Inbox upkeep is part of v2, before Section 3 - decided 2026-09-13 by the operator
+
+The operator affirmed the commons-store inbox as the coordinator's transport. The concept had already worked for earlier prototypes and for the shared discussion file. The concern was its upkeep: whether messages are read, whether they are handled, how replies tie to requests, what shares the store, whether it grows forever, and how finished records are cleaned up.
+
+Read against the code, the inbox answers read, reply linkage, sharing and growth. It has no handled state, its TTL sweep deletes unread records and skips the log, and its reply stamp can be taken by another turn. Three options were put to the operator: add a section now, build Sections 1 to 8 first and fix after, or fix only the cleanup now. The operator chose the first. The coordinator's core job is knowing what each worker finished, and without a handled state it would infer that from reply text, which is how a loop builds work nobody asked for. Section 12 carries the work.
 
 ### The idle anchor keeps updating on an unmatched turn completion - decided 2026-09-13 by a consult
 
@@ -278,7 +316,6 @@ This Decision is recorded as the operator's ruling on the Reviewer's own thread 
 
 ## Open Questions
 
-- The transport pick itself (commons-store inbox path over the harness's peer tools or Discord threads) is this spec's own authored call, confirmed against the code by a design council rather than handed down by an existing source - the operator has not yet been asked to affirm it specifically. Low blast to revisit before Section 1 starts; expensive to change once Sections 1-4 are built on it.
 - Whether the kit's standing-grant rail rewrite (in flight as of this spec's authoring) keeps a Coordinator-to-Worker chain compatible with the Decisions section's FORK B ruling - owner: re-check `skills/role/SKILL.md` once the rewrite lands; the ruling itself does not wait on this, per the operator's own word (Round 107), but the two should be reconciled if they diverge.
 - What label a coordinator gets on records *it* sends to the operator (this spec only decided the worker-facing labels) - low-blast, decide at execution time, likely no label at all since the coordinator reports via its own Discord thread, not this inbox path.
 - The exact `tool.call` event field (if any) that distinguishes a subagent's own call from the top-level session's, needed by Section 4's urgent-break-in fix - owner: implementation time, checked against the real `ToolCallEvent` type, not assumed by this spec.
