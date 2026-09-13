@@ -271,9 +271,15 @@ source "$_COMMON"
 # A provided file keeps its options, and gains whichever plugin id it lacks,
 # so a rundir written for one load mode still reaches the plugin in the other.
 if [ ! -f "$SETTINGS_FILE" ]; then
-  emit_settings_json "$SETTINGS_FILE" || exit 1
+  if ! emit_settings_json "$SETTINGS_FILE" 2>>"$LOG"; then
+    echo "ERROR: could not write $SETTINGS_FILE; see $LOG" | tee -a "$LOG" >&2
+    exit 1
+  fi
 else
-  ensure_settings_plugin_ids "$SETTINGS_FILE" || exit 1
+  if ! ensure_settings_plugin_ids "$SETTINGS_FILE" "$PERSONA" 2>>"$LOG"; then
+    echo "ERROR: could not complete $SETTINGS_FILE; see $LOG" | tee -a "$LOG" >&2
+    exit 1
+  fi
 fi
 
 # --- Helper: log a line to supervisor.log ---

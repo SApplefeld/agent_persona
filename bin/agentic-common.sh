@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 # bin/agentic-common.sh - Shared supervisor/test helpers.
 # Sourced by bin/supervise.sh and .kit/live-common.sh.
-# Provides: wait_persona_free, emit_settings_json, poll_decisions, poll_heartbeat.
+# Provides: wait_persona_free, emit_settings_json, ensure_settings_plugin_ids,
+#           valid_persona_name, find_global_store, poll_decisions, poll_heartbeat.
 # All functions use W2 read-error semantics: a read error is a transient mid-write
 # race, treated as "live" (or "not ready"), never an abort. The timeout is the only exit.
 
-# --- Profiles ---
-# Selected by PROFILE=full|short (default: short).
-# full: TICK_MS=30000, NUDGE_IDLE_MS=120000, GIT_PROBE_MS=120000
-# short: TICK_MS=10000, NUDGE_IDLE_MS=45000, GIT_PROBE_MS=30000
 # --- Plugin ids ---
 # The two ids pluginConfigs is keyed by: --plugin-dir load, and installed load.
 AGENTIC_PLUGIN_DEV_ID="agentic-plugin"
 AGENTIC_PLUGIN_INSTALLED_ID="agentic-plugin@agent-persona"
 
+# --- Profiles ---
+# Selected by PROFILE=full|short (default: short).
+# full: TICK_MS=30000, NUDGE_IDLE_MS=120000, GIT_PROBE_MS=120000
+# short: TICK_MS=10000, NUDGE_IDLE_MS=45000, GIT_PROBE_MS=30000
 PROFILE="${PROFILE:-short}"
 case "$PROFILE" in
   full)
@@ -79,16 +80,17 @@ emit_settings_json() {
   # own second positional argument, visible here because this function is
   # sourced into the caller's shell rather than run in a subshell.
   # Every value below is spliced into JSON unescaped, so each is held to a
-  # shape that cannot close a string or an object: digits for the numbers,
-  # letters, digits, underscore and hyphen for the persona.
+  # shape that cannot close a string or an object and that JSON accepts:
+  # digits with no leading zero for the numbers, letters, digits, underscore
+  # and hyphen for the persona.
   local var
   for var in TICK_MS NUDGE_IDLE_MS GIT_PROBE_MS NUDGE_FLOOR_MS HEARTBEAT_MS STALE_AFTER_MS \
     SELF_REVIEW_EVERY_TURNS CONTEXT_BUDGET_INFO_TOKENS CONTEXT_BUDGET_CLOSEOUT_TOKENS \
     CONTEXT_BUDGET_CRITICAL_TOKENS CONTEXT_BUDGET_READ_EVERY_N_TICKS COST_SUMMARY_EVERY_N_TICKS \
     COST_MAX_NUDGES_PER_HOUR COST_MAX_PLUGIN_CALLS_PER_HOUR COST_BACKOFF_AFTER_TICKS COST_BACKOFF_MAX_MS; do
     case "${!var:-0}" in
-      ''|*[!0-9]*)
-        echo "ERROR: emit_settings_json: $var '${!var}' is not a non-negative integer" >&2
+      ''|*[!0-9]*|0[0-9]*)
+        echo "ERROR: emit_settings_json: $var '${!var}' is not a non-negative integer without leading zeros" >&2
         return 1
         ;;
     esac
@@ -113,26 +115,44 @@ EOF
 }
 
 # --- ensure_settings_plugin_ids ---
-# Usage: ensure_settings_plugin_ids <settings-file>
+# Usage: ensure_settings_plugin_ids <settings-file> [persona]
 # For a settings file the caller already provided: where the options sit under
 # only one of the two plugin ids, copies them under the other, leaving every
-# option as the caller wrote it. Returns 1 when the file is not valid JSON.
+# other option as the caller wrote it. When a persona is given it is set under
+# both ids, since the supervisor's own persona argument is the one its pre-gate
+# and polls watch. The file is replaced by rename, so an interrupted write
+# never leaves it truncated. Returns 1 when the file is not valid JSON, when it
+# is not a JSON object, or when the persona is not a valid persona name.
 ensure_settings_plugin_ids() {
+  if [ -n "${2:-}" ] && ! valid_persona_name "$2"; then
+    echo "ERROR: ensure_settings_plugin_ids: persona '$2' may hold only letters, digits, underscore and hyphen" >&2
+    return 1
+  fi
   node -e '
 const fs = require("fs");
-const [file, devId, installedId] = process.argv.slice(1);
+const [file, devId, installedId, persona] = process.argv.slice(1);
 let s;
-try { s = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) {
+try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^﻿/, "")); } catch (e) {
   console.error("ERROR: ensure_settings_plugin_ids: " + file + " is not valid JSON: " + e.message);
   process.exit(1);
 }
-const pc = s && s.pluginConfigs;
-if (!pc || typeof pc !== "object") process.exit(0);
-if (pc[devId] && !pc[installedId]) pc[installedId] = pc[devId];
-else if (pc[installedId] && !pc[devId]) pc[devId] = pc[installedId];
-else process.exit(0);
-fs.writeFileSync(file, JSON.stringify(s));
-' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID"
+if (!s || typeof s !== "object" || Array.isArray(s)) {
+  console.error("ERROR: ensure_settings_plugin_ids: " + file + " is not a JSON object");
+  process.exit(1);
+}
+const before = JSON.stringify(s);
+const pc = (s.pluginConfigs && typeof s.pluginConfigs === "object") ? s.pluginConfigs : (s.pluginConfigs = {});
+const dev = pc[devId] && pc[devId].options;
+const inst = pc[installedId] && pc[installedId].options;
+const options = Object.assign({}, dev || inst || {});
+if (persona) options.persona = persona;
+pc[devId] = Object.assign({}, pc[devId], { options: Object.assign({}, dev || options, persona ? { persona } : {}) });
+pc[installedId] = Object.assign({}, pc[installedId], { options: Object.assign({}, inst || options, persona ? { persona } : {}) });
+if (JSON.stringify(s) === before) process.exit(0);
+const tmp = file + ".tmp-" + process.pid;
+fs.writeFileSync(tmp, JSON.stringify(s));
+fs.renameSync(tmp, file);
+' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID" "${2:-}"
 }
 
 # --- valid_persona_name ---

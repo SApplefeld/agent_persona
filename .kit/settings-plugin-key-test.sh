@@ -70,23 +70,64 @@ run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids
 R=$(inspect "$TMP/inst.json")
 case "$R" in *"DEV_KEY=1"*"SAME_OPTIONS=1"*"PERSONA_DEV=inst;"*) check "provided installed-only file gains the --plugin-dir id" 0 ;; *) check "provided installed-only file gains the --plugin-dir id" 1 ;; esac
 
+# An id present without options counts as missing.
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":9}},"agentic-plugin@agent-persona":{"enabled":true}}}' > "$TMP/partial.json"
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids "$2"' _ "$ROOT" "$TMP/partial.json"
+R=$(inspect "$TMP/partial.json")
+case "$R" in *"INSTALLED_KEY=1"*"SAME_OPTIONS=1"*) check "an id with no options gains the other id's options" 0 ;; *) check "an id with no options gains the other id's options" 1 ;; esac
+
+# The supervisor's persona replaces a stale persona under both ids.
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":7,"persona":"stale"}}}}' > "$TMP/stale.json"
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids "$2" fresh' _ "$ROOT" "$TMP/stale.json"
+R=$(inspect "$TMP/stale.json")
+case "$R" in *"PERSONA_DEV=fresh;"*"PERSONA_INSTALLED=fresh;"*) check "a given persona replaces the file's persona under both ids" 0 ;; *) check "a given persona replaces the file's persona under both ids" 1 ;; esac
+grep -q '"controllerTickMs":7' "$TMP/stale.json"; check "replacing the persona keeps the caller's other options" "$?"
+
+# A leading UTF-8 byte order mark is accepted.
+printf '\xef\xbb\xbf%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"persona":"bom"}}}}' > "$TMP/bom.json"
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids "$2"' _ "$ROOT" "$TMP/bom.json"
+R=$(inspect "$TMP/bom.json")
+case "$R" in *"PERSONA_INSTALLED=bom;"*) check "a file with a byte order mark is completed" 0 ;; *) check "a file with a byte order mark is completed" 1 ;; esac
+
 printf '%s' '{"pluginConfigs":' > "$TMP/broken.json"
 ERR=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids "$2"' _ "$ROOT" "$TMP/broken.json" 2>&1)
 RC=$?
 case "$RC:$ERR" in 0:*) check "ensure_settings_plugin_ids refuses a file that is not JSON" 1 ;; *"is not valid JSON"*) check "ensure_settings_plugin_ids refuses a file that is not JSON" 0 ;; *) check "ensure_settings_plugin_ids refuses a file that is not JSON" 1 ;; esac
 
 # --- values spliced into JSON are refused when they could break out ---
-run_lib PERSONA='x"}}},"hooks":{"a":1' bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/inj.json" 2>/dev/null
-[ "$?" -ne 0 ]; check "emit_settings_json refuses a persona carrying a quote" "$?"
-run_lib PERSONA="ok" HEARTBEAT_MS='1,"hooks":{}' bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/inj2.json" 2>/dev/null
-[ "$?" -ne 0 ]; check "emit_settings_json refuses a non-numeric cadence" "$?"
+# Each refusal is attributed by the variable name the emitter's own message
+# names, and no settings file may be left behind.
+refused() {  # <label> <expected token> <output file> -- env assignments...
+  local label="$1" token="$2" file="$3"; shift 3
+  local err rc
+  err=$(run_lib "$@" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$file" 2>&1)
+  rc=$?
+  if [ "$rc" -ne 0 ] && [ ! -e "$file" ] && case "$err" in *"$token"*) true ;; *) false ;; esac; then
+    check "$label" 0
+  else
+    check "$label (rc=$rc, err=$err)" 1
+  fi
+}
+refused "emit_settings_json refuses a persona carrying a quote" "PERSONA 'x" "$TMP/inj.json" PERSONA='x"}}},"hooks":{"a":1'
+refused "emit_settings_json refuses a non-numeric cadence" "HEARTBEAT_MS '1," "$TMP/inj2.json" PERSONA="ok" HEARTBEAT_MS='1,"hooks":{}'
+# HEARTBEAT_MS rather than TICK_MS: sourcing the library resets TICK_MS from
+# PROFILE, so a TICK_MS value set here never reaches the emitter.
+refused "emit_settings_json refuses a cadence with a leading zero" "HEARTBEAT_MS '030000'" "$TMP/inj3.json" PERSONA="ok" HEARTBEAT_MS='030000'
 
-# --- bin/supervise.sh wires both helpers and the persona check ---
+# --- bin/supervise.sh, driven for real up to the settings step ---
+# Nothing before that step launches a process: it validates arguments, changes
+# into the workdir, creates the rundir and sources the library.
 SUP="$ROOT/bin/supervise.sh"
-grep -q 'emit_settings_json "\$SETTINGS_FILE" || exit 1' "$SUP"; check "supervise.sh exits when the emitter refuses" "$?"
-grep -q 'ensure_settings_plugin_ids "\$SETTINGS_FILE" || exit 1' "$SUP"; check "supervise.sh completes a provided settings file" "$?"
-OUT=$(env -i PATH="$PATH" bash "$SUP" /nonexistent 'bad"name' default 2>&1)
+mkdir -p "$TMP/wd" "$TMP/rd"
+printf '%s' '{"pluginConfigs":' > "$TMP/rd/settings.json"
+OUT=$(env -i PATH="$PATH" bash "$SUP" "$TMP/wd" tester default --rundir "$TMP/rd" 2>&1)
+RC=$?
+[ "$RC" -eq 1 ]; check "supervise.sh exits 1 on a provided settings file that is not JSON (rc=$RC)" "$?"
+grep -q "is not valid JSON" "$TMP/rd/supervisor.log" 2>/dev/null; check "supervise.sh records the settings refusal in supervisor.log" "$?"
+
+OUT=$(env -i PATH="$PATH" bash "$SUP" "$TMP/wd" 'bad"name' default --rundir "$TMP/rd2" 2>&1)
 case "$OUT" in *"persona 'bad\"name' may hold only"*) check "supervise.sh refuses a persona carrying a quote" 0 ;; *) check "supervise.sh refuses a persona carrying a quote" 1 ;; esac
+[ ! -e "$TMP/rd2" ]; check "supervise.sh refuses the persona before creating the rundir" "$?"
 
 if [ "$failed" -eq 0 ]; then
   echo "settings-plugin-key-test.sh: PASS"

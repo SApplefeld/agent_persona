@@ -54,6 +54,10 @@ Four extensions, in order of what blocks the next:
 
 **Operating rule that falls out of the turn-serial constraint.** A worker's own turn runs 2-5 minutes; a message delivered mid-turn queues until it ends (confirmed live in this plan's own Rounds 100-103: a message sent to this worker mid-turn queued exactly this way). So: steers to one worker batch into one record per cycle rather than trickling in one at a time; `urgent` is reserved for a real stop-or-redirect, never for "what is your status"; and status is never asked of a worker in-band - the coordinator reads `agentic_inbox`, the worker's own `.agentic-personas.json` in its repo, and the commons entry, all of which are file reads with no turn cost to the worker.
 
+## Standing Brief Amendments
+
+- Section 0 item 5's scope is which plugin copy a worker or the coordinator loads, how the settings a supervisor writes reach that copy, and whether the installed-mode store holds every live persona claim. How a supervisor's cadence values resolve between exported env vars and the library's `PROFILE` block is a different surface and does not ride under item 5.
+
 ## Sections of Work
 
 ### 1. Commons entry carries turn state and workdir
