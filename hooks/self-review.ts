@@ -79,7 +79,7 @@ export function buildSelfReviewInput(
   const NOISE_ACTIONS = new Set([
     "controller_tick", "env_inject", "heartbeat", "self-review",
     "turn_start", "turn_complete", "planning_fired",
-    "planning_created", "nudge_sent", "nudge", "allow",
+    "planning_created", "nudge_sent", "nudge_skipped_turn_in_flight", "nudge", "allow",
   ]);
 
   const workerDecisions = state.decisions.filter(
