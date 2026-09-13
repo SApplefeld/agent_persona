@@ -123,6 +123,27 @@ if [ -z "$CHANNEL_NAME" ]; then
   CHANNEL_NAME="supervisor-$PERSONA"
 fi
 
+# Every numeric setting below is held to one rule: digits only, no leading
+# zero, at most nine digits, and greater than zero. Each clause of that rule
+# stops a distinct way a bad value corrupts a run instead of failing loudly.
+# A non-numeric value turns every `[ "$a" -lt "$b" ]` comparison into a shell
+# error, which the caller reads as "the bound is already passed". A leading
+# zero makes the shell read the value as octal, so `$((0500 / 1000))` is 0
+# and `$((0089))` aborts the script with "value too great for base". A digit
+# string longer than nine digits is past any plausible bound or count, and a
+# long enough one wraps the shell's 64-bit arithmetic to an unrelated value.
+# Zero itself collapses every grace loop and poll interval to no wait at all.
+#
+# Returns 0 when the value passes. Each caller decides what a failure means:
+# the PowerShell bound falls back to its default, every other setting ends
+# the run with an ERROR line naming the setting.
+positive_number() {
+  case "${1:-}" in
+    ''|*[!0-9]*|0*) return 1 ;;
+  esac
+  [ "${#1}" -le 9 ]
+}
+
 # --- Defaults (plan section 6) ---
 # A fixed sentinel line every PowerShell probe below writes as its own
 # last statement (Reviewer Round 124, found while fixing R72): powershell
@@ -148,19 +169,11 @@ STOP_PS_SENTINEL="___SUPERVISOR_PS_DONE___"
 # in favor of retry_stop_escalation's single wall-clock-bounded loop, R88),
 # rather than folded into this one setting.
 SUPERVISOR_PS_BOUND_S="${supervisorPsBoundS:-30}"
-# Reviewer Round 130 R99 (Minor): unvalidated, a non-numeric override
-# makes every `[ "$waited" -lt "$bound" ]` comparison error, which reads
-# as "already past the bound" and force-kills every PowerShell call
-# instantly. Validated once here; falls back to 30 rather than erroring.
-# Reviewer Round 132 R103 (Minor): `0` itself passed this validation (it
-# is all digits) and force-kills every call at once, just as a bad
-# non-numeric override would - rejected the same way.
-# The numeric test after the digit test is what catches an all-zero string
-# like "00", which passes a digits-only pattern.
-case "$SUPERVISOR_PS_BOUND_S" in
-  ''|*[!0-9]*) SUPERVISOR_PS_BOUND_S=30 ;;
-esac
-if [ "$SUPERVISOR_PS_BOUND_S" -le 0 ]; then
+# An unusable bound force-kills every PowerShell call the moment it starts,
+# because `[ "$waited" -lt "$bound" ]` either errors or is false at once.
+# This is the one numeric setting that falls back instead of ending the run:
+# a bad bound costs process-tree verification, not the run itself.
+if ! positive_number "$SUPERVISOR_PS_BOUND_S"; then
   SUPERVISOR_PS_BOUND_S=30
 fi
 
@@ -189,18 +202,20 @@ SUPERVISOR_PRIMING_WAIT_S="${supervisorPrimingWaitS:-180}"
 # the log naming the cause. Both are checked once at startup instead.
 #
 # The model cannot be validated against a known set - new model names ship
-# without this script changing - so the check is on shape: non-empty, a first
-# character other than `-`, and only lowercase letters, digits, `.`, `-`, `[`
-# and `]`. The brackets admit a context-size suffix such as `opus[1m]`. The
-# leading-hyphen refusal keeps a value like `--some-flag` from reaching
-# `claude -p --model` as a flag. A stray quote or other character is the
-# realistic typo the character set catches.
-case "$SUPERVISOR_MODEL" in
-  ''|-*|*[!]a-z0-9.[-]*)
-    echo "ERROR: supervisorModel '$SUPERVISOR_MODEL' is not a plausible model name (non-empty, not starting with '-', only lowercase letters, digits, '.', '-', '[' and ']')" >&2
-    exit 1
-    ;;
-esac
+# without this script changing - so the check is on shape: a name of lowercase
+# letters, digits, `.` and `-` that starts with a letter or a digit, plus an
+# optional bracketed suffix such as the `[1m]` of `opus[1m]`. Requiring the
+# brackets to come as a matched pair at the end is what a case glob cannot
+# express, so the check is a regex. Starting on a letter or digit keeps a
+# value like `--some-flag` from reaching `claude -p --model` as a flag. A
+# stray quote or other character is the realistic typo the pattern catches.
+plausible_model_name() {
+  [[ "${1:-}" =~ ^[a-z0-9][a-z0-9.-]*(\[[a-z0-9.-]+\])?$ ]]
+}
+if ! plausible_model_name "$SUPERVISOR_MODEL"; then
+  echo "ERROR: supervisorModel '$SUPERVISOR_MODEL' is not a plausible model name (lowercase letters, digits, '.' and '-', starting with a letter or digit, with an optional bracketed suffix such as '[1m]')" >&2
+  exit 1
+fi
 case "$SUPERVISOR_EFFORT" in
   low|medium|high|xhigh|max) : ;;
   *)
@@ -212,13 +227,9 @@ esac
 # both checks above, so they are validated on the same rules. A live suite
 # exporting a bad `MODEL` or `EFFORT` would otherwise produce the same silent
 # crash loop the settings checks exist to prevent.
-if [ -n "${MODEL:-}" ]; then
-  case "$MODEL" in
-    -*|*[!]a-z0-9.[-]*)
-      echo "ERROR: MODEL '$MODEL' is not a plausible model name (non-empty, not starting with '-', only lowercase letters, digits, '.', '-', '[' and ']')" >&2
-      exit 1
-      ;;
-  esac
+if [ -n "${MODEL:-}" ] && ! plausible_model_name "$MODEL"; then
+  echo "ERROR: MODEL '$MODEL' is not a plausible model name (lowercase letters, digits, '.' and '-', starting with a letter or digit, with an optional bracketed suffix such as '[1m]')" >&2
+  exit 1
 fi
 if [ -n "${EFFORT:-}" ]; then
   case "$EFFORT" in
@@ -229,31 +240,36 @@ if [ -n "${EFFORT:-}" ]; then
       ;;
   esac
 fi
-# Same reasoning as R113's model/effort validation: a non-numeric wait bound
-# turns the priming wait's own arithmetic comparison into a shell error on
-# every launch. The numeric test after the digit test is what rejects an
-# all-zero string like "00", which passes a digits-only pattern.
-case "$SUPERVISOR_PRIMING_WAIT_S" in
-  ''|*[!0-9]*)
-    echo "ERROR: supervisorPrimingWaitS '$SUPERVISOR_PRIMING_WAIT_S' is not a whole number of seconds" >&2
-    exit 1
-    ;;
-esac
-if [ "$SUPERVISOR_PRIMING_WAIT_S" -le 0 ]; then
-  echo "ERROR: supervisorPrimingWaitS '$SUPERVISOR_PRIMING_WAIT_S' must be greater than zero" >&2
+# The six settings that end the run on a bad value, each checked against the
+# one rule positive_number states. A bad value here is always a typo in the
+# settings file or in an exported override, and the symptom it produces is
+# remote from its cause: the priming wait bounds an arithmetic comparison,
+# the stop grace sizes both of stop_child's grace loops so a zero-iteration
+# loop skips EOF and TERM and goes straight to KILL, the minimum run time
+# decides what counts as a crash, the crash limit and the restart budget
+# decide when the run gives up, and the poll interval feeds `sleep`.
+if ! positive_number "$SUPERVISOR_PRIMING_WAIT_S"; then
+  echo "ERROR: supervisorPrimingWaitS '$SUPERVISOR_PRIMING_WAIT_S' is not a whole number of seconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
   exit 1
 fi
-# The stop grace feeds both of stop_child's grace loops. A non-numeric value
-# makes each loop run zero iterations, so every stop skips EOF and TERM and
-# goes straight to KILL. Held to the same rule as supervisorPrimingWaitS.
-case "$SUPERVISOR_STOP_GRACE_MS" in
-  ''|*[!0-9]*)
-    echo "ERROR: supervisorStopGraceMs '$SUPERVISOR_STOP_GRACE_MS' is not a whole number of milliseconds" >&2
-    exit 1
-    ;;
-esac
-if [ "$SUPERVISOR_STOP_GRACE_MS" -le 0 ]; then
-  echo "ERROR: supervisorStopGraceMs '$SUPERVISOR_STOP_GRACE_MS' must be greater than zero" >&2
+if ! positive_number "$SUPERVISOR_STOP_GRACE_MS"; then
+  echo "ERROR: supervisorStopGraceMs '$SUPERVISOR_STOP_GRACE_MS' is not a whole number of milliseconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
+  exit 1
+fi
+if ! positive_number "$SUPERVISOR_MIN_RUN_MS"; then
+  echo "ERROR: supervisorMinRunMs '$SUPERVISOR_MIN_RUN_MS' is not a whole number of milliseconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
+  exit 1
+fi
+if ! positive_number "$SUPERVISOR_CRASH_LIMIT"; then
+  echo "ERROR: supervisorCrashLimit '$SUPERVISOR_CRASH_LIMIT' is not a whole number of crashes greater than zero (digits only, no leading zero, at most 9 digits)" >&2
+  exit 1
+fi
+if ! positive_number "$SUPERVISOR_MAX_RESTARTS_PER_HOUR"; then
+  echo "ERROR: supervisorMaxRestartsPerHour '$SUPERVISOR_MAX_RESTARTS_PER_HOUR' is not a whole number of restarts greater than zero (digits only, no leading zero, at most 9 digits)" >&2
+  exit 1
+fi
+if ! positive_number "$SUPERVISOR_POLL_MS"; then
+  echo "ERROR: supervisorPollMs '$SUPERVISOR_POLL_MS' is not a whole number of milliseconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
   exit 1
 fi
 
@@ -1174,9 +1190,13 @@ stop_child() {
   # script spawns.
   if [ -n "$snapshot_winpid" ]; then
     # Accepted hazard: `//T` re-walks the live process tree at kill time, not
-    # the snapshot, so a recycled pid whose stale ParentProcessId still points
-    # into this tree could widen the kill. Accepted because the wrapper pid is
-    # confirmed live by the `kill -0` checks just before this phase.
+    # the snapshot, so an unrelated live process whose stale ParentProcessId
+    # happens to equal a pid in this tree is killed with it. The `kill -0`
+    # checks just before this phase rule out only that the wrapper's own pid
+    # has been recycled; they say nothing about what else now claims it as a
+    # parent. This call is therefore a best-effort reach for a `claude.exe`
+    # descendant, and `kill_process_snapshot` below is the bounded kill, since
+    # it matches each pid against the start time recorded in the snapshot.
     run_bounded_native 5 taskkill //F //T //PID "$snapshot_winpid"
     # Reviewer Round 132 R102 (Major): a failed or abandoned taskkill left
     # nothing else touching `$pid` at all - every caller of `stop_child`
@@ -1452,8 +1472,16 @@ while true; do
     > "$OUT" 2> "$ERR"; }
   CHILD_LAUNCH_PID=$!
 
-  # Copy the fd number now: the array is unset when the coproc exits.
-  CHILD_IN=${CHILD[1]}
+  # Copy the fd number now: bash unsets the CHILD array the moment it reaps
+  # the coproc, and under `set -u` a bare `${CHILD[1]}` after that aborts the
+  # supervisor. The default keeps the read itself safe, and the empty check
+  # below turns a child that died before this line into a named failure
+  # rather than a write to a closed descriptor.
+  CHILD_IN=${CHILD[1]:-}
+  if [ -z "$CHILD_IN" ]; then
+    log "ERROR: CHILD_IN not set after coproc launch"
+    exit 1
+  fi
   # Reviewer Round 126 R78: a new child's launch is also the point a stale
   # snapshot from the *previous* child must stop being read - it can
   # describe pids hours old by the time anything revisits it, and every

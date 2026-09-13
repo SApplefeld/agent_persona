@@ -11,7 +11,7 @@
 # ends the supervisor on its own: a shutdown_requested decision, or the crash
 # limit set to 1.
 #
-# Cases (a) and (b) launch with --prompt. The supervisor then waits for the
+# Cases (a), (b) and (e) launch with --prompt. The supervisor then waits for the
 # priming turn's result line, and a child that exits without writing one is
 # seen dead before the poll loop starts, so the exit is handled by the
 # natural-exit path and never by a decide-unit read of the same store.
@@ -59,6 +59,15 @@ check "pin: exactly one backfill substring test is found in bin/supervise.sh ('$
 [ -n "$BACKSTOP_DETAIL" ] && [ "$(printf '%s\n' "$BACKSTOP_DETAIL" | wc -l)" -eq 1 ]
 check "pin: exactly one backstop root_complete detail is found in hooks/index.ts ('$BACKSTOP_DETAIL')" "$?"
 [ -n "$OTHER_DETAILS" ]; check "pin: a non-backstop root_complete detail is found in hooks/index.ts" "$?"
+# The awk above pairs each root_complete decision with the detail line that
+# follows it. Comparing the pair count against the number of root_complete
+# decisions in the file is what catches a decision written in a shape the awk
+# skips, which would otherwise leave its detail out of the check below in
+# silence.
+ROOT_COMPLETE_WRITES=$(grep -c 'action: "root_complete",' "$HOOKS")
+DETAIL_COUNT=$(printf '%s\n' "$DETAILS" | grep -c .)
+[ "$ROOT_COMPLETE_WRITES" -gt 0 ] && [ "$DETAIL_COUNT" -eq "$ROOT_COMPLETE_WRITES" ]
+check "pin: every root_complete decision in hooks/index.ts yielded a detail (${DETAIL_COUNT}/${ROOT_COMPLETE_WRITES})" "$?"
 if [ -n "$READER_SUBSTR" ] && [ -n "$BACKSTOP_DETAIL" ]; then
   case "$BACKSTOP_DETAIL" in *"$READER_SUBSTR"*) R=0 ;; *) R=1 ;; esac
 else
@@ -112,6 +121,7 @@ case "\$action" in
   startup) exit 1 ;;
   crash7) IFS= read -r _; sleep 3; exit 7 ;;
   backfilled) IFS= read -r _; record root_complete "\$S/detail-backfilled"; exit 0 ;;
+  backfilled7) IFS= read -r _; record root_complete "\$S/detail-backfilled"; exit 7 ;;
   real) IFS= read -r _; record root_complete "\$S/detail-real"; exit 0 ;;
   shutdown) IFS= read -r _; record shutdown_requested ""; exit 0 ;;
   *) exit 1 ;;
@@ -180,6 +190,19 @@ drive d "startup,shutdown" 6
 no_pid_abort "(d)"
 grep -q 'EXIT child-1 code=1 (natural)' "$LOG"; check "(d) child-1 is recorded as code=1, natural" "$?"
 [ "$RC" -eq 3 ] && grep -q 'STOP_CRASH_LOOP: 1 crashes' "$LOG"; check "(d) the startup death counts toward the crash limit (rc=$RC)" "$?"
+
+# --- (e) a backfilled root_complete with a non-zero exit takes the crash path ---
+# The unaccounted relaunch in (a) is gated on both the backfilled flag and a
+# clean exit. This case holds the flag and flips the exit code, so it shows the
+# second half of that gate: the run is accounted as a crash, and the NOTE line
+# (a) asserts is absent here.
+drive e "backfilled7" 6 --prompt "stub goal"
+no_pid_abort "(e)"
+grep -q 'EXIT child-1 code=7 (natural)' "$LOG"; check "(e) child-1 is recorded as code=7, natural" "$?"
+! grep -q 'is backfilled' "$LOG"; check "(e) no backfilled NOTE line, so the unaccounted relaunch was not taken" "$?"
+! grep -q 'RESTART_PASSIVE:' "$LOG"; check "(e) no 'RESTART_PASSIVE:' line" "$?"
+[ "$RC" -eq 3 ] && grep -q 'STOP_CRASH_LOOP: 1 crashes' "$LOG"; check "(e) the exit is counted as a crash and ends the run (rc=$RC)" "$?"
+[ "$LAUNCHES" -eq 1 ]; check "(e) no second child launches (stub launches=$LAUNCHES)" "$?"
 
 if [ "$failed" -eq 0 ]; then
   echo "supervisor-natural-exit-test.sh: PASS"

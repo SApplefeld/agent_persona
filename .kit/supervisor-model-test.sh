@@ -167,29 +167,58 @@ accepted() {  # <label> env assignments...
   fi
 }
 
-# The model shape: non-empty, no leading '-', lowercase letters, digits, '.',
-# '-', '[' and ']'. '-opus' and '--some-flag' hold only allowed characters, so
-# the leading-hyphen rule is the only one that can refuse them.
-refused_by "supervisorModel '-opus' is refused by the leading-hyphen rule" "ERROR: supervisorModel '-opus'" supervisorModel=-opus
-refused_by "MODEL '--some-flag' is refused by the leading-hyphen rule" "ERROR: MODEL '--some-flag'" MODEL=--some-flag
+# The model shape: a name of lowercase letters, digits, '.' and '-' starting
+# with a letter or digit, plus an optional bracketed suffix. '-opus' and
+# '--some-flag' hold only allowed characters, so the leading character is the
+# only rule that can refuse them. The bracket cases pin that the suffix is
+# admitted only as a matched pair at the end of a name.
+refused_by "supervisorModel '-opus' is refused by the leading-character rule" "ERROR: supervisorModel '-opus'" supervisorModel=-opus
+refused_by "MODEL '--some-flag' is refused by the leading-character rule" "ERROR: MODEL '--some-flag'" MODEL=--some-flag
 accepted "supervisorModel 'opus[1m]' passes the startup checks" "supervisorModel=opus[1m]"
 accepted "MODEL 'opus[1m]' passes the startup checks" "MODEL=opus[1m]"
+refused_by "supervisorModel 'opus]' is refused (unmatched closing bracket)" "ERROR: supervisorModel 'opus]'" "supervisorModel=opus]"
+refused_by "supervisorModel 'opus[1m' is refused (unmatched opening bracket)" "ERROR: supervisorModel 'opus[1m'" "supervisorModel=opus[1m"
+refused_by "supervisorModel ']' is refused (a bracket is not a name)" "ERROR: supervisorModel ']'" "supervisorModel=]"
+refused_by "supervisorModel '[' is refused (a bracket is not a name)" "ERROR: supervisorModel '['" "supervisorModel=["
+refused_by "supervisorModel '[1m]' is refused (a suffix with no name before it)" "ERROR: supervisorModel '[1m]'" "supervisorModel=[1m]"
+refused_by "supervisorModel 'opus[1m]x' is refused (the suffix is not at the end)" "ERROR: supervisorModel 'opus[1m]x'" "supervisorModel=opus[1m]x"
+refused_by "MODEL 'opus]' is refused (unmatched closing bracket)" "ERROR: MODEL 'opus]'" "MODEL=opus]"
 
-# supervisorStopGraceMs: 'abc' fails the digits-only rule, '00' passes it and
-# fails the greater-than-zero test.
-refused_by "supervisorStopGraceMs 'abc' is refused by the digits-only rule" "ERROR: supervisorStopGraceMs 'abc' is not a whole number" supervisorStopGraceMs=abc
-refused_by "supervisorStopGraceMs '00' is refused by the greater-than-zero test" "ERROR: supervisorStopGraceMs '00' must be greater than zero" supervisorStopGraceMs=00
-accepted "supervisorStopGraceMs '5000' passes the startup checks" supervisorStopGraceMs=5000
+# Every numeric setting that ends the run on a bad value is held to one rule:
+# digits only, no leading zero, at most nine digits, greater than zero. Each
+# clause gets a case per setting. A leading zero is read as octal by the
+# shell's own arithmetic, a value past nine digits wraps it, and zero collapses
+# whatever wait or count the setting sizes.
+for spec in \
+  "supervisorPrimingWaitS 180" \
+  "supervisorStopGraceMs 5000" \
+  "supervisorMinRunMs 120000" \
+  "supervisorCrashLimit 3" \
+  "supervisorMaxRestartsPerHour 6" \
+  "supervisorPollMs 10000"
+do
+  name="${spec%% *}"
+  good="${spec##* }"
+  refused_by "$name '0500' is refused by the leading-zero rule" "ERROR: $name '0500'" "$name=0500"
+  refused_by "$name '12345678901234567890' is refused by the nine-digit rule" "ERROR: $name '12345678901234567890'" "$name=12345678901234567890"
+  refused_by "$name '0' is refused by the greater-than-zero rule" "ERROR: $name '0'" "$name=0"
+  refused_by "$name 'abc' is refused by the digits-only rule" "ERROR: $name 'abc'" "$name=abc"
+  accepted "$name '$good' passes the startup checks" "$name=$good"
+done
 
-# supervisorPsBoundS falls back to 30 rather than refusing, so its resolution
-# is read by running the script's own lines, from the assignment up to the
-# next setting, in a separate process.
+# supervisorPsBoundS is the seventh setting on that rule and the one that falls
+# back to 30 rather than refusing, so its resolution is read by running the
+# script's own lines, from the assignment up to the next setting, in a separate
+# process.
 PS_BOUND_SNIPPET=$(sed -n '/^SUPERVISOR_PS_BOUND_S=/,/^SUPERVISOR_STOP_GRACE_MS=/p' "$SCRIPT" | sed '$d')
-if [ -z "$PS_BOUND_SNIPPET" ]; then
-  check "the SUPERVISOR_PS_BOUND_S block is found in bin/supervise.sh" 1
+# The block calls the shared check, so the snippet carries the function too.
+# An empty extraction here means the shared check was renamed or removed.
+HELPER_SNIPPET=$(sed -n '/^positive_number() {/,/^}$/p' "$SCRIPT")
+if [ -z "$PS_BOUND_SNIPPET" ] || [ -z "$HELPER_SNIPPET" ]; then
+  check "the SUPERVISOR_PS_BOUND_S block and the shared numeric check are found in bin/supervise.sh" 1
 else
-  printf '%s\necho "PS_BOUND=$SUPERVISOR_PS_BOUND_S"\n' "$PS_BOUND_SNIPPET" > "$TMP/psbound.sh"
-  for pair in 00:30 abc:30 45:45; do
+  printf '%s\n%s\necho "PS_BOUND=$SUPERVISOR_PS_BOUND_S"\n' "$HELPER_SNIPPET" "$PS_BOUND_SNIPPET" > "$TMP/psbound.sh"
+  for pair in 00:30 abc:30 0500:30 12345678901234567890:30 0:30 45:45; do
     OUT=$(env -i PATH="$PATH" supervisorPsBoundS="${pair%%:*}" bash "$TMP/psbound.sh" 2>&1)
     case "$OUT" in
       *"PS_BOUND=${pair##*:}") check "supervisorPsBoundS '${pair%%:*}' resolves to ${pair##*:}" 0 ;;
@@ -198,20 +227,38 @@ else
   done
 fi
 
+# Every one of the seven numeric settings goes through the shared check, so a
+# new call site that hand-rolls its own rule reds this count.
+CALLS=$(grep -c 'positive_number "\$SUPERVISOR_' "$SCRIPT")
+[ "$CALLS" -eq 7 ]
+check "the shared numeric check guards all seven settings (found $CALLS)" "$?"
+
 # --- Every live suite that launches bin/supervise.sh exports MODEL and EFFORT ---
 # The suite launches the supervisor as a separate process, so only an exported
-# value reaches its launch flags. A suite that names bin/supervise.sh without a
-# launch line (one that only reads functions out of it) is listed by name.
+# value reaches its launch flags. A suite that names bin/supervise.sh with no
+# launch line the scan recognizes is a failure unless it is on the list below,
+# which holds the suites that read functions out of the script without running
+# it. That keeps a real launcher written in an unrecognized shape from passing
+# as a file the scan simply skipped.
+NON_LAUNCHERS="live-stopprocesstree-test.sh"
 LAUNCHERS=0
 for f in "$HERE"/live-*-test.sh; do
   grep -q 'bin/supervise\.sh' "$f" || continue
+  base=$(basename "$f")
   if grep -Eq '^[[:space:]]*(bash[[:space:]]+)?("\$SUPERVISE"|[^[:space:]]*bin/supervise\.sh)[[:space:]]' "$f"; then
     LAUNCHERS=$((LAUNCHERS + 1))
     grep -q '^export MODEL=' "$f" && grep -q '^export EFFORT=' "$f"
     rc=$?
-    check "$(basename "$f") launches bin/supervise.sh and exports MODEL and EFFORT" "$rc"
+    check "$base launches bin/supervise.sh and exports MODEL and EFFORT" "$rc"
   else
-    echo "  note: $(basename "$f") names bin/supervise.sh without launching it"
+    case " $NON_LAUNCHERS " in
+      *" $base "*)
+        check "$base names bin/supervise.sh without launching it, as listed" 0
+        ;;
+      *)
+        check "$base names bin/supervise.sh with no launch line this scan recognizes" 1
+        ;;
+    esac
   fi
 done
 [ "$LAUNCHERS" -gt 0 ]; check "live suites launching bin/supervise.sh were found ($LAUNCHERS)" "$?"

@@ -221,7 +221,14 @@ Declared in `plugin.json` with defaults. Read as `options.<name>` in `register(o
 1. **Pre-gate**: waits for both the commons store and per-directory heartbeat to be free (no live persona claims) before launching a child.
 2. **Launch**: starts a child via coproc with stdin as a pipe (not a file), so EOF can be sent to stop it cleanly.
 3. **Poll**: watches the store for `context_budget_crossed` decisions and other signals; decides `continue`, `restart`, `stop_complete`, `stop_budget`, or `stop_crash_loop`.
-4. **Stop**: snapshots the child's Windows process tree first, recording each process's pid and start time. It then sends EOF (closes the coproc write end), sends TERM to the wrapper after `stopGraceMs`, and after another `stopGraceMs` runs `taskkill` on the tree and force-kills each snapshot process still matching its pid and start time. A phase counts as stopped only once every snapshot process is verified gone. A survivor or an unverifiable read gets up to 30 seconds of tree-kill retries. If a stop that ends the supervisor still cannot be verified, the supervisor exits with code 5. A relaunch logs the failure and proceeds. On exit, the cleanup trap stops a live child the same way, or re-verifies the last snapshot when the wrapper is already gone. The supervisor waits for the child and records its real exit code.
+4. **Stop**: the stop runs in phases, each ending only once every process in the snapshot is verified gone.
+   - It snapshots the child's Windows process tree first, recording each process's pid and start time.
+   - It sends EOF by closing the coproc write end, then waits `stopGraceMs`.
+   - It sends TERM to the wrapper, then waits another `stopGraceMs`.
+   - It runs `taskkill` on the tree and force-kills each snapshot process still matching both its pid and its start time.
+   - A survivor of a resolved snapshot gets up to 30 seconds of retries. A tree that could not be resolved at all is re-snapshotted once, and reported if that read fails too.
+   - If a stop that ends the supervisor still cannot be verified, the supervisor exits with code 5. A relaunch logs the failure and proceeds.
+   - On exit, the cleanup trap stops a live child the same way, or re-verifies the last snapshot when the wrapper is already gone. The supervisor waits for the child and records its real exit code.
 5. **Log**: appends to `supervisor.log` and `supervisor.err` (never truncates after launch).
 
 The supervisor never writes the persona store (invariant §8). It uses `supervise-decide.mjs` (pure JS, 9/9 unit tests) for the decision logic. The prompt is cleared after the first send so subsequent launches don't inherit it.
@@ -341,6 +348,9 @@ The operator has not yet ruled on these options; the defaults are in force.
 - `.kit/controller-tick-test.mjs` : S4 (peer doorbell), S9 (cost cap ask opener)
 - `.kit/assert-decisions.js` : decision log assertions (ask lifecycle, reply check)
 - `.kit/supervisor-unit-test.mjs` : `bin/supervise-decide.mjs`'s decision unit, pure and offline
+- `.kit/supervisor-natural-exit-test.sh` : the path `bin/supervise.sh` takes when a child exits on its own, driven by a stub `claude`, offline
+- `.kit/supervisor-model-test.sh` : `bin/supervise.sh`'s startup validation of the model, effort and numeric settings, offline
+- `.kit/settings-plugin-key-test.sh` : the child settings JSON the supervisor writes, including the plugin key and the persona name rule, offline
 - `.kit/live-stopprocesstree-test.sh` : `bin/supervise.sh`'s stop-path helpers and `stop_child` itself, against real Windows processes (registered in `live-all.sh`'s `ALL_SUITES` as `stopprocesstree` - launches no `claude` session and holds no persona claim)
 
 **Runner lock:** `live-all.sh` writes `.kit/RUNNING` at start and refuses to start if it already exists (exit 8). After a killed gate, confirm no `claude` child with `--plugin-dir` is running, then `rm .kit/RUNNING`.
