@@ -649,6 +649,18 @@ export const register: Register = async (on, options) => {
   // earliest entry left after the delete.
   const openTurns = new Map<string, number>();
   const turnIsOpen = () => openTurns.size > 0;
+  // The published stamp names the earliest turn still open, or null when none
+  // is. Both turn handlers derive it through here rather than each writing its
+  // own value: a start that simply stamped its own clock would move the stamp
+  // forward whenever a second turn opened, and a reader in another process
+  // would watch one pending record's deferral shrink and then grow again.
+  const deriveTurnStartedAt = (): number | null => {
+    let earliest: number | null = null;
+    for (const startedAt of openTurns.values()) {
+      if (earliest === null || startedAt < earliest) earliest = startedAt;
+    }
+    return earliest;
+  };
   // Plan item 8.3: an urgent inbox record is looked for on the owner's
   // passthrough tool calls; this throttles that store read to once per
   // urgentCheckMinMs, since a long turn can make a tool call every second.
@@ -2688,8 +2700,9 @@ export const register: Register = async (on, options) => {
     // The turn is open from here until a completion carrying this same id.
     openTurns.set(e.turnId, Date.now());
     // Plan item 8.3: publish the turn's start so a reader session can report
-    // how long a pending record has been deferred behind this turn.
-    sess.turnStartedAt = Date.now();
+    // how long a pending record has been deferred behind this turn. Derived
+    // from the map so this handler and turn.complete agree on what it means.
+    sess.turnStartedAt = deriveTurnStartedAt();
     if (sess.isOwner) {
       try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }
     }
@@ -2749,26 +2762,30 @@ export const register: Register = async (on, options) => {
   // --- turn.complete: goal scoring, memory curation, guarded save ---
   // Modules write to sess.state. The Controller (clock.tick) reads sess.state and decides.
   on("turn.complete", async ($, e, next) => {
-    // The idle anchor is session-scoped and unconditional by design. Its only
-    // reader is the idle gate in the controller tick, which runs only once the
-    // open-turn map is empty, and this write lands before the delete below, so
-    // a value written while another turn is still running is superseded by the
-    // completion that finally empties the map.
+    // Session-scoped and unconditional by design, whether or not this
+    // completion matches a turn this session saw start. The plan doc's
+    // Decisions entry on the idle anchor owns the reasoning.
     sess.state.monitor.lastTurnComplete = Date.now();
-    // This turn's own start, read before the delete. A completion for a turn
-    // this session never saw start has no entry here, and null is what makes
-    // the long-turn record below skip itself rather than measure against some
-    // other turn's clock.
-    const thisTurnStartedAt = openTurns.get(e.turnId) ?? null;
+    // This turn's own entry, read before the delete below removes it.
+    const mapStartedAt = openTurns.get(e.turnId);
     // Closing by id: a completion for a turn this session never saw start
     // removes nothing, so it cannot clear a different turn that is still open.
     openTurns.delete(e.turnId);
     // Plan item 8.4: a turn that ran past an hour is one of the weaknesses
     // the own-record pass counts, so record it as a decision here, the only
     // point that knows both ends of the turn.
-    if (thisTurnStartedAt !== null) {
-      const turnMs = Date.now() - thisTurnStartedAt;
-      if (turnMs >= KAIZEN_LONG_TURN_MS) {
+    // The harness measures the turn itself and carries the figure whatever the
+    // turn's reason, so where it arrives the record needs no hook-side clock
+    // and no open-turn entry, and still counts a turn whose start this session
+    // never saw, which is most of them on a session the harness under-reports.
+    // No other line in this plugin reads that field, so nothing here has ever
+    // observed it arrive; the map entry stays as the fallback rather than
+    // letting an absent field turn this record off with nothing saying so.
+    {
+      const turnMs = typeof e.durationMs === "number"
+        ? e.durationMs
+        : mapStartedAt === undefined ? null : Date.now() - mapStartedAt;
+      if (turnMs !== null && turnMs >= KAIZEN_LONG_TURN_MS) {
         sess.state.decisions.push({
           timestamp: Date.now(),
           loop: "monitor",
@@ -2785,11 +2802,7 @@ export const register: Register = async (on, options) => {
     // reader no turn is running while one still is, and a stamp left set by an
     // unmatched completion would strand and report a turn that ended hours
     // ago. Deriving it cannot strand, because an empty map yields null.
-    let earliestOpenTurn: number | null = null;
-    for (const startedAt of openTurns.values()) {
-      if (earliestOpenTurn === null || startedAt < earliestOpenTurn) earliestOpenTurn = startedAt;
-    }
-    sess.turnStartedAt = earliestOpenTurn;
+    sess.turnStartedAt = deriveTurnStartedAt();
     if (sess.isOwner) {
       try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }
     }

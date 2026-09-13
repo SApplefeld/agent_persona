@@ -3869,6 +3869,8 @@ async function main() {
     await caseSection9_unmatchedCompletionLeavesTheStampOnAnOpenTurn(clock);
     await caseSection9_completingOneOfTwoLeavesTheEarlierTurnsStamp(clock);
     await caseSection9_longTurnRecordMeasuresItsOwnTurn(clock);
+    await caseSection9_turnStartDerivesTheStampToo(clock);
+    await caseSection9_durationMsCountsAnUnmatchedLongTurn(clock);
     await caseS4_peer_consumed(clock);
     await caseS4_peer_send_message_consumed(clock);
     await caseS4_other_origin_passes(clock);
@@ -6276,4 +6278,55 @@ async function caseSection9_longTurnRecordMeasuresItsOwnTurn(clock) {
     getDecisions(h).filter(d => d.action === "turn_over_hour").length === 2,
     getDecisions(h).filter(d => d.action === "turn_over_hour"),
   );
+}
+
+// Section 9 fix round 1: both turn handlers derive the published stamp through
+// one rule. Before this, turn.start stamped its own clock, so opening a second
+// turn moved the stamp forward and a reader watched one record's deferral
+// shrink and then grow again when that second turn completed.
+async function caseSection9_turnStartDerivesTheStampToo(clock) {
+  console.log("\n=== Section 9: a second turn opening does not move the published stamp ===");
+  clock.set(T0);
+  const h = await seedOwnerHarness("section9_start_derives", T0);
+  const startH = h.handlers["turn.start"];
+  const completeH = h.handlers["turn.complete"];
+
+  await startH(h.fake, { turnId: "t-a" }, async () => ({ result: "ok" }));
+  check("section9 start-derive setup: A's start is stamped", readHeartbeat(h).default?.turnStartedAt === T0, readHeartbeat(h).default);
+
+  clock.advance(30_000);
+  await startH(h.fake, { turnId: "t-b" }, async () => ({ result: "ok" }));
+  const afterBStarts = readHeartbeat(h).default?.turnStartedAt;
+  check("section9 start-derive: opening B leaves the stamp at A's start", afterBStarts === T0, afterBStarts);
+  check("section9 start-derive: the stamp is not B's own start", afterBStarts !== T0 + 30_000, afterBStarts);
+
+  clock.advance(30_000);
+  await completeH(h.fake, { turnId: "t-a", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  const afterADone = readHeartbeat(h).default?.turnStartedAt;
+  check("section9 start-derive: with A closed the stamp moves to B's start", afterADone === T0 + 30_000, afterADone);
+}
+
+// Section 9 fix round 1: the long-turn record prefers the harness's own
+// duration, so a turn whose start this session never saw is still counted.
+// Nothing else in the plugin reads that field, so this case is the only place
+// the branch is exercised at all.
+async function caseSection9_durationMsCountsAnUnmatchedLongTurn(clock) {
+  console.log("\n=== Section 9: the harness duration counts a long turn whose start was never seen ===");
+  clock.set(T0);
+  const h = await seedOwnerHarness("section9_durationms", T0);
+  const completeH = h.handlers["turn.complete"];
+  const longTurns = () => getState(h).decisions.filter((d) => d.action === "turn_over_hour");
+
+  // Withheld control first: the same unmatched completion with no duration
+  // field writes nothing, so a record below cannot come from anywhere else.
+  await completeH(h.fake, { turnId: "t-unseen-1", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  check("section9 durationMs control: an unmatched completion with no duration writes nothing", longTurns().length === 0, longTurns());
+
+  await completeH(h.fake, { turnId: "t-unseen-2", aborted: true, reason: "aborted", durationMs: 4_200_000 }, async () => ({ result: "ok" }));
+  const recorded = longTurns();
+  check("section9 durationMs: an unmatched long turn is counted from the harness duration", recorded.length === 1, recorded);
+  check("section9 durationMs: measured at the harness figure, 4200s", recorded[0] && recorded[0].detail.includes("4200s"), recorded[0] && recorded[0].detail);
+
+  await completeH(h.fake, { turnId: "t-unseen-3", aborted: true, reason: "aborted", durationMs: 180_000 }, async () => ({ result: "ok" }));
+  check("section9 durationMs control: a three-minute harness duration records nothing", longTurns().length === 1, longTurns());
 }
