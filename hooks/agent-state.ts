@@ -507,8 +507,13 @@ export function completeLeaf(state: AgentState, id: string, note: string): void 
 export function isActivationEligible(state: AgentState, node: GoalNode): boolean {
   if (node.status !== "pending") return false;
   if (state.goals.some((g) => g.parentId === node.id)) return false;
+  // The walk is bounded by the node count. A parentId cycle, which the
+  // tree's shape rules do not permit but nothing here re-checks, exhausts the
+  // bound and reads as not eligible rather than spinning.
   let current = node;
+  let steps = state.goals.length;
   while (current.parentId) {
+    if (steps-- <= 0) return false;
     const parent = state.goals.find((g) => g.id === current.parentId);
     if (!parent) break;
     if (parent.parentId === null) break; // parent is the root, exempt from the status test

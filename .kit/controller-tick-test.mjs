@@ -23,11 +23,12 @@ import { execSync } from "node:child_process";
 import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, loadModule, makeState, makeGoalNode } from "./tick-harness.mjs";
 
 let failures = 0;
-function check(name, cond) {
+function check(name, cond, detail) {
   if (cond) {
     console.log(`  OK: ${name}`);
   } else {
     console.error(`  FAIL: ${name}`);
+    if (detail !== undefined) console.error(`        detail: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`);
     failures++;
   }
 }
@@ -4782,7 +4783,7 @@ async function caseSection10_goalAddActivatesPlanWithNoActiveLeaf(clock) {
 
   const decisions = getDecisions(h);
   check("section10 add-plan: an 'activated' decision names the new node positionally",
-    decisions.some(d => d.action === "activated" && d.detail.startsWith(`Node ${newNode.id} activated`) && d.detail.includes("added with no active leaf")));
+    newNode && decisions.some(d => d.action === "activated" && d.detail.startsWith(`Node ${newNode.id} activated`) && d.detail.includes("added with no active leaf")));
 }
 
 // Section 10: goal_done closes the node goal_add just activated in the same
@@ -4818,13 +4819,11 @@ async function caseSection10_goalDoneClosesSameTurnNoTickBetween(clock) {
   }, async () => ({ result: "passthrough" }));
 
   check("section10 done: goal_done not denied", doneResult.deny === undefined, doneResult.deny);
-  check("section10 done: goal_done did not refuse with 'No active goal leaf to complete'",
-    doneResult.deny !== "No active goal leaf to complete.");
 
   const state = getState(h);
   const newNode = state.goals.find(g => g.kind === "plan");
   check("section10 done: the node is complete", newNode && newNode.status === "complete");
-  check("section10 done: a 'done' decision names the node", getDecisions(h).some(d => d.action === "done" && d.detail.includes(newNode.id)));
+  check("section10 done: a 'done' decision names the node", newNode && getDecisions(h).some(d => d.action === "done" && d.detail.includes(newNode.id)));
 }
 
 // Control: adding a task under an already-active parent still demotes the
@@ -4878,7 +4877,7 @@ async function caseSection10_tickPlanningGateStillActivates_control(clock) {
     kind: "root",
     title: "Section 10 tick control root",
     objective: "Get one thing done",
-    status: "active",
+    status: "pending",
     source: "controller",
     maxRounds: 10,
     completedRounds: 0,
@@ -4901,9 +4900,10 @@ async function caseSection10_tickPlanningGateStillActivates_control(clock) {
     ]),
   });
 
-  // No goal_add or goal_done fired here at all - only the tick's planning
-  // gate, with no turn open, runs the planner and activates its first plan.
-  await fireTick(h, T0);
+  // No goal_add or goal_done fired here at all. The tick's planning gate,
+  // with no turn open, runs the planner and activates its first plan, which
+  // is the path through activateNext that this section refactored.
+  await fireTick(h);
 
   const state = getState(h);
   const plan = state.goals.find(g => g.kind === "plan");
