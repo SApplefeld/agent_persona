@@ -131,6 +131,23 @@ Section 7 builds only the worker-side half of FORK B. Nothing built anywhere in 
 Files in scope: `bin/supervise.sh` (the coordinator-priming-turn injection site, mirroring Section 7's own, gated on the `COORDINATOR_PERSONA` comparison above).
 Tests: a `.kit/*-test.sh` case (per Section 7's R36 correction, this is a bash-level test, not a harness case) that a launch with `$PERSONA` matching `COORDINATOR_PERSONA` injects this instruction on its own priming turn, with a control that an ordinary worker's launch (`$PERSONA` not matching) does not. The round-cap and batching *behavior* is model behavior, live-suite territory per R28's same reasoning, not a test-file assertion.
 
+### 10. `goal_add` activates the node it creates when nothing else is active
+Model: sonnet
+
+This is the source fix for the `goal_add` activation defect `docs/backlog.md` records. It is small, and it is why workers were not closing goal nodes.
+
+`goal_add` activates its new node only when `kind === "task"` and the parent is already `active` (`hooks/index.ts:3485-3494`). A `plan` node takes no such branch and returns "planning or activation will occur at the next tick" (`:3505`). The tick is the only other activator, and its order is owner check, then in-flight check, then planning gate (`:1250`), with the early return at `:1258`, so the planning gate cannot run while a turn is open.
+
+A plan node added during a turn therefore cannot be activated until that turn ends. When the work it names finishes in that same turn, `goal_done` finds no active leaf and denies at `:3616`, and the node stays `pending` forever. `docs/backlog.md` records four reproductions in one session. Shortening the tick interval does not help, because no tick reaches the gate.
+
+Fix: when the tree has no active leaf, `goal_add` activates the node it just created rather than deferring, mirroring the `task` branch above it. `activateNext` in `hooks/agent-state.ts:511` already holds the ordering rules, so prefer calling it over duplicating the choice of which node wins.
+
+Decide at implementation time and record it: whether a `plan` node with no children is activated directly, or whether activation waits for its first child task. The tree's own shape rules are in `activateNext`'s DFS, which only ever activates leaves, so the answer probably falls out of reusing it.
+
+Files in scope: `hooks/index.ts` (the `goal_add` handler), `.kit/controller-tick-test.mjs`.
+
+Tests: a plan node added with no active leaf is active when `goal_add` returns, and `goal_done` closes it in the same turn with no tick in between. Controls: adding under an active parent still demotes and activates as it does today, and the tick's own planning gate still activates when the node was added with no turn open.
+
 ## Decisions
 
 ### FORK B: coordinator steer authority - decided 2026-09-12, Option 2, autonomy with judgment
