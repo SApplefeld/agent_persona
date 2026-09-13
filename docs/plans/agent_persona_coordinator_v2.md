@@ -131,7 +131,97 @@ Section 7 builds only the worker-side half of FORK B. Nothing built anywhere in 
 Files in scope: `bin/supervise.sh` (the coordinator-priming-turn injection site, mirroring Section 7's own, gated on the `COORDINATOR_PERSONA` comparison above).
 Tests: a `.kit/*-test.sh` case (per Section 7's R36 correction, this is a bash-level test, not a harness case) that a launch with `$PERSONA` matching `COORDINATOR_PERSONA` injects this instruction on its own priming turn, with a control that an ordinary worker's launch (`$PERSONA` not matching) does not. The round-cap and batching *behavior* is model behavior, live-suite territory per R28's same reasoning, not a test-file assertion.
 
+### 10. `goal_add` activates the node it creates when nothing else is active
+Model: sonnet
+
+This is the source fix the Decisions entry above names as replacing the dropped commit detector. It is small, and it is why workers were not closing goal nodes.
+
+`goal_add` activates its new node only when `kind === "task"` and the parent is already `active` (`hooks/index.ts:3485-3494`). A `plan` node takes no such branch and returns "planning or activation will occur at the next tick" (`:3505`). The tick is the only other activator, and its order is owner check, then in-flight check, then planning gate (`:1250`), with the early return at `:1258`, so the planning gate cannot run while a turn is open.
+
+A plan node added during a turn therefore cannot be activated until that turn ends. When the work it names finishes in that same turn, `goal_done` finds no active leaf and denies at `:3616`, and the node stays `pending` forever. `docs/backlog.md` records four reproductions in one session. Shortening the tick interval does not help, because no tick reaches the gate.
+
+Fix: when the tree has no active leaf, `goal_add` activates the node it just created rather than deferring, mirroring the `task` branch above it. `activateNext` in `hooks/agent-state.ts:511` already holds the ordering rules, so prefer calling it over duplicating the choice of which node wins.
+
+Decide at implementation time and record it: whether a `plan` node with no children is activated directly, or whether activation waits for its first child task. The tree's own shape rules are in `activateNext`'s DFS, which only ever activates leaves, so the answer probably falls out of reusing it.
+
+Files in scope: `hooks/index.ts` (the `goal_add` handler), `.kit/controller-tick-test.mjs`.
+
+Tests: a plan node added with no active leaf is active when `goal_add` returns, and `goal_done` closes it in the same turn with no tick in between. Controls: adding under an active parent still demotes and activates as it does today, and the tick's own planning gate still activates when the node was added with no turn open.
+
+### 9. An unmatched turn completion still corrupts the idle reading and the deferred-status stamp
+Model: opus
+
+Surfaced by Section 0's own work on the controller's in-flight test, and appended as approval drift rather than folded, because it needs acceptance criteria Section 0 does not carry.
+
+The controller decides a worker is idle from `sess.state.monitor.lastTurnComplete`, and a reader session reports how long an inbox record has waited from `sess.turnStartedAt`. Both are written unconditionally at the top of the `turn.complete` handler in `hooks/index.ts`, before anything checks whether this completion matches a turn that was actually open. Confirmed at `:2821` and `:2839`.
+
+The turn events are not reliably paired. One observed window carries two `turn.complete` events with no `turn.start` between them. So an unmatched completion restarts the idle clock while a turn is still running, clears the start stamp a reader needs, and leaves the long-turn record at `:2829` measuring against a different turn's start.
+
+Section 0 makes the in-flight reading survive unpaired events by keying it on turn ids. These two fields are the remainder: the same handler, the same premise, and still corrupted by the same shape.
+
+Two further defects in the same handler, routed here from Section 0's review rounds rather than fixed there.
+
+`sess.turnStartedAt` is a single value while the open-turn map is keyed by turn id. Whichever completion arrives first nulls it, so with two overlapping turns the second completion reads it as null and its long-turn record is skipped. Now that the map holds each turn's start time, the fix is to read the start from the map entry before deleting it.
+
+`currentPrompt` and `nudgedTurn` are written after `await $.prompt.submit` rather than before it. The type definitions say the submitted text runs when the session is idle but do not say when the promise settles. If it settles only once the nudged prompt's own turn has run, `nudgedTurn` is set after the `turn.complete` that reads it, and the flag leaks into the following turn. Confirm against the type definitions before changing anything: this is unverified and may be a non-issue.
+
+Files in scope: `hooks/index.ts` (the `turn.complete` handler), `.kit/controller-tick-test.mjs`.
+
+Tests: an unmatched completion leaves `lastTurnComplete` and `turnStartedAt` unchanged, with a withheld control that a matched completion updates both; the long-turn record measures against its own turn's start across an interleaved unmatched completion.
+
+Open question for implementation time, not for this spec: whether `lastTurnComplete` should update on an unmatched completion anyway, on the reasoning that some turn did complete. The answer turns on whether the controller's idle reading is about the session or about a particular turn, which the code does not currently say.
+
+What the harness guarantees, confirmed at `.claude/types/claude-code.d.ts:6532-6552`: `turn.complete` carries its answer, duration, interrupt flag, turn id and cost "whatever its reason", and the `aborted` flag is true when the turn ended by interruption. So an interrupted turn still completes, and a completion is not lost to an abort. That narrows the missing-completion case to a failure below the harness, such as the host process dying, and it is the citation behind Section 0's decision to bound the open-turn map rather than trust pairing.
+
+### 11. The goal nudge is bounded by an open-turn reading that survives unpaired events
+Model: opus
+
+Appended as approval drift rather than folded, on the same ground as Sections 9 and 10: Section 0 carries the work but states no acceptance for it. Section 9 twice cites "Section 0's decision to bound the open-turn map" as settled, and Section 0's own six items never state it, so Section 9 currently rests on a specification that does not exist. This section is that specification.
+
+Two defects, both observed rather than inferred.
+
+A long turn collected one queued `[GOAL]` nudge per controller tick, 48 of them in a single measured window. The cause is that `sess.lastNudgeAt` was written after `await $.prompt.submit`, and that promise does not settle while the turn it waits on is still running. Every tick in that window therefore read the same stale floor, passed it, and queued another identical copy.
+
+The turn events are not reliably paired, on Section 9's own evidence: one window carries two `turn.complete` events with no `turn.start` between them. A single boolean carries only the last event, so any one completion reads as "no turn is open" however many turns are still running.
+
+Fix: the in-flight reading is keyed by turn id rather than held as a boolean, and the nudge floor is spent before the submit rather than after it.
+
+No age-out bounds the open-turn map. Three fix rounds built one and each reopened the defect beside it, and a scope ruling on 2026-09-13 refused the mechanism: nothing in the Goal asks for it, and the map is in-process state that a lost completion could only outlive on host death, which takes the map with it. See the Decisions entry.
+
+Files in scope: `hooks/index.ts`, `.kit/controller-tick-test.mjs`, `.kit/tick-harness.mjs`.
+
+Acceptance:
+
+1. No nudge is submitted while a turn is open, and that reading is correct when a completion arrives for a turn whose start was never seen.
+2. The nudge floor is spent before the submit, so a submit that does not settle during the turn cannot leave the next tick reading an unspent floor.
+3. The escalation counter and the nudged-turn flag are spent before the submit alongside the floor, so a promise that settles after the turn cannot let a compliant worker accumulate the counter past its cap.
+
+Tests: a case per criterion, each watched red before green. Criterion 1 takes a withheld control, a completion for a turn whose start was never seen leaving the reading unchanged.
+
 ## Decisions
+
+### The open-turn map takes no age-out - decided 2026-09-13 by a scope ruling
+
+Section 11 fixes the nudge pile-up with an in-flight reading keyed by turn id. Three fix rounds also tried to bound that map, so a turn id whose completion never arrived could not mute the goal loop forever. Each design reopened the defect it sat beside: keying the age on turn start evicted long legitimate turns, and refreshing every entry on any tool call meant a leaked id rode on a later turn and never aged out at all.
+
+The second of those is two consecutive rounds of fix-introduced findings in one mechanism, which is a design stop rather than a third patch. The ruling refused the mechanism on three grounds. The Goal asks for nothing of the kind. No Out of Scope entry reaches it either, so the refusal rests on absence of an ask rather than on an exclusion. And the two acceptance bullets naming the bound were written from the code after the code existed, which ratifies a mechanism by construction and makes the question unaskable, so they carry no authority and were removed with it.
+
+The correctness reading points the same way without deciding it. The harness guarantees `turn.complete` whatever the turn’s reason, including an abort, so a completion is lost only below the harness, such as on host death. The map is a plain in-process Map with no persistence, so host death takes it too. The bound therefore guarded a state the process cannot reach while repeatedly creating one it could.
+
+
+### The commit-landed detector is dropped, not repaired - decided 2026-09-13 by the operator
+
+The controller's git sampler was being taught to tell its decider that this checkout had just committed, so the decider could close the goal node that commit finished. It is dropped. PR #22 is closed unmerged and the working tree is restored; nothing reached `main`.
+
+Three grounds, in the order they matter.
+
+It was never specified. The mechanism has no section in either plan doc, and entered the record at DISCUSSION.md Round 154 as work a predecessor session pushed during Section 0 item 4. With no plan-stated acceptance, each of five review rounds wrote its own standard, so each design was defeated by a case the previous standard did not name and the rounds could not converge.
+
+No design survived contact with git. The last one asked git directly, via `git reflog -1 --format=%gs`, and still admitted `commit (merge)` and `commit (cherry-pick)` as local work while losing a genuine local commit behind `rebase (finish)`. All three subjects are present in this repository's own reflog at git 2.54.0.
+
+The problem it solved has a direct answer. The worker already has `goal_done` and is instructed to call it, so the detector was machinery to infer a fact the worker can simply state. The operator's ruling is to fix that source instead: if goal nodes are not being closed reliably, that is the defect, and inferring completion from the shape of a git repository is the wrong instrument for it.
+
+The five commits remain on `origin/kaizen-treelag-commit-signal` as the record, and the unpushed sixth round is captured under `.kit/scratch/sec0-commit-signal/`.
 
 ### FORK B: coordinator steer authority - decided 2026-09-12, Option 2, autonomy with judgment
 
@@ -173,3 +263,35 @@ This Decision is recorded as the operator's ruling on the Reviewer's own thread 
 ## Chapters
 
 (none yet)
+
+### Interim board 1 - 2026-09-13
+
+**In-flight section stage.** Section 0's commit-landed discriminator is at a design stop. It is not closed, nothing about it is committed, and no fix round is running on it.
+
+**What the mechanism is.** The controller's periodic tick samples git and decides whether this checkout has gained a commit of its own, so the decider it calls can close a goal node the commit finished. It lives in `hooks/index.ts`, roughly `:1700-1810`.
+
+**Why it stopped.** Two consecutive review rounds each returned at least one Major whose provenance reads fix-introduced: a defect in code the section's own previous fix round wrote, tracing to the plan's acceptance bullets, and both rounds' findings sit in that one passage. The executing-work skill routes that to a judge rather than to a third fix round.
+
+**The held unit.** Every owed fix-introduced Major in that passage is held together until a ruling lands:
+
+- The primary gate no longer reads the worktree's dirty count, but the carry-forward branch still requires a clean tree. A stamp set while the worker keeps editing is dropped by the next sample unless a decider ran in between, so a real commit is named to nobody. Raised independently by both lenses.
+- The `prevGit.lastCommitAt > 0` guard was removed. The sampler writes zero when `git log` fails, so one transient failure followed by a recovery satisfies the advance test on its own and a commit that did not land is named. Raised independently by both lenses.
+- The subject test `/^commit(:| \()/` accepts `commit (merge)` and `commit (cherry-pick)`. Both are subjects git writes in this repository, confirmed by reading its own reflog at git 2.54.0. A pull that conflicts and is finished by hand is therefore named as local work, while the same pull without a conflict is silent.
+- `git reflog -1` reads only HEAD's last move. `git commit && git pull --rebase && git push` inside one probe window leaves the top entry at `rebase (finish)`, which this repository's reflog also carries, so the local commit is never named and nothing re-arms it.
+- The deduplication leg keys on the committer time advancing, which is not a commit's identity. An amend re-announces an already-named commit, and a commit whose time does not advance past the prior HEAD is never named.
+
+**Not held, and not yet fixed.** Two Minors outside that passage: the skip counter is reset before `classify` is awaited while the summary hash is now written after it, so a repeatedly failing classifier defeats the tick backoff; and the mid-tick persist runs before the classify ledger is bumped, so a throw there loses the accounting for a call already paid for. Both accumulate for the section's Minor pass.
+
+**Live dispatches.** None. The implementer and both reviewers have returned.
+
+**Ruling asked, and the answer is that the question was malformed.** The Expert seat and then the scope adjudicator were given a Goal sentence and three acceptance bullets. The adjudicator returned accept-and-declare. Its grounds do not survive checking, for one reason: those bullets are not in this plan. They were composed by the orchestrator for the dispatch, and the ruling confirmed the mechanism against them.
+
+**The mechanism is built-but-unasked, confirmed.** Section 0's six items are the goal-less-restart defect, the stop-path defect, worker launch discipline, the whole-gate live run, the runtime switch to the installed plugin, and finishing reviews. None is a commit discriminator. Grep across both plan docs finds no mention of it outside this entry. It originated from the kaizen goal "messages wait too long" and was built opportunistically by a predecessor session, which the coordination file's Round 154 records as accepted work without a plan section.
+
+That is why five rounds failed to converge. Each round wrote its own acceptance criteria, because the plan carries none, so no round could be checked against an agreed statement of what the mechanism owes.
+
+**This is the operator's decision and it is with them.** The bucket is ask, not accept-and-declare.
+
+**Gate baseline.** Measured on this machine against the worktree as it stands, with a live supervisor and three other sessions on the box: `npx tsc --noEmit` 0, `node .kit/check-loader-rule.mjs` 0, `node .kit/commons-unit-test.mjs` 0, `node .kit/self-review-unit-test.mjs` 0, `node .kit/controller-tick-test.mjs` 0 with 410 checks and 0 failures, each exit code read from its own run. The parent commit `0613271` measures 383 on the same lane. Green is not the reading that matters here: every finding above names a path the suite does not exercise.
+
+**Next action.** Wait on the ruling. A refuse takes one removal round back to the form the acceptance bullets ask for. An accept-and-declare re-enters the held unit as an ordinary fix round. An ask goes to the operator.

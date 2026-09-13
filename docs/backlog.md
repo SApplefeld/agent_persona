@@ -4,7 +4,13 @@
 
 Reproduced four times in one session (DISCUSSION.md Rounds 108, 110, 112, 114): `goal_add({kind: "plan", ...})` returns "No active goal; planning or activation will occur at the next tick," and each time, the work named in the node's own objective finished before any controller tick activated that node as the leaf. `goal_done` then fails with "No active goal leaf to complete" - the node sits `pending` forever, never `complete`, even though the work it names is genuinely done.
 
-Not root-caused. Candidate causes, none confirmed: the controller tick may only activate a *new* plan node when the tree has no other active leaf at tick time, and this session's tree already had one; or the tick interval (10s default) may simply not have elapsed between `goal_add` and the work finishing, for work fast enough to complete in one turn. Either way, item 8.1's own "close within one controller tick" acceptance assumes activation happens promptly enough to make `goal_done` usable synchronously, and this session's experience says it does not, at least not reliably for same-turn work.
+**Root-caused 2026-09-13. Neither candidate below was right, and it is not a race.** `goal_add` activates the node it creates only when `kind === "task"` and the parent is already `active` (`hooks/index.ts:3485-3494`). A `plan` node takes no such branch and falls through to the message "planning or activation will occur at the next tick" (`:3505`). The tick is the only other activator, and its documented order is owner check, then in-flight check, then planning gate (`:1250`), with the early return at `:1258`. So the planning gate cannot run while a turn is open.
+
+A plan node added during a turn therefore cannot be activated until that turn ends, whatever the tick interval. If the work it names finishes in the same turn, `goal_done` finds no active leaf and denies at `:3616`, and the node stays `pending`. Shortening the tick interval cannot help, because no tick reaches the gate.
+
+Fix: `goal_add` activates the node itself when the tree has no active leaf, mirroring the `task` branch immediately above rather than deferring to a tick that cannot run. Tracked as a section in `docs/plans/agent_persona_coordinator_v2.md`; retire this entry when that section closes.
+
+This is the defect the commit-landed detector was built to work around: workers could not close nodes through `goal_done`, so a git-watcher was written to infer completion from the worktree instead. That detector is dropped (same plan doc, Decisions), and this is the source fix that replaces it.
 
 Worth root-causing before the v2 coordinator's own goal handling depends on the same activation path (Reviewer Round 115, following Round 113's own goal-tree discussion): a coordinator directing many workers leans on the tree closing promptly to reflect status accurately, and this same gap would leave its own nodes stuck `pending` the same way.
 
