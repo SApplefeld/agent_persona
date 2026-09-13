@@ -209,6 +209,40 @@ async function caseTreeLag_commit_closes_the_node(clock) {
     decs.some(d => d.action === "completed_by_controller"));
 }
 
+// The age bound. monitor.env is persisted, so a stamp written just before a
+// crash would otherwise be re-asserted whenever the process came back. Nothing
+// else drives a sample far enough past a stamp to exercise the comparison, so a
+// wrong direction or a bound that never fires would go unnoticed.
+async function caseTreeLag_stale_stamp_is_not_named(clock) {
+  console.log("\n=== TREELAG: a stamp older than the age bound is not named ===");
+  clock.set(T0);
+
+  const h = await createTickHarness(treeLagOpts("treelag_stale_stamp"));
+  h.setClassifyValue("nudge");
+  await fireTurn(h);
+  await new Promise(r => setTimeout(r, 20));
+
+  // Plant a clean sample carrying a stamp from well beyond the bound, the shape a
+  // restart restores from disk. The bound in hooks/index.ts is ten minutes.
+  const planted = Date.now() - (60 * 60 * 1000);
+  const store = JSON.parse(h.fsMap.get(".agentic-personas.json"));
+  store.default.monitor.env.git = {
+    branch: "main", dirty: 0, ahead: 0, behind: 0,
+    lastCommitAt: planted, sampledAt: planted, clearedAt: planted,
+  };
+  h.fsMap.set(".agentic-personas.json", JSON.stringify(store));
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  await tickAndSettle(h, clock, 120);
+
+  const summaries = h.classifyCalls.map(a => String((a && a[0]) || ""));
+  check("TREELAG stale: a decider ran on the restored sample",
+    summaries.some(s => /dirty 0/.test(s)));
+  check("TREELAG stale: but the hour-old commit is not named",
+    !summaries.some(s => /a commit landed since the previous sample/.test(s)));
+}
+
 // Control for the opt-in git stub: a case that never calls setGitScript must
 // still take the exit-128 non-git path. Without this, a later change could make
 // git answers the harness default and silently retire the gitUnavailable
@@ -4012,6 +4046,7 @@ async function main() {
   await caseTreeLag_commit_is_named_to_decider(clock);
   await caseTreeLag_clean_without_commit_is_silent(clock);
   await caseTreeLag_commit_closes_the_node(clock);
+  await caseTreeLag_stale_stamp_is_not_named(clock);
   await caseTreeLag_git_stub_control(clock);
 
   // AO1: Skip for now (we have uncommitted changes during development).

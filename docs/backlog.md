@@ -49,3 +49,23 @@ F5 greps the backfill supervisor log for `NOTE:.*backfilled`. The only line matc
 The runtime clone at `/d/DeepSeekHarness/agentic-plugin` is current at `0fc66d2`, but a running `bin/supervise.sh` keeps reading its original open file handle and never picks up a pull. Both supervisors live on this machine were launched before it, so two things outlive the fix. Their `stop_child` still signals one pid rather than the whole Windows process tree, and a restart taken through either still hits the `GATE TIMEOUT` PR #17 removes. The `aios` supervisor also holds `MODEL=sonnet` in its own environment from the launcher line that has since been dropped, so every child it starts stays on `sonnet` rather than taking the new `opus` default.
 
 Nothing to fix in the tree. The remedy is relaunching each supervisor, then dropping this entry. Relaunching is destructive to whatever that supervisor's child is mid-way through, so it is taken at a quiet point rather than on sight of this entry. This is the narrowed remainder of the `aios` launcher entry and the stale-dev-clone entry, both retired in item 3's runtime-clone addendum.
+
+## The commit stamp's consumption is not observable from the tick harness
+
+`hooks/index.ts` renders a commit-landed line into the controller's summary and
+consumes the stamp that produced it after the classify call returns. The consumption
+is correct and load-bearing, but no harness case can currently prove it, so it is
+covered by reading rather than by a test.
+
+The reason is a second mechanism reaching the same observable. Without consumption the
+stamp stays set, every following tick builds an identical summary, and the
+unchanged-summary hash gate skips `classify` entirely. So "the commit is named to
+exactly one decider" holds either way, and a case asserting it passes with the
+consumption removed. Confirmed by mutation: deleting the consumption leaves the whole
+suite green.
+
+A case was written for this and then deleted rather than kept, because a check that
+cannot fail reads exactly like a check that passes. What would actually discriminate is
+a run where the summary changes for an unrelated reason while the stamp is still set,
+so the hash gate does not fire and a second decider is reached. That needs a way to
+perturb the summary mid-run that the harness does not currently offer.
