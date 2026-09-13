@@ -417,3 +417,19 @@ Delta: the size reading was taken on this branch at the close gate, on NEO-CLAUD
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 1 - 2026-09-13
+This entry records the pre-flight check the operator chose after this repository moved to a new machine, SCOTT-CLAUDE, under the LocalAdmin profile. It is not a Chapter and closes no section.
+
+Decided 2026-09-13 by the operator: before Section 0 item 5, run the fast unit lane on the new machine and confirm both plugin copies are current, so a fault caused by the move cannot pass for an item 5 defect. The whole live gate's owed re-run waits for a naturally quiet box.
+
+Stage: Section 0 item 5 not started. Sections 1 through 8 not started. Sections 9, 10 and 11 are merged to `main`.
+
+Gate baseline, the targeted lane on `main` at `74bbb76`, clean worktree, measured 2026-09-13 on SCOTT-CLAUDE with this repository's own dev supervisor and its child live on the box. Each exit code read from its own run: `npx tsc --noEmit` 0; `node .kit/check-loader-rule.mjs` 0; `node .kit/commons-unit-test.mjs` 0; `node .kit/self-review-unit-test.mjs` 0; `node .kit/controller-tick-test.mjs` 0 with 499 checks and 0 failures. That equals Chapter 3's close count of 499 on NEO-CLAUDE. `npm ci` ran first, because the checkout arrived with no `node_modules`.
+
+Plugin copies on this machine:
+- The installed copy, `agentic-plugin@agent-persona` 0.10.0, records `gitCommitSha` `74bbb76`, and its `hooks/index.ts` and `bin/supervise.sh` are byte-identical to this checkout.
+- `D:\DeepSeekHarness\agentic-plugin` is not the clone the passive-supervisor plan's runtime-clone addendum updated to `0fc66d2`. Here it sits at `d8586dd` (2026-09-07), has no git remote, and carries an uncommitted `hooks/index.ts`. Every compared file differs from this checkout. `/d/personas/aios/relaunch-wait.sh:12` still launches from it with `--dev`. The `aios` supervisor is not running, so nothing currently executes that code.
+- The one live supervisor is `dev`, launched by `/d/personas/dev/relaunch.sh:6` from this checkout with `--dev`.
+
+Next action for item 5, pending the operator's call on how the relaunch is taken: the item's live check needs every live persona claim in the installed-mode store, and the only live persona is the `dev` supervisor loading this checkout through `--plugin-dir`. Passing it therefore needs that supervisor relaunched without `--dev`. Before the relaunch, confirm whether `emit_settings_json`'s `pluginConfigs` key, `"agentic-plugin"` at `bin/agentic-common.sh:81`, still reaches the plugin when it loads as `agentic-plugin@agent-persona`. The memory record `merged-supervise-sh-needs-dev-flag-for-plugin-dir-mode` says an installed child falls back to persona `default`, which is unverified on this tree.
