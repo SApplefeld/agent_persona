@@ -4,6 +4,10 @@ Status: In Progress
 Commit Model: Branch-and-PR. `main` is protected on GitHub, PRs only. Every PR opens Draft and the worker marks it ready explicitly, in words, per v1's own convention.
 Created: 2026-09-12
 
+## Dispatch Authorization
+
+The operator authorized a self-armed completion leash over this plan on 2026-09-13, over the Discord thread bound to the dev session, covering any session holding this plan. The authorization answered the dev session's recommendation to arm the plan so a stop cannot end the run between sections. It grants the leash and nothing wider: outward acts outside the recorded commit model still need the operator's yes.
+
 ## Section 0. Close out v1 first, plus two live worker-liveness defects a fleet cannot ship with
 
 `agent_persona_passive-supervisor_v1.md` is still Status: In Progress; every roadmap item (1-8) has a Chapter, everything is merged to `main` at `1911a83`, and this v2 spec exists at that same clean boundary. Before any v2 section starts:
@@ -61,10 +65,6 @@ Four extensions, in order of what blocks the next:
 - A worker whose child exits 0 with a backfilled root_complete newer than its start is relaunched without RESTART_PASSIVE and outside the crash counter. That is what item 1's "ignores a backfilled root" means on the bash natural-exit path.
 - Section 6's launch shape never feeds a worker's `--prompt` from coordinator text. `bin/supervise.sh` frames `--prompt` content as the operator's trusted task, so coordinator steers reach a worker only through the labelled inbox path.
 - Section 12 runs after Sections 1 and 2 and before Section 3. Sections 7 and 8 each carry one added sentence: a worker resolves a coordinator record with `agentic_resolve` when the work is finished or declined, and the coordinator counts rounds per steer against resolutions rather than replies.
-
-## Dispatch Authorization
-
-The operator authorized a self-armed completion leash over this plan on 2026-09-13, over the Discord thread bound to the dev session, covering any session holding this plan. The authorization answered the dev session's recommendation to arm the plan so a stop cannot end the run between sections. It grants the leash and nothing wider: outward acts outside the recorded commit model still need the operator's yes.
 
 ## Sections of Work
 
