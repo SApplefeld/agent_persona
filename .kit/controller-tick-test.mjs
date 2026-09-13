@@ -3811,7 +3811,11 @@ async function main() {
     await caseSection10_tickPlanningGateStillActivates_control(clock);
     await caseSection10_competingOlderPendingLeafLoses(clock);
     await caseSection10_openAskBlocksActivation(clock);
-    await caseSection10_pausedNodeBlocksActivation(clock);
+    await caseSection10FixRound_unrelatedPausedNodeDoesNotBlock(clock);
+    await caseSection10FixRound_nudgeCapPauseBlocksActivation(clock);
+    await caseSection10FixRound_droppedPlanParentNotActivated(clock);
+    await caseSection10FixRound_secondPlanAddLandsUnderRoot(clock);
+    await caseSection10FixRound_taskUnderPendingPlanActivated(clock);
     await caseItem81_goalEditDropAllowsBlocked(clock);
     await caseItem81_goalEditDropStillRefusesActive_control(clock);
     await caseR58f3_nudgeInsideOpenTurnNotCounted(clock);
@@ -4956,6 +4960,14 @@ async function caseSection10_competingOlderPendingLeafLoses(clock) {
 
 // Section 10 fix round: an open ask means the controller deliberately holds
 // the tree, so goal_add must not activate anything while pendingAskId is set.
+// The held node is seeded "pending", not "paused" (Reviewer round 2 finding:
+// the prior seeding let the guard's now-removed paused clause carry this
+// case, so a green result proved nothing about the ask clause specifically).
+// With the paused clause gone entirely (item 3), an open ask is the only
+// rule left standing between this case and activation, so the assertion
+// below is the ask clause's own coverage - proved by the mutation control
+// this case's caller runs separately (delete the pendingAskId clause, watch
+// this case go red, restore).
 //
 // pendingAskId lives on the state itself, not on a goal node, and
 // createTickHarness seeds its state through makeState(), which has no
@@ -4975,13 +4987,13 @@ async function caseSection10_openAskBlocksActivation(clock) {
     id: "plan-held",
     parentId: "root-1",
     kind: "plan",
-    status: "paused",
+    status: "pending",
     createdAt: T0 - 10_000,
     updatedAt: T0 - 5_000,
   });
 
   const options = { ...OPTS, caseName: "section10_open_ask_blocks" };
-  const seedState = makeState({ now: T0, goals: [rootGoal, heldLeaf], activeGoalId: "plan-held" });
+  const seedState = makeState({ now: T0, goals: [rootGoal, heldLeaf], activeGoalId: null });
   seedState.pendingAskId = "ask-plan-held-12345";
 
   const h = createFake$(options);
@@ -4998,10 +5010,10 @@ async function caseSection10_openAskBlocksActivation(clock) {
   h.handlers = handlers;
 
   // enforceInvariants (agent-state.ts) runs on every session.start load and
-  // nulls activeGoalId when no node's status is "active" - a paused node
-  // does not keep it, even though a live session never clears it while
-  // pausing in place. So the pre-call value, not "plan-held", is the
-  // baseline this case's "unchanged" assertion compares against.
+  // nulls activeGoalId when no node's status is "active" - the seeded
+  // pending held leaf never holds it either. So the pre-call value (null),
+  // not any node id, is the baseline this case's "unchanged" assertion
+  // compares against.
   const activeGoalIdBefore = getState(h).activeGoalId;
   const decisionsBefore = getDecisions(h).length;
   const toolCallH = h.handlers["tool.call"];
@@ -5026,16 +5038,28 @@ async function caseSection10_openAskBlocksActivation(clock) {
     !newDecisions.some(d => d.action === "activated"));
 }
 
-// Section 10 fix round: a paused node means the controller deliberately
-// holds the tree (nudge cap or an error streak), so goal_add must not
-// activate anything while any node is paused, even with no ask open.
-async function caseSection10_pausedNodeBlocksActivation(clock) {
-  console.log("\n=== Section 10: a paused node blocks activation ===");
+// Section 10 fix round (regression case for item 3): a stale, unrelated
+// paused node - not held by the nudge cap, just a plain operator pause or a
+// leftover plan-switch pause - must not disable this branch. The prior
+// round's guard scanned the whole tree for any paused node at all, which
+// silently reinstated the defect Section 10 exists to fix the moment one
+// stray paused node sat anywhere in the tree. Only an open ask or a
+// nudge-cap hold (the next case) may block activation now.
+async function caseSection10FixRound_unrelatedPausedNodeDoesNotBlock(clock) {
+  console.log("\n=== Section 10 fix round: an unrelated paused node does not block activation ===");
   clock.set(T0);
 
   const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
-  const pausedLeaf = makeGoalNode({
-    id: "plan-paused",
+  const planParent = makeGoalNode({
+    id: "plan-parent",
+    parentId: "root-1",
+    kind: "plan",
+    status: "pending",
+    createdAt: T0 - 20_000,
+    updatedAt: T0 - 20_000,
+  });
+  const unrelatedPaused = makeGoalNode({
+    id: "plan-unrelated-paused",
     parentId: "root-1",
     kind: "plan",
     status: "paused",
@@ -5045,38 +5069,210 @@ async function caseSection10_pausedNodeBlocksActivation(clock) {
 
   const h = await createTickHarness({
     ...OPTS,
-    caseName: "section10_paused_blocks",
-    stateOpts: { now: T0, goals: [rootGoal, pausedLeaf], activeGoalId: "plan-paused" },
+    caseName: "section10_unrelated_paused_no_block",
+    stateOpts: { now: T0, goals: [rootGoal, planParent, unrelatedPaused], activeGoalId: null },
   });
 
-  // enforceInvariants (agent-state.ts) runs on the session.start load
-  // createTickHarness fires internally and nulls activeGoalId when no node's
-  // status is "active" - a paused node does not keep it there, even though a
-  // live session never clears it while pausing in place. So the pre-call
-  // value, not "plan-paused", is the baseline this case's "unchanged"
-  // assertion compares against.
-  const activeGoalIdBefore = getState(h).activeGoalId;
+  const toolCallH = h.handlers["tool.call"];
+  const result = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "task",
+    parentId: "plan-parent",
+    title: "New task under a pending plan",
+    objective: "Should activate despite the unrelated paused node",
+  }, async () => ({ result: "passthrough" }));
+
+  check("section10 unrelated-paused: not denied", result.deny === undefined);
+
+  const state = getState(h);
+  const newTask = state.goals.find(g => g.kind === "task");
+  check("section10 unrelated-paused: the new task exists", !!newTask);
+  check("section10 unrelated-paused: the new task is active",
+    newTask && newTask.status === "active" && state.activeGoalId === newTask.id);
+  check("section10 unrelated-paused: the unrelated paused node is still paused",
+    state.goals.find(g => g.id === "plan-unrelated-paused").status === "paused");
+}
+
+// Section 10 fix round (item 3): a nudge-cap pause is the one paused shape
+// that must still block activation - the same hold turn.complete's own
+// worker-tool-call path (Round 60 finding 3b) restores on the worker's next
+// completed turn, never on a goal_add call.
+async function caseSection10FixRound_nudgeCapPauseBlocksActivation(clock) {
+  console.log("\n=== Section 10 fix round: a nudge-cap pause blocks activation ===");
+  clock.set(T0);
+
+  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const nudgeCapPaused = makeGoalNode({
+    id: "plan-nudgecap-paused",
+    parentId: "root-1",
+    kind: "plan",
+    status: "paused",
+    pausedByNudgeCap: true,
+    createdAt: T0 - 10_000,
+    updatedAt: T0 - 5_000,
+  });
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "section10_nudgecap_pause_blocks",
+    stateOpts: { now: T0, goals: [rootGoal, nudgeCapPaused], activeGoalId: null },
+  });
+
   const decisionsBefore = getDecisions(h).length;
   const toolCallH = h.handlers["tool.call"];
   const result = await toolCallH(h.fake, {
     tool: "mcp__agentic-plugin__goal_add",
     kind: "plan",
-    title: "New plan while a node is paused",
+    title: "New plan while a nudge-cap pause holds",
     objective: "Should not activate",
   }, async () => ({ result: "passthrough" }));
 
-  check("section10 paused: not denied", result.deny === undefined);
+  check("section10 nudgecap-pause: not denied", result.deny === undefined);
 
   const state = getState(h);
-  console.log(`  scope: status of every node in the tree = ${JSON.stringify(state.goals.map(g => ({ id: g.id, status: g.status })))}`);
-  check("section10 paused: no node in the tree is active",
+  check("section10 nudgecap-pause: no node in the tree is active",
     !state.goals.some(g => g.status === "active"));
-  check("section10 paused: activeGoalId is unchanged", state.activeGoalId === activeGoalIdBefore);
+  check("section10 nudgecap-pause: activeGoalId is null", state.activeGoalId === null);
 
   const newDecisions = getDecisions(h).slice(decisionsBefore);
-  console.log(`  scope: actions of decisions pushed by this call = ${JSON.stringify(newDecisions.map(d => d.action))}`);
-  check("section10 paused: no 'activated' decision was pushed by this call",
+  check("section10 nudgecap-pause: no 'activated' decision was pushed by this call",
     !newDecisions.some(d => d.action === "activated"));
+}
+
+// Section 10 fix round (item 2): a task added under a dropped (abandoned)
+// plan must never be activated. isActivationEligible's ancestor rule is what
+// refuses this - the parent's own status fails the "every ancestor is
+// pending" test - so no separate parent-status check is written for it.
+async function caseSection10FixRound_droppedPlanParentNotActivated(clock) {
+  console.log("\n=== Section 10 fix round: a task under a dropped plan is not activated ===");
+  clock.set(T0);
+
+  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const droppedPlan = makeGoalNode({
+    id: "plan-dropped",
+    parentId: "root-1",
+    kind: "plan",
+    status: "abandoned",
+    blockedReason: "dropped by operator",
+    createdAt: T0 - 10_000,
+    updatedAt: T0 - 5_000,
+  });
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "section10_dropped_plan_parent",
+    stateOpts: { now: T0, goals: [rootGoal, droppedPlan], activeGoalId: null },
+  });
+
+  const activeGoalIdBefore = getState(h).activeGoalId;
+  const decisionsBefore = getDecisions(h).length;
+  const toolCallH = h.handlers["tool.call"];
+  const result = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "task",
+    parentId: "plan-dropped",
+    title: "New task under a dropped plan",
+    objective: "Should not activate",
+  }, async () => ({ result: "passthrough" }));
+
+  check("section10 dropped-parent: not denied", result.deny === undefined);
+
+  const state = getState(h);
+  check("section10 dropped-parent: no node in the tree is active",
+    !state.goals.some(g => g.status === "active"));
+  check("section10 dropped-parent: activeGoalId did not move", state.activeGoalId === activeGoalIdBefore);
+  check("section10 dropped-parent: the dropped plan is still abandoned",
+    state.goals.find(g => g.id === "plan-dropped").status === "abandoned");
+
+  const newDecisions = getDecisions(h).slice(decisionsBefore);
+  check("section10 dropped-parent: no 'activated' decision was pushed by this call",
+    !newDecisions.some(d => d.action === "activated"));
+}
+
+// Section 10 fix round (item 4): a second same-turn plan add, with no
+// parentId given (the tool's own description tells a worker to omit it),
+// must land under the root even though the first plan add already activated
+// and is now the active leaf - before this fix the no-explicit-parent branch
+// resolved a bare "plan" add to whatever was active, and a plan can only be
+// added under the root, so the second call was denied.
+async function caseSection10FixRound_secondPlanAddLandsUnderRoot(clock) {
+  console.log("\n=== Section 10 fix round: a second same-turn plan add lands under the root ===");
+  clock.set(T0);
+
+  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "section10_second_plan_add",
+    stateOpts: { now: T0, goals: [rootGoal], activeGoalId: null },
+  });
+
+  const toolCallH = h.handlers["tool.call"];
+  const first = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "plan",
+    title: "First plan",
+    objective: "Do the first thing",
+  }, async () => ({ result: "passthrough" }));
+  check("section10 second-plan: first add not denied", first.deny === undefined);
+
+  const second = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "plan",
+    title: "Second plan",
+    objective: "Do the second thing",
+  }, async () => ({ result: "passthrough" }));
+  check("section10 second-plan: second add not denied", second.deny === undefined);
+
+  const state = getState(h);
+  const plans = state.goals.filter(g => g.kind === "plan");
+  check("section10 second-plan: two plan nodes exist", plans.length === 2);
+  check("section10 second-plan: the second plan's parentId is the root",
+    plans.length === 2 && plans[1].parentId === "root-1");
+}
+
+// Section 10 fix round (new coverage, adversarial lens): a task added under
+// a pending (not active) plan, with nothing active anywhere, is activated -
+// this shape (parent pending rather than active) had no case before this
+// round.
+async function caseSection10FixRound_taskUnderPendingPlanActivated(clock) {
+  console.log("\n=== Section 10 fix round: a task added under a pending plan is activated ===");
+  clock.set(T0);
+
+  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const pendingPlan = makeGoalNode({
+    id: "plan-pending",
+    parentId: "root-1",
+    kind: "plan",
+    status: "pending",
+    createdAt: T0 - 10_000,
+    updatedAt: T0 - 10_000,
+  });
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "section10_task_under_pending_plan",
+    stateOpts: { now: T0, goals: [rootGoal, pendingPlan], activeGoalId: null },
+  });
+
+  const toolCallH = h.handlers["tool.call"];
+  const result = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "task",
+    parentId: "plan-pending",
+    title: "New task under a pending plan",
+    objective: "Do the task",
+  }, async () => ({ result: "passthrough" }));
+
+  check("section10 task-under-pending-plan: not denied", result.deny === undefined);
+
+  const state = getState(h);
+  const newTask = state.goals.find(g => g.kind === "task");
+  check("section10 task-under-pending-plan: the new task exists", !!newTask);
+  check("section10 task-under-pending-plan: the new task is active",
+    newTask && newTask.status === "active" && state.activeGoalId === newTask.id);
+  check("section10 task-under-pending-plan: the pending plan parent stays pending (it was never active, so nothing demotes it)",
+    state.goals.find(g => g.id === "plan-pending").status === "pending");
 }
 
 // Item 8.1 / Round 58 finding 4: goal_edit's drop action refused a blocked node outright, which is
