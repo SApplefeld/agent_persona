@@ -155,8 +155,11 @@ R79_ELAPSED=$(( $(date +%s) - R79_START ))
 # Reviewer Round 130 R99 (Minor): 18s was still below the helper's own
 # worst-case honest path (winpid poll up to 5s, wait loop up to bound,
 # reap poll up to 5s, plus two taskkill calls each capped at 5s - about
-# 23s legitimately, before any scheduling slack). Widened.
-R79_CEILING=$((3 + 20))
+# 23s legitimately, before any scheduling slack). Widened again per
+# Round 132 R103: the prior widening equaled that computed worst path
+# exactly, with no slack at all for scheduling variance - a ceiling that
+# tight flakes red on nothing but timing noise.
+R79_CEILING=$((3 + 30))
 if [ "$R79_ELAPSED" -gt "$R79_CEILING" ]; then
   failed "R79 regression: run_bounded_powershell_capture took ${R79_ELAPSED}s against a 3s bound (expected under ~${R79_CEILING}s) - the bound did not hold"
 else
@@ -178,8 +181,9 @@ if [ -z "$R79_REAL_SNAPSHOT" ]; then
   failed "R79 regression: the real powershell.exe pid was never self-reported - cannot assert the native process is actually dead"
 else
   R79_SURVIVORS=$(check_snapshot_survivors "$R79_REAL_SNAPSHOT")
-  if [ -n "$R79_SURVIVORS" ]; then
-    failed "R79 regression: the real powershell.exe process (pid,ticks=$R79_REAL_SNAPSHOT) SURVIVED the bound - the stub was killed, the native process was not"
+  R79_SURVIVORS_RC=$?
+  if [ "$R79_SURVIVORS_RC" -ne 0 ] || [ -n "$R79_SURVIVORS" ]; then
+    failed "R79 regression: the real powershell.exe process (pid,ticks=$R79_REAL_SNAPSHOT) SURVIVED the bound, or the check could not be verified (rc=$R79_SURVIVORS_RC) - the stub was killed, the native process was not confirmed dead"
   else
     pass "R79 regression: the real powershell.exe process (pid,ticks=$R79_REAL_SNAPSHOT), not just the MSYS stub, is confirmed dead after the bound"
   fi
@@ -214,14 +218,25 @@ else
   # DIRECT_WINPID (the same helper production uses) before the kill and
   # check every entry, matched by pid and start time, afterward.
   DIRECT_SNAPSHOT=$(snapshot_process_tree "$DIRECT_WINPID")
-  taskkill //F //T //PID "$DIRECT_WINPID" > /dev/null 2>&1
-  sleep 2
-  DIRECT_SURVIVORS=$(check_snapshot_survivors "$DIRECT_SNAPSHOT")
-  if [ -z "$DIRECT_SURVIVORS" ]; then
-    pass "direct-exec case: taskkill //F //T on the resolved winpid kills the real Windows process (every snapshotted pid, matched by start time, confirmed dead)"
+  # Reviewer Round 130 R97 / Round 132 R100 (the fix reported last round
+  # never actually landed in this file - confirmed by the Reviewer
+  # against `git show`, and confirmed again here by reading the file):
+  # an empty $DIRECT_SNAPSHOT reads exactly like "the walk found nothing"
+  # whether the cause is a genuinely gone process or a timed-out/failed
+  # walk. Guarded before use, same as every dead-assertion below.
+  if [ -z "$DIRECT_SNAPSHOT" ]; then
+    failed "setup: snapshot_process_tree returned nothing for a confirmed-live winpid ($DIRECT_WINPID) - the walk itself failed, this case cannot proceed"
   else
-    failed "direct-exec case: the real Windows process SURVIVED taskkill //F //T on its resolved winpid ($DIRECT_SURVIVORS still alive)"
     taskkill //F //T //PID "$DIRECT_WINPID" > /dev/null 2>&1
+    sleep 2
+    DIRECT_SURVIVORS=$(check_snapshot_survivors "$DIRECT_SNAPSHOT")
+    DIRECT_SURVIVORS_RC=$?
+    if [ -z "$DIRECT_SURVIVORS" ] && [ "$DIRECT_SURVIVORS_RC" -eq 0 ]; then
+      pass "direct-exec case: taskkill //F //T on the resolved winpid kills the real Windows process (every snapshotted pid, matched by start time, confirmed dead)"
+    else
+      failed "direct-exec case: the real Windows process SURVIVED taskkill //F //T on its resolved winpid, or the check could not be verified (rc=$DIRECT_SURVIVORS_RC, survivors=$DIRECT_SURVIVORS)"
+      taskkill //F //T //PID "$DIRECT_WINPID" > /dev/null 2>&1
+    fi
   fi
 fi
 
@@ -309,11 +324,19 @@ else
   else
     pass "Phase-3 case: snapshot lines all match pid,ticks"
   fi
+  # Reviewer Round 130 R97 / Round 132 R100 (the fix reported two rounds
+  # ago never actually landed - confirmed against `git show` by the
+  # Reviewer and independently confirmed here): a timed-out probe (empty
+  # output, rc 1) passed this check exactly like a genuinely absent
+  # survivor. rc is now read explicitly at every one of this file's own
+  # check_snapshot_survivors call sites, not inferred from its output
+  # alone.
   PRE_KILL_SURVIVORS=$(check_snapshot_survivors "$PRE_KILL_SNAPSHOT")
-  if echo "$PRE_KILL_SURVIVORS" | grep -qx "$REAL_CHILD_WINPID"; then
+  PRE_KILL_SURVIVORS_RC=$?
+  if [ "$PRE_KILL_SURVIVORS_RC" -eq 0 ] && echo "$PRE_KILL_SURVIVORS" | grep -qx "$REAL_CHILD_WINPID"; then
     pass "Phase-3 case: positive control - the live child reads as a survivor before any kill runs"
   else
-    failed "Phase-3 case: positive control failed - the live child ($REAL_CHILD_WINPID) was not reported as a survivor before the kill; the instrument cannot be trusted for the assertion below"
+    failed "Phase-3 case: positive control failed (rc=$PRE_KILL_SURVIVORS_RC) - the live child ($REAL_CHILD_WINPID) was not reported as a survivor before the kill; the instrument cannot be trusted for the assertion below"
   fi
 
   stop_child "test-phase3"
@@ -328,10 +351,11 @@ else
   # from "a different process now holds a recycled pid", which is the
   # exact hazard R66 was fixed to guard against elsewhere in this file.
   POST_KILL_SURVIVORS=$(check_snapshot_survivors "$PRE_KILL_SNAPSHOT")
-  if ! echo "$POST_KILL_SURVIVORS" | grep -qx "$REAL_CHILD_WINPID"; then
+  POST_KILL_SURVIVORS_RC=$?
+  if [ "$POST_KILL_SURVIVORS_RC" -eq 0 ] && ! echo "$POST_KILL_SURVIVORS" | grep -qx "$REAL_CHILD_WINPID"; then
     pass "Phase-3 case: the real child (matched by pid and start time) is gone after stop_child's own tree kill (the CRLF bug's exact path)"
   else
-    failed "Phase-3 case: the real child SURVIVED Phase 3's tree kill - the CRLF bug or an equivalent is back"
+    failed "Phase-3 case: the real child SURVIVED Phase 3's tree kill, or the check could not be verified (rc=$POST_KILL_SURVIVORS_RC) - the CRLF bug or an equivalent is back"
     kill -9 "$REAL_CHILD_WINPID" 2>/dev/null
   fi
 fi
