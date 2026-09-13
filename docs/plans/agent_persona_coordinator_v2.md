@@ -481,3 +481,26 @@ Next action, for the fresh `dev` session:
 5. Write the item 5 Chapter with that evidence, open the pull request as Draft, and report the result to the operator on Discord.
 
 Rollback if the relaunch fails: restore `relaunch.sh` from its `.orig` copy and run it, which relaunches the `dev` supervisor with `--dev` on the dev tree as before.
+
+## Chapter: Section 0 item 5, the installed-mode live check
+
+**Result: the live check passes.** The `dev` supervisor relaunched without `--dev`, its child loads the installed plugin, and the installed store holds every live persona claim. Read 2026-09-13 between 22:10Z and 22:17Z on SCOTT-CLAUDE by the fresh `dev` session the restart started.
+
+The handoff's five steps, each read directly:
+
+1. **The relaunch ran.** `/d/personas/dev/restart-installed.log` records the old supervisor exiting at 21:46:41Z, the 100-second stale wait, and `relaunch.sh` at 21:48:21Z. `supervise-relaunch-20260913T2148Z.stdout` records `GATE PASSED`, `LAUNCH child-1`, and 150 polls of `WAITING: child-1 alive, persona held`.
+2. **The three live-check parts hold.**
+   - The child, Windows pid 7820 under the supervisor's `env.exe` pid 20104, carries `--settings D:\agent_persona\run\settings.json --model opus --effort medium` and no `--plugin-dir`, read from `Win32_Process.CommandLine`.
+   - The installed store, `agentic-plugin_agent-persona-54422876af67.json`, holds `persona:dev` for session `ed969171-1b62-472b-81f3-2f4bbbca04a7`, last seen 11 seconds before the read. That is the child's own session id, read from `run/child-1/stdout.jsonl`.
+   - The inline store, `agentic-plugin_inline-725b37f2a6ed.json`, holds `persona:dev` only for session `2e3cc529-...`, last seen 1844 seconds before the read. That is the pre-restart child, past the 90-second stale window, so no live claim.
+3. **Every live claim in the installed store is accounted for, with one non-supervisor claim.** Besides `persona:dev`, session `0db6449e-...` holds `reader:default` and `persona:default`, last seen 25 seconds before the read. It is an interactive `claude.exe` started 17:01 local from `C:\Users\LocalAdmin`, not a supervisor. That is the known pre-Section-6 behavior Section 5's ordering note describes, where every plugin-loaded session claims `persona:default`. It confirms the installed store is the one shared store ordinary sessions use too. It means no supervisor other than `dev` is live, as expected.
+4. **`run/settings.json` carries both ids.** `pluginConfigs` holds `agentic-plugin` and `agentic-plugin@agent-persona`, each with `persona: "dev"` and the same seven cadence options.
+5. This Chapter, and the Draft pull request below.
+
+What this does not cover: the installed copy is 0.10.0 built from `74bbb76`, which carries none of this branch's code. This branch changes only `bin/` and `.kit/`, which the supervisor reads from the checkout, so the live check exercises the branch's supervisor side and the merged plugin side. The `aios` supervisor was not running and was not started, so its launcher change is unexercised live.
+
+Gate: no code changed since Interim board 2's targeted lane, whose counts stand. This Chapter is a record-only change.
+
+Commit model: Branch-and-PR, on `item0-5-installed-runtime` off `74bbb76`.
+
+Next: Section 0 item 6, the finishing reviews over Section 0, then Section 1. The operator has been asked to affirm the transport pick under Open Questions before Section 1 starts.
