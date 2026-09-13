@@ -26,6 +26,7 @@ import {
   yieldRecord,
   completeLeaf,
   activateNext,
+  isActivationEligible,
   isPlanningDue,
   previousRoundBlocked,
   planningCapReached,
@@ -3391,6 +3392,16 @@ export const register: Register = async (on, options) => {
           return { deny: 'kind "plan" is only allowed under the root.' };
         }
         parentId = explicitParent;
+      } else if (kind === "plan") {
+        // Section 10 fix round: a plan always resolves to the root when no
+        // parentId is given, whatever is active. Without this, Section 10's
+        // own no-active-leaf branch below activates the first plan a worker
+        // adds in a turn, and a second plan add in the same turn - with no
+        // parentId, exactly what this tool's own description tells a worker
+        // to omit - would resolve under that now-active first plan and be
+        // denied ("plan" only allowed under the root), which never happened
+        // before this section since no plan stayed active mid-turn.
+        parentId = root.id;
       } else {
         const active = sess.state.activeGoalId
           ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
@@ -3459,6 +3470,37 @@ export const register: Register = async (on, options) => {
           sess.state.activeGoalId = newNode.id;
           activate($, newNode.id, `${parent.id} demoted to pending; ${newNode.id} activated`);
         }
+      }
+
+      // Section 10: if the tree still has no active leaf, activate the node
+      // just created rather than deferring to the next tick, mirroring the
+      // task branch above (set status and activeGoalId directly, then call
+      // activate() to log the decision and reset the nudge budget). Without
+      // this, the node stays pending for the rest of this turn, so a
+      // same-turn goal_done has nothing of this node's to close.
+      //
+      // isActivationEligible carries activateNext's own ancestor rule, so a
+      // node added under an abandoned or blocked parent is refused here the
+      // same way activateNext's DFS would refuse it - this branch never
+      // activates into a closed subtree.
+      //
+      // The hold check beside it is exactly two things: an open ask
+      // (pendingAskId) is the operator's own open question, and a
+      // pausedByNudgeCap node is the nudge cap's own hold, restored only by
+      // turn.complete's own worker-tool-call path. A plain paused node -
+      // dropped by an operator pause, or left over from a plan switch - is
+      // neither of those and must not disable this branch for the rest of
+      // the session.
+      if (
+        !sess.state.goals.some((g) => g.status === "active") &&
+        !sess.state.pendingAskId &&
+        !sess.state.goals.some((g) => g.pausedByNudgeCap === true) &&
+        isActivationEligible(sess.state, newNode)
+      ) {
+        newNode.status = "active";
+        newNode.updatedAt = now;
+        sess.state.activeGoalId = newNode.id;
+        activate($, newNode.id, `${newNode.id} added with no active leaf`);
       }
 
       const writeOk = await persist($);

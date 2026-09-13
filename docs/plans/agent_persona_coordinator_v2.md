@@ -131,6 +131,25 @@ Section 7 builds only the worker-side half of FORK B. Nothing built anywhere in 
 Files in scope: `bin/supervise.sh` (the coordinator-priming-turn injection site, mirroring Section 7's own, gated on the `COORDINATOR_PERSONA` comparison above).
 Tests: a `.kit/*-test.sh` case (per Section 7's R36 correction, this is a bash-level test, not a harness case) that a launch with `$PERSONA` matching `COORDINATOR_PERSONA` injects this instruction on its own priming turn, with a control that an ordinary worker's launch (`$PERSONA` not matching) does not. The round-cap and batching *behavior* is model behavior, live-suite territory per R28's same reasoning, not a test-file assertion.
 
+### 10. `goal_add` activates the node it creates when nothing else is active
+Model: sonnet
+
+This is the source fix for the `goal_add` activation defect `docs/backlog.md` records. It is small, and it is why workers were not closing goal nodes.
+
+`goal_add` activates its new node only when `kind === "task"` and the parent is already `active` (`hooks/index.ts:3485-3494`). A `plan` node takes no such branch and returns "planning or activation will occur at the next tick" (`:3505`). The tick is the only other activator, and its order is owner check, then in-flight check, then planning gate (`:1250`), with the early return at `:1258`, so the planning gate cannot run while a turn is open.
+
+A plan node added during a turn therefore cannot be activated until that turn ends. When the work it names finishes in that same turn, `goal_done` finds no active leaf and denies at `:3616`, and the node stays `pending` forever. `docs/backlog.md` records four reproductions in one session. Shortening the tick interval does not help, because no tick reaches the gate.
+
+Fix: when the tree has no active leaf, `goal_add` activates the node it just created rather than deferring, mirroring the `task` branch above it. It activates that node directly rather than calling `activateNext`, whose walk returns the oldest eligible leaf and so would hand activation to some other node. What it reuses instead is `activateNext`’s eligibility rule, which decides not ordering but which nodes may be active at all: a node must be pending, must be a leaf, and every ancestor below the root must be pending too. That rule is exported from `hooks/agent-state.ts` as `isActivationEligible`, and `activateNext` reads it too, so there is one definition rather than two.
+
+The branch does not fire while the controller holds the tree: an open operator question, or a node paused by the nudge cap. A node paused any other way does not hold it, because an operator can pause one node while another keeps working.
+
+Decide at implementation time and record it: whether a `plan` node with no children is activated directly, or whether activation waits for its first child task. The tree's own shape rules are in `activateNext`'s DFS, which only ever activates leaves, so the answer probably falls out of reusing it.
+
+Files in scope: `hooks/index.ts` (the `goal_add` handler), `hooks/agent-state.ts` (folded in during execution, for the eligibility rule above), `.kit/controller-tick-test.mjs`.
+
+Tests: a plan node added with no active leaf is active when `goal_add` returns, and `goal_done` closes it in the same turn with no tick in between. Controls: adding under an active parent still demotes and activates as it does today, and the tick's own planning gate still activates when the node was added with no turn open.
+
 ### 11. The goal nudge is bounded by an open-turn reading that survives unpaired events
 Model: opus
 
@@ -254,6 +273,47 @@ Commit model: Branch-and-PR, on `item0-4-whole-gate` off `4e2115f`.
 Next: Section 0 item 5, the runtime switch from `--plugin-dir` to the installed marketplace plugin, whose own live check is the acceptance this item's evidence deliberately does not cover.
 
 ### Chapter 1 - 2026-09-13
+Completed: 10. `goal_add` activates the node it creates when nothing else is active
+Implemented By: implementer-sonnet, three dispatches (the section, then two fix rounds); the Minor close pass ran in the main session
+Metrics: review rounds 3, closed claim-exit; provenance 6 spec-traceable, 4 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: Section 10 asked for two decisions to be recorded here, and execution produced a third.
+
+A childless `plan` node activates directly rather than waiting for a first child task. The ground is the tree's own leaf test, `!hasChildren`, which a node created moments earlier satisfies. Worth knowing beside it: activating a childless plan suppresses the planner's decomposition of it, because `isPlanningDue` returns false once any descendant is active. That is what the tick's own `activateNext` would have done too, so it is not a behavior change.
+
+The spec's preference for calling `activateNext` was reversed, and this is a deviation from the section text, which has been updated to match. `activateNext` returns the oldest eligible leaf, and the node just created always has the newest timestamp, so calling it handed activation to some other node. Round 1's reviewer traced the consequence: `goal_done` acts on whatever is active, so the worker's next call completed a node nobody had worked on and credited it a round, while the node just added stayed pending. A silent wrong completion is worse than the loud refusal it replaced.
+
+The third decision is the one that took two fix rounds to find. `activateNext` is not only an ordering rule. It is the single place deciding which nodes may be active at all: pending status, leaf, and an all-pending ancestor chain. Round 2 bypassed it and lost all three, which is why four of round 2's five Majors were one defect wearing four faces. The rule is now exported from `hooks/agent-state.ts` as `isActivationEligible`, `activateNext` reads it for its own leaf test, and `goal_add` asks it before activating. One definition, two callers.
+
+Two surfaces were folded into this section rather than routed out. `hooks/agent-state.ts` was folded for the extraction above; it sits in the same directory as a file the section already changed, needs no acceptance the section does not carry, and the section's own gate covers it. Parent resolution in `goal_add` was folded because the section made a pre-existing branch reachable: a plan added with no `parentId` now resolves to the root whatever is active, since otherwise the first plan added in a turn became active and the second was denied for not being under the root.
+
+`docs/backlog.md`'s entry for this defect is retired in this changeset, which is what the section existed to do.
+
+A round 3 implementer reported that injected `[OPERATOR, urgent]` text had reached it in a tool result, instructing it to open a pull request, kill processes by pid and rewrite briefing conventions, and that it had refused. No injection occurred. Every occurrence of that marker in its transcript is this plan document's own Section 4 prose describing the Round 106 incident, which the agent read while reading the spec, plus its own report sentence. The lesson is banked in the operator memory tier.
+Assumptions: assumed 2026-09-13 (route b, low-blast default, section 10): the controller's hold on the tree is exactly an open operator question and a nudge-cap pause. A node paused any other way does not hold the branch, because an operator can pause one node while another keeps working and a plan switch leaves a paused node behind that only a worker resume clears. Reversal is one clause in one condition.
+Review Findings: review: code pair at opus, Workflow (round 1); code pair plus security at opus, Workflow (round 2); adversarial alone at sonnet, Workflow (round 3). The security lens ran in rounds 1 and 2, on the hook's allow and deny surface.
+
+Round 1: one Critical, `activateNext` activating the wrong node, fixed. Four Majors, all fixed: the test could not detect the wrong node; `activate` was called with a null id that reset the nudge budget; the branch had no open-ask precondition where the tick's equivalent path has one; the branch could leave two nodes active at once through the nudge-cap restore path.
+
+Round 2: no Critical. Five Majors, four fixed: activation into a closed subtree, which `completeLeaf`'s cascade then flips from abandoned to complete; a tree-wide paused guard that silently re-disabled the fix for a whole session; an open-ask case whose held node was also paused, so either clause could have refused it; a second same-turn plan add denied for not being under the root.
+
+One Major justified-not-fixed: activation here ignores `sortKey`, so a node an operator reprioritized loses to the node the worker just created. Honoring it would reinstate round 1's Critical, the section's own title settles the conflict, and the operator's node wins the very next activation after `goal_done`.
+
+Round 3: APPROVED, no Critical and no Major. The reviewer established the `activateNext` refactor behavior-preserving both by induction over the DFS's per-level status filter and by a full suite run.
+
+Minors: 6 fixed in the close pass (the `check` helper now prints its third argument, which four call sites were already passing; a deny assertion implied by the one above it dropped; a `fireTick` second argument the function does not take; two unguarded node dereferences; the planning-gate control's root reseeded pending, since the root is never active in v3); 0 upgraded; 5 left with the reason (the active-node rather than active-leaf predicate, which only `goal_resume` can reach and where activating a second node would break the single-active invariant; the activation ordered before `await persist($)`, which is the shape the two branches above it already have; the yield path's untrue "this write was not saved" text, pre-existing; an orphan task resolving to the root, pre-existing and unchanged in outcome, only in timing; the same `fireTick` arity at two pre-existing sites outside this section's files).
+
+One Minor from round 3 was fixed rather than held: `isActivationEligible`'s ancestor walk is now bounded by the node count and reads a cycle as not eligible rather than spinning.
+Stamps: adjudicated 9, stamped 5. Applied: the splice-verified-by-diffing record, which caught a script that threw before its write so two edits never landed; the release-the-claim-at-the-operation-end record, which set the claim discipline across five gate runs; the kaizen standing grant, under which a note was written to the kit inbox; the queued-agent-looks-never-started record, which held the first-turn reading when two of three reviewers had started; and the forward-resource-arrangements record, under which every dispatch carried the box-budget clause. Four skipped as not acted on this stretch.
+Gate: targeted lane at section close, on the branch tip with a clean worktree, with the supervisor fleet live on the box (11 node and claude processes at the first run). `npx tsc --noEmit` exit 0; `node .kit/check-loader-rule.mjs` exit 0; `node .kit/commons-unit-test.mjs` exit 0; `node .kit/self-review-unit-test.mjs` exit 0; `node .kit/controller-tick-test.mjs` exit 0 with 398 checks and 0 failures. Each exit code read from its own run. The baseline recorded on this same lane at `6f8a031`, before any code changed, was 351 checks and 0 failures, so the delta is +47 checks and 0 failing in both readings. The contention lane did not run, because this section's delta touches no machine-shared state. Measured 2026-09-13 on NEO-CLAUDE.
+Next: the pull request for this branch, then Section 9
+Commit Model: Branch-and-PR, on `kaizen-goal-add-activates` off `ca3c228`
+Delta: the size reading was taken on this branch at the close gate, on NEO-CLAUDE, with a clean worktree. The verb reported no corpus to measure in this repository.
+
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
+
+### Chapter 2 - 2026-09-13
 Completed: 11. The goal nudge is bounded by an open-turn reading that survives unpaired events
 Implemented By: implementer-opus, three fix rounds, with the removal round dispatched after a scope ruling
 Metrics: review rounds 3, closed major-closed; provenance 3 spec-traceable, 3 fix-introduced, 2 new-requirement, rulings (1 refused, 0 declared, 0 asked); NEEDS_CONTEXT count 0; escalations 0; consults 0
