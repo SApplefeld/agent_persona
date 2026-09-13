@@ -131,6 +131,42 @@ Section 7 builds only the worker-side half of FORK B. Nothing built anywhere in 
 Files in scope: `bin/supervise.sh` (the coordinator-priming-turn injection site, mirroring Section 7's own, gated on the `COORDINATOR_PERSONA` comparison above).
 Tests: a `.kit/*-test.sh` case (per Section 7's R36 correction, this is a bash-level test, not a harness case) that a launch with `$PERSONA` matching `COORDINATOR_PERSONA` injects this instruction on its own priming turn, with a control that an ordinary worker's launch (`$PERSONA` not matching) does not. The round-cap and batching *behavior* is model behavior, live-suite territory per R28's same reasoning, not a test-file assertion.
 
+### 9. An unmatched turn completion still corrupts the idle reading and the deferred-status stamp
+Model: opus
+
+Surfaced by Section 0's own work on the controller's in-flight test, and appended as approval drift rather than folded, because it needs acceptance criteria Section 0 does not carry.
+
+The controller decides a worker is idle from `sess.state.monitor.lastTurnComplete`, and a reader session reports how long an inbox record has waited from `sess.turnStartedAt`. Both are written unconditionally at the top of the `turn.complete` handler in `hooks/index.ts`, before anything checks whether this completion matches a turn that was actually open. Confirmed in the `turn.complete` handler, which writes both before it checks anything about the arriving completion.
+
+The turn events are not reliably paired. One observed window carries two `turn.complete` events with no `turn.start` between them. So an unmatched completion restarts the idle clock while a turn is still running, clears the start stamp a reader needs, and leaves the long-turn record measuring against a different turn's start.
+
+Section 11 makes the in-flight reading survive unpaired events by keying it on turn ids. These two fields are the remainder: the same handler, the same premise, and still corrupted by the same shape.
+
+Two further defects in the same handler, routed here from Section 0's review rounds rather than fixed there.
+
+`sess.turnStartedAt` is a single value while the open-turn map is keyed by turn id. Whichever completion arrives first nulls it, so with two overlapping turns the second completion reads it as null and its long-turn record is skipped. The stamp becomes derived from the map rather than cleared, through one helper both turn handlers call, so a second turn opening cannot move it either. The long-turn record stops depending on the stamp at all: `turn.complete` carries `durationMs`, the harness's own measurement of that turn, which counts a long turn whose start this session never saw. Nothing else in the plugin reads that field, so the map entry stays as a fallback rather than letting an absent field switch the record off silently.
+
+The third defect this section was written to fix is already closed. `currentPrompt` and `nudgedTurn` were written after `await $.prompt.submit`, so a promise settling only once the nudged turn had run would set `nudgedTurn` after the `turn.complete` that reads it and leak the flag into the following turn. Section 11 moved all three writes, the nudge floor with them, to the synchronous side of the submit (the nudge branch of the controller tick, which writes the floor, the prompt text, the nudged-turn flag and the escalation count before the submit), for that same reason stated in its own comment. Nothing here is left to do, and this section does not touch that code.
+
+Files in scope: `hooks/index.ts` (the `turn.complete` handler), `.kit/controller-tick-test.mjs`.
+
+Tests: an unmatched completion leaves `sess.turnStartedAt` naming a turn that is still open, with a withheld control that a matched completion for the only open turn sets it to null; a second turn opening leaves the stamp at the earlier turn's start; the long-turn record measures against its own turn rather than another turn's clock across an interleaved unmatched completion, counts an unmatched long turn when the harness supplies `durationMs`, and writes nothing when neither that field nor a map entry is there. `lastTurnComplete` is pinned unchanged by its own case, as a regression guard on the Decisions ruling below rather than coverage of a change.
+
+Acceptance:
+
+1. A completion for a turn id this session never saw start leaves `sess.turnStartedAt` naming a turn that is still open.
+2. A completion for the only open turn sets `sess.turnStartedAt` to null.
+3. With two turns open, a completion for the later one leaves the stamp at the earlier turn's start, and a second turn opening does not move it either.
+4. The long-turn record measures the completing turn rather than another turn's clock.
+5. The long-turn record is written for a completion whose turn this session never saw start when the harness supplies a duration, and written for no completion where neither that duration nor a map entry is available.
+6. `sess.state.monitor.lastTurnComplete` is updated by every completion, matched or not.
+
+Bullets 1 through 4 and 6 restate what this section's own text above already asks for. Bullet 5 is wider than that text, which named only the map entry: the harness duration was adopted from a review finding during execution, because a record depending on the map alone is blind on a session where most starts are never delivered. That widening is recorded as drift in this section's Chapter rather than left to read as original scope.
+
+The open question this section carried, whether `lastTurnComplete` should update on an unmatched completion, is answered under `## Decisions` below: it should, it is left exactly as it is, and only `sess.turnStartedAt` and the long-turn record change.
+
+What the harness guarantees, confirmed at `.claude/types/claude-code.d.ts:6532-6552`: `turn.complete` carries its answer, duration, interrupt flag, turn id and cost "whatever its reason", and the `aborted` flag is true when the turn ended by interruption. So an interrupted turn still completes, and a completion is not lost to an abort. That narrows the missing-completion case to a failure below the harness, such as the host process dying, and it is the citation behind Section 0's decision to bound the open-turn map rather than trust pairing.
+
 ### 10. `goal_add` activates the node it creates when nothing else is active
 Model: sonnet
 
@@ -176,6 +212,24 @@ Acceptance:
 Tests: a case per criterion, each watched red before green. Criterion 1 takes a withheld control, a completion for a turn whose start was never seen leaving the reading unchanged.
 
 ## Decisions
+
+### The idle anchor keeps updating on an unmatched turn completion - decided 2026-09-13 by a consult
+
+Section 9 was written to stop an unmatched `turn.complete` corrupting two fields. Its own text left one of the two open, asking whether `lastTurnComplete` should update anyway on the reasoning that some turn did complete, while its Tests line pre-answered the same question the other way. A consult ruled it, and the answer is that the field is left exactly as it is.
+
+Three readings decide it. `lastTurnComplete` has exactly one reader, the idle gate, which sits inside the controller tick whose second statement is `if (turnIsOpen()) return;`, so the gate is only ever read when no turn is open. The handler writes the field before it deletes the turn from the open-turn map, so a write made while a turn was still open is always superseded by the matched completion that finally empties the map. And the field is written twice more, on session start and on the ownership path, both times when no turn completed at all, which is not how a per-turn record behaves.
+
+So the harm Section 9 names for this field, an unmatched completion restarting the idle clock while a turn is still running, is unreachable on this code. Conditioning the write would be a regression rather than a tightening: on a session whose starts go undelivered, the anchor would freeze while real turns kept finishing, the idle reading would climb without bound, and the gate would pass on every tick. That is the nudge pile-up Section 11 exists to prevent, re-entered through another door.
+
+The axis that decides it generalizes to the next field in this handler, and it is not session-scope versus turn-scope. It is whether a wrong value is superseded in process before any reader sees it, or published out of the process where nothing overwrites it. `lastTurnComplete` is the first. `sess.turnStartedAt` is the second, published to the heartbeat by `writeOwnerHeartbeat` and read by another session on the deferred-status path, which is why it is the field this section changes.
+
+
+Deriving the stamp buys a trade rather than a free win, and both review lenses named it, so it is recorded as accepted rather than left implied. Before this change the stamp was wrong during an overlap but self-healing, because any completion at all nulled it. Now it is only ever as honest as the open-turn map, and that map takes no age-out by the ruling recorded below. So a `turn.start` whose id never receives a completion pins the stamp for the life of the owner, and every reader then reports every pending record as deferred behind a turn that ended long ago, with the heartbeat staying fresh so a reader's dead-owner check cannot catch it.
+
+That is accepted on the same ground the age-out refusal rests on: the map is in-process, so the only failure that can strand an entry is one that takes the process down and the map with it. What makes it worth naming anyway is that this section widens the consequence of being wrong about that. The check that would settle it is cheap and is filed in `docs/backlog.md`: log the turn id on both events, then read a live log and see whether every delivered start later completes. Until someone does, the no-strand claim is inferred rather than confirmed.
+
+One consequence for both turn handlers. The stamp is written through a single `deriveTurnStartedAt` helper rather than by each handler stamping its own clock, because a start that stamped its own clock moved the published value forward whenever a second turn opened, and a reader watched one record's deferral shrink and then grow again when that second turn ended.
+That also rules out the obvious shape for the fix. Skipping the clear when a completion is unmatched would let the stamp strand set forever whenever a start arrives whose own completion never does, and every reader would then report each pending record as deferred behind a turn that ended hours ago. The stamp is therefore derived from the open-turn map rather than conditionally cleared: after the delete it names the earliest turn still open, or null when none is.
 
 ### The open-turn map takes no age-out - decided 2026-09-13 by a scope ruling
 
@@ -326,3 +380,40 @@ Stamps: adjudicated 3, stamped 3 (two line-ending and batch-edit gotchas that ca
 Gate: targeted lane on the separated branch, each exit code read from its own run: `tsc --noEmit` 0, `check-loader-rule.mjs` 0, `commons-unit-test.mjs` 0, `self-review-unit-test.mjs` 0, `controller-tick-test.mjs` 0 with 429 OK and 0 failures. Baseline on the pre-separation worktree was 464 OK / 0 failures, measured by the orchestrator on that tree; the separated branch reads 429 because the detector's own 32 checks left with it and this section's cases replaced them. No regressions against either reading. The typecheck ran with the sibling worktree's compiler, this worktree carrying no install of its own. One unreproduced red is filed to `docs/backlog.md` rather than rationalized: `commons-unit-test.mjs` once exited 127 on a libuv teardown assertion after printing all tests passed, and did not reproduce in seven further runs.
 Next: the pull request against main, then Section 10
 Commit Model: Branch-and-PR
+
+### Chapter 3 - 2026-09-13
+Completed: 9. An unmatched turn completion still corrupts the idle reading and the deferred-status stamp
+Implemented By: implementer-opus, one dispatch; three fix rounds ran in the main session, the last of them a removal ordered by a scope ruling
+Metrics: review rounds 3, closed major-closed; provenance 4 spec-traceable, 3 fix-introduced, 0 new-requirement, rulings (1 refused, 0 declared, 0 asked); NEEDS_CONTEXT 0; escalations 0; consults 1
+Decisions / Surprises: this section ran after 10 and 11 rather than before them, which is ordinary. A plan's section numbers are its decomposition, not its build order, and the discriminating read is a Chapter's own Completed line.
+
+Section 11 had already closed one of the three defects this section was written to fix. It moved the prompt text, the nudged-turn flag and the escalation count to the synchronous side of the submit, which is what the third defect asked for. Nothing was left to do and this section does not touch that code.
+
+The section's own premise for the first defect was wrong, and a consult ruled it before any code changed. `lastTurnComplete` has one reader, the idle gate, which sits inside a controller tick that returns while any turn is open, and the handler writes the field before it removes the turn from the open-turn map. So a write made during another turn is always superseded before a reader sees it. Freezing the field, which the section's own Tests line asked for, would have let the idle reading climb without bound on a session whose starts go undelivered, which is the nudge pile-up Section 11 exists to prevent. The field is left exactly as it is and the ruling is recorded under Decisions.
+
+The axis that ruling turns on generalizes: whether a wrong value is superseded in process before any reader sees it, or published out of the process where nothing overwrites it. That is why `sess.turnStartedAt` is the field this section changes and the idle anchor is not.
+Assumptions: assumed 2026-09-13 (route b, low-blast default, section 9): the long-turn record's label falls back to the word unknown when a completion carries no usable turn id, rather than printing the word undefined into operator-facing text. Reversal is one expression.
+Review Findings: review: code pair at fable, Agent tool (round 1); adversarial alone at opus, Workflow (rounds 2 and 3). The security lens did not run: the delta composes no permission grant, emits no allow or deny decision, and handles no untrusted input. It writes a timestamp a sibling session reads, which is a correctness boundary the code pair covers. Recorded as a decision rather than an omission.
+
+Round 1, three Majors, all fixed: turn.start wrote the published stamp from its own clock while turn.complete derived it from the map, so opening a second turn moved it; the long-turn record skipped every completion with no map entry, which is most of them; and deriving the stamp makes it only as honest as a map that takes no age-out. The third was accepted rather than fixed and the trade is recorded under Decisions with the cheap check that would settle it.
+
+Round 2, three Majors, all fixed: the long-turn test case omitted the duration field so it exercised a fallback rather than the branch production takes; preferring the event field removed an accidental duplicate suppression; and the record's label came from a counter that only counts starts this session saw.
+
+Round 3, APPROVED_WITH_CONCERNS, one low-confidence Major and five Minors.
+
+Design stop. Rounds 2 and 3 each returned a fix-introduced Major in one mechanism, the long-turn record's duration source, which is the provenance trigger rather than a severity one. It was noticed at round 3's adjudication after that round's Major had already been fixed, which is out of order and is recorded as the deviation it is. The judge returned refuse and ordered the block cut back.
+
+That ruling was checked rather than adopted on its face, because its grounds rested on acceptance bullets this session composed for the dispatch and the plan carried none. The check the memory record prescribes is to grep the plan for the mechanism, and it came back harsher than the ruling: the plan never asked for the duration field, the comparison between two figures, or the duplicate suppression. The comparison and the suppression were removed, along with the cases pinning them, because both defended against failures nobody has measured inside the one block already producing self-inflicted defects.
+
+The duration field itself was kept and is declared drift. A record depending on the map alone is blind on a session where most starts are never delivered, which a reviewer established and which serves the Goal. Section 9 now carries an Acceptance list so the next judge rules against the plan rather than against a reconstruction.
+
+One dispatch of the scope adjudicator failed at its fable tier on an API safeguard flag, an environment fault rather than a review outcome. The one same-model retry ran and ruled.
+Stamps: adjudicated 5, stamped 3. Applied: the plan-section-number record, which settled that running 9 after 11 is ordinary; the optional-field distinct-count record, which caught a dedupe keyed on an event id that would have silently suppressed every later long turn had the id ever been absent; and the line-endings record, which is why every ending check here read raw bytes and which caught 52 bare-LF lines this session put into a CRLF test file. Two skipped as peer-session reads rather than this session's.
+Gate: targeted lane at section close, on the branch tip with a clean worktree, the supervisor fleet live on the box throughout and named rather than waited out. Each exit code read from its own run: `tsc --noEmit` 0; `check-loader-rule.mjs` 0; `commons-unit-test.mjs` 0; `self-review-unit-test.mjs` 0; `controller-tick-test.mjs` 0 with 499 checks and 0 failures. Baseline on this same lane at `56057ab`, the merged main this branch cut from, was 476 checks and 0 failures, so the delta is +23 checks and 0 failing in both readings. The count peaked at 505 before the removal round retired six assertions with the mechanisms they pinned. The contention lane did not run: this section's delta touches no machine-shared state. Measured 2026-09-13 on NEO-CLAUDE.
+Next: the pull request for this branch, then Section 0 item 5, which gates Sections 1 through 8 and needs the box quiet
+Commit Model: Branch-and-PR, on `section-9-unmatched-turn-completion` off `56057ab`
+Delta: the size reading was taken on this branch at the close gate, on NEO-CLAUDE, with a clean worktree. The verb reported no corpus to measure in this repository.
+
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
