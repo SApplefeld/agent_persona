@@ -77,105 +77,146 @@ async function tickAndSettle(h, clock, ms = 50) {
 }
 
 // ============================================================
-// D2: idle tick skip
-// ============================================================
-// ============================================================
-// TREELAG: a commit closes the node it completes, within one controller tick
+// TREELAG: a commit is named to the decider, and can close the node
 //
-// Kaizen goal: the `tree_lag` signal (hooks/self-review.ts:236-241) fires when an
-// env_git decision reads `dirty=0 (was N)` with no TREE_WRITE_ACTIONS entry between
-// two clears. The completion path already exists (hooks/index.ts:2549-2566 pushes
-// `completed_by_controller`, which is already in TREE_WRITE_ACTIONS). What is missing
-// is any reason for finalDecision to become "complete" when the worktree clears.
+// Kaizen goal: the `tree_lag` signal (hooks/self-review.ts) fires when a commit
+// lands with no goal-tree write between it and the previous one. The completion
+// path already exists in the controller tick and logs `completed_by_controller`,
+// which self-review already counts as a tree write. What was missing is that the
+// decider is handed a level, "dirty 0", and never the transition, so a tree clean
+// for hours and one a commit just cleaned read identically.
 //
-// This case is written to fail for one specific reason: the leaf is still active
-// after the cleared sample. It must NOT pass or fail on whether a git sample arrived,
-// which is why the env_git assertions are separate checks above the completion one.
-// Those two failures look identical in a count and mean opposite things.
+// Each case asserts its instrument before its subject. A sample that never
+// arrives, a tick that returns early, and a decider never reached all fail
+// identically to the real defect, so without those the red is unreadable.
 // ============================================================
-async function caseTreeLag_commit_closes_leaf(clock) {
-  console.log("\n=== TREELAG: a cleared worktree closes the active leaf in one tick ===");
-  clock.set(T0);
 
-  // gitProbeMs is read at hooks/index.ts:653 straight off the register options
-  // (`const cfg = (options ?? {})`), clamped only as an upper bound, so this
-  // value reaches sess.options directly. It is 1 rather than a round number on
-  // purpose: the sampler stamps sampledAt from Date.now(), which is NOT stubbed
-  // for this case in a full run, so clock.advance() moves nothing the cadence
-  // check reads. At 1ms any real elapsed time clears it, which keeps the case
-  // off the ambient clock stub entirely.
-  const h = await createTickHarness({
-    ...OPTS,
-        // Real elapsed time is what the idle gate reads here, since Date.now() is not
-    // stubbed for this case, so an idle threshold of zero is what gets the tick past
-    // that gate and as far as the decider at all.
-    nudgeIdleMs: 0,
-caseName: "treelag_commit_closes_leaf",
-    gitProbeMs: 1,
-  });
-
-  // Dirty, then clean: the transition the detector keys on.
-  h.setGitScript([
-    { branch: "main", dirty: 3 },
-    { branch: "main", dirty: 0 },
-  ]);
-  h.setClassifyValue("nudge");
-
-  // A turn has to land before the tick reaches the git probe at all: the probe
-  // sits at hooks/index.ts:1684, behind the tick's own owner and idle gates, so
-  // a tick on a session that has never completed a turn returns before it.
+// Shared driver: fire a turn so the tick gets past its idle gate, then tick
+// enough times for the scripted samples to land. Real elapsed time is what the
+// idle gate reads, since Date.now() is not stubbed for these cases in a full
+// run, which is why nudgeIdleMs is 0 and gitProbeMs is 1 rather than relying on
+// clock.advance().
+async function treeLagDrive(h, clock) {
   await fireTurn(h);
   await new Promise(r => setTimeout(r, 20));
-  clock.advance(65000);
-
-  // Several ticks: a tick can return early on other work before it reaches the
-  // git probe, so the case drives enough of them for both samples to land.
   for (let i = 0; i < 5; i++) {
     await tickAndSettle(h, clock, 120);
     clock.advance(2000);
   }
+}
+
+function treeLagOpts(caseName) {
+  return { ...OPTS, nudgeIdleMs: 0, gitProbeMs: 1, caseName };
+}
+
+async function caseTreeLag_commit_is_named_to_decider(clock) {
+  console.log("\n=== TREELAG: a landed commit is named to the decider ===");
+  clock.set(T0);
+
+  const h = await createTickHarness(treeLagOpts("treelag_commit_named"));
+  // Dirty, then clean with a NEWER commit timestamp: a commit landed.
+  h.setGitScript([
+    { branch: "main", dirty: 3, commitAt: 1_700_000_000 },
+    { branch: "main", dirty: 0, commitAt: 1_700_000_500 },
+  ]);
+  h.setClassifyValue("nudge");
+  await treeLagDrive(h, clock);
+
+  const decs = getState(h).decisions;
+  const gitDecs = decs.filter(d => d.action === "env_git");
+  const summaries = h.classifyCalls.map(a => String((a && a[0]) || ""));
+  const clean = summaries.find(s => /dirty 0/.test(s));
+
+  check("TREELAG: a git sample reached the tick at all", gitDecs.length > 0);
+  check("TREELAG: the cleared-worktree transition was sampled",
+    gitDecs.some(d => /dirty=0 \(was [1-9]/.test(d.detail || "")));
+  check("TREELAG: the decider ran on the cleared sample", clean !== undefined);
+  // One summary, both facts: asserting them with separate .some calls would pass
+  // even if the clean tree and the commit notice came from different ticks.
+  check("TREELAG: that same summary names the commit, not just the clean tree",
+    clean !== undefined && /a commit landed since the previous sample/.test(clean));
+}
+
+// Control, and the one that matters most: a worktree can go clean without a
+// commit. `git stash`, `git restore .`, `git checkout -f` and `git clean` all do
+// it, and the dirty count includes untracked files. Telling the decider a commit
+// landed there would invite it to close a node because the worker threw work
+// away. Same dirty transition as the case above, same commit timestamp.
+async function caseTreeLag_clean_without_commit_is_silent(clock) {
+  console.log("\n=== TREELAG control: a clean worktree with no new commit says nothing ===");
+  clock.set(T0);
+
+  const h = await createTickHarness(treeLagOpts("treelag_clean_no_commit"));
+  h.setGitScript([
+    { branch: "main", dirty: 3, commitAt: 1_700_000_000 },
+    { branch: "main", dirty: 0, commitAt: 1_700_000_000 },
+  ]);
+  h.setClassifyValue("nudge");
+  await treeLagDrive(h, clock);
+
+  const gitDecs = getState(h).decisions.filter(d => d.action === "env_git");
+  const summaries = h.classifyCalls.map(a => String((a && a[0]) || ""));
+  const clean = summaries.find(s => /dirty 0/.test(s));
+
+  check("TREELAG control: the same dirty-to-clean transition was sampled",
+    gitDecs.some(d => /dirty=0 \(was [1-9]/.test(d.detail || "")));
+  check("TREELAG control: the decider still ran on it", clean !== undefined);
+  check("TREELAG control: but no commit is claimed",
+    clean !== undefined && !/a commit landed/.test(clean));
+}
+
+// The goal's own stated proof: a cleared sample after a completing commit closes
+// the node. The decider still decides, so the case sets it to "complete"; what is
+// under test is the wiring from that decision to a closed leaf and a tree write,
+// which is completeLeaf/activateNext and the decision push, not the stub.
+async function caseTreeLag_commit_closes_the_node(clock) {
+  console.log("\n=== TREELAG: the node the commit finished is closed in that tick ===");
+  clock.set(T0);
+
+  const h = await createTickHarness(treeLagOpts("treelag_closes_node"));
+  h.setGitScript([
+    { branch: "main", dirty: 3, commitAt: 1_700_000_000 },
+    { branch: "main", dirty: 0, commitAt: 1_700_000_500 },
+  ]);
+  // The decider must answer "nudge" until the commit actually lands, or it closes
+  // the leaf on the first tick from the still-dirty sample and the case proves
+  // closure without proving closure ON the commit, which is the whole claim.
+  h.setClassifyValue("nudge");
+  await fireTurn(h);
+  await new Promise(r => setTimeout(r, 20));
+
+  let toldOnTick = -1;
+  for (let i = 0; i < 6 && toldOnTick < 0; i++) {
+    await tickAndSettle(h, clock, 120);
+    clock.advance(2000);
+    const seen = h.classifyCalls.map(a => String((a && a[0]) || ""));
+    if (seen.some(s => /a commit landed since the previous sample/.test(s))) toldOnTick = i;
+  }
+  check("TREELAG close: the decider was told a commit landed", toldOnTick >= 0);
+
+  // Now the decider judges the work done. One tick is all it gets.
+  h.setClassifyValue("complete");
+  await tickAndSettle(h, clock, 120);
 
   const st = getState(h);
   const decs = st.decisions;
-  const gitDecs = decs.filter(d => d.action === "env_git");
-  const cleared = gitDecs.some(d => /dirty=0 \(was [1-9]/.test(d.detail || ""));
-
-  // Instrument checks first: if these fail, the case proves nothing about the fix.
-  check("TREELAG: a git sample reached the tick at all", gitDecs.length > 0);
-  check("TREELAG: the cleared-worktree transition was sampled", cleared);
-
-  // The actual subject: the decider is told a commit landed, not merely that the
-  // worktree is currently clean. Asserting on completion instead would pass without
-  // any change, because the harness classify returns a fixed value and never reads
-  // the summary it is handed, so the assertion would be about the stub.
-  const summaries = h.classifyCalls.map(a => String((a && a[0]) || ""));
-  check("TREELAG: the decider ran after the clear", summaries.some(s => /dirty 0/.test(s)));
-  check("TREELAG: the decider is told the worktree just cleared, not only that it is clean",
-    summaries.some(s => /worktree cleared/i.test(s)));
+  const leaf = st.goals.find(g => g.id === "g-plan");
+  check("TREELAG close: the leaf is complete", leaf && leaf.status === "complete");
+  check("TREELAG close: the closure is recorded as a tree write",
+    decs.some(d => d.action === "completed_by_controller"));
 }
 
-// Control for the opt-in git stub: a case that never calls setGitScript must still
-// take the exit-128 non-git path. Without this, a later change could make git answers
-// the harness default and silently retire the gitUnavailable coverage every other
-// case relies on, with nothing turning red.
+// Control for the opt-in git stub: a case that never calls setGitScript must
+// still take the exit-128 non-git path. Without this, a later change could make
+// git answers the harness default and silently retire the gitUnavailable
+// coverage every other case relies on, with nothing turning red.
 async function caseTreeLag_git_stub_control(clock) {
   console.log("\n=== TREELAG control: no git script means the non-git path ===");
   clock.set(T0);
 
-  const h = await createTickHarness({
-    ...OPTS,
-    caseName: "treelag_git_stub_control",
-    gitProbeMs: 1,
-  });
+  const h = await createTickHarness(treeLagOpts("treelag_git_stub_control"));
   h.setClassifyValue("nudge");
-
-  await fireTurn(h);
-  await new Promise(r => setTimeout(r, 20));
-  clock.advance(65000);
-
-  await tickAndSettle(h, clock, 80);
-  clock.advance(2000);
-  await tickAndSettle(h, clock, 80);
+  await treeLagDrive(h, clock);
 
   const decs = getState(h).decisions;
   check("TREELAG control: no env_git decision without a script",
@@ -184,6 +225,9 @@ async function caseTreeLag_git_stub_control(clock) {
     decs.some(d => d.action === "env_git_null"));
 }
 
+// ============================================================
+// D2: idle tick skip
+// ============================================================
 async function caseD2(clock) {
   console.log("\n=== D2: idle tick skip ===");
   clock.set(T0);
@@ -3962,7 +4006,9 @@ async function main() {
   await caseBO1_pin_control_no_selfreview(clock);
   await caseItem6_personaOption(clock);
   await caseItem6_personaOption_control(clock);
-  await caseTreeLag_commit_closes_leaf(clock);
+  await caseTreeLag_commit_is_named_to_decider(clock);
+  await caseTreeLag_clean_without_commit_is_silent(clock);
+  await caseTreeLag_commit_closes_the_node(clock);
   await caseTreeLag_git_stub_control(clock);
 
   // AO1: Skip for now (we have uncommitted changes during development).

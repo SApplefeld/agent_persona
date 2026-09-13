@@ -353,6 +353,13 @@ const REPLY_INSTRUCTION = "You are attached to a Discord channel. When you want 
 // rewritten, so the file that grows without bound is this one, by design,
 // not the store the plugin reads and rewrites whole on every tick.
 const CHANNEL_LOG_PATH = ".agentic-channel.jsonl";
+
+// How long an unconsumed commit-landed stamp stays worth telling a decider about.
+// It exists for the restart case: `monitor.env` is persisted, so a stamp written
+// just before a crash would otherwise be re-asserted whenever the process came
+// back. Ten minutes is far longer than the gap between two deciders and far
+// shorter than an outage worth reporting a stale commit across.
+const COMMIT_SIGNAL_MAX_AGE_MS = 10 * 60_000;
 // Round 47 finding 1: this used to swallow every write error, and
 // enforceChannelWindow deleted the rolled store keys regardless of whether
 // the append actually landed - a failed write meant the record vanished
@@ -1709,13 +1716,44 @@ export const register: Register = async (on, options) => {
                   const sampledAt = Date.now();
                   const newGit: EnvGit = { branch, dirty, ahead, behind, lastCommitAt, sampledAt };
                   const prevGit = env.git;
-                  // Stamp the dirty-to-clean transition on the sample that observed
-                  // it, so the summary can name the commit rather than only the
-                  // resulting clean tree. It is deliberately not carried forward to
-                  // later samples: the signal is "a commit just landed", and a stale
-                  // one would tell the decider that on every tick afterwards.
-                  if (prevGit !== null && prevGit.dirty > 0 && dirty === 0) {
+                  // Stamp the sample that observed a commit landing, so the summary
+                  // can name the commit rather than only the resulting clean tree.
+                  //
+                  // A dirty-to-clean transition alone is NOT that signal: `git stash`,
+                  // `git restore .`, `git checkout -f` and `git clean` all take dirty
+                  // above zero to zero with no commit, and the dirty count includes
+                  // untracked lines. Telling the decider a commit landed there would
+                  // invite it to close a node because the worker discarded its work.
+                  // So the commit itself is the discriminator, read from the same
+                  // `git log -1 --format=%ct` this sampler already issues. A branch
+                  // change is excluded too, since `lastCommitAt` jumps on a checkout
+                  // without anything having been committed here.
+                  if (
+                    prevGit !== null &&
+                    prevGit.branch === branch &&
+                    prevGit.dirty > 0 &&
+                    dirty === 0 &&
+                    lastCommitAt > prevGit.lastCommitAt
+                  ) {
                     newGit.clearedAt = sampledAt;
+                  } else if (
+                    prevGit !== null &&
+                    prevGit.clearedAt !== undefined &&
+                    sampledAt - prevGit.clearedAt < COMMIT_SIGNAL_MAX_AGE_MS
+                  ) {
+                    // Carry an unconsumed stamp forward. The probe is
+                    // fire-and-forget and can run more than once between two
+                    // deciders; the second sample sees a worktree that is already
+                    // clean, so it fails the gate above and would rebuild the
+                    // sample without the stamp, destroying the notice before any
+                    // decider was handed it. The stamp is retired by consumption
+                    // at the decider, not by the next sample.
+                    //
+                    // The age bound is what keeps a crash from resurrecting it:
+                    // `env` is persisted, so without it a stamp written just
+                    // before a restart would be re-asserted to a decider whenever
+                    // the process came back, however much later that was.
+                    newGit.clearedAt = prevGit.clearedAt;
                   }
                   if (prevGit === null || prevGit.dirty !== dirty || prevGit.branch !== branch) {
                     const detail = prevGit === null
@@ -2172,10 +2210,19 @@ export const register: Register = async (on, options) => {
         const parts: string[] = [];
         if (env.git !== null) {
           parts.push(`git: ${env.git.branch} dirty ${env.git.dirty} ahead ${env.git.ahead} behind ${env.git.behind}`);
-          // Only on the sample that observed the transition, so the decider can tell
-          // a commit that just landed from a tree that has been clean for hours.
-          if (env.git.clearedAt !== undefined && env.git.clearedAt === env.git.sampledAt) {
-            parts.push("worktree cleared since the previous sample (a commit or reset landed)");
+          // Present only while the stamp is unconsumed, so the decider can tell a
+          // commit that just landed from a tree that has been clean for hours. The
+          // stamp is cleared once a decider has actually been handed it, below.
+          if (env.git.clearedAt !== undefined) {
+            parts.push("a commit landed since the previous sample (worktree went from dirty to clean)");
+            // Spend the stamp here, at the one place it becomes visible to a
+            // decider, rather than after the classify call. A tick builds this
+            // summary before several gates that can still return early, but a
+            // summary carrying this line always differs from the previous one, so
+            // the unchanged-summary gate cannot swallow the tick that renders it.
+            // Consuming later instead lets a tick whose summary predates the
+            // sample retire a stamp nothing was ever shown.
+            env.git.clearedAt = undefined;
           }
         }
         if (env.health !== null) {

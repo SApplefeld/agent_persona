@@ -126,9 +126,16 @@ function createFake$(opts = {}) {
     },
     process: {
       // The git sampler issues `git status --porcelain=v1 -b` and then
-      // `git log -1 --format=%ct` as a pair. gitIndex advances on the log call,
-      // the second of the pair, so a step's timestamp stays with the status it
-      // belongs to.
+      // `git log -1 --format=%ct` as a pair. A step supplies both halves, so
+      // `commitAt` belongs to the same step as its dirty count: the sampler keys
+      // its commit-landed signal on that timestamp advancing, and a case needs to
+      // drive a commit and a bare worktree clean separately.
+      //
+      // The pair is consumed as a unit: `status` selects the step and `log`
+      // advances past it. A sampler path that issued a status without reaching the
+      // log would pin the script on one step, so the advance stays on the second
+      // call rather than the first, where a half-consumed pair would read as a
+      // step that never arrives.
       run(argv) {
         if (gitScript.length > 0 && Array.isArray(argv) && argv[0] === "git") {
           const step = gitScript[Math.min(gitIndex, gitScript.length - 1)];
@@ -139,7 +146,8 @@ function createFake$(opts = {}) {
           }
           if (argv[1] === "log") {
             gitIndex += 1;
-            return Promise.resolve({ exitCode: 0, stdout: String(Math.floor(Date.now() / 1000)) + "\n" });
+            const commitAt = step.commitAt ?? 1_700_000_000;
+            return Promise.resolve({ exitCode: 0, stdout: String(commitAt) + "\n" });
           }
         }
         return Promise.resolve({ exitCode: 128 });
@@ -150,8 +158,6 @@ function createFake$(opts = {}) {
   // Attach maps to fake for convenient access (h.fake.fsMap === h.fsMap).
   fake.fsMap = fsMap;
   fake.storeMap = storeMap;
-  // steps: [{ branch?, dirty? }, ...]. The last step repeats once exhausted.
-  fake.setGitScript = (steps) => { gitScript = steps || []; gitIndex = 0; };
   fake.classifyCalls = classifyCalls;
   fake.completeCalls = completeCalls;
   fake.promptSubmits = promptSubmits;
@@ -171,7 +177,8 @@ function createFake$(opts = {}) {
     uiLogs,
     setClassifyValue(v) { classifyValue = v; },
     setCompleteValue(v) { completeValue = v; },
-    // steps: [{ branch?, dirty? }, ...]. The last step repeats once exhausted.
+    // steps: [{ branch?, dirty?, commitAt? }, ...], one per sampler status/log
+    // pair. The last step repeats once the script is exhausted.
     setGitScript(steps) { gitScript = steps || []; gitIndex = 0; },
     resetClassifyCalls() { classifyCalls.length = 0; },
     resetCompleteCalls() { completeCalls.length = 0; },
