@@ -360,6 +360,45 @@ else
   fi
 fi
 
+# --- Case: a CIM failure during the descendant walk is reported as
+# unverified, not a false-clean root-only tree (Reviewer Round 132 R101 /
+# Round 134 R104, R105) ---
+# `Get-CimInstance` is shadowed with a throw by redefining `run_bounded_
+# powershell_capture` (the one seam `snapshot_process_tree` calls through)
+# to prepend a shadow function definition ahead of its real script - a
+# PowerShell function in the same -Command scope resolves before a
+# same-named cmdlet, so every call the walk makes fails exactly like a
+# real WMI outage would, without touching `snapshot_process_tree`'s own
+# extracted body at all. Watched red against d7d8aa8 (the CIMFAIL marker
+# landed inside `Get-Descendants`'s own captured output, never reaching
+# real stdout, so the walk reported a false-clean root-only tree, rc 0)
+# before this fix; asserts rc 1 (unverified) now.
+eval "$(declare -f run_bounded_powershell_capture | sed '1s/run_bounded_powershell_capture/_real_run_bounded_powershell_capture_for_r105/')"
+run_bounded_powershell_capture() {
+  local bound="$1"
+  local script="$2"
+  _real_run_bounded_powershell_capture_for_r105 "$bound" "function Get-CimInstance { throw 'R105_SIMULATED_CIM_FAILURE' }
+$script"
+}
+( exec powershell.exe -NoProfile -Command "Start-Sleep -Seconds 30" ) &
+CIMFAIL_PID=$!
+sleep 2
+CIMFAIL_WINPID=$(resolve_windows_pid "$CIMFAIL_PID")
+if [ -z "$CIMFAIL_WINPID" ]; then
+  failed "setup: could not resolve a winpid for the R105 CIM-failure case"
+else
+  snapshot_process_tree "$CIMFAIL_WINPID" > /dev/null
+  CIMFAIL_SNAP_RC=$?
+  if [ "$CIMFAIL_SNAP_RC" -eq 1 ]; then
+    pass "R101/R104/R105: snapshot_process_tree returns 1 (unverified) when the CIM walk itself fails, not a false-clean root-only tree"
+  else
+    failed "R101/R104/R105: snapshot_process_tree returned rc=$CIMFAIL_SNAP_RC (expected 1) when the CIM walk fails - R104's exact defect is back"
+  fi
+fi
+kill -9 "$CIMFAIL_PID" 2>/dev/null
+# Restore the real implementation for anything that runs after this case.
+eval "$(declare -f _real_run_bounded_powershell_capture_for_r105 | sed '1s/_real_run_bounded_powershell_capture_for_r105/run_bounded_powershell_capture/')"
+
 rm -f "$RUNDIR/child.pid" "$RUNDIR/child3.pid"
 kill -9 "$DIRECT_PID" "$CHILD_PID" 2>/dev/null  # best-effort cleanup
 

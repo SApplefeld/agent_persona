@@ -520,20 +520,35 @@ snapshot_process_tree() {
   if [ -z "$winpid" ]; then
     return 0
   fi
+  # Reviewer Round 134 R104 (Critical, reproduced by both reviewers): the
+  # prior cut's `Write-Output 'CIMFAIL'` sat *inside* `Get-Descendants`,
+  # whose own output stream is what `@(Get-Descendants $winpid)` unions
+  # into `$ids` - so the marker never reached this script's real stdout at
+  # all. It became a string member of `$ids` instead, and the id loop then
+  # emitted `"CIMFAIL,<some ticks value>"` (a non-terminating error inside
+  # `Get-Process -Id` on a non-integer, silently absorbed) plus the
+  # sentinel - a CIM failure was, in practice, still a verified root-only
+  # tree. Fixed with a script-scope flag set in the catch (invisible to
+  # the id loop, immune to this exact bug), a bare `CIMFAIL` line emitted
+  # only after that loop finishes and only from the top-level script
+  # (never from inside a function whose own output is captured
+  # elsewhere), and `$ids` filtered to integers so a stray non-numeric
+  # value can never reach `Get-Process -Id` again regardless.
   local raw
   raw=$(run_bounded_powershell_capture "$SUPERVISOR_PS_BOUND_S" "
       \$visited = New-Object 'System.Collections.Generic.HashSet[int]'
+      \$script:cimFailed = \$false
       function Get-Descendants(\$parentId) {
         if (-not \$visited.Add(\$parentId)) { return }
         try {
           \$children = Get-CimInstance Win32_Process -Filter \"ParentProcessId=\$parentId\" -ErrorAction Stop
         } catch {
-          Write-Output 'CIMFAIL'
+          \$script:cimFailed = \$true
           return
         }
         foreach (\$c in \$children) { \$c.ProcessId; Get-Descendants \$c.ProcessId }
       }
-      \$ids = @($winpid) + @(Get-Descendants $winpid)
+      \$ids = @($winpid) + @(Get-Descendants $winpid) | Where-Object { \$_ -match '^[0-9]+\$' }
       foreach (\$thisId in \$ids) {
         \$proc = Get-Process -Id \$thisId -ErrorAction SilentlyContinue
         if (\$proc) {
@@ -541,6 +556,7 @@ snapshot_process_tree() {
           catch { Write-Output (\"\$thisId,UNREADABLE\") }
         }
       }
+      if (\$script:cimFailed) { Write-Output 'CIMFAIL' }
       Write-Output '$STOP_PS_SENTINEL'
     ")
   # Reviewer Round 132 R101 (Major, confidence medium, taken): a CIM query
