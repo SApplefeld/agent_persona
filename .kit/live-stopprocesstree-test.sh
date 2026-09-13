@@ -395,7 +395,11 @@ else
     failed "R101/R104/R105: snapshot_process_tree returned rc=$CIMFAIL_SNAP_RC (expected 1) when the CIM walk fails - R104's exact defect is back"
   fi
 fi
-kill -9 "$CIMFAIL_PID" 2>/dev/null
+# Reviewer Round 136 R108 (Minor, required): kill -9 on $CIMFAIL_PID hits
+# the MSYS stub only, not the live native powershell.exe underneath it;
+# use the same taskkill-on-winpid mechanism the rest of this file already
+# extracted, targeting the resolved winpid directly.
+run_bounded_native 5 taskkill //F //T //PID "$CIMFAIL_WINPID"
 # Restore the real implementation for anything that runs after this case.
 eval "$(declare -f _real_run_bounded_powershell_capture_for_r105 | sed '1s/_real_run_bounded_powershell_capture_for_r105/run_bounded_powershell_capture/')"
 

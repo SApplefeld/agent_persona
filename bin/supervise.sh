@@ -525,15 +525,21 @@ snapshot_process_tree() {
   # whose own output stream is what `@(Get-Descendants $winpid)` unions
   # into `$ids` - so the marker never reached this script's real stdout at
   # all. It became a string member of `$ids` instead, and the id loop then
-  # emitted `"CIMFAIL,<some ticks value>"` (a non-terminating error inside
-  # `Get-Process -Id` on a non-integer, silently absorbed) plus the
-  # sentinel - a CIM failure was, in practice, still a verified root-only
-  # tree. Fixed with a script-scope flag set in the catch (invisible to
-  # the id loop, immune to this exact bug), a bare `CIMFAIL` line emitted
-  # only after that loop finishes and only from the top-level script
-  # (never from inside a function whose own output is captured
-  # elsewhere), and `$ids` filtered to integers so a stray non-numeric
-  # value can never reach `Get-Process -Id` again regardless.
+  # emitted `"CIMFAIL,<the PREVIOUS iteration's ticks value>"` plus the
+  # sentinel - `Get-Process -Id "CIMFAIL"` fails to bind (not an integer)
+  # and never assigns `$proc`, so the loop's `$proc` variable kept
+  # whatever process object the last successful iteration left in it,
+  # combined with the current (wrong) `$thisId`. A CIM failure was, in
+  # practice, still a verified root-only tree. Fixed with a script-scope
+  # flag set in the catch (invisible to the id loop, immune to this exact
+  # bug), a bare `CIMFAIL` line emitted only after that loop finishes and
+  # only from the top-level script (never from inside a function whose
+  # own output is captured elsewhere), and `$ids` filtered with a
+  # numeric-string match (Round 134's own self-caught regression: an
+  # `-is [int]` type check silently drops every real descendant pid,
+  # since `Get-CimInstance`'s `ProcessId` is `[UInt32]`, not `[int]`) so a
+  # stray non-numeric value can never reach `Get-Process -Id` again
+  # regardless.
   local raw
   raw=$(run_bounded_powershell_capture "$SUPERVISOR_PS_BOUND_S" "
       \$visited = New-Object 'System.Collections.Generic.HashSet[int]'
@@ -870,6 +876,28 @@ stop_child() {
   if [ -z "$pid" ]; then
     log "STOP[$label]: no child to stop (CHILD_PID empty or unbound)"
     return 0
+  fi
+  # Reviewer Round 136 R107 (Major, required): a wrapper that exits on its
+  # own in the window between the poll loop's own `kill -0` check and
+  # `stop_child` actually running (the decide-unit's own node calls, the
+  # `case` dispatch) used to fall all the way through to `unverified` -
+  # `resolve_windows_pid` finds nothing for an already-gone pid, so
+  # `snap_attempted` stays 0, and a child that ended cleanly reported
+  # `exit 5` as if a survivor were still alive. Checked explicitly here,
+  # before any snapshot is even attempted: if the wrapper is already gone
+  # and no winpid ever resolves for it, there is nothing to verify and
+  # nothing to kill - `STOP_PATH="gone"` reports exactly that, distinct
+  # from `unverified` (which means "cannot tell"), and `retry_stop_
+  # escalation` treats it as nothing to retry.
+  if ! kill -0 "$pid" 2>/dev/null; then
+    local early_winpid
+    early_winpid=$(resolve_windows_pid "$pid")
+    if [ -z "$early_winpid" ]; then
+      log "STOP[$label]: wrapper gone before stop_child ran (pid $pid already exited, no winpid resolves) - nothing to verify or kill"
+      STOP_PATH="gone"
+      LAST_STOP_SNAPSHOT=""
+      return 0
+    fi
   fi
 
   # Reviewer Round 119 R50/R52: the snapshot is taken HERE, before any
