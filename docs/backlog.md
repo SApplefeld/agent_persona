@@ -1,5 +1,13 @@
 # Backlog
 
+## The natural-exit relaunch never checks for a surviving claude.exe, because the child's Windows pid is resolved only at stop time (found 2026-09-13)
+
+`bin/supervise.sh` translates the child's MSYS pid to a Windows pid inside `stop_child` alone, and that translation finds nothing once the wrapper has exited. So the `STOP_PATH="gone"` early return, the natural-exit relaunch, and the escalation retry's re-snapshot never look at descendants. If `env.exe` is killed from outside while `claude.exe` under it survives holding the persona claim, the relaunch walks into the 120-second pre-gate and exits 2 with an orphan. The remedy is to resolve and store the Windows pid right after the `coproc` launch, and snapshot from the stored value on every stop and before a natural-exit relaunch. Needs a live proof, which is why it was not folded into Section 0's finishing fix round.
+
+## A backfilled root_complete relaunch has no rate bound, and a newer backfilled root can mask a real completion (found 2026-09-13)
+
+A child that does one backfilled tool turn and exits 0 is relaunched outside both the crash counter and `SUPERVISOR_MAX_RESTARTS_PER_HOUR`, so a child that repeats that shape relaunches without limit. Separately, `get_root_complete` reads only the newest `root_complete`, so a real completion followed within one poll by a backfilled one reads as backfilled and the finished child stays up. Count backfilled relaunches against the hourly restart budget without touching the crash counter, and have the reader report the newest non-backfilled timestamp beside the flag.
+
 ## A provided settings file's persona silently overrides the supervisor's persona argument (found 2026-09-13)
 
 `bin/supervise.sh` hands `$RUNDIR/settings.json` to its child on `--settings` and writes that file only when it is absent. `RUNDIR` defaults to `$WORKDIR/run`, so a second supervisor launched on the same workdir under a different persona reuses the first launch's file. Its child claims the file's persona while the pre-gate and polls watch the supervisor's own argument, and a store check reads a claim for a persona nobody asked for.
