@@ -77,8 +77,14 @@ emit_settings_json() {
   if [ -n "${PERSONA:-}" ]; then
     persona_opt=",\"persona\":\"$PERSONA\""
   fi
+  # The engine keys pluginConfigs by plugin id: the manifest name under
+  # --plugin-dir, and "<name>@<marketplace>" for the installed copy. Options
+  # under the wrong id are ignored without an error, so the same options are
+  # written under both. .kit/settings-plugin-key-test.sh pins both ids against
+  # .claude-plugin/plugin.json and .claude-plugin/marketplace.json.
+  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts$cost_opts$persona_opt}"
   cat > "$out" <<EOF
-{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":$TICK_MS,"nudgeIdleMs":$NUDGE_IDLE_MS,"nudgeFloorMs":${NUDGE_FLOOR_MS:-5000},"gitProbeMs":$GIT_PROBE_MS,"heartbeatMs":${HEARTBEAT_MS:-30000},"staleAfterMs":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts$cost_opts$persona_opt}}}}
+{"pluginConfigs":{"agentic-plugin":{"options":$options},"agentic-plugin@agent-persona":{"options":$options}}}
 EOF
 }
 
