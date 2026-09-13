@@ -150,7 +150,42 @@ Files in scope: `hooks/index.ts` (the `goal_add` handler), `hooks/agent-state.ts
 
 Tests: a plan node added with no active leaf is active when `goal_add` returns, and `goal_done` closes it in the same turn with no tick in between. Controls: adding under an active parent still demotes and activates as it does today, and the tick's own planning gate still activates when the node was added with no turn open.
 
+### 11. The goal nudge is bounded by an open-turn reading that survives unpaired events
+Model: opus
+
+Appended as approval drift rather than folded, because Section 0 carries this work and states no acceptance for it. Section 0's own six items never mention the controller's in-flight reading at all, so the work had no specification to be judged against. This section is that specification.
+
+Two defects, both observed rather than inferred.
+
+A long turn collected one queued `[GOAL]` nudge per controller tick, 48 of them in a single measured window. The cause is that `sess.lastNudgeAt` was written after `await $.prompt.submit`, and that promise does not settle while the turn it waits on is still running. Every tick in that window therefore read the same stale floor, passed it, and queued another identical copy.
+
+The turn events are not reliably paired, on Section 9's own evidence: one window carries two `turn.complete` events with no `turn.start` between them. A single boolean carries only the last event, so any one completion reads as "no turn is open" however many turns are still running.
+
+Fix: the in-flight reading is keyed by turn id rather than held as a boolean, and the nudge floor is spent before the submit rather than after it.
+
+No age-out bounds the open-turn map. Three fix rounds built one and each reopened the defect beside it, and a scope ruling on 2026-09-13 refused the mechanism: nothing in the Goal asks for it, and the map is in-process state that a lost completion could only outlive on host death, which takes the map with it. See the Decisions entry.
+
+Files in scope: `hooks/index.ts`, `.kit/controller-tick-test.mjs`, `.kit/tick-harness.mjs`.
+
+Acceptance:
+
+1. No nudge is submitted while a turn is open, and that reading is correct when a completion arrives for a turn whose start was never seen.
+2. The nudge floor is spent before the submit, so a submit that does not settle during the turn cannot leave the next tick reading an unspent floor.
+3. The escalation counter and the nudged-turn flag are spent before the submit alongside the floor, so a promise that settles after the turn cannot let a compliant worker accumulate the counter past its cap.
+
+Tests: a case per criterion, each watched red before green. Criterion 1 takes a withheld control, a completion for a turn whose start was never seen leaving the reading unchanged.
+
 ## Decisions
+
+### The open-turn map takes no age-out - decided 2026-09-13 by a scope ruling
+
+Section 11 fixes the nudge pile-up with an in-flight reading keyed by turn id. Three fix rounds also tried to bound that map, so a turn id whose completion never arrived could not mute the goal loop forever. Each design reopened the defect it sat beside: keying the age on turn start evicted long legitimate turns, and refreshing every entry on any tool call meant a leaked id rode on a later turn and never aged out at all.
+
+The second of those is two consecutive rounds of fix-introduced findings in one mechanism, which is a design stop rather than a third patch. The ruling refused the mechanism on three grounds. The Goal asks for nothing of the kind. No Out of Scope entry reaches it either, so the refusal rests on absence of an ask rather than on an exclusion. And the two acceptance bullets naming the bound were written from the code after the code existed, which ratifies a mechanism by construction and makes the question unaskable, so they carry no authority and were removed with it.
+
+The correctness reading points the same way without deciding it. The harness guarantees `turn.complete` whatever the turn’s reason, including an abort, so a completion is lost only below the harness, such as on host death. The map is a plain in-process Map with no persistence, so host death takes it too. The bound therefore guarded a state the process cannot reach while repeatedly creating one it could.
+
+
 
 ### FORK B: coordinator steer authority - decided 2026-09-12, Option 2, autonomy with judgment
 
@@ -277,3 +312,17 @@ Delta: the size reading was taken on this branch at the close gate, on NEO-CLAUD
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Chapter 2 - 2026-09-13
+Completed: 11. The goal nudge is bounded by an open-turn reading that survives unpaired events
+Implemented By: implementer-opus, three fix rounds, with the removal round dispatched after a scope ruling
+Metrics: review rounds 3, closed major-closed; provenance 3 spec-traceable, 3 fix-introduced, 2 new-requirement, rulings (1 refused, 0 declared, 0 asked); NEEDS_CONTEXT count 0; escalations 0; consults 0
+Decisions / Surprises: the section's own mechanism was refused mid-flight. Three rounds built an age-out on the open-turn map and each reopened the defect beside it, which is a design stop rather than a third patch. The ruling refused it and the removal landed in the same round as the remaining fixes. Two acceptance bullets came out of the plan with the mechanism, because they had been written from the code after the code existed and so ratified it by construction.
+
+A second surprise sat in the branch rather than the code. This work was built on top of the five commits of the dropped commit-landed detector, so it could not reach main as it stood. Transplanting it onto main by hand failed its own gate at 27 checks, which is the reason a clean `git apply` is not evidence of a working build. Reverting the detector on the branch and letting git do the untangling worked, and left one harness change to carry forward by hand: the tick harness's classify stub records the arguments it was handed, which is general capability the detector happened to introduce and the nudge cases depend on.
+Assumptions: none
+Review Findings: round 3 ran one adversarial lens at opus, Workflow, after round 2 returned Majors. It returned CHANGES_REQUIRED with 4 Majors and 5 Minors. Major 1 (the age-out is defeated by refresh-all) and Major 2 (that interaction is untested) were dispositioned by the removal rather than by a fix. Major 3 (a new decision action missing from the self-review noise list) was folded, widening Files in scope to `hooks/self-review.ts`. Major 4 (three writes stranded after the parking submit) was fixed and is now criterion 3; the reviewer's stated magnitude was wrong and the implementer disproved it with a red run, so the defect is recorded as one met nudge failing to clear its own count rather than as a compliant worker tripping the cap. All 5 Minors fixed. The orchestrator overturned one implementer call, keeping `nudge_failed` out of the noise set, because `docs/backlog.md` carries an open entry whose remedy is exactly that record.
+Stamps: adjudicated 3, stamped 3 (two line-ending and batch-edit gotchas that caught a live corruption in this session's own edit, and the composed-trace-target record that shaped the ruling dispatch)
+Gate: targeted lane on the separated branch, each exit code read from its own run: `tsc --noEmit` 0, `check-loader-rule.mjs` 0, `commons-unit-test.mjs` 0, `self-review-unit-test.mjs` 0, `controller-tick-test.mjs` 0 with 429 OK and 0 failures. Baseline on the pre-separation worktree was 464 OK / 0 failures, measured by the orchestrator on that tree; the separated branch reads 429 because the detector's own 32 checks left with it and this section's cases replaced them. No regressions against either reading. The typecheck ran with the sibling worktree's compiler, this worktree carrying no install of its own. One unreproduced red is filed to `docs/backlog.md` rather than rationalized: `commons-unit-test.mjs` once exited 127 on a libuv teardown assertion after printing all tests passed, and did not reproduce in seven further runs.
+Next: the pull request against main, then Section 10
+Commit Model: Branch-and-PR

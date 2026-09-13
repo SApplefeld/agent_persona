@@ -626,8 +626,30 @@ export const register: Register = async (on, options) => {
   // Whether the reply tool (channel-relay's mcp__..__reply) was called
   // anywhere during the current turn. Reset at turn.start, set by tool.call.
   let replyCalledThisTurn = false;
-  // Skip the controller tick while a turn is in flight.
-  let turnInFlight = false;
+  // The turns open right now, each id against the clock at its turn.start, so
+  // the controller tick can skip while the worker is inside one.
+  // Keyed by id rather than held as a boolean because turn events are not
+  // reliably paired:
+  // two turns can be open at once, and a turn.complete can arrive for a turn
+  // whose turn.start this session never saw. A boolean carries only the last
+  // event, so any single completion reads as "no turn open" however many turns
+  // are still running, and the tick then nudges into a live turn. A completion
+  // for an id not in the map removes nothing and leaves the reading alone.
+  //
+  // The map holds no entry a live process cannot account for. A turn.complete
+  // is delivered whatever the turn's reason, an abort included, so an id is
+  // left behind only by a failure below the harness, and a failure that takes
+  // the host down takes this in-process map with it. That is why the reading
+  // needs no age-out: there is no state a running process can reach in which
+  // an entry here is not a turn.
+  //
+  // The value is that turn's own start time. No reader takes it yet; the
+  // long-turn record in turn.complete measures against the single
+  // sess.turnStartedAt instead, which whichever completion arrives first
+  // clears for every other open turn. A per-turn start is what that record
+  // actually wants, and this is it.
+  const openTurns = new Map<string, number>();
+  const turnIsOpen = () => openTurns.size > 0;
   // Plan item 8.3: an urgent inbox record is looked for on the owner's
   // passthrough tool calls; this throttles that store read to once per
   // urgentCheckMinMs, since a long turn can make a tool call every second.
@@ -1244,7 +1266,7 @@ export const register: Register = async (on, options) => {
       // 1. Owner check.
       if (!sess.isOwner) return;
       // 2. In-flight check.
-      if (turnInFlight) return;
+      if (turnIsOpen()) return;
 
       // D3: drain operator inbox (one record per tick, owner only).
       // List pending inbox records whose writer holds a live reader claim,
@@ -2496,45 +2518,105 @@ export const register: Register = async (on, options) => {
 
           // Actuate (controller only: the three actuators).
           if (finalDecision === "nudge" && g.status === "active") {
-            // Nudge floor.
-            if (now - sess.lastNudgeAt >= nudgeFloorMs) {
+            // A nudge wakes an idle worker, and a worker inside an open turn is
+            // not idle, so no nudge is sent while a turn is open. The tick's
+            // in-flight check passes synchronously while the classify call that
+            // follows is async, so a turn can open underneath a tick already on
+            // its way to this line. That is why the open-turn reading is taken
+            // again here rather than trusted from the top of the tick. A
+            // submission made here would not reach the running turn at all. It
+            // is queued and runs once the session is idle, so it arrives as
+            // part of the next turn's prompt, one identical copy per tick,
+            // rather than waking anything.
+            if (turnIsOpen()) {
+              sess.state.decisions.push({
+                timestamp: tickTs,
+                loop: "monitor",
+                action: "nudge_skipped_turn_in_flight",
+                detail: `${g.id}: idle ${idleDisplay}, turn in flight`,
+              });
+            } else if (now - sess.lastNudgeAt >= nudgeFloorMs) {
+              // Nudge floor.
               // AK2: Guard only (silent). The nudge-cap check before classify already handles the cap.
               // If we reached here, the cap was not latched at the pre-classify check.
               if (nudgeCapped) {
                 return;
               }
+              // R8: nudge text appends goal_done instruction. Item 8.2
+              // (Round 36): a converted ask-operator gets its own text -
+              // re-read the plan and the discussion file, and only state a
+              // fork as a literal marker line if one truly exists, since
+              // the classifier itself never carries a concrete blocking
+              // question, only an idle reading.
+              const nudgeText = idleGapConverted
+                ? `[GOAL] The active goal is: ${g.objective}\n` +
+                  `The controller read this as an idle gap, not a real fork: no concrete blocking question. ` +
+                  `Re-read the plan doc and DISCUSSION.md before continuing - the next concrete step should already be there.\n` +
+                  `If you genuinely hold a fork the plan doesn't resolve, state it in this turn as a line: ASK: <question>? Recommend: <choice>\n` +
+                  `Otherwise take the next concrete step. When this step is done, call goal_done with a one-line note. ` +
+                  `If the result names a next goal, continue with it.`
+                : `[GOAL] The active goal is: ${g.objective}\n` +
+                  `The Controller detected ${idleDisplay} of idle time. ` +
+                  `Re-read the objective and take the next concrete step toward it.\n` +
+                  `When this step is done, call goal_done with a one-line note. ` +
+                  `If the result names a next goal, continue with it.`;
+              // The floor is spent here, before the submit, so that the test
+              // above and this write are one synchronous step. $.prompt.submit
+              // does not resolve until the session is next idle, so during a
+              // long turn it parks; writing the floor after it would leave
+              // every tick reading the same stale stamp, passing the floor,
+              // and queueing another identical copy of this prompt. The cost
+              // of spending it first is that a submit that throws has still
+              // consumed the floor and the next nudge waits it out, which the
+              // nudge_failed record below is there to make visible.
+              //
+              // The stamp is the clock now rather than the tick's own `now`,
+              // which was taken before the classify call: classify latency
+              // would otherwise come out of the floor and shorten it.
+              sess.lastNudgeAt = Date.now();
+              // The rest of this nudge's own bookkeeping is spent here for the
+              // same reason as the floor. The region from the open-turn check
+              // above to this point is synchronous, so all three writes are made
+              // for a nudge that is going out between turns; on the far side of
+              // the submit a whole worker turn may have run and been scored, and
+              // each of the three then lands too late for the turn it is about.
+              //
+              // The escalation counter would land after the reset an on-goal
+              // score performs, so a nudge the worker met would not clear its
+              // own count, and two unmet nudges after a met one would reach the
+              // cap that pauses the node, a round earlier than the worker
+              // earned. The nudged-turn flag would land after the turn.complete
+              // that reads it, leaking into the following turn and scoring an
+              // ordinary turn with the nudge-aware label set. The prompt text
+              // would land after the scorer had already judged the answer
+              // against the previous turn's prompt.
+              currentPrompt = nudgeText;
+              nudgedTurn = true;
+              sess.consecutiveNudgesWithoutOnGoal += 1;
+              // What this nudge made the count, read here rather than after
+              // the submit, so the record names the count this nudge reached
+              // rather than whatever a turn completing in the meantime left
+              // behind.
+              const nudgeNumber = sess.consecutiveNudgesWithoutOnGoal;
+              let submitted = false;
+              // Only the submit is guarded, so a throw from the ledger writes
+              // below is not recorded as a submit failure.
               try {
-                // R8: nudge text appends goal_done instruction. Item 8.2
-                // (Round 36): a converted ask-operator gets its own text -
-                // re-read the plan and the discussion file, and only state a
-                // fork as a literal marker line if one truly exists, since
-                // the classifier itself never carries a concrete blocking
-                // question, only an idle reading.
-                const nudgeText = idleGapConverted
-                  ? `[GOAL] The active goal is: ${g.objective}\n` +
-                    `The controller read this as an idle gap, not a real fork: no concrete blocking question. ` +
-                    `Re-read the plan doc and DISCUSSION.md before continuing - the next concrete step should already be there.\n` +
-                    `If you genuinely hold a fork the plan doesn't resolve, state it in this turn as a line: ASK: <question>? Recommend: <choice>\n` +
-                    `Otherwise take the next concrete step. When this step is done, call goal_done with a one-line note. ` +
-                    `If the result names a next goal, continue with it.`
-                  : `[GOAL] The active goal is: ${g.objective}\n` +
-                    `The Controller detected ${idleDisplay} of idle time. ` +
-                    `Re-read the objective and take the next concrete step toward it.\n` +
-                    `When this step is done, call goal_done with a one-line note. ` +
-                    `If the result names a next goal, continue with it.`;
                 await $.prompt.submit({ text: nudgeText });
-                currentPrompt = nudgeText;
-                nudgedTurn = true;
-                sess.lastNudgeAt = now;
-                // Round 58 finding 3: a nudge fired while a turn is open (turnInFlight) does not
-                // count toward the cap - it joins the turn already in progress rather than landing
-                // between completed turns, so the worker never saw it as an idle-gap nudge to react
-                // to. The rebind PR's own turn (71 tool calls, well past the 45s idle window) hit
-                // three such nudges and escalated on prose the worker had no chance to answer. Only
-                // a nudge delivered between completed turns advances the counter.
-                if (!turnInFlight) {
-                  sess.consecutiveNudgesWithoutOnGoal += 1;
-                }
+                submitted = true;
+              } catch (err) {
+                // Non-fatal, as every actuator failure here is. It is recorded
+                // because the floor was already spent above, so a failed submit
+                // costs a whole nudge window and would otherwise leave nothing
+                // anywhere saying the worker went un-nudged.
+                sess.state.decisions.push({
+                  timestamp: tickTs,
+                  loop: "monitor",
+                  action: "nudge_failed",
+                  detail: `${g.id}: submit failed, floor already spent: ${String(err)}`.slice(0, 200),
+                });
+              }
+              if (submitted) {
                 // D1: increment nudge ledger (count only, no token estimate)
                 sess.state.monitor.cost.nudge.count += 1;
                 // D3: update nudge window
@@ -2543,9 +2625,20 @@ export const register: Register = async (on, options) => {
                   timestamp: tickTs,
                   loop: "monitor",
                   action: "nudge_sent",
-                  detail: `${g.id}: idle ${idleDisplay}, nudge #${sess.consecutiveNudgesWithoutOnGoal}${turnInFlight ? " (inside an open turn, not counted)" : ""}`,
+                  detail: `${g.id}: idle ${idleDisplay}, nudge #${nudgeNumber}`,
                 });
-              } catch { /* nudge failed; non-fatal */ }
+              }
+            } else {
+              // The decider said nudge and the floor held. This is the ordinary
+              // outcome for the second of two ticks alive at once, and it is
+              // recorded so that a quiet stretch reads as the floor doing its
+              // job rather than as the decider never having run.
+              sess.state.decisions.push({
+                timestamp: tickTs,
+                loop: "monitor",
+                action: "nudge_skipped_floor",
+                detail: `${g.id}: idle ${idleDisplay}, floor not elapsed`,
+              });
             }
           } else if (finalDecision === "complete" && g.status === "active") {
             // R3: use completeLeaf + activateNext.
@@ -2593,7 +2686,8 @@ export const register: Register = async (on, options) => {
   on("turn.start", async ($, e, next) => {
     sess.state.monitor.turnCount += 1;
     sess.state.monitor.lastTurnId = e.turnId;
-    turnInFlight = true;
+    // The turn is open from here until a completion carrying this same id.
+    openTurns.set(e.turnId, Date.now());
     // Plan item 8.3: publish the turn's start so a reader session can report
     // how long a pending record has been deferred behind this turn.
     sess.turnStartedAt = Date.now();
@@ -2657,7 +2751,9 @@ export const register: Register = async (on, options) => {
   // Modules write to sess.state. The Controller (clock.tick) reads sess.state and decides.
   on("turn.complete", async ($, e, next) => {
     sess.state.monitor.lastTurnComplete = Date.now();
-    turnInFlight = false;
+    // Closing by id: a completion for a turn this session never saw start
+    // removes nothing, so it cannot clear a different turn that is still open.
+    openTurns.delete(e.turnId);
     // Plan item 8.4: a turn that ran past an hour is one of the weaknesses
     // the own-record pass counts, so record it as a decision here, the only
     // point that knows both ends of the turn.

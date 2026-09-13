@@ -76,10 +76,18 @@ export function buildSelfReviewInput(
 } {
   // Noise actions: internal bookkeeping with no worker-facing signal (T5).
   // Kept OUT of the window: deny, block, score, error_streak, paused_by_controller, done, activated.
+  // The nudge actuator's routine records are here: each one is the controller
+  // reporting on its own bookkeeping, and a lesson drawn from the worker's
+  // behaviour has nothing to take from any of them. Two stay in the window.
+  // nudge_cap_reached, because being capped is something that happened to the
+  // worker. And nudge_failed, because a refused submit is the moment every
+  // automated path into the session goes dead, and that record is the only
+  // surface that says so.
   const NOISE_ACTIONS = new Set([
     "controller_tick", "env_inject", "heartbeat", "self-review",
     "turn_start", "turn_complete", "planning_fired",
-    "planning_created", "nudge_sent", "nudge", "allow",
+    "planning_created", "nudge_sent", "nudge_skipped_turn_in_flight",
+    "nudge_skipped_floor", "nudge", "allow",
   ]);
 
   const workerDecisions = state.decisions.filter(

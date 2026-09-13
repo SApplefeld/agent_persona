@@ -1,5 +1,18 @@
 # Backlog
 
+## commons-unit-test.mjs once died in a libuv teardown assertion after passing (found 2026-09-13)
+
+One run printed `All tests passed` and then exited 127 on
+`Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win\async.c:94`. The crash is in
+teardown, after every assertion had completed, so the exit code and the result disagree. It did not
+reproduce in seven further runs across two sessions on the same tree, and the change in flight did
+not touch that file.
+
+Filed rather than called a flake, because the shape matters more than the frequency: a suite that can
+exit non-zero after passing will also read as failing to any gate that trusts the exit code, which is
+every gate here. The likely cause is a handle closed twice during teardown. Worth catching the next
+occurrence with `--trace-uncaught` rather than hunting it cold.
+
 ## Arm the plugin's hooks only for sessions that want them (operator feedback, 2026-09-12)
 
 Promoted into `docs/plans/agent_persona_coordinator_v2.md` Section 6 (Reviewer Round 105 R5): every session loading this plugin fires its hooks and reminders every turn regardless of intent, and v2 adds more such sessions. No longer a separate future brainstorm; retire this entry when v2's Section 6 closes.
