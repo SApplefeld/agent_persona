@@ -58,8 +58,9 @@ summary line read `assert=[missing]`. Its checks are not missing. The suite's ow
 substantive, covering that the real child is gone after `stop_child` returns on the TERM
 path and after the tree kill.
 
-The gap is collection, not coverage. `.kit/live-stopprocesstree-test.sh` defines its
-`pass` and `failed` helpers as bare `echo`, so every check goes to stdout, while
+The gap is collection, not coverage. `.kit/live-stopprocesstree-test.sh` has its
+`pass` and `failed` helpers print to stdout and bump their own counters, which is what
+produces the `15 checks run, 0 failed` line, but neither writes a file, while
 `.kit/live-all.sh:132` collects `$suite_dir/<suite>.assert.log`, a file this suite never
 writes. Its exit file is collected, which is why `exitfile=[0 ]` is populated beside an
 empty `assert=`.
@@ -70,3 +71,16 @@ fails if `stop_child` leaves the real child alive, so a mutation to signal a sin
 would turn it red today. The effect of this gap is that a whole-gate summary understates
 the evidence for item 2's process-tree stop, which is exactly the fix that gate exists to
 validate.
+
+## Section 0 item 4's whole gate was run without its own precondition, and owes one re-run
+
+Item 4 conditions its whole-gate run on the operator confirming every other live `claude`
+process is stopped. The run `20260913T085812Z` was taken without that confirmation, with
+both supervisors and their children live, and with foreign `.NET` test runs going before
+and during it. Sixteen of seventeen suites passed clean, so the contention does not appear
+to have bitten, and the single failure is explained independently by the F5/F6 entry.
+
+What is owed is narrow: one re-run of `live-restartpassive-test.sh` on a genuinely quiet
+box, so its result rests on the condition the item sets rather than on a run that did not
+meet it. The whole gate does not need repeating for this. Drop this entry once that run is
+recorded in item 4's Chapter.
