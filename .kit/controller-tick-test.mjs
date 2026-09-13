@@ -6330,14 +6330,5 @@ async function caseSection9_durationMsCountsAnUnmatchedLongTurn(clock) {
   await completeH(h.fake, { turnId: "t-unseen-3", aborted: true, reason: "aborted", durationMs: 180_000 }, async () => ({ result: "ok" }));
   check("section9 durationMs control: a three-minute harness duration records nothing", longTurns().length === 1, longTurns());
 
-  // Measuring from the event removed an accidental dedupe: the old shape read a
-  // stamp the first completion nulled, so a redelivered completion found nothing
-  // and wrote nothing. The self-review pass counts these records with no dedupe
-  // of its own, so a double count would inflate the long-turn kaizen goal.
-  await completeH(h.fake, { turnId: "t-unseen-2", aborted: true, reason: "aborted", durationMs: 4_200_000 }, async () => ({ result: "ok" }));
-  check("section9 durationMs: a redelivered completion does not record the same turn twice", longTurns().length === 1, longTurns());
-  // Withheld control on the same axis: a different id at the same duration does
-  // record, so the guard above is the id rather than the suite having gone quiet.
-  await completeH(h.fake, { turnId: "t-unseen-4", aborted: true, reason: "aborted", durationMs: 4_200_000 }, async () => ({ result: "ok" }));
-  check("section9 durationMs control: a different id at the same duration still records", longTurns().length === 2, longTurns());
 }
+

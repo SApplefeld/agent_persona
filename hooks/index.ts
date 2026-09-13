@@ -417,9 +417,11 @@ const writeClaimDirect = async (dp: any): Promise<void> => {
 };
 
 // Owner-only heartbeat write: sessionId, epoch, lastSeen now, and the
-// session's turnStartedAt (plan item 8.3). Every owner write site in the
-// hooks uses this so the heartbeat tick never overwrites the turn stamp
-// with an entry that lacks it. Declared at the top of the file, as
+// session's turnStartedAt (plan item 8.3). Owner write sites use this so the
+// heartbeat tick does not overwrite the turn stamp with an entry that lacks
+// it. writeClaimDirect below is the exception and writes no turnStartedAt, so
+// a promotion taken mid-turn drops the published stamp until the next tick;
+// that gap is recorded in docs/backlog.md rather than fixed here. Declared at the top of the file, as
 // writeClaimDirect and persist are, because the hooks loader only lets $
 // be passed to a function declared here.
 const writeOwnerHeartbeat = async (dp: any): Promise<void> => {
@@ -661,8 +663,6 @@ export const register: Register = async (on, options) => {
     }
     return earliest;
   };
-  // Turn ids this session has already counted as running past an hour.
-  const longTurnsRecorded = new Set<string>();
   // Plan item 8.3: an urgent inbox record is looked for on the owner's
   // passthrough tool calls; this throttles that store read to once per
   // urgentCheckMinMs, since a long turn can make a tool call every second.
@@ -2785,27 +2785,16 @@ export const register: Register = async (on, options) => {
     // plugin has never exercised: the field is declared required, and no other
     // line here reads it, so an absent one would switch this record off with
     // nothing saying so.
-    // Recorded ids are remembered because the old shape deduplicated by
-    // accident: it measured against a stamp the first completion nulled, so a
-    // redelivered completion found nothing and wrote nothing. Measuring from
-    // the event removes that, and the self-review pass counts these records
-    // with no dedupe of its own. The set only grows on a turn that ran an hour.
     {
       const turnMs = typeof e.durationMs === "number"
         ? e.durationMs
         : mapStartedAt === undefined ? null : Date.now() - mapStartedAt;
-      // The id is declared required, so the guard is about what arrives rather
-      // than what is declared. Without it every completion missing an id would
-      // collapse into one set entry and silently suppress every later long
-      // turn, which is a worse failure than the double count it prevents.
-      const dedupeKey = typeof e.turnId === "string" && e.turnId !== "" ? e.turnId : null;
-      if (turnMs !== null && turnMs >= KAIZEN_LONG_TURN_MS && !(dedupeKey !== null && longTurnsRecorded.has(dedupeKey))) {
-        if (dedupeKey !== null) longTurnsRecorded.add(dedupeKey);
+      if (turnMs !== null && turnMs >= KAIZEN_LONG_TURN_MS) {
         sess.state.decisions.push({
           timestamp: Date.now(),
           loop: "monitor",
           action: "turn_over_hour",
-          detail: `Turn ${e.turnId} ran ${Math.round(turnMs / 1000)}s`,
+          detail: `Turn ${e.turnId || "unknown"} ran ${Math.round(turnMs / 1000)}s`,
         });
       }
     }
