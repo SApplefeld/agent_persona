@@ -3805,6 +3805,10 @@ async function main() {
     await caseItem5_channelWindowNoDeleteOnAppendFailure();
     await caseItem5_decisionLogCappedAtPush(clock);
     await caseItem5_memoryCappedAtPush(clock);
+    await caseSection10_goalAddActivatesPlanWithNoActiveLeaf(clock);
+    await caseSection10_goalDoneClosesSameTurnNoTickBetween(clock);
+    await caseSection10_taskUnderActiveParentStillDemotesAndActivates_control(clock);
+    await caseSection10_tickPlanningGateStillActivates_control(clock);
     await caseItem81_goalEditDropAllowsBlocked(clock);
     await caseItem81_goalEditDropStillRefusesActive_control(clock);
     await caseR58f3_nudgeInsideOpenTurnNotCounted(clock);
@@ -4735,6 +4739,170 @@ async function caseItem8p4_turnOverHourRecorded(clock) {
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
+
+// Section 10: goal_add activates the node it creates when nothing else is
+// active, instead of deferring to a controller tick that cannot run while
+// this turn is open. A plan node added under the root with no active leaf
+// anywhere in the tree is active by the time goal_add returns.
+async function caseSection10_goalAddActivatesPlanWithNoActiveLeaf(clock) {
+  console.log("\n=== Section 10: goal_add activates a plan node when nothing else is active ===");
+  clock.set(T0);
+
+  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "section10_goal_add_activates_plan",
+    stateOpts: { now: T0, goals: [rootGoal], activeGoalId: null },
+  });
+
+  const toolCallH = h.handlers["tool.call"];
+  const result = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "plan",
+    title: "New plan",
+    objective: "Do the newly added work",
+  }, async () => ({ result: "passthrough" }));
+
+  check("section10 add-plan: not denied", result.deny === undefined, result.deny);
+  check("section10 add-plan: result names the newly active node", /Now active:/.test(result.result || ""));
+
+  const state = getState(h);
+  const newNode = state.goals.find(g => g.kind === "plan");
+  check("section10 add-plan: new plan node exists", !!newNode);
+  check("section10 add-plan: new plan node is active", newNode && newNode.status === "active");
+  check("section10 add-plan: activeGoalId points at the new node", newNode && state.activeGoalId === newNode.id);
+
+  const decisions = getDecisions(h);
+  check("section10 add-plan: an 'activated' decision names the new node and the no-active-leaf reason",
+    decisions.some(d => d.action === "activated" && d.detail.includes(newNode.id) && d.detail.includes("added with no active leaf")));
+}
+
+// Section 10: goal_done closes the node goal_add just activated in the same
+// turn, with no controller tick running in between - the exact sequence the
+// defect broke (goal_done denied "No active goal leaf to complete" because
+// the node stayed pending).
+async function caseSection10_goalDoneClosesSameTurnNoTickBetween(clock) {
+  console.log("\n=== Section 10: goal_done closes the goal_add-activated node with no tick between ===");
+  clock.set(T0);
+
+  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "section10_goal_done_same_turn",
+    stateOpts: { now: T0, goals: [rootGoal], activeGoalId: null },
+  });
+
+  const toolCallH = h.handlers["tool.call"];
+  const addResult = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "plan",
+    title: "New plan",
+    objective: "Do the newly added work",
+  }, async () => ({ result: "passthrough" }));
+  check("section10 done: goal_add not denied", addResult.deny === undefined, addResult.deny);
+
+  // No tick fires here - fireTick/tickAndSettle is never called between
+  // goal_add and goal_done, which is the exact "same turn" the defect broke.
+  const doneResult = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__goal_done",
+    note: "finished in the same turn",
+  }, async () => ({ result: "passthrough" }));
+
+  check("section10 done: goal_done not denied", doneResult.deny === undefined, doneResult.deny);
+  check("section10 done: goal_done did not refuse with 'No active goal leaf to complete'",
+    doneResult.deny !== "No active goal leaf to complete.");
+
+  const state = getState(h);
+  const newNode = state.goals.find(g => g.kind === "plan");
+  check("section10 done: the node is complete", newNode && newNode.status === "complete");
+  check("section10 done: a 'done' decision names the node", getDecisions(h).some(d => d.action === "done" && d.detail.includes(newNode.id)));
+}
+
+// Control: adding a task under an already-active parent still demotes the
+// parent to pending and activates the new task exactly as it did before
+// this section - the new no-active-leaf branch runs after this one and must
+// see an active leaf already present, so it does nothing here.
+async function caseSection10_taskUnderActiveParentStillDemotesAndActivates_control(clock) {
+  console.log("\n=== Section 10 control: adding a task under an active parent still demotes and activates ===");
+  clock.set(T0);
+
+  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const activePlan = makeGoalNode({ id: "plan-active", parentId: "root-1", kind: "plan", status: "active" });
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "section10_task_under_active_parent_control",
+    stateOpts: { now: T0, goals: [rootGoal, activePlan], activeGoalId: "plan-active" },
+  });
+
+  const toolCallH = h.handlers["tool.call"];
+  const result = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "task",
+    parentId: "plan-active",
+    title: "New task",
+    objective: "Do the task",
+  }, async () => ({ result: "passthrough" }));
+
+  check("section10 task-control: not denied", result.deny === undefined, result.deny);
+
+  const state = getState(h);
+  const plan = state.goals.find(g => g.id === "plan-active");
+  const task = state.goals.find(g => g.kind === "task");
+  check("section10 task-control: the parent plan is demoted to pending", plan && plan.status === "pending");
+  check("section10 task-control: the new task is active", task && task.status === "active");
+  check("section10 task-control: activeGoalId points at the new task", task && state.activeGoalId === task.id);
+  check("section10 task-control: exactly one 'activated' decision (the task branch fires, the no-active-leaf branch is a no-op)",
+    getDecisions(h).filter(d => d.action === "activated").length === 1);
+}
+
+// Control: the tick's own planning gate is untouched by this section - a
+// root added with no turn open still gets a plan created and activated by
+// the planner path, same as before.
+async function caseSection10_tickPlanningGateStillActivates_control(clock) {
+  console.log("\n=== Section 10 control: the tick's own planning gate still activates a new plan ===");
+  clock.set(T0);
+
+  const rootGoal = {
+    id: "root-1",
+    parentId: null,
+    kind: "root",
+    title: "Section 10 tick control root",
+    objective: "Get one thing done",
+    status: "active",
+    source: "controller",
+    maxRounds: 10,
+    completedRounds: 0,
+    scores: [],
+    notes: [],
+    planningRounds: 0,
+    consecutiveBlockedPlannings: 0,
+    consecutivePlanningFailures: 0,
+    planningRound: 0,
+    createdAt: T0 - 10000,
+    updatedAt: T0 - 5000,
+  };
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "section10_tick_planning_gate_control",
+    stateOpts: { now: T0, goals: [rootGoal], activeGoalId: null },
+    completeValue: JSON.stringify([
+      { title: "Only plan", objective: "Get one thing done", maxRounds: 5 },
+    ]),
+  });
+
+  // No goal_add or goal_done fired here at all - only the tick's planning
+  // gate, with no turn open, runs the planner and activates its first plan.
+  await fireTick(h, T0);
+
+  const state = getState(h);
+  const plan = state.goals.find(g => g.kind === "plan");
+  check("section10 tick-control: planner created the plan", !!plan);
+  check("section10 tick-control: the planning gate activated it", plan && plan.status === "active" && state.activeGoalId === plan.id);
+}
 
 // Item 8.1 / Round 58 finding 4: goal_edit's drop action refused a blocked node outright, which is
 // exactly why the stale duplicate plan-mtwxh5jx-acm9 could not be retired - blocked was not in its

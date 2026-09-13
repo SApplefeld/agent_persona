@@ -3365,6 +3365,18 @@ export const register: Register = async (on, options) => {
         }
       }
 
+      // Section 10: if the tree still has no active leaf, activate one now
+      // rather than deferring to the next tick, since the tick's planning
+      // gate cannot run while this turn is still open and a node added here
+      // would otherwise sit pending forever. activateNext holds the
+      // ordering rules, so this reuses it rather than preferring the node
+      // just created; an older pending leaf earlier in DFS/sortKey order
+      // wins if one exists.
+      if (!sess.state.goals.some((g) => g.status === "active")) {
+        const nextId = activateNext(sess.state);
+        activate($, nextId, `${newNode.id} added with no active leaf`);
+      }
+
       const writeOk = await persist($);
       if (writeOk) {
         const nextActive = sess.state.activeGoalId
