@@ -1733,12 +1733,25 @@ export const register: Register = async (on, options) => {
                     prevGit.branch === branch &&
                     prevGit.dirty > 0 &&
                     dirty === 0 &&
+                    // A zero means `git log` failed rather than that the repository
+                    // has no commits, since the sampler writes 0 on a non-zero exit.
+                    // Without this, a failed log followed by a recovered one makes
+                    // any advance look like a commit, so a stash after a transient
+                    // git failure would report as finished work.
+                    prevGit.lastCommitAt > 0 &&
                     lastCommitAt > prevGit.lastCommitAt
                   ) {
                     newGit.clearedAt = sampledAt;
                   } else if (
                     prevGit !== null &&
                     prevGit.clearedAt !== undefined &&
+                    prevGit.branch === branch &&
+                    // The tree must still be clean. Without this, a stamp set by a
+                    // commit outlives the worker starting new edits, and the summary
+                    // reads "dirty 5" beside "a commit landed", which is the exact
+                    // invitation to close a node over work in progress that the gate
+                    // above exists to prevent.
+                    dirty === 0 &&
                     sampledAt - prevGit.clearedAt < COMMIT_SIGNAL_MAX_AGE_MS
                   ) {
                     // Carry an unconsumed stamp forward. The probe is
@@ -2205,6 +2218,12 @@ export const register: Register = async (on, options) => {
 
       // C7: Environment line only when env.git or env.health is non-null.
       const env = sess.state.monitor.env;
+      // Which commit stamp, if any, this tick's summary actually rendered. It is
+      // what makes the consumption below exact: clearing whatever happens to be on
+      // `env.git` after the classify call would retire a stamp the fire-and-forget
+      // probe set during this same tick, after the summary was already built, so a
+      // commit would be spent without ever having been named to anyone.
+      let renderedCommitStamp: number | undefined;
       let envLine = "";
       if (env.git !== null || env.health !== null) {
         const parts: string[] = [];
@@ -2213,16 +2232,22 @@ export const register: Register = async (on, options) => {
           // Present only while the stamp is unconsumed, so the decider can tell a
           // commit that just landed from a tree that has been clean for hours. The
           // stamp is cleared once a decider has actually been handed it, below.
-          if (env.git.clearedAt !== undefined) {
+          // Rendered, never consumed here. This summary is built well above several
+          // gates that still return early (the nudge cap, the call cap, the cost cap
+          // and the tick backoff), so clearing the stamp at this point would spend it
+          // on ticks that never reach a decider at all, and backoff is routine rather
+          // than rare. Consumption happens after the classify call returns.
+          //
+          // The age bound is checked here rather than only in the sampler, because
+          // `monitor.env` is persisted: after a restart this line is rendered from
+          // the restored sample before any fresh probe can land, and if the probe
+          // latches unavailable no later sample ever applies the bound at all.
+          if (
+            env.git.clearedAt !== undefined &&
+            Date.now() - env.git.clearedAt < COMMIT_SIGNAL_MAX_AGE_MS
+          ) {
             parts.push("a commit landed since the previous sample (worktree went from dirty to clean)");
-            // Spend the stamp here, at the one place it becomes visible to a
-            // decider, rather than after the classify call. A tick builds this
-            // summary before several gates that can still return early, but a
-            // summary carrying this line always differs from the previous one, so
-            // the unchanged-summary gate cannot swallow the tick that renders it.
-            // Consuming later instead lets a tick whose summary predates the
-            // sample retire a stamp nothing was ever shown.
-            env.git.clearedAt = undefined;
+            renderedCommitStamp = env.git.clearedAt;
           }
         }
         if (env.health !== null) {
@@ -2432,6 +2457,17 @@ export const register: Register = async (on, options) => {
             classifyLabels,
             { model: "haiku" }
           );
+          // Consume the stamp this tick's summary actually carried, and only that
+          // one. Matching on the value rather than clearing blindly is what keeps a
+          // stamp set mid-tick, after the summary was built, alive for the next
+          // decider instead of being spent unseen.
+          if (
+            renderedCommitStamp !== undefined &&
+            sess.state.monitor.env.git !== null &&
+            sess.state.monitor.env.git.clearedAt === renderedCommitStamp
+          ) {
+            sess.state.monitor.env.git.clearedAt = undefined;
+          }
           // D1: increment classify ledger
           sess.state.monitor.cost.classify.count += 1;
           sess.state.monitor.cost.classify.estTokens += estimateTokens(summary.length, 30);

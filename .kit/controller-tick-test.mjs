@@ -178,25 +178,28 @@ async function caseTreeLag_commit_closes_the_node(clock) {
     { branch: "main", dirty: 3, commitAt: 1_700_000_000 },
     { branch: "main", dirty: 0, commitAt: 1_700_000_500 },
   ]);
-  // The decider must answer "nudge" until the commit actually lands, or it closes
-  // the leaf on the first tick from the still-dirty sample and the case proves
-  // closure without proving closure ON the commit, which is the whole claim.
-  h.setClassifyValue("nudge");
+  // The decider answers "complete" ONLY on a summary that names the commit, and
+  // "nudge" on every other. That is what makes this case discriminating: a stub
+  // returning "complete" for any input would close the leaf on the first tick from
+  // the still-dirty sample, and both closure assertions below would pass exactly
+  // the same way whether or not the commit signal existed at all.
+  let completedOn = null;
+  h.setClassifyValue((summary) => {
+    const s = String(summary || "");
+    if (/a commit landed since the previous sample/.test(s)) {
+      completedOn = s;
+      return "complete";
+    }
+    return "nudge";
+  });
   await fireTurn(h);
   await new Promise(r => setTimeout(r, 20));
-
-  let toldOnTick = -1;
-  for (let i = 0; i < 6 && toldOnTick < 0; i++) {
+  for (let i = 0; i < 6; i++) {
     await tickAndSettle(h, clock, 120);
     clock.advance(2000);
-    const seen = h.classifyCalls.map(a => String((a && a[0]) || ""));
-    if (seen.some(s => /a commit landed since the previous sample/.test(s))) toldOnTick = i;
   }
-  check("TREELAG close: the decider was told a commit landed", toldOnTick >= 0);
 
-  // Now the decider judges the work done. One tick is all it gets.
-  h.setClassifyValue("complete");
-  await tickAndSettle(h, clock, 120);
+  check("TREELAG close: the decider was told a commit landed", completedOn !== null);
 
   const st = getState(h);
   const decs = st.decisions;

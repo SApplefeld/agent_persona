@@ -99,7 +99,11 @@ function createFake$(opts = {}) {
       // semantics are unchanged, so existing count-based checks still read the same.
       classify(...args) {
         classifyCalls.push(args);
-        return Promise.resolve(classifyValue);
+        // A function value lets a case decide from the summary it was actually
+        // handed, which is the only way to tell a feature working from this stub
+        // answering the same thing regardless of its input.
+        const v = typeof classifyValue === "function" ? classifyValue(...args) : classifyValue;
+        return Promise.resolve(v);
       },
       complete() {
         completeCalls.push(1);
