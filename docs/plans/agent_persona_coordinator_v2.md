@@ -62,6 +62,10 @@ Four extensions, in order of what blocks the next:
 - Section 6's launch shape never feeds a worker's `--prompt` from coordinator text. `bin/supervise.sh` frames `--prompt` content as the operator's trusted task, so coordinator steers reach a worker only through the labelled inbox path.
 - Section 12 runs after Sections 1 and 2 and before Section 3. Sections 7 and 8 each carry one added sentence: a worker resolves a coordinator record with `agentic_resolve` when the work is finished or declined, and the coordinator counts rounds per steer against resolutions rather than replies.
 
+## Dispatch Authorization
+
+The operator authorized a self-armed completion leash over this plan on 2026-09-13, over the Discord thread bound to the dev session, covering any session holding this plan. The authorization answered the dev session's recommendation to arm the plan so a stop cannot end the run between sections. It grants the leash and nothing wider: outward acts outside the recorded commit model still need the operator's yes.
+
 ## Sections of Work
 
 ### 1. Commons entry carries turn state and workdir
