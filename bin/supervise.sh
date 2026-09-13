@@ -123,17 +123,28 @@ if [ -z "$CHANNEL_NAME" ]; then
   CHANNEL_NAME="supervisor-$PERSONA"
 fi
 
-# Every numeric setting below is held to one rule: digits only, no leading
-# zero, at most nine digits, and greater than zero. Each clause of that rule
-# stops a distinct way a bad value corrupts a run instead of failing loudly.
-# A non-numeric value turns every `[ "$a" -lt "$b" ]` comparison into a shell
-# error, which the caller reads as "the bound is already passed". A leading
-# zero makes the shell read the value as octal, so `$((0500 / 1000))` is 0
-# and `$((0089))` aborts the script with "value too great for base". A digit
-# string longer than nine digits is past any plausible bound or count, and a
-# long enough one wraps the shell's 64-bit arithmetic to an unrelated value.
-# Zero itself collapses every grace loop and poll interval to no wait at all.
+# The shared check for the numeric settings this script reads itself. The
+# plugin values further down are a different set on a different rule, the one
+# emit_settings_json applies in bin/agentic-common.sh, since those are spliced
+# into JSON rather than used in arithmetic here.
 #
+# The rule: digits only, no leading zero, at most nine digits, and at least
+# the given minimum, which defaults to 1. Each clause stops a distinct way a
+# bad value corrupts a run instead of failing loudly. A non-numeric value
+# turns every `[ "$a" -lt "$b" ]` comparison into a shell error, which the
+# caller reads as "the bound is already passed". A leading zero makes the
+# shell read the value as octal, so `$((0500 / 1000))` is 0 and `$((0089))`
+# aborts the script with "value too great for base". A digit string longer
+# than nine digits is past any plausible bound or count, and a long enough one
+# wraps the shell's 64-bit arithmetic to an unrelated value. Zero collapses
+# every grace loop and poll interval to no wait at all.
+#
+# The minimum exists for the millisecond settings whose consumer divides them
+# by 1000 before use: anything under 1000 floors to a zero-second wait there,
+# which is the same failure a zero produces, reached from a value that looks
+# reasonable. Those two callers pass 1000.
+#
+# Usage: positive_number <value> [minimum]
 # Returns 0 when the value passes. Each caller decides what a failure means:
 # the PowerShell bound falls back to its default, every other setting ends
 # the run with an ERROR line naming the setting.
@@ -141,7 +152,8 @@ positive_number() {
   case "${1:-}" in
     ''|*[!0-9]*|0*) return 1 ;;
   esac
-  [ "${#1}" -le 9 ]
+  [ "${#1}" -le 9 ] || return 1
+  [ "$1" -ge "${2:-1}" ]
 }
 
 # --- Defaults (plan section 6) ---
@@ -240,20 +252,24 @@ if [ -n "${EFFORT:-}" ]; then
       ;;
   esac
 fi
-# The six settings that end the run on a bad value, each checked against the
-# one rule positive_number states. A bad value here is always a typo in the
+# The settings that end the run on a bad value, each checked against the one
+# rule positive_number states. A bad value here is always a typo in the
 # settings file or in an exported override, and the symptom it produces is
 # remote from its cause: the priming wait bounds an arithmetic comparison,
 # the stop grace sizes both of stop_child's grace loops so a zero-iteration
 # loop skips EOF and TERM and goes straight to KILL, the minimum run time
 # decides what counts as a crash, the crash limit and the restart budget
 # decide when the run gives up, and the poll interval feeds `sleep`.
+#
+# The stop grace and the poll interval are the two the consumer divides by
+# 1000, so they take the 1000 minimum; the minimum run time is compared in
+# milliseconds as written and stays on the plain rule.
 if ! positive_number "$SUPERVISOR_PRIMING_WAIT_S"; then
   echo "ERROR: supervisorPrimingWaitS '$SUPERVISOR_PRIMING_WAIT_S' is not a whole number of seconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
   exit 1
 fi
-if ! positive_number "$SUPERVISOR_STOP_GRACE_MS"; then
-  echo "ERROR: supervisorStopGraceMs '$SUPERVISOR_STOP_GRACE_MS' is not a whole number of milliseconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
+if ! positive_number "$SUPERVISOR_STOP_GRACE_MS" 1000; then
+  echo "ERROR: supervisorStopGraceMs '$SUPERVISOR_STOP_GRACE_MS' is not a whole number of milliseconds of at least 1000 (digits only, no leading zero, at most 9 digits); it is divided by 1000, so a smaller value is a zero-second grace" >&2
   exit 1
 fi
 if ! positive_number "$SUPERVISOR_MIN_RUN_MS"; then
@@ -268,8 +284,8 @@ if ! positive_number "$SUPERVISOR_MAX_RESTARTS_PER_HOUR"; then
   echo "ERROR: supervisorMaxRestartsPerHour '$SUPERVISOR_MAX_RESTARTS_PER_HOUR' is not a whole number of restarts greater than zero (digits only, no leading zero, at most 9 digits)" >&2
   exit 1
 fi
-if ! positive_number "$SUPERVISOR_POLL_MS"; then
-  echo "ERROR: supervisorPollMs '$SUPERVISOR_POLL_MS' is not a whole number of milliseconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
+if ! positive_number "$SUPERVISOR_POLL_MS" 1000; then
+  echo "ERROR: supervisorPollMs '$SUPERVISOR_POLL_MS' is not a whole number of milliseconds of at least 1000 (digits only, no leading zero, at most 9 digits); it is divided by 1000, so a smaller value polls with no wait at all" >&2
   exit 1
 fi
 
@@ -278,15 +294,14 @@ HEARTBEAT_MS="${heartbeatMs:-30000}"
 STALE_AFTER_MS="${staleAfterMs:-90000}"
 # This one is read by the supervisor itself, not only emitted: it is the stale
 # bound the pre-launch gate hands wait_persona_free_both, and it reaches the
-# decide unit too. emit_settings_json holds every plugin value to this shape,
-# but it is skipped whenever the rundir already holds a settings file, so the
-# same rule runs here, on the path every launch takes.
-case "$STALE_AFTER_MS" in
-  ''|*[!0-9]*|0[0-9]*)
-    echo "ERROR: staleAfterMs '$STALE_AFTER_MS' is not a non-negative integer without leading zeros" >&2
-    exit 1
-    ;;
-esac
+# decide unit too. So it takes the same check the settings above take, rather
+# than only the emitter's rule, which is skipped whenever the rundir already
+# holds a settings file. It is compared against an age in milliseconds as
+# written, so it stays on the plain rule with no minimum.
+if ! positive_number "$STALE_AFTER_MS"; then
+  echo "ERROR: staleAfterMs '$STALE_AFTER_MS' is not a whole number of milliseconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
+  exit 1
+fi
 TICK_MS="${controllerTickMs:-10000}"
 NUDGE_IDLE_MS="${nudgeIdleMs:-45000}"
 NUDGE_FLOOR_MS="${nudgeFloorMs:-5000}"

@@ -203,36 +203,66 @@ refused_by "supervisorModel '[1m]' is refused (a suffix with no name before it)"
 refused_by "supervisorModel 'opus[1m]x' is refused (the suffix is not at the end)" "ERROR: supervisorModel 'opus[1m]x'" "supervisorModel=opus[1m]x"
 refused_by "MODEL 'opus]' is refused (unmatched closing bracket)" "ERROR: MODEL 'opus]'" "MODEL=opus]"
 
-# Every numeric setting that ends the run on a bad value is held to one rule:
-# digits only, no leading zero, at most nine digits, greater than zero. Each
-# clause gets a case per setting. A leading zero is read as octal by the
-# shell's own arithmetic, a value past nine digits wraps it, and zero collapses
-# whatever wait or count the setting sizes.
-for spec in \
-  "supervisorPrimingWaitS 180" \
-  "supervisorStopGraceMs 5000" \
-  "supervisorMinRunMs 120000" \
-  "supervisorCrashLimit 3" \
-  "supervisorMaxRestartsPerHour 6" \
-  "supervisorPollMs 10000"
-do
-  name="${spec%% *}"
-  good="${spec##* }"
-  refused_by "$name '0500' is refused by the leading-zero rule" "ERROR: $name '0500'" "$name=0500"
-  refused_by "$name '12345678901234567890' is refused by the nine-digit rule" "ERROR: $name '12345678901234567890'" "$name=12345678901234567890"
-  refused_by "$name '0' is refused by the greater-than-zero rule" "ERROR: $name '0'" "$name=0"
-  refused_by "$name 'abc' is refused by the digits-only rule" "ERROR: $name 'abc'" "$name=abc"
-  accepted "$name '$good' passes the startup checks" "$name=$good"
-done
-
-# supervisorPsBoundS is the seventh setting on that rule and the one that falls
-# back to 30 rather than refusing, so its resolution is read by running the
-# script's own lines, from the assignment up to the next setting, in a separate
-# process.
-PS_BOUND_SNIPPET=$(sed -n '/^SUPERVISOR_PS_BOUND_S=/,/^SUPERVISOR_STOP_GRACE_MS=/p' "$SCRIPT" | sed '$d')
-# The block calls the shared check, so the snippet carries the function too.
-# An empty extraction here means the shared check was renamed or removed.
+# The shared check is extracted once and exercised in one process. A clause of
+# the rule is a property of that function, so driving the whole supervisor to
+# prove each clause against each setting would spawn dozens of processes to
+# test one function. The call sites get their own cases further down.
+# An empty extraction means the check was renamed or removed.
 HELPER_SNIPPET=$(sed -n '/^positive_number() {/,/^}$/p' "$SCRIPT")
+[ -n "$HELPER_SNIPPET" ]; check "the shared numeric check is found in bin/supervise.sh" "$?"
+if [ -n "$HELPER_SNIPPET" ]; then
+  # value, minimum, expected verdict.
+  HELPER_CASES="0500 1 REFUSE
+00 1 REFUSE
+12345678901234567890 1 REFUSE
+1000000000 1 REFUSE
+0 1 REFUSE
+abc 1 REFUSE
+5abc 1 REFUSE
+1 1 PASS
+180 1 PASS
+999999999 1 PASS
+999 1000 REFUSE
+1 1000 REFUSE
+1000 1000 PASS
+60000 1000 PASS"
+  printf '%s\n%s\n' "$HELPER_SNIPPET" \
+    'while read -r v m x; do if positive_number "$v" "$m"; then echo "$v $m PASS"; else echo "$v $m REFUSE"; fi; done' \
+    > "$TMP/helper.sh"
+  HELPER_OUT=$(printf '%s\n' "$HELPER_CASES" | bash "$TMP/helper.sh" 2>&1)
+  while read -r v m want; do
+    # The concatenations force a string comparison. awk compares two operands
+    # that both look numeric as numbers, which makes '0' and '00' the same row.
+    got=$(printf '%s\n' "$HELPER_OUT" | awk -v v="$v" -v m="$m" '($1 "") == (v "") && ($2 "") == (m "") { print $3 }')
+    [ "$got" = "$want" ]
+    check "the shared check ${want}s '$v' at minimum $m (got ${got:-nothing})" "$?"
+  done <<< "$HELPER_CASES"
+fi
+
+# The call sites, driven through the real bin/supervise.sh. One spawn per
+# setting is what proves that setting's own value reaches the shared check and
+# that the refusal names it; the clauses themselves are covered above. The two
+# settings whose consumer divides by 1000 get a second spawn for the minimum,
+# since a value like 500 passes every other clause and still floors to a
+# zero-second wait. That the defaults pass every check is covered by the
+# gate-passing control above and by the suites that launch a child.
+for name in supervisorPrimingWaitS supervisorStopGraceMs supervisorMinRunMs \
+  supervisorCrashLimit supervisorMaxRestartsPerHour supervisorPollMs
+do
+  refused_by "$name 'abc' is refused at its own call site" "ERROR: $name 'abc'" "$name=abc"
+done
+refused_by "supervisorStopGraceMs '500' is refused by the 1000 minimum" "ERROR: supervisorStopGraceMs '500'" supervisorStopGraceMs=500
+refused_by "supervisorPollMs '500' is refused by the 1000 minimum" "ERROR: supervisorPollMs '500'" supervisorPollMs=500
+refused_by "staleAfterMs 'abc' is refused at its own call site" "ERROR: staleAfterMs 'abc'" staleAfterMs=abc
+# A plain zero is the value that separates the shared rule from the emitter's
+# own rule, which admits it. A zero stale bound reads every holder as stale, so
+# the pre-launch gate passes while another session still holds the persona.
+refused_by "staleAfterMs '0' is refused, which the emitter's rule alone would admit" "ERROR: staleAfterMs '0'" staleAfterMs=0
+
+# supervisorPsBoundS is the one setting on this rule that falls back to 30
+# rather than refusing, so its resolution is read by running the script's own
+# lines, from the assignment up to the next setting, in a separate process.
+PS_BOUND_SNIPPET=$(sed -n '/^SUPERVISOR_PS_BOUND_S=/,/^SUPERVISOR_STOP_GRACE_MS=/p' "$SCRIPT" | sed '$d')
 if [ -z "$PS_BOUND_SNIPPET" ] || [ -z "$HELPER_SNIPPET" ]; then
   check "the SUPERVISOR_PS_BOUND_S block and the shared numeric check are found in bin/supervise.sh" 1
 else
@@ -246,11 +276,28 @@ else
   done
 fi
 
-# Every one of the seven numeric settings goes through the shared check, so a
-# new call site that hand-rolls its own rule reds this count.
-CALLS=$(grep -c 'positive_number "\$SUPERVISOR_' "$SCRIPT")
-[ "$CALLS" -eq 7 ]
-check "the shared numeric check guards all seven settings (found $CALLS)" "$?"
+# Which settings must be checked is derived from the script rather than listed
+# here: every assignment of the shape NAME="${setting:-<digits>}" is a numeric
+# setting. Each one has to be named in a positive_number call in this script,
+# or be one of the plugin values emit_settings_json checks on its own rule in
+# bin/agentic-common.sh. A setting added with a hand-rolled case, or with no
+# check at all, is in neither list and reds this pin; a count of calls would
+# not notice it.
+COMMON="$HERE/../bin/agentic-common.sh"
+NUMERIC_NAMES=$(sed -n 's/^\([A-Z][A-Z0-9_]*\)="\${[A-Za-z][A-Za-z0-9]*:-[0-9][0-9]*}".*/\1/p' "$SCRIPT")
+GUARDED_NAMES=$(grep -o 'positive_number "\$[A-Z][A-Z0-9_]*"' "$SCRIPT" | sed 's/^.*"\$\([A-Z0-9_]*\)"$/\1/')
+EMITTED_NAMES=$(sed -n '/^  for var in /,/; do$/p' "$COMMON" | tr -c 'A-Za-z0-9_' '\n' | grep '^[A-Z][A-Z0-9_]*$')
+NUMERIC_COUNT=$(printf '%s\n' "$NUMERIC_NAMES" | grep -c .)
+UNCHECKED=""
+for n in $NUMERIC_NAMES; do
+  printf '%s\n' "$GUARDED_NAMES" | grep -qx "$n" && continue
+  printf '%s\n' "$EMITTED_NAMES" | grep -qx "$n" && continue
+  UNCHECKED="$UNCHECKED $n"
+done
+[ -n "$GUARDED_NAMES" ] && [ -n "$EMITTED_NAMES" ] && [ "$NUMERIC_COUNT" -ge 8 ]
+check "the numeric settings, the checked names and the emitted names all read out of the sources ($NUMERIC_COUNT numeric settings found)" "$?"
+[ -z "$UNCHECKED" ]
+check "every numeric setting is named in a positive_number call or in emit_settings_json's list (unchecked:${UNCHECKED:- none})" "$?"
 
 # --- Every live suite that launches bin/supervise.sh exports MODEL and EFFORT ---
 # The suite launches the supervisor as a separate process, so only an exported
