@@ -3365,16 +3365,23 @@ export const register: Register = async (on, options) => {
         }
       }
 
-      // Section 10: if the tree still has no active leaf, activate one now
-      // rather than deferring to the next tick, since the tick's planning
-      // gate cannot run while this turn is still open and a node added here
-      // would otherwise sit pending forever. activateNext holds the
-      // ordering rules, so this reuses it rather than preferring the node
-      // just created; an older pending leaf earlier in DFS/sortKey order
-      // wins if one exists.
-      if (!sess.state.goals.some((g) => g.status === "active")) {
-        const nextId = activateNext(sess.state);
-        activate($, nextId, `${newNode.id} added with no active leaf`);
+      // Section 10: if the tree still has no active leaf, activate the node
+      // just created rather than deferring to the next tick, mirroring the
+      // task branch above (set status and activeGoalId directly, then call
+      // activate() to log the decision and reset the nudge budget). Without
+      // this, the node stays pending for the rest of this turn, so a
+      // same-turn goal_done has nothing of this node's to close. An open ask
+      // or a paused node means the controller deliberately holds the tree
+      // right now, and this branch must not override that hold.
+      if (
+        !sess.state.goals.some((g) => g.status === "active") &&
+        !sess.state.pendingAskId &&
+        !sess.state.goals.some((g) => g.status === "paused")
+      ) {
+        newNode.status = "active";
+        newNode.updatedAt = now;
+        sess.state.activeGoalId = newNode.id;
+        activate($, newNode.id, `${newNode.id} added with no active leaf`);
       }
 
       const writeOk = await persist($);

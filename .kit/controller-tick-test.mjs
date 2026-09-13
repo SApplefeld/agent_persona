@@ -3809,6 +3809,9 @@ async function main() {
     await caseSection10_goalDoneClosesSameTurnNoTickBetween(clock);
     await caseSection10_taskUnderActiveParentStillDemotesAndActivates_control(clock);
     await caseSection10_tickPlanningGateStillActivates_control(clock);
+    await caseSection10_competingOlderPendingLeafLoses(clock);
+    await caseSection10_openAskBlocksActivation(clock);
+    await caseSection10_pausedNodeBlocksActivation(clock);
     await caseItem81_goalEditDropAllowsBlocked(clock);
     await caseItem81_goalEditDropStillRefusesActive_control(clock);
     await caseR58f3_nudgeInsideOpenTurnNotCounted(clock);
@@ -4774,8 +4777,8 @@ async function caseSection10_goalAddActivatesPlanWithNoActiveLeaf(clock) {
   check("section10 add-plan: activeGoalId points at the new node", newNode && state.activeGoalId === newNode.id);
 
   const decisions = getDecisions(h);
-  check("section10 add-plan: an 'activated' decision names the new node and the no-active-leaf reason",
-    decisions.some(d => d.action === "activated" && d.detail.includes(newNode.id) && d.detail.includes("added with no active leaf")));
+  check("section10 add-plan: an 'activated' decision names the new node positionally",
+    decisions.some(d => d.action === "activated" && d.detail.startsWith(`Node ${newNode.id} activated`) && d.detail.includes("added with no active leaf")));
 }
 
 // Section 10: goal_done closes the node goal_add just activated in the same
@@ -4902,6 +4905,178 @@ async function caseSection10_tickPlanningGateStillActivates_control(clock) {
   const plan = state.goals.find(g => g.kind === "plan");
   check("section10 tick-control: planner created the plan", !!plan);
   check("section10 tick-control: the planning gate activated it", plan && plan.status === "active" && state.activeGoalId === plan.id);
+}
+
+// Section 10 fix round: the node goal_add creates wins activation even when
+// an older pending leaf already sits in the tree - activateNext's DFS/
+// createdAt order would otherwise hand activation to that older leaf, which
+// is the exact defect the Critical finding named.
+async function caseSection10_competingOlderPendingLeafLoses(clock) {
+  console.log("\n=== Section 10: a competing older pending leaf loses to the node just added ===");
+  clock.set(T0);
+
+  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const olderLeaf = makeGoalNode({
+    id: "plan-old",
+    parentId: "root-1",
+    kind: "plan",
+    status: "pending",
+    createdAt: T0 - 10_000,
+    updatedAt: T0 - 10_000,
+  });
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "section10_competing_older_leaf",
+    stateOpts: { now: T0, goals: [rootGoal, olderLeaf], activeGoalId: null },
+  });
+
+  const toolCallH = h.handlers["tool.call"];
+  const result = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "plan",
+    title: "New plan",
+    objective: "Do the newly added work",
+  }, async () => ({ result: "passthrough" }));
+
+  check("section10 competing-leaf: not denied", result.deny === undefined);
+
+  const state = getState(h);
+  const newNode = state.goals.find(g => g.id !== "root-1" && g.id !== "plan-old");
+  check("section10 competing-leaf: new plan node exists", !!newNode);
+  check("section10 competing-leaf: the new node is active, not the older leaf",
+    newNode && newNode.status === "active" && state.activeGoalId === newNode.id);
+  check("section10 competing-leaf: the older leaf is still pending",
+    state.goals.find(g => g.id === "plan-old").status === "pending");
+
+  const decisions = getDecisions(h);
+  check("section10 competing-leaf: the 'activated' decision names the new node positionally, not the older leaf",
+    newNode && decisions.some(d => d.action === "activated" && d.detail.startsWith(`Node ${newNode.id} activated`)));
+}
+
+// Section 10 fix round: an open ask means the controller deliberately holds
+// the tree, so goal_add must not activate anything while pendingAskId is set.
+//
+// pendingAskId lives on the state itself, not on a goal node, and
+// createTickHarness seeds its state through makeState(), which has no
+// stateOpts field for it. getState(h) reads the fake fs after the fact,
+// which is a separate copy from the module's live in-memory sess.state that
+// the goal_add handler actually reads, so mutating it there would never
+// reach the handler. Building the harness manually here, seeding
+// pendingAskId into the persona store before session.start runs, is what
+// gets it into sess.state, mirroring the buildPersonaState pattern used
+// elsewhere in this file for state fields stateOpts does not cover.
+async function caseSection10_openAskBlocksActivation(clock) {
+  console.log("\n=== Section 10: an open ask blocks activation ===");
+  clock.set(T0);
+
+  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const heldLeaf = makeGoalNode({
+    id: "plan-held",
+    parentId: "root-1",
+    kind: "plan",
+    status: "paused",
+    createdAt: T0 - 10_000,
+    updatedAt: T0 - 5_000,
+  });
+
+  const options = { ...OPTS, caseName: "section10_open_ask_blocks" };
+  const seedState = makeState({ now: T0, goals: [rootGoal, heldLeaf], activeGoalId: "plan-held" });
+  seedState.pendingAskId = "ask-plan-held-12345";
+
+  const h = createFake$(options);
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: seedState }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+    default: { sessionId: "old-session", epoch: 1, lastSeen: 1_000_000_000_000 },
+  }));
+  const mod = await loadModule(options.caseName);
+  const handlers = {};
+  const on = (event, handler) => { handlers[event] = handler; };
+  await mod.register(on, options);
+  const startH = handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+  h.handlers = handlers;
+
+  // enforceInvariants (agent-state.ts) runs on every session.start load and
+  // nulls activeGoalId when no node's status is "active" - a paused node
+  // does not keep it, even though a live session never clears it while
+  // pausing in place. So the pre-call value, not "plan-held", is the
+  // baseline this case's "unchanged" assertion compares against.
+  const activeGoalIdBefore = getState(h).activeGoalId;
+  const decisionsBefore = getDecisions(h).length;
+  const toolCallH = h.handlers["tool.call"];
+  const result = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "plan",
+    title: "New plan while ask open",
+    objective: "Should not activate",
+  }, async () => ({ result: "passthrough" }));
+
+  check("section10 open-ask: not denied", result.deny === undefined);
+
+  const state = getState(h);
+  console.log(`  scope: status of every node in the tree = ${JSON.stringify(state.goals.map(g => ({ id: g.id, status: g.status })))}`);
+  check("section10 open-ask: no node in the tree is active",
+    !state.goals.some(g => g.status === "active"));
+  check("section10 open-ask: activeGoalId is unchanged", state.activeGoalId === activeGoalIdBefore);
+
+  const newDecisions = getDecisions(h).slice(decisionsBefore);
+  console.log(`  scope: actions of decisions pushed by this call = ${JSON.stringify(newDecisions.map(d => d.action))}`);
+  check("section10 open-ask: no 'activated' decision was pushed by this call",
+    !newDecisions.some(d => d.action === "activated"));
+}
+
+// Section 10 fix round: a paused node means the controller deliberately
+// holds the tree (nudge cap or an error streak), so goal_add must not
+// activate anything while any node is paused, even with no ask open.
+async function caseSection10_pausedNodeBlocksActivation(clock) {
+  console.log("\n=== Section 10: a paused node blocks activation ===");
+  clock.set(T0);
+
+  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const pausedLeaf = makeGoalNode({
+    id: "plan-paused",
+    parentId: "root-1",
+    kind: "plan",
+    status: "paused",
+    createdAt: T0 - 10_000,
+    updatedAt: T0 - 5_000,
+  });
+
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "section10_paused_blocks",
+    stateOpts: { now: T0, goals: [rootGoal, pausedLeaf], activeGoalId: "plan-paused" },
+  });
+
+  // enforceInvariants (agent-state.ts) runs on the session.start load
+  // createTickHarness fires internally and nulls activeGoalId when no node's
+  // status is "active" - a paused node does not keep it there, even though a
+  // live session never clears it while pausing in place. So the pre-call
+  // value, not "plan-paused", is the baseline this case's "unchanged"
+  // assertion compares against.
+  const activeGoalIdBefore = getState(h).activeGoalId;
+  const decisionsBefore = getDecisions(h).length;
+  const toolCallH = h.handlers["tool.call"];
+  const result = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "plan",
+    title: "New plan while a node is paused",
+    objective: "Should not activate",
+  }, async () => ({ result: "passthrough" }));
+
+  check("section10 paused: not denied", result.deny === undefined);
+
+  const state = getState(h);
+  console.log(`  scope: status of every node in the tree = ${JSON.stringify(state.goals.map(g => ({ id: g.id, status: g.status })))}`);
+  check("section10 paused: no node in the tree is active",
+    !state.goals.some(g => g.status === "active"));
+  check("section10 paused: activeGoalId is unchanged", state.activeGoalId === activeGoalIdBefore);
+
+  const newDecisions = getDecisions(h).slice(decisionsBefore);
+  console.log(`  scope: actions of decisions pushed by this call = ${JSON.stringify(newDecisions.map(d => d.action))}`);
+  check("section10 paused: no 'activated' decision was pushed by this call",
+    !newDecisions.some(d => d.action === "activated"));
 }
 
 // Item 8.1 / Round 58 finding 4: goal_edit's drop action refused a blocked node outright, which is
