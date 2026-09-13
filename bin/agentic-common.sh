@@ -9,6 +9,11 @@
 # Selected by PROFILE=full|short (default: short).
 # full: TICK_MS=30000, NUDGE_IDLE_MS=120000, GIT_PROBE_MS=120000
 # short: TICK_MS=10000, NUDGE_IDLE_MS=45000, GIT_PROBE_MS=30000
+# --- Plugin ids ---
+# The two ids pluginConfigs is keyed by: --plugin-dir load, and installed load.
+AGENTIC_PLUGIN_DEV_ID="agentic-plugin"
+AGENTIC_PLUGIN_INSTALLED_ID="agentic-plugin@agent-persona"
+
 PROFILE="${PROFILE:-short}"
 case "$PROFILE" in
   full)
@@ -73,19 +78,71 @@ emit_settings_json() {
   # falling back to the plugin's hardcoded "default". $PERSONA is supervise.sh's
   # own second positional argument, visible here because this function is
   # sourced into the caller's shell rather than run in a subshell.
+  # Every value below is spliced into JSON unescaped, so each is held to a
+  # shape that cannot close a string or an object: digits for the numbers,
+  # letters, digits, underscore and hyphen for the persona.
+  local var
+  for var in TICK_MS NUDGE_IDLE_MS GIT_PROBE_MS NUDGE_FLOOR_MS HEARTBEAT_MS STALE_AFTER_MS \
+    SELF_REVIEW_EVERY_TURNS CONTEXT_BUDGET_INFO_TOKENS CONTEXT_BUDGET_CLOSEOUT_TOKENS \
+    CONTEXT_BUDGET_CRITICAL_TOKENS CONTEXT_BUDGET_READ_EVERY_N_TICKS COST_SUMMARY_EVERY_N_TICKS \
+    COST_MAX_NUDGES_PER_HOUR COST_MAX_PLUGIN_CALLS_PER_HOUR COST_BACKOFF_AFTER_TICKS COST_BACKOFF_MAX_MS; do
+    case "${!var:-0}" in
+      ''|*[!0-9]*)
+        echo "ERROR: emit_settings_json: $var '${!var}' is not a non-negative integer" >&2
+        return 1
+        ;;
+    esac
+  done
+  if ! valid_persona_name "${PERSONA:-default}"; then
+    echo "ERROR: emit_settings_json: PERSONA '$PERSONA' may hold only letters, digits, underscore and hyphen" >&2
+    return 1
+  fi
   local persona_opt=""
   if [ -n "${PERSONA:-}" ]; then
     persona_opt=",\"persona\":\"$PERSONA\""
   fi
-  # The engine keys pluginConfigs by plugin id: the manifest name under
-  # --plugin-dir, and "<name>@<marketplace>" for the installed copy. Options
-  # under the wrong id are ignored without an error, so the same options are
-  # written under both. .kit/settings-plugin-key-test.sh pins both ids against
-  # .claude-plugin/plugin.json and .claude-plugin/marketplace.json.
+  # pluginConfigs is keyed by plugin id: the manifest name under --plugin-dir,
+  # and "<name>@<marketplace>" for the installed copy. The installed form is
+  # absent from the engine's type file, and options under the other id are
+  # ignored without an error, so the same options are written under both.
+  # .kit/settings-plugin-key-test.sh pins both ids against the two manifests.
   local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts$cost_opts$persona_opt}"
   cat > "$out" <<EOF
-{"pluginConfigs":{"agentic-plugin":{"options":$options},"agentic-plugin@agent-persona":{"options":$options}}}
+{"pluginConfigs":{"$AGENTIC_PLUGIN_DEV_ID":{"options":$options},"$AGENTIC_PLUGIN_INSTALLED_ID":{"options":$options}}}
 EOF
+}
+
+# --- ensure_settings_plugin_ids ---
+# Usage: ensure_settings_plugin_ids <settings-file>
+# For a settings file the caller already provided: where the options sit under
+# only one of the two plugin ids, copies them under the other, leaving every
+# option as the caller wrote it. Returns 1 when the file is not valid JSON.
+ensure_settings_plugin_ids() {
+  node -e '
+const fs = require("fs");
+const [file, devId, installedId] = process.argv.slice(1);
+let s;
+try { s = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) {
+  console.error("ERROR: ensure_settings_plugin_ids: " + file + " is not valid JSON: " + e.message);
+  process.exit(1);
+}
+const pc = s && s.pluginConfigs;
+if (!pc || typeof pc !== "object") process.exit(0);
+if (pc[devId] && !pc[installedId]) pc[installedId] = pc[devId];
+else if (pc[installedId] && !pc[devId]) pc[devId] = pc[installedId];
+else process.exit(0);
+fs.writeFileSync(file, JSON.stringify(s));
+' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID"
+}
+
+# --- valid_persona_name ---
+# Usage: valid_persona_name <name>; returns 0 for a non-empty name of letters,
+# digits, underscore and hyphen, 1 otherwise.
+valid_persona_name() {
+  case "$1" in
+    ''|*[!A-Za-z0-9_-]*) return 1 ;;
+  esac
+  return 0
 }
 
 # --- find_global_store ---

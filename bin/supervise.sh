@@ -44,6 +44,16 @@ PERSONA="$2"
 PERMISSION_MODE="$3"
 shift 3
 
+# The persona is spliced into the child's settings JSON and into node -e
+# scripts, so it is held to the same shape valid_persona_name enforces in
+# bin/agentic-common.sh, checked here before anything touches the disk.
+case "$PERSONA" in
+  ''|*[!A-Za-z0-9_-]*)
+    echo "ERROR: persona '$PERSONA' may hold only letters, digits, underscore and hyphen" >&2
+    exit 1
+    ;;
+esac
+
 PROMPT=""
 RUNDIR=""
 DEV_MODE=0
@@ -258,8 +268,12 @@ _COMMON="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agentic-common.sh"
 source "$_COMMON"
 
 # --- Emit settings JSON (only if not already provided) ---
+# A provided file keeps its options, and gains whichever plugin id it lacks,
+# so a rundir written for one load mode still reaches the plugin in the other.
 if [ ! -f "$SETTINGS_FILE" ]; then
-  emit_settings_json "$SETTINGS_FILE"
+  emit_settings_json "$SETTINGS_FILE" || exit 1
+else
+  ensure_settings_plugin_ids "$SETTINGS_FILE" || exit 1
 fi
 
 # --- Helper: log a line to supervisor.log ---
