@@ -109,3 +109,21 @@ What is owed is narrow: one re-run of `live-restartpassive-test.sh` on a genuine
 box, so its result rests on the condition the item sets rather than on a run that did not
 meet it. The whole gate does not need repeating for this. Drop this entry once that run is
 recorded in item 4's Chapter.
+
+## Design direction: let the outer loops recover a session that stopped, rather than only preventing the stop (operator dialog, 2026-09-13)
+
+Not a defect and not yet a plan. Recorded from a design conversation with the operator so it survives the session that had it.
+
+The problem it addresses, in the operator's own account: sessions are often found parked mid-effort, having declared a next action and then stopped, losing hours of wall-clock progress. The kit's stop hooks were built to prevent exactly that. The proposal is that the supervisor shell, which already launched the session and holds both ends of its pipe, could also recover one after the fact, the way a person at the keyboard types "continue".
+
+What makes it viable: `bin/supervise.sh` runs the child under a bash coproc with stream-json in both directions, so the shell can both type in and read out. The child emits exactly one result line per turn it completes, and the launcher already gates on that line before writing a prompt, because a prompt written earlier is absorbed into the open turn instead of starting its own.
+
+The discriminator is the hard part, because one keystroke helps in one state and harms in another. Idle but alive: typing is right, and is what the operator does by hand. Process gone: typing does nothing and the existing restart is the answer. Mid-turn: typing is actively harmful, because the prompt queues and joins the next turn, which is the nudge pile-up Section 11 exists to stop.
+
+The signal to build the discriminator on should be the shell's own, not the plugin's. The plugin's open-turn reading depends on `turn.start` events that are delivered for a minority of turns, per the entry above. The shell knows when it wrote a prompt and when the result line came back, and observes both halves itself.
+
+Keep the stop hooks beside this rather than replacing them. They cover different failures. A hook prevents a bad stop at no cost when it works, but cannot fire in a session that has died, since whatever killed the process took the hook with it. A loop repairs after the fact and always pays a detection delay plus a resume that re-reads the plan and re-derives what the stopped session already held.
+
+Design against one failure from the start: a loop that types "continue" on every quiet stretch will eventually type it into a session that correctly finished, which is the failure the operator described on a sibling project, many review rounds building features nobody asked for. The loop needs a predicate for whether work should still be happening, not only whether work is happening. The armed kit goal is the natural source, since it already records what the session was meant to finish.
+
+Two limits worth knowing before anyone builds this. There is no working-on-it event in the stream, because the spinner is drawn by the interactive display, so silence during a long tool call is indistinguishable from death on the pipe alone and growth is the honest liveness evidence. And prompts the plugin submits to itself are not echoed into that stream, so a shell-side monitor sees the turn a self-nudge causes but never the nudge.
