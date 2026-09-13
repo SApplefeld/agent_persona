@@ -131,6 +131,13 @@ STOP_PS_SENTINEL="___SUPERVISOR_PS_DONE___"
 # in favor of retry_stop_escalation's single wall-clock-bounded loop, R88),
 # rather than folded into this one setting.
 SUPERVISOR_PS_BOUND_S="${supervisorPsBoundS:-30}"
+# Reviewer Round 130 R99 (Minor): unvalidated, a non-numeric override
+# makes every `[ "$waited" -lt "$bound" ]` comparison error, which reads
+# as "already past the bound" and force-kills every PowerShell call
+# instantly. Validated once here; falls back to 30 rather than erroring.
+case "$SUPERVISOR_PS_BOUND_S" in
+  ''|*[!0-9]*) SUPERVISOR_PS_BOUND_S=30 ;;
+esac
 
 SUPERVISOR_STOP_GRACE_MS="${supervisorStopGraceMs:-60000}"
 SUPERVISOR_MIN_RUN_MS="${supervisorMinRunMs:-120000}"
@@ -201,6 +208,44 @@ LAST_STOP_SNAPSHOT=""  # set by stop_child; the process-tree snapshot its own ki
 # Reviewer Round 126 R85 (Minor): unset under `set -u`, so the "no child
 # to stop" early return's own `log "... ($STOP_PATH)"` aborted the script.
 STOP_PATH=""
+
+# --- Helper: run a native command bounded, without inheriting the
+# caller's own stdout ---
+# Reviewer Round 130 R94 (Major, reproduced): a taskkill watchdog written
+# as `( sleep 5; kill -9 "$tk" 2>/dev/null ) &` with no redirection
+# inherits whatever fd its parent function's stdout currently is - in
+# every production call, that is the caller's own `$(...)` capture pipe.
+# The command substitution cannot return until every process holding a
+# copy of that pipe's write end closes it, watchdog included, so a call
+# that finished in 4s (by the helper's own log) did not hand control back
+# to the caller until 9s - a flat 5-10s tax on every expired call, for no
+# reason connected to the actual work. Worse, `$tk` is itself a stub for
+# a native `taskkill.exe` (bash exec-optimises the subshell), so `kill -9`
+# on it is exactly the signal-based hang the R79 addendum banned, one
+# level further removed. Fixed once, here: every native command this
+# script spawns and bounds goes through this helper, which redirects to
+# `/dev/null` at the exec site itself (so nothing it holds can block a
+# caller's pipe) and abandons rather than signals a command that outlives
+# its bound (no second kill to hang on).
+# Usage: run_bounded_native <bound-seconds> <command...>
+run_bounded_native() {
+  local bound="$1"
+  shift
+  ( exec "$@" ) > /dev/null 2>&1 &
+  local npid=$!
+  local nwaited=0
+  while kill -0 "$npid" 2>/dev/null && [ "$nwaited" -lt "$bound" ]; do
+    sleep 1
+    nwaited=$((nwaited + 1))
+  done
+  if kill -0 "$npid" 2>/dev/null; then
+    log_diag "STOP: a native call ($*) did not finish within ${bound}s - abandoning it rather than risking a second signal-based hang"
+    return 124
+  fi
+  wait "$npid" 2>/dev/null
+  return $?
+}
+
 cleanup() {
   local exit_code=$?
   # Stop the child gracefully if it's still running.
@@ -208,15 +253,28 @@ cleanup() {
     log "CLEANUP: stopping child-$CHILD_INDEX (pid $CHILD_PID)"
     stop_child "cleanup"
     retry_stop_escalation "cleanup" $?
-  elif [ -n "$LAST_STOP_SNAPSHOT" ] && [ -n "$(check_snapshot_survivors "$LAST_STOP_SNAPSHOT" 2>/dev/null)" ]; then
+  elif [ -n "$LAST_STOP_SNAPSHOT" ]; then
     # Reviewer Round 124 R75: the wrapper pid can be gone (an earlier
     # stop_child call already reaped it) while its own snapshot still
     # shows a live descendant - the exact incident shape, a dead wrapper
     # with a surviving claude.exe. Keying this trap on the wrapper pid
     # alone means that survivor is never revisited on this exit path; key
     # it on the last known snapshot instead.
-    log "CLEANUP: wrapper already gone but its last known process tree still shows a survivor; force-killing it"
-    kill_process_snapshot "$LAST_STOP_SNAPSHOT"
+    #
+    # Reviewer Round 130 R96 (Major): the old guard, `[ -n "$(check_
+    # snapshot_survivors ...)" ]`, read a timed-out probe (empty output,
+    # rc 1) the same as "no survivors" - R72's fail-open class, missed
+    # here because this call site checked emptiness, never rc. Call
+    # `kill_process_snapshot` unconditionally instead: it is ticks-matched
+    # and re-verifies its own kill, so it is never a blind kill on a
+    # snapshot that might already be dead, and it fails closed on its own
+    # unverifiable read rather than this call site guessing first.
+    log "CLEANUP: wrapper already gone; re-verifying its last known process tree before exit"
+    if kill_process_snapshot "$LAST_STOP_SNAPSHOT"; then
+      log "CLEANUP: tree confirmed dead"
+    else
+      log "CLEANUP: tree could not be confirmed dead (survivor or unverifiable read) - exiting anyway"
+    fi
   fi
   exit "$exit_code"
 }
@@ -339,16 +397,12 @@ run_bounded_powershell() {
     [ -z "$ps_real_pid" ] && [ -s "$outfile" ] && ps_real_pid=$(head -1 "$outfile" 2>/dev/null | tr -d '\r' | sed -n 's/^PSPID:\([0-9]*\)$/\1/p')
     local rc_real="n/a" rc_stub="n/a"
     if [ -n "$ps_real_pid" ]; then
-      ( taskkill //F //PID "$ps_real_pid" > /dev/null 2>&1 ) &
-      local tk_real=$!
-      ( sleep 5; kill -9 "$tk_real" 2>/dev/null ) &
-      wait "$tk_real" 2>/dev/null; rc_real=$?
+      run_bounded_native 5 taskkill //F //PID "$ps_real_pid"
+      rc_real=$?
     fi
     if [ -n "$ps_winpid" ]; then
-      ( taskkill //F //T //PID "$ps_winpid" > /dev/null 2>&1 ) &
-      local tk_stub=$!
-      ( sleep 5; kill -9 "$tk_stub" 2>/dev/null ) &
-      wait "$tk_stub" 2>/dev/null; rc_stub=$?
+      run_bounded_native 5 taskkill //F //T //PID "$ps_winpid"
+      rc_stub=$?
     fi
     log_diag "STOP: taskkill on the real powershell pid ${ps_real_pid:-unresolved} rc=$rc_real; taskkill //T on stub winpid ${ps_winpid:-unresolved} rc=$rc_stub"
     # Bounded reap, not a blocking `wait`: taskkill is the only
@@ -542,14 +596,29 @@ check_snapshot_survivors() {
   pairs="${pairs#,}"
   unreadable="${unreadable#,}"
   if [ -z "$pairs" ] && [ -z "$unreadable" ]; then
-    log_diag "STOP: check_snapshot_survivors got no valid pid entries to check"
-    return 0
+    # Reviewer Round 130 R99 (Minor): reaching here means $snapshot was
+    # non-empty (the early `-z "$snapshot"` return above already handles
+    # a genuinely empty one) but nothing in it parsed as a valid pid
+    # entry - that is a parse failure, not "nothing to check", and should
+    # not read as a clean, verified result.
+    log_diag "STOP: check_snapshot_survivors got a non-empty snapshot with no parseable pid entries - treating as unverified"
+    return 1
   fi
+  # Reviewer Round 130 R95 (Major): `StartTime` can throw at read time (a
+  # transient race, not just at snapshot time - `snapshot_process_tree`
+  # already guards this same read, this call site did not). Under
+  # `-Command`, an unguarded throw aborts only that one loop iteration;
+  # the loop continues, the sentinel still gets written, and the whole
+  # call reports rc-equivalent success with the live process silently
+  # omitted - reported dead, never a survivor, never killed. Guarded the
+  # same way the snapshot walk already is.
   local raw
   raw=$(run_bounded_powershell_capture "$SUPERVISOR_PS_BOUND_S" "
       foreach (\$e in @($pairs)) {
         \$proc = Get-Process -Id \$e.Id -ErrorAction SilentlyContinue
-        if (\$proc -and \$proc.StartTime.Ticks -eq \$e.Ticks) { Write-Output \$e.Id }
+        try {
+          if (\$proc -and \$proc.StartTime.Ticks -eq \$e.Ticks) { Write-Output \$e.Id }
+        } catch { if (\$proc) { Write-Output \$e.Id } }
       }
       foreach (\$u in @($unreadable)) {
         \$proc = Get-Process -Id \$u -ErrorAction SilentlyContinue
@@ -615,13 +684,23 @@ kill_process_snapshot() {
   if [ -z "$pairs" ]; then
     log "STOP: kill_process_snapshot has no ticks-matched pairs to act on (any UNREADABLE entries are reported, per R91, never killed)"
   else
+    # Reviewer Round 130 R95 (Major): the same unguarded `StartTime` read
+    # here, on the kill side, means a throw makes this loop iteration
+    # silently skip a pid that should have been killed - never fatal
+    # (the pid just survives to the next check), but it should never be
+    # read as a ticks mismatch either. On a throw, treat the pid as
+    # UNREADABLE: report it (so `check_snapshot_survivors` catches it via
+    # its own existence check), never kill it on an unverifiable ticks
+    # comparison.
     local raw
     raw=$(run_bounded_powershell_capture "$SUPERVISOR_PS_BOUND_S" "
       foreach (\$e in @($pairs)) {
         \$proc = Get-Process -Id \$e.Id -ErrorAction SilentlyContinue
-        if (\$proc -and \$proc.StartTime.Ticks -eq \$e.Ticks) {
-          try { Stop-Process -Id \$e.Id -Force -ErrorAction SilentlyContinue } catch {}
-        }
+        try {
+          if (\$proc -and \$proc.StartTime.Ticks -eq \$e.Ticks) {
+            try { Stop-Process -Id \$e.Id -Force -ErrorAction SilentlyContinue } catch {}
+          }
+        } catch {}
       }
       Write-Output '$STOP_PS_SENTINEL'
     ")
@@ -679,24 +758,31 @@ retry_stop_escalation() {
   if [ "$result" -eq 0 ]; then
     return 0
   fi
+  # Reviewer Round 130 R98 (Major): a re-snapshot attempt from a dead or
+  # zombie `CHILD_PID` reliably resolves to no winpid at all (confirmed by
+  # the blind reviewer's own probe) - looping and sleeping through the
+  # whole budget on a re-resolve that structurally cannot ever succeed
+  # just burns the budget for nothing. Try exactly once, up front; if it
+  # still yields nothing, there is nothing this loop can do and it fails
+  # fast rather than slow.
+  if [ -z "$LAST_STOP_SNAPSHOT" ]; then
+    log "STOP[$label]: stop_child reported failure (STOP_PATH=$STOP_PATH) with no snapshot to retry against; attempting one re-snapshot"
+    if [ -n "${CHILD_PID:-}" ]; then
+      local resnap_winpid
+      resnap_winpid=$(resolve_windows_pid "$CHILD_PID")
+      [ -n "$resnap_winpid" ] && LAST_STOP_SNAPSHOT=$(snapshot_process_tree "$resnap_winpid")
+    fi
+    if [ -z "$LAST_STOP_SNAPSHOT" ]; then
+      log "STOP[$label]: re-snapshot found nothing to retry against (the wrapper's own pid no longer resolves) - failing fast rather than sleeping out the budget"
+      return 1
+    fi
+  fi
   local RETRY_BUDGET_S=30
   local deadline
   deadline=$(( $(date +%s) + RETRY_BUDGET_S ))
   local attempt=0
   while [ "$(date +%s)" -lt "$deadline" ]; do
     attempt=$((attempt + 1))
-    if [ -z "$LAST_STOP_SNAPSHOT" ]; then
-      log "STOP[$label]: stop_child reported failure (STOP_PATH=$STOP_PATH) with no snapshot to retry against; re-snapshotting (attempt $attempt)"
-      if [ -n "${CHILD_PID:-}" ]; then
-        local resnap_winpid
-        resnap_winpid=$(resolve_windows_pid "$CHILD_PID")
-        [ -n "$resnap_winpid" ] && LAST_STOP_SNAPSHOT=$(snapshot_process_tree "$resnap_winpid")
-      fi
-      if [ -z "$LAST_STOP_SNAPSHOT" ]; then
-        sleep 2
-        continue
-      fi
-    fi
     log "STOP[$label]: retrying the tree kill (attempt $attempt, $(( deadline - $(date +%s) ))s left in budget)"
     if kill_process_snapshot "$LAST_STOP_SNAPSHOT"; then
       log "STOP[$label]: retry succeeded on attempt $attempt, tree confirmed dead"
@@ -742,18 +828,28 @@ stop_child() {
   # signaled, and is the same list checked and killed at every phase below.
   local snapshot_winpid
   snapshot_winpid=$(resolve_windows_pid "$pid")
-  local snapshot="" snap_rc=0
+  # Reviewer Round 130 R98 (Major, confidence medium): the walk's own
+  # empty output was conflated with a failed walk - a completed walk from
+  # a genuinely live winpid always lists at least the root, so an empty
+  # snapshot with `snap_rc` 0 means the walk ran fine and found nothing
+  # (the process was already gone), not that nothing was looked at.
+  # `snap_attempted` tracks whether the walk ran at all, separately from
+  # whether it found anything, so "ran clean and found nothing" (verified
+  # dead) is no longer read the same as "never ran" or "ran and failed"
+  # (genuinely unverified).
+  local snapshot="" snap_rc=0 snap_attempted=0
   if [ -n "$snapshot_winpid" ]; then
+    snap_attempted=1
     snapshot=$(snapshot_process_tree "$snapshot_winpid")
     snap_rc=$?
   fi
-  # Reviewer Round 122 R64 / Round 124 R71: an empty snapshot (a failed
-  # resolve) or a non-zero snap_rc (the PowerShell walk timed out or
-  # errored - errors go only to supervisor.err, never here) must not read
-  # as "verified dead" - it means the tree was never actually looked at.
-  # Named explicitly so the operator can tell the two apart in the log,
-  # rather than a silent, indistinguishable clean report.
-  if [ -z "$snapshot" ] || [ "$snap_rc" -ne 0 ]; then
+  # Reviewer Round 122 R64 / Round 124 R71: a failed resolve or a
+  # non-zero `snap_rc` (the PowerShell walk timed out or errored - errors
+  # go only to supervisor.err, never here) must not read as "verified
+  # dead" - it means the tree was never actually looked at. Named
+  # explicitly so the operator can tell the two apart in the log, rather
+  # than a silent, indistinguishable clean report.
+  if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
     log "STOP[$label]: tree not verified (no snapshot resolved for pid $pid, or the walk did not complete, rc=$snap_rc) - stop relies on the coproc's own pid alone"
   fi
   LAST_STOP_SNAPSHOT="$snapshot"
@@ -782,7 +878,7 @@ stop_child() {
   # never actually looked at. Empty is now the same "cannot tell" case as
   # an unverified check: return 1, not 0.
   verify_snapshot_dead() {
-    if [ -z "$snapshot" ] || [ "$snap_rc" -ne 0 ]; then
+    if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
       log "STOP[$label]: no snapshot was ever resolved for this stop (resolve or walk failed) - not confirming dead on an unverified read"
       return 1
     fi
@@ -819,7 +915,7 @@ stop_child() {
       LAST_STOP_SNAPSHOT=""
       return 0
     fi
-    if [ -z "$snapshot" ] || [ "$snap_rc" -ne 0 ]; then
+    if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
       STOP_PATH="unverified"
     else
       log "STOP[$label]: a snapshot survivor could not be killed after the EOF path"
@@ -841,7 +937,7 @@ stop_child() {
       LAST_STOP_SNAPSHOT=""
       return 0
     fi
-    if [ -z "$snapshot" ] || [ "$snap_rc" -ne 0 ]; then
+    if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
       STOP_PATH="unverified"
     else
       log "STOP[$label]: a snapshot survivor could not be killed after the TERM path"
@@ -860,8 +956,13 @@ stop_child() {
   # it can hang the same way. `taskkill //F //T` on the already-resolved
   # `$snapshot_winpid` is tried first; `kill -9` remains a fallback for
   # the case `resolve_windows_pid` never found a winpid at all.
+  # Reviewer Round 130 R94: this call was itself unbounded - a native
+  # spawn with nothing capping how long it can run, inside a function
+  # whose whole purpose is bounding exactly that shape of call. Routed
+  # through `run_bounded_native` like every other native command this
+  # script spawns.
   if [ -n "$snapshot_winpid" ]; then
-    taskkill //F //T //PID "$snapshot_winpid" > /dev/null 2>&1
+    run_bounded_native 5 taskkill //F //T //PID "$snapshot_winpid"
   else
     kill -9 "$pid" 2>/dev/null
   fi
@@ -870,7 +971,7 @@ stop_child() {
   # empty snapshot trivially returns 0 (nothing to kill), which read as
   # STOP_PATH="kill", a clean report, on a tree that was never resolved at
   # all. Checked explicitly before trusting that return.
-  if [ -z "$snapshot" ] || [ "$snap_rc" -ne 0 ]; then
+  if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
     log "STOP[$label]: no snapshot was ever resolved for this stop (resolve or walk failed) - not confirming dead on an unverified read"
     STOP_PATH="unverified"
     return 1

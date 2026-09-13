@@ -75,13 +75,19 @@ if [ -z "$STOP_PS_SENTINEL" ]; then
   exit 1
 fi
 # SUPERVISOR_PS_BOUND_S (Reviewer Round 126 R89) is the same shape of
-# global the extracted functions close over - default value read the
-# same way, not retyped.
-SUPERVISOR_PS_BOUND_S=30
+# global the extracted functions close over - its default value read
+# from supervise.sh's own line (Reviewer Round 130 R99: a prior cut of
+# this comment claimed that and then hardcoded the literal anyway).
+SUPERVISOR_PS_BOUND_S=$(grep '^SUPERVISOR_PS_BOUND_S="\${supervisorPsBoundS:-' "$SUPERVISE" | head -1 | sed -n 's/.*:-\([0-9]*\)}"/\1/p')
+if [ -z "$SUPERVISOR_PS_BOUND_S" ]; then
+  echo "FAIL: could not read SUPERVISOR_PS_BOUND_S's default value from $SUPERVISE"
+  exit 1
+fi
 
 FN_FILE="$RUNDIR/stop-process-tree-fns.sh"
 : > "$FN_FILE"
 extract_fn "resolve_windows_pid" "$FN_FILE"
+extract_fn "run_bounded_native" "$FN_FILE"
 extract_fn "run_bounded_powershell" "$FN_FILE"
 extract_fn "run_bounded_powershell_capture" "$FN_FILE"
 extract_fn "snapshot_process_tree" "$FN_FILE"
@@ -103,7 +109,7 @@ source "$FN_FILE"
 # Reviewer Round 124 R77 / Round 126: this count has drifted upward twice
 # since this comment was first written, so it is named here rather than
 # pinned as a literal that will only go stale again.
-FNS_TO_EXTRACT="resolve_windows_pid run_bounded_powershell run_bounded_powershell_capture snapshot_process_tree check_snapshot_survivors kill_process_snapshot retry_stop_escalation stop_child"
+FNS_TO_EXTRACT="resolve_windows_pid run_bounded_native run_bounded_powershell run_bounded_powershell_capture snapshot_process_tree check_snapshot_survivors kill_process_snapshot retry_stop_escalation stop_child"
 FN_COUNT=$(echo "$FNS_TO_EXTRACT" | wc -w)
 for fn in $FNS_TO_EXTRACT; do
   if ! declare -F "$fn" > /dev/null; then
@@ -146,7 +152,11 @@ R79_ELAPSED=$(( $(date +%s) - R79_START ))
 # load (the poll loop, the taskkill, the reap wait); a flat 15s ceiling
 # flakes red on a slow day for reasons that have nothing to do with
 # whether the bound actually held. Scaled off the bound itself instead.
-R79_CEILING=$((3 + 15))
+# Reviewer Round 130 R99 (Minor): 18s was still below the helper's own
+# worst-case honest path (winpid poll up to 5s, wait loop up to bound,
+# reap poll up to 5s, plus two taskkill calls each capped at 5s - about
+# 23s legitimately, before any scheduling slack). Widened.
+R79_CEILING=$((3 + 20))
 if [ "$R79_ELAPSED" -gt "$R79_CEILING" ]; then
   failed "R79 regression: run_bounded_powershell_capture took ${R79_ELAPSED}s against a 3s bound (expected under ~${R79_CEILING}s) - the bound did not hold"
 else
