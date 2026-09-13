@@ -4166,7 +4166,9 @@ async function main() {
     await caseItem5_memoryCappedAtPush(clock);
     await caseItem81_goalEditDropAllowsBlocked(clock);
     await caseItem81_goalEditDropStillRefusesActive_control(clock);
-    await caseR58f3_nudgeInsideOpenTurnNotCounted(clock);
+    await caseNudgeGuard_skippedWhileTurnOpen(clock);
+    await caseNudgeGuard_sentBetweenTurns_control(clock);
+    await caseR58f3_nudgeInsideOpenTurnNotSent(clock);
     await caseR58f3_capPausesWithNoAsk(clock);
     await caseR60f3b_reactivationAfterCapPause(clock);
     await caseItem8p3_ownerStampsTurnStartInHeartbeat(clock);
@@ -5176,53 +5178,153 @@ async function caseItem81_goalEditDropStillRefusesActive_control(clock) {
   check("item81 drop-active control: status unchanged", node.status === "active");
 }
 
-// Round 58 finding 3, part (a): a nudge fired while a turn is open (turnInFlight) must not count
-// toward the cap, since it joins the turn already in progress rather than landing between
-// completed turns the worker could react to between. Never completing the opened turn keeps
-// turnInFlight true for every tick below.
-async function caseR58f3_nudgeInsideOpenTurnNotCounted(clock) {
-  console.log("\n=== Round 58 finding 3a: nudges inside an open turn don't count toward the cap ===");
-  clock.set(T0);
+// ============================================================
+// NUDGE GUARD: a nudge is not sent while a turn is open
+//
+// A nudge wakes an idle worker, and a worker inside an open turn is not idle.
+// A prompt submitted there does not reach the running turn: it is queued and
+// runs once the session is idle. So a long turn would otherwise collect one
+// identical [GOAL] copy per tick and hand the worker the whole pile as the
+// next turn's prompt.
+//
+// The tick's in-flight check is synchronous and the classify call after it is
+// not, so the turn can open underneath a tick already on its way to the nudge.
+// That race is the only route to the nudge path with a turn open, and it is
+// what the driver below reproduces.
+// ============================================================
 
+// One driver, one axis. Each round fires a tick, lets its deferred nudge work
+// land, and differs only in whether a turn opens while that work is in flight.
+// Everything else - the ticks, the clock advance, the classify verdict, the
+// settle sleeps - is identical on both sides, so a silence on the open-turn
+// side is readable only because the between-turns side speaks under the same
+// mechanism.
+//
+// The turn is opened from inside the classify stub, which is the tick's own
+// first await past the synchronous in-flight check. That is the live shape:
+// the check passes, the tick goes async, and the turn opens underneath it.
+// Opening the turn before the tick instead would make every tick return at the
+// in-flight check and never reach the nudge path at all, which is why each
+// case asserts the decider was reached before it asserts the silence.
+//
+// turn.start sets the module's turnInFlight synchronously, before its own first
+// await, so the flag is up by the time the stub returns and the call needs no
+// awaiting here.
+async function nudgeRaceDrive(h, clock, { openTurn, rounds }) {
+  const startH = h.handlers["turn.start"];
+  const completeH = h.handlers["turn.complete"];
+  let opened = 0;
+  // The classify stub returns the verdict to the tick synchronously, so it
+  // cannot await the turn.start it fires. The promise is kept with a rejection
+  // handler attached at creation: a throw inside turn.start (its own
+  // unguarded inbox read is the live path) then fails a check here instead of
+  // escaping as an unhandled rejection that takes the suite process down.
+  const started = [];
+  const startErrors = [];
+  h.setClassifyValue(() => {
+    if (openTurn) {
+      started.push(Promise.resolve(startH(h.fake, { turnId: `race-turn-${opened}` }, () => {}))
+        .catch((err) => { startErrors.push(err); }));
+      opened += 1;
+    }
+    return "nudge";
+  });
+  for (let i = 0; i < rounds; i++) {
+    clock.advance(130_000);
+    await fireTick(h);
+    await new Promise(r => setTimeout(r, 60));
+    if (openTurn) await completeH(h.fake, { aborted: true, reason: "aborted" }, () => {});
+    await new Promise(r => setTimeout(r, 20));
+  }
+  await Promise.all(started);
+  for (const err of startErrors) console.error(`  turn.start rejected: ${err}`);
+  check("nudge race driver: every turn.start settled without rejecting", startErrors.length === 0);
+  return opened;
+}
+
+async function seedNudgeRaceHarness(caseName) {
   const h = await createTickHarness({
     ...OPTS,
     // Raised well past MAX_CONSECUTIVE_NUDGES (3): OPTS's own costMaxNudgesPerHour (2) is a
     // different, unrelated cap (D3's own test) that would otherwise trip first and mask what
-    // this case is actually proving.
+    // these cases are actually proving.
     costMaxNudgesPerHour: 20,
-    caseName: "r58f3_open_turn",
+    caseName,
   });
   h.setClassifyValue("nudge");
-
   // session.start's reload resets the reseeded "active" leaf to "pending" - a completed dummy
   // turn (H2 scoring) re-activates g-plan before the race under test, the same transitional step
   // caseD2/D4 use via fireTurn().
   await fireTurn(h);
   await new Promise(r => setTimeout(r, 20));
+  return h;
+}
 
-  // The tick callback is fire-and-forget by design (its own comment: "the timer callback is sync,
-  // so we schedule async work" via an un-awaited Promise.resolve().then()). fireTick's own await
-  // only covers that synchronous scheduling, not the deferred classify/nudge work, which is why
-  // tickAndSettle sleeps afterward to let it land. That gap is exactly the race Round 58 hit live:
-  // the synchronous in-flight gate (turnInFlight false) passes and the tick is scheduled, then the
-  // real turn opens before the deferred nudge actually runs. Reproduced here by opening the turn
-  // right after firing the tick, before the settle sleep lets the nudge land.
-  const startH = h.handlers["turn.start"];
-  const completeH = h.handlers["turn.complete"];
-  for (let i = 0; i < 4; i++) {
-    clock.advance(130_000);
-    await fireTick(h);
-    await startH(h.fake, { turnId: `race-turn-${i}` }, () => {});
-    await new Promise(r => setTimeout(r, 50));
-    await completeH(h.fake, { aborted: true, reason: "aborted" }, () => {});
-    await new Promise(r => setTimeout(r, 20));
-  }
+// One round with a turn open: nothing in the nudge path runs.
+async function caseNudgeGuard_skippedWhileTurnOpen(clock) {
+  console.log("\n=== Nudge guard: a nudge is skipped while a turn is open ===");
+  clock.set(T0);
+
+  const h = await seedNudgeRaceHarness("nudge_guard_open_turn");
+  const opened = await nudgeRaceDrive(h, clock, { openTurn: true, rounds: 1 });
 
   const state = getState(h);
   const decisions = state.decisions;
+  // Instrument first: a tick that never reached the decider is the same silence
+  // as a guard that fired, so the decider must be shown to have said "nudge"
+  // with a turn open under it.
+  check("nudge guard: a turn was opened inside the tick", opened === 1);
+  check("nudge guard: the decider ran and said nudge", decisions.some(d => d.action === "controller_tick" && d.detail.startsWith("g-plan: nudge:")));
+  check("nudge guard: no [GOAL] prompt submitted", !(h.promptSubmits || []).some(p => p.startsWith("[GOAL]")));
+  check("nudge guard: no nudge_sent decision", !decisions.some(d => d.action === "nudge_sent"));
+  const skips = decisions.filter(d => d.action === "nudge_skipped_turn_in_flight");
+  check("nudge guard: one nudge_skipped_turn_in_flight decision", skips.length === 1);
+  check("nudge guard: the skip names the node and the idle reading", skips.length === 1 && skips[0].detail.startsWith("g-plan:") && skips[0].detail.includes("idle "));
+  // Nothing else in the nudge path ran: no ledger increment, no nudge window bump.
+  check("nudge guard: nudge ledger not incremented", state.monitor.cost.nudge.count === 0);
+  check("nudge guard: nudge window not bumped", (state.monitor.cost.nudgeWindow?.count ?? 0) === 0);
+  const plan = state.goals.find(g => g.id === "g-plan");
+  check("nudge guard: the active leaf stays active", plan && plan.status === "active");
+}
+
+// The withheld control: the same driver with the turn closed. The nudge is
+// sent, which is what makes the silence above a decision rather than a harness
+// that failed to drive the path at all.
+async function caseNudgeGuard_sentBetweenTurns_control(clock) {
+  console.log("\n=== Nudge guard control: with no turn open the nudge is sent ===");
+  clock.set(T0);
+
+  const h = await seedNudgeRaceHarness("nudge_guard_control");
+  await nudgeRaceDrive(h, clock, { openTurn: false, rounds: 1 });
+
+  const state = getState(h);
+  const decisions = state.decisions;
+  const goalPrompts = (h.promptSubmits || []).filter(p => p.startsWith("[GOAL]"));
+  check("nudge guard control: one [GOAL] prompt submitted", goalPrompts.length === 1);
   const nudges = decisions.filter(d => d.action === "nudge_sent");
-  check("r58f3a: four nudges were sent despite the race", nudges.length === 4);
-  check("r58f3a: every nudge notes it was not counted", nudges.every(d => d.detail.includes("not counted")));
+  check("nudge guard control: one nudge_sent decision", nudges.length === 1);
+  check("nudge guard control: the nudge is counted", nudges.length === 1 && nudges[0].detail.includes("nudge #1"));
+  check("nudge guard control: no skip decision", !decisions.some(d => d.action === "nudge_skipped_turn_in_flight"));
+  check("nudge guard control: nudge ledger incremented", state.monitor.cost.nudge.count === 1);
+}
+
+// Round 58 finding 3, part (a), repointed: the pile-up itself. Four ticks whose
+// nudges all land inside an open turn produce no [GOAL] prompts at all, rather
+// than one copy per tick.
+async function caseR58f3_nudgeInsideOpenTurnNotSent(clock) {
+  console.log("\n=== Round 58 finding 3a: repeated nudges inside open turns never pile up ===");
+  clock.set(T0);
+
+  const h = await seedNudgeRaceHarness("r58f3_open_turn");
+  const opened = await nudgeRaceDrive(h, clock, { openTurn: true, rounds: 4 });
+
+  const state = getState(h);
+  const decisions = state.decisions;
+  check("r58f3a: a turn was opened inside every tick", opened === 4);
+  check("r58f3a: the decider ran on every round", decisions.filter(d => d.action === "controller_tick" && d.detail.startsWith("g-plan: nudge:")).length === 4);
+  check("r58f3a: no [GOAL] prompt submitted at all", !(h.promptSubmits || []).some(p => p.startsWith("[GOAL]")));
+  check("r58f3a: no nudge_sent", !decisions.some(d => d.action === "nudge_sent"));
+  check("r58f3a: four skips, one per round", decisions.filter(d => d.action === "nudge_skipped_turn_in_flight").length === 4);
   check("r58f3a: no nudge_cap_reached", !decisions.some(d => d.action === "nudge_cap_reached"));
   check("r58f3a: no ask_opened", !decisions.some(d => d.action === "ask_opened"));
   check("r58f3a: no paused_by_controller", !decisions.some(d => d.action === "paused_by_controller"));

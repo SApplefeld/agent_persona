@@ -2624,8 +2624,24 @@ export const register: Register = async (on, options) => {
 
           // Actuate (controller only: the three actuators).
           if (finalDecision === "nudge" && g.status === "active") {
-            // Nudge floor.
-            if (now - sess.lastNudgeAt >= nudgeFloorMs) {
+            // A nudge wakes an idle worker, and a worker inside an open turn is
+            // not idle, so no nudge is sent while a turn is open. The tick's
+            // in-flight check passes synchronously while the classify call that
+            // follows is async, so a turn can open underneath a tick already on
+            // its way to this line. That is why the flag is read again here. A
+            // submission made here would not reach the running turn at all. It
+            // is queued and runs once the session is idle, so it arrives as
+            // part of the next turn's prompt, one identical copy per tick,
+            // rather than waking anything.
+            if (turnInFlight) {
+              sess.state.decisions.push({
+                timestamp: tickTs,
+                loop: "monitor",
+                action: "nudge_skipped_turn_in_flight",
+                detail: `${g.id}: idle ${idleDisplay}, turn in flight`,
+              });
+            } else if (now - sess.lastNudgeAt >= nudgeFloorMs) {
+              // Nudge floor.
               // AK2: Guard only (silent). The nudge-cap check before classify already handles the cap.
               // If we reached here, the cap was not latched at the pre-classify check.
               if (nudgeCapped) {
@@ -2654,15 +2670,11 @@ export const register: Register = async (on, options) => {
                 currentPrompt = nudgeText;
                 nudgedTurn = true;
                 sess.lastNudgeAt = now;
-                // Round 58 finding 3: a nudge fired while a turn is open (turnInFlight) does not
-                // count toward the cap - it joins the turn already in progress rather than landing
-                // between completed turns, so the worker never saw it as an idle-gap nudge to react
-                // to. The rebind PR's own turn (71 tool calls, well past the 45s idle window) hit
-                // three such nudges and escalated on prose the worker had no chance to answer. Only
-                // a nudge delivered between completed turns advances the counter.
-                if (!turnInFlight) {
-                  sess.consecutiveNudgesWithoutOnGoal += 1;
-                }
+                // Every nudge that reaches this line was delivered between
+                // completed turns, which is the only kind the escalation
+                // counter is about: a nudge the worker met as an idle-gap
+                // prompt and did not answer.
+                sess.consecutiveNudgesWithoutOnGoal += 1;
                 // D1: increment nudge ledger (count only, no token estimate)
                 sess.state.monitor.cost.nudge.count += 1;
                 // D3: update nudge window
@@ -2671,7 +2683,7 @@ export const register: Register = async (on, options) => {
                   timestamp: tickTs,
                   loop: "monitor",
                   action: "nudge_sent",
-                  detail: `${g.id}: idle ${idleDisplay}, nudge #${sess.consecutiveNudgesWithoutOnGoal}${turnInFlight ? " (inside an open turn, not counted)" : ""}`,
+                  detail: `${g.id}: idle ${idleDisplay}, nudge #${sess.consecutiveNudgesWithoutOnGoal}`,
                 });
               } catch { /* nudge failed; non-fatal */ }
             }

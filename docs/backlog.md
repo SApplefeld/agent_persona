@@ -80,17 +80,30 @@ the operator's channel once and record it as a monitor decision, so the silence 
 visible at the moment it starts rather than discovered by a reader whose messages went
 unanswered.
 
-## A commit-landed notice never reaches a session whose turn is long
+## An operator record cannot reach a worker inside a running turn, so turn length is the wait
 
-The operator inbox drain sits below the tick's in-flight check at `hooks/index.ts`, so no
-inbox record is delivered while a turn is open, and the drain then delivers one record
-per tick. A session in a turn that runs for an hour holds every record the whole time.
+`$.prompt.submit` runs once the session is idle. The harness states it twice in its own
+type definitions: the submit call's `input.text` "runs when the session is idle"
+(`.claude/types/claude-code.d.ts:1608-1609`), and a submitted prompt's `turnId` is
+"Absent for a prompt submitted while the session was idle, and for a plugin's own
+(`$.prompt.submit`), which runs once it is idle" (`:4493-4495`).
+
+So the wait an operator record sees is bounded below by however long the running turn
+lasts, and no change to when the controller submits can shorten it. Moving the inbox
+drain above the tick's in-flight check does not help, and costs: it stamps `deliveredAt`
+at queue time, which understates the real wait, and any turn id stamped at that moment
+belongs to a turn that never sees the prompt.
+
 Measured over the 101 delivered records in `.agentic-channel.jsonl`, the median wait is
-6 seconds and 8 records waited 10 minutes or more, the longest 48 minutes.
+6 seconds and 8 records waited 10 minutes or more, the longest 48 minutes. The long tail
+is turn length rather than a scheduling gap.
 
-Moving the drain above the in-flight check is not obviously right: a prompt submitted
-while a turn is open joins that turn rather than starting a new one. Deciding this needs
-a harness case that drives a mid-turn submission and observes where the text lands.
+The type definitions name one channel that does reach a running turn, and it is not this
+one: "A queued delivery (a peer session's message) reaches the model inside a running
+turn" (`:4493-4494`). Whether an operator record can be routed through that channel
+rather than through `$.prompt.submit` is the open question worth answering here. Short of
+that, the remedy is shorter worker turns, which is a working-discipline question rather
+than a code change.
 
 ## The supervisor's poll loop exits when its child dies externally
 
