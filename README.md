@@ -221,7 +221,7 @@ Declared in `plugin.json` with defaults. Read as `options.<name>` in `register(o
 1. **Pre-gate**: waits for both the commons store and per-directory heartbeat to be free (no live persona claims) before launching a child.
 2. **Launch**: starts a child via coproc with stdin as a pipe (not a file), so EOF can be sent to stop it cleanly.
 3. **Poll**: watches the store for `context_budget_crossed` decisions and other signals; decides `continue`, `restart`, `stop_complete`, `stop_budget`, or `stop_crash_loop`.
-4. **Stop**: sends EOF (close coproc write end), then TERM after `stopGraceMs`, then KILL. Waits for the child and records the real exit code.
+4. **Stop**: snapshots the child's Windows process tree first, recording each process's pid and start time. It then sends EOF (closes the coproc write end), sends TERM to the wrapper after `stopGraceMs`, and after another `stopGraceMs` runs `taskkill` on the tree and force-kills each snapshot process still matching its pid and start time. A phase counts as stopped only once every snapshot process is verified gone. A survivor or an unverifiable read gets up to 30 seconds of tree-kill retries. If a stop that ends the supervisor still cannot be verified, the supervisor exits with code 5. A relaunch logs the failure and proceeds. On exit, the cleanup trap stops a live child the same way, or re-verifies the last snapshot when the wrapper is already gone. The supervisor waits for the child and records its real exit code.
 5. **Log**: appends to `supervisor.log` and `supervisor.err` (never truncates after launch).
 
 The supervisor never writes the persona store (invariant §8). It uses `supervise-decide.mjs` (pure JS, 9/9 unit tests) for the decision logic. The prompt is cleared after the first send so subsequent launches don't inherit it.
@@ -340,7 +340,7 @@ The operator has not yet ruled on these options; the defaults are in force.
 - `.kit/live-operator-test.sh` : the full live suite (phases 1, 2, 3)
 - `.kit/controller-tick-test.mjs` : S4 (peer doorbell), S9 (cost cap ask opener)
 - `.kit/assert-decisions.js` : decision log assertions (ask lifecycle, reply check)
-- `.kit/supervisor-unit-test.mjs` : `bin/supervise-decide.mjs`'s decision unit, pure and offline (bonus: pre-existing coverage documented here for the first time, not part of this section's own work)
+- `.kit/supervisor-unit-test.mjs` : `bin/supervise-decide.mjs`'s decision unit, pure and offline
 - `.kit/live-stopprocesstree-test.sh` : `bin/supervise.sh`'s stop-path helpers and `stop_child` itself, against real Windows processes (registered in `live-all.sh`'s `ALL_SUITES` as `stopprocesstree` - launches no `claude` session and holds no persona claim)
 
 **Runner lock:** `live-all.sh` writes `.kit/RUNNING` at start and refuses to start if it already exists (exit 8). After a killed gate, confirm no `claude` child with `--plugin-dir` is running, then `rm .kit/RUNNING`.

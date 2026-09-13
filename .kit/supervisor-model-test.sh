@@ -131,6 +131,91 @@ case "$OUT" in
   *) check "an EXPORTED EFFORT reaches a separate process" 1 ;;
 esac
 
+# --- Startup input checks, driven through the real bin/supervise.sh ---
+# HOME is an empty directory, so a value that passes every startup check stops
+# at the pre-launch gate with exit 2 and "GATE FAIL". A refused value exits 1
+# with an ERROR line naming the setting, before the gate runs. A stub claude
+# first on PATH records any launch, and none is expected either way.
+TMP="$(mktemp -d)"
+trap 'rm -f "$STUB"; rm -rf "$TMP"' EXIT
+mkdir -p "$TMP/home" "$TMP/wd" "$TMP/stub"
+printf '#!/usr/bin/env bash\ntouch "%s"\nexit 1\n' "$TMP/stub/launched" > "$TMP/stub/claude"
+chmod +x "$TMP/stub/claude"
+drive_sup() {  # env assignments...
+  env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" "$@" bash "$SCRIPT" "$TMP/wd" modelprobe default --rundir "$TMP/rd" --no-channel 2>&1
+}
+refused_by() {  # <label> <expected output text> env assignments...
+  local label="$1" token="$2" out rc
+  shift 2
+  out=$(drive_sup "$@")
+  rc=$?
+  if [ "$rc" -eq 1 ] && [ ! -e "$TMP/stub/launched" ] && case "$out" in *"$token"*) true ;; *) false ;; esac; then
+    check "$label" 0
+  else
+    check "$label (rc=$rc, out=$out)" 1
+  fi
+}
+accepted() {  # <label> env assignments...
+  local label="$1" out rc
+  shift
+  out=$(drive_sup "$@")
+  rc=$?
+  if [ "$rc" -eq 2 ] && [ ! -e "$TMP/stub/launched" ] && case "$out" in *"GATE FAIL"*) true ;; *) false ;; esac; then
+    check "$label" 0
+  else
+    check "$label (rc=$rc, out=$out)" 1
+  fi
+}
+
+# The model shape: non-empty, no leading '-', lowercase letters, digits, '.',
+# '-', '[' and ']'. '-opus' and '--some-flag' hold only allowed characters, so
+# the leading-hyphen rule is the only one that can refuse them.
+refused_by "supervisorModel '-opus' is refused by the leading-hyphen rule" "ERROR: supervisorModel '-opus'" supervisorModel=-opus
+refused_by "MODEL '--some-flag' is refused by the leading-hyphen rule" "ERROR: MODEL '--some-flag'" MODEL=--some-flag
+accepted "supervisorModel 'opus[1m]' passes the startup checks" "supervisorModel=opus[1m]"
+accepted "MODEL 'opus[1m]' passes the startup checks" "MODEL=opus[1m]"
+
+# supervisorStopGraceMs: 'abc' fails the digits-only rule, '00' passes it and
+# fails the greater-than-zero test.
+refused_by "supervisorStopGraceMs 'abc' is refused by the digits-only rule" "ERROR: supervisorStopGraceMs 'abc' is not a whole number" supervisorStopGraceMs=abc
+refused_by "supervisorStopGraceMs '00' is refused by the greater-than-zero test" "ERROR: supervisorStopGraceMs '00' must be greater than zero" supervisorStopGraceMs=00
+accepted "supervisorStopGraceMs '5000' passes the startup checks" supervisorStopGraceMs=5000
+
+# supervisorPsBoundS falls back to 30 rather than refusing, so its resolution
+# is read by running the script's own lines, from the assignment up to the
+# next setting, in a separate process.
+PS_BOUND_SNIPPET=$(sed -n '/^SUPERVISOR_PS_BOUND_S=/,/^SUPERVISOR_STOP_GRACE_MS=/p' "$SCRIPT" | sed '$d')
+if [ -z "$PS_BOUND_SNIPPET" ]; then
+  check "the SUPERVISOR_PS_BOUND_S block is found in bin/supervise.sh" 1
+else
+  printf '%s\necho "PS_BOUND=$SUPERVISOR_PS_BOUND_S"\n' "$PS_BOUND_SNIPPET" > "$TMP/psbound.sh"
+  for pair in 00:30 abc:30 45:45; do
+    OUT=$(env -i PATH="$PATH" supervisorPsBoundS="${pair%%:*}" bash "$TMP/psbound.sh" 2>&1)
+    case "$OUT" in
+      *"PS_BOUND=${pair##*:}") check "supervisorPsBoundS '${pair%%:*}' resolves to ${pair##*:}" 0 ;;
+      *) check "supervisorPsBoundS '${pair%%:*}' resolves to ${pair##*:} (out=$OUT)" 1 ;;
+    esac
+  done
+fi
+
+# --- Every live suite that launches bin/supervise.sh exports MODEL and EFFORT ---
+# The suite launches the supervisor as a separate process, so only an exported
+# value reaches its launch flags. A suite that names bin/supervise.sh without a
+# launch line (one that only reads functions out of it) is listed by name.
+LAUNCHERS=0
+for f in "$HERE"/live-*-test.sh; do
+  grep -q 'bin/supervise\.sh' "$f" || continue
+  if grep -Eq '^[[:space:]]*(bash[[:space:]]+)?("\$SUPERVISE"|[^[:space:]]*bin/supervise\.sh)[[:space:]]' "$f"; then
+    LAUNCHERS=$((LAUNCHERS + 1))
+    grep -q '^export MODEL=' "$f" && grep -q '^export EFFORT=' "$f"
+    rc=$?
+    check "$(basename "$f") launches bin/supervise.sh and exports MODEL and EFFORT" "$rc"
+  else
+    echo "  note: $(basename "$f") names bin/supervise.sh without launching it"
+  fi
+done
+[ "$LAUNCHERS" -gt 0 ]; check "live suites launching bin/supervise.sh were found ($LAUNCHERS)" "$?"
+
 echo
 if [ "$failed" = "0" ]; then
   echo "All tests passed"

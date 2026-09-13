@@ -249,7 +249,7 @@ CHILD_IN=""  # stop_child checks this; empty means Phase 1's EOF close is a no-o
 SUPERVISOR_STOP_GRACE_MS=2000  # short grace so this test doesn't wait a full minute per phase
 STOP_PATH=""
 ( powershell.exe -NoProfile -Command "Start-Sleep -Seconds 90" & echo $! > "$RUNDIR/child.pid"; wait ) &
-CHILD_PID=$!
+CHILD_LAUNCH_PID=$!  # the variable stop_child reads the child's pid from
 sleep 2
 REAL_CHILD_PID=$(cat "$RUNDIR/child.pid" 2>/dev/null)
 if [ -z "$REAL_CHILD_PID" ]; then
@@ -267,7 +267,7 @@ else
     pass "stop_child: the real child is gone after stop_child returns (STOP_PATH=$STOP_PATH) - the exact defect this fixes"
   else
     failed "stop_child: the real child SURVIVED stop_child (STOP_PATH=$STOP_PATH) - the orphan defect is not fixed"
-    kill -9 "$REAL_CHILD_WINPID" 2>/dev/null
+    run_bounded_native 5 taskkill //F //T //PID "$REAL_CHILD_WINPID"
   fi
 fi
 
@@ -282,8 +282,8 @@ CHILD_IN=""
 SUPERVISOR_STOP_GRACE_MS=2000
 STOP_PATH=""
 ( trap '' TERM; powershell.exe -NoProfile -Command "Start-Sleep -Seconds 90" & echo $! > "$RUNDIR/child3.pid"; wait ) &
-CHILD_PID=$!
-disown "$CHILD_PID" 2>/dev/null
+CHILD_LAUNCH_PID=$!
+disown "$CHILD_LAUNCH_PID" 2>/dev/null
 sleep 2
 REAL_CHILD_PID=$(cat "$RUNDIR/child3.pid" 2>/dev/null)
 if [ -z "$REAL_CHILD_PID" ]; then
@@ -356,7 +356,7 @@ else
     pass "Phase-3 case: the real child (matched by pid and start time) is gone after stop_child's own tree kill (the CRLF bug's exact path)"
   else
     failed "Phase-3 case: the real child SURVIVED Phase 3's tree kill, or the check could not be verified (rc=$POST_KILL_SURVIVORS_RC) - the CRLF bug or an equivalent is back"
-    kill -9 "$REAL_CHILD_WINPID" 2>/dev/null
+    run_bounded_native 5 taskkill //F //T //PID "$REAL_CHILD_WINPID"
   fi
 fi
 
@@ -404,7 +404,7 @@ run_bounded_native 5 taskkill //F //T //PID "$CIMFAIL_WINPID"
 eval "$(declare -f _real_run_bounded_powershell_capture_for_r105 | sed '1s/_real_run_bounded_powershell_capture_for_r105/run_bounded_powershell_capture/')"
 
 rm -f "$RUNDIR/child.pid" "$RUNDIR/child3.pid"
-kill -9 "$DIRECT_PID" "$CHILD_PID" 2>/dev/null  # best-effort cleanup
+kill -9 "$DIRECT_PID" "$CHILD_LAUNCH_PID" 2>/dev/null  # best-effort cleanup
 
 echo ""
 echo "$CHECK_COUNT checks run, $FAIL_COUNT failed"

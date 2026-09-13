@@ -155,9 +155,14 @@ SUPERVISOR_PS_BOUND_S="${supervisorPsBoundS:-30}"
 # Reviewer Round 132 R103 (Minor): `0` itself passed this validation (it
 # is all digits) and force-kills every call at once, just as a bad
 # non-numeric override would - rejected the same way.
+# The numeric test after the digit test is what catches an all-zero string
+# like "00", which passes a digits-only pattern.
 case "$SUPERVISOR_PS_BOUND_S" in
-  ''|*[!0-9]*|0) SUPERVISOR_PS_BOUND_S=30 ;;
+  ''|*[!0-9]*) SUPERVISOR_PS_BOUND_S=30 ;;
 esac
+if [ "$SUPERVISOR_PS_BOUND_S" -le 0 ]; then
+  SUPERVISOR_PS_BOUND_S=30
+fi
 
 SUPERVISOR_STOP_GRACE_MS="${supervisorStopGraceMs:-60000}"
 SUPERVISOR_MIN_RUN_MS="${supervisorMinRunMs:-120000}"
@@ -184,14 +189,15 @@ SUPERVISOR_PRIMING_WAIT_S="${supervisorPrimingWaitS:-180}"
 # the log naming the cause. Both are checked once at startup instead.
 #
 # The model cannot be validated against a known set - new model names ship
-# without this script changing - so the check is on shape. An emptiness test
-# would be dead code here: `${supervisorModel:-opus}` substitutes the default
-# for an unset OR empty value, so the variable is never empty by the time it
-# is read. What a shape check does catch is the realistic typo, `opsu` or a
-# stray quote, which reaches `claude -p` as an unknown model.
+# without this script changing - so the check is on shape: non-empty, a first
+# character other than `-`, and only lowercase letters, digits, `.`, `-`, `[`
+# and `]`. The brackets admit a context-size suffix such as `opus[1m]`. The
+# leading-hyphen refusal keeps a value like `--some-flag` from reaching
+# `claude -p --model` as a flag. A stray quote or other character is the
+# realistic typo the character set catches.
 case "$SUPERVISOR_MODEL" in
-  *[!a-z0-9.-]*|'')
-    echo "ERROR: supervisorModel '$SUPERVISOR_MODEL' is not a plausible model name (lowercase letters, digits, dots and hyphens)" >&2
+  ''|-*|*[!]a-z0-9.[-]*)
+    echo "ERROR: supervisorModel '$SUPERVISOR_MODEL' is not a plausible model name (non-empty, not starting with '-', only lowercase letters, digits, '.', '-', '[' and ']')" >&2
     exit 1
     ;;
 esac
@@ -208,8 +214,8 @@ esac
 # crash loop the settings checks exist to prevent.
 if [ -n "${MODEL:-}" ]; then
   case "$MODEL" in
-    *[!a-z0-9.-]*)
-      echo "ERROR: MODEL '$MODEL' is not a plausible model name (lowercase letters, digits, dots and hyphens)" >&2
+    -*|*[!]a-z0-9.[-]*)
+      echo "ERROR: MODEL '$MODEL' is not a plausible model name (non-empty, not starting with '-', only lowercase letters, digits, '.', '-', '[' and ']')" >&2
       exit 1
       ;;
   esac
@@ -235,6 +241,19 @@ case "$SUPERVISOR_PRIMING_WAIT_S" in
 esac
 if [ "$SUPERVISOR_PRIMING_WAIT_S" -le 0 ]; then
   echo "ERROR: supervisorPrimingWaitS '$SUPERVISOR_PRIMING_WAIT_S' must be greater than zero" >&2
+  exit 1
+fi
+# The stop grace feeds both of stop_child's grace loops. A non-numeric value
+# makes each loop run zero iterations, so every stop skips EOF and TERM and
+# goes straight to KILL. Held to the same rule as supervisorPrimingWaitS.
+case "$SUPERVISOR_STOP_GRACE_MS" in
+  ''|*[!0-9]*)
+    echo "ERROR: supervisorStopGraceMs '$SUPERVISOR_STOP_GRACE_MS' is not a whole number of milliseconds" >&2
+    exit 1
+    ;;
+esac
+if [ "$SUPERVISOR_STOP_GRACE_MS" -le 0 ]; then
+  echo "ERROR: supervisorStopGraceMs '$SUPERVISOR_STOP_GRACE_MS' must be greater than zero" >&2
   exit 1
 fi
 
@@ -308,7 +327,12 @@ log_diag() {
 }
 
 # --- Trap: clean up on exit ---
-CHILD_PID=""
+# The launched child's pid, saved from `$!` right after the coproc starts and
+# cleared once that child is waited on. Every read of the child's pid goes
+# through this variable, never the coproc's own CHILD_PID: bash unsets
+# CHILD_PID the moment it reaps the coproc, and under `set -u` any later
+# bare `$CHILD_PID` expansion aborts the whole supervisor with exit 1.
+CHILD_LAUNCH_PID=""
 CHILD_IN=""  # coproc write fd number
 LAST_STOP_SNAPSHOT=""  # set by stop_child; the process-tree snapshot its own kill acted on
 # Reviewer Round 126 R85 (Minor): unset under `set -u`, so the "no child
@@ -355,8 +379,8 @@ run_bounded_native() {
 cleanup() {
   local exit_code=$?
   # Stop the child gracefully if it's still running.
-  if [ -n "${CHILD_PID:-}" ] && kill -0 "$CHILD_PID" 2>/dev/null; then
-    log "CLEANUP: stopping child-$CHILD_INDEX (pid $CHILD_PID)"
+  if [ -n "$CHILD_LAUNCH_PID" ] && kill -0 "$CHILD_LAUNCH_PID" 2>/dev/null; then
+    log "CLEANUP: stopping child-$CHILD_INDEX (pid $CHILD_LAUNCH_PID)"
     stop_child "cleanup"
     retry_stop_escalation "cleanup" $?
   elif [ -n "$LAST_STOP_SNAPSHOT" ]; then
@@ -910,7 +934,7 @@ retry_stop_escalation() {
     return 0
   fi
   # Reviewer Round 130 R98 (Major): a re-snapshot attempt from a dead or
-  # zombie `CHILD_PID` reliably resolves to no winpid at all (confirmed by
+  # zombie `CHILD_LAUNCH_PID` reliably resolves to no winpid at all (confirmed by
   # the blind reviewer's own probe) - looping and sleeping through the
   # whole budget on a re-resolve that structurally cannot ever succeed
   # just burns the budget for nothing. Try exactly once, up front; if it
@@ -919,9 +943,9 @@ retry_stop_escalation() {
   if [ -z "$LAST_STOP_SNAPSHOT" ]; then
     log "STOP[$label]: stop_child reported failure (STOP_PATH=$STOP_PATH) with no snapshot to retry against; attempting one re-snapshot"
     local resnap_rc=1
-    if [ -n "${CHILD_PID:-}" ]; then
+    if [ -n "${CHILD_LAUNCH_PID:-}" ]; then
       local resnap_winpid
-      resnap_winpid=$(resolve_windows_pid "$CHILD_PID")
+      resnap_winpid=$(resolve_windows_pid "$CHILD_LAUNCH_PID")
       if [ -n "$resnap_winpid" ]; then
         LAST_STOP_SNAPSHOT=$(snapshot_process_tree "$resnap_winpid")
         resnap_rc=$?
@@ -961,21 +985,21 @@ retry_stop_escalation() {
 }
 
 # Usage: stop_child <label>
-# Sets STOP_PATH to one of seven values (Reviewer Round 126 R87 adds
-# "unverified" to the six R77 named): "eof", "term", or "kill" when the
+# Sets STOP_PATH to one of eight values: "eof", "term", or "kill" when the
 # tree is confirmed dead at that phase, "eof_kill_failed",
 # "term_kill_failed", "kill_failed" when a CONFIRMED survivor from the
-# snapshot remained after that phase's own escalation, or "unverified"
-# when the snapshot itself could never be resolved or walked in the first
-# place - nothing was confirmed either way. Returns 1 in every failed
-# case; callers should read that return rather than trusting STOP_PATH's
-# clean-looking values by name alone.
+# snapshot remained after that phase's own escalation, "unverified" when the
+# snapshot itself could never be resolved or walked in the first place -
+# nothing was confirmed either way - or "gone" when the wrapper had already
+# exited and no Windows pid resolves for it, so there is nothing to verify
+# or kill. Returns 1 in every failed case; callers should read that return
+# rather than trusting STOP_PATH's clean-looking values by name alone.
 stop_child() {
   local label="$1"
-  # If CHILD_PID is not set or empty, there's nothing to stop.
-  local pid="${CHILD_PID:-}"
+  # If CHILD_LAUNCH_PID is empty, there's nothing to stop.
+  local pid="${CHILD_LAUNCH_PID:-}"
   if [ -z "$pid" ]; then
-    log "STOP[$label]: no child to stop (CHILD_PID empty or unbound)"
+    log "STOP[$label]: no child to stop (CHILD_LAUNCH_PID empty)"
     return 0
   fi
   # Reviewer Round 136 R107 (Major, required): a wrapper that exits on its
@@ -1149,10 +1173,14 @@ stop_child() {
   # through `run_bounded_native` like every other native command this
   # script spawns.
   if [ -n "$snapshot_winpid" ]; then
+    # Accepted hazard: `//T` re-walks the live process tree at kill time, not
+    # the snapshot, so a recycled pid whose stale ParentProcessId still points
+    # into this tree could widen the kill. Accepted because the wrapper pid is
+    # confirmed live by the `kill -0` checks just before this phase.
     run_bounded_native 5 taskkill //F //T //PID "$snapshot_winpid"
     # Reviewer Round 132 R102 (Major): a failed or abandoned taskkill left
     # nothing else touching `$pid` at all - every caller of `stop_child`
-    # then runs an unbounded `wait "$CHILD_PID"`, which blocks forever on
+    # then runs an unbounded `wait "$CHILD_LAUNCH_PID"`, which blocks forever on
     # a wrapper that was never actually signaled. `taskkill` reaching the
     # whole tree is still tried first (it is the only mechanism that can
     # reach a `claude.exe` descendant), but the wrapper's own pid is now
@@ -1189,9 +1217,6 @@ stop_child() {
 # shared with .kit/live-common.sh so both callers filter on dev_mode the
 # same way rather than carrying their own copies.
 
-# --- Helper: read a fact from .agentic-personas.json ---
-# Usage: get_fact <workdir> <persona> <fact>
-# Prints the timestamp of the newest matching decision, or empty.
 # --- Wait for a child turn to close ---
 # The stream-json child emits exactly one `"type":"result"` line per turn it
 # completes. A prompt written before that line appears joins the open turn
@@ -1234,6 +1259,9 @@ wait_for_result_line() {
   return 1
 }
 
+# --- Helper: read a fact from .agentic-personas.json ---
+# Usage: get_fact <workdir> <persona> <fact>
+# Prints the timestamp of the newest matching decision, or empty.
 get_fact() {
   local workdir="$1"
   local persona="$2"
@@ -1376,7 +1404,8 @@ while true; do
   fi
 
   # Launch the child via coproc. The coproc gives us:
-  # - CHILD_PID: the claude process pid (no holder to leak)
+  # - $!: the claude process pid (no holder to leak), saved to
+  #   CHILD_LAUNCH_PID because bash unsets the coproc's own CHILD_PID on reap
   # - CHILD[1]: the write-end fd number for stdin
   # To stop the child, we close CHILD[1] (EOF), then TERM, then KILL.
   # The child reads its first prompt from the coproc pipe, stays alive with
@@ -1421,7 +1450,8 @@ while true; do
     --permission-mode "$PERMISSION_MODE" \
     --debug-file "$DEBUG" \
     > "$OUT" 2> "$ERR"; }
-  
+  CHILD_LAUNCH_PID=$!
+
   # Copy the fd number now: the array is unset when the coproc exits.
   CHILD_IN=${CHILD[1]}
   # Reviewer Round 126 R78: a new child's launch is also the point a stale
@@ -1526,9 +1556,9 @@ while true; do
     # child that never receives its task is worse than one that receives
     # it late, and the NOTE line says which happened.
     GOAL_WRITE_OK=1
-    if wait_for_result_line "$OUT" "$SUPERVISOR_PRIMING_WAIT_S" "${CHILD_PID:-}"; then
+    if wait_for_result_line "$OUT" "$SUPERVISOR_PRIMING_WAIT_S" "$CHILD_LAUNCH_PID"; then
       log "NOTE: child-$CHILD_INDEX priming turn completed; sending the goal prompt as its own turn"
-    elif [ -n "${CHILD_PID:-}" ] && ! kill -0 "$CHILD_PID" 2>/dev/null; then
+    elif [ -n "$CHILD_LAUNCH_PID" ] && ! kill -0 "$CHILD_LAUNCH_PID" 2>/dev/null; then
       # The child died before it ever closed a turn. Writing into its pipe
       # would accomplish nothing, and the poll loop below is what accounts
       # for the crash - reaching it quickly is the point.
@@ -1555,12 +1585,12 @@ while true; do
   CHILD_SESSION_ID=""
   POLL_COUNT=0
 
-  if [ -z "${CHILD_PID:-}" ]; then
-    log "ERROR: CHILD_PID not set after coproc launch"
+  if [ -z "$CHILD_LAUNCH_PID" ]; then
+    log "ERROR: CHILD_LAUNCH_PID not set after coproc launch"
     exit 1
   fi
 
-  while kill -0 "$CHILD_PID" 2>/dev/null; do
+  while kill -0 "$CHILD_LAUNCH_PID" 2>/dev/null; do
     sleep $((SUPERVISOR_POLL_MS / 1000))
     POLL_COUNT=$((POLL_COUNT + 1))
 
@@ -1697,11 +1727,8 @@ console.log(o.reason || '');
         stop_child "stop_complete"
         retry_stop_escalation "stop_complete" $?
         STOP_ESCALATION_RESULT=$?
-        if [ -n "${CHILD_PID:-}" ]; then
-          wait "$CHILD_PID"; EXIT_CODE=$?
-        else
-          EXIT_CODE=0
-        fi
+        wait "$CHILD_LAUNCH_PID"; EXIT_CODE=$?
+        CHILD_LAUNCH_PID=""
         echo "$EXIT_CODE" > "$EXIT_MARKER"
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         # Reviewer Round 126 R82: exiting 0 here when a survivor is still
@@ -1719,11 +1746,8 @@ console.log(o.reason || '');
         stop_child "stop_crash_loop"
         retry_stop_escalation "stop_crash_loop" $?
         STOP_ESCALATION_RESULT=$?
-        if [ -n "${CHILD_PID:-}" ]; then
-          wait "$CHILD_PID"; EXIT_CODE=$?
-        else
-          EXIT_CODE=0
-        fi
+        wait "$CHILD_LAUNCH_PID"; EXIT_CODE=$?
+        CHILD_LAUNCH_PID=""
         echo "$EXIT_CODE" > "$EXIT_MARKER"
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         if [ "${STOP_ESCALATION_RESULT:-0}" -ne 0 ]; then
@@ -1737,11 +1761,8 @@ console.log(o.reason || '');
         stop_child "stop_budget"
         retry_stop_escalation "stop_budget" $?
         STOP_ESCALATION_RESULT=$?
-        if [ -n "${CHILD_PID:-}" ]; then
-          wait "$CHILD_PID"; EXIT_CODE=$?
-        else
-          EXIT_CODE=0
-        fi
+        wait "$CHILD_LAUNCH_PID"; EXIT_CODE=$?
+        CHILD_LAUNCH_PID=""
         echo "$EXIT_CODE" > "$EXIT_MARKER"
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         if [ "${STOP_ESCALATION_RESULT:-0}" -ne 0 ]; then
@@ -1760,11 +1781,8 @@ console.log(o.reason || '');
         log "RESTART_PASSIVE: $DECIDE_REASON"
         stop_child "restart_passive"
         retry_stop_escalation "restart_passive" $?
-        if [ -n "${CHILD_PID:-}" ]; then
-          wait "$CHILD_PID"; EXIT_CODE=$?
-        else
-          EXIT_CODE=0
-        fi
+        wait "$CHILD_LAUNCH_PID"; EXIT_CODE=$?
+        CHILD_LAUNCH_PID=""
         echo "$EXIT_CODE" > "$EXIT_MARKER"
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         case "$DECIDE_REASON" in
@@ -1781,11 +1799,8 @@ console.log(o.reason || '');
         log "RESTART: $DECIDE_REASON"
         stop_child "restart"
         retry_stop_escalation "restart" $?
-        if [ -n "${CHILD_PID:-}" ]; then
-          wait "$CHILD_PID"; EXIT_CODE=$?
-        else
-          EXIT_CODE=0
-        fi
+        wait "$CHILD_LAUNCH_PID"; EXIT_CODE=$?
+        CHILD_LAUNCH_PID=""
         echo "$EXIT_CODE" > "$EXIT_MARKER"
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
 
@@ -1815,12 +1830,10 @@ console.log(o.reason || '');
   done
 
   # Child exited on its own (not via decide).
-  # With coproc, we can use wait() to get the real exit code.
-  if [ -n "${CHILD_PID:-}" ]; then
-    wait "$CHILD_PID"; EXIT_CODE=$?
-  else
-    EXIT_CODE=0
-  fi
+  # `wait` on the saved pid returns the child's real exit code even after bash
+  # has already reaped the coproc.
+  wait "$CHILD_LAUNCH_PID"; EXIT_CODE=$?
+  CHILD_LAUNCH_PID=""
   echo "$EXIT_CODE" > "$EXIT_MARKER"
 
   log "EXIT child-$CHILD_INDEX code=$EXIT_CODE (natural)"

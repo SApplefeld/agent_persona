@@ -128,6 +128,15 @@ refused "emit_settings_json refuses a non-numeric cadence" "HEARTBEAT_MS '1," "$
 # PROFILE, so a TICK_MS value set here never reaches the emitter.
 refused "emit_settings_json refuses a cadence with a leading zero" "HEARTBEAT_MS '030000'" "$TMP/inj3.json" PERSONA="ok" HEARTBEAT_MS='030000'
 
+# --- the persona character class is the same in both files that check it ---
+# bin/supervise.sh refuses a bad persona before sourcing the library, so it
+# carries its own copy of valid_persona_name's class.
+SUP_CLASS=$(sed -n '/^case "\$PERSONA" in$/{n;p;}' "$ROOT/bin/supervise.sh" | grep -o '\[![^]]*\]')
+LIB_CLASS=$(sed -n '/^valid_persona_name() {$/,/^}$/p' "$ROOT/bin/agentic-common.sh" | grep -o '\[![^]]*\]')
+[ -n "$SUP_CLASS" ] && [ "$(printf '%s\n' "$SUP_CLASS" | wc -l)" -eq 1 ]; check "one persona class found in bin/supervise.sh ($SUP_CLASS)" "$?"
+[ -n "$LIB_CLASS" ] && [ "$(printf '%s\n' "$LIB_CLASS" | wc -l)" -eq 1 ]; check "one persona class found in valid_persona_name ($LIB_CLASS)" "$?"
+[ -n "$SUP_CLASS" ] && [ "$SUP_CLASS" = "$LIB_CLASS" ]; check "bin/supervise.sh and valid_persona_name use the same persona class" "$?"
+
 # --- bin/supervise.sh, driven for real ---
 # HOME is an empty directory, so no commons store exists and the pre-launch
 # gate stops the supervisor with "GATE FAIL", exit 2, before any child starts.
