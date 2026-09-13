@@ -431,6 +431,19 @@ while true; do
   # The prose-style clause below is the same text CLAUDE.md's "Writing to
   # the operator" section carries, kept in sync by hand with its plugin-side
   # copy in hooks/index.ts (REPLY_INSTRUCTION).
+  # Reviewer Round 136 addendum, v2 spec Section 0 item 3 Part A
+  # (operator-directed): a fixed sentence telling the child to load the
+  # kit's own operating skills before touching plan work, so the
+  # per-section reviewer pair, the fix-round loop, and the red-before-
+  # green rule are actually followed rather than reaching the model only
+  # as summarized doctrine. Built unconditionally, independent of
+  # `NO_CHANNEL` - this session's own PR #17 review chain showed the gap
+  # this closes: two separate Chapter sentences claimed a fix that was
+  # not in the diff, exactly the shape a fresh-context blind reviewer on
+  # the diff catches every time and a same-context worker does not. This
+  # is also the `NO_CHANNEL`-independent priming write Section 3 item 1
+  # is planned to reuse.
+  SKILL_LOAD_INSTRUCTION="Before your first tool call on any plan work, invoke the Skill tool for claude-kit:operating-instructions, then claude-kit:executing-work; when a plan reaches its last section, claude-kit:finishing-work. After any context compaction, re-invoke the governing skill before the next step, because compaction drops skill bodies. A fix round inside a review loop is a section: it takes the same fresh-context adversarial and blind reviewer pair before you post it, and the round cites their verdicts beside the gate count. "
   CHANNEL_REPLY_INSTRUCTION=""
   if [ "$NO_CHANNEL" -ne 1 ]; then
     CHANNEL_REPLY_INSTRUCTION="You are attached to a Discord channel. When you want to say something back to the operator, call the reply tool from the channel-relay MCP server - your own conversational reply is not visible to them. Plain prose, never mannered prose. This governs every reply-tool message the operator reads. Write for a reader on a phone with no session context. One idea per sentence, about twenty words. Answer first, then the reason, then the evidence. Never carry a second rule inside the clause of the first. Never nest a qualification in parentheses or after a semicolon. Name the concrete thing that happened rather than the class it belongs to. Keep precision by adding a sentence, never by packing one. Vary sentence length, because uniform length is its own defect and the twenty is a per-sentence check rather than a target. Use plain words for internal names unless the exact value is what the operator needs to act on. Decide before writing. Never include round numbers, steer numbers, or session ids. End the message when the content ends. When you ask the operator a question, or report something they must decide, give the whole shape: what is happening and why it came up, the question in plain words, what it blocks, each option with what it costs, and your recommendation with its reason. A bare question or a bare pick is not enough. When the operator asks what is going on, or a result is not what they expected, give the outcome, then the reason, then the evidence, each in its own sentence. A shipped notice stays short; an explanation earns its length. "
@@ -442,7 +455,7 @@ while true; do
       const prefix = process.argv[2] || '';
       const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:prefix + p}]}});
       process.stdout.write(json + '\n');
-    " "$PROMPT_FILE" "$CHANNEL_REPLY_INSTRUCTION" >&"$CHILD_IN"
+    " "$PROMPT_FILE" "$SKILL_LOAD_INSTRUCTION$CHANNEL_REPLY_INSTRUCTION" >&"$CHILD_IN"
   elif [ "$NO_CHANNEL" -ne 1 ]; then
     # [SUPERVISOR-PRIMING] marks this turn as synthetic (the child has no
     # real goal yet) so hooks/index.ts's turn.complete backstop - which
@@ -458,7 +471,23 @@ while true; do
         '[SUPERVISOR-PRIMING] ' + prefix + 'You are the passive supervisor, waiting for a goal or a steering message from the operator. Reply now with one short line acknowledging you are ready, then wait.'
       }]}});
       process.stdout.write(json + '\n');
-    " "$CHANNEL_REPLY_INSTRUCTION" >&"$CHILD_IN"
+    " "$SKILL_LOAD_INSTRUCTION$CHANNEL_REPLY_INSTRUCTION" >&"$CHILD_IN"
+  else
+    # Reviewer Round 113 R36's own gap: a worker launched `--no-channel`
+    # with no `PROMPT_FILE` (exactly the shape the `.kit/live-*` suites
+    # run) got neither branch above and no priming turn at all - so the
+    # skill-load instruction, which must reach every child regardless of
+    # `NO_CHANNEL`, never did either. This branch is that missing case:
+    # the same synthetic priming turn, carrying only the skill-load
+    # sentence (there is no channel reply instruction to add when
+    # `NO_CHANNEL` is set).
+    node -e "
+      const prefix = process.argv[1] || '';
+      const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:
+        '[SUPERVISOR-PRIMING] ' + prefix + 'You are the passive supervisor, waiting for a goal or a steering message from the operator. Reply now with one short line acknowledging you are ready, then wait.'
+      }]}});
+      process.stdout.write(json + '\n');
+    " "$SKILL_LOAD_INSTRUCTION" >&"$CHILD_IN"
   fi
   PROMPT=""
 
