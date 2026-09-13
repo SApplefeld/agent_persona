@@ -74,6 +74,10 @@ if [ -z "$STOP_PS_SENTINEL" ]; then
   echo "FAIL: could not read STOP_PS_SENTINEL's value from $SUPERVISE"
   exit 1
 fi
+# SUPERVISOR_PS_BOUND_S (Reviewer Round 126 R89) is the same shape of
+# global the extracted functions close over - default value read the
+# same way, not retyped.
+SUPERVISOR_PS_BOUND_S=30
 
 FN_FILE="$RUNDIR/stop-process-tree-fns.sh"
 : > "$FN_FILE"
@@ -123,11 +127,28 @@ set -o pipefail
 # inside a command substitution, since that combination - not a bare direct
 # call - is what the reproduction actually needed to surface the hang.
 R79_START=$(date +%s)
-R79_OUT=$(run_bounded_powershell_capture 3 "Start-Sleep -Seconds 40; Write-Output 'done-late'")
+# Reviewer Round 126 R90: the prior version of this case asserted only
+# that the sleep's own late output never reached the caller - vacuous
+# after the file-not-pipe fix, since the outfile is deleted at about
+# bound+5s and "done-late" lands at 40s in a file nobody is still
+# reading; that leg passes whether or not the process was actually
+# killed. `TESTPID:$PID` is the test's own marker (distinct from
+# run_bounded_powershell's internal `PSPID:` bookkeeping line, which is
+# stripped before the caller ever sees it) - it survives into R79_OUT and
+# gives this case the real powershell.exe pid to assert dead afterward,
+# by pid AND start time, the same standard the rest of this file holds
+# every other kill to.
+R79_OUT=$(run_bounded_powershell_capture 3 "Write-Output (\"TESTPID:\" + \$PID + \",\" + (Get-Process -Id \$PID).StartTime.Ticks); Start-Sleep -Seconds 40; Write-Output 'done-late'")
 R79_RC=$?
 R79_ELAPSED=$(( $(date +%s) - R79_START ))
-if [ "$R79_ELAPSED" -gt 15 ]; then
-  failed "R79 regression: run_bounded_powershell_capture took ${R79_ELAPSED}s against a 3s bound (expected under ~15s) - the bound did not hold"
+# Reviewer Round 126 R93 (Minor): a 3s-bound call has already been
+# observed taking ~13s of legitimate helper time under this session's own
+# load (the poll loop, the taskkill, the reap wait); a flat 15s ceiling
+# flakes red on a slow day for reasons that have nothing to do with
+# whether the bound actually held. Scaled off the bound itself instead.
+R79_CEILING=$((3 + 15))
+if [ "$R79_ELAPSED" -gt "$R79_CEILING" ]; then
+  failed "R79 regression: run_bounded_powershell_capture took ${R79_ELAPSED}s against a 3s bound (expected under ~${R79_CEILING}s) - the bound did not hold"
 else
   pass "R79 regression: run_bounded_powershell_capture returned in ${R79_ELAPSED}s against a 3s bound"
 fi
@@ -140,6 +161,18 @@ if printf '%s' "$R79_OUT" | grep -q 'done-late'; then
   failed "R79 regression: the sleep's own late output reached the caller (\"$R79_OUT\") - the process was not actually force-killed on the bound"
 else
   pass "R79 regression: no late output from the bounded call - the process did not survive its own bound"
+fi
+R79_TESTPID_LINE=$(printf '%s\n' "$R79_OUT" | grep '^TESTPID:')
+R79_REAL_SNAPSHOT="${R79_TESTPID_LINE#TESTPID:}"
+if [ -z "$R79_REAL_SNAPSHOT" ]; then
+  failed "R79 regression: the real powershell.exe pid was never self-reported - cannot assert the native process is actually dead"
+else
+  R79_SURVIVORS=$(check_snapshot_survivors "$R79_REAL_SNAPSHOT")
+  if [ -n "$R79_SURVIVORS" ]; then
+    failed "R79 regression: the real powershell.exe process (pid,ticks=$R79_REAL_SNAPSHOT) SURVIVED the bound - the stub was killed, the native process was not"
+  else
+    pass "R79 regression: the real powershell.exe process (pid,ticks=$R79_REAL_SNAPSHOT), not just the MSYS stub, is confirmed dead after the bound"
+  fi
 fi
 
 # --- Case: the wrapper's own exec target is killed directly by taskkill
@@ -164,12 +197,20 @@ else
   else
     pass "setup: direct-exec case resolved a real, live winpid ($DIRECT_WINPID) before signaling"
   fi
+  # Reviewer Round 126 R90: assert the actual descendant pid, not just
+  # "some Get-Process -Id $DIRECT_WINPID query returns nothing" - that
+  # query alone cannot tell a genuinely dead process from one whose pid
+  # is simply not what got walked. Snapshot the whole tree from
+  # DIRECT_WINPID (the same helper production uses) before the kill and
+  # check every entry, matched by pid and start time, afterward.
+  DIRECT_SNAPSHOT=$(snapshot_process_tree "$DIRECT_WINPID")
   taskkill //F //T //PID "$DIRECT_WINPID" > /dev/null 2>&1
   sleep 2
-  if [ -z "$(powershell -NoProfile -Command "Get-Process -Id $DIRECT_WINPID -ErrorAction SilentlyContinue" 2>/dev/null)" ]; then
-    pass "direct-exec case: taskkill //F //T on the resolved winpid kills the real Windows process"
+  DIRECT_SURVIVORS=$(check_snapshot_survivors "$DIRECT_SNAPSHOT")
+  if [ -z "$DIRECT_SURVIVORS" ]; then
+    pass "direct-exec case: taskkill //F //T on the resolved winpid kills the real Windows process (every snapshotted pid, matched by start time, confirmed dead)"
   else
-    failed "direct-exec case: the real Windows process SURVIVED taskkill //F //T on its resolved winpid"
+    failed "direct-exec case: the real Windows process SURVIVED taskkill //F //T on its resolved winpid ($DIRECT_SURVIVORS still alive)"
     taskkill //F //T //PID "$DIRECT_WINPID" > /dev/null 2>&1
   fi
 fi

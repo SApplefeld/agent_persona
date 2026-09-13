@@ -120,6 +120,18 @@ fi
 # produce it.
 STOP_PS_SENTINEL="___SUPERVISOR_PS_DONE___"
 
+# Reviewer Round 126 R89: the 30s bound every PowerShell call used was a bare
+# literal repeated at each call site. Made a setting, sized to this box's own
+# measured spawn cost (R79/R92's live runs: 4-11s per call under this
+# session's own load) rather than picked arbitrarily; a slower box overrides
+# it rather than silently timing out every call. Disagreement with R84's own
+# ask, stated rather than dropped: R84 also asked to "collapse the per-stop
+# PowerShell calls to as few as the design allows" - that is addressed
+# separately this round (kill_process_snapshot's own retry loop is removed
+# in favor of retry_stop_escalation's single wall-clock-bounded loop, R88),
+# rather than folded into this one setting.
+SUPERVISOR_PS_BOUND_S="${supervisorPsBoundS:-30}"
+
 SUPERVISOR_STOP_GRACE_MS="${supervisorStopGraceMs:-60000}"
 SUPERVISOR_MIN_RUN_MS="${supervisorMinRunMs:-120000}"
 SUPERVISOR_CRASH_LIMIT="${supervisorCrashLimit:-3}"
@@ -272,11 +284,26 @@ resolve_windows_pid() {
 # blocked 236s and then returned "Permission denied", the same shape of
 # hang this whole helper exists to prevent, just moved one line down. Do
 # not iterate on signal flavours: the stub is no longer signaled at all
-# on expiry. `taskkill //F //T //PID` on the pre-captured winpid (`//T`
-# reaches its whole process tree, not just the one pid) is the only
-# termination this function attempts, and reaping the stub afterward is
-# itself bounded rather than a blocking `wait`, so a stub that still
-# will not die cannot wedge this function a second way.
+# on expiry.
+#
+# Reviewer Round 126 R92 (Major, inferred, since confirmed by direct
+# observation this round): the comment above claiming the tail-exec
+# subshell "collapses into one process" is not the whole shape under
+# load - a probe showed three: the MSYS stub this function's own `$!`
+# names, an intermediate `bash.exe`, and `powershell.exe` itself.
+# `taskkill //F //T //PID` on the stub is a tree walk from that stub at
+# kill time; if the intermediate has already exited, `//T` has nothing
+# to walk through to reach `powershell.exe`, and the two runs that
+# validated this fix never hit that gap. Rather than depend on that walk
+# working, the launched script's very first statement now writes its own
+# real Windows pid (`$PID`, PowerShell's own automatic variable - always
+# correct, no CIM query needed) as a `PSPID:<pid>` line, read from the
+# output file while waiting rather than only at the deadline. On expiry,
+# that self-reported pid is killed directly, `taskkill //T` on the stub
+# still runs as a second attempt, and both calls' exit codes are logged
+# rather than discarded. Each `taskkill` is itself backgrounded and
+# capped at 5s rather than run as an unbounded native spawn inside a
+# function that exists to bound exactly that shape of call.
 # Usage: run_bounded_powershell <bound-seconds> <script> <outfile>
 run_bounded_powershell() {
   local bound="$1"
@@ -285,7 +312,7 @@ run_bounded_powershell() {
   local errfile start_ts
   errfile=$(mktemp)
   start_ts=$(date +%s)
-  ( exec powershell -NoProfile -Command "$script" >"$outfile" 2>"$errfile" ) &
+  ( exec powershell -NoProfile -Command "Write-Output (\"PSPID:\" + \$PID); $script" >"$outfile" 2>"$errfile" ) &
   local ps_pid=$!
   local ps_winpid="" wpoll=0
   while [ -z "$ps_winpid" ] && [ "$wpoll" -lt 5 ] && kill -0 "$ps_pid" 2>/dev/null; do
@@ -293,17 +320,37 @@ run_bounded_powershell() {
     [ -z "$ps_winpid" ] && sleep 1
     wpoll=$((wpoll + 1))
   done
+  # Self-reported real pid of the launched powershell.exe process itself -
+  # read opportunistically from the output file as it becomes available,
+  # not just at the deadline, since the file may not have its first line
+  # yet this early.
+  local ps_real_pid=""
   local waited=0
   while kill -0 "$ps_pid" 2>/dev/null && [ "$waited" -lt "$bound" ]; do
+    if [ -z "$ps_real_pid" ] && [ -s "$outfile" ]; then
+      ps_real_pid=$(head -1 "$outfile" 2>/dev/null | tr -d '\r' | sed -n 's/^PSPID:\([0-9]*\)$/\1/p')
+    fi
     sleep 1
     waited=$((waited + 1))
   done
   local status elapsed
   if kill -0 "$ps_pid" 2>/dev/null; then
     [ -z "$ps_winpid" ] && ps_winpid=$(resolve_windows_pid "$ps_pid")
-    if [ -n "$ps_winpid" ]; then
-      taskkill //F //T //PID "$ps_winpid" > /dev/null 2>&1
+    [ -z "$ps_real_pid" ] && [ -s "$outfile" ] && ps_real_pid=$(head -1 "$outfile" 2>/dev/null | tr -d '\r' | sed -n 's/^PSPID:\([0-9]*\)$/\1/p')
+    local rc_real="n/a" rc_stub="n/a"
+    if [ -n "$ps_real_pid" ]; then
+      ( taskkill //F //PID "$ps_real_pid" > /dev/null 2>&1 ) &
+      local tk_real=$!
+      ( sleep 5; kill -9 "$tk_real" 2>/dev/null ) &
+      wait "$tk_real" 2>/dev/null; rc_real=$?
     fi
+    if [ -n "$ps_winpid" ]; then
+      ( taskkill //F //T //PID "$ps_winpid" > /dev/null 2>&1 ) &
+      local tk_stub=$!
+      ( sleep 5; kill -9 "$tk_stub" 2>/dev/null ) &
+      wait "$tk_stub" 2>/dev/null; rc_stub=$?
+    fi
+    log_diag "STOP: taskkill on the real powershell pid ${ps_real_pid:-unresolved} rc=$rc_real; taskkill //T on stub winpid ${ps_winpid:-unresolved} rc=$rc_stub"
     # Bounded reap, not a blocking `wait`: taskkill is the only
     # termination attempted (see the addendum above). `wait`'s own exit
     # status is never used here (status is already 124, unconditionally,
@@ -323,7 +370,7 @@ run_bounded_powershell() {
     fi
     status=124
     elapsed=$(( $(date +%s) - start_ts ))
-    log_diag "STOP: a PowerShell call exceeded its ${bound}s bound (elapsed ${elapsed}s) and was force-killed via taskkill //T on winpid ${ps_winpid:-unresolved}"
+    log_diag "STOP: a PowerShell call exceeded its ${bound}s bound (elapsed ${elapsed}s) and was force-killed"
   else
     wait "$ps_pid"
     status=$?
@@ -349,7 +396,10 @@ run_bounded_powershell_capture() {
   outfile=$(mktemp)
   run_bounded_powershell "$bound" "$script" "$outfile"
   status=$?
-  tr -d '\r' < "$outfile"
+  # The self-reported "PSPID:<pid>" line (R92, above) is run_bounded_
+  # powershell's own bookkeeping, never part of the script's own output -
+  # stripped here so no caller's sentinel or pair parsing ever sees it.
+  tr -d '\r' < "$outfile" | grep -v '^PSPID:[0-9]*$'
   rm -f "$outfile"
   return "$status"
 }
@@ -376,9 +426,11 @@ run_bounded_powershell_capture() {
 # every later consumer can tell a genuinely surviving process from a
 # same-numbered impostor by comparing tick values, not just pid presence.
 #
-# Reviewer Round 122 R67: this call is now `timeout`-wrapped like the kill
-# and verify calls below it - a hung CIM query here wedges stop_child
-# exactly as one in the kill path would.
+# Reviewer Round 122 R67 / Round 126 R79 (Minor correction, R93): this
+# call is bounded like the kill and verify calls below it - a hung CIM
+# query here wedges stop_child exactly as one in the kill path would.
+# GNU `timeout` (R67's original wrapper) does not actually hold on this
+# box (R71/R79); the bound is `run_bounded_powershell`, not `timeout`.
 #
 # Output is piped through `tr -d '\r'` (Reviewer Round 122 R62/R63):
 # PowerShell emits CRLF even under `-NoProfile`, and an unstripped `\r`
@@ -398,10 +450,11 @@ run_bounded_powershell_capture() {
 # survivors` below can treat it as an automatic, unconditional survivor
 # rather than silently discarding it.
 #
-# The pipeline's own exit status (via `pipefail`, scoped to this call
-# only) is what a caller reads to tell a timeout or PowerShell failure
-# apart from a genuinely empty tree (Reviewer Round 124 R72's ask, folded
-# in here since both share one call site).
+# A caller tells a timeout or PowerShell failure apart from a genuinely
+# empty tree by this function's own return code (Reviewer Round 124
+# R72's ask): `run_bounded_powershell_capture` returns its bound status
+# directly, so no local `pipefail` scoping is needed here to preserve it
+# through a pipe, unlike an earlier cut of this function.
 # Usage: snapshot_process_tree <windows-pid>
 snapshot_process_tree() {
   local winpid="$1"
@@ -409,7 +462,7 @@ snapshot_process_tree() {
     return 0
   fi
   local raw
-  raw=$(run_bounded_powershell_capture 30 "
+  raw=$(run_bounded_powershell_capture "$SUPERVISOR_PS_BOUND_S" "
       \$visited = New-Object 'System.Collections.Generic.HashSet[int]'
       function Get-Descendants(\$parentId) {
         if (-not \$visited.Add(\$parentId)) { return }
@@ -493,7 +546,7 @@ check_snapshot_survivors() {
     return 0
   fi
   local raw
-  raw=$(run_bounded_powershell_capture 30 "
+  raw=$(run_bounded_powershell_capture "$SUPERVISOR_PS_BOUND_S" "
       foreach (\$e in @($pairs)) {
         \$proc = Get-Process -Id \$e.Id -ErrorAction SilentlyContinue
         if (\$proc -and \$proc.StartTime.Ticks -eq \$e.Ticks) { Write-Output \$e.Id }
@@ -530,63 +583,59 @@ check_snapshot_survivors() {
 # those pid numbers, recycled or not. Kills only pairs where `Get-Process
 # -Id` still finds the pid AND its `StartTime.Ticks` still matches what
 # was recorded in the snapshot - the same match `check_snapshot_survivors`
-# uses to decide who's a real survivor in the first place. An
-# `UNREADABLE`-ticks pid is killed only by existence (it has no ticks to
-# match against), the same residual best-effort R81 accepts for checking
-# one.
+# uses to decide who's a real survivor in the first place.
+#
+# Reviewer Round 126 R91 (Major): an `UNREADABLE`-ticks pid used to be
+# force-killed by bare existence alone - exactly R78's class narrowed to
+# one field, since a pid whose start time was unreadable at snapshot time
+# and recycled during the grace window then dies by number, not by
+# identity. `check_snapshot_survivors` still reports one as a survivor
+# (by existence, the only check available for it - R81), but this
+# function no longer kills on that report at all.
+#
+# Reviewer Round 126 R88 (Major): the internal 3-attempt retry loop this
+# function used to run, stacked underneath `retry_stop_escalation`'s own
+# 6-attempt loop, is what made the worst-case stop take minutes instead
+# of the ~30s the comments claimed. One check here now; `retry_stop_
+# escalation` is the single place that retries over time, on its own
+# wall-clock budget.
 # Usage: kill_process_snapshot <snapshot, "pid,ticks" per line>
 kill_process_snapshot() {
   local snapshot="$1"
   if [ -z "$snapshot" ]; then
     return 0
   fi
-  local pairs="" unreadable="" sid sticks
+  local pairs="" sid sticks
   while IFS=',' read -r sid sticks; do
     case "$sid" in ''|*[!0-9]*) continue ;; esac
-    case "$sticks" in
-      ''|*[!0-9]*) unreadable="$unreadable,$sid"; continue ;;
-    esac
+    case "$sticks" in ''|*[!0-9]*) continue ;; esac
     pairs="$pairs,@{Id=$sid;Ticks=$sticks}"
   done <<< "$snapshot"
   pairs="${pairs#,}"
-  unreadable="${unreadable#,}"
-  if [ -z "$pairs" ] && [ -z "$unreadable" ]; then
-    log "STOP: kill_process_snapshot got no valid entries to act on"
-    return 0
-  fi
-  local raw
-  raw=$(run_bounded_powershell_capture 30 "
+  if [ -z "$pairs" ]; then
+    log "STOP: kill_process_snapshot has no ticks-matched pairs to act on (any UNREADABLE entries are reported, per R91, never killed)"
+  else
+    local raw
+    raw=$(run_bounded_powershell_capture "$SUPERVISOR_PS_BOUND_S" "
       foreach (\$e in @($pairs)) {
         \$proc = Get-Process -Id \$e.Id -ErrorAction SilentlyContinue
         if (\$proc -and \$proc.StartTime.Ticks -eq \$e.Ticks) {
           try { Stop-Process -Id \$e.Id -Force -ErrorAction SilentlyContinue } catch {}
         }
       }
-      foreach (\$u in @($unreadable)) {
-        \$proc = Get-Process -Id \$u -ErrorAction SilentlyContinue
-        if (\$proc) {
-          try { Stop-Process -Id \$u -Force -ErrorAction SilentlyContinue } catch {}
-        }
-      }
       Write-Output '$STOP_PS_SENTINEL'
     ")
-  if ! printf '%s\n' "$raw" | grep -qx "$STOP_PS_SENTINEL"; then
-    log "STOP: kill_process_snapshot's powershell call did not complete (timeout or error)"
-  fi
-  # Reviewer Round 124 R77 (Minor): Stop-Process -Force is asynchronous, so
-  # a survivor check run with no settle at all can read a process mid-exit
-  # as still alive. Retry a few times over a couple of seconds before
-  # declaring the kill failed, rather than on the first read.
-  local survivors rc attempt
-  for attempt in 1 2 3; do
-    survivors=$(check_snapshot_survivors "$snapshot")
-    rc=$?
-    if [ -z "$survivors" ] && [ "$rc" -eq 0 ]; then
-      return 0
+    if ! printf '%s\n' "$raw" | grep -qx "$STOP_PS_SENTINEL"; then
+      log "STOP: kill_process_snapshot's powershell call did not complete (timeout or error)"
     fi
-    [ "$attempt" -lt 3 ] && sleep 1
-  done
-  log "STOP: kill_failed - these Windows pids survived the tree kill or could not be verified: $(echo "$survivors" | tr '\n' ' ')"
+  fi
+  local survivors rc
+  survivors=$(check_snapshot_survivors "$snapshot")
+  rc=$?
+  if [ -z "$survivors" ] && [ "$rc" -eq 0 ]; then
+    return 0
+  fi
+  log "STOP: kill_failed - these Windows pids are alive or unverifiable: $(echo "$survivors" | tr '\n' ' ')"
   return 1
 }
 
@@ -604,10 +653,25 @@ kill_process_snapshot() {
 # on a confirmed-alive survivor, spending the whole 120s waiting on a
 # heartbeat staleness timeout rather than on the tree actually dying -
 # tonight's 21:36Z-21:40Z incident verbatim. Retries the kill on a cadence
-# instead of once, bounded to 30s (a quarter of the pre-gate's own
-# ceiling, chosen so this backstop cannot itself become the wedge R53 was
-# fixed to prevent), then still proceeds either way with the outcome
+# instead of once, then still proceeds either way with the outcome
 # logged - this is a backstop, not a substitute for the pre-gate itself.
+#
+# Reviewer Round 126 R88 (Major): the "30s" this comment used to claim
+# was only the sleeps between six fixed attempts - each attempt's own
+# `kill_process_snapshot` call could itself run up to `$SUPERVISOR_PS_
+# BOUND_S` seconds (plus, before this round, its own internal 3-attempt
+# retry loop, now removed - R88's other half, above), so the real
+# worst case was minutes, not 30s. This loop is now bounded by actual
+# wall clock against `RETRY_BUDGET_S` (a quarter of the 120s pre-gate
+# ceiling, same reasoning as before, just enforced for real this time),
+# checked before and after each attempt rather than assumed from a sleep
+# count.
+#
+# Reviewer Round 126 R87's second half: a caller can reach this backstop
+# with `LAST_STOP_SNAPSHOT` empty (the very first snapshot attempt in
+# `stop_child` never resolved), and a healthy backstop should try to
+# re-snapshot rather than give up outright - the wrapper's own pid may
+# still be resolvable even though the earlier walk failed or timed out.
 # Usage: retry_stop_escalation <label> <stop_child's own return code>
 retry_stop_escalation() {
   local label="$1"
@@ -615,31 +679,46 @@ retry_stop_escalation() {
   if [ "$result" -eq 0 ]; then
     return 0
   fi
-  if [ -z "$LAST_STOP_SNAPSHOT" ]; then
-    log "STOP[$label]: stop_child reported failure (STOP_PATH=$STOP_PATH) and there is no snapshot to retry against (tree was never verified)"
-    return 1
-  fi
-  local attempt
-  for attempt in 1 2 3 4 5 6; do
-    log "STOP[$label]: stop_child reported failure (STOP_PATH=$STOP_PATH); retrying the tree kill (attempt $attempt/6)"
+  local RETRY_BUDGET_S=30
+  local deadline
+  deadline=$(( $(date +%s) + RETRY_BUDGET_S ))
+  local attempt=0
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    attempt=$((attempt + 1))
+    if [ -z "$LAST_STOP_SNAPSHOT" ]; then
+      log "STOP[$label]: stop_child reported failure (STOP_PATH=$STOP_PATH) with no snapshot to retry against; re-snapshotting (attempt $attempt)"
+      if [ -n "${CHILD_PID:-}" ]; then
+        local resnap_winpid
+        resnap_winpid=$(resolve_windows_pid "$CHILD_PID")
+        [ -n "$resnap_winpid" ] && LAST_STOP_SNAPSHOT=$(snapshot_process_tree "$resnap_winpid")
+      fi
+      if [ -z "$LAST_STOP_SNAPSHOT" ]; then
+        sleep 2
+        continue
+      fi
+    fi
+    log "STOP[$label]: retrying the tree kill (attempt $attempt, $(( deadline - $(date +%s) ))s left in budget)"
     if kill_process_snapshot "$LAST_STOP_SNAPSHOT"; then
       log "STOP[$label]: retry succeeded on attempt $attempt, tree confirmed dead"
       LAST_STOP_SNAPSHOT=""
       return 0
     fi
-    [ "$attempt" -lt 6 ] && sleep 5
+    sleep 2
   done
-  log "STOP[$label]: every retry FAILED over 30s - a process from the stopped child may still be alive and holding its persona claim; proceeding anyway rather than spending the pre-gate timeout to find out"
+  log "STOP[$label]: every retry FAILED over the ${RETRY_BUDGET_S}s budget - a process from the stopped child may be alive or unverifiable, and may still hold its persona claim; proceeding anyway rather than spending the pre-gate timeout to find out"
   return 1
 }
 
 # Usage: stop_child <label>
-# Sets STOP_PATH to one of six values (Reviewer Round 124 R77): "eof",
-# "term", or "kill" when the tree is confirmed dead at that phase, or
-# "eof_kill_failed", "term_kill_failed", "kill_failed" when a survivor
-# from the snapshot remained after that phase's own escalation. Returns
-# 1 in the failed cases; callers should read that return rather than
-# trusting STOP_PATH's clean-looking values by name alone.
+# Sets STOP_PATH to one of seven values (Reviewer Round 126 R87 adds
+# "unverified" to the six R77 named): "eof", "term", or "kill" when the
+# tree is confirmed dead at that phase, "eof_kill_failed",
+# "term_kill_failed", "kill_failed" when a CONFIRMED survivor from the
+# snapshot remained after that phase's own escalation, or "unverified"
+# when the snapshot itself could never be resolved or walked in the first
+# place - nothing was confirmed either way. Returns 1 in every failed
+# case; callers should read that return rather than trusting STOP_PATH's
+# clean-looking values by name alone.
 stop_child() {
   local label="$1"
   # If CHILD_PID is not set or empty, there's nothing to stop.
@@ -695,8 +774,18 @@ stop_child() {
   # nothing was actually confirmed alive, so this now logs and returns 1
   # without calling kill_process_snapshot at all: "cannot tell" is not
   # grounds to act, only grounds to fail closed and let the caller retry.
+  #
+  # Reviewer Round 126 R87 (Major): an EMPTY snapshot (the resolve or the
+  # walk itself failed, `snap_rc` non-zero above) used to return 0 here -
+  # "verified dead" - which is the exact report a slow-spawn regime (the
+  # bound this whole function exists for) produces on a tree that was
+  # never actually looked at. Empty is now the same "cannot tell" case as
+  # an unverified check: return 1, not 0.
   verify_snapshot_dead() {
-    [ -z "$snapshot" ] && return 0
+    if [ -z "$snapshot" ] || [ "$snap_rc" -ne 0 ]; then
+      log "STOP[$label]: no snapshot was ever resolved for this stop (resolve or walk failed) - not confirming dead on an unverified read"
+      return 1
+    fi
     local alive rc
     alive=$(check_snapshot_survivors "$snapshot")
     rc=$?
@@ -730,8 +819,12 @@ stop_child() {
       LAST_STOP_SNAPSHOT=""
       return 0
     fi
-    log "STOP[$label]: a snapshot survivor could not be killed after the EOF path"
-    STOP_PATH="eof_kill_failed"
+    if [ -z "$snapshot" ] || [ "$snap_rc" -ne 0 ]; then
+      STOP_PATH="unverified"
+    else
+      log "STOP[$label]: a snapshot survivor could not be killed after the EOF path"
+      STOP_PATH="eof_kill_failed"
+    fi
     return 1
   fi
   # Phase 2: TERM - send SIGTERM after grace expired.
@@ -748,15 +841,40 @@ stop_child() {
       LAST_STOP_SNAPSHOT=""
       return 0
     fi
-    log "STOP[$label]: a snapshot survivor could not be killed after the TERM path"
-    STOP_PATH="term_kill_failed"
+    if [ -z "$snapshot" ] || [ "$snap_rc" -ne 0 ]; then
+      STOP_PATH="unverified"
+    else
+      log "STOP[$label]: a snapshot survivor could not be killed after the TERM path"
+      STOP_PATH="term_kill_failed"
+    fi
     return 1
   fi
   # Phase 3: KILL - send SIGKILL to the wrapper, then force-kill the whole
   # snapshot taken at entry (not a fresh walk from a possibly-dead or
   # -recycled pid).
   log "STOP[$label]: TERM grace expired, sending KILL to pid $pid (winpid $snapshot_winpid) and its process tree"
-  kill -9 "$pid" 2>/dev/null
+  # Reviewer Round 126 R93 (Minor): a bare `kill -9` on the wrapper's own
+  # MSYS pid is the same class of call the addendum above found could
+  # block on this box (236s, "Permission denied") - whether `$pid` here is
+  # a real bash process or itself a stub for `claude.exe` decides whether
+  # it can hang the same way. `taskkill //F //T` on the already-resolved
+  # `$snapshot_winpid` is tried first; `kill -9` remains a fallback for
+  # the case `resolve_windows_pid` never found a winpid at all.
+  if [ -n "$snapshot_winpid" ]; then
+    taskkill //F //T //PID "$snapshot_winpid" > /dev/null 2>&1
+  else
+    kill -9 "$pid" 2>/dev/null
+  fi
+  # Reviewer Round 126 R87: the same fail-open bug as verify_snapshot_dead's
+  # empty-snapshot case, one phase down - `kill_process_snapshot` on an
+  # empty snapshot trivially returns 0 (nothing to kill), which read as
+  # STOP_PATH="kill", a clean report, on a tree that was never resolved at
+  # all. Checked explicitly before trusting that return.
+  if [ -z "$snapshot" ] || [ "$snap_rc" -ne 0 ]; then
+    log "STOP[$label]: no snapshot was ever resolved for this stop (resolve or walk failed) - not confirming dead on an unverified read"
+    STOP_PATH="unverified"
+    return 1
+  fi
   if kill_process_snapshot "$snapshot"; then
     STOP_PATH="kill"
     LAST_STOP_SNAPSHOT=""
@@ -1177,6 +1295,7 @@ console.log(o.reason || '');
         # it is not one. Exit 5 instead, a code distinct from every other
         # exit this script uses, so the operator can tell the two apart.
         if [ "${STOP_ESCALATION_RESULT:-0}" -ne 0 ]; then
+          log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable despite every stop retry (STOP_PATH=$STOP_PATH)"
           exit 5
         fi
         exit 0
@@ -1194,6 +1313,7 @@ console.log(o.reason || '');
         echo "$EXIT_CODE" > "$EXIT_MARKER"
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         if [ "${STOP_ESCALATION_RESULT:-0}" -ne 0 ]; then
+          log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable despite every stop retry (STOP_PATH=$STOP_PATH)"
           exit 5
         fi
         exit 3
@@ -1211,6 +1331,7 @@ console.log(o.reason || '');
         echo "$EXIT_CODE" > "$EXIT_MARKER"
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         if [ "${STOP_ESCALATION_RESULT:-0}" -ne 0 ]; then
+          log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable despite every stop retry (STOP_PATH=$STOP_PATH)"
           exit 5
         fi
         exit 4
