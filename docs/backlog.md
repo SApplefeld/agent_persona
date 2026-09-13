@@ -89,3 +89,37 @@ What is owed is narrow: one re-run of `live-restartpassive-test.sh` on a genuine
 box, so its result rests on the condition the item sets rather than on a run that did not
 meet it. The whole gate does not need repeating for this. Drop this entry once that run is
 recorded in item 4's Chapter.
+
+## A design conversation with the operator has no capture rule, so whether it lands anywhere is a judgment call each time
+
+The outer-loop recovery conversation reached a real design direction and landed in zero
+files until the operator asked whether dialog is captured automatically. It is not. Nothing
+in the tree names a destination for what a conversation produces, so capture depends on the
+session noticing that the conversation was worth capturing, which is exactly the judgment
+that failed.
+
+The remedy is a rule keyed on the shape of the conversation rather than on that judgment.
+Four shapes, worked out with the operator:
+
+- **Status or steering.** "What are you working on", "check the conflicts on PR 25". The
+  plan doc and the work itself are already the record. Nothing to capture.
+- **A question.** Capture turns on one check: did answering require establishing a fact
+  that was not already written down? If the answer came from reading code, counting log
+  lines, or tracing a rule across documents, it is a finding and belongs in memory. If it
+  came from what was already on disk, nothing new exists.
+- **A correction.** The operator correcting how the session reasons or acts. Belongs in
+  memory where it is specific to this project, in the doctrine where it is not.
+- **A design direction.** An idea worked out in dialog. Belongs in the backlog or as a plan
+  section.
+
+The last three do not end until something durable exists, and the write does not wait for
+the conversation to converge. Waiting for agreement before capturing is the same failure in
+a slower form.
+
+Open: where the rule itself should live. Project memory holds it for this repo only. The
+doctrine holds it everywhere and is the heavier edit. The lean is the doctrine, because the
+failure is not specific to this repo. Operator's call.
+
+This entry and the outer-loop recovery entry both append to the tail of this file on
+separate branches, so whichever merges second will conflict here. The resolution is to keep
+both entries.
