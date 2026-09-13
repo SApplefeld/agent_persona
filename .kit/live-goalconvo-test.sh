@@ -48,6 +48,15 @@ failed() { echo "FAIL: $1" | tee -a "$ASSERT_LOG"; FAIL_COUNT=$((FAIL_COUNT + 1)
 # complete path can close the leaf without an explicit goal_done call.
 PROMPT='Please write a short haiku about the ocean to a file named ocean.txt in the working directory.'
 
+# Reviewer Round 141 R109: bin/supervise.sh's own default model is now
+# opus (v2 Section 0 item 3 Part B) - export MODEL so this suite's child
+# still runs at haiku, unaffected by that new default.
+export MODEL="haiku"
+# Pinned beside MODEL so the suite holds its own cost and effort steady
+# against the opus/medium defaults, and so a default change cannot move
+# what these runs measure.
+export EFFORT="medium"
+
 bash "$SUPERVISE" "$WORKDIR" "goalconvo-item2-$$" acceptEdits --dev --prompt "$PROMPT" --rundir "$SUITE_DIR" --no-channel \
   > "$SUITE_DIR/supervise.stdout.log" 2>&1 &
 SUPERVISE_PID=$!

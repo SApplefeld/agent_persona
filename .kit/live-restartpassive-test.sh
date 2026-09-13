@@ -41,6 +41,16 @@ failed() { echo "FAIL: $1" | tee -a "$ASSERT_LOG"; FAIL_COUNT=$((FAIL_COUNT + 1)
 # One short plan, so root_complete arrives quickly.
 PROMPT='Call goal_create with objective "Write a one-line file named done.txt containing the word done" and maxRounds 2. Write the file, then call goal_done.'
 
+# Reviewer Round 141 R109: bin/supervise.sh's own default model is now
+# opus (v2 Section 0 item 3 Part B) - export MODEL so both children this
+# suite launches (this one and the backfill one below) still run at
+# haiku, unaffected by that new default.
+export MODEL="haiku"
+# Pinned beside MODEL so the suite holds its own cost and effort steady
+# against the opus/medium defaults, and so a default change cannot move
+# what these runs measure.
+export EFFORT="medium"
+
 bash "$SUPERVISE" "$WORKDIR" "restartpassive-item4-$$" acceptEdits --dev --prompt "$PROMPT" --rundir "$SUITE_DIR" --no-channel \
   > "$SUITE_DIR/supervise.stdout.log" 2>&1 &
 SUPERVISE_PID=$!

@@ -85,6 +85,14 @@ PROMPT='Call goal_create with the objective: Wait for operator instructions deli
 # relaunch" hinge on timing rather than on the relaunch. Resumption is
 # proved by a second reader message instead (F5b).
 export nudgeIdleMs=600000
+# Reviewer Round 141 R109: bin/supervise.sh's own default model is now
+# opus (v2 Section 0 item 3 Part B) - export MODEL so this suite's child
+# still runs at haiku, unaffected by that new default.
+export MODEL="haiku"
+# Pinned beside MODEL so the suite holds its own cost and effort steady
+# against the opus/medium defaults, and so a default change cannot move
+# what these runs measure.
+export EFFORT="medium"
 
 bash "$SUPERVISE" "$WORKDIR" "$PERSONA" acceptEdits --dev --prompt "$PROMPT" --rundir "$SUITE_DIR" --no-channel \
   > "$SUITE_DIR/supervise.stdout.log" 2>&1 &
