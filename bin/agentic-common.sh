@@ -115,44 +115,46 @@ EOF
 }
 
 # --- ensure_settings_plugin_ids ---
-# Usage: ensure_settings_plugin_ids <settings-file> [persona]
-# For a settings file the caller already provided: where the options sit under
-# only one of the two plugin ids, copies them under the other, leaving every
-# other option as the caller wrote it. When a persona is given it is set under
-# both ids, since the supervisor's own persona argument is the one its pre-gate
-# and polls watch. The file is replaced by rename, so an interrupted write
-# never leaves it truncated. Returns 1 when the file is not valid JSON, when it
-# is not a JSON object, or when the persona is not a valid persona name.
+# Usage: ensure_settings_plugin_ids <settings-file>
+# For a settings file the caller already provided: where options sit under only
+# one of the two plugin ids, copies them under the other, leaving every option
+# as the caller wrote it. An id whose options object is missing or empty counts
+# as absent. The file is replaced by rename, so an interrupted write never leaves
+# it truncated. Returns 1 when the file is not valid JSON, when it, its
+# pluginConfigs, an id entry or an options value is not a plain object, or when
+# the write fails.
 ensure_settings_plugin_ids() {
-  if [ -n "${2:-}" ] && ! valid_persona_name "$2"; then
-    echo "ERROR: ensure_settings_plugin_ids: persona '$2' may hold only letters, digits, underscore and hyphen" >&2
-    return 1
-  fi
   node -e '
 const fs = require("fs");
-const [file, devId, installedId, persona] = process.argv.slice(1);
+const [file, devId, installedId] = process.argv.slice(1);
+const fail = (msg) => { console.error("ERROR: ensure_settings_plugin_ids: " + file + " " + msg); process.exit(1); };
+const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 let s;
-try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^﻿/, "")); } catch (e) {
-  console.error("ERROR: ensure_settings_plugin_ids: " + file + " is not valid JSON: " + e.message);
-  process.exit(1);
+try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
+if (!plain(s)) fail("is not a JSON object");
+if (s.pluginConfigs === undefined) process.exit(0);
+const pc = s.pluginConfigs;
+if (!plain(pc)) fail("has a pluginConfigs value that is not an object");
+for (const id of [devId, installedId]) {
+  if (pc[id] === undefined) continue;
+  if (!plain(pc[id])) fail("has a " + id + " entry that is not an object");
+  if (pc[id].options !== undefined && !plain(pc[id].options)) fail("has " + id + " options that are not an object");
 }
-if (!s || typeof s !== "object" || Array.isArray(s)) {
-  console.error("ERROR: ensure_settings_plugin_ids: " + file + " is not a JSON object");
-  process.exit(1);
-}
-const before = JSON.stringify(s);
-const pc = (s.pluginConfigs && typeof s.pluginConfigs === "object") ? s.pluginConfigs : (s.pluginConfigs = {});
-const dev = pc[devId] && pc[devId].options;
-const inst = pc[installedId] && pc[installedId].options;
-const options = Object.assign({}, dev || inst || {});
-if (persona) options.persona = persona;
-pc[devId] = Object.assign({}, pc[devId], { options: Object.assign({}, dev || options, persona ? { persona } : {}) });
-pc[installedId] = Object.assign({}, pc[installedId], { options: Object.assign({}, inst || options, persona ? { persona } : {}) });
-if (JSON.stringify(s) === before) process.exit(0);
+const has = (id) => pc[id] !== undefined && plain(pc[id].options) && Object.keys(pc[id].options).length > 0;
+let from, to;
+if (has(devId) && !has(installedId)) { from = devId; to = installedId; }
+else if (has(installedId) && !has(devId)) { from = installedId; to = devId; }
+else process.exit(0);
+pc[to] = Object.assign({}, pc[to], { options: Object.assign({}, pc[from].options) });
 const tmp = file + ".tmp-" + process.pid;
-fs.writeFileSync(tmp, JSON.stringify(s));
-fs.renameSync(tmp, file);
-' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID" "${2:-}"
+try {
+  fs.writeFileSync(tmp, JSON.stringify(s));
+  fs.renameSync(tmp, file);
+} catch (e) {
+  try { fs.unlinkSync(tmp); } catch (_) {}
+  fail("could not be rewritten: " + e.message);
+}
+' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID"
 }
 
 # --- valid_persona_name ---

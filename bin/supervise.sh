@@ -257,7 +257,10 @@ PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ -z "$RUNDIR" ]; then
   RUNDIR="$WORKDIR/run"
 fi
-mkdir -p "$RUNDIR"
+if ! mkdir -p "$RUNDIR"; then
+  echo "ERROR: cannot create rundir $RUNDIR" >&2
+  exit 1
+fi
 
 LOG="$RUNDIR/supervisor.log"
 SETTINGS_FILE="$RUNDIR/settings.json"
@@ -276,7 +279,7 @@ if [ ! -f "$SETTINGS_FILE" ]; then
     exit 1
   fi
 else
-  if ! ensure_settings_plugin_ids "$SETTINGS_FILE" "$PERSONA" 2>>"$LOG"; then
+  if ! ensure_settings_plugin_ids "$SETTINGS_FILE" 2>>"$LOG"; then
     echo "ERROR: could not complete $SETTINGS_FILE; see $LOG" | tee -a "$LOG" >&2
     exit 1
   fi

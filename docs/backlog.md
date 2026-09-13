@@ -1,5 +1,11 @@
 # Backlog
 
+## A provided settings file's persona silently overrides the supervisor's persona argument (found 2026-09-13)
+
+`bin/supervise.sh` hands `$RUNDIR/settings.json` to its child on `--settings` and writes that file only when it is absent. `RUNDIR` defaults to `$WORKDIR/run`, so a second supervisor launched on the same workdir under a different persona reuses the first launch's file. Its child claims the file's persona while the pre-gate and polls watch the supervisor's own argument, and a store check reads a claim for a persona nobody asked for.
+
+The same shape holds under `--plugin-dir` and in installed mode. The narrow exposure today is that every launcher on the box passes its own `--rundir` or runs one persona per workdir. Coordinator v2 Section 6 launches a coordinator beside workers, so check its launch recipe gives every supervisor its own rundir, or refuse a provided file whose persona differs from the argument.
+
 ## A supervisor's cadence env overrides never reach its child, so Section 6's coordinator tick would be ignored (found 2026-09-13)
 
 `bin/supervise.sh` sets `TICK_MS`, `NUDGE_IDLE_MS` and `GIT_PROBE_MS` from the `controllerTickMs`, `nudgeIdleMs` and `gitProbeMs` env vars, then sources `bin/agentic-common.sh`. The library's `PROFILE` block reassigns all three without a `${VAR:-}` guard, so the settings file carries the profile's values whatever the caller exported. With `NUDGE_IDLE_MS=600000` set before sourcing the library, the value reads `45000` afterwards.

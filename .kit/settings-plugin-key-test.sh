@@ -76,12 +76,25 @@ run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids
 R=$(inspect "$TMP/partial.json")
 case "$R" in *"INSTALLED_KEY=1"*"SAME_OPTIONS=1"*) check "an id with no options gains the other id's options" 0 ;; *) check "an id with no options gains the other id's options" 1 ;; esac
 
-# The supervisor's persona replaces a stale persona under both ids.
-printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":7,"persona":"stale"}}}}' > "$TMP/stale.json"
-run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids "$2" fresh' _ "$ROOT" "$TMP/stale.json"
-R=$(inspect "$TMP/stale.json")
-case "$R" in *"PERSONA_DEV=fresh;"*"PERSONA_INSTALLED=fresh;"*) check "a given persona replaces the file's persona under both ids" 0 ;; *) check "a given persona replaces the file's persona under both ids" 1 ;; esac
-grep -q '"controllerTickMs":7' "$TMP/stale.json"; check "replacing the persona keeps the caller's other options" "$?"
+# An id whose options object is empty counts as missing.
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":9}},"agentic-plugin@agent-persona":{"options":{}}}}' > "$TMP/empty.json"
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids "$2"' _ "$ROOT" "$TMP/empty.json"
+R=$(inspect "$TMP/empty.json")
+case "$R" in *"INSTALLED_KEY=1"*"SAME_OPTIONS=1"*) check "an id with empty options gains the other id's options" 0 ;; *) check "an id with empty options gains the other id's options" 1 ;; esac
+
+# Two ids that already carry different options are left exactly as written.
+DIFFERENT='{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":1}},"agentic-plugin@agent-persona":{"options":{"controllerTickMs":2}}}}'
+printf '%s' "$DIFFERENT" > "$TMP/different.json"
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids "$2"' _ "$ROOT" "$TMP/different.json"
+[ "$(cat "$TMP/different.json")" = "$DIFFERENT" ]; check "two ids with different options are left byte for byte" "$?"
+
+# Shapes that cannot hold options are refused rather than repaired.
+for shape in '{"pluginConfigs":[]}' '{"pluginConfigs":{"agentic-plugin":"x"}}' '{"pluginConfigs":{"agentic-plugin":{"options":"x"}}}'; do
+  printf '%s' "$shape" > "$TMP/shape.json"
+  ERR=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids "$2"' _ "$ROOT" "$TMP/shape.json" 2>&1)
+  RC=$?
+  case "$RC:$ERR" in 0:*) check "refuses $shape" 1 ;; *"not an object"*) check "refuses $shape" 0 ;; *) check "refuses $shape (err=$ERR)" 1 ;; esac
+done
 
 # A leading UTF-8 byte order mark is accepted.
 printf '\xef\xbb\xbf%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"persona":"bom"}}}}' > "$TMP/bom.json"
@@ -114,18 +127,32 @@ refused "emit_settings_json refuses a non-numeric cadence" "HEARTBEAT_MS '1," "$
 # PROFILE, so a TICK_MS value set here never reaches the emitter.
 refused "emit_settings_json refuses a cadence with a leading zero" "HEARTBEAT_MS '030000'" "$TMP/inj3.json" PERSONA="ok" HEARTBEAT_MS='030000'
 
-# --- bin/supervise.sh, driven for real up to the settings step ---
-# Nothing before that step launches a process: it validates arguments, changes
-# into the workdir, creates the rundir and sources the library.
+# --- bin/supervise.sh, driven for real ---
+# HOME is an empty directory, so no commons store exists and the pre-launch
+# gate stops the supervisor with "GATE FAIL", exit 2, before any child starts.
+# --no-channel keeps the Discord relay out even if that ever changes.
 SUP="$ROOT/bin/supervise.sh"
-mkdir -p "$TMP/wd" "$TMP/rd"
+mkdir -p "$TMP/home" "$TMP/wd" "$TMP/rd" "$TMP/rd-ok"
+drive() {  # <persona> <rundir>
+  env -i PATH="$PATH" HOME="$TMP/home" bash "$SUP" "$TMP/wd" "$1" default --rundir "$2" --no-channel 2>&1
+}
+
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":7,"persona":"tester"}}}}' > "$TMP/rd-ok/settings.json"
+OUT=$(drive tester "$TMP/rd-ok")
+RC=$?
+[ "$RC" -eq 2 ] && grep -q "GATE FAIL" "$TMP/rd-ok/supervisor.log" && ! grep -q "LAUNCH" "$TMP/rd-ok/supervisor.log"
+check "driven supervise.sh stops at the gate without launching (rc=$RC)" "$?"
+R=$(inspect "$TMP/rd-ok/settings.json")
+case "$R" in *"INSTALLED_KEY=1"*"SAME_OPTIONS=1"*"PERSONA_INSTALLED=tester;"*) check "supervise.sh completes a provided --plugin-dir-only settings file" 0 ;; *) check "supervise.sh completes a provided --plugin-dir-only settings file" 1 ;; esac
+
 printf '%s' '{"pluginConfigs":' > "$TMP/rd/settings.json"
-OUT=$(env -i PATH="$PATH" bash "$SUP" "$TMP/wd" tester default --rundir "$TMP/rd" 2>&1)
+OUT=$(drive tester "$TMP/rd")
 RC=$?
 [ "$RC" -eq 1 ]; check "supervise.sh exits 1 on a provided settings file that is not JSON (rc=$RC)" "$?"
 grep -q "is not valid JSON" "$TMP/rd/supervisor.log" 2>/dev/null; check "supervise.sh records the settings refusal in supervisor.log" "$?"
+! grep -q "LAUNCH" "$TMP/rd/supervisor.log" 2>/dev/null; check "supervise.sh launches nothing after refusing the settings file" "$?"
 
-OUT=$(env -i PATH="$PATH" bash "$SUP" "$TMP/wd" 'bad"name' default --rundir "$TMP/rd2" 2>&1)
+OUT=$(drive 'bad"name' "$TMP/rd2")
 case "$OUT" in *"persona 'bad\"name' may hold only"*) check "supervise.sh refuses a persona carrying a quote" 0 ;; *) check "supervise.sh refuses a persona carrying a quote" 1 ;; esac
 [ ! -e "$TMP/rd2" ]; check "supervise.sh refuses the persona before creating the rundir" "$?"
 

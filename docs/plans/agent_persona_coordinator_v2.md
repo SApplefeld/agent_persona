@@ -57,6 +57,7 @@ Four extensions, in order of what blocks the next:
 ## Standing Brief Amendments
 
 - Section 0 item 5's scope is which plugin copy a worker or the coordinator loads, how the settings a supervisor writes reach that copy, and whether the installed-mode store holds every live persona claim. How a supervisor's cadence values resolve between exported env vars and the library's `PROFILE` block is a different surface and does not ride under item 5.
+- Completing a provided settings file under item 5 means copying the options from whichever plugin id carries them to the id that lacks them, with every option as the caller wrote it. Which persona wins when a supervisor's persona argument and a provided settings file disagree is a different surface, present identically under `--plugin-dir`, and does not ride under item 5.
 
 ## Sections of Work
 
