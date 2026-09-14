@@ -627,19 +627,6 @@ export function deliveryGroundIn(
 }
 
 /**
- * deliveryGroundIn's ground as a string, or null on either refusal.
- */
-export function deliveryLabelIn(
-  claims: UnionedClaim[],
-  target: string,
-  writer: string,
-  coordinatorPersona: string,
-): string | null {
-  const g = deliveryGroundIn(claims, target, writer, coordinatorPersona);
-  return "ground" in g ? g.ground : null;
-}
-
-/**
  * Whether `writer` may address `target`'s inbox, over claims already read:
  * deliveryGroundIn's three legs and its bracket rule, as a boolean. The
  * send gate and the inbox read call the reading form below; the three
@@ -652,40 +639,58 @@ export function mayReachPersonaIn(
   writer: string,
   coordinatorPersona: string,
 ): boolean {
-  return deliveryLabelIn(claims, target, writer, coordinatorPersona) !== null;
+  return "ground" in deliveryGroundIn(claims, target, writer, coordinatorPersona);
 }
 
 /**
- * The one rule for a record id that reaches the model inside a delivery
- * bracket: a non-empty string that passes the bracket rule above. The id
- * is store data any plugin-loaded session wrote, and one carrying "]"
- * could close the bracket early and forge the text after it. Returns the
- * reason an id is refused, or null when it is usable; the three delivery
- * sites apply this rule and deliver nothing under a refused id.
+ * The one rule for the record fields a delivery reads: `id` is a non-empty
+ * string that passes the bracket rule above, and `text` is a string. Both
+ * are store data any plugin-loaded session wrote: an id carrying "]" could
+ * close the bracket early and forge the text after it, and a text that is
+ * not a string cannot be quoted line by line. Returns the reason, naming
+ * the field, or null when the record is deliverable; the three delivery
+ * sites apply this rule and deliver nothing under a refused record.
  */
-export function deliveryIdProblem(id: unknown): string | null {
-  if (typeof id !== "string" || id.length === 0) return "must be a non-empty string";
-  return bracketSafeProblem(id);
+export function deliveryRecordProblem(rec: { id: unknown; text: unknown }): string | null {
+  if (typeof rec.id !== "string" || rec.id.length === 0) return "id must be a non-empty string";
+  const idProblem = bracketSafeProblem(rec.id);
+  if (idProblem !== null) return `id ${idProblem}`;
+  if (typeof rec.text !== "string") return "text must be a string";
+  return null;
 }
 
 /**
  * The bracket every delivered record opens with: `[<ground> id=<id>]`, or
  * `[<ground> id=<id>, urgent]` on the urgent break-in. `ground` is what
- * deliveryLabelIn returned and `id` has passed deliveryIdProblem. The id
- * rides in-band because agentic_inbox is reader-only, so nothing else tells
- * the owner the id agentic_resolve takes.
+ * deliveryGroundIn returned and `id` has passed deliveryRecordProblem. The
+ * id rides in-band because agentic_inbox is reader-only, so nothing else
+ * tells the owner the id agentic_resolve takes.
  */
 export function deliveryPrefix(ground: string, id: string, urgent: boolean): string {
   return `[${ground} id=${id}${urgent ? ", urgent" : ""}]`;
 }
 
 /**
- * The full text a delivery submits: the prefix, then `Answer to <question>:
- * ` when the record answers an open ask, then the record's text. Only the
- * first line opens with a bracket: every later line of the text is quoted
- * with `> ` (split on LF or CRLF, joined with LF), so a text carrying a
- * newline and then a bracket cannot read as a second delivered record. The
- * three delivery sites build their text here and nowhere else.
+ * Every line of `body` after the first, quoted with `> `. A line ends at
+ * CRLF or at any one of LF, CR, VT, FF, NEL (U+0085), LINE SEPARATOR
+ * (U+2028) or PARAGRAPH SEPARATOR (U+2029), the terminators the bracket
+ * rule refuses as field splitters; the lines are joined with LF. Applied
+ * to any store-sourced body that follows a bracket on its first line, so
+ * a body carrying a line break and then a bracket cannot read as a second
+ * plugin-submitted line.
+ */
+export function quoteContinuationLines(body: string): string {
+  const [first, ...rest] = body.split(/\r\n|[\n\r\v\f\u{85}\u{2028}\u{2029}]/u);
+  return [first, ...rest.map((line) => `> ${line}`)].join("\n");
+}
+
+/**
+ * The full text a delivery submits: the prefix, then the body, which is
+ * `Answer to <question>: ` when the record answers an open ask, then the
+ * record's text. The question and the text are both store data, so the
+ * whole body passes through quoteContinuationLines: only the bracket line
+ * is unquoted. The three delivery sites build their text here and nowhere
+ * else.
  */
 export function deliveryText(
   ground: string,
@@ -694,9 +699,7 @@ export function deliveryText(
   opts: { urgent?: boolean; answerTo?: string } = {},
 ): string {
   const answer = opts.answerTo === undefined ? "" : `Answer to ${opts.answerTo}: `;
-  const [first, ...rest] = text.split(/\r?\n/);
-  const quoted = rest.map((line) => `> ${line}`);
-  return [`${deliveryPrefix(ground, id, opts.urgent === true)} ${answer}${first}`, ...quoted].join("\n");
+  return `${deliveryPrefix(ground, id, opts.urgent === true)} ${quoteContinuationLines(`${answer}${text}`)}`;
 }
 
 /**

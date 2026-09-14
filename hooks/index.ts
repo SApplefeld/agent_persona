@@ -51,7 +51,8 @@ import {
   claimReaderRole,
   mayReachPersona,
   deliveryGroundIn,
-  deliveryIdProblem,
+  deliveryRecordProblem,
+  quoteContinuationLines,
   deliveryPrefix,
   deliveryText,
   personaNameProblem,
@@ -214,7 +215,10 @@ async function tickOpenAsk(
     });
     // A refused re-raise is non-fatal: the decision log still shows the
     // re-raise, and its entry has left the list.
-    const reraiseEntry: ExpectedTurn = { kind: "plugin", text: `${REPLY_INSTRUCTION}[STILL WAITING] ${askRecord.question}` };
+    // The question is store data, so its continuation lines are quoted
+    // the way a delivered record's are: the bracket line stays the only
+    // unquoted one.
+    const reraiseEntry: ExpectedTurn = { kind: "plugin", text: `${REPLY_INSTRUCTION}${quoteContinuationLines(`[STILL WAITING] ${askRecord.question}`)}` };
     expectedTurns.push(reraiseEntry);
     await submitExpectedTurn(dp, expectedTurns, reraiseEntry);
   }
@@ -1509,11 +1513,12 @@ export const register: Register = async (on, options) => {
             if (answer) {
               // One claims read gates the answer and labels it. A dead
               // writer's answer is logged here and skipped by the general
-              // drain below; an answer whose id or writer persona cannot sit
-              // inside the bracket is marked skipped here, once, so the
-              // drain never lists it.
+              // drain below; an answer whose writer persona cannot sit
+              // inside the bracket, or whose id or text fails the record
+              // rule, is marked skipped here, once, so the drain never
+              // lists it.
               const answerGround = deliveryGroundIn(await readAllClaims(store, sess.staleAfterMs), persona, answer.from, coordinatorPersona);
-              const answerIdProblem = deliveryIdProblem(answer.id);
+              const answerProblem = deliveryRecordProblem(answer);
               if ("refused" in answerGround && answerGround.refused === "no_claim") {
                 sess.state.decisions.push({
                   timestamp: Date.now(),
@@ -1521,7 +1526,7 @@ export const register: Register = async (on, options) => {
                   action: "operator_skipped_no_claim",
                   detail: `answer ${answer.id} from ${answer.from} holds no live claim that reaches '${persona}' (no reader claim, no '${coordinatorPersona}' persona claim, no named persona of its own)`,
                 });
-              } else if ("refused" in answerGround || answerIdProblem !== null) {
+              } else if ("refused" in answerGround || answerProblem !== null) {
                 answer.status = "skipped";
                 await store.set(answer.key, { ...answer });
                 sess.state.decisions.push("refused" in answerGround && answerGround.refused === "bad_name"
@@ -1529,13 +1534,13 @@ export const register: Register = async (on, options) => {
                     timestamp: Date.now(),
                     loop: "monitor",
                     action: "operator_skipped_bad_name",
-                    detail: `answer at ${answer.key} would be labelled with persona '${answerGround.persona}', which ${answerGround.problem}; marked skipped`,
+                    detail: `answer at ${answer.key} would be labelled with persona ${JSON.stringify(answerGround.persona)}, which ${answerGround.problem}; marked skipped`,
                   }
                   : {
                     timestamp: Date.now(),
                     loop: "monitor",
-                    action: "operator_skipped_bad_id",
-                    detail: `answer at ${answer.key} carries an id that ${answerIdProblem}; marked skipped`,
+                    action: "operator_skipped_bad_record",
+                    detail: `answer at ${answer.key}: ${answerProblem}; marked skipped`,
                   });
               } else {
                 const answerLabel = answerGround.ground;
@@ -1601,23 +1606,24 @@ export const register: Register = async (on, options) => {
         // General drain (D3)
         // Filter to writers whose live claims reach this persona, over one
         // claims read for the whole pending list; the same read yields the
-        // label each deliverable record carries. A record whose id, or
-        // whose writer's persona, cannot sit inside the label's bracket is
-        // skipped like a dead writer's, under its own decision. An answer
-        // the ask step above already marked skipped is not listed again.
+        // label each deliverable record carries. A record whose writer's
+        // persona cannot sit inside the label's bracket, or whose id or
+        // text fails the record rule, is skipped like a dead writer's,
+        // under its own decision. An answer the ask step above already
+        // marked skipped is not listed again.
         const withClaim: { rec: InboxRecord; ground: string }[] = [];
         const withoutClaim: typeof pending = [];
         const badName: { rec: InboxRecord; persona: string; problem: string }[] = [];
-        const badId: { rec: InboxRecord; problem: string }[] = [];
+        const badRecord: { rec: InboxRecord; problem: string }[] = [];
         const claims = pending.length > 0 ? await readAllClaims(store, sess.staleAfterMs) : [];
         for (const rec of pending) {
           if (rec.status !== "pending") continue;
           const ground = deliveryGroundIn(claims, persona, rec.from, coordinatorPersona);
-          const idProblem = deliveryIdProblem(rec.id);
+          const recordProblem = deliveryRecordProblem(rec);
           if ("refused" in ground) {
             if (ground.refused === "no_claim") withoutClaim.push(rec);
             else badName.push({ rec, persona: ground.persona, problem: ground.problem });
-          } else if (idProblem !== null) badId.push({ rec, problem: idProblem });
+          } else if (recordProblem !== null) badRecord.push({ rec, problem: recordProblem });
           else withClaim.push({ rec, ground: ground.ground });
         }
         // Round 32/36: mark a dead writer's record skipped once, on its own
@@ -1639,16 +1645,16 @@ export const register: Register = async (on, options) => {
             timestamp: Date.now(),
             loop: "monitor",
             action: "operator_skipped_bad_name",
-            detail: `record at ${rec.key} would be labelled with persona '${writerPersona}', which ${problem}; marked skipped`,
+            detail: `record at ${rec.key} would be labelled with persona ${JSON.stringify(writerPersona)}, which ${problem}; marked skipped`,
           });
         }
-        for (const { rec, problem } of badId) {
+        for (const { rec, problem } of badRecord) {
           await store.set(rec.key, { ...rec, status: "skipped" });
           sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "monitor",
-            action: "operator_skipped_bad_id",
-            detail: `record at ${rec.key} carries an id that ${problem}; marked skipped`,
+            action: "operator_skipped_bad_record",
+            detail: `record at ${rec.key}: ${problem}; marked skipped`,
           });
         }
         // Take the oldest record with a live claim
@@ -4508,10 +4514,11 @@ export const register: Register = async (on, options) => {
         const lines: string[] = [];
         const claims = urgentPending.length > 0 ? await readAllClaims(store, sess.staleAfterMs) : [];
         for (const rec of urgentPending) {
-          // A record whose id or writer persona cannot sit inside the
-          // bracket is left pending here; the tick's drain marks it skipped.
+          // A record whose writer persona cannot sit inside the bracket, or
+          // whose id or text fails the record rule, is left pending here;
+          // the tick's drain marks it skipped.
           const ground = deliveryGroundIn(claims, persona, rec.from, coordinatorPersona);
-          if ("refused" in ground || deliveryIdProblem(rec.id) !== null) continue;
+          if ("refused" in ground || deliveryRecordProblem(rec) !== null) continue;
           const existing = await store.get(rec.key);
           if (!existing) continue;
           const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
