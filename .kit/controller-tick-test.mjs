@@ -3166,6 +3166,11 @@ async function main() {
     await caseSection12_J1_unmatchedTurnTextTakesNoStamp(clock);
     await caseSection12_J1_continuationTurnTakesNoStamp(clock);
     await caseSection12_J2_droppedPromptDoesNotLeaveTheExternalFlagSet(clock);
+    await caseSection12_K1_droppedDeliverySubmitIsHandledLikeARejectedOne(clock);
+    await caseSection12_K1_droppedAskAnswerSubmitLeavesTheAskClosed(clock);
+    await caseSection12_K1_droppedNudgeSubmitConsumesItsEntry(clock);
+    await caseSection12_K2_settledTextMatchesTheDeliveryTurn(clock);
+    await caseSection12_K2_submittedTextStillMatchesBeforeTheSubmitSettles(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
     await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
     await caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock);
@@ -4955,6 +4960,184 @@ async function caseSection12_J2_droppedPromptDoesNotLeaveTheExternalFlagSet(cloc
   check("section12.J2: the delivery's turn files the reply", readStoreRecord(h, `reply:default:${id}`)?.text === "Delivered answer.");
   h.releasePromptSubmits();
   await tick;
+}
+
+// K1 (A): a hook beneath the plugin can drop the plugin's own submit, and
+// $.prompt.submit then resolves { drop } rather than rejecting. A dropped
+// delivery takes the rejected delivery's path: the record stays delivered
+// with its deliveredAt, operator_delivery_failed names the drop reason, its
+// entry is consumed so a later turn neither stamps it nor withholds on it,
+// and no delivery is retried.
+async function caseSection12_K1_droppedDeliverySubmitIsHandledLikeARejectedOne(clock) {
+  console.log("\n=== Section 12 K1 (A): a dropped delivery submit leaves the record delivered, consumes its entry, and is not retried ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("section12_k1_a_delivery_dropped", now, "writer-k1a");
+  h.dropNextPromptSubmit("hook beneath refused the delivery");
+  await tickAndSettle(h, clock, 50);
+  check("section12.K1a: the delivery was attempted (setup sanity)", (h.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 1);
+  const afterDrop = readStoreRecord(h, key);
+  check("section12.K1a: record stays delivered with deliveredAt intact", afterDrop?.status === "delivered" && typeof afterDrop?.deliveredAt === "number", afterDrop);
+  check("section12.K1a: operator_delivery_failed names the record and the drop reason",
+    getDecisions(h).some((d) => d.action === "operator_delivery_failed" && d.detail.includes(id) && d.detail.includes("submit dropped") && d.detail.includes("hook beneath refused the delivery")));
+
+  // Its entry is gone: a turn opening with the delivery's own text matches
+  // nothing, stamps nothing, and withholds nothing (no delivery is queued).
+  await h.handlers["turn.start"](h.fake, { turnId: "t-after-drop-k1a", text: "[OPERATOR] message 1" }, async () => ({ result: "ok" }));
+  check("section12.K1a: a later turn with the delivery's text stamps nothing", readStoreRecord(h, key)?.turnId === undefined);
+  check("section12.K1a: a later turn writes no operator_stamp_withheld naming the record",
+    !getDecisions(h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes(id)));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-after-drop-k1a", answer: "unrelated", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.K1a: no reply written", !h.storeMap.has(`reply:default:${id}`));
+
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 50);
+  check("section12.K1a: the next tick does not retry the delivery", (h.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 1 && readStoreRecord(h, key)?.status === "delivered");
+}
+
+// K1 (B): the ask-answer delivery dropped: the same, and the ask stays
+// closed with pendingAskId as the delivery wrote it.
+async function caseSection12_K1_droppedAskAnswerSubmitLeavesTheAskClosed(clock) {
+  console.log("\n=== Section 12 K1 (B): a dropped ask-answer submit leaves the ask closed and the record delivered ===");
+  clock.set(T0);
+  const now = T0;
+  const ha = await createTickHarness({ ...OPTS, caseName: "section12_k1_b_ask_dropped" });
+  ha.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  const personaState = buildPersonaState(SESSION_ID, now);
+  personaState.goals = [
+    { id: "node-k1b", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-k1b";
+  personaState.pendingAskId = "ask-k1b-1";
+  ha.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  ha.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  seedReaderClaim(ha, "writer-k1b", now);
+  const answerKey = seedInboxRecord(ha, "writer-k1b", 1, { at: now - 500, kind: "answer", answers: "ask-k1b-1", status: "pending" });
+  const startH = ha.handlers["session.start"];
+  if (startH) await startH(ha.fake, {}, () => {});
+  const askKey = "ask:default:ask-k1b-1";
+  ha.storeMap.set(askKey, { id: "ask-k1b-1", ownerSessionId: SESSION_ID, at: now - 1000, nodeId: "node-k1b", question: "Which way?", status: "open" });
+
+  ha.dropNextPromptSubmit("hook beneath refused the answer");
+  clock.advance(65_000);
+  await tickAndSettle(ha, clock, 50);
+  check("section12.K1b: the answer delivery was attempted (setup sanity)", (ha.promptSubmits || []).some((p) => p.startsWith("[OPERATOR] Answer to")));
+  const rec = readStoreRecord(ha, answerKey);
+  check("section12.K1b: the answer record stays delivered with deliveredAt intact", rec?.status === "delivered" && typeof rec?.deliveredAt === "number", rec);
+  check("section12.K1b: the ask stays answered", readStoreRecord(ha, askKey)?.status === "answered");
+  const state = getState(ha);
+  check("section12.K1b: pendingAskId stays cleared", state.pendingAskId === undefined);
+  check("section12.K1b: operator_delivery_failed names the record and the drop reason",
+    state.decisions.some((d) => d.action === "operator_delivery_failed" && d.detail.includes("default-writer-k1b-1") && d.detail.includes("submit dropped") && d.detail.includes("hook beneath refused the answer")));
+  await ha.handlers["turn.start"](ha.fake, { turnId: "t-after-drop-k1b", text: "[OPERATOR] Answer to Which way?: message 1" }, async () => ({ result: "ok" }));
+  check("section12.K1b: a later turn with the answer's text stamps nothing", readStoreRecord(ha, answerKey)?.turnId === undefined);
+  await ha.handlers["turn.complete"](ha.fake, { turnId: "t-after-drop-k1b", answer: "unrelated", reason: "completed" }, async () => ({ result: "ok" }));
+  clock.advance(10_000);
+  await tickAndSettle(ha, clock, 50);
+  check("section12.K1b: the next tick retries nothing", (ha.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 1 && readStoreRecord(ha, answerKey)?.status === "delivered");
+}
+
+// K1 (C): a nudge whose submit is dropped consumes its own entry and its
+// failure decision names the reason. Observed through a queued delivery: a
+// turn opening with the dropped nudge's text matches nothing, so it reads
+// unaccounted and withholds the delivery's stamp, where a surviving nudge
+// entry would have matched it as the nudge and withheld nothing.
+async function caseSection12_K1_droppedNudgeSubmitConsumesItsEntry(clock) {
+  console.log("\n=== Section 12 K1 (C): a dropped budget nudge consumes its entry and records the drop reason ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "section12_k1_c_nudge_dropped",
+    contextBudgetEnabled: true,
+    contextBudgetInfoTokens: 100,
+    contextBudgetCloseoutTokens: 200,
+    contextBudgetCriticalTokens: 1_000_000,
+    contextBudgetReadEveryNTicks: 1,
+    sessionMessages: () => Promise.resolve([{ text: "x".repeat(2000), toolUses: [], toolResults: [] }]),
+  });
+  // A goal-less tree, so the tick returns after the budget read and no goal
+  // nudge rides on the same dropped submit.
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(SESSION_ID, now) }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  h.dropNextPromptSubmit("hook beneath refused the nudge");
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 50);
+  const nudgeText = (h.promptSubmits || []).find((p) => p.startsWith("[BUDGET]"));
+  check("section12.K1c: the budget nudge was attempted (setup sanity)", typeof nudgeText === "string");
+  check("section12.K1c: context_budget_nudge_failed names the drop reason and no context_budget_nudge was logged",
+    getDecisions(h).some((d) => d.action === "context_budget_nudge_failed" && d.detail.includes("submit dropped") && d.detail.includes("hook beneath refused the nudge")) && !getDecisions(h).some((d) => d.action === "context_budget_nudge"));
+
+  // A delivery queues behind the dropped nudge, then a turn opens with the
+  // nudge's own text.
+  seedReaderClaim(h, "writer-k1c", clock.get());
+  const key = seedInboxRecord(h, "writer-k1c", 1, { at: clock.get() - 500, status: "pending" });
+  const id = "default-writer-k1c-1";
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 50);
+  check("section12.K1c: record delivered (setup sanity)", readStoreRecord(h, key)?.status === "delivered");
+  await h.handlers["turn.start"](h.fake, { turnId: "t-nudge-text-k1c", text: nudgeText }, async () => ({ result: "ok" }));
+  check("section12.K1c: a turn with the dropped nudge's text reads unaccounted and withholds the delivery's stamp",
+    getDecisions(h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes(id) && d.detail.includes("unaccounted")));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-nudge-text-k1c", answer: "not the nudge", reason: "completed" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-k1c" }, async () => ({ result: "ok" }));
+  check("section12.K1c: the delivery's own turn still takes the stamp", readStoreRecord(h, key)?.turnId === "t-delivery-k1c");
+  await fireTurn(h, "t-flush-k1c");
+}
+
+// K2 (D): the text a turn opens with is the text as the hook chain beneath
+// the plugin left it, which $.prompt.submit resolves as { text }. A
+// delivery whose submit settles to a rewritten text, and whose turn opens
+// with that settled text, still takes the stamp and files the reply.
+async function caseSection12_K2_settledTextMatchesTheDeliveryTurn(clock) {
+  console.log("\n=== Section 12 K2 (D): a delivery turn opening with the settled text takes the stamp ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("section12_k2_d_settled", now, "writer-k2d");
+  h.settleNextPromptSubmit((text) => "[relay] " + text);
+  await tickAndSettle(h, clock, 50);
+  check("section12.K2d: the delivery was submitted with its own text (setup sanity)", (h.promptSubmits || []).includes("[OPERATOR] message 1"));
+  check("section12.K2d: the turn queued with the settled text (setup sanity)", h.queuedTurnTexts[0] === "[relay] [OPERATOR] message 1");
+  await h.handlers["turn.start"](h.fake, { turnId: "t-settled-k2d" }, async () => ({ result: "ok" }));
+  check("section12.K2d: the turn opening with the settled text takes the stamp", readStoreRecord(h, key)?.turnId === "t-settled-k2d");
+  check("section12.K2d: no operator_stamp_withheld", !getDecisions(h).some((d) => d.action === "operator_stamp_withheld"));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-settled-k2d", answer: "Delivered answer.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.K2d: the reply is filed", readStoreRecord(h, `reply:default:${id}`)?.text === "Delivered answer.");
+}
+
+// K2 (E): the contract does not order the submit promise settling against
+// turn.start, so a turn that opens with the submitted text before the
+// submit has settled still matches on that key. The submit is parked here,
+// so the settled text has not been read when the turn opens.
+async function caseSection12_K2_submittedTextStillMatchesBeforeTheSubmitSettles(clock) {
+  console.log("\n=== Section 12 K2 (E): a delivery turn opening with the submitted text before the submit settles takes the stamp ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("section12_k2_e_presettle", now, "writer-k2e");
+  h.settleNextPromptSubmit((text) => "[relay] " + text);
+  h.holdPromptSubmits();
+  const tick = fireTick(h);
+  const queued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith("[OPERATOR]")));
+  check("section12.K2e: the delivery's submit is parked (setup sanity)", queued);
+  await h.handlers["turn.start"](h.fake, { turnId: "t-presettle-k2e", text: "[OPERATOR] message 1" }, async () => ({ result: "ok" }));
+  check("section12.K2e: the turn opening with the submitted text takes the stamp", readStoreRecord(h, key)?.turnId === "t-presettle-k2e");
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-presettle-k2e", answer: "Delivered answer.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.K2e: the reply is filed", readStoreRecord(h, `reply:default:${id}`)?.text === "Delivered answer.");
+  h.releasePromptSubmits();
+  await tick;
+  check("section12.K2e: no operator_stamp_withheld after the submit settles", !getDecisions(h).some((d) => d.action === "operator_stamp_withheld"));
 }
 
 // agentic_say(urgent: true) writes urgent onto the record; a plain say does not.

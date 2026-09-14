@@ -60,6 +60,15 @@ function createFake$(opts = {}) {
   let releaseSubmitHold = null;
   // Non-null to make every subsequent prompt submission reject with it.
   let submitFailure = null;
+  // Non-null to make the next prompt submission resolve `{ drop: reason }`,
+  // the shape a hook beneath the plugin returns when it drops the plugin's
+  // own submit; no turn opens, so nothing is queued. Cleared by that call.
+  let submitDrop = null;
+  // Non-null to run the next prompt submission's text through it: the stub
+  // resolves `{ text: settled }` and queues the settled text, the way a
+  // hook beneath the plugin or the engine's cap rewrites the text a turn
+  // then opens with. Cleared by that call.
+  let submitSettle = null;
 
   const fake = {
     ui: {
@@ -126,13 +135,22 @@ function createFake$(opts = {}) {
       // turn runs. holdPromptSubmits() puts the stub in that shape. The text is
       // recorded before the wait, so promptSubmits counts submissions attempted
       // rather than submissions resolved, which is what a case asserting "only
-      // one copy was ever queued" needs to read.
+      // one copy was ever queued" needs to read. An accepted submit resolves
+      // `{ text }` with the text the turn will open with, as the real call
+      // does; a held one resolves that once released.
       submit({ text }) {
         promptSubmits.push(text);
         if (submitFailure) return Promise.reject(submitFailure);
-        queuedTurnTexts.push(text);
-        if (submitHold) return submitHold;
-        return Promise.resolve();
+        if (submitDrop !== null) {
+          const drop = submitDrop;
+          submitDrop = null;
+          return Promise.resolve({ drop });
+        }
+        const settled = submitSettle ? submitSettle(text) : text;
+        submitSettle = null;
+        queuedTurnTexts.push(settled);
+        if (submitHold) return submitHold.then(() => ({ text: settled }));
+        return Promise.resolve({ text: settled });
       },
     },
     clock: {
@@ -185,6 +203,13 @@ function createFake$(opts = {}) {
     // can fail, and a case needs to tell a submit that was never attempted from
     // one that was attempted and threw.
     failPromptSubmits(err) { submitFailure = err; },
+    // Make the next prompt submission resolve `{ drop: reason }` and queue
+    // nothing; one shot, cleared by that submission. The text is still
+    // recorded, as for a rejection.
+    dropNextPromptSubmit(reason) { submitDrop = reason; },
+    // Run the next prompt submission's text through `fn` before it is
+    // queued; the submission resolves `{ text: fn(text) }`. One shot.
+    settleNextPromptSubmit(fn) { submitSettle = fn; },
     // Hold every subsequent prompt submission open until releasePromptSubmits().
     holdPromptSubmits() {
       submitHold = new Promise((resolve) => { releaseSubmitHold = resolve; });
