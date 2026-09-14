@@ -94,20 +94,35 @@ function personaKey(persona: string): string {
   return `${PERSONA_PREFIX}${persona}`;
 }
 
+// The one rule for a string that is spliced inside a delivery bracket (a
+// persona name or a record id): no "[" or "]", which could close the
+// bracket early and open a forged one; no ",", which is the bracket's own
+// separator before "urgent"; and no whitespace, control or format
+// character, which could split or hide a field. Returns the reason, or
+// null when the string is safe.
+function bracketSafeProblem(s: string): string | null {
+  if (s.includes("[") || s.includes("]")) return "cannot contain '[' or ']'";
+  if (s.includes(",")) return "cannot contain ','";
+  if (/[\s\p{Cc}\p{Cf}]/u.test(s)) return "cannot contain whitespace, a control character or a format character";
+  return null;
+}
+
 /**
- * The one rule for a persona name that reaches a store key: non-empty after
- * trim, and no ":". Records are keyed `inbox:<persona>:<session>:<seq>` and
- * listed by the `inbox:<persona>:` prefix, so a colon in a name would let one
- * persona's listing read another persona's keys. Returns the reason a name is
+ * The one rule for a persona name that reaches a store key or a delivery
+ * bracket: non-empty after trim, no ":", and bracket-safe once trimmed.
+ * Records are keyed `inbox:<persona>:<session>:<seq>` and listed by the
+ * `inbox:<persona>:` prefix, so a colon in a name would let one persona's
+ * listing read another persona's keys; a record id is
+ * `<persona>-<session>-<seq>` and the name is spliced into the delivery
+ * label, so the bracket rule holds for it too. Returns the reason a name is
  * refused, or null when it is usable. The tools' persona argument,
- * agentic_identity and the configured coordinator name apply this rule
- * rather than their own; the persona a session starts under is the
- * supervisor's to spell and is not checked here.
+ * agentic_identity, the configured coordinator name and the persona a
+ * session starts under apply this rule rather than their own.
  */
 export function personaNameProblem(name: unknown): string | null {
   if (typeof name !== "string" || !name.trim()) return "must be a non-empty string";
   if (name.includes(":")) return "cannot contain ':'";
-  return null;
+  return bracketSafeProblem(name.trim());
 }
 
 // --- D1: Records ---
@@ -572,6 +587,47 @@ function ownedNamedPersonasOf(claims: UnionedClaim[], sessionId: string): string
  * one rule over one claims array, so a record that is delivered is a
  * record that is labelled, and a writer holding a reader claim anywhere is
  * never labelled WORKER.
+ *
+ * The persona a READER or WORKER ground would name is store data any
+ * process can write straight into the claims, so it is held to the bracket
+ * rule here as well as at the name rule's entry points: a name that fails
+ * it is refused as `bad_name`, with the reason, and the writer does not
+ * reach the target at all. `no_claim` is the refusal when no leg holds.
+ */
+export type DeliveryGround =
+  | { ground: string }
+  | { refused: "no_claim" }
+  | { refused: "bad_name"; persona: string; problem: string };
+
+export function deliveryGroundIn(
+  claims: UnionedClaim[],
+  target: string,
+  writer: string,
+  coordinatorPersona: string,
+): DeliveryGround {
+  if (holdsOwnerClaim(claims, writer, coordinatorPersona)) return { ground: "COORDINATOR" };
+  const workerLeg = target === coordinatorPersona && holdsOwnerClaim(claims, writer, undefined, "default");
+  const readerPersonas = readerPersonasOf(claims, writer);
+  let kind: string;
+  let persona: string;
+  if (readerPersonas.length > 0) {
+    const readsTarget = readerPersonas.includes(target);
+    if (!readsTarget && !workerLeg) return { refused: "no_claim" };
+    kind = "READER";
+    persona = readsTarget ? target : readerPersonas[0];
+  } else if (workerLeg) {
+    kind = "WORKER";
+    persona = ownedNamedPersonasOf(claims, writer)[0];
+  } else {
+    return { refused: "no_claim" };
+  }
+  const problem = bracketSafeProblem(persona);
+  if (problem !== null) return { refused: "bad_name", persona, problem };
+  return { ground: `${kind}:${persona}` };
+}
+
+/**
+ * deliveryGroundIn's ground as a string, or null on either refusal.
  */
 export function deliveryLabelIn(
   claims: UnionedClaim[],
@@ -579,24 +635,16 @@ export function deliveryLabelIn(
   writer: string,
   coordinatorPersona: string,
 ): string | null {
-  if (holdsOwnerClaim(claims, writer, coordinatorPersona)) return "COORDINATOR";
-  const workerLeg = target === coordinatorPersona && holdsOwnerClaim(claims, writer, undefined, "default");
-  const readerPersonas = readerPersonasOf(claims, writer);
-  if (readerPersonas.length > 0) {
-    const readsTarget = readerPersonas.includes(target);
-    if (!readsTarget && !workerLeg) return null;
-    return `READER:${readsTarget ? target : readerPersonas[0]}`;
-  }
-  if (workerLeg) return `WORKER:${ownedNamedPersonasOf(claims, writer)[0]}`;
-  return null;
+  const g = deliveryGroundIn(claims, target, writer, coordinatorPersona);
+  return "ground" in g ? g.ground : null;
 }
 
 /**
  * Whether `writer` may address `target`'s inbox, over claims already read:
- * deliveryLabelIn's three legs, as a boolean. The send gate and the inbox
- * read call the reading form below; the three delivery sites read once and
- * call deliveryLabelIn per record, so the gate and the label they apply
- * cannot disagree.
+ * deliveryGroundIn's three legs and its bracket rule, as a boolean. The
+ * send gate and the inbox read call the reading form below; the three
+ * delivery sites read once and call deliveryGroundIn per record, so the
+ * gate and the label they apply cannot disagree.
  */
 export function mayReachPersonaIn(
   claims: UnionedClaim[],
@@ -609,7 +657,7 @@ export function mayReachPersonaIn(
 
 /**
  * The one rule for a record id that reaches the model inside a delivery
- * bracket: no "[", no "]", no whitespace and no control character. The id
+ * bracket: a non-empty string that passes the bracket rule above. The id
  * is store data any plugin-loaded session wrote, and one carrying "]"
  * could close the bracket early and forge the text after it. Returns the
  * reason an id is refused, or null when it is usable; the three delivery
@@ -617,9 +665,7 @@ export function mayReachPersonaIn(
  */
 export function deliveryIdProblem(id: unknown): string | null {
   if (typeof id !== "string" || id.length === 0) return "must be a non-empty string";
-  if (id.includes("[") || id.includes("]")) return "cannot contain '[' or ']'";
-  if (/[\s\p{Cc}]/u.test(id)) return "cannot contain whitespace or a control character";
-  return null;
+  return bracketSafeProblem(id);
 }
 
 /**
@@ -635,8 +681,11 @@ export function deliveryPrefix(ground: string, id: string, urgent: boolean): str
 
 /**
  * The full text a delivery submits: the prefix, then `Answer to <question>:
- * ` when the record answers an open ask, then the record's text. The three
- * delivery sites build their text here and nowhere else.
+ * ` when the record answers an open ask, then the record's text. Only the
+ * first line opens with a bracket: every later line of the text is quoted
+ * with `> ` (split on LF or CRLF, joined with LF), so a text carrying a
+ * newline and then a bracket cannot read as a second delivered record. The
+ * three delivery sites build their text here and nowhere else.
  */
 export function deliveryText(
   ground: string,
@@ -645,7 +694,9 @@ export function deliveryText(
   opts: { urgent?: boolean; answerTo?: string } = {},
 ): string {
   const answer = opts.answerTo === undefined ? "" : `Answer to ${opts.answerTo}: `;
-  return `${deliveryPrefix(ground, id, opts.urgent === true)} ${answer}${text}`;
+  const [first, ...rest] = text.split(/\r?\n/);
+  const quoted = rest.map((line) => `> ${line}`);
+  return [`${deliveryPrefix(ground, id, opts.urgent === true)} ${answer}${first}`, ...quoted].join("\n");
 }
 
 /**
