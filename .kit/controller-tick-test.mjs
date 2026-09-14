@@ -3176,6 +3176,7 @@ async function main() {
     await caseSection12_L1_withheldLineNamesTheFirstLiveRecord(clock);
     await caseSection12_M1_deliveryQueuedDuringTheWithheldReadIsKept(clock);
     await caseSection12_M1_throwingWithheldReadKeepsEveryEntry(clock);
+    await caseSection12_N1_reusedRecordIdDoesNotKeepASweptDeliveryEntry(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
     await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
     await caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock);
@@ -5267,6 +5268,39 @@ async function caseSection12_M1_deliveryQueuedDuringTheWithheldReadIsKept(clock)
   check("section12.M1a: R2's own turn takes the stamp", readStoreRecord(h, key2)?.turnId === "t-delivery-m1a");
   await h.handlers["turn.complete"](h.fake, { turnId: "t-delivery-m1a", answer: "Delivered answer.", reason: "completed" }, async () => ({ result: "ok" }));
   check("section12.M1a: R2's turn files the reply", readStoreRecord(h, `reply:default:${id2}`)?.text === "Delivered answer.");
+}
+
+// N1: a sender's next record is numbered from its highest seq still in the
+// store, so once the sweep removes a delivered record whose turn never
+// opened, the sender's next record takes the same id and reads pending.
+// The swept delivery's entry is dropped rather than kept on that pending
+// record, so no withheld line names a record that was never delivered. The
+// new record is written straight into the store in the shape
+// writeInboxRecord gives it, and no tick runs after it, so it stays pending.
+async function caseSection12_N1_reusedRecordIdDoesNotKeepASweptDeliveryEntry(clock) {
+  console.log("\n=== Section 12 N1: a pending record reusing a swept delivery's id does not keep its entry ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("section12_n1_reused_id", now, "writer-n1", { operatorRecordTtlMs: 1000 });
+  await tickAndSettle(h, clock, 50);
+  check("section12.N1: record delivered and its turn never opened (setup sanity)", readStoreRecord(h, key)?.status === "delivered" && readStoreRecord(h, key)?.turnId === undefined);
+  clock.advance(5_000);
+  await tickAndSettle(h, clock, 50);
+  await tickAndSettle(h, clock, 50);
+  check("section12.N1: the TTL sweep removed the record (setup sanity)", !h.storeMap.has(key));
+
+  seedReaderClaim(h, "writer-n1", clock.get());
+  const reusedKey = seedInboxRecord(h, "writer-n1", 1, { at: clock.get(), status: "pending", text: "a later message" });
+  check("section12.N1: the new record reuses the swept id and reads pending (setup sanity)", reusedKey === key && readStoreRecord(h, key)?.id === id && readStoreRecord(h, key)?.status === "pending");
+
+  await h.handlers["turn.start"](h.fake, { turnId: "t-ext-1-n1", text: "typed after the reuse" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-ext-1-n1", answer: "first answer", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.N1: no operator_stamp_withheld names the reused id",
+    !getDecisions(h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes(id)));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-ext-2-n1", text: "typed again" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-ext-2-n1", answer: "second answer", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.N1: a second external turn names nothing either (the entry is gone)",
+    !getDecisions(h).some((d) => d.action === "operator_stamp_withheld"));
 }
 
 // M1 (B): a withheld read that throws leaves every queued entry in place,
