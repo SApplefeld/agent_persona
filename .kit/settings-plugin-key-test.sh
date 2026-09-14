@@ -150,10 +150,12 @@ case "$R" in *"ARMING_DEV=owner;"*"ARMING_INSTALLED=owner;"*) check "a file nami
 
 # Shapes that cannot hold options are refused rather than repaired.
 for shape in '{"pluginConfigs":[]}' '{"pluginConfigs":{"agentic-plugin":"x"}}' '{"pluginConfigs":{"agentic-plugin":{"options":"x"}}}'; do
-  printf '%s' "$shape" > "$TMP/shape.json"
-  ERR=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids "$2"' _ "$ROOT" "$TMP/shape.json" 2>&1)
-  RC=$?
-  case "$RC:$ERR" in 0:*) check "refuses $shape" 1 ;; *"not an object"*) check "refuses $shape" 0 ;; *) check "refuses $shape (err=$ERR)" 1 ;; esac
+  for fn in ensure_settings_plugin_ids ensure_settings_arming; do
+    printf '%s' "$shape" > "$TMP/shape.json"
+    ERR=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && "$3" "$2"' _ "$ROOT" "$TMP/shape.json" "$fn" 2>&1)
+    RC=$?
+    case "$RC:$ERR" in 0:*) check "$fn refuses $shape" 1 ;; *"not an object"*) check "$fn refuses $shape" 0 ;; *) check "$fn refuses $shape (err=$ERR)" 1 ;; esac
+  done
 done
 
 # A leading UTF-8 byte order mark is accepted.
