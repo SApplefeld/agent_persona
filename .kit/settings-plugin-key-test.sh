@@ -153,20 +153,41 @@ case "$R" in *"ARMING_DEV=owner;"*"ARMING_INSTALLED=owner;"*) check "a file nami
 # from this read, so the coordinator-role comparison sees the name the plugin
 # resolves from the file. The driven runs below cannot observe that export:
 # the pre-launch gate stops the supervisor before the priming block, so this
-# library case is the coverage. Three files, one per class of the plugin's
-# rule: a usable name (under the installed id only, so the dev-id miss and
-# the installed-id read both run), "default" (refused, falls back), and no
-# key at all (falls back). "boss" is withheld from every literal the
-# function carries.
+# library case is the coverage. The second argument is the dev-mode flag,
+# 1 for the --plugin-dir id and 0 for the installed id, and only the loaded
+# id's options are read. Three files, one per class of the plugin's rule: a
+# usable name (under the installed id, read in mode 0), "default" (refused,
+# falls back), and no key at all (falls back). Then a file naming both ids
+# with differing values, read once in each mode, and a control where only
+# the other id carries the key and the loaded id's options lack it. The
+# names boss, chief and deputy are withheld from every literal the function
+# carries.
+read_coord() {  # <file> <dev_mode>
+  run_lib bash -c 'source "$1/bin/agentic-common.sh" && read_settings_coordinator_persona "$2" "$3"' _ "$ROOT" "$1" "$2" 2>&1
+}
 printf '%s' '{"pluginConfigs":{"agentic-plugin@agent-persona":{"options":{"coordinatorPersona":"boss"}}}}' > "$TMP/coord-boss.json"
-OUT=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && read_settings_coordinator_persona "$2"' _ "$ROOT" "$TMP/coord-boss.json" 2>&1)
-[ "$OUT" = "boss" ]; check "read_settings_coordinator_persona prints the file's coordinatorPersona (out=$OUT)" "$?"
+OUT=$(read_coord "$TMP/coord-boss.json" 0)
+[ "$OUT" = "boss" ]; check "read_settings_coordinator_persona prints the loaded id's coordinatorPersona (out=$OUT)" "$?"
 printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"coordinatorPersona":"default"}}}}' > "$TMP/coord-default.json"
-OUT=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && read_settings_coordinator_persona "$2"' _ "$ROOT" "$TMP/coord-default.json" 2>&1)
+OUT=$(read_coord "$TMP/coord-default.json" 1)
 [ "$OUT" = "coordinator" ]; check "read_settings_coordinator_persona resolves a coordinatorPersona of default to coordinator (out=$OUT)" "$?"
 printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":7}}}}' > "$TMP/coord-nokey.json"
-OUT=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && read_settings_coordinator_persona "$2"' _ "$ROOT" "$TMP/coord-nokey.json" 2>&1)
+OUT=$(read_coord "$TMP/coord-nokey.json" 1)
 [ "$OUT" = "coordinator" ]; check "read_settings_coordinator_persona resolves a missing coordinatorPersona to coordinator (out=$OUT)" "$?"
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"coordinatorPersona":"chief"}},"agentic-plugin@agent-persona":{"options":{"coordinatorPersona":"deputy"}}}}' > "$TMP/coord-both.json"
+OUT=$(read_coord "$TMP/coord-both.json" 1)
+[ "$OUT" = "chief" ]; check "two ids with differing coordinatorPersona: mode 1 prints the --plugin-dir id's value (out=$OUT)" "$?"
+OUT=$(read_coord "$TMP/coord-both.json" 0)
+[ "$OUT" = "deputy" ]; check "two ids with differing coordinatorPersona: mode 0 prints the installed id's value (out=$OUT)" "$?"
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":7}},"agentic-plugin@agent-persona":{"options":{"coordinatorPersona":"deputy"}}}}' > "$TMP/coord-other.json"
+OUT=$(read_coord "$TMP/coord-other.json" 1)
+[ "$OUT" = "coordinator" ]; check "control: a key under the other id only resolves to coordinator for the loaded id (out=$OUT)" "$?"
+# A BOM-prefixed file (a Windows editor's default) is read like the siblings
+# read it; a strip written as a doubled backslash matches a literal backslash
+# instead and fails the file as not JSON.
+printf '﻿%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"coordinatorPersona":"warden"}}}}' > "$TMP/coord-bom.json"
+OUT=$(read_coord "$TMP/coord-bom.json" 1)
+[ "$OUT" = "warden" ]; check "read_settings_coordinator_persona strips a leading BOM before parsing (out=$OUT)" "$?"
 
 # Shapes that cannot hold options are refused rather than repaired.
 for shape in '{"pluginConfigs":[]}' '{"pluginConfigs":{"agentic-plugin":"x"}}' '{"pluginConfigs":{"agentic-plugin":{"options":"x"}}}'; do

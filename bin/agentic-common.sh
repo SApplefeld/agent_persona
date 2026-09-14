@@ -244,42 +244,50 @@ try {
 }
 
 # --- read_settings_coordinator_persona ---
-# Usage: read_settings_coordinator_persona <settings-file>
+# Usage: read_settings_coordinator_persona <settings-file> <dev_mode: 0|1>
 # For a settings file the caller already provided: prints the coordinator
 # persona name the plugin will resolve from it, so the caller can export
 # COORDINATOR_PERSONA on the provided branch to the same value the emit
-# branch exports. The rule is the plugin's own (hooks/index.ts, the
-# coordinatorPersona read): a string that is non-empty after trim, carries no
-# ":" and is bracket-safe once trimmed (no "[", "]", ",", whitespace, control
-# or format character), and is not "default", is taken trimmed; anything
-# else, a missing key included, resolves to "coordinator". The --plugin-dir
-# id's options are read first and the installed id's second, since
-# ensure_settings_plugin_ids has already copied the options under both.
-# Returns 1 on the same shapes ensure_settings_plugin_ids refuses (not JSON,
-# not an object, a pluginConfigs, id entry or options value that is not an
-# object), with the same error-line shape, and prints nothing then.
+# branch exports. Only the options under the id the launch loads are read,
+# dev_mode 1 being the --plugin-dir id and 0 the installed id, the same flag
+# find_global_store takes: the plugin reads its own id's options and nothing
+# under the other, and a file naming both ids is left as written by
+# ensure_settings_plugin_ids, so the two may carry different values. The
+# rule is the plugin's own (hooks/index.ts, the coordinatorPersona read): a
+# string that is non-empty after trim, carries no ":" and is bracket-safe
+# once trimmed (no "[", "]", ",", whitespace, control or format character),
+# and is not "default", is taken trimmed; anything else resolves to
+# "coordinator", a key missing under the loaded id included, whatever the
+# other id carries. Returns 1 on the same shapes ensure_settings_plugin_ids
+# refuses (not JSON, not an object, a pluginConfigs, id entry or options
+# value that is not an object), with the same error-line shape, and prints
+# nothing then.
 read_settings_coordinator_persona() {
+  local dev_mode="${2:-1}"
+  local id="$AGENTIC_PLUGIN_INSTALLED_ID"
+  if [ "$dev_mode" -eq 1 ]; then
+    id="$AGENTIC_PLUGIN_DEV_ID"
+  fi
   node -e '
 const fs = require("fs");
-const [file, devId, installedId] = process.argv.slice(1);
+const [file, id] = process.argv.slice(1);
 const fail = (msg) => { console.error("ERROR: read_settings_coordinator_persona: " + file + " " + msg); process.exit(1); };
 const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 let s;
-try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^﻿/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
+try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
 if (!plain(s)) fail("is not a JSON object");
 const pc = s.pluginConfigs === undefined ? {} : s.pluginConfigs;
 if (!plain(pc)) fail("has a pluginConfigs value that is not an object");
 let value;
-for (const id of [devId, installedId]) {
-  if (pc[id] === undefined) continue;
+if (pc[id] !== undefined) {
   if (!plain(pc[id])) fail("has a " + id + " entry that is not an object");
   if (pc[id].options !== undefined && !plain(pc[id].options)) fail("has " + id + " options that are not an object");
-  if (value === undefined && plain(pc[id].options)) value = pc[id].options.coordinatorPersona;
+  if (plain(pc[id].options)) value = pc[id].options.coordinatorPersona;
 }
 const usable = typeof value === "string" && value.trim() !== "" && !value.includes(":")
   && !/[\[\],]/.test(value.trim()) && !/[\s\p{Cc}\p{Cf}]/u.test(value.trim());
 console.log(usable && value.trim() !== "default" ? value.trim() : "coordinator");
-' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID"
+' "$1" "$id"
 }
 
 # --- valid_persona_name ---

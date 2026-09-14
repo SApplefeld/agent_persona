@@ -212,6 +212,31 @@ else
   check "persona differs from COORDINATOR_PERSONA: coordinator role instruction is empty" 1
 fi
 
+# The two evals above move NO_CHANNEL and the persona match together, so a
+# role assignment nested inside the NO_CHANNEL guard would pass both. These
+# two vary one axis each: no channel with a matching persona must still
+# carry the instruction, and a channel with a mismatched COORDINATOR_PERSONA
+# must not.
+unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION
+NO_CHANNEL=1
+PERSONA="lead"
+COORDINATOR_PERSONA="lead"
+eval "$VARS_SNIPPET"
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_SAY_CONTROL"*"$ROLE_CAP_CONTROL"*) check "channel not attached, persona matches: coordinator role instruction present, naming agentic_say and the round cap" 0 ;;
+  *) check "channel not attached, persona matches: coordinator role instruction present, naming agentic_say and the round cap" 1 ;;
+esac
+unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION
+NO_CHANNEL=0
+PERSONA="lead"
+COORDINATOR_PERSONA="worker"
+eval "$VARS_SNIPPET"
+if [ -z "${COORDINATOR_ROLE_INSTRUCTION:-}" ]; then
+  check "channel attached, COORDINATOR_PERSONA differs: coordinator role instruction is empty" 0
+else
+  check "channel attached, COORDINATOR_PERSONA differs: coordinator role instruction is empty" 1
+fi
+
 echo
 if [ "$failed" = "0" ]; then
   echo "All tests passed"
