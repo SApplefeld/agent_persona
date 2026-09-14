@@ -242,20 +242,19 @@ export async function readAllClaims(
 }
 
 /**
- * Read the turn state and workdir of the live session holding a resource.
- * The holder is the same session commonsWinner resolves for every other
- * reader, so a contended resource reads consistently. A read only: stale
- * entries are skipped, never gc'd, and a missing or malformed entry is
- * skipped too. Returns null when no live entry claims the resource.
- * Entries written by an older plugin lack the meta fields, which normalize
- * to null and "".
+ * Read the turn state of the live session holding a resource. The holder is
+ * the same session commonsWinner resolves for every other reader, so a
+ * contended resource reads consistently. A read only: stale entries are
+ * skipped, never gc'd, and a missing or malformed entry is skipped too.
+ * Returns null when no live entry claims the resource. An entry written by
+ * an older plugin lacks the turn stamp, which normalizes to null.
  */
 export async function readHolderMeta(
   store: CommonsStore,
   resource: string,
   stalenessThresholdMs: number = DEFAULT_STALE_AFTER_MS,
   now: number = Date.now(),
-): Promise<{ holder: string; turnStartedAt: number | null; workdir: string } | null> {
+): Promise<{ holder: string; turnStartedAt: number | null } | null> {
   const allKeys = await store.keys();
   const keys = allKeys.filter((k) => k.startsWith(COMMONS_PREFIX));
   const live: UnionedClaim[] = [];
@@ -265,6 +264,7 @@ export async function readHolderMeta(
     const raw = await store.get(key);
     if (!raw) continue;
     const entry: CommonsEntry = raw as CommonsEntry;
+    if (typeof entry.sessionId !== "string") continue;
     if (!Array.isArray(entry.claims)) continue;
     if (typeof entry.lastSeen !== "number" || now - entry.lastSeen > stalenessThresholdMs) continue;
 
@@ -282,7 +282,6 @@ export async function readHolderMeta(
   return {
     holder,
     turnStartedAt: typeof entry.turnStartedAt === "number" ? entry.turnStartedAt : null,
-    workdir: typeof entry.workdir === "string" ? entry.workdir : "",
   };
 }
 

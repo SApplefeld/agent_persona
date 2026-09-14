@@ -3902,7 +3902,7 @@ async function caseItem8p3_inboxReportsDeferredWhileTurnRuns(clock) {
   const now = T0;
   const turnStartedAt = now - 120_000;
 
-  const h = await seedReaderHarness("item8p3_deferred", now, "busy-owner-001", {}, { turnStartedAt, workdir: HARNESS_CWD });
+  const h = await seedReaderHarness("item8p3_deferred", now, "busy-owner-001", { turnStartedAt }, { turnStartedAt, workdir: HARNESS_CWD });
   const toolCallH = h.handlers["tool.call"];
   const say = await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_say", text: "are you there?" }, async () => ({ result: "passthrough" }));
   check("item8.3 deferred: agentic_say accepted (setup sanity)", say.result !== undefined);
