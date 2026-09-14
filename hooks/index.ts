@@ -1087,7 +1087,7 @@ export const register: Register = async (on, options) => {
           detail: `Joining '${sess.persona}' as reader (holder: ${holderHb!.sessionId}, epoch ${existingPersona.epoch})`,
         });
         // D2: Claim the reader role
-        await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId);
+        await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId, Date.now(), commonsMeta());
       }
     } else {
       sess.state = createDefaultState(sess.persona, sess.mySessionId);
@@ -1189,7 +1189,7 @@ export const register: Register = async (on, options) => {
         // denies the reader.
         if (!sess.isOwner) {
           try {
-            await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId);
+            await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId, Date.now(), commonsMeta());
           } catch { /* non-fatal */ }
         }
 
@@ -3335,7 +3335,7 @@ export const register: Register = async (on, options) => {
           await releaseResource(commonsStoreOf($), resource, sess.mySessionId, Date.now(), commonsMeta());
         } catch { /* non-fatal: commons is a coordination layer */ }
         // D2: Claim the reader role
-        await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId);
+        await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId, Date.now(), commonsMeta());
         return {
           result: `persona '${sess.persona}' is held by session ${shouldYieldTo}; joined as reader. ${sess.state.memory.length} memories.`,
         };

@@ -60,7 +60,7 @@ const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 // --- Store interface ---
 
-import type { CommonsStore } from "./commons";
+import type { CommonsStore, CommonsMeta } from "./commons";
 import { claimResource, releaseResource, readAllClaims } from "./commons";
 
 // --- Key helpers ---
@@ -385,9 +385,11 @@ export async function claimReaderRole(
   store: CommonsStore,
   persona: string,
   mySessionId: string,
+  now: number = Date.now(),
+  meta?: CommonsMeta,
 ): Promise<void> {
   // Use the commons claim path (same as persona claim)
-  await claimResource(store, readerKey(persona), mySessionId);
+  await claimResource(store, readerKey(persona), mySessionId, now, meta);
 }
 
 /**
@@ -397,8 +399,10 @@ export async function releaseReaderRole(
   store: CommonsStore,
   persona: string,
   mySessionId: string,
+  now: number = Date.now(),
+  meta?: CommonsMeta,
 ): Promise<void> {
-  await releaseResource(store, readerKey(persona), mySessionId);
+  await releaseResource(store, readerKey(persona), mySessionId, now, meta);
 }
 
 /**

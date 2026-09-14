@@ -87,7 +87,7 @@ function createFake$(opts = {}) {
       id() { return Promise.resolve(SESSION_ID); },
       // The harness fires session.start with no cwd on the event, so the
       // plugin reads its workdir from here. A fixed literal cases can assert on.
-      cwd() { return Promise.resolve(opts.cwd ?? HARNESS_CWD); },
+      cwd() { return Promise.resolve(HARNESS_CWD); },
       // BJ1: Add messages() for budget fixtures.
       // The test can override this with its own implementation.
       messages() {
@@ -135,7 +135,9 @@ function createFake$(opts = {}) {
       },
     },
     store: {
-      get(key) { return Promise.resolve(storeMap.has(key) ? storeMap.get(key) : null); },
+      // A copy, as the real store hands back a parsed JSON value: a plugin
+      // function that mutates what it fetched lands nothing until set runs.
+      get(key) { return Promise.resolve(storeMap.has(key) ? structuredClone(storeMap.get(key)) : null); },
       set(key, value) { storeMap.set(key, value); return Promise.resolve(); },
       delete(key) { storeMap.delete(key); return Promise.resolve(); },
       keys() { return Promise.resolve([...storeMap.keys()]); },

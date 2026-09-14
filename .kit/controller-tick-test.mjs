@@ -3140,6 +3140,7 @@ async function main() {
     await caseSection1_turnStartStampsCommonsEntry(clock);
     await caseSection1_turnCompleteClearsCommonsStamp_control(clock);
     await caseSection1_yieldMidTurnStillClearsCommonsStamp(clock);
+    await caseSection1_readerEntryCarriesWorkdirAtSessionStart(clock);
     await caseItem8p3_inboxReportsDeferredWhileTurnRuns(clock);
     await caseItem8p3_deferredNotReportedForStaleOwner(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
@@ -3784,8 +3785,8 @@ async function caseSection1_turnCompleteClearsCommonsStamp_control(clock) {
 
 // A session that yields ownership mid-turn still clears its commons stamp at
 // turn.complete. yieldNow writes the mid-turn stamp through releaseResource,
-// and the reader tick's claimReaderRole passes no meta, so an owner-gated
-// stamp at turn.complete would strand the non-null value forever. The yield is
+// and the reader tick's claimReaderRole republishes the still-open turn, so an
+// owner-gated stamp at turn.complete would strand the non-null value. The yield is
 // the heartbeat tick's store check: the persona store names another session.
 async function caseSection1_yieldMidTurnStillClearsCommonsStamp(clock) {
   console.log("\n=== Section 1: a session that yields mid-turn still clears its commons turnStartedAt ===");
@@ -3814,11 +3815,45 @@ async function caseSection1_yieldMidTurnStillClearsCommonsStamp(clock) {
   check("section1 yield: commons turnStartedAt is null after turn.complete as a reader", entry?.turnStartedAt === null, entry);
 }
 
-// Seeds a reader harness: otherSid owns the persona (commons, persona store,
-// heartbeat), this session joins as a reader and holds a live reader claim.
-// hbExtra is merged into the owner's heartbeat entry.
-async function seedReaderHarness(caseName, now, otherSid, hbExtra) {
+// A reader session's commons entry carries its workdir from session.start and
+// its turn stamp from turn.start, on the entry claimReaderRole writes. The
+// second half pins the recreation path: a peer's gcStaleClaims can delete the
+// reader's entry mid-turn, and the reader tick's claimReaderRole recreates it,
+// which must carry the open turn's stamp rather than a fresh null.
+async function caseSection1_readerEntryCarriesWorkdirAtSessionStart(clock) {
+  console.log("\n=== Section 1: a reader's commons entry carries workdir at session.start and the turn stamp through recreation ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await joinAsReader("section1_reader_meta", now, "meta-owner-001", {});
+
+  const atStart = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("section1 reader: joined as a reader at session.start (precondition)", atStart?.claims?.some(c => c.resource === "reader:default") === true, atStart);
+  check("section1 reader: commons entry carries the session's workdir at session.start", atStart?.workdir === HARNESS_CWD, atStart);
+  check("section1 reader: commons turnStartedAt is null between turns at session.start", atStart?.turnStartedAt === null, atStart);
+
+  const turnStartH = h.handlers["turn.start"];
+  await turnStartH(h.fake, { turnId: "t-reader" }, async () => ({ result: "ok" }));
+  const midTurn = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("section1 reader: commons entry carries turnStartedAt at turn.start", midTurn?.turnStartedAt === now, midTurn);
+
+  // A peer's gc deleted the entry mid-turn; the reader tick recreates it.
+  h.storeMap.delete(`commons:${SESSION_ID}`);
+  clock.advance(1_000);
+  await fireHeartbeat(h);
+  const recreated = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("section1 reader: the reader tick recreated the entry (precondition)", recreated?.claims?.some(c => c.resource === "reader:default") === true, recreated);
+  check("section1 reader: the recreated entry carries the open turn's turnStartedAt", recreated?.turnStartedAt === now, recreated);
+  check("section1 reader: the recreated entry carries the session's workdir", recreated?.workdir === HARNESS_CWD, recreated);
+}
+
+// Joins this session to a persona otherSid owns (commons, persona store,
+// heartbeat) as a reader at session.start. hbExtra is merged into the owner's
+// heartbeat entry. createTickHarness fired session.start once at creation as
+// the owner, so that entry is dropped first: a real reader starts with none,
+// and the entry read after the join is the one the reader path wrote.
+async function joinAsReader(caseName, now, otherSid, hbExtra) {
   const h = await createTickHarness({ ...OPTS, caseName });
+  h.storeMap.delete(`commons:${SESSION_ID}`);
   h.storeMap.set(`commons:${otherSid}`, {
     sessionId: otherSid,
     lastSeen: now,
@@ -3830,6 +3865,13 @@ async function seedReaderHarness(caseName, now, otherSid, hbExtra) {
   }));
   const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
+  return h;
+}
+
+// Seeds a reader harness: joinAsReader, then this session's own commons entry
+// is replaced with a bare live reader claim.
+async function seedReaderHarness(caseName, now, otherSid, hbExtra) {
+  const h = await joinAsReader(caseName, now, otherSid, hbExtra);
   h.storeMap.set(`commons:${SESSION_ID}`, {
     sessionId: SESSION_ID,
     lastSeen: now,

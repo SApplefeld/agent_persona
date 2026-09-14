@@ -25,8 +25,8 @@ export interface CommonsEntry {
   sessionId: string;
   lastSeen: number; // ms timestamp, refreshed on every controller tick
   claims: CommonsClaim[];
-  turnStartedAt: number | null; // the session's clock at turn.start, null between turns
-  workdir: string; // the directory the session runs in, "" when unknown
+  turnStartedAt?: number | null; // the session's clock at turn.start, null between turns
+  workdir?: string; // the directory the session runs in, "" when unknown
 }
 
 // The per-turn fields a session publishes beside its claims, so a session in
