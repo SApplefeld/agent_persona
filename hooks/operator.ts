@@ -525,18 +525,6 @@ function holdsOwnerClaim(
     && commonsWinner(claims, c.resource) === sessionId);
 }
 
-/**
- * Check if a session holds a live reader claim for a persona.
- */
-export async function hasLiveReaderClaim(
-  store: CommonsStore,
-  persona: string,
-  sessionId: string,
-  staleAfterMs: number = 90_000,
-): Promise<boolean> {
-  return holdsReaderClaim(await readAllClaims(store, staleAfterMs), persona, sessionId);
-}
-
 // The personas `sessionId` holds a reader claim on, sorted, so a label that
 // must pick one of several picks the same one every time.
 function readerPersonasOf(claims: UnionedClaim[], sessionId: string): string[] {
