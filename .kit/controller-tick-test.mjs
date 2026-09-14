@@ -3268,6 +3268,7 @@ async function main() {
     await caseSection7_r1_everyPushIsJudgedAndRefspecsResolve(clock);
     await caseSection7_r1_subagentAttributionOutlivesTheTurn(clock);
     await caseSection7_r2_chapterWritesPassAndBypassSpellingsAreCaught(clock);
+    await caseSection7_r3_modelValueRewritesAndMergesAreCaught(clock);
   } finally {
     clock.restore();
   }
@@ -8545,8 +8546,7 @@ async function caseSection7_r2_chapterWritesPassAndBypassSpellingsAreCaught(cloc
 
   const glued = await boundCall(h, { tool: "Bash", command: "printf x >CLAUDE.md" });
   check("section7 r2 G2: printf x >CLAUDE.md (basename glued to the redirect) is denied before next", glued.denied && glued.nextCalls === 0, glued.r);
-  const spaced = await boundCall(h, { tool: "Bash", command: "printf x > CLAUDE.md" });
-  check("section7 r2 G2 pair: printf x > CLAUDE.md (spaced) is denied before next", spaced.denied && spaced.nextCalls === 0, spaced.r);
+  // The spaced spelling, printf x > CLAUDE.md, is the S7-A check "section7 bounded: Bash writing CLAUDE.md by redirect is denied before next", the glued leg's witness.
 
   const quotedMain = await boundCall(h, { tool: "Bash", command: "git push origin \"main\"" });
   check("section7 r2 G3: git push origin \"main\" (quoted refspec) under Branch-and-PR is denied before next", quotedMain.denied && quotedMain.nextCalls === 0 && quotedMain.r.deny.includes("names the trunk"), quotedMain.r);
@@ -8555,5 +8555,48 @@ async function caseSection7_r2_chapterWritesPassAndBypassSpellingsAreCaught(cloc
 
   const dotSegment = await boundCall(h, { tool: "Edit", file_path: ".claude/./settings.json", old_string: "a", new_string: "b" });
   check("section7 r2 minor: an Edit of .claude/./settings.json is denied before next", dotSegment.denied && dotSegment.nextCalls === 0, dotSegment.r);
+}
+
+// The recorded commit model cannot be rewritten by value on the armed plan;
+// a push after a directory change is judged as another repository's; a pull
+// request merge is refused under a model that gates on the PR; a guarded
+// basename glued to a trailing `&` is seen; `..` does not hide a settings
+// file; a push that sets push.default has no readable destination.
+async function caseSection7_r3_modelValueRewritesAndMergesAreCaught(clock) {
+  console.log("\n=== Section 7 fix 3: a model value rewrite, a push after cd, and a PR merge are caught ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await openCoordinatorOriginTurn("section7_r3", now, clock, "t-r3");
+  h.fsMap.set(".kit/goal-state.json", JSON.stringify({ plan: "docs/plans/p.md" }));
+  h.fsMap.set("docs/plans/p.md", planTextWith("Commit Model: Branch-and-PR. x"));
+  h.fsMap.set(".git/HEAD", "ref: refs/heads/feature-x\n");
+
+  const valueEdit = await boundCall(h, { tool: "Edit", file_path: "docs/plans/p.md", old_string: "Branch-and-PR. x", new_string: "Commit-and-Push. x" });
+  check("section7 r3 H1: an Edit of the armed plan swapping the model value without the label is denied before next", valueEdit.denied && valueEdit.nextCalls === 0, valueEdit.r);
+  const otherFile = await boundCall(h, { tool: "Edit", file_path: "docs/plans/other.md", old_string: "Branch-and-PR. x", new_string: "Commit-and-Push. x" });
+  check("section7 r3 H1 control: the same Edit against a different .md path passes through (the file path alone varies)", otherFile.passed, otherFile.r);
+  const sedValue = await boundCall(h, { tool: "Bash", command: "sed -i 's/Branch-and-PR/Commit-and-Push/' docs/plans/p.md" });
+  check("section7 r3 H1: sed rewriting the model value in the armed plan is denied before next", sedValue.denied && sedValue.nextCalls === 0, sedValue.r);
+
+  const cdPush = await boundCall(h, { tool: "Bash", command: "cd D:/other && git push" });
+  check("section7 r3 H2: cd D:/other && git push under Branch-and-PR is denied as another repository",
+    cdPush.denied && cdPush.nextCalls === 0 && cdPush.r.deny.includes("another repository"), cdPush.r);
+  const pushDefault = await boundCall(h, { tool: "Bash", command: "git -c push.default=upstream push" });
+  check("section7 r3 minor: git -c push.default=upstream push under Branch-and-PR is denied with the push.default reason",
+    pushDefault.denied && pushDefault.nextCalls === 0 && pushDefault.r.deny.includes("push.default"), pushDefault.r);
+
+  const merge = await boundCall(h, { tool: "Bash", command: "gh pr merge 12 --squash" });
+  check("section7 r3 H3: gh pr merge 12 --squash under Branch-and-PR is denied before next",
+    merge.denied && merge.nextCalls === 0 && merge.r.deny.includes("a pull request merge"), merge.r);
+  const view = await boundCall(h, { tool: "Bash", command: "gh pr view 12" });
+  check("section7 r3 H3 control: gh pr view 12 passes through (the subcommand alone varies)", view.passed, view.r);
+  h.fsMap.set("docs/plans/p.md", planTextWith("Commit Model: Commit-and-Push. x"));
+  const mergeUnderPush = await boundCall(h, { tool: "Bash", command: "gh pr merge 12" });
+  check("section7 r3 H3 control: gh pr merge 12 under Commit-and-Push passes through (the model alone varies)", mergeUnderPush.passed, mergeUnderPush.r);
+
+  const gluedAmp = await boundCall(h, { tool: "Bash", command: "printf x >CLAUDE.md&" });
+  check("section7 r3 minor: printf x >CLAUDE.md& (basename glued to a trailing &) is denied before next", gluedAmp.denied && gluedAmp.nextCalls === 0, gluedAmp.r);
+  const dotDot = await boundCall(h, { tool: "Edit", file_path: ".claude/x/../settings.json", old_string: "a", new_string: "b" });
+  check("section7 r3 minor: an Edit of .claude/x/../settings.json is denied before next", dotDot.denied && dotDot.nextCalls === 0, dotDot.r);
 }
 

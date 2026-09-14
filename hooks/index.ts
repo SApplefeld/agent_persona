@@ -130,10 +130,29 @@ function guardedBasenameItem(base: string, parent: string): string | null {
   return null;
 }
 
-// A path's segments with `.` and empty ones dropped, so `.claude/./x` and
-// `.claude//x` read as `.claude/x`.
+// A path's segments with `.` and empty ones dropped and `..` resolved
+// against the segment before it, so `.claude/./x`, `.claude//x` and
+// `.claude/x/../x` all read as `.claude/x`. A `..` with nothing before it
+// stays.
 function pathSegments(p: string): string[] {
-  return p.split(/[\\/]/).filter((s) => s !== "" && s !== ".");
+  const out: string[] = [];
+  for (const s of p.split(/[\\/]/)) {
+    if (s === "" || s === ".") continue;
+    if (s === ".." && out.length > 0 && out[out.length - 1] !== "..") { out.pop(); continue; }
+    out.push(s);
+  }
+  return out;
+}
+
+// Whether a file tool's path names the given repo-relative path: both are
+// reduced to segments, compared case-insensitively, and the tool's path
+// matches when it ends with the target's segments, so an absolute path
+// under the repo root and a `./`-prefixed one both resolve.
+function pathNames(toolPath: string, target: string): boolean {
+  const a = pathSegments(toolPath).map((s) => s.toLowerCase());
+  const b = pathSegments(target).map((s) => s.toLowerCase());
+  if (b.length === 0 || a.length < b.length) return false;
+  return b.every((s, i) => a[a.length - b.length + i] === s);
 }
 
 // The ask-first item a file tool's path names, by guardedBasenameItem over
@@ -153,25 +172,54 @@ export function guardedPathItem(p: unknown): string | null {
 // mid-Chapter, below the heading, carrying the line, reads as a header
 // write; the model puts it to the operator and the cost is one round trip.
 function commitModelHeaderLineIn(text: string): boolean {
+  return headerTextMatches(text, /^\s*Commit Model:/i);
+}
+
+// Whether any line of the text before its first `## ` or `### ` line
+// matches the pattern.
+function headerTextMatches(text: string, pattern: RegExp): boolean {
   for (const line of text.split(/\r?\n/)) {
     if (/^#{2,3} /.test(line)) return false;
-    if (/^\s*Commit Model:/i.test(line)) return true;
+    if (pattern.test(line)) return true;
   }
   return false;
 }
 
-// Whether a file tool's written text (Write's content, Edit's old or new
+// The label or any of the three model values, the strings a rewrite of the
+// recorded commit model has to write.
+const COMMIT_MODEL_LABEL_OR_VALUE = /Commit Model:|Review-Only|Branch-and-PR|Commit-and-Push/i;
+
+// The strings a file tool writes: Write's content, Edit's old or new
 // string, each edits[] entry's old or new string, NotebookEdit's new
-// source) carries a plan header's Commit Model line, the input the push
-// rule reads. A whole file rewrite that removes the line without writing
-// one is not seen here and stays on the model's judgment.
-export function writesCommitModelLine(args: unknown): boolean {
+// source.
+function writtenTexts(args: unknown): string[] {
   const a = args as { content?: unknown; old_string?: unknown; new_string?: unknown; new_source?: unknown; edits?: unknown };
   const texts: unknown[] = [a.content, a.old_string, a.new_string, a.new_source];
   if (Array.isArray(a.edits)) {
     for (const ed of a.edits as Array<{ old_string?: unknown; new_string?: unknown }>) texts.push(ed?.old_string, ed?.new_string);
   }
-  return texts.some((s) => typeof s === "string" && commitModelHeaderLineIn(s));
+  return texts.filter((s): s is string => typeof s === "string");
+}
+
+// Whether a file tool's written text carries a plan header's Commit Model
+// line, the input the push rule reads, whatever file it targets. A whole
+// file rewrite that removes the line without writing one is not seen here
+// and stays on the model's judgment.
+export function writesCommitModelLine(args: unknown): boolean {
+  return writtenTexts(args).some((s) => commitModelHeaderLineIn(s));
+}
+
+// Whether a file tool's written text carries the label or one of the three
+// model values with no `## ` or `### ` line before it in that text. On the
+// armed plan file this is a rewrite of the recorded commit model by value
+// (`old_string` "Branch-and-PR. x", `new_string` "Commit-and-Push. x"),
+// the label never appearing. The residuals: an Edit to the armed plan whose
+// string names a model value in prose without a heading before it (a
+// Chapter body edited mid-paragraph) is refused and costs one round trip;
+// a rewrite that replaces the value with text naming none of the three is
+// not seen.
+export function writesCommitModelValue(args: unknown): boolean {
+  return writtenTexts(args).some((s) => headerTextMatches(s, COMMIT_MODEL_LABEL_OR_VALUE));
 }
 
 // First words that only read: a segment opening with one of these, or with
@@ -186,15 +234,22 @@ const GIT_READ_ONLY_SUBCOMMANDS = new Set(["diff", "log", "show", "status", "bla
 // A guarded path as a token inside a shell segment: an optional directory
 // prefix, then a guarded basename, bounded by whitespace, a quote, a
 // bracket, `=`, `:` or a redirect operator (`>CLAUDE.md`, `2>CLAUDE.md`)
-// on the left and by the end, whitespace, a quote, a bracket or a comma on
-// the right.
-const GUARDED_TOKEN = /(^|[\s"'=(:<>])((?:[^\s"'()<>]*[\\/])?(?:CLAUDE\.md|CLAUDE\.local\.md|settings(?:\.[^\s"'\\/]+)?\.json|goal-state\.json))(?=$|[\s"'),])/i;
+// on the left and by the end, whitespace, a quote, a bracket, a comma or a
+// control operator (`>CLAUDE.md&`) on the right.
+const GUARDED_TOKEN = /(^|[\s"'=(:<>])((?:[^\s"'()<>]*[\\/])?(?:CLAUDE\.md|CLAUDE\.local\.md|settings(?:\.[^\s"'\\/]+)?\.json|goal-state\.json))(?=$|[\s"'),&;|])/i;
 
-// The segments of a shell command: split on `;`, `&&`, `||`, `|` and line
-// breaks, trimmed, with empties dropped.
+// What separates the segments of a shell command: `;`, `&&`, `||`, `|`
+// and line breaks.
+const SEGMENT_SEPARATOR = /\r?\n|;|&&|\|\||\|/;
+
+// The segments of a shell command, trimmed, with empties dropped.
 function commandSegments(command: string): string[] {
-  return command.split(/\r?\n|;|&&|\|\||\|/).map((s) => s.trim()).filter((s) => s.length > 0);
+  return command.split(SEGMENT_SEPARATOR).map((s) => s.trim()).filter((s) => s.length > 0);
 }
+
+// First words that change the working directory, so a push in a later
+// segment runs in a repository this hook does not read.
+const DIRECTORY_CHANGE_WORDS = new Set(["cd", "pushd", "set-location", "sl", "chdir"]);
 
 // A segment's first word without a leading path, a `.exe` suffix or
 // surrounding quotes, lowercased.
@@ -259,6 +314,44 @@ export function commandGuardedItem(command: unknown): string | null {
   return null;
 }
 
+// The segments of a Bash or PowerShell command that could rewrite a plan's
+// recorded commit model by value: a first word neither read-only nor git,
+// and the label or one of the three model values with no `## ` or `### `
+// heading earlier in the segment's own text (`sed -i
+// 's/Branch-and-PR/Commit-and-Push/' <plan>`). Which of them names the
+// armed plan is settled by segmentNamesPath once that path is read, so the
+// leash file is read only when a segment of this shape exists.
+export function commitModelValueSegments(command: unknown): string[] {
+  if (typeof command !== "string") return [];
+  return commandSegments(command).filter((segment) => {
+    if (isReadOnlySegment(segment) || firstWordOf(segment) === "git") return false;
+    const at = segment.search(COMMIT_MODEL_LABEL_OR_VALUE);
+    return at >= 0 && !/#{2,3} /.test(segment.slice(0, at));
+  });
+}
+
+// Whether a shell segment carries the given repo-relative path as one of
+// its whitespace-split tokens, quotes stripped.
+export function segmentNamesPath(segment: string, target: string): boolean {
+  return segment.split(/\s+/).some((t) => pathNames(t.replace(/^["']+|["']+$/g, ""), target));
+}
+
+// Whether a Bash or PowerShell command merges a pull request: a segment
+// whose first word is gh and whose next two tokens are `pr merge`, or whose
+// tokens carry `api` and a token ending `/merge`. Under Review-Only and
+// Branch-and-PR the merge is the gate the model rests on, so the caller
+// refuses it there and under no recorded model, and admits it under
+// Commit-and-Push.
+export function mergesPullRequest(command: unknown): boolean {
+  if (typeof command !== "string") return false;
+  return commandSegments(command).some((segment) => {
+    if (firstWordOf(segment) !== "gh") return false;
+    const tokens = segment.split(/\s+/).slice(1).map((t) => t.replace(/^["']+|["']+$/g, ""));
+    if (tokens[0] === "pr" && tokens[1] === "merge") return true;
+    return tokens.includes("api") && tokens.some((t) => /\/merge$/i.test(t));
+  });
+}
+
 // git's own global options, the only dash tokens stepped over between `git`
 // and its subcommand, so `git commit -m push` and `git log --grep push` are
 // not pushes. The first list takes a value, inline after `=` or as the next
@@ -300,35 +393,46 @@ function segmentTokensFrom(rest: string, closer: '"' | "'" | null): string[] {
   return kept.split(/\s+/).filter((t) => t.length > 0);
 }
 
-export type GitPush = { args: string; otherRepo: boolean };
+export type GitPush = { args: string; otherRepo: boolean; setsPushDefault: boolean };
 
 // Every `git push` a Bash or PowerShell command runs, each as the text after
 // `push` up to its segment's end, with whether the invocation pointed at
-// another repository. `git` counts wherever it starts a word, after a
-// quote, a slash or a backslash included (`bash -c "git push ..."`,
-// `/usr/bin/git push`, `git.exe push`), so a wrapped push is seen and ends
-// at the quote that closes its wrapper. A non-string yields none.
+// another repository and whether it set push.default. `git` counts
+// wherever it starts a word, after a quote, a slash or a backslash included
+// (`bash -c "git push ..."`, `/usr/bin/git push`, `git.exe push`), so a
+// wrapped push is seen and ends at the quote that closes its wrapper. A
+// push points at another repository through -C, --git-dir or --work-tree,
+// through a GIT_DIR= or GIT_WORK_TREE= assignment before its git token, or
+// when any earlier segment of the command changes directory (cd, pushd,
+// Set-Location, sl, chdir), since the checkout that push lands on is not
+// the one this hook reads. A non-string yields none.
 export function gitPushesIn(command: unknown): GitPush[] {
   if (typeof command !== "string") return [];
   const pushes: GitPush[] = [];
   const starts = /(^|[\s;&|()"'`\\/])git(?:\.exe)?(?=\s)/gi;
   let m: RegExpExecArray | null;
   while ((m = starts.exec(command)) !== null) {
+    const pieces = command.slice(0, m.index).split(SEGMENT_SEPARATOR);
+    const ownPrefix = pieces[pieces.length - 1] ?? "";
+    let otherRepo = pieces.slice(0, -1).some((s) => DIRECTORY_CHANGE_WORDS.has(firstWordOf(s.trim())))
+      || /(^|\s)GIT_(DIR|WORK_TREE)=/.test(ownPrefix);
+    let setsPushDefault = false;
     const tokens = segmentTokensFrom(command.slice(m.index + m[0].length), openQuoteAt(command, m.index + m[0].length));
     let i = 0;
-    let otherRepo = false;
     while (i < tokens.length) {
       const t = tokens[i];
       const valued = GIT_GLOBAL_VALUE_OPTIONS.find((o) => t === o || t.startsWith(`${o}=`));
       if (valued !== undefined) {
         if (GIT_OTHER_REPO_OPTIONS.has(valued)) otherRepo = true;
+        const value = t === valued ? tokens[i + 1] ?? "" : t.slice(valued.length + 1);
+        if (valued === "-c" && /^push\.default=/i.test(value)) setsPushDefault = true;
         i += t === valued ? 2 : 1;
         continue;
       }
       if (t === "--exec-path" || t.startsWith("--exec-path=") || GIT_GLOBAL_FLAGS.has(t)) { i += 1; continue; }
       break;
     }
-    if (tokens[i] === "push") pushes.push({ args: tokens.slice(i + 1).join(" "), otherRepo });
+    if (tokens[i] === "push") pushes.push({ args: tokens.slice(i + 1).join(" "), otherRepo, setsPushDefault });
   }
   return pushes;
 }
@@ -365,12 +469,14 @@ export type PushVerdict = { beyond: string } | { needsBranch: true } | null;
 // where it has no colon) is main or master once a refs/heads/ prefix is
 // stripped, and resolves a push with no refspec, or one whose destination is
 // HEAD, through the checked-out branch: beyond on main or master, beyond
-// when the branch cannot be read, and beyond when the push points at
-// another repository (-C, --git-dir, --work-tree), whose branch is not read.
-// The trunk's own protection is not relied on: a rollout repository may
-// carry no ruleset at all. Commit-and-Push admits every push the first rule
-// did not refuse.
-export function pushVerdict(pushArgs: string, model: string | null, branch?: string | null, otherRepo = false): PushVerdict {
+// when the branch cannot be read, beyond when the push points at another
+// repository (-C, --git-dir, --work-tree, a GIT_DIR or GIT_WORK_TREE
+// assignment, a directory change earlier in the command), whose branch is
+// not read, and beyond when the push sets push.default, which decides the
+// destination in a way the branch alone does not. The trunk's own
+// protection is not relied on: a rollout repository may carry no ruleset
+// at all. Commit-and-Push admits every push the first rule did not refuse.
+export function pushVerdict(pushArgs: string, model: string | null, branch?: string | null, otherRepo = false, setsPushDefault = false): PushVerdict {
   const tokens = pushTokens(pushArgs);
   const options: string[] = [];
   const positionals: string[] = [];
@@ -404,27 +510,42 @@ export function pushVerdict(pushArgs: string, model: string | null, branch?: str
   }
   if (!unresolved) return null;
   if (otherRepo) return { beyond: "the push names another repository, whose checked-out branch is not read" };
+  if (setsPushDefault) return { beyond: "the push sets push.default, so its destination is not read" };
   if (branch === undefined) return { needsBranch: true };
   if (branch === null) return { beyond: "the plan's recorded commit model is Branch-and-PR and the checked-out branch could not be read" };
   if (branch === "main" || branch === "master") return { beyond: `the plan's recorded commit model is Branch-and-PR and the checked-out branch is the trunk (${branch})` };
   return null;
 }
 
-// The commit model the armed plan's header records, read through the kit
-// leash file: `.kit/goal-state.json` names the plan, and the first `Commit
-// Model:` line in the plan's header (the text before its first `## `
-// heading) names one of the three models, matched case-insensitively and
-// returned in canonical casing. Null when the leash file, the plan or the
-// line is absent, when the plan path is not a plain repo-relative path, or
-// when any read throws. Called only once a push was found in a command,
-// never on every tool call.
-export async function readRecordedCommitModel(dp: any): Promise<string | null> {
+// The repo-relative path of the armed plan, read from the kit leash file
+// `.kit/goal-state.json`'s `plan`. Null when the leash file is absent, the
+// path is missing, is not a plain repo-relative path, or the read throws.
+// Read lazily: only once a command or written text has the shape of a push
+// or of a commit-model rewrite, never on every tool call.
+export async function readArmedPlanPath(dp: any): Promise<string | null> {
   try {
     if (!(await dp.fs.exists(".kit/goal-state.json"))) return null;
     const leash = JSON.parse(await dp.fs.read(".kit/goal-state.json")) as { plan?: unknown };
     const plan = leash.plan;
     if (typeof plan !== "string" || plan.length === 0) return null;
     if (/^[\\/]/.test(plan) || /^[A-Za-z]:/.test(plan) || plan.split(/[\\/]/).includes("..")) return null;
+    return plan;
+  } catch {
+    return null;
+  }
+}
+
+// The commit model the armed plan's header records: the first `Commit
+// Model:` line in the plan's header (the text before its first `## `
+// heading) names one of the three models, matched case-insensitively and
+// returned in canonical casing. Null when the plan path cannot be read
+// (readArmedPlanPath), the plan or the line is absent, or any read throws.
+// Called only once a push or a pull request merge was found in a command,
+// never on every tool call.
+export async function readRecordedCommitModel(dp: any): Promise<string | null> {
+  try {
+    const plan = await readArmedPlanPath(dp);
+    if (plan === null) return null;
     const text: string = await dp.fs.read(plan);
     const headingAt = text.search(/(^|\r?\n)## /);
     const header = headingAt < 0 ? text : text.slice(0, headingAt);
@@ -4056,12 +4177,18 @@ export const register: Register = async (on, options) => {
     // life. The main loop (no agentId) reads the turn flag directly.
     const callerAgentId = typeof e.agentId === "string" && e.agentId.length > 0 ? e.agentId : null;
     if (callerAgentId !== null && !subagentCoordinatorOrigin.has(callerAgentId)) {
-      // The map holds at most 256 agents; at the cap the oldest entry
-      // (insertion order) is dropped, so a long session cannot grow it
-      // without bound.
+      // The map holds at most 256 agents, so a long session cannot grow it
+      // without bound. At the cap the oldest entry (insertion order) whose
+      // standing is free is dropped; a bounded (true) entry is dropped only
+      // when no free one exists, so eviction never quietly frees a
+      // coordinator-origin agent while a free one could go instead.
       if (subagentCoordinatorOrigin.size >= 256) {
-        const oldest = subagentCoordinatorOrigin.keys().next().value;
-        if (oldest !== undefined) subagentCoordinatorOrigin.delete(oldest);
+        let victim: string | undefined;
+        for (const [id, bounded] of subagentCoordinatorOrigin) {
+          if (!bounded) { victim = id; break; }
+          if (victim === undefined) victim = id;
+        }
+        if (victim !== undefined) subagentCoordinatorOrigin.delete(victim);
       }
       subagentCoordinatorOrigin.set(callerAgentId, currentTurnIsCoordinatorOrigin);
     }
@@ -4982,26 +5109,47 @@ export const register: Register = async (on, options) => {
         const target: unknown = (e as any).file_path ?? (e as any).notebook_path;
         item = guardedPathItem(target);
         if (item === null && writesCommitModelLine(e)) item = "a change to a plan's recorded commit model";
+        // A rewrite of the model by value alone is the same item when the
+        // file is the armed plan; the leash file is read only once the
+        // written text names a model value or the label.
+        if (item === null && typeof target === "string" && writesCommitModelValue(e)) {
+          const armedPlan = await readArmedPlanPath($);
+          if (armedPlan !== null && pathNames(target, armedPlan)) item = "a change to a plan's recorded commit model";
+        }
         evidence = typeof target === "string" ? target : "";
       } else if (toolName === "Bash" || toolName === "PowerShell") {
         const command: unknown = (e as any).command;
         item = commandGuardedItem(command);
         evidence = typeof command === "string" ? command : "";
         if (item === null) {
+          const valueSegments = commitModelValueSegments(command);
+          if (valueSegments.length > 0) {
+            const armedPlan = await readArmedPlanPath($);
+            if (armedPlan !== null && valueSegments.some((s) => segmentNamesPath(s, armedPlan))) item = "a change to a plan's recorded commit model";
+          }
+        }
+        if (item === null) {
           let model: string | null | undefined;
           let branch: string | null | undefined;
           for (const push of gitPushesIn(command)) {
             if (model === undefined) model = await readRecordedCommitModel($);
-            let verdict = pushVerdict(push.args, model, branch, push.otherRepo);
+            let verdict = pushVerdict(push.args, model, branch, push.otherRepo, push.setsPushDefault);
             if (verdict !== null && "needsBranch" in verdict) {
               branch = await readCheckedOutBranch($);
-              verdict = pushVerdict(push.args, model, branch, push.otherRepo);
+              verdict = pushVerdict(push.args, model, branch, push.otherRepo, push.setsPushDefault);
             }
             if (verdict !== null && "beyond" in verdict) {
               item = `a push beyond the commit model (${verdict.beyond})`;
               evidence = `git push ${push.args}`;
               break;
             }
+          }
+          // A pull request merge lands the trunk without a push, so under a
+          // model whose gate is the PR (Branch-and-PR), one that admits no
+          // landing (Review-Only), or no recorded model, it is ask-first.
+          if (item === null && mergesPullRequest(command)) {
+            if (model === undefined) model = await readRecordedCommitModel($);
+            if (model !== "Commit-and-Push") item = "a pull request merge";
           }
         }
       }
