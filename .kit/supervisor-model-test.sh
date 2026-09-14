@@ -85,6 +85,27 @@ case "$ARGV" in
 esac
 rm -f "$TMP/stub/launched" "$TMP/stub/argv"
 
+# The mirror drive closes the other direction of each flag: EFFORT is
+# exported with no MODEL, so the argv shows supervisorModel reaching the
+# --model flag on its own and an exported EFFORT winning over its setting.
+rm -f "$TMP/stub/launched" "$TMP/stub/argv"
+OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home-free" supervisorCrashLimit=1 supervisorPollMs=1000 \
+  EFFORT=low supervisorModel=sonnet supervisorEffort=high \
+  timeout 120 bash "$SCRIPT" "$TMP/wd-launch" modelprobe default --rundir "$TMP/rd-launch" --no-channel 2>&1)
+RC=$?
+[ "$RC" -eq 3 ] && [ -e "$TMP/stub/launched" ]
+check "mirror control: the EFFORT-exported drive reaches the launch (rc=$RC)" "$?"
+ARGV=" $(tr '\n' ' ' < "$TMP/stub/argv" 2>/dev/null)"
+case "$ARGV" in
+  *" --model sonnet "*) check "supervisorModel reaches the launch flag when no MODEL is exported (--model sonnet)" 0 ;;
+  *) check "supervisorModel reaches the launch flag when no MODEL is exported (argv:$ARGV)" 1 ;;
+esac
+case "$ARGV" in
+  *" --effort low "*) check "an exported EFFORT wins over supervisorEffort at the launch flag (--effort low)" 0 ;;
+  *) check "an exported EFFORT wins over supervisorEffort at the launch flag (argv:$ARGV)" 1 ;;
+esac
+rm -f "$TMP/stub/launched" "$TMP/stub/argv"
+
 # The model shape: a name of lowercase letters, digits, '.' and '-' starting
 # with a letter or digit, plus an optional bracketed suffix. '-opus' and
 # '--some-flag' hold only allowed characters, so the leading character is the

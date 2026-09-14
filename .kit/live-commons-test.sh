@@ -365,21 +365,48 @@ fi
 
 # Step 4 (F10a/F10b): Strict mutual-exclusion assertions on out.jsonl content.
 # Primary assertions:
-#   (1) Exactly one child carries 'active (epoch N, owner)' and the other carries 'joined as reader'.
+#   (1) In the commons store, exactly one child holds persona:default and the other holds reader:default only.
 #   (2) The reader is the later claimedAt (loser), confirmed via the commons store.
 #   (3) The loser's memory_add was refused ('this write was not saved'); the winner's was saved.
 
-# --- F10(1): owner vs reader in out.jsonl ---
+# --- F10(1): owner vs reader in the commons store ---
 A_OUT="$SUITE_DIR/commons-A.out.jsonl"
 B_OUT="${B_OUT_DIR:-$SUITE_DIR}/commons-B.out.jsonl"
 A_IS_OWNER=0
 B_IS_OWNER=0
 A_IS_READER=0
 B_IS_READER=0
-if [ -f "$A_OUT" ] && grep -q "active (epoch [0-9]*, owner)" "$A_OUT" 2>/dev/null; then A_IS_OWNER=1; fi
-if [ -f "$B_OUT" ] && grep -q "active (epoch [0-9]*, owner)" "$B_OUT" 2>/dev/null; then B_IS_OWNER=1; fi
-if [ -f "$A_OUT" ] && grep -q "joined as reader" "$A_OUT" 2>/dev/null; then A_IS_READER=1; fi
-if [ -f "$B_OUT" ] && grep -q "joined as reader" "$B_OUT" 2>/dev/null; then B_IS_READER=1; fi
+# Owner and reader are read from the commons store rather than from the tool
+# result's wording: each child's session id comes from its own out.jsonl, and
+# the store entry under commons:<session id> says which claim it holds.
+# The winner holds persona:default and the loser holds reader:default only.
+if [ -n "$STORE_FILE_WIN" ]; then
+  F10_ROLES=$(node -e "
+const fs = require('fs');
+function sessionOf(p) {
+  if (!fs.existsSync(p)) return '';
+  for (const line of fs.readFileSync(p, 'utf8').split('\n')) {
+    try { const r = JSON.parse(line); if (r.session_id) return r.session_id; } catch {}
+  }
+  return '';
+}
+const store = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const out = [];
+for (const [label, p] of [['A', process.argv[2]], ['B', process.argv[3]]]) {
+  const sid = sessionOf(p);
+  const claims = ((store['commons:' + sid] || {}).claims || []).map(c => c.resource);
+  out.push(label + '_OWNER=' + (claims.includes('persona:default') ? 1 : 0));
+  out.push(label + '_READER=' + (claims.includes('reader:default') && !claims.includes('persona:default') ? 1 : 0));
+}
+console.log(out.join(' '));
+" "$STORE_FILE_WIN" "$(cygpath -m "$A_OUT")" "$(cygpath -m "$B_OUT")" 2>/dev/null | tr -d '\r')
+  for kv in $F10_ROLES; do
+    case "$kv" in
+      A_OWNER=1) A_IS_OWNER=1 ;; B_OWNER=1) B_IS_OWNER=1 ;;
+      A_READER=1) A_IS_READER=1 ;; B_READER=1) B_IS_READER=1 ;;
+    esac
+  done
+fi
 
 OWNER_COUNT=$((A_IS_OWNER + B_IS_OWNER))
 READER_COUNT=$((A_IS_READER + B_IS_READER))
