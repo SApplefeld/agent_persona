@@ -87,11 +87,15 @@ A running child never re-reads credentials, so a 429 carrying a `five_hour` limi
 
 `restart_requested` is writable by the owner alone. When the owner is itself the wedged child, the one session that can see the wedge (a reader holding the same persona) is refused by the tool, and the only remaining lever is killing the process from outside. Allow a reader to write the fact when the owner's heartbeat is stale, on the same staleness bound the stale-owner arbitration already uses. Not in item 3's PR.
 
-## A running supervisor keeps the script it launched with, so this branch's supervisor fixes reach no live process until each is relaunched
+## A running supervisor keeps the script it launched with, so the dev supervisor lacks this branch's later fixes until it is relaunched
 
-A running `bin/supervise.sh` keeps reading its original open file handle and never picks up a later commit. The `dev` supervisor launched at 2026-09-13 21:48Z, before every supervisor fix on `item0-5-installed-runtime`, so its own process still reads the child pid from a variable bash unsets at reap, still takes no shared numeric check on its settings, and still emits no backfilled NOTE on its natural-exit path. The `aios` launcher at `/d/personas/aios/relaunch-wait.sh` also holds `MODEL=sonnet`, so a child it starts stays on `sonnet` rather than taking the `opus` default.
+A running `bin/supervise.sh` keeps reading its original open file handle and never picks up a later commit. The `dev` supervisor started at 2026-09-13 21:45Z, after the branch's settings-file commits and before `406a783`, so its own process still reads the child pid from a variable bash unsets at reap, still takes no shared numeric check on its settings, and still emits no backfilled NOTE on its natural-exit path. The `aios` supervisor started at 2026-09-14 00:11Z from this checkout with `MODEL=opus`, so it carries every supervisor fix up to `a4119cd` and lacks only the pre-launch gate change in `8e0bcef`. The file under both running supervisors has been rewritten since they started, and bash reads a script by offset, so code after each one's main loop is no longer what it launched with.
 
 Nothing to fix in the tree. The remedy is relaunching each supervisor, then dropping this entry. Relaunching is destructive to whatever that supervisor's child is mid-way through, so it is taken at a quiet point rather than on sight of this entry. This is the narrowed remainder of the `aios` launcher entry and the stale-dev-clone entry, both retired in item 3's runtime-clone addendum.
+
+## The stale bound has no floor against the refresh cadence it measures (found 2026-09-13)
+
+`staleAfterMs` takes the shared numeric check and nothing else, while the holders it measures refresh `lastSeen` every `heartbeatMs` (default 30000) and every controller tick. A validated value below that cadence, such as 5000, reads every live holder as stale at most polls, and the pre-launch gate passes while another session holds the persona. A floor tied to the refresh cadence is a rule across two settings that nothing in the coordinator plan asks for, so it is filed rather than built. Raised by a blind review of `8e0bcef`.
 
 ## live-stopprocesstree-test.sh runs 15 checks that the gate summary never collects
 

@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
-# Live test: v2 Section 0 item 2, the stop-path defect (Reviewer Round 105
-# R2, Round 111 R29, Round 113 R42, Round 119 R50-R56). A live incident
+# Live test: v2 Section 0 item 2, the stop-path defect. A live incident
 # showed a bash wrapper TERMed while the claude.exe process underneath it
 # survived, still holding the persona claim, until the pre-gate timed out.
 #
-# Confirmed live, this session, while building this fix: an MSYS pid's
-# WINPID (preferably /proc/<pid>/winpid; ps -p's column 4 as a fallback -
-# this environment's `ps` has no `-o` support) must be resolved BEFORE the
-# MSYS pid is signaled - once it exits, both reads find nothing. A genuine
-# native Windows child process (not an MSYS-forked one, which does not
-# expose a discoverable Win32 parent) is exactly what Get-CimInstance
-# Win32_Process's ParentProcessId walk correctly finds and kills. And
-# (Round 119 R50) the snapshot must be taken before ANY phase signals the
-# wrapper, not after Phase 1/2's own kill -0 check fails - the live
-# incident's exact shape (TERM kills the wrapper, the real child survives)
-# is invisible to a check that only ever asks about the wrapper's own pid.
+# An MSYS pid's WINPID (preferably /proc/<pid>/winpid; ps -p's column 4 as
+# a fallback - this environment's `ps` has no `-o` support) must be
+# resolved BEFORE the MSYS pid is signaled - once it exits, both reads
+# find nothing. A genuine native Windows child process (not an
+# MSYS-forked one, which does not expose a discoverable Win32 parent) is
+# exactly what Get-CimInstance Win32_Process's ParentProcessId walk
+# correctly finds and kills. And the snapshot must be taken before ANY
+# phase signals the wrapper, not after Phase 1/2's own kill -0 check
+# fails - the live incident's exact shape (TERM kills the wrapper, the
+# real child survives) is invisible to a check that only ever asks about
+# the wrapper's own pid.
 #
 # This proves the real fix against real processes, not fakes or unit-
 # tested stand-ins, without launching a full claude session (which the
@@ -31,18 +30,18 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SUPERVISE="$PLUGIN_DIR/bin/supervise.sh"
-# Reviewer Round 119 R56: a real temp dir, not this repo's own run/ (the
-# live supervisor's default RUNDIR) - a concurrent supervised run must
-# never share this test's scratch files.
+# A real temp dir, not this repo's own run/ (the live supervisor's
+# default RUNDIR) - a concurrent supervised run must never share this
+# test's scratch files.
 RUNDIR="$(mktemp -d)"
 trap 'rm -rf "$RUNDIR"' EXIT
 
-# Reviewer Round 122 R69: registered in .kit/live-all.sh's ALL_SUITES as
-# "stopprocesstree" - it launches no claude session and holds no persona
-# claim, so it fits the runner cheaply, and the whole gate's own summary
-# now covers it. SUITE_DIR is the convention every other live-*-test.sh
-# reads its own scratch dir from when live-all.sh drives it; standalone
-# runs (no SUITE_DIR set) fall back to their own mktemp -d.
+# Registered in .kit/live-all.sh's ALL_SUITES as "stopprocesstree" - it
+# launches no claude session and holds no persona claim, so it fits the
+# runner cheaply, and the whole gate's own summary covers it. SUITE_DIR
+# is the convention every other live-*-test.sh reads its own scratch dir
+# from when live-all.sh drives it; standalone runs (no SUITE_DIR set)
+# fall back to their own mktemp -d.
 SUITE_DIR="${SUITE_DIR:-$(mktemp -d)}"
 mkdir -p "$SUITE_DIR"
 EXIT_FILE="$SUITE_DIR/stopprocesstree-test.exit"
@@ -74,10 +73,9 @@ if [ -z "$STOP_PS_SENTINEL" ]; then
   echo "FAIL: could not read STOP_PS_SENTINEL's value from $SUPERVISE"
   exit 1
 fi
-# SUPERVISOR_PS_BOUND_S (Reviewer Round 126 R89) is the same shape of
-# global the extracted functions close over - its default value read
-# from supervise.sh's own line (Reviewer Round 130 R99: a prior cut of
-# this comment claimed that and then hardcoded the literal anyway).
+# SUPERVISOR_PS_BOUND_S is the same shape of global the extracted
+# functions close over - its default value is read from supervise.sh's
+# own line rather than hardcoded here.
 SUPERVISOR_PS_BOUND_S=$(grep '^SUPERVISOR_PS_BOUND_S="\${supervisorPsBoundS:-' "$SUPERVISE" | head -1 | sed -n 's/.*:-\([0-9]*\)}"/\1/p')
 if [ -z "$SUPERVISOR_PS_BOUND_S" ]; then
   echo "FAIL: could not read SUPERVISOR_PS_BOUND_S's default value from $SUPERVISE"
@@ -102,13 +100,12 @@ log() { echo "[log] $*"; }
 log_diag() { echo "[log_diag] $*" >&2; }
 source "$FN_FILE"
 
-# Reviewer Round 119 R56: a truncated extraction (a sed range mismatch, a
-# renamed function upstream) must fail as an extraction problem, not
-# silently produce a no-op function that passes every check by doing
-# nothing. Check each function actually landed before trusting any of them.
-# Reviewer Round 124 R77 / Round 126: this count has drifted upward twice
-# since this comment was first written, so it is named here rather than
-# pinned as a literal that will only go stale again.
+# A truncated extraction (a sed range mismatch, a renamed function
+# upstream) must fail as an extraction problem, not silently produce a
+# no-op function that passes every check by doing nothing. Check each
+# function actually landed before trusting any of them. This count is
+# named here rather than pinned as a literal, since the function list has
+# grown before and will again.
 FNS_TO_EXTRACT="resolve_windows_pid run_bounded_native run_bounded_powershell run_bounded_powershell_capture snapshot_process_tree check_snapshot_survivors kill_process_snapshot retry_stop_escalation stop_child"
 FN_COUNT=$(echo "$FNS_TO_EXTRACT" | wc -w)
 for fn in $FNS_TO_EXTRACT; do
@@ -119,46 +116,38 @@ for fn in $FNS_TO_EXTRACT; do
 done
 pass "setup: all $FN_COUNT functions extracted and defined"
 
-# Reviewer Round 124 R74: production runs every extracted call under
-# real shell semantics, including a pipeline whose upstream command fails
-# silently unless pipefail is set - run this test under the same
-# semantics its production callers actually use.
+# Production runs every extracted call under real shell semantics,
+# including a pipeline whose upstream command fails silently unless
+# pipefail is set - run this test under the same semantics its
+# production callers actually use.
 set -o pipefail
 
-# --- Case: run_bounded_powershell actually holds its bound (Reviewer
-# Round 126 R79, reproduced live: a 3s bound around a 40s sleep returned
-# after 264s, not ~3-5s, because a bare `kill -9` on the tail-exec
-# subshell's own pid did not hold under load) ---
+# --- Case: run_bounded_powershell actually holds its bound (a bare
+# `kill -9` on the tail-exec subshell's own pid does not hold under
+# load, so a 3s bound around a 40s sleep can return long after 3-5s) ---
 # Run exactly as production calls it: through run_bounded_powershell_capture,
 # inside a command substitution, since that combination - not a bare direct
 # call - is what the reproduction actually needed to surface the hang.
 R79_START=$(date +%s)
-# Reviewer Round 126 R90: the prior version of this case asserted only
-# that the sleep's own late output never reached the caller - vacuous
-# after the file-not-pipe fix, since the outfile is deleted at about
-# bound+5s and "done-late" lands at 40s in a file nobody is still
-# reading; that leg passes whether or not the process was actually
-# killed. `TESTPID:$PID` is the test's own marker (distinct from
-# run_bounded_powershell's internal `PSPID:` bookkeeping line, which is
-# stripped before the caller ever sees it) - it survives into R79_OUT and
-# gives this case the real powershell.exe pid to assert dead afterward,
-# by pid AND start time, the same standard the rest of this file holds
-# every other kill to.
+# Asserting only that the sleep's own late output never reached the
+# caller is vacuous once the caller reads a file rather than a pipe,
+# since the outfile is deleted at about bound+5s and "done-late" lands
+# at 40s in a file nobody is still reading; that leg passes whether or
+# not the process was actually killed. `TESTPID:$PID` is the test's own
+# marker (distinct from run_bounded_powershell's internal `PSPID:`
+# bookkeeping line, which is stripped before the caller ever sees it) -
+# it survives into R79_OUT and gives this case the real powershell.exe
+# pid to assert dead afterward, by pid AND start time, the same standard
+# the rest of this file holds every other kill to.
 R79_OUT=$(run_bounded_powershell_capture 3 "Write-Output (\"TESTPID:\" + \$PID + \",\" + (Get-Process -Id \$PID).StartTime.Ticks); Start-Sleep -Seconds 40; Write-Output 'done-late'")
 R79_RC=$?
 R79_ELAPSED=$(( $(date +%s) - R79_START ))
-# Reviewer Round 126 R93 (Minor): a 3s-bound call has already been
-# observed taking ~13s of legitimate helper time under this session's own
-# load (the poll loop, the taskkill, the reap wait); a flat 15s ceiling
-# flakes red on a slow day for reasons that have nothing to do with
-# whether the bound actually held. Scaled off the bound itself instead.
-# Reviewer Round 130 R99 (Minor): 18s was still below the helper's own
-# worst-case honest path (winpid poll up to 5s, wait loop up to bound,
-# reap poll up to 5s, plus two taskkill calls each capped at 5s - about
-# 23s legitimately, before any scheduling slack). Widened again per
-# Round 132 R103: the prior widening equaled that computed worst path
-# exactly, with no slack at all for scheduling variance - a ceiling that
-# tight flakes red on nothing but timing noise.
+# A 3s-bound call can legitimately take up to about 23s of helper time
+# under load: winpid poll up to 5s, wait loop up to bound, reap poll up
+# to 5s, plus two taskkill calls each capped at 5s. A flat ceiling near
+# that computed worst path, with no slack for scheduling variance, flakes
+# red on nothing but timing noise, so the ceiling is scaled off the bound
+# itself with slack built in.
 R79_CEILING=$((3 + 30))
 if [ "$R79_ELAPSED" -gt "$R79_CEILING" ]; then
   failed "R79 regression: run_bounded_powershell_capture took ${R79_ELAPSED}s against a 3s bound (expected under ~${R79_CEILING}s) - the bound did not hold"
@@ -191,14 +180,14 @@ fi
 
 # --- Case: the wrapper's own exec target is killed directly by taskkill
 # on its resolved winpid ---
-# Confirmed shape: a bash subshell that tail-execs directly into a native
-# binary with nothing after it collapses into one process. Re-pointed at
-# `taskkill //F //T` (Reviewer Round 126 addendum, reproduced by the
-# blind reviewer): a bare `kill -9` on the MSYS pid itself blocked 236s
-# and returned "Permission denied", twice - not a safe fallback signal
-# under load, which is why `run_bounded_powershell` no longer uses it
-# either. `resolve_windows_pid` must run before any termination attempt,
-# same as production - once the pid exits, the read finds nothing.
+# A bash subshell that tail-execs directly into a native binary with
+# nothing after it collapses into one process. Uses `taskkill //F //T`
+# rather than `kill -9` on the MSYS pid itself: a bare `kill -9` there
+# can block for minutes and return "Permission denied" instead, not a
+# safe fallback signal under load, which is why `run_bounded_powershell`
+# does not use it either. `resolve_windows_pid` must run before any
+# termination attempt, same as production - once the pid exits, the read
+# finds nothing.
 ( exec powershell.exe -NoProfile -Command "Start-Sleep -Seconds 90" ) &
 DIRECT_PID=$!
 sleep 2
@@ -211,17 +200,14 @@ else
   else
     pass "setup: direct-exec case resolved a real, live winpid ($DIRECT_WINPID) before signaling"
   fi
-  # Reviewer Round 126 R90: assert the actual descendant pid, not just
-  # "some Get-Process -Id $DIRECT_WINPID query returns nothing" - that
-  # query alone cannot tell a genuinely dead process from one whose pid
-  # is simply not what got walked. Snapshot the whole tree from
-  # DIRECT_WINPID (the same helper production uses) before the kill and
-  # check every entry, matched by pid and start time, afterward.
+  # Asserts the actual descendant pid, not just "some Get-Process -Id
+  # $DIRECT_WINPID query returns nothing" - that query alone cannot tell
+  # a genuinely dead process from one whose pid is simply not what got
+  # walked. Snapshot the whole tree from DIRECT_WINPID (the same helper
+  # production uses) before the kill and check every entry, matched by
+  # pid and start time, afterward.
   DIRECT_SNAPSHOT=$(snapshot_process_tree "$DIRECT_WINPID")
-  # Reviewer Round 130 R97 / Round 132 R100 (the fix reported last round
-  # never actually landed in this file - confirmed by the Reviewer
-  # against `git show`, and confirmed again here by reading the file):
-  # an empty $DIRECT_SNAPSHOT reads exactly like "the walk found nothing"
+  # An empty $DIRECT_SNAPSHOT reads exactly like "the walk found nothing"
   # whether the cause is a genuinely gone process or a timed-out/failed
   # walk. Guarded before use, same as every dead-assertion below.
   if [ -z "$DIRECT_SNAPSHOT" ]; then
@@ -240,8 +226,8 @@ else
   fi
 fi
 
-# --- Case: stop_child itself (Reviewer Round 119 R51), not just the raw
-# tree-kill helper, actually stops a wrapper whose real child survives it
+# --- Case: stop_child itself, not just the raw tree-kill helper,
+# actually stops a wrapper whose real child survives it
 # --- This is the shape the spec's own acceptance criterion asks for: a
 # child whose claude.exe outlives its wrapper is still fully stopped by
 # stop_child, end to end.
@@ -272,7 +258,7 @@ else
 fi
 
 # --- Case: a wrapper that ignores TERM forces stop_child to Phase 3, the
-# path where the CRLF bug (Reviewer Round 122 R62/R63) actually lived ---
+# path where the CRLF bug actually lived ---
 # The prior case above only ever reaches Phase 2 (a plain bash wrapper
 # dies to TERM on its own). Phase 3's own kill_process_snapshot is where
 # `Stop-Process` and the per-pid survivor probe both take a snapshot built
@@ -296,22 +282,21 @@ else
     pass "setup: Phase-3 case's real child (winpid $REAL_CHILD_WINPID) confirmed alive before stop_child runs"
   fi
 
-  # Reviewer Round 124 R74: the prior version of this case would still
-  # pass with the CRLF fix reverted, because a `\r` landing on the ticks
-  # field (not the pid) makes the kill list valid, lets Stop-Process
-  # succeed, and only silently drops the ticks comparison downstream -
-  # the child ends up dead either way, and the test never noticed the
-  # comparison itself was broken. Assert the snapshot's own shape and a
-  # positive control (this live child reads as a survivor before the
-  # kill) so a regression here fails on its own signal, not by accident.
+  # A `\r` landing on the ticks field (not the pid) makes the kill list
+  # valid, lets Stop-Process succeed, and only silently drops the ticks
+  # comparison downstream - the child ends up dead either way, so a case
+  # that only checks the child died would never notice the comparison
+  # itself is broken. Asserts the snapshot's own shape and a positive
+  # control (this live child reads as a survivor before the kill) so a
+  # regression here fails on its own signal, not by accident.
   PRE_KILL_SNAPSHOT=$(snapshot_process_tree "$REAL_CHILD_WINPID")
-  # Reviewer Round 126 R83: the glob `[0-9]*,[0-9]*` accepts `1234,63837\r`
-  # (the trailing `\r` falls inside the second `*`) and `1234,6x` (same
-  # reason) - it does not actually pin the shape the comment above claims.
-  # `grep -Eqx` anchors both ends of the line and pins the exact two shapes
-  # this function can legitimately emit (a numeric ticks value, or the
-  # literal `UNREADABLE` marker), catching both a stray CR and a
-  # mid-file garbage character a glob would silently pass.
+  # The glob `[0-9]*,[0-9]*` would accept `1234,63837\r` (the trailing
+  # `\r` falls inside the second `*`) and `1234,6x` (same reason), so it
+  # does not actually pin the intended shape. `grep -Eqx` anchors both
+  # ends of the line and pins the exact two shapes this function can
+  # legitimately emit (a numeric ticks value, or the literal
+  # `UNREADABLE` marker), catching both a stray CR and a mid-file garbage
+  # character a glob would silently pass.
   SNAPSHOT_SHAPE_OK=1
   while IFS= read -r snap_line; do
     [ -z "$snap_line" ] && continue
@@ -324,13 +309,10 @@ else
   else
     pass "Phase-3 case: snapshot lines all match pid,ticks"
   fi
-  # Reviewer Round 130 R97 / Round 132 R100 (the fix reported two rounds
-  # ago never actually landed - confirmed against `git show` by the
-  # Reviewer and independently confirmed here): a timed-out probe (empty
-  # output, rc 1) passed this check exactly like a genuinely absent
-  # survivor. rc is now read explicitly at every one of this file's own
-  # check_snapshot_survivors call sites, not inferred from its output
-  # alone.
+  # A timed-out probe (empty output, rc 1) would pass this check exactly
+  # like a genuinely absent survivor if read from output alone. rc is
+  # read explicitly at every one of this file's own
+  # check_snapshot_survivors call sites instead.
   PRE_KILL_SURVIVORS=$(check_snapshot_survivors "$PRE_KILL_SNAPSHOT")
   PRE_KILL_SURVIVORS_RC=$?
   if [ "$PRE_KILL_SURVIVORS_RC" -eq 0 ] && echo "$PRE_KILL_SURVIVORS" | grep -qx "$REAL_CHILD_WINPID"; then
@@ -346,10 +328,10 @@ else
     failed "Phase-3 case: stop_child never reached Phase 3 (STOP_PATH=$STOP_PATH) - the TERM-ignoring wrapper did not force escalation, this case did not reproduce"
   fi
   sleep 2
-  # Reviewer Round 124 R74: check pid AND start time, not pid alone - a
-  # bare "is this pid gone" check cannot tell "the same process is dead"
-  # from "a different process now holds a recycled pid", which is the
-  # exact hazard R66 was fixed to guard against elsewhere in this file.
+  # Checks pid AND start time, not pid alone - a bare "is this pid gone"
+  # check cannot tell "the same process is dead" from "a different
+  # process now holds a recycled pid", the same hazard guarded against
+  # elsewhere in this file.
   POST_KILL_SURVIVORS=$(check_snapshot_survivors "$PRE_KILL_SNAPSHOT")
   POST_KILL_SURVIVORS_RC=$?
   if [ "$POST_KILL_SURVIVORS_RC" -eq 0 ] && ! echo "$POST_KILL_SURVIVORS" | grep -qx "$REAL_CHILD_WINPID"; then
@@ -361,18 +343,17 @@ else
 fi
 
 # --- Case: a CIM failure during the descendant walk is reported as
-# unverified, not a false-clean root-only tree (Reviewer Round 132 R101 /
-# Round 134 R104, R105) ---
+# unverified, not a false-clean root-only tree ---
 # `Get-CimInstance` is shadowed with a throw by redefining `run_bounded_
 # powershell_capture` (the one seam `snapshot_process_tree` calls through)
 # to prepend a shadow function definition ahead of its real script - a
 # PowerShell function in the same -Command scope resolves before a
 # same-named cmdlet, so every call the walk makes fails exactly like a
 # real WMI outage would, without touching `snapshot_process_tree`'s own
-# extracted body at all. Watched red against d7d8aa8 (the CIMFAIL marker
-# landed inside `Get-Descendants`'s own captured output, never reaching
-# real stdout, so the walk reported a false-clean root-only tree, rc 0)
-# before this fix; asserts rc 1 (unverified) now.
+# extracted body at all. Asserts rc 1 (unverified): a CIMFAIL marker
+# landing inside `Get-Descendants`'s own captured output rather than
+# reaching real stdout would report a false-clean root-only tree, rc 0,
+# instead.
 eval "$(declare -f run_bounded_powershell_capture | sed '1s/run_bounded_powershell_capture/_real_run_bounded_powershell_capture_for_r105/')"
 run_bounded_powershell_capture() {
   local bound="$1"
@@ -395,10 +376,10 @@ else
     failed "R101/R104/R105: snapshot_process_tree returned rc=$CIMFAIL_SNAP_RC (expected 1) when the CIM walk fails - R104's exact defect is back"
   fi
 fi
-# Reviewer Round 136 R108 (Minor, required): kill -9 on $CIMFAIL_PID hits
-# the MSYS stub only, not the live native powershell.exe underneath it;
-# use the same taskkill-on-winpid mechanism the rest of this file already
-# extracted, targeting the resolved winpid directly.
+# kill -9 on $CIMFAIL_PID hits the MSYS stub only, not the live native
+# powershell.exe underneath it; uses the same taskkill-on-winpid
+# mechanism the rest of this file already extracted, targeting the
+# resolved winpid directly.
 run_bounded_native 5 taskkill //F //T //PID "$CIMFAIL_WINPID"
 # Restore the real implementation for anything that runs after this case.
 eval "$(declare -f _real_run_bounded_powershell_capture_for_r105 | sed '1s/_real_run_bounded_powershell_capture_for_r105/run_bounded_powershell_capture/')"

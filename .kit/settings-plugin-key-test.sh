@@ -209,6 +209,31 @@ case "$OUT" in *"heartbeat=OK"*) check "a 1ms stale bound reads the 60s-old hold
 OUT=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && wait_persona_free_both "$2" probe 1 90000 ""' _ "$ROOT" "$TMP/hb" 2>&1)
 case "$OUT" in *"heartbeat=FAIL"*) check "a 90000ms stale bound reads the same holder as live" 0 ;; *) check "a 90000ms stale bound reads the same holder as live (out=$OUT)" 1 ;; esac
 
+# The mirror leg for the commons half of the same gate. The store holds one
+# session entry in the shape hooks/commons.ts writes (a commons:<session-id>
+# key carrying lastSeen and a claims array), 60 seconds old and claiming
+# persona:probe. The workdir has no heartbeat file, so the reading below is
+# the commons half's alone. The persona and the bound both reach the program
+# as arguments, so a value carrying JavaScript in either is read rather than
+# run; the two cases after them are the control, the same store reading free
+# under a 1 ms bound and held under a 90000 ms bound, which only happens if
+# the bound arrives at all.
+mkdir -p "$TMP/wd-commons"
+COMMONS_STORE="$TMP/commons-store.json"
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({"commons:probe-session":{sessionId:"probe-session",lastSeen:Date.now()-60000,claims:[{resource:"persona:probe",claimedAt:Date.now()-60000}]}}))' "$COMMONS_STORE"
+PWN="$TMP/pwned-commons-bound"
+run_lib PWN="$PWN" bash -c 'source "$1/bin/agentic-common.sh" && wait_persona_free_both "$2" probe 1 "$3" "$4"' \
+  _ "$ROOT" "$TMP/wd-commons" '(require("fs").writeFileSync(process.env.PWN,"x"),0)' "$COMMONS_STORE" > /dev/null 2>&1
+[ ! -e "$PWN" ]; check "a staleAfterMs carrying JavaScript never runs inside the commons program" "$?"
+PWN="$TMP/pwned-commons-persona"
+run_lib PWN="$PWN" bash -c 'source "$1/bin/agentic-common.sh" && wait_persona_free_both "$2" "$3" 1 90000 "$4"' \
+  _ "$ROOT" "$TMP/wd-commons" "probe'+(require(\"fs\").writeFileSync(process.env.PWN,\"x\"),'')+'" "$COMMONS_STORE" > /dev/null 2>&1
+[ ! -e "$PWN" ]; check "a persona carrying JavaScript never runs inside the commons program" "$?"
+OUT=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && wait_persona_free_both "$2" probe 1 1 "$3"' _ "$ROOT" "$TMP/wd-commons" "$COMMONS_STORE" 2>&1)
+case "$OUT" in *"commons=OK"*) check "a 1ms stale bound reads the 60s-old commons claim as free" 0 ;; *) check "a 1ms stale bound reads the 60s-old commons claim as free (out=$OUT)" 1 ;; esac
+OUT=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && wait_persona_free_both "$2" probe 1 90000 "$3"' _ "$ROOT" "$TMP/wd-commons" "$COMMONS_STORE" 2>&1)
+case "$OUT" in *"commons=FAIL"*) check "a 90000ms stale bound reads the same commons claim as held" 0 ;; *) check "a 90000ms stale bound reads the same commons claim as held (out=$OUT)" 1 ;; esac
+
 if [ "$failed" -eq 0 ]; then
   echo "settings-plugin-key-test.sh: PASS"
   exit 0

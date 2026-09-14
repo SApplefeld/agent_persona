@@ -284,7 +284,9 @@ fi
 # Which settings must be checked is derived from the script rather than listed
 # here. Every assignment of the shape NAME="${setting:-...}" is a setting,
 # whatever its default, so one written with an empty or non-numeric default
-# is enumerated too. A setting is numeric unless the exclusion list below
+# is enumerated too. Two shapes sit outside the pattern's reach: a default
+# that itself contains a closing brace, and an assignment with no double
+# quotes around the expansion. A setting is numeric unless the exclusion list below
 # names it, which is what makes a new setting get classified on purpose
 # rather than escape the pin by its punctuation. Each numeric setting has to
 # be named in a positive_number call in this script, or be a plugin value
@@ -305,9 +307,15 @@ SETTING_NAMES=$(sed -n 's/^\([A-Z][A-Z0-9_]*\)="\${[A-Za-z][A-Za-z0-9]*:-[^}]*}"
 GUARDED_NAMES=$(grep -o 'positive_number "\$[A-Z][A-Z0-9_]*"' "$SCRIPT" | sed 's/^.*"\$\([A-Z0-9_]*\)"$/\1/')
 EMITTED_NAMES=$(sed -n '/^  for var in /,/; do$/p' "$COMMON" | tr -c 'A-Za-z0-9_' '\n' | grep '^[A-Z][A-Z0-9_]*$')
 SETTING_COUNT=$(printf '%s\n' "$SETTING_NAMES" | grep -c .)
-# True when bin/supervise.sh expands the name anywhere but its own assignment.
+# True when bin/supervise.sh reads the name anywhere but its own assignment,
+# a comment, the positive_number call for that name, or the ERROR line beside
+# that call. The match is on the bare identifier, so an arithmetic read like
+# $((NAME / 1000)) counts as well as $NAME and ${NAME}. Leaving the guard and
+# its ERROR line out keeps the narrowing from being satisfied by the very
+# guard it exists to require.
 reads_itself() {
-  grep -Ev "^$1=" "$SCRIPT" | grep -Eq "\\\$\{?$1([^A-Za-z0-9_]|\$)"
+  grep -Ev "^[[:space:]]*#|^$1=|positive_number \"\\\$$1\"|ERROR: [A-Za-z]+ '\\\$$1'" "$SCRIPT" \
+    | grep -Eq "(^|[^A-Za-z0-9_])$1([^A-Za-z0-9_]|\$)"
 }
 UNCHECKED=""
 SELF_READ_EMITTED=""
