@@ -383,6 +383,7 @@ Every ground is a claim a session issues itself. Any plugin-loaded session on th
 Refused when:
 - The calling session owns the target persona (an owner does not message itself; a reader addressing the persona it reads is unaffected)
 - None of the three grounds holds
+- The target is `<coordinatorPersona>` and no live session owns it: only that persona's owner reads the record, so it would wait unread for a coordinator that may never launch
 - `persona` is given but fails the shared name rule: empty, contains `:` (records are keyed `inbox:<persona>:...`, so a colon would cross persona listings), or contains `[`, `]`, `,`, whitespace after trimming, a control character or a format character (the name is spliced into record ids and delivery labels, so any of those could forge or split a bracket). `agentic_identity`, the configured `coordinatorPersona` and the persona a session starts under apply the same rule; a start persona that fails it runs as `default` and records `persona_name_refused`.
 
 **`agentic_inbox`** (`persona?`)

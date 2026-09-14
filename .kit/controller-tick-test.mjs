@@ -5574,11 +5574,21 @@ async function caseSection3_namedOwnerReachesTheCoordinatorAndDefaultOnlyDoesNot
   clock.set(T0);
   const now = T0;
   const h = await seedNamedOwnerHarness("section3_worker_send", now, "dev", "coordinator");
+  seedForeignClaims(h, "coord-live-009", now, ["persona:coordinator"]);
   const sent = await callTool(h, { tool: SAY, text: "Escalation: the gate is red outside my diff.", persona: "coordinator" });
-  check("section3 worker send: a dev owner's say to the coordinator is accepted and written", sent.deny === undefined && readStoreRecord(h, `inbox:coordinator:${SESSION_ID}:1`)?.status === "pending", sent);
+  check("section3 worker send: a dev owner's say to a live coordinator is accepted and written", sent.deny === undefined && readStoreRecord(h, `inbox:coordinator:${SESSION_ID}:1`)?.status === "pending", sent);
   const inbox = await callTool(h, { tool: INBOX, persona: "coordinator" });
   const parsed = inbox.result ? JSON.parse(inbox.result) : null;
   check("section3 worker send: agentic_inbox on the coordinator lists the record", parsed?.inbox?.length === 1 && parsed.inbox[0].id === `coordinator-${SESSION_ID}-1`, inbox);
+
+  // With no live owner of the coordinator persona nothing would read the
+  // record, so the send is refused and the worker's standing instruction
+  // sends the finding to the operator instead. The send above, against a
+  // live coordinator claim, is the control.
+  const hn = await seedNamedOwnerHarness("section3_worker_send_no_coordinator", now, "dev", "coordinator");
+  const unheld = await callTool(hn, { tool: SAY, text: "Escalation with nobody holding the coordinator persona.", persona: "coordinator" });
+  check("section3 worker send: with no live coordinator the say is refused, naming that no live session holds it", typeof unheld.deny === "string" && unheld.deny.includes("no live session holds the 'coordinator' persona"), unheld);
+  check("section3 worker send: with no live coordinator no record was written", !hn.storeMap.has(`inbox:coordinator:${SESSION_ID}:1`));
 
   const hd = await seedNamedOwnerHarness("section3_default_send", now, "default", "coordinator");
   const refused = await callTool(hd, { tool: SAY, text: "Hello from a plain chat session.", persona: "coordinator" });

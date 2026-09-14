@@ -50,6 +50,7 @@ import type { InboxRecord } from "./operator";
 import {
   claimReaderRole,
   mayReachPersona,
+  mayReachPersonaIn,
   deliveryGroundIn,
   deliveryRecordProblem,
   quoteContinuationLines,
@@ -4417,10 +4418,19 @@ export const register: Register = async (on, options) => {
       // The reach rule: a live reader claim on the target, the coordinator
       // persona held by this session, or the target being the coordinator
       // persona while this session owns a named persona of its own.
-      const mayReach = await mayReachPersona(commonsStoreOf($), persona, sess.mySessionId, coordinatorPersona, sess.staleAfterMs);
-      if (!mayReach) {
+      const sayClaims = await readAllClaims(commonsStoreOf($), sess.staleAfterMs);
+      if (!mayReachPersonaIn(sayClaims, persona, sess.mySessionId, coordinatorPersona)) {
         toolErrorsThisTurn++;
         return { deny: `agentic_say cannot reach '${persona}': this session holds no live reader claim on it and does not hold the '${coordinatorPersona}' persona, and ${persona === coordinatorPersona ? "owns no named persona of its own to push from" : `'${persona}' is not the coordinator persona`}.` };
+      }
+      // A record to the coordinator persona is read only by that persona's
+      // owner, so while no live session owns it the record would wait unread
+      // for a coordinator that may never launch. The send is refused instead,
+      // and a worker's standing instruction takes the refusal as the cue to
+      // put its finding to the operator.
+      if (persona === coordinatorPersona && commonsWinner(sayClaims, `persona:${coordinatorPersona}`) === null) {
+        toolErrorsThisTurn++;
+        return { deny: `agentic_say cannot reach '${persona}': no live session holds the '${coordinatorPersona}' persona, so nothing would read this record; put a finding to the operator instead.` };
       }
       // BD3 part 2: when answers is set, verify it names a live open ask.
       if (answers) {
