@@ -296,6 +296,12 @@ wait_persona_free_both() {
     local commons_ok=false
     if [ -n "$global_store" ] && [ -f "$global_store" ]; then
       local line live rc
+      # The persona and the stale bound are passed as arguments rather than
+      # spliced into the program text, so a value carrying JavaScript is data
+      # the program reads instead of code it runs. A bound that is not a
+      # number reads as NaN, which the program takes as no bound at all and
+      # counts every claim as live, so the gate waits rather than passing on
+      # a bad bound.
       line=$(node -e "
 const fs = require('fs');
 let s;
@@ -305,20 +311,22 @@ try {
   console.log('ERROR: ' + e.message);
   process.exit(2);
 }
+const persona = process.argv[2];
+const staleAfterMs = Number(process.argv[3]);
+const bounded = !Number.isNaN(staleAfterMs);
 const keys = Object.keys(s).filter(k => k.startsWith('commons:'));
 const now = Date.now();
-const stale = 90000;
 let live = 0;
 for (const key of keys) {
   const e = s[key];
-  if (e.lastSeen && (now - e.lastSeen) < stale && e.claims) {
+  if (e.lastSeen && (!bounded || (now - e.lastSeen) < staleAfterMs) && e.claims) {
     for (const c of e.claims) {
-      if (c.resource === 'persona:$persona') { live++; }
+      if (c.resource === 'persona:' + persona) { live++; }
     }
   }
 }
 console.log('live=' + live);
-" "$global_store" 2>/dev/null)
+" "$global_store" "$persona" "$stale_after_ms" 2>/dev/null)
       rc=$?
       if [ $rc -eq 0 ] && ! echo "$line" | grep -q '^ERROR'; then
         live=$(echo "$line" | sed -n 's/.*live=\([0-9]*\).*/\1/p')
@@ -334,11 +342,12 @@ console.log('live=' + live);
       heartbeat_ok=true
     else
       local hb_status
-      # The stale bound is passed as an argument rather than spliced into the
-      # program text, so a value carrying JavaScript is data the program reads
-      # instead of code it runs. A value that is not a number reads as NaN,
-      # every comparison against it is false, and the holder is treated as
-      # live, so the gate waits rather than passing on a bad bound.
+      # The persona and the stale bound are passed as arguments rather than
+      # spliced into the program text, so a value carrying JavaScript is data
+      # the program reads instead of code it runs. A bound that is not a
+      # number reads as NaN, every comparison against it is false, and the
+      # holder is treated as live, so the gate waits rather than passing on
+      # a bad bound.
       hb_status=$(node -e "
 const fs = require('fs');
 let hb;
@@ -349,14 +358,14 @@ try {
   process.exit(2);
 }
 const staleAfterMs = Number(process.argv[2]);
-const entry = hb['$persona'];
+const entry = hb[process.argv[3]];
 if (!entry) {
   console.log('absent');
 } else {
   const age = Date.now() - entry.lastSeen;
   console.log(age > staleAfterMs ? 'stale:' + Math.round(age / 1000) + 's' : 'live:' + Math.round(age / 1000) + 's');
 }
-" "$heartbeat_path" "$stale_after_ms" 2>/dev/null)
+" "$heartbeat_path" "$stale_after_ms" "$persona" 2>/dev/null)
       if echo "$hb_status" | grep -q '^stale\|^absent'; then
         heartbeat_ok=true
       fi

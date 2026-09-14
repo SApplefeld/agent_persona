@@ -67,6 +67,7 @@ Four extensions, in order of what blocks the next:
 - The bash natural-exit path's coverage for item 1 is `.kit/supervisor-natural-exit-test.sh`, a stub-driven suite, in place of the live-restartpassive legs the Test bullet names. A live suite cannot reach that branch, because its child blocks on stdin until cleanup stops it.
 - Every numeric supervisor setting passes one shared check: digits only, no leading zero, at most 9 digits, greater than zero. Bash reads a leading zero as octal in arithmetic, and a value past 64 bits breaks `[ -lt ]`. A setting the code consumes as `$((value / 1000))` is checked in the unit its consumer uses, so a sub-second value cannot floor to a zero wait.
 - `staleAfterMs` reaches a `node` program through argv rather than spliced into the program body, and it passes the numeric check on the provided-settings path, which skips `emit_settings_json`.
+- Both node programs inside `wait_persona_free_both` take the stale bound through argv, so the commons check and the heartbeat check read the same value.
 - Section 6's launch shape never feeds a worker's `--prompt` from coordinator text. `bin/supervise.sh` frames `--prompt` content as the operator's trusted task, so coordinator steers reach a worker only through the labelled inbox path.
 - Section 12 runs after Sections 1 and 2 and before Section 3. Sections 7 and 8 each carry one added sentence: a worker resolves a coordinator record with `agentic_resolve` when the work is finished or declined, and the coordinator counts rounds per steer against resolutions rather than replies.
 

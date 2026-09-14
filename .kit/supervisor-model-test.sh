@@ -209,6 +209,11 @@ refused_by "MODEL 'opus]' is refused (unmatched closing bracket)" "ERROR: MODEL 
 # test one function. The call sites get their own cases further down.
 # An empty extraction means the check was renamed or removed.
 HELPER_SNIPPET=$(sed -n '/^positive_number() {/,/^}$/p' "$SCRIPT")
+# Both generated stubs below run under the same shell options as
+# bin/supervise.sh, so an unset expansion or a failed pipe stage in the
+# extracted region fails here the way it fails in production.
+STUB_OPTIONS='set -u
+set -o pipefail'
 [ -n "$HELPER_SNIPPET" ]; check "the shared numeric check is found in bin/supervise.sh" "$?"
 if [ -n "$HELPER_SNIPPET" ]; then
   # value, minimum, expected verdict.
@@ -226,7 +231,7 @@ abc 1 REFUSE
 1 1000 REFUSE
 1000 1000 PASS
 60000 1000 PASS"
-  printf '%s\n%s\n' "$HELPER_SNIPPET" \
+  printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$HELPER_SNIPPET" \
     'while read -r v m x; do if positive_number "$v" "$m"; then echo "$v $m PASS"; else echo "$v $m REFUSE"; fi; done' \
     > "$TMP/helper.sh"
   HELPER_OUT=$(printf '%s\n' "$HELPER_CASES" | bash "$TMP/helper.sh" 2>&1)
@@ -266,7 +271,7 @@ PS_BOUND_SNIPPET=$(sed -n '/^SUPERVISOR_PS_BOUND_S=/,/^SUPERVISOR_STOP_GRACE_MS=
 if [ -z "$PS_BOUND_SNIPPET" ] || [ -z "$HELPER_SNIPPET" ]; then
   check "the SUPERVISOR_PS_BOUND_S block and the shared numeric check are found in bin/supervise.sh" 1
 else
-  printf '%s\n%s\necho "PS_BOUND=$SUPERVISOR_PS_BOUND_S"\n' "$HELPER_SNIPPET" "$PS_BOUND_SNIPPET" > "$TMP/psbound.sh"
+  printf '%s\n%s\n%s\necho "PS_BOUND=$SUPERVISOR_PS_BOUND_S"\n' "$STUB_OPTIONS" "$HELPER_SNIPPET" "$PS_BOUND_SNIPPET" > "$TMP/psbound.sh"
   for pair in 00:30 abc:30 0500:30 12345678901234567890:30 0:30 45:45; do
     OUT=$(env -i PATH="$PATH" supervisorPsBoundS="${pair%%:*}" bash "$TMP/psbound.sh" 2>&1)
     case "$OUT" in
@@ -277,27 +282,54 @@ else
 fi
 
 # Which settings must be checked is derived from the script rather than listed
-# here: every assignment of the shape NAME="${setting:-<digits>}" is a numeric
-# setting. Each one has to be named in a positive_number call in this script,
-# or be one of the plugin values emit_settings_json checks on its own rule in
-# bin/agentic-common.sh. A setting added with a hand-rolled case, or with no
-# check at all, is in neither list and reds this pin; a count of calls would
-# not notice it.
+# here. Every assignment of the shape NAME="${setting:-...}" is a setting,
+# whatever its default, so one written with an empty or non-numeric default
+# is enumerated too. A setting is numeric unless the exclusion list below
+# names it, which is what makes a new setting get classified on purpose
+# rather than escape the pin by its punctuation. Each numeric setting has to
+# be named in a positive_number call in this script, or be a plugin value
+# emit_settings_json checks on its own rule in bin/agentic-common.sh.
+#
+# That second excuse reaches only a name the supervisor never reads for
+# itself. emit_settings_json is skipped whenever the rundir already holds a
+# settings file, so a name the supervisor expands anywhere but its own
+# assignment carries a positive_number call whatever the emitter checks. The
+# last leg proves the narrowing has a subject, so it cannot go quiet by
+# having nothing to bite on.
+#
+# A setting added with a hand-rolled case, or with no check at all, is in
+# neither list and reds this pin; a count of calls would not notice it.
 COMMON="$HERE/../bin/agentic-common.sh"
-NUMERIC_NAMES=$(sed -n 's/^\([A-Z][A-Z0-9_]*\)="\${[A-Za-z][A-Za-z0-9]*:-[0-9][0-9]*}".*/\1/p' "$SCRIPT")
+NON_NUMERIC_NAMES="SUPERVISOR_MODEL SUPERVISOR_EFFORT"
+SETTING_NAMES=$(sed -n 's/^\([A-Z][A-Z0-9_]*\)="\${[A-Za-z][A-Za-z0-9]*:-[^}]*}".*/\1/p' "$SCRIPT")
 GUARDED_NAMES=$(grep -o 'positive_number "\$[A-Z][A-Z0-9_]*"' "$SCRIPT" | sed 's/^.*"\$\([A-Z0-9_]*\)"$/\1/')
 EMITTED_NAMES=$(sed -n '/^  for var in /,/; do$/p' "$COMMON" | tr -c 'A-Za-z0-9_' '\n' | grep '^[A-Z][A-Z0-9_]*$')
-NUMERIC_COUNT=$(printf '%s\n' "$NUMERIC_NAMES" | grep -c .)
+SETTING_COUNT=$(printf '%s\n' "$SETTING_NAMES" | grep -c .)
+# True when bin/supervise.sh expands the name anywhere but its own assignment.
+reads_itself() {
+  grep -Ev "^$1=" "$SCRIPT" | grep -Eq "\\\$\{?$1([^A-Za-z0-9_]|\$)"
+}
 UNCHECKED=""
-for n in $NUMERIC_NAMES; do
+SELF_READ_EMITTED=""
+NUMERIC_COUNT=0
+for n in $SETTING_NAMES; do
+  case " $NON_NUMERIC_NAMES " in *" $n "*) continue ;; esac
+  NUMERIC_COUNT=$((NUMERIC_COUNT + 1))
+  emitted=false
+  printf '%s\n' "$EMITTED_NAMES" | grep -qx "$n" && emitted=true
+  self_read=false
+  reads_itself "$n" && self_read=true
+  $emitted && $self_read && SELF_READ_EMITTED="$SELF_READ_EMITTED $n"
   printf '%s\n' "$GUARDED_NAMES" | grep -qx "$n" && continue
-  printf '%s\n' "$EMITTED_NAMES" | grep -qx "$n" && continue
+  $emitted && ! $self_read && continue
   UNCHECKED="$UNCHECKED $n"
 done
-[ -n "$GUARDED_NAMES" ] && [ -n "$EMITTED_NAMES" ] && [ "$NUMERIC_COUNT" -ge 8 ]
-check "the numeric settings, the checked names and the emitted names all read out of the sources ($NUMERIC_COUNT numeric settings found)" "$?"
+[ -n "$GUARDED_NAMES" ] && [ -n "$EMITTED_NAMES" ] && [ "$SETTING_COUNT" -ge 8 ]
+check "the settings, the checked names and the emitted names all read out of the sources ($SETTING_COUNT settings found, $NUMERIC_COUNT numeric)" "$?"
 [ -z "$UNCHECKED" ]
-check "every numeric setting is named in a positive_number call or in emit_settings_json's list (unchecked:${UNCHECKED:- none})" "$?"
+check "every numeric setting is named in a positive_number call, or is emitted and never read by the supervisor itself (unchecked:${UNCHECKED:- none})" "$?"
+[ -n "$SELF_READ_EMITTED" ]
+check "the narrowing has a subject: an emitted setting the supervisor also reads for itself (${SELF_READ_EMITTED# })" "$?"
 
 # --- Every live suite that launches bin/supervise.sh exports MODEL and EFFORT ---
 # The suite launches the supervisor as a separate process, so only an exported

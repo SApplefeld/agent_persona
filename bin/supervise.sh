@@ -124,9 +124,11 @@ if [ -z "$CHANNEL_NAME" ]; then
 fi
 
 # The shared check for the numeric settings this script reads itself. The
-# plugin values further down are a different set on a different rule, the one
-# emit_settings_json applies in bin/agentic-common.sh, since those are spliced
-# into JSON rather than used in arithmetic here.
+# plugin values further down are, with one exception, a different set on a
+# different rule, the one emit_settings_json applies in bin/agentic-common.sh,
+# since those are spliced into JSON rather than used in arithmetic here. The
+# exception is staleAfterMs, which this script also reads for itself, so it
+# takes this check too, at its own assignment below.
 #
 # The rule: digits only, no leading zero, at most nine digits, and at least
 # the given minimum, which defaults to 1. Each clause stops a distinct way a
@@ -269,7 +271,7 @@ if ! positive_number "$SUPERVISOR_PRIMING_WAIT_S"; then
   exit 1
 fi
 if ! positive_number "$SUPERVISOR_STOP_GRACE_MS" 1000; then
-  echo "ERROR: supervisorStopGraceMs '$SUPERVISOR_STOP_GRACE_MS' is not a whole number of milliseconds of at least 1000 (digits only, no leading zero, at most 9 digits); it is divided by 1000, so a smaller value is a zero-second grace" >&2
+  echo "ERROR: supervisorStopGraceMs '$SUPERVISOR_STOP_GRACE_MS' is not a whole number of milliseconds of at least 1000, written with digits only, no leading zero and at most 9 digits. The stop grace is divided by 1000, so anything smaller is a zero-second grace." >&2
   exit 1
 fi
 if ! positive_number "$SUPERVISOR_MIN_RUN_MS"; then
@@ -285,7 +287,7 @@ if ! positive_number "$SUPERVISOR_MAX_RESTARTS_PER_HOUR"; then
   exit 1
 fi
 if ! positive_number "$SUPERVISOR_POLL_MS" 1000; then
-  echo "ERROR: supervisorPollMs '$SUPERVISOR_POLL_MS' is not a whole number of milliseconds of at least 1000 (digits only, no leading zero, at most 9 digits); it is divided by 1000, so a smaller value polls with no wait at all" >&2
+  echo "ERROR: supervisorPollMs '$SUPERVISOR_POLL_MS' is not a whole number of milliseconds of at least 1000, written with digits only, no leading zero and at most 9 digits. The poll interval is divided by 1000, so anything smaller polls with no wait at all." >&2
   exit 1
 fi
 
