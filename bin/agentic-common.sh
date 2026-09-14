@@ -51,8 +51,8 @@ esac
 #          staleAfterMs, contextBudgetEnabled, budget thresholds when set,
 #          arming (always "owner": every supervisor launch is an owner), and
 #          coordinatorPersona (from COORDINATOR_PERSONA, default "coordinator").
-# Exports COORDINATOR_PERSONA to the value it wrote, so bin/supervise.sh can
-# compare $PERSONA against it later without reading plugin config itself.
+# Exports COORDINATOR_PERSONA to the value it wrote, so a caller can compare
+# its own persona against the same name without parsing the settings file.
 emit_settings_json() {
   local out="$1"
   local self_review_opts=""
@@ -130,9 +130,9 @@ emit_settings_json() {
     echo "ERROR: emit_settings_json: COORDINATOR_PERSONA must not be 'default'" >&2
     return 1
   fi
-  # bin/supervise.sh never reads plugin config itself; this export is how
-  # its own priming-injection check (Section 8) compares $PERSONA against
-  # the same name this function just wrote into coordinatorPersona.
+  # This export lets a caller compare its own persona against the name this
+  # function just wrote into coordinatorPersona, without parsing the
+  # settings file itself.
   export COORDINATOR_PERSONA="$coordinator_persona"
   # pluginConfigs is keyed by plugin id: the manifest name under --plugin-dir,
   # and "<name>@<marketplace>" for the installed copy. The installed form is
@@ -191,14 +191,17 @@ try {
 # --- ensure_settings_arming ---
 # Usage: ensure_settings_arming <settings-file>
 # For a settings file the caller already provided: under each of the two
-# plugin ids that has a non-empty options object, sets options.arming to
-# "owner" where the caller's file omits it, leaving every option the caller
-# did write, arming included, exactly as written. A relaunch reusing an
-# older settings file with no arming key would otherwise start the child as
-# "off" (no tool, no claim) with nothing saying so. The file is replaced by
-# rename, same as ensure_settings_plugin_ids, so an interrupted write never
-# leaves it truncated. Returns 1 on the same conditions that function does,
-# with the same error-line shape; exits 0 when nothing needed changing.
+# plugin ids, creates pluginConfigs, the id entry and its options object
+# where any of them is absent, and sets options.arming to "owner" where an
+# id's options omit the key, leaving every other option the caller wrote
+# exactly as written. Where an id's options.arming is present and is not
+# exactly "owner", the function refuses and exits 1 without writing: a
+# supervisor launch always drives a goal tree as an owner, so a settings
+# file naming another tier is a mistake to refuse rather than a value to
+# honor. The file is replaced by rename, same as ensure_settings_plugin_ids,
+# so an interrupted write never leaves it truncated. Returns 1 on the same
+# conditions that function does, with the same error-line shape, plus the
+# arming refusal above; exits 0 when nothing needed changing.
 ensure_settings_arming() {
   node -e '
 const fs = require("fs");
@@ -208,18 +211,18 @@ const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 let s;
 try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
 if (!plain(s)) fail("is not a JSON object");
-if (s.pluginConfigs === undefined) process.exit(0);
+let changed = false;
+if (s.pluginConfigs === undefined) { s.pluginConfigs = {}; changed = true; }
 const pc = s.pluginConfigs;
 if (!plain(pc)) fail("has a pluginConfigs value that is not an object");
-let changed = false;
 for (const id of [devId, installedId]) {
-  if (pc[id] === undefined) continue;
+  if (pc[id] === undefined) { pc[id] = {}; changed = true; }
   if (!plain(pc[id])) fail("has a " + id + " entry that is not an object");
+  if (pc[id].options === undefined) { pc[id].options = {}; changed = true; }
   const opts = pc[id].options;
-  if (opts === undefined) continue;
   if (!plain(opts)) fail("has " + id + " options that are not an object");
-  if (Object.keys(opts).length === 0) continue;
   if (opts.arming === undefined) { opts.arming = "owner"; changed = true; }
+  else if (opts.arming !== "owner") fail("carries arming '"'"'" + opts.arming + "'"'"' under " + id + "; a supervisor launch is always owner");
 }
 if (!changed) process.exit(0);
 const tmp = file + ".tmp-" + process.pid;

@@ -48,10 +48,10 @@ or, once it's already running passively, by talking to its Discord thread (attac
 **Launch the coordinator**, a second supervised session whose owner may address every persona's inbox:
 
 ```
-MODEL=fable TICK_MS=60000 COORDINATOR_PERSONA=coordinator bin/supervise.sh /path/to/a/workdir coordinator bypassPermissions --channel-name coordinator
+MODEL=fable controllerTickMs=60000 COORDINATOR_PERSONA=coordinator bin/supervise.sh /path/to/a/workdir coordinator bypassPermissions --rundir /path/to/a/rundir --channel-name coordinator
 ```
 
-The persona argument and `COORDINATOR_PERSONA` name the same persona. The thread name defaults to `supervisor-<persona>`, so `--channel-name coordinator` gives the coordinator its own Discord thread, separate from any worker's. `TICK_MS` is set six times the supervisor default so the coordinator polls the shared store less often than a worker polls its own goal tree. The launch omits `--dev`, since the coordinator loads the same installed copy every worker does.
+The persona argument and `COORDINATOR_PERSONA` name the same persona. The thread name defaults to `supervisor-<persona>`; `--channel-name` replaces it with a name of the operator's choosing, here `coordinator`, separate from any worker's. `controllerTickMs` is set six times the supervisor default so the coordinator polls the shared store less often than a worker polls its own goal tree. The launch omits `--dev`, since the coordinator loads the same installed copy every worker does.
 
 **The arming key** gates what a session's hooks do, in three values. `owner` is the full worker/coordinator shape; a supervisor launch always writes it. `reader` registers `agentic_identity`/`agentic_say`/`agentic_inbox` only, with no goal-tree tool and no ownership ever - an interactive reader session takes this shape by passing a settings file with `"arming":"reader"` under both plugin ids through `--settings`. `off`, the default for a session that omits the key, registers no tool, timer, or claim at all: a peer message still reaches an `off` session as the harness delivers it, since no hook consumes it, and nothing is written to `.agentic-personas.json` or the commons store.
 
@@ -447,7 +447,7 @@ When the reader answers the ask, the owner's controller is reactivated (`reactiv
 Two options are defined in the plan (section 6) with defaults in force:
 
 1. **Ask wait default:** Whether the owner's ask waits indefinitely for a reply or times out. Default: **60 minutes** (`askOperatorWaitMs` unset, code fallback `hooks/index.ts:142`).
-2. **Peer text:** Whether peer text is consumed by the `session.receive` hook or passed through with a `[PEER]` prefix. Default: **consumed** (the hook returns `{ consumed: reason }` and nothing is queued, shown, or read by the model). Under `arming` `off` no hook runs at all, this one included, so peer text reaches the model exactly as the harness delivers it.
+2. **Peer text:** Whether peer text is consumed by the `session.receive` hook or passed through with a `[PEER]` prefix. Default: **consumed** (the hook returns `{ consumed: reason }` and nothing is queued, shown, or read by the model). Under `arming` `off` no hook but the tier's own start-up log line runs, so peer text reaches the model exactly as the harness delivers it.
 
 The operator has not yet ruled on these options; the defaults are in force.
 

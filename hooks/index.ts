@@ -1276,7 +1276,7 @@ export const register: Register = async (on, options) => {
         sess.state = createDefaultState(sess.persona, sess.mySessionId);
       }
       sess.isOwner = false;
-      sess.myEpoch = 0;
+      sess.myEpoch = existingPersona?.epoch ?? 0;
       sess.state.decisions.push({
         timestamp: Date.now(),
         loop: "monitor",
@@ -3705,16 +3705,11 @@ export const register: Register = async (on, options) => {
       const previousPersona = sess.persona;
       sess.persona = name;
       if (arming === "reader") {
-        // Section 6: a reader session never claims persona:<name> here,
-        // never arbitrates for it, and never becomes its owner - it only
-        // ever joins as a reader. The previous persona's own reader claim
-        // (never a persona: claim, which a reader never holds) is released
-        // so switching away leaves no stale reader entry behind.
-        if (previousPersona && previousPersona !== name) {
-          try {
-            await releaseResource(commonsStoreOf($), `reader:${previousPersona}`, sess.mySessionId, Date.now(), commonsMeta());
-          } catch { /* non-fatal: commons is a coordination layer */ }
-        }
+        // A reader session never claims persona:<name> here, never
+        // arbitrates for it, and never becomes its owner: it only ever
+        // joins as a reader. It keeps every reader:<target> claim it has
+        // made, because delivery grounds each pending record on a live
+        // reader:<target> claim at delivery time.
         const store: Record<string, unknown> = await $.fs.exists(storePath)
           ? (JSON.parse(await $.fs.read(storePath)) as Record<string, unknown>)
           : {};

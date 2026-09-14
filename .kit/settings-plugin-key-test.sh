@@ -61,12 +61,15 @@ case "$R" in *"PERSONA_DEV=keyprobe;"*) check "emitted: --plugin-dir id carries 
 case "$R" in *"ARMING_DEV=owner;"*"ARMING_INSTALLED=owner;"*) check "emitted: both ids carry arming owner" 0 ;; *) check "emitted: both ids carry arming owner (out=$R)" 1 ;; esac
 case "$R" in *"COORD_DEV=coordinator;"*"COORD_INSTALLED=coordinator;"*) check "emitted: both ids carry coordinatorPersona coordinator (default)" 0 ;; *) check "emitted: both ids carry coordinatorPersona coordinator (default) (out=$R)" 1 ;; esac
 
-# --- Section 6: emit_settings_json exports COORDINATOR_PERSONA for the caller ---
-# bin/supervise.sh never reads plugin config itself, so its own priming check
-# (Section 8) reads this export rather than the settings file it just wrote.
+# --- emit_settings_json exports COORDINATOR_PERSONA for the caller ---
+# The export lets a caller compare its own persona against the name it wrote
+# into coordinatorPersona without parsing the settings file.
 EXPORTED=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2" >/dev/null && export -p | grep -c "COORDINATOR_PERSONA="' _ "$ROOT" "$TMP/exported.json")
 [ "$EXPORTED" = "1" ]; check "emit_settings_json exports COORDINATOR_PERSONA" "$?"
-COORD_VALUE=$(run_lib COORDINATOR_PERSONA="lead" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2" >/dev/null && echo "$COORDINATOR_PERSONA"' _ "$ROOT" "$TMP/exported2.json")
+# The value is read from a grandchild bash -c, which inherits an env var
+# only when it was actually exported; a plain assignment in this shell
+# would already answer "lead" without exercising the export at all.
+COORD_VALUE=$(run_lib bash -c 'COORDINATOR_PERSONA="lead"; source "$1/bin/agentic-common.sh" && emit_settings_json "$2" >/dev/null && bash -c '\''echo "$COORDINATOR_PERSONA"'\''' _ "$ROOT" "$TMP/exported2.json")
 [ "$COORD_VALUE" = "lead" ]; check "emit_settings_json exports the given COORDINATOR_PERSONA value ($COORD_VALUE)" "$?"
 
 # --- Section 6: COORDINATOR_PERSONA "default" is refused ---
@@ -116,12 +119,34 @@ check "ensure_settings_arming exits 0 on a file with no arming key" "$?"
 R=$(inspect "$TMP/noarm.json")
 case "$R" in *"PERSONA_DEV=noarm;"*"ARMING_DEV=owner;"*"ARMING_INSTALLED=owner;"*"TICK_DEV=11;"*) check "a missing arming key gains owner under both ids, other options unchanged" 0 ;; *) check "a missing arming key gains owner under both ids, other options unchanged (out=$R)" 1 ;; esac
 
-# Control: a provided arming value is left exactly as written, never
-# overwritten to owner.
+# A provided arming value naming another tier is refused, not honored: a
+# supervisor launch always drives a goal tree as an owner.
 printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":11,"arming":"reader"}}}}' > "$TMP/hasarm.json"
-run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids "$2" && ensure_settings_arming "$2"' _ "$ROOT" "$TMP/hasarm.json"
-R=$(inspect "$TMP/hasarm.json")
-case "$R" in *"ARMING_DEV=reader;"*"ARMING_INSTALLED=reader;"*) check "control: a provided arming value is kept, not overwritten to owner" 0 ;; *) check "control: a provided arming value is kept, not overwritten to owner (out=$R)" 1 ;; esac
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids "$2"' _ "$ROOT" "$TMP/hasarm.json"
+BEFORE=$(cat "$TMP/hasarm.json")
+ERR=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_arming "$2"' _ "$ROOT" "$TMP/hasarm.json" 2>&1)
+RC=$?
+case "$RC:$ERR" in 1:*"carries arming 'reader' under agentic-plugin; a supervisor launch is always owner"*) check "ensure_settings_arming refuses a provided arming value naming another tier" 0 ;; *) check "ensure_settings_arming refuses a provided arming value naming another tier (rc=$RC, err=$ERR)" 1 ;; esac
+[ "$(cat "$TMP/hasarm.json")" = "$BEFORE" ]; check "a refused arming value leaves the file byte for byte unchanged" "$?"
+
+# ensure_settings_arming completes an empty file to owner under both ids,
+# creating pluginConfigs and both id entries from nothing, and leaves any
+# sibling key (here a permissions block) untouched.
+printf '%s' '{"permissions":{"allow":[]}}' > "$TMP/empty.json"
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_arming "$2"' _ "$ROOT" "$TMP/empty.json"
+check "ensure_settings_arming exits 0 on an empty file" "$?"
+R=$(inspect "$TMP/empty.json")
+case "$R" in *"ARMING_DEV=owner;"*"ARMING_INSTALLED=owner;"*) check "an empty file gains owner under both ids" 0 ;; *) check "an empty file gains owner under both ids (out=$R)" 1 ;; esac
+node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.exit(s.permissions && Array.isArray(s.permissions.allow) ? 0 : 1);' "$TMP/empty.json"
+check "an empty file's permissions sibling key survives completion" "$?"
+
+# ensure_settings_arming completes a file naming only the dev id with empty
+# options, gaining the installed id from nothing and owner under both.
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{}}}}' > "$TMP/onlydev.json"
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_arming "$2"' _ "$ROOT" "$TMP/onlydev.json"
+check "ensure_settings_arming exits 0 on a file naming only the dev id" "$?"
+R=$(inspect "$TMP/onlydev.json")
+case "$R" in *"ARMING_DEV=owner;"*"ARMING_INSTALLED=owner;"*) check "a file naming only the dev id gains owner under both ids" 0 ;; *) check "a file naming only the dev id gains owner under both ids (out=$R)" 1 ;; esac
 
 # Shapes that cannot hold options are refused rather than repaired.
 for shape in '{"pluginConfigs":[]}' '{"pluginConfigs":{"agentic-plugin":"x"}}' '{"pluginConfigs":{"agentic-plugin":{"options":"x"}}}'; do
@@ -194,6 +219,17 @@ RC=$?
 check "driven supervise.sh stops at the gate without launching (rc=$RC)" "$?"
 R=$(inspect "$TMP/rd-ok/settings.json")
 case "$R" in *"INSTALLED_KEY=1"*"SAME_OPTIONS=1"*"PERSONA_DEV=fromfile;"*"PERSONA_INSTALLED=fromfile;"*) check "supervise.sh completes a provided --plugin-dir-only file, keeping its persona" 0 ;; *) check "supervise.sh completes a provided --plugin-dir-only file, keeping its persona" 1 ;; esac
+
+# --- controllerTickMs reaches the emitted settings file (M1) ---
+# A fresh rundir with no settings.json takes the emit_settings_json path,
+# where the env override must survive the library's own PROFILE assignment.
+mkdir -p "$TMP/rd-tick"
+OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" controllerTickMs=60000 \
+  bash "$SUP" "$TMP/wd" tester default --rundir "$TMP/rd-tick" --no-channel 2>&1)
+RC=$?
+[ "$RC" -eq 2 ]; check "driven supervise.sh with controllerTickMs=60000 stops at the gate (rc=$RC)" "$?"
+R=$(inspect "$TMP/rd-tick/settings.json")
+case "$R" in *"TICK_DEV=60000;"*) check "supervise.sh emits controllerTickMs into the settings file (out=$R)" 0 ;; *) check "supervise.sh emits controllerTickMs into the settings file (out=$R)" 1 ;; esac
 
 printf '%s' '{"pluginConfigs":' > "$TMP/rd/settings.json"
 OUT=$(drive tester "$TMP/rd")

@@ -8155,7 +8155,7 @@ async function caseSection6_reader_heartbeatNeverPromotes(clock) {
 // call, but appends no [GOAL TREE]/[NO GOAL]/[ENV]/[LESSON]/[MEMORY] block:
 // a reader owns no goal tree of its own to nag about.
 async function caseSection6_reader_promptSubmitAppendsNoContext(clock) {
-  console.log("\n=== Section 6 reader: prompt.submit with an empty goal tree appends no context block ===");
+  console.log("\n=== Section 6 reader: prompt.submit with a seeded goal tree appends no context block ===");
   clock.set(T0);
   const h = await createTickHarness({ ...OPTS, arming: "reader", caseName: "s6_reader_prompt" });
   const submitH = h.handlers["prompt.submit"];
@@ -8175,7 +8175,7 @@ async function caseSection6_reader_identitySwitchJoinsAsReaderNotOwner(clock) {
   const entry = h.storeMap.get(`commons:${SESSION_ID}`);
   check("s6 reader identity: entry holds reader:someone", !!entry && entry.claims.some((c) => c.resource === "reader:someone"), entry);
   check("s6 reader identity: entry holds no persona:someone", !!entry && !entry.claims.some((c) => c.resource === "persona:someone"), entry);
-  check("s6 reader identity: the old reader:default claim was released", !!entry && !entry.claims.some((c) => c.resource === "reader:default"), entry);
+  check("s6 reader identity: the entry still holds reader:default beside reader:someone", !!entry && entry.claims.some((c) => c.resource === "reader:default") && entry.claims.some((c) => c.resource === "reader:someone"), entry);
 }
 
 // Control: a reader still writes an inbox record through agentic_say to the

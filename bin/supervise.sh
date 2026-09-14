@@ -303,11 +303,6 @@ if ! positive_number "$STALE_AFTER_MS"; then
   echo "ERROR: staleAfterMs '$STALE_AFTER_MS' is not a whole number of milliseconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
   exit 1
 fi
-TICK_MS="${controllerTickMs:-10000}"
-NUDGE_IDLE_MS="${nudgeIdleMs:-45000}"
-NUDGE_FLOOR_MS="${nudgeFloorMs:-5000}"
-GIT_PROBE_MS="${gitProbeMs:-30000}"
-
 # Budget thresholds (from the test profile, or defaults)
 CONTEXT_BUDGET_INFO_TOKENS="${contextBudgetInfoTokens:-}"
 CONTEXT_BUDGET_CLOSEOUT_TOKENS="${contextBudgetCloseoutTokens:-}"
@@ -332,6 +327,14 @@ _COMMON="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agentic-common.sh"
 # shellcheck source=agentic-common.sh
 source "$_COMMON"
 
+# Sourcing agentic-common.sh above assigns these four from its own PROFILE
+# case. They are set here, after the source, so this launch's env overrides
+# apply instead of being clobbered by the library's defaults.
+TICK_MS="${controllerTickMs:-10000}"
+NUDGE_IDLE_MS="${nudgeIdleMs:-45000}"
+NUDGE_FLOOR_MS="${nudgeFloorMs:-5000}"
+GIT_PROBE_MS="${gitProbeMs:-30000}"
+
 # --- Emit settings JSON (only if not already provided) ---
 # A provided file keeps its options, and gains whichever plugin id it lacks,
 # so a rundir written for one load mode still reaches the plugin in the other.
@@ -345,10 +348,10 @@ else
     echo "ERROR: could not complete $SETTINGS_FILE; see $LOG" | tee -a "$LOG" >&2
     exit 1
   fi
-  # Section 6: a provided settings file with no arming key would otherwise
-  # start this launch's child as "off" (no tool, no claim), silently -
-  # every supervisor launch is an owner, so a missing key is completed the
-  # same way a missing plugin id is, leaving any value the caller did write.
+  # A provided settings file with no arming key would otherwise start this
+  # launch's child as "off" (no tool, no claim), silently. Every supervisor
+  # launch is an owner, so a missing key is completed to owner where absent,
+  # and refused where it names another tier.
   if ! ensure_settings_arming "$SETTINGS_FILE" 2>>"$LOG"; then
     echo "ERROR: could not complete $SETTINGS_FILE; see $LOG" | tee -a "$LOG" >&2
     exit 1
