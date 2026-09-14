@@ -3156,13 +3156,16 @@ async function main() {
     await caseSection12_F1_resolveInsideTheAnsweringTurnKeepsTheReply(clock);
     await caseSection12_F2_windowRollKeepsAnOpenSteersReply(clock);
     await caseSection12_F3_failedNudgeResetsTheNudgedFlag(clock);
-    await caseSection12_F4_failedDeliverySubmitReturnsTheRecordToPending(clock);
+    await caseSection12_F4_failedDeliverySubmitLeavesTheRecordDelivered(clock);
     await caseSection12_G1_lateRejectingSubmitLeavesAnAnsweredRecord(clock);
     await caseSection12_G2_sweepAgesOffDeliveryAndKeepsReplyWithRecord(clock);
-    await caseSection12_G3_failedAskAnswerDeliveryReopensTheAsk(clock);
+    await caseSection12_G3_failedAskAnswerSubmitLeavesTheAskClosed(clock);
     await caseSection12_6_pluginTurnDoesNotTakeTheStamp(clock);
     await caseSection12_H1_deliveryTurnOpensAheadOfAQueuedBackstop(clock);
     await caseSection12_H1_parkedPluginTurnAfterAnExternalTurnTakesNoStamp(clock);
+    await caseSection12_J1_unmatchedTurnTextTakesNoStamp(clock);
+    await caseSection12_J1_continuationTurnTakesNoStamp(clock);
+    await caseSection12_J2_droppedPromptDoesNotLeaveTheExternalFlagSet(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
     await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
     await caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock);
@@ -4275,7 +4278,7 @@ async function caseSection12_6_foreignTurnDoesNotTakeTheStamp(clock) {
   await tickAndSettle(h, clock, 50);
   check("section12.6 channel: record delivered (setup sanity)", readStoreRecord(h, key)?.status === "delivered");
   await h.handlers["prompt.submit"](h.fake, { text: "What's the status?", origin: { kind: "channel" } }, async () => ({}));
-  await h.handlers["turn.start"](h.fake, { turnId: "t-channel" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-channel", text: "What's the status?" }, async () => ({ result: "ok" }));
   const afterStart = readStoreRecord(h, key);
   check("section12.6 channel: record not stamped with the channel turn", afterStart?.turnId === undefined, afterStart);
   check("section12.6 channel: operator_stamp_withheld names the record and channel-origin",
@@ -4321,7 +4324,7 @@ async function caseSection12_6_foreignTurnDoesNotTakeTheStamp(clock) {
   await tickAndSettle(k.h, clock, 50);
   check("section12.6 keyboard: record delivered (setup sanity)", readStoreRecord(k.h, k.key)?.status === "delivered");
   await k.h.handlers["prompt.submit"](k.h.fake, { text: "Typed at the keyboard.", origin: { kind: "keyboard" } }, async () => ({}));
-  await k.h.handlers["turn.start"](k.h.fake, { turnId: "t-keyboard" }, async () => ({ result: "ok" }));
+  await k.h.handlers["turn.start"](k.h.fake, { turnId: "t-keyboard", text: "Typed at the keyboard." }, async () => ({ result: "ok" }));
   const afterKeyboardStart = readStoreRecord(k.h, k.key);
   check("section12.6 keyboard: record not stamped with the keyboard turn", afterKeyboardStart?.turnId === undefined, afterKeyboardStart);
   check("section12.6 keyboard: operator_stamp_withheld names the record and external",
@@ -4567,10 +4570,12 @@ async function caseSection12_F3_failedNudgeResetsTheNudgedFlag(clock) {
     decisions.some((d) => d.action === "context_budget_nudge_failed" && d.detail.includes("submit refused for the nudge")) && !decisions.some((d) => d.action === "context_budget_nudge"));
 }
 
-// F4: a refused delivery submit returns the record to pending, consumes the
-// submitted id, and the next tick delivers it again.
-async function caseSection12_F4_failedDeliverySubmitReturnsTheRecordToPending(clock) {
-  console.log("\n=== Section 12 F4: a refused delivery submit returns the record to pending for the next tick ===");
+// F4 (ruled form): a refused delivery submit consumes the stamp handoff it
+// armed and records the refusal, and nothing else. The record stays
+// delivered with its deliveredAt, its entry is gone from the list, and no
+// delivery is retried; the TTL ages it out.
+async function caseSection12_F4_failedDeliverySubmitLeavesTheRecordDelivered(clock) {
+  console.log("\n=== Section 12 F4: a refused delivery submit leaves the record delivered, unstamped, and not retried ===");
   clock.set(T0);
   const now = T0;
   const { h, key, id } = await seedOwnerWithPendingRecord("section12_f4_delivery_failed", now, "writer-f4");
@@ -4579,21 +4584,22 @@ async function caseSection12_F4_failedDeliverySubmitReturnsTheRecordToPending(cl
   await new Promise((r) => setTimeout(r, 50));
   check("section12.F4: the delivery was attempted (setup sanity)", (h.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 1);
   const afterFail = readStoreRecord(h, key);
-  check("section12.F4: record back to pending after the refused submit", afterFail?.status === "pending" && afterFail?.deliveredAt === undefined, afterFail);
+  check("section12.F4: record stays delivered with deliveredAt intact", afterFail?.status === "delivered" && typeof afterFail?.deliveredAt === "number", afterFail);
   check("section12.F4: operator_delivery_failed names the record and the error",
     getDecisions(h).some((d) => d.action === "operator_delivery_failed" && d.detail.includes(id) && d.detail.includes("submit refused for the delivery")));
 
-  await h.handlers["turn.start"](h.fake, { turnId: "t-unrelated" }, async () => ({ result: "ok" }));
-  check("section12.F4: an unrelated turn stamps nothing", readStoreRecord(h, key)?.turnId === undefined);
-  check("section12.F4: an unrelated turn withholds nothing", !getDecisions(h).some((d) => d.action === "operator_stamp_withheld"));
-  await h.handlers["turn.complete"](h.fake, { turnId: "t-unrelated", answer: "unrelated", reason: "completed" }, async () => ({ result: "ok" }));
+  // Its entry is gone: a turn opening with the delivery's own text is not
+  // matched, so it stamps nothing and no withheld decision names it.
+  await h.handlers["turn.start"](h.fake, { turnId: "t-after-refusal", text: "[OPERATOR] message 1" }, async () => ({ result: "ok" }));
+  check("section12.F4: a later turn with the delivery's text stamps nothing", readStoreRecord(h, key)?.turnId === undefined);
+  check("section12.F4: a later turn withholds nothing (no delivery queued)", !getDecisions(h).some((d) => d.action === "operator_stamp_withheld"));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-after-refusal", answer: "unrelated", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.F4: no reply written", !h.storeMap.has(`reply:default:${id}`));
 
   h.failPromptSubmits(null);
   clock.advance(10_000);
   await tickAndSettle(h, clock, 50);
-  check("section12.F4: the next tick delivers the record", readStoreRecord(h, key)?.status === "delivered" && (h.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 2);
-  await h.handlers["turn.start"](h.fake, { turnId: "t-own-retry" }, async () => ({ result: "ok" }));
-  check("section12.F4: the retried delivery's own turn takes the stamp", readStoreRecord(h, key)?.turnId === "t-own-retry");
+  check("section12.F4: the next tick does not retry the delivery", (h.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 1 && readStoreRecord(h, key)?.status === "delivered");
 }
 
 // G1: the real submit parks until the session is next idle, so a rejection
@@ -4614,7 +4620,9 @@ async function caseSection12_G1_lateRejectingSubmitLeavesAnAnsweredRecord(clock)
   const tick = fireTick(h);
   const queued = await waitUntil(() => rejectParked !== null);
   check("section12.G1: the delivery's submit is parked (setup sanity)", queued && readStoreRecord(h, key)?.status === "delivered");
-  await h.handlers["turn.start"](h.fake, { turnId: "t-late" }, async () => ({ result: "ok" }));
+  // The stub's submit is overridden above, so the harness's text queue never
+  // saw this delivery: the turn carries its text explicitly.
+  await h.handlers["turn.start"](h.fake, { turnId: "t-late", text: "[OPERATOR] message 1" }, async () => ({ result: "ok" }));
   check("section12.G1: the delivery's own turn took the stamp under the parked submit (setup sanity)", readStoreRecord(h, key)?.turnId === "t-late");
   await h.handlers["turn.complete"](h.fake, { turnId: "t-late", answer: "Answered under the parked submit.", reason: "completed" }, async () => ({ result: "ok" }));
   rejectParked(new Error("late rejection"));
@@ -4623,8 +4631,8 @@ async function caseSection12_G1_lateRejectingSubmitLeavesAnAnsweredRecord(clock)
   const rec = readStoreRecord(h, key);
   check("section12.G1: record stays answered, not reverted to pending", rec?.status === "answered" && rec?.turnId === "t-late" && rec?.deliveredAt !== undefined, rec);
   check("section12.G1: the reply is still there", readStoreRecord(h, `reply:default:${id}`)?.text === "Answered under the parked submit.");
-  check("section12.G1: operator_delivery_failed says the turn had already opened",
-    getDecisions(h).some((d) => d.action === "operator_delivery_failed" && d.detail.includes(id) && d.detail.includes("already opened") && d.detail.includes("late rejection")));
+  check("section12.G1: operator_delivery_failed names the record and the rejection",
+    getDecisions(h).some((d) => d.action === "operator_delivery_failed" && d.detail.includes(id) && d.detail.includes("late rejection")));
   clock.advance(10_000);
   await tickAndSettle(h, clock, 50);
   check("section12.G1: the next tick does not re-deliver it", (h.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 1 && readStoreRecord(h, key)?.status === "answered");
@@ -4662,15 +4670,14 @@ async function caseSection12_G2_sweepAgesOffDeliveryAndKeepsReplyWithRecord(cloc
   check("section12.G2 control: swept count is 3", swept === 3, swept);
 }
 
-// G3: the F4 shape on the ask-answer path. The ask was closed, the node
-// reactivated and pendingAskId cleared before the submit; a refused submit
-// puts all three back so the next tick delivers through the ask path with
-// its question framing.
-async function caseSection12_G3_failedAskAnswerDeliveryReopensTheAsk(clock) {
-  console.log("\n=== Section 12 G3: a refused ask-answer delivery reopens the ask for the next tick ===");
+// G3 (ruled form): the F4 shape on the ask-answer path. The ask stays
+// closed as the delivery wrote it, pendingAskId stays cleared, the node
+// stays active, the record stays delivered, and nothing is retried.
+async function caseSection12_G3_failedAskAnswerSubmitLeavesTheAskClosed(clock) {
+  console.log("\n=== Section 12 G3: a refused ask-answer submit leaves the ask closed and the record delivered ===");
   clock.set(T0);
   const now = T0;
-  const ha = await createTickHarness({ ...OPTS, caseName: "section12_g3_ask_revert" });
+  const ha = await createTickHarness({ ...OPTS, caseName: "section12_g3_ask_refused" });
   ha.storeMap.set(`commons:${SESSION_ID}`, {
     sessionId: SESSION_ID,
     lastSeen: now,
@@ -4696,21 +4703,20 @@ async function caseSection12_G3_failedAskAnswerDeliveryReopensTheAsk(clock) {
   await fireTick(ha).catch(() => {});
   await new Promise((r) => setTimeout(r, 50));
   check("section12.G3: the answer delivery was attempted (setup sanity)", (ha.promptSubmits || []).some((p) => p.startsWith("[OPERATOR] Answer to")));
-  check("section12.G3: the answer record is pending again", readStoreRecord(ha, answerKey)?.status === "pending");
-  check("section12.G3: the ask is open again", readStoreRecord(ha, askKey)?.status === "open");
-  let state = getState(ha);
-  check("section12.G3: pendingAskId restored", state.pendingAskId === "ask-g3-1");
-  check("section12.G3: the node is paused again", state.goals.find((g) => g.id === "node-g3")?.status === "paused");
-  check("section12.G3: ask_answer_delivery_reverted names the ask and the record",
-    state.decisions.some((d) => d.action === "ask_answer_delivery_reverted" && d.detail.includes("ask-g3-1") && d.detail.includes("default-writer-g3-1")));
+  const rec = readStoreRecord(ha, answerKey);
+  check("section12.G3: the answer record stays delivered with deliveredAt intact", rec?.status === "delivered" && typeof rec?.deliveredAt === "number", rec);
+  check("section12.G3: the ask stays answered", readStoreRecord(ha, askKey)?.status === "answered");
+  const state = getState(ha);
+  check("section12.G3: pendingAskId stays cleared", state.pendingAskId === undefined);
+  check("section12.G3: the node stays active", state.goals.find((g) => g.id === "node-g3")?.status === "active");
+  check("section12.G3: operator_delivery_failed names the record and the error",
+    state.decisions.some((d) => d.action === "operator_delivery_failed" && d.detail.includes("default-writer-g3-1") && d.detail.includes("submit refused for the answer")));
+  check("section12.G3: no ask_answer_delivery_reverted", !state.decisions.some((d) => d.action === "ask_answer_delivery_reverted"));
 
   ha.failPromptSubmits(null);
   clock.advance(10_000);
   await tickAndSettle(ha, clock, 50);
-  check("section12.G3: the next tick delivers it through the ask path with the question framing",
-    (ha.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR] Answer to Which way?")).length === 2 && readStoreRecord(ha, answerKey)?.status === "delivered");
-  state = getState(ha);
-  check("section12.G3: the ask is answered and the node active after the retry", readStoreRecord(ha, askKey)?.status === "answered" && !state.pendingAskId && state.goals.find((g) => g.id === "node-g3")?.status === "active");
+  check("section12.G3: the next tick retries nothing", (ha.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 1 && readStoreRecord(ha, answerKey)?.status === "delivered");
 }
 
 // G4 (bullet 6, fourth shape): a turn one of the plugin's other submits
@@ -4778,7 +4784,7 @@ async function caseSection12_H1_deliveryTurnOpensAheadOfAQueuedBackstop(clock) {
   // call fails, so the backstop submits a re-prompt, which parks too.
   h.fake.tool.call = () => Promise.reject(new Error("no live channel"));
   await h.handlers["prompt.submit"](h.fake, { text: "status?", origin: { kind: "channel" } }, async () => ({}));
-  await h.handlers["turn.start"](h.fake, { turnId: "t-channel-h1a" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-channel-h1a", text: "status?" }, async () => ({ result: "ok" }));
   const completeChannel = h.handlers["turn.complete"](h.fake, { turnId: "t-channel-h1a", answer: "All green.", reason: "completed" }, async () => ({ result: "ok" }));
   const backstopQueued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.includes("[REPLY BACKSTOP]")));
   check("section12.H1a: the backstop submit is parked behind the delivery (setup sanity)", backstopQueued);
@@ -4827,7 +4833,7 @@ async function caseSection12_H1_parkedPluginTurnAfterAnExternalTurnTakesNoStamp(
   const reraiseQueued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.includes("[STILL WAITING]")));
   check("section12.H1b: the re-raise submit is parked (setup sanity)", reraiseQueued);
   await h.handlers["prompt.submit"](h.fake, { text: "typed", origin: { kind: "keyboard" } }, async () => ({}));
-  await h.handlers["turn.start"](h.fake, { turnId: "t-external-h1b" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-external-h1b", text: "typed" }, async () => ({ result: "ok" }));
   await h.handlers["turn.complete"](h.fake, { turnId: "t-external-h1b", answer: "typed answer", reason: "completed" }, async () => ({ result: "ok" }));
 
   // A delivery is submitted in the gap.
@@ -4852,6 +4858,96 @@ async function caseSection12_H1_parkedPluginTurnAfterAnExternalTurnTakesNoStamp(
   h.releasePromptSubmits();
   await reraiseTick;
   await deliveryTick;
+}
+
+// J1 (A): the turn's text is what says whose turn it is. A non-external turn
+// whose text matches no queued entry is unaccounted: it stamps nothing, the
+// delivery's entry stays queued, and the delivery's own turn, opening later
+// with its own text, takes the stamp.
+async function caseSection12_J1_unmatchedTurnTextTakesNoStamp(clock) {
+  console.log("\n=== Section 12 J1 (A): a turn whose text matches no queued submit takes no stamp; the delivery's own text does ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("section12_j1_a", now, "writer-j1a");
+  h.holdPromptSubmits();
+  const tick = fireTick(h);
+  const queued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith("[OPERATOR]")));
+  check("section12.J1a: the delivery's submit is parked (setup sanity)", queued);
+
+  // An external turn opens and completes.
+  await h.handlers["prompt.submit"](h.fake, { text: "first typed", origin: { kind: "keyboard" } }, async () => ({}));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-x-j1a", text: "first typed" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-x-j1a", answer: "first answer", reason: "completed" }, async () => ({ result: "ok" }));
+
+  // A turn the hook did not see opens next with text that is not D's (the
+  // shape of a second typed prompt whose hook firing was spent on an
+  // earlier turn.start): its text matches nothing.
+  await h.handlers["turn.start"](h.fake, { turnId: "t-second-j1a", text: "second typed" }, async () => ({ result: "ok" }));
+  check("section12.J1a: the unmatched turn takes no stamp", readStoreRecord(h, key)?.turnId === undefined);
+  check("section12.J1a: operator_stamp_withheld names the record and unaccounted",
+    getDecisions(h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes(id) && d.detail.includes("unaccounted")));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-second-j1a", answer: "second answer", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.J1a: the unmatched turn files no reply", !h.storeMap.has(`reply:default:${id}`));
+
+  // The delivery's own turn opens with the delivery's text.
+  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-j1a" }, async () => ({ result: "ok" }));
+  check("section12.J1a: the delivery's own turn, by its text, takes the stamp", readStoreRecord(h, key)?.turnId === "t-delivery-j1a");
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-delivery-j1a", answer: "Delivered answer.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.J1a: the delivery's turn files the reply", readStoreRecord(h, `reply:default:${id}`)?.text === "Delivered answer.");
+  h.releasePromptSubmits();
+  await tick;
+}
+
+// J1 (B): a continuation turn (empty text) opening while a delivery is
+// queued matches nothing, stamps nothing, and leaves the entry queued.
+async function caseSection12_J1_continuationTurnTakesNoStamp(clock) {
+  console.log("\n=== Section 12 J1 (B): a continuation turn takes no stamp and leaves the delivery queued ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("section12_j1_b", now, "writer-j1b");
+  h.holdPromptSubmits();
+  const tick = fireTick(h);
+  await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith("[OPERATOR]")));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-cont-j1b", text: "" }, async () => ({ result: "ok" }));
+  check("section12.J1b: the continuation turn takes no stamp", readStoreRecord(h, key)?.turnId === undefined);
+  check("section12.J1b: operator_stamp_withheld names the record and unaccounted",
+    getDecisions(h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes(id) && d.detail.includes("unaccounted")));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-cont-j1b", answer: "continued", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.J1b: the continuation files no reply", !h.storeMap.has(`reply:default:${id}`));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-j1b" }, async () => ({ result: "ok" }));
+  check("section12.J1b: the delivery's own turn still takes the stamp", readStoreRecord(h, key)?.turnId === "t-delivery-j1b");
+  h.releasePromptSubmits();
+  await tick;
+}
+
+// J2: a prompt the hook chain drops opens no turn, so the external flag it
+// set is reset on the drop branch. Pinned through the withheld reason: an
+// unmatched turn after a dropped prompt reads unaccounted, not external,
+// and the delivery's own turn then stamps with no withheld decision naming
+// channel-origin or external.
+async function caseSection12_J2_droppedPromptDoesNotLeaveTheExternalFlagSet(clock) {
+  console.log("\n=== Section 12 J2: a dropped prompt does not leave the external flag set for the next turn ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("section12_j2_drop", now, "writer-j2");
+  h.holdPromptSubmits();
+  const tick = fireTick(h);
+  await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith("[OPERATOR]")));
+  const dropped = await h.handlers["prompt.submit"](h.fake, { text: "dropped by a hook beneath", origin: { kind: "channel" } }, async () => ({ drop: "refused beneath" }));
+  check("section12.J2: the prompt was dropped (setup sanity)", dropped?.drop === "refused beneath");
+  await h.handlers["turn.start"](h.fake, { turnId: "t-unmatched-j2", text: "" }, async () => ({ result: "ok" }));
+  const withheld = getDecisions(h).filter((d) => d.action === "operator_stamp_withheld");
+  check("section12.J2: the unmatched turn after the drop reads unaccounted, not channel-origin or external",
+    withheld.length === 1 && withheld[0].detail.includes("unaccounted"), withheld);
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-unmatched-j2", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-j2" }, async () => ({ result: "ok" }));
+  check("section12.J2: the delivery's own turn takes the stamp", readStoreRecord(h, key)?.turnId === "t-delivery-j2");
+  check("section12.J2: no withheld decision names channel-origin or external",
+    !getDecisions(h).some((d) => d.action === "operator_stamp_withheld" && (d.detail.includes("channel-origin") || d.detail.includes("external"))));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-delivery-j2", answer: "Delivered answer.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.J2: the delivery's turn files the reply", readStoreRecord(h, `reply:default:${id}`)?.text === "Delivered answer.");
+  h.releasePromptSubmits();
+  await tick;
 }
 
 // agentic_say(urgent: true) writes urgent onto the record; a plain say does not.

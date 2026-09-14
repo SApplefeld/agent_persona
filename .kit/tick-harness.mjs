@@ -41,6 +41,12 @@ function createFake$(opts = {}) {
   const toolRegisters = [];
   const toolCalls = [];
   const promptSubmits = [];
+  // The texts of accepted submits whose turn has not opened yet, in
+  // submission order. A turn.start a case fires without `text` takes the
+  // next one, the way the engine begins a plugin's turn with the text it
+  // submitted; a case whose turn is not the next queued submit's (an
+  // external turn, a continuation) passes its own `text`.
+  const queuedTurnTexts = [];
   const fsMap = new Map();
   const storeMap = new Map();
   let classifyValue = opts.classifyValue || "nudge";
@@ -124,6 +130,7 @@ function createFake$(opts = {}) {
       submit({ text }) {
         promptSubmits.push(text);
         if (submitFailure) return Promise.reject(submitFailure);
+        queuedTurnTexts.push(text);
         if (submitHold) return submitHold;
         return Promise.resolve();
       },
@@ -162,6 +169,7 @@ function createFake$(opts = {}) {
     toolRegisters,
     toolCalls,
     promptSubmits,
+    queuedTurnTexts,
     fsMap,
     storeMap,
     classifyCalls,
@@ -369,6 +377,13 @@ async function createTickHarness(options = {}) {
   const handlers = {};
 
   const on = (event, handler) => {
+    if (event === "turn.start") {
+      // A turn.start fired without `text` begins with the next queued
+      // submit's text, "" when none is queued (a continuation).
+      handlers[event] = (dp, e, next) =>
+        handler(dp, e.text === undefined ? { ...e, text: h.queuedTurnTexts.shift() ?? "" } : e, next);
+      return;
+    }
     handlers[event] = handler;
   };
 
