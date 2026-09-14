@@ -148,6 +148,26 @@ check "ensure_settings_arming exits 0 on a file naming only the dev id" "$?"
 R=$(inspect "$TMP/onlydev.json")
 case "$R" in *"ARMING_DEV=owner;"*"ARMING_INSTALLED=owner;"*) check "a file naming only the dev id gains owner under both ids" 0 ;; *) check "a file naming only the dev id gains owner under both ids (out=$R)" 1 ;; esac
 
+# --- Section 8: read_settings_coordinator_persona resolves the plugin's name ---
+# The provided-settings branch of bin/supervise.sh exports COORDINATOR_PERSONA
+# from this read, so the coordinator-role comparison sees the name the plugin
+# resolves from the file. The driven runs below cannot observe that export:
+# the pre-launch gate stops the supervisor before the priming block, so this
+# library case is the coverage. Three files, one per class of the plugin's
+# rule: a usable name (under the installed id only, so the dev-id miss and
+# the installed-id read both run), "default" (refused, falls back), and no
+# key at all (falls back). "boss" is withheld from every literal the
+# function carries.
+printf '%s' '{"pluginConfigs":{"agentic-plugin@agent-persona":{"options":{"coordinatorPersona":"boss"}}}}' > "$TMP/coord-boss.json"
+OUT=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && read_settings_coordinator_persona "$2"' _ "$ROOT" "$TMP/coord-boss.json" 2>&1)
+[ "$OUT" = "boss" ]; check "read_settings_coordinator_persona prints the file's coordinatorPersona (out=$OUT)" "$?"
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"coordinatorPersona":"default"}}}}' > "$TMP/coord-default.json"
+OUT=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && read_settings_coordinator_persona "$2"' _ "$ROOT" "$TMP/coord-default.json" 2>&1)
+[ "$OUT" = "coordinator" ]; check "read_settings_coordinator_persona resolves a coordinatorPersona of default to coordinator (out=$OUT)" "$?"
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":7}}}}' > "$TMP/coord-nokey.json"
+OUT=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && read_settings_coordinator_persona "$2"' _ "$ROOT" "$TMP/coord-nokey.json" 2>&1)
+[ "$OUT" = "coordinator" ]; check "read_settings_coordinator_persona resolves a missing coordinatorPersona to coordinator (out=$OUT)" "$?"
+
 # Shapes that cannot hold options are refused rather than repaired.
 for shape in '{"pluginConfigs":[]}' '{"pluginConfigs":{"agentic-plugin":"x"}}' '{"pluginConfigs":{"agentic-plugin":{"options":"x"}}}'; do
   for fn in ensure_settings_plugin_ids ensure_settings_arming; do

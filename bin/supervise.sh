@@ -356,6 +356,16 @@ else
     echo "ERROR: could not complete $SETTINGS_FILE; see $LOG" | tee -a "$LOG" >&2
     exit 1
   fi
+  # The emit branch above exports COORDINATOR_PERSONA from the value it
+  # writes. This branch writes nothing, so the name is read back from the
+  # provided file under the plugin's own rule, and the coordinator-role
+  # comparison at launch sees the same name the plugin will resolve rather
+  # than whatever this launcher's environment happened to carry.
+  if ! COORDINATOR_PERSONA="$(read_settings_coordinator_persona "$SETTINGS_FILE" 2>>"$LOG")"; then
+    echo "ERROR: could not read coordinatorPersona from $SETTINGS_FILE; see $LOG" | tee -a "$LOG" >&2
+    exit 1
+  fi
+  export COORDINATOR_PERSONA
 fi
 
 # --- Helper: log a line to supervisor.log ---
@@ -1534,6 +1544,28 @@ while true; do
   if [ "$NO_CHANNEL" -ne 1 ]; then
     CHANNEL_REPLY_INSTRUCTION="You are attached to a Discord channel. When you want to say something back to the operator, call the reply tool from the channel-relay MCP server - your own conversational reply is not visible to them. Plain prose, never mannered prose. This governs every reply-tool message the operator reads. Write for a reader on a phone with no session context. One idea per sentence, about twenty words. Answer first, then the reason, then the evidence. Never carry a second rule inside the clause of the first. Never nest a qualification in parentheses or after a semicolon. Name the concrete thing that happened rather than the class it belongs to. Keep precision by adding a sentence, never by packing one. Vary sentence length, because uniform length is its own defect and the twenty is a per-sentence check rather than a target. Use plain words for internal names unless the exact value is what the operator needs to act on. Decide before writing. Never include round numbers, steer numbers, or session ids. End the message when the content ends. When you ask the operator a question, or report something they must decide, give the whole shape: what is happening and why it came up, the question in plain words, what it blocks, each option with what it costs, and your recommendation with its reason. A bare question or a bare pick is not enough. When the operator asks what is going on, or a result is not what they expected, give the outcome, then the reason, then the evidence, each in its own sentence. A shipped notice stays short; an explanation earns its length. "
   fi
+  # A fixed sentence telling the coordinator persona what it is and how it
+  # works: it directs workers through agentic_say records the plugin labels
+  # [COORDINATOR id=<record id>] from its live claim, reads a worker's state
+  # from agentic_inbox and the worker's own store file rather than asking in
+  # a record, batches every steer to one worker in one cycle into one record,
+  # keeps urgent for a real stop or redirect, counts rounds per steer against
+  # agentic_resolve resolutions, stops at two rounds and raises the steer with
+  # the operator instead of pushing a third, holds no act inside a worker's
+  # approved plan back for the operator, and weighs and resolves a worker's
+  # own [WORKER:<persona> id=<record id>] record. Built only when this
+  # launch's persona is the coordinator persona, compared against the
+  # COORDINATOR_PERSONA env var rather than plugin config: this script never
+  # reads the settings JSON it emits, and the CLI persona and the file's
+  # coordinatorPersona may differ, so both settings branches above export the
+  # name the plugin will resolve. Empty for every other launch. Rides the
+  # same NO_CHANNEL-independent priming write as the two sentences above it;
+  # the steer sentence stays unconditional, since the coordinator receives
+  # [WORKER:...] records too and that sentence is what says what they carry.
+  COORDINATOR_ROLE_INSTRUCTION=""
+  if [ "$PERSONA" = "$COORDINATOR_PERSONA" ]; then
+    COORDINATOR_ROLE_INSTRUCTION="You are the coordinator persona. You direct workers, each a supervised session in its own repository under its own persona. You report to the operator on your own channel only, and you never post into a worker's channel. You reach a worker by calling agentic_say with the persona argument naming that worker. The plugin labels your record [COORDINATOR id=<record id>] from your live claim, and you mark nothing yourself. That label is what lets the worker read the record as the operator's delegated authority inside the worker's approved plan. You read a worker's state from files, never by asking for it in a record. agentic_inbox with the persona argument returns your own records to that worker with their deferred, reply and handled state. The worker's .agentic-personas.json in the worker's repository holds its goal tree. A record sent mid-turn queues until the worker's turn ends, so a status question costs the worker a turn and answers nothing. Every steer to one worker in one cycle goes in one record. The urgent flag is reserved for a real stop or redirect. An urgent record reaches the worker as a signal to weigh on its own judgment and carries no delegated authority. A steer is finished when the worker resolves the record with agentic_resolve. Rounds per steer are counted against resolutions rather than replies. A round is one record sent on a steer and its resolution. If a steer would take more than two rounds to land, or the worker's own reading of it drifts from the plan's stated Goal, stop and raise it with the operator instead of pushing a third round. A steer that would take a worker past its plan's stated Goal goes to the operator rather than to the worker. So does a decision the plan does not cover, and so does anything divergent enough to need a conversation. Raise it on your own channel with the whole shape of the question. No act inside a worker's approved plan is held back for the operator, so a push, a deploy, a settings edit or a commit-model change is the worker's to take on your steer's authority. The repository's branch protection and its pull-request review are the gate on those acts. A prompt labelled [WORKER:<persona> id=<record id>] is that worker's finding or escalation, to weigh and route. Resolve it with agentic_resolve when it is handled. "
+  fi
   # Every launch opens with the same synthetic priming turn, whatever shape
   # the child is: passive with a channel, passive with none, or a child that
   # has a real goal prompt waiting. The goal prompt, when there is one, is
@@ -1579,7 +1611,7 @@ while true; do
         '[SUPERVISOR-PRIMING] ' + prefix + body
       }]}});
       process.stdout.write(json + '\n');
-    " "$SKILL_LOAD_INSTRUCTION$COORDINATOR_STEER_INSTRUCTION$CHANNEL_REPLY_INSTRUCTION" "$PRIMING_BODY" >&"$CHILD_IN"
+    " "$SKILL_LOAD_INSTRUCTION$COORDINATOR_STEER_INSTRUCTION$COORDINATOR_ROLE_INSTRUCTION$CHANNEL_REPLY_INSTRUCTION" "$PRIMING_BODY" >&"$CHILD_IN"
   fi
 
   if [ -n "$CHILD_IN" ] && [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then

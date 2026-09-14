@@ -2,8 +2,13 @@
 # bin/agentic-common.sh - Shared supervisor/test helpers.
 # Sourced by bin/supervise.sh and .kit/live-common.sh.
 # Provides: wait_persona_free, refuse_if_persona_live, emit_settings_json,
-#           ensure_settings_plugin_ids, valid_persona_name, find_global_store,
-#           list_installed_stores, poll_decisions, poll_heartbeat.
+#           ensure_settings_plugin_ids, ensure_settings_arming,
+#           read_settings_coordinator_persona, valid_persona_name,
+#           find_global_store, list_installed_stores, poll_decisions,
+#           poll_heartbeat.
+# COORDINATOR_PERSONA is exported on both settings branches: emit_settings_json
+# exports the name it writes, and read_settings_coordinator_persona prints the
+# name a provided file resolves to, for the caller to export.
 # All functions use W2 read-error semantics: a read error is a transient mid-write
 # race, treated as "live" (or "not ready"), never an abort. The timeout is the only
 # exit. refuse_if_persona_live is the one exception: it is a start-only check with
@@ -53,6 +58,8 @@ esac
 #          coordinatorPersona (from COORDINATOR_PERSONA, default "coordinator").
 # Exports COORDINATOR_PERSONA to the value it wrote, so a caller can compare
 # its own persona against the same name without parsing the settings file.
+# This is the emit branch's half of that export; the provided-settings branch
+# reads the same name back through read_settings_coordinator_persona.
 emit_settings_json() {
   local out="$1"
   local self_review_opts=""
@@ -233,6 +240,45 @@ try {
   try { fs.unlinkSync(tmp); } catch (_) {}
   fail("could not be rewritten: " + e.message);
 }
+' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID"
+}
+
+# --- read_settings_coordinator_persona ---
+# Usage: read_settings_coordinator_persona <settings-file>
+# For a settings file the caller already provided: prints the coordinator
+# persona name the plugin will resolve from it, so the caller can export
+# COORDINATOR_PERSONA on the provided branch to the same value the emit
+# branch exports. The rule is the plugin's own (hooks/index.ts, the
+# coordinatorPersona read): a string that is non-empty after trim, carries no
+# ":" and is bracket-safe once trimmed (no "[", "]", ",", whitespace, control
+# or format character), and is not "default", is taken trimmed; anything
+# else, a missing key included, resolves to "coordinator". The --plugin-dir
+# id's options are read first and the installed id's second, since
+# ensure_settings_plugin_ids has already copied the options under both.
+# Returns 1 on the same shapes ensure_settings_plugin_ids refuses (not JSON,
+# not an object, a pluginConfigs, id entry or options value that is not an
+# object), with the same error-line shape, and prints nothing then.
+read_settings_coordinator_persona() {
+  node -e '
+const fs = require("fs");
+const [file, devId, installedId] = process.argv.slice(1);
+const fail = (msg) => { console.error("ERROR: read_settings_coordinator_persona: " + file + " " + msg); process.exit(1); };
+const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+let s;
+try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^﻿/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
+if (!plain(s)) fail("is not a JSON object");
+const pc = s.pluginConfigs === undefined ? {} : s.pluginConfigs;
+if (!plain(pc)) fail("has a pluginConfigs value that is not an object");
+let value;
+for (const id of [devId, installedId]) {
+  if (pc[id] === undefined) continue;
+  if (!plain(pc[id])) fail("has a " + id + " entry that is not an object");
+  if (pc[id].options !== undefined && !plain(pc[id].options)) fail("has " + id + " options that are not an object");
+  if (value === undefined && plain(pc[id].options)) value = pc[id].options.coordinatorPersona;
+}
+const usable = typeof value === "string" && value.trim() !== "" && !value.includes(":")
+  && !/[\[\],]/.test(value.trim()) && !/[\s\p{Cc}\p{Cf}]/u.test(value.trim());
+console.log(usable && value.trim() !== "default" ? value.trim() : "coordinator");
 ' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID"
 }
 

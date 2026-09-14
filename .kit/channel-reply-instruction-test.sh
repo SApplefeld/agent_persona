@@ -9,7 +9,10 @@
 # independent write) plus v2 Section 7 (COORDINATOR_STEER_INSTRUCTION, the
 # sentence telling the child what a [COORDINATOR id=...] prompt carries and
 # how to resolve it, present under BOTH values of NO_CHANNEL, riding the
-# priming write and never the goal write). Every direction is checked so
+# priming write and never the goal write) plus v2 Section 8
+# (COORDINATOR_ROLE_INSTRUCTION, the coordinator's own standing instruction,
+# present when the launch persona equals COORDINATOR_PERSONA and empty
+# otherwise, riding the same priming write). Every direction is checked so
 # this cannot pass by always finding a string true. The block under test is
 # pulled out of
 # the real script by its start/end lines, not hand-copied, so this test
@@ -35,14 +38,20 @@ if [ -z "$SNIPPET" ]; then
   echo "FAIL: could not locate the SKILL_LOAD_INSTRUCTION/CHANNEL_REPLY_INSTRUCTION block in $SCRIPT"
   exit 1
 fi
-# The narrower range (just the two variable assignments) is what actually
+# The narrower range (the variable assignments only) is what actually
 # gets eval'd for the value checks below - the wider $SNIPPET above
 # includes the three priming-write `node -e` calls themselves, which
 # reference `$PROMPT_FILE`/`$CHILD_IN` (unset in this test's own
 # environment) and would either abort under `set -u` or try to write to
 # a real fd that does not exist here. Evaluating code that sends bytes
 # to a coproc pipe is not this test's job; reading its own text is.
-VARS_SNIPPET=$(sed -n '/^  SKILL_LOAD_INSTRUCTION="/,/^  fi$/p' "$SCRIPT")
+# The range ends at the PRIMING_BODY guard, the first code line after the
+# assignments, which is dropped from the range: two `if ... fi` blocks sit
+# inside it (the NO_CHANNEL guard around CHANNEL_REPLY_INSTRUCTION and the
+# COORDINATOR_PERSONA guard around COORDINATOR_ROLE_INSTRUCTION), so the
+# first `^  fi$` ends short of the second block, and only comments sit
+# between the last assignment and that guard.
+VARS_SNIPPET=$(sed -n '/^  SKILL_LOAD_INSTRUCTION="/,/^  if \[ -n "\$PROMPT_FILE" \] && \[ -f "\$PROMPT_FILE" \]; then$/p' "$SCRIPT" | sed '$d')
 if [ -z "$VARS_SNIPPET" ]; then
   echo "FAIL: could not locate the SKILL_LOAD_INSTRUCTION/CHANNEL_REPLY_INSTRUCTION variable block in $SCRIPT"
   exit 1
@@ -58,6 +67,16 @@ SKILL_LOAD_CONTROL="claude-kit:operating-instructions"
 # call when the steer's work is finished or declined.
 STEER_LABEL_CONTROL="[COORDINATOR id="
 STEER_RESOLVE_CONTROL="agentic_resolve"
+# v2 Section 8: the coordinator's own instruction is gated on the launch
+# persona matching COORDINATOR_PERSONA. Two control substrings: the tail of
+# the round-cap sentence the plan's Decisions section quotes verbatim
+# (chosen from the spec's own words so the pin outlives a rewording of the
+# rest), and the tool the sentence tells the coordinator to reach a worker
+# with. The persona names below are withheld from every literal the
+# launcher carries, so the gate is proven on the comparison rather than on
+# the name "coordinator".
+ROLE_CAP_CONTROL="pushing a third round"
+ROLE_SAY_CONTROL="agentic_say"
 
 failed=0
 check() {
@@ -104,6 +123,17 @@ case "$GOAL_WRITE" in
   *GOAL_PROMPT_FRAMING*) check "the goal-prompt write does not carry the coordinator steer sentence" 0 ;;
   *) check "the goal-prompt write does not carry the coordinator steer sentence" 1 ;;
 esac
+# The coordinator's own instruction rides the same priming write and never
+# the goal write; the value checks below cannot see the call site.
+case "$PRIMING_WRITE" in
+  *COORDINATOR_ROLE_INSTRUCTION*) check "the priming write carries the coordinator role instruction" 0 ;;
+  *) check "the priming write carries the coordinator role instruction" 1 ;;
+esac
+case "$GOAL_WRITE" in
+  *COORDINATOR_ROLE_INSTRUCTION*) check "the goal-prompt write does not carry the coordinator role instruction" 1 ;;
+  *GOAL_PROMPT_FRAMING*) check "the goal-prompt write does not carry the coordinator role instruction" 0 ;;
+  *) check "the goal-prompt write does not carry the coordinator role instruction" 1 ;;
+esac
 # v2 Section 7 (Reviewer Round 113 R36): the priming write the steer
 # sentence rides must stay independent of NO_CHANNEL. The presence checks
 # above stay green if that write is wrapped in a NO_CHANNEL guard, so the
@@ -130,7 +160,11 @@ printf '%s\n' "$SNIPPET" | grep -qE '^[[:space:]]*if wait_for_result_line "\$OUT
 # the plugin-side copy in hooks/index.ts (REPLY_INSTRUCTION). The two files
 # carry one text by design and keep it in sync by hand, so identity is the
 # contract; the wording itself is free to change as long as both move.
+# This eval is also the matching case for the coordinator's own instruction:
+# the launch persona equals COORDINATOR_PERSONA.
 NO_CHANNEL=0
+PERSONA="lead"
+COORDINATOR_PERSONA="lead"
 eval "$VARS_SNIPPET"
 PLUGIN_REPLY_INSTRUCTION=$(sed -n 's/^const REPLY_INSTRUCTION = "\(.*\)";$/\1/p' "$HERE/../hooks/index.ts")
 [ -n "$CHANNEL_REPLY_INSTRUCTION" ] && [ "$CHANNEL_REPLY_INSTRUCTION" = "$PLUGIN_REPLY_INSTRUCTION" ]
@@ -144,12 +178,20 @@ case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *"$STEER_LABEL_CONTROL"*"$STEER_RESOLVE_CONTROL"*) check "channel attached: coordinator steer sentence present, naming the label and agentic_resolve" 0 ;;
   *) check "channel attached: coordinator steer sentence present, naming the label and agentic_resolve" 1 ;;
 esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_SAY_CONTROL"*"$ROLE_CAP_CONTROL"*) check "persona matches COORDINATOR_PERSONA: coordinator role instruction present, naming agentic_say and the round cap" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: coordinator role instruction present, naming agentic_say and the round cap" 1 ;;
+esac
 
 # Channel not attached: the reply-tool guidance is absent, but the
 # skill-load sentence and the coordinator steer sentence must still be
-# present - both are NO_CHANNEL-independent.
-unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION
+# present - both are NO_CHANNEL-independent. This eval is also the control
+# for the coordinator's own instruction: an ordinary worker's launch, whose
+# persona differs from COORDINATOR_PERSONA, gets none of it.
+unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION
 NO_CHANNEL=1
+PERSONA="worker"
+COORDINATOR_PERSONA="lead"
 eval "$VARS_SNIPPET"
 case "${SKILL_LOAD_INSTRUCTION:-}" in
   *"$SKILL_LOAD_CONTROL"*) check "channel not attached: skill-load sentence still present" 0 ;;
@@ -163,6 +205,11 @@ if [ -z "${CHANNEL_REPLY_INSTRUCTION:-}" ]; then
   check "channel not attached: instruction is empty" 0
 else
   check "channel not attached: instruction is empty" 1
+fi
+if [ -z "${COORDINATOR_ROLE_INSTRUCTION:-}" ]; then
+  check "persona differs from COORDINATOR_PERSONA: coordinator role instruction is empty" 0
+else
+  check "persona differs from COORDINATOR_PERSONA: coordinator role instruction is empty" 1
 fi
 
 echo
