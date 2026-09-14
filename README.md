@@ -366,7 +366,7 @@ Writes an operator record into the commons store. `urgent: true` marks the recor
 
 **`agentic_inbox`** (reader only)
 
-Returns unread replies to the caller's records. A record still `pending` while the owner's heartbeat shows a turn in flight (`turnStartedAt` in `.agentic-heartbeat.json`) comes back with `deferred: true` and `turnRunningMs`. Refused when:
+Returns unread replies to the caller's records. A record still `pending` while the owner's commons entry shows a turn in flight (`turnStartedAt` in the machine-global commons store, live while the entry's `lastSeen` is within `staleAfterMs`) comes back with `deferred: true` and `turnRunningMs`. The store is shared across the machine, so a reader in another working directory sees the same state. Refused when:
 - The calling session is the owner
 - The calling session does not hold a reader claim on the target persona
 

@@ -11,6 +11,7 @@ const {
   shouldYieldCommons,
   commonsWinner,
   commonsKey,
+  readHolderMeta,
 } = await import("../hooks/commons.ts");
 
 // Async in-memory store mock (matches $.store shape)
@@ -169,6 +170,31 @@ function check(name, cond) { if (cond) ok(name); else fail(name); }
   // Winner is B (A was stale and GC'd)
   const winner = commonsWinner(claims, "persona:default");
   check("Test 9: winner is B (A GC'd)", winner === "session-B");
+}
+
+// --- Test 10: readHolderMeta reads the live holder's meta ---
+{
+  const store = createMockStore();
+  const now = Date.now();
+
+  // No entry claims the resource
+  check("Test 10: no live holder returns null", await readHolderMeta(store, "persona:default", 90_000, now) === null);
+
+  // A stale entry with a turn stamp is skipped, not read, and not gc'd
+  await claimResource(store, "persona:default", "session-A", now - 100_000, { turnStartedAt: now - 200_000, workdir: "D:/a" });
+  check("Test 10: stale holder is skipped", await readHolderMeta(store, "persona:default", 90_000, now) === null);
+  check("Test 10: stale entry is not gc'd by the read", (await store.get(commonsKey("session-A"))) !== null);
+
+  // An entry written by an older plugin lacks both meta fields
+  store._data.set(commonsKey("session-B"), { sessionId: "session-B", lastSeen: now, claims: [{ resource: "persona:default", claimedAt: now }] });
+  const metaB = await readHolderMeta(store, "persona:default", 90_000, now);
+  check("Test 10: missing turnStartedAt normalizes to null", metaB?.holder === "session-B" && metaB.turnStartedAt === null);
+  check("Test 10: missing workdir normalizes to \"\"", metaB?.workdir === "");
+
+  // The live holder's stamp is read back
+  await claimResource(store, "persona:default", "session-B", now, { turnStartedAt: now - 5_000, workdir: "D:/b" });
+  const metaLive = await readHolderMeta(store, "persona:default", 90_000, now);
+  check("Test 10: live holder's turnStartedAt and workdir are read", metaLive?.turnStartedAt === now - 5_000 && metaLive.workdir === "D:/b");
 }
 
 // --- Summary ---

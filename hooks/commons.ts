@@ -242,6 +242,51 @@ export async function readAllClaims(
 }
 
 /**
+ * Read the turn state and workdir of the live session holding a resource.
+ * The holder is the same session commonsWinner resolves for every other
+ * reader, so a contended resource reads consistently. A read only: stale
+ * entries are skipped, never gc'd, and a missing or malformed entry is
+ * skipped too. Returns null when no live entry claims the resource.
+ * Entries written by an older plugin lack the meta fields, which normalize
+ * to null and "".
+ */
+export async function readHolderMeta(
+  store: CommonsStore,
+  resource: string,
+  stalenessThresholdMs: number = DEFAULT_STALE_AFTER_MS,
+  now: number = Date.now(),
+): Promise<{ holder: string; turnStartedAt: number | null; workdir: string } | null> {
+  const allKeys = await store.keys();
+  const keys = allKeys.filter((k) => k.startsWith(COMMONS_PREFIX));
+  const live: UnionedClaim[] = [];
+  const entries = new Map<string, CommonsEntry>();
+
+  for (const key of keys) {
+    const raw = await store.get(key);
+    if (!raw) continue;
+    const entry: CommonsEntry = raw as CommonsEntry;
+    if (!Array.isArray(entry.claims)) continue;
+    if (typeof entry.lastSeen !== "number" || now - entry.lastSeen > stalenessThresholdMs) continue;
+
+    for (const claim of entry.claims) {
+      if (claim.resource !== resource) continue;
+      live.push({ resource: claim.resource, claimedAt: claim.claimedAt, holder: entry.sessionId });
+      entries.set(entry.sessionId, entry);
+    }
+  }
+
+  const holder = commonsWinner(live, resource);
+  if (holder === null) return null;
+  const entry = entries.get(holder);
+  if (!entry) return null;
+  return {
+    holder,
+    turnStartedAt: typeof entry.turnStartedAt === "number" ? entry.turnStartedAt : null,
+    workdir: typeof entry.workdir === "string" ? entry.workdir : "",
+  };
+}
+
+/**
  * Yield check: does any live competitor have an earlier claim on the same resource?
  * First-claim-wins: a session holds resource R if and only if no LIVE competitor
  * has an earlier claim on R, ordered by (claimedAt, then sessionId as tiebreaker).

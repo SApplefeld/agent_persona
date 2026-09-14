@@ -43,6 +43,7 @@ import {
   releaseResource,
   stampCommonsMeta,
   commonsWinner,
+  readHolderMeta,
 } from "./commons";
 import type { CommonsStore } from "./commons";
 import {
@@ -3990,22 +3991,20 @@ export const register: Register = async (on, options) => {
       // D2: Append open asks for this persona
       const allAsks = await listAskRecords(commonsStoreOf($), persona);
       const openAsks = allAsks.filter((ask) => ask.status === "open");
-      // Plan item 8.3: the owner's heartbeat entry carries turnStartedAt while
+      // Plan item 8.3: the owner's commons entry carries turnStartedAt while
       // a turn runs. A record still pending behind that turn is reported as
       // deferred, with how long the turn has run, so the sender knows the
       // message is held rather than lost. The stamp alone is not enough: an
       // owner killed mid-turn never clears it, so the report also requires
-      // the heartbeat's lastSeen within staleAfterMs of now, since a stale
-      // owner is dead rather than busy.
+      // the entry's lastSeen within staleAfterMs of now, since a stale owner
+      // is dead rather than busy. The commons store is machine-global, so a
+      // reader in another working directory sees the same entry, which the
+      // cwd-relative heartbeat file cannot give it.
       let ownerTurnStartedAt: number | null = null;
       try {
-        if (await $.fs.exists(heartbeatPath)) {
-          const hb = JSON.parse(await $.fs.read(heartbeatPath)) as Record<string, HeartbeatEntry>;
-          const entry = hb[persona];
-          const ownerLive = entry && typeof entry.lastSeen === "number" && (Date.now() - entry.lastSeen) <= sess.staleAfterMs;
-          if (ownerLive && typeof entry.turnStartedAt === "number") ownerTurnStartedAt = entry.turnStartedAt;
-        }
-      } catch { /* heartbeat read failed; report records without the deferred view */ }
+        const holder = await readHolderMeta(commonsStoreOf($), `persona:${persona}`, sess.staleAfterMs);
+        if (holder) ownerTurnStartedAt = holder.turnStartedAt;
+      } catch { /* commons read failed; report records without the deferred view */ }
       // Attach replies to records, and the deferred view to pending ones.
       const withReplies = await Promise.all(myRecords.map(async (rec) => {
         const reply = await readReplyRecord(commonsStoreOf($), persona, rec.id);

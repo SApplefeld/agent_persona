@@ -3143,6 +3143,7 @@ async function main() {
     await caseSection1_readerEntryCarriesWorkdirAtSessionStart(clock);
     await caseItem8p3_inboxReportsDeferredWhileTurnRuns(clock);
     await caseItem8p3_deferredNotReportedForStaleOwner(clock);
+    await caseSection2_deferredReadsCommonsNotLocalHeartbeat(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
     await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
     await caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock);
@@ -3846,19 +3847,29 @@ async function caseSection1_readerEntryCarriesWorkdirAtSessionStart(clock) {
   check("section1 reader: the recreated entry carries the session's workdir", recreated?.workdir === HARNESS_CWD, recreated);
 }
 
-// Joins this session to a persona otherSid owns (commons, persona store,
-// heartbeat) as a reader at session.start. hbExtra is merged into the owner's
-// heartbeat entry. createTickHarness fired session.start once at creation as
-// the owner, so that entry is dropped first: a real reader starts with none,
-// and the entry read after the join is the one the reader path wrote.
-async function joinAsReader(caseName, now, otherSid, hbExtra) {
-  const h = await createTickHarness({ ...OPTS, caseName });
-  h.storeMap.delete(`commons:${SESSION_ID}`);
+// Writes otherSid's commons entry holding persona:default, live at now.
+// commonsExtra is merged over it (a turn stamp, a workdir, an aged lastSeen).
+// Written whole rather than merged into an existing entry, because a stale
+// entry is gc'd by any readAllClaims and may no longer be there.
+function seedOwnerCommons(h, otherSid, now, commonsExtra) {
   h.storeMap.set(`commons:${otherSid}`, {
     sessionId: otherSid,
     lastSeen: now,
     claims: [{ resource: "persona:default", claimedAt: now - 1000 }],
+    ...commonsExtra,
   });
+}
+
+// Joins this session to a persona otherSid owns (commons, persona store,
+// heartbeat) as a reader at session.start. hbExtra is merged into the owner's
+// heartbeat entry, commonsExtra into the owner's commons entry. createTickHarness
+// fired session.start once at creation as the owner, so that entry is dropped
+// first: a real reader starts with none, and the entry read after the join is
+// the one the reader path wrote.
+async function joinAsReader(caseName, now, otherSid, hbExtra, commonsExtra = {}) {
+  const h = await createTickHarness({ ...OPTS, caseName });
+  h.storeMap.delete(`commons:${SESSION_ID}`);
+  seedOwnerCommons(h, otherSid, now, commonsExtra);
   h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(otherSid, now) }));
   h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
     default: { sessionId: otherSid, epoch: 1, lastSeen: now, ...hbExtra },
@@ -3870,8 +3881,8 @@ async function joinAsReader(caseName, now, otherSid, hbExtra) {
 
 // Seeds a reader harness: joinAsReader, then this session's own commons entry
 // is replaced with a bare live reader claim.
-async function seedReaderHarness(caseName, now, otherSid, hbExtra) {
-  const h = await joinAsReader(caseName, now, otherSid, hbExtra);
+async function seedReaderHarness(caseName, now, otherSid, hbExtra, commonsExtra = {}) {
+  const h = await joinAsReader(caseName, now, otherSid, hbExtra, commonsExtra);
   h.storeMap.set(`commons:${SESSION_ID}`, {
     sessionId: SESSION_ID,
     lastSeen: now,
@@ -3880,16 +3891,18 @@ async function seedReaderHarness(caseName, now, otherSid, hbExtra) {
   return h;
 }
 
-// A record still pending while the owner's heartbeat shows a turn in flight
-// reads back from agentic_inbox as deferred, with the turn's running time.
-// Control: the same record with no turn in flight carries no deferred field.
+// A record still pending while the owner's commons entry shows a turn in
+// flight reads back from agentic_inbox as deferred, with the turn's running
+// time. This is the same-repo control for Section 2: the owner's heartbeat
+// file and its commons entry agree. Control: the same record with no turn in
+// flight carries no deferred field.
 async function caseItem8p3_inboxReportsDeferredWhileTurnRuns(clock) {
   console.log("\n=== Item 8.3: agentic_inbox reports a deferred record and the turn's running time ===");
   clock.set(T0);
   const now = T0;
   const turnStartedAt = now - 120_000;
 
-  const h = await seedReaderHarness("item8p3_deferred", now, "busy-owner-001", { turnStartedAt });
+  const h = await seedReaderHarness("item8p3_deferred", now, "busy-owner-001", {}, { turnStartedAt, workdir: HARNESS_CWD });
   const toolCallH = h.handlers["tool.call"];
   const say = await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_say", text: "are you there?" }, async () => ({ result: "passthrough" }));
   check("item8.3 deferred: agentic_say accepted (setup sanity)", say.result !== undefined);
@@ -3901,8 +3914,8 @@ async function caseItem8p3_inboxReportsDeferredWhileTurnRuns(clock) {
   check("item8.3 deferred: record marked deferred", rec?.deferred === true);
   check("item8.3 deferred: turnRunningMs is the owner's turn age", rec?.turnRunningMs === 120_000);
 
-  // Control: owner heartbeat with no turn in flight.
-  const hc = await seedReaderHarness("item8p3_deferred_control", now, "idle-owner-001", { turnStartedAt: null });
+  // Control: owner commons entry with no turn in flight.
+  const hc = await seedReaderHarness("item8p3_deferred_control", now, "idle-owner-001", {}, { turnStartedAt: null, workdir: HARNESS_CWD });
   const toolCallHc = hc.handlers["tool.call"];
   await toolCallHc(hc.fake, { tool: "mcp__agentic-plugin__agentic_say", text: "are you there?" }, async () => ({ result: "passthrough" }));
   const inboxC = await toolCallHc(hc.fake, { tool: "mcp__agentic-plugin__agentic_inbox" }, async () => ({ result: "passthrough" }));
@@ -3914,37 +3927,70 @@ async function caseItem8p3_inboxReportsDeferredWhileTurnRuns(clock) {
 
 // A turnStartedAt left behind by an owner killed mid-turn must not read as
 // "held behind a running turn": the deferred report also needs the owner's
-// heartbeat lastSeen within staleAfterMs of now. Control: the same stamp
+// commons lastSeen within staleAfterMs of now. Control: the same stamp
 // with a fresh lastSeen does report deferred.
 async function caseItem8p3_deferredNotReportedForStaleOwner(clock) {
-  console.log("\n=== Item 8.3: no deferred report when the owner's heartbeat is stale ===");
+  console.log("\n=== Item 8.3: no deferred report when the owner's commons entry is stale ===");
   clock.set(T0);
   const now = T0;
   const otherSid = "killed-owner-001";
 
-  // Join as a reader against a live owner, then age the heartbeat: the
-  // sidecar now shows a turn stamp from an owner that stopped stamping
+  // Join as a reader against a live owner, then age its commons entry: the
+  // entry now shows a turn stamp from an owner that stopped stamping
   // 200s ago (staleAfterMs is 90s).
   const h = await seedReaderHarness("item8p3_deferred_stale", now, otherSid, {});
   const toolCallH = h.handlers["tool.call"];
   await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_say", text: "anyone home?" }, async () => ({ result: "passthrough" }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
-    default: { sessionId: otherSid, epoch: 1, lastSeen: now - 200_000, turnStartedAt: now - 300_000 },
-  }));
+  seedOwnerCommons(h, otherSid, now, { lastSeen: now - 200_000, turnStartedAt: now - 300_000, workdir: HARNESS_CWD });
   const inbox = await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_inbox" }, async () => ({ result: "passthrough" }));
   const rec = inbox.result ? JSON.parse(inbox.result).inbox[0] : undefined;
   check("item8.3 stale owner: record still pending (setup sanity)", rec?.status === "pending");
   check("item8.3 stale owner: no deferred field", rec?.deferred === undefined);
   check("item8.3 stale owner: no turnRunningMs field", rec?.turnRunningMs === undefined);
 
-  // Control: same stamp, heartbeat fresh.
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
-    default: { sessionId: otherSid, epoch: 1, lastSeen: now, turnStartedAt: now - 300_000 },
-  }));
+  // Control: same stamp, commons entry fresh. Written whole: the stale entry
+  // was gc'd by the inbox read above.
+  seedOwnerCommons(h, otherSid, now, { turnStartedAt: now - 300_000, workdir: HARNESS_CWD });
   const inboxC = await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_inbox" }, async () => ({ result: "passthrough" }));
   const recC = inboxC.result ? JSON.parse(inboxC.result).inbox[0] : undefined;
-  check("item8.3 stale owner control: fresh heartbeat reports deferred", recC?.deferred === true);
-  check("item8.3 stale owner control: fresh heartbeat reports turnRunningMs", recC?.turnRunningMs === 300_000);
+  check("item8.3 stale owner control: fresh commons entry reports deferred", recC?.deferred === true);
+  check("item8.3 stale owner control: fresh commons entry reports turnRunningMs", recC?.turnRunningMs === 300_000);
+}
+
+// The deferred check reads the addressed persona's own commons entry, which
+// is machine-global, rather than the caller's cwd-relative heartbeat file.
+// First half, the cross-repo shape: the owner's commons entry carries a turn
+// stamp and another repo's workdir while the caller's local heartbeat file
+// knows of no turn; the record is deferred. Second half, the inverse: the
+// local heartbeat file carries a stamp the commons entry does not; the record
+// is not deferred, because the local file says nothing about the owner.
+async function caseSection2_deferredReadsCommonsNotLocalHeartbeat(clock) {
+  console.log("\n=== Section 2: the deferred check reads the owner's commons entry, not the local heartbeat file ===");
+  clock.set(T0);
+  const now = T0;
+
+  const h = await seedReaderHarness("section2_cross_repo", now, "remote-owner-001",
+    { turnStartedAt: null },
+    { turnStartedAt: now - 120_000, workdir: "D:/other-repo" });
+  const toolCallH = h.handlers["tool.call"];
+  await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_say", text: "status?" }, async () => ({ result: "passthrough" }));
+  const inbox = await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_inbox" }, async () => ({ result: "passthrough" }));
+  const rec = inbox.result ? JSON.parse(inbox.result).inbox[0] : undefined;
+  check("section2 cross-repo: record still pending (setup sanity)", rec?.status === "pending");
+  check("section2 cross-repo: record deferred from the owner's commons stamp", rec?.deferred === true);
+  check("section2 cross-repo: turnRunningMs is the commons stamp's age", rec?.turnRunningMs === 120_000);
+
+  // Inverse: only the caller's local heartbeat file shows a turn.
+  const hl = await seedReaderHarness("section2_local_only", now, "idle-owner-002",
+    { turnStartedAt: now - 60_000 },
+    { turnStartedAt: null, workdir: "D:/other-repo" });
+  const toolCallHl = hl.handlers["tool.call"];
+  await toolCallHl(hl.fake, { tool: "mcp__agentic-plugin__agentic_say", text: "status?" }, async () => ({ result: "passthrough" }));
+  const inboxL = await toolCallHl(hl.fake, { tool: "mcp__agentic-plugin__agentic_inbox" }, async () => ({ result: "passthrough" }));
+  const recL = inboxL.result ? JSON.parse(inboxL.result).inbox[0] : undefined;
+  check("section2 local-only: record still pending (setup sanity)", recL?.status === "pending");
+  check("section2 local-only: no deferred field from the local heartbeat stamp", recL?.deferred === undefined);
+  check("section2 local-only: no turnRunningMs field", recL?.turnRunningMs === undefined);
 }
 
 // agentic_say(urgent: true) writes urgent onto the record; a plain say does not.
