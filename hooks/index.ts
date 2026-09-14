@@ -49,7 +49,7 @@ import type { CommonsStore } from "./commons";
 import type { InboxRecord } from "./operator";
 import {
   claimReaderRole,
-  hasLiveReaderClaim,
+  mayReachPersona,
   sweepExpiredRecords,
   SweepDeleteError,
   enforceChannelWindow,
@@ -97,6 +97,19 @@ function commonsStoreOf(dp: any): CommonsStore {
     delete: (k: string) => dp.store.delete(k),
     keys: () => dp.store.keys(),
   };
+}
+
+// The persona an agentic_say or agentic_inbox call addresses: the `persona`
+// argument when given, else the session's own persona. A name carrying ":"
+// is refused because records are keyed `inbox:<persona>:<session>:<seq>` and
+// listed by the `inbox:<persona>:` prefix, so a colon in a name would let one
+// persona's listing read another persona's keys.
+function targetPersonaOf(arg: unknown, own: string): { persona: string } | { deny: string } {
+  if (arg === undefined || arg === null) return { persona: own };
+  if (typeof arg !== "string" || !arg.trim()) return { deny: "'persona' must be a non-empty string when given." };
+  const name = arg.trim();
+  if (name.includes(":")) return { deny: `'persona' cannot contain ':' (got '${name}').` };
+  return { persona: name };
 }
 
 // One turn this plugin's own $.prompt.submit has queued and that has not
@@ -793,6 +806,11 @@ export const register: Register = async (on, options) => {
   const staleAfterMs = typeof cfg.staleAfterMs === "number" ? (cfg.staleAfterMs as number) : 90_000;
   sess.staleAfterMs = staleAfterMs; // F9a: single-source the threshold
   const controllerTickMs = typeof cfg.controllerTickMs === "number" ? (cfg.controllerTickMs as number) : 30_000;
+  // The one persona name the inbox gates treat as the coordinator: its holder
+  // may address any persona, and any named persona owner may address it.
+  const coordinatorPersona = typeof cfg.coordinatorPersona === "string" && cfg.coordinatorPersona.trim()
+    ? cfg.coordinatorPersona.trim()
+    : "coordinator";
   const urgentCheckMinMs = typeof cfg.urgentCheckMinMs === "number" ? (cfg.urgentCheckMinMs as number) : 5_000;
   const nudgeFloorMs = typeof cfg.nudgeFloorMs === "number" ? (cfg.nudgeFloorMs as number) : 5 * 60_000;
   const nudgeIdleMs = typeof cfg.nudgeIdleMs === "number" ? (cfg.nudgeIdleMs as number) : 2 * 60_000;
@@ -1099,11 +1117,14 @@ export const register: Register = async (on, options) => {
       },
     });
 
-    // D2: Reader tools (plan signatures: agentic_say(text, answers?), agentic_inbox())
+    // D2: inbox tools (plan signatures: agentic_say(text, answers?, urgent?, persona?), agentic_inbox(persona?))
     await $.tool.register({
       name: "agentic_say",
       description:
-        "Send a message to the owner session of this persona. The reader session calls this to send text to the owner. " +
+        "Send a message to the owner session of a persona. Without persona, the target is this session's own persona: a reader session " +
+        "calls this to send text to the owner it reads. With persona, the target is that persona's inbox, reached with no identity switch: " +
+        "the session holding the coordinator persona may address any persona, and a session owning a named persona may address the coordinator persona. " +
+        "Refused for the persona this session owns itself. " +
         "The owner sees the message on its next quiet tick; while the owner is inside a turn the record waits, and agentic_inbox " +
         "shows it as deferred with the turn's running time. Pass urgent: true to reach the owner inside the running turn instead, " +
         "folded into its next tool result. Use for steering, reporting, or asking questions.",
@@ -1122,6 +1143,10 @@ export const register: Register = async (on, options) => {
             type: "boolean",
             description: "Optional. Deliver inside the owner's current turn (as context on its next tool result) rather than waiting for a quiet tick. Not for answering an ask.",
           },
+          persona: {
+            type: "string",
+            description: "Optional. The persona whose owner receives the message. Defaults to this session's own persona. Not a persona this session owns.",
+          },
         },
         required: ["text"],
       },
@@ -1130,14 +1155,22 @@ export const register: Register = async (on, options) => {
     await $.tool.register({
       name: "agentic_inbox",
       description:
-        "Read replies from the owner session of this persona. The reader session calls this to poll for replies to its messages. " +
+        "Read replies from the owner session of a persona. Without persona, the target is this session's own persona: a reader session " +
+        "calls this to poll for replies to its messages. With persona, the target is that persona, under the rule agentic_say uses: " +
+        "the session holding the coordinator persona may read any persona, and a session owning a named persona may read the coordinator persona. " +
+        "Refused for the persona this session owns itself. " +
         "Returns {inbox: [{id, from, at, text, kind, status, reply?, deferred?, turnRunningMs?, outcome?, note?, resolvedAt?}], asks: [{id, at, nodeId, question, status}]}. " +
         "A pending record carries deferred: true and turnRunningMs while the owner is inside a turn: it waits for that turn to end. " +
         "A resolved record carries outcome (done or declined), note and resolvedAt: the owner finished or declined the work, which a reply alone does not say. " +
         "Answer an open ask with agentic_say(text, answers: <ask id>).",
       inputSchema: {
         type: "object",
-        properties: {},
+        properties: {
+          persona: {
+            type: "string",
+            description: "Optional. The persona whose inbox to read. Defaults to this session's own persona. Not a persona this session owns.",
+          },
+        },
         required: [],
       },
     });
@@ -1431,8 +1464,10 @@ export const register: Register = async (on, options) => {
       if (turnIsOpen()) return;
 
       // D3: drain operator inbox (one record per tick, owner only).
-      // List pending inbox records whose writer holds a live reader claim,
-      // take the lowest at, mark delivered, submit as [OPERATOR] prompt.
+      // List pending inbox records whose writer may reach this persona
+      // (mayReachPersona: a reader claim on it, the coordinator persona, or a
+      // named persona owner when this persona is the coordinator), take the
+      // lowest at, mark delivered, submit as [OPERATOR] prompt.
       // D5: if a pending record answers the open ask, close the ask first
       // (ask_answered path) before the general drain.
       if (sess.isOwner) {
@@ -1448,13 +1483,13 @@ export const register: Register = async (on, options) => {
           if (askRecord && askRecord.status === "open") {
             const answer = pending.find((rec) => rec.answers === askId);
             if (answer) {
-              const answerAlive = await hasLiveReaderClaim(store, persona, answer.from);
+              const answerAlive = await mayReachPersona(store, persona, answer.from, coordinatorPersona);
               if (!answerAlive) {
                 sess.state.decisions.push({
                   timestamp: Date.now(),
                   loop: "monitor",
                   action: "operator_skipped_no_claim",
-                  detail: `answer ${answer.id} from ${answer.from} has no live reader claim`,
+                  detail: `answer ${answer.id} from ${answer.from} holds no live claim that reaches '${persona}' (no reader claim, no '${coordinatorPersona}' persona claim, no named persona of its own)`,
                 });
               } else {
                 // Close the ask
@@ -1517,11 +1552,11 @@ export const register: Register = async (on, options) => {
         }
 
         // General drain (D3)
-        // Filter to writers with live reader claims
+        // Filter to writers whose live claims reach this persona
         const withClaim: typeof pending = [];
         const withoutClaim: typeof pending = [];
         for (const rec of pending) {
-          const alive = await hasLiveReaderClaim(store, persona, rec.from);
+          const alive = await mayReachPersona(store, persona, rec.from, coordinatorPersona);
           if (alive) withClaim.push(rec);
           else withoutClaim.push(rec);
         }
@@ -1535,7 +1570,7 @@ export const register: Register = async (on, options) => {
             timestamp: Date.now(),
             loop: "monitor",
             action: "operator_skipped_no_claim",
-            detail: `record ${rec.id} writer ${rec.from} has no live reader claim (marked skipped)`,
+            detail: `record ${rec.id} writer ${rec.from} holds no live claim that reaches '${persona}' (no reader claim, no '${coordinatorPersona}' persona claim, no named persona of its own; marked skipped)`,
           });
         }
         // Take the oldest record with a live claim
@@ -4166,10 +4201,17 @@ export const register: Register = async (on, options) => {
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
-    // D2: Serve agentic_say (reader sends a message to the owner)
-    // Plan D2: agentic_say(text, answers?), persona is the session's (sess.persona)
+    // D2: Serve agentic_say (a message to the owner of a persona)
+    // Plan D2: agentic_say(text, answers?, urgent?, persona?). The target is
+    // the persona argument when given, else sess.persona; sess.persona itself
+    // never changes here, and no claim is written.
     if ((e as any).tool === "mcp__agentic-plugin__agentic_say") {
-      const persona = sess.persona;
+      const targetOrDeny = targetPersonaOf((e as any).persona, sess.persona);
+      if ("deny" in targetOrDeny) {
+        toolErrorsThisTurn++;
+        return { deny: `agentic_say: ${targetOrDeny.deny}` };
+      }
+      const persona = targetOrDeny.persona;
       const text = String((e as any).text || "").trim();
       const answers = (e as any).answers as string | undefined;
       const urgent = (e as any).urgent === true;
@@ -4177,16 +4219,20 @@ export const register: Register = async (on, options) => {
         toolErrorsThisTurn++;
         return { deny: "agentic_say requires a non-empty 'text'." };
       }
-      // Check if we are a reader
-      if (sess.isOwner) {
+      // Self-message guard: an owner addressing the persona it owns is
+      // talking to itself. The guard keys on ownership rather than on the
+      // name alone, because a reader's sess.persona is the persona it reads.
+      if (sess.isOwner && persona === sess.persona) {
         toolErrorsThisTurn++;
-        return { deny: "agentic_say is for reader sessions only; the owner does not need to send itself a message." };
+        return { deny: `agentic_say cannot address '${persona}': this session owns that persona, and the owner does not need to send itself a message.` };
       }
-      // D2: require a live reader claim
-      const hasClaim = await hasLiveReaderClaim(commonsStoreOf($), persona, sess.mySessionId);
-      if (!hasClaim) {
+      // The reach rule: a live reader claim on the target, the coordinator
+      // persona held by this session, or the target being the coordinator
+      // persona while this session owns a named persona of its own.
+      const mayReach = await mayReachPersona(commonsStoreOf($), persona, sess.mySessionId, coordinatorPersona);
+      if (!mayReach) {
         toolErrorsThisTurn++;
-        return { deny: "agentic_say requires a live reader claim; the reader role is not held by this session." };
+        return { deny: `agentic_say cannot reach '${persona}': this session holds no live reader claim on it and does not hold the '${coordinatorPersona}' persona, and ${persona === coordinatorPersona ? "owns no named persona of its own to push from" : `'${persona}' is not the coordinator persona`}.` };
       }
       // BD3 part 2: when answers is set, verify it names a live open ask.
       if (answers) {
@@ -4210,22 +4256,27 @@ export const register: Register = async (on, options) => {
       return { result: `Message sent to owner of ${persona} (id: ${id}${urgent ? ", urgent: delivered inside the owner's running turn if one is in flight" : ""})` };
     }
 
-    // D2: Serve agentic_inbox (reader reads replies)
-    // Plan D2: agentic_inbox(), persona is the session's (sess.persona)
+    // D2: Serve agentic_inbox (replies from the owner of a persona)
+    // Plan D2: agentic_inbox(persona?). The target is the persona argument
+    // when given, else sess.persona, under the same guard and reach rule as
+    // agentic_say; no identity switch, no claim written.
     if ((e as any).tool === "mcp__agentic-plugin__agentic_inbox") {
-      const persona = sess.persona;
-      // Check if we are a reader
-      if (sess.isOwner) {
+      const targetOrDeny = targetPersonaOf((e as any).persona, sess.persona);
+      if ("deny" in targetOrDeny) {
         toolErrorsThisTurn++;
-        return { deny: "agentic_inbox is for reader sessions only; the owner reads its own replies directly." };
+        return { deny: `agentic_inbox: ${targetOrDeny.deny}` };
       }
-      // D2: require a live reader claim
-      const hasClaim = await hasLiveReaderClaim(commonsStoreOf($), persona, sess.mySessionId);
-      if (!hasClaim) {
+      const persona = targetOrDeny.persona;
+      if (sess.isOwner && persona === sess.persona) {
         toolErrorsThisTurn++;
-        return { deny: "agentic_inbox requires a live reader claim; the reader role is not held by this session." };
+        return { deny: `agentic_inbox cannot address '${persona}': this session owns that persona, and the owner reads its own replies directly.` };
       }
-      // D2: List inbox records for this persona, filtered to the caller's messages
+      const mayReach = await mayReachPersona(commonsStoreOf($), persona, sess.mySessionId, coordinatorPersona);
+      if (!mayReach) {
+        toolErrorsThisTurn++;
+        return { deny: `agentic_inbox cannot reach '${persona}': this session holds no live reader claim on it and does not hold the '${coordinatorPersona}' persona, and ${persona === coordinatorPersona ? "owns no named persona of its own to read from" : `'${persona}' is not the coordinator persona`}.` };
+      }
+      // D2: List inbox records for the target persona, filtered to the caller's messages
       const allRecords = await listInboxRecords(commonsStoreOf($), persona);
       const myRecords = allRecords.filter((rec) => rec.from === sess.mySessionId);
       // D2: Append open asks for this persona
@@ -4343,7 +4394,8 @@ export const register: Register = async (on, options) => {
     const r = await next(e);
     if ((r as { isError?: boolean }).isError === true) toolErrorsThisTurn++;
 
-    // Plan item 8.3: an urgent record from a live reader reaches the owner
+    // Plan item 8.3: an urgent record from a writer that may reach this
+    // persona (mayReachPersona, the tick's own rule) reaches the owner
     // inside the running turn. The controller tick cannot deliver while a
     // turn is in flight, so the record rides here instead: marked delivered
     // and stamped with this turn (turn.complete then records the turn's
@@ -4359,7 +4411,7 @@ export const register: Register = async (on, options) => {
           .filter((rec) => rec.status === "pending" && rec.urgent === true && !rec.answers);
         const lines: string[] = [];
         for (const rec of urgentPending) {
-          if (!(await hasLiveReaderClaim(store, persona, rec.from))) continue;
+          if (!(await mayReachPersona(store, persona, rec.from, coordinatorPersona))) continue;
           const existing = await store.get(rec.key);
           if (!existing) continue;
           const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;

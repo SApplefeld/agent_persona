@@ -3179,6 +3179,13 @@ async function main() {
     await caseSection12_close_entryLeavingDuringTheWithheldReadIsNotNamed(clock);
     await caseSection12_close_voidSubmitResultDoesNotThrow(clock);
     await caseSection12_close_sweepDeleteFailureAfterTheAppendIsNamedApart(clock);
+    await caseSection3_ownerIsRefusedForItsOwnPersonaAndReachesAnother(clock);
+    await caseSection3_thirdPersonaNeedsTheCoordinatorClaim(clock);
+    await caseSection3_namedOwnerReachesTheCoordinatorAndDefaultOnlyDoesNot(clock);
+    await caseSection3_workerRecordIsDeliveredToTheCoordinatorOnTick(clock);
+    await caseSection3_workerAnswerReachesTheCoordinatorsAsk(clock);
+    await caseSection3_urgentWorkerRecordBreaksIntoTheCoordinatorsTurn(clock);
+    await caseSection3_personaArgumentShapeIsRefused(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
     await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
     await caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock);
@@ -5411,6 +5418,230 @@ async function caseSection12_M1_throwingWithheldReadKeepsEveryEntry(clock) {
   check("section12.M1b: the delivery's entry was kept, so its own turn takes the stamp", readStoreRecord(h, key)?.turnId === "t-delivery-m1b");
   await h.handlers["turn.complete"](h.fake, { turnId: "t-delivery-m1b", answer: "Delivered answer.", reason: "completed" }, async () => ({ result: "ok" }));
   check("section12.M1b: the delivery's turn files the reply", readStoreRecord(h, `reply:default:${id}`)?.text === "Delivered answer.");
+}
+
+// ============================================================
+// Section 3: persona argument on agentic_say / agentic_inbox
+// ============================================================
+
+const SAY = "mcp__agentic-plugin__agentic_say";
+const INBOX = "mcp__agentic-plugin__agentic_inbox";
+
+// An owner harness under a named persona: the plugin runs with `persona` as
+// its own, owns it in commons, and treats `coordinatorPersona` as the
+// coordinator's name. The harness store seeds only "default", so a named
+// persona starts fresh at session.start and the tick reads its own slot.
+async function seedNamedOwnerHarness(caseName, now, persona, coordinatorPersona) {
+  const h = await createTickHarness({ ...OPTS, caseName, persona, coordinatorPersona });
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: `persona:${persona}`, claimedAt: now - 2000 }],
+  });
+  return h;
+}
+
+// A foreign session's commons entry holding the named resources, live at now.
+function seedForeignClaims(h, sid, now, resources) {
+  h.storeMap.set(`commons:${sid}`, {
+    sessionId: sid,
+    lastSeen: now,
+    claims: resources.map((resource) => ({ resource, claimedAt: now - 1000 })),
+  });
+}
+
+// A pending inbox record addressed to `persona` from `writerSid`, keyed and
+// numbered the way writeInboxRecord writes one.
+function seedRecordFor(h, persona, writerSid, seq, fields) {
+  const key = `inbox:${persona}:${writerSid}:${seq}`;
+  h.storeMap.set(key, { id: `${persona}-${writerSid}-${seq}`, key, from: writerSid, at: T0 - 5000, kind: "say", text: `message ${seq}`, status: "pending", ...fields });
+  return key;
+}
+
+async function callTool(h, args, next = async () => ({ result: "passthrough" })) {
+  return h.handlers["tool.call"](h.fake, args, next);
+}
+
+// The self-message guard keys on ownership: the coordinator owner is refused
+// for its own persona, named or defaulted, and reaches another persona with
+// the persona argument, with no identity switch and no claim written. The
+// reader half of the guard (a reader addressing the persona it reads, with
+// no persona argument) is caseAT4_inbox_status, on the same code path.
+async function caseSection3_ownerIsRefusedForItsOwnPersonaAndReachesAnother(clock) {
+  console.log("\n=== Section 3: an owner cannot address its own persona; the coordinator reaches another with persona ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("section3_self_guard", now, "coordinator", "coordinator");
+
+  const sayOwn = await callTool(h, { tool: SAY, text: "note to self" });
+  check("section3 self-guard: agentic_say with no persona is refused by the self-message guard", typeof sayOwn.deny === "string" && sayOwn.deny.includes("owns that persona"), sayOwn);
+  const sayNamedOwn = await callTool(h, { tool: SAY, text: "note to self", persona: "coordinator" });
+  check("section3 self-guard: agentic_say naming the owned persona is refused by the self-message guard", typeof sayNamedOwn.deny === "string" && sayNamedOwn.deny.includes("owns that persona"), sayNamedOwn);
+  const inboxOwn = await callTool(h, { tool: INBOX });
+  check("section3 self-guard: agentic_inbox with no persona is refused by the self-message guard", typeof inboxOwn.deny === "string" && inboxOwn.deny.includes("owns that persona"), inboxOwn);
+  check("section3 self-guard: no record was written", ![...h.storeMap.keys()].some((k) => k.startsWith("inbox:")));
+
+  const sayDev = await callTool(h, { tool: SAY, text: "Pick up the failing suite.", persona: "dev" });
+  check("section3 coordinator to worker: agentic_say with persona reaches the worker's inbox", sayDev.deny === undefined && typeof sayDev.result === "string", sayDev);
+  const rec = readStoreRecord(h, `inbox:dev:${SESSION_ID}:1`);
+  check("section3 coordinator to worker: the record is keyed to the target persona from this session", rec?.from === SESSION_ID && rec?.status === "pending" && rec?.id === `dev-${SESSION_ID}-1`, rec);
+  const inboxDev = await callTool(h, { tool: INBOX, persona: "dev" });
+  const parsed = inboxDev.result ? JSON.parse(inboxDev.result) : null;
+  check("section3 coordinator to worker: agentic_inbox with persona lists the caller's record to that persona", parsed?.inbox?.length === 1 && parsed.inbox[0].id === `dev-${SESSION_ID}-1`, inboxDev);
+  const claims = h.storeMap.get(`commons:${SESSION_ID}`)?.claims?.map((c) => c.resource);
+  check("section3 coordinator to worker: no claim was written for the target", Array.isArray(claims) && claims.length === 1 && claims[0] === "persona:coordinator", claims);
+  const sayOwnAgain = await callTool(h, { tool: SAY, text: "still me" });
+  check("section3 coordinator to worker: the session's own persona is unchanged, so a bare say is still self-addressed", typeof sayOwnAgain.deny === "string" && sayOwnAgain.deny.includes("owns that persona"), sayOwnAgain);
+}
+
+// Reaching a persona the caller neither owns nor reads takes the coordinator
+// persona claim: the same session, owning `dev`, is refused for `worker` by
+// the reach gate, and reaches it once its commons entry also holds
+// `persona:coordinator`. Only the claim changes between the two legs.
+async function caseSection3_thirdPersonaNeedsTheCoordinatorClaim(clock) {
+  console.log("\n=== Section 3: reaching an unrelated persona needs the coordinator claim ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("section3_third_persona", now, "dev", "coordinator");
+  const refused = await callTool(h, { tool: SAY, text: "Take this over.", persona: "worker" });
+  check("section3 third persona: refused by the reach gate without the coordinator claim", typeof refused.deny === "string" && refused.deny.includes("cannot reach 'worker'") && !refused.deny.includes("owns that persona"), refused);
+  check("section3 third persona: no record was written", !h.storeMap.has(`inbox:worker:${SESSION_ID}:1`));
+  const refusedInbox = await callTool(h, { tool: INBOX, persona: "worker" });
+  check("section3 third persona: agentic_inbox is refused by the reach gate too", typeof refusedInbox.deny === "string" && refusedInbox.deny.includes("cannot reach 'worker'"), refusedInbox);
+
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:dev", claimedAt: now - 2000 }, { resource: "persona:coordinator", claimedAt: now - 1000 }],
+  });
+  const allowed = await callTool(h, { tool: SAY, text: "Take this over.", persona: "worker" });
+  check("section3 third persona: reaches the persona with the coordinator claim", allowed.deny === undefined && readStoreRecord(h, `inbox:worker:${SESSION_ID}:1`)?.status === "pending", allowed);
+  const inbox = await callTool(h, { tool: INBOX, persona: "worker" });
+  const parsed = inbox.result ? JSON.parse(inbox.result) : null;
+  check("section3 third persona: agentic_inbox lists the record with the coordinator claim", parsed?.inbox?.length === 1 && parsed.inbox[0].from === SESSION_ID, inbox);
+}
+
+// The worker-to-coordinator send: a session owning a named persona reaches
+// the coordinator persona with no claim beyond that ownership. Control (R44):
+// a session holding only `persona:default` is refused by the reach gate,
+// though it holds a live owner claim.
+async function caseSection3_namedOwnerReachesTheCoordinatorAndDefaultOnlyDoesNot(clock) {
+  console.log("\n=== Section 3: a named persona owner reaches the coordinator; a persona:default holder does not ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("section3_worker_send", now, "dev", "coordinator");
+  const sent = await callTool(h, { tool: SAY, text: "Escalation: the gate is red outside my diff.", persona: "coordinator" });
+  check("section3 worker send: a dev owner's say to the coordinator is accepted and written", sent.deny === undefined && readStoreRecord(h, `inbox:coordinator:${SESSION_ID}:1`)?.status === "pending", sent);
+  const inbox = await callTool(h, { tool: INBOX, persona: "coordinator" });
+  const parsed = inbox.result ? JSON.parse(inbox.result) : null;
+  check("section3 worker send: agentic_inbox on the coordinator lists the record", parsed?.inbox?.length === 1 && parsed.inbox[0].id === `coordinator-${SESSION_ID}-1`, inbox);
+
+  const hd = await seedNamedOwnerHarness("section3_default_send", now, "default", "coordinator");
+  const refused = await callTool(hd, { tool: SAY, text: "Hello from a plain chat session.", persona: "coordinator" });
+  check("section3 R44 send control: a persona:default holder is refused by the reach gate", typeof refused.deny === "string" && refused.deny.includes("cannot reach 'coordinator'") && refused.deny.includes("owns no named persona"), refused);
+  check("section3 R44 send control: no record was written", !hd.storeMap.has(`inbox:coordinator:${SESSION_ID}:1`));
+}
+
+// The worker-to-coordinator delivery: a pending record from a session
+// holding `persona:dev` and no reader claim is submitted to the coordinator's
+// model on the next tick rather than marked skipped. Control (R44): a record
+// from a session holding only `persona:default` is marked skipped by the
+// drain's reach gate on the same tick.
+async function caseSection3_workerRecordIsDeliveredToTheCoordinatorOnTick(clock) {
+  console.log("\n=== Section 3: a worker's record to the coordinator is delivered on the tick; a persona:default record is skipped ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("section3_worker_delivery", now, "coordinator", "coordinator");
+  seedForeignClaims(h, "worker-dev-001", now, ["persona:dev"]);
+  seedForeignClaims(h, "chat-default-002", now, ["persona:default"]);
+  const workerKey = seedRecordFor(h, "coordinator", "worker-dev-001", 1, { at: now - 5000, text: "Finding: the suite is red outside my diff." });
+  const chatKey = seedRecordFor(h, "coordinator", "chat-default-002", 1, { at: now - 4000, text: "Hello from a plain chat session." });
+  await tickAndSettle(h, clock, 50);
+  const worker = readStoreRecord(h, workerKey);
+  check("section3 worker delivery: the worker's record is delivered, not skipped", worker?.status === "delivered" && typeof worker?.deliveredAt === "number", worker);
+  check("section3 worker delivery: the record's text was submitted to the coordinator's model", (h.promptSubmits || []).some((p) => p.includes("Finding: the suite is red outside my diff.")), h.promptSubmits);
+  const decisions = getStateForPersona(h, "coordinator")?.decisions || [];
+  check("section3 worker delivery: operator_delivered names the record", decisions.some((d) => d.action === "operator_delivered" && d.detail.includes("coordinator-worker-dev-001-1")), decisions.map((d) => d.action));
+  check("section3 worker delivery: no operator_skipped_no_claim names the worker", !decisions.some((d) => d.action === "operator_skipped_no_claim" && d.detail.includes("worker-dev-001")));
+  const chat = readStoreRecord(h, chatKey);
+  check("section3 R44 delivery control: the persona:default record is marked skipped by the drain's reach gate", chat?.status === "skipped" && decisions.some((d) => d.action === "operator_skipped_no_claim" && d.detail.includes("chat-default-002")), chat);
+  check("section3 R44 delivery control: the persona:default text was never submitted", !(h.promptSubmits || []).some((p) => p.includes("Hello from a plain chat session.")));
+}
+
+// The worker-to-coordinator ask answer: a worker's answer to the
+// coordinator's open ask closes the ask and is submitted, rather than dropped
+// with operator_skipped_no_claim at the ask-answer gate.
+async function caseSection3_workerAnswerReachesTheCoordinatorsAsk(clock) {
+  console.log("\n=== Section 3: a worker's answer to the coordinator's ask is delivered on the tick ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("section3_worker_answer", now, "coordinator", "coordinator");
+  const personaState = buildPersonaState(SESSION_ID, now);
+  personaState.persona = "coordinator";
+  personaState.goals = [
+    { id: "node-c1", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-c1";
+  personaState.pendingAskId = "ask-c1-1";
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ coordinator: personaState }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ coordinator: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  seedForeignClaims(h, "worker-dev-001", now, ["persona:dev"]);
+  const answerKey = seedRecordFor(h, "coordinator", "worker-dev-001", 1, { at: now - 500, kind: "answer", answers: "ask-c1-1", text: "Ship it on the branch." });
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+  const askKey = "ask:coordinator:ask-c1-1";
+  h.storeMap.set(askKey, { id: "ask-c1-1", ownerSessionId: SESSION_ID, at: now - 1000, nodeId: "node-c1", question: "Ship or hold?", status: "open" });
+  h.resetPromptSubmits();
+  clock.advance(65_000);
+  await tickAndSettle(h, clock, 50);
+  check("section3 worker answer: the ask is closed as answered", readStoreRecord(h, askKey)?.status === "answered", readStoreRecord(h, askKey));
+  check("section3 worker answer: the answer record is delivered", readStoreRecord(h, answerKey)?.status === "delivered", readStoreRecord(h, answerKey));
+  check("section3 worker answer: the answer was submitted to the coordinator's model", (h.promptSubmits || []).some((p) => p.includes("Ship it on the branch.")), h.promptSubmits);
+  const state = getStateForPersona(h, "coordinator");
+  check("section3 worker answer: ask_answered is recorded and nothing was skipped", !!state && state.decisions.some((d) => d.action === "ask_answered") && !state.decisions.some((d) => d.action === "operator_skipped_no_claim"), state?.decisions.map((d) => d.action));
+  check("section3 worker answer: pendingAskId is cleared and the node is active", !!state && state.pendingAskId === undefined && state.goals.find((g) => g.id === "node-c1")?.status === "active");
+}
+
+// The urgent break-in takes the same reach rule: a worker's urgent record to
+// the coordinator is folded into the coordinator's running turn, and a
+// persona:default session's urgent record is left pending for the tick.
+async function caseSection3_urgentWorkerRecordBreaksIntoTheCoordinatorsTurn(clock) {
+  console.log("\n=== Section 3: a worker's urgent record breaks into the coordinator's running turn ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("section3_urgent", now, "coordinator", "coordinator");
+  seedForeignClaims(h, "worker-dev-001", now, ["persona:dev"]);
+  seedForeignClaims(h, "chat-default-002", now, ["persona:default"]);
+  const workerKey = seedRecordFor(h, "coordinator", "worker-dev-001", 1, { at: now - 5000, text: "Stop: the deploy is failing.", urgent: true });
+  const chatKey = seedRecordFor(h, "coordinator", "chat-default-002", 1, { at: now - 4000, text: "Plain chat, urgent.", urgent: true });
+  await h.handlers["turn.start"](h.fake, { turnId: "t-coord" }, async () => ({ result: "ok" }));
+  const r = await callTool(h, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "a.txt" }, text: "a.txt" }));
+  const ctx = Array.isArray(r.context) ? r.context.join("\n") : "";
+  check("section3 urgent: the worker's urgent text rides the tool result", r.deny === undefined && ctx.includes("Stop: the deploy is failing."), r);
+  const worker = readStoreRecord(h, workerKey);
+  check("section3 urgent: the worker's record is delivered and stamped with the running turn", worker?.status === "delivered" && worker?.turnId === "t-coord", worker);
+  check("section3 urgent R44 control: the persona:default record is not folded in and stays pending", !ctx.includes("Plain chat, urgent.") && readStoreRecord(h, chatKey)?.status === "pending", readStoreRecord(h, chatKey));
+}
+
+// A persona argument that is empty or carries ":" is refused before any
+// record is read or written: records are keyed inbox:<persona>:<session>:<seq>
+// and listed by prefix, so "default:x" would write under a key the default
+// persona's listing reads. The reader harness is the shape where a bare say
+// succeeds, so an ignored argument would show as a written record.
+async function caseSection3_personaArgumentShapeIsRefused(clock) {
+  console.log("\n=== Section 3: an empty or colon-bearing persona argument is refused ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedReaderHarness("section3_persona_shape", now, "owner-shape-001", {}, { turnStartedAt: null, workdir: HARNESS_CWD });
+  const colon = await callTool(h, { tool: SAY, text: "hello", persona: "default:x" });
+  check("section3 persona shape: a colon-bearing name is refused by the name guard", typeof colon.deny === "string" && colon.deny.includes("cannot contain ':'"), colon);
+  const blank = await callTool(h, { tool: SAY, text: "hello", persona: "   " });
+  check("section3 persona shape: a blank name is refused by the name guard", typeof blank.deny === "string" && blank.deny.includes("non-empty"), blank);
+  const colonInbox = await callTool(h, { tool: INBOX, persona: "default:x" });
+  check("section3 persona shape: agentic_inbox refuses the same name", typeof colonInbox.deny === "string" && colonInbox.deny.includes("cannot contain ':'"), colonInbox);
+  check("section3 persona shape: no record was written under any key", ![...h.storeMap.keys()].some((k) => k.startsWith("inbox:")));
+  const bare = await callTool(h, { tool: SAY, text: "hello" });
+  check("section3 persona shape control: the same reader's bare say still writes to the persona it reads", bare.deny === undefined && h.storeMap.has(`inbox:default:${SESSION_ID}:1`), bare);
 }
 
 // agentic_say(urgent: true) writes urgent onto the record; a plain say does not.

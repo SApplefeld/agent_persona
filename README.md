@@ -358,17 +358,24 @@ A reader session can steer an owner session without being at the owner's keyboar
 
 ### Tools
 
-**`agentic_say`** (reader only)
+**`agentic_say`** (`text`, `answers?`, `urgent?`, `persona?`)
 
-Writes an operator record into the commons store. `urgent: true` marks the record for delivery inside the owner's running turn (see Delivery). Refused when:
-- The calling session is the owner (owners cannot message themselves)
-- The calling session does not hold a reader claim on the target persona
+Writes an operator record into the commons store, addressed to the target persona: the `persona` argument when given, else the calling session's own persona. The argument reaches another persona's inbox with no identity switch; the caller's own persona and claims stay as they are. `urgent: true` marks the record for delivery inside the owner's running turn (see Delivery). A caller may reach the target on any of three grounds, checked against the caller's live commons claims:
+- The reader path: the caller holds a reader claim on the target persona (a reader steering the owner it reads, which needs no `persona` argument)
+- The coordinator path: the caller holds `persona:<coordinatorPersona>` (default `coordinator`), which reaches any persona
+- The worker path: the target is `<coordinatorPersona>` and the caller holds a live `persona:<name>` claim on a named persona of its own; `persona:default` alone does not qualify, because every plugin-loaded session holds it
 
-**`agentic_inbox`** (reader only)
+Refused when:
+- The calling session owns the target persona (an owner does not message itself; a reader addressing the persona it reads is unaffected)
+- None of the three grounds holds
+- `persona` is given but is empty or contains `:` (records are keyed `inbox:<persona>:...`, so a colon would cross persona listings)
 
-Returns unread replies to the caller's records. A record still `pending` while the owner's commons entry shows a turn in flight (`turnStartedAt` in the machine-global commons store, live while the entry's `lastSeen` is within `staleAfterMs`) comes back with `deferred: true` and `turnRunningMs`. A `resolved` record carries `outcome`, `note` and `resolvedAt` beside `reply`. The store is shared across the machine, so a reader in another working directory sees the same state. Refused when:
-- The calling session is the owner
-- The calling session does not hold a reader claim on the target persona
+**`agentic_inbox`** (`persona?`)
+
+Returns unread replies to the caller's records addressed to the target persona (the `persona` argument when given, else the caller's own persona), plus that persona's open asks. A record still `pending` while the owner's commons entry shows a turn in flight (`turnStartedAt` in the machine-global commons store, live while the entry's `lastSeen` is within `staleAfterMs`) comes back with `deferred: true` and `turnRunningMs`. A `resolved` record carries `outcome`, `note` and `resolvedAt` beside `reply`. The store is shared across the machine, so a reader in another working directory sees the same state. Refused under the same rule as `agentic_say`:
+- The calling session owns the target persona
+- None of the three grounds above holds
+- `persona` is given but is empty or contains `:`
 
 **`agentic_resolve`** (owner only)
 
@@ -409,7 +416,7 @@ An `urgent` record does not wait for a quiet tick. On the owner's next passthrou
 
 ### Trust boundary
 
-Text reaches the model **only** through `$.prompt.submit` from a record whose writer holds a reader claim on the same persona. Peer messages (cross-session `SendMessage`) are consumed by the `session.receive` hook and **never** reach the model. The hook tests `e.origin.kind` against `peer` and `peer-send-message`; if either matches, it returns `{ consumed: "agentic: peer text is not steering; use agentic_say" }`, which means nothing is queued, shown, or read by the model. A peer message therefore carries no standing: it cannot steer the owner, open an ask, or trigger a nudge.
+Text reaches the model **only** through `$.prompt.submit` from a record whose writer may reach the owner's persona under the same three grounds `agentic_say` checks at send, re-read from the writer's live commons claims at delivery: a reader claim on the persona, the `persona:<coordinatorPersona>` claim, or, when the owner's persona is the coordinator persona, a live `persona:<name>` claim on a named persona (never `persona:default` alone). One shared check (`mayReachPersona` in `hooks/operator.ts`) gates the send, the inbox read, the tick's drain, the ask-answer delivery and the urgent break-in, so a record accepted at send and refused at delivery is marked `skipped` only when the writer's claims changed in between. Peer messages (cross-session `SendMessage`) are consumed by the `session.receive` hook and **never** reach the model. The hook tests `e.origin.kind` against `peer` and `peer-send-message`; if either matches, it returns `{ consumed: "agentic: peer text is not steering; use agentic_say" }`, which means nothing is queued, shown, or read by the model. A peer message therefore carries no standing: it cannot steer the owner, open an ask, or trigger a nudge.
 
 ### Ask wait
 

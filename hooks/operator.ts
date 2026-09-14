@@ -62,11 +62,12 @@ const INBOX_PREFIX = "inbox:";
 const REPLY_PREFIX = "reply:";
 const ASK_PREFIX = "ask:";
 const READER_PREFIX = "reader:";
+const PERSONA_PREFIX = "persona:";
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 // --- Store interface ---
 
-import type { CommonsStore, CommonsMeta } from "./commons";
+import type { CommonsStore, CommonsMeta, UnionedClaim } from "./commons";
 import { claimResource, releaseResource, readAllClaims } from "./commons";
 
 // --- Key helpers ---
@@ -85,6 +86,12 @@ export function askKey(persona: string, askId: string): string {
 
 function readerKey(persona: string): string {
   return `${READER_PREFIX}${persona}`;
+}
+
+// The commons resource an owner session claims for a persona. index.ts
+// builds the same string by hand at its claim and release sites.
+function personaKey(persona: string): string {
+  return `${PERSONA_PREFIX}${persona}`;
 }
 
 // --- D1: Records ---
@@ -459,6 +466,27 @@ export async function releaseReaderRole(
   await releaseResource(store, readerKey(persona), mySessionId, now, meta);
 }
 
+// The two claim tests over one claims read, so a caller that needs both
+// reads the commons store once.
+function holdsReaderClaim(claims: UnionedClaim[], persona: string, sessionId: string): boolean {
+  const readerResource = readerKey(persona);
+  return claims.some((c) => c.resource === readerResource && c.holder === sessionId);
+}
+
+function holdsOwnerClaim(
+  claims: UnionedClaim[],
+  sessionId: string,
+  persona?: string,
+  excludePersona?: string,
+): boolean {
+  if (persona !== undefined) {
+    const personaResource = personaKey(persona);
+    return claims.some((c) => c.resource === personaResource && c.holder === sessionId);
+  }
+  const excluded = excludePersona === undefined ? null : personaKey(excludePersona);
+  return claims.some((c) => c.holder === sessionId && c.resource.startsWith(PERSONA_PREFIX) && c.resource !== excluded);
+}
+
 /**
  * Check if a session holds a live reader claim for a persona.
  */
@@ -468,9 +496,47 @@ export async function hasLiveReaderClaim(
   sessionId: string,
   staleAfterMs: number = 90_000,
 ): Promise<boolean> {
+  return holdsReaderClaim(await readAllClaims(store, staleAfterMs), persona, sessionId);
+}
+
+/**
+ * Check if a session holds a live persona (owner) claim. With `persona`, the
+ * claim must be `persona:<persona>`. Without it, any live `persona:*` claim
+ * counts, except one named by `opts.excludePersona`.
+ */
+export async function hasLiveOwnerClaim(
+  store: CommonsStore,
+  sessionId: string,
+  persona?: string,
+  opts?: { excludePersona?: string; staleAfterMs?: number },
+): Promise<boolean> {
+  const claims = await readAllClaims(store, opts?.staleAfterMs ?? 90_000);
+  return holdsOwnerClaim(claims, sessionId, persona, opts?.excludePersona);
+}
+
+/**
+ * Whether `writer` may address `target`'s inbox. True on any of three legs:
+ * the writer holds a reader claim on the target (a reader steering the owner
+ * it reads); the writer holds the coordinator persona (the coordinator
+ * addressing any persona); or the target is the coordinator persona and the
+ * writer owns a named persona of its own (a worker pushing to the
+ * coordinator). A bare `persona:default` claim does not satisfy the third
+ * leg: every plugin-loaded session holds one, so it proves nothing about
+ * being a launched worker. The send gates, the inbox read, the tick's drain,
+ * the ask-answer delivery and the urgent break-in all call this one check,
+ * and it reads the claims once because the drain calls it per pending record.
+ */
+export async function mayReachPersona(
+  store: CommonsStore,
+  target: string,
+  writer: string,
+  coordinatorPersona: string,
+  staleAfterMs: number = 90_000,
+): Promise<boolean> {
   const claims = await readAllClaims(store, staleAfterMs);
-  const readerResource = readerKey(persona);
-  return claims.some((c) => c.resource === readerResource && c.holder === sessionId);
+  return holdsReaderClaim(claims, target, writer)
+    || holdsOwnerClaim(claims, writer, coordinatorPersona)
+    || (target === coordinatorPersona && holdsOwnerClaim(claims, writer, undefined, "default"));
 }
 
 /**
