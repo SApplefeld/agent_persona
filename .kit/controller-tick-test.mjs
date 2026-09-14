@@ -4061,6 +4061,10 @@ async function caseSection2_deferredReadsCommonsNotLocalHeartbeat(clock) {
   check("section2 cross-repo: record still pending (setup sanity)", rec?.status === "pending");
   check("section2 cross-repo: record deferred from the owner's commons stamp", rec?.deferred === true);
   check("section2 cross-repo: turnRunningMs is the commons stamp's age", rec?.turnRunningMs === 120_000);
+  // The workdir on the result is the owner's, read from its commons entry,
+  // and not the caller's own: the same-directory pin in the item 8.3 case
+  // cannot tell the two apart, which is what this cross-repo half is for.
+  check("section2 cross-repo: workdir on the result is the owner's, not the caller's", JSON.parse(inbox.result).workdir === "D:/other-repo");
 
   // Inverse: only the caller's local heartbeat file shows a turn.
   const hl = await seedReaderHarness("section2_local_only", now, "idle-owner-002",
@@ -7833,6 +7837,8 @@ async function caseS13_score_completedTurnRecordsRound(clock) {
   await h.handlers["turn.complete"](h.fake, { turnId: "t-score", answer: "Rivers run to the sea.", reason: "completed" }, async () => ({ result: "ok" }));
   const state = getState(h);
   const scores = state.decisions.filter((d) => d.action === "score");
+  // Two stable tokens rather than the detail's whole prose: nothing machine-reads
+  // that string, so its wording is free to move while the leaf and the verdict stay.
   check("s13 score: one score decision names the turn's leaf and the verdict", scores.length === 1 && scores[0].detail.includes("g-plan") && scores[0].detail.includes("on-goal"), scores);
   const plan = state.goals.find((g) => g.id === "g-plan");
   check("s13 score: the on-goal round is burned (completedRounds 1)", plan && plan.completedRounds === 1, plan && plan.completedRounds);

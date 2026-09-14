@@ -46,10 +46,11 @@ fi
 # a real fd that does not exist here. Evaluating code that sends bytes
 # to a coproc pipe is not this test's job; reading its own text is.
 # The range ends at the PRIMING_BODY guard, the first code line after the
-# assignments, which is dropped from the range: two `if ... fi` blocks sit
-# inside it (the NO_CHANNEL guard around CHANNEL_REPLY_INSTRUCTION and the
+# assignments, which is dropped from the range: three `if ... fi` blocks sit
+# inside it (the NO_CHANNEL guard around CHANNEL_REPLY_INSTRUCTION, the
+# worker-launch guard around the steer sentence's escalation clause, and the
 # COORDINATOR_PERSONA guard around COORDINATOR_ROLE_INSTRUCTION), so the
-# first `^  fi$` ends short of the second block, and only comments sit
+# first `^  fi$` ends short of the later blocks, and only comments sit
 # between the last assignment and that guard.
 VARS_SNIPPET=$(sed -n '/^  SKILL_LOAD_INSTRUCTION="/,/^  if \[ -n "\$PROMPT_FILE" \] && \[ -f "\$PROMPT_FILE" \]; then$/p' "$SCRIPT" | sed '$d')
 if [ -z "$VARS_SNIPPET" ]; then
@@ -237,6 +238,10 @@ case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_SAY_CONTROL"*"$ROLE_CAP_CONTROL"*) check "channel not attached, persona matches: coordinator role instruction present, naming agentic_say and the round cap" 0 ;;
   *) check "channel not attached, persona matches: coordinator role instruction present, naming agentic_say and the round cap" 1 ;;
 esac
+case "${COORDINATOR_STEER_INSTRUCTION:-}" in
+  *"$STEER_ESCALATE_CONTROL"*) check "channel not attached, persona matches: the steer sentence carries no escalation-to-coordinator clause" 1 ;;
+  *) check "channel not attached, persona matches: the steer sentence carries no escalation-to-coordinator clause" 0 ;;
+esac
 unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION
 NO_CHANNEL=0
 PERSONA="lead"
@@ -247,6 +252,23 @@ if [ -z "${COORDINATOR_ROLE_INSTRUCTION:-}" ]; then
 else
   check "channel attached, COORDINATOR_PERSONA differs: coordinator role instruction is empty" 1
 fi
+case "${COORDINATOR_STEER_INSTRUCTION:-}" in
+  *"$STEER_ESCALATE_CONTROL"*"$COORDINATOR_PERSONA"*) check "channel attached, COORDINATOR_PERSONA differs: the steer sentence routes findings and declined steers to the coordinator by name" 0 ;;
+  *) check "channel attached, COORDINATOR_PERSONA differs: the steer sentence routes findings and declined steers to the coordinator by name" 1 ;;
+esac
+# A launch under the default persona holds no named owner claim, so the
+# worker leg of the reach rule refuses its agentic_say to the coordinator:
+# the clause is withheld rather than issued as a standing instruction the
+# plugin always denies.
+unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION
+NO_CHANNEL=1
+PERSONA="default"
+COORDINATOR_PERSONA="lead"
+eval "$VARS_SNIPPET"
+case "${COORDINATOR_STEER_INSTRUCTION:-}" in
+  *"$STEER_ESCALATE_CONTROL"*) check "default persona: the steer sentence carries no escalation-to-coordinator clause" 1 ;;
+  *) check "default persona: the steer sentence carries no escalation-to-coordinator clause" 0 ;;
+esac
 
 echo
 if [ "$failed" = "0" ]; then

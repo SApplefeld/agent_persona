@@ -193,7 +193,12 @@ function check(name, cond) { if (cond) ok(name); else fail(name); }
   await claimResource(store, "persona:default", "session-B", now, { turnStartedAt: now - 5_000, workdir: "D:/b" });
   const metaLive = await readHolderMeta(store, "persona:default", 90_000, now);
   check("Test 10: live holder's turnStartedAt is read", metaLive?.turnStartedAt === now - 5_000);
-  check("Test 10: live holder's workdir is read, and a missing one normalizes to null", metaLive?.workdir === "D:/b" && metaB?.workdir === null);
+  check("Test 10: live holder's workdir is read", metaLive?.workdir === "D:/b");
+  check("Test 10: a missing workdir normalizes to null", metaB?.workdir === null);
+  await claimResource(store, "persona:default", "session-B", now, { turnStartedAt: now - 5_000, workdir: "" });
+  const metaEmpty = await readHolderMeta(store, "persona:default", 90_000, now);
+  check("Test 10: an empty workdir normalizes to null", metaEmpty?.workdir === null);
+  await claimResource(store, "persona:default", "session-B", now, { turnStartedAt: now - 5_000, workdir: "D:/b" });
 
   // Two live claimants: the meta comes from the earlier claim, the winner
   // every other reader resolves, not from the later one

@@ -247,7 +247,9 @@ export async function readAllClaims(
  * contended resource reads consistently. A read only: stale entries are
  * skipped, never gc'd, and a missing or malformed entry is skipped too.
  * Returns null when no live entry claims the resource. An entry written by
- * an older plugin lacks the turn stamp, which normalizes to null.
+ * an older plugin lacks the turn stamp, which normalizes to null. The
+ * holder's workdir rides beside the stamp; a missing or empty one reads as
+ * null too.
  */
 export async function readHolderMeta(
   store: CommonsStore,
