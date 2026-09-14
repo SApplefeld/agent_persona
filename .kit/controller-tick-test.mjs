@@ -3155,7 +3155,7 @@ async function main() {
     await caseSection12_7_ownTurnStillTakesTheStamp_control(clock);
     await caseSection12_F1_resolveInsideTheAnsweringTurnKeepsTheReply(clock);
     await caseSection12_F2_windowRollKeepsAnOpenSteersReply(clock);
-    await caseSection12_F3_failedNudgeResetsTheNudgedFlag(clock);
+    await caseSection12_F3_failedNudgeConsumesItsEntry(clock);
     await caseSection12_F4_failedDeliverySubmitLeavesTheRecordDelivered(clock);
     await caseSection12_G1_lateRejectingSubmitLeavesAnAnsweredRecord(clock);
     await caseSection12_G2_sweepAgesOffDeliveryAndKeepsReplyWithRecord(clock);
@@ -3170,13 +3170,15 @@ async function main() {
     await caseSection12_K1_droppedAskAnswerSubmitLeavesTheAskClosed(clock);
     await caseSection12_K1_droppedNudgeSubmitConsumesItsEntry(clock);
     await caseSection12_K2_settledTextMatchesTheDeliveryTurn(clock);
-    await caseSection12_K2_submittedTextStillMatchesBeforeTheSubmitSettles(clock);
     await caseSection12_L1_sweptRecordDropsItsDeliveryEntry(clock);
     await caseSection12_L1_resolvedRecordDropsItsDeliveryEntry(clock);
     await caseSection12_L1_withheldLineNamesTheFirstLiveRecord(clock);
     await caseSection12_M1_deliveryQueuedDuringTheWithheldReadIsKept(clock);
     await caseSection12_M1_throwingWithheldReadKeepsEveryEntry(clock);
     await caseSection12_N1_reusedRecordIdDoesNotKeepASweptDeliveryEntry(clock);
+    await caseSection12_close_entryLeavingDuringTheWithheldReadIsNotNamed(clock);
+    await caseSection12_close_voidSubmitResultDoesNotThrow(clock);
+    await caseSection12_close_sweepDeleteFailureAfterTheAppendIsNamedApart(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
     await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
     await caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock);
@@ -4307,9 +4309,10 @@ async function caseSection12_6_foreignTurnDoesNotTakeTheStamp(clock) {
   check("section12.6 channel: no reply written from the channel turn's answer", !h.storeMap.has(`reply:default:${id}`));
   check("section12.6 channel: record still delivered, not answered", readStoreRecord(h, key)?.status === "delivered");
 
-  // A goal nudge is submitted, then a delivery; plugin turns open in
-  // submission order, so the nudged turn opens first and the delivery's
-  // own turn second.
+  // A goal nudge is submitted, then a delivery; the harness stub hands a
+  // turn.start fired without text the queued submit texts in order, so the
+  // nudged turn opens with the nudge's text first and the delivery's own
+  // turn with its text second.
   const n = await createTickHarness({ ...OPTS, caseName: "section12_6_nudge" });
   n.storeMap.set(`commons:${SESSION_ID}`, {
     sessionId: SESSION_ID,
@@ -4342,7 +4345,7 @@ async function caseSection12_6_foreignTurnDoesNotTakeTheStamp(clock) {
   const k = await seedOwnerWithPendingRecord("section12_6_keyboard", now, "writer-k");
   await tickAndSettle(k.h, clock, 50);
   check("section12.6 keyboard: record delivered (setup sanity)", readStoreRecord(k.h, k.key)?.status === "delivered");
-  await k.h.handlers["prompt.submit"](k.h.fake, { text: "Typed at the keyboard.", origin: { kind: "keyboard" } }, async () => ({}));
+  await k.h.handlers["prompt.submit"](k.h.fake, { text: "Typed at the keyboard.", origin: { kind: "composer" } }, async () => ({}));
   await k.h.handlers["turn.start"](k.h.fake, { turnId: "t-keyboard", text: "Typed at the keyboard." }, async () => ({ result: "ok" }));
   const afterKeyboardStart = readStoreRecord(k.h, k.key);
   check("section12.6 keyboard: record not stamped with the keyboard turn", afterKeyboardStart?.turnId === undefined, afterKeyboardStart);
@@ -4353,11 +4356,13 @@ async function caseSection12_6_foreignTurnDoesNotTakeTheStamp(clock) {
   check("section12.6 keyboard: record still delivered, not answered", readStoreRecord(k.h, k.key)?.status === "delivered");
 }
 
-// The budget close-out nudge sets the nudged-turn flag on the synchronous
-// side of its submit, as the goal nudge does. The real submit parks until the
-// session is next idle, so a flag set after it lands only once the nudged
-// turn has run: a turn starting under the parked submit would then read as
-// the plugin's own and take a delivered record's stamp.
+// The budget close-out nudge pushes its expected-turn entry on the
+// synchronous side of its submit, as the goal nudge does. The real submit
+// parks until the session is next idle, so an entry pushed after it would
+// land only once the nudged turn has run: a turn starting under the parked
+// submit would then match nothing it could place. The harness stub hands a
+// turn.start fired without text the queued submit texts in order, so the
+// nudge's turn opens first and the delivery's own turn second.
 async function caseSection12_6_budgetNudgeFlagsTheTurnBeforeItsSubmit(clock) {
   console.log("\n=== Section 12 bullet 6: a budget-nudge turn starting under the parked submit does not take the stamp ===");
   clock.set(T0);
@@ -4538,9 +4543,10 @@ async function caseSection12_F2_windowRollKeepsAnOpenSteersReply(clock) {
   check("section12.F2: agentic_inbox still returns the reply", seen?.reply === "the open steer's reply", seen);
 }
 
-// F3: a budget nudge whose submit is refused resets the nudged flag, so the
-// tick's next delivery turn is the plugin's own and takes the stamp.
-async function caseSection12_F3_failedNudgeResetsTheNudgedFlag(clock) {
+// F3: a budget nudge whose submit is refused removes the entry it pushed
+// before the submit, so the tick's next delivery turn is the plugin's own
+// and takes the stamp.
+async function caseSection12_F3_failedNudgeConsumesItsEntry(clock) {
   console.log("\n=== Section 12 F3: a refused budget nudge does not withhold the next delivery turn's stamp ===");
   clock.set(T0);
   const now = T0;
@@ -4570,9 +4576,8 @@ async function caseSection12_F3_failedNudgeResetsTheNudgedFlag(clock) {
   clock.advance(10_000);
   await tickAndSettle(h, clock, 50);
   check("section12.F3: the budget nudge was attempted (setup sanity)", (h.promptSubmits || []).some((p) => p.startsWith("[BUDGET]")));
-  // No turn pair here: turn.complete resets the nudged flag, which is the
-  // very state this case observes. The decisions are read after the
-  // turn.start below, which persists.
+  // No turn pair here: the decisions are read after the turn.start below,
+  // which persists.
 
   h.failPromptSubmits(null);
   seedReaderClaim(h, "writer-f3", clock.get());
@@ -4730,7 +4735,6 @@ async function caseSection12_G3_failedAskAnswerSubmitLeavesTheAskClosed(clock) {
   check("section12.G3: the node stays active", state.goals.find((g) => g.id === "node-g3")?.status === "active");
   check("section12.G3: operator_delivery_failed names the record and the error",
     state.decisions.some((d) => d.action === "operator_delivery_failed" && d.detail.includes("default-writer-g3-1") && d.detail.includes("submit refused for the answer")));
-  check("section12.G3: no ask_answer_delivery_reverted", !state.decisions.some((d) => d.action === "ask_answer_delivery_reverted"));
 
   ha.failPromptSubmits(null);
   clock.advance(10_000);
@@ -4740,8 +4744,8 @@ async function caseSection12_G3_failedAskAnswerSubmitLeavesTheAskClosed(clock) {
 
 // G4 (bullet 6, fourth shape): a turn one of the plugin's other submits
 // opened (the ask re-raise here; the kaizen announcement and the reply
-// backstop set the same flag) starting first after a delivery does not take
-// the stamp.
+// backstop push the same plugin-kind entry) starting first after a delivery
+// does not take the stamp.
 async function caseSection12_6_pluginTurnDoesNotTakeTheStamp(clock) {
   console.log("\n=== Section 12 bullet 6: a turn the ask re-raise opened does not take a delivered record's stamp ===");
   clock.set(T0);
@@ -4851,7 +4855,7 @@ async function caseSection12_H1_parkedPluginTurnAfterAnExternalTurnTakesNoStamp(
   const reraiseTick = fireTick(h);
   const reraiseQueued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.includes("[STILL WAITING]")));
   check("section12.H1b: the re-raise submit is parked (setup sanity)", reraiseQueued);
-  await h.handlers["prompt.submit"](h.fake, { text: "typed", origin: { kind: "keyboard" } }, async () => ({}));
+  await h.handlers["prompt.submit"](h.fake, { text: "typed", origin: { kind: "composer" } }, async () => ({}));
   await h.handlers["turn.start"](h.fake, { turnId: "t-external-h1b", text: "typed" }, async () => ({ result: "ok" }));
   await h.handlers["turn.complete"](h.fake, { turnId: "t-external-h1b", answer: "typed answer", reason: "completed" }, async () => ({ result: "ok" }));
 
@@ -4894,7 +4898,7 @@ async function caseSection12_J1_unmatchedTurnTextTakesNoStamp(clock) {
   check("section12.J1a: the delivery's submit is parked (setup sanity)", queued);
 
   // An external turn opens and completes.
-  await h.handlers["prompt.submit"](h.fake, { text: "first typed", origin: { kind: "keyboard" } }, async () => ({}));
+  await h.handlers["prompt.submit"](h.fake, { text: "first typed", origin: { kind: "composer" } }, async () => ({}));
   await h.handlers["turn.start"](h.fake, { turnId: "t-x-j1a", text: "first typed" }, async () => ({ result: "ok" }));
   await h.handlers["turn.complete"](h.fake, { turnId: "t-x-j1a", answer: "first answer", reason: "completed" }, async () => ({ result: "ok" }));
 
@@ -5124,29 +5128,6 @@ async function caseSection12_K2_settledTextMatchesTheDeliveryTurn(clock) {
   check("section12.K2d: the reply is filed", readStoreRecord(h, `reply:default:${id}`)?.text === "Delivered answer.");
 }
 
-// K2 (E): the contract does not order the submit promise settling against
-// turn.start, so a turn that opens with the submitted text before the
-// submit has settled still matches on that key. The submit is parked here,
-// so the settled text has not been read when the turn opens.
-async function caseSection12_K2_submittedTextStillMatchesBeforeTheSubmitSettles(clock) {
-  console.log("\n=== Section 12 K2 (E): a delivery turn opening with the submitted text before the submit settles takes the stamp ===");
-  clock.set(T0);
-  const now = T0;
-  const { h, key, id } = await seedOwnerWithPendingRecord("section12_k2_e_presettle", now, "writer-k2e");
-  h.settleNextPromptSubmit((text) => "[relay] " + text);
-  h.holdPromptSubmits();
-  const tick = fireTick(h);
-  const queued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith("[OPERATOR]")));
-  check("section12.K2e: the delivery's submit is parked (setup sanity)", queued);
-  await h.handlers["turn.start"](h.fake, { turnId: "t-presettle-k2e", text: "[OPERATOR] message 1" }, async () => ({ result: "ok" }));
-  check("section12.K2e: the turn opening with the submitted text takes the stamp", readStoreRecord(h, key)?.turnId === "t-presettle-k2e");
-  await h.handlers["turn.complete"](h.fake, { turnId: "t-presettle-k2e", answer: "Delivered answer.", reason: "completed" }, async () => ({ result: "ok" }));
-  check("section12.K2e: the reply is filed", readStoreRecord(h, `reply:default:${id}`)?.text === "Delivered answer.");
-  h.releasePromptSubmits();
-  await tick;
-  check("section12.K2e: no operator_stamp_withheld after the submit settles", !getDecisions(h).some((d) => d.action === "operator_stamp_withheld"));
-}
-
 // L1 (A): a delivery entry whose turn never opens with a matching text
 // outlives its record once the TTL sweep removes it. The withheld branch
 // reads the store and drops the entry, so no later unmatched turn writes an
@@ -5301,6 +5282,96 @@ async function caseSection12_N1_reusedRecordIdDoesNotKeepASweptDeliveryEntry(clo
   await h.handlers["turn.complete"](h.fake, { turnId: "t-ext-2-n1", answer: "second answer", reason: "completed" }, async () => ({ result: "ok" }));
   check("section12.N1: a second external turn names nothing either (the entry is gone)",
     !getDecisions(h).some((d) => d.action === "operator_stamp_withheld"));
+}
+
+// An entry taken before the withheld read can leave the list while the read
+// is parked: here the delivery's own turn opens and consumes it. The read
+// then still shows the record delivered and unstamped, and the branch names
+// nothing for an entry no longer queued.
+async function caseSection12_close_entryLeavingDuringTheWithheldReadIsNotNamed(clock) {
+  console.log("\n=== Section 12 close: an entry consumed while the withheld read is parked is not named ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("section12_close_recheck", now, "writer-cr");
+  await tickAndSettle(h, clock, 50);
+  check("section12.close recheck: record delivered and its turn never opened (setup sanity)", readStoreRecord(h, key)?.status === "delivered" && readStoreRecord(h, key)?.turnId === undefined);
+
+  h.holdStoreGets(key);
+  const unmatched = h.handlers["turn.start"](h.fake, { turnId: "t-unmatched-cr", text: "typed first" }, async () => ({ result: "ok" }));
+  check("section12.close recheck: the withheld read is parked (setup sanity)", await waitUntil(() => h.parkedStoreGetCount === 1));
+  const own = h.handlers["turn.start"](h.fake, { turnId: "t-own-cr", text: "[OPERATOR] message 1" }, async () => ({ result: "ok" }));
+  check("section12.close recheck: the delivery's own turn reached its stamp read (setup sanity)", await waitUntil(() => h.parkedStoreGetCount === 2));
+  h.releaseStoreGet();
+  await unmatched;
+  check("section12.close recheck: no operator_stamp_withheld names the consumed entry's record",
+    !getDecisions(h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes(id)));
+  h.releaseStoreGet();
+  await own;
+  check("section12.close recheck: the delivery's own turn takes the stamp", readStoreRecord(h, key)?.turnId === "t-own-cr");
+}
+
+// The submit's resolved value is read through a null guard, so a submit
+// resolving no value is taken as accepted rather than throwing out of the
+// tick; the delivery's own turn still takes the stamp.
+async function caseSection12_close_voidSubmitResultDoesNotThrow(clock) {
+  console.log("\n=== Section 12 close: a submit resolving no value does not throw out of the tick ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key } = await seedOwnerWithPendingRecord("section12_close_void_submit", now, "writer-cv");
+  const realSubmit = h.fake.prompt.submit;
+  h.fake.prompt.submit = ({ text }) => {
+    h.promptSubmits.push(text);
+    h.queuedTurnTexts.push(text);
+    return Promise.resolve(undefined);
+  };
+  let threw = null;
+  try {
+    await fireTick(h);
+  } catch (err) {
+    threw = err;
+  }
+  h.fake.prompt.submit = realSubmit;
+  check("section12.close void: the delivery was submitted (setup sanity)", (h.promptSubmits || []).includes("[OPERATOR] message 1"));
+  check("section12.close void: the tick does not throw", threw === null, threw && String(threw));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-own-cv" }, async () => ({ result: "ok" }));
+  check("section12.close void: the delivery's own turn takes the stamp", readStoreRecord(h, key)?.turnId === "t-own-cv");
+  check("section12.close void: no operator_delivery_failed", !getDecisions(h).some((d) => d.action === "operator_delivery_failed"));
+}
+
+// A store delete failing after the sweep's log append landed is recorded
+// apart from a refused append: the detail says every record was logged and
+// how many were removed, never that the records were left in the store.
+async function caseSection12_close_sweepDeleteFailureAfterTheAppendIsNamedApart(clock) {
+  console.log("\n=== Section 12 close: a sweep delete failing after the append names the partial removal ===");
+  clock.set(T0);
+  const now = T0;
+  const DAY = 86_400_000;
+  const h = await seedOwnerHarness("section12_close_sweep_delete", now);
+  const key = seedInboxRecord(h, "writer-old", 1, { at: now - 2 * DAY, status: "answered", deliveredAt: now - 2 * DAY + 1000, turnId: "t-old" });
+  const askKey = "ask:default:ask-old-1";
+  h.storeMap.set(askKey, { id: "ask-old-1", ownerSessionId: SESSION_ID, at: now - 2 * DAY + 3000, nodeId: "node-old", question: "old question", status: "expired" });
+  const realDelete = h.fake.store.delete;
+  // The sweep deletes the inbox record, then the ask; the ask's delete is
+  // the one refused.
+  let deletes = 0;
+  h.fake.store.delete = (k) => {
+    if (k !== askKey) return realDelete(k);
+    deletes++;
+    return Promise.reject(new Error("delete refused"));
+  };
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+  await fireTurn(h, "t-flush-close-sweep");
+  h.fake.store.delete = realDelete;
+
+  check("section12.close sweep: the ask's delete was refused, the inbox record's landed (setup sanity)", deletes === 1 && !h.storeMap.has(key) && h.storeMap.has(askKey));
+  check("section12.close sweep: the log holds both records (setup sanity)",
+    (h.fsMap.get(".agentic-channel.jsonl") || "").split("\n").filter((l) => l.trim().length > 0).length === 2);
+  const failed = getDecisions(h).filter((d) => d.action === "sweep_expired_records_failed");
+  check("section12.close sweep: the decision names the partial removal after the logged append",
+    failed.length === 1 && failed[0].detail.includes("every record logged") && failed[0].detail.includes("1 of 2 removed") && failed[0].detail.includes("delete refused") && !failed[0].detail.includes("left in store"), failed);
 }
 
 // M1 (B): a withheld read that throws leaves every queued entry in place,

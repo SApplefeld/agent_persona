@@ -268,6 +268,22 @@ export async function listAskRecords(
 }
 
 /**
+ * A store delete that failed during `sweepExpiredRecords` after every expired
+ * record was appended to the channel log: `removed` of `total` logged records
+ * left the store before the failure, and the rest are still in it.
+ */
+export class SweepDeleteError extends Error {
+  readonly removed: number;
+  readonly total: number;
+  constructor(removed: number, total: number, cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "SweepDeleteError";
+    this.removed = removed;
+    this.total = total;
+  }
+}
+
+/**
  * Sweep records older than the TTL.
  * Returns the number of records swept.
  *
@@ -286,7 +302,9 @@ export async function listAskRecords(
  * writes with `sweptAt` in place of `rolledAt`, so a reader of the log can tell
  * the two routes apart. Append before delete, and never delete on a failed
  * append: the error propagates with every record still in the store, so the
- * caller records the refusal rather than a count.
+ * caller records the refusal rather than a count. A delete that fails after
+ * the append landed throws a `SweepDeleteError` instead, carrying how many
+ * of the logged records were removed before it.
  */
 export async function sweepExpiredRecords(
   store: CommonsStore,
@@ -332,9 +350,13 @@ export async function sweepExpiredRecords(
   if (expired.length > 0) {
     const sweptAt = Date.now();
     await appendLines(expired.map((e) => JSON.stringify({ persona, kind: e.kind, key: e.key, sweptAt, record: e.record })));
-    for (const e of expired) {
-      await store.delete(e.key);
-      swept++;
+    try {
+      for (const e of expired) {
+        await store.delete(e.key);
+        swept++;
+      }
+    } catch (err) {
+      throw new SweepDeleteError(swept, expired.length, err);
     }
   }
 
@@ -355,8 +377,9 @@ export async function sweepExpiredRecords(
  * drain has not consumed yet, and a `delivered` or `answered` record is an
  * open steer whose state the sender still reads, so both stay in the store
  * whatever the window, and so does the open steer's reply; the TTL sweep is
- * the bound on those. A reply for a `resolved` or `skipped` record rolls
- * with it, and an orphan reply with no inbox record rolls on its own age.
+ * the bound on those. Every other reply, whether its record is `resolved`,
+ * `skipped` or gone, enters the window on its own age, so it can roll on a
+ * different cadence from its record.
  * Returns the number of records rolled.
  */
 export async function enforceChannelWindow(

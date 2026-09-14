@@ -51,6 +51,7 @@ import {
   claimReaderRole,
   hasLiveReaderClaim,
   sweepExpiredRecords,
+  SweepDeleteError,
   enforceChannelWindow,
   writeInboxRecord,
   getHighestInboxSeq,
@@ -107,7 +108,8 @@ function commonsStoreOf(dp: any): CommonsStore {
 // it whole), and the text the turn then opens with. Both are kept because
 // the contract does not order the submit promise settling against
 // turn.start: a turn that opens before the submit's continuation has run
-// matches on `text`, one that opens after matches on `settledText`. A
+// matches on `text` where nothing rewrote the text, and one that opens
+// after matches on `settledText` either way. A
 // UserPromptSubmit settings hook cannot rewrite the text, since its output
 // carries no text field, and a prompt it suppresses leaves no turn that
 // matches either key. A turn that opens with a rewritten or capped text
@@ -118,30 +120,34 @@ function commonsStoreOf(dp: any): CommonsStore {
 type ExpectedTurn = { text: string; settledText?: string } & ({ kind: "delivery"; recordId: string } | { kind: "nudge" } | { kind: "plugin" });
 type SubmitOutcome = { ok: true } | { ok: false; how: "failed" | "dropped"; reason: string };
 
+// Removes one entry from the expected-turn list by identity, never by
+// position; an entry already gone is left alone.
+function removeExpectedTurn(expectedTurns: ExpectedTurn[], entry: ExpectedTurn): void {
+  const i = expectedTurns.indexOf(entry);
+  if (i >= 0) expectedTurns.splice(i, 1);
+}
+
 // Runs one queued entry's $.prompt.submit and reads its result. A rejection
 // and a resolved `{ drop }` (a hook beneath this plugin dropped the submit,
 // which resolves rather than rejects) are one outcome: no turn is coming,
 // so the entry leaves the list (by identity, never by position) and the
 // caller gets the reason to record. A resolved `{ text }` stores the
 // settled text on the entry as its second match key. No site reads the
-// submit's result directly. Top level because it takes `dp`.
+// submit's result directly. A result that is not an object is read as an
+// accepted submit with no settled text. Top level because it takes `dp`.
 async function submitExpectedTurn(dp: any, expectedTurns: ExpectedTurn[], entry: ExpectedTurn): Promise<SubmitOutcome> {
-  const unexpect = (): void => {
-    const i = expectedTurns.indexOf(entry);
-    if (i >= 0) expectedTurns.splice(i, 1);
-  };
-  let result: PromptSubmitResult;
+  let result: PromptSubmitResult | undefined;
   try {
     result = await dp.prompt.submit({ text: entry.text });
   } catch (err) {
-    unexpect();
+    removeExpectedTurn(expectedTurns, entry);
     return { ok: false, how: "failed", reason: err instanceof Error ? err.message : String(err) };
   }
-  if (typeof result.drop === "string") {
-    unexpect();
+  if (typeof result?.drop === "string") {
+    removeExpectedTurn(expectedTurns, entry);
     return { ok: false, how: "dropped", reason: result.drop };
   }
-  if (typeof result.text === "string") entry.settledText = result.text;
+  if (typeof result?.text === "string") entry.settledText = result.text;
   return { ok: true };
 }
 
@@ -683,10 +689,7 @@ export const register: Register = async (on, options) => {
   // identical text are a known limit: the first queued entry wins.
   const expectedTurns: ExpectedTurn[] = [];
   const expectTurn = (entry: ExpectedTurn): ExpectedTurn => { expectedTurns.push(entry); return entry; };
-  const unexpectTurn = (entry: ExpectedTurn): void => {
-    const i = expectedTurns.indexOf(entry);
-    if (i >= 0) expectedTurns.splice(i, 1);
-  };
+  const unexpectTurn = (entry: ExpectedTurn): void => removeExpectedTurn(expectedTurns, entry);
   // What the turn now running opened as, set at turn.start from the entry
   // its text matched ("unaccounted" for one that matched none, whether
   // external, a continuation or unknown) and read at turn.complete.
@@ -700,7 +703,7 @@ export const register: Register = async (on, options) => {
       timestamp: Date.now(),
       loop: "monitor",
       action: "operator_delivery_failed",
-      detail: `record ${rec.id} submit ${outcome.how}; left as delivered: ${outcome.reason}`.slice(0, 200),
+      detail: `record ${rec.id} submit ${outcome.how}; left as it stands: ${outcome.reason}`.slice(0, 200),
     });
   };
   // Item 2 backstop safety (Round 28): true only when the real
@@ -1609,7 +1612,9 @@ export const register: Register = async (on, options) => {
               timestamp: Date.now(),
               loop: "worker",
               action: "sweep_expired_records_failed",
-              detail: `sweep refused, records left in store (persona: ${sess.persona}): ${err instanceof Error ? err.message : String(err)}`,
+              detail: err instanceof SweepDeleteError
+                ? `sweep partly applied, every record logged, ${err.removed} of ${err.total} removed (persona: ${sess.persona}): ${err.message}`
+                : `sweep refused, records left in store (persona: ${sess.persona}): ${err instanceof Error ? err.message : String(err)}`,
             });
           }
 
@@ -2781,9 +2786,9 @@ export const register: Register = async (on, options) => {
               // score performs, so a nudge the worker met would not clear its
               // own count, and two unmet nudges after a met one would reach the
               // cap that pauses the node, a round earlier than the worker
-              // earned. The nudged-turn flag would land after the turn.complete
-              // that reads it, leaking into the following turn and scoring an
-              // ordinary turn with the nudge-aware label set. The prompt text
+              // earned. The nudge's expected-turn entry would be queued after
+              // its own turn.start had looked for it, so that turn would open
+              // unaccounted and be scored without the nudge-aware label set. The prompt text
               // would land after the scorer had already judged the answer
               // against the previous turn's prompt.
               currentPrompt = nudgeText;
@@ -2970,6 +2975,9 @@ export const register: Register = async (on, options) => {
         }
         if (liveRecords) {
           for (const entry of deliveryEntries) {
+            // An entry that left the list while the read ran (its own turn
+            // opened, or its submit was refused) is neither named nor removed.
+            if (!expectedTurns.includes(entry)) continue;
             const record = liveRecords.find((rec) => rec.id === entry.recordId);
             const live = record !== undefined && record.status === "delivered" && !record.turnId;
             if (live) {
