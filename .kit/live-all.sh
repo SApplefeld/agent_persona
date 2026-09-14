@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Live test runner: runs the ten suites serially (V4: CONCURRENCY=1).
+# Live test runner: runs the five live suites serially, one real claude child at a time.
 # Usage: live-all.sh [suite...]
-#   Suites: errorstreak, health, gitprobe, controller, goaltree, goaltree-stall, planfail, yield, budget, commons
-#   Default: all ten.
+#   Suites: goaltree, budget, commons, operator, restartrequest
+#   Default: all five.
 #
-# V4: serial execution (one suite at a time, no stagger).
-# Wall clock targets: full <= 25 min, short <= 12 min (serial, no overlap).
+# Each suite proves one thing the offline lane cannot: the real engine and plugin
+# together. The offline suites (controller-tick-test.mjs and its siblings) own the rest.
 set -u
 
 # --- Configuration ---
@@ -22,7 +22,7 @@ RUN_DIR="$RUNS_DIR/$STAMP"
 HEAD_SHORT="$(cd "$PLUGIN_DIR" && git log -1 --format=%h)"
 
 # --- Suite list ---
-ALL_SUITES=(errorstreak health gitprobe controller goaltree goaltree-stall planfail yield budget cost commons operator passive goalconvo restartpassive restartrequest stopprocesstree)
+ALL_SUITES=(goaltree budget commons operator restartrequest)
 if [ $# -eq 0 ]; then
   SUITES=("${ALL_SUITES[@]}")
 else
@@ -147,8 +147,7 @@ run_suite() {
   [ -f "$suite_dir/$suite.decisions.log" ] && cp -f "$suite_dir/$suite.decisions.log" "$RUN_DIR/$suite.decisions.log"
   # AL8: preserve both artifact name shapes
   # Most suites: $suite-test.out.jsonl, $suite-test.err.log, $suite-test.debug.log
-  # Budget, goaltree, goaltree-stall, planfail: $suite.out.jsonl, $suite.err.log
-  # Yield: yield-A.*, yield-B.*, yield-B2.* (multi-session)
+  # Budget, goaltree: $suite.out.jsonl, $suite.err.log
   [ -f "$suite_dir/$suite-test.err.log" ] && cp -f "$suite_dir/$suite-test.err.log" "$RUN_DIR/$suite.err.log"
   [ -f "$suite_dir/$suite-test.out.jsonl" ] && cp -f "$suite_dir/$suite-test.out.jsonl" "$RUN_DIR/$suite.out.jsonl"
   [ -f "$suite_dir/$suite-test.debug.log" ] && cp -f "$suite_dir/$suite-test.debug.log" "$RUN_DIR/$suite.debug.log"
@@ -162,20 +161,10 @@ run_suite() {
   if [ ! -f "$RUN_DIR/$suite.debug.log" ] && [ -f "$suite_dir/$suite.debug.log" ]; then
     cp -f "$suite_dir/$suite.debug.log" "$RUN_DIR/$suite.debug.log"
   fi
-  # BJ4: For the yield suite, retain all multi-session transcripts
-  if [ "$suite" = "yield" ]; then
-    mkdir -p "$RUN_DIR/yield"
-    for f in yield-A.out.jsonl yield-A.err.log yield-B.out.jsonl yield-B.err.log \
-             yield-B2.out.jsonl yield-B2.err.log yield.decisions.log yield.assert.log \
-             yield.exit settings.json .agentic-personas.json; do
-      [ -f "$suite_dir/$f" ] && cp -f "$suite_dir/$f" "$RUN_DIR/yield/" 2>/dev/null
-    done
-  fi
-  # Round 79: restartrequest's own names (supervisor.log, the reader's transcript,
-  # the reader's debug log, the owner's persona store carrying its decision log)
-  # matched none of the generic patterns above, so the suite retained only its
-  # assert tail - the same class of gap the yield block above already closes,
-  # mirrored here since this suite is also multi-session.
+  # restartrequest's own names (supervisor.log, the reader's transcript, the
+  # reader's debug log, the owner's persona store carrying its decision log)
+  # match none of the generic patterns above, so the multi-session suite
+  # retains them by name.
   if [ "$suite" = "restartrequest" ]; then
     mkdir -p "$RUN_DIR/restartrequest"
     for f in supervisor.log supervise.stdout.log reader.out.jsonl reader.err.log \

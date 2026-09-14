@@ -3168,6 +3168,15 @@ async function main() {
     await caseS9_cost_cap_opens_ask(clock);
     await caseS9_cost_cap_below(clock);
     await caseS7_reader_does_not_overwrite(clock);
+    await caseS13_score_completedTurnRecordsRound(clock);
+    await caseS13_errorStreak_threeDeniedTurnsOpenAnAsk(clock);
+    await caseS13_gitProbe_dirtyCountSampledOnCadence(clock);
+    await caseS13_health_redThenGreenAndTheRedReachesTheTurn(clock);
+    await caseS13_stall_pendingPlanActivatesFirstAndNothingActivatesAfterRootComplete(clock);
+    await caseS13_planFail_threeFailuresBlockTheRoot(clock);
+    await caseS13_identity_takesOverAStaleHolder(clock);
+    await caseS13_lessonInject_newestLessonReachesTheNextTurnOnce(clock);
+    await caseS13_budget_latchCrossesEachThresholdOnce(clock);
   } finally {
     clock.restore();
   }
@@ -5460,5 +5469,302 @@ async function caseSection9_durationMsCountsAnUnmatchedLongTurn(clock) {
   await completeH(h.fake, { turnId: "t-unseen-3", aborted: true, reason: "aborted", durationMs: 180_000 }, async () => ({ result: "ok" }));
   check("section9 durationMs control: a three-minute harness duration records nothing", longTurns().length === 1, longTurns());
 
+}
+
+// ============================================================
+// Section 13: hook paths driven whole through the harness: the scorer's
+// round, the error streak, the git probe, the health probe, plan activation
+// and the post-completion guard, the planner failure cap, stale-holder
+// takeover, lesson injection, and the budget latch.
+// ============================================================
+
+// Ordered-subsequence match, the shape assert-decisions.js reads a live
+// decision log with: how many of `expected` appear in `decisions` in order.
+function matchedInOrder(decisions, expected) {
+  let idx = 0;
+  for (const d of decisions) {
+    if (idx < expected.length && d.action === expected[idx]) idx++;
+  }
+  return idx;
+}
+
+// A root with one active plan under it, the tree a live suite holds after
+// goal_create and the first activation. maxRounds is set so a scored round
+// does not trip the round cap.
+function rootWithActivePlan(now, rootOverrides = {}) {
+  return [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 10, createdAt: now, updatedAt: now, ...rootOverrides }),
+    makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "plan", status: "active", maxRounds: 5, createdAt: now, updatedAt: now }),
+  ];
+}
+
+// Scorer: the scorer on turn.complete classifies a completed turn
+// against the leaf that was active at turn.start, records a score decision,
+// and an on-goal verdict burns one round of that leaf.
+async function caseS13_score_completedTurnRecordsRound(clock) {
+  console.log("\n=== S13 score: a completed turn on the active leaf records a score and burns a round ===");
+  clock.set(T0);
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s13_score",
+    stateOpts: { now: T0, goals: rootWithActivePlan(T0), activeGoalId: "g-plan" },
+  });
+  h.setClassifyValue("on-goal");
+  await h.handlers["turn.start"](h.fake, { turnId: "t-score" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-score", answer: "Rivers run to the sea.", reason: "completed" }, async () => ({ result: "ok" }));
+  const state = getState(h);
+  const scores = state.decisions.filter((d) => d.action === "score");
+  check("s13 score: one score decision names the turn's leaf and the verdict", scores.length === 1 && scores[0].detail === "g-plan Round 1: on-goal", scores);
+  const plan = state.goals.find((g) => g.id === "g-plan");
+  check("s13 score: the on-goal round is burned (completedRounds 1)", plan && plan.completedRounds === 1, plan && plan.completedRounds);
+}
+
+// Error streak: a root objective saying "no bash" denies Bash in
+// tool.call, three denied turns reach the C3 streak on the next tick, and the
+// streak opens an ask and pauses the plan rather than blocking it.
+async function caseS13_errorStreak_threeDeniedTurnsOpenAnAsk(clock) {
+  console.log("\n=== S13 errorstreak: three denied turns escalate to an ask, not a block ===");
+  clock.set(T0);
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s13_errorstreak",
+    stateOpts: { now: T0, goals: rootWithActivePlan(T0, { objective: "no bash: write the file with the Write tool" }), activeGoalId: "g-plan" },
+  });
+  const startH = h.handlers["turn.start"];
+  const toolH = h.handlers["tool.call"];
+  const completeH = h.handlers["turn.complete"];
+  let denied = 0;
+  for (let i = 1; i <= 3; i++) {
+    const turnId = `t-streak-${i}`;
+    await startH(h.fake, { turnId }, async () => ({ result: "ok" }));
+    const r = await toolH(h.fake, { tool: "Bash", turnId }, async () => ({ result: "ran" }));
+    if (r && r.deny) denied++;
+    await completeH(h.fake, { turnId, aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  }
+  check("s13 errorstreak: the root constraint denied Bash on every turn", denied === 3, denied);
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  const decisions = getDecisions(h);
+  const expected = ["deny", "deny", "deny", "error_streak", "ask_opened", "paused_by_controller", "ask_waiting"];
+  check("s13 errorstreak: deny x3, error_streak, ask_opened, paused_by_controller, ask_waiting in order", matchedInOrder(decisions, expected) === expected.length, decisions.map((d) => d.action));
+  check("s13 errorstreak: no block (the streak asks, it does not block)", !decisions.some((d) => d.action === "block"));
+}
+
+// Git probe: the git probe runs on its cadence, counts the porcelain
+// lines that are not the branch line, and logs env_git when the count moves.
+// The probe is fire-and-forget and the tick persists only on its own paths,
+// so a turn flushes the in-memory decisions to the store before the read.
+async function caseS13_gitProbe_dirtyCountSampledOnCadence(clock) {
+  console.log("\n=== S13 gitprobe: the porcelain dirty count is sampled on the probe cadence ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, caseName: "s13_gitprobe", gitProbeMs: 30_000 });
+  const porcelains = ["## main\n", "## main\n?? new-file.txt\n", "## main\n"];
+  let sample = 0;
+  h.fake.process.run = (argv) => {
+    if (argv[0] === "git" && argv[1] === "status") {
+      return Promise.resolve({ exitCode: 0, stdout: porcelains[Math.min(sample++, porcelains.length - 1)] });
+    }
+    if (argv[0] === "git" && argv[1] === "log") return Promise.resolve({ exitCode: 0, stdout: "1700000000\n" });
+    return Promise.resolve({ exitCode: 128 });
+  };
+  for (let i = 0; i < 3; i++) {
+    clock.advance(30_000);
+    await tickAndSettle(h, clock, 20);
+  }
+  await fireTurn(h, "t-gitprobe-flush");
+  const decisions = getDecisions(h);
+  const gitLines = decisions.filter((d) => d.action === "env_git");
+  const dirtySeq = gitLines.map((d) => (d.detail.match(/dirty=(\d+)/) || [])[1]);
+  check("s13 gitprobe: three env_git samples read dirty 0, then 1, then 0", dirtySeq.join(",") === "0,1,0", gitLines.map((d) => d.detail));
+  check("s13 gitprobe: no env_git_null or env_git_error", !decisions.some((d) => d.action === "env_git_null" || d.action === "env_git_error"), decisions.map((d) => d.action));
+}
+
+// Health probe: runHealth maps the probe's exit code to health_red or
+// health_green at the goal_done completion site, and a red probe reaches the
+// next turn as an [ENV] block with an env_inject decision. The first tick
+// activates the first pending plan, so the activation precedes the first probe.
+async function caseS13_health_redThenGreenAndTheRedReachesTheTurn(clock) {
+  console.log("\n=== S13 health: the probe's exit code maps to health_red then health_green, and the red reaches the [ENV] block ===");
+  clock.set(T0);
+  const goals = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 10 }),
+    makeGoalNode({ id: "g-plan-1", parentId: "g-root", kind: "plan", status: "pending", maxRounds: 5 }),
+    makeGoalNode({ id: "g-plan-2", parentId: "g-root", kind: "plan", status: "pending", maxRounds: 5, createdAt: T0 + 1 }),
+  ];
+  const h = await createTickHarness({ ...OPTS, caseName: "s13_health", stateOpts: { now: T0, goals, activeGoalId: null } });
+  h.fsMap.set(".agentic-health", "node probe.js");
+  const probeExits = [1, 0];
+  h.fake.process.run = (argv) => {
+    if (argv[0] === "node") return Promise.resolve({ exitCode: probeExits.shift() ?? 0, stdout: "probe output\n" });
+    return Promise.resolve({ exitCode: 128 });
+  };
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  const toolH = h.handlers["tool.call"];
+  const submitH = h.handlers["prompt.submit"];
+  await toolH(h.fake, { tool: "mcp__agentic-plugin__goal_done", note: "first" }, async () => ({ result: "ok" }));
+  const injected = await submitH(h.fake, { text: "next step" }, async () => ({}));
+  await toolH(h.fake, { tool: "mcp__agentic-plugin__goal_done", note: "second" }, async () => ({ result: "ok" }));
+  const decisions = getDecisions(h);
+  const expected = ["activated", "health_red", "env_inject", "health_green"];
+  check("s13 health: activated, health_red, env_inject, health_green in order", matchedInOrder(decisions, expected) === expected.length, decisions.map((d) => d.action));
+  const envBlock = (injected.context || []).find((b) => b.startsWith("[ENV]"));
+  check("s13 health: the [ENV] block names the red probe's exit code", !!envBlock && envBlock.includes("health: exit 1"), injected.context);
+}
+
+// Plan activation: H1, a pending plan under the root is activated by the
+// tick with no planner run before it, and L25, once the root is complete no
+// later tick activates anything, as a real activation or as activate_none.
+async function caseS13_stall_pendingPlanActivatesFirstAndNothingActivatesAfterRootComplete(clock) {
+  console.log("\n=== S13 goaltree-stall: a pending plan activates with no planner run before it (H1); nothing activates after root_complete (L25) ===");
+  clock.set(T0);
+  const goals = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 10 }),
+    makeGoalNode({ id: "g-added", parentId: "g-root", kind: "plan", status: "pending", maxRounds: 5, source: "worker" }),
+  ];
+  const h = await createTickHarness({ ...OPTS, caseName: "s13_stall", completeValue: "[]", stateOpts: { now: T0, goals, activeGoalId: null } });
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  let decisions = getDecisions(h);
+  const activatedIdx = decisions.findIndex((d) => d.action === "activated");
+  check("s13 stall H1: the tick activates the pending plan with no planning_fired before it", activatedIdx !== -1 && !decisions.slice(0, activatedIdx).some((d) => d.action === "planning_fired"), decisions.map((d) => d.action));
+  check("s13 stall H1: the planner was not called while the added plan was pending", h.completeCalls.length === 0, h.completeCalls.length);
+  await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__goal_done", note: "done" }, async () => ({ result: "ok" }));
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  decisions = getDecisions(h);
+  const rootCompleteIdx = decisions.findIndex((d) => d.action === "root_complete");
+  check("s13 stall: planning_fired then root_complete once the plan is done", rootCompleteIdx !== -1 && decisions.slice(0, rootCompleteIdx).some((d) => d.action === "planning_fired"), decisions.map((d) => d.action));
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  const after = getDecisions(h).slice(rootCompleteIdx + 1).map((d) => d.action);
+  check("s13 stall L25: no activated after root_complete", rootCompleteIdx !== -1 && !after.includes("activated"), after);
+  check("s13 stall L25: no activate_none after root_complete", rootCompleteIdx !== -1 && !after.includes("activate_none"), after);
+}
+
+// Planner failure cap: the .agentic-planner-fault flag replaces the planner's reply
+// with "not json"; three parse failures block the root with a reason naming
+// the planner, and no planner call fires after the block (M13). The stubbed
+// reply is a valid plan, so a flag the code ignored would show as
+// planning_created.
+async function caseS13_planFail_threeFailuresBlockTheRoot(clock) {
+  console.log("\n=== S13 planfail: three planner failures block the root and stop the retries ===");
+  clock.set(T0);
+  const root = makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 10 });
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s13_planfail",
+    completeValue: JSON.stringify([{ title: "Step 1", objective: "Do step 1", maxRounds: 5 }]),
+    stateOpts: { now: T0, goals: [root], activeGoalId: null },
+  });
+  h.fsMap.set(".agentic-planner-fault", "1");
+  for (let i = 0; i < 4; i++) {
+    clock.advance(10_000);
+    await tickAndSettle(h, clock, 20);
+  }
+  const state = getState(h);
+  const decisions = state.decisions;
+  const rootNow = state.goals.find((g) => g.parentId === null);
+  check("s13 planfail: the root is blocked with a reason naming the planner", !!rootNow && rootNow.status === "blocked" && /Planner failing/.test(rootNow.blockedReason || ""), rootNow && [rootNow.status, rootNow.blockedReason]);
+  check("s13 planfail: exactly three planning_failed", countAction(decisions, "planning_failed") === 3, decisions.map((d) => d.action));
+  const blockIdx = decisions.findIndex((d) => d.action === "block");
+  const afterBlock = decisions.slice(blockIdx + 1).map((d) => d.action);
+  check("s13 planfail: no planning_failed or planning_fired after the block", blockIdx !== -1 && !afterBlock.includes("planning_failed") && !afterBlock.includes("planning_fired"), afterBlock);
+  check("s13 planfail: no planning_created (the fault flag took effect)", countAction(decisions, "planning_created") === 0);
+}
+
+// Stale-holder takeover: a session that joined as reader behind a live holder
+// takes the persona over through agentic_identity once that holder's commons
+// entry is older than staleAfterMs. caseS5_identity_joins_live_owner is the
+// control: the same call against a live holder joins as reader.
+async function caseS13_identity_takesOverAStaleHolder(clock) {
+  console.log("\n=== S13 takeover: agentic_identity takes over a persona whose holder went stale ===");
+  clock.set(T0);
+  const mod = await loadModule("s13_stale_takeover");
+  const h = createFake$(OPTS);
+  const handlers = {};
+  await mod.register((event, handler) => { handlers[event] = handler; }, OPTS);
+  const holderSid = "earlier-holder-session";
+  const now = Date.now();
+  h.storeMap.set(`commons:${holderSid}`, {
+    sessionId: holderSid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 1000 }],
+  });
+  const state = makeState({ now });
+  state.activeSessionId = holderSid;
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: holderSid, epoch: 1, lastSeen: now } }));
+  await handlers["session.start"](h.fake, {}, () => {});
+  const toolH = handlers["tool.call"];
+  const refused = await toolH(h.fake, { tool: "mcp__agentic-plugin__agentic_identity", persona: "default" }, async () => ({ result: "passthrough" }));
+  check("s13 takeover control: with the holder live, the call joins as reader", (refused?.result || "").includes("joined as reader"), refused);
+  // The holder stops heartbeating: its entry ages past the 90 s staleAfterMs default.
+  clock.advance(200_000);
+  const taken = await toolH(h.fake, { tool: "mcp__agentic-plugin__agentic_identity", persona: "default" }, async () => ({ result: "passthrough" }));
+  const text = taken?.result || "";
+  check("s13 takeover: with the holder stale, the result names ownership", /owner/.test(text) && !/joined as reader/.test(text), text);
+  const decisions = getState(h).decisions;
+  check("s13 takeover: identity_set is recorded for the takeover", decisions.some((d) => d.action === "identity_set"), decisions.map((d) => d.action));
+  const mine = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("s13 takeover: this session's commons entry holds persona:default", !!mine && mine.claims.some((c) => c.resource === "persona:default"), mine);
+}
+
+// Lesson injection: the newest self-review lesson in memory is
+// injected into the next turn as a [LESSON] block with a lesson_inject
+// decision, and the S11 gate on lastInjectAt keeps it from riding every
+// later turn. The decision lands in the store through the turn that follows
+// the prompt, since prompt.submit itself does not persist.
+async function caseS13_lessonInject_newestLessonReachesTheNextTurnOnce(clock) {
+  console.log("\n=== S13 lesson_inject: the newest self-review lesson is injected into the next turn, once ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, caseName: "s13_lesson_inject" });
+  const state = makeState({ now: T0 });
+  const lesson = (id, text, createdAt) => ({ id, kind: "lesson", text, confidence: 0.9, source: "self-review", createdAt, lastAccessed: 0, accessCount: 0, pinned: false });
+  state.memory = [
+    lesson("m-older", "An older lesson.", T0 - 60_000),
+    lesson("m-newest", "Run the tests before claiming done.", T0 - 1_000),
+  ];
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
+  await h.handlers["session.start"](h.fake, {}, () => {});
+  const submitH = h.handlers["prompt.submit"];
+  const first = await submitH(h.fake, { text: "continue" }, async () => ({}));
+  const lessonBlock = (first.context || []).find((b) => b.startsWith("[LESSON]"));
+  check("s13 lesson_inject: the [LESSON] block carries the newest self-review lesson", !!lessonBlock && lessonBlock.includes("Run the tests before claiming done."), first.context);
+  await fireTurn(h, "t-lesson-1");
+  const injects = getDecisions(h).filter((d) => d.action === "lesson_inject");
+  check("s13 lesson_inject: one lesson_inject decision names that lesson", injects.length === 1 && injects[0].detail.includes("Run the tests before claiming done."), injects);
+  const second = await submitH(h.fake, { text: "continue again" }, async () => ({}));
+  check("s13 lesson_inject: the same lesson is not injected again on the next prompt", !(second.context || []).some((b) => b.startsWith("[LESSON]")), second.context);
+}
+
+// Budget latch: each threshold's crossing is latched, so
+// three reads of one over-critical estimate log info, closeout and critical
+// once each and send the close-out nudge once (D2 latch).
+async function caseS13_budget_latchCrossesEachThresholdOnce(clock) {
+  console.log("\n=== S13 budget latch: each threshold crosses once and the close-out nudge is sent once ===");
+  clock.set(T0);
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s13_budget_latch",
+    contextBudgetEnabled: true,
+    contextBudgetInfoTokens: 100,
+    contextBudgetCloseoutTokens: 200,
+    contextBudgetCriticalTokens: 300,
+    contextBudgetReadEveryNTicks: 1,
+    sessionMessages: () => Promise.resolve([{ text: "x".repeat(2000), toolUses: [], toolResults: [] }]),
+  });
+  for (let i = 0; i < 3; i++) {
+    clock.advance(10_000);
+    await tickAndSettle(h, clock, 50);
+  }
+  const decisions = getDecisions(h);
+  const crossings = decisions.filter((d) => d.action === "context_budget_crossed").map((d) => d.detail.split(":")[0]);
+  check("s13 budget latch: info, closeout and critical each crossed exactly once over three reads", ["info", "closeout", "critical"].every((t) => crossings.filter((c) => c === t).length === 1), crossings);
+  check("s13 budget latch: exactly one context_budget_nudge", countAction(decisions, "context_budget_nudge") === 1, countAction(decisions, "context_budget_nudge"));
 }
 

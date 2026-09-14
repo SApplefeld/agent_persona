@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Live test: commons two-session race suite (Stage 2 acceptance gate).
+# Live commons suite: two real claude processes contend for one persona.
+# Proves what no offline suite can: two real processes race on one commons
+# store, the plugin loads under --plugin-dir, and the engine honors the deny
+# that refuses the reader's write.
 # Two concurrent sessions both try to claim the same persona via agentic_identity.
 # Commons arbitration (claim-then-read, compareHolders) determines the winner;
 # the loser takes the reader path and its writes are refused.
@@ -365,8 +368,6 @@ fi
 #   (1) Exactly one child carries 'active (epoch N, owner)' and the other carries 'joined as reader'.
 #   (2) The reader is the later claimedAt (loser), confirmed via the commons store.
 #   (3) The loser's memory_add was refused ('this write was not saved'); the winner's was saved.
-# Secondary: the yield log (if present) must have exactly one distinct yielder.
-# If the yield log is absent or has zero matches, that is a FAIL (not a skip).
 
 # --- F10(1): owner vs reader in out.jsonl ---
 A_OUT="$SUITE_DIR/commons-A.out.jsonl"
@@ -453,50 +454,6 @@ console.log('F10(2): reader ' + readerSession + ' holds reader:default only, no 
   fi
 fi
 
-# --- F10(reader): the reader holds a reader:default claim ---
-# AU4: snapshot the store and assert the reader's commons entry carries
-# a claim with resource === 'reader:default'.
-# AW2: keep both the snapshot and a control derived from it (never edit the snapshot).
-if [ "$OWNER_COUNT" -eq 1 ] && [ -n "$STORE_FILE_WIN" ] && [ -n "${READER_SESSION_WIN:-}" ] && [ "$ASSERT_FAILED" -eq 0 ]; then
-  # Convert the Windows store path back to a Git Bash path for cp
-  STORE_FILE_UNIX=$(cygpath -u "$STORE_FILE_WIN")
-  # Snapshot the store file into the evidence directory
-  cp "$STORE_FILE_UNIX" "$K"/global-store.json
-  # Create a control: remove the reader's claim from a copy (never touch the snapshot)
-  node -e "
-const fs = require('fs');
-const src = process.argv[1];
-const dst = process.argv[2];
-const readerSession = process.argv[3];
-const store = JSON.parse(fs.readFileSync(src, 'utf8'));
-const entry = store['commons:' + readerSession];
-if (entry && entry.claims) {
-  entry.claims = entry.claims.filter(c => c.resource !== 'reader:default');
-}
-fs.writeFileSync(dst, JSON.stringify(store, null, 2));
-" "$K"/global-store.json "$K"/global-store-control.json "$READER_SESSION_WIN"
-  # Assert the reader holds a reader:default claim (on the snapshot)
-  node -e "
-const fs = require('fs');
-const store = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
-const readerSession = process.argv[2];
-const entry = store['commons:' + readerSession];
-if (!entry) {
-  console.error('F10(reader) FAIL: no commons entry for reader ' + readerSession);
-  process.exit(1);
-}
-const readerClaim = (entry.claims || []).find(c => c.resource === 'reader:default');
-if (!readerClaim) {
-  console.error('F10(reader) FAIL: reader ' + readerSession + ' does not hold reader:default');
-  process.exit(1);
-}
-console.log('F10(reader): ' + readerSession + ' holds reader:default');
-" "$K"/global-store.json "$READER_SESSION_WIN" >> "$K"/commons.assert.log 2>&1
-  if [ $? -ne 0 ]; then
-    ASSERT_FAILED=1
-  fi
-fi
-
 # --- F10(3): loser's write refused, winner's saved ---
 # Identify the reader's out.jsonl (the loser)
 LOSER_FILE=""
@@ -526,40 +483,6 @@ else
   ASSERT_FAILED=1
 fi
 
-# --- F10 secondary: yield log must have zero or one distinct yielder, never two ---
-if [ -f "$SUITE_DIR/.agentic-yields.log" ]; then
-  # Log format is JSONL: {"ts":"...","persona":"default","yielded":"<sessionId>",...}
-  YIELDERS=$(node -e "
-const fs = require('fs');
-const lines = fs.readFileSync('$SUITE_DIR/.agentic-yields.log', 'utf8').trim().split('\n');
-const ids = new Set();
-for (const line of lines) {
-  try {
-    const rec = JSON.parse(line);
-    if (rec.yielded) ids.add(rec.yielded);
-  } catch {}
-}
-console.log([...ids].join('\n'));
-" 2>/dev/null)
-  # Round 47 finding 2: `grep -c . || echo 0` prints "0" twice when there
-  # are no yielders - grep -c already prints its own zero count, but still
-  # exits 1 on zero matches, so the `||` fallback appends a second "0" line,
-  # and the two-line value breaks the integer test below. `grep -c . || true`
-  # keeps grep's own zero and lets the exit code fail silently instead of
-  # triggering a second echo.
-  YIELDER_COUNT=$(echo "$YIELDERS" | grep -c . 2>/dev/null || true)
-  YIELDER_COUNT="${YIELDER_COUNT:-0}"
-  if [ "$YIELDER_COUNT" -le 1 ]; then
-    echo "F10(yieldlog): $YIELDER_COUNT distinct yielder(s)" >> "$K"/commons.assert.log
-  else
-    echo "F10(yieldlog) FAIL: expected 0 or 1 yielder, got $YIELDER_COUNT: $YIELDERS" >> "$K"/commons.assert.log
-    ASSERT_FAILED=1
-  fi
-else
-  # No yield log file: acceptable (reader path via agentic_identity writes no yield line).
-  echo "F10(yieldlog): no yield log file (reader path, acceptable)" >> "$K"/commons.assert.log
-fi
-
 # F10e: evidence retention: copy artifacts to .kit/runs/<utc-stamp>/ before exit
 # Use RUN_DIR if set (when run by live-all.sh), otherwise create own stamp
 if [ -n "${RUN_DIR:-}" ]; then
@@ -575,7 +498,7 @@ else
 fi
 mkdir -p "$RUNS_DIR"
 # Copy A's artifacts
-for f in commons-A.out.jsonl commons-A.debug.log commons-A.err.log commons.exit commons.assert.log global-store.json global-store-control.json; do
+for f in commons-A.out.jsonl commons-A.debug.log commons-A.err.log commons.exit commons.assert.log; do
   [ -f "$K/$f" ] && cp -f "$K/$f" "$RUNS_DIR/" 2>/dev/null
 done
 for f in .agentic-*.json .agentic-*.log; do

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Live test 3: goal tree + plan selection (R9 acceptance test).
-# v0.8.0: per-suite directory, profile-driven timing, --settings.
+# Live goaltree suite: the core loop end to end on the real engine.
+# Proves what no offline suite can: a real claude child creates the tree, the
+# planner fills it from the roadmap, real nudges start real turns, and the chain
+# runs to root_complete against the engine's own event timing.
 set -u
 
 # --- Configuration ---
@@ -25,7 +27,8 @@ unset CLAUDECODE
 
 feed() {
   # L7: align the objective with the fixture so the planner does not invent meta-plans
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"Write three haikus, one about rivers, one about mountains, one about deserts\" maxRounds 10 and roadmapPath \"D:/DeepSeekHarness/agentic-plugin/.kit/roadmap-test.md\". Then reply with the single word: ok"}}'
+  ROADMAP="$(cygpath -m "$PLUGIN_DIR/.kit/roadmap-test.md")"
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Call goal_create with objective \"Write three haikus, one about rivers, one about mountains, one about deserts\" maxRounds 10 and roadmapPath \"'"$ROADMAP"'\". Then reply with the single word: ok"}}'
   # Derive idle wait from TICK_MS: 13 * TICK_MS/1000 (13 ticks to cover the chain)
   IDLE_WAIT_S=$(( 13 * TICK_MS / 1000 ))
   sleep $IDLE_WAIT_S

@@ -2,7 +2,9 @@
 # supervisor-natural-exit-test.sh - harness case for bin/supervise.sh's
 # natural-exit path: what the supervisor does after a child exits on its own
 # rather than through a decide-unit stop. This is the coverage for the
-# backfilled root_complete branch of that path.
+# backfilled root_complete branch of that path. Case (g) covers the other
+# route to RESTART_PASSIVE, the decide path acting on a real root_complete
+# while the child is still alive.
 #
 # The real bin/supervise.sh is driven with no real claude: an isolated HOME
 # holding an empty installed-mode commons store (so the pre-launch gate
@@ -119,6 +121,10 @@ case "\$action" in
   backfilled) IFS= read -r _; record root_complete "\$S/detail-backfilled"; exit 0 ;;
   backfilled7) IFS= read -r _; record root_complete "\$S/detail-backfilled"; exit 7 ;;
   real) IFS= read -r _; record root_complete "\$S/detail-real"; exit 0 ;;
+  # A real root_complete with the child still alive: the supervisor's decide
+  # path, not the natural-exit path, must act on it. The loop blocks on stdin
+  # until the supervisor's EOF stop closes it.
+  real_live) IFS= read -r _; record root_complete "\$S/detail-real"; while IFS= read -r _; do :; done; exit 0 ;;
   shutdown) IFS= read -r _; record shutdown_requested ""; exit 0 ;;
   *) exit 1 ;;
 esac
@@ -167,6 +173,23 @@ grep -q 'EXIT child-1 code=0 (natural)' "$LOG"; check "(b) child-1's exit is han
 grep -q 'RESTART_PASSIVE: root_complete at [0-9]* > child start [0-9]* (no shutdown requested)' "$LOG"; check "(b) the natural-exit RESTART_PASSIVE line is present" "$?"
 ! grep -q 'is backfilled' "$LOG"; check "(b) no backfilled NOTE line" "$?"
 grep -q 'LAUNCH child-2' "$LOG"; check "(b) a second child launches" "$?"
+
+# --- (g) a real root_complete while the child is still alive: the decide path ---
+# No --prompt, so the launch writes only the priming line and the poll loop
+# starts at once. The stub records a real root_complete and stays alive, so
+# the natural-exit path never sees child-1; the decide unit maps the newer
+# root_complete to restart_passive, the supervisor stops child-1 through
+# stop_child and relaunches. The decide path's line carries no
+# "(no shutdown requested)" suffix, which is how it is told from the
+# natural-exit line case (b) asserts.
+drive g "real_live,shutdown" 1
+[ "$RC" -eq 0 ]; check "(g) supervisor exits 0 on the second child's shutdown_requested (rc=$RC)" "$?"
+grep -q 'RESTART_PASSIVE: root_complete at [0-9]* > child start [0-9]*$' "$LOG"; check "(g) the decide path's RESTART_PASSIVE line is present (no natural-exit suffix)" "$?"
+G_RP=$(grep -n 'RESTART_PASSIVE: root_complete' "$LOG" | head -n 1 | cut -d: -f1)
+G_EXIT1=$(grep -n 'EXIT child-1 code=' "$LOG" | head -n 1 | cut -d: -f1)
+[ -n "$G_RP" ] && [ -n "$G_EXIT1" ] && [ "$G_RP" -lt "$G_EXIT1" ]; check "(g) child-1's EXIT line follows the RESTART_PASSIVE line, so the stop was the decide path's (lines $G_RP < $G_EXIT1)" "$?"
+! grep -q 'EXIT child-1 code=[0-9]* (natural)' "$LOG"; check "(g) no natural-exit EXIT line for child-1" "$?"
+grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 2 ]; check "(g) a second child launches (stub launches=$LAUNCHES)" "$?"
 
 # --- (c) a child exiting 7 during the poll loop: recorded and counted ---
 # supervisorCrashLimit=1, so one counted crash ends the run with exit 3.

@@ -1,24 +1,17 @@
 #!/usr/bin/env bash
-# Live test: operator channel end-to-end (section 5).
-# Three phases:
-#   1. Message and reply: reader sends agentic_say, owner drains, reader gets reply
-#   2. Ask and answer: ask opens (pause/ask-operator/cap), reader answers, owner reactivated
-#   3. Peer probe: peer text consumed, model never reads it (OPERATOR_HOLD_S > 0 only)
+# Live operator suite: the operator channel across two real claude processes.
+# Proves what no offline suite can: a reader process sends agentic_say, the
+# owner process drains it and replies, and the reader reads that reply back
+# through agentic_inbox, the whole round trip on real transcripts.
 #
-# BD2: one reader coproc, three turns via three writes to its stdin.
-# BD4: phase 2 asserts the ask lifecycle, not the opener.
-# BD5: phase 1 and phase 3 transcript assertions, evidence retention, exit = assertion verdict.
-# BD6: coproc for owner (no sleep in feed), run stamp in SUITE_DIR, handshake with session id.
-#
-# OPERATOR_HOLD_S=0 skips phase 3 (unattended gate).
-# OPERATOR_HOLD_S=240 (standalone) holds the owner open for the probe.
+# One reader coproc, two turns via two writes to its stdin; the owner runs in
+# its own coproc. The exit code is the assertion verdict.
 set -u
 
 # --- Configuration ---
 STAMP_O="$(date -u +%Y%m%dT%H%M%SZ)"
 SUITE_DIR="${SUITE_DIR:-/d/Temp/agentic-live/operator-${STAMP_O}}"
 PROFILE="${PROFILE:-short}"
-OPERATOR_HOLD_S="${OPERATOR_HOLD_S:-0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -70,8 +63,6 @@ OWNER_ERR="$SUITE_DIR/operator-owner.err.log"
 OWNER_EXIT="$SUITE_DIR/operator.exit"
 READER_OUT="$SUITE_DIR/operator-reader.out.jsonl"
 READER_ERR="$SUITE_DIR/operator-reader.err.log"
-HANDSHAKE_READY="$SUITE_DIR/operator-hold.ready"
-HANDSHAKE_SENT="$SUITE_DIR/operator-probe.sent"
 
 # BE8: LOCAL store is where decisions live (persist writes to cwd-relative path).
 LOCAL_STORE="$SUITE_DIR/.agentic-personas.json"
@@ -89,12 +80,11 @@ cleanup() {
   stop_coproc_pid "${OWNER_PID:-}" "${IN_O:-}" 5
   stop_coproc_pid "${READER_PID:-}" "${IN_R:-}" 5
   wait 2>/dev/null
-  rm -f "$RUNNING" "$HANDSHAKE_READY" "$HANDSHAKE_SENT"
+  rm -f "$RUNNING"
 }
 trap cleanup EXIT
 
-rm -f "$OWNER_OUT" "$OWNER_ERR" "$READER_OUT" \
-      "$HANDSHAKE_READY" "$HANDSHAKE_SENT"
+rm -f "$OWNER_OUT" "$OWNER_ERR" "$READER_OUT"
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 unset CLAUDECODE
 
@@ -153,25 +143,9 @@ try {
   done
 fi
 
-# --- Find the global store file (needed for BG5 snapshot and the
-# owner-claim wait below) ---
+# --- Find the global store file (needed for the owner-claim wait below
+# and the BG3 reply lookup) ---
 STORE_FILE_LAUNCH="$(find_global_store)"
-
-# --- BG5: Snapshot non-commons keys before owner starts ---
-# Write to operator.store-keys-before.json for end-of-suite verification.
-if [ -n "$STORE_FILE_LAUNCH" ] && [ -f "$STORE_FILE_LAUNCH" ]; then
-  node -e "
-try {
-  const s = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
-  const nonCommonsKeys = Object.keys(s).filter(k => !k.startsWith('commons:')).sort();
-  require('fs').writeFileSync(process.argv[2], JSON.stringify(nonCommonsKeys, null, 2));
-  console.log('BG5: snapshotted ' + nonCommonsKeys.length + ' non-commons keys');
-} catch (e) {
-  console.error('BG5: failed to snapshot keys: ' + e.message);
-  process.exit(1);
-}
-" "$(cygpath -m "$STORE_FILE_LAUNCH" 2>/dev/null || echo "$STORE_FILE_LAUNCH")" "$SUITE_DIR/operator.store-keys-before.json" 2>/dev/null
-fi
 
 # --- BD6: Owner via coproc (BE6) ---
 # BE6: use coproc, not pipe+subshell.
@@ -241,36 +215,6 @@ if [ "$LIVE" != "1" ]; then
   exit 1
 fi
 echo "owner persona:default claim live in commons store"
-
-# --- BD6: Read owner session id from out.jsonl (BF6: poll for init line) ---
-OWNER_SESSION_ID=""
-SESSION_POLL_N=0
-while [ $SESSION_POLL_N -lt 30 ]; do
-  if [ -f "$OWNER_OUT" ]; then
-    OWNER_SESSION_ID=$(node -e "
-const fs = require('fs');
-try {
-  const lines = fs.readFileSync(process.argv[1], 'utf8').split('\n');
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    try {
-      const obj = JSON.parse(line);
-      if (obj.type === 'system' && obj.subtype === 'init' && obj.session_id) {
-        console.log(obj.session_id);
-        break;
-      }
-    } catch {}
-  }
-} catch {}
-" "$OWNER_OUT" 2>/dev/null)
-    if [ -n "$OWNER_SESSION_ID" ]; then
-      break
-    fi
-  fi
-  SESSION_POLL_N=$((SESSION_POLL_N + 1))
-  sleep 1
-done
-echo "owner session id: ${OWNER_SESSION_ID:-unknown}"
 
 # --- BD2/BE12: Reader from its OWN directory, one coproc, three turns ---
 # BE12: reader runs from its own directory to test cross-directory behavior.
@@ -388,20 +332,18 @@ echo "phase 1: reader turn 1 sent"
 OUT="$READER_OUT" wait_turn 1
 echo "phase 1 reader turn 1 done"
 
-# Wait for operator_turn_stamped (BE10: engine stamps the turn, no user line)
+# Wait for operator_turn_stamped (synchronization only: assert-decisions.js asserts the order)
 if wait_for_decision "operator_turn_stamped" 90; then
   echo "  OK: phase 1 operator_turn_stamped found"
 else
-  echo "  FAIL: operator_turn_stamped not found after 90s"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
+  echo "  wait: operator_turn_stamped not seen after 90s (assert-decisions.js decides)"
 fi
 
-# Wait for operator_answered (owner's reply)
+# Wait for operator_answered (synchronization only)
 if wait_for_decision "operator_answered" 120; then
   echo "  OK: phase 1 operator_answered found"
 else
-  echo "  FAIL: operator_answered not found after 120s"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
+  echo "  wait: operator_answered not seen after 120s (assert-decisions.js decides)"
 fi
 
 # --- Phase 1: reader turn 2 (inbox, get reply) ---
@@ -416,12 +358,10 @@ cat "$READER_P2" >&"$IN_R"
 OUT="$READER_OUT" wait_turn 2
 echo "phase 1 reader turn 2 done"
 
-# --- BD5: Phase 1 transcript assertions (BG3: primary + secondary) ---
+# --- BD5: Phase 1 transcript assertion (BG3 primary) ---
 # BG3 primary: in operator-reader.out.jsonl, turn 2's agentic_inbox tool result
 #   parses as JSON, inbox entry id === default-<reader sid>-1 has status "answered"
 #   and reply.text equals the store record's text.
-# BG3 secondary: assistant's REPLY: line contains the store record's text
-#   (may add trailing words, may not drop any).
 if [ -f "$READER_OUT" ] && [ -n "$READER_SESSION_ID" ] && [ -n "$STORE_FILE_LAUNCH" ] && [ -f "$STORE_FILE_LAUNCH" ]; then
   # Get the expected reply record: reply:default:default-<reader sid>-1
   EXPECTED_REPLY_KEY="reply:default:default-${READER_SESSION_ID}-1"
@@ -490,192 +430,8 @@ try {
     FAIL_COUNT=$((FAIL_COUNT + 1))
   fi
   
-  # BG3 secondary: REPLY: line contains the store record's text
-  REPLY_LINE=""
-  if grep -q 'REPLY:' "$READER_OUT" 2>/dev/null; then
-    REPLY_LINE=$(node -e "
-const fs = require('fs');
-try {
-  const lines = fs.readFileSync(process.argv[1], 'utf8').split('\n');
-  let found = null;
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    try {
-      const obj = JSON.parse(line);
-      if (found) break;
-      if (obj.type === 'assistant' && obj.message && obj.message.content) {
-        for (const block of obj.message.content) {
-          if (block.type === 'text' && block.text.includes('REPLY:')) {
-            const m = block.text.match(/REPLY:[^\n]*/);
-            if (m) { found = m[0]; break; }
-          }
-        }
-      }
-      if (!found && obj.type === 'result' && obj.result && obj.result.includes('REPLY:')) {
-        const m = obj.result.match(/REPLY:[^\n]*/);
-        if (m) { found = m[0]; }
-      }
-    } catch {}
-  }
-  if (found) console.log(found);
-} catch {}
-" "$READER_OUT" 2>/dev/null)
-  fi
-  
-  if [ -n "$REPLY_LINE" ]; then
-    REPLY_TEXT="${REPLY_LINE#REPLY: }"
-    REPLY_TEXT="${REPLY_TEXT#REPLY:}"
-    REPLY_TEXT="$(echo "$REPLY_TEXT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    if [ -n "$REPLY_TEXT" ] && [ -n "$STORE_REPLY_TEXT" ]; then
-      # BG3 secondary: REPLY: line CONTAINS the store text (may add trailing words)
-      if echo "$REPLY_TEXT" | grep -qF "$STORE_REPLY_TEXT"; then
-        echo "  OK: BG3 secondary: REPLY: line contains store reply text"
-      else
-        echo "  FAIL: BG3 secondary: REPLY: line ('$REPLY_TEXT') does not contain store reply text ('$STORE_REPLY_TEXT')"
-        FAIL_COUNT=$((FAIL_COUNT + 1))
-      fi
-    else
-      echo "  FAIL: BG3 secondary: REPLY: text or store text is empty"
-      FAIL_COUNT=$((FAIL_COUNT + 1))
-    fi
-  else
-    echo "  FAIL: BG3 secondary: no REPLY: line in reader transcript"
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-  fi
 else
   echo "  FAIL: BG3: missing prerequisites (reader transcript, session id, or global store)"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-fi
-
-# --- BE10: Phase 1 control: operator_turn_stamped precedes operator_answered ---
-# BE8: read from LOCAL store (decisions live there)
-if [ -f "$LOCAL_STORE_OWNER" ]; then
-  STAMPED_BEFORE_ANSWERED=$(node -e "
-try {
-  const s = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
-  const p = Object.keys(s)[0];
-  if (!p) { console.log('0'); process.exit(0); }
-  const d = (s[p].decisions || []);
-  const stampedIdx = d.findIndex(x => x.action === 'operator_turn_stamped');
-  const answeredIdx = d.findIndex(x => x.action === 'operator_answered');
-  if (stampedIdx !== -1 && answeredIdx !== -1 && stampedIdx < answeredIdx) console.log('1');
-  else console.log('0');
-} catch { console.log('0'); }
-" "$LOCAL_STORE_OWNER" 2>/dev/null)
-  if [ "$STAMPED_BEFORE_ANSWERED" = "1" ]; then
-    echo "  OK: operator_turn_stamped precedes operator_answered"
-  else
-    echo "  FAIL: operator_turn_stamped does not precede operator_answered"
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-  fi
-else
-  echo "  FAIL: local store missing for phase 1 control"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-fi
-
-# Check no user turn carries the reader's text without the [OPERATOR] prefix
-if [ -f "$OWNER_OUT" ]; then
-  HAS_BARE=$(node -e "
-const fs = require('fs');
-try {
-  const lines = fs.readFileSync(process.argv[1], 'utf8').split('\n');
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    try {
-      const obj = JSON.parse(line);
-      if (obj.type === 'user' && obj.message && obj.message.content) {
-        const content = typeof obj.message.content === 'string' ? obj.message.content : '';
-        if (content.includes('Report your current goal') && !content.startsWith('[OPERATOR] ')) {
-          console.log('1'); break;
-        }
-      }
-    } catch {}
-  }
-  console.log('0');
-} catch { console.log('0'); }
-" "$OWNER_OUT" 2>/dev/null)
-  if [ "$HAS_BARE" = "0" ]; then
-    echo "  OK: owner out.jsonl has no bare reader text"
-  else
-    echo "  FAIL: owner out.jsonl has reader text without [OPERATOR] prefix"
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-  fi
-fi
-
-# --- Phase 2: owner opens the ask (controller ask-operator), reader answers ---
-echo "phase 2: waiting for owner to open an ask..."
-# The controller tick should fire ask-operator after nudgeIdleMs of idle time.
-# Wait for ask_opened in the LOCAL store.
-if wait_for_decision "ask_opened" 180; then
-  echo "  OK: ask_opened found"
-  # REPORT: which path opened it
-  ASK_DETAIL=$(node -e "
-try {
-  const s = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
-  const p = Object.keys(s)[0];
-  if (!p) { console.log('unknown'); process.exit(0); }
-  const d = (s[p].decisions || []);
-  const ask = d.find(x => x.action === 'ask_opened');
-  if (ask) console.log(ask.detail || 'unknown');
-  else console.log('unknown');
-} catch { console.log('unknown'); }
-" "$LOCAL_STORE_OWNER" 2>/dev/null)
-  echo "  REPORT: ask opened by: ${ASK_DETAIL}"
-else
-  echo "  FAIL: ask_opened not found after 180s"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-fi
-
-# Wait for ask_waiting (at least one)
-if wait_for_decision "ask_waiting" 60; then
-  echo "  OK: ask_waiting found"
-else
-  echo "  FAIL: ask_waiting not found after 60s"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-fi
-
-# --- Phase 2: reader turn 3 (answer the ask) ---
-echo "phase 2: reader turn 3 (answer the ask)..."
-# BE9: key on ask id from agentic_inbox asks list, answer with agentic_say(answers=id)
-READER_P3="$SUITE_DIR/reader-p3.json"
-cat > "$READER_P3" <<'PROMPT'
-{"type":"user","message":{"role":"user","content":"Call agentic_inbox once. Look at the asks list. Take the id of the first open ask. Call agentic_say with text: I am here. Please continue. Set the answers field to that ask id. Print DONE on its own line. You must print the DONE line before finishing."}}
-PROMPT
-cat "$READER_P3" >&"$IN_R"
-
-# Wait for the reader's turn 3 to complete
-OUT="$READER_OUT" wait_turn 3
-echo "phase 2 reader turn 3 done"
-
-# Wait for ask_answered
-if wait_for_decision "ask_answered" 120; then
-  echo "  OK: ask_answered found"
-else
-  echo "  FAIL: ask_answered not found after 120s"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-fi
-
-# BF3: dropped wait_for_decision activated 120 (per Round 88)
-
-# BD4: no UNEXPECTED activated between ask_opened and ask_answered (BE8: local store)
-# The reactivation that IS the answer processing (detail mentions "answer to ask") is expected.
-NO_ACT_BETWEEN=$(node -e "
-try {
-  const s = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
-  const p = Object.keys(s)[0];
-  if (!p) { console.log('1'); process.exit(0); }
-  const d = (s[p].decisions || []);
-  const askIdx = d.findIndex(x => x.action === 'ask_opened');
-  const ansIdx = d.findIndex(x => x.action === 'ask_answered');
-  if (askIdx === -1 || ansIdx === -1 || ansIdx <= askIdx) { console.log('1'); process.exit(0); }
-  const between = d.slice(askIdx + 1, ansIdx).filter(x => x.action === 'activated' && !(x.detail || '').includes('answer to ask'));
-  console.log(between.length === 0 ? '0' : '1');
-} catch { console.log('0'); }
-" "$LOCAL_STORE_OWNER" 2>/dev/null)
-if [ "$NO_ACT_BETWEEN" = "0" ]; then
-  echo "  OK: no unexpected activated between ask_opened and ask_answered"
-else
-  echo "  FAIL: unexpected activated found between ask_opened and ask_answered"
   FAIL_COUNT=$((FAIL_COUNT + 1))
 fi
 
@@ -683,55 +439,6 @@ fi
 eval "exec $IN_R>&-"
 wait "$READER_PID" 2>/dev/null
 echo "reader done"
-
-# --- Phase 3: peer probe (only when OPERATOR_HOLD_S > 0) ---
-PHASE3_SKIPPED=1
-if [ "$OPERATOR_HOLD_S" -gt 0 ]; then
-  PHASE3_SKIPPED=0
-  # BD6: handshake carries <stamp> <owner session id>
-  echo "${STAMP_O} ${OWNER_SESSION_ID}" > "$HANDSHAKE_READY"
-  echo "phase 3: holding owner open for ${OPERATOR_HOLD_S}s, waiting for probe (stamp: ${STAMP_O})"
-
-  PROBE_N=0
-  while [ $PROBE_N -lt "$OPERATOR_HOLD_S" ]; do
-    if [ -f "$HANDSHAKE_SENT" ]; then
-      break
-    fi
-    sleep 2; PROBE_N=$((PROBE_N + 2))
-  done
-
-  if [ ! -f "$HANDSHAKE_SENT" ]; then
-    echo "  FAIL: phase 3 timeout (no probe after ${OPERATOR_HOLD_S}s)"
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-    PHASE3_SKIPPED=1
-  else
-    # Wait for peer_consumed decision
-    if wait_for_decision "peer_consumed" 30; then
-      echo "  OK: peer_consumed found"
-    else
-      echo "  FAIL: peer_consumed not found after 30s"
-      FAIL_COUNT=$((FAIL_COUNT + 1))
-    fi
-    # BD5: no line outside decisions carries PEER-PROBE
-    HAS_PROBE=$(node -e "
-const fs = require('fs');
-try {
-  const lines = fs.readFileSync(process.argv[1], 'utf8').split('\n');
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    if (line.includes('PEER-PROBE')) { console.log('1'); break; }
-  }
-  console.log('0');
-} catch { console.log('0'); }
-" "$OWNER_OUT" 2>/dev/null)
-    if [ "$HAS_PROBE" = "0" ]; then
-      echo "  OK: owner out.jsonl has no PEER-PROBE outside decisions"
-    else
-      echo "  FAIL: owner out.jsonl has PEER-PROBE line"
-      FAIL_COUNT=$((FAIL_COUNT + 1))
-    fi
-  fi
-fi
 
 # --- Stop owner: close stdin (EOF = graceful stop) ---
 eval "exec $IN_O>&-"
@@ -758,13 +465,7 @@ try {
   process.exit(1);
 }
 " "$SUITE_DIR/operator.decisions.log" "$LOCAL_STORE_OWNER"
-  # BE8: decisions in LOCAL store, ask records in GLOBAL store. Pass both.
-  GLOBAL_STORE_CYG=""
-  if [ -n "$STORE_FILE_LAUNCH" ] && [ -f "$STORE_FILE_LAUNCH" ]; then
-    GLOBAL_STORE_CYG="$(cygpath -m "$STORE_FILE_LAUNCH" 2>/dev/null || echo "$STORE_FILE_LAUNCH")"
-  fi
-  # BG2: pass reader session id as 6th arg for record id validation
-  node "$SCRIPT_DIR/assert-decisions.js" operator "$LOCAL_STORE_OWNER" "$SUITE_DIR/operator.assert.log" "$GLOBAL_STORE_CYG" "$READER_SESSION_ID"
+  node "$SCRIPT_DIR/assert-decisions.js" operator "$LOCAL_STORE_OWNER" "$SUITE_DIR/operator.assert.log"
   ASSERT_EXIT=$?
   echo "ASSERT: $ASSERT_EXIT" >> "$OWNER_EXIT"
   if [ $ASSERT_EXIT -ne 0 ]; then
@@ -780,83 +481,6 @@ else
   FAIL_COUNT=$((FAIL_COUNT + 1))
 fi
 
-# --- BF3c: BE12 assertion pair ---
-# 1. Reader local store exists
-READER_LOCAL_STORE="$SUITE_DIR/reader/.agentic-personas.json"
-if [ -f "$READER_LOCAL_STORE" ]; then
-  echo "  OK: reader local store exists"
-else
-  echo "  FAIL: reader local store not found"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-fi
-
-# 2. No SUITE_DIR/.agentic-yields.log (yields should be in the global store)
-if [ ! -f "$SUITE_DIR/.agentic-yields.log" ]; then
-  echo "  OK: no .agentic-yields.log in SUITE_DIR"
-else
-  echo "  FAIL: .agentic-yields.log found in SUITE_DIR"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-fi
-
-# --- BG5: Verify all snapshotted keys are still present (store or log) ---
-# Read the snapshot from operator.store-keys-before.json and check each key.
-# Round 47 finding 1: a key that left the store is only acceptable if the
-# bounded-store rollover put it in .agentic-channel.jsonl - the two suites
-# that rolled records during the gate run proved the rollover fires, but
-# the log itself never turned up anywhere, meaning the append had silently
-# failed while the delete went ahead anyway (fixed in hooks/index.ts and
-# hooks/operator.ts). BG5 now reads both: a missing key is a real failure
-# unless the owner's own channel log names it.
-CHANNEL_LOG_WIN=""
-[ -f "$SUITE_DIR/owner/.agentic-channel.jsonl" ] && CHANNEL_LOG_WIN="$(cygpath -m "$SUITE_DIR/owner/.agentic-channel.jsonl" 2>/dev/null || echo "$SUITE_DIR/owner/.agentic-channel.jsonl")"
-if [ -n "$STORE_FILE_LAUNCH" ] && [ -f "$STORE_FILE_LAUNCH" ] && [ -f "$SUITE_DIR/operator.store-keys-before.json" ]; then
-  BG5_RESULT=$(node -e "
-try {
-  const s = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
-  const snapshot = JSON.parse(require('fs').readFileSync(process.argv[2], 'utf8'));
-  const logPath = process.argv[3];
-  const rolledKeys = new Set();
-  if (logPath) {
-    try {
-      const lines = require('fs').readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean);
-      for (const line of lines) {
-        try { const rec = JSON.parse(line); if (rec.key) rolledKeys.add(rec.key); } catch {}
-      }
-    } catch {}
-  }
-  const goneFromStore = snapshot.filter(k => !s[k]);
-  const missing = goneFromStore.filter(k => !rolledKeys.has(k));
-  const rolled = goneFromStore.filter(k => rolledKeys.has(k));
-  console.log(JSON.stringify({ missing, rolled, total: snapshot.length }));
-} catch (e) {
-  console.log(JSON.stringify({ error: e.message }));
-}
-" "$(cygpath -m "$STORE_FILE_LAUNCH" 2>/dev/null || echo "$STORE_FILE_LAUNCH")" "$SUITE_DIR/operator.store-keys-before.json" "$CHANNEL_LOG_WIN" 2>/dev/null)
-  
-  if [ -n "$BG5_RESULT" ]; then
-    BG5_MISSING=$(echo "$BG5_RESULT" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).missing?.length || 0)}catch{console.log(0)}})")
-    BG5_ROLLED=$(echo "$BG5_RESULT" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).rolled?.length || 0)}catch{console.log(0)}})")
-    BG5_TOTAL=$(echo "$BG5_RESULT" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).total || 0)}catch{console.log(0)}})")
-
-    if [ "$BG5_MISSING" -eq 0 ]; then
-      if [ "$BG5_ROLLED" -eq 0 ]; then
-        echo "  OK: BG5: all $BG5_TOTAL snapshotted keys still present"
-      else
-        echo "  OK: BG5: $BG5_ROLLED of $BG5_TOTAL snapshotted keys left the store, all $BG5_ROLLED found in the channel log (bounded-store rollover, accepted)"
-      fi
-    else
-      BG5_MISSING_LIST=$(echo "$BG5_RESULT" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).missing?.join(', ') || 'unknown')}catch{console.log('unknown')}})")
-      echo "  FAIL: BG5: $BG5_MISSING of $BG5_TOTAL snapshotted keys missing: $BG5_MISSING_LIST"
-      FAIL_COUNT=$((FAIL_COUNT + 1))
-    fi
-  else
-    echo "  FAIL: BG5: failed to verify key preservation"
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-  fi
-else
-  echo "  WARN: BG5: no global store or snapshot file to check (skipping)"
-fi
-
 # --- BD5: evidence retention (BE11) ---
 # Use RUN_DIR if set (when run by live-all.sh), otherwise use STAMP_O
 if [ -n "${RUN_DIR:-}" ]; then
@@ -867,7 +491,7 @@ fi
 mkdir -p "$RUNS_DIR"
 for f in operator-owner.out.jsonl operator-owner.err.log operator-reader.out.jsonl \
          operator-reader.err.log operator.decisions.log operator.assert.log \
-         operator.exit settings.json operator.store-keys-before.json; do
+         operator.exit settings.json; do
   [ -f "$SUITE_DIR/$f" ] && cp -f "$SUITE_DIR/$f" "$RUNS_DIR/" 2>/dev/null
 done
 # BG6: retain debug logs
@@ -876,8 +500,8 @@ done
 # BE11: also retain the local stores and global store snapshot
 [ -f "$SUITE_DIR/owner/.agentic-personas.json" ] && cp -f "$SUITE_DIR/owner/.agentic-personas.json" "$RUNS_DIR/owner-personas.json" 2>/dev/null
 [ -f "$SUITE_DIR/reader/.agentic-personas.json" ] && cp -f "$SUITE_DIR/reader/.agentic-personas.json" "$RUNS_DIR/reader-personas.json" 2>/dev/null
-# Round 47 finding 1: retain the owner's channel-rollover log too, so BG5
-# below (and any post-mortem read) can see what left the store and why.
+# Retain the owner's channel-rollover log so a post-mortem read can see what
+# left the store and why.
 [ -f "$SUITE_DIR/owner/.agentic-channel.jsonl" ] && cp -f "$SUITE_DIR/owner/.agentic-channel.jsonl" "$RUNS_DIR/owner-channel.jsonl" 2>/dev/null
 if [ -n "$STORE_FILE_LAUNCH" ] && [ -f "$STORE_FILE_LAUNCH" ]; then
   cp -f "$STORE_FILE_LAUNCH" "$RUNS_DIR/global-store-snapshot.json" 2>/dev/null
@@ -887,13 +511,6 @@ if [ -f "$SUITE_DIR/operator.suite.log" ]; then
   cp -f "$SUITE_DIR/operator.suite.log" "$RUNS_DIR/operator.suite.log" 2>/dev/null
 fi
 echo "evidence retained in $RUNS_DIR"
-
-# --- Phase 3 REPORT ---
-if [ $PHASE3_SKIPPED -eq 1 ]; then
-  echo "REPORT: phase 3 skipped (no probe)"
-else
-  echo "REPORT: phase 3 completed (probe sent)"
-fi
 
 # --- BD5: exit = assertion verdict ---
 # 0 only when all checks passed; 1 otherwise

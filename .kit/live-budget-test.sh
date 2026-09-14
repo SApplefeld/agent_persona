@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Live test 9: context budget (2b acceptance test).
-# v0.9.0: per-suite directory, profile-driven timing, --settings.
+# Live budget suite: the context budget read off the real engine.
+# Proves what no offline suite can: the estimate parses the real shape of
+# session.messages() and climbs past every threshold as a real turn runs.
 set -u
 
 # --- Configuration ---
