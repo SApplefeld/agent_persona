@@ -191,3 +191,11 @@ a slower form.
 Open: where the rule itself should live. Project memory holds it for this repo only. The
 doctrine holds it everywhere and is the heavier edit. The lean is the doctrine, because the
 failure is not specific to this repo. Operator's call.
+
+## A v2 or v3 persona store reaches the tick with no cost ledger (found 2026-09-14)
+
+`parseState` in `hooks/agent-state.ts` fills `monitor.cost` at line 393, but its v2 branch returns at 343 and its v3 branch at 361, both before that fill, and the v2 branch copies `old.monitor` whole. `enforceInvariants` never touches `cost`. So a store written before the cost ledger existed is migrated to version 4 with no `monitor.cost`, and the first controller tick reads `monitor.cost.callWindow` on undefined. `.kit/cost-migration-test.mjs` covers a v4 store missing the block and never a v2 or v3 one. The remedy is to move the cost fill above both early returns, or into `enforceInvariants`, with one fixture per old version. Found by Section 13's audit while reading the migration suite; outside that section's goal.
+
+## The hourly cost-cap ask is controller prose of the kind Round 58 finding 3 removed elsewhere (found 2026-09-14)
+
+`hooks/index.ts:2317-2343` opens an operator ask when the per-hour nudge budget is spent, with a question the controller composes. Round 58 finding 3 removed the same shape from the consecutive-nudge cap (`:2251-2258`) on the ground that an ask with no concrete fork from the worker has nothing for the operator to decide, and item 8.2 says asks come only from real forks. Whether the hourly cap is the one legitimate exception, because the operator must choose between raising the budget and waiting, is a design question. `.kit/controller-tick-test.mjs:3214-3216` pins the ask as it stands and stays until that question is answered. Found by Section 13's audit; outside its goal.
