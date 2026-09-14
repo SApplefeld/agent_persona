@@ -3139,6 +3139,7 @@ async function main() {
     await caseItem8p3_ownerStampsTurnStartInHeartbeat(clock);
     await caseSection1_turnStartStampsCommonsEntry(clock);
     await caseSection1_turnCompleteClearsCommonsStamp_control(clock);
+    await caseSection1_yieldMidTurnStillClearsCommonsStamp(clock);
     await caseItem8p3_inboxReportsDeferredWhileTurnRuns(clock);
     await caseItem8p3_deferredNotReportedForStaleOwner(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
@@ -3751,6 +3752,16 @@ async function caseSection1_turnStartStampsCommonsEntry(clock) {
   check("section1 stamp: commons entry carries turnStartedAt at turn.start", entry?.turnStartedAt === now, entry);
   check("section1 stamp: commons entry carries the session's workdir", entry?.workdir === HARNESS_CWD, entry);
   check("section1 stamp: the persona claim is untouched", entry?.claims?.some(c => c.resource === "persona:default") === true, entry);
+
+  // The live branch: session.start carries cwd on the event, so the fallback
+  // $.session.cwd() is not consulted. createTickHarness already fired
+  // session.start once at creation, so this re-fire on the same closure
+  // inherits the creation-time claims; harmless here, only workdir is read.
+  const startH = h.handlers["session.start"];
+  await startH(h.fake, { cwd: "D:/other-root" }, () => {});
+  await turnStartH(h.fake, { turnId: "t-commons-2" }, async () => ({ result: "ok" }));
+  const entry2 = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("section1 stamp: workdir comes from the event's cwd when it carries one", entry2?.workdir === "D:/other-root", entry2);
 }
 
 // Control: turn.complete clears the commons entry's copy back to null, as it
@@ -3769,6 +3780,38 @@ async function caseSection1_turnCompleteClearsCommonsStamp_control(clock) {
   const entry = h.storeMap.get(`commons:${SESSION_ID}`);
   check("section1 control: commons turnStartedAt is null after turn.complete", entry?.turnStartedAt === null, entry);
   check("section1 control: workdir unchanged after turn.complete", entry?.workdir === HARNESS_CWD, entry);
+}
+
+// A session that yields ownership mid-turn still clears its commons stamp at
+// turn.complete. yieldNow writes the mid-turn stamp through releaseResource,
+// and the reader tick's claimReaderRole passes no meta, so an owner-gated
+// stamp at turn.complete would strand the non-null value forever. The yield is
+// the heartbeat tick's store check: the persona store names another session.
+async function caseSection1_yieldMidTurnStillClearsCommonsStamp(clock) {
+  console.log("\n=== Section 1: a session that yields mid-turn still clears its commons turnStartedAt ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedOwnerHarness("section1_commons_yield_clear", now);
+
+  const turnStartH = h.handlers["turn.start"];
+  const turnCompleteH = h.handlers["turn.complete"];
+  await turnStartH(h.fake, { turnId: "t-yield" }, async () => ({ result: "ok" }));
+  const midTurn = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("section1 yield: commons entry carries turnStartedAt before the yield (setup sanity)", midTurn?.turnStartedAt === now, midTurn);
+
+  // Another session takes the persona in the store; the heartbeat tick yields.
+  clock.advance(10_000);
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState("foreign-owner-001", now + 10_000) }));
+  await fireHeartbeat(h);
+  const yieldLog = h.fsMap.get(".agentic-yields.log") ?? "";
+  check("section1 yield: the session yielded on the heartbeat tick (precondition)", yieldLog.includes(`"yielded":"${SESSION_ID}"`) && yieldLog.includes(`"winner":"foreign-owner-001"`), yieldLog);
+  const afterYield = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("section1 yield: the persona claim was released (precondition)", afterYield?.claims?.some(c => c.resource === "persona:default") === false, afterYield);
+
+  clock.advance(5_000);
+  await turnCompleteH(h.fake, { turnId: "t-yield", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  const entry = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("section1 yield: commons turnStartedAt is null after turn.complete as a reader", entry?.turnStartedAt === null, entry);
 }
 
 // Seeds a reader harness: otherSid owns the persona (commons, persona store,

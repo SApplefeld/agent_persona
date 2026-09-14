@@ -31,7 +31,7 @@ export interface CommonsEntry {
 
 // The per-turn fields a session publishes beside its claims, so a session in
 // another working directory can read this one's turn state. Entries written
-// before these fields existed lack both; a reader treats absence as null and "".
+// by an older plugin lack both fields.
 export interface CommonsMeta {
   turnStartedAt: number | null;
   workdir: string;
@@ -169,7 +169,9 @@ export async function stampCommonsMeta(
   // Refresh liveness
   existing.lastSeen = now;
 
-  // Write back (we own this key, no race)
+  // Write back. One process writes this key, but claimResource, releaseResource
+  // and this stamp each read-modify-write it across an await, ordered by the
+  // event loop rather than by a lock.
   await store.set(key, existing);
 }
 

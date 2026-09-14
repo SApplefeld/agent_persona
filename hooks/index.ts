@@ -2726,11 +2726,13 @@ export const register: Register = async (on, options) => {
     sess.turnStartedAt = deriveTurnStartedAt();
     if (sess.isOwner) {
       try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }
-      // The commons copy of the stamp exists so a session in another working
-      // directory can read this turn's state, which the cwd-relative heartbeat
-      // file cannot give it.
-      try { await stampCommonsMeta(commonsStoreOf($), sess.mySessionId, commonsMeta()); } catch { /* commons stamp failed; non-fatal */ }
     }
+    // The commons copy of the stamp exists so a session in another working
+    // directory can read this turn's state, which the cwd-relative heartbeat
+    // file cannot give it. Owner or reader, the session's own entry carries
+    // its turn state: a session that yields mid-turn writes the stamp through
+    // releaseResource, and only this handler pair clears it.
+    try { await stampCommonsMeta(commonsStoreOf($), sess.mySessionId, commonsMeta()); } catch { /* commons stamp failed; non-fatal */ }
     // H2: record the active leaf at turn start for scoring.
     turnLeafId = sess.state.activeGoalId;
     // C4: reset tool error counter for this turn.
@@ -2832,12 +2834,15 @@ export const register: Register = async (on, options) => {
     // a read-modify-write called from both turn handlers and from the heartbeat
     // tick, so two in-flight calls can land out of build order and publish a
     // non-null stamp just after the map emptied. The next tick repairs it, so
-    // that exposure is one heartbeat interval rather than unbounded.
+    // that exposure is one heartbeat interval rather than unbounded. The
+    // commons entry carries the same exposure for the same reason, repaired by
+    // the owner's next tick claim write (a reader's tick passes no meta, so its
+    // copy holds until its next turn boundary).
     sess.turnStartedAt = deriveTurnStartedAt();
     if (sess.isOwner) {
       try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }
-      try { await stampCommonsMeta(commonsStoreOf($), sess.mySessionId, commonsMeta()); } catch { /* commons stamp failed; non-fatal */ }
     }
+    try { await stampCommonsMeta(commonsStoreOf($), sess.mySessionId, commonsMeta()); } catch { /* commons stamp failed; non-fatal */ }
 
     // Read and clear the nudge flag once, up front. This prevents
     // a stale flag from leaking into a later real user turn (e.g. if the
