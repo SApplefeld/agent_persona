@@ -274,6 +274,75 @@ console.log('live=' + live + ' oldest_age=' + (oldest ? Math.round((now - oldest
   done
 }
 
+# --- refuse_if_persona_live ---
+# Start-only refuse-at-start check, beside wait_persona_free's own wait.
+# Reads every given store path once, with no polling, and refuses the moment
+# any store holds a live persona: claim of any name (a commons: key whose
+# lastSeen is within stale_after_ms, holding a claim whose resource starts
+# with "persona:"). A store path that does not exist is skipped (installed
+# mode may never have run on this machine). A store that exists and cannot
+# be parsed is itself a refusal: a start-only check has no later poll to
+# recover on, so it fails closed the same way a live claim does. The caller
+# decides the exit code; this function only returns and prints, it never
+# exits the shell.
+# Usage: refuse_if_persona_live <stale_after_ms> <store-path>...
+refuse_if_persona_live() {
+  local stale_after_ms="$1"
+  shift
+  local store checked=0
+  for store in "$@"; do
+    [ -n "$store" ] || continue
+    if [ ! -f "$store" ]; then
+      echo "refuse-check: store not present, skipping: $store"
+      continue
+    fi
+    local store_w line rc
+    store_w=$(cygpath -m "$store" 2>/dev/null || echo "$store")
+    line=$(node -e "
+const fs = require('fs');
+let s;
+try {
+  s = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+} catch (e) {
+  console.log('ERROR: ' + e.message);
+  process.exit(2);
+}
+const staleAfterMs = Number(process.argv[2]);
+const keys = Object.keys(s).filter(k => k.startsWith('commons:'));
+const now = Date.now();
+for (const key of keys) {
+  const e = s[key];
+  if (e && e.lastSeen && (now - e.lastSeen) < staleAfterMs && Array.isArray(e.claims)) {
+    for (const c of e.claims) {
+      if (c && typeof c.resource === 'string' && c.resource.indexOf('persona:') === 0) {
+        console.log('LIVE ' + c.resource + ' ' + Math.round((now - e.lastSeen) / 1000));
+        process.exit(0);
+      }
+    }
+  }
+}
+console.log('CLEAN');
+" "$store_w" "$stale_after_ms")
+    rc=$?
+    if [ $rc -ne 0 ] || echo "$line" | grep -q '^ERROR'; then
+      echo "refuse-check FAIL: store cannot be parsed: $store ($line)"
+      return 1
+    fi
+    case "$line" in
+      LIVE\ *)
+        local resource age
+        resource=$(echo "$line" | sed -n 's/^LIVE \([^ ]*\) .*/\1/p')
+        age=$(echo "$line" | sed -n 's/^LIVE [^ ]* \(.*\)/\1/p')
+        echo "refuse-check FAIL: live persona claim in $store: $resource (age ${age}s)"
+        return 1
+        ;;
+    esac
+    checked=$((checked + 1))
+  done
+  echo "refuse-check passed ($checked store(s) read, no live persona claim)"
+  return 0
+}
+
 # --- wait_persona_free_both ---
 # AD2: Wait for the persona to be free in BOTH the commons store AND the
 # per-directory heartbeat. The commons check ensures no machine-global claim;

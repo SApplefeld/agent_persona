@@ -73,6 +73,25 @@ case "$(basename "$GLOBAL_STORE")" in
     ;;
 esac
 
+# Refuse-at-start check, beside the .kit/RUNNING lock above. Checks both
+# stores (Reviewer Round 113 R32): the inline store this harness's own
+# children use, and the installed-mode store Section 0 item 5 moves every
+# worker and the coordinator onto. Until Section 6's arming default lands,
+# any plugin-loaded session, a plain chat among them, claims persona:default
+# at start, so an open plugin-loaded session is enough to trip this check;
+# that is the check working, not a bug in it.
+INSTALLED_STORE="$(find_global_store 0)"
+if [ -n "$INSTALLED_STORE" ]; then
+  refuse_if_persona_live 90000 "$GLOBAL_STORE" "$INSTALLED_STORE"
+else
+  refuse_if_persona_live 90000 "$GLOBAL_STORE"
+fi
+if [ $? -ne 0 ]; then
+  echo "live-all.sh: refusing to start: a live persona claim is present (the whole gate cannot run beside a live fleet)"
+  rm -f "$GLOBAL_RUNNING"
+  exit 10
+fi
+
 # --- Helper: run one suite in its private directory ---
 run_suite() {
   local suite="$1"

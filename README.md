@@ -446,7 +446,7 @@ The operator has not yet ruled on these options; the defaults are in force.
 
 The supervisor's own suites are listed under the Supervisor section's Test Coverage above.
 
-**Runner lock:** `live-all.sh` writes `.kit/RUNNING` at start and refuses to start if it already exists (exit 8). After a killed gate, confirm no `claude` child with `--plugin-dir` is running, then `rm .kit/RUNNING`.
+**Runner lock:** `live-all.sh` writes `.kit/RUNNING` at start and refuses to start if it already exists (exit 8). After a killed gate, confirm no `claude` child with `--plugin-dir` is running, then `rm .kit/RUNNING`. `live-all.sh` also refuses at start, with no wait, when any `persona:` claim is live in either commons store, inline or installed (exit 10). Until the coordinator's launch recipe removes the ordinary session claim, an open plugin-loaded session is enough to trip it.
 
 ## Limitations
 
