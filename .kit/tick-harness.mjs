@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const SESSION_ID = "harness-session";
+const HARNESS_CWD = "D:/harness-root";
 
 // AO1: Resolve hook - when specifier starts with "./", has no extension, and
 // parent URL is under hooks/, append ".ts" and defer to next resolver.
@@ -84,6 +85,9 @@ function createFake$(opts = {}) {
     },
     session: {
       id() { return Promise.resolve(SESSION_ID); },
+      // The harness fires session.start with no cwd on the event, so the
+      // plugin reads its workdir from here. A fixed literal cases can assert on.
+      cwd() { return Promise.resolve(opts.cwd ?? HARNESS_CWD); },
       // BJ1: Add messages() for budget fixtures.
       // The test can override this with its own implementation.
       messages() {
@@ -393,4 +397,5 @@ export {
   seedPersonaStore,
   loadModule,
   SESSION_ID,
+  HARNESS_CWD,
 };

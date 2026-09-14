@@ -19,7 +19,7 @@
 // Usage: node controller-tick-test.mjs
 // Exits 0 on success, 1 on failure.
 
-import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, loadModule, makeState, makeGoalNode } from "./tick-harness.mjs";
+import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, HARNESS_CWD, loadModule, makeState, makeGoalNode } from "./tick-harness.mjs";
 import { DECISIONS_MAX, MEMORY_MAX } from "../hooks/agent-state.ts";
 
 let failures = 0;
@@ -3137,6 +3137,8 @@ async function main() {
     await caseR119_noRoundMetReachesTheCap_control(clock);
     await caseNudgeFailed_recordedAndTheFloorIsStillSpent(clock);
     await caseItem8p3_ownerStampsTurnStartInHeartbeat(clock);
+    await caseSection1_turnStartStampsCommonsEntry(clock);
+    await caseSection1_turnCompleteClearsCommonsStamp_control(clock);
     await caseItem8p3_inboxReportsDeferredWhileTurnRuns(clock);
     await caseItem8p3_deferredNotReportedForStaleOwner(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
@@ -3732,6 +3734,41 @@ async function caseItem8p3_ownerStampsTurnStartInHeartbeat(clock) {
   const midTurn = readHeartbeat(h).default;
   check("item8.3 stamp: heartbeat tick refreshed lastSeen", midTurn?.lastSeen === now + 30_000);
   check("item8.3 stamp: heartbeat tick kept turnStartedAt", midTurn?.turnStartedAt === now);
+}
+
+// Section 1: the owner's commons entry carries the turn stamp and the
+// session's workdir, so a session in another working directory can read this
+// one as busy. The heartbeat file cannot give it that, being cwd-relative.
+async function caseSection1_turnStartStampsCommonsEntry(clock) {
+  console.log("\n=== Section 1: turn.start stamps turnStartedAt and workdir onto the commons entry ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedOwnerHarness("section1_commons_stamp", now);
+
+  const turnStartH = h.handlers["turn.start"];
+  await turnStartH(h.fake, { turnId: "t-commons" }, async () => ({ result: "ok" }));
+  const entry = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("section1 stamp: commons entry carries turnStartedAt at turn.start", entry?.turnStartedAt === now, entry);
+  check("section1 stamp: commons entry carries the session's workdir", entry?.workdir === HARNESS_CWD, entry);
+  check("section1 stamp: the persona claim is untouched", entry?.claims?.some(c => c.resource === "persona:default") === true, entry);
+}
+
+// Control: turn.complete clears the commons entry's copy back to null, as it
+// clears the heartbeat file's own stamp, and leaves the workdir in place.
+async function caseSection1_turnCompleteClearsCommonsStamp_control(clock) {
+  console.log("\n=== Section 1 control: turn.complete clears the commons entry's turnStartedAt ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedOwnerHarness("section1_commons_clear", now);
+
+  const turnStartH = h.handlers["turn.start"];
+  const turnCompleteH = h.handlers["turn.complete"];
+  await turnStartH(h.fake, { turnId: "t-commons" }, async () => ({ result: "ok" }));
+  clock.advance(5_000);
+  await turnCompleteH(h.fake, { turnId: "t-commons", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  const entry = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("section1 control: commons turnStartedAt is null after turn.complete", entry?.turnStartedAt === null, entry);
+  check("section1 control: workdir unchanged after turn.complete", entry?.workdir === HARNESS_CWD, entry);
 }
 
 // Seeds a reader harness: otherSid owns the persona (commons, persona store,

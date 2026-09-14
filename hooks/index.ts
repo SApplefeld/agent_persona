@@ -41,6 +41,7 @@ import {
   readAllClaims,
   shouldYieldCommons,
   releaseResource,
+  stampCommonsMeta,
   commonsWinner,
 } from "./commons";
 import type { CommonsStore } from "./commons";
@@ -244,6 +245,7 @@ const sess: {
   controllerTickCount: number; // D4: in-session tick counter for backoff and cost_summary
   staleAfterMs: number; // F9a: single-source the staleness threshold
   turnStartedAt: number | null; // plan item 8.3: this session's clock at turn.start, null between turns
+  workdir: string; // the directory this session runs in, "" until session.start reads it
 } = {
   persona: "default",
   mySessionId: "pending",
@@ -265,7 +267,12 @@ const sess: {
   controllerTickCount: 0,
   staleAfterMs: 90_000,
   turnStartedAt: null,
+  workdir: "",
 };
+
+// The turn state and workdir every commons-entry write carries, so the entry
+// tracks the turn the way the heartbeat file's own stamp does.
+const commonsMeta = () => ({ turnStartedAt: sess.turnStartedAt, workdir: sess.workdir });
 
 // Reentrancy flag for the git probe (E4).
 let gitProbeInFlight = false;
@@ -387,7 +394,7 @@ export const yieldNow = async (dp: any, onDisk: { activeSessionId: string; epoch
   // F13: release the commons claim so an exited session does not lock the
   // persona for the full 90s staleness window.
   try {
-    await releaseResource(commonsStoreOf(dp), `persona:${sess.persona}`, sess.mySessionId);
+    await releaseResource(commonsStoreOf(dp), `persona:${sess.persona}`, sess.mySessionId, Date.now(), commonsMeta());
   } catch { /* non-fatal */ }
 };
 
@@ -535,7 +542,7 @@ export const persist = async (dp: any): Promise<boolean> => {
       // F13: release the commons claim so an exited session does not lock the
       // persona for the full 90s staleness window.
       try {
-        await releaseResource(commonsStoreOf(dp), resource, sess.mySessionId);
+        await releaseResource(commonsStoreOf(dp), resource, sess.mySessionId, Date.now(), commonsMeta());
       } catch { /* non-fatal */ }
       // Persist the yield decision to disk before returning
       const store2: Record<string, unknown> = await dp.fs.exists(sess.storePath)
@@ -763,6 +770,17 @@ export const register: Register = async (on, options) => {
       sess.mySessionId = String(await $.session.id());
     } catch {
       // $.session.id unavailable; single-session still works
+    }
+    // The event carries cwd; $.session.cwd() is the fallback when it does not.
+    try {
+      if (typeof e.cwd === "string" && e.cwd.length > 0) {
+        sess.workdir = e.cwd;
+      } else {
+        const cwd = await $.session.cwd();
+        if (typeof cwd === "string") sess.workdir = cwd;
+      }
+    } catch {
+      // cwd unavailable; the commons entry publishes "" for it
     }
     $.ui.log(`Agentic: session.start (${sess.mySessionId})`);
 
@@ -1105,7 +1123,7 @@ export const register: Register = async (on, options) => {
       // no live persona:default claim and takes ownership, evicting the owner.
       try {
         const resource = `persona:${sess.persona}`;
-        await claimResource(commonsStoreOf($), resource, sess.mySessionId);
+        await claimResource(commonsStoreOf($), resource, sess.mySessionId, Date.now(), commonsMeta());
       } catch { /* non-fatal */ }
       // BD3 part 3: expire open asks from prior owners. The owner that opened
       // them is gone or restarted; its pendingAskId is gone with it.
@@ -1161,7 +1179,7 @@ export const register: Register = async (on, options) => {
             // Commons: refresh lastSeen to signal liveness (Stage 2 integration).
             try {
               const resource = `persona:${sess.persona}`;
-              await claimResource(commonsStoreOf($), resource, sess.mySessionId);
+              await claimResource(commonsStoreOf($), resource, sess.mySessionId, Date.now(), commonsMeta());
             } catch { /* non-fatal */ }
           }
         }
@@ -2708,6 +2726,10 @@ export const register: Register = async (on, options) => {
     sess.turnStartedAt = deriveTurnStartedAt();
     if (sess.isOwner) {
       try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }
+      // The commons copy of the stamp exists so a session in another working
+      // directory can read this turn's state, which the cwd-relative heartbeat
+      // file cannot give it.
+      try { await stampCommonsMeta(commonsStoreOf($), sess.mySessionId, commonsMeta()); } catch { /* commons stamp failed; non-fatal */ }
     }
     // H2: record the active leaf at turn start for scoring.
     turnLeafId = sess.state.activeGoalId;
@@ -2814,6 +2836,7 @@ export const register: Register = async (on, options) => {
     sess.turnStartedAt = deriveTurnStartedAt();
     if (sess.isOwner) {
       try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }
+      try { await stampCommonsMeta(commonsStoreOf($), sess.mySessionId, commonsMeta()); } catch { /* commons stamp failed; non-fatal */ }
     }
 
     // Read and clear the nudge flag once, up front. This prevents
@@ -3249,7 +3272,7 @@ export const register: Register = async (on, options) => {
       // place a session's persona actually changes.
       if (previousPersona && previousPersona !== name) {
         try {
-          await releaseResource(commonsStoreOf($), `persona:${previousPersona}`, sess.mySessionId);
+          await releaseResource(commonsStoreOf($), `persona:${previousPersona}`, sess.mySessionId, Date.now(), commonsMeta());
         } catch { /* non-fatal: commons is a coordination layer */ }
       }
       const store: Record<string, unknown> = await $.fs.exists(storePath)
@@ -3268,7 +3291,7 @@ export const register: Register = async (on, options) => {
       let winnerId = sess.mySessionId; // default: we are the winner
       let shouldYieldTo: string | null = null;
       try {
-        await claimResource(commonsStoreOf($), resource, sess.mySessionId);
+        await claimResource(commonsStoreOf($), resource, sess.mySessionId, Date.now(), commonsMeta());
         const claims = await readAllClaims(commonsStoreOf($), sess.staleAfterMs);
         const winner = commonsWinner(claims, resource);
         if (winner && winner !== sess.mySessionId) {
@@ -3304,7 +3327,7 @@ export const register: Register = async (on, options) => {
         // `persona:default` claim did. Release it before claiming the reader
         // role, so the joiner ends with reader:<p> only.
         try {
-          await releaseResource(commonsStoreOf($), resource, sess.mySessionId);
+          await releaseResource(commonsStoreOf($), resource, sess.mySessionId, Date.now(), commonsMeta());
         } catch { /* non-fatal: commons is a coordination layer */ }
         // D2: Claim the reader role
         await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId);
