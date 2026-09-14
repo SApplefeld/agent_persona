@@ -274,7 +274,14 @@ export async function listAskRecords(
  * A `pending` record is never swept, whatever its age: a pending record whose
  * writer has no live claim leaves the queue through the drain's own route
  * (`skipped`), so one that is still pending is live work the owner has not
- * consumed yet. Every record the sweep removes (inbox, reply, ask) is appended
+ * consumed yet. An inbox record's age is the latest of its write, delivery
+ * and resolution times, so a record that waited pending past the TTL and was
+ * then delivered is not swept on the next cadence. A reply is swept together
+ * with its inbox record, expired when that record is, and on its own `at`
+ * only when it is an orphan with no inbox record; the sender reads replies
+ * by walking inbox records, so a reply outliving its record is unreachable
+ * and a record outliving its reply reads as unanswered. Every record the
+ * sweep removes (inbox, reply, ask) is appended
  * to the channel log first, one line per record in the shape `enforceChannelWindow`
  * writes with `sweptAt` in place of `rolledAt`, so a reader of the log can tell
  * the two routes apart. Append before delete, and never delete on a failed
@@ -294,9 +301,16 @@ export async function sweepExpiredRecords(
   // one append, then delete.
   const expired: { key: string; kind: "inbox" | "reply" | "ask"; record: unknown }[] = [];
   const inboxRecords = await listInboxRecords(store, persona);
+  // Inbox record ids present in the store, and those the sweep removes, so a
+  // reply follows its record's fate rather than its own age.
+  const inboxIds = new Set<string>();
+  const expiredInboxIds = new Set<string>();
   for (const record of inboxRecords) {
-    if (record.at < cutoff && record.status !== "pending" && record.key) {
+    inboxIds.add(record.id);
+    const age = Math.max(record.at, record.deliveredAt ?? 0, record.resolvedAt ?? 0);
+    if (age < cutoff && record.status !== "pending" && record.key) {
       expired.push({ key: record.key, kind: "inbox", record });
+      expiredInboxIds.add(record.id);
     }
   }
   const keys = await store.keys();
@@ -307,8 +321,13 @@ export async function sweepExpiredRecords(
     if (!kind) continue;
     const raw = await store.get(key);
     if (!raw) continue;
-    const record = raw as ReplyRecord | AskRecord;
-    if (record.at < cutoff) expired.push({ key, kind, record: raw });
+    if (kind === "reply") {
+      const msgId = key.slice(replyPrefix.length);
+      const isExpired = inboxIds.has(msgId) ? expiredInboxIds.has(msgId) : (raw as ReplyRecord).at < cutoff;
+      if (isExpired) expired.push({ key, kind, record: raw });
+      continue;
+    }
+    if ((raw as AskRecord).at < cutoff) expired.push({ key, kind, record: raw });
   }
   if (expired.length > 0) {
     const sweptAt = Date.now();

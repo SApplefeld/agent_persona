@@ -3157,6 +3157,10 @@ async function main() {
     await caseSection12_F2_windowRollKeepsAnOpenSteersReply(clock);
     await caseSection12_F3_failedNudgeResetsTheNudgedFlag(clock);
     await caseSection12_F4_failedDeliverySubmitReturnsTheRecordToPending(clock);
+    await caseSection12_G1_lateRejectingSubmitLeavesAnAnsweredRecord(clock);
+    await caseSection12_G2_sweepAgesOffDeliveryAndKeepsReplyWithRecord(clock);
+    await caseSection12_G3_failedAskAnswerDeliveryReopensTheAsk(clock);
+    await caseSection12_6_pluginTurnDoesNotTakeTheStamp(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
     await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
     await caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock);
@@ -4571,6 +4575,166 @@ async function caseSection12_F4_failedDeliverySubmitReturnsTheRecordToPending(cl
   check("section12.F4: the next tick delivers the record", readStoreRecord(h, key)?.status === "delivered" && (h.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 2);
   await h.handlers["turn.start"](h.fake, { turnId: "t-own-retry" }, async () => ({ result: "ok" }));
   check("section12.F4: the retried delivery's own turn takes the stamp", readStoreRecord(h, key)?.turnId === "t-own-retry");
+}
+
+// G1: the real submit parks until the session is next idle, so a rejection
+// can arrive after the submitted turn ran and answered. A record whose id a
+// turn.start already consumed is left as it stands rather than reverted.
+async function caseSection12_G1_lateRejectingSubmitLeavesAnAnsweredRecord(clock) {
+  console.log("\n=== Section 12 G1: a submit rejecting after its turn ran does not revert the answered record ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("section12_g1_late_reject", now, "writer-g1");
+  // A submit that parks until this case rejects it, recorded like the stub's.
+  const realSubmit = h.fake.prompt.submit;
+  let rejectParked = null;
+  h.fake.prompt.submit = ({ text }) => {
+    h.promptSubmits.push(text);
+    return new Promise((_, reject) => { rejectParked = reject; });
+  };
+  const tick = fireTick(h);
+  const queued = await waitUntil(() => rejectParked !== null);
+  check("section12.G1: the delivery's submit is parked (setup sanity)", queued && readStoreRecord(h, key)?.status === "delivered");
+  await h.handlers["turn.start"](h.fake, { turnId: "t-late" }, async () => ({ result: "ok" }));
+  check("section12.G1: the delivery's own turn took the stamp under the parked submit (setup sanity)", readStoreRecord(h, key)?.turnId === "t-late");
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-late", answer: "Answered under the parked submit.", reason: "completed" }, async () => ({ result: "ok" }));
+  rejectParked(new Error("late rejection"));
+  await tick.catch(() => {});
+  h.fake.prompt.submit = realSubmit;
+  const rec = readStoreRecord(h, key);
+  check("section12.G1: record stays answered, not reverted to pending", rec?.status === "answered" && rec?.turnId === "t-late" && rec?.deliveredAt !== undefined, rec);
+  check("section12.G1: the reply is still there", readStoreRecord(h, `reply:default:${id}`)?.text === "Answered under the parked submit.");
+  check("section12.G1: operator_delivery_failed says the turn had already opened",
+    getDecisions(h).some((d) => d.action === "operator_delivery_failed" && d.detail.includes(id) && d.detail.includes("already opened") && d.detail.includes("late rejection")));
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 50);
+  check("section12.G1: the next tick does not re-deliver it", (h.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 1 && readStoreRecord(h, key)?.status === "answered");
+}
+
+// G2: an inbox record ages off the latest of its write, delivery and
+// resolution times, and its reply is swept with it rather than on its own
+// age, so a record that waited pending past the TTL and then got answered
+// keeps its reply. Control: a record old on every time is swept with its
+// reply as a pair, and an orphan reply is swept on its own age.
+async function caseSection12_G2_sweepAgesOffDeliveryAndKeepsReplyWithRecord(clock) {
+  console.log("\n=== Section 12 G2: the sweep ages a record off delivery time and sweeps its reply with it ===");
+  clock.set(T0);
+  const now = T0;
+  const { sweepExpiredRecords } = await import("../hooks/operator.ts?case=section12_g2_direct_unit");
+  const lateKey = "inbox:default:writer-late:1";
+  const lateReplyKey = "reply:default:default-writer-late-1";
+  const oldKey = "inbox:default:writer-old:1";
+  const oldReplyKey = "reply:default:default-writer-old-1";
+  const orphanReplyKey = "reply:default:default-writer-gone-1";
+  const store = makeMiniStore({
+    [lateKey]: { id: "default-writer-late-1", key: lateKey, from: "writer-late", at: now - 10_000, text: "waited, then answered", kind: "say", status: "answered", deliveredAt: now - 100, turnId: "t-late" },
+    [lateReplyKey]: { at: now - 50, text: "fresh reply" },
+    [oldKey]: { id: "default-writer-old-1", key: oldKey, from: "writer-old", at: now - 10_000, text: "old and answered", kind: "say", status: "answered", deliveredAt: now - 9_000, turnId: "t-old" },
+    [oldReplyKey]: { at: now - 200, text: "reply newer than the TTL, swept with its record" },
+    [orphanReplyKey]: { at: now - 5_000, text: "orphan" },
+  });
+  const appended = [];
+  const swept = await sweepExpiredRecords(store, "default", async (lines) => { appended.push(...lines); }, 1000);
+  check("section12.G2: the late-delivered record is kept", store._map.has(lateKey));
+  check("section12.G2: its reply is kept with it", store._map.has(lateReplyKey));
+  check("section12.G2 control: the record old on every time is swept", !store._map.has(oldKey));
+  check("section12.G2 control: its reply is swept with it as a pair", !store._map.has(oldReplyKey));
+  check("section12.G2 control: the orphan reply is swept on its own age", !store._map.has(orphanReplyKey));
+  check("section12.G2 control: swept count is 3", swept === 3, swept);
+}
+
+// G3: the F4 shape on the ask-answer path. The ask was closed, the node
+// reactivated and pendingAskId cleared before the submit; a refused submit
+// puts all three back so the next tick delivers through the ask path with
+// its question framing.
+async function caseSection12_G3_failedAskAnswerDeliveryReopensTheAsk(clock) {
+  console.log("\n=== Section 12 G3: a refused ask-answer delivery reopens the ask for the next tick ===");
+  clock.set(T0);
+  const now = T0;
+  const ha = await createTickHarness({ ...OPTS, caseName: "section12_g3_ask_revert" });
+  ha.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  const personaState = buildPersonaState(SESSION_ID, now);
+  personaState.goals = [
+    { id: "node-g3", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-g3";
+  personaState.pendingAskId = "ask-g3-1";
+  ha.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  ha.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  seedReaderClaim(ha, "writer-g3", now);
+  const answerKey = seedInboxRecord(ha, "writer-g3", 1, { at: now - 500, kind: "answer", answers: "ask-g3-1", status: "pending" });
+  const startH = ha.handlers["session.start"];
+  if (startH) await startH(ha.fake, {}, () => {});
+  const askKey = "ask:default:ask-g3-1";
+  ha.storeMap.set(askKey, { id: "ask-g3-1", ownerSessionId: SESSION_ID, at: now - 1000, nodeId: "node-g3", question: "Which way?", status: "open" });
+
+  ha.failPromptSubmits(new Error("submit refused for the answer"));
+  clock.advance(65_000);
+  await fireTick(ha).catch(() => {});
+  await new Promise((r) => setTimeout(r, 50));
+  check("section12.G3: the answer delivery was attempted (setup sanity)", (ha.promptSubmits || []).some((p) => p.startsWith("[OPERATOR] Answer to")));
+  check("section12.G3: the answer record is pending again", readStoreRecord(ha, answerKey)?.status === "pending");
+  check("section12.G3: the ask is open again", readStoreRecord(ha, askKey)?.status === "open");
+  let state = getState(ha);
+  check("section12.G3: pendingAskId restored", state.pendingAskId === "ask-g3-1");
+  check("section12.G3: the node is paused again", state.goals.find((g) => g.id === "node-g3")?.status === "paused");
+  check("section12.G3: ask_answer_delivery_reverted names the ask and the record",
+    state.decisions.some((d) => d.action === "ask_answer_delivery_reverted" && d.detail.includes("ask-g3-1") && d.detail.includes("default-writer-g3-1")));
+
+  ha.failPromptSubmits(null);
+  clock.advance(10_000);
+  await tickAndSettle(ha, clock, 50);
+  check("section12.G3: the next tick delivers it through the ask path with the question framing",
+    (ha.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR] Answer to Which way?")).length === 2 && readStoreRecord(ha, answerKey)?.status === "delivered");
+  state = getState(ha);
+  check("section12.G3: the ask is answered and the node active after the retry", readStoreRecord(ha, askKey)?.status === "answered" && !state.pendingAskId && state.goals.find((g) => g.id === "node-g3")?.status === "active");
+}
+
+// G4 (bullet 6, fourth shape): a turn one of the plugin's other submits
+// opened (the ask re-raise here; the kaizen announcement and the reply
+// backstop set the same flag) starting first after a delivery does not take
+// the stamp.
+async function caseSection12_6_pluginTurnDoesNotTakeTheStamp(clock) {
+  console.log("\n=== Section 12 bullet 6: a turn the ask re-raise opened does not take a delivered record's stamp ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await createTickHarness({ ...OPTS, caseName: "section12_g4_plugin_turn", askReraiseWindowMs: 30_000, askOperatorWaitMs: 300_000 });
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  const personaState = buildPersonaState(SESSION_ID, now);
+  personaState.goals = [
+    { id: "node-g4", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-g4";
+  personaState.pendingAskId = "ask-g4-1";
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+  h.storeMap.set("ask:default:ask-g4-1", { id: "ask-g4-1", ownerSessionId: SESSION_ID, at: T0, nodeId: "node-g4", question: "Keep going?", status: "open" });
+
+  clock.advance(35_000);
+  await tickAndSettle(h, clock, 20);
+  check("section12.6 plugin: the re-raise turn was submitted (setup sanity)", (h.promptSubmits || []).some((p) => p.includes("[STILL WAITING]")));
+
+  seedReaderClaim(h, "writer-g4", clock.get());
+  const key = seedInboxRecord(h, "writer-g4", 1, { at: clock.get() - 500, status: "pending" });
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 50);
+  check("section12.6 plugin: record delivered (setup sanity)", readStoreRecord(h, key)?.status === "delivered");
+  await h.handlers["turn.start"](h.fake, { turnId: "t-reraise" }, async () => ({ result: "ok" }));
+  check("section12.6 plugin: record not stamped with the re-raise turn", readStoreRecord(h, key)?.turnId === undefined);
+  check("section12.6 plugin: operator_stamp_withheld names the record and plugin",
+    getDecisions(h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes("default-writer-g4-1") && d.detail.includes("plugin")));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-reraise", answer: "Still waiting on you.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.6 plugin: no reply written from the re-raise turn's answer", !h.storeMap.has("reply:default:default-writer-g4-1"));
 }
 
 // agentic_say(urgent: true) writes urgent onto the record; a plain say does not.

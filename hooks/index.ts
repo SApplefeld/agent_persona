@@ -110,6 +110,9 @@ async function tickOpenAsk(
   persona: string,
   cfg: Record<string, unknown>,
   contextId: string | null,
+  // Marks the re-raise below as a plugin-opened turn for the stamp guard at
+  // turn.start; the flag lives in register()'s scope, hence the setter.
+  setPluginTurnPending: (v: boolean) => void,
 ): Promise<"waiting" | "expired" | "none"> {
   if (!state.pendingAskId) return "none";
   const store = commonsStoreOf(dp);
@@ -141,9 +144,14 @@ async function tickOpenAsk(
       action: "ask_reraised",
       detail: `${contextId ? contextId + ": " : ""}ask ${state.pendingAskId} re-raised after ${Math.round(elapsed / 1000)}s: ${askRecord.question.slice(0, 100)}`,
     });
+    setPluginTurnPending(true);
     try {
       await dp.prompt.submit({ text: `${REPLY_INSTRUCTION}[STILL WAITING] ${askRecord.question}` });
-    } catch { /* re-raise failed; non-fatal, the decision log still shows it */ }
+    } catch {
+      // Re-raise failed; non-fatal, the decision log still shows it. No
+      // plugin turn is coming, so the flag is cleared.
+      setPluginTurnPending(false);
+    }
   }
 
   // Round 34: an absent option must still resolve to a real wait, not to 0 -
@@ -612,6 +620,14 @@ export const register: Register = async (on, options) => {
   // own prompt.submit hook, so currentPrompt still holds the stale user text.
   // This flag tells turn.complete to score with the nudge-aware label set.
   let nudgedTurn = false;
+  // Whether one of the plugin's other own submits (the kaizen announcement,
+  // the reply backstop, the ask re-raise) has a turn pending: set on the
+  // synchronous side of each of those submits, cleared in their catch and
+  // at turn.complete beside nudgedTurn. The stamp guard at turn.start reads
+  // it: such a turn is a plugin turn but not the delivery's own, and the
+  // external flag cannot see it.
+  let pluginTurnPending = false;
+  const setPluginTurnPending = (v: boolean) => { pluginTurnPending = v; };
   // The inbox record the tick's delivery just submitted as an [OPERATOR]
   // prompt, set on the synchronous side of $.prompt.submit at both delivery
   // sites and consumed by the next turn.start. Only that record is ever
@@ -625,8 +641,23 @@ export const register: Register = async (on, options) => {
   // TTL, and the submitted id would arm whatever turn starts next. Both
   // delivery sites call this on a throw: the id is consumed, the record goes
   // back to pending with no deliveredAt so the next tick retries it, and the
-  // refusal is recorded.
-  const revertFailedDelivery = async (store: CommonsStore, rec: InboxRecord, err: unknown): Promise<void> => {
+  // refusal is recorded. The real submit parks until the session is next
+  // idle, so a rejection can arrive after the submitted turn ran: a
+  // turn.start has then already consumed the id, the record carries a stamp
+  // and possibly a reply, and reverting it would re-deliver text a turn
+  // already read. That case is recorded and the record left as it stands.
+  // Returns whether the record was reverted.
+  const revertFailedDelivery = async (store: CommonsStore, rec: InboxRecord, err: unknown): Promise<boolean> => {
+    const errText = err instanceof Error ? err.message : String(err);
+    if (submittedRecordId !== rec.id) {
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "operator_delivery_failed",
+        detail: `record ${rec.id} submit rejected after its turn had already opened; left as it stands: ${errText}`.slice(0, 200),
+      });
+      return false;
+    }
     submittedRecordId = null;
     const existing = await store.get(rec.key);
     if (existing) {
@@ -639,8 +670,9 @@ export const register: Register = async (on, options) => {
       timestamp: Date.now(),
       loop: "monitor",
       action: "operator_delivery_failed",
-      detail: `record ${rec.id} submit failed, returned to pending: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200),
+      detail: `record ${rec.id} submit failed, returned to pending: ${errText}`.slice(0, 200),
     });
+    return true;
   };
   // Item 2 backstop safety (Round 28): true only when the real
   // prompt.submit hook (a genuine external turn) just saw the
@@ -1425,9 +1457,11 @@ export const register: Register = async (on, options) => {
                 const activeNode = targetNode || (sess.state.activeGoalId
                   ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
                   : null);
+                let reactivatedHere = false;
                 if (activeNode && activeNode.status === "paused") {
                   activeNode.status = "active";
                   activeNode.updatedAt = Date.now();
+                  reactivatedHere = true;
                   sess.state.decisions.push({
                     timestamp: Date.now(),
                     loop: "goal",
@@ -1445,7 +1479,27 @@ export const register: Register = async (on, options) => {
                 try {
                   await $.prompt.submit({ text: `[OPERATOR] Answer to ${askRecord.question}: ${answer.text}` });
                 } catch (err) {
-                  await revertFailedDelivery(store, answer, err);
+                  // A reverted answer record goes back to pending, and the
+                  // ask it answers goes back with it: reopened, waited on
+                  // again, its node paused again where this path activated
+                  // it. The next tick then delivers through this same path
+                  // with the question framing, rather than the general drain
+                  // delivering bare text against a node already running.
+                  if (await revertFailedDelivery(store, answer, err)) {
+                    askRecord.status = "open";
+                    await store.set(askKey(persona, askId), askRecord);
+                    sess.state.pendingAskId = askId;
+                    if (reactivatedHere && activeNode) {
+                      activeNode.status = "paused";
+                      activeNode.updatedAt = Date.now();
+                    }
+                    sess.state.decisions.push({
+                      timestamp: Date.now(),
+                      loop: "monitor",
+                      action: "ask_answer_delivery_reverted",
+                      detail: `ask ${askId} reopened, record ${answer.id} back to pending (answer submit failed)`,
+                    });
+                  }
                 }
                 await persist($);
                 return;
@@ -1737,12 +1791,17 @@ export const register: Register = async (on, options) => {
               sr.pendingPeriodic = false;
               sess.state.updatedAt = now;
               await persist($);
+              pluginTurnPending = true;
               try {
                 await $.prompt.submit({
                   text: `${REPLY_INSTRUCTION}[KAIZEN] Post each line below to the operator's thread as written, then continue your work:\n` +
                     announced.map((line) => `- ${line}`).join("\n"),
                 });
-              } catch { /* announcement failed; the decision log still carries the finding */ }
+              } catch {
+                // Announcement failed; the decision log still carries the
+                // finding. No plugin turn is coming, so the flag is cleared.
+                pluginTurnPending = false;
+              }
             }
             if (announced.length === 0) {
               const input = buildSelfReviewInput(
@@ -2282,7 +2341,7 @@ export const register: Register = async (on, options) => {
 
       // 4. No active leaf: activate pending work if any exists (H1), else return.
       if (!activeNode || activeNode.status !== "active") {
-        const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, null);
+        const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, null, setPluginTurnPending);
         if (askResult !== "none") return;
         const nextId = activateNext(sess.state);
         if (nextId) {
@@ -2303,7 +2362,7 @@ export const register: Register = async (on, options) => {
 
       // D5: skip nudge and classify if an ask is open; record ask_waiting once per minute.
       if (sess.state.pendingAskId) {
-        const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, g.id);
+        const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, g.id, setPluginTurnPending);
         if (askResult === "waiting") return;
         if (askResult === "expired") return;
         // Ask was closed by an answer; clear the flag.
@@ -2875,21 +2934,23 @@ export const register: Register = async (on, options) => {
     // record the delivery submitted, and onto no other. The stamp is what
     // turn.complete uses to file this turn's answer as the record's reply,
     // so a turn the plugin did not open for the record must not take it.
-    // Three readings say the turn is not the delivery's own: the real
+    // Four readings say the turn is not the delivery's own: the real
     // prompt.submit hook fired since the last turn.start (an external turn,
     // keyboard or SDK or channel, which the plugin's own submits never
     // fire), the turn is channel-origin (the more specific reading of the
-    // same hook, named first), or a nudge opened it (a plugin submit the
-    // hook cannot see, read from nudgedTurn, which is set on the synchronous
-    // side of the nudge's submit and reset only at turn.complete). On any of
-    // them the stamp is withheld and the record stays delivered with no
+    // same hook, named first), a nudge opened it (a plugin submit the hook
+    // cannot see, read from nudgedTurn, which is set on the synchronous side
+    // of the nudge's submit and reset only at turn.complete), or another of
+    // the plugin's own submits opened it (the kaizen announcement, the reply
+    // backstop, the ask re-raise, read from pluginTurnPending, kept the same
+    // way). On any of them the stamp is withheld and the record stays delivered with no
     // reply, which the sender reads as unanswered rather than as a wrong
     // answer. The submitted id is consumed either way, so the delivery's own
     // turn arriving later takes no stamp either; the TTL bounds the record.
     if (sess.isOwner && submittedRecordId) {
       const recordId = submittedRecordId;
       submittedRecordId = null;
-      const withheldReason = currentTurnIsChannelOrigin ? "channel-origin" : nudgedTurn ? "nudged" : currentTurnIsExternal ? "external" : null;
+      const withheldReason = currentTurnIsChannelOrigin ? "channel-origin" : nudgedTurn ? "nudged" : pluginTurnPending ? "plugin" : currentTurnIsExternal ? "external" : null;
       if (withheldReason) {
         sess.state.decisions.push({
           timestamp: Date.now(),
@@ -2989,6 +3050,7 @@ export const register: Register = async (on, options) => {
     // nudged turn is aborted or the goal is not active).
     const wasNudged = nudgedTurn;
     nudgedTurn = false;
+    pluginTurnPending = false;
 
     // C3: error streak fold.
     const toolErrors = toolErrorsThisTurn;
@@ -3022,6 +3084,7 @@ export const register: Register = async (on, options) => {
           detail: `turn ${e.turnId} answered with no reply-tool call; sent through reply directly`,
         });
       } catch (directErr) {
+        pluginTurnPending = true;
         try {
           await $.prompt.submit({
             text: `${REPLY_INSTRUCTION}[REPLY BACKSTOP] Send this exact text to the operator through the reply tool now, unchanged:\n${e.answer}`,
@@ -3032,7 +3095,11 @@ export const register: Register = async (on, options) => {
             action: "channel_reply_backfill_reprompted",
             detail: `turn ${e.turnId} direct reply call failed (${(directErr as Error).message}); re-prompted instead`,
           });
-        } catch { /* both paths failed; nothing more to do without a live channel */ }
+        } catch {
+          // Both paths failed; nothing more to do without a live channel.
+          // No plugin turn is coming, so the flag is cleared.
+          pluginTurnPending = false;
+        }
       }
     }
     currentTurnIsChannelOrigin = false;
