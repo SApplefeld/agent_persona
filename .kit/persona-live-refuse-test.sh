@@ -58,10 +58,14 @@ STORE_I="$TMP/i.json"; write_store "$STORE_I" '{"commons:s1":{lastSeen: now-1000
 STORE_J_LIVE="$TMP/j-live.json"; write_store "$STORE_J_LIVE" '{"commons:s1":{lastSeen: "soon", claims:[{resource:"persona:worker-j"}]}}'
 STORE_J_CTRL="$TMP/j-ctrl.json"; write_store "$STORE_J_CTRL" '{"commons:s1":{lastSeen: now-1000, claims:[]}}'
 
-STORE_K_BASE="$TMP/k-base.json"; write_store "$STORE_K_BASE" '{"commons:s1":{lastSeen: now-1000, claims:[]}}'
-STORE_K1="$TMP/k1.json"; write_store "$STORE_K1" '{"commons:s1":{lastSeen: now-1000, claims:[]}}'
-STORE_K2="$TMP/k2.json"; write_store "$STORE_K2" '{"commons:s1":{lastSeen: now-1000, claims:[]}}'
-STORE_K3="$TMP/k3.json"; write_store "$STORE_K3" '{"commons:s1":{lastSeen: now-1000, claims:[{resource:"persona:worker-k3"}]}}'
+# (k) a stub plugin store directory: one inline store and three installed
+# stores, so the discovery filter has both classes to tell apart.
+STUB_HOME="$TMP/home"
+STUB_STORE_DIR="$STUB_HOME/.claude/plugins/store"
+mkdir -p "$STUB_STORE_DIR"
+for name in agentic-plugin_inline-abc agentic-plugin_agent-persona-1 agentic-plugin_agent-persona-2 agentic-plugin_zzz-3; do
+  write_store "$STUB_STORE_DIR/$name.json" '{"commons:s1":{lastSeen: now-1000, claims:[]}}'
+done
 
 # Runs every case once, reporting each result through the function named
 # by $1 ("check", which counts toward this suite's exit).
@@ -88,10 +92,16 @@ run_cases() {
   if [ "$RC" -eq 0 ] && echo "$OUT" | grep -qF "$STORE_D2_MISSING" && echo "$OUT" | grep -q 'passed'; then R=0; fi
   "$report" "(d) a missing second store path: skipped, returns 0 when the first is clean" "$R"
 
+  T0=$(date +%s)
   OUT=$(refuse_if_persona_live 90000 "$STORE_E" 2>&1); RC=$?
+  T1=$(date +%s); ELAPSED_E=$((T1 - T0))
   R=1
   if [ "$RC" -eq 1 ] && echo "$OUT" | grep -qF "$STORE_E" && echo "$OUT" | grep -q 'after 3 attempts'; then R=0; fi
   "$report" "(e) an unparsable store: fails after 3 attempts, naming the store" "$R"
+
+  R=1
+  [ "$RC" -eq 1 ] && [ "$ELAPSED_E" -lt 3 ] && R=0
+  "$report" "(e) control: the three failed reads complete within 3 seconds, so the re-read carries no wait (elapsed ${ELAPSED_E}s)" "$R"
 
   OUT=$(refuse_if_persona_live 90000 "$STORE_H1_MISSING" "$STORE_H2_MISSING" 2>&1); RC=$?
   R=1
@@ -113,10 +123,15 @@ run_cases() {
   if [ "$RC" -eq 0 ] && echo "$OUT" | grep -q 'refuse-check passed'; then R=0; fi
   "$report" "(j) control: the same store with a numeric lastSeen and no persona claim returns 0" "$R"
 
-  OUT=$(refuse_if_persona_live 90000 "$STORE_K_BASE" "$STORE_K1" "$STORE_K2" "$STORE_K3" 2>&1); RC=$?
+  LIST=$(HOME="$STUB_HOME" list_installed_stores 2>&1)
   R=1
-  if [ "$RC" -eq 1 ] && echo "$OUT" | grep -qF "$STORE_K3" && echo "$OUT" | grep -q 'persona:worker-k3'; then R=0; fi
-  "$report" "(k) three installed stores where only the third is live: returns 1 naming it" "$R"
+  if [ "$(echo "$LIST" | grep -c .)" -eq 3 ] && ! echo "$LIST" | grep -q 'inline' && echo "$LIST" | grep -q 'zzz-3'; then R=0; fi
+  "$report" "(k) list_installed_stores names every installed store and no inline store (3 of 4 files)" "$R"
+
+  FIRST=$(HOME="$STUB_HOME" find_global_store 0)
+  R=1
+  if [ -n "$FIRST" ] && [ "$FIRST" = "$(echo "$LIST" | head -n 1)" ]; then R=0; fi
+  "$report" "(k) control: find_global_store 0 returns the first store list_installed_stores names" "$R"
 }
 
 source "$REAL"

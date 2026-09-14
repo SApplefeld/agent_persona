@@ -75,22 +75,15 @@ esac
 
 # Refuse-at-start check, beside the .kit/RUNNING lock above. Reads the
 # inline store this harness's own children use, plus every installed-mode
-# store under the plugin store directory, because workers and the
+# store list_installed_stores names, because workers and the
 # coordinator run under the installed plugin rather than --plugin-dir.
 # Today any plugin-loaded session claims persona:default at session start,
 # so an open plain session is enough to trip this check; that is the check
 # working, not a bug in it.
 INSTALLED_STORES=()
-NULLGLOB_WAS_SET=0
-shopt -q nullglob && NULLGLOB_WAS_SET=1
-shopt -s nullglob
-for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
-  case "$(basename "$f")" in
-    agentic-plugin_inline-*) continue ;;
-  esac
-  [ -f "$f" ] && INSTALLED_STORES+=("$f")
-done
-[ "$NULLGLOB_WAS_SET" -eq 1 ] || shopt -u nullglob
+while IFS= read -r f; do
+  [ -n "$f" ] && INSTALLED_STORES+=("$f")
+done < <(list_installed_stores)
 
 OUT=$(refuse_if_persona_live "$PERSONA_STALE_MS" "$GLOBAL_STORE" "${INSTALLED_STORES[@]}")
 RC=$?
@@ -99,7 +92,7 @@ if [ $RC -ne 0 ]; then
   if echo "$OUT" | grep -q 'live persona claim'; then
     echo "live-all.sh: refusing to start: a live persona claim is present (a claim younger than the stale bound may be residue of a gate killed within the last 90 seconds; the whole gate cannot run beside a live fleet)"
   else
-    echo "live-all.sh: refusing to start: a commons store could not be read (see the refuse-check line above)"
+    echo "live-all.sh: refusing to start: the refuse check failed for a reason other than a live claim (the refuse-check line above names it)"
   fi
   rm -f "$GLOBAL_RUNNING"
   rm -rf "$RUN_DIR"

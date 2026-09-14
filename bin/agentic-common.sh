@@ -3,7 +3,7 @@
 # Sourced by bin/supervise.sh and .kit/live-common.sh.
 # Provides: wait_persona_free, refuse_if_persona_live, emit_settings_json,
 #           ensure_settings_plugin_ids, valid_persona_name, find_global_store,
-#           poll_decisions, poll_heartbeat.
+#           list_installed_stores, poll_decisions, poll_heartbeat.
 # All functions use W2 read-error semantics: a read error is a transient mid-write
 # race, treated as "live" (or "not ready"), never an abort. The timeout is the only
 # exit. refuse_if_persona_live is the one exception: it is a start-only check with
@@ -209,22 +209,40 @@ find_global_store() {
         fi
       done
     else
-      # Installed mode: any agentic-plugin_*.json that is NOT an inline
-      # (dev-tree) store.
-      for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
-        if [ -f "$f" ]; then
-          case "$(basename "$f")" in
-            agentic-plugin_inline-*) continue ;;
-            *) echo "$f"; return 0 ;;
-          esac
-        fi
-      done
+      # Installed mode: the first store list_installed_stores names, so
+      # this branch and the runner's refuse-at-start check share one filter.
+      f="$(list_installed_stores | head -n 1)"
+      if [ -n "$f" ]; then
+        echo "$f"
+        return 0
+      fi
     fi
   fi
   echo ""
   return 0
 }
 
+# --- list_installed_stores ---
+# Prints every installed-mode commons store, one path per line: each
+# agentic-plugin_*.json under the plugin store directory that is not an
+# inline (dev-tree) store. This is the one filter that decides what counts
+# as an installed store. find_global_store's installed branch takes the
+# first line and .kit/live-all.sh's refuse-at-start check reads every
+# line, so the two cannot drift apart. Prints nothing when the directory
+# is absent or holds no such file. Reads $HOME at call time.
+# Usage: list_installed_stores
+list_installed_stores() {
+  local f
+  [ -d "$HOME/.claude/plugins/store" ] || return 0
+  for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
+    [ -f "$f" ] || continue
+    case "$(basename "$f")" in
+      agentic-plugin_inline-*) continue ;;
+    esac
+    echo "$f"
+  done
+  return 0
+}
 # --- wait_persona_free ---
 # T9/V3: pre-gate - wait until no live persona claim exists in the commons store.
 # Fails closed on a read error (V3). Prints live=/oldest_age= per poll (V3).
