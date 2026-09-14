@@ -35,3 +35,5 @@
 !/supervisor-model-test.sh
 !/live-stopprocesstree-test.sh
 !/fixtures/
+!/settings-plugin-key-test.sh
+!/supervisor-natural-exit-test.sh

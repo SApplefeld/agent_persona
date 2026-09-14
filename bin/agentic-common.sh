@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # bin/agentic-common.sh - Shared supervisor/test helpers.
 # Sourced by bin/supervise.sh and .kit/live-common.sh.
-# Provides: wait_persona_free, emit_settings_json, poll_decisions, poll_heartbeat.
+# Provides: wait_persona_free, emit_settings_json, ensure_settings_plugin_ids,
+#           valid_persona_name, find_global_store, poll_decisions, poll_heartbeat.
 # All functions use W2 read-error semantics: a read error is a transient mid-write
 # race, treated as "live" (or "not ready"), never an abort. The timeout is the only exit.
+
+# --- Plugin ids ---
+# The two ids pluginConfigs is keyed by: --plugin-dir load, and installed load.
+AGENTIC_PLUGIN_DEV_ID="agentic-plugin"
+AGENTIC_PLUGIN_INSTALLED_ID="agentic-plugin@agent-persona"
 
 # --- Profiles ---
 # Selected by PROFILE=full|short (default: short).
@@ -73,13 +79,92 @@ emit_settings_json() {
   # falling back to the plugin's hardcoded "default". $PERSONA is supervise.sh's
   # own second positional argument, visible here because this function is
   # sourced into the caller's shell rather than run in a subshell.
+  # Every value below is spliced into JSON unescaped, so each is held to a
+  # shape that cannot close a string or an object and that JSON accepts:
+  # digits with no leading zero for the numbers, letters, digits, underscore
+  # and hyphen for the persona.
+  local var
+  for var in TICK_MS NUDGE_IDLE_MS GIT_PROBE_MS NUDGE_FLOOR_MS HEARTBEAT_MS STALE_AFTER_MS \
+    SELF_REVIEW_EVERY_TURNS CONTEXT_BUDGET_INFO_TOKENS CONTEXT_BUDGET_CLOSEOUT_TOKENS \
+    CONTEXT_BUDGET_CRITICAL_TOKENS CONTEXT_BUDGET_READ_EVERY_N_TICKS COST_SUMMARY_EVERY_N_TICKS \
+    COST_MAX_NUDGES_PER_HOUR COST_MAX_PLUGIN_CALLS_PER_HOUR COST_BACKOFF_AFTER_TICKS COST_BACKOFF_MAX_MS; do
+    case "${!var:-0}" in
+      ''|*[!0-9]*|0[0-9]*)
+        echo "ERROR: emit_settings_json: $var '${!var}' is not a non-negative integer without leading zeros" >&2
+        return 1
+        ;;
+    esac
+  done
+  if ! valid_persona_name "${PERSONA:-default}"; then
+    echo "ERROR: emit_settings_json: PERSONA '$PERSONA' may hold only letters, digits, underscore and hyphen" >&2
+    return 1
+  fi
   local persona_opt=""
   if [ -n "${PERSONA:-}" ]; then
     persona_opt=",\"persona\":\"$PERSONA\""
   fi
+  # pluginConfigs is keyed by plugin id: the manifest name under --plugin-dir,
+  # and "<name>@<marketplace>" for the installed copy. The installed form is
+  # absent from the engine's type file, and options under the other id are
+  # ignored without an error, so the same options are written under both.
+  # .kit/settings-plugin-key-test.sh pins both ids against the two manifests.
+  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts$cost_opts$persona_opt}"
   cat > "$out" <<EOF
-{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":$TICK_MS,"nudgeIdleMs":$NUDGE_IDLE_MS,"nudgeFloorMs":${NUDGE_FLOOR_MS:-5000},"gitProbeMs":$GIT_PROBE_MS,"heartbeatMs":${HEARTBEAT_MS:-30000},"staleAfterMs":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts$cost_opts$persona_opt}}}}
+{"pluginConfigs":{"$AGENTIC_PLUGIN_DEV_ID":{"options":$options},"$AGENTIC_PLUGIN_INSTALLED_ID":{"options":$options}}}
 EOF
+}
+
+# --- ensure_settings_plugin_ids ---
+# Usage: ensure_settings_plugin_ids <settings-file>
+# For a settings file the caller already provided: where options sit under only
+# one of the two plugin ids, copies them under the other, leaving every option
+# as the caller wrote it. An id whose options object is missing or empty counts
+# as absent. The file is replaced by rename, so an interrupted write never leaves
+# it truncated. Returns 1 when the file is not valid JSON, when it, its
+# pluginConfigs, an id entry or an options value is not a plain object, or when
+# the write fails.
+ensure_settings_plugin_ids() {
+  node -e '
+const fs = require("fs");
+const [file, devId, installedId] = process.argv.slice(1);
+const fail = (msg) => { console.error("ERROR: ensure_settings_plugin_ids: " + file + " " + msg); process.exit(1); };
+const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+let s;
+try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
+if (!plain(s)) fail("is not a JSON object");
+if (s.pluginConfigs === undefined) process.exit(0);
+const pc = s.pluginConfigs;
+if (!plain(pc)) fail("has a pluginConfigs value that is not an object");
+for (const id of [devId, installedId]) {
+  if (pc[id] === undefined) continue;
+  if (!plain(pc[id])) fail("has a " + id + " entry that is not an object");
+  if (pc[id].options !== undefined && !plain(pc[id].options)) fail("has " + id + " options that are not an object");
+}
+const has = (id) => pc[id] !== undefined && plain(pc[id].options) && Object.keys(pc[id].options).length > 0;
+let from, to;
+if (has(devId) && !has(installedId)) { from = devId; to = installedId; }
+else if (has(installedId) && !has(devId)) { from = installedId; to = devId; }
+else process.exit(0);
+pc[to] = Object.assign({}, pc[to], { options: Object.assign({}, pc[from].options) });
+const tmp = file + ".tmp-" + process.pid;
+try {
+  fs.writeFileSync(tmp, JSON.stringify(s));
+  fs.renameSync(tmp, file);
+} catch (e) {
+  try { fs.unlinkSync(tmp); } catch (_) {}
+  fail("could not be rewritten: " + e.message);
+}
+' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID"
+}
+
+# --- valid_persona_name ---
+# Usage: valid_persona_name <name>; returns 0 for a non-empty name of letters,
+# digits, underscore and hyphen, 1 otherwise.
+valid_persona_name() {
+  case "$1" in
+    ''|*[!A-Za-z0-9_-]*) return 1 ;;
+  esac
+  return 0
 }
 
 # --- find_global_store ---
@@ -211,6 +296,12 @@ wait_persona_free_both() {
     local commons_ok=false
     if [ -n "$global_store" ] && [ -f "$global_store" ]; then
       local line live rc
+      # The persona and the stale bound are passed as arguments rather than
+      # spliced into the program text, so a value carrying JavaScript is data
+      # the program reads instead of code it runs. A bound that is not a
+      # number reads as NaN, which the program takes as no bound at all and
+      # counts every claim as live, so the gate waits rather than passing on
+      # a bad bound.
       line=$(node -e "
 const fs = require('fs');
 let s;
@@ -220,20 +311,22 @@ try {
   console.log('ERROR: ' + e.message);
   process.exit(2);
 }
+const persona = process.argv[2];
+const staleAfterMs = Number(process.argv[3]);
+const bounded = !Number.isNaN(staleAfterMs);
 const keys = Object.keys(s).filter(k => k.startsWith('commons:'));
 const now = Date.now();
-const stale = 90000;
 let live = 0;
 for (const key of keys) {
   const e = s[key];
-  if (e.lastSeen && (now - e.lastSeen) < stale && e.claims) {
+  if (e.lastSeen && (!bounded || (now - e.lastSeen) < staleAfterMs) && e.claims) {
     for (const c of e.claims) {
-      if (c.resource === 'persona:$persona') { live++; }
+      if (c.resource === 'persona:' + persona) { live++; }
     }
   }
 }
 console.log('live=' + live);
-" "$global_store" 2>/dev/null)
+" "$global_store" "$persona" "$stale_after_ms" 2>/dev/null)
       rc=$?
       if [ $rc -eq 0 ] && ! echo "$line" | grep -q '^ERROR'; then
         live=$(echo "$line" | sed -n 's/.*live=\([0-9]*\).*/\1/p')
@@ -249,6 +342,12 @@ console.log('live=' + live);
       heartbeat_ok=true
     else
       local hb_status
+      # The persona and the stale bound are passed as arguments rather than
+      # spliced into the program text, so a value carrying JavaScript is data
+      # the program reads instead of code it runs. A bound that is not a
+      # number reads as NaN, every comparison against it is false, and the
+      # holder is treated as live, so the gate waits rather than passing on
+      # a bad bound.
       hb_status=$(node -e "
 const fs = require('fs');
 let hb;
@@ -258,14 +357,15 @@ try {
   console.log('ERROR: ' + e.message);
   process.exit(2);
 }
-const entry = hb['$persona'];
+const staleAfterMs = Number(process.argv[2]);
+const entry = hb[process.argv[3]];
 if (!entry) {
   console.log('absent');
 } else {
   const age = Date.now() - entry.lastSeen;
-  console.log(age > $stale_after_ms ? 'stale:' + Math.round(age / 1000) + 's' : 'live:' + Math.round(age / 1000) + 's');
+  console.log(age > staleAfterMs ? 'stale:' + Math.round(age / 1000) + 's' : 'live:' + Math.round(age / 1000) + 's');
 }
-" "$heartbeat_path" 2>/dev/null)
+" "$heartbeat_path" "$stale_after_ms" "$persona" 2>/dev/null)
       if echo "$hb_status" | grep -q '^stale\|^absent'; then
         heartbeat_ok=true
       fi

@@ -402,6 +402,45 @@ const cases = [
     },
     expected: 'restart',
   },
+  // 20. The crash-loop stop counts against the supervisor's own limit, not a
+  // fixed 3: three crashes under a limit of five is still a restart.
+  {
+    name: 'three crashes under crashLimit 5: restart, not stop_crash_loop',
+    input: {
+      childExitCode: 1,
+      rootCompleteTs: null,
+      criticalTs: null,
+      crashCount: 3,
+      crashLimit: 5,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: null,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'restart',
+  },
+  // 21. Reaching the limit stops.
+  {
+    name: 'five crashes under crashLimit 5: stop_crash_loop',
+    input: {
+      childExitCode: 1,
+      rootCompleteTs: null,
+      criticalTs: null,
+      crashCount: 5,
+      crashLimit: 5,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: null,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'stop_crash_loop',
+  },
 ];
 
 let pass = 0, fail = 0;

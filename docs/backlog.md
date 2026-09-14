@@ -1,5 +1,27 @@
 # Backlog
 
+## The natural-exit relaunch never checks for a surviving claude.exe, because the child's Windows pid is resolved only at stop time (found 2026-09-13)
+
+`bin/supervise.sh` translates the child's MSYS pid to a Windows pid inside `stop_child` alone, and that translation finds nothing once the wrapper has exited. So the `STOP_PATH="gone"` early return, the natural-exit relaunch, and the escalation retry's re-snapshot never look at descendants. If `env.exe` is killed from outside while `claude.exe` under it survives holding the persona claim, the relaunch walks into the 120-second pre-gate and exits 2 with an orphan. The remedy is to resolve and store the Windows pid right after the `coproc` launch, and snapshot from the stored value on every stop and before a natural-exit relaunch. Needs a live proof, which is why it was not folded into Section 0's finishing fix round.
+
+## A backfilled root_complete relaunch has no rate bound, and a newer backfilled root can mask a real completion (found 2026-09-13)
+
+A child that does one backfilled tool turn and exits 0 is relaunched outside both the crash counter and `SUPERVISOR_MAX_RESTARTS_PER_HOUR`, so a child that repeats that shape relaunches without limit. Separately, `get_root_complete` reads only the newest `root_complete`, so a real completion followed within one poll by a backfilled one reads as backfilled and the finished child stays up. Count backfilled relaunches against the hourly restart budget without touching the crash counter, and have the reader report the newest non-backfilled timestamp beside the flag.
+
+## A provided settings file's persona silently overrides the supervisor's persona argument (found 2026-09-13)
+
+`bin/supervise.sh` hands `$RUNDIR/settings.json` to its child on `--settings` and writes that file only when it is absent. `RUNDIR` defaults to `$WORKDIR/run`, so a second supervisor launched on the same workdir under a different persona reuses the first launch's file. Its child claims the file's persona while the pre-gate and polls watch the supervisor's own argument, and a store check reads a claim for a persona nobody asked for.
+
+The same shape holds under `--plugin-dir` and in installed mode. The narrow exposure today is that every launcher on the box passes its own `--rundir` or runs one persona per workdir. Coordinator v2 Section 6 launches a coordinator beside workers, so check its launch recipe gives every supervisor its own rundir, or refuse a provided file whose persona differs from the argument.
+
+## A supervisor's cadence env overrides never reach its child, so Section 6's coordinator tick would be ignored (found 2026-09-13)
+
+`bin/supervise.sh` sets `TICK_MS`, `NUDGE_IDLE_MS` and `GIT_PROBE_MS` from the `controllerTickMs`, `nudgeIdleMs` and `gitProbeMs` env vars, then sources `bin/agentic-common.sh`. The library's `PROFILE` block reassigns all three without a `${VAR:-}` guard, so the settings file carries the profile's values whatever the caller exported. With `NUDGE_IDLE_MS=600000` set before sourcing the library, the value reads `45000` afterwards.
+
+Two consumers are affected today. `.kit/live-restartrequest-test.sh` exports `nudgeIdleMs=600000` so no controller nudge can pause its plan, and it actually runs with 45-second nudges. Coordinator v2 Sections 5 and 6 set the coordinator's `controllerTickMs` to 60000 at launch through exactly this path, so neither can hold until this is fixed.
+
+Pre-existing since `b5cb8ae`, which moved the helpers into the library. Raised by the Section 0 item 5 review and ruled outside that item's scope. The likely fix is the profile block assigning `TICK_MS="${TICK_MS:-30000}"` and its siblings, but check every `.kit/live-*.sh` caller that sets `PROFILE` expecting it to win over an inherited value first.
+
 ## The harness delivers far more turn completions than turn starts, so the open-turn guard is blind for most turns (found 2026-09-13)
 
 Cheap first step, not yet done: neither event is logged with its turn id, so nobody can tell whether the extra completions are unpaired turns or repeated deliveries of the same one. Log `e.turnId` on both `turn.start` and `turn.complete`, run a worker for a while, and read the pairing off a live log. Section 9 leans on that pairing: it derives the published deferral stamp from the open-turn map, so a start whose completion never arrives now pins the stamp instead of being cleared by the next completion, and the claim that this cannot happen is inferred from the map being in-process rather than confirmed from a log.
@@ -65,15 +87,27 @@ A running child never re-reads credentials, so a 429 carrying a `five_hour` limi
 
 `restart_requested` is writable by the owner alone. When the owner is itself the wedged child, the one session that can see the wedge (a reader holding the same persona) is refused by the tool, and the only remaining lever is killing the process from outside. Allow a reader to write the fact when the owner's heartbeat is stale, on the same staleness bound the stale-owner arbitration already uses. Not in item 3's PR.
 
-## live-restartpassive-test.sh F5 and F6 have never been observed green, and the NOTE they grep for is on a path the suite never reaches
+## A running supervisor keeps the script it launched with, so the dev supervisor lacks this branch's later fixes until it is relaunched
 
-F5 greps the backfill supervisor log for `NOTE:.*backfilled`. The only line matching that pattern is emitted on `bin/supervise.sh`'s natural-exit path, which runs when the child process exits on its own. The suite's backfill child does its one tool turn and then sits waiting on stdin, so the supervisor's own cleanup stops it at the leg's timeout and the natural-exit path never runs. The backstop itself is working: the leg's own store carries `root_complete ... marked complete - backfilled, work already done`, and the poll loop correctly returns `continue` rather than `restart_passive`, which is the behavior F5 exists to prove. What is missing is an observable the leg can actually read. Either emit the NOTE from the poll-loop path as well as the exit path, or drive the backfill child to a real exit before asserting. This is item 1's leg, not item 3's, and it has been authored-but-unrun since Round 119.
-
-## Both running supervisors are still on pre-pull code, so the one-pid stop path and the aios sonnet pinning both survive until relaunch
-
-The runtime clone at `/d/DeepSeekHarness/agentic-plugin` is current at `0fc66d2`, but a running `bin/supervise.sh` keeps reading its original open file handle and never picks up a pull. Both supervisors live on this machine were launched before it, so two things outlive the fix. Their `stop_child` still signals one pid rather than the whole Windows process tree, and a restart taken through either still hits the `GATE TIMEOUT` PR #17 removes. The `aios` supervisor also holds `MODEL=sonnet` in its own environment from the launcher line that has since been dropped, so every child it starts stays on `sonnet` rather than taking the new `opus` default.
+A running `bin/supervise.sh` keeps reading its original open file handle and never picks up a later commit. The `dev` supervisor started at 2026-09-13 21:45Z, after the branch's settings-file commits and before `406a783`, so its own process still reads the child pid from a variable bash unsets at reap, still takes no shared numeric check on its settings, and still emits no backfilled NOTE on its natural-exit path. The `aios` supervisor started at 2026-09-14 00:11Z from this checkout with `MODEL=opus`, so it carries every supervisor fix up to `a4119cd` and lacks every supervisor commit after it, the pre-launch gate change in `8e0bcef` and the commons test leg in `2359d7d` among them. The file under both running supervisors has been rewritten since they started, and bash reads a script by offset, so code after each one's main loop is no longer what it launched with.
 
 Nothing to fix in the tree. The remedy is relaunching each supervisor, then dropping this entry. Relaunching is destructive to whatever that supervisor's child is mid-way through, so it is taken at a quiet point rather than on sight of this entry. This is the narrowed remainder of the `aios` launcher entry and the stale-dev-clone entry, both retired in item 3's runtime-clone addendum.
+
+## The decide path relaunches once more before a restart or crash limit stops the run (found 2026-09-14)
+
+The decide path's `restart` branch in `bin/supervise.sh` updates the crash and restart counts and relaunches without checking either limit, and `bin/supervise-decide.mjs` sees the counts only at the next child's first poll. So the run that reaches `supervisorMaxRestartsPerHour` or `supervisorCrashLimit` launches one more child, which claims the persona, takes a priming turn and attaches the channel before it is stopped with exit 4 or 3. The natural-exit path checks both limits before relaunching. The remedy is the same two checks in the `restart` branch before it relaunches.
+
+## A `--prompt` goal is dropped when the first child dies before its goal turn (found 2026-09-14)
+
+`bin/supervise.sh` builds the prompt file only for child 1 and clears `PROMPT` after that first launch whether or not the goal turn was written. A child 1 that dies at startup, to a rate limit or a network fault, relaunches as a passive child 2, and the operator's task reaches no child. Only a `NOTE:` line in `supervisor.log` records the skip. The remedy is to keep the prompt until its goal turn is written, or to log the dropped goal as an `ERROR:`.
+
+## The stale bound has no floor against the refresh cadence it measures (found 2026-09-13)
+
+`staleAfterMs` takes the shared numeric check and nothing else, while the holders it measures refresh `lastSeen` every `heartbeatMs` (default 30000) and every controller tick. A validated value below that cadence, such as 5000, reads every live holder as stale at most polls, and the pre-launch gate passes while another session holds the persona. A floor tied to the refresh cadence is a rule across two settings that nothing in the coordinator plan asks for, so it is filed rather than built.
+
+## The context-budget plan's status header is none of the kit's values (found 2026-09-13)
+
+`docs/plans/agentic-plugin_context-budget_v1.md` reads `Status: Independent part Complete; checkpoint section BLOCKED-on-operator (Path C open question resolved).`, which the kit's tooling cannot read as any of its status values. The curating-docs skill rules whether the plan splits into a complete part and an open part, archives, or takes one of the three headers.
 
 ## live-stopprocesstree-test.sh runs 15 checks that the gate summary never collects
 

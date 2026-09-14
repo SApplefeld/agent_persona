@@ -4,6 +4,10 @@ Status: In Progress
 Commit Model: Branch-and-PR. `main` is protected on GitHub, PRs only. Every PR opens Draft and the worker marks it ready explicitly, in words, per v1's own convention.
 Created: 2026-09-12
 
+## Dispatch Authorization
+
+The operator authorized a self-armed completion leash over this plan on 2026-09-13, over the Discord thread bound to the dev session, covering any session holding this plan. The authorization answered the dev session's recommendation to arm the plan so a stop cannot end the run between sections. It grants the leash and nothing wider: outward acts outside the recorded commit model still need the operator's yes.
+
 ## Section 0. Close out v1 first, plus two live worker-liveness defects a fleet cannot ship with
 
 `agent_persona_passive-supervisor_v1.md` is still Status: In Progress; every roadmap item (1-8) has a Chapter, everything is merged to `main` at `1911a83`, and this v2 spec exists at that same clean boundary. Before any v2 section starts:
@@ -53,6 +57,22 @@ Four extensions, in order of what blocks the next:
 **Machine-budget contention.** Confirmed live via `Get-Process` at council time: 4+ `claude` processes at 345-597 MB each, plus their node children. A coordinator adds one more process pair; each worker adds one more. The mechanism choice does not change this count. Two contention findings, both grounded in the live store rather than guessed: `listInboxRecords` and `hasLiveReaderClaim` each poll the one shared JSON file every tick per owner plus on a 5-second throttle per tool call, so K workers plus one coordinator is K+1 pollers on one file; and the store shows two separate clusters of multiple full-file `.bak` rewrites within a third of a second of each other, consistent with concurrent processes each writing a full snapshot in quick succession (confirmed as contention; not confirmed as corruption - all copies parsed as valid JSON with matching key counts). Mitigations, detailed in Section 5: the coordinator's own launch sets its tick cadence well above the worker default (a launch-time setting, no new knob); the existing closed-record roll to the append-only log stays in place; and `.kit/live-all.sh` gains a new refuse-at-start check - the whole gate does not run at all while any real fleet is live, not merely waits for it, per Section 5.
 
 **Operating rule that falls out of the turn-serial constraint.** A worker's own turn runs 2-5 minutes; a message delivered mid-turn queues until it ends (confirmed live in this plan's own Rounds 100-103: a message sent to this worker mid-turn queued exactly this way). So: steers to one worker batch into one record per cycle rather than trickling in one at a time; `urgent` is reserved for a real stop-or-redirect, never for "what is your status"; and status is never asked of a worker in-band - the coordinator reads `agentic_inbox`, the worker's own `.agentic-personas.json` in its repo, and the commons entry, all of which are file reads with no turn cost to the worker.
+
+## Standing Brief Amendments
+
+- Section 0 item 5's scope is which plugin copy a worker or the coordinator loads, how the settings a supervisor writes reach that copy, and whether the installed-mode store holds every live persona claim. How a supervisor's cadence values resolve between exported env vars and the library's `PROFILE` block is a different surface and does not ride under item 5.
+- Completing a provided settings file under item 5 means copying the options from whichever plugin id carries them to the id that lacks them, with every option as the caller wrote it. Which persona wins when a supervisor's persona argument and a provided settings file disagree is a different surface, present identically under `--plugin-dir`, and does not ride under item 5.
+- A worker whose child exits 0 with a backfilled root_complete newer than its start is relaunched without RESTART_PASSIVE and outside the crash counter. That is what item 1's "ignores a backfilled root" means on the bash natural-exit path.
+- Bash unsets a coproc's `CHILD_PID` when it reaps the child, and `bin/supervise.sh` runs under `set -u`, so any read of `CHILD_PID` after the child exits aborts the supervisor with exit 1. Every read of the child's pid after launch uses one pid saved immediately after the coproc starts. The RESTART_PASSIVE restarts on `aios` came through the decide path's stop, not the natural-exit branch, which no run had reached.
+- The bash natural-exit path's coverage for item 1 is `.kit/supervisor-natural-exit-test.sh`, a stub-driven suite, in place of the live-restartpassive legs the Test bullet names. A live suite cannot reach that branch, because its child blocks on stdin until cleanup stops it.
+- Every numeric supervisor setting passes one shared check: digits only, no leading zero, at most 9 digits, greater than zero. Bash reads a leading zero as octal in arithmetic, and a value past 64 bits breaks `[ -lt ]`. A setting the code consumes as `$((value / 1000))` is checked in the unit its consumer uses, so a sub-second value cannot floor to a zero wait.
+- `staleAfterMs` reaches a `node` program through argv rather than spliced into the program body, and it passes the numeric check on the provided-settings path, which skips `emit_settings_json`.
+- Both node programs inside `wait_persona_free_both` take the stale bound through argv, so the commons check and the heartbeat check read the same value.
+- Section 0 repairs the two liveness defects its title names and the surfaces its six items build. A supervisor behavior that predates Section 0 and that none of those items changes, such as when a restart limit fires or how long a launch prompt is kept, is a different surface and does not ride under Section 0.
+- A test lands only where it pins a failure the code can actually produce and a hard requirement depends on. A test that pins a setting's value, a preference, or a configuration choice does not land. A case that another case or control already proves is removed rather than added.
+- Section 13 runs after Section 0 closes and before Section 1.
+- Section 6's launch shape never feeds a worker's `--prompt` from coordinator text. `bin/supervise.sh` frames `--prompt` content as the operator's trusted task, so coordinator steers reach a worker only through the labelled inbox path.
+- Section 12 runs after Sections 1 and 2 and before Section 3. Sections 7 and 8 each carry one added sentence: a worker resolves a coordinator record with `agentic_resolve` when the work is finished or declined, and the coordinator counts rounds per steer against resolutions rather than replies.
 
 ## Sections of Work
 
@@ -120,6 +140,7 @@ Nothing built by Sections 1-6 actually implements the Decisions section's FORK B
 1. **The worker-side standing instruction.** A fixed sentence, injected on the priming turn beside `CHANNEL_REPLY_INSTRUCTION` (`bin/supervise.sh:393`) - the correct site for a standing instruction; `REPLY_INSTRUCTION` (`hooks/index.ts:346`) is a different mechanism with different reach, prepended to every `$.prompt.submit` text rather than stated once at start (Reviewer Round 111 R27 correction) - telling the worker's own model: a prompt prefixed `[COORDINATOR]` carries the operator's own delegated authority for anything that ties to a goal node in the worker's approved plan, stays within that node's scope and the plan's commit model, and is none of the closed exclusion list Decisions item 2 states; anything outside that bound is surfaced to the operator exactly as an unlabelled steer would be. This is the actual mechanism that turns Option 2 from a policy on paper into worker behavior. **The priming turn does not always exist (Reviewer Round 113 R36 correction):** `bin/supervise.sh:397-421` writes one only when a `PROMPT_FILE` exists or `NO_CHANNEL` is not `1` - a worker launched `--no-channel` with no prompt file, exactly the shape the `.kit/live-*` suites run, gets neither branch and no priming turn at all. This section's own instruction rides on its own priming write, one that fires regardless of `NO_CHANNEL`, mirroring how `.kit/channel-reply-instruction-test.sh` already tests the reply instruction under both values.
 2. **The bound checks.** The four ask-first items (Decisions item 2: a push beyond the plan's own recorded commit model, a deploy, a settings/CLAUDE.md edit, a write outside the plan's own scope) are a runtime check, not merely worker judgment - at minimum, the commit-model and settings/CLAUDE.md items are checkable programmatically (the commit model is a string in the plan doc's own header; a settings/CLAUDE.md write is a file-path check) rather than left to the model's own read of the instruction. Where a check can be automated, it is; the goal-node scope tie leans more on the model's own judgment, per the operator's own ruling that judgment is the point, not a bug to instrument away. Per the operator's own ruling (Decisions item 2), these checks never make the act itself impossible - they only decide whether *this coordinator steer, acting on its own delegated authority*, may proceed without asking. An act one of these checks catches is surfaced to the operator, never acted on under coordinator authority; the operator's own direct instruction, given on their own channel, is untouched by any of this and always reaches the worker exactly as it does today. **Scope of these checks, stated (Reviewer Round 113 R34 - unstated, this reads as "every tool call, always," which would surface the operator's own keyboard or Discord instruction to edit CLAUDE.md as if it needed the operator's own permission, a regression nobody asked for):** the mechanical checks fire only inside a turn whose opening prompt the plugin itself submitted from a `[COORDINATOR]` record - tracked by a session-level flag set at the delivery site (beside `currentTurnIsChannelOrigin`'s own pattern) and cleared at `turn.complete`, the same lifecycle that flag already follows. A turn opened by the operator's own keyboard or channel input never sets this flag and is never subject to these checks.
 3. **The urgent path is excluded from Option 2 entirely (Reviewer Round 113 R35 - author's call, not a sentence-level fix).** The urgent break-in delivers text as `context` on a tool result (`hooks/index.ts:3860-3865`), which the operating doctrine's own rule on embedded text says to surface, never act on - exactly the shape Round 106 already proved a subagent correctly refuses, and moving the break-in off subagents (Section 4) does not change what the *top-level* model sees when the same shape reaches it directly. Rather than route an urgent coordinator steer through `$.prompt.submit` instead (a real option, more invasive - it would open a new turn mid-turn), this spec keeps `urgent` scoped to what it already is: a stop-or-redirect signal the worker surfaces to itself and decides on its own judgment, never a channel for Option 2's delegated authority. A stop needs no delegated authority to act on - surfacing it is enough. Only non-urgent, tick-delivered `[COORDINATOR]` records - which arrive as an ordinary `$.prompt.submit` turn, not tool-result context - carry Option 2's authority.
+The standing instruction also carries Section 12's resolve sentence, per the Standing Brief Amendments entry naming it.
 Files in scope: `bin/supervise.sh` (the standing instruction's own priming-turn write, independent of `NO_CHANNEL`), `hooks/index.ts` (the coordinator-origin session flag and the mechanical bound checks that read it).
 Tests (split per Reviewer Round 111 R28 - a harness with a fake `$` and no model cannot observe model behavior, and per Round 113 R36 this section's own priming-turn test is a bash-level case, not a `controller-tick-test.mjs` one): a `.kit/*-test.sh` case that the standing instruction is injected on its own priming write for both `NO_CHANNEL` values, mirroring `.kit/channel-reply-instruction-test.sh`'s own shape; a harness case that a settings-path write and a deploy/commit-model push, attempted inside a coordinator-origin turn, are surfaced to the operator rather than acted on under coordinator authority (with a control that the same act inside an ordinary operator-origin turn is never intercepted by this section at all - the R34 regression this scope statement exists to prevent); and a harness case that an urgent-flagged record never sets the coordinator-origin flag or triggers the bound checks, confirming the R35 exclusion holds structurally rather than by convention alone. Whether a non-urgent `[COORDINATOR]`-labelled record tied to an active goal node actually gets acted on directly, versus the same content unlabelled producing an operator round trip instead, is model behavior and is a live case under `.kit/live-*`, not a harness case.
 
@@ -128,6 +149,7 @@ Model: fable
 Section 7 builds only the worker-side half of FORK B. Nothing built anywhere in this spec tells the coordinator's own model what it is: followed exactly as written, Section 6 launches a Fable process holding `persona:<coordinatorPersona>` that has never been instructed it is a coordinator, carries a round cap, or should batch its steers. This section is that missing coordinator-side instruction, injected on the coordinator's own priming turn (Section 7's own fix - the standing priming write independent of `NO_CHANNEL` - applies here identically), stating: the two-round cap per steer and the escalation criterion from Decisions item 3 (raise a steer to the operator directly, on the coordinator's own thread, rather than push a third round or force a worker past its plan's scope); the batching rule from the Approach's own operating rule (steers to one worker batch into one record per cycle; `urgent` is reserved for a real stop-or-redirect; status is read from files, never asked of a worker in-band) - stated nowhere else as an instruction to follow, only as a design rationale in prose until this section; and that it labels its own outbound records so a worker can apply Section 7's bound (which, mechanically, is just being the session that holds `persona:<coordinatorPersona>` - nothing extra for the coordinator to do here beyond existing as that session).
 
 **`bin/supervise.sh` cannot compare against `cfg.coordinatorPersona` because it never reads plugin config at all (Reviewer Round 113 R37 correction).** The launch script holds `$PERSONA` (its own CLI argument) and has no visibility into the plugin's own settings JSON it emits - Section 6 itself allows the CLI persona name and `coordinatorPersona` to differ, so `$PERSONA` alone is not a safe proxy either. Fix: Section 6's `emit_settings_json` call also exports a `COORDINATOR_PERSONA` env var alongside the settings it already writes, and `bin/supervise.sh` compares its own `$PERSONA` against that env var (not against plugin config it cannot read) to decide whether this section's priming injection applies to this particular launch.
+The coordinator instruction also carries Section 12's resolve sentence, per the Standing Brief Amendments entry naming it, so rounds per steer are counted against resolutions.
 Files in scope: `bin/supervise.sh` (the coordinator-priming-turn injection site, mirroring Section 7's own, gated on the `COORDINATOR_PERSONA` comparison above).
 Tests: a `.kit/*-test.sh` case (per Section 7's R36 correction, this is a bash-level test, not a harness case) that a launch with `$PERSONA` matching `COORDINATOR_PERSONA` injects this instruction on its own priming turn, with a control that an ordinary worker's launch (`$PERSONA` not matching) does not. The round-cap and batching *behavior* is model behavior, live-suite territory per R28's same reasoning, not a test-file assertion.
 
@@ -211,7 +233,84 @@ Acceptance:
 
 Tests: a case per criterion, each watched red before green. Criterion 1 takes a withheld control, a completion for a turn whose start was never seen leaving the reading unchanged.
 
+### 12. Inbox upkeep: a handled state, cleanup that never loses unread work, and a reply link no other turn can take
+Model: opus
+
+Appended by the operator's decision of 2026-09-13, recorded under `## Decisions`. It runs after Sections 1 and 2 and before Section 3, because Section 3 is where the coordinator starts addressing workers by name and depends on this lifecycle. The section number is its decomposition, not its build order.
+
+The inbox records read, replied and linked-reply, and it bounds its own size. Three gaps remain, each confirmed in the code on `item0-5-installed-runtime` at `97a7765`.
+
+**No handled state.** `InboxStatus` is `pending | delivered | answered | skipped` (`hooks/operator.ts:19`). `answered` is written when the turn stamped with the record ends with a non-empty answer (`hooks/index.ts:3181-3194`). That means a turn replied, not that the work finished. A steer taking three turns reads `answered` after the first. The coordinator's two-round cap per steer (Decisions, FORK B item 3) needs to count finished steers, and it cannot.
+
+**Cleanup can lose unread work, and loses it unlogged.** `sweepExpiredRecords` deletes every `inbox:` record older than the TTL, 24 hours by default, whatever its status, `pending` included (`hooks/operator.ts:277-285`). It runs before `enforceChannelWindow` on the same cadence (`hooks/index.ts:1435` then `:1457`). So a record that ages out is deleted outright and never reaches `.agentic-channel.jsonl`, and only a count survives in the decision log.
+
+**The reply link can be taken by another turn (inferred, not reproduced).** The first `turn.start` after a delivery stamps its turn id onto any `delivered` record with no turn id (`hooks/index.ts:2740-2750`). Nothing checks that this turn is the one the plugin opened for that record. A turn opened from the operator's Discord channel, or a `[GOAL]` nudge, starting first would take the stamp, and its answer would be filed as the reply. The channel-origin flag this needs already exists: `currentTurnIsChannelOrigin`, set at `turn.start` (`:2721`). Confirming the race live is part of this section's red step.
+
+Fix:
+1. **A resolution the worker sets.** An owner-side tool, `agentic_resolve`, takes a record id, an outcome of `done` or `declined`, and a short note. It writes `resolvedAt`, `outcome` and `note` onto that record and sets status `resolved`. It is refused unless `sess.isOwner` is true and the record's persona equals `sess.persona`, which keeps a reader session holding the persona from resolving, and it is refused for a record still `pending`. It registers under Section 6's `owner` tier only. `agentic_inbox` returns `outcome`, `note` and `resolvedAt` beside `reply` for each of the caller's records. The Section 7 standing instruction and the Section 8 coordinator instruction each gain one sentence: a worker resolves a coordinator record when the work is finished or declined, and the coordinator counts rounds against resolutions rather than replies.
+2. **Cleanup that keeps unread work and logs before it deletes.** The TTL sweep never touches a `pending` record. A pending record already leaves the queue by the existing route when its writer has no live claim (`skipped`, `hooks/index.ts:1380-1381`), so a pending record that survives is live work. Every record the TTL removes is appended to `.agentic-channel.jsonl` before it is deleted, on the same append-before-delete contract `enforceChannelWindow` holds (`hooks/operator.ts:364-374`), and a failed append leaves the record in the store and logs the refusal. The window roll keeps `delivered` and `answered` records that are not yet resolved in the store rather than rolling them, so an open steer's state stays readable. The TTL is the bound on those.
+3. **A reply link only the plugin's own turn can take.** Both tick delivery sites, the general drain (`hooks/index.ts:1393-1408`) and the ask-answer delivery (`:1322-1359`), record which record they submit before they call `$.prompt.submit`, on the synchronous side, the same reason Section 11 moved its writes there. `turn.start` stamps only that record, and only on a turn flagged neither channel-origin nor nudged; a turn opened by a goal nudge is read from the nudged-turn flag. The mechanism is checked against the real turn event type at implementation time. Where nothing distinguishes the plugin's turn from another, the stamp is withheld rather than guessed. The record then stays `delivered` with no reply, which the sender reads as unanswered rather than as a wrong answer. The abort re-stamp at `turn.complete` (`:3203-3208`), which clears the turn id so the next turn re-stamps, is retired with it: an aborted delivery stays `delivered` with no reply until the TTL.
+
+If the live race in the defect paragraph does not reproduce, the harness case is the red step and the Chapter records the race as inferred rather than confirmed.
+
+Files in scope: `hooks/operator.ts`, `hooks/index.ts`, `hooks/self-review.ts` (a noise-list ruling for each new decision action, as Chapter 2 folded it for Section 11), `.kit/controller-tick-test.mjs`, `.kit/tick-harness.mjs`, `.kit/commons-unit-test.mjs`, `README.md` (the Operator channel section's Tools, Record shapes, Bounded store and Delivery text, `README.md:271-314`).
+
+Acceptance:
+1. A worker's `agentic_resolve` on a delivered or answered record addressed to its persona sets status `resolved` with the outcome and note, and the sender's `agentic_inbox` returns them.
+2. `agentic_resolve` is refused for a `pending` record and for a record addressed to another persona.
+3. A `pending` record older than the TTL is still in the store after the sweep.
+4. Every record the TTL sweep removes appears in `.agentic-channel.jsonl` first, and a failed append leaves it in the store.
+5. The window roll does not remove a `delivered` or `answered` record that is not resolved.
+6. A turn flagged channel-origin, a turn opened by a goal nudge, or any other turn the plugin did not open for the record, starting after a delivery does not take the record's stamp, and its answer is not written as that record's reply.
+7. The plugin's own delivery turn still takes the stamp and writes the reply, as today, at both the general drain and the ask-answer delivery.
+
+Tests: a case per acceptance bullet, each watched red before green. Bullet 3 and bullet 6 each take a withheld control: an old non-pending record is swept, and the plugin's own turn is stamped.
+
+### 13. Test audit: every suite earns its place against the test bar
+Model: opus
+
+Appended by the operator's decision of 2026-09-14, recorded under `## Decisions`. It runs after Section 0 closes and before Section 1, because every later section adds tests and builds against the bar this section applies. The section number is its decomposition, not its build order.
+
+The repository carries two test lanes, measured 2026-09-14 on SCOTT-CLAUDE at `6d382c7`.
+
+The offline lane is ten suites holding 807 checks, and it runs in about 80 seconds. `.kit/controller-tick-test.mjs` holds 499 of those checks and runs in 11 seconds. `.kit/supervisor-natural-exit-test.sh` is the slowest at 50 seconds, because it drives the real supervisor through a stub child.
+
+The live lane is `.kit/live-all.sh`, whose `ALL_SUITES` names 17 suites. Each launches real `claude` children, and the last full run took 56 minutes. Two more live suites, `.kit/live-supervisor-test.sh` and `.kit/live-self-review-test.sh`, are tracked but never run by the gate.
+
+So the gate's cost is the live suites rather than the check count.
+
+Fix: every suite answers one question, and the answer decides whether it stays.
+1. **A live suite** names what it proves that no offline suite proves. A suite with no such answer is retired. A suite whose proof can move to a stub-driven offline case moves there, and leaves the gate once that case is green.
+2. **An offline check** pins a failure the code can actually produce, which a hard requirement depends on. A check that pins only a setting's value, a preference, or a configuration choice is removed.
+3. **A duplicate** is removed wherever two cases prove the same thing.
+4. **The two ungated live suites** are either registered with a reason or retired.
+
+Files in scope: every `.kit/*-test.sh` and `.kit/*-test.mjs`, `.kit/live-all.sh`, `.kit/.gitignore` (the tracked-suite roster), `README.md` (the Test Coverage catalog).
+
+Acceptance:
+1. Every suite left in `.kit/live-all.sh` states in its header what it proves that no offline suite proves.
+2. Every retired or moved suite and every removed check is named in the Chapter with what still proves the behavior, or with the statement that nothing does and why that is acceptable.
+3. No offline check remains whose only subject is a setting's value, a preference, or a configuration choice.
+4. No two remaining cases prove the same thing.
+5. The offline lane's and the whole gate's wall times are measured before and after on the same machine, and the Chapter carries both.
+
+Tests: this section removes tests, so its gate is that every remaining suite passes. A new case is written only where a live proof moves to an offline stub, and that case is watched red before green.
+
 ## Decisions
+
+### Every test earns its place, and a test audit runs before Section 1 - decided 2026-09-14 by the operator
+
+The operator set a bar for tests on the Discord thread during Section 0's finishing pass. A test must be genuinely necessary, pinning something essential to functionality that is a hard requirement. Tests that pin simple preferences or intentional configuration are not wanted, the example given being a test that a menu has three items.
+
+A second message asked for a task to look over every test against that bar and decommission the superfluous and preferential ones. The ground was a sibling project whose thousands of tests make every gate take over an hour.
+
+The bar is in the Standing Brief Amendments block, so it rides on every section's dispatch from here on. Section 13 carries the audit. The dev session placed it before Section 1 because every later section adds tests and should build against the bar rather than be cleaned up after it, and told the operator the placement is theirs to move.
+
+### Inbox upkeep is part of v2, before Section 3 - decided 2026-09-13 by the operator
+
+The operator affirmed the commons-store inbox as the coordinator's transport. The concept had already worked for earlier prototypes and for the shared discussion file. The concern was its upkeep: whether messages are read, whether they are handled, how replies tie to requests, what shares the store, whether it grows forever, and how finished records are cleaned up.
+
+Read against the code, the inbox answers read, reply linkage, sharing and growth. It has no handled state, its TTL sweep deletes unread records and skips the log, and its reply stamp can be taken by another turn. Three options were put to the operator: add a section now, build Sections 1 to 8 first and fix after, or fix only the cleanup now. The operator chose the first. The coordinator's core job is knowing what each worker finished, and without a handled state it would infer that from reply text, which is how a loop builds work nobody asked for. Section 12 carries the work.
 
 ### The idle anchor keeps updating on an unmatched turn completion - decided 2026-09-13 by a consult
 
@@ -273,7 +372,6 @@ This Decision is recorded as the operator's ruling on the Reviewer's own thread 
 
 ## Open Questions
 
-- The transport pick itself (commons-store inbox path over the harness's peer tools or Discord threads) is this spec's own authored call, confirmed against the code by a design council rather than handed down by an existing source - the operator has not yet been asked to affirm it specifically. Low blast to revisit before Section 1 starts; expensive to change once Sections 1-4 are built on it.
 - Whether the kit's standing-grant rail rewrite (in flight as of this spec's authoring) keeps a Coordinator-to-Worker chain compatible with the Decisions section's FORK B ruling - owner: re-check `skills/role/SKILL.md` once the rewrite lands; the ruling itself does not wait on this, per the operator's own word (Round 107), but the two should be reconciled if they diverge.
 - What label a coordinator gets on records *it* sends to the operator (this spec only decided the worker-facing labels) - low-blast, decide at execution time, likely no label at all since the coordinator reports via its own Discord thread, not this inbox path.
 - The exact `tool.call` event field (if any) that distinguishes a subagent's own call from the top-level session's, needed by Section 4's urgent-break-in fix - owner: implementation time, checked against the real `ToolCallEvent` type, not assumed by this spec.
@@ -413,6 +511,149 @@ Gate: targeted lane at section close, on the branch tip with a clean worktree, t
 Next: the pull request for this branch, then Section 0 item 5, which gates Sections 1 through 8 and needs the box quiet
 Commit Model: Branch-and-PR, on `section-9-unmatched-turn-completion` off `56057ab`
 Delta: the size reading was taken on this branch at the close gate, on NEO-CLAUDE, with a clean worktree. The verb reported no corpus to measure in this repository.
+
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
+
+### Interim board 1 - 2026-09-13
+This entry records the pre-flight check the operator chose after this repository moved to a new machine, SCOTT-CLAUDE, under the LocalAdmin profile. It is not a Chapter and closes no section.
+
+Decided 2026-09-13 by the operator: before Section 0 item 5, run the fast unit lane on the new machine and confirm both plugin copies are current, so a fault caused by the move cannot pass for an item 5 defect. The whole live gate's owed re-run waits for a naturally quiet box.
+
+Stage: Section 0 item 5 not started. Sections 1 through 8 not started. Sections 9, 10 and 11 are merged to `main`.
+
+Gate baseline, the targeted lane on `main` at `74bbb76`, clean worktree, measured 2026-09-13 on SCOTT-CLAUDE with this repository's own dev supervisor and its child live on the box. Each exit code read from its own run: `npx tsc --noEmit` 0; `node .kit/check-loader-rule.mjs` 0; `node .kit/commons-unit-test.mjs` 0; `node .kit/self-review-unit-test.mjs` 0; `node .kit/controller-tick-test.mjs` 0 with 499 checks and 0 failures. That equals Chapter 3's close count of 499 on NEO-CLAUDE. `npm ci` ran first, because the checkout arrived with no `node_modules`.
+
+Plugin copies on this machine:
+- The installed copy, `agentic-plugin@agent-persona` 0.10.0, records `gitCommitSha` `74bbb76`, and its `hooks/index.ts` and `bin/supervise.sh` are byte-identical to this checkout.
+- `D:\DeepSeekHarness\agentic-plugin` is not the clone the passive-supervisor plan's runtime-clone addendum updated to `0fc66d2`. Here it sits at `d8586dd` (2026-09-07), has no git remote, and carries an uncommitted `hooks/index.ts`. Every compared file differs from this checkout. `/d/personas/aios/relaunch-wait.sh:12` still launches from it with `--dev`. The `aios` supervisor is not running, so nothing currently executes that code.
+- The one live supervisor is `dev`, launched by `/d/personas/dev/relaunch.sh:6` from this checkout with `--dev`.
+
+Next action for item 5, pending the operator's call on how the relaunch is taken: the item's live check needs every live persona claim in the installed-mode store, and the only live persona is the `dev` supervisor loading this checkout through `--plugin-dir`. Passing it therefore needs that supervisor relaunched without `--dev`. Before the relaunch, confirm whether `emit_settings_json`'s `pluginConfigs` key, `"agentic-plugin"` at `bin/agentic-common.sh:81`, still reaches the plugin when it loads as `agentic-plugin@agent-persona`. The memory record `merged-supervise-sh-needs-dev-flag-for-plugin-dir-mode` says an installed child falls back to persona `default`, which is unverified on this tree.
+
+### Interim board 2 - 2026-09-13
+This entry is the handoff across the planned restart of the `dev` supervisor onto the installed plugin. It is not a Chapter and closes no section. The session that wrote it ends when the restart stops its child; the next `dev` session resumes from here.
+
+Decided 2026-09-13 by the operator: Option 1, with full authority to proceed. Prepare the switch on a branch, update both launchers, write these steps, restart the `dev` supervisor without `--dev`, and let the fresh session run the live check.
+
+Stage: Section 0 item 5 in progress on `item0-5-installed-runtime`. The prerequisite settings fix is committed and pushed, and its review loop is closed (see Review below). No pull request is open yet.
+
+Shipped on the branch: `bin/agentic-common.sh`'s `emit_settings_json` writes the plugin's options under both `agentic-plugin` and `agentic-plugin@agent-persona`, refuses a persona or cadence that could break out of the JSON, and `ensure_settings_plugin_ids` completes a settings file a rundir already holds. `bin/supervise.sh` checks the persona shape before touching the disk and completes or refuses a provided settings file, logging a refusal to `supervisor.log`. `.kit/settings-plugin-key-test.sh` pins both ids against the two manifests and drives `supervise.sh` for real with no store and a stub `claude`.
+
+The key mismatch was measured before any code changed: on engine 2.1.270 against installed 0.10.0, settings keyed `agentic-plugin` claimed persona `default`, and settings keyed `agentic-plugin@agent-persona` claimed the configured persona. After the change, one emitted file claimed its persona in both load modes, each in its own store only. That contradicts the passive-supervisor plan's Chapter 6, which recorded the bare key reaching an installed plugin on an earlier engine.
+
+Review: round 1, the code pair plus security, at fable on the Agent tool; rounds 2 to 4, one adversarial lens at opus, high effort, on Workflow.
+- Round 1: three Majors fixed (a provided settings file never gained the installed id; the persona and cadences spliced into JSON unescaped, a security Major fixed rather than parked; hand-written suite settings, resolved by the same completion and, for `.kit/live-budget-test.sh`, justified because it launches with `--plugin-dir`).
+- Round 2: two fix-introduced Majors fixed (a provided file kept a persona differing from the launch argument; the cadence guard accepted leading zeros). One new-requirement Major held and ruled refuse by the scope adjudicator: sourcing the library resets `TICK_MS`, `NUDGE_IDLE_MS` and `GIT_PROBE_MS` from `PROFILE` over exported overrides. Filed to `docs/backlog.md`; recorded in Standing Brief Amendments.
+- Round 3: one fix-introduced Major in the same mechanism as round 2's, which made a design stop on the persona overwrite in `ensure_settings_plugin_ids`. Ruling refuse by the scope adjudicator: completing the missing id is item 5's form, and which persona wins between the argument and a provided file is a separate surface. The overwrite was removed; the ruling is in Standing Brief Amendments and the persona disagreement is filed to `docs/backlog.md`.
+- Round 4: APPROVED_WITH_CONCERNS. One Major fixed below the fix-delta bar, test-only, taken as an author re-read: the driven check now gives the file a persona that differs from the argument and asserts the file's options survive; a control that makes `supervise.sh` overwrite instead of complete fails 4 checks. Minors left with the reason: the `@inline` plugin-id alias, which no caller writes; the backlog heading dates, which follow that file's format; the rundir `mkdir` guard, kept as a harmless adjacent fix.
+- Rulings: 2 refused, 0 declared, 0 asked. Consults: 0.
+
+Gate, the targeted lane on `item0-5-installed-runtime`, measured 2026-09-13 on SCOTT-CLAUDE with this repository's own dev supervisor and its child live on the box, each exit code read from its own run: `bash .kit/settings-plugin-key-test.sh` 0 with 29 checks; `bash .kit/supervisor-model-test.sh` 0; `bash .kit/channel-reply-instruction-test.sh` 0; `npx tsc --noEmit` 0; `node .kit/check-loader-rule.mjs` 0; `node .kit/commons-unit-test.mjs` 0; `node .kit/self-review-unit-test.mjs` 0; `node .kit/supervisor-unit-test.mjs` 0 with 19 passed; `node .kit/controller-tick-test.mjs` 0 with 499 checks and 0 failures, equal to Interim board 1's baseline. The last four node suites were measured at `2f1fb01`; the final commit changes only the settings test.
+
+Stamps: adjudicated 13, stamped 3 (`plugin-options-come-from-settings-pluginconfigs`, `merged-supervise-sh-needs-dev-flag-for-plugin-dir-mode`, and the operator record on section numbers); 10 skipped as reads that shaped nothing.
+
+What changed outside the repository, all on SCOTT-CLAUDE:
+- `/d/personas/dev/relaunch.sh` drops `--dev`. The pre-change copy is `.kit/scratch/preflight-newvm/dev-relaunch.sh.orig`.
+- `/d/personas/aios/relaunch-wait.sh` launches `/d/agent_persona/bin/supervise.sh` without `--dev` and waits on the installed store through `find_global_store 0`. The pre-change copy is `.kit/scratch/preflight-newvm/aios-relaunch-wait.sh.orig`. The `aios` supervisor was not running and was not started.
+- `/d/personas/dev/restart-installed.sh` is new. It waits for the old supervisor's Windows pid to exit, sleeps 100 seconds so the old claim goes stale, then runs `relaunch.sh`. It is launched through `Win32_Process.Create`, so it sits outside the old child's process tree, which `stop_child` kills whole. Its log is `/d/personas/dev/restart-installed.log`.
+- The project memory record `merged-supervise-sh-needs-dev-flag-for-plugin-dir-mode` is rewritten to the current state.
+- `npm ci` populated `node_modules`.
+
+The running supervisor executes `/d/agent_persona/bin/supervise.sh` from this checkout, so the checkout must stay on `item0-5-installed-runtime` or a descendant until the pull request merges. Its child loads the installed plugin, `agentic-plugin@agent-persona` 0.10.0 built from `74bbb76`, which carries no code from this branch. This branch changes only `bin/` and `.kit/`, which the supervisor reads from the checkout.
+
+Next action, for the fresh `dev` session:
+1. Read `/d/personas/dev/restart-installed.log` and the newest `/d/personas/dev/supervise-relaunch-*.stdout`, and confirm the relaunch ran.
+2. Confirm the live check's three parts, each read directly rather than inferred:
+   - the child `claude.exe` command line carries no `--plugin-dir` and carries `--model opus`;
+   - the installed store, `find_global_store 0`, holds a live `persona:dev` claim (lastSeen within 90 seconds) for the child's own session id;
+   - the inline store, `find_global_store 1`, holds no live `persona:dev` claim.
+3. Confirm every live persona claim in the installed store belongs to a supervisor that is actually running. Only `dev` is expected.
+4. Confirm `run/settings.json` now carries both plugin ids with persona `dev`.
+5. Write the item 5 Chapter with that evidence, open the pull request as Draft, and report the result to the operator on Discord.
+
+Rollback if the relaunch fails: restore `relaunch.sh` from its `.orig` copy and run it, which relaunches the `dev` supervisor with `--dev` on the dev tree as before.
+
+## Chapter: Section 0 item 5, the installed-mode live check
+
+**Result: the live check passes.** The `dev` supervisor relaunched without `--dev`, its child loads the installed plugin, and the installed store holds every live persona claim. Read 2026-09-13 between 22:10Z and 22:17Z on SCOTT-CLAUDE by the fresh `dev` session the restart started.
+
+The handoff's five steps, each read directly:
+
+1. **The relaunch ran.** `/d/personas/dev/restart-installed.log` records the old supervisor exiting at 21:46:41Z, the 100-second stale wait, and `relaunch.sh` at 21:48:21Z. `supervise-relaunch-20260913T2148Z.stdout` records `GATE PASSED`, `LAUNCH child-1`, and 150 polls of `WAITING: child-1 alive, persona held`.
+2. **The three live-check parts hold.**
+   - The child, Windows pid 7820 under the supervisor's `env.exe` pid 20104, carries `--settings D:\agent_persona\run\settings.json --model opus --effort medium` and no `--plugin-dir`, read from `Win32_Process.CommandLine`.
+   - The installed store, `agentic-plugin_agent-persona-54422876af67.json`, holds `persona:dev` for session `ed969171-1b62-472b-81f3-2f4bbbca04a7`, last seen 11 seconds before the read. That is the child's own session id, read from `run/child-1/stdout.jsonl`.
+   - The inline store, `agentic-plugin_inline-725b37f2a6ed.json`, holds `persona:dev` only for session `2e3cc529-...`, last seen 1844 seconds before the read. That is the pre-restart child, past the 90-second stale window, so no live claim.
+3. **Every live claim in the installed store is accounted for, with one non-supervisor claim.** Besides `persona:dev`, session `0db6449e-...` holds `reader:default` and `persona:default`, last seen 25 seconds before the read. It is an interactive `claude.exe` started 17:01 local from `C:\Users\LocalAdmin`, not a supervisor. That is the known pre-Section-6 behavior Section 5's ordering note describes, where every plugin-loaded session claims `persona:default`. It confirms the installed store is the one shared store ordinary sessions use too. It means no supervisor other than `dev` is live, as expected.
+4. **`run/settings.json` carries both ids.** `pluginConfigs` holds `agentic-plugin` and `agentic-plugin@agent-persona`, each with `persona: "dev"` and the same seven cadence options.
+5. This Chapter, and the Draft pull request below.
+
+What this does not cover: the installed copy is 0.10.0 built from `74bbb76`, which carries none of this branch's code. This branch changes only `bin/` and `.kit/`, which the supervisor reads from the checkout, so the live check exercises the branch's supervisor side and the merged plugin side. The `aios` supervisor was not running and was not started, so its launcher change is unexercised live.
+
+Gate: no code changed since Interim board 2's targeted lane, whose counts stand. This Chapter is a record-only change.
+
+Commit model: Branch-and-PR, on `item0-5-installed-runtime` off `74bbb76`.
+
+Next: Section 0 item 6, the finishing reviews over Section 0, then Section 1. The operator has been asked to affirm the transport pick under Open Questions before Section 1 starts.
+
+### Interim board 1 - 2026-09-13
+
+Section 0 item 6, the finishing pass, is mid-flight. Items 1 to 5 are closed by their own Chapters.
+
+- Stage: the finishing reviews over the whole Section 0 changeset have run twice. Round 1 (security plus adversarial, Fable, high) returned two Majors, both routed. Round 2 over the fix delta (adversarial, blind and security, Fable, high) returned one Major and eleven Minors.
+- Live dispatches: implementer-opus, resumed, building fix round two. It was asked for one shared numeric-settings check across the seven supervisor settings, a case (e) for the backfilled non-zero exit, stricter launcher and writer-count pins, the guarded CHILD array read, a balanced-bracket model rule, two README corrections, and the taskkill tree-flag comment rewording.
+- Gate baseline, this checkout at 406a783, 2026-09-13 22:55Z, no live suite: supervisor-natural-exit 27 OK, supervisor-model 24 OK, settings-plugin-key 32 OK, channel-reply-instruction 12 OK, supervisor-unit 19 passed. Every exit code 0. A heavy-process claim for claude-kit, started 22:49:33Z with a 120 second window, was on disk and past its window.
+- Rulings adopted since the last boundary: the saved-pid rule for every read of the child pid; the shared numeric check refusing a leading zero and more than nine digits; the natural-exit coverage living in the stub suite rather than the live legs. All three are in the Standing Brief Amendments block.
+- Next per item: adjudicate fix round two, run the Minors close pass from the section Minors list under the scratch path, dispatch the docs curator, then write the item 6 Chapter and update PR #30.
+
+### Interim board 2 - 2026-09-13
+
+Section 0 item 6, the finishing pass, is still mid-flight. Items 1 to 5 are closed by their own Chapters.
+
+- Stage: four review rounds have run over this section. Round 1 (security and adversarial, Fable, high) returned two Majors, both routed. Round 2 over the first fix delta (adversarial, blind and security, Fable, high) returned one Major. Round 3 (adversarial and blind, Opus, high) returned Majors in two mechanisms, which fired the design stop. Round 4 is dispatched over commit a4119cd, adversarial and blind at Opus, high.
+- Design stop: the numeric settings validation carried a fix-introduced Major in two consecutive rounds. The scope adjudicator ruled accept-and-declare, grounding it on the amendment bullet that names the shared check, and the held findings then re-entered their fix round. The judge also observed, without moving its bucket, that the PowerShell bound falls back silently where the other settings exit with an error line. That observation is open as a quality question.
+- Live dispatches: none. The implementer finished its fourth round and is idle.
+- Gate baseline, this checkout at a4119cd, 2026-09-14 00:05Z, no live suite, no heavy-process claim on disk: supervisor-natural-exit 41 OK, supervisor-model 60 OK, settings-plugin-key 37 OK, channel-reply-instruction 12 OK, supervisor-unit 19 passed. Every exit code 0. The model suite fell from 64 to 60 checks when thirty supervisor spawns became fourteen helper cases in one process.
+- Rulings adopted since the last boundary: a millisecond setting is checked in the unit its consumer divides it into; the heartbeat staleness bound travels through argv and takes the shared check; the call-count pin is replaced by a structural enumeration. All three are in the Standing Brief Amendments block or in the code they govern.
+- Open limit the implementer flagged: the structural pin proves a numeric setting is checked by one of two rules, and cannot tell that a setting took the wrong one of the two. Deciding that needs each setting's consumer read.
+- Next per item: adjudicate round 4, run the Minors close pass from the section Minors list under the scratch path, dispatch the docs curator, then write the item 6 Chapter and update PR #30.
+
+### Chapter 4 - 2026-09-14
+Completed: 0. Close out v1 first, plus two live worker-liveness defects a fleet cannot ship with
+Implemented By: items 1 to 5 by their own Chapters above; item 6's fix rounds by implementer-opus (four dispatches, one resumed) and implementer-sonnet (the comment sweep), with the crash-limit fix and the last close pass in the main session
+Metrics: review rounds 6, closed claim-exit; provenance 4 spec-traceable, 11 fix-introduced, 4 new-requirement, rulings (3 refused, 3 declared, 0 asked); NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: item 6 is Section 0's finishing pass, run per the finishing-work skill over the whole Section 0 changeset on `item0-5-installed-runtime` off `74bbb76`. Items 1 to 5 closed by their own Chapters. The pass found more than the items built.
+
+A child that exited on its own aborted the supervisor. Bash unsets `CHILD_PID` and the `CHILD` array when it reaps a coproc, and the script runs under `set -u`, so the natural-exit branch had never completed on any run. Every read of the child's pid now uses one pid saved at launch, and a stub-driven suite covers the branch no live suite can reach. The three RESTART_PASSIVE restarts the plan credited to that branch came through the decide path's stop.
+
+The stale bound reached a `node` program by splicing, and an implementer's red run executed an injected payload through it. Both programs in the pre-launch gate now take the persona and the bound through argv. The commons half had also held a fixed 90000 and ignored its own parameter.
+
+Two design stops fired. The shared numeric check carried fix-introduced Majors in rounds 2 and 3, and the pin proving every setting is checked carried them in rounds 3 and 4. The scope adjudicator ruled accept-and-declare on both, grounded on the amendment bullet naming the shared check. Its non-blocking observation stands as an open quality question: `supervisorPsBoundS` falls back to 30 silently where every other setting exits with an error line.
+
+The operator set a bar for tests mid-pass: a test must pin a failure a hard requirement depends on, never a setting or a preference. It was applied at adjudication. Six Minors asking for more pin machinery were left with their reasons, and one case added in this pass was removed as a duplicate of an existing one. The operator then asked for an audit of every suite against the bar, which is appended as Section 13 and recorded under Decisions, with the bar in the Standing Brief Amendments block. That is approval drift, made deliberately on the operator's word.
+
+The docs curator's one `mistake` was real and predates the changeset: `bin/supervise-decide.mjs` at `74bbb76` holds `crashCount >= 3` and never received `supervisorCrashLimit`, while the natural-exit path compares against the setting. Section 0's new validation made the setting look like a bound it only half was. It was fixed in `6d382c7` with unit cases watched red against the fixed 3, and reviewed in round 6. finishing-work stops on a surviving `mistake` and puts it to the operator first. This run fixed it before the PR instead, and reports it in the close-out, which is the deviation from that step.
+
+Three of round 6's Majors were refused as outside Section 0 and filed to `docs/backlog.md`: the decide path relaunching once more before a restart or crash limit stops the run, and a `--prompt` goal dropped when the first child dies before its goal turn. The third, a pin on the crash-limit argv wiring, was refused without a backlog entry, since Section 13's audit governs whether such a pin earns its place.
+
+This session wrote two false facts into a backlog entry about the running supervisors, which round 5's adversarial lens read off `/proc`; both are corrected. It also ran a suite once without reading the heavy-process claim first; the claims directory was empty on every later read.
+
+State found live: the `aios` supervisor started 2026-09-14 00:11Z from this checkout on `opus`, carrying the branch's supervisor fixes through `a4119cd`. The `dev` supervisor started 2026-09-13 21:45Z and predates `406a783`. The script under both has been rewritten since, and bash reads a script by offset, so both relaunches are owed and are the operator's.
+Assumptions: assumed 2026-09-14 (route b, low-blast default, section 0): a blank, zero or negative stale bound reaching `wait_persona_free_both` directly reads as a bound rather than being refused, because every caller in the repository passes a value `positive_number` has already checked. Reversal is one predicate in each node program. assumed 2026-09-14 (route b, low-blast default, section 13): the test audit runs before Section 1 rather than after Section 12, since every later section adds tests against the bar; the operator accepted the placement on the thread.
+Review Findings: review: security plus adversarial at fable, Workflow (round 1); adversarial, blind and security at fable, Workflow (round 2); code pair at opus, Workflow (rounds 3 to 6); author re-reads over round 5's test-only fix delta, the comment sweep, and the final close pass. Design stop: the shared numeric check, ruling accept-and-declare by the scope adjudicator. Design stop: the derived-name settings pin, ruling accept-and-declare by the scope adjudicator. Declared: the commons half's stale bound, accept-and-declare by the scope adjudicator, recorded as the amendment bullet on both node programs. Refused: three round 6 Majors, by the scope adjudicator, grounded on Section 0's title and six items, recorded as the amendment bullet on pre-existing supervisor behavior.
+
+Round 1: two Majors, both raised by both lenses and spec-traceable to items 1 and 3, routed to the Standing Brief Amendments and `docs/backlog.md`. Round 2: one fix-introduced Major, a leading zero accepted by the stop-grace check, fixed. Round 3: eight Majors, seven fix-introduced and one spec-traceable. The empty stdin-fd guard exited the supervisor and ran before the snapshot reset; the stop-grace and poll settings floored to zero below 1000; the shared check accepted a leading zero; the call-count pin overstated its reach; and a comment retracted the stop path's accepted-hazard rationale. The spec-traceable one, a spliced and unchecked stale bound, was fixed under the security carve-out. Round 4: three Majors, the ignored commons bound, declared and fixed, and two in the replacement pin, fixed after the second design stop. Round 5: two Majors, the untested commons half and the pin's blindness to bare arithmetic reads, fixed in a test-only delta below the fix-delta bar. Round 6: three Majors, all new-requirement, all refused.
+
+Minors: 23 fixed, in the fix rounds or the close passes. They cover the review-round citations in `bin/supervise.sh` and the stop-tree suite, 55 and 27 reworded, and the model suite's thirty spawns collapsed to helper cases. Also the false header comment on the numeric rule, the generated stubs under `set -u` and `pipefail`, and the plugin-values comment naming its exception. Also the two error lines split into plain sentences, the self-satisfying subject leg, the unreached sed shapes named, and the backlog's false facts. The rest are README claims: the unit case count, the status line's log claim, the ungated live suite, the persona splice claim in the README and the script header, the retry-budget and gate-wait wording, the exit-1 row and the script's exit-code header, the run-directory write claim, the backlog entries' narration, the crash-limit timing comment, and one duplicate unit case removed. 0 upgraded. 9 left with the reason. The natural-exit suite is invoked by no runner, and the README catalog is the record. The enumeration floor, a one-direction minimum test, and a second structural pin were each left under the operator's test bar. A blank or negative bound reaching the library directly is the declared assumption. The one-millisecond boundary against the plugin's comparison is left too. The README's v0.11.0 against the manifest's 0.10.0 is a release decision. The engine claim that an unmatched plugin id falls back to persona `default` was measured on engine 2.1.270 in Interim board 2. The unreachable argv fallback matches its sixteen siblings. 1 routed to `docs/backlog.md`, a floor for the stale bound against the refresh cadence.
+
+Docs curation: eight drift items, one `mistake` and seven `deviation`s, none silently reconciled. The `mistake` is the crash limit above. Its pre-change read is `git show 74bbb76:bin/supervise-decide.mjs`, which holds `crashCount >= 3`, so the basis survived. The deviations: the silent fallback of `supervisorPsBoundS`; the decide-unit test count; the live-suite count in the status line; the decision set omitting `restart_passive`; the pre-launch gate's scope; the backlog's undercount of what the aios supervisor lacks; the discussion archive's round range. Six of them rest on a pre-change claim the curator could not read, and they ride into the PR description marked as unverified pre-change claims. Two hygiene items: the context-budget plan was absent from the index and its status header is none of the kit's values, filed to `docs/backlog.md`; the v1 and v2 cross-references hold both ways.
+Stamps: adjudicated 3, stamped 2. Applied: the coproc record, whose reap-trap correction became the saved-pid rule; the forward-resource-arrangements record, under which every brief carried the live-supervisor constraint. One skipped as a read that shaped nothing this stretch.
+Gate: targeted lane at section close, measured 2026-09-14 01:14Z on SCOTT-CLAUDE on the tree this Chapter commits, the dev and aios supervisors live on the box and named rather than waited out, the heavy-process claims directory empty at the read. Each exit code read from its own run: `bash .kit/supervisor-model-test.sh` 0 with 61 OK; `bash .kit/settings-plugin-key-test.sh` 0 with 41 OK; `bash .kit/supervisor-natural-exit-test.sh` 0 with 41 OK; `bash .kit/channel-reply-instruction-test.sh` 0 with 12 OK; `node .kit/supervisor-unit-test.mjs` 0 with 21 passed; `bash -n bin/supervise.sh` 0. `npx tsc --noEmit` 0 at `2359d7d`; nothing after it changes TypeScript. Baseline on this same lane at `a4119cd`, Interim board 2: 60, 37, 41, 12 and 19, so the delta is +1, +4, 0, 0 and +2, with 0 failing in both readings. No live suite ran, and the whole live gate's owed re-run on a quiet box stays on the backlog. The contention lane did not run: the delta touches no machine-shared state.
+Next: PR #30 marked ready for review, then Section 13, the test audit, then Section 1
+Commit Model: Branch-and-PR, on `item0-5-installed-runtime` off `74bbb76`, PR #30
+Delta: the size reading was taken on this branch at the close gate, on SCOTT-CLAUDE, with only this Chapter's own changes in the worktree. The verb reported no corpus to measure in this repository.
 
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
