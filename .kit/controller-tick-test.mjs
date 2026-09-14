@@ -3267,6 +3267,7 @@ async function main() {
     await caseSection7_r1_shellChecksFailClosed(clock);
     await caseSection7_r1_everyPushIsJudgedAndRefspecsResolve(clock);
     await caseSection7_r1_subagentAttributionOutlivesTheTurn(clock);
+    await caseSection7_r2_chapterWritesPassAndBypassSpellingsAreCaught(clock);
   } finally {
     clock.restore();
   }
@@ -8517,5 +8518,42 @@ async function caseSection7_r1_subagentAttributionOutlivesTheTurn(clock) {
   check("section7 r1 F5: agent-o, first seen in an operator turn, passes a CLAUDE.md Edit during a later coordinator turn", agentOLater.passed, agentOLater.r);
   const mainInCoordinatorTurn = await boundCall(h, { tool: "Edit", file_path: "CLAUDE.md", old_string: "a", new_string: "b" });
   check("section7 r1 F5 control: the main loop's CLAUDE.md Edit in that coordinator turn is denied", mainInCoordinatorTurn.denied && mainInCoordinatorTurn.nextCalls === 0, mainInCoordinatorTurn.r);
+}
+
+// The Commit Model sniff is scoped to a header line, one no `## ` or `### `
+// line precedes inside the written text, so a Chapter append passes; a
+// guarded basename glued to a redirect operator is seen; a quoted refspec
+// is read rather than dropped; a `.` or empty path segment does not hide a
+// settings file.
+async function caseSection7_r2_chapterWritesPassAndBypassSpellingsAreCaught(clock) {
+  console.log("\n=== Section 7 fix 2: a Chapter write passes, a redirect-glued path and a quoted refspec are caught ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await openCoordinatorOriginTurn("section7_r2", now, clock, "t-r2");
+  h.fsMap.set(".kit/goal-state.json", JSON.stringify({ plan: "docs/plans/p.md" }));
+  h.fsMap.set("docs/plans/p.md", planTextWith("Commit Model: Branch-and-PR. prose"));
+  h.fsMap.set(".git/HEAD", "ref: refs/heads/feature-x\n");
+
+  const chapter = await boundCall(h, { tool: "Edit", file_path: "docs/plans/p.md", old_string: "prose\r\n", new_string: "prose\r\n\r\n### Chapter 99 - 2026-09-14\r\nCompleted: Section 7.\r\nCommit Model: Branch-and-PR\r\n" });
+  check("section7 r2 G1 control: an Edit whose new_string is a Chapter body (heading before the Commit Model line) passes through", chapter.passed, chapter.r);
+  const wholePlan = await boundCall(h, { tool: "Write", file_path: "docs/plans/p.md", content: "# p\r\n\r\nCommit Model: Commit-and-Push\r\n\r\n## Approach\r\n\r\n### Chapter 1\r\nCommit Model: Commit-and-Push\r\n" });
+  check("section7 r2 G1: a Write whose content is a whole plan with the header line and later Chapter lines is denied before next", wholePlan.denied && wholePlan.nextCalls === 0, wholePlan.r);
+  const multi = await boundCall(h, { tool: "MultiEdit", file_path: "docs/plans/p.md", edits: [{ old_string: "prose", new_string: "Commit Model: Commit-and-Push" }] });
+  check("section7 r2 G1: a MultiEdit whose edits[] carry a header Commit Model line is denied before next", multi.denied && multi.nextCalls === 0, multi.r);
+  const shellChapter = await boundCall(h, { tool: "Bash", command: "printf '### Chapter 99\\nCommit Model: Branch-and-PR\\n' >> docs/plans/p.md" });
+  check("section7 r2 G1 control: a shell segment whose Commit Model text follows a ### heading passes through", shellChapter.passed, shellChapter.r);
+
+  const glued = await boundCall(h, { tool: "Bash", command: "printf x >CLAUDE.md" });
+  check("section7 r2 G2: printf x >CLAUDE.md (basename glued to the redirect) is denied before next", glued.denied && glued.nextCalls === 0, glued.r);
+  const spaced = await boundCall(h, { tool: "Bash", command: "printf x > CLAUDE.md" });
+  check("section7 r2 G2 pair: printf x > CLAUDE.md (spaced) is denied before next", spaced.denied && spaced.nextCalls === 0, spaced.r);
+
+  const quotedMain = await boundCall(h, { tool: "Bash", command: "git push origin \"main\"" });
+  check("section7 r2 G3: git push origin \"main\" (quoted refspec) under Branch-and-PR is denied before next", quotedMain.denied && quotedMain.nextCalls === 0 && quotedMain.r.deny.includes("names the trunk"), quotedMain.r);
+  const wrappedThenEcho = await boundCall(h, { tool: "Bash", command: "bash -c \"git push origin feat\" && echo done" });
+  check("section7 r2 G3 control: bash -c \"git push origin feat\" && echo done passes through (the closing quote ends the wrapped push)", wrappedThenEcho.passed, wrappedThenEcho.r);
+
+  const dotSegment = await boundCall(h, { tool: "Edit", file_path: ".claude/./settings.json", old_string: "a", new_string: "b" });
+  check("section7 r2 minor: an Edit of .claude/./settings.json is denied before next", dotSegment.denied && dotSegment.nextCalls === 0, dotSegment.r);
 }
 

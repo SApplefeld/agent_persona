@@ -130,27 +130,48 @@ function guardedBasenameItem(base: string, parent: string): string | null {
   return null;
 }
 
+// A path's segments with `.` and empty ones dropped, so `.claude/./x` and
+// `.claude//x` read as `.claude/x`.
+function pathSegments(p: string): string[] {
+  return p.split(/[\\/]/).filter((s) => s !== "" && s !== ".");
+}
+
 // The ask-first item a file tool's path names, by guardedBasenameItem over
 // the path's last two segments. Null for any other path and for a
 // non-string.
 export function guardedPathItem(p: unknown): string | null {
   if (typeof p !== "string") return null;
-  const parts = p.split(/[\\/]/);
+  const parts = pathSegments(p);
   return guardedBasenameItem(parts[parts.length - 1] ?? "", parts.length >= 2 ? parts[parts.length - 2] : "");
 }
 
-// A line a plan header records its commit model on. Written text carrying
-// one is a change to a plan's recorded commit model, the input the push
-// rule reads.
-const COMMIT_MODEL_LINE = /^\s*Commit Model:/im;
+// Whether written text carries a plan header's Commit Model line: a line
+// opening `Commit Model:` that no `## ` or `### ` line precedes inside the
+// same text. Every Chapter carries a Commit Model line too, below its
+// heading, so text in which each such line follows a heading is a Chapter
+// and is not the header. The residual: an Edit whose new_string starts
+// mid-Chapter, below the heading, carrying the line, reads as a header
+// write; the model puts it to the operator and the cost is one round trip.
+function commitModelHeaderLineIn(text: string): boolean {
+  for (const line of text.split(/\r?\n/)) {
+    if (/^#{2,3} /.test(line)) return false;
+    if (/^\s*Commit Model:/i.test(line)) return true;
+  }
+  return false;
+}
 
 // Whether a file tool's written text (Write's content, Edit's old or new
-// string, NotebookEdit's new source) carries a Commit Model line. A whole
-// file rewrite that removes the line without writing one is not seen here
-// and stays on the model's judgment.
+// string, each edits[] entry's old or new string, NotebookEdit's new
+// source) carries a plan header's Commit Model line, the input the push
+// rule reads. A whole file rewrite that removes the line without writing
+// one is not seen here and stays on the model's judgment.
 export function writesCommitModelLine(args: unknown): boolean {
-  const a = args as { content?: unknown; old_string?: unknown; new_string?: unknown; new_source?: unknown };
-  return [a.content, a.old_string, a.new_string, a.new_source].some((s) => typeof s === "string" && COMMIT_MODEL_LINE.test(s));
+  const a = args as { content?: unknown; old_string?: unknown; new_string?: unknown; new_source?: unknown; edits?: unknown };
+  const texts: unknown[] = [a.content, a.old_string, a.new_string, a.new_source];
+  if (Array.isArray(a.edits)) {
+    for (const ed of a.edits as Array<{ old_string?: unknown; new_string?: unknown }>) texts.push(ed?.old_string, ed?.new_string);
+  }
+  return texts.some((s) => typeof s === "string" && commitModelHeaderLineIn(s));
 }
 
 // First words that only read: a segment opening with one of these, or with
@@ -164,9 +185,10 @@ const GIT_READ_ONLY_SUBCOMMANDS = new Set(["diff", "log", "show", "status", "bla
 
 // A guarded path as a token inside a shell segment: an optional directory
 // prefix, then a guarded basename, bounded by whitespace, a quote, a
-// bracket, `=` or `:` on the left and by the end, whitespace, a quote, a
-// bracket or a comma on the right.
-const GUARDED_TOKEN = /(^|[\s"'=(:])((?:[^\s"'()]*[\\/])?(?:CLAUDE\.md|CLAUDE\.local\.md|settings(?:\.[^\s"'\\/]+)?\.json|goal-state\.json))(?=$|[\s"'),])/i;
+// bracket, `=`, `:` or a redirect operator (`>CLAUDE.md`, `2>CLAUDE.md`)
+// on the left and by the end, whitespace, a quote, a bracket or a comma on
+// the right.
+const GUARDED_TOKEN = /(^|[\s"'=(:<>])((?:[^\s"'()<>]*[\\/])?(?:CLAUDE\.md|CLAUDE\.local\.md|settings(?:\.[^\s"'\\/]+)?\.json|goal-state\.json))(?=$|[\s"'),])/i;
 
 // The segments of a shell command: split on `;`, `&&`, `||`, `|` and line
 // breaks, trimmed, with empties dropped.
@@ -206,7 +228,11 @@ function redirectsOutput(segment: string): boolean {
 // reached through a directory change the command does not name is left to
 // the model's judgment. A segment carrying `Commit Model:` under a first
 // word that is neither read-only nor git is a change to a plan's recorded
-// commit model.
+// commit model, unless a `## ` or `### ` heading sits earlier in the
+// segment's own text, which marks the text as a Chapter rather than the
+// header. Segments split on line breaks, so a heredoc Chapter whose heading
+// and Commit Model line sit on different lines is still refused; a Chapter
+// append goes through the Edit tool.
 export function commandGuardedItem(command: unknown): string | null {
   if (typeof command !== "string") return null;
   const namesClaudeDir = /(^|[\s"'=(\\/])\.claude(?=$|[\s"'\\/)])/i.test(command);
@@ -215,7 +241,7 @@ export function commandGuardedItem(command: unknown): string | null {
     const readOnly = isReadOnlySegment(segment);
     const token = GUARDED_TOKEN.exec(segment);
     if (token !== null) {
-      const parts = token[2].split(/[\\/]/);
+      const parts = pathSegments(token[2]);
       const base = parts[parts.length - 1] ?? "";
       let parent = parts.length >= 2 ? parts[parts.length - 2] : "";
       if (parent === "") {
@@ -225,7 +251,10 @@ export function commandGuardedItem(command: unknown): string | null {
       const item = guardedBasenameItem(base, parent);
       if (item !== null && !(readOnly && !redirectsOutput(segment))) return item;
     }
-    if (/Commit Model:/i.test(segment) && !readOnly && firstWordOf(segment) !== "git") return "a change to a plan's recorded commit model";
+    const modelAt = segment.search(/Commit Model:/i);
+    if (modelAt >= 0 && !readOnly && firstWordOf(segment) !== "git" && !/#{2,3} /.test(segment.slice(0, modelAt))) {
+      return "a change to a plan's recorded commit model";
+    }
   }
   return null;
 }
@@ -238,17 +267,37 @@ const GIT_GLOBAL_VALUE_OPTIONS = ["-C", "-c", "--git-dir", "--work-tree", "--nam
 const GIT_OTHER_REPO_OPTIONS = new Set(["-C", "--git-dir", "--work-tree"]);
 const GIT_GLOBAL_FLAGS = new Set(["--no-pager", "-P", "--paginate", "--bare", "--no-replace-objects", "--literal-pathspecs", "--no-optional-locks"]);
 
+// The quote open at a point in a shell command, `"` or `'`, or null outside
+// any quote: unescaped quote characters before the point are walked in
+// order, a `'` closing only at the next `'` and a `"` only at the next
+// unescaped `"`, so the innermost open quote is the one a wrapped command
+// (`bash -c "git push ..."`) will close at.
+function openQuoteAt(command: string, index: number): '"' | "'" | null {
+  let open: '"' | "'" | null = null;
+  for (let i = 0; i < index; i++) {
+    const ch = command[i];
+    if (ch === "\\" && open !== "'") { i++; continue; }
+    if (open === null && (ch === '"' || ch === "'")) open = ch;
+    else if (ch === open) open = null;
+  }
+  return open;
+}
+
 // The tokens of a shell segment from a point inside it: the text is cut at
-// `;`, `&`, `|`, a line break or an unescaped quote, then split on
-// whitespace.
-function segmentTokensFrom(rest: string): string[] {
-  let end = rest.length;
+// `;`, `&`, `|`, a line break, or the unescaped quote that closes the
+// wrapper the point sits inside (`closer`), and any other quote character
+// is dropped rather than cutting, so `git push origin "main"` reads its
+// refspec. The result is split on whitespace.
+function segmentTokensFrom(rest: string, closer: '"' | "'" | null): string[] {
+  let kept = "";
   for (let i = 0; i < rest.length; i++) {
     const ch = rest[i];
-    if (ch === "\\") { i++; continue; }
-    if (ch === ";" || ch === "&" || ch === "|" || ch === "\n" || ch === "\r" || ch === '"' || ch === "'") { end = i; break; }
+    if (ch === "\\") { kept += ch + (rest[i + 1] ?? ""); i++; continue; }
+    if (ch === ";" || ch === "&" || ch === "|" || ch === "\n" || ch === "\r" || ch === closer) break;
+    if (ch === '"' || ch === "'") continue;
+    kept += ch;
   }
-  return rest.slice(0, end).split(/\s+/).filter((t) => t.length > 0);
+  return kept.split(/\s+/).filter((t) => t.length > 0);
 }
 
 export type GitPush = { args: string; otherRepo: boolean };
@@ -257,15 +306,15 @@ export type GitPush = { args: string; otherRepo: boolean };
 // `push` up to its segment's end, with whether the invocation pointed at
 // another repository. `git` counts wherever it starts a word, after a
 // quote, a slash or a backslash included (`bash -c "git push ..."`,
-// `/usr/bin/git push`, `git.exe push`), so a wrapped push is seen. A
-// non-string yields none.
+// `/usr/bin/git push`, `git.exe push`), so a wrapped push is seen and ends
+// at the quote that closes its wrapper. A non-string yields none.
 export function gitPushesIn(command: unknown): GitPush[] {
   if (typeof command !== "string") return [];
   const pushes: GitPush[] = [];
   const starts = /(^|[\s;&|()"'`\\/])git(?:\.exe)?(?=\s)/gi;
   let m: RegExpExecArray | null;
   while ((m = starts.exec(command)) !== null) {
-    const tokens = segmentTokensFrom(command.slice(m.index + m[0].length));
+    const tokens = segmentTokensFrom(command.slice(m.index + m[0].length), openQuoteAt(command, m.index + m[0].length));
     let i = 0;
     let otherRepo = false;
     while (i < tokens.length) {
@@ -4007,6 +4056,13 @@ export const register: Register = async (on, options) => {
     // life. The main loop (no agentId) reads the turn flag directly.
     const callerAgentId = typeof e.agentId === "string" && e.agentId.length > 0 ? e.agentId : null;
     if (callerAgentId !== null && !subagentCoordinatorOrigin.has(callerAgentId)) {
+      // The map holds at most 256 agents; at the cap the oldest entry
+      // (insertion order) is dropped, so a long session cannot grow it
+      // without bound.
+      if (subagentCoordinatorOrigin.size >= 256) {
+        const oldest = subagentCoordinatorOrigin.keys().next().value;
+        if (oldest !== undefined) subagentCoordinatorOrigin.delete(oldest);
+      }
       subagentCoordinatorOrigin.set(callerAgentId, currentTurnIsCoordinatorOrigin);
     }
     const callerIsCoordinatorOrigin = callerAgentId === null
