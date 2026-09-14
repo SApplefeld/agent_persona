@@ -4115,6 +4115,13 @@ async function caseSection12_2_resolveRefusals(clock) {
   check("section12.2: skipped record unchanged", readStoreRecord(h, skippedKey)?.status === "skipped");
   check("section12.2: no operator_resolved decision logged", countAction(getDecisions(h), "operator_resolved") === 0);
 
+  const longKey = seedInboxRecord(h, "writer-l", 1, { at: now - 5000, status: "delivered", deliveredAt: now - 4000 });
+  const rl = await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_resolve", id: "default-writer-l-1", outcome: "done", note: "x".repeat(2001) }, async () => ({ result: "passthrough" }));
+  check("section12.2: a note over 2000 characters is refused, and the refusal names the bound", typeof rl.deny === "string" && rl.deny.includes("2000"), rl);
+  check("section12.2: the over-length record unchanged", readStoreRecord(h, longKey)?.status === "delivered" && readStoreRecord(h, longKey)?.note === undefined);
+  const rb = await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_resolve", id: "default-writer-l-1", outcome: "done", note: "y".repeat(2000) }, async () => ({ result: "passthrough" }));
+  check("section12.2: a note of exactly 2000 characters is accepted (control)", rb.deny === undefined && readStoreRecord(h, longKey)?.note?.length === 2000, rb);
+
   const hr = await seedReaderHarness("section12_2_reader", now, "owner-002", {}, { turnStartedAt: null, workdir: HARNESS_CWD });
   const readerKey = seedInboxRecord(hr, SESSION_ID, 1, { at: now - 5000, status: "delivered", deliveredAt: now - 4000 });
   const rr = await hr.handlers["tool.call"](hr.fake, { tool: "mcp__agentic-plugin__agentic_resolve", id: `default-${SESSION_ID}-1`, outcome: "done", note: "" }, async () => ({ result: "passthrough" }));

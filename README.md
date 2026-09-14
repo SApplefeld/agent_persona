@@ -376,6 +376,7 @@ Marks a record addressed to the owner's persona as `resolved`, writing `resolved
 - The calling session is not the owner (a reader holding the persona cannot resolve)
 - The record is not listed under the caller's persona
 - The record is still `pending` (not delivered yet) or `skipped` (its writer had no live claim)
+- The `note` is longer than 2000 characters (it goes whole into the shared store, so it is bounded at the handler)
 
 ### Record shapes
 

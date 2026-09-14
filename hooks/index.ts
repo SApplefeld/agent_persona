@@ -373,6 +373,8 @@ const REPLY_INSTRUCTION = "You are attached to a Discord channel. When you want 
 // rewritten, so the file that grows without bound is this one, by design,
 // not the store the plugin reads and rewrites whole on every tick.
 const CHANNEL_LOG_PATH = ".agentic-channel.jsonl";
+// Bound on the note agentic_resolve writes into the shared commons store.
+const RESOLVE_NOTE_MAX = 2000;
 // Round 47 finding 1: this used to swallow every write error, and
 // enforceChannelWindow deleted the rolled store keys regardless of whether
 // the append actually landed - a failed write meant the record vanished
@@ -1116,7 +1118,7 @@ export const register: Register = async (on, options) => {
           },
           note: {
             type: "string",
-            description: "Optional short note for the sender: what was done, or why it was declined.",
+            description: "Optional short note for the sender: what was done, or why it was declined. At most 2000 characters; a longer note is refused.",
           },
         },
         required: ["id", "outcome"],
@@ -4207,6 +4209,12 @@ export const register: Register = async (on, options) => {
       if (!sess.isOwner) {
         toolErrorsThisTurn++;
         return { deny: "agentic_resolve is for the owner session only; a reader does not resolve the owner's records." };
+      }
+      // The note goes whole into the machine-global store, which every live
+      // session rewrites and polls, so it is bounded here at the handler.
+      if (note.length > RESOLVE_NOTE_MAX) {
+        toolErrorsThisTurn++;
+        return { deny: `agentic_resolve note is ${note.length} characters; the bound is ${RESOLVE_NOTE_MAX}. Shorten it.` };
       }
       if (!id) {
         toolErrorsThisTurn++;
