@@ -109,28 +109,6 @@ The decide path's `restart` branch in `bin/supervise.sh` updates the crash and r
 
 `docs/plans/agentic-plugin_context-budget_v1.md` reads `Status: Independent part Complete; checkpoint section BLOCKED-on-operator (Path C open question resolved).`, which the kit's tooling cannot read as any of its status values. The curating-docs skill rules whether the plan splits into a complete part and an open part, archives, or takes one of the three headers.
 
-## live-stopprocesstree-test.sh runs 15 checks that the gate summary never collects
-
-In the whole-gate run `20260913T085812Z` this suite was the only one of seventeen whose
-summary line read `assert=[missing]`. Its checks are not missing. The suite's own log ends
-`15 checks run, 0 failed` and `live-stopprocesstree-test.sh: PASS`, and its assertions are
-substantive, covering that the real child is gone after `stop_child` returns on the TERM
-path and after the tree kill.
-
-The gap is collection, not coverage. `.kit/live-stopprocesstree-test.sh` has its
-`pass` and `failed` helpers print to stdout and bump their own counters, which is what
-produces the `15 checks run, 0 failed` line, but neither writes a file, while
-`.kit/live-all.sh:132` collects `$suite_dir/<suite>.assert.log`, a file this suite never
-writes. Its exit file is collected, which is why `exitfile=[0 ]` is populated beside an
-empty `assert=`.
-
-Fix: have `pass` and `failed` tee to `$SUITE_DIR/stopprocesstree.assert.log` as the other
-suites do. No new assertions are needed, and no control has to be built: the suite already
-fails if `stop_child` leaves the real child alive, so a mutation to signal a single pid
-would turn it red today. The effect of this gap is that a whole-gate summary understates
-the evidence for item 2's process-tree stop, which is exactly the fix that gate exists to
-validate.
-
 ## Section 0 item 4's whole gate was run without its own precondition, and owes one re-run
 
 Item 4 conditions its whole-gate run on the operator confirming every other live `claude`
@@ -199,3 +177,7 @@ failure is not specific to this repo. Operator's call.
 ## The hourly cost-cap ask is controller prose of the kind Round 58 finding 3 removed elsewhere (found 2026-09-14)
 
 `hooks/index.ts:2317-2343` opens an operator ask when the per-hour nudge budget is spent, with a question the controller composes. Round 58 finding 3 removed the same shape from the consecutive-nudge cap (`:2251-2258`) on the ground that an ask with no concrete fork from the worker has nothing for the operator to decide, and item 8.2 says asks come only from real forks. Whether the hourly cap is the one legitimate exception, because the operator must choose between raising the budget and waiting, is a design question. `.kit/controller-tick-test.mjs:3214-3216` pins the ask as it stands and stays until that question is answered. Found by Section 13's audit; outside its goal.
+
+## `hooks/cost-ledger.ts` exports `isCapReached`, which no production code calls (found 2026-09-14)
+
+`isCapReached` at `hooks/cost-ledger.ts:31` has no caller under `hooks/` or `bin/` (grep `isCapReached` over `hooks/`, `bin/` and `.kit/`: only its own definition). The controller inlines the same comparison at `hooks/index.ts:2306` (`effectiveWindowCount(...) >= costMaxNudgesPerHour`), so the export is dead code that the test audit exposed when its only caller, a unit-test import, was removed. Delete the export, or route the controller through it, when the cost ledger is next touched. Not done in Section 13 because that section edits tests only.
