@@ -550,12 +550,6 @@ function ownedNamedPersonasOf(claims: UnionedClaim[], sessionId: string): string
 }
 
 /**
- * The ground a coordinator's record is labelled with. The delivery sites
- * compare against it to mark the turn they open as coordinator-origin.
- */
-export const COORDINATOR_GROUND = "COORDINATOR";
-
-/**
  * The provenance ground a record from `writer` carries when delivered to
  * `target`, read from claims already read, or null when the writer may not
  * reach the target at all. Reach holds on any of three legs: the writer
@@ -599,7 +593,7 @@ export function deliveryGroundIn(
   writer: string,
   coordinatorPersona: string,
 ): DeliveryGround {
-  if (holdsOwnerClaim(claims, writer, coordinatorPersona)) return { ground: COORDINATOR_GROUND };
+  if (holdsOwnerClaim(claims, writer, coordinatorPersona)) return { ground: "COORDINATOR" };
   const workerLeg = target === coordinatorPersona && holdsOwnerClaim(claims, writer, undefined, "default");
   const readerPersonas = readerPersonasOf(claims, writer);
   let kind: string;

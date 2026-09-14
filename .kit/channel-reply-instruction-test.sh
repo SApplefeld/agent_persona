@@ -10,7 +10,8 @@
 # sentence telling the child what a [COORDINATOR id=...] prompt carries and
 # how to resolve it, present under BOTH values of NO_CHANNEL, riding the
 # priming write and never the goal write). Every direction is checked so
-# this cannot pass by always finding a string true. The block under test is pulled out of
+# this cannot pass by always finding a string true. The block under test is
+# pulled out of
 # the real script by its start/end lines, not hand-copied, so this test
 # reads whatever bin/supervise.sh currently says rather than a frozen guess.
 # Exits 0 on all-pass, 1 on any failure.
@@ -102,6 +103,17 @@ case "$GOAL_WRITE" in
   *COORDINATOR_STEER_INSTRUCTION*) check "the goal-prompt write does not carry the coordinator steer sentence" 1 ;;
   *GOAL_PROMPT_FRAMING*) check "the goal-prompt write does not carry the coordinator steer sentence" 0 ;;
   *) check "the goal-prompt write does not carry the coordinator steer sentence" 1 ;;
+esac
+# v2 Section 7 (Reviewer Round 113 R36): the priming write the steer
+# sentence rides must stay independent of NO_CHANNEL. The presence checks
+# above stay green if that write is wrapped in a NO_CHANNEL guard, so the
+# guard line itself is pinned: the line before the first priming `node -e`
+# is the CHILD_IN test and names no NO_CHANNEL.
+PRIMING_GUARD=$(printf '%s\n' "$SNIPPET" | grep -B1 -m1 '^    node -e "$' | head -1)
+case "$PRIMING_GUARD" in
+  *NO_CHANNEL*) check "the priming write is not guarded by NO_CHANNEL (its guard line is the CHILD_IN test)" 1 ;;
+  '  if [ -n "$CHILD_IN" ]; then') check "the priming write is not guarded by NO_CHANNEL (its guard line is the CHILD_IN test)" 0 ;;
+  *) check "the priming write is not guarded by NO_CHANNEL (its guard line is the CHILD_IN test)" 1 ;;
 esac
 # A presence grep for the wait is not enough: `if : wait_for_result_line ...`
 # keeps the literal, makes the call a no-op argument to `:`, and passes. So

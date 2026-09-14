@@ -93,9 +93,6 @@ export function buildSelfReviewInput(
   // surface, the same way nudge_failed is. context_budget_nudge_failed and
   // operator_delivery_failed for the same reason: each is a refused submit,
   // the moment an automated path into the session went dead.
-  // coordinator_bound_surfaced stays in the window as well, because a
-  // steer's act refused at the coordinator bound is something that happened
-  // to the worker, the same way operator_resolved is.
   const NOISE_ACTIONS = new Set([
     "controller_tick", "env_inject", "heartbeat", "self-review",
     "turn_start", "turn_complete", "planning_fired",
