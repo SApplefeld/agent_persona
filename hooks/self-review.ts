@@ -88,7 +88,9 @@ export function buildSelfReviewInput(
   // worker. operator_stamp_withheld and operator_turn_unanswered, because each
   // names a delivery that went unanswered, which a self-review should see.
   // sweep_expired_records_failed, because a refused log write is a dead
-  // surface, the same way nudge_failed is.
+  // surface, the same way nudge_failed is. context_budget_nudge_failed and
+  // operator_delivery_failed for the same reason: each is a refused submit,
+  // the moment an automated path into the session went dead.
   const NOISE_ACTIONS = new Set([
     "controller_tick", "env_inject", "heartbeat", "self-review",
     "turn_start", "turn_complete", "planning_fired",

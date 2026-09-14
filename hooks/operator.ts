@@ -330,12 +330,15 @@ export async function sweepExpiredRecords(
  * its own lifecycle - answered, expired, or re-raised - and TTL-based
  * `sweepExpiredRecords` above is the only thing that ages one out); it
  * covers `inbox:` records that are `"skipped"` or `"resolved"` and every
- * `reply:` record, combined and ordered oldest-first, keeping the newest
+ * `reply:` record except one whose inbox record is present as `"delivered"`
+ * or `"answered"`, combined and ordered oldest-first, keeping the newest
  * `windowSize` and rolling the rest. A `pending` record is live work the
  * drain has not consumed yet, and a `delivered` or `answered` record is an
  * open steer whose state the sender still reads, so both stay in the store
- * whatever the window; the TTL sweep is the bound on those. Returns the
- * number of records rolled.
+ * whatever the window, and so does the open steer's reply; the TTL sweep is
+ * the bound on those. A reply for a `resolved` or `skipped` record rolls
+ * with it, and an orphan reply with no inbox record rolls on its own age.
+ * Returns the number of records rolled.
  */
 export async function enforceChannelWindow(
   store: CommonsStore,
@@ -343,7 +346,9 @@ export async function enforceChannelWindow(
   windowSize: number,
   appendLines: (lines: string[]) => Promise<void>,
 ): Promise<number> {
-  const inbox = (await listInboxRecords(store, persona)).filter((r) => r.status === "skipped" || r.status === "resolved");
+  const allInbox = await listInboxRecords(store, persona);
+  const inbox = allInbox.filter((r) => r.status === "skipped" || r.status === "resolved");
+  const openSteerIds = new Set(allInbox.filter((r) => r.status === "delivered" || r.status === "answered").map((r) => r.id));
   const keys = await store.keys();
   const replyPrefix = `${REPLY_PREFIX}${persona}:`;
   const combined: { key: string; at: number; kind: "inbox" | "reply"; record: unknown }[] = inbox.map((r) => ({
@@ -354,6 +359,7 @@ export async function enforceChannelWindow(
   }));
   for (const key of keys) {
     if (key.startsWith(replyPrefix)) {
+      if (openSteerIds.has(key.slice(replyPrefix.length))) continue;
       const raw = await store.get(key);
       if (raw) combined.push({ key, at: (raw as ReplyRecord).at, kind: "reply", record: raw });
     }

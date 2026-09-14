@@ -3153,6 +3153,10 @@ async function main() {
     await caseSection12_6_foreignTurnDoesNotTakeTheStamp(clock);
     await caseSection12_6_budgetNudgeFlagsTheTurnBeforeItsSubmit(clock);
     await caseSection12_7_ownTurnStillTakesTheStamp_control(clock);
+    await caseSection12_F1_resolveInsideTheAnsweringTurnKeepsTheReply(clock);
+    await caseSection12_F2_windowRollKeepsAnOpenSteersReply(clock);
+    await caseSection12_F3_failedNudgeResetsTheNudgedFlag(clock);
+    await caseSection12_F4_failedDeliverySubmitReturnsTheRecordToPending(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
     await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
     await caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock);
@@ -4408,6 +4412,165 @@ async function caseSection12_7_ownTurnStillTakesTheStamp_control(clock) {
   await ha.handlers["turn.complete"](ha.fake, { turnId: "t-own-ask", answer: "Going left.", reason: "completed" }, async () => ({ result: "ok" }));
   check("section12.7 ask: reply written from the turn's answer", readStoreRecord(ha, "reply:default:default-writer-ans-1")?.text === "Going left.");
   check("section12.7 ask: answer record answered", readStoreRecord(ha, answerKey)?.status === "answered");
+}
+
+// F1: the owner does the work and calls agentic_resolve inside the stamped
+// turn, so the record is already resolved when turn.complete runs. The reply
+// is still filed, the status stays resolved, and the sender reads both.
+async function caseSection12_F1_resolveInsideTheAnsweringTurnKeepsTheReply(clock) {
+  console.log("\n=== Section 12 F1: a resolve inside the answering turn still files the reply ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("section12_f1_resolve_in_turn", now, "writer-f1");
+  await tickAndSettle(h, clock, 50);
+  await h.handlers["turn.start"](h.fake, { turnId: "t-resolve" }, async () => ({ result: "ok" }));
+  check("section12.F1: record stamped (setup sanity)", readStoreRecord(h, key)?.turnId === "t-resolve");
+  const r = await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__agentic_resolve", id, outcome: "done", note: "shipped" }, async () => ({ result: "passthrough" }));
+  check("section12.F1: resolve accepted inside the turn (setup sanity)", r.deny === undefined);
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-resolve", answer: "Here is the result.", reason: "completed" }, async () => ({ result: "ok" }));
+  const rec = readStoreRecord(h, key);
+  const reply = readStoreRecord(h, `reply:default:${id}`);
+  check("section12.F1: reply written from the turn's answer", reply?.text === "Here is the result.", reply);
+  check("section12.F1: record stays resolved with its outcome", rec?.status === "resolved" && rec?.outcome === "done", rec);
+  check("section12.F1: operator_answered names the record", getDecisions(h).some((d) => d.action === "operator_answered" && d.detail.includes(id)));
+
+  // The sender's read. The reader harness lists records by its own session
+  // id, so the record is copied over with `from` rewritten to it; the reply
+  // key is by record id and copies as is.
+  const hr = await seedReaderHarness("section12_f1_inbox", now, "owner-f1", {}, { turnStartedAt: null, workdir: HARNESS_CWD });
+  hr.storeMap.set(key, { ...rec, from: SESSION_ID });
+  hr.storeMap.set(`reply:default:${id}`, reply);
+  const inbox = await hr.handlers["tool.call"](hr.fake, { tool: "mcp__agentic-plugin__agentic_inbox" }, async () => ({ result: "passthrough" }));
+  const seen = inbox.result ? JSON.parse(inbox.result).inbox.find((x) => x.id === id) : undefined;
+  check("section12.F1: agentic_inbox returns reply beside outcome", seen?.reply === "Here is the result." && seen?.outcome === "done" && seen?.status === "resolved", seen);
+}
+
+// F2: the window roll keeps the reply of an open steer (an answered or
+// delivered record still in the store) while a reply for a record that
+// rolls, and an orphan reply, roll as before.
+async function caseSection12_F2_windowRollKeepsAnOpenSteersReply(clock) {
+  console.log("\n=== Section 12 F2: the window roll keeps an answered record's reply ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await createTickHarness({ ...OPTS, caseName: "section12_f2_window_reply", channelRecordWindow: 2 });
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  const answeredKey = seedInboxRecord(h, "writer-a", 1, { at: now - 9000, status: "answered", deliveredAt: now - 8950, turnId: "t-a" });
+  const answeredReplyKey = "reply:default:default-writer-a-1";
+  h.storeMap.set(answeredReplyKey, { at: now - 8900, text: "the open steer's reply" });
+  const resolvedKey = seedInboxRecord(h, "writer-r", 1, { at: now - 7000, status: "resolved", resolvedAt: now - 6800, outcome: "done", note: "" });
+  const resolvedReplyKey = "reply:default:default-writer-r-1";
+  h.storeMap.set(resolvedReplyKey, { at: now - 6900, text: "reply on a resolved record" });
+  const resolved2Key = seedInboxRecord(h, "writer-r2", 1, { at: now - 5000, status: "resolved", resolvedAt: now - 4800, outcome: "declined", note: "" });
+  const orphanReplyKey = "reply:default:default-writer-gone-1";
+  h.storeMap.set(orphanReplyKey, { at: now - 4000, text: "orphan reply" });
+  const skippedKey = seedInboxRecord(h, "writer-s", 1, { at: now - 2000, status: "skipped" });
+
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+
+  check("section12.F2: answered record still in the store (setup sanity)", h.storeMap.has(answeredKey));
+  check("section12.F2: the answered record's reply survives the roll", h.storeMap.has(answeredReplyKey));
+  check("section12.F2 control: the rolled resolved record's reply rolled with it", !h.storeMap.has(resolvedKey) && !h.storeMap.has(resolvedReplyKey));
+  check("section12.F2 control: the orphan reply and the newest rollable records sit within the window",
+    !h.storeMap.has(resolved2Key) && h.storeMap.has(orphanReplyKey) && h.storeMap.has(skippedKey));
+  const logLines = (h.fsMap.get(".agentic-channel.jsonl") || "").split("\n").filter((l) => l.trim().length > 0);
+  check("section12.F2 control: the log holds the three rolled records", logLines.length === 3, logLines);
+
+  const hr = await seedReaderHarness("section12_f2_inbox", clock.get(), "owner-f2", {}, { turnStartedAt: null, workdir: HARNESS_CWD });
+  hr.storeMap.set(answeredKey, { ...readStoreRecord(h, answeredKey), from: SESSION_ID });
+  const keptReply = readStoreRecord(h, answeredReplyKey);
+  if (keptReply) hr.storeMap.set(answeredReplyKey, keptReply);
+  const inbox = await hr.handlers["tool.call"](hr.fake, { tool: "mcp__agentic-plugin__agentic_inbox" }, async () => ({ result: "passthrough" }));
+  const seen = inbox.result ? JSON.parse(inbox.result).inbox.find((x) => x.id === "default-writer-a-1") : undefined;
+  check("section12.F2: agentic_inbox still returns the reply", seen?.reply === "the open steer's reply", seen);
+}
+
+// F3: a budget nudge whose submit is refused resets the nudged flag, so the
+// tick's next delivery turn is the plugin's own and takes the stamp.
+async function caseSection12_F3_failedNudgeResetsTheNudgedFlag(clock) {
+  console.log("\n=== Section 12 F3: a refused budget nudge does not withhold the next delivery turn's stamp ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "section12_f3_nudge_failed",
+    contextBudgetEnabled: true,
+    contextBudgetInfoTokens: 100,
+    contextBudgetCloseoutTokens: 200,
+    contextBudgetCriticalTokens: 1_000_000,
+    contextBudgetReadEveryNTicks: 1,
+    sessionMessages: () => Promise.resolve([{ text: "x".repeat(2000), toolUses: [], toolResults: [] }]),
+  });
+  // A goal-less tree, so the tick returns after the budget read and no goal
+  // nudge rides on the same refused submit.
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(SESSION_ID, now) }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  h.failPromptSubmits(new Error("submit refused for the nudge"));
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 50);
+  check("section12.F3: the budget nudge was attempted (setup sanity)", (h.promptSubmits || []).some((p) => p.startsWith("[BUDGET]")));
+  // No turn pair here: turn.complete resets the nudged flag, which is the
+  // very state this case observes. The decisions are read after the
+  // turn.start below, which persists.
+
+  h.failPromptSubmits(null);
+  seedReaderClaim(h, "writer-f3", clock.get());
+  const key = seedInboxRecord(h, "writer-f3", 1, { at: clock.get() - 500, status: "pending" });
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 50);
+  check("section12.F3: record delivered (setup sanity)", readStoreRecord(h, key)?.status === "delivered");
+  await h.handlers["turn.start"](h.fake, { turnId: "t-own-after-failed-nudge" }, async () => ({ result: "ok" }));
+  check("section12.F3: the delivery's own turn takes the stamp", readStoreRecord(h, key)?.turnId === "t-own-after-failed-nudge");
+  await fireTurn(h, "t-flush-f3");
+  const decisions = getDecisions(h);
+  check("section12.F3: no operator_stamp_withheld", !decisions.some((d) => d.action === "operator_stamp_withheld"));
+  check("section12.F3: the refused budget nudge is recorded and no context_budget_nudge was logged",
+    decisions.some((d) => d.action === "context_budget_nudge_failed" && d.detail.includes("submit refused for the nudge")) && !decisions.some((d) => d.action === "context_budget_nudge"));
+}
+
+// F4: a refused delivery submit returns the record to pending, consumes the
+// submitted id, and the next tick delivers it again.
+async function caseSection12_F4_failedDeliverySubmitReturnsTheRecordToPending(clock) {
+  console.log("\n=== Section 12 F4: a refused delivery submit returns the record to pending for the next tick ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("section12_f4_delivery_failed", now, "writer-f4");
+  h.failPromptSubmits(new Error("submit refused for the delivery"));
+  await fireTick(h).catch(() => {});
+  await new Promise((r) => setTimeout(r, 50));
+  check("section12.F4: the delivery was attempted (setup sanity)", (h.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 1);
+  const afterFail = readStoreRecord(h, key);
+  check("section12.F4: record back to pending after the refused submit", afterFail?.status === "pending" && afterFail?.deliveredAt === undefined, afterFail);
+  check("section12.F4: operator_delivery_failed names the record and the error",
+    getDecisions(h).some((d) => d.action === "operator_delivery_failed" && d.detail.includes(id) && d.detail.includes("submit refused for the delivery")));
+
+  await h.handlers["turn.start"](h.fake, { turnId: "t-unrelated" }, async () => ({ result: "ok" }));
+  check("section12.F4: an unrelated turn stamps nothing", readStoreRecord(h, key)?.turnId === undefined);
+  check("section12.F4: an unrelated turn withholds nothing", !getDecisions(h).some((d) => d.action === "operator_stamp_withheld"));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-unrelated", answer: "unrelated", reason: "completed" }, async () => ({ result: "ok" }));
+
+  h.failPromptSubmits(null);
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 50);
+  check("section12.F4: the next tick delivers the record", readStoreRecord(h, key)?.status === "delivered" && (h.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 2);
+  await h.handlers["turn.start"](h.fake, { turnId: "t-own-retry" }, async () => ({ result: "ok" }));
+  check("section12.F4: the retried delivery's own turn takes the stamp", readStoreRecord(h, key)?.turnId === "t-own-retry");
 }
 
 // agentic_say(urgent: true) writes urgent onto the record; a plain say does not.

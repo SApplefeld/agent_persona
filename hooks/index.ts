@@ -46,6 +46,7 @@ import {
   readHolderMeta,
 } from "./commons";
 import type { CommonsStore } from "./commons";
+import type { InboxRecord } from "./operator";
 import {
   claimReaderRole,
   hasLiveReaderClaim,
@@ -619,6 +620,28 @@ export const register: Register = async (on, options) => {
   // another turn starting first would otherwise take the stamp and file
   // its own answer as the record's reply.
   let submittedRecordId: string | null = null;
+  // A delivery whose $.prompt.submit threw opened no turn, so the record it
+  // marked delivered would otherwise sit delivered with no stamp until the
+  // TTL, and the submitted id would arm whatever turn starts next. Both
+  // delivery sites call this on a throw: the id is consumed, the record goes
+  // back to pending with no deliveredAt so the next tick retries it, and the
+  // refusal is recorded.
+  const revertFailedDelivery = async (store: CommonsStore, rec: InboxRecord, err: unknown): Promise<void> => {
+    submittedRecordId = null;
+    const existing = await store.get(rec.key);
+    if (existing) {
+      const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
+      parsed.status = "pending";
+      delete parsed.deliveredAt;
+      await store.set(rec.key, parsed);
+    }
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "monitor",
+      action: "operator_delivery_failed",
+      detail: `record ${rec.id} submit failed, returned to pending: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200),
+    });
+  };
   // Item 2 backstop safety (Round 28): true only when the real
   // prompt.submit hook (a genuine external turn) just saw the
   // [SUPERVISOR-PRIMING] marker bin/supervise.sh's priming turn carries.
@@ -1419,7 +1442,11 @@ export const register: Register = async (on, options) => {
                   detail: `ask ${askId} closed by record ${answer.id}`,
                 });
                 submittedRecordId = answer.id;
-                await $.prompt.submit({ text: `[OPERATOR] Answer to ${askRecord.question}: ${answer.text}` });
+                try {
+                  await $.prompt.submit({ text: `[OPERATOR] Answer to ${askRecord.question}: ${answer.text}` });
+                } catch (err) {
+                  await revertFailedDelivery(store, answer, err);
+                }
                 await persist($);
                 return;
               }
@@ -1469,7 +1496,11 @@ export const register: Register = async (on, options) => {
             detail: `record ${oldest.id} submitted as [OPERATOR]`,
           });
           submittedRecordId = oldest.id;
-          await $.prompt.submit({ text: "[OPERATOR] " + oldest.text });
+          try {
+            await $.prompt.submit({ text: "[OPERATOR] " + oldest.text });
+          } catch (err) {
+            await revertFailedDelivery(store, oldest, err);
+          }
           await persist($);
           return; // One record per tick
         }
@@ -2208,7 +2239,18 @@ export const register: Register = async (on, options) => {
                   action: "context_budget_nudge",
                   detail: `${estimatedTokens} tokens, close-out nudge sent`,
                 });
-              } catch { /* nudge failed; non-fatal */ }
+              } catch (err) {
+                // Non-fatal. No nudged turn is coming, so the flag set above
+                // is reset: left set, the tick's next delivery turn would
+                // read as nudged and its stamp would be withheld.
+                nudgedTurn = false;
+                sess.state.decisions.push({
+                  timestamp: budgetTs,
+                  loop: "monitor",
+                  action: "context_budget_nudge_failed",
+                  detail: `close-out nudge submit failed: ${String(err)}`.slice(0, 200),
+                });
+              }
             }
             if (!sess.contextBudgetLatched.info && estimatedTokens >= sess.contextBudgetInfoTokens) {
               sess.contextBudgetLatched.info = true;
@@ -2707,7 +2749,10 @@ export const register: Register = async (on, options) => {
                 // Non-fatal, as every actuator failure here is. It is recorded
                 // because the floor was already spent above, so a failed submit
                 // costs a whole nudge window and would otherwise leave nothing
-                // anywhere saying the worker went un-nudged.
+                // anywhere saying the worker went un-nudged. No nudged turn is
+                // coming, so the flag is reset: left set, the tick's next
+                // delivery turn would read as nudged and lose its stamp.
+                nudgedTurn = false;
                 sess.state.decisions.push({
                   timestamp: tickTs,
                   loop: "monitor",
@@ -3296,13 +3341,16 @@ export const register: Register = async (on, options) => {
       sess.state.monitor.selfReview.turnsSince += 1;
     }
 
-    // D4: if the turn.complete turnId matches a delivered record, write the
-    // reply and mark answered.
+    // D4: if the turn.complete turnId matches the record stamped with this
+    // turn, write the reply and mark answered. The record may already be
+    // resolved: the owner does the work and calls agentic_resolve inside the
+    // stamped turn, so the reply is filed for a resolved record too and its
+    // resolution stays as it is.
     if (sess.isOwner) {
       const persona = sess.persona;
       const allRecords = await listInboxRecords(commonsStoreOf($), persona);
       const matching = allRecords.find(
-        (rec) => rec.status === "delivered" && rec.turnId === e.turnId
+        (rec) => (rec.status === "delivered" || rec.status === "resolved") && rec.turnId === e.turnId
       );
       if (matching) {
         const store = commonsStoreOf($);
@@ -3313,7 +3361,7 @@ export const register: Register = async (on, options) => {
           const existing = await store.get(matching.key);
           if (existing) {
             const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
-            parsed.status = "answered";
+            if (parsed.status === "delivered") parsed.status = "answered";
             await store.set(matching.key, parsed);
           }
           sess.state.decisions.push({
@@ -3323,14 +3371,15 @@ export const register: Register = async (on, options) => {
             detail: `record ${matching.id} replied`,
           });
         } else {
-          // AX4: empty answer or aborted. The record stays delivered with
-          // its stamp and no reply until the TTL: a later turn is not the
-          // one the plugin opened for it, so none re-stamps it.
+          // AX4: empty answer or aborted. The record keeps its status
+          // (delivered, or resolved with its resolution), its stamp and no
+          // reply until the TTL: a later turn is not the one the plugin
+          // opened for it, so none re-stamps it.
           sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "monitor",
             action: "operator_turn_unanswered",
-            detail: `record ${matching.id} turn ${e.turnId} ended with no answer (empty or aborted); left delivered`,
+            detail: `record ${matching.id} turn ${e.turnId} ended with no answer (empty or aborted); left ${matching.status}`,
           });
         }
       }
