@@ -77,6 +77,9 @@ STEER_RESOLVE_CONTROL="agentic_resolve"
 # the name "coordinator".
 ROLE_CAP_CONTROL="pushing a third round"
 ROLE_SAY_CONTROL="agentic_say"
+# The steer sentence's escalation clause, present for a worker's launch and
+# absent for the coordinator's own, which cannot address itself.
+STEER_ESCALATE_CONTROL="through agentic_say with persona set to"
 
 failed=0
 check() {
@@ -134,7 +137,7 @@ case "$GOAL_WRITE" in
   *GOAL_PROMPT_FRAMING*) check "the goal-prompt write does not carry the coordinator role instruction" 0 ;;
   *) check "the goal-prompt write does not carry the coordinator role instruction" 1 ;;
 esac
-# v2 Section 7 (Reviewer Round 113 R36): the priming write the steer
+# v2 Section 7: the priming write the steer
 # sentence rides must stay independent of NO_CHANNEL. The presence checks
 # above stay green if that write is wrapped in a NO_CHANNEL guard, so the
 # guard line itself is pinned: the line before the first priming `node -e`
@@ -182,6 +185,10 @@ case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_SAY_CONTROL"*"$ROLE_CAP_CONTROL"*) check "persona matches COORDINATOR_PERSONA: coordinator role instruction present, naming agentic_say and the round cap" 0 ;;
   *) check "persona matches COORDINATOR_PERSONA: coordinator role instruction present, naming agentic_say and the round cap" 1 ;;
 esac
+case "${COORDINATOR_STEER_INSTRUCTION:-}" in
+  *"$STEER_ESCALATE_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the steer sentence carries no escalation-to-coordinator clause" 1 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the steer sentence carries no escalation-to-coordinator clause" 0 ;;
+esac
 
 # Channel not attached: the reply-tool guidance is absent, but the
 # skill-load sentence and the coordinator steer sentence must still be
@@ -200,6 +207,10 @@ esac
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *"$STEER_LABEL_CONTROL"*"$STEER_RESOLVE_CONTROL"*) check "channel not attached: coordinator steer sentence still present, naming the label and agentic_resolve" 0 ;;
   *) check "channel not attached: coordinator steer sentence still present, naming the label and agentic_resolve" 1 ;;
+esac
+case "${COORDINATOR_STEER_INSTRUCTION:-}" in
+  *"$STEER_ESCALATE_CONTROL"*"$COORDINATOR_PERSONA"*) check "persona differs from COORDINATOR_PERSONA: the steer sentence routes findings and declined steers to the coordinator by name" 0 ;;
+  *) check "persona differs from COORDINATOR_PERSONA: the steer sentence routes findings and declined steers to the coordinator by name" 1 ;;
 esac
 if [ -z "${CHANNEL_REPLY_INSTRUCTION:-}" ]; then
   check "channel not attached: instruction is empty" 0

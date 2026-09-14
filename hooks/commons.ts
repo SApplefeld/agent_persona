@@ -254,7 +254,7 @@ export async function readHolderMeta(
   resource: string,
   stalenessThresholdMs: number = DEFAULT_STALE_AFTER_MS,
   now: number = Date.now(),
-): Promise<{ holder: string; turnStartedAt: number | null } | null> {
+): Promise<{ holder: string; turnStartedAt: number | null; workdir: string | null } | null> {
   const allKeys = await store.keys();
   const keys = allKeys.filter((k) => k.startsWith(COMMONS_PREFIX));
   const live: UnionedClaim[] = [];
@@ -282,6 +282,7 @@ export async function readHolderMeta(
   return {
     holder,
     turnStartedAt: typeof entry.turnStartedAt === "number" ? entry.turnStartedAt : null,
+    workdir: typeof entry.workdir === "string" && entry.workdir !== "" ? entry.workdir : null,
   };
 }
 

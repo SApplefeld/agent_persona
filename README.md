@@ -387,10 +387,10 @@ Refused when:
 
 **`agentic_inbox`** (`persona?`)
 
-Returns unread replies to the caller's records addressed to the target persona (the `persona` argument when given, else the caller's own persona), plus that persona's open asks. A record still `pending` while the owner's commons entry shows a turn in flight (`turnStartedAt` in the machine-global commons store, live while the entry's `lastSeen` is within `staleAfterMs`) comes back with `deferred: true` and `turnRunningMs`. A `resolved` record carries `outcome`, `note` and `resolvedAt` beside `reply`. The store is shared across the machine, so a reader in another working directory sees the same state. Refused under the same rule as `agentic_say`:
+Returns unread replies to the caller's records addressed to the target persona (the `persona` argument when given, else the caller's own persona), plus that persona's open asks. A record still `pending` while the owner's commons entry shows a turn in flight (`turnStartedAt` in the machine-global commons store, live while the entry's `lastSeen` is within `staleAfterMs`) comes back with `deferred: true` and `turnRunningMs`. A `resolved` record carries `outcome`, `note` and `resolvedAt` beside `reply`. The result also carries `workdir`, the target persona's live owner's working directory, where its own `.agentic-personas.json` sits. The store is shared across the machine, so a reader in another working directory sees the same state. Refused under the same rule as `agentic_say`:
 - The calling session owns the target persona
 - None of the three grounds above holds
-- `persona` is given but is empty or contains `:`
+- `persona` is given but fails the shared persona name rule stated under `agentic_say` above
 
 **`agentic_resolve`** (owner only)
 

@@ -1212,7 +1212,7 @@ export const register: Register = async (on, options) => {
         "calls this to poll for replies to its messages. With persona, the target is that persona, under the rule agentic_say uses: " +
         "the session holding the coordinator persona may read any persona, and a session owning a named persona may read the coordinator persona. " +
         "Refused for the persona this session owns itself. " +
-        "Returns {inbox: [{id, from, at, text, kind, status, reply?, deferred?, turnRunningMs?, outcome?, note?, resolvedAt?}], asks: [{id, at, nodeId, question, status}]}. " +
+        "Returns {inbox: [{id, from, at, text, kind, status, reply?, deferred?, turnRunningMs?, outcome?, note?, resolvedAt?}], asks: [{id, at, nodeId, question, status}], workdir?}: workdir is the target persona's live owner's working directory, where its own store file sits. " +
         "A pending record carries deferred: true and turnRunningMs while the owner is inside a turn: it waits for that turn to end. " +
         "A resolved record carries outcome (done or declined), note and resolvedAt: the owner finished or declined the work, which a reply alone does not say. " +
         "Answer an open ask with agentic_say(text, answers: <ask id>).",
@@ -4480,9 +4480,13 @@ export const register: Register = async (on, options) => {
       // reader in another working directory sees the same entry, which the
       // cwd-relative heartbeat file cannot give it.
       let ownerTurnStartedAt: number | null = null;
+      // The owner's working directory rides on the result too, so a
+      // coordinator in another repository knows where the worker's own
+      // store file sits without asking for it in a record.
+      let ownerWorkdir: string | null = null;
       try {
         const holder = await readHolderMeta(commonsStoreOf($), `persona:${persona}`, sess.staleAfterMs);
-        if (holder) ownerTurnStartedAt = holder.turnStartedAt;
+        if (holder) { ownerTurnStartedAt = holder.turnStartedAt; ownerWorkdir = holder.workdir; }
       } catch { /* commons read failed; report records without the deferred view */ }
       // Attach replies to records, and the deferred view to pending ones.
       const withReplies = await Promise.all(myRecords.map(async (rec) => {
@@ -4493,7 +4497,7 @@ export const register: Register = async (on, options) => {
         }
         return base;
       }));
-      return { result: JSON.stringify({ inbox: withReplies, asks: openAsks }, null, 2) };
+      return { result: JSON.stringify({ inbox: withReplies, asks: openAsks, ...(ownerWorkdir !== null ? { workdir: ownerWorkdir } : {}) }, null, 2) };
     }
 
     // Section 12: serve agentic_resolve (the owner marks a record's work

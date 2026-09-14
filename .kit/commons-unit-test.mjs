@@ -193,6 +193,7 @@ function check(name, cond) { if (cond) ok(name); else fail(name); }
   await claimResource(store, "persona:default", "session-B", now, { turnStartedAt: now - 5_000, workdir: "D:/b" });
   const metaLive = await readHolderMeta(store, "persona:default", 90_000, now);
   check("Test 10: live holder's turnStartedAt is read", metaLive?.turnStartedAt === now - 5_000);
+  check("Test 10: live holder's workdir is read, and a missing one normalizes to null", metaLive?.workdir === "D:/b" && metaB?.workdir === null);
 
   // Two live claimants: the meta comes from the earlier claim, the winner
   // every other reader resolves, not from the later one

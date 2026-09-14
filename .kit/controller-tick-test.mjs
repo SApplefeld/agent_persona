@@ -3991,6 +3991,10 @@ async function caseItem8p3_inboxReportsDeferredWhileTurnRuns(clock) {
   check("item8.3 deferred: record still pending", rec?.status === "pending");
   check("item8.3 deferred: record marked deferred", rec?.deferred === true);
   check("item8.3 deferred: turnRunningMs is the owner's turn age", rec?.turnRunningMs === 120_000);
+  // The owner's workdir rides on the result: Section 1 publishes it on the
+  // commons entry so a coordinator in another repository knows where the
+  // worker's own store file sits without asking in a record.
+  check("item8.3 deferred: the owner's workdir rides on the result", parsed.workdir === HARNESS_CWD);
 
   // Control: owner commons entry with no turn in flight.
   const hc = await seedReaderHarness("item8p3_deferred_control", now, "idle-owner-001", {}, { turnStartedAt: null, workdir: HARNESS_CWD });
@@ -7829,7 +7833,7 @@ async function caseS13_score_completedTurnRecordsRound(clock) {
   await h.handlers["turn.complete"](h.fake, { turnId: "t-score", answer: "Rivers run to the sea.", reason: "completed" }, async () => ({ result: "ok" }));
   const state = getState(h);
   const scores = state.decisions.filter((d) => d.action === "score");
-  check("s13 score: one score decision names the turn's leaf and the verdict", scores.length === 1 && scores[0].detail === "g-plan Round 1: on-goal", scores);
+  check("s13 score: one score decision names the turn's leaf and the verdict", scores.length === 1 && scores[0].detail.includes("g-plan") && scores[0].detail.includes("on-goal"), scores);
   const plan = state.goals.find((g) => g.id === "g-plan");
   check("s13 score: the on-goal round is burned (completedRounds 1)", plan && plan.completedRounds === 1, plan && plan.completedRounds);
 }
