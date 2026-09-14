@@ -5589,6 +5589,20 @@ async function caseSection3_namedOwnerReachesTheCoordinatorAndDefaultOnlyDoesNot
   const unheld = await callTool(hn, { tool: SAY, text: "Escalation with nobody holding the coordinator persona.", persona: "coordinator" });
   check("section3 worker send: with no live coordinator the say is refused, naming that no live session holds it", typeof unheld.deny === "string" && unheld.deny.includes("no live session holds the 'coordinator' persona"), unheld);
   check("section3 worker send: with no live coordinator no record was written", !hn.storeMap.has(`inbox:coordinator:${SESSION_ID}:1`));
+  // That refusal is the cue the standing instruction names rather than a
+  // failure, so it does not count toward the error streak that pauses the
+  // active goal. Control: a say refused for a malformed persona name in the
+  // next turn does count.
+  await hn.handlers["turn.start"](hn.fake, { turnId: "t-nocoord-1" }, () => {});
+  await callTool(hn, { tool: SAY, text: "Escalation again.", persona: "coordinator" });
+  await hn.handlers["turn.complete"](hn.fake, { turnId: "t-nocoord-1", answer: "done", reason: "stop" }, () => {});
+  const afterRefusal = getStateForPersona(hn, "dev")?.monitor?.env?.errors;
+  check("section3 worker send: a turn whose only refusal is the no-coordinator one is not an error turn", afterRefusal?.consecutiveErrorTurns === 0, afterRefusal);
+  await hn.handlers["turn.start"](hn.fake, { turnId: "t-nocoord-2" }, () => {});
+  await callTool(hn, { tool: SAY, text: "Bad target.", persona: "a:b" });
+  await hn.handlers["turn.complete"](hn.fake, { turnId: "t-nocoord-2", answer: "done", reason: "stop" }, () => {});
+  const afterBadName = getStateForPersona(hn, "dev")?.monitor?.env?.errors;
+  check("section3 worker send control: a say refused for a malformed persona name is an error turn", afterBadName?.consecutiveErrorTurns === 1, afterBadName);
 
   const hd = await seedNamedOwnerHarness("section3_default_send", now, "default", "coordinator");
   const refused = await callTool(hd, { tool: SAY, text: "Hello from a plain chat session.", persona: "coordinator" });

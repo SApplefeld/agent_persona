@@ -1540,13 +1540,14 @@ while true; do
   # A worker's own findings and escalations reach the coordinator through
   # the same inbox path, labelled [WORKER:<persona> id=<record id>] at
   # delivery. The plugin refuses that send while no live session owns the
-  # coordinator persona, so a fleet with no coordinator writes nothing unread
-  # and the refusal sends the finding to the operator. Appended for every
+  # coordinator persona, so a fleet with no coordinator writes nothing unread;
+  # the worker sends again later or puts the finding to the operator. That
+  # refusal also fires while a coordinator relaunches. Appended for every
   # launch but the coordinator's own, which cannot address itself; a
   # default-persona launch holds no named owner claim, so the reach rule
   # would refuse its send and the clause is withheld.
   if [ "$PERSONA" != "default" ] && [ "$PERSONA" != "$COORDINATOR_PERSONA" ]; then
-    COORDINATOR_STEER_INSTRUCTION+="A finding the coordinator should act on, and every coordinator steer you decline, also goes to it through agentic_say with persona set to ${COORDINATOR_PERSONA}: that delivery wakes the coordinator, where a resolution alone waits for its next status read. Where that send is refused because no live session holds the coordinator persona, the finding goes to the operator instead. What needs the operator's own decision still goes to the operator on your own channel. "
+    COORDINATOR_STEER_INSTRUCTION+="A finding the coordinator should act on, and every coordinator steer you decline, also goes to it through agentic_say with persona set to ${COORDINATOR_PERSONA}: that delivery wakes the coordinator, where a resolution alone waits for its next status read. Where that send is refused because no live session holds the coordinator persona, send it again on a later turn, and put the finding to the operator where it cannot wait. What needs the operator's own decision still goes to the operator on your own channel. "
   fi
   # The one line the goal-prompt turn opens with. It names the text behind
   # it as the operator's own task, so a child that has just loaded
