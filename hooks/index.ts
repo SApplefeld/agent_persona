@@ -107,12 +107,14 @@ function commonsStoreOf(dp: any): CommonsStore {
 // it whole), and the text the turn then opens with. Both are kept because
 // the contract does not order the submit promise settling against
 // turn.start: a turn that opens before the submit's continuation has run
-// matches on `text`, one that opens after matches on `settledText`. Two
-// turns match neither key: one a UserPromptSubmit settings hook suppressed,
-// which opens with an empty text, and one that opens with a rewritten or
-// capped text before the submit's continuation has stored the settled
-// text. Such a turn reads unaccounted, and the delivery entry then leaves
-// the list at the withheld branch once its record is swept or resolved.
+// matches on `text`, one that opens after matches on `settledText`. A
+// UserPromptSubmit settings hook cannot rewrite the text, since its output
+// carries no text field, and a prompt it suppresses leaves no turn that
+// matches either key. A turn that opens with a rewritten or capped text
+// before the submit's continuation has stored the settled text matches
+// neither key either. Such a delivery's turn reads unaccounted, and its
+// entry then leaves the list at the withheld branch once its record is
+// swept or resolved.
 type ExpectedTurn = { text: string; settledText?: string } & ({ kind: "delivery"; recordId: string } | { kind: "nudge" } | { kind: "plugin" });
 type SubmitOutcome = { ok: true } | { ok: false; how: "failed" | "dropped"; reason: string };
 
@@ -668,8 +670,8 @@ export const register: Register = async (on, options) => {
   // submit, and runs the submit through the top-level submitExpectedTurn,
   // which removes that same entry (by identity, never by position) when no
   // turn is coming. A delivery entry also leaves when the withheld branch
-  // in turn.start finds its record gone from the store, or no longer
-  // delivered and unstamped. turn.start matches e.text, the text the turn
+  // in turn.start finds its record gone from the store, or neither pending
+  // nor delivered and unstamped. turn.start matches e.text, the text the turn
   // begins with, against each queued entry's two keys (the ExpectedTurn type
   // above says why there are two) and removes the match wherever it sits;
   // that entry's kind is the turn's kind. A delivery entry carries the inbox
@@ -2947,20 +2949,36 @@ export const register: Register = async (on, options) => {
       // A delivery entry outlives its record when no turn opens with a
       // matching text: the TTL sweep or a resolve moves the record on while
       // the entry stays queued. So the store is read once per fire and every
-      // delivery entry whose record is absent, or is no longer delivered and
-      // unstamped, leaves the list by identity. The first entry that
-      // survives is the one the withheld line names; where none survives,
-      // nothing is written. Nudge and plugin entries are not read.
+      // delivery entry whose record is absent, or is neither pending nor
+      // delivered and unstamped, leaves the list by identity. The first entry
+      // that survives is the one the withheld line names; where none
+      // survives, nothing is written. Nudge and plugin entries are not read.
+      // The entries are taken before the read, because a tick can mark a
+      // record delivered and queue its entry while the read runs, and that
+      // entry is never judged against a read older than it. A record the
+      // read still shows pending is one whose delivery write had not landed
+      // when the read ran, so its entry is kept. A read that throws removes
+      // nothing and writes nothing, and the turn goes on.
       let queuedDelivery: Extract<ExpectedTurn, { kind: "delivery" }> | null = null;
-      if (sess.isOwner && expectedTurns.some((entry) => entry.kind === "delivery")) {
-        const liveRecords = await listInboxRecords(commonsStoreOf($), sess.persona);
-        for (const entry of [...expectedTurns]) {
-          if (entry.kind !== "delivery") continue;
-          const record = liveRecords.find((rec) => rec.id === entry.recordId);
-          if (record && record.status === "delivered" && !record.turnId) {
-            if (!queuedDelivery) queuedDelivery = entry;
-          } else {
-            unexpectTurn(entry);
+      const deliveryEntries = expectedTurns.filter(
+        (entry): entry is Extract<ExpectedTurn, { kind: "delivery" }> => entry.kind === "delivery"
+      );
+      if (sess.isOwner && deliveryEntries.length > 0) {
+        let liveRecords: InboxRecord[] | null = null;
+        try {
+          liveRecords = await listInboxRecords(commonsStoreOf($), sess.persona);
+        } catch {
+          liveRecords = null;
+        }
+        if (liveRecords) {
+          for (const entry of deliveryEntries) {
+            const record = liveRecords.find((rec) => rec.id === entry.recordId);
+            const live = record !== undefined && (record.status === "pending" || (record.status === "delivered" && !record.turnId));
+            if (live) {
+              if (!queuedDelivery) queuedDelivery = entry;
+            } else {
+              unexpectTurn(entry);
+            }
           }
         }
       }

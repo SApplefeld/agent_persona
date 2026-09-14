@@ -69,6 +69,11 @@ function createFake$(opts = {}) {
   // hook beneath the plugin or the engine's cap rewrites the text a turn
   // then opens with. Cleared by that call.
   let submitSettle = null;
+  // Non-null while store reads of one key are held: every store.get of that
+  // key reads the value as it stands at the call, then parks in
+  // parkedStoreGets until releaseStoreGet() lets it resolve.
+  let storeGetHoldKey = null;
+  const parkedStoreGets = [];
 
   const fake = {
     ui: {
@@ -162,7 +167,15 @@ function createFake$(opts = {}) {
     store: {
       // A copy, as the real store hands back a parsed JSON value: a plugin
       // function that mutates what it fetched lands nothing until set runs.
-      get(key) { return Promise.resolve(storeMap.has(key) ? structuredClone(storeMap.get(key)) : null); },
+      // A held read keeps the value it read at the call, so it resolves with
+      // the store as it stood before any write that lands while it is parked.
+      get(key) {
+        const value = storeMap.has(key) ? structuredClone(storeMap.get(key)) : null;
+        if (storeGetHoldKey !== null && key === storeGetHoldKey) {
+          return new Promise((resolve) => { parkedStoreGets.push(() => resolve(value)); });
+        }
+        return Promise.resolve(value);
+      },
       set(key, value) { storeMap.set(key, value); return Promise.resolve(); },
       delete(key) { storeMap.delete(key); return Promise.resolve(); },
       keys() { return Promise.resolve([...storeMap.keys()]); },
@@ -221,6 +234,17 @@ function createFake$(opts = {}) {
       const resolve = releaseSubmitHold;
       submitHold = null;
       releaseSubmitHold = null;
+      if (resolve) resolve();
+    },
+    // Hold every subsequent store.get of `key` open until releaseStoreGet().
+    // Each held read keeps the value the store held at the call.
+    holdStoreGets(key) { storeGetHoldKey = key; },
+    get parkedStoreGetCount() { return parkedStoreGets.length; },
+    // Stop holding new reads, then resolve the oldest parked read. Called
+    // once per parked read, so a case chooses which reader resumes first.
+    releaseStoreGet() {
+      storeGetHoldKey = null;
+      const resolve = parkedStoreGets.shift();
       if (resolve) resolve();
     },
     resetToolCalls() { toolCalls.length = 0; },

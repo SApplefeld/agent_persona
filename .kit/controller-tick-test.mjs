@@ -3174,6 +3174,8 @@ async function main() {
     await caseSection12_L1_sweptRecordDropsItsDeliveryEntry(clock);
     await caseSection12_L1_resolvedRecordDropsItsDeliveryEntry(clock);
     await caseSection12_L1_withheldLineNamesTheFirstLiveRecord(clock);
+    await caseSection12_M1_deliveryQueuedDuringTheWithheldReadIsKept(clock);
+    await caseSection12_M1_throwingWithheldReadKeepsEveryEntry(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
     await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
     await caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock);
@@ -5227,6 +5229,83 @@ async function caseSection12_L1_withheldLineNamesTheFirstLiveRecord(clock) {
   check("section12.L1c: the second delivery's own turn still takes the stamp", readStoreRecord(h, key2)?.turnId === "t-delivery-l1c");
   await h.handlers["turn.complete"](h.fake, { turnId: "t-delivery-l1c", answer: "Delivered answer.", reason: "completed" }, async () => ({ result: "ok" }));
   check("section12.L1c: the second delivery's turn files the reply", readStoreRecord(h, `reply:default:${id2}`)?.text === "Delivered answer.");
+}
+
+// M1 (A): the withheld branch's store read can span a tick that delivers
+// another record. The tick reads R2 pending, an unmatched turn opens and its
+// withheld read reads R2 pending too, then the tick marks R2 delivered and
+// queues its entry while that read is still parked. The entry pushed during
+// the read is not judged against it, so R2's own turn still takes the stamp.
+async function caseSection12_M1_deliveryQueuedDuringTheWithheldReadIsKept(clock) {
+  console.log("\n=== Section 12 M1 (A): a delivery queued while the withheld read is parked keeps its entry ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key: key1, id: id1 } = await seedOwnerWithPendingRecord("section12_m1_a_race", now, "writer-m1a1");
+  await tickAndSettle(h, clock, 50);
+  check("section12.M1a: E1 delivered and its turn never opened (setup sanity)", readStoreRecord(h, key1)?.status === "delivered" && readStoreRecord(h, key1)?.turnId === undefined);
+  seedReaderClaim(h, "writer-m1a2", clock.get());
+  const key2 = seedInboxRecord(h, "writer-m1a2", 1, { at: clock.get() - 100, status: "pending", text: "second message" });
+  const id2 = "default-writer-m1a2-1";
+
+  h.holdStoreGets(key2);
+  clock.advance(3_000);
+  const tick = fireTick(h);
+  check("section12.M1a: the tick's inbox read of R2 is parked (setup sanity)", await waitUntil(() => h.parkedStoreGetCount === 1));
+  const turnStart = h.handlers["turn.start"](h.fake, { turnId: "t-unmatched-m1a", text: "typed during the delivery" }, async () => ({ result: "ok" }));
+  check("section12.M1a: the withheld branch's read of R2 is parked too (setup sanity)", await waitUntil(() => h.parkedStoreGetCount === 2));
+  h.releaseStoreGet();
+  await tick;
+  check("section12.M1a: the tick delivered R2 while the withheld read was parked (setup sanity)",
+    readStoreRecord(h, key2)?.status === "delivered" && (h.promptSubmits || []).includes("[OPERATOR] second message"));
+  h.releaseStoreGet();
+  await turnStart;
+  const withheld = getDecisions(h).filter((d) => d.action === "operator_stamp_withheld");
+  check("section12.M1a: the withheld line names E1", withheld.length === 1 && withheld[0].detail.includes(id1), withheld);
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-unmatched-m1a", answer: "typed answer", reason: "completed" }, async () => ({ result: "ok" }));
+
+  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-m1a", text: "[OPERATOR] second message" }, async () => ({ result: "ok" }));
+  check("section12.M1a: R2's own turn takes the stamp", readStoreRecord(h, key2)?.turnId === "t-delivery-m1a");
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-delivery-m1a", answer: "Delivered answer.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.M1a: R2's turn files the reply", readStoreRecord(h, `reply:default:${id2}`)?.text === "Delivered answer.");
+}
+
+// M1 (B): a withheld read that throws leaves every queued entry in place,
+// writes no withheld line, and the turn still reaches the hooks beneath.
+async function caseSection12_M1_throwingWithheldReadKeepsEveryEntry(clock) {
+  console.log("\n=== Section 12 M1 (B): a throwing withheld read keeps every entry and the turn continues ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("section12_m1_b_throw", now, "writer-m1b");
+  await tickAndSettle(h, clock, 50);
+  check("section12.M1b: record delivered and its turn never opened (setup sanity)", readStoreRecord(h, key)?.status === "delivered" && readStoreRecord(h, key)?.turnId === undefined);
+
+  const realKeys = h.fake.store.keys;
+  let refused = 0;
+  h.fake.store.keys = () => {
+    if (refused === 0) {
+      refused++;
+      return Promise.reject(new Error("store read refused"));
+    }
+    return realKeys();
+  };
+  let nextCalled = false;
+  let threw = null;
+  try {
+    await h.handlers["turn.start"](h.fake, { turnId: "t-unmatched-m1b", text: "typed while the store refuses" }, async () => { nextCalled = true; return { result: "ok" }; });
+  } catch (err) {
+    threw = err;
+  }
+  h.fake.store.keys = realKeys;
+  check("section12.M1b: the store read was attempted and refused (setup sanity)", refused === 1);
+  check("section12.M1b: turn.start does not throw and reaches the hooks beneath", threw === null && nextCalled, threw);
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-unmatched-m1b", answer: "typed answer", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.M1b: no operator_stamp_withheld on a refused read",
+    !getDecisions(h).some((d) => d.action === "operator_stamp_withheld"));
+
+  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-m1b", text: "[OPERATOR] message 1" }, async () => ({ result: "ok" }));
+  check("section12.M1b: the delivery's entry was kept, so its own turn takes the stamp", readStoreRecord(h, key)?.turnId === "t-delivery-m1b");
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-delivery-m1b", answer: "Delivered answer.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.M1b: the delivery's turn files the reply", readStoreRecord(h, `reply:default:${id}`)?.text === "Delivered answer.");
 }
 
 // agentic_say(urgent: true) writes urgent onto the record; a plain say does not.
