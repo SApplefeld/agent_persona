@@ -689,3 +689,416 @@ Routed out: `hooks/cost-ledger.ts:31` `isCapReached` has no production caller, e
 Live dispatch: phase 2b (implementer-opus, brief `.kit/scratch/s13/brief-2b.md`), dispatched at 02:36Z from the clean tree at `b9b0068`, first-turn reading 78 assistant lines at 02:40Z, transcript still growing at 02:50Z. It was asked to retire the six REMOVE live suites, write the moved offline cases (score, errorstreak, gitprobe, health, goaltree-stall, planfail, yield phase 2, the `real_live` stub in natural-exit, `lesson_inject`) each watched red first, trim the five KEEP suites, drop `stopprocesstree` from `ALL_SUITES`, remove the kept suites` own MODEL/EFFORT exports, and update `live-all.sh`, `assert-decisions.js`, `.kit/.gitignore` and the README catalogs, writing `.kit/scratch/s13/applied-2b.md`.
 Gate baseline in force: offline lane 69 s at `b9b0068` on SCOTT-CLAUDE, measured 2026-09-14 by the phase 2a run with the dev and aios supervisors live, under the heavy-process claim; whole live gate still the previous machine's 56 minutes.
 Next: when 2b returns, verify its diff and gate, commit the first-green state, then the reviewer pair over `f005b30..HEAD`, the Minor pass, the close gate, the after measurement (offline lane, then the trimmed live gate once under a claim with the fleet state named), Chapter 5, then Section 1.
+
+### Chapter 5 - 2026-09-14
+Completed: 13. Test audit: every suite earns its place against the test bar
+Implemented By: implementer-opus (two sequential dispatches, phase 2a offline and phase 2b live lane, after four read-only implementer-opus ledger dispatches in phase 1); the round 1 and round 2 fixes and the Minor pass by the main session
+Metrics: review rounds 2, closed major-closed; provenance 3 spec-traceable, 1 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); NEEDS_CONTEXT count 0; escalations 0; consults 0
+Decisions / Surprises: The adjudication of the four ledgers is Interim board 4 and is not repeated here. Phase 2a's implementer applied the map-fallback REPAIR to the right row (`caseSection9_longTurnRecordMeasuresItsOwnTurn`) although the brief cited the single-turn case; the probe reddened both, so the single-turn case already drove the fallback and the repaired case pins it across interleaved turns. The D3 BG1 block the brief left in place under a misread of the D3/S9 merge ruling was removed by the main session, and three presence pins (`reason`, `selfReview`, `planner`) were reinstated in `cost-migration-test.mjs` because `hooks/index.ts:1422-1428` reads all three and the ledger's survivor did not cover them. Phase 2b added a budget-latch harness case beyond the enumerated moves, because the budget arm's trim would otherwise have dropped ledger rows `:357` and `:364-366` with no survivor; the ledger's cost row `:323-338` (no classify on a paused tree) has no separate case, since two attempts stayed green under the break while the same break reddens `caseS13_errorStreak`, which is the coverage. Phase 2b also found `commons-unit-test.mjs` Test 4 named as a survivor in its manifest after phase 2a had deleted it; the stale-holder half is carried by `caseS13_identity_takesOverAStaleHolder` and Test 9. `live-common.sh` ships unconditional `export MODEL="haiku"` and `export EFFORT="medium"`, diverging from the `${MODEL:-haiku}` form Interim board 4 ruled, because this session's own shell carries `MODEL=opus` (a supervisor child inherits it) and a gate run from such a shell would have launched the restartrequest child at opus with nothing in the run saying so. `stopprocesstree` left the gate roster and runs on its own beside the offline lane (15 checks, exit 0). The trimmed live gate's first run on this machine passed all five suites; it also exercised the F10(1) store re-pin live. The offline lane is 3 s slower after the audit than before (85 s against 82 s) even with 185 fewer checks, because the moved `real_live` stub case in the natural-exit suite drives the real supervisor for about 18 s; the live gate is what the audit was for, and it went from 56 minutes on the previous machine to 16.5 minutes here. Phase 2a's implementer ran one sub-second suite before reading the claim file; every later spawn went through a wrapper that read the claim, wrote its own and deleted only its own, and it waited out one live claim from `KIT: Worker`. The dispatch briefs sit at `.kit/scratch/s13/brief-2a.md` and `brief-2b.md` (scratch, not tracked). Kaizen: none.
+Assumptions: (a) `live-commons-test.sh` F10(1)'s owner and reader are read from the commons store rather than the tool result's wording, per the ledger's `:371-391` REPAIR row, and the reader's session id is taken from the first stream-json record carrying `session_id` in its own `out.jsonl`, the same equivalence the suite's earlier F10(2) rested on (route (a): the ledger row and the pre-existing suite, 2026-09-14, section 13). (b) `live-commons-test.sh` Step 2's three FAIL conditions on the store (no commons keys, fewer than two claiming sessions, no live persona:default claim) stay as plumbing that reports what the store held, in the U3 shape, since F10(1) now implies each of them (route (b), 2026-09-14, section 13). (c) The security lens did not run: the delta is test files, a test-only stub action and a README catalog; no production input handling, process spawn, permission grant or hook decision changed (route (a): step 3's trigger list, 2026-09-14, section 13).
+Review Findings: review: code pair at fable, Agent tool (round 1, adversarial `low`, blind `low`); round 2: adversarial at opus `high`, Workflow. Round 1 Majors, all spec-traceable and fixed in `00b03fa`: the model suite pinned one direction per launch flag (a mirror drive exporting EFFORT with no MODEL now pins the other direction of both, watched red by breaking each flag in `bin/supervise.sh:1449-1450` in turn); commons F10(1) decided owner and reader by grepping the tool result's wording that the offline harness also pins (re-pinned on the store); `live-common.sh` exported `MODEL="${MODEL:-haiku}"`, which an inherited `MODEL=opus` would override for the restartrequest child (blind lens, trace orchestrator-made to acceptance bullet 2 through Interim board 4's `live-common.sh` fold ruling; exports made unconditional). Round 2 Major, fix-introduced and fixed in `ba6d351`: F10(2) became a duplicate of the store-read F10(1) (removed; F10(1) logs both session ids and their claims). Minors: 8 fixed in the close pass (the stopprocesstree header's runner claim, the README model-suite line, the settings-refusal pin now also asserting nothing launched, `cost-migration-test.mjs` classify reads failing by name rather than TypeError, the mirror drive's own rundir, `${STORE_FILE_WIN:-}` under `set -u`, F10(1)'s stderr into the assert log, the F10 header and summary wording), 0 upgraded, 4 left with the reason: the channel-reply byte-identity check compares bash's value with the raw TS literal, and both literals carry no escape today while a `\"` on one side fails loudly, so the check still catches the two copies drifting; Step 2's store diagnostics stay as plumbing (assumption (b)); the board 4 export-form divergence is recorded above rather than in code; the phase 2b manifest's Test 4 citation is corrected above. One round 1 Minor (the conditional export) was superseded by the blind lens's Major on the same lines.
+Stamps: adjudicated 3, stamped 2 (`fan-out-runs-through-workflow-under-a-session-wide-cap`, `a-trace-target-you-composed-cannot-check-your-own-work`, both operator tier); `a-queued-agent-looks-identical-to-one-that-never-started` skipped, no queue formed. The window (4h) covers the span since Chapter 4's commit; no hand walk owed.
+Gate: targeted lane at section close, measured 2026-09-14 04:15Z on SCOTT-CLAUDE at `ba6d351` with the dev, aios, KIT Worker and KIT Expert sessions live and no foreign runner or build in the process list, under the heavy-process claim: the offline lane, 10 suites, 622 checks (channel-reply 9, commons-unit 15, controller-tick 421, cost-ledger-unit 17, cost-migration 20, self-review-unit 26, settings-plugin-key 34, supervisor-model 27, supervisor-natural-exit 36, supervisor-unit 17), every suite exit 0, lane exit 0, `TOTAL wall=85s`; `live-stopprocesstree-test.sh` 15 checks, exit 0; `npx tsc --noEmit` exit 0. Baseline on the same lane: Interim board 3's 807 checks, 82 s at `187898b`, every exit 0; delta: 185 fewer checks, 0 failing before and after. Contention lane: the trimmed live gate, `.kit/live-all.sh`, run once on this machine 2026-09-14 04:17:47Z to 04:34:17Z at `ba6d351`, run stamp `20260914T041747Z`, ENGINE 2.1.270, PROFILE short, with the same four sessions live and under the claim (expected 1500 s): 5 suites (goaltree, budget, commons, operator, restartrequest), each `script_exit=0` and `ASSERT: 0`, `Failures: 0`, runner exit 0, 16 minutes 30 seconds wall. The before figure for the whole gate is the 56-minute 17-suite run recorded in the item 6 Chapter on the previous machine; no untrimmed gate ever ran on this one, so the two figures are on different machines and the Chapter says so rather than inventing a same-machine before. The offline lane's before and after are on this machine.
+Next: 1. Commons entry carries turn state and workdir
+Commit Model: Branch-and-PR
+Delta: measured 2026-09-14 04:40Z on SCOTT-CLAUDE at `ba6d351`, worktree clean apart from this Chapter and the backlog edit; the reading is quoted below.
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
+Removed checks, retired suites and moved cases, with what still proves each (acceptance bullet 2). The two phase manifests follow verbatim, headings respelled as bold so no line opens with a heading marker. Phase 2a (the offline suites):
+
+
+Tree at `f005b30` on `section13-test-audit`. Every ledger line number below is the ledger's own (files were unchanged between `187898b` and `f005b30`: `git diff --stat 187898b..HEAD -- .kit hooks bin` printed nothing). All edits are unstaged; the index is empty.
+
+**Rows applied, ledger A (`ledger-controller-tick-a.md`, `.kit/controller-tick-test.mjs`)**
+
+| ledger row | case / check | verdict applied | survivor the ledger named |
+|---|---|---|---|
+| :138-139 | D2 tick1: nudge_sent in decisions; nudge count bumped | REMOVE | `caseNudgeGuard_sentBetweenTurns_control` :5535, :5538 |
+| :196 | D4: consecutiveSkips >= 1 after 3 ticks | REPAIR: re-pinned as `D4 control: the seeded streak is 4 before any turn`, three ticks dropped, case renamed "activity resets the skip streak"; `setClassifyValue`/`resetClassifyCalls` dropped as orphans of the ticks | :202 (reset) plus `cost-ledger-unit-test.mjs` backoff rows |
+| :233 | AM7: no classify calls (no active goal) | REMOVE (ruling 2); `cls` read dropped as orphan | :232 kept |
+| :294 | AT4 link: hooks/index.ts imports successfully | REMOVE, whole case `caseAT4_link` retired | every case's `createTickHarness` import (F1) |
+| :387 | AT4 reader_claim: reader:default claim | REMOVE, whole case `caseAT4_reader_claim` retired | `caseS5_reader_claims_reader_not_persona` :2601-2602 |
+| :556 | AT4 inbox_status: agentic_say succeeds for reader with claim | REMOVE | `caseS6_say_known_answers_writes_record` :2906 |
+| :571 | record has kind === say | REMOVE | nothing reads the field |
+| :572 | record has answers === ask-1 | REMOVE | :2911 |
+| :587 | inbox array present | REMOVE | :588 throws on a missing array |
+| :589 | record has status pending | REMOVE | `caseItem8p3_inboxReportsDeferredWhileTurnRuns` :4513, :4524 |
+| :783-796 | S2 reply (three checks) | REMOVE, whole case `caseS2_reply` retired | `caseS2_reply_turnid` :1053, :1061 |
+| :863 | S2 drain in-flight: turn.start handler is defined | REMOVE | :868 |
+| :944, :952 | S2 drain no claim (two checks) | REMOVE, whole case `caseS2_drain_noclaim` retired | `caseItem8p2_dead_writer_record_skipped_once` :2158, :2161 |
+| :1184, :1194 | S1 reader arbitration (two checks) | REMOVE, whole case `caseS1_reader_arbitration` retired | :2601-2602 |
+| :1234-1245 | S3 ask-operator (four checks) | REMOVE, whole case `caseS3_ask_operator` retired | `caseItem8p2_classifier_ask_operator_converts_unconditionally` :1857, :1863, :1866 |
+| :1327 | S3 planner no walk: node-002 still pending | REMOVE, whole case `caseS3_planner_no_walk` retired (vacuous) | `caseS3_no_walk_while_open` :1449, `caseSection10_openAskBlocksActivation` :5020 |
+| :1365-1376 | S3 pause-is-ask (four checks) | REMOVE, whole case `caseS3_pause_is_ask` retired | `caseItem8p2_pause_converts_unconditionally` :1923, :1929, :1932 |
+| :1791-1797 | S3 timeout default: pendingAskId cleared; ask_timeout; node-002 activated | REMOVE (:1790 kept) | `caseS3_timeout_walks_on` :1714, :1718, :1722 |
+| :1860 | item8p2a: no ask_opened decision | REMOVE | :1857 (F3) |
+| :1868 | item8p2a: nudge text includes DISCUSSION.md | REMOVE | :1869 |
+| :1926 | item8p2a2: no ask_opened decision | REMOVE | :1923 (F3) |
+| :2005 | item8p2b: ask_opened decision present | REMOVE | :1991 (F3) |
+| :2061, :2065 | placeholder: pendingAskId never set; no ask_opened | REMOVE | :2060 (F3) |
+| :2340 | item5 decision cap: decisions.length === 200 | REPAIR: `DECISIONS_MAX` imported from `hooks/agent-state.ts`; seed loop, timestamps, the assert and the newest-entry id all derive from it | n/a |
+| :2398 | item5 memory cap: memory.length === 50 | REPAIR: `MEMORY_MAX` imported; seed loop, the assert and the newest-entry id derive from it | n/a |
+| :2420 | S4 peer: session.receive handler exists | REMOVE | :2432 throws if undefined |
+| :2436 | S4 peer: consumed message mentions agentic_say | REMOVE | :2435 |
+| :2455 | S4 ps-m: handler exists | REMOVE | :2465 |
+| :2472, :2473 | S4 ps-m: peer_consumed once; detail contains text | REMOVE; `state`/`peerDecisions` reads dropped as orphans | :2440-2441 |
+| :2487 | S4 other origin: handler exists | REMOVE | :2494 |
+| :2530 | bare string: consumed mentions agentic_say | REMOVE | :2529 |
+| :2534, :2535 | bare string: 1 peer_consumed; detail contains text | REMOVE; `state`/`peerDecisions` reads dropped as orphans | :2440-2441 |
+| :2539-2541 | 2 receive_passthrough; details kind=bridge, kind=task-notification | REMOVE; `passthroughDecisions` read dropped as orphan | :2500-2516 |
+| :2557, :2558 | S5 owner: commons entry exists; persona:default claim | REMOVE, whole case `caseS5_owner_claims_commons_at_start` retired | `caseS5_identity_releases_old_persona` :2689 |
+| :2600 | S5 reader: commons entry exists | REMOVE | :2601 |
+| :2642 | S5 identity: tool.call handler exists | REMOVE | :2646 |
+| :2654 | S5 identity: result does NOT contain identity_set | REMOVE (vacuous) | :2653 |
+| :2753 | S5 reader release: reader:default claim | REMOVE | `caseS5_identity_joins_live_owner` :2659 |
+| :2817 | S6 inbox: result contains the ask id | REMOVE | :2818 |
+| :2941, :2942, :2971 | S6 owner: two ask_expired; detail says owner restart; no open asks remain | REMOVE; the dead "reader then sees" setup at :2944-2970 dropped as the fixture only :2971 read | :2933-2934 |
+| :3166, :3175 | S2 serializing: reply record exists; reply text readable | REMOVE, whole case `caseS2_reply_serializing_fake` retired | `caseS2_reply_turnid` :1053 |
+| :3209 | S9: cost_cap_reached present | REMOVE; `costCap` read dropped as orphan | `caseD3` :269 |
+| :3213 | S9: ask_opened decision present | REMOVE | :3214 |
+
+Not applied from ledger A: `:274-280` (D3 BG1 block, ledger REMOVE), left in place under brief ruling 5, "the D3/S9 BG1 merge the ledger suggested is skipped: both blocks stay". If the ruling meant only that the two cases are not merged into one harness, the seven lines at `caseD3` from `// BG1: the active goal should be paused` to `no other goal activated` are the removal still owed, and `caseS9_cost_cap_opens_ask` :3220-3226 is its survivor. `:232`, `:3214`, `:3216` KEEP per ruling 2.
+
+**Rows applied, ledger B (`ledger-controller-tick-b.md`, `.kit/controller-tick-test.mjs`)**
+
+| ledger row | case / check | verdict applied | survivor the ledger named |
+|---|---|---|---|
+| ctt:3412 | BM2 four: planner_variance detail correct | REMOVE | ctt:3409, ctt:3417 |
+| ctt:3527-3565 | `caseBJ1_budget_266_shape` | REMOVE, whole case retired (confirmed vacuous, ruling 1) | ctt:3482 `caseBJ1_budget_268_shape` |
+| ctt:3772 | item6 persona control: 'default' persona slot exists | REMOVE; `defaultState` read dropped as orphan, comment trimmed to the surviving assertion | every `getState` call |
+| ctt:3914-3922 | commented-out AO1 block in `main` | REMOVE (housekeeping); the `execSync` import it alone named dropped as orphan | n/a |
+| ctt:4087 | D5b reraise: reraisedAt is set | REMOVE | ctt:4096 |
+| ctt:4123-4126 | item2 size: two wording pins | REPAIR: `one-step or trivial-looking request` pin dropped, `size is not the test` pin kept | n/a |
+| ctt:4454, 4458, 4469 | item8.3 stamp: absent before any turn; equals turn.start clock; cleared at turn.complete | REMOVE; case trimmed to the heartbeat-tick leg (4464-4465), the `turn.complete` call only 4469 read dropped, header comment restated | ctt:6160, 6182, 6218, 6295 |
+| ctt:4623 | item8.3 urgent: no [OPERATOR] prompt submitted | REMOVE (cannot fail) | ctt:4618-4619 |
+| ctt:4699 | item8.4 goal: objective carries a proof line | REMOVE | `self-review-unit-test.mjs` 12b (`/Proof:/`) |
+| ctt:4700 | item8.4 goal: title names it kaizen | REMOVE | ctt:4696 finds the node by `kaizenSignal` |
+| ctt:4725-4730 | item8.4 control | REPAIR: `detail.endsWith(": NONE")` dropped from 4728-4729; `completeCalls.length === 1` and `action === "self-review"` kept | n/a |
+| ctt:4762-4766 | item8.4 config | REPAIR: 4763 pins `action === "kaizen_config_adjusted"` only; the `20 -> 10` detail regex dropped | `self-review-unit-test.mjs` 12e |
+| ctt:4794-4826 | `caseSection10_goalAddActivatesPlanWithNoActiveLeaf` | REMOVE, whole case retired | ctt:4832-4866, ctt:4995-4997 |
+| ctt:5223-5224 | section10 dropped-parent: the dropped plan is still abandoned | REMOVE | ctt:5220-5222 |
+| ctt:5506-5517 | `caseNudgeGuard_skippedWhileTurnOpen` (9 checks) | REMOVE, whole case retired; 5514 and 5515 re-homed into `caseR58f3_nudgeInsideOpenTurnNotSent` as `r58f3a: nudge ledger not incremented` and `r58f3a: nudge window not bumped` | ctt:5544-5563 |
+| ctt:5601 | r58f3b: blockedReason names the nudge cap | REMOVE | ctt:6037 `pausedByNudgeCap === true`, ctt:5600 |
+| ctt:5629 | r60f3b(i): cap pause landed first | REPAIR: the `/Nudged \d+ times/` regex replaced by `plan.pausedByNudgeCap === true` | n/a |
+| ctt:6088-6136 | `caseFloorStampedAtSubmit_notBeforeTheDecider` (7 checks) | REMOVE, whole case retired with its header comment | ctt:5757-5803 |
+| ctt:6211-6212 | section9 two open: not null; not the completed turn's own start | REMOVE | ctt:6210 |
+| ctt:6226-6281 | `caseSection9_longTurnRecordMeasuresItsOwnTurn` | REPAIR: `durationMs` removed from the four completions (6239, 6250, 6266, 6275) so every figure comes from the map fallback; comments restated. Watched red first, see the probe record | n/a (now the only pin of criterion 4 across interleaved turns) |
+| ctt:6301 | section9 start-derive: the stamp is not B's own start | REMOVE | ctt:6300 |
+
+Ledger B rows marked KEEP with a comment fix or a rename (ctt:3482 `caseBJ1_budget_268_shape` rename; ctt:4292 `caseItem2_backfillSkipsNudgeTurn` comment; ctt:4780 `caseItem8p4_turnOverHourRecorded` comment) were left untouched under ruling 6, since their verdict column reads KEEP. Named here for routing.
+
+Brief ruling 3 cites "ctt:4780, 4785" for the map-fallback repair; that ledger row is the single-turn case and reads KEEP. The REPAIR row whose four completions lose `durationMs` is ctt:6226-6281, which matches Interim board 4's wording, and that is the row applied and probed.
+
+**Rows applied, ledger offline-other (`ledger-offline-other.md`)**
+
+**`.kit/supervisor-natural-exit-test.sh`**
+| ledger row | check | verdict applied | survivor |
+|---|---|---|---|
+| 91-93 | pin: live-stopprocesstree assigns stop_child's pid variable | REMOVE; the header's static-pin list restated to the one pin left | `live-stopprocesstree-test.sh:249-255` |
+| 160-165 (+171, 181, 191, 199, 209, 235) | `no_pid_abort` helper and its six calls | REMOVE | each case's rc and launch-count asserts |
+| 174 | (a) the NOTE line names the backfilled root | REPAIR: pattern loosened to the stable token `is backfilled`, the same token (b) and (e) assert absent | n/a |
+| 198-201 | case (d), child dies at startup | REMOVE, whole case | (f) at 232-240, (c) at 190-195 |
+| 236 | (f) no `ERROR: CHILD_IN` line | REMOVE (orphan pattern) | 239-240 |
+
+**`.kit/supervisor-model-test.sh`**
+| ledger row | check | verdict applied | survivor |
+|---|---|---|---|
+| 23-38 | setup greps for the settings lines and the two flag resolutions | REPAIR: dropped; the launch control records argv instead | the argv checks below |
+| 57-66 | default resolves to opus / medium | REMOVE | nothing, acceptable (a preference) |
+| 68-77 | supervisorModel / supervisorEffort override | REPAIR: folded into the launch control drive, which sets `supervisorModel=sonnet supervisorEffort=high` and reads `--effort high` from the stub's argv | n/a |
+| 90-132 | unexported / exported MODEL and EFFORT pairs (4 checks) | REMOVE; the `$STUB` file, `env_stub`, and the trap's stub clean-up dropped as orphans | the repaired launch control |
+| 175-186 | launch control | KEEP and REPAIR: the stub writes `"$@"` to `$TMP/stub/argv`; the drive exports `MODEL=haiku` beside `supervisorModel=sonnet supervisorEffort=high` and asserts `--model haiku` (export wins over the setting) and `--effort high` (setting reaches the flag) | n/a |
+| 197 | MODEL 'opus[1m]' passes | REMOVE | 196 |
+| 198-204 | seven bracket variants | REMOVE 6, kept `opus]` (198) | 194-196 |
+| 220-244 | `positive_number` rows | REMOVE 6 (`00`, `12345678901234567890`, `5abc`, `180`, `60000 1000`, `999 1000`), 8 kept | the kept rows |
+| 254-258 | six call-site drives with 'abc' | REMOVE 5, kept `supervisorCrashLimit`; loop replaced by one line, comment restated | the structural pin at 306-340 |
+| 261, 265 | staleAfterMs 'abc' and '0' | REMOVE | `settings-plugin-key-test.sh:185-192`, helper row `0 1 REFUSE` |
+| 275-281 | supervisorPsBoundS rows | REMOVE 4, kept `abc:30` and `45:45` | n/a |
+| 342-370 | live-export scan | REMOVE (ruling 4), whole block with `NON_LAUNCHERS` and `LAUNCHERS` | `.kit/live-common.sh` now exports `MODEL="${MODEL:-haiku}"` and `EFFORT="${EFFORT:-medium}"` |
+
+The header comment was rewritten to state what the suite proves now (the argv the stub records across the real process boundary).
+
+**`.kit/settings-plugin-key-test.sh`**
+| ledger row | check | verdict applied | survivor |
+|---|---|---|---|
+| 54, 55, 56, 59 | parses as JSON; DEV_KEY; INSTALLED_KEY; installed id carries the persona | REMOVE | 57 (`SAME_OPTIONS=1`) and 58 |
+| 163 | provided file's options under both ids | REMOVE | 162 |
+| 169 | refusal recorded in supervisor.log | REPAIR: pinned on `[ -s supervisor.log ]` rather than the sentence | n/a |
+| 170 | launches nothing after refusing | REMOVE | 168 |
+| 174 | refusal happens before creating the rundir | REMOVE | nothing, acceptable |
+
+**`.kit/channel-reply-instruction-test.sh`**
+| ledger row | check | verdict applied | survivor |
+|---|---|---|---|
+| 81 | exactly two writes to the child's stdin | REMOVE; `CALL_SITES` dropped as orphan | 86-94 |
+| 83 | the skill-load sentence rides on exactly one write | REMOVE; `SITES_WITH_SKILL_LOAD` dropped as orphan | 87 plus 91 |
+| 105 | the `^  else$` priming body exists | REMOVE | 128-131 |
+| 110-113 | channel attached: prose guidance present | REPAIR: re-pinned on byte-identity between `CHANNEL_REPLY_INSTRUCTION` and `hooks/index.ts` `REPLY_INSTRUCTION` (the ledger's "or better" option); `CONTROL` dropped as orphan | n/a |
+| 118-121 | goal-prompt framing names the task as the operator's own | REPAIR: pinned `GOAL_PROMPT_FRAMING` non-empty; `FRAMING_CONTROL` dropped as orphan | 92 |
+
+**`.kit/commons-unit-test.mjs`**
+| ledger row | check | verdict applied | survivor |
+|---|---|---|---|
+| 40-42 | Test 1 (three checks) | REMOVE, whole test | Test 2 line 58, Test 3 |
+| 79 | Test 3: A holds (earlier claim) | REMOVE (tautology); `resourceClaims` dropped as orphan | 82-89 |
+| 109-116 | Test 4 (three checks) | REMOVE, whole test | Test 9 |
+| 131 | Test 5: release removes claim | REMOVE; `entry` read dropped | 134 |
+| 147 | Test 6: multiple resources claimed | REMOVE; `entry` read dropped | 149 |
+| 187 | Test 8: A holds before release | REMOVE; `let` reads collapsed to `const` | Test 3 |
+
+**`.kit/cost-ledger-unit-test.mjs`**
+| ledger row | check | verdict applied | survivor |
+|---|---|---|---|
+| 22, 23, 25 | fnv1aHash empty / deterministic / unsigned | REMOVE | 24 |
+| 33, 37 | effectiveWindowCount active / expired | REMOVE | 41, 45 |
+| 50-63 | isCapReached (4 checks) | REMOVE; the `isCapReached` import dropped as orphan, header comment restated | nothing, acceptable |
+| 75, 79, 87, 91 | backoffFactor 20 / 30 / 50 / threshold 5 | REMOVE | 71, 83, 94 |
+| 102, 112, 115, 119, 122, 125, 135 | shouldRunClassify rows | REMOVE | 99, 106, 109, 129, 132 |
+| 142, 145, 148, 151 | estimateTokens rows | REMOVE | 139 |
+| 160, 168 | bumpWindow active increments; exactly at boundary | REMOVE | 172, 164 |
+
+**`.kit/cost-migration-test.mjs`**
+| ledger row | check | verdict applied | survivor |
+|---|---|---|---|
+| 25-35 | eleven "field exists" checks | REMOVE | 37-47 (see the concern in the report: `reason`, `selfReview`, `planner` have no value check there) |
+
+`37-47` kept as they stand (ruling 5).
+
+**`.kit/self-review-unit-test.mjs`**
+| ledger row | check | verdict applied | survivor |
+|---|---|---|---|
+| 156 | 9a: input has prompt | REMOVE | 9f |
+| 158-160 | 9c, 9d, 9e noise members | REMOVE | 9b |
+| 163 | 9h: streak is a number | REMOVE | nothing, acceptable |
+| 171, 173, 177 | 10a, 10b, 10c | REMOVE, with their `dedupeSelfReview` calls | 10d, 10e |
+| 230 | 11d newest kept | REMOVE | 11c |
+
+**`.kit/supervisor-unit-test.mjs`**
+| ledger row | case | verdict applied | survivor |
+|---|---|---|---|
+| 24-39 | 1: exit non-zero → restart | REMOVE | natural-exit (c) |
+| 44-60 | 2: exit non-zero with root_complete → restart_passive | REMOVE | case 11 |
+| 206-221 | 4: closeout only → continue | REMOVE | 2d, 2g |
+| 281-297 | 8: crash loop at the default limit | REMOVE | 20, 21 |
+
+**`.kit/live-common.sh`**
+Two lines added after the `agentic-common.sh` source block, before `# --- Helpers ---` (the file had no defaults block to sit beside): `export MODEL="${MODEL:-haiku}"` and `export EFFORT="${EFFORT:-medium}"`, with a four-line comment stating why they live here.
+
+`.kit/tick-harness.mjs`: no edit was needed; no REPAIR row lacked a stub.
+
+**Check counts per suite**
+
+Counted as the `  OK:` lines each suite prints (`supervisor-unit-test.mjs` prints `PASS: <name>` per case instead, counted the same way). Before = the baseline run's log at `187898b` (`.kit/scratch/s13/baseline-logs/`), after = the phase 2a lane run's log (`.kit/scratch/s13/log-*.txt`). The controller-tick file's `check(` call sites went from 511 to 404 (`grep -c "check("`, which also counts the `function check` line and the commented AO1 sites in the pristine file), but the runtime count is the figure below.
+
+| suite | before | after | exit (2a lane) |
+|---|---|---|---|
+| channel-reply-instruction-test.sh | 12 | 9 | 0 |
+| commons-unit-test.mjs | 25 | 15 | 0 |
+| controller-tick-test.mjs | 499 | 398 | 0 |
+| cost-ledger-unit-test.mjs | 43 | 17 | 0 |
+| cost-migration-test.mjs | 28 | 17 | 0 |
+| self-review-unit-test.mjs | 35 | 26 | 0 |
+| settings-plugin-key-test.sh | 41 | 34 | 0 |
+| supervisor-model-test.sh | 61 | 24 | 0 |
+| supervisor-natural-exit-test.sh | 41 | 31 | 0 |
+| supervisor-unit-test.mjs | 21 | 17 | 0 |
+| total | 806 | 588 | |
+
+The controller-tick delta reconciles as 108 OK lines gone and 7 added (2 re-homed from the nudge guard case, 5 renamed by the D4, item5 and item8.4 repairs); the 108 includes two runs of the nudge-race driver's per-round instrument checks that executed inside the retired one-round case.
+
+Lane wall: `TOTAL wall=69s` in `.kit/scratch/s13/offline-2a.txt` against the baseline's 82 s. `supervisor-natural-exit-test.sh` 50 s to 42 s, `supervisor-model-test.sh` 12 s to 9 s.
+
+**Probe record (Section 9 map-fallback repair)**
+
+Pre-probe copies: `.kit/scratch/s13/index.ts.pre-probe` (`cmp` exit 0 at capture) and `.kit/scratch/s13/status.pre-probe` (empty: the tree was clean).
+
+Step 2, repair in and code intact: `node .kit/controller-tick-test.mjs` exit 0, 398 OK, tail `PASS: 0 failure(s)` (`.kit/scratch/s13/probe-step2-green.txt`).
+
+Step 3, the break: `hooks/index.ts:2791` changed from
+`        : mapStartedAt === undefined ? null : Date.now() - mapStartedAt;`
+to
+`        : mapStartedAt === undefined ? null : 0;`
+Run: exit 6, 392 OK (`.kit/scratch/s13/probe-step3-red.txt`). Failing lines:
+```
+  FAIL: item8.4 long turn: a sixty-one-minute turn records turn_over_hour with its duration
+  FAIL: section9 long turn: the matched completion writes exactly one record
+  FAIL: section9 long turn: measured against its own start, 3960s
+  FAIL: section9 long turn: the overlapped long turn still records
+  FAIL: section9 long turn: measured against its own start, 3780s
+  FAIL: section9 long turn control: the three-minute turn records nothing
+FAIL: 6 failure(s)
+```
+The repaired case's five figure checks red; the sixth is the existing single-turn fallback case, which reads the same branch.
+
+Step 4, restore: `cp .kit/scratch/s13/index.ts.pre-probe hooks/index.ts`, then `cmp hooks/index.ts .kit/scratch/s13/index.ts.pre-probe` exit 0; `git diff -- hooks/index.ts` empty.
+
+Step 5, green: exit 0, 398 OK, tail `  OK: item6 persona control: no unexpected extra persona slot appeared` / `PASS: 0 failure(s)` (`.kit/scratch/s13/probe-step5-green.txt`).
+
+**Orphans removed**
+
+- `.kit/controller-tick-test.mjs`: `import { execSync }` (only the commented AO1 block named it); the `costCap` read in S9; `state`/`peerDecisions`/`passthroughDecisions` reads in the three S4 cases; `defaultState` in the item 6 control; the `turn.complete` call in the item 8.3 stamp case; the S6 owner case's "reader then sees" setup (`otherSid`, second store/heartbeat seed, `startH`, `openAsks`); the D4 case's `setClassifyValue`/`resetClassifyCalls`; the AM7 `cls` read; ten runner lines in `main()` plus four more for ledger B's retired cases.
+- `.kit/supervisor-model-test.sh`: `$STUB` and its trap clean-up, `env_stub`, `SETTINGS_SNIPPET`, `MODEL_FLAG`, `EFFORT_FLAG`, `NON_LAUNCHERS`, `LAUNCHERS`, the header narrative about R110.
+- `.kit/supervisor-natural-exit-test.sh`: `no_pid_abort`, `PID_VAR`, the header's stopprocesstree pin bullet.
+- `.kit/channel-reply-instruction-test.sh`: `CONTROL`, `FRAMING_CONTROL`, `CALL_SITES`, `SITES_WITH_SKILL_LOAD`.
+- `.kit/cost-ledger-unit-test.mjs`: the `isCapReached` import.
+- `.kit/commons-unit-test.mjs`: `resourceClaims` in Test 3, `entry` reads in Tests 5 and 6.
+- `.kit/self-review-unit-test.mjs`: the three `dedupeSelfReview` calls that fed 10a-10c.
+
+Orphan sweep: `grep -rn --include='*.sh' --include='*.mjs' --include='*.js' --include='*.ts' --exclude-dir=scratch --exclude-dir=runs -e <name> .kit hooks` for each of `no_pid_abort PID_VAR env_stub SETTINGS_SNIPPET MODEL_FLAG EFFORT_FLAG NON_LAUNCHERS LAUNCHERS FRAMING_CONTROL CALL_SITES SITES_WITH_SKILL_LOAD execSync` and each of the fourteen retired case names: every one matched nothing. `isCapReached` matched only its definition at `hooks/cost-ledger.ts:31` (outside scope, reported below). Control: the same grep for `seedNudgeRaceHarness` matched `.kit/controller-tick-test.mjs:4692` and callers, and for `positive_number` matched `.kit/supervisor-model-test.sh:103,121`, so the instrument speaks.
+
+**Surfaces outside Files in scope, for the main session to route**
+
+- `hooks/cost-ledger.ts:31` `isCapReached`: now has no caller and no test (the ledger noted it as dead; out of scope here).
+- `.kit/live-goalconvo-test.sh`, `live-passive-test.sh`, `live-restartpassive-test.sh`, `live-restartrequest-test.sh`, `live-supervisor-test.sh`: each still carries its own `export MODEL="haiku"` / `export EFFORT="medium"` with a comment naming the model suite's scan as the reason; redundant after the `live-common.sh` fold and 2b's to trim.
+- `.kit/supervisor-model-test.sh` no longer carries the `.kit/live-*-test.sh` scan; nothing in `.kit/` now detects a live suite that sets `MODEL` before sourcing `live-common.sh`, which is by design under ruling 4.
+- Ledger B KEEP-with-note rows (ctt:3482 rename, ctt:4292 comment, ctt:4780 comment) untouched.
+
+**Rows not applied**
+
+- Ledger A `:274-280` (D3 BG1 block): left under ruling 5, see the note under ledger A.
+- `cost-migration-test.mjs` `37-47`: left as they stand (ruling 5).
+- Every KEEP row.
+
+
+Phase 2b (the live lane):
+
+
+Tree at start: `19b8dbc` on `section13-test-audit` (the dispatch said `b9b0068`; `19b8dbc` is the plan-doc commit on top of it, and no file in scope differs between the two). Every edit is unstaged. Nothing under `hooks/` or `bin/` is modified. Line numbers below are the ledger's unless marked "now".
+
+Baselines measured at HEAD before the change (confirmed, from the runs' own output):
+- `controller-tick-test.mjs`: 394 OK, exit 0 (`.kit/scratch/s13/ct-head-baseline.txt`, the HEAD file run from a temp copy).
+- `supervisor-natural-exit-test.sh`: 31 OK (applied-2a table; the 2a lane log).
+- Offline lane: `TOTAL wall=69s` (`offline-2a.txt`).
+
+After the change:
+- `controller-tick-test.mjs`: 421 OK, exit 0, `PASS: 0 failure(s)` (`.kit/scratch/s13/2b-final-ct.txt`): 394 + 27 new checks.
+- `supervisor-natural-exit-test.sh`: 36 OK, exit 0 (`log-supervisor-natural-exit-test.sh.txt`): 31 + 5 for case (g).
+- Offline lane: every suite exit 0, `TOTAL wall=87s` (`offline-2b.txt`). The growth is the natural-exit suite, 42 s to 60 s, which is case (g)'s drive.
+- `bash .kit/live-stopprocesstree-test.sh`: exit 0, `15 checks run, 0 failed` (`stopprocesstree-2b.txt`).
+
+**1. Retired suites (deleted with `rm`)**
+
+| file | ledger row | survivor |
+|---|---|---|
+| `.kit/live-controller-test.sh` | ledger 4 (`:92-102`) | goaltree `assert-decisions.js:120-129` and `:155-170` (now `:61-99`); `score` element moved to `caseS13_score_completedTurnRecordsRound`; cost_summary at `controller-tick-test.mjs` AM7 |
+| `.kit/live-cost-test.sh` | ledger 10 (`:176-188`) | D2, D3, D4, AM7 cases in `controller-tick-test.mjs`; the paused-tree row `:323-338` is recorded under "not applied" below |
+| `.kit/live-passive-test.sh` | ledger 13 (`:233-243`) | restartrequest F1, F4, F5b, F6; `supervisor-model-test.sh` gate control; natural-exit (c) |
+| `.kit/live-goalconvo-test.sh` | ledger 14 (`:245-254`) | restartrequest F6; goaltree chain |
+| `.kit/live-supervisor-test.sh` | ledger 18 (`:308-322`) | restartrequest F1, F5b, F6; natural-exit (b) and (g) |
+| `.kit/live-self-review-test.sh` | ledger 19 (`:324-337`) | commons F10(1); `self-review-unit-test.mjs` Tests 1 and 4; item8p2c; F4 moved to `caseS13_lessonInject_newestLessonReachesTheNextTurnOnce` |
+| `.kit/live-errorstreak-test.sh` | ledger 1 (`:43-56`) | `caseS13_errorStreak_threeDeniedTurnsOpenAnAsk` |
+| `.kit/live-gitprobe-test.sh` | ledger 3 (`:78-90`) | `caseS13_gitProbe_dirtyCountSampledOnCadence` |
+| `.kit/live-health-test.sh` | ledger 2 (`:58-76`) | `caseS13_health_redThenGreenAndTheRedReachesTheTurn` |
+| `.kit/live-goaltree-stall-test.sh` | ledger 6 (`:119-131`) | `caseS13_stall_pendingPlanActivatesFirstAndNothingActivatesAfterRootComplete`; the chain row `:129` by goaltree and `caseSection10_goalAddActivatesPlanWithNoActiveLeaf` |
+| `.kit/live-planfail-test.sh` | ledger 7 (`:133-147`) | `caseS13_planFail_threeFailuresBlockTheRoot` |
+| `.kit/live-yield-test.sh` | ledger 8 (`:149-161`) | phase 2 leg: `caseS13_identity_takesOverAStaleHolder`; the rest by commons F10(1) and `commons-unit-test.mjs` Test 4 |
+| `.kit/live-restartpassive-test.sh` | ledger 15 (`:256-269`) | natural-exit case (g), stub action `real_live`; F4 by restartrequest F6 |
+
+Fixtures deleted because nothing outside `.kit/scratch/` referenced them once their suites left (ledger `:352`): `.kit/health-probe.js` (live-health only), `.kit/check-cap-reached.mjs` and `.kit/write-decisions-log.mjs` (live-cost only). Predicate before deletion: `grep -rln -E "health-probe\.js|check-cap-reached\.mjs|write-decisions-log\.mjs" .kit README.md bin hooks --exclude-dir=scratch --exclude-dir=runs`, which matched only `.kit/.gitignore`.
+
+**2. Moved cases**
+
+All in `.kit/controller-tick-test.mjs` unless stated; line numbers are "now". Every probe: copy taken to `.kit/scratch/s13/<base>.pre-probe-<name>` before the edit, `git status --porcelain` to `status.pre-probe-<name>`, one exactly-one-match edit by `probe-edit.mjs`, red run, `cp` restore, `cmp` (exit 0 every time, re-checked at the end of the phase: every `hooks/` and `bin/` copy still `cmp` 0), green run. Full outputs in `probe-<name>.red.txt`, `probe-<name>.green.txt`, `probe-<name>.summary.txt`.
+
+| live row | new case (file:line) | probe edit | red run's failing line(s) | restore cmp | green tail |
+|---|---|---|---|---|---|
+| controller `score` element (`assert-decisions.js:216`, ledger `:101`) | `caseS13_score_completedTurnRecordsRound` `:5504` (2 checks) | `hooks/index.ts` scorer: the `on-goal` label dropped from the round-burning condition | `FAIL: s13 score: the on-goal round is burned (completedRounds 1)`, exit 1 | 0 | `PASS: 0 failure(s)`, exit 0 |
+| errorstreak `assert-decisions.js:290-296` (ledger `:54-56`) | `caseS13_errorStreak_threeDeniedTurnsOpenAnAsk` `:5525` (3) | `hooks/index.ts` C3: `consecutiveErrorTurns >= 3` to `>= 4` | `FAIL: s13 errorstreak: deny x3, error_streak, ask_opened, paused_by_controller, ask_waiting in order`, exit 1 | 0 | `PASS: 0 failure(s)`, exit 0 |
+| gitprobe `assert-decisions.js:266-270` (ledger `:88-90`) | `caseS13_gitProbe_dirtyCountSampledOnCadence` `:5559` (2) | `hooks/index.ts` git probe: the env_git log condition reduced to `prevGit === null` (dirty and branch changes no longer logged) | `FAIL: s13 gitprobe: three env_git samples read dirty 0, then 1, then 0`, exit 1 | 0 | `PASS: 0 failure(s)`, exit 0 |
+| health `assert-decisions.js:278-284` (ledger `:70-74`) | `caseS13_health_redThenGreenAndTheRedReachesTheTurn` `:5588` (2) | `hooks/index.ts` runHealth: `if (res.exitCode === 0)` before the `health_green` push to `!== 0` | `FAIL: s13 health: activated, health_red, env_inject, health_green in order`, exit 1 | 0 | `PASS: 0 failure(s)`, exit 0 |
+| goaltree-stall H1 `assert-decisions.js:207` (ledger `:130`) | `caseS13_stall_pendingPlanActivatesFirstAndNothingActivatesAfterRootComplete` `:5620` (5, H1 checks 1-2) | `hooks/agent-state.ts`: `return !hasWork;` to `return true;` | `FAIL: s13 stall H1: the tick activates the pending plan with no planning_fired before it` and `FAIL: s13 stall H1: the planner was not called while the added plan was pending` among 83 FAILs, exit 82 (the break reaches every case that plans) | 0 | `PASS: 0 failure(s)`, exit 0 |
+| goaltree-stall L25 `assert-decisions.js:210-211` (ledger `:131`) | same case, checks 4-5 | `hooks/index.ts` step 4: `if (nextId) {` after `activateNext(sess.state)` to `if (true) {` | `FAIL: s13 stall L25: no activate_none after root_complete`, exit 1 | 0 | `PASS: 0 failure(s)`, exit 0 |
+| planfail `assert-decisions.js:237-255` (ledger `:143-147`) | `caseS13_planFail_threeFailuresBlockTheRoot` `:5654` (4) | `hooks/index.ts`: `failCount >= 3` to `>= 5` | three FAILs: root blocked, exactly three planning_failed, nothing after the block; exit 3 | 0 | `PASS: 0 failure(s)`, exit 0 |
+| yield phase 2 `assert-decisions.js:231` (ledger `:159`) | `caseS13_identity_takesOverAStaleHolder` `:5684` (4; check 1 is the live-holder control) | `hooks/index.ts` agentic_identity: `readAllClaims(commonsStoreOf($), sess.staleAfterMs)` to `sess.staleAfterMs * 1000` | three FAILs: result names ownership, identity_set recorded, entry holds persona:default; exit 3 | 0 | `PASS: 0 failure(s)`, exit 0 |
+| self-review F4 (`live-self-review-test.sh:213-225`, ledger `:335`, U4) | `caseS13_lessonInject_newestLessonReachesTheNextTurnOnce` `:5722` (3) | `hooks/index.ts` prompt.submit: `newest.createdAt > sr.lastInjectAt` to `<` | two FAILs: [LESSON] block carries the lesson, one lesson_inject decision; exit 2 | 0 | `PASS: 0 failure(s)`, exit 0 |
+| budget `assert-decisions.js:357, 364-366` (ledger `:172-173`) | `caseS13_budget_latchCrossesEachThresholdOnce` `:5748` (2) | `hooks/index.ts` budget latch: the line `sess.contextBudgetLatched.closeout = true;` deleted | two FAILs: each threshold once, one context_budget_nudge; exit 2 | 0 | `PASS: 0 failure(s)`, exit 0 |
+| restartpassive F1-F3 (`live-restartpassive-test.sh:59-89`, ledger `:266-268`) | `.kit/supervisor-natural-exit-test.sh` stub action `real_live` (`:127`) and case (g) `:185-192` (5 checks) | `bin/supervise.sh` decide path: `restart_passive)` arm renamed `restart_passive_unmapped)` | four FAILs: rc=124 at the drive timeout, no decide-path `RESTART_PASSIVE:` line, no ordering, `stub launches=1`; suite exit 1 | 0 | `supervisor-natural-exit-test.sh: PASS`, exit 0 |
+
+The exact `from` and `to` text of every probe edit is in `.kit/scratch/s13/probe-edit.mjs`.
+
+The budget latch case is an extension past the brief's enumerated MOVE-OFFLINE list: the brief trims `live-budget-test.sh` to the KEEP row (`:356`), and the ledger's rows `:357` and `:364-366` say MOVE-OFFLINE with a sketch. The brief's "trim removes the assertion" would otherwise drop those three checks with no survivor, so the case was written. Flagged for the reviewer.
+
+`real_live` adds no process spawn: the stub arm reads one line, records `root_complete` from the case's detail file, then drains stdin and exits 0, all inside the stub's existing per-launch read loop (`.kit/supervisor-natural-exit-test.sh:127`). Case (g) launches with no `--prompt`, so the supervisor enters the poll loop at once and the decide unit reads the store while the child is alive.
+
+The helpers `matchedInOrder` (`:5483`) and `rootWithActivePlan` (`:5494`) are new in the Section 13 block.
+
+**3. Trimmed suites**
+
+Each removed assert with its ledger row and survivor. A trim removed the assertion and any inducer step that fed only it; kept assertions are unchanged.
+
+**`.kit/live-goaltree-test.sh`**
+- Header rewritten (ruling 7). Roadmap path in the `goal_create` prompt re-pointed from `D:/DeepSeekHarness/agentic-plugin/.kit/roadmap-test.md` to `$(cygpath -m "$PLUGIN_DIR/.kit/roadmap-test.md")` (ledger `:117` REPAIR), built into the JSON line; checked by piping the built line through `JSON.parse` (content reads `D:/agent_persona/.kit/roadmap-test.md`). No in-suite assert removed; its checks live in `assert-decisions.js` (below).
+
+**`.kit/live-budget-test.sh`**
+- Header rewritten. No in-suite assert; the trim is in `assert-decisions.js`.
+
+**`.kit/live-commons-test.sh`**
+- F10(reader) block `:456-498` removed (ledger `:203` REMOVE, survivor F10(2) `:438-442`), which also removes the `global-store-control.json` write (ledger `:204` orphan) and the `global-store.json` snapshot that only it wrote; both names dropped from the retention list (`:578`).
+- F10 yield-log check `:529-561` removed (ledger `:206` REMOVE, survivor F10(1)), with its two describing comment lines at `:368-369`.
+- Header rewritten. Pre-gate F13a `:139-185` untouched (U3).
+- Not applied: F10(1) `:371-391` is a REPAIR row (re-pin on the store) that the brief did not name; left as is.
+
+**`.kit/live-operator-test.sh` (`.kit/scratch/s13/live-operator-test.sh.pre-trim` is the pre-trim copy)**
+- Phase 1 waits for `operator_turn_stamped` and `operator_answered` (`:392-405`): kept as synchronization, FAIL increments removed (ledger `:220`, survivor `assert-decisions.js` operator phase 1).
+- BG3 secondary `:493-544` removed (ledger `:222`, survivor BG3 primary `:445-491`, kept).
+- BE10 phase 1 control `:550-574` removed (ledger `:220`, survivor `assert-decisions.js` operator phase 1).
+- Bare-text check `:576-603` removed (ledger `:223`, survivor `controller-tick-test.mjs` S2 drain).
+- Phase 2 `:605-680` removed, including the reader's turn 3 prompt and its `wait_turn 3` (ledger `:224`, survivors S3 no-walk, S3 answer-reactivates, Item8p2 fork-opens-ask, S6 say-known-answers, S6 inbox-carries-ask-id). The reader stop is kept.
+- Phase 3 `:687-734` removed with `OPERATOR_HOLD_S`, `HANDSHAKE_READY`, `HANDSHAKE_SENT`, the `OWNER_SESSION_ID` read `:245-273` (only the handshake used it), the phase 3 REPORT `:891-896`, and `PHASE3_SKIPPED` (ledger `:226`, survivors S4 peer_consumed, S4 peer_send_message_consumed, S4 other_origin_passes).
+- BF3c pair `:783-799` removed (ledger `:227-228`, orphans).
+- BG5 snapshot `:159-174` and verify `:801-858` removed, with `operator.store-keys-before.json` dropped from retention (ledger `:229`, survivor `controller-tick-test.mjs:2251` item5 append-fails).
+- The `assert-decisions.js` call drops its 5th and 6th arguments and the `GLOBAL_STORE_CYG` block that fed them.
+- Header rewritten. Kept: BG4 guard and self-check (`:40-57`, `:329-348`), pre-gate (`:114-154`, U3), BG3 primary, the channel-log retention (comment reworded to present state).
+- Left as is and flagged: the owner's settings exports (`NUDGE_IDLE_MS=60000`, `COST_MAX_NUDGES_PER_HOUR=1`, `COST_SUMMARY_EVERY_N_TICKS=3`) shaped the ask opener for phase 2 but are in force from launch through phase 1, so they are not an inducer that fed only a removed assert; changing them would change the kept run. The owner-launch comment still says the tick "should fire ask-operator", which remains what the owner does under those settings.
+
+**`.kit/live-restartrequest-test.sh`**
+- `export MODEL="haiku"` and `export EFFORT="medium"` with their two comments (`:88-95`) removed (ruling 6a). `live-common.sh:21-22` exports both; the suite sources it at `:23` (now) and launches `bin/supervise.sh` at `:90` (now). No other kept suite carried the exports (`grep -n -E 'MODEL=|EFFORT=' .kit/live-*-test.sh` matches nothing now; `--model haiku` flags on the direct `claude` launches are untouched).
+- F3b `:190` removed (ledger `:280`, survivor `supervisor-unit-test.mjs:123-143` case 2e).
+- F5a `:208-222` removed: `F5_TREE`, the `ACTIVE_AFTER` store query and its comparison, and the F5a pass/fail line (ledger `:282`, survivor F5b, whose loop and `ACTIVE_BEFORE` stay).
+- Header gained the two sentences (ruling 7).
+
+**Source order for MODEL/EFFORT in every kept suite (confirmed by grep, "now" lines)**
+goaltree sources `live-common.sh` at `:20`, budget `:19`, commons `:87`, operator `:59`, restartrequest `:23`; none references `MODEL` or `EFFORT` in its own text.
+
+**4. Runner, switch, roster, README**
+
+- `.kit/live-all.sh`: header lines 1-8 rewritten; `ALL_SUITES=(goaltree budget commons operator restartrequest)`; the yield retention block `:165-173` removed (ledger `:347` orphan); the two artifact-shape comment lines naming retired suites and the restartrequest retention comment reworded to present state. Lock, pre-gate, store-name control and the serial loop untouched.
+- `.kit/assert-decisions.js` (497 to 153 lines): arms `stall`, `controller`, `yield`, `planfail`, `gitprobe`, `health`, `errorstreak`, `cost` deleted. goaltree arm keeps the ordered chain (`:120-129`), the nudge_sent pin (`:154-170`) and the non-turn-leaf score check (`:176-192`); the planner-count block (`:131-152`, ledger `:113`, survivor BM2 offline) and the completedRounds check (`:193-199`, ledger `:116`) removed. budget arm keeps only `check2("budget: at least 3 crossings", ...)` (ledger `:171`); the nudge count, the three per-threshold checks (moved offline above) and the cost_summary check (ledger `:174`, survivor AM7) removed. operator arm keeps only `orderedSubsequence(["operator_turn_stamped", "operator_answered"], "operator phase 1")`; the ask lifecycle (`:382-417`), the record-id and ask-record checks (`:424-460`), the phase 3 peer check (`:466-472`) and the REPORT lines removed. Helpers `forbidden`, `forbiddenBefore`, `forbiddenAfter` deleted (only deleted arms used them); the `globalStorePath` and `readerSid` argv reads and the usage text's optional args deleted (only the operator ask block used them). `orderedSubsequence` and `check2` stay (goaltree, operator, budget use them).
+- `.kit/.gitignore`: the 16 `!/` lines for the 13 deleted suites and 3 deleted fixtures removed; nothing added (39 to 23 lines).
+- `README.md` Supervisor Test Coverage (`:315-321`): natural-exit line adds case (g) and no longer lists the startup-death case (retired in 2a); model-test line no longer claims the live-export scan (2a removed it); stopprocesstree line says `live-all.sh` does not run it; `live-supervisor-test.sh` line deleted; the passive/goalconvo/restartpassive/restartrequest line is now the restartrequest line. Operator Test coverage (`:425-427`): operator line says phase 1; controller-tick line names S3, S4, S6, S9 and the Section 13 cases; assert-decisions line names the three surviving arms.
+- `.kit/controller-tick-test.mjs`: Section 13 block comments state what each case drives in present terms (no retired-suite names).
+
+**5. Orphans removed, with the sweep**
+
+Predicate: `grep -rn --exclude-dir=scratch --exclude-dir=runs -F <name> .kit README.md bin hooks`.
+
+Deleted file names (16): `live-controller-test`, `live-cost-test`, `live-passive-test`, `live-goalconvo-test`, `live-supervisor-test`, `live-self-review-test`, `live-errorstreak-test`, `live-gitprobe-test`, `live-health-test`, `live-goaltree-stall-test`, `live-planfail-test`, `live-yield-test`, `live-restartpassive-test`, `health-probe.js`, `check-cap-reached.mjs`, `write-decisions-log.mjs`: each matched nothing. Control `roadmap-test.md` matched `.kit/.gitignore:14`, `.kit/assert-decisions.js:63`, `.kit/controller-tick-test.mjs:2718,2738,2780,2799`, `.kit/live-goaltree-test.sh:30`, so the instrument speaks.
+
+Removed helpers and variables (`--include` sh, mjs, js, ts, md): `forbiddenBefore`, `forbiddenAfter`, `globalStorePath`, `GLOBAL_STORE_CYG`, `HANDSHAKE_READY`, `HANDSHAKE_SENT`, `OPERATOR_HOLD_S`, `OWNER_SESSION_ID`, `PHASE3_SKIPPED`, `store-keys-before`, `F5_TREE`, `ACTIVE_AFTER`, `global-store-control`: each matched nothing. `readerSid` matched only a local in `controller-tick-test.mjs:3855-3867` (an unrelated case's variable). `READER_SESSION_WIN` still matches `live-commons-test.sh:419,450` (F10(2), kept).
+
+Reported, not removed (out of scope, `.kit/live-common.sh` is not in the brief): `wait_activation` (`:37`), `count_turn_starts` (`:45`), `wait_for_fact` (`:64`) now have no caller in `.kit/live-*.sh` (ledger `:348-349`).
+
+**6. Rows not applied, and why**
+
+- Ledger cost `:323-338` (no classify on a fully paused tree, MOVE-OFFLINE by extending D3): not applied. Two attempts were made and removed. A D3 extension (two more ticks after the cap, classify stays 2) stayed green under the step-4 break `if (!activeNode || activeNode.status !== "active")` to `if (!activeNode)`, because the nudge-cap check returns before the classifier. A standalone case seeding a paused leaf also stayed green under that break: `enforceInvariants` nulls `activeGoalId` for a paused node on parse, and every in-session pause is followed by an earlier return or nulls the id itself, so no single break reaches the classifier from a paused leaf. Under that same break `caseS13_errorStreak` reddens (`probe-pausedtree.summary.txt`: the paused node fell to the idle gate and no ask_waiting was logged), so the guard is pinned by that case. Recorded rather than shipped as a check that cannot go red.
+- Ledger commons `:201` (F10(1) REPAIR, re-pin on the store): not named by the brief; left as is.
+- Ledger `:348-349` (`live-common.sh` orphans): file not in scope; reported above.
+- README `:252` ("The `.kit/live-*` suites export `haiku` for exactly that reason."): outside the two catalogs the brief names. The export now lives in `live-common.sh`, which every live suite sources, so the sentence is still operationally true; flagged for the reviewer.
+- Ledger health `:70-71,73` UNSURE rows: moved with the suite per IB4; the engine-contract half (`$.process.run`) has no live pin, per U1.
+
+**7. Gates (all read from exit codes)**
+
+- `npx tsc --noEmit`: exit 0.
+- `bash -n` on `supervisor-natural-exit-test.sh`, `live-all.sh`, `live-goaltree-test.sh`, `live-budget-test.sh`, `live-commons-test.sh`, `live-operator-test.sh`, `live-restartrequest-test.sh`: all ok.
+- `node --check` on `controller-tick-test.mjs`, `assert-decisions.js`: ok.
+- CRLF: every edited file's `\r\n` count equals its `\n` count.
+- Offline lane `offline-2b.txt`: 10 suites exit 0, `TOTAL wall=87s`.
+- `bash .kit/live-stopprocesstree-test.sh`: exit 0.
+- `cmp` of `hooks/index.ts` against all 11 pre-probe copies, `hooks/agent-state.ts` against its copy, `bin/supervise.sh` against its copy: exit 0 each; `git status --porcelain -- hooks bin` is empty.
+- `git status --porcelain`: 11 modified, 16 deleted, all in scope; index empty.
+
+**Box budget**
+
+Each spawn (probe runs, the lane, stopprocesstree, the HEAD baseline, the final harness run) read `~/.claude/coordinator/SCOTT-CLAUDE/claims/heavy-process.md` first (never present), wrote the `supervisor-dev` claim with this session's id and a stamp from `kit-registry-stamp.js now`, and removed only a claim carrying that session line afterwards. Process-list sample before the lane: several `node.exe` and two `claude.exe` (the live sessions' own processes, no test runner); a sample, not a clearance.
+

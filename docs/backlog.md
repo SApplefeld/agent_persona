@@ -77,7 +77,7 @@ Not this repo's fix - a pointer to the kit plugin repo. A worker that never load
 
 ## A KILL-path variant of live-restartpassive-test.sh's F2 leg (Reviewer Round 126 R76 ruling, worded per R93, 2026-09-12)
 
-`.kit/live-restartpassive-test.sh` F2 proves the persona-claim-free and pre-gate-pass observables for a child that stops cleanly on the EOF path. `.kit/live-stopprocesstree-test.sh`'s own Phase-3 shape - a child that ignores both EOF and TERM, forcing `stop_child` to its final KILL escalation - has no equivalent live leg proving those same two observables; it only proves process death. Add an F2-shaped variant driving an EOF-and-TERM-ignoring child through the same claim-free/pre-gate-pass assertions when this is next picked up.
+`.kit/supervisor-natural-exit-test.sh` case (g), the `real_live` stub action, proves the decide path's `RESTART_PASSIVE` and relaunch for a child that stops cleanly on the EOF path, and `.kit/live-restartrequest-test.sh` proves the claim handover on a real child. `.kit/live-stopprocesstree-test.sh`'s own Phase-3 shape - a child that ignores both EOF and TERM, forcing `stop_child` to its final KILL escalation - has no equivalent live leg proving those same two observables; it only proves process death. Add an F2-shaped variant driving an EOF-and-TERM-ignoring child through the same claim-free/pre-gate-pass assertions when this is next picked up.
 
 ## The supervisor treats a rate-limited child as merely quiet, and a credential swap never reaches it
 
