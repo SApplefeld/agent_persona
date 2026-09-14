@@ -110,9 +110,10 @@ async function tickOpenAsk(
   persona: string,
   cfg: Record<string, unknown>,
   contextId: string | null,
-  // Marks the re-raise below as a plugin-opened turn for the stamp guard at
-  // turn.start; the flag lives in register()'s scope, hence the setter.
-  setPluginTurnPending: (v: boolean) => void,
+  // Queues the re-raise below as a plugin-opened turn for the stamp guard at
+  // turn.start and returns the closure that dequeues it; the list lives in
+  // register()'s scope, hence the closure.
+  expectPluginTurn: () => () => void,
 ): Promise<"waiting" | "expired" | "none"> {
   if (!state.pendingAskId) return "none";
   const store = commonsStoreOf(dp);
@@ -144,13 +145,13 @@ async function tickOpenAsk(
       action: "ask_reraised",
       detail: `${contextId ? contextId + ": " : ""}ask ${state.pendingAskId} re-raised after ${Math.round(elapsed / 1000)}s: ${askRecord.question.slice(0, 100)}`,
     });
-    setPluginTurnPending(true);
+    const unexpect = expectPluginTurn();
     try {
       await dp.prompt.submit({ text: `${REPLY_INSTRUCTION}[STILL WAITING] ${askRecord.question}` });
     } catch {
       // Re-raise failed; non-fatal, the decision log still shows it. No
-      // plugin turn is coming, so the flag is cleared.
-      setPluginTurnPending(false);
+      // plugin turn is coming, so its entry leaves the list.
+      unexpect();
     }
   }
 
@@ -616,25 +617,42 @@ export const register: Register = async (on, options) => {
 
   // Track the user prompt for the current turn (the goal scorer needs it).
   let currentPrompt = "";
-  // When the controller nudges, $.prompt.submit bypasses this plugin's
-  // own prompt.submit hook, so currentPrompt still holds the stale user text.
-  // This flag tells turn.complete to score with the nudge-aware label set.
-  let nudgedTurn = false;
-  // Whether one of the plugin's other own submits (the kaizen announcement,
-  // the reply backstop, the ask re-raise) has a turn pending: set on the
-  // synchronous side of each of those submits, cleared in their catch and
-  // at turn.complete beside nudgedTurn. The stamp guard at turn.start reads
-  // it: such a turn is a plugin turn but not the delivery's own, and the
-  // external flag cannot see it.
-  let pluginTurnPending = false;
-  const setPluginTurnPending = (v: boolean) => { pluginTurnPending = v; };
-  // The inbox record the tick's delivery just submitted as an [OPERATOR]
-  // prompt, set on the synchronous side of $.prompt.submit at both delivery
-  // sites and consumed by the next turn.start. Only that record is ever
-  // stamped with a turn id, and only when the turn starting is none of
-  // external (lastPromptWasExternal below), channel-origin, or nudged:
-  // another turn starting first would otherwise take the stamp and file
-  // its own answer as the record's reply.
+  // The turns this plugin's own $.prompt.submit calls have queued and that
+  // have not opened yet, in submission order. Every such call bypasses this
+  // plugin's own prompt.submit hook, so nothing else tells a turn it opened
+  // from any other: each submit site pushes its entry on the synchronous
+  // side immediately before its submit, removes that same entry (by
+  // identity, never by position) in its catch, and turn.start shifts the
+  // head when a turn that is not external opens, which makes that turn the
+  // head entry's. A delivery entry carries the inbox record its [OPERATOR]
+  // prompt delivered, which only that turn stamps and answers; a nudge entry
+  // tells turn.complete to score with the nudge-aware label set, since
+  // currentPrompt still holds the stale user text; a plugin entry is the
+  // kaizen announcement, the reply backstop or the ask re-raise, a turn that
+  // stamps nothing. The list rests on parked plugin submits opening turns in
+  // submission order, which the engine's prompt.submit contract does not
+  // state ("runs when the session is idle" is all it says), so it is an
+  // assumption rather than a read fact.
+  type ExpectedTurn = { kind: "delivery"; recordId: string } | { kind: "nudge" } | { kind: "plugin" };
+  const expectedTurns: ExpectedTurn[] = [];
+  const expectTurn = (entry: ExpectedTurn): ExpectedTurn => { expectedTurns.push(entry); return entry; };
+  const unexpectTurn = (entry: ExpectedTurn): void => {
+    const i = expectedTurns.indexOf(entry);
+    if (i >= 0) expectedTurns.splice(i, 1);
+  };
+  // For the ask re-raise, which lives outside this scope.
+  const expectPluginTurn = (): (() => void) => {
+    const entry = expectTurn({ kind: "plugin" });
+    return () => unexpectTurn(entry);
+  };
+  // What the turn now running opened as, set at turn.start from the entry
+  // it shifted (or "external" for a turn the real prompt.submit hook saw,
+  // "unaccounted" for one the list cannot place) and read at turn.complete.
+  let currentTurnKind: ExpectedTurn["kind"] | "external" | "unaccounted" = "unaccounted";
+  // The inbox record the tick's delivery most recently submitted as an
+  // [OPERATOR] prompt, set beside its delivery entry and cleared when that
+  // entry is shifted at turn.start; the failed-submit helper below reads it
+  // to tell an early rejection from one arriving after the turn opened.
   let submittedRecordId: string | null = null;
   // A delivery whose $.prompt.submit threw opened no turn, so the record it
   // marked delivered would otherwise sit delivered with no stamp until the
@@ -1475,10 +1493,12 @@ export const register: Register = async (on, options) => {
                   action: "ask_answered",
                   detail: `ask ${askId} closed by record ${answer.id}`,
                 });
+                const expectedAnswerTurn = expectTurn({ kind: "delivery", recordId: answer.id });
                 submittedRecordId = answer.id;
                 try {
                   await $.prompt.submit({ text: `[OPERATOR] Answer to ${askRecord.question}: ${answer.text}` });
                 } catch (err) {
+                  unexpectTurn(expectedAnswerTurn);
                   // A reverted answer record goes back to pending, and the
                   // ask it answers goes back with it: reopened, waited on
                   // again, its node paused again where this path activated
@@ -1549,10 +1569,12 @@ export const register: Register = async (on, options) => {
             action: "operator_delivered",
             detail: `record ${oldest.id} submitted as [OPERATOR]`,
           });
+          const expectedDeliveryTurn = expectTurn({ kind: "delivery", recordId: oldest.id });
           submittedRecordId = oldest.id;
           try {
             await $.prompt.submit({ text: "[OPERATOR] " + oldest.text });
           } catch (err) {
+            unexpectTurn(expectedDeliveryTurn);
             await revertFailedDelivery(store, oldest, err);
           }
           await persist($);
@@ -1791,7 +1813,7 @@ export const register: Register = async (on, options) => {
               sr.pendingPeriodic = false;
               sess.state.updatedAt = now;
               await persist($);
-              pluginTurnPending = true;
+              const expectedKaizenTurn = expectTurn({ kind: "plugin" });
               try {
                 await $.prompt.submit({
                   text: `${REPLY_INSTRUCTION}[KAIZEN] Post each line below to the operator's thread as written, then continue your work:\n` +
@@ -1799,8 +1821,8 @@ export const register: Register = async (on, options) => {
                 });
               } catch {
                 // Announcement failed; the decision log still carries the
-                // finding. No plugin turn is coming, so the flag is cleared.
-                pluginTurnPending = false;
+                // finding. No plugin turn is coming, so its entry leaves the list.
+                unexpectTurn(expectedKaizenTurn);
               }
             }
             if (announced.length === 0) {
@@ -2282,15 +2304,15 @@ export const register: Register = async (on, options) => {
                 detail: `closeout: ${estimatedTokens} tokens`,
               });
               // D1: deliver a close-out nudge through $.prompt.submit.
+              // Queued before the submit, as the goal nudge does: the submit
+              // parks until the session is next idle, so an entry pushed
+              // after it would land only once the nudged turn had already run.
+              const expectedBudgetTurn = expectTurn({ kind: "nudge" });
               try {
                 const nudgeText =
                   `[BUDGET] Context is at ${estimatedTokens} tokens (close-out threshold: ${sess.contextBudgetCloseoutTokens}).\n` +
                   `Bank your current state to memory and the plan doc, then reach a clean stopping point. ` +
                   `The session will be restarted at the critical threshold; bank state now.`;
-                // Set before the submit, as the goal nudge does: the submit
-                // parks until the session is next idle, so a flag set after
-                // it would land only once the nudged turn had already run.
-                nudgedTurn = true;
                 await $.prompt.submit({ text: nudgeText });
                 sess.state.decisions.push({
                   timestamp: budgetTs,
@@ -2299,10 +2321,10 @@ export const register: Register = async (on, options) => {
                   detail: `${estimatedTokens} tokens, close-out nudge sent`,
                 });
               } catch (err) {
-                // Non-fatal. No nudged turn is coming, so the flag set above
-                // is reset: left set, the tick's next delivery turn would
-                // read as nudged and its stamp would be withheld.
-                nudgedTurn = false;
+                // Non-fatal. No nudged turn is coming, so its entry leaves
+                // the list: left in, the tick's next delivery turn would open
+                // as the nudge and its record would go unstamped.
+                unexpectTurn(expectedBudgetTurn);
                 sess.state.decisions.push({
                   timestamp: budgetTs,
                   loop: "monitor",
@@ -2341,7 +2363,7 @@ export const register: Register = async (on, options) => {
 
       // 4. No active leaf: activate pending work if any exists (H1), else return.
       if (!activeNode || activeNode.status !== "active") {
-        const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, null, setPluginTurnPending);
+        const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, null, expectPluginTurn);
         if (askResult !== "none") return;
         const nextId = activateNext(sess.state);
         if (nextId) {
@@ -2362,7 +2384,7 @@ export const register: Register = async (on, options) => {
 
       // D5: skip nudge and classify if an ask is open; record ask_waiting once per minute.
       if (sess.state.pendingAskId) {
-        const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, g.id, setPluginTurnPending);
+        const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, g.id, expectPluginTurn);
         if (askResult === "waiting") return;
         if (askResult === "expired") return;
         // Ask was closed by an answer; clear the flag.
@@ -2791,7 +2813,7 @@ export const register: Register = async (on, options) => {
               // would land after the scorer had already judged the answer
               // against the previous turn's prompt.
               currentPrompt = nudgeText;
-              nudgedTurn = true;
+              const expectedNudgeTurn = expectTurn({ kind: "nudge" });
               sess.consecutiveNudgesWithoutOnGoal += 1;
               // What this nudge made the count, read here rather than after
               // the submit, so the record names the count this nudge reached
@@ -2809,9 +2831,9 @@ export const register: Register = async (on, options) => {
                 // because the floor was already spent above, so a failed submit
                 // costs a whole nudge window and would otherwise leave nothing
                 // anywhere saying the worker went un-nudged. No nudged turn is
-                // coming, so the flag is reset: left set, the tick's next
-                // delivery turn would read as nudged and lose its stamp.
-                nudgedTurn = false;
+                // coming, so its entry leaves the list: left in, the tick's next
+                // delivery turn would open as the nudge and lose its stamp.
+                unexpectTurn(expectedNudgeTurn);
                 sess.state.decisions.push({
                   timestamp: tickTs,
                   loop: "monitor",
@@ -2930,57 +2952,64 @@ export const register: Register = async (on, options) => {
       detail: `Turn ${sess.state.monitor.turnCount} leaf ${turnLeafId || "none"}`,
     });
 
-    // AS3: the first turn.start after a delivery stamps e.turnId onto the
-    // record the delivery submitted, and onto no other. The stamp is what
-    // turn.complete uses to file this turn's answer as the record's reply,
-    // so a turn the plugin did not open for the record must not take it.
-    // Four readings say the turn is not the delivery's own: the real
-    // prompt.submit hook fired since the last turn.start (an external turn,
-    // keyboard or SDK or channel, which the plugin's own submits never
-    // fire), the turn is channel-origin (the more specific reading of the
-    // same hook, named first), a nudge opened it (a plugin submit the hook
-    // cannot see, read from nudgedTurn, which is set on the synchronous side
-    // of the nudge's submit and reset only at turn.complete), or another of
-    // the plugin's own submits opened it (the kaizen announcement, the reply
-    // backstop, the ask re-raise, read from pluginTurnPending, kept the same
-    // way). On any of them the stamp is withheld and the record stays delivered with no
-    // reply, which the sender reads as unanswered rather than as a wrong
-    // answer. The submitted id is consumed either way, so the delivery's own
-    // turn arriving later takes no stamp either; the TTL bounds the record.
-    if (sess.isOwner && submittedRecordId) {
-      const recordId = submittedRecordId;
-      submittedRecordId = null;
-      const withheldReason = currentTurnIsChannelOrigin ? "channel-origin" : nudgedTurn ? "nudged" : pluginTurnPending ? "plugin" : currentTurnIsExternal ? "external" : null;
-      if (withheldReason) {
+    // AS3: which turn is this? An external turn is one the real
+    // prompt.submit hook saw since the last turn.start (keyboard, SDK or
+    // channel, which the plugin's own submits never fire): the plugin's
+    // parked submits are still parked, so the expected-turn list is left as
+    // it is, and where a delivery is queued its stamp is withheld for this
+    // turn, with channel-origin named ahead of external as the more specific
+    // reading of the same hook. Any other turn is the plugin's own, and the
+    // head of the list says which: the entries were pushed in submission
+    // order and the engine opens parked plugin submits in that order (an
+    // assumption, see the list's comment). A delivery entry stamps its
+    // record with this turn id, which is what turn.complete uses to file
+    // this turn's answer as the record's reply; a nudge or plugin entry
+    // stamps nothing, and a delivery queued behind it keeps its entry for
+    // the turn that is its own. A turn with the list empty is one the plugin
+    // cannot account for and stamps nothing. A delivery whose stamp an
+    // external turn withheld keeps its entry too, so its own turn, opening
+    // later, still takes it.
+    const queuedDelivery = expectedTurns.find((entry) => entry.kind === "delivery");
+    let stampRecordId: string | null = null;
+    if (currentTurnIsExternal) {
+      currentTurnKind = "external";
+      if (sess.isOwner && queuedDelivery && queuedDelivery.kind === "delivery") {
         sess.state.decisions.push({
           timestamp: Date.now(),
           loop: "monitor",
           action: "operator_stamp_withheld",
-          detail: `record ${recordId} not stamped with turn ${e.turnId} (${withheldReason} turn)`,
+          detail: `record ${queuedDelivery.recordId} not stamped with turn ${e.turnId} (${currentTurnIsChannelOrigin ? "channel-origin" : "external"} turn)`,
         });
         await persist($);
-      } else {
-        const store = commonsStoreOf($);
-        const persona = sess.persona;
-        const allRecords = await listInboxRecords(store, persona);
-        const submitted = allRecords.find(
-          (rec) => rec.id === recordId && rec.status === "delivered" && !rec.turnId
-        );
-        if (submitted) {
-          const existing = await store.get(submitted.key);
-          if (existing) {
-            const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
-            parsed.turnId = e.turnId;
-            await store.set(submitted.key, parsed);
-          }
-          sess.state.decisions.push({
-            timestamp: Date.now(),
-            loop: "monitor",
-            action: "operator_turn_stamped",
-            detail: `record ${submitted.id} stamped with turn ${e.turnId}`,
-          });
-          await persist($);
+      }
+    } else {
+      const head = expectedTurns.shift();
+      currentTurnKind = head ? head.kind : "unaccounted";
+      if (head && head.kind === "delivery") {
+        stampRecordId = head.recordId;
+        submittedRecordId = null;
+      }
+    }
+    if (sess.isOwner && stampRecordId) {
+      const store = commonsStoreOf($);
+      const allRecords = await listInboxRecords(store, sess.persona);
+      const submitted = allRecords.find(
+        (rec) => rec.id === stampRecordId && rec.status === "delivered" && !rec.turnId
+      );
+      if (submitted) {
+        const existing = await store.get(submitted.key);
+        if (existing) {
+          const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
+          parsed.turnId = e.turnId;
+          await store.set(submitted.key, parsed);
         }
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "operator_turn_stamped",
+          detail: `record ${submitted.id} stamped with turn ${e.turnId}`,
+        });
+        await persist($);
       }
     }
 
@@ -3045,12 +3074,13 @@ export const register: Register = async (on, options) => {
     }
     try { await stampCommonsMeta(commonsStoreOf($), sess.mySessionId, commonsMeta()); } catch { /* commons stamp failed; non-fatal */ }
 
-    // Read and clear the nudge flag once, up front. This prevents
-    // a stale flag from leaking into a later real user turn (e.g. if the
-    // nudged turn is aborted or the goal is not active).
-    const wasNudged = nudgedTurn;
-    nudgedTurn = false;
-    pluginTurnPending = false;
+    // Read what this turn opened as once, up front, and reset it so a stale
+    // reading never leaks into a later turn (a completion for a turn whose
+    // start this session never saw reads as unaccounted). The expected-turn
+    // list itself is not touched here: its entries leave it at turn.start,
+    // one per turn the plugin opened.
+    const wasNudged = currentTurnKind === "nudge";
+    currentTurnKind = "unaccounted";
 
     // C3: error streak fold.
     const toolErrors = toolErrorsThisTurn;
@@ -3084,7 +3114,7 @@ export const register: Register = async (on, options) => {
           detail: `turn ${e.turnId} answered with no reply-tool call; sent through reply directly`,
         });
       } catch (directErr) {
-        pluginTurnPending = true;
+        const expectedBackstopTurn = expectTurn({ kind: "plugin" });
         try {
           await $.prompt.submit({
             text: `${REPLY_INSTRUCTION}[REPLY BACKSTOP] Send this exact text to the operator through the reply tool now, unchanged:\n${e.answer}`,
@@ -3097,8 +3127,8 @@ export const register: Register = async (on, options) => {
           });
         } catch {
           // Both paths failed; nothing more to do without a live channel.
-          // No plugin turn is coming, so the flag is cleared.
-          pluginTurnPending = false;
+          // No plugin turn is coming, so its entry leaves the list.
+          unexpectTurn(expectedBackstopTurn);
         }
       }
     }
@@ -4360,7 +4390,7 @@ export const register: Register = async (on, options) => {
     // D5b (bullet 1): an open ask never silences the worker. This hook fires
     // only for a genuine external turn - the controller's own $.prompt.submit
     // calls (nudges, operator-record delivery, the ask re-raise) bypass this
-    // handler, per the nudgedTurn comment above. So any turn that reaches
+    // handler, per the expected-turns comment above. So any turn that reaches
     // here while an ask is open is the operator answering it, whether it
     // came from the keyboard or a Discord thread reply, and whether or not
     // it carries the ask id: close the ask and reactivate the paused node.

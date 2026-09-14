@@ -3161,6 +3161,8 @@ async function main() {
     await caseSection12_G2_sweepAgesOffDeliveryAndKeepsReplyWithRecord(clock);
     await caseSection12_G3_failedAskAnswerDeliveryReopensTheAsk(clock);
     await caseSection12_6_pluginTurnDoesNotTakeTheStamp(clock);
+    await caseSection12_H1_deliveryTurnOpensAheadOfAQueuedBackstop(clock);
+    await caseSection12_H1_parkedPluginTurnAfterAnExternalTurnTakesNoStamp(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
     await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
     await caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock);
@@ -4283,22 +4285,33 @@ async function caseSection12_6_foreignTurnDoesNotTakeTheStamp(clock) {
   check("section12.6 channel: no reply written from the channel turn's answer", !h.storeMap.has(`reply:default:${id}`));
   check("section12.6 channel: record still delivered, not answered", readStoreRecord(h, key)?.status === "delivered");
 
-  // A goal nudge opens the turn that starts first after the delivery.
-  const n = await seedOwnerWithPendingRecord("section12_6_nudge", now, "writer-n");
-  await tickAndSettle(n.h, clock, 50);
-  check("section12.6 nudge: record delivered (setup sanity)", readStoreRecord(n.h, n.key)?.status === "delivered");
-  n.h.setClassifyValue("nudge");
+  // A goal nudge is submitted, then a delivery; plugin turns open in
+  // submission order, so the nudged turn opens first and the delivery's
+  // own turn second.
+  const n = await createTickHarness({ ...OPTS, caseName: "section12_6_nudge" });
+  n.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  n.setClassifyValue("nudge");
   clock.advance(130_000);
-  await tickAndSettle(n.h, clock, 50);
-  check("section12.6 nudge: nudge_sent fired (setup sanity)", getDecisions(n.h).some((d) => d.action === "nudge_sent"));
-  await n.h.handlers["turn.start"](n.h.fake, { turnId: "t-nudge" }, async () => ({ result: "ok" }));
-  const afterNudgeStart = readStoreRecord(n.h, n.key);
+  await tickAndSettle(n, clock, 50);
+  check("section12.6 nudge: nudge_sent fired (setup sanity)", getDecisions(n).some((d) => d.action === "nudge_sent"));
+  seedReaderClaim(n, "writer-n", clock.get());
+  const nKey = seedInboxRecord(n, "writer-n", 1, { at: clock.get() - 500, status: "pending" });
+  const nId = "default-writer-n-1";
+  clock.advance(10_000);
+  await tickAndSettle(n, clock, 50);
+  check("section12.6 nudge: record delivered (setup sanity)", readStoreRecord(n, nKey)?.status === "delivered");
+  await n.handlers["turn.start"](n.fake, { turnId: "t-nudge" }, async () => ({ result: "ok" }));
+  const afterNudgeStart = readStoreRecord(n, nKey);
   check("section12.6 nudge: record not stamped with the nudged turn", afterNudgeStart?.turnId === undefined, afterNudgeStart);
-  check("section12.6 nudge: operator_stamp_withheld names the record and nudged",
-    getDecisions(n.h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes(n.id) && d.detail.includes("nudged")));
-  await n.h.handlers["turn.complete"](n.h.fake, { turnId: "t-nudge", answer: "Working on the goal.", reason: "completed" }, async () => ({ result: "ok" }));
-  check("section12.6 nudge: no reply written from the nudged turn's answer", !n.h.storeMap.has(`reply:default:${n.id}`));
-  check("section12.6 nudge: record still delivered, not answered", readStoreRecord(n.h, n.key)?.status === "delivered");
+  await n.handlers["turn.complete"](n.fake, { turnId: "t-nudge", answer: "Working on the goal.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.6 nudge: no reply written from the nudged turn's answer", !n.storeMap.has(`reply:default:${nId}`));
+  check("section12.6 nudge: record still delivered, not answered", readStoreRecord(n, nKey)?.status === "delivered");
+  await n.handlers["turn.start"](n.fake, { turnId: "t-delivery-after-nudge" }, async () => ({ result: "ok" }));
+  check("section12.6 nudge: the delivery's own turn, opening next, takes the stamp", readStoreRecord(n, nKey)?.turnId === "t-delivery-after-nudge");
 
   // A keyboard turn opens first after the delivery: an external turn with no
   // channel origin, seen only through the real prompt.submit hook, which the
@@ -4346,25 +4359,31 @@ async function caseSection12_6_budgetNudgeFlagsTheTurnBeforeItsSubmit(clock) {
   const key = seedInboxRecord(h, "writer-b", 1, { at: now - 5000, status: "pending" });
   const id = "default-writer-b-1";
 
-  // Tick 1 delivers the record and returns before the budget read.
-  await tickAndSettle(h, clock, 50);
-  check("section12.6 budget: record delivered (setup sanity)", readStoreRecord(h, key)?.status === "delivered");
-
-  // Tick 2 crosses the close-out threshold and submits the budget nudge,
-  // which parks; the nudged turn starts under it.
+  // Tick 1 delivers nothing (the record is not seeded yet), crosses the
+  // close-out threshold and submits the budget nudge, which parks.
+  h.storeMap.delete(key);
   h.holdPromptSubmits();
-  clock.advance(10_000);
-  const tick2 = fireTick(h);
+  const tick1 = fireTick(h);
   const nudgeQueued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith("[BUDGET]")));
   check("section12.6 budget: the close-out nudge was submitted (setup sanity)", nudgeQueued);
+
+  // Tick 2 delivers the record behind the parked nudge.
+  seedInboxRecord(h, "writer-b", 1, { at: now - 5000, status: "pending" });
+  clock.advance(10_000);
+  const tick2 = fireTick(h);
+  const delivered = await waitUntil(() => readStoreRecord(h, key)?.status === "delivered");
+  check("section12.6 budget: record delivered behind the parked nudge (setup sanity)", delivered);
+
+  // The nudged turn opens first, then the delivery's own.
   await h.handlers["turn.start"](h.fake, { turnId: "t-budget" }, async () => ({ result: "ok" }));
   const afterStart = readStoreRecord(h, key);
   check("section12.6 budget: record not stamped with the budget-nudge turn", afterStart?.turnId === undefined, afterStart);
-  check("section12.6 budget: operator_stamp_withheld names the record and nudged",
-    getDecisions(h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes(id) && d.detail.includes("nudged")));
   await h.handlers["turn.complete"](h.fake, { turnId: "t-budget", answer: "Banking state.", reason: "completed" }, async () => ({ result: "ok" }));
   check("section12.6 budget: no reply written from the nudged turn's answer", !h.storeMap.has(`reply:default:${id}`));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-after-budget" }, async () => ({ result: "ok" }));
+  check("section12.6 budget: the delivery's own turn, opening next, takes the stamp", readStoreRecord(h, key)?.turnId === "t-delivery-after-budget");
   h.releasePromptSubmits();
+  await tick1;
   await tick2;
 }
 
@@ -4729,12 +4748,110 @@ async function caseSection12_6_pluginTurnDoesNotTakeTheStamp(clock) {
   clock.advance(10_000);
   await tickAndSettle(h, clock, 50);
   check("section12.6 plugin: record delivered (setup sanity)", readStoreRecord(h, key)?.status === "delivered");
+  // The re-raise was submitted before the delivery, so its turn opens first.
   await h.handlers["turn.start"](h.fake, { turnId: "t-reraise" }, async () => ({ result: "ok" }));
   check("section12.6 plugin: record not stamped with the re-raise turn", readStoreRecord(h, key)?.turnId === undefined);
-  check("section12.6 plugin: operator_stamp_withheld names the record and plugin",
-    getDecisions(h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes("default-writer-g4-1") && d.detail.includes("plugin")));
   await h.handlers["turn.complete"](h.fake, { turnId: "t-reraise", answer: "Still waiting on you.", reason: "completed" }, async () => ({ result: "ok" }));
   check("section12.6 plugin: no reply written from the re-raise turn's answer", !h.storeMap.has("reply:default:default-writer-g4-1"));
+  // The delivery's own turn opens next and takes the stamp.
+  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-after-reraise" }, async () => ({ result: "ok" }));
+  check("section12.6 plugin: the delivery's own turn, opening next, takes the stamp", readStoreRecord(h, key)?.turnId === "t-delivery-after-reraise");
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-delivery-after-reraise", answer: "On it.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.6 plugin: the delivery's own turn files the reply", readStoreRecord(h, "reply:default:default-writer-g4-1")?.text === "On it.");
+}
+
+// H1 (A): a delivery submit parks, then a channel turn completes with no
+// reply call and its backstop queues a plugin submit behind it. The
+// delivery's own turn opens first and takes the stamp: a queued plugin
+// submit says nothing about which turn is opening.
+async function caseSection12_H1_deliveryTurnOpensAheadOfAQueuedBackstop(clock) {
+  console.log("\n=== Section 12 H1 (A): the delivery's turn opening ahead of a queued backstop submit takes the stamp ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("section12_h1_a", now, "writer-h1a");
+  h.holdPromptSubmits();
+  const tick = fireTick(h);
+  const queued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith("[OPERATOR]")));
+  check("section12.H1a: the delivery's submit is parked (setup sanity)", queued && readStoreRecord(h, key)?.status === "delivered");
+
+  // A channel turn runs to completion with no reply call; the direct reply
+  // call fails, so the backstop submits a re-prompt, which parks too.
+  h.fake.tool.call = () => Promise.reject(new Error("no live channel"));
+  await h.handlers["prompt.submit"](h.fake, { text: "status?", origin: { kind: "channel" } }, async () => ({}));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-channel-h1a" }, async () => ({ result: "ok" }));
+  const completeChannel = h.handlers["turn.complete"](h.fake, { turnId: "t-channel-h1a", answer: "All green.", reason: "completed" }, async () => ({ result: "ok" }));
+  const backstopQueued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.includes("[REPLY BACKSTOP]")));
+  check("section12.H1a: the backstop submit is parked behind the delivery (setup sanity)", backstopQueued);
+  check("section12.H1a: the channel turn did not take the stamp", readStoreRecord(h, key)?.turnId === undefined);
+
+  // The delivery's own turn opens first.
+  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-h1a" }, async () => ({ result: "ok" }));
+  check("section12.H1a: the delivery's own turn takes the stamp", readStoreRecord(h, key)?.turnId === "t-delivery-h1a");
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-delivery-h1a", answer: "Done.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.H1a: its answer is filed as the reply", readStoreRecord(h, `reply:default:${id}`)?.text === "Done." && readStoreRecord(h, key)?.status === "answered");
+  h.releasePromptSubmits();
+  await tick;
+  await completeChannel;
+}
+
+// H1 (B): a plugin submit (the ask re-raise) parks behind an external turn;
+// that turn runs and completes; a delivery is then submitted. The parked
+// plugin turn opens first and takes no stamp; the delivery's turn opens
+// next and takes it.
+async function caseSection12_H1_parkedPluginTurnAfterAnExternalTurnTakesNoStamp(clock) {
+  console.log("\n=== Section 12 H1 (B): a plugin turn parked behind an external turn takes no stamp; the delivery's turn does ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await createTickHarness({ ...OPTS, caseName: "section12_h1_b", askReraiseWindowMs: 30_000, askOperatorWaitMs: 300_000 });
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  const personaState = buildPersonaState(SESSION_ID, now);
+  personaState.goals = [
+    { id: "node-h1b", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-h1b";
+  personaState.pendingAskId = "ask-h1b-1";
+  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+  h.storeMap.set("ask:default:ask-h1b-1", { id: "ask-h1b-1", ownerSessionId: SESSION_ID, at: T0, nodeId: "node-h1b", question: "Keep going?", status: "open" });
+
+  // The re-raise submit parks behind the external turn that is about to run.
+  h.holdPromptSubmits();
+  clock.advance(35_000);
+  const reraiseTick = fireTick(h);
+  const reraiseQueued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.includes("[STILL WAITING]")));
+  check("section12.H1b: the re-raise submit is parked (setup sanity)", reraiseQueued);
+  await h.handlers["prompt.submit"](h.fake, { text: "typed", origin: { kind: "keyboard" } }, async () => ({}));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-external-h1b" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-external-h1b", answer: "typed answer", reason: "completed" }, async () => ({ result: "ok" }));
+
+  // A delivery is submitted in the gap.
+  seedReaderClaim(h, "writer-h1b", clock.get());
+  const key = seedInboxRecord(h, "writer-h1b", 1, { at: clock.get() - 500, status: "pending" });
+  clock.advance(10_000);
+  const deliveryTick = fireTick(h);
+  const delivered = await waitUntil(() => readStoreRecord(h, key)?.status === "delivered");
+  check("section12.H1b: record delivered behind the parked re-raise (setup sanity)", delivered);
+
+  // The parked plugin turn opens first.
+  await h.handlers["turn.start"](h.fake, { turnId: "t-reraise-h1b" }, async () => ({ result: "ok" }));
+  check("section12.H1b: the parked plugin turn takes no stamp", readStoreRecord(h, key)?.turnId === undefined);
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-reraise-h1b", answer: "Still waiting.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.H1b: the plugin turn files no reply", !h.storeMap.has("reply:default:default-writer-h1b-1"));
+
+  // The delivery's own turn opens next.
+  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-h1b" }, async () => ({ result: "ok" }));
+  check("section12.H1b: the delivery's own turn takes the stamp", readStoreRecord(h, key)?.turnId === "t-delivery-h1b");
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-delivery-h1b", answer: "Delivered answer.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.H1b: the delivery's turn files the reply", readStoreRecord(h, "reply:default:default-writer-h1b-1")?.text === "Delivered answer.");
+  h.releasePromptSubmits();
+  await reraiseTick;
+  await deliveryTick;
 }
 
 // agentic_say(urgent: true) writes urgent onto the record; a plain say does not.

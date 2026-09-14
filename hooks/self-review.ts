@@ -85,8 +85,10 @@ export function buildSelfReviewInput(
   // surface that says so.
   // The inbox lifecycle's records stay in the window too. operator_resolved,
   // because finishing or declining a steer is something that happened to the
-  // worker. operator_stamp_withheld and operator_turn_unanswered, because each
-  // names a delivery that went unanswered, which a self-review should see.
+  // worker. operator_stamp_withheld (an external turn ran ahead of a queued
+  // delivery, whose own turn still stamps it later) and
+  // operator_turn_unanswered, because each names a delivery a turn passed
+  // over or left unanswered, which a self-review should see.
   // sweep_expired_records_failed, because a refused log write is a dead
   // surface, the same way nudge_failed is. context_budget_nudge_failed and
   // operator_delivery_failed for the same reason: each is a refused submit,
