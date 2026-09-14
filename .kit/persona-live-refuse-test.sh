@@ -50,6 +50,19 @@ STORE_D2_MISSING="$TMP/d2-does-not-exist.json"
 STORE_E="$TMP/e.json"
 printf '%s' '{not json' > "$STORE_E"
 
+STORE_H1_MISSING="$TMP/h1-does-not-exist.json"
+STORE_H2_MISSING="$TMP/h2-does-not-exist.json"
+
+STORE_I="$TMP/i.json"; write_store "$STORE_I" '{"commons:s1":{lastSeen: now-1000, claims:[]}}'
+
+STORE_J_LIVE="$TMP/j-live.json"; write_store "$STORE_J_LIVE" '{"commons:s1":{lastSeen: "soon", claims:[{resource:"persona:worker-j"}]}}'
+STORE_J_CTRL="$TMP/j-ctrl.json"; write_store "$STORE_J_CTRL" '{"commons:s1":{lastSeen: now-1000, claims:[]}}'
+
+STORE_K_BASE="$TMP/k-base.json"; write_store "$STORE_K_BASE" '{"commons:s1":{lastSeen: now-1000, claims:[]}}'
+STORE_K1="$TMP/k1.json"; write_store "$STORE_K1" '{"commons:s1":{lastSeen: now-1000, claims:[]}}'
+STORE_K2="$TMP/k2.json"; write_store "$STORE_K2" '{"commons:s1":{lastSeen: now-1000, claims:[]}}'
+STORE_K3="$TMP/k3.json"; write_store "$STORE_K3" '{"commons:s1":{lastSeen: now-1000, claims:[{resource:"persona:worker-k3"}]}}'
+
 # Runs every case once, reporting each result through the function named
 # by $1 ("check", which counts toward this suite's exit).
 run_cases() {
@@ -77,48 +90,57 @@ run_cases() {
 
   OUT=$(refuse_if_persona_live 90000 "$STORE_E" 2>&1); RC=$?
   R=1
-  if [ "$RC" -eq 1 ] && echo "$OUT" | grep -qF "$STORE_E" && echo "$OUT" | grep -qi 'cannot be parsed'; then R=0; fi
-  "$report" "(e) an unparsable store: returns 1 naming the store and the error" "$R"
+  if [ "$RC" -eq 1 ] && echo "$OUT" | grep -qF "$STORE_E" && echo "$OUT" | grep -q 'after 3 attempts'; then R=0; fi
+  "$report" "(e) an unparsable store: fails after 3 attempts, naming the store" "$R"
+
+  OUT=$(refuse_if_persona_live 90000 "$STORE_H1_MISSING" "$STORE_H2_MISSING" 2>&1); RC=$?
+  R=1
+  if [ "$RC" -eq 1 ] && echo "$OUT" | grep -q 'no store was read'; then R=0; fi
+  "$report" "(h) zero readable stores (both paths missing): returns 1 naming the cause" "$R"
+
+  OUT=$(refuse_if_persona_live abc "$STORE_I" 2>&1); RC=$?
+  R=1
+  if [ "$RC" -eq 1 ] && echo "$OUT" | grep -q 'abc'; then R=0; fi
+  "$report" "(i) a non-numeric stale bound: returns 1 naming the bound" "$R"
+
+  OUT=$(refuse_if_persona_live 90000 "$STORE_J_LIVE" 2>&1); RC=$?
+  R=1
+  if [ "$RC" -eq 1 ] && echo "$OUT" | grep -q 'lastSeen is not a number'; then R=0; fi
+  "$report" "(j) a live persona claim under a string lastSeen: fails closed, returns 1" "$R"
+
+  OUT=$(refuse_if_persona_live 90000 "$STORE_J_CTRL" 2>&1); RC=$?
+  R=1
+  if [ "$RC" -eq 0 ] && echo "$OUT" | grep -q 'refuse-check passed'; then R=0; fi
+  "$report" "(j) control: the same store with a numeric lastSeen and no persona claim returns 0" "$R"
+
+  OUT=$(refuse_if_persona_live 90000 "$STORE_K_BASE" "$STORE_K1" "$STORE_K2" "$STORE_K3" 2>&1); RC=$?
+  R=1
+  if [ "$RC" -eq 1 ] && echo "$OUT" | grep -qF "$STORE_K3" && echo "$OUT" | grep -q 'persona:worker-k3'; then R=0; fi
+  "$report" "(k) three installed stores where only the third is live: returns 1 naming it" "$R"
 }
 
 source "$REAL"
 run_cases check
 
-# --- (f) immediately: no polling wait, and no sleep in the function body ---
+# --- (f) a fresh live claim refuses within 3 seconds, with no polling wait ---
+# The fixture is written immediately before the timed call, with a freshly
+# read clock, so the number of cases that ran earlier in this suite cannot
+# push its age toward the stale bound.
+STORE_F_LIVE="$TMP/f-live.json"
+NOW_F=$(node -e 'console.log(Date.now())')
+node -e '
+const fs = require("fs");
+const now = Number(process.argv[2]);
+fs.writeFileSync(process.argv[1], JSON.stringify({"commons:s1":{lastSeen: now - 500, claims:[{resource:"persona:worker-f"}]}}));
+' "$STORE_F_LIVE" "$NOW_F"
 T0=$(date +%s)
-refuse_if_persona_live 90000 "$STORE_A1" "$STORE_A2" >/dev/null 2>&1
+refuse_if_persona_live 90000 "$STORE_F_LIVE" >/dev/null 2>&1
+RC=$?
 T1=$(date +%s)
 ELAPSED=$((T1 - T0))
-[ "$ELAPSED" -lt 5 ]; check "(f) case (a) completes in under 5 seconds (elapsed ${ELAPSED}s)" "$?"
-
-# Static pin: the function's own line range, from its definition to the
-# first line-leading close brace, carries no sleep. wait_persona_free is the
-# control - the same extraction technique must find its poll-loop sleep, or
-# this grep is not actually looking at function bodies at all.
-# Extracts one function's own text by brace balance, since a naive
-# "first line starting with }" stops at the closing brace of an embedded
-# node -e script's JS object literal, not the bash function's own end.
-extract_function() {  # $1 = function name, $2 = file
-  awk -v head="$1() {" '
-    index($0, head) == 1 { grab=1; depth=0 }
-    grab {
-      print
-      n = length($0)
-      for (i = 1; i <= n; i++) {
-        c = substr($0, i, 1)
-        if (c == "{") depth++
-        else if (c == "}") depth--
-      }
-      if (depth == 0) exit
-    }
-  ' "$2"
-}
-REFUSE_BODY=$(extract_function refuse_if_persona_live "$REAL")
-WAIT_BODY=$(extract_function wait_persona_free "$REAL")
-[ -n "$REFUSE_BODY" ] && ! echo "$REFUSE_BODY" | grep -q 'sleep'
-check "(f) refuse_if_persona_live's own body contains no sleep" "$?"
-[ -n "$WAIT_BODY" ] && echo "$WAIT_BODY" | grep -q 'sleep'
-check "(f) control: the same extraction finds sleep in wait_persona_free's body" "$?"
+R=1
+[ "$RC" -eq 1 ] && [ "$ELAPSED" -lt 3 ] && R=0
+check "(f) a fresh live claim refuses within 3 seconds (elapsed ${ELAPSED}s, rc ${RC})" "$R"
 
 if [ "$failed" -eq 0 ]; then
   echo "persona-live-refuse-test.sh: PASS"

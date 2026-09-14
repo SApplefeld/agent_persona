@@ -305,7 +305,7 @@ Every PowerShell call the stop makes is bounded by `supervisorPsBoundS`, since G
 |---|---|
 | `bin/supervise.sh` | The supervisor script (bash) |
 | `bin/supervise-decide.mjs` | Decision logic (pure JS) |
-| `bin/agentic-common.sh` | Shared helpers: `emit_settings_json`, `ensure_settings_plugin_ids`, `valid_persona_name`, `find_global_store`, `wait_persona_free_both`, `poll_decisions`, `poll_heartbeat` |
+| `bin/agentic-common.sh` | Shared helpers: `emit_settings_json`, `ensure_settings_plugin_ids`, `valid_persona_name`, `find_global_store`, `wait_persona_free_both`, `refuse_if_persona_live`, `poll_decisions`, `poll_heartbeat` |
 
 ### Test Coverage
 
@@ -318,6 +318,7 @@ The offline suites run with no `claude` session and no persona claim, so they ru
 - `.kit/channel-reply-instruction-test.sh`: the priming turn carries the skill-load instruction under both `--no-channel` values and the reply-tool instruction only with a channel attached, read from the script's own text. Offline.
 - `.kit/live-stopprocesstree-test.sh`: the stop-path helpers and `stop_child` itself, extracted from `bin/supervise.sh`, against real Windows processes: a wrapper whose native child survives it, a wrapper that ignores TERM and forces the KILL phase, the PowerShell bound holding, and a CIM failure read as unverified. It launches no `claude` session, so it runs beside a live fleet on its own; `live-all.sh` does not run it.
 - `.kit/live-restartrequest-test.sh`: a reader's restart request stops a real `claude` child and relaunches one, with the claim handed over and the plan kept. Live.
+- `.kit/persona-live-refuse-test.sh`: `bin/agentic-common.sh`'s `refuse_if_persona_live`, driven with stub commons-store fixtures. Cases: a live claim in the first of two stores, a control with only stale or non-persona claims, a live claim only in the second (installed-store) leg, a missing store path skipped, an unparsable store failing after three re-reads, a fresh live claim refusing within 3 seconds with no polling wait, zero readable stores refusing, a non-numeric stale bound refusing, a non-numeric `lastSeen` under a live claim refusing (with a numeric-`lastSeen` control), and three installed stores where only the third is live, naming it. Offline.
 
 ## Cost and cadence options (item 6)
 
@@ -446,7 +447,7 @@ The operator has not yet ruled on these options; the defaults are in force.
 
 The supervisor's own suites are listed under the Supervisor section's Test Coverage above.
 
-**Runner lock:** `live-all.sh` writes `.kit/RUNNING` at start and refuses to start if it already exists (exit 8). After a killed gate, confirm no `claude` child with `--plugin-dir` is running, then `rm .kit/RUNNING`. `live-all.sh` also refuses at start, with no wait, when any `persona:` claim is live in either commons store, inline or installed (exit 10). Until the coordinator's launch recipe removes the ordinary session claim, an open plugin-loaded session is enough to trip it.
+**Runner lock:** `live-all.sh` writes `.kit/RUNNING` at start and refuses to start if it already exists (exit 8). After a killed gate, confirm no `claude` child with `--plugin-dir` is running, then `rm .kit/RUNNING`. `live-all.sh` also refuses at start, with no wait, when a live `persona:` claim is present in any commons store, inline or installed, or when a store could not be read after three attempts (exit 10). Until the coordinator's launch recipe removes the ordinary session claim, an open plugin-loaded session is enough to trip it. A claim younger than the stale bound may be residue of a gate killed within the last 90 seconds, in which case wait and re-run.
 
 ## Limitations
 

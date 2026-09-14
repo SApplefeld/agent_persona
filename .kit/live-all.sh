@@ -73,22 +73,36 @@ case "$(basename "$GLOBAL_STORE")" in
     ;;
 esac
 
-# Refuse-at-start check, beside the .kit/RUNNING lock above. Checks both
-# stores (Reviewer Round 113 R32): the inline store this harness's own
-# children use, and the installed-mode store Section 0 item 5 moves every
-# worker and the coordinator onto. Until Section 6's arming default lands,
-# any plugin-loaded session, a plain chat among them, claims persona:default
-# at start, so an open plugin-loaded session is enough to trip this check;
-# that is the check working, not a bug in it.
-INSTALLED_STORE="$(find_global_store 0)"
-if [ -n "$INSTALLED_STORE" ]; then
-  refuse_if_persona_live 90000 "$GLOBAL_STORE" "$INSTALLED_STORE"
-else
-  refuse_if_persona_live 90000 "$GLOBAL_STORE"
-fi
-if [ $? -ne 0 ]; then
-  echo "live-all.sh: refusing to start: a live persona claim is present (the whole gate cannot run beside a live fleet)"
+# Refuse-at-start check, beside the .kit/RUNNING lock above. Reads the
+# inline store this harness's own children use, plus every installed-mode
+# store under the plugin store directory, because workers and the
+# coordinator run under the installed plugin rather than --plugin-dir.
+# Today any plugin-loaded session claims persona:default at session start,
+# so an open plain session is enough to trip this check; that is the check
+# working, not a bug in it.
+INSTALLED_STORES=()
+NULLGLOB_WAS_SET=0
+shopt -q nullglob && NULLGLOB_WAS_SET=1
+shopt -s nullglob
+for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
+  case "$(basename "$f")" in
+    agentic-plugin_inline-*) continue ;;
+  esac
+  [ -f "$f" ] && INSTALLED_STORES+=("$f")
+done
+[ "$NULLGLOB_WAS_SET" -eq 1 ] || shopt -u nullglob
+
+OUT=$(refuse_if_persona_live "$PERSONA_STALE_MS" "$GLOBAL_STORE" "${INSTALLED_STORES[@]}")
+RC=$?
+echo "$OUT"
+if [ $RC -ne 0 ]; then
+  if echo "$OUT" | grep -q 'live persona claim'; then
+    echo "live-all.sh: refusing to start: a live persona claim is present (a claim younger than the stale bound may be residue of a gate killed within the last 90 seconds; the whole gate cannot run beside a live fleet)"
+  else
+    echo "live-all.sh: refusing to start: a commons store could not be read (see the refuse-check line above)"
+  fi
   rm -f "$GLOBAL_RUNNING"
+  rm -rf "$RUN_DIR"
   exit 10
 fi
 

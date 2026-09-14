@@ -1,15 +1,26 @@
 #!/usr/bin/env bash
 # bin/agentic-common.sh - Shared supervisor/test helpers.
 # Sourced by bin/supervise.sh and .kit/live-common.sh.
-# Provides: wait_persona_free, emit_settings_json, ensure_settings_plugin_ids,
-#           valid_persona_name, find_global_store, poll_decisions, poll_heartbeat.
+# Provides: wait_persona_free, refuse_if_persona_live, emit_settings_json,
+#           ensure_settings_plugin_ids, valid_persona_name, find_global_store,
+#           poll_decisions, poll_heartbeat.
 # All functions use W2 read-error semantics: a read error is a transient mid-write
-# race, treated as "live" (or "not ready"), never an abort. The timeout is the only exit.
+# race, treated as "live" (or "not ready"), never an abort. The timeout is the only
+# exit. refuse_if_persona_live is the one exception: it is a start-only check with
+# no later poll to recover on, so it fails closed on a read error after its re-reads
+# instead of waiting it out.
 
 # --- Plugin ids ---
 # The two ids pluginConfigs is keyed by: --plugin-dir load, and installed load.
 AGENTIC_PLUGIN_DEV_ID="agentic-plugin"
 AGENTIC_PLUGIN_INSTALLED_ID="agentic-plugin@agent-persona"
+
+# --- Contention guards ---
+# The bound below which a commons entry counts as live, matching the plugin's
+# staleAfterMs default (hooks/index.ts). A fleet launched with heartbeatMs
+# above this value is read as stale here while its own arbitration still
+# treats it as live.
+PERSONA_STALE_MS=90000
 
 # --- Profiles ---
 # Selected by PROFILE=full|short (default: short).
@@ -280,11 +291,17 @@ console.log('live=' + live + ' oldest_age=' + (oldest ? Math.round((now - oldest
 # any store holds a live persona: claim of any name (a commons: key whose
 # lastSeen is within stale_after_ms, holding a claim whose resource starts
 # with "persona:"). A store path that does not exist is skipped (installed
-# mode may never have run on this machine). A store that exists and cannot
-# be parsed is itself a refusal: a start-only check has no later poll to
-# recover on, so it fails closed the same way a live claim does. The caller
-# decides the exit code; this function only returns and prints, it never
-# exits the shell.
+# mode may never have run on this machine). A store whose read fails is
+# re-read up to two more times, with no sleep between reads, before it
+# counts as a failure: the failure is either a mid-write race by a live
+# session or a corrupt file, and a start-only check has no later poll to
+# tell the two apart or recover on, so after three reads it fails closed
+# the same way a live claim does. A stale bound that is not a positive
+# number is refused immediately, on the first read, with no re-read (a
+# malformed bound reads the same way every time). Reading zero stores end
+# to end is itself a refusal, since a check that read nothing proved
+# nothing clean. The caller decides the exit code; this function only
+# returns and prints, it never exits the shell.
 # Usage: refuse_if_persona_live <stale_after_ms> <store-path>...
 refuse_if_persona_live() {
   local stale_after_ms="$1"
@@ -296,10 +313,16 @@ refuse_if_persona_live() {
       echo "refuse-check: store not present, skipping: $store"
       continue
     fi
-    local store_w line rc
+    local store_w line rc attempt
     store_w=$(cygpath -m "$store" 2>/dev/null || echo "$store")
-    line=$(node -e "
+    for attempt in 1 2 3; do
+      line=$(node -e "
 const fs = require('fs');
+const staleAfterMs = Number(process.argv[2]);
+if (!Number.isFinite(staleAfterMs) || !(staleAfterMs > 0)) {
+  console.log('ERROR: stale bound is not a positive number: ' + process.argv[2]);
+  process.exit(2);
+}
 let s;
 try {
   s = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
@@ -307,12 +330,16 @@ try {
   console.log('ERROR: ' + e.message);
   process.exit(2);
 }
-const staleAfterMs = Number(process.argv[2]);
 const keys = Object.keys(s).filter(k => k.startsWith('commons:'));
 const now = Date.now();
 for (const key of keys) {
   const e = s[key];
-  if (e && e.lastSeen && (now - e.lastSeen) < staleAfterMs && Array.isArray(e.claims)) {
+  if (!e) continue;
+  if (e.lastSeen !== undefined && e.lastSeen !== null && (typeof e.lastSeen !== 'number' || !Number.isFinite(e.lastSeen))) {
+    console.log('ERROR: lastSeen is not a number under ' + key);
+    process.exit(2);
+  }
+  if (e.lastSeen && (now - e.lastSeen) < staleAfterMs && Array.isArray(e.claims)) {
     for (const c of e.claims) {
       if (c && typeof c.resource === 'string' && c.resource.indexOf('persona:') === 0) {
         console.log('LIVE ' + c.resource + ' ' + Math.round((now - e.lastSeen) / 1000));
@@ -323,9 +350,17 @@ for (const key of keys) {
 }
 console.log('CLEAN');
 " "$store_w" "$stale_after_ms")
-    rc=$?
+      rc=$?
+      if echo "$line" | grep -q '^ERROR: stale bound is not a positive number:'; then
+        echo "refuse-check FAIL: ${line#ERROR: }"
+        return 1
+      fi
+      if [ $rc -eq 0 ] && ! echo "$line" | grep -q '^ERROR'; then
+        break
+      fi
+    done
     if [ $rc -ne 0 ] || echo "$line" | grep -q '^ERROR'; then
-      echo "refuse-check FAIL: store cannot be parsed: $store ($line)"
+      echo "refuse-check FAIL: store could not be read after 3 attempts (a mid-write race or a corrupt file): $store ($line)"
       return 1
     fi
     case "$line" in
@@ -339,6 +374,10 @@ console.log('CLEAN');
     esac
     checked=$((checked + 1))
   done
+  if [ "$checked" -eq 0 ]; then
+    echo "refuse-check FAIL: no store was read (every path was empty or missing)"
+    return 1
+  fi
   echo "refuse-check passed ($checked store(s) read, no live persona claim)"
   return 0
 }
