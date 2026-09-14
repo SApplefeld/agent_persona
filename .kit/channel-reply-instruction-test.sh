@@ -6,8 +6,11 @@
 # NO_CHANNEL=1) plus v2 Section 0 item 3 Part A (SKILL_LOAD_INSTRUCTION,
 # the operating-instructions/executing-work skill-load sentence, must be
 # present under BOTH values of NO_CHANNEL - it is the NO_CHANNEL-
-# independent write). Every direction is checked so this cannot pass by
-# always finding a string true. The block under test is pulled out of
+# independent write) plus v2 Section 7 (COORDINATOR_STEER_INSTRUCTION, the
+# sentence telling the child what a [COORDINATOR id=...] prompt carries and
+# how to resolve it, present under BOTH values of NO_CHANNEL, riding the
+# priming write and never the goal write). Every direction is checked so
+# this cannot pass by always finding a string true. The block under test is pulled out of
 # the real script by its start/end lines, not hand-copied, so this test
 # reads whatever bin/supervise.sh currently says rather than a frozen guess.
 # Exits 0 on all-pass, 1 on any failure.
@@ -48,6 +51,12 @@ fi
 # child regardless of NO_CHANNEL - checked under both values below,
 # alongside the pre-existing CHANNEL_REPLY_INSTRUCTION checks.
 SKILL_LOAD_CONTROL="claude-kit:operating-instructions"
+# v2 Section 7: the coordinator steer sentence must reach every child
+# regardless of NO_CHANNEL too. Two control substrings: the label the
+# sentence teaches the child to read, and the tool it tells the child to
+# call when the steer's work is finished or declined.
+STEER_LABEL_CONTROL="[COORDINATOR id="
+STEER_RESOLVE_CONTROL="agentic_resolve"
 
 failed=0
 check() {
@@ -83,6 +92,17 @@ case "$GOAL_WRITE" in
   *GOAL_PROMPT_FRAMING*) check "the goal-prompt write does not carry the skill-load sentence" 0 ;;
   *) check "the goal-prompt write does not carry the skill-load sentence" 1 ;;
 esac
+# The coordinator steer sentence rides the same priming write and never
+# the goal write, for the same reason the skill-load sentence does not.
+case "$PRIMING_WRITE" in
+  *COORDINATOR_STEER_INSTRUCTION*) check "the priming write carries the coordinator steer sentence" 0 ;;
+  *) check "the priming write carries the coordinator steer sentence" 1 ;;
+esac
+case "$GOAL_WRITE" in
+  *COORDINATOR_STEER_INSTRUCTION*) check "the goal-prompt write does not carry the coordinator steer sentence" 1 ;;
+  *GOAL_PROMPT_FRAMING*) check "the goal-prompt write does not carry the coordinator steer sentence" 0 ;;
+  *) check "the goal-prompt write does not carry the coordinator steer sentence" 1 ;;
+esac
 # A presence grep for the wait is not enough: `if : wait_for_result_line ...`
 # keeps the literal, makes the call a no-op argument to `:`, and passes. So
 # assert the shape and the position instead - the call sits in an `if`
@@ -108,15 +128,24 @@ case "${SKILL_LOAD_INSTRUCTION:-}" in
   *) check "channel attached: skill-load sentence present" 1 ;;
 esac
 [ -n "${GOAL_PROMPT_FRAMING:-}" ]; check "the goal-prompt framing line is non-empty" $?
+case "${COORDINATOR_STEER_INSTRUCTION:-}" in
+  *"$STEER_LABEL_CONTROL"*"$STEER_RESOLVE_CONTROL"*) check "channel attached: coordinator steer sentence present, naming the label and agentic_resolve" 0 ;;
+  *) check "channel attached: coordinator steer sentence present, naming the label and agentic_resolve" 1 ;;
+esac
 
 # Channel not attached: the reply-tool guidance is absent, but the
-# skill-load sentence must still be present - it is NO_CHANNEL-independent.
-unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION
+# skill-load sentence and the coordinator steer sentence must still be
+# present - both are NO_CHANNEL-independent.
+unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION
 NO_CHANNEL=1
 eval "$VARS_SNIPPET"
 case "${SKILL_LOAD_INSTRUCTION:-}" in
   *"$SKILL_LOAD_CONTROL"*) check "channel not attached: skill-load sentence still present" 0 ;;
   *) check "channel not attached: skill-load sentence still present" 1 ;;
+esac
+case "${COORDINATOR_STEER_INSTRUCTION:-}" in
+  *"$STEER_LABEL_CONTROL"*"$STEER_RESOLVE_CONTROL"*) check "channel not attached: coordinator steer sentence still present, naming the label and agentic_resolve" 0 ;;
+  *) check "channel not attached: coordinator steer sentence still present, naming the label and agentic_resolve" 1 ;;
 esac
 if [ -z "${CHANNEL_REPLY_INSTRUCTION:-}" ]; then
   check "channel not attached: instruction is empty" 0

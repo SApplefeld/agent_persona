@@ -69,6 +69,7 @@ import {
   readAskRecord,
   expireOpenAsks,
   askKey,
+  COORDINATOR_GROUND,
 } from "./operator";
 import {
   shouldSelfReview,
@@ -115,6 +116,86 @@ function targetPersonaOf(arg: unknown, own: string): { persona: string } | { den
   return { persona: (arg as string).trim() };
 }
 
+// The ask-first item a file path names: a CLAUDE.md anywhere, or a settings
+// file (`settings.json`, `settings.local.json` and the like) whose parent
+// directory is `.claude`. Null for any other path and for a non-string.
+export function settingsOrClaudeMdPath(p: unknown): string | null {
+  if (typeof p !== "string") return null;
+  const parts = p.split(/[\\/]/);
+  const base = parts[parts.length - 1] ?? "";
+  if (base.toLowerCase() === "claude.md") return "a CLAUDE.md edit";
+  const parent = parts.length >= 2 ? parts[parts.length - 2] : "";
+  if (/^settings(\.[^\\/]+)?\.json$/i.test(base) && parent.toLowerCase() === ".claude") return "a settings file edit";
+  return null;
+}
+
+// The ask-first item a Bash command writes to: the same two paths as
+// settingsOrClaudeMdPath, found as a path token in the command beside a
+// write token (any redirect, sed -i, tee, cp, mv, rm, truncate). A command
+// that only names the path (a cat, a grep) and a non-string return null.
+export function bashWritesSettingsOrClaudeMd(command: unknown): string | null {
+  if (typeof command !== "string") return null;
+  const path = /(^|[\s"'=(])(?:[^\s"'()]*[\\/])?(CLAUDE\.md|\.claude[\\/]settings(?:\.[^\s"'\\/]+)?\.json)(?=$|[\s"')])/i.exec(command);
+  if (path === null) return null;
+  const writes = /(>|\bsed\s+(?:-\S+\s+)*-i|\btee\s|(^|[\s;&|(])(?:cp|mv|rm)\s|\btruncate\b)/.test(command);
+  if (!writes) return null;
+  return path[2].toLowerCase() === "claude.md" ? "a CLAUDE.md edit" : "a settings file edit";
+}
+
+// The arguments after `git push` on the first line of a command that runs
+// one, cut at the next `;`, `&&`, `||` or `|`; null for a command with no
+// push and for a non-string. Global flags before `push`, with or without a
+// value (`-C <dir>`, `-c k=v`, `--no-pager`), are stepped over.
+export function gitPushArgs(command: unknown): string | null {
+  if (typeof command !== "string") return null;
+  const m = /(^|[\s;&|(])git\s+(?:-\S+\s+(?:[^-\s]\S*\s+)?)*push\b(.*)$/m.exec(command);
+  if (m === null) return null;
+  return m[2].split(/;|&&|\|\||\|/)[0].trim();
+}
+
+// Why a push's arguments reach past the plan's recorded commit model, or
+// null when the push is within it. A forced or deleting push is beyond every
+// model; with no recorded model every push is beyond; Review-Only admits no
+// push; Branch-and-PR refuses a push naming main or master and admits any
+// other, since the plugin cannot read the checked-out branch and the trunk
+// is protected by the repository's own ruleset; Commit-and-Push admits any
+// push the first rule did not refuse.
+export function pushBeyondCommitModel(pushArgs: string, model: string | null): string | null {
+  const tokens = pushArgs.split(/\s+/).filter((t) => t.length > 0);
+  const forced = tokens.find((t) =>
+    t === "--force" || t === "-f" || t === "--force-with-lease" || t.startsWith("--force-with-lease=")
+    || t === "--force-if-includes" || t === "--delete" || t === "-d" || (t.startsWith("+") && t.length > 1));
+  if (forced !== undefined) return `a forced or deleting push (${forced}) is beyond every commit model`;
+  if (model === null) return "no recorded commit model was found for the armed plan, so no push is within one";
+  if (model === "Review-Only") return "the plan's recorded commit model is Review-Only, which admits no push";
+  if (model === "Branch-and-PR") {
+    const trunk = tokens.find((t) => t === "main" || t === "master" || t.endsWith(":main") || t.endsWith(":master"));
+    if (trunk !== undefined) return `the plan's recorded commit model is Branch-and-PR and the push names the trunk (${trunk})`;
+  }
+  return null;
+}
+
+// The commit model the armed plan's header records, read through the kit
+// leash file: `.kit/goal-state.json` names the plan, and the plan's first
+// `Commit Model:` line names one of the three models. Null when the leash
+// file, the plan or the line is absent, when the plan path is not a plain
+// repo-relative path, or when any read throws. Called only once a push was
+// found in a command, never on every tool call.
+export async function readRecordedCommitModel(dp: any): Promise<string | null> {
+  try {
+    if (!(await dp.fs.exists(".kit/goal-state.json"))) return null;
+    const leash = JSON.parse(await dp.fs.read(".kit/goal-state.json")) as { plan?: unknown };
+    const plan = leash.plan;
+    if (typeof plan !== "string" || plan.length === 0) return null;
+    if (/^[\\/]/.test(plan) || /^[A-Za-z]:/.test(plan) || plan.split(/[\\/]/).includes("..")) return null;
+    const text = await dp.fs.read(plan);
+    const m = /^Commit Model:\s*(Review-Only|Branch-and-PR|Commit-and-Push)\b/m.exec(text);
+    return m === null ? null : m[1];
+  } catch {
+    return null;
+  }
+}
+
 // One turn this plugin's own $.prompt.submit has queued and that has not
 // opened yet; the list and its match rules are described at register()'s
 // `expectedTurns`. An entry carries two match keys. `text` is the string
@@ -132,8 +213,10 @@ function targetPersonaOf(arg: unknown, own: string): { persona: string } | { den
 // before the submit's continuation has stored the settled text matches
 // neither key either. Such a delivery's turn reads unaccounted, and its
 // entry then leaves the list at the withheld branch once its record is
-// swept or resolved.
-type ExpectedTurn = { text: string; settledText?: string } & ({ kind: "delivery"; recordId: string } | { kind: "nudge" } | { kind: "plugin" });
+// swept or resolved. A delivery entry also carries `coordinator`, true when
+// the record's label ground is the coordinator's, which is what turn.start
+// reads to mark the turn coordinator-origin for the tool.call bound checks.
+type ExpectedTurn = { text: string; settledText?: string } & ({ kind: "delivery"; recordId: string; coordinator: boolean } | { kind: "nudge" } | { kind: "plugin" });
 type SubmitOutcome = { ok: true } | { ok: false; how: "failed" | "dropped"; reason: string };
 
 // Removes one entry from the expected-turn list by identity, never by
@@ -755,6 +838,14 @@ export const register: Register = async (on, options) => {
   // message, captured at turn.start from the flag above so turn.complete
   // can act on it after the flag has already reset for the next prompt.
   let currentTurnIsChannelOrigin = false;
+  // Whether THIS turn opened from a [COORDINATOR ...] record this plugin
+  // delivered: true only for a turn whose opening text matched a delivery
+  // entry queued for a record whose label ground is the coordinator's. Set
+  // at turn.start from the matched entry and cleared at turn.complete. The
+  // urgent break-in queues no entry, so it never sets this; a turn the real
+  // prompt hook saw (keyboard, SDK caller, channel) matches no entry and
+  // never sets it either. The tool.call bound checks read it.
+  let currentTurnIsCoordinatorOrigin = false;
   // Whether the reply tool (channel-relay's mcp__..__reply) was called
   // anywhere during the current turn. Reset at turn.start, set by tool.call.
   let replyCalledThisTurn = false;
@@ -1659,7 +1750,7 @@ export const register: Register = async (on, options) => {
                   detail: `ask ${askId} closed by record ${answer.id}`,
                 });
                 const answerText = deliveryText(answerLabel, answer.id, answer.text, { answerTo: askRecord.question });
-                const expectedAnswerTurn = expectTurn({ kind: "delivery", recordId: answer.id, text: answerText });
+                const expectedAnswerTurn = expectTurn({ kind: "delivery", recordId: answer.id, text: answerText, coordinator: answerLabel === COORDINATOR_GROUND });
                 const answerOutcome = await submitExpectedTurn($, expectedTurns, expectedAnswerTurn);
                 if (!answerOutcome.ok) recordFailedDelivery(answer, answerOutcome);
                 await persist($);
@@ -1743,7 +1834,7 @@ export const register: Register = async (on, options) => {
             action: "operator_delivered",
             detail: `record ${oldest.id} submitted as ${deliveryPrefix(ground, oldest.id, false)}`,
           });
-          const expectedDeliveryTurn = expectTurn({ kind: "delivery", recordId: oldest.id, text: submittedText });
+          const expectedDeliveryTurn = expectTurn({ kind: "delivery", recordId: oldest.id, text: submittedText, coordinator: ground === COORDINATOR_GROUND });
           const deliveryOutcome = await submitExpectedTurn($, expectedTurns, expectedDeliveryTurn);
           if (!deliveryOutcome.ok) recordFailedDelivery(oldest, deliveryOutcome);
           await persist($);
@@ -3134,9 +3225,11 @@ export const register: Register = async (on, options) => {
     if (matched) {
       unexpectTurn(matched);
       currentTurnKind = matched.kind;
+      currentTurnIsCoordinatorOrigin = matched.kind === "delivery" && matched.coordinator === true;
       if (matched.kind === "delivery") stampRecordId = matched.recordId;
     } else {
       currentTurnKind = "unaccounted";
+      currentTurnIsCoordinatorOrigin = false;
       // A delivery entry outlives its record when no turn opens with a
       // matching text: the TTL sweep or a resolve moves the record on while
       // the entry stays queued. So the store is read once per fire and every
@@ -3324,6 +3417,7 @@ export const register: Register = async (on, options) => {
       }
     }
     currentTurnIsChannelOrigin = false;
+    currentTurnIsCoordinatorOrigin = false;
 
     // Item 2 sub-bullet (f016b69): a turn that did real work with no
     // active root - the exact shape a cost-conscious model produces when
@@ -4577,6 +4671,53 @@ export const register: Register = async (on, options) => {
       });
       await persist($);
       return { deny: "Bash is not allowed by the current goal" };
+    }
+
+    // A turn this plugin opened from a [COORDINATOR ...] record acts on the
+    // coordinator's delegated authority, which stops at the operator's
+    // ask-first items. The two the hook can check are checked here: an edit
+    // to a settings file or a CLAUDE.md, by path or by a writing Bash
+    // command, and a push beyond the plan's recorded commit model. A caught
+    // act is refused for this turn only, with the reason telling the model
+    // to put it to the operator; a turn the operator opened never carries
+    // the flag and reaches every such act unchecked. The turn is the unit,
+    // so a subagent's call inside it is checked too: its write is the same
+    // act under the same authority. The refusal is not a tool error and
+    // leaves toolErrorsThisTurn alone, so it never feeds the error-streak
+    // pause.
+    if (currentTurnIsCoordinatorOrigin) {
+      let item: string | null = null;
+      let evidence = "";
+      const toolName: string = e.tool;
+      if (["Write", "Edit", "MultiEdit", "NotebookEdit"].includes(toolName)) {
+        const target: unknown = (e as any).file_path ?? (e as any).notebook_path;
+        item = settingsOrClaudeMdPath(target);
+        evidence = typeof target === "string" ? target : "";
+      } else if (e.tool === "Bash") {
+        const command: unknown = (e as any).command;
+        item = bashWritesSettingsOrClaudeMd(command);
+        evidence = typeof command === "string" ? command : "";
+        if (item === null) {
+          const pushArgs = gitPushArgs(command);
+          if (pushArgs !== null) {
+            const reason = pushBeyondCommitModel(pushArgs, await readRecordedCommitModel($));
+            if (reason !== null) {
+              item = `a push beyond the commit model (${reason})`;
+              evidence = `git push ${pushArgs}`;
+            }
+          }
+        }
+      }
+      if (item !== null) {
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "worker",
+          action: "coordinator_bound_surfaced",
+          detail: `${e.tool}: ${item}; ${evidence}`.slice(0, 200),
+        });
+        await persist($);
+        return { deny: `coordinator steer bound: ${item} is one of the operator's ask-first items, so it does not proceed on the coordinator's delegated authority. Put this act to the operator on your channel with the whole shape; the operator's own instruction reaches it directly.` };
+      }
     }
 
     const r = await next(e);

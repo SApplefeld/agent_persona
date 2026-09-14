@@ -3260,6 +3260,10 @@ async function main() {
     await caseSection6_reader_identitySwitchJoinsAsReaderNotOwner(clock);
     await caseSection6_reader_sayControlStillWritesARecord(clock);
     await caseSection6_owner_matchesTheFullExistingShape(clock);
+    await caseSection7_coordinatorOriginTurnIsBounded(clock);
+    await caseSection7_operatorAndReaderTurnsAreNeverIntercepted_control(clock);
+    await caseSection7_urgentBreakInNeverArmsTheFlag(clock);
+    await caseSection7_subagentCallInsideCoordinatorTurnIsBounded(clock);
   } finally {
     clock.restore();
   }
@@ -8202,5 +8206,184 @@ async function caseSection6_owner_matchesTheFullExistingShape(clock) {
   check("s6 owner: two clock callbacks (heartbeat, controller tick)", h.clockEveryCallbacks.length === 2, h.clockEveryCallbacks.length);
   const entry = h.storeMap.get(`commons:${SESSION_ID}`);
   check("s6 owner: commons entry holds persona:default (ownership taken)", !!entry && entry.claims.some((c) => c.resource === "persona:default"), entry);
+}
+
+// ============================================================
+// Section 7: the coordinator-origin turn flag and the bound checks the
+// tool.call hook runs under it. A turn the plugin opened from a
+// [COORDINATOR ...] record refuses the two mechanically checkable
+// ask-first items (a settings or CLAUDE.md edit, a push beyond the plan's
+// recorded commit model) and records each refusal; every other turn, and
+// the urgent break-in's tool-result context, is untouched.
+// ============================================================
+
+// A dev-persona harness with one coordinator record delivered by tick and
+// its turn opened with the queued submit text, so the turn now running is
+// coordinator-origin.
+async function openCoordinatorOriginTurn(caseName, now, clock, turnId) {
+  const h = await seedNamedOwnerHarness(caseName, now, "dev", "coordinator");
+  seedForeignClaims(h, "coord-001", now, ["persona:coordinator"]);
+  const key = seedRecordFor(h, "dev", "coord-001", 1, { at: now - 5000, text: "Land the section." });
+  await tickAndSettle(h, clock, 50);
+  check(`${caseName}: the coordinator record is delivered as [COORDINATOR id=<record id>] (setup sanity)`,
+    readStoreRecord(h, key)?.status === "delivered" && (h.promptSubmits || []).includes("[COORDINATOR id=dev-coord-001-1] Land the section."), h.promptSubmits);
+  await h.handlers["turn.start"](h.fake, { turnId }, async () => ({ result: "ok" }));
+  check(`${caseName}: the turn is stamped on the record (setup sanity)`, readStoreRecord(h, key)?.turnId === turnId, readStoreRecord(h, key));
+  return h;
+}
+
+// One tool call under a counting next: the result, how many times next ran,
+// and whether the result carries the coordinator-bound deny. A pass-through
+// is read as next ran exactly once and the result carries no deny at all.
+async function boundCall(h, args) {
+  let nextCalls = 0;
+  const r = await callTool(h, args, async () => { nextCalls++; return { result: "passthrough" }; });
+  return { r, nextCalls, denied: typeof r?.deny === "string" && r.deny.includes("coordinator steer bound"), passed: nextCalls === 1 && r?.deny === undefined };
+}
+
+function boundDecisions(h) {
+  return (getStateForPersona(h, "dev")?.decisions || []).filter((d) => d.action === "coordinator_bound_surfaced");
+}
+
+// S7-A: inside a coordinator-origin turn, each ask-first item the hook can
+// check is refused before next runs and recorded; a read that only names
+// the path passes; the push rule reads the plan the leash file names; and
+// the flag clears at turn.complete so the next unaccounted turn is free.
+async function caseSection7_coordinatorOriginTurnIsBounded(clock) {
+  console.log("\n=== Section 7: a coordinator-origin turn refuses a settings or CLAUDE.md edit and a push beyond the commit model ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await openCoordinatorOriginTurn("section7_bounded", now, clock, "t-coord");
+
+  const w = await boundCall(h, { tool: "Write", file_path: ".claude/settings.json", content: "{}" });
+  check("section7 bounded: Write of .claude/settings.json is denied with a coordinator steer bound reason", w.denied, w.r);
+  check("section7 bounded: the denied Write never reached next", w.nextCalls === 0, w.nextCalls);
+  check("section7 bounded: a coordinator_bound_surfaced decision names Write and the settings item",
+    boundDecisions(h).some((d) => d.detail.startsWith("Write: a settings file edit")), boundDecisions(h));
+
+  const ed = await boundCall(h, { tool: "Edit", file_path: "D:/x/CLAUDE.md", old_string: "a", new_string: "b" });
+  check("section7 bounded: Edit of D:/x/CLAUDE.md is denied before next", ed.denied && ed.nextCalls === 0, ed.r);
+  check("section7 bounded: the decision names Edit and the CLAUDE.md item",
+    boundDecisions(h).some((d) => d.detail.startsWith("Edit: a CLAUDE.md edit")), boundDecisions(h));
+
+  const bw = await boundCall(h, { tool: "Bash", command: "printf x > CLAUDE.md" });
+  check("section7 bounded: Bash writing CLAUDE.md by redirect is denied before next", bw.denied && bw.nextCalls === 0, bw.r);
+  check("section7 bounded: the decision names Bash and the CLAUDE.md item",
+    boundDecisions(h).some((d) => d.detail.startsWith("Bash: a CLAUDE.md edit")), boundDecisions(h));
+
+  const cat = await boundCall(h, { tool: "Bash", command: "cat CLAUDE.md" });
+  check("section7 bounded: Bash reading CLAUDE.md passes through (next ran once, no deny)", cat.passed, cat.r);
+
+  const before = boundDecisions(h).length;
+  const forced = await boundCall(h, { tool: "Bash", command: "git push --force origin feature" });
+  check("section7 bounded: a forced push is denied before next with no goal-state file seeded", forced.denied && forced.nextCalls === 0, forced.r);
+  check("section7 bounded: the decision names Bash and the push item",
+    boundDecisions(h).length === before + 1 && boundDecisions(h).at(-1).detail.startsWith("Bash: a push beyond the commit model"), boundDecisions(h).at(-1));
+
+  h.fsMap.set(".kit/goal-state.json", JSON.stringify({ plan: "docs/plans/p.md" }));
+  const planWith = (model) => `# p\r\n\r\nStatus: In Progress\r\nCommit Model: ${model}. prose after the model\r\n`;
+  h.fsMap.set("docs/plans/p.md", planWith("Branch-and-PR"));
+  const toMain = await boundCall(h, { tool: "Bash", command: "git push origin main" });
+  check("section7 bounded: Branch-and-PR: git push origin main is denied before next", toMain.denied && toMain.nextCalls === 0, toMain.r);
+  const toBranch = await boundCall(h, { tool: "Bash", command: "git push -u origin section-x" });
+  check("section7 bounded: Branch-and-PR: git push -u origin section-x passes through (next ran once, no deny)", toBranch.passed, toBranch.r);
+  const headMain = await boundCall(h, { tool: "Bash", command: "git -C /d/agent_persona push origin HEAD:main" });
+  check("section7 bounded: Branch-and-PR: git -C <dir> push origin HEAD:main is denied before next", headMain.denied && headMain.nextCalls === 0, headMain.r);
+
+  h.fsMap.set("docs/plans/p.md", planWith("Review-Only"));
+  const ro = await boundCall(h, { tool: "Bash", command: "git push origin section-x" });
+  check("section7 bounded: Review-Only: a push to a feature branch is denied before next", ro.denied && ro.nextCalls === 0, ro.r);
+
+  h.fsMap.set("docs/plans/p.md", planWith("Commit-and-Push"));
+  const cap = await boundCall(h, { tool: "Bash", command: "git push origin main" });
+  check("section7 bounded: Commit-and-Push: git push origin main passes through (next ran once, no deny)", cap.passed, cap.r);
+
+  h.fsMap.delete("docs/plans/p.md");
+  const absent = await boundCall(h, { tool: "Bash", command: "git push origin section-x" });
+  check("section7 bounded: an absent plan file reads as no recorded model, so the push is denied before next", absent.denied && absent.nextCalls === 0, absent.r);
+
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-coord", answer: "Put to the operator.", reason: "completed" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-keyboard", text: "keyboard text" }, async () => ({ result: "ok" }));
+  const after = await boundCall(h, { tool: "Write", file_path: ".claude/settings.json", content: "{}" });
+  check("section7 bounded: after turn.complete, an unaccounted turn's Write of .claude/settings.json passes through (next ran once, no deny)", after.passed, after.r);
+}
+
+// S7-B, the control: the checks key on the coordinator-origin flag alone.
+// A turn the real prompt hook saw as channel-origin, a keyboard turn, and a
+// delivery turn labelled READER each vary one axis against S7-A (the
+// origin the hook saw, an external turn with no origin, the label's ground
+// on the same delivery path) and none is intercepted.
+async function caseSection7_operatorAndReaderTurnsAreNeverIntercepted_control(clock) {
+  console.log("\n=== Section 7 control: a channel-origin turn, a keyboard turn and a READER delivery turn are never intercepted ===");
+  clock.set(T0);
+  const now = T0;
+
+  const hc = await seedNamedOwnerHarness("section7_control_channel", now, "dev", "coordinator");
+  await hc.handlers["prompt.submit"](hc.fake, { text: "Edit the settings file.", origin: { kind: "channel" } }, async () => ({}));
+  await hc.handlers["turn.start"](hc.fake, { turnId: "t-channel", text: "Edit the settings file." }, async () => ({ result: "ok" }));
+  const cw = await boundCall(hc, { tool: "Write", file_path: ".claude/settings.json", content: "{}" });
+  const cpush = await boundCall(hc, { tool: "Bash", command: "git push --force origin main" });
+  check("section7 control channel: Write of .claude/settings.json passes through (next ran once, no deny)", cw.passed, cw.r);
+  check("section7 control channel: git push --force origin main passes through (next ran once, no deny)", cpush.passed, cpush.r);
+  check("section7 control channel: no coordinator_bound_surfaced decision", boundDecisions(hc).length === 0, boundDecisions(hc));
+
+  const hk = await seedNamedOwnerHarness("section7_control_keyboard", now, "dev", "coordinator");
+  await hk.handlers["prompt.submit"](hk.fake, { text: "Push it." }, async () => ({}));
+  await hk.handlers["turn.start"](hk.fake, { turnId: "t-keyboard", text: "Push it." }, async () => ({ result: "ok" }));
+  const kw = await boundCall(hk, { tool: "Write", file_path: ".claude/settings.json", content: "{}" });
+  const kpush = await boundCall(hk, { tool: "Bash", command: "git push --force origin main" });
+  check("section7 control keyboard: Write of .claude/settings.json passes through (next ran once, no deny)", kw.passed, kw.r);
+  check("section7 control keyboard: git push --force origin main passes through (next ran once, no deny)", kpush.passed, kpush.r);
+  check("section7 control keyboard: no coordinator_bound_surfaced decision", boundDecisions(hk).length === 0, boundDecisions(hk));
+
+  const hr = await seedNamedOwnerHarness("section7_control_reader", now, "dev", "coordinator");
+  seedForeignClaims(hr, "rev-001", now, ["reader:dev"]);
+  const key = seedRecordFor(hr, "dev", "rev-001", 1, { at: now - 5000, text: "Reader note." });
+  await tickAndSettle(hr, clock, 50);
+  check("section7 control reader: the record is delivered as [READER:dev id=<record id>] (setup sanity)",
+    readStoreRecord(hr, key)?.status === "delivered" && (hr.promptSubmits || []).includes("[READER:dev id=dev-rev-001-1] Reader note."), hr.promptSubmits);
+  await hr.handlers["turn.start"](hr.fake, { turnId: "t-reader" }, async () => ({ result: "ok" }));
+  check("section7 control reader: the turn is stamped on the record (setup sanity)", readStoreRecord(hr, key)?.turnId === "t-reader", readStoreRecord(hr, key));
+  const rw = await boundCall(hr, { tool: "Write", file_path: ".claude/settings.json", content: "{}" });
+  const rpush = await boundCall(hr, { tool: "Bash", command: "git push --force origin main" });
+  check("section7 control reader: Write of .claude/settings.json passes through (next ran once, no deny)", rw.passed, rw.r);
+  check("section7 control reader: git push --force origin main passes through (next ran once, no deny)", rpush.passed, rpush.r);
+  check("section7 control reader: no coordinator_bound_surfaced decision", boundDecisions(hr).length === 0, boundDecisions(hr));
+}
+
+// S7-C: the urgent break-in delivers a coordinator record as tool-result
+// context inside a turn the plugin did not open, and queues no expected
+// turn, so the flag stays down and a CLAUDE.md edit in that same turn is
+// not intercepted.
+async function caseSection7_urgentBreakInNeverArmsTheFlag(clock) {
+  console.log("\n=== Section 7: an urgent coordinator record folded in as context never arms the coordinator-origin flag ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("section7_urgent", now, "dev", "coordinator");
+  seedForeignClaims(h, "coord-001", now, ["persona:coordinator"]);
+  const key = seedRecordFor(h, "dev", "coord-001", 1, { at: now - 5000, text: "Stop: wrong branch.", urgent: true });
+  await h.handlers["turn.start"](h.fake, { turnId: "t-top", text: "working" }, async () => ({ result: "ok" }));
+  const ls = await callTool(h, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "a.txt" }, text: "a.txt" }));
+  const ctx = Array.isArray(ls.context) ? ls.context.join("\n") : "";
+  check("section7 urgent: the break-in folds the record in as [COORDINATOR id=<record id>, urgent] context",
+    ls.deny === undefined && ctx.includes("[COORDINATOR id=dev-coord-001-1, urgent] Stop: wrong branch."), ls);
+  check("section7 urgent: the record is delivered and stamped with the running turn",
+    readStoreRecord(h, key)?.status === "delivered" && readStoreRecord(h, key)?.turnId === "t-top", readStoreRecord(h, key));
+  const ed = await boundCall(h, { tool: "Edit", file_path: "CLAUDE.md", old_string: "a", new_string: "b" });
+  check("section7 urgent: Edit of CLAUDE.md in the same turn passes through (next ran once, no deny)", ed.passed, ed.r);
+  check("section7 urgent: no coordinator_bound_surfaced decision", boundDecisions(h).length === 0, boundDecisions(h));
+}
+
+// S7-D: the turn is the unit. A subagent's call inside a coordinator-origin
+// turn is the same act under the same authority and is refused too.
+async function caseSection7_subagentCallInsideCoordinatorTurnIsBounded(clock) {
+  console.log("\n=== Section 7: a subagent's CLAUDE.md edit inside a coordinator-origin turn is refused too ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await openCoordinatorOriginTurn("section7_subagent", now, clock, "t-coord-sub");
+  const ed = await boundCall(h, { tool: "Edit", file_path: "CLAUDE.md", agentId: "agent-1", old_string: "a", new_string: "b" });
+  check("section7 subagent: the subagent's Edit of CLAUDE.md is denied before next", ed.denied && ed.nextCalls === 0, ed.r);
+  check("section7 subagent: the decision names Edit and the CLAUDE.md item",
+    boundDecisions(h).some((d) => d.detail.startsWith("Edit: a CLAUDE.md edit")), boundDecisions(h));
 }
 
