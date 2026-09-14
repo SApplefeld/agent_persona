@@ -1141,3 +1141,10 @@ Delta: measured 2026-09-14 05:36Z on SCOTT-CLAUDE at `fc8948f` with the Minor pa
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 7 - 2026-09-14
+Section 12 (Inbox upkeep) is in implementation. Sections 1 and 2 closed at Chapters 6 and 7 (`1601e80`, `0325388`, both pushed). The Section 12 brief is `.kit/scratch/s12/brief.md`; it resolves four intake gaps as declared assumptions: the resolve tool registers beside the reader tools and is owner-gated in its handler because Section 6's tier does not exist yet; the Section 7 and 8 instruction sentences ride with those sections per the amendments; the reply link is a session-scoped submitted-record id set synchronously before each `$.prompt.submit` and read at `turn.start` under the channel-origin and nudged flags; the live race is not reproduced, the harness case is the red step and the race is recorded as inferred.
+Live dispatches: implementer-opus on Section 12, asked to build all three fixes and seven acceptance cases per the brief, red before green per bullet, and return DONE with the lane counts.
+Gate baseline: targeted lane measured 2026-09-14 05:35Z on SCOTT-CLAUDE at `0325388` (worktree clean apart from the Section 2 close pass then unstaged, since committed there), under the heavy-process claim with the dev, aios, KIT Worker and KIT Expert sessions live: `npx tsc --noEmit` exit 0, `node .kit/check-loader-rule.mjs` exit 0, `node .kit/commons-unit-test.mjs` 20 checks exit 0, `node .kit/controller-tick-test.mjs` 444 checks 0 failing exit 0.
+Rulings adopted since the last boundary: none.
+Next: await the Section 12 implementer, verify with the lane, first-green commit and push, round 1 code pair at fable low through the Agent tool, adjudicate, the Minor pass, the close gate, the stamp adjudication, Chapter 8, the commit and push, the checkpoint, then Section 3.
