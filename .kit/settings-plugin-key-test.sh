@@ -161,7 +161,7 @@ printf '%s' '{"pluginConfigs":' > "$TMP/rd/settings.json"
 OUT=$(drive tester "$TMP/rd")
 RC=$?
 [ "$RC" -eq 1 ]; check "supervise.sh exits 1 on a provided settings file that is not JSON (rc=$RC)" "$?"
-[ -s "$TMP/rd/supervisor.log" ]; check "supervise.sh records the settings refusal in supervisor.log" "$?"
+[ -s "$TMP/rd/supervisor.log" ] && ! grep -q "LAUNCH" "$TMP/rd/supervisor.log"; check "supervise.sh records the settings refusal in supervisor.log and launches nothing" "$?"
 
 OUT=$(drive 'bad"name' "$TMP/rd2")
 case "$OUT" in *"persona 'bad\"name' may hold only"*) check "supervise.sh refuses a persona carrying a quote" 0 ;; *) check "supervise.sh refuses a persona carrying a quote" 1 ;; esac

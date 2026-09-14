@@ -22,8 +22,8 @@ check("cost field exists", state1.monitor.cost !== undefined && state1.monitor.c
 
 if (state1.monitor.cost) {
   const c = state1.monitor.cost;
-  check("classify.count is 0", c.classify.count === 0);
-  check("classify.estTokens is 0", c.classify.estTokens === 0);
+  check("classify.count is 0", c.classify?.count === 0);
+  check("classify.estTokens is 0", c.classify?.estTokens === 0);
   check("reason exists", c.reason !== undefined);
   check("selfReview exists", c.selfReview !== undefined);
   check("planner exists", c.planner !== undefined);

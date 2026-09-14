@@ -36,12 +36,11 @@ SUPERVISE="$PLUGIN_DIR/bin/supervise.sh"
 RUNDIR="$(mktemp -d)"
 trap 'rm -rf "$RUNDIR"' EXIT
 
-# Registered in .kit/live-all.sh's ALL_SUITES as "stopprocesstree" - it
-# launches no claude session and holds no persona claim, so it fits the
-# runner cheaply, and the whole gate's own summary covers it. SUITE_DIR
-# is the convention every other live-*-test.sh reads its own scratch dir
-# from when live-all.sh drives it; standalone runs (no SUITE_DIR set)
-# fall back to their own mktemp -d.
+# This suite launches no claude session and holds no persona claim, so it
+# runs on its own beside a live fleet, and .kit/live-all.sh does not run it.
+# SUITE_DIR is the convention the live suites read their scratch dir from
+# when a runner drives them; a standalone run (no SUITE_DIR set) falls back
+# to its own mktemp -d.
 SUITE_DIR="${SUITE_DIR:-$(mktemp -d)}"
 mkdir -p "$SUITE_DIR"
 EXIT_FILE="$SUITE_DIR/stopprocesstree-test.exit"

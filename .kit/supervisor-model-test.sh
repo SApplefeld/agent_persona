@@ -91,7 +91,7 @@ rm -f "$TMP/stub/launched" "$TMP/stub/argv"
 rm -f "$TMP/stub/launched" "$TMP/stub/argv"
 OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home-free" supervisorCrashLimit=1 supervisorPollMs=1000 \
   EFFORT=low supervisorModel=sonnet supervisorEffort=high \
-  timeout 120 bash "$SCRIPT" "$TMP/wd-launch" modelprobe default --rundir "$TMP/rd-launch" --no-channel 2>&1)
+  timeout 120 bash "$SCRIPT" "$TMP/wd-launch" modelprobe default --rundir "$TMP/rd-launch-mirror" --no-channel 2>&1)
 RC=$?
 [ "$RC" -eq 3 ] && [ -e "$TMP/stub/launched" ]
 check "mirror control: the EFFORT-exported drive reaches the launch (rc=$RC)" "$?"

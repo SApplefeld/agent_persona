@@ -9,8 +9,8 @@
 #
 # Asserts:
 #   F8:   Both sessions wrote a commons:<sessionId> claim entry; exactly one winner.
-#   F10c: The reader's session_id (read from its own out.jsonl) is the LATER
-#         claimant in the store. The earlier claimant is the winner (F9 rule).
+#   F10c: Read from the commons store under each child's own session_id, one
+#         child holds persona:default and the other holds reader:default only.
 #   F10d: CROSSDIR=1: B ran in its own directory and has its own
 #         .agentic-personas.json and .agentic-heartbeat.json there.
 #   F12b: Stale RUNNING markers are reclaimed by Windows-PID liveness check
@@ -366,7 +366,7 @@ fi
 # Step 4 (F10a/F10b): Strict mutual-exclusion assertions on out.jsonl content.
 # Primary assertions:
 #   (1) In the commons store, exactly one child holds persona:default and the other holds reader:default only.
-#   (2) The reader is the later claimedAt (loser), confirmed via the commons store.
+#   (2) Both session ids and their claims are logged, so a red names the session it saw.
 #   (3) The loser's memory_add was refused ('this write was not saved'); the winner's was saved.
 
 # --- F10(1): owner vs reader in the commons store ---
@@ -380,7 +380,7 @@ B_IS_READER=0
 # result's wording: each child's session id comes from its own out.jsonl, and
 # the store entry under commons:<session id> says which claim it holds.
 # The winner holds persona:default and the loser holds reader:default only.
-if [ -n "$STORE_FILE_WIN" ]; then
+if [ -n "${STORE_FILE_WIN:-}" ]; then
   F10_ROLES=$(node -e "
 const fs = require('fs');
 function sessionOf(p) {
@@ -395,11 +395,12 @@ const out = [];
 for (const [label, p] of [['A', process.argv[2]], ['B', process.argv[3]]]) {
   const sid = sessionOf(p);
   const claims = ((store['commons:' + sid] || {}).claims || []).map(c => c.resource);
+  console.error('F10(1): ' + label + ' session ' + (sid || '(none)') + ' claims ' + JSON.stringify(claims));
   out.push(label + '_OWNER=' + (claims.includes('persona:default') ? 1 : 0));
   out.push(label + '_READER=' + (claims.includes('reader:default') && !claims.includes('persona:default') ? 1 : 0));
 }
 console.log(out.join(' '));
-" "$STORE_FILE_WIN" "$(cygpath -m "$A_OUT")" "$(cygpath -m "$B_OUT")" 2>/dev/null | tr -d '\r')
+" "$STORE_FILE_WIN" "$(cygpath -m "$A_OUT")" "$(cygpath -m "$B_OUT")" 2>> "$K"/commons.assert.log | tr -d '\r')
   for kv in $F10_ROLES; do
     case "$kv" in
       A_OWNER=1) A_IS_OWNER=1 ;; B_OWNER=1) B_IS_OWNER=1 ;;
@@ -412,73 +413,9 @@ OWNER_COUNT=$((A_IS_OWNER + B_IS_OWNER))
 READER_COUNT=$((A_IS_READER + B_IS_READER))
 if [ "$OWNER_COUNT" -eq 1 ] && [ "$READER_COUNT" -eq 1 ]; then
   echo "F10(1): exactly one owner, one reader" >> "$K"/commons.assert.log
-  if [ "$A_IS_OWNER" -eq 1 ]; then OWNER_ID_A=1; READER_FILE="commons-B.out.jsonl"; else OWNER_ID_A=0; READER_FILE="commons-A.out.jsonl"; fi
 else
   echo "F10(1) FAIL: owner_count=$OWNER_COUNT reader_count=$READER_COUNT (A_owner=$A_IS_OWNER B_owner=$B_IS_OWNER A_reader=$A_IS_READER B_reader=$B_IS_READER)" >> "$K"/commons.assert.log
   ASSERT_FAILED=1
-fi
-
-# --- F10(2): the reader is the later claimedAt ---
-# F10c fix: read the reader's session_id from the READER_FILE's out.jsonl,
-# then verify in the commons store that this session has the later claimedAt.
-if [ "$OWNER_COUNT" -eq 1 ] && [ -n "$STORE_FILE_WIN" ] && [ "$ASSERT_FAILED" -eq 0 ]; then
-  # Determine which file is the reader's
-  READER_OUT="$A_OUT"
-  if [ "$B_IS_READER" -eq 1 ]; then READER_OUT="$B_OUT"; fi
-  READER_OUT_WIN=$(cygpath -m "$READER_OUT")
-  # Extract the reader's session_id from its out.jsonl (stream-json has "session_id" in the init line)
-  READER_SESSION=$(node -e "
-const fs = require('fs');
-const lines = fs.readFileSync(process.argv[1], 'utf8').trim().split('\n');
-for (const line of lines) {
-  try {
-    const rec = JSON.parse(line);
-    if (rec.session_id) { console.log(rec.session_id); process.exit(0); }
-  } catch {}
-}
-console.error('F10(2) FAIL: could not find session_id in reader out.jsonl');
-process.exit(1);
-" "$READER_OUT_WIN" 2>&1)
-  if [ $? -ne 0 ]; then
-    echo "F10(2) FAIL: $READER_SESSION" >> "$K"/commons.assert.log
-    ASSERT_FAILED=1
-  else
-    READER_SESSION_WIN=$(echo "$READER_SESSION" | tr -d '\r')
-    # Round 47 finding 2: this used to require two persona:default claims
-    # and compare claimedAt to find the later (losing) one. Round 32's fix
-    # (8d28ee6) releases the reader's speculative persona:default claim on
-    # arbitration loss, so there is only ever one persona:default claim in
-    # the store now - the owner's - and the old check reads that fix as a
-    # failure. The real proof of arbitration order is simpler and does not
-    # need timestamps: the reader session's own commons entry must carry
-    # reader:default and must NOT carry persona:default (the winner keeps
-    # persona:default; every loser is demoted to reader:default only).
-    node -e "
-const fs = require('fs');
-const store = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
-const readerSession = process.argv[2];
-const key = 'commons:' + readerSession;
-const entry = store[key];
-if (!entry || !entry.claims) {
-  console.error('F10(2) FAIL: no commons entry for reader ' + readerSession);
-  process.exit(1);
-}
-const hasReaderClaim = entry.claims.some(c => c.resource === 'reader:default');
-const hasPersonaClaim = entry.claims.some(c => c.resource === 'persona:default');
-if (!hasReaderClaim) {
-  console.error('F10(2) FAIL: reader ' + readerSession + ' has no reader:default claim');
-  process.exit(1);
-}
-if (hasPersonaClaim) {
-  console.error('F10(2) FAIL: reader ' + readerSession + ' still carries a persona:default claim (Round 32 regression)');
-  process.exit(1);
-}
-console.log('F10(2): reader ' + readerSession + ' holds reader:default only, no persona:default');
-" "$STORE_FILE_WIN" "$READER_SESSION_WIN" >> "$K"/commons.assert.log 2>&1
-    if [ $? -ne 0 ]; then
-      ASSERT_FAILED=1
-    fi
-  fi
 fi
 
 # --- F10(3): loser's write refused, winner's saved ---
