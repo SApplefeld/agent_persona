@@ -107,10 +107,12 @@ function commonsStoreOf(dp: any): CommonsStore {
 // it whole), and the text the turn then opens with. Both are kept because
 // the contract does not order the submit promise settling against
 // turn.start: a turn that opens before the submit's continuation has run
-// matches on `text`, one that opens after matches on `settledText`. A
-// UserPromptSubmit settings hook rewriting the text after the submit has
-// settled defeats both keys; that turn reads unaccounted and a delivery
-// record ages out unstamped.
+// matches on `text`, one that opens after matches on `settledText`. Two
+// turns match neither key: one a UserPromptSubmit settings hook suppressed,
+// which opens with an empty text, and one that opens with a rewritten or
+// capped text before the submit's continuation has stored the settled
+// text. Such a turn reads unaccounted, and the delivery entry then leaves
+// the list at the withheld branch once its record is swept or resolved.
 type ExpectedTurn = { text: string; settledText?: string } & ({ kind: "delivery"; recordId: string } | { kind: "nudge" } | { kind: "plugin" });
 type SubmitOutcome = { ok: true } | { ok: false; how: "failed" | "dropped"; reason: string };
 
@@ -665,10 +667,12 @@ export const register: Register = async (on, options) => {
   // immediately before its submit, carrying the exact text it hands the
   // submit, and runs the submit through the top-level submitExpectedTurn,
   // which removes that same entry (by identity, never by position) when no
-  // turn is coming. turn.start matches e.text, the text the turn begins
-  // with, against each queued entry's two keys (the ExpectedTurn type above
-  // says why there are two) and removes the match wherever it sits; that
-  // entry's kind is the turn's kind. A delivery entry carries the inbox
+  // turn is coming. A delivery entry also leaves when the withheld branch
+  // in turn.start finds its record gone from the store, or no longer
+  // delivered and unstamped. turn.start matches e.text, the text the turn
+  // begins with, against each queued entry's two keys (the ExpectedTurn type
+  // above says why there are two) and removes the match wherever it sits;
+  // that entry's kind is the turn's kind. A delivery entry carries the inbox
   // record its [OPERATOR] prompt delivered, which only that turn stamps and
   // answers; a nudge entry tells turn.complete to score with the
   // nudge-aware label set, since currentPrompt still holds the stale user
@@ -2940,8 +2944,27 @@ export const register: Register = async (on, options) => {
       if (matched.kind === "delivery") stampRecordId = matched.recordId;
     } else {
       currentTurnKind = "unaccounted";
-      const queuedDelivery = expectedTurns.find((entry) => entry.kind === "delivery");
-      if (sess.isOwner && queuedDelivery && queuedDelivery.kind === "delivery") {
+      // A delivery entry outlives its record when no turn opens with a
+      // matching text: the TTL sweep or a resolve moves the record on while
+      // the entry stays queued. So the store is read once per fire and every
+      // delivery entry whose record is absent, or is no longer delivered and
+      // unstamped, leaves the list by identity. The first entry that
+      // survives is the one the withheld line names; where none survives,
+      // nothing is written. Nudge and plugin entries are not read.
+      let queuedDelivery: Extract<ExpectedTurn, { kind: "delivery" }> | null = null;
+      if (sess.isOwner && expectedTurns.some((entry) => entry.kind === "delivery")) {
+        const liveRecords = await listInboxRecords(commonsStoreOf($), sess.persona);
+        for (const entry of [...expectedTurns]) {
+          if (entry.kind !== "delivery") continue;
+          const record = liveRecords.find((rec) => rec.id === entry.recordId);
+          if (record && record.status === "delivered" && !record.turnId) {
+            if (!queuedDelivery) queuedDelivery = entry;
+          } else {
+            unexpectTurn(entry);
+          }
+        }
+      }
+      if (queuedDelivery) {
         const reason = currentTurnIsChannelOrigin ? "channel-origin" : currentTurnIsExternal ? "external" : "unaccounted";
         sess.state.decisions.push({
           timestamp: Date.now(),

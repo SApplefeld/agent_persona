@@ -3171,6 +3171,9 @@ async function main() {
     await caseSection12_K1_droppedNudgeSubmitConsumesItsEntry(clock);
     await caseSection12_K2_settledTextMatchesTheDeliveryTurn(clock);
     await caseSection12_K2_submittedTextStillMatchesBeforeTheSubmitSettles(clock);
+    await caseSection12_L1_sweptRecordDropsItsDeliveryEntry(clock);
+    await caseSection12_L1_resolvedRecordDropsItsDeliveryEntry(clock);
+    await caseSection12_L1_withheldLineNamesTheFirstLiveRecord(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
     await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
     await caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock);
@@ -4041,9 +4044,10 @@ function readStoreRecord(h, key) {
 
 // An owner harness on the default makeState tree (an active leaf, so the
 // tick can reach the nudge path), holding the persona in commons, with one
-// pending record from a writer holding a live reader claim.
-async function seedOwnerWithPendingRecord(caseName, now, writerSid) {
-  const h = await createTickHarness({ ...OPTS, caseName });
+// pending record from a writer holding a live reader claim. `extraOpts`
+// rides into the plugin's options over OPTS.
+async function seedOwnerWithPendingRecord(caseName, now, writerSid, extraOpts = {}) {
+  const h = await createTickHarness({ ...OPTS, ...extraOpts, caseName });
   h.storeMap.set(`commons:${SESSION_ID}`, {
     sessionId: SESSION_ID,
     lastSeen: now,
@@ -5138,6 +5142,91 @@ async function caseSection12_K2_submittedTextStillMatchesBeforeTheSubmitSettles(
   h.releasePromptSubmits();
   await tick;
   check("section12.K2e: no operator_stamp_withheld after the submit settles", !getDecisions(h).some((d) => d.action === "operator_stamp_withheld"));
+}
+
+// L1 (A): a delivery entry whose turn never opens with a matching text
+// outlives its record once the TTL sweep removes it. The withheld branch
+// reads the store and drops the entry, so no later unmatched turn writes an
+// operator_stamp_withheld naming a record that is gone. The sweep is driven
+// through the tick with a short operatorRecordTtlMs: the delivery tick
+// returns early, and the second tick after it reaches the summary cadence.
+async function caseSection12_L1_sweptRecordDropsItsDeliveryEntry(clock) {
+  console.log("\n=== Section 12 L1 (A): a delivery entry whose record was swept is dropped, and no withheld line names it ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("section12_l1_a_swept", now, "writer-l1a", { operatorRecordTtlMs: 1000 });
+  await tickAndSettle(h, clock, 50);
+  check("section12.L1a: record delivered and its turn never opened (setup sanity)", readStoreRecord(h, key)?.status === "delivered" && readStoreRecord(h, key)?.turnId === undefined);
+  clock.advance(5_000);
+  await tickAndSettle(h, clock, 50);
+  await tickAndSettle(h, clock, 50);
+  check("section12.L1a: the TTL sweep removed the record (setup sanity)", !h.storeMap.has(key));
+
+  await h.handlers["turn.start"](h.fake, { turnId: "t-ext-1-l1a", text: "typed after the sweep" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-ext-1-l1a", answer: "first answer", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.L1a: no operator_stamp_withheld names the swept record",
+    !getDecisions(h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes(id)));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-ext-2-l1a", text: "typed again" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-ext-2-l1a", answer: "second answer", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.L1a: a second external turn names nothing either (the entry is gone)",
+    !getDecisions(h).some((d) => d.action === "operator_stamp_withheld"));
+}
+
+// L1 (B): the same exit when the record is resolved rather than swept.
+// agentic_resolve accepts a delivered record whether or not it is stamped,
+// so the parked delivery's record is resolved through the tool, after
+// which it is no longer delivered and unstamped and the entry is dropped.
+async function caseSection12_L1_resolvedRecordDropsItsDeliveryEntry(clock) {
+  console.log("\n=== Section 12 L1 (B): a delivery entry whose record was resolved is dropped, and no withheld line names it ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("section12_l1_b_resolved", now, "writer-l1b");
+  await tickAndSettle(h, clock, 50);
+  check("section12.L1b: record delivered and its turn never opened (setup sanity)", readStoreRecord(h, key)?.status === "delivered" && readStoreRecord(h, key)?.turnId === undefined);
+  const r = await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__agentic_resolve", id, outcome: "declined", note: "" }, async () => ({ result: "passthrough" }));
+  check("section12.L1b: resolve accepted the unstamped delivered record (setup sanity)", r?.deny === undefined && readStoreRecord(h, key)?.status === "resolved", r);
+
+  await h.handlers["turn.start"](h.fake, { turnId: "t-ext-1-l1b", text: "typed after the resolve" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-ext-1-l1b", answer: "first answer", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.L1b: no operator_stamp_withheld names the resolved record",
+    !getDecisions(h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes(id)));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-ext-2-l1b", text: "typed again" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-ext-2-l1b", answer: "second answer", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.L1b: a second external turn names nothing either (the entry is gone)",
+    !getDecisions(h).some((d) => d.action === "operator_stamp_withheld"));
+}
+
+// L1 (C): two deliveries parked, the first's record swept and the second's
+// live: the withheld line names the second record, the first entry is gone,
+// and the second entry still stamps its own turn. The records carry
+// different texts so the two entries cannot match one turn.
+async function caseSection12_L1_withheldLineNamesTheFirstLiveRecord(clock) {
+  console.log("\n=== Section 12 L1 (C): with a swept and a live delivery queued, the withheld line names the live one ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key: key1, id: id1 } = await seedOwnerWithPendingRecord("section12_l1_c_two", now, "writer-l1c1", { operatorRecordTtlMs: 4000 });
+  seedReaderClaim(h, "writer-l1c2", now);
+  const key2 = seedInboxRecord(h, "writer-l1c2", 1, { at: now - 4000, status: "pending", text: "second message" });
+  const id2 = "default-writer-l1c2-1";
+  await tickAndSettle(h, clock, 50);
+  check("section12.L1c: the first record delivered first (setup sanity)", readStoreRecord(h, key1)?.status === "delivered" && readStoreRecord(h, key2)?.status === "pending");
+  clock.advance(3_000);
+  await tickAndSettle(h, clock, 50);
+  check("section12.L1c: the second record delivered (setup sanity)", readStoreRecord(h, key2)?.status === "delivered");
+  clock.advance(2_000);
+  await tickAndSettle(h, clock, 50);
+  await tickAndSettle(h, clock, 50);
+  check("section12.L1c: the sweep removed the first record and kept the second (setup sanity)", !h.storeMap.has(key1) && readStoreRecord(h, key2)?.status === "delivered");
+
+  await h.handlers["turn.start"](h.fake, { turnId: "t-ext-l1c", text: "typed between" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-ext-l1c", answer: "typed answer", reason: "completed" }, async () => ({ result: "ok" }));
+  const withheld = getDecisions(h).filter((d) => d.action === "operator_stamp_withheld");
+  check("section12.L1c: the withheld line names the live second record and not the swept first",
+    withheld.length === 1 && withheld[0].detail.includes(id2) && !withheld[0].detail.includes(id1), withheld);
+  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-l1c", text: "[OPERATOR] second message" }, async () => ({ result: "ok" }));
+  check("section12.L1c: the second delivery's own turn still takes the stamp", readStoreRecord(h, key2)?.turnId === "t-delivery-l1c");
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-delivery-l1c", answer: "Delivered answer.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.L1c: the second delivery's turn files the reply", readStoreRecord(h, `reply:default:${id2}`)?.text === "Delivered answer.");
 }
 
 // agentic_say(urgent: true) writes urgent onto the record; a plain say does not.
