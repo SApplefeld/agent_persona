@@ -3264,6 +3264,9 @@ async function main() {
     await caseSection7_operatorAndReaderTurnsAreNeverIntercepted_control(clock);
     await caseSection7_urgentBreakInNeverArmsTheFlag(clock);
     await caseSection7_subagentCallInsideCoordinatorTurnIsBounded(clock);
+    await caseSection7_r1_shellChecksFailClosed(clock);
+    await caseSection7_r1_everyPushIsJudgedAndRefspecsResolve(clock);
+    await caseSection7_r1_subagentAttributionOutlivesTheTurn(clock);
   } finally {
     clock.restore();
   }
@@ -8385,5 +8388,134 @@ async function caseSection7_subagentCallInsideCoordinatorTurnIsBounded(clock) {
   check("section7 subagent: the subagent's Edit of CLAUDE.md is denied before next", ed.denied && ed.nextCalls === 0, ed.r);
   check("section7 subagent: the decision names Edit and the CLAUDE.md item",
     boundDecisions(h).some((d) => d.detail.startsWith("Edit: a CLAUDE.md edit")), boundDecisions(h));
+  check("section7 subagent: the deny tells a subagent to report the refusal to its parent rather than retry",
+    typeof ed.r?.deny === "string" && ed.r.deny.includes("If you are a subagent, report this refusal to your parent verbatim rather than retrying."), ed.r);
+}
+
+// A plan file whose header carries `line`, then a `## ` heading with prose
+// under it, so a Commit Model line below the heading is never the header's.
+function planTextWith(line) {
+  return `# p\r\n\r\nStatus: In Progress\r\n${line}\r\n\r\n## Approach\r\n\r\nprose\r\n`;
+}
+
+// The shell checks fail closed: a segment naming a guarded path is the
+// ask-first act unless its verb is read-only and it redirects nowhere but a
+// discard; PowerShell is a shell like Bash; the leash file and a Commit
+// Model line are guarded; the header read is case-insensitive and stops at
+// the first `## ` heading; evidence carries no URL credentials.
+async function caseSection7_r1_shellChecksFailClosed(clock) {
+  console.log("\n=== Section 7 fix 1: shell checks fail closed, PowerShell is a shell, the leash file and the commit-model line are guarded ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await openCoordinatorOriginTurn("section7_r1_shell", now, clock, "t-r1-shell");
+  h.fsMap.set(".kit/goal-state.json", JSON.stringify({ plan: "docs/plans/p.md" }));
+  h.fsMap.set("docs/plans/p.md", planTextWith("Commit Model: Branch-and-PR. prose"));
+
+  const psPush = await boundCall(h, { tool: "PowerShell", command: "git push origin main" });
+  check("section7 r1 F1: PowerShell git push origin main under Branch-and-PR is denied before next", psPush.denied && psPush.nextCalls === 0, psPush.r);
+  const psSet = await boundCall(h, { tool: "PowerShell", command: "Set-Content CLAUDE.md x" });
+  check("section7 r1 F1: PowerShell Set-Content CLAUDE.md is denied before next", psSet.denied && psSet.nextCalls === 0, psSet.r);
+
+  const nodeWrite = await boundCall(h, { tool: "Bash", command: "node -e \"require('fs').writeFileSync('CLAUDE.md','x')\"" });
+  check("section7 r1 F4: a node -e write to CLAUDE.md is denied before next", nodeWrite.denied && nodeWrite.nextCalls === 0, nodeWrite.r);
+  const grepRead = await boundCall(h, { tool: "Bash", command: "grep x CLAUDE.md 2>/dev/null" });
+  check("section7 r1 F4 control: grep x CLAUDE.md 2>/dev/null passes through (read-only verb, discard redirect only)", grepRead.passed, grepRead.r);
+  const localEdit = await boundCall(h, { tool: "Edit", file_path: "CLAUDE.local.md", old_string: "a", new_string: "b" });
+  check("section7 r1 F4: Edit of CLAUDE.local.md is denied before next", localEdit.denied && localEdit.nextCalls === 0, localEdit.r);
+
+  const modelEdit = await boundCall(h, { tool: "Edit", file_path: "docs/plans/p.md", old_string: "Commit Model: Branch-and-PR.", new_string: "Commit Model: Commit-and-Push." });
+  check("section7 r1 F6: an Edit whose new_string carries a Commit Model: line is denied before next", modelEdit.denied && modelEdit.nextCalls === 0, modelEdit.r);
+  check("section7 r1 F6: the decision names the commit-model item",
+    boundDecisions(h).some((d) => d.detail.startsWith("Edit: a change to a plan's recorded commit model")), boundDecisions(h));
+  const leashWrite = await boundCall(h, { tool: "Write", file_path: ".kit/goal-state.json", content: "{}" });
+  check("section7 r1 F6: a Write to .kit/goal-state.json is denied before next", leashWrite.denied && leashWrite.nextCalls === 0, leashWrite.r);
+  const shellModel = await boundCall(h, { tool: "Bash", command: "printf 'Commit Model: Commit-and-Push\\n' > docs/plans/p.md" });
+  check("section7 r1 F6: a shell segment writing a Commit Model: line is denied before next", shellModel.denied && shellModel.nextCalls === 0, shellModel.r);
+  h.fsMap.set("docs/plans/p.md", planTextWith("Commit model: commit-and-push. prose"));
+  const lowerModel = await boundCall(h, { tool: "Bash", command: "git push origin main" });
+  check("section7 r1 F6: a header reading Commit model: commit-and-push is read as Commit-and-Push, so git push origin main passes through", lowerModel.passed, lowerModel.r);
+  h.fsMap.set("docs/plans/p.md", "# p\r\n\r\nStatus: In Progress\r\n\r\n## Chapter 1\r\n\r\nCommit Model: Commit-and-Push\r\n");
+  const chapterOnly = await boundCall(h, { tool: "Bash", command: "git push origin feature-x" });
+  check("section7 r1 F6: a Commit Model line below a ## heading is not the header, so the push is denied as no recorded model",
+    chapterOnly.denied && chapterOnly.r.deny.includes("no recorded commit model"), chapterOnly.r);
+
+  h.fsMap.set("docs/plans/p.md", planTextWith("Commit Model: Branch-and-PR. prose"));
+  const cred = await boundCall(h, { tool: "Bash", command: "git push https://u:TOKEN@example.invalid/r.git main" });
+  check("section7 r1 F9: a push carrying URL credentials is denied, and neither the deny nor the decision detail carries the token",
+    cred.denied && !cred.r.deny.includes("TOKEN") && boundDecisions(h).every((d) => !d.detail.includes("TOKEN")) && boundDecisions(h).some((d) => d.detail.includes("//***@example.invalid")), boundDecisions(h).at(-1));
+}
+
+// Every push in a command is judged, wherever `git` starts a word; refspec
+// forms resolve to their destination; an unresolved destination reads the
+// checked-out branch and never assumes the trunk is protected.
+async function caseSection7_r1_everyPushIsJudgedAndRefspecsResolve(clock) {
+  console.log("\n=== Section 7 fix 1: every push is judged, refspecs resolve, and an unresolved destination reads the checked-out branch ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await openCoordinatorOriginTurn("section7_r1_push", now, clock, "t-r1-push");
+  h.fsMap.set(".kit/goal-state.json", JSON.stringify({ plan: "docs/plans/p.md" }));
+  h.fsMap.set("docs/plans/p.md", planTextWith("Commit Model: Branch-and-PR. prose"));
+
+  const compound = await boundCall(h, { tool: "Bash", command: "git push -u origin feat && git push origin main" });
+  check("section7 r1 F2: a compound command whose second push names main is denied before next", compound.denied && compound.nextCalls === 0, compound.r);
+  const wrapped = await boundCall(h, { tool: "Bash", command: "bash -c \"git push origin main\"" });
+  check("section7 r1 F2: a shell-wrapped push naming main is denied before next", wrapped.denied && wrapped.nextCalls === 0, wrapped.r);
+
+  const fullRef = await boundCall(h, { tool: "Bash", command: "git push origin HEAD:refs/heads/main" });
+  check("section7 r1 F3: git push origin HEAD:refs/heads/main is denied before next", fullRef.denied && fullRef.nextCalls === 0, fullRef.r);
+  const bareUnreadable = await boundCall(h, { tool: "Bash", command: "git push" });
+  check("section7 r1 F3: a bare git push with no readable .git/HEAD is denied as unreadable",
+    bareUnreadable.denied && bareUnreadable.nextCalls === 0 && bareUnreadable.r.deny.includes("could not be read"), bareUnreadable.r);
+  h.fsMap.set(".git/HEAD", "ref: refs/heads/main\n");
+  const bareOnMain = await boundCall(h, { tool: "Bash", command: "git push" });
+  check("section7 r1 F3: a bare git push with .git/HEAD on main is denied before next", bareOnMain.denied && bareOnMain.nextCalls === 0, bareOnMain.r);
+  h.fsMap.set(".git/HEAD", "ref: refs/heads/feature-x\n");
+  const bareOnFeature = await boundCall(h, { tool: "Bash", command: "git push" });
+  check("section7 r1 F3 control: a bare git push with .git/HEAD on feature-x passes through (next ran once, no deny)", bareOnFeature.passed, bareOnFeature.r);
+  const otherRepo = await boundCall(h, { tool: "Bash", command: "git -C /d/other push -u origin" });
+  check("section7 r1 F3: an unresolved push into another repository (-C) is denied before next",
+    otherRepo.denied && otherRepo.nextCalls === 0 && otherRepo.r.deny.includes("another repository"), otherRepo.r);
+
+  h.fsMap.set("docs/plans/p.md", planTextWith("Commit Model: Commit-and-Push. prose"));
+  const emptySource = await boundCall(h, { tool: "Bash", command: "git push origin :feature" });
+  check("section7 r1 F3: git push origin :feature (an empty source, a delete) is denied under Commit-and-Push", emptySource.denied && emptySource.nextCalls === 0, emptySource.r);
+
+  h.fsMap.set("docs/plans/p.md", planTextWith("Commit Model: Review-Only. prose"));
+  const commitPush = await boundCall(h, { tool: "Bash", command: "git commit -m push" });
+  check("section7 r1 F2 control: git commit -m push under Review-Only passes through (the word push is not a push)", commitPush.passed, commitPush.r);
+}
+
+// A subagent is attributed to the turn it first appears in: one first seen
+// inside a coordinator-origin turn stays bounded after that turn completes,
+// and one first seen inside an operator turn stays free during a later
+// coordinator-origin turn, whose own main-loop call is still bounded.
+async function caseSection7_r1_subagentAttributionOutlivesTheTurn(clock) {
+  console.log("\n=== Section 7 fix 1: a subagent keeps the origin of the turn it first appeared in ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await openCoordinatorOriginTurn("section7_r1_agents", now, clock, "t-c1");
+  const first = await boundCall(h, { tool: "Edit", file_path: "CLAUDE.md", agentId: "agent-c", old_string: "a", new_string: "b" });
+  check("section7 r1 F5: agent-c first seen in the coordinator turn is denied (setup)", first.denied, first.r);
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-c1", answer: "Put to the operator.", reason: "completed" }, async () => ({ result: "ok" }));
+
+  await h.handlers["turn.start"](h.fake, { turnId: "t-k", text: "keyboard text" }, async () => ({ result: "ok" }));
+  const seenInOperatorTurn = await boundCall(h, { tool: "Bash", command: "ls", agentId: "agent-o" });
+  check("section7 r1 F5: agent-o first seen in the operator turn passes through (setup)", seenInOperatorTurn.passed, seenInOperatorTurn.r);
+  const late = await boundCall(h, { tool: "Edit", file_path: "CLAUDE.md", agentId: "agent-c", old_string: "a", new_string: "b" });
+  check("section7 r1 F5: agent-c is still denied a CLAUDE.md Edit after its turn completed", late.denied && late.nextCalls === 0, late.r);
+  const mainInOperatorTurn = await boundCall(h, { tool: "Edit", file_path: "CLAUDE.md", old_string: "a", new_string: "b" });
+  check("section7 r1 F5 control: the main loop's CLAUDE.md Edit in the operator turn passes through", mainInOperatorTurn.passed, mainInOperatorTurn.r);
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-k", answer: "Done.", reason: "completed" }, async () => ({ result: "ok" }));
+
+  const key2 = seedRecordFor(h, "dev", "coord-001", 2, { at: now - 4000, text: "Second steer." });
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock, 50);
+  check("section7 r1 F5: the second coordinator record is delivered (setup sanity)",
+    readStoreRecord(h, key2)?.status === "delivered" && (h.promptSubmits || []).includes("[COORDINATOR id=dev-coord-001-2] Second steer."), h.promptSubmits);
+  await h.handlers["turn.start"](h.fake, { turnId: "t-c2" }, async () => ({ result: "ok" }));
+  const agentOLater = await boundCall(h, { tool: "Edit", file_path: "CLAUDE.md", agentId: "agent-o", old_string: "a", new_string: "b" });
+  check("section7 r1 F5: agent-o, first seen in an operator turn, passes a CLAUDE.md Edit during a later coordinator turn", agentOLater.passed, agentOLater.r);
+  const mainInCoordinatorTurn = await boundCall(h, { tool: "Edit", file_path: "CLAUDE.md", old_string: "a", new_string: "b" });
+  check("section7 r1 F5 control: the main loop's CLAUDE.md Edit in that coordinator turn is denied", mainInCoordinatorTurn.denied && mainInCoordinatorTurn.nextCalls === 0, mainInCoordinatorTurn.r);
 }
 

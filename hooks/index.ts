@@ -116,71 +116,259 @@ function targetPersonaOf(arg: unknown, own: string): { persona: string } | { den
   return { persona: (arg as string).trim() };
 }
 
-// The ask-first item a file path names: a CLAUDE.md anywhere, or a settings
-// file (`settings.json`, `settings.local.json` and the like) whose parent
-// directory is `.claude`. Null for any other path and for a non-string.
-export function settingsOrClaudeMdPath(p: unknown): string | null {
-  if (typeof p !== "string") return null;
-  const parts = p.split(/[\\/]/);
-  const base = parts[parts.length - 1] ?? "";
-  if (base.toLowerCase() === "claude.md") return "a CLAUDE.md edit";
-  const parent = parts.length >= 2 ? parts[parts.length - 2] : "";
-  if (/^settings(\.[^\\/]+)?\.json$/i.test(base) && parent.toLowerCase() === ".claude") return "a settings file edit";
+// The ask-first item a guarded basename names under its parent directory,
+// or null. Guarded: CLAUDE.md or CLAUDE.local.md in any directory, any
+// case; settings*.json whose parent is .claude; and goal-state.json under
+// .kit, the leash file that names the plan the push rule reads its commit
+// model from.
+function guardedBasenameItem(base: string, parent: string): string | null {
+  const b = base.toLowerCase();
+  const d = parent.toLowerCase();
+  if (b === "claude.md" || b === "claude.local.md") return "a CLAUDE.md edit";
+  if (/^settings(\.[^\\/]+)?\.json$/.test(b) && d === ".claude") return "a settings file edit";
+  if (b === "goal-state.json" && d === ".kit") return "a change to the kit leash file";
   return null;
 }
 
-// The ask-first item a Bash command writes to: the same two paths as
-// settingsOrClaudeMdPath, found as a path token in the command beside a
-// write token (any redirect, sed -i, tee, cp, mv, rm, truncate). A command
-// that only names the path (a cat, a grep) and a non-string return null.
-export function bashWritesSettingsOrClaudeMd(command: unknown): string | null {
-  if (typeof command !== "string") return null;
-  const path = /(^|[\s"'=(])(?:[^\s"'()]*[\\/])?(CLAUDE\.md|\.claude[\\/]settings(?:\.[^\s"'\\/]+)?\.json)(?=$|[\s"')])/i.exec(command);
-  if (path === null) return null;
-  const writes = /(>|\bsed\s+(?:-\S+\s+)*-i|\btee\s|(^|[\s;&|(])(?:cp|mv|rm)\s|\btruncate\b)/.test(command);
-  if (!writes) return null;
-  return path[2].toLowerCase() === "claude.md" ? "a CLAUDE.md edit" : "a settings file edit";
+// The ask-first item a file tool's path names, by guardedBasenameItem over
+// the path's last two segments. Null for any other path and for a
+// non-string.
+export function guardedPathItem(p: unknown): string | null {
+  if (typeof p !== "string") return null;
+  const parts = p.split(/[\\/]/);
+  return guardedBasenameItem(parts[parts.length - 1] ?? "", parts.length >= 2 ? parts[parts.length - 2] : "");
 }
 
-// The arguments after `git push` on the first line of a command that runs
-// one, cut at the next `;`, `&&`, `||` or `|`; null for a command with no
-// push and for a non-string. Global flags before `push`, with or without a
-// value (`-C <dir>`, `-c k=v`, `--no-pager`), are stepped over.
-export function gitPushArgs(command: unknown): string | null {
-  if (typeof command !== "string") return null;
-  const m = /(^|[\s;&|(])git\s+(?:-\S+\s+(?:[^-\s]\S*\s+)?)*push\b(.*)$/m.exec(command);
-  if (m === null) return null;
-  return m[2].split(/;|&&|\|\||\|/)[0].trim();
+// A line a plan header records its commit model on. Written text carrying
+// one is a change to a plan's recorded commit model, the input the push
+// rule reads.
+const COMMIT_MODEL_LINE = /^\s*Commit Model:/im;
+
+// Whether a file tool's written text (Write's content, Edit's old or new
+// string, NotebookEdit's new source) carries a Commit Model line. A whole
+// file rewrite that removes the line without writing one is not seen here
+// and stays on the model's judgment.
+export function writesCommitModelLine(args: unknown): boolean {
+  const a = args as { content?: unknown; old_string?: unknown; new_string?: unknown; new_source?: unknown };
+  return [a.content, a.old_string, a.new_string, a.new_source].some((s) => typeof s === "string" && COMMIT_MODEL_LINE.test(s));
 }
 
-// Why a push's arguments reach past the plan's recorded commit model, or
-// null when the push is within it. A forced or deleting push is beyond every
-// model; with no recorded model every push is beyond; Review-Only admits no
-// push; Branch-and-PR refuses a push naming main or master and admits any
-// other, since the plugin cannot read the checked-out branch and the trunk
-// is protected by the repository's own ruleset; Commit-and-Push admits any
-// push the first rule did not refuse.
-export function pushBeyondCommitModel(pushArgs: string, model: string | null): string | null {
-  const tokens = pushArgs.split(/\s+/).filter((t) => t.length > 0);
-  const forced = tokens.find((t) =>
-    t === "--force" || t === "-f" || t === "--force-with-lease" || t.startsWith("--force-with-lease=")
-    || t === "--force-if-includes" || t === "--delete" || t === "-d" || (t.startsWith("+") && t.length > 1));
-  if (forced !== undefined) return `a forced or deleting push (${forced}) is beyond every commit model`;
-  if (model === null) return "no recorded commit model was found for the armed plan, so no push is within one";
-  if (model === "Review-Only") return "the plan's recorded commit model is Review-Only, which admits no push";
-  if (model === "Branch-and-PR") {
-    const trunk = tokens.find((t) => t === "main" || t === "master" || t.endsWith(":main") || t.endsWith(":master"));
-    if (trunk !== undefined) return `the plan's recorded commit model is Branch-and-PR and the push names the trunk (${trunk})`;
+// First words that only read: a segment opening with one of these, or with
+// git followed by a read-only subcommand, names a guarded path without
+// changing it.
+const READ_ONLY_FIRST_WORDS = new Set([
+  "cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "rg", "wc", "ls", "stat", "file", "diff", "cmp",
+  "get-content", "gc", "type", "select-string", "test-path", "get-item", "get-childitem", "dir",
+]);
+const GIT_READ_ONLY_SUBCOMMANDS = new Set(["diff", "log", "show", "status", "blame", "ls-files"]);
+
+// A guarded path as a token inside a shell segment: an optional directory
+// prefix, then a guarded basename, bounded by whitespace, a quote, a
+// bracket, `=` or `:` on the left and by the end, whitespace, a quote, a
+// bracket or a comma on the right.
+const GUARDED_TOKEN = /(^|[\s"'=(:])((?:[^\s"'()]*[\\/])?(?:CLAUDE\.md|CLAUDE\.local\.md|settings(?:\.[^\s"'\\/]+)?\.json|goal-state\.json))(?=$|[\s"'),])/i;
+
+// The segments of a shell command: split on `;`, `&&`, `||`, `|` and line
+// breaks, trimmed, with empties dropped.
+function commandSegments(command: string): string[] {
+  return command.split(/\r?\n|;|&&|\|\||\|/).map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
+// A segment's first word without a leading path, a `.exe` suffix or
+// surrounding quotes, lowercased.
+function firstWordOf(segment: string): string {
+  const w = (segment.split(/\s+/)[0] ?? "").replace(/^["']+|["']+$/g, "");
+  return (w.split(/[\\/]/).pop() ?? "").replace(/\.exe$/i, "").toLowerCase();
+}
+
+function isReadOnlySegment(segment: string): boolean {
+  const first = firstWordOf(segment);
+  if (READ_ONLY_FIRST_WORDS.has(first)) return true;
+  return first === "git" && GIT_READ_ONLY_SUBCOMMANDS.has((segment.split(/\s+/)[1] ?? "").toLowerCase());
+}
+
+// Whether a segment redirects output anywhere but an fd duplication
+// (`N>&M`) or a discard (`>/dev/null`, `2>/dev/null`, `>$null`, `> NUL`).
+function redirectsOutput(segment: string): boolean {
+  const stripped = segment
+    .replace(/\d*>&\d+/g, "")
+    .replace(/\d*>>?\s*(?:\/dev\/null|\$null|nul)(?=$|[\s;&|)])/gi, "");
+  return stripped.includes(">");
+}
+
+// The ask-first item a Bash or PowerShell command performs, or null. The
+// check fails closed: a segment naming a guarded path is the act unless its
+// first word is read-only and it redirects output nowhere but a discard or
+// an fd duplication, so a writer the list does not name (node -e, python
+// -c, perl -pi, git checkout, dd, Set-Content) is caught. A bare settings
+// or goal-state basename counts when the same command also names .claude
+// or .kit (`cd .claude && echo x > settings.json`); a settings write
+// reached through a directory change the command does not name is left to
+// the model's judgment. A segment carrying `Commit Model:` under a first
+// word that is neither read-only nor git is a change to a plan's recorded
+// commit model.
+export function commandGuardedItem(command: unknown): string | null {
+  if (typeof command !== "string") return null;
+  const namesClaudeDir = /(^|[\s"'=(\\/])\.claude(?=$|[\s"'\\/)])/i.test(command);
+  const namesKitDir = /(^|[\s"'=(\\/])\.kit(?=$|[\s"'\\/)])/i.test(command);
+  for (const segment of commandSegments(command)) {
+    const readOnly = isReadOnlySegment(segment);
+    const token = GUARDED_TOKEN.exec(segment);
+    if (token !== null) {
+      const parts = token[2].split(/[\\/]/);
+      const base = parts[parts.length - 1] ?? "";
+      let parent = parts.length >= 2 ? parts[parts.length - 2] : "";
+      if (parent === "") {
+        if (/^settings/i.test(base) && namesClaudeDir) parent = ".claude";
+        else if (/^goal-state/i.test(base) && namesKitDir) parent = ".kit";
+      }
+      const item = guardedBasenameItem(base, parent);
+      if (item !== null && !(readOnly && !redirectsOutput(segment))) return item;
+    }
+    if (/Commit Model:/i.test(segment) && !readOnly && firstWordOf(segment) !== "git") return "a change to a plan's recorded commit model";
   }
   return null;
 }
 
+// git's own global options, the only dash tokens stepped over between `git`
+// and its subcommand, so `git commit -m push` and `git log --grep push` are
+// not pushes. The first list takes a value, inline after `=` or as the next
+// token; -C, --git-dir and --work-tree point the push at another repository.
+const GIT_GLOBAL_VALUE_OPTIONS = ["-C", "-c", "--git-dir", "--work-tree", "--namespace"];
+const GIT_OTHER_REPO_OPTIONS = new Set(["-C", "--git-dir", "--work-tree"]);
+const GIT_GLOBAL_FLAGS = new Set(["--no-pager", "-P", "--paginate", "--bare", "--no-replace-objects", "--literal-pathspecs", "--no-optional-locks"]);
+
+// The tokens of a shell segment from a point inside it: the text is cut at
+// `;`, `&`, `|`, a line break or an unescaped quote, then split on
+// whitespace.
+function segmentTokensFrom(rest: string): string[] {
+  let end = rest.length;
+  for (let i = 0; i < rest.length; i++) {
+    const ch = rest[i];
+    if (ch === "\\") { i++; continue; }
+    if (ch === ";" || ch === "&" || ch === "|" || ch === "\n" || ch === "\r" || ch === '"' || ch === "'") { end = i; break; }
+  }
+  return rest.slice(0, end).split(/\s+/).filter((t) => t.length > 0);
+}
+
+export type GitPush = { args: string; otherRepo: boolean };
+
+// Every `git push` a Bash or PowerShell command runs, each as the text after
+// `push` up to its segment's end, with whether the invocation pointed at
+// another repository. `git` counts wherever it starts a word, after a
+// quote, a slash or a backslash included (`bash -c "git push ..."`,
+// `/usr/bin/git push`, `git.exe push`), so a wrapped push is seen. A
+// non-string yields none.
+export function gitPushesIn(command: unknown): GitPush[] {
+  if (typeof command !== "string") return [];
+  const pushes: GitPush[] = [];
+  const starts = /(^|[\s;&|()"'`\\/])git(?:\.exe)?(?=\s)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = starts.exec(command)) !== null) {
+    const tokens = segmentTokensFrom(command.slice(m.index + m[0].length));
+    let i = 0;
+    let otherRepo = false;
+    while (i < tokens.length) {
+      const t = tokens[i];
+      const valued = GIT_GLOBAL_VALUE_OPTIONS.find((o) => t === o || t.startsWith(`${o}=`));
+      if (valued !== undefined) {
+        if (GIT_OTHER_REPO_OPTIONS.has(valued)) otherRepo = true;
+        i += t === valued ? 2 : 1;
+        continue;
+      }
+      if (t === "--exec-path" || t.startsWith("--exec-path=") || GIT_GLOBAL_FLAGS.has(t)) { i += 1; continue; }
+      break;
+    }
+    if (tokens[i] === "push") pushes.push({ args: tokens.slice(i + 1).join(" "), otherRepo });
+  }
+  return pushes;
+}
+
+// push options that take the next token as their value, so that token is
+// never read as a refspec.
+const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--repo", "--receive-pack", "--exec"]);
+
+// A push's arguments as tokens with shell redirects removed: a bare
+// redirect token (`2>`, `>`) drops with the target that follows it, and an
+// attached one (`2>x`) drops alone.
+function pushTokens(pushArgs: string): string[] {
+  const raw = pushArgs.split(/\s+/).filter((t) => t.length > 0);
+  const out: string[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const t = raw[i];
+    if (/^(\d*>>?|<)$/.test(t)) { i++; continue; }
+    if (/^(\d*>>?|<)\S/.test(t)) continue;
+    out.push(t);
+  }
+  return out;
+}
+
+export type PushVerdict = { beyond: string } | { needsBranch: true } | null;
+
+// Whether a push's arguments reach past the plan's recorded commit model.
+// `beyond` carries the reason; `needsBranch` asks the caller to read the
+// checked-out branch and call again with it; null is a push within the
+// model. Beyond every model: --force, --force-with-lease, --force-if-includes,
+// --delete, --mirror, --prune, a bundled short-option token carrying f or d
+// (-f, -fu, -df, -d), a +refspec, and a refspec with an empty source. With
+// no recorded model every push is beyond, and Review-Only admits none.
+// Branch-and-PR refuses --all and any refspec whose destination (its source
+// where it has no colon) is main or master once a refs/heads/ prefix is
+// stripped, and resolves a push with no refspec, or one whose destination is
+// HEAD, through the checked-out branch: beyond on main or master, beyond
+// when the branch cannot be read, and beyond when the push points at
+// another repository (-C, --git-dir, --work-tree), whose branch is not read.
+// The trunk's own protection is not relied on: a rollout repository may
+// carry no ruleset at all. Commit-and-Push admits every push the first rule
+// did not refuse.
+export function pushVerdict(pushArgs: string, model: string | null, branch?: string | null, otherRepo = false): PushVerdict {
+  const tokens = pushTokens(pushArgs);
+  const options: string[] = [];
+  const positionals: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t === "--") { positionals.push(...tokens.slice(i + 1)); break; }
+    if (t.startsWith("-")) {
+      options.push(t);
+      if (PUSH_VALUE_OPTIONS.has(t)) i++;
+      continue;
+    }
+    positionals.push(t);
+  }
+  const refspecs = positionals.slice(1);
+  const beyondAll = options.find((o) =>
+    o === "--force" || o.startsWith("--force-with-lease") || o === "--force-if-includes" || o === "--delete"
+    || o === "--mirror" || o === "--prune" || (/^-[a-zA-Z]+$/.test(o) && /[fd]/.test(o)))
+    ?? refspecs.find((r) => r.startsWith("+") || r.startsWith(":"));
+  if (beyondAll !== undefined) return { beyond: `a forced, deleting or mirroring push (${beyondAll}) is beyond every commit model` };
+  if (model === null) return { beyond: "no recorded commit model was found for the armed plan, so no push is within one" };
+  if (model === "Review-Only") return { beyond: "the plan's recorded commit model is Review-Only, which admits no push" };
+  if (model !== "Branch-and-PR") return null;
+  if (options.includes("--all")) return { beyond: "the plan's recorded commit model is Branch-and-PR and --all pushes the trunk with every other branch" };
+  let unresolved = refspecs.length === 0;
+  for (const r of refspecs) {
+    const colon = r.indexOf(":");
+    const src = colon < 0 ? r : r.slice(0, colon);
+    const dst = (colon < 0 ? r : r.slice(colon + 1)).replace(/^refs\/heads\//, "");
+    if (dst === "main" || dst === "master") return { beyond: `the plan's recorded commit model is Branch-and-PR and the push names the trunk (${r})` };
+    if (dst === "HEAD" || (colon < 0 && src === "HEAD")) unresolved = true;
+  }
+  if (!unresolved) return null;
+  if (otherRepo) return { beyond: "the push names another repository, whose checked-out branch is not read" };
+  if (branch === undefined) return { needsBranch: true };
+  if (branch === null) return { beyond: "the plan's recorded commit model is Branch-and-PR and the checked-out branch could not be read" };
+  if (branch === "main" || branch === "master") return { beyond: `the plan's recorded commit model is Branch-and-PR and the checked-out branch is the trunk (${branch})` };
+  return null;
+}
+
 // The commit model the armed plan's header records, read through the kit
-// leash file: `.kit/goal-state.json` names the plan, and the plan's first
-// `Commit Model:` line names one of the three models. Null when the leash
-// file, the plan or the line is absent, when the plan path is not a plain
-// repo-relative path, or when any read throws. Called only once a push was
-// found in a command, never on every tool call.
+// leash file: `.kit/goal-state.json` names the plan, and the first `Commit
+// Model:` line in the plan's header (the text before its first `## `
+// heading) names one of the three models, matched case-insensitively and
+// returned in canonical casing. Null when the leash file, the plan or the
+// line is absent, when the plan path is not a plain repo-relative path, or
+// when any read throws. Called only once a push was found in a command,
+// never on every tool call.
 export async function readRecordedCommitModel(dp: any): Promise<string | null> {
   try {
     if (!(await dp.fs.exists(".kit/goal-state.json"))) return null;
@@ -188,9 +376,34 @@ export async function readRecordedCommitModel(dp: any): Promise<string | null> {
     const plan = leash.plan;
     if (typeof plan !== "string" || plan.length === 0) return null;
     if (/^[\\/]/.test(plan) || /^[A-Za-z]:/.test(plan) || plan.split(/[\\/]/).includes("..")) return null;
-    const text = await dp.fs.read(plan);
-    const m = /^Commit Model:\s*(Review-Only|Branch-and-PR|Commit-and-Push)\b/m.exec(text);
-    return m === null ? null : m[1];
+    const text: string = await dp.fs.read(plan);
+    const headingAt = text.search(/(^|\r?\n)## /);
+    const header = headingAt < 0 ? text : text.slice(0, headingAt);
+    const m = /^Commit Model:\s*(Review-Only|Branch-and-PR|Commit-and-Push)\b/im.exec(header);
+    if (m === null) return null;
+    return ["Review-Only", "Branch-and-PR", "Commit-and-Push"].find((c) => c.toLowerCase() === m[1].toLowerCase()) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// The branch the working directory has checked out, read from `.git/HEAD`,
+// or through the `gitdir: <path>` line where `.git` is a file (a worktree
+// or a submodule). `ref: refs/heads/<b>` yields `<b>`; a detached HEAD, an
+// unreadable file or no repository yields null. Called only when a
+// Branch-and-PR push leaves its destination unresolved.
+export async function readCheckedOutBranch(dp: any): Promise<string | null> {
+  try {
+    let head: string;
+    try {
+      head = await dp.fs.read(".git/HEAD");
+    } catch {
+      const gitdir = /^gitdir:\s*(.+?)\s*$/m.exec(await dp.fs.read(".git"));
+      if (gitdir === null) return null;
+      head = await dp.fs.read(`${gitdir[1]}/HEAD`);
+    }
+    const ref = /^ref:\s*refs\/heads\/(\S+)/.exec(head);
+    return ref === null ? null : ref[1];
   } catch {
     return null;
   }
@@ -846,6 +1059,13 @@ export const register: Register = async (on, options) => {
   // prompt hook saw (keyboard, SDK caller, channel) matches no entry and
   // never sets it either. The tool.call bound checks read it.
   let currentTurnIsCoordinatorOrigin = false;
+  // Each subagent's own coordinator-origin standing, keyed by the agentId
+  // its tool calls carry and fixed at its first tool call from the turn
+  // flag above, because a background agent runs past turn.complete and the
+  // turn flag alone would free it or bind it with whatever turn runs next.
+  // The residual: an agent whose first tool call lands in a later turn takes
+  // that turn's origin.
+  const subagentCoordinatorOrigin = new Map<string, boolean>();
   // Whether the reply tool (channel-relay's mcp__..__reply) was called
   // anywhere during the current turn. Reset at turn.start, set by tool.call.
   let replyCalledThisTurn = false;
@@ -3782,6 +4002,16 @@ export const register: Register = async (on, options) => {
     if (typeof e.tool === "string" && (e.tool.includes("__reply") || e.tool.endsWith("_reply"))) {
       replyCalledThisTurn = true;
     }
+    // A subagent's standing is fixed at its first call, whatever tool it
+    // is, so the bound checks below read one answer for the agent's whole
+    // life. The main loop (no agentId) reads the turn flag directly.
+    const callerAgentId = typeof e.agentId === "string" && e.agentId.length > 0 ? e.agentId : null;
+    if (callerAgentId !== null && !subagentCoordinatorOrigin.has(callerAgentId)) {
+      subagentCoordinatorOrigin.set(callerAgentId, currentTurnIsCoordinatorOrigin);
+    }
+    const callerIsCoordinatorOrigin = callerAgentId === null
+      ? currentTurnIsCoordinatorOrigin
+      : subagentCoordinatorOrigin.get(callerAgentId) === true;
 
     // Serve agentic_identity (F9: single arbiter = commons; epoch is only the
     // same-directory write fence). Claim in commons FIRST; if a live earlier
@@ -4675,40 +4905,54 @@ export const register: Register = async (on, options) => {
 
     // A turn this plugin opened from a [COORDINATOR ...] record acts on the
     // coordinator's delegated authority, which stops at the operator's
-    // ask-first items. The two the hook can check are checked here: an edit
-    // to a settings file or a CLAUDE.md, by path or by a writing Bash
-    // command, and a push beyond the plan's recorded commit model. A caught
-    // act is refused for this turn only, with the reason telling the model
-    // to put it to the operator; a turn the operator opened never carries
-    // the flag and reaches every such act unchecked. The turn is the unit,
-    // so a subagent's call inside it is checked too: its write is the same
-    // act under the same authority. The refusal is not a tool error and
-    // leaves toolErrorsThisTurn alone, so it never feeds the error-streak
-    // pause.
-    if (currentTurnIsCoordinatorOrigin) {
+    // ask-first items. The ones the hook can check are checked here: an
+    // edit to a settings file, a CLAUDE.md or the kit leash file, by path or
+    // by a shell command; a written Commit Model line, the bound's own
+    // input; and a push beyond the plan's recorded commit model, judged for
+    // every push a Bash or PowerShell command runs. A caught act is refused
+    // for this caller only, with the reason telling the model to put it to
+    // the operator; a turn the operator opened never carries the flag and
+    // reaches every such act unchecked. The turn is the unit, so a subagent
+    // first seen inside it is checked too, on the standing fixed above: its
+    // write is the same act under the same authority. The refusal is not a
+    // tool error and leaves toolErrorsThisTurn alone, so it never feeds the
+    // error-streak pause. Evidence and reason are scrubbed of URL userinfo
+    // before either is recorded or returned.
+    if (callerIsCoordinatorOrigin) {
       let item: string | null = null;
       let evidence = "";
       const toolName: string = e.tool;
       if (["Write", "Edit", "MultiEdit", "NotebookEdit"].includes(toolName)) {
         const target: unknown = (e as any).file_path ?? (e as any).notebook_path;
-        item = settingsOrClaudeMdPath(target);
+        item = guardedPathItem(target);
+        if (item === null && writesCommitModelLine(e)) item = "a change to a plan's recorded commit model";
         evidence = typeof target === "string" ? target : "";
-      } else if (e.tool === "Bash") {
+      } else if (toolName === "Bash" || toolName === "PowerShell") {
         const command: unknown = (e as any).command;
-        item = bashWritesSettingsOrClaudeMd(command);
+        item = commandGuardedItem(command);
         evidence = typeof command === "string" ? command : "";
         if (item === null) {
-          const pushArgs = gitPushArgs(command);
-          if (pushArgs !== null) {
-            const reason = pushBeyondCommitModel(pushArgs, await readRecordedCommitModel($));
-            if (reason !== null) {
-              item = `a push beyond the commit model (${reason})`;
-              evidence = `git push ${pushArgs}`;
+          let model: string | null | undefined;
+          let branch: string | null | undefined;
+          for (const push of gitPushesIn(command)) {
+            if (model === undefined) model = await readRecordedCommitModel($);
+            let verdict = pushVerdict(push.args, model, branch, push.otherRepo);
+            if (verdict !== null && "needsBranch" in verdict) {
+              branch = await readCheckedOutBranch($);
+              verdict = pushVerdict(push.args, model, branch, push.otherRepo);
+            }
+            if (verdict !== null && "beyond" in verdict) {
+              item = `a push beyond the commit model (${verdict.beyond})`;
+              evidence = `git push ${push.args}`;
+              break;
             }
           }
         }
       }
       if (item !== null) {
+        const scrub = (s: string): string => s.replace(/\/\/[^\s/@]+@/g, "//***@");
+        item = scrub(item);
+        evidence = scrub(evidence);
         sess.state.decisions.push({
           timestamp: Date.now(),
           loop: "worker",
@@ -4716,7 +4960,8 @@ export const register: Register = async (on, options) => {
           detail: `${e.tool}: ${item}; ${evidence}`.slice(0, 200),
         });
         await persist($);
-        return { deny: `coordinator steer bound: ${item} is one of the operator's ask-first items, so it does not proceed on the coordinator's delegated authority. Put this act to the operator on your channel with the whole shape; the operator's own instruction reaches it directly.` };
+        const subagentNote = callerAgentId === null ? "" : " If you are a subagent, report this refusal to your parent verbatim rather than retrying.";
+        return { deny: `coordinator steer bound: ${item} is one of the operator's ask-first items, so it does not proceed on the coordinator's delegated authority. Put this act to the operator on your channel with the whole shape; the operator's own instruction reaches it directly.${subagentNote}` };
       }
     }
 
