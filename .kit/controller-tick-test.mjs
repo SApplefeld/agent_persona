@@ -40,6 +40,10 @@ const OPTS = {
   costMaxNudgesPerHour: 2,
   costSummaryEveryNTicks: 2,
   costBackoffAfterTicks: 2,
+  // Section 6: every case in this suite drives a worker's own hook paths,
+  // so the shared OPTS carries the owner tier. A case testing "off" or
+  // "reader" overrides this field explicitly.
+  arming: "owner",
 };
 
 const T0 = 1_700_000_000_000;
@@ -3248,6 +3252,14 @@ async function main() {
     await caseS13_identity_takesOverAStaleHolder(clock);
     await caseS13_lessonInject_newestLessonReachesTheNextTurnOnce(clock);
     await caseS13_budget_latchCrossesEachThresholdOnce(clock);
+    await caseSection6_off_noToolNoClaimNoTimer(clock);
+    await caseSection6_off_unrecognizedValueLogsAndBehavesAsOff(clock);
+    await caseSection6_reader_toolsClockAndStartClaim(clock);
+    await caseSection6_reader_heartbeatNeverPromotes(clock);
+    await caseSection6_reader_promptSubmitAppendsNoContext(clock);
+    await caseSection6_reader_identitySwitchJoinsAsReaderNotOwner(clock);
+    await caseSection6_reader_sayControlStillWritesARecord(clock);
+    await caseSection6_owner_matchesTheFullExistingShape(clock);
   } finally {
     clock.restore();
   }
@@ -8069,5 +8081,126 @@ async function caseS13_budget_latchCrossesEachThresholdOnce(clock) {
   const crossings = decisions.filter((d) => d.action === "context_budget_crossed").map((d) => d.detail.split(":")[0]);
   check("s13 budget latch: info, closeout and critical each crossed exactly once over three reads", ["info", "closeout", "critical"].every((t) => crossings.filter((c) => c === t).length === 1), crossings);
   check("s13 budget latch: exactly one context_budget_nudge", countAction(decisions, "context_budget_nudge") === 1, countAction(decisions, "context_budget_nudge"));
+}
+
+// ============================================================
+// Section 6: the arming key gates what a session's hooks do. "off"
+// registers one hook and nothing else; "reader" registers the three
+// inbox/identity tools and the heartbeat timer only, with no ownership
+// ever; "owner" is today's unchanged shape, the control below.
+// ============================================================
+
+// off: no tool, no timer, no claim, one hook, one log line naming the tier.
+async function caseSection6_off_noToolNoClaimNoTimer(clock) {
+  console.log("\n=== Section 6 off: no tool, no timer, no claim; one hook logs the tier ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, arming: "off", caseName: "s6_off" });
+  check("s6 off: no tool registered", h.toolRegisters.length === 0, h.toolRegisters.map((t) => t.name));
+  check("s6 off: no clock timer registered", h.clockEveryCallbacks.length === 0, h.clockEveryCallbacks.length);
+  check("s6 off: exactly one hook, session.start", JSON.stringify(Object.keys(h.handlers)) === JSON.stringify(["session.start"]), Object.keys(h.handlers));
+  const entry = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("s6 off: no commons entry for this session", entry === undefined, entry);
+  // The harness pre-seeds .agentic-personas.json before register() ever
+  // runs (createTickHarness's own seedPersonaStore, .kit/tick-harness.mjs,
+  // outside this section's scope), so the file's mere presence in h.fsMap
+  // proves nothing about what session.start itself wrote. What proves an
+  // off session took no store write is that the seeded state's decisions
+  // are still empty: session.start's only hook body is a log line.
+  const state = JSON.parse(h.fsMap.get(".agentic-personas.json")).default;
+  check("s6 off: session.start recorded no decision (no store write)", state.decisions.length === 0, state.decisions);
+  check("s6 off: one log line names arming off", h.uiLogs.some((l) => l.includes("arming off")), h.uiLogs);
+}
+
+// An unrecognized arming value behaves exactly as "off", and the one log
+// line names the value so a typo in a settings file is diagnosable.
+async function caseSection6_off_unrecognizedValueLogsAndBehavesAsOff(clock) {
+  console.log("\n=== Section 6 off: an unrecognized arming value behaves as off and is named in the log ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, arming: "bogus", caseName: "s6_off_bogus" });
+  check("s6 off bogus: no tool registered", h.toolRegisters.length === 0, h.toolRegisters.map((t) => t.name));
+  check("s6 off bogus: no clock timer registered", h.clockEveryCallbacks.length === 0, h.clockEveryCallbacks.length);
+  check("s6 off bogus: log line names the unrecognized value", h.uiLogs.some((l) => l.includes("arming off") && l.includes("bogus")), h.uiLogs);
+}
+
+// reader: the three inbox/identity tools only, one clock callback (the
+// heartbeat), and a session.start that joins as a reader with no
+// persona:default claim ever taken.
+async function caseSection6_reader_toolsClockAndStartClaim(clock) {
+  console.log("\n=== Section 6 reader: agentic_identity/agentic_say/agentic_inbox only, one clock callback, joins as reader ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, arming: "reader", caseName: "s6_reader_start" });
+  const names = h.toolRegisters.map((t) => t.name).sort();
+  check("s6 reader: exactly agentic_identity/agentic_say/agentic_inbox", JSON.stringify(names) === JSON.stringify(["agentic_identity", "agentic_inbox", "agentic_say"]), names);
+  check("s6 reader: one clock callback (the heartbeat)", h.clockEveryCallbacks.length === 1, h.clockEveryCallbacks.length);
+  const entry = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("s6 reader: commons entry holds reader:default", !!entry && entry.claims.some((c) => c.resource === "reader:default"), entry);
+  check("s6 reader: commons entry holds no persona:default", !!entry && !entry.claims.some((c) => c.resource === "persona:default"), entry);
+}
+
+// The heartbeat tick's promotion branch never runs under reader: with the
+// harness's own default-seeded holder already stale, a real reader would
+// promote to owner here. The reader-claim refresh beside it still runs.
+async function caseSection6_reader_heartbeatNeverPromotes(clock) {
+  console.log("\n=== Section 6 reader: a stale holder at the heartbeat tick never promotes this session to owner ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, arming: "reader", caseName: "s6_reader_heartbeat" });
+  await fireHeartbeat(h);
+  const entry = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("s6 reader heartbeat: still reader:default, not persona:default", !!entry && entry.claims.some((c) => c.resource === "reader:default") && !entry.claims.some((c) => c.resource === "persona:default"), entry);
+  const state = JSON.parse(h.fsMap.get(".agentic-personas.json")).default;
+  check("s6 reader heartbeat: no reader_promoted decision", !state.decisions.some((d) => d.action === "reader_promoted"), state.decisions.map((d) => d.action));
+}
+
+// prompt.submit under reader keeps the flag bookkeeping and the next(e)
+// call, but appends no [GOAL TREE]/[NO GOAL]/[ENV]/[LESSON]/[MEMORY] block:
+// a reader owns no goal tree of its own to nag about.
+async function caseSection6_reader_promptSubmitAppendsNoContext(clock) {
+  console.log("\n=== Section 6 reader: prompt.submit with an empty goal tree appends no context block ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, arming: "reader", caseName: "s6_reader_prompt" });
+  const submitH = h.handlers["prompt.submit"];
+  const r = await submitH(h.fake, { text: "hello" }, async () => ({}));
+  check("s6 reader prompt: no context blocks appended", r.context === undefined, r);
+}
+
+// agentic_identity under reader always joins as reader, even a persona
+// nobody else holds: no speculative persona: claim, no ownership branch.
+async function caseSection6_reader_identitySwitchJoinsAsReaderNotOwner(clock) {
+  console.log("\n=== Section 6 reader: agentic_identity to an unheld persona still joins as reader ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, arming: "reader", caseName: "s6_reader_identity" });
+  const toolH = h.handlers["tool.call"];
+  const result = await toolH(h.fake, { tool: "mcp__agentic-plugin__agentic_identity", persona: "someone" }, async () => ({ result: "passthrough" }));
+  check("s6 reader identity: result names a reader join, not ownership", (result?.result || "").includes("joined as reader") && !(result.result || "").includes("owner)"), result);
+  const entry = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("s6 reader identity: entry holds reader:someone", !!entry && entry.claims.some((c) => c.resource === "reader:someone"), entry);
+  check("s6 reader identity: entry holds no persona:someone", !!entry && !entry.claims.some((c) => c.resource === "persona:someone"), entry);
+  check("s6 reader identity: the old reader:default claim was released", !!entry && !entry.claims.some((c) => c.resource === "reader:default"), entry);
+}
+
+// Control: a reader still writes an inbox record through agentic_say to the
+// persona it reads. Reader tier removes ownership and the goal-tree tools,
+// never the inbox path the Reviewer's own shape depends on.
+async function caseSection6_reader_sayControlStillWritesARecord(clock) {
+  console.log("\n=== Section 6 reader control: agentic_say to the read persona still writes a record ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, arming: "reader", caseName: "s6_reader_say" });
+  const toolH = h.handlers["tool.call"];
+  const result = await toolH(h.fake, { tool: "mcp__agentic-plugin__agentic_say", text: "status update" }, async () => ({ result: "passthrough" }));
+  check("s6 reader say: the call succeeds (no deny)", !result?.deny, result);
+  const inboxKeys = [...h.storeMap.keys()].filter((k) => k.startsWith("inbox:default:"));
+  check("s6 reader say: a record was written to the default persona's inbox", inboxKeys.length === 1, [...h.storeMap.keys()]);
+}
+
+// owner: the full existing shape, unchanged. The control that this section
+// changes nothing for a worker or the coordinator.
+async function caseSection6_owner_matchesTheFullExistingShape(clock) {
+  console.log("\n=== Section 6 owner control: every tool and both clock timers still register, matching today ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, arming: "owner", caseName: "s6_owner_control" });
+  check("s6 owner: thirteen tools registered", h.toolRegisters.length === 13, h.toolRegisters.map((t) => t.name));
+  check("s6 owner: two clock callbacks (heartbeat, controller tick)", h.clockEveryCallbacks.length === 2, h.clockEveryCallbacks.length);
+  const entry = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("s6 owner: commons entry holds persona:default (ownership taken)", !!entry && entry.claims.some((c) => c.resource === "persona:default"), entry);
 }
 

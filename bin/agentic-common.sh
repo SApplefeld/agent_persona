@@ -48,7 +48,11 @@ esac
 # Usage: emit_settings_json <output-file>
 # Emits the settings.json JSON for the --settings flag.
 # Carries: controllerTickMs, nudgeIdleMs, nudgeFloorMs, gitProbeMs, heartbeatMs,
-#          staleAfterMs, contextBudgetEnabled, and budget thresholds when set.
+#          staleAfterMs, contextBudgetEnabled, budget thresholds when set,
+#          arming (always "owner": every supervisor launch is an owner), and
+#          coordinatorPersona (from COORDINATOR_PERSONA, default "coordinator").
+# Exports COORDINATOR_PERSONA to the value it wrote, so bin/supervise.sh can
+# compare $PERSONA against it later without reading plugin config itself.
 emit_settings_json() {
   local out="$1"
   local self_review_opts=""
@@ -93,7 +97,8 @@ emit_settings_json() {
   # Every value below is spliced into JSON unescaped, so each is held to a
   # shape that cannot close a string or an object and that JSON accepts:
   # digits with no leading zero for the numbers, letters, digits, underscore
-  # and hyphen for the persona.
+  # and hyphen for the persona and for coordinatorPersona (the same
+  # valid_persona_name check, since both are spliced the same way).
   local var
   for var in TICK_MS NUDGE_IDLE_MS GIT_PROBE_MS NUDGE_FLOOR_MS HEARTBEAT_MS STALE_AFTER_MS \
     SELF_REVIEW_EVERY_TURNS CONTEXT_BUDGET_INFO_TOKENS CONTEXT_BUDGET_CLOSEOUT_TOKENS \
@@ -114,12 +119,27 @@ emit_settings_json() {
   if [ -n "${PERSONA:-}" ]; then
     persona_opt=",\"persona\":\"$PERSONA\""
   fi
+  # Section 6: a supervisor launch is always an owner, never a reader or an
+  # off session, so this value is fixed rather than read from an env var.
+  local coordinator_persona="${COORDINATOR_PERSONA:-coordinator}"
+  if ! valid_persona_name "$coordinator_persona"; then
+    echo "ERROR: emit_settings_json: COORDINATOR_PERSONA '$coordinator_persona' may hold only letters, digits, underscore and hyphen" >&2
+    return 1
+  fi
+  if [ "$coordinator_persona" = "default" ]; then
+    echo "ERROR: emit_settings_json: COORDINATOR_PERSONA must not be 'default'" >&2
+    return 1
+  fi
+  # bin/supervise.sh never reads plugin config itself; this export is how
+  # its own priming-injection check (Section 8) compares $PERSONA against
+  # the same name this function just wrote into coordinatorPersona.
+  export COORDINATOR_PERSONA="$coordinator_persona"
   # pluginConfigs is keyed by plugin id: the manifest name under --plugin-dir,
   # and "<name>@<marketplace>" for the installed copy. The installed form is
   # absent from the engine's type file, and options under the other id are
   # ignored without an error, so the same options are written under both.
   # .kit/settings-plugin-key-test.sh pins both ids against the two manifests.
-  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts$cost_opts$persona_opt}"
+  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts$cost_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"}"
   cat > "$out" <<EOF
 {"pluginConfigs":{"$AGENTIC_PLUGIN_DEV_ID":{"options":$options},"$AGENTIC_PLUGIN_INSTALLED_ID":{"options":$options}}}
 EOF
@@ -157,6 +177,51 @@ if (has(devId) && !has(installedId)) { from = devId; to = installedId; }
 else if (has(installedId) && !has(devId)) { from = installedId; to = devId; }
 else process.exit(0);
 pc[to] = Object.assign({}, pc[to], { options: Object.assign({}, pc[from].options) });
+const tmp = file + ".tmp-" + process.pid;
+try {
+  fs.writeFileSync(tmp, JSON.stringify(s));
+  fs.renameSync(tmp, file);
+} catch (e) {
+  try { fs.unlinkSync(tmp); } catch (_) {}
+  fail("could not be rewritten: " + e.message);
+}
+' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID"
+}
+
+# --- ensure_settings_arming ---
+# Usage: ensure_settings_arming <settings-file>
+# For a settings file the caller already provided: under each of the two
+# plugin ids that has a non-empty options object, sets options.arming to
+# "owner" where the caller's file omits it, leaving every option the caller
+# did write, arming included, exactly as written. A relaunch reusing an
+# older settings file with no arming key would otherwise start the child as
+# "off" (no tool, no claim) with nothing saying so. The file is replaced by
+# rename, same as ensure_settings_plugin_ids, so an interrupted write never
+# leaves it truncated. Returns 1 on the same conditions that function does,
+# with the same error-line shape; exits 0 when nothing needed changing.
+ensure_settings_arming() {
+  node -e '
+const fs = require("fs");
+const [file, devId, installedId] = process.argv.slice(1);
+const fail = (msg) => { console.error("ERROR: ensure_settings_arming: " + file + " " + msg); process.exit(1); };
+const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+let s;
+try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
+if (!plain(s)) fail("is not a JSON object");
+if (s.pluginConfigs === undefined) process.exit(0);
+const pc = s.pluginConfigs;
+if (!plain(pc)) fail("has a pluginConfigs value that is not an object");
+let changed = false;
+for (const id of [devId, installedId]) {
+  if (pc[id] === undefined) continue;
+  if (!plain(pc[id])) fail("has a " + id + " entry that is not an object");
+  const opts = pc[id].options;
+  if (opts === undefined) continue;
+  if (!plain(opts)) fail("has " + id + " options that are not an object");
+  if (Object.keys(opts).length === 0) continue;
+  if (opts.arming === undefined) { opts.arming = "owner"; changed = true; }
+}
+if (!changed) process.exit(0);
 const tmp = file + ".tmp-" + process.pid;
 try {
   fs.writeFileSync(tmp, JSON.stringify(s));

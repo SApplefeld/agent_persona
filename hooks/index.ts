@@ -822,6 +822,37 @@ export const register: Register = async (on, options) => {
       && cfg.coordinatorPersona.trim() !== "default"
     ? cfg.coordinatorPersona.trim()
     : "coordinator";
+
+  // Section 6: the arming tier gates what this session's hooks do. "owner"
+  // is a worker or the coordinator: every hook below registers and every
+  // claim site fires exactly as it always has. "reader" is a passive seat
+  // like the Reviewer's: only agentic_identity/agentic_say/agentic_inbox
+  // register, with no goal-tree tool, no controller tick, and no claim on
+  // any owner-only claim site. "off" is a plain chat session: it registers
+  // nothing below this point but the one hook a few lines down, which logs
+  // the tier and nothing else. An absent or unrecognized value reads as
+  // "off"; an unrecognized one is remembered so that hook's log line can
+  // name it.
+  const armingRaw = typeof cfg.arming === "string" ? cfg.arming.trim() : "";
+  let armingUnrecognized: string | null = null;
+  let arming: "off" | "reader" | "owner";
+  if (armingRaw === "owner" || armingRaw === "reader") {
+    arming = armingRaw;
+  } else {
+    arming = "off";
+    if (armingRaw !== "" && armingRaw !== "off") armingUnrecognized = armingRaw;
+  }
+  if (arming === "off") {
+    // No tool registration, no timer, no claim, no store write: this is
+    // the only hook an "off" session installs.
+    on("session.start", async ($, e, next) => {
+      const suffix = armingUnrecognized ? `; unrecognized value '${armingUnrecognized}'` : "";
+      $.ui.log(`Agentic: arming off, no persona tools or claims in this session${suffix}`);
+      return next(e);
+    });
+    return;
+  }
+
   const urgentCheckMinMs = typeof cfg.urgentCheckMinMs === "number" ? (cfg.urgentCheckMinMs as number) : 5_000;
   const nudgeFloorMs = typeof cfg.nudgeFloorMs === "number" ? (cfg.nudgeFloorMs as number) : 5 * 60_000;
   const nudgeIdleMs = typeof cfg.nudgeIdleMs === "number" ? (cfg.nudgeIdleMs as number) : 2 * 60_000;
@@ -946,6 +977,10 @@ export const register: Register = async (on, options) => {
       },
     });
 
+    // Section 6: the goal-tree tools never register under arming "reader".
+    // A reader session steers through agentic_say/agentic_inbox only; it
+    // owns no persona and so has no goal tree of its own to create or edit.
+    if (arming !== "reader") {
     await $.tool.register({
       name: "goal_create",
       description:
@@ -1133,6 +1168,7 @@ export const register: Register = async (on, options) => {
         required: ["text"],
       },
     });
+    }
 
     // D2: inbox tools (plan signatures: agentic_say(text, answers?, urgent?, persona?), agentic_inbox(persona?))
     await $.tool.register({
@@ -1192,6 +1228,9 @@ export const register: Register = async (on, options) => {
       },
     });
 
+    // Section 12 registers agentic_resolve under arming "owner" only: a
+    // reader owns no persona's records to resolve.
+    if (arming !== "reader") {
     await $.tool.register({
       name: "agentic_resolve",
       description:
@@ -1217,6 +1256,7 @@ export const register: Register = async (on, options) => {
         required: ["id", "outcome"],
       },
     });
+    }
 
     // --- Claim or join the persona based on liveness (heartbeat sidecar) ---
     const existing = await $.fs.exists(storePath)
@@ -1224,7 +1264,27 @@ export const register: Register = async (on, options) => {
       : {};
     const existingPersona = existing[sess.persona];
 
-    if (existingPersona) {
+    if (arming === "reader") {
+      // Section 6: a reader session never takes ownership at start, whether
+      // or not a holder is alive and whether or not the persona exists in
+      // the store yet - it only ever joins as a reader, so the whole
+      // liveness/claim branch below never runs for it.
+      if (existingPersona) {
+        sess.state = parseState(JSON.stringify(existingPersona));
+        sess.state.persona = sess.persona;
+      } else {
+        sess.state = createDefaultState(sess.persona, sess.mySessionId);
+      }
+      sess.isOwner = false;
+      sess.myEpoch = 0;
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "passive_reader",
+        detail: `Joining '${sess.persona}' as reader (arming reader)`,
+      });
+      await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId, Date.now(), commonsMeta());
+    } else if (existingPersona) {
       sess.state = parseState(JSON.stringify(existingPersona));
       sess.state.persona = sess.persona;
 
@@ -1387,8 +1447,10 @@ export const register: Register = async (on, options) => {
         // Passive reader: promote if the sidecar holder is stale and not self.
         // With the shouldYield check above, the sidecar is only ever
         // written by the store's current owner, so a stale sidecar means no
-        // live owner, no store-owner comparison needed.
-        if (!sess.isOwner) {
+        // live owner, no store-owner comparison needed. A reader-tier
+        // session never promotes: it stays a reader even when the holder
+        // it reads goes stale.
+        if (!sess.isOwner && arming !== "reader") {
           let holderHb: HeartbeatEntry | null = null;
           try {
             if (await $.fs.exists(heartbeatPath)) {
@@ -1484,6 +1546,10 @@ export const register: Register = async (on, options) => {
     //   "no active leaf, return" → idle gate → classify.
     // Eligibility in code. The model decides WHAT, never WHETHER.
     // Cap counts *sent* nudges only, resets only on on-goal or complete.
+    // Section 6: a reader session never runs this tick at all - it owns no
+    // goal tree to classify or actuate against, and the tick's own owner
+    // check would return immediately anyway, so the timer itself is skipped.
+    if (arming !== "reader") {
     $.clock.every(controllerTickMs, async () => {
       // 1. Owner check.
       if (!sess.isOwner) return;
@@ -2997,6 +3063,7 @@ export const register: Register = async (on, options) => {
         }
       });
     });
+    }
 
     return next(e);
   });
@@ -3637,6 +3704,40 @@ export const register: Register = async (on, options) => {
       }
       const previousPersona = sess.persona;
       sess.persona = name;
+      if (arming === "reader") {
+        // Section 6: a reader session never claims persona:<name> here,
+        // never arbitrates for it, and never becomes its owner - it only
+        // ever joins as a reader. The previous persona's own reader claim
+        // (never a persona: claim, which a reader never holds) is released
+        // so switching away leaves no stale reader entry behind.
+        if (previousPersona && previousPersona !== name) {
+          try {
+            await releaseResource(commonsStoreOf($), `reader:${previousPersona}`, sess.mySessionId, Date.now(), commonsMeta());
+          } catch { /* non-fatal: commons is a coordination layer */ }
+        }
+        const store: Record<string, unknown> = await $.fs.exists(storePath)
+          ? (JSON.parse(await $.fs.read(storePath)) as Record<string, unknown>)
+          : {};
+        const existing = store[name] as AgentState | undefined;
+        if (existing) {
+          sess.state = parseState(JSON.stringify(existing));
+          sess.state.persona = name;
+        } else {
+          sess.state = createDefaultState(name, sess.mySessionId);
+        }
+        sess.isOwner = false;
+        sess.myEpoch = existing?.epoch ?? 0;
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "passive_reader",
+          detail: `Joining '${sess.persona}' as reader (arming reader)`,
+        });
+        await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId, Date.now(), commonsMeta());
+        return {
+          result: `persona '${sess.persona}': joined as reader (arming reader). ${sess.state.memory.length} memories.`,
+        };
+      }
       // Backlog fix (commons claim staleness): a commons session record shares
       // one lastSeen across every claim it has ever made, so a persona claim
       // left behind on switch reads as live for as long as this session keeps
@@ -4603,6 +4704,13 @@ export const register: Register = async (on, options) => {
       // must not survive to the next turn.start.
       lastPromptWasChannelOrigin = false;
       lastPromptWasExternal = false;
+      return r;
+    }
+
+    if (arming === "reader") {
+      // Section 6: a reader session owns no goal tree, so no [GOAL TREE],
+      // paused, [NO GOAL], [ENV], [LESSON] or [MEMORY] block is appended -
+      // the prompt reaches the model exactly as the harness delivered it.
       return r;
     }
 

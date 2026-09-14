@@ -38,6 +38,11 @@ console.log("INSTALLED_KEY=" + (inst ? 1 : 0));
 console.log("SAME_OPTIONS=" + (dev && inst && JSON.stringify(dev) === JSON.stringify(inst) ? 1 : 0));
 console.log("PERSONA_DEV=" + (dev ? dev.persona : "") + ";");
 console.log("PERSONA_INSTALLED=" + (inst ? inst.persona : "") + ";");
+console.log("ARMING_DEV=" + (dev ? dev.arming : "") + ";");
+console.log("ARMING_INSTALLED=" + (inst ? inst.arming : "") + ";");
+console.log("COORD_DEV=" + (dev ? dev.coordinatorPersona : "") + ";");
+console.log("COORD_INSTALLED=" + (inst ? inst.coordinatorPersona : "") + ";");
+console.log("TICK_DEV=" + (dev ? dev.controllerTickMs : "") + ";");
 ' "$ROOT" "$1"
 }
 
@@ -53,6 +58,22 @@ check "emit_settings_json exits 0" "$?"
 R=$(inspect "$TMP/emitted.json")
 case "$R" in *"SAME_OPTIONS=1"*) check "emitted: both ids carry identical options" 0 ;; *) check "emitted: both ids carry identical options" 1 ;; esac
 case "$R" in *"PERSONA_DEV=keyprobe;"*) check "emitted: --plugin-dir id carries the persona" 0 ;; *) check "emitted: --plugin-dir id carries the persona" 1 ;; esac
+case "$R" in *"ARMING_DEV=owner;"*"ARMING_INSTALLED=owner;"*) check "emitted: both ids carry arming owner" 0 ;; *) check "emitted: both ids carry arming owner (out=$R)" 1 ;; esac
+case "$R" in *"COORD_DEV=coordinator;"*"COORD_INSTALLED=coordinator;"*) check "emitted: both ids carry coordinatorPersona coordinator (default)" 0 ;; *) check "emitted: both ids carry coordinatorPersona coordinator (default) (out=$R)" 1 ;; esac
+
+# --- Section 6: emit_settings_json exports COORDINATOR_PERSONA for the caller ---
+# bin/supervise.sh never reads plugin config itself, so its own priming check
+# (Section 8) reads this export rather than the settings file it just wrote.
+EXPORTED=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2" >/dev/null && export -p | grep -c "COORDINATOR_PERSONA="' _ "$ROOT" "$TMP/exported.json")
+[ "$EXPORTED" = "1" ]; check "emit_settings_json exports COORDINATOR_PERSONA" "$?"
+COORD_VALUE=$(run_lib COORDINATOR_PERSONA="lead" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2" >/dev/null && echo "$COORDINATOR_PERSONA"' _ "$ROOT" "$TMP/exported2.json")
+[ "$COORD_VALUE" = "lead" ]; check "emit_settings_json exports the given COORDINATOR_PERSONA value ($COORD_VALUE)" "$?"
+
+# --- Section 6: COORDINATOR_PERSONA "default" is refused ---
+ERR=$(run_lib COORDINATOR_PERSONA="default" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/coord-default.json" 2>&1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "emit_settings_json refuses COORDINATOR_PERSONA=default" 1 ;; *"COORDINATOR_PERSONA must not be 'default'"*) check "emit_settings_json refuses COORDINATOR_PERSONA=default" 0 ;; *) check "emit_settings_json refuses COORDINATOR_PERSONA=default (rc=$RC, err=$ERR)" 1 ;; esac
+[ ! -e "$TMP/coord-default.json" ]; check "a refused COORDINATOR_PERSONA leaves no settings file" "$?"
 
 # --- a provided single-id file gains the other id, options unchanged ---
 printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":7,"persona":"legacy"}}}}' > "$TMP/legacy.json"
@@ -84,6 +105,23 @@ printf '%s' "$DIFFERENT" > "$TMP/different.json"
 run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids "$2"' _ "$ROOT" "$TMP/different.json"
 RC=$?
 [ "$RC" -eq 0 ] && [ "$(cat "$TMP/different.json")" = "$DIFFERENT" ]; check "two ids with different options are accepted and left byte for byte (rc=$RC)" "$?"
+
+# --- Section 6: ensure_settings_arming completes a missing arming key ---
+# A provided file with no arming key gains "owner" under both ids once
+# ensure_settings_plugin_ids has already given each id the same options;
+# every other option the caller wrote survives untouched.
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":11,"persona":"noarm"}}}}' > "$TMP/noarm.json"
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids "$2" && ensure_settings_arming "$2"' _ "$ROOT" "$TMP/noarm.json"
+check "ensure_settings_arming exits 0 on a file with no arming key" "$?"
+R=$(inspect "$TMP/noarm.json")
+case "$R" in *"PERSONA_DEV=noarm;"*"ARMING_DEV=owner;"*"ARMING_INSTALLED=owner;"*"TICK_DEV=11;"*) check "a missing arming key gains owner under both ids, other options unchanged" 0 ;; *) check "a missing arming key gains owner under both ids, other options unchanged (out=$R)" 1 ;; esac
+
+# Control: a provided arming value is left exactly as written, never
+# overwritten to owner.
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":11,"arming":"reader"}}}}' > "$TMP/hasarm.json"
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids "$2" && ensure_settings_arming "$2"' _ "$ROOT" "$TMP/hasarm.json"
+R=$(inspect "$TMP/hasarm.json")
+case "$R" in *"ARMING_DEV=reader;"*"ARMING_INSTALLED=reader;"*) check "control: a provided arming value is kept, not overwritten to owner" 0 ;; *) check "control: a provided arming value is kept, not overwritten to owner (out=$R)" 1 ;; esac
 
 # Shapes that cannot hold options are refused rather than repaired.
 for shape in '{"pluginConfigs":[]}' '{"pluginConfigs":{"agentic-plugin":"x"}}' '{"pluginConfigs":{"agentic-plugin":{"options":"x"}}}'; do

@@ -80,7 +80,8 @@ cat > settings.json << 'EOF'
         "contextBudgetCriticalTokens": 700,
         "contextBudgetReadEveryNTicks": 1,
         "controllerTickMs": 10000,
-        "costSummaryEveryNTicks": 2
+        "costSummaryEveryNTicks": 2,
+        "arming": "owner"
       }
     }
   }

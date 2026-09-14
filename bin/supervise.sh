@@ -345,6 +345,14 @@ else
     echo "ERROR: could not complete $SETTINGS_FILE; see $LOG" | tee -a "$LOG" >&2
     exit 1
   fi
+  # Section 6: a provided settings file with no arming key would otherwise
+  # start this launch's child as "off" (no tool, no claim), silently -
+  # every supervisor launch is an owner, so a missing key is completed the
+  # same way a missing plugin id is, leaving any value the caller did write.
+  if ! ensure_settings_arming "$SETTINGS_FILE" 2>>"$LOG"; then
+    echo "ERROR: could not complete $SETTINGS_FILE; see $LOG" | tee -a "$LOG" >&2
+    exit 1
+  fi
 fi
 
 # --- Helper: log a line to supervisor.log ---

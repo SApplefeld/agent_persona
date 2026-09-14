@@ -45,6 +45,16 @@ or, once it's already running passively, by talking to its Discord thread (attac
 
 **Working on the plugin's own code** instead of just running it: pass `--dev` to `supervise.sh`, which loads this checkout directly (`--plugin-dir`) instead of the installed copy, so edits here take effect on the next launch with no reinstall.
 
+**Launch the coordinator**, a second supervised session whose owner may address every persona's inbox:
+
+```
+MODEL=fable TICK_MS=60000 COORDINATOR_PERSONA=coordinator bin/supervise.sh /path/to/a/workdir coordinator bypassPermissions --channel-name coordinator
+```
+
+The persona argument and `COORDINATOR_PERSONA` name the same persona. The thread name defaults to `supervisor-<persona>`, so `--channel-name coordinator` gives the coordinator its own Discord thread, separate from any worker's. `TICK_MS` is set six times the supervisor default so the coordinator polls the shared store less often than a worker polls its own goal tree. The launch omits `--dev`, since the coordinator loads the same installed copy every worker does.
+
+**The arming key** gates what a session's hooks do, in three values. `owner` is the full worker/coordinator shape; a supervisor launch always writes it. `reader` registers `agentic_identity`/`agentic_say`/`agentic_inbox` only, with no goal-tree tool and no ownership ever - an interactive reader session takes this shape by passing a settings file with `"arming":"reader"` under both plugin ids through `--settings`. `off`, the default for a session that omits the key, registers no tool, timer, or claim at all: a peer message still reaches an `off` session as the harness delivers it, since no hook consumes it, and nothing is written to `.agentic-personas.json` or the commons store.
+
 **Status: v0.11.0 : Stage 3 (supervisor).** `tsc --noEmit` clean. Supervisor (`bin/supervise.sh`) drives outer-loop runs: pre-gate (commons + heartbeat), coproc stdin with EOF stop, real exit codes, `PROMPT=""` cleared after first send, `writeClaimDirect` shared across all three claim sites. The suites are catalogued under Test Coverage in the Supervisor section.
 
 ## Architecture
@@ -195,6 +205,8 @@ Declared in `plugin.json` with defaults. Read as `options.<name>` in `register(o
 | `controllerTickMs` | 30000 | Controller tick interval (ms) |
 | `nudgeFloorMs` | 300000 | Minimum gap between nudges (ms) |
 | `nudgeIdleMs` | 120000 | Session must be idle this long before a nudge is eligible (ms) |
+| `arming` | `off` | `off`, `reader` or `owner`; gates which tools, timers and claims this session registers. See "The arming key" above. |
+| `coordinatorPersona` | `coordinator` | The one persona name the inbox gates treat as the coordinator. A configured name of `default` is refused and falls back. |
 
 ## Loops
 
@@ -435,7 +447,7 @@ When the reader answers the ask, the owner's controller is reactivated (`reactiv
 Two options are defined in the plan (section 6) with defaults in force:
 
 1. **Ask wait default:** Whether the owner's ask waits indefinitely for a reply or times out. Default: **60 minutes** (`askOperatorWaitMs` unset, code fallback `hooks/index.ts:142`).
-2. **Peer text:** Whether peer text is consumed by the `session.receive` hook or passed through with a `[PEER]` prefix. Default: **consumed** (the hook returns `{ consumed: reason }` and nothing is queued, shown, or read by the model).
+2. **Peer text:** Whether peer text is consumed by the `session.receive` hook or passed through with a `[PEER]` prefix. Default: **consumed** (the hook returns `{ consumed: reason }` and nothing is queued, shown, or read by the model). Under `arming` `off` no hook runs at all, this one included, so peer text reaches the model exactly as the harness delivers it.
 
 The operator has not yet ruled on these options; the defaults are in force.
 
@@ -447,7 +459,7 @@ The operator has not yet ruled on these options; the defaults are in force.
 
 The supervisor's own suites are listed under the Supervisor section's Test Coverage above.
 
-**Runner lock:** `live-all.sh` writes `.kit/RUNNING` at start and refuses to start if it already exists (exit 8). After a killed gate, confirm no `claude` child with `--plugin-dir` is running, then `rm .kit/RUNNING`. `live-all.sh` also refuses at start, with no wait, when a live `persona:` claim is present in any commons store, inline or installed, or when a store could not be read after three attempts (exit 10). Until the coordinator's launch recipe removes the ordinary session claim, an open plugin-loaded session is enough to trip it. A claim younger than the stale bound may be residue of a gate killed within the last 90 seconds, in which case wait and re-run.
+**Runner lock:** `live-all.sh` writes `.kit/RUNNING` at start and refuses to start if it already exists (exit 8). After a killed gate, confirm no `claude` child with `--plugin-dir` is running, then `rm .kit/RUNNING`. `live-all.sh` also refuses at start, with no wait, when a live `persona:` claim is present in any commons store, inline or installed, or when a store could not be read after three attempts (exit 10). An open session armed `owner`, or one running the previous plugin, is enough to trip it. A claim younger than the stale bound may be residue of a gate killed within the last 90 seconds, in which case wait and re-run.
 
 ## Limitations
 
