@@ -68,6 +68,9 @@ Four extensions, in order of what blocks the next:
 - Every numeric supervisor setting passes one shared check: digits only, no leading zero, at most 9 digits, greater than zero. Bash reads a leading zero as octal in arithmetic, and a value past 64 bits breaks `[ -lt ]`. A setting the code consumes as `$((value / 1000))` is checked in the unit its consumer uses, so a sub-second value cannot floor to a zero wait.
 - `staleAfterMs` reaches a `node` program through argv rather than spliced into the program body, and it passes the numeric check on the provided-settings path, which skips `emit_settings_json`.
 - Both node programs inside `wait_persona_free_both` take the stale bound through argv, so the commons check and the heartbeat check read the same value.
+- Section 0 repairs the two liveness defects its title names and the surfaces its six items build. A supervisor behavior that predates Section 0 and that none of those items changes, such as when a restart limit fires or how long a launch prompt is kept, is a different surface and does not ride under Section 0.
+- A test lands only where it pins a failure the code can actually produce and a hard requirement depends on. A test that pins a setting's value, a preference, or a configuration choice does not land. A case that another case or control already proves is removed rather than added.
+- Section 13 runs after Section 0 closes and before Section 1.
 - Section 6's launch shape never feeds a worker's `--prompt` from coordinator text. `bin/supervise.sh` frames `--prompt` content as the operator's trusted task, so coordinator steers reach a worker only through the labelled inbox path.
 - Section 12 runs after Sections 1 and 2 and before Section 3. Sections 7 and 8 each carry one added sentence: a worker resolves a coordinator record with `agentic_resolve` when the work is finished or declined, and the coordinator counts rounds per steer against resolutions rather than replies.
 
@@ -263,7 +266,45 @@ Acceptance:
 
 Tests: a case per acceptance bullet, each watched red before green. Bullet 3 and bullet 6 each take a withheld control: an old non-pending record is swept, and the plugin's own turn is stamped.
 
+### 13. Test audit: every suite earns its place against the test bar
+Model: opus
+
+Appended by the operator's decision of 2026-09-14, recorded under `## Decisions`. It runs after Section 0 closes and before Section 1, because every later section adds tests and builds against the bar this section applies. The section number is its decomposition, not its build order.
+
+The repository carries two test lanes, measured 2026-09-14 on SCOTT-CLAUDE at `6d382c7`.
+
+The offline lane is ten suites holding 807 checks, and it runs in about 80 seconds. `.kit/controller-tick-test.mjs` holds 499 of those checks and runs in 11 seconds. `.kit/supervisor-natural-exit-test.sh` is the slowest at 50 seconds, because it drives the real supervisor through a stub child.
+
+The live lane is `.kit/live-all.sh`, whose `ALL_SUITES` names 17 suites. Each launches real `claude` children, and the last full run took 56 minutes. Two more live suites, `.kit/live-supervisor-test.sh` and `.kit/live-self-review-test.sh`, are tracked but never run by the gate.
+
+So the gate's cost is the live suites rather than the check count.
+
+Fix: every suite answers one question, and the answer decides whether it stays.
+1. **A live suite** names what it proves that no offline suite proves. A suite with no such answer is retired. A suite whose proof can move to a stub-driven offline case moves there, and leaves the gate once that case is green.
+2. **An offline check** pins a failure the code can actually produce, which a hard requirement depends on. A check that pins only a setting's value, a preference, or a configuration choice is removed.
+3. **A duplicate** is removed wherever two cases prove the same thing.
+4. **The two ungated live suites** are either registered with a reason or retired.
+
+Files in scope: every `.kit/*-test.sh` and `.kit/*-test.mjs`, `.kit/live-all.sh`, `.kit/.gitignore` (the tracked-suite roster), `README.md` (the Test Coverage catalog).
+
+Acceptance:
+1. Every suite left in `.kit/live-all.sh` states in its header what it proves that no offline suite proves.
+2. Every retired or moved suite and every removed check is named in the Chapter with what still proves the behavior, or with the statement that nothing does and why that is acceptable.
+3. No offline check remains whose only subject is a setting's value, a preference, or a configuration choice.
+4. No two remaining cases prove the same thing.
+5. The offline lane's and the whole gate's wall times are measured before and after on the same machine, and the Chapter carries both.
+
+Tests: this section removes tests, so its gate is that every remaining suite passes. A new case is written only where a live proof moves to an offline stub, and that case is watched red before green.
+
 ## Decisions
+
+### Every test earns its place, and a test audit runs before Section 1 - decided 2026-09-14 by the operator
+
+The operator set a bar for tests on the Discord thread during Section 0's finishing pass. A test must be genuinely necessary, pinning something essential to functionality that is a hard requirement. Tests that pin simple preferences or intentional configuration are not wanted, the example given being a test that a menu has three items.
+
+A second message asked for a task to look over every test against that bar and decommission the superfluous and preferential ones. The ground was a sibling project whose thousands of tests make every gate take over an hour.
+
+The bar is in the Standing Brief Amendments block, so it rides on every section's dispatch from here on. Section 13 carries the audit. The dev session placed it before Section 1 because every later section adds tests and should build against the bar rather than be cleaned up after it, and told the operator the placement is theirs to move.
 
 ### Inbox upkeep is part of v2, before Section 3 - decided 2026-09-13 by the operator
 
@@ -578,3 +619,42 @@ Section 0 item 6, the finishing pass, is still mid-flight. Items 1 to 5 are clos
 - Rulings adopted since the last boundary: a millisecond setting is checked in the unit its consumer divides it into; the heartbeat staleness bound travels through argv and takes the shared check; the call-count pin is replaced by a structural enumeration. All three are in the Standing Brief Amendments block or in the code they govern.
 - Open limit the implementer flagged: the structural pin proves a numeric setting is checked by one of two rules, and cannot tell that a setting took the wrong one of the two. Deciding that needs each setting's consumer read.
 - Next per item: adjudicate round 4, run the Minors close pass from the section Minors list under the scratch path, dispatch the docs curator, then write the item 6 Chapter and update PR #30.
+
+### Chapter 4 - 2026-09-14
+Completed: 0. Close out v1 first, plus two live worker-liveness defects a fleet cannot ship with
+Implemented By: items 1 to 5 by their own Chapters above; item 6's fix rounds by implementer-opus (four dispatches, one resumed) and implementer-sonnet (the comment sweep), with the crash-limit fix and the last close pass in the main session
+Metrics: review rounds 6, closed claim-exit; provenance 4 spec-traceable, 11 fix-introduced, 4 new-requirement, rulings (3 refused, 3 declared, 0 asked); NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: item 6 is Section 0's finishing pass, run per the finishing-work skill over the whole Section 0 changeset on `item0-5-installed-runtime` off `74bbb76`. Items 1 to 5 closed by their own Chapters. The pass found more than the items built.
+
+A child that exited on its own aborted the supervisor. Bash unsets `CHILD_PID` and the `CHILD` array when it reaps a coproc, and the script runs under `set -u`, so the natural-exit branch had never completed on any run. Every read of the child's pid now uses one pid saved at launch, and a stub-driven suite covers the branch no live suite can reach. The three RESTART_PASSIVE restarts the plan credited to that branch came through the decide path's stop.
+
+The stale bound reached a `node` program by splicing, and an implementer's red run executed an injected payload through it. Both programs in the pre-launch gate now take the persona and the bound through argv. The commons half had also held a fixed 90000 and ignored its own parameter.
+
+Two design stops fired. The shared numeric check carried fix-introduced Majors in rounds 2 and 3, and the pin proving every setting is checked carried them in rounds 3 and 4. The scope adjudicator ruled accept-and-declare on both, grounded on the amendment bullet naming the shared check. Its non-blocking observation stands as an open quality question: `supervisorPsBoundS` falls back to 30 silently where every other setting exits with an error line.
+
+The operator set a bar for tests mid-pass: a test must pin a failure a hard requirement depends on, never a setting or a preference. It was applied at adjudication. Six Minors asking for more pin machinery were left with their reasons, and one case added in this pass was removed as a duplicate of an existing one. The operator then asked for an audit of every suite against the bar, which is appended as Section 13 and recorded under Decisions, with the bar in the Standing Brief Amendments block. That is approval drift, made deliberately on the operator's word.
+
+The docs curator's one `mistake` was real and predates the changeset: `bin/supervise-decide.mjs` at `74bbb76` holds `crashCount >= 3` and never received `supervisorCrashLimit`, while the natural-exit path compares against the setting. Section 0's new validation made the setting look like a bound it only half was. It was fixed in `6d382c7` with unit cases watched red against the fixed 3, and reviewed in round 6. finishing-work stops on a surviving `mistake` and puts it to the operator first. This run fixed it before the PR instead, and reports it in the close-out, which is the deviation from that step.
+
+Three of round 6's Majors were refused as outside Section 0 and filed to `docs/backlog.md`: the decide path relaunching once more before a restart or crash limit stops the run, and a `--prompt` goal dropped when the first child dies before its goal turn. The third, a pin on the crash-limit argv wiring, was refused without a backlog entry, since Section 13's audit governs whether such a pin earns its place.
+
+This session wrote two false facts into a backlog entry about the running supervisors, which round 5's adversarial lens read off `/proc`; both are corrected. It also ran a suite once without reading the heavy-process claim first; the claims directory was empty on every later read.
+
+State found live: the `aios` supervisor started 2026-09-14 00:11Z from this checkout on `opus`, carrying the branch's supervisor fixes through `a4119cd`. The `dev` supervisor started 2026-09-13 21:45Z and predates `406a783`. The script under both has been rewritten since, and bash reads a script by offset, so both relaunches are owed and are the operator's.
+Assumptions: assumed 2026-09-14 (route b, low-blast default, section 0): a blank, zero or negative stale bound reaching `wait_persona_free_both` directly reads as a bound rather than being refused, because every caller in the repository passes a value `positive_number` has already checked. Reversal is one predicate in each node program. assumed 2026-09-14 (route b, low-blast default, section 13): the test audit runs before Section 1 rather than after Section 12, since every later section adds tests against the bar; the operator accepted the placement on the thread.
+Review Findings: review: security plus adversarial at fable, Workflow (round 1); adversarial, blind and security at fable, Workflow (round 2); code pair at opus, Workflow (rounds 3 to 6); author re-reads over round 5's test-only fix delta, the comment sweep, and the final close pass. Design stop: the shared numeric check, ruling accept-and-declare by the scope adjudicator. Design stop: the derived-name settings pin, ruling accept-and-declare by the scope adjudicator. Declared: the commons half's stale bound, accept-and-declare by the scope adjudicator, recorded as the amendment bullet on both node programs. Refused: three round 6 Majors, by the scope adjudicator, grounded on Section 0's title and six items, recorded as the amendment bullet on pre-existing supervisor behavior.
+
+Round 1: two Majors, both raised by both lenses and spec-traceable to items 1 and 3, routed to the Standing Brief Amendments and `docs/backlog.md`. Round 2: one fix-introduced Major, a leading zero accepted by the stop-grace check, fixed. Round 3: eight Majors, seven fix-introduced and one spec-traceable. The empty stdin-fd guard exited the supervisor and ran before the snapshot reset; the stop-grace and poll settings floored to zero below 1000; the shared check accepted a leading zero; the call-count pin overstated its reach; and a comment retracted the stop path's accepted-hazard rationale. The spec-traceable one, a spliced and unchecked stale bound, was fixed under the security carve-out. Round 4: three Majors, the ignored commons bound, declared and fixed, and two in the replacement pin, fixed after the second design stop. Round 5: two Majors, the untested commons half and the pin's blindness to bare arithmetic reads, fixed in a test-only delta below the fix-delta bar. Round 6: three Majors, all new-requirement, all refused.
+
+Minors: 23 fixed, in the fix rounds or the close passes. They cover the review-round citations in `bin/supervise.sh` and the stop-tree suite, 55 and 27 reworded, and the model suite's thirty spawns collapsed to helper cases. Also the false header comment on the numeric rule, the generated stubs under `set -u` and `pipefail`, and the plugin-values comment naming its exception. Also the two error lines split into plain sentences, the self-satisfying subject leg, the unreached sed shapes named, and the backlog's false facts. The rest are README claims: the unit case count, the status line's log claim, the ungated live suite, the persona splice claim in the README and the script header, the retry-budget and gate-wait wording, the exit-1 row and the script's exit-code header, the run-directory write claim, the backlog entries' narration, the crash-limit timing comment, and one duplicate unit case removed. 0 upgraded. 9 left with the reason. The natural-exit suite is invoked by no runner, and the README catalog is the record. The enumeration floor, a one-direction minimum test, and a second structural pin were each left under the operator's test bar. A blank or negative bound reaching the library directly is the declared assumption. The one-millisecond boundary against the plugin's comparison is left too. The README's v0.11.0 against the manifest's 0.10.0 is a release decision. The engine claim that an unmatched plugin id falls back to persona `default` was measured on engine 2.1.270 in Interim board 2. The unreachable argv fallback matches its sixteen siblings. 1 routed to `docs/backlog.md`, a floor for the stale bound against the refresh cadence.
+
+Docs curation: eight drift items, one `mistake` and seven `deviation`s, none silently reconciled. The `mistake` is the crash limit above. Its pre-change read is `git show 74bbb76:bin/supervise-decide.mjs`, which holds `crashCount >= 3`, so the basis survived. The deviations: the silent fallback of `supervisorPsBoundS`; the decide-unit test count; the live-suite count in the status line; the decision set omitting `restart_passive`; the pre-launch gate's scope; the backlog's undercount of what the aios supervisor lacks; the discussion archive's round range. Six of them rest on a pre-change claim the curator could not read, and they ride into the PR description marked as unverified pre-change claims. Two hygiene items: the context-budget plan was absent from the index and its status header is none of the kit's values, filed to `docs/backlog.md`; the v1 and v2 cross-references hold both ways.
+Stamps: adjudicated 3, stamped 2. Applied: the coproc record, whose reap-trap correction became the saved-pid rule; the forward-resource-arrangements record, under which every brief carried the live-supervisor constraint. One skipped as a read that shaped nothing this stretch.
+Gate: targeted lane at section close, measured 2026-09-14 01:14Z on SCOTT-CLAUDE on the tree this Chapter commits, the dev and aios supervisors live on the box and named rather than waited out, the heavy-process claims directory empty at the read. Each exit code read from its own run: `bash .kit/supervisor-model-test.sh` 0 with 61 OK; `bash .kit/settings-plugin-key-test.sh` 0 with 41 OK; `bash .kit/supervisor-natural-exit-test.sh` 0 with 41 OK; `bash .kit/channel-reply-instruction-test.sh` 0 with 12 OK; `node .kit/supervisor-unit-test.mjs` 0 with 21 passed; `bash -n bin/supervise.sh` 0. `npx tsc --noEmit` 0 at `2359d7d`; nothing after it changes TypeScript. Baseline on this same lane at `a4119cd`, Interim board 2: 60, 37, 41, 12 and 19, so the delta is +1, +4, 0, 0 and +2, with 0 failing in both readings. No live suite ran, and the whole live gate's owed re-run on a quiet box stays on the backlog. The contention lane did not run: the delta touches no machine-shared state.
+Next: PR #30 marked ready for review, then Section 13, the test audit, then Section 1
+Commit Model: Branch-and-PR, on `item0-5-installed-runtime` off `74bbb76`, PR #30
+Delta: the size reading was taken on this branch at the close gate, on SCOTT-CLAUDE, with only this Chapter's own changes in the worktree. The verb reported no corpus to measure in this repository.
+
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```

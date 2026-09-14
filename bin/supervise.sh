@@ -21,8 +21,9 @@
 # to skip this (a scratch/proof run with no Discord side effects).
 #
 # Exit codes:
-#   0 = run complete (root_complete)
-#   2 = pre-launch gate timeout
+#   0 = shutdown_requested honored
+#   1 = usage, or a setting refused at startup
+#   2 = no commons store for the load mode, or pre-launch gate timeout
 #   3 = crash loop
 #   4 = restart budget exhausted
 #   5 = stopped, but a process from the child is alive or unverifiable
@@ -44,8 +45,8 @@ PERSONA="$2"
 PERMISSION_MODE="$3"
 shift 3
 
-# The persona is spliced into the child's settings JSON and into node -e
-# scripts, so it is held to the same shape valid_persona_name enforces in
+# The persona is spliced into the child's settings JSON, so it is held to
+# the same shape valid_persona_name enforces in
 # bin/agentic-common.sh, checked here before anything touches the disk.
 case "$PERSONA" in
   ''|*[!A-Za-z0-9_-]*)

@@ -88,7 +88,9 @@ export function decide(input) {
 
   // 2. Crash loop: crashLimit consecutive non-zero exits within minRunMs: stop.
   // The limit is the supervisor's own setting, so both readers of the crash
-  // count, this unit and the natural-exit path, stop on the same number.
+  // count, this unit and the natural-exit path, compare against the same
+  // number. They differ on timing: the natural-exit path checks before it
+  // relaunches, while this unit sees the count at the next child's first poll.
   if (crashCount >= crashLimit) {
     return { action: 'stop_crash_loop', reason: `crash loop (${crashCount} non-zero exits within ${minRunMs}ms)` };
   }

@@ -93,13 +93,21 @@ A running `bin/supervise.sh` keeps reading its original open file handle and nev
 
 Nothing to fix in the tree. The remedy is relaunching each supervisor, then dropping this entry. Relaunching is destructive to whatever that supervisor's child is mid-way through, so it is taken at a quiet point rather than on sight of this entry. This is the narrowed remainder of the `aios` launcher entry and the stale-dev-clone entry, both retired in item 3's runtime-clone addendum.
 
+## The decide path relaunches once more before a restart or crash limit stops the run (found 2026-09-14)
+
+The decide path's `restart` branch in `bin/supervise.sh` updates the crash and restart counts and relaunches without checking either limit, and `bin/supervise-decide.mjs` sees the counts only at the next child's first poll. So the run that reaches `supervisorMaxRestartsPerHour` or `supervisorCrashLimit` launches one more child, which claims the persona, takes a priming turn and attaches the channel before it is stopped with exit 4 or 3. The natural-exit path checks both limits before relaunching. The remedy is the same two checks in the `restart` branch before it relaunches.
+
+## A `--prompt` goal is dropped when the first child dies before its goal turn (found 2026-09-14)
+
+`bin/supervise.sh` builds the prompt file only for child 1 and clears `PROMPT` after that first launch whether or not the goal turn was written. A child 1 that dies at startup, to a rate limit or a network fault, relaunches as a passive child 2, and the operator's task reaches no child. Only a `NOTE:` line in `supervisor.log` records the skip. The remedy is to keep the prompt until its goal turn is written, or to log the dropped goal as an `ERROR:`.
+
 ## The stale bound has no floor against the refresh cadence it measures (found 2026-09-13)
 
-`staleAfterMs` takes the shared numeric check and nothing else, while the holders it measures refresh `lastSeen` every `heartbeatMs` (default 30000) and every controller tick. A validated value below that cadence, such as 5000, reads every live holder as stale at most polls, and the pre-launch gate passes while another session holds the persona. A floor tied to the refresh cadence is a rule across two settings that nothing in the coordinator plan asks for, so it is filed rather than built. Raised by a blind review of `8e0bcef`.
+`staleAfterMs` takes the shared numeric check and nothing else, while the holders it measures refresh `lastSeen` every `heartbeatMs` (default 30000) and every controller tick. A validated value below that cadence, such as 5000, reads every live holder as stale at most polls, and the pre-launch gate passes while another session holds the persona. A floor tied to the refresh cadence is a rule across two settings that nothing in the coordinator plan asks for, so it is filed rather than built.
 
 ## The context-budget plan's status header is none of the kit's values (found 2026-09-13)
 
-`docs/plans/agentic-plugin_context-budget_v1.md` reads `Status: Independent part Complete; checkpoint section BLOCKED-on-operator (Path C open question resolved).`, which the kit's tooling cannot read as any of its status values. The curating-docs skill rules whether the plan splits into a complete part and an open part, archives, or takes one of the three headers. Raised by the docs curator over Section 0 of the coordinator plan, which indexed the file but did not rehead it.
+`docs/plans/agentic-plugin_context-budget_v1.md` reads `Status: Independent part Complete; checkpoint section BLOCKED-on-operator (Path C open question resolved).`, which the kit's tooling cannot read as any of its status values. The curating-docs skill rules whether the plan splits into a complete part and an open part, archives, or takes one of the three headers.
 
 ## live-stopprocesstree-test.sh runs 15 checks that the gate summary never collects
 

@@ -441,24 +441,6 @@ const cases = [
     },
     expected: 'stop_crash_loop',
   },
-  // 22. Control: with no limit supplied, the default is still 3.
-  {
-    name: 'three crashes with no crashLimit: stop_crash_loop on the default',
-    input: {
-      childExitCode: 1,
-      rootCompleteTs: null,
-      criticalTs: null,
-      crashCount: 3,
-      restartCount: 0,
-      childStartTs: 1000,
-      childSessionId: 'sess-1',
-      heartbeatSessionId: 'sess-1',
-      heartbeatLastSeen: null,
-      launchedAt: 900,
-      staleAfterMs: 90000,
-    },
-    expected: 'stop_crash_loop',
-  },
 ];
 
 let pass = 0, fail = 0;
