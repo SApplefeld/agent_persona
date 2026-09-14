@@ -3269,6 +3269,7 @@ async function main() {
     await caseSection7_r1_subagentAttributionOutlivesTheTurn(clock);
     await caseSection7_r2_chapterWritesPassAndBypassSpellingsAreCaught(clock);
     await caseSection7_r3_modelValueRewritesAndMergesAreCaught(clock);
+    await caseSection7_r4_unmatchedAndContinuedTurnsFailTowardBound(clock);
   } finally {
     clock.restore();
   }
@@ -8216,10 +8217,9 @@ async function caseSection6_owner_matchesTheFullExistingShape(clock) {
 // ============================================================
 // Section 7: the coordinator-origin turn flag and the bound checks the
 // tool.call hook runs under it. A turn the plugin opened from a
-// [COORDINATOR ...] record refuses the two mechanically checkable
-// ask-first items (a settings or CLAUDE.md edit, a push beyond the plan's
-// recorded commit model) and records each refusal; every other turn, and
-// the urgent break-in's tool-result context, is untouched.
+// [COORDINATOR ...] record refuses the ask-first items the hook can check,
+// each named by the case that pins it, and records each refusal; every
+// other turn, and the urgent break-in's tool-result context, is untouched.
 // ============================================================
 
 // A dev-persona harness with one coordinator record delivered by tick and
@@ -8539,8 +8539,7 @@ async function caseSection7_r2_chapterWritesPassAndBypassSpellingsAreCaught(cloc
   check("section7 r2 G1 control: an Edit whose new_string is a Chapter body (heading before the Commit Model line) passes through", chapter.passed, chapter.r);
   const wholePlan = await boundCall(h, { tool: "Write", file_path: "docs/plans/p.md", content: "# p\r\n\r\nCommit Model: Commit-and-Push\r\n\r\n## Approach\r\n\r\n### Chapter 1\r\nCommit Model: Commit-and-Push\r\n" });
   check("section7 r2 G1: a Write whose content is a whole plan with the header line and later Chapter lines is denied before next", wholePlan.denied && wholePlan.nextCalls === 0, wholePlan.r);
-  const multi = await boundCall(h, { tool: "MultiEdit", file_path: "docs/plans/p.md", edits: [{ old_string: "prose", new_string: "Commit Model: Commit-and-Push" }] });
-  check("section7 r2 G1: a MultiEdit whose edits[] carry a header Commit Model line is denied before next", multi.denied && multi.nextCalls === 0, multi.r);
+  // The engine's type surface declares no MultiEdit tool and no edits[] argument, so no check drives one.
   const shellChapter = await boundCall(h, { tool: "Bash", command: "printf '### Chapter 99\\nCommit Model: Branch-and-PR\\n' >> docs/plans/p.md" });
   check("section7 r2 G1 control: a shell segment whose Commit Model text follows a ### heading passes through", shellChapter.passed, shellChapter.r);
 
@@ -8598,5 +8597,66 @@ async function caseSection7_r3_modelValueRewritesAndMergesAreCaught(clock) {
   check("section7 r3 minor: printf x >CLAUDE.md& (basename glued to a trailing &) is denied before next", gluedAmp.denied && gluedAmp.nextCalls === 0, gluedAmp.r);
   const dotDot = await boundCall(h, { tool: "Edit", file_path: ".claude/x/../settings.json", old_string: "a", new_string: "b" });
   check("section7 r3 minor: an Edit of .claude/x/../settings.json is denied before next", dotDot.denied && dotDot.nextCalls === 0, dotDot.r);
+}
+
+// The coordinator-origin flag fails toward bound where the turn's opening
+// text cannot be placed: a non-external, non-channel turn whose text
+// matches nothing while a coordinator delivery is queued is bound, and a
+// continuation turn (empty text) inherits the origin of the turn that just
+// completed. An external turn, and a continuation of an operator turn, stay
+// free. The commit-model label arm keys on the armed plan's path.
+async function caseSection7_r4_unmatchedAndContinuedTurnsFailTowardBound(clock) {
+  console.log("\n=== Section 7 fix 4: an unplaceable plugin turn beside a queued coordinator delivery, and a continuation of a coordinator turn, are bound ===");
+  clock.set(T0);
+  const now = T0;
+
+  const hq = await seedNamedOwnerHarness("section7_r4_unmatched", now, "dev", "coordinator");
+  seedForeignClaims(hq, "coord-001", now, ["persona:coordinator"]);
+  const kq = seedRecordFor(hq, "dev", "coord-001", 1, { at: now - 5000, text: "Land the section." });
+  await tickAndSettle(hq, clock, 50);
+  check("section7 r4 J1: the coordinator record is delivered and its entry queued (setup sanity)",
+    readStoreRecord(hq, kq)?.status === "delivered" && (hq.promptSubmits || []).includes("[COORDINATOR id=dev-coord-001-1] Land the section."), hq.promptSubmits);
+  await hq.handlers["turn.start"](hq.fake, { turnId: "t-rewritten", text: "[rewritten] Land the section." }, async () => ({ result: "ok" }));
+  const unmatched = await boundCall(hq, { tool: "Edit", file_path: "CLAUDE.md", old_string: "a", new_string: "b" });
+  check("section7 r4 J1: a non-external turn whose text matches nothing, beside a queued coordinator delivery, is bound: CLAUDE.md Edit denied before next",
+    unmatched.denied && unmatched.nextCalls === 0, unmatched.r);
+  await hq.handlers["turn.complete"](hq.fake, { turnId: "t-rewritten", answer: "Put to the operator.", reason: "completed" }, async () => ({ result: "ok" }));
+  await hq.handlers["prompt.submit"](hq.fake, { text: "Push it." }, async () => ({}));
+  await hq.handlers["turn.start"](hq.fake, { turnId: "t-external", text: "Push it." }, async () => ({ result: "ok" }));
+  const external = await boundCall(hq, { tool: "Edit", file_path: "CLAUDE.md", old_string: "a", new_string: "b" });
+  check("section7 r4 J1 control: the same queued delivery, but the real prompt hook fired (external turn): CLAUDE.md Edit passes through", external.passed, external.r);
+
+  const h = await openCoordinatorOriginTurn("section7_r4_continue", now, clock, "t-c1");
+  h.fsMap.set(".kit/goal-state.json", JSON.stringify({ plan: "docs/plans/p.md" }));
+  h.fsMap.set("docs/plans/p.md", planTextWith("Commit Model: Branch-and-PR. prose"));
+  const otherLabel = await boundCall(h, { tool: "Edit", file_path: "docs/plans/other.md", old_string: "a", new_string: "Commit Model: Commit-and-Push" });
+  check("section7 r4 minor control: an Edit of a file the leash does not name, whose new_string is a Commit Model line, passes through (the file path alone varies)", otherLabel.passed, otherLabel.r);
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-c1", answer: "Put to the operator.", reason: "completed" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-cont", text: "" }, async () => ({ result: "ok" }));
+  const continued = await boundCall(h, { tool: "Edit", file_path: "CLAUDE.md", old_string: "a", new_string: "b" });
+  check("section7 r4 J1: an empty-text continuation of a coordinator-origin turn is bound: CLAUDE.md Edit denied before next", continued.denied && continued.nextCalls === 0, continued.r);
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-cont", answer: "Put to the operator.", reason: "completed" }, async () => ({ result: "ok" }));
+  await h.handlers["prompt.submit"](h.fake, { text: "Push it." }, async () => ({}));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-k", text: "Push it." }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-k", answer: "Done.", reason: "completed" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-cont2", text: "" }, async () => ({ result: "ok" }));
+  const continuedOperator = await boundCall(h, { tool: "Edit", file_path: "CLAUDE.md", old_string: "a", new_string: "b" });
+  check("section7 r4 J1 control: an empty-text continuation of an operator turn stays free: CLAUDE.md Edit passes through (the previous turn's origin alone varies)", continuedOperator.passed, continuedOperator.r);
+
+  // A coordinator delivery whose turn the harness never announced: no
+  // turn.start fires, so the origin is read at the call.
+  const hm = await seedNamedOwnerHarness("section7_r4_missed_start", now, "dev", "coordinator");
+  seedForeignClaims(hm, "coord-001", now, ["persona:coordinator"]);
+  const km = seedRecordFor(hm, "dev", "coord-001", 1, { at: now - 5000, text: "Land the section." });
+  await tickAndSettle(hm, clock, 50);
+  check("section7 r4 J1 amendment: the coordinator record is delivered and its entry queued, no turn.start fired (setup sanity)",
+    readStoreRecord(hm, km)?.status === "delivered" && (hm.promptSubmits || []).includes("[COORDINATOR id=dev-coord-001-1] Land the section."), hm.promptSubmits);
+  const missedStart = await boundCall(hm, { tool: "Edit", file_path: "CLAUDE.md", old_string: "a", new_string: "b" });
+  check("section7 r4 J1 amendment: with a coordinator delivery queued and no turn.start fired, a CLAUDE.md Edit is denied before next",
+    missedStart.denied && missedStart.nextCalls === 0, missedStart.r);
+  await hm.handlers["prompt.submit"](hm.fake, { text: "Push it." }, async () => ({}));
+  const missedStartExternal = await boundCall(hm, { tool: "Edit", file_path: "CLAUDE.md", old_string: "a", new_string: "b" });
+  check("section7 r4 J1 amendment control: the same queued delivery, the real prompt hook fired and still no turn.start: CLAUDE.md Edit passes through (the external flag alone varies)",
+    missedStartExternal.passed, missedStartExternal.r);
 }
 

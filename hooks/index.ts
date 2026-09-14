@@ -164,19 +164,8 @@ export function guardedPathItem(p: unknown): string | null {
   return guardedBasenameItem(parts[parts.length - 1] ?? "", parts.length >= 2 ? parts[parts.length - 2] : "");
 }
 
-// Whether written text carries a plan header's Commit Model line: a line
-// opening `Commit Model:` that no `## ` or `### ` line precedes inside the
-// same text. Every Chapter carries a Commit Model line too, below its
-// heading, so text in which each such line follows a heading is a Chapter
-// and is not the header. The residual: an Edit whose new_string starts
-// mid-Chapter, below the heading, carrying the line, reads as a header
-// write; the model puts it to the operator and the cost is one round trip.
-function commitModelHeaderLineIn(text: string): boolean {
-  return headerTextMatches(text, /^\s*Commit Model:/i);
-}
-
 // Whether any line of the text before its first `## ` or `### ` line
-// matches the pattern.
+// matches the pattern: the header of a plan, as written text carries it.
 function headerTextMatches(text: string, pattern: RegExp): boolean {
   for (const line of text.split(/\r?\n/)) {
     if (/^#{2,3} /.test(line)) return false;
@@ -190,35 +179,28 @@ function headerTextMatches(text: string, pattern: RegExp): boolean {
 const COMMIT_MODEL_LABEL_OR_VALUE = /Commit Model:|Review-Only|Branch-and-PR|Commit-and-Push/i;
 
 // The strings a file tool writes: Write's content, Edit's old or new
-// string, each edits[] entry's old or new string, NotebookEdit's new
-// source.
+// string, NotebookEdit's new source. The engine declares no tool carrying
+// an edits[] array.
 function writtenTexts(args: unknown): string[] {
-  const a = args as { content?: unknown; old_string?: unknown; new_string?: unknown; new_source?: unknown; edits?: unknown };
-  const texts: unknown[] = [a.content, a.old_string, a.new_string, a.new_source];
-  if (Array.isArray(a.edits)) {
-    for (const ed of a.edits as Array<{ old_string?: unknown; new_string?: unknown }>) texts.push(ed?.old_string, ed?.new_string);
-  }
-  return texts.filter((s): s is string => typeof s === "string");
+  const a = args as { content?: unknown; old_string?: unknown; new_string?: unknown; new_source?: unknown };
+  return [a.content, a.old_string, a.new_string, a.new_source].filter((s): s is string => typeof s === "string");
 }
 
-// Whether a file tool's written text carries a plan header's Commit Model
-// line, the input the push rule reads, whatever file it targets. A whole
-// file rewrite that removes the line without writing one is not seen here
-// and stays on the model's judgment.
-export function writesCommitModelLine(args: unknown): boolean {
-  return writtenTexts(args).some((s) => commitModelHeaderLineIn(s));
-}
-
-// Whether a file tool's written text carries the label or one of the three
-// model values with no `## ` or `### ` line before it in that text. On the
-// armed plan file this is a rewrite of the recorded commit model by value
-// (`old_string` "Branch-and-PR. x", `new_string` "Commit-and-Push. x"),
-// the label never appearing. The residuals: an Edit to the armed plan whose
-// string names a model value in prose without a heading before it (a
-// Chapter body edited mid-paragraph) is refused and costs one round trip;
-// a rewrite that replaces the value with text naming none of the three is
-// not seen.
-export function writesCommitModelValue(args: unknown): boolean {
+// Whether a file tool's written text carries the `Commit Model:` label or
+// one of the three model values with no `## ` or `### ` line before it in
+// that text. Written to the armed plan file (the caller compares the
+// target with readArmedPlanPath) this is a change to the recorded commit
+// model, the input the push rule reads, whether the label is written
+// (`Commit Model: Commit-and-Push`) or the value alone is swapped
+// (`old_string` "Branch-and-PR. x", `new_string` "Commit-and-Push. x").
+// Every Chapter carries a Commit Model line below its heading, so text in
+// which each such line follows a heading is a Chapter and is not seen. The
+// residuals: an Edit to the armed plan whose string starts mid-Chapter,
+// below the heading, and names a model value or the label is refused and
+// costs one round trip; a rewrite that replaces the value with text naming
+// none of the three, or a whole-file rewrite that removes the line without
+// writing one, is not seen and stays on the model's judgment.
+export function writesCommitModel(args: unknown): boolean {
   return writtenTexts(args).some((s) => headerTextMatches(s, COMMIT_MODEL_LABEL_OR_VALUE));
 }
 
@@ -281,13 +263,9 @@ function redirectsOutput(segment: string): boolean {
 // or goal-state basename counts when the same command also names .claude
 // or .kit (`cd .claude && echo x > settings.json`); a settings write
 // reached through a directory change the command does not name is left to
-// the model's judgment. A segment carrying `Commit Model:` under a first
-// word that is neither read-only nor git is a change to a plan's recorded
-// commit model, unless a `## ` or `### ` heading sits earlier in the
-// segment's own text, which marks the text as a Chapter rather than the
-// header. Segments split on line breaks, so a heredoc Chapter whose heading
-// and Commit Model line sit on different lines is still refused; a Chapter
-// append goes through the Edit tool.
+// the model's judgment. A write of the recorded commit model is not this
+// function's: commitModelValueSegments finds the candidate segments and the
+// caller settles them against the armed plan's path.
 export function commandGuardedItem(command: unknown): string | null {
   if (typeof command !== "string") return null;
   const namesClaudeDir = /(^|[\s"'=(\\/])\.claude(?=$|[\s"'\\/)])/i.test(command);
@@ -306,21 +284,20 @@ export function commandGuardedItem(command: unknown): string | null {
       const item = guardedBasenameItem(base, parent);
       if (item !== null && !(readOnly && !redirectsOutput(segment))) return item;
     }
-    const modelAt = segment.search(/Commit Model:/i);
-    if (modelAt >= 0 && !readOnly && firstWordOf(segment) !== "git" && !/#{2,3} /.test(segment.slice(0, modelAt))) {
-      return "a change to a plan's recorded commit model";
-    }
   }
   return null;
 }
 
-// The segments of a Bash or PowerShell command that could rewrite a plan's
-// recorded commit model by value: a first word neither read-only nor git,
-// and the label or one of the three model values with no `## ` or `### `
-// heading earlier in the segment's own text (`sed -i
-// 's/Branch-and-PR/Commit-and-Push/' <plan>`). Which of them names the
-// armed plan is settled by segmentNamesPath once that path is read, so the
-// leash file is read only when a segment of this shape exists.
+// The segments of a Bash or PowerShell command that could write a plan's
+// recorded commit model: a first word neither read-only nor git, and the
+// `Commit Model:` label or one of the three model values with no `## ` or
+// `### ` heading earlier in the segment's own text (`printf 'Commit Model:
+// Commit-and-Push' > <plan>`, `sed -i 's/Branch-and-PR/Commit-and-Push/'
+// <plan>`). Which of them names the armed plan is settled by
+// segmentNamesPath once that path is read, so the leash file is read only
+// when a segment of this shape exists. Segments split on line breaks, so a
+// heredoc Chapter whose heading and Commit Model line sit on different
+// lines is still a candidate; a Chapter append goes through the Edit tool.
 export function commitModelValueSegments(command: unknown): string[] {
   if (typeof command !== "string") return [];
   return commandSegments(command).filter((segment) => {
@@ -1222,13 +1199,44 @@ export const register: Register = async (on, options) => {
   // can act on it after the flag has already reset for the next prompt.
   let currentTurnIsChannelOrigin = false;
   // Whether THIS turn opened from a [COORDINATOR ...] record this plugin
-  // delivered: true only for a turn whose opening text matched a delivery
-  // entry queued for a record whose label ground is the coordinator's. Set
-  // at turn.start from the matched entry and cleared at turn.complete. The
-  // urgent break-in queues no entry, so it never sets this; a turn the real
-  // prompt hook saw (keyboard, SDK caller, channel) matches no entry and
-  // never sets it either. The tool.call bound checks read it.
+  // delivered: true for a turn whose opening text matched a delivery entry
+  // queued for a record whose label ground is the coordinator's, and, so
+  // the flag fails toward bound, for two turns the match cannot place (the
+  // rule at turn.start's unmatched branch): a plugin-submitted turn whose
+  // text was rewritten or capped while a coordinator delivery is queued,
+  // and an empty-text continuation of a coordinator-origin turn. Set at
+  // turn.start and cleared at turn.complete. The urgent break-in queues no
+  // entry, so it never sets this; a turn the real prompt hook saw
+  // (keyboard, SDK caller, channel) never sets it either. The tool.call
+  // bound checks read it.
   let currentTurnIsCoordinatorOrigin = false;
+  // The origin of the turn that last completed, kept so an empty-text
+  // continuation (the harness re-entering the main loop after a background
+  // task) inherits it. Set at turn.complete from the flag above, immediately
+  // before that flag clears.
+  let lastTurnWasCoordinatorOrigin = false;
+  // Whether THIS turn is one the real prompt hook saw (keyboard, SDK
+  // caller, channel). Set at turn.start from lastPromptWasExternal and
+  // cleared at turn.complete.
+  let currentTurnIsExternal = false;
+  // The coordinator-origin standing at the moment of a tool call, read by
+  // the tool.call bound checks for the main loop and for a subagent's
+  // first-call attribution. True where the turn flag is up, or where a
+  // coordinator delivery entry is queued and no flag says the running or
+  // the next turn is the operator's: the harness does not deliver a
+  // turn.start for every turn, and a turn whose start never fired leaves
+  // the turn flag as turn.complete left it and the lastPromptWas* handoff
+  // flags unconsumed, so those are read here too and a keyboard or channel
+  // turn still reads as the operator's with no start seen. The turn.start
+  // rule and this read agree; this is the fail-closed backstop. The
+  // residual: a stale coordinator entry binds unaccounted plugin-submitted
+  // turns until the withheld branch removes it, which errs toward the
+  // operator.
+  const coordinatorOriginNow = (): boolean => {
+    if (currentTurnIsCoordinatorOrigin) return true;
+    if (currentTurnIsExternal || lastPromptWasExternal || currentTurnIsChannelOrigin || lastPromptWasChannelOrigin) return false;
+    return expectedTurns.some((entry) => entry.kind === "delivery" && entry.coordinator === true);
+  };
   // Each subagent's own coordinator-origin standing, keyed by the agentId
   // its tool calls carry and fixed at its first tool call from the turn
   // flag above, because a background agent runs past turn.complete and the
@@ -3580,7 +3588,7 @@ export const register: Register = async (on, options) => {
     // it. Reset the reply-tracking flag for the turn now starting.
     currentTurnIsChannelOrigin = lastPromptWasChannelOrigin;
     lastPromptWasChannelOrigin = false;
-    const currentTurnIsExternal = lastPromptWasExternal;
+    currentTurnIsExternal = lastPromptWasExternal;
     lastPromptWasExternal = false;
     replyCalledThisTurn = false;
     // D4: reset backoff skip counter on new turn (activity breaks the skip streak).
@@ -3619,7 +3627,27 @@ export const register: Register = async (on, options) => {
       if (matched.kind === "delivery") stampRecordId = matched.recordId;
     } else {
       currentTurnKind = "unaccounted";
-      currentTurnIsCoordinatorOrigin = false;
+      // An unplaced turn fails toward bound. An empty-text turn that the
+      // real prompt hook did not see is a continuation of the conversation
+      // and inherits the origin of the turn that just completed. A turn with
+      // text that the real prompt hook did not see and that is not
+      // channel-origin, while a coordinator delivery entry is queued, is
+      // that delivery's turn opening with rewritten or capped text, so it
+      // is coordinator-origin; the entries are read here, before the store
+      // read below, so a read that throws still binds. An external turn is
+      // the operator's or the SDK's and a channel-origin turn is the
+      // operator's; neither is bound here. The residual: a stale
+      // coordinator entry whose record was swept binds one unaccounted
+      // plugin-submitted turn until the withheld branch below removes it,
+      // which errs toward the operator.
+      const coordinatorDeliveryQueued = expectedTurns.some((entry) => entry.kind === "delivery" && entry.coordinator === true);
+      if (e.text === "" && !currentTurnIsExternal) {
+        currentTurnIsCoordinatorOrigin = lastTurnWasCoordinatorOrigin;
+      } else if (e.text !== "" && !currentTurnIsExternal && !currentTurnIsChannelOrigin && coordinatorDeliveryQueued) {
+        currentTurnIsCoordinatorOrigin = true;
+      } else {
+        currentTurnIsCoordinatorOrigin = false;
+      }
       // A delivery entry outlives its record when no turn opens with a
       // matching text: the TTL sweep or a resolve moves the record on while
       // the entry stays queued. So the store is read once per fire and every
@@ -3807,7 +3835,9 @@ export const register: Register = async (on, options) => {
       }
     }
     currentTurnIsChannelOrigin = false;
+    lastTurnWasCoordinatorOrigin = currentTurnIsCoordinatorOrigin;
     currentTurnIsCoordinatorOrigin = false;
+    currentTurnIsExternal = false;
 
     // Item 2 sub-bullet (f016b69): a turn that did real work with no
     // active root - the exact shape a cost-conscious model produces when
@@ -4174,7 +4204,7 @@ export const register: Register = async (on, options) => {
     }
     // A subagent's standing is fixed at its first call, whatever tool it
     // is, so the bound checks below read one answer for the agent's whole
-    // life. The main loop (no agentId) reads the turn flag directly.
+    // life. The main loop (no agentId) reads the call-time origin directly.
     const callerAgentId = typeof e.agentId === "string" && e.agentId.length > 0 ? e.agentId : null;
     if (callerAgentId !== null && !subagentCoordinatorOrigin.has(callerAgentId)) {
       // The map holds at most 256 agents, so a long session cannot grow it
@@ -4190,10 +4220,10 @@ export const register: Register = async (on, options) => {
         }
         if (victim !== undefined) subagentCoordinatorOrigin.delete(victim);
       }
-      subagentCoordinatorOrigin.set(callerAgentId, currentTurnIsCoordinatorOrigin);
+      subagentCoordinatorOrigin.set(callerAgentId, coordinatorOriginNow());
     }
     const callerIsCoordinatorOrigin = callerAgentId === null
-      ? currentTurnIsCoordinatorOrigin
+      ? coordinatorOriginNow()
       : subagentCoordinatorOrigin.get(callerAgentId) === true;
 
     // Serve agentic_identity (F9: single arbiter = commons; epoch is only the
@@ -5105,14 +5135,13 @@ export const register: Register = async (on, options) => {
       let item: string | null = null;
       let evidence = "";
       const toolName: string = e.tool;
-      if (["Write", "Edit", "MultiEdit", "NotebookEdit"].includes(toolName)) {
+      if (["Write", "Edit", "NotebookEdit"].includes(toolName)) {
         const target: unknown = (e as any).file_path ?? (e as any).notebook_path;
         item = guardedPathItem(target);
-        if (item === null && writesCommitModelLine(e)) item = "a change to a plan's recorded commit model";
-        // A rewrite of the model by value alone is the same item when the
-        // file is the armed plan; the leash file is read only once the
-        // written text names a model value or the label.
-        if (item === null && typeof target === "string" && writesCommitModelValue(e)) {
+        // A write of the label or of a model value alone is the item when
+        // the file is the armed plan; the leash file is read only once the
+        // written text has that shape.
+        if (item === null && typeof target === "string" && writesCommitModel(e)) {
           const armedPlan = await readArmedPlanPath($);
           if (armedPlan !== null && pathNames(target, armedPlan)) item = "a change to a plan's recorded commit model";
         }
