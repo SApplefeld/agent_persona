@@ -181,3 +181,7 @@ failure is not specific to this repo. Operator's call.
 ## `hooks/cost-ledger.ts` exports `isCapReached`, which no production code calls (found 2026-09-14)
 
 `isCapReached` at `hooks/cost-ledger.ts:31` has no caller under `hooks/` or `bin/` (grep `isCapReached` over `hooks/`, `bin/` and `.kit/`: only its own definition). The controller inlines the same comparison at `hooks/index.ts:2306` (`effectiveWindowCount(...) >= costMaxNudgesPerHour`), so the export is dead code that the test audit exposed when its only caller, a unit-test import, was removed. Delete the export, or route the controller through it, when the cost ledger is next touched. Not done in Section 13 because that section edits tests only.
+
+## `agentic_say` text and `agentic_resolve` note have no shared length bound at the commons store (found 2026-09-14)
+
+`agentic_say` writes its `text` argument whole into the machine-global commons store (`hooks/index.ts`, the `agentic_say` handler), which every live session rewrites whole and polls every tick, and `agentic_resolve` now writes a `note` the same way. Section 12 caps the note at its own handler. The cap is a property of the store boundary rather than of either producer, so it belongs in one exported helper both handlers call, with the bound named in each tool description. Not done in Section 12 because `agentic_say` is outside its files in scope and its text shape is pinned by the live operator suite. Raised by the round 1 security and adversarial lenses over Section 12.
