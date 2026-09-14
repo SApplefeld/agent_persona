@@ -3270,6 +3270,7 @@ async function main() {
     await caseSection7_r2_chapterWritesPassAndBypassSpellingsAreCaught(clock);
     await caseSection7_r3_modelValueRewritesAndMergesAreCaught(clock);
     await caseSection7_r4_unmatchedAndContinuedTurnsFailTowardBound(clock);
+    await caseSection7_r5_completionsRetireFlagsByTurnAndShellLabelIsReadAnywhere(clock);
   } finally {
     clock.restore();
   }
@@ -8658,5 +8659,47 @@ async function caseSection7_r4_unmatchedAndContinuedTurnsFailTowardBound(clock) 
   const missedStartExternal = await boundCall(hm, { tool: "Edit", file_path: "CLAUDE.md", old_string: "a", new_string: "b" });
   check("section7 r4 J1 amendment control: the same queued delivery, the real prompt hook fired and still no turn.start: CLAUDE.md Edit passes through (the external flag alone varies)",
     missedStartExternal.passed, missedStartExternal.r);
+}
+
+// A completion retires the handoff flags a start-less keyboard turn left
+// up; a completion under another turn id leaves a coordinator turn's flags
+// in place; the shell label arm reads the label anywhere, and the value
+// arm sees the armed plan's path glued inside a quoted token.
+async function caseSection7_r5_completionsRetireFlagsByTurnAndShellLabelIsReadAnywhere(clock) {
+  console.log("\n=== Section 7 fix 5: a start-less keyboard turn's completion retires its flag, a completion is keyed to its turn id, and the shell label arm is back ===");
+  clock.set(T0);
+  const now = T0;
+
+  const hk = await openCoordinatorOriginTurn("section7_r5_keyboard", now, clock, "t-a");
+  await hk.handlers["turn.complete"](hk.fake, { turnId: "t-a", answer: "Put to the operator.", reason: "completed" }, async () => ({ result: "ok" }));
+  await hk.handlers["prompt.submit"](hk.fake, { text: "Push it." }, async () => ({}));
+  await hk.handlers["turn.complete"](hk.fake, { turnId: "t-k", answer: "Done.", reason: "completed" }, async () => ({ result: "ok" }));
+  const kb = seedRecordFor(hk, "dev", "coord-001", 2, { at: now - 4000, text: "Second steer." });
+  hk.resetPromptSubmits();
+  await tickAndSettle(hk, clock, 50);
+  check("section7 r5 K1: coordinator delivery B is delivered and its entry queued with no turn.start (setup sanity)",
+    readStoreRecord(hk, kb)?.status === "delivered" && (hk.promptSubmits || []).includes("[COORDINATOR id=dev-coord-001-2] Second steer."), hk.promptSubmits);
+  const afterKeyboardCompletion = await boundCall(hk, { tool: "Edit", file_path: "CLAUDE.md", old_string: "a", new_string: "b" });
+  check("section7 r5 K1: after a start-less keyboard turn completed, a queued coordinator delivery with no turn.start binds: CLAUDE.md Edit denied before next",
+    afterKeyboardCompletion.denied && afterKeyboardCompletion.nextCalls === 0, afterKeyboardCompletion.r);
+
+  const ht = await openCoordinatorOriginTurn("section7_r5_turnid", now, clock, "t1");
+  await ht.handlers["turn.complete"](ht.fake, { turnId: "t0", answer: "Other turn.", reason: "completed" }, async () => ({ result: "ok" }));
+  const otherId = await boundCall(ht, { tool: "Edit", file_path: "CLAUDE.md", old_string: "a", new_string: "b" });
+  check("section7 r5 K2: a turn.complete under another turn id (t0) leaves the coordinator turn (t1) bound: CLAUDE.md Edit denied before next",
+    otherId.denied && otherId.nextCalls === 0, otherId.r);
+  await ht.handlers["turn.complete"](ht.fake, { turnId: "t1", answer: "Put to the operator.", reason: "completed" }, async () => ({ result: "ok" }));
+  const ownId = await boundCall(ht, { tool: "Edit", file_path: "CLAUDE.md", old_string: "a", new_string: "b" });
+  check("section7 r5 K2 control: the completion under the turn's own id (t1) clears it: the same CLAUDE.md Edit passes through (the completion's turn id alone varies)", ownId.passed, ownId.r);
+
+  const h = await openCoordinatorOriginTurn("section7_r5_shell", now, clock, "t-r5");
+  h.fsMap.set(".kit/goal-state.json", JSON.stringify({ plan: "docs/plans/p.md" }));
+  h.fsMap.set("docs/plans/p.md", planTextWith("Commit Model: Branch-and-PR. x"));
+  const heredoc = await boundCall(h, { tool: "Bash", command: "cat > docs/plans/p.md <<EOF\nCommit Model: Commit-and-Push\nEOF" });
+  check("section7 r5 K3: a heredoc whose body line is a Commit Model label is denied before next", heredoc.denied && heredoc.nextCalls === 0, heredoc.r);
+  const gluedValue = await boundCall(h, { tool: "Bash", command: "node -e \"fs.writeFileSync('docs/plans/p.md','Commit-and-Push. x')\"" });
+  check("section7 r5 K3: node -e writing a model value to the armed plan through a quoted, glued path is denied before next", gluedValue.denied && gluedValue.nextCalls === 0, gluedValue.r);
+  const gluedOther = await boundCall(h, { tool: "Bash", command: "node -e \"fs.writeFileSync('docs/plans/other.md','Commit-and-Push. x')\"" });
+  check("section7 r5 K3 control: the same node -e against a file the leash does not name passes through (the path alone varies)", gluedOther.passed, gluedOther.r);
 }
 

@@ -263,9 +263,17 @@ function redirectsOutput(segment: string): boolean {
 // or goal-state basename counts when the same command also names .claude
 // or .kit (`cd .claude && echo x > settings.json`); a settings write
 // reached through a directory change the command does not name is left to
-// the model's judgment. A write of the recorded commit model is not this
-// function's: commitModelValueSegments finds the candidate segments and the
-// caller settles them against the armed plan's path.
+// the model's judgment. A segment carrying `Commit Model:` under a first
+// word that is neither read-only nor git is a change to a plan's recorded
+// commit model whatever path it names or fails to name, unless a `## ` or
+// `### ` heading sits earlier in the segment's own text, which marks the
+// text as a Chapter rather than the header: a heredoc's label line is its
+// own segment naming no path (`cat > <plan> <<EOF` / `Commit Model: ...` /
+// `EOF`), so the label is read anywhere. Segments split on line breaks, so
+// a heredoc Chapter whose heading and Commit Model line sit on different
+// lines is refused; a Chapter append goes through the Edit tool. A rewrite
+// of the model by value alone is commitModelValueSegments', settled by the
+// caller against the armed plan's path.
 export function commandGuardedItem(command: unknown): string | null {
   if (typeof command !== "string") return null;
   const namesClaudeDir = /(^|[\s"'=(\\/])\.claude(?=$|[\s"'\\/)])/i.test(command);
@@ -283,6 +291,10 @@ export function commandGuardedItem(command: unknown): string | null {
       }
       const item = guardedBasenameItem(base, parent);
       if (item !== null && !(readOnly && !redirectsOutput(segment))) return item;
+    }
+    const labelAt = segment.search(/Commit Model:/i);
+    if (labelAt >= 0 && !readOnly && firstWordOf(segment) !== "git" && !/#{2,3} /.test(segment.slice(0, labelAt))) {
+      return "a change to a plan's recorded commit model";
     }
   }
   return null;
@@ -307,10 +319,18 @@ export function commitModelValueSegments(command: unknown): string[] {
   });
 }
 
-// Whether a shell segment carries the given repo-relative path as one of
-// its whitespace-split tokens, quotes stripped.
+// Whether a shell segment carries the given repo-relative path: as one of
+// its whitespace-split tokens with surrounding quotes stripped (`sed -i
+// '...' <plan>`), or as a segment-bounded substring of the text, preceded
+// by the start, whitespace, a quote, `(`, `=`, `:` or a path separator and
+// followed by the end, whitespace, a quote, `)`, `,` or `;`, so a path
+// glued inside a quoted token (`writeFileSync('<plan>','...')`) is seen.
 export function segmentNamesPath(segment: string, target: string): boolean {
-  return segment.split(/\s+/).some((t) => pathNames(t.replace(/^["']+|["']+$/g, ""), target));
+  if (segment.split(/\s+/).some((t) => pathNames(t.replace(/^["']+|["']+$/g, ""), target))) return true;
+  const segs = pathSegments(target);
+  if (segs.length === 0) return false;
+  const escaped = segs.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\\\\/]+");
+  return new RegExp(`(^|[\\s"'(=:\\\\/])${escaped}(?=$|[\\s"'),;])`, "i").test(segment);
 }
 
 // Whether a Bash or PowerShell command merges a pull request: a segment
@@ -450,9 +470,12 @@ export type PushVerdict = { beyond: string } | { needsBranch: true } | null;
 // repository (-C, --git-dir, --work-tree, a GIT_DIR or GIT_WORK_TREE
 // assignment, a directory change earlier in the command), whose branch is
 // not read, and beyond when the push sets push.default, which decides the
-// destination in a way the branch alone does not. The trunk's own
-// protection is not relied on: a rollout repository may carry no ruleset
-// at all. Commit-and-Push admits every push the first rule did not refuse.
+// destination in a way the branch alone does not. Only the `-c
+// push.default=` form is read: a repository whose config sets
+// push.default=upstream with branch.<b>.merge=refs/heads/main pushes the
+// trunk from a feature branch and passes. The trunk's own protection is
+// not relied on: a rollout repository may carry no ruleset at all.
+// Commit-and-Push admits every push the first rule did not refuse.
 export function pushVerdict(pushArgs: string, model: string | null, branch?: string | null, otherRepo = false, setsPushDefault = false): PushVerdict {
   const tokens = pushTokens(pushArgs);
   const options: string[] = [];
@@ -1219,6 +1242,12 @@ export const register: Register = async (on, options) => {
   // caller, channel). Set at turn.start from lastPromptWasExternal and
   // cleared at turn.complete.
   let currentTurnIsExternal = false;
+  // The turn id the origin flags above were set under at turn.start, or
+  // null between turns. A turn.complete clears them only under this id or
+  // when none is recorded, because completions arrive for overlapping and
+  // never-started turns and a completion for another turn must not free
+  // the coordinator turn still running.
+  let originTurnId: string | null = null;
   // The coordinator-origin standing at the moment of a tool call, read by
   // the tool.call bound checks for the main loop and for a subagent's
   // first-call attribution. True where the turn flag is up, or where a
@@ -3590,6 +3619,7 @@ export const register: Register = async (on, options) => {
     lastPromptWasChannelOrigin = false;
     currentTurnIsExternal = lastPromptWasExternal;
     lastPromptWasExternal = false;
+    originTurnId = e.turnId;
     replyCalledThisTurn = false;
     // D4: reset backoff skip counter on new turn (activity breaks the skip streak).
     if (costEnabled && sess.state.monitor.cost) {
@@ -3835,9 +3865,25 @@ export const register: Register = async (on, options) => {
       }
     }
     currentTurnIsChannelOrigin = false;
-    lastTurnWasCoordinatorOrigin = currentTurnIsCoordinatorOrigin;
-    currentTurnIsCoordinatorOrigin = false;
-    currentTurnIsExternal = false;
+    // The origin flags clear only under the turn id they were set under,
+    // or when no id is recorded (a completion for a turn whose start never
+    // fired); a completion for any other turn leaves them. The prompt
+    // handoff flags are consumed here as well as at turn.start, so a
+    // keyboard turn the hook never saw open is retired by its completion
+    // rather than reading every later start-less coordinator turn as the
+    // operator's. The residual: a completion for an overlapping earlier
+    // turn retires a fresh keyboard prompt's flag before its turn opens,
+    // so that keyboard turn can read as bound where a coordinator delivery
+    // is queued, which costs the operator one round trip and errs toward
+    // bound.
+    if (originTurnId === null || originTurnId === e.turnId) {
+      lastTurnWasCoordinatorOrigin = currentTurnIsCoordinatorOrigin;
+      currentTurnIsCoordinatorOrigin = false;
+      currentTurnIsExternal = false;
+      lastPromptWasExternal = false;
+      lastPromptWasChannelOrigin = false;
+      originTurnId = null;
+    }
 
     // Item 2 sub-bullet (f016b69): a turn that did real work with no
     // active root - the exact shape a cost-conscious model produces when
