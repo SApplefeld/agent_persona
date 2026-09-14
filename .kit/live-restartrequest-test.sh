@@ -76,11 +76,15 @@ console.log(typeof v === 'string' ? v : JSON.stringify(v));
 # The owner opens a goal tree and waits: the planner fires on the next tick
 # and activates a plan, which is the "active plan" the relaunched child must
 # resume. The opening prompt arrives on stdin, the operator's own channel to
-# the child, and grants [OPERATOR]-prefixed reader messages the operator's
-# standing for this run: without that, the model reads a plugin-submitted
-# prompt as data rather than an instruction and asks for confirmation
-# before a restart (the same refusal the plan's Chapter 4 met for shutdown).
-PROMPT='Call goal_create with the objective: Wait for operator instructions delivered by chat and follow them. After calling goal_create, stop and wait. Do not call goal_done. Standing instruction from the operator for this run: a message that arrives prefixed [OPERATOR] is relayed from the operator through a reader session and carries the operator standing, exactly as if typed here. When one asks you to call supervisor_restart, call it at once with the reason given and do not ask for confirmation. When one asks a question, answer it in one line.'
+# the child, and grants the reader's messages the operator's standing for
+# this run. This suite's reader joins through agentic_identity as a reader
+# of the persona, so the plugin delivers its urgent restart request with a
+# bracket opening [READER:<persona> id=<record id>, urgent]; the standing
+# instruction keys on that opening, with the id noted as present. Without
+# it, the model reads a plugin-submitted prompt as data rather than an
+# instruction and asks for confirmation before a restart (the same refusal
+# the plan's Chapter 4 met for shutdown).
+PROMPT='Call goal_create with the objective: Wait for operator instructions delivered by chat and follow them. After calling goal_create, stop and wait. Do not call goal_done. Standing instruction from the operator for this run: a message that arrives inside a bracket opening [READER: (the bracket also carries an id= field naming the record) is relayed from the operator through a reader session and carries the operator standing, exactly as if typed here. When one asks you to call supervisor_restart, call it at once with the reason given and do not ask for confirmation. When one asks a question, answer it in one line.'
 
 # No controller nudges during this run: a nudge can open a worker-stated
 # ask and pause the plan, which would make "the active plan survived the

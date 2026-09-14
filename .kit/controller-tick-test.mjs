@@ -601,10 +601,11 @@ async function caseS2_drain(clock) {
     check("S2 drain: second record still pending", false);
   }
 
-  // Check: prompt.submit was called once with [OPERATOR]
+  // Check: prompt.submit was called once, with the reader label and the record id
   const prompts = h.promptSubmits || [];
-  const operatorPrompts = prompts.filter(p => p.startsWith("[OPERATOR]"));
-  check("S2 drain: one [OPERATOR] prompt submitted", operatorPrompts.length === 1);
+  const labelledPrompts = prompts.filter(p => p === `${readerLabel("drain-rec-1")} First message`);
+  check("S2 drain: one prompt submitted, labelled READER:default with the record id", labelledPrompts.length === 1, prompts);
+  check("S2 drain: the second record's text was not submitted", !prompts.some(p => p.includes("Second message")));
 }
 
 // S2: D3 drain in-flight control (turn in flight, nothing delivered)
@@ -688,10 +689,9 @@ async function caseS2_drain_inflight(clock) {
     check("S2 drain in-flight: record still pending", false);
   }
 
-  // Check: no [OPERATOR] prompt was submitted
+  // Check: the record's text was not submitted under any label
   const prompts = h.promptSubmits || [];
-  const operatorPrompts = prompts.filter(p => p.startsWith("[OPERATOR]"));
-  check("S2 drain in-flight: no [OPERATOR] prompt submitted", operatorPrompts.length === 0);
+  check("S2 drain in-flight: no prompt carries the record's text", !prompts.some(p => p.includes("In-flight test")), prompts);
 }
 
 // S2: D4 reply by turn id. An aborted or empty-answer turn leaves the record
@@ -1048,8 +1048,9 @@ async function caseS3_answer_reactivates(clock) {
   const decisions = state.decisions || [];
   check("S3 answer-react: ask_answered action present", decisions.some(d => d.action === "ask_answered"));
 
-  // Check: [OPERATOR] prompt submitted
-  check("S3 answer-react: [OPERATOR] prompt submitted", h.promptSubmits.some(t => t.includes("[OPERATOR]")));
+  // Check: the answer was submitted with the reader label, the answer record's id and the question
+  check("S3 answer-react: the answer prompt is labelled READER:default with the answer id and the question",
+    h.promptSubmits.includes(`${readerLabel("default-answer-writer-session-1")} Answer to What should we do?: Please continue with the fix.`), h.promptSubmits);
 }
 
 // ============================================================
@@ -2219,6 +2220,14 @@ function seedReaderClaim(h, sid, now) {
   });
 }
 
+// The bracket a record from a writer holding reader:default opens with when
+// delivered to the default persona (Section 4): the ground READER:default
+// and the record's id, written out here rather than imported so the suite
+// pins the format the model reads.
+function readerLabel(id) {
+  return `[READER:default id=${id}]`;
+}
+
 // S6-1: agentic_inbox returns asks with an id field
 async function caseS6_inbox_carries_ask_id(clock) {
   console.log("\n=== S6: inbox carries ask id ===");
@@ -3188,6 +3197,12 @@ async function main() {
     await caseSection3_personaArgumentShapeIsRefused(clock);
     await caseSection3_coordinatorLegKeysOnTheCommonsWinner(clock);
     await caseSection3_defaultCoordinatorNameDoesNotOpenEveryInbox(clock);
+    await caseSection4_coordinatorRecordIsLabelledCoordinator(clock);
+    await caseSection4_readerLabelNamesTheTargetAmongSeveralReaderClaims(clock);
+    await caseSection4_readerClaimWinsOverWorkerAndFirstPersonaNames(clock);
+    await caseSection4_badRecordIdIsRefusedByItsOwnRule(clock);
+    await caseSection4_subagentToolCallCarriesNoBreakIn(clock);
+    await caseSection4_channelOriginPromptCarriesNoLabel(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
     await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
     await caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock);
@@ -4615,7 +4630,7 @@ async function caseSection12_F4_failedDeliverySubmitLeavesTheRecordDelivered(clo
   h.failPromptSubmits(new Error("submit refused for the delivery"));
   await fireTick(h).catch(() => {});
   await new Promise((r) => setTimeout(r, 50));
-  check("section12.F4: the delivery was attempted (setup sanity)", (h.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 1);
+  check("section12.F4: the delivery was attempted (setup sanity)", (h.promptSubmits || []).filter((p) => p.startsWith(readerLabel(id))).length === 1);
   const afterFail = readStoreRecord(h, key);
   check("section12.F4: record stays delivered with deliveredAt intact", afterFail?.status === "delivered" && typeof afterFail?.deliveredAt === "number", afterFail);
   check("section12.F4: operator_delivery_failed names the record and the error",
@@ -4623,7 +4638,7 @@ async function caseSection12_F4_failedDeliverySubmitLeavesTheRecordDelivered(clo
 
   // Its entry is gone: a turn opening with the delivery's own text is not
   // matched, so it stamps nothing and no withheld decision names it.
-  await h.handlers["turn.start"](h.fake, { turnId: "t-after-refusal", text: "[OPERATOR] message 1" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-after-refusal", text: `${readerLabel(id)} message 1` }, async () => ({ result: "ok" }));
   check("section12.F4: a later turn with the delivery's text stamps nothing", readStoreRecord(h, key)?.turnId === undefined);
   check("section12.F4: a later turn withholds nothing (no delivery queued)", !getDecisions(h).some((d) => d.action === "operator_stamp_withheld"));
   await h.handlers["turn.complete"](h.fake, { turnId: "t-after-refusal", answer: "unrelated", reason: "completed" }, async () => ({ result: "ok" }));
@@ -4632,7 +4647,7 @@ async function caseSection12_F4_failedDeliverySubmitLeavesTheRecordDelivered(clo
   h.failPromptSubmits(null);
   clock.advance(10_000);
   await tickAndSettle(h, clock, 50);
-  check("section12.F4: the next tick does not retry the delivery", (h.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 1 && readStoreRecord(h, key)?.status === "delivered");
+  check("section12.F4: the next tick does not retry the delivery", (h.promptSubmits || []).filter((p) => p.startsWith(readerLabel(id))).length === 1 && readStoreRecord(h, key)?.status === "delivered");
 }
 
 // G1: the real submit parks until the session is next idle, so a rejection
@@ -4655,7 +4670,7 @@ async function caseSection12_G1_lateRejectingSubmitLeavesAnAnsweredRecord(clock)
   check("section12.G1: the delivery's submit is parked (setup sanity)", queued && readStoreRecord(h, key)?.status === "delivered");
   // The stub's submit is overridden above, so the harness's text queue never
   // saw this delivery: the turn carries its text explicitly.
-  await h.handlers["turn.start"](h.fake, { turnId: "t-late", text: "[OPERATOR] message 1" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-late", text: `${readerLabel(id)} message 1` }, async () => ({ result: "ok" }));
   check("section12.G1: the delivery's own turn took the stamp under the parked submit (setup sanity)", readStoreRecord(h, key)?.turnId === "t-late");
   await h.handlers["turn.complete"](h.fake, { turnId: "t-late", answer: "Answered under the parked submit.", reason: "completed" }, async () => ({ result: "ok" }));
   rejectParked(new Error("late rejection"));
@@ -4668,7 +4683,7 @@ async function caseSection12_G1_lateRejectingSubmitLeavesAnAnsweredRecord(clock)
     getDecisions(h).some((d) => d.action === "operator_delivery_failed" && d.detail.includes(id) && d.detail.includes("late rejection")));
   clock.advance(10_000);
   await tickAndSettle(h, clock, 50);
-  check("section12.G1: the next tick does not re-deliver it", (h.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 1 && readStoreRecord(h, key)?.status === "answered");
+  check("section12.G1: the next tick does not re-deliver it", (h.promptSubmits || []).filter((p) => p.startsWith(readerLabel(id))).length === 1 && readStoreRecord(h, key)?.status === "answered");
 }
 
 // G2: an inbox record ages off the latest of its write, delivery and
@@ -4735,7 +4750,7 @@ async function caseSection12_G3_failedAskAnswerSubmitLeavesTheAskClosed(clock) {
   clock.advance(65_000);
   await fireTick(ha).catch(() => {});
   await new Promise((r) => setTimeout(r, 50));
-  check("section12.G3: the answer delivery was attempted (setup sanity)", (ha.promptSubmits || []).some((p) => p.startsWith("[OPERATOR] Answer to")));
+  check("section12.G3: the answer delivery was attempted (setup sanity)", (ha.promptSubmits || []).some((p) => p.startsWith(`${readerLabel("default-writer-g3-1")} Answer to`)));
   const rec = readStoreRecord(ha, answerKey);
   check("section12.G3: the answer record stays delivered with deliveredAt intact", rec?.status === "delivered" && typeof rec?.deliveredAt === "number", rec);
   check("section12.G3: the ask stays answered", readStoreRecord(ha, askKey)?.status === "answered");
@@ -4748,7 +4763,7 @@ async function caseSection12_G3_failedAskAnswerSubmitLeavesTheAskClosed(clock) {
   ha.failPromptSubmits(null);
   clock.advance(10_000);
   await tickAndSettle(ha, clock, 50);
-  check("section12.G3: the next tick retries nothing", (ha.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 1 && readStoreRecord(ha, answerKey)?.status === "delivered");
+  check("section12.G3: the next tick retries nothing", (ha.promptSubmits || []).filter((p) => p.startsWith(readerLabel("default-writer-g3-1"))).length === 1 && readStoreRecord(ha, answerKey)?.status === "delivered");
 }
 
 // G4 (bullet 6, fourth shape): a turn one of the plugin's other submits
@@ -4809,7 +4824,7 @@ async function caseSection12_H1_deliveryTurnOpensAheadOfAQueuedBackstop(clock) {
   const { h, key, id } = await seedOwnerWithPendingRecord("section12_h1_a", now, "writer-h1a");
   h.holdPromptSubmits();
   const tick = fireTick(h);
-  const queued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith("[OPERATOR]")));
+  const queued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith(readerLabel(id))));
   check("section12.H1a: the delivery's submit is parked (setup sanity)", queued && readStoreRecord(h, key)?.status === "delivered");
 
   // A channel turn runs to completion with no reply call; the direct reply
@@ -4903,7 +4918,7 @@ async function caseSection12_J1_unmatchedTurnTextTakesNoStamp(clock) {
   const { h, key, id } = await seedOwnerWithPendingRecord("section12_j1_a", now, "writer-j1a");
   h.holdPromptSubmits();
   const tick = fireTick(h);
-  const queued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith("[OPERATOR]")));
+  const queued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith(readerLabel(id))));
   check("section12.J1a: the delivery's submit is parked (setup sanity)", queued);
 
   // An external turn opens and completes.
@@ -4939,7 +4954,7 @@ async function caseSection12_J1_continuationTurnTakesNoStamp(clock) {
   const { h, key, id } = await seedOwnerWithPendingRecord("section12_j1_b", now, "writer-j1b");
   h.holdPromptSubmits();
   const tick = fireTick(h);
-  await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith("[OPERATOR]")));
+  await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith(readerLabel(id))));
   await h.handlers["turn.start"](h.fake, { turnId: "t-cont-j1b", text: "" }, async () => ({ result: "ok" }));
   check("section12.J1b: the continuation turn takes no stamp", readStoreRecord(h, key)?.turnId === undefined);
   check("section12.J1b: operator_stamp_withheld names the record and unaccounted",
@@ -4964,7 +4979,7 @@ async function caseSection12_J2_droppedPromptDoesNotLeaveTheExternalFlagSet(cloc
   const { h, key, id } = await seedOwnerWithPendingRecord("section12_j2_drop", now, "writer-j2");
   h.holdPromptSubmits();
   const tick = fireTick(h);
-  await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith("[OPERATOR]")));
+  await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith(readerLabel(id))));
   const dropped = await h.handlers["prompt.submit"](h.fake, { text: "dropped by a hook beneath", origin: { kind: "channel" } }, async () => ({ drop: "refused beneath" }));
   check("section12.J2: the prompt was dropped (setup sanity)", dropped?.drop === "refused beneath");
   await h.handlers["turn.start"](h.fake, { turnId: "t-unmatched-j2", text: "" }, async () => ({ result: "ok" }));
@@ -4995,7 +5010,7 @@ async function caseSection12_K1_droppedDeliverySubmitIsHandledLikeARejectedOne(c
   const { h, key, id } = await seedOwnerWithPendingRecord("section12_k1_a_delivery_dropped", now, "writer-k1a");
   h.dropNextPromptSubmit("hook beneath refused the delivery");
   await tickAndSettle(h, clock, 50);
-  check("section12.K1a: the delivery was attempted (setup sanity)", (h.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 1);
+  check("section12.K1a: the delivery was attempted (setup sanity)", (h.promptSubmits || []).filter((p) => p.startsWith(readerLabel(id))).length === 1);
   const afterDrop = readStoreRecord(h, key);
   check("section12.K1a: record stays delivered with deliveredAt intact", afterDrop?.status === "delivered" && typeof afterDrop?.deliveredAt === "number", afterDrop);
   check("section12.K1a: operator_delivery_failed names the record and the drop reason",
@@ -5003,7 +5018,7 @@ async function caseSection12_K1_droppedDeliverySubmitIsHandledLikeARejectedOne(c
 
   // Its entry is gone: a turn opening with the delivery's own text matches
   // nothing, stamps nothing, and withholds nothing (no delivery is queued).
-  await h.handlers["turn.start"](h.fake, { turnId: "t-after-drop-k1a", text: "[OPERATOR] message 1" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-after-drop-k1a", text: `${readerLabel(id)} message 1` }, async () => ({ result: "ok" }));
   check("section12.K1a: a later turn with the delivery's text stamps nothing", readStoreRecord(h, key)?.turnId === undefined);
   check("section12.K1a: a later turn writes no operator_stamp_withheld naming the record",
     !getDecisions(h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes(id)));
@@ -5012,7 +5027,7 @@ async function caseSection12_K1_droppedDeliverySubmitIsHandledLikeARejectedOne(c
 
   clock.advance(10_000);
   await tickAndSettle(h, clock, 50);
-  check("section12.K1a: the next tick does not retry the delivery", (h.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 1 && readStoreRecord(h, key)?.status === "delivered");
+  check("section12.K1a: the next tick does not retry the delivery", (h.promptSubmits || []).filter((p) => p.startsWith(readerLabel(id))).length === 1 && readStoreRecord(h, key)?.status === "delivered");
 }
 
 // K1 (B): the ask-answer delivery dropped: the same, and the ask stays
@@ -5045,7 +5060,7 @@ async function caseSection12_K1_droppedAskAnswerSubmitLeavesTheAskClosed(clock) 
   ha.dropNextPromptSubmit("hook beneath refused the answer");
   clock.advance(65_000);
   await tickAndSettle(ha, clock, 50);
-  check("section12.K1b: the answer delivery was attempted (setup sanity)", (ha.promptSubmits || []).some((p) => p.startsWith("[OPERATOR] Answer to")));
+  check("section12.K1b: the answer delivery was attempted (setup sanity)", (ha.promptSubmits || []).some((p) => p.startsWith(`${readerLabel("default-writer-k1b-1")} Answer to`)));
   const rec = readStoreRecord(ha, answerKey);
   check("section12.K1b: the answer record stays delivered with deliveredAt intact", rec?.status === "delivered" && typeof rec?.deliveredAt === "number", rec);
   check("section12.K1b: the ask stays answered", readStoreRecord(ha, askKey)?.status === "answered");
@@ -5053,12 +5068,12 @@ async function caseSection12_K1_droppedAskAnswerSubmitLeavesTheAskClosed(clock) 
   check("section12.K1b: pendingAskId stays cleared", state.pendingAskId === undefined);
   check("section12.K1b: operator_delivery_failed names the record and the drop reason",
     state.decisions.some((d) => d.action === "operator_delivery_failed" && d.detail.includes("default-writer-k1b-1") && d.detail.includes("submit dropped") && d.detail.includes("hook beneath refused the answer")));
-  await ha.handlers["turn.start"](ha.fake, { turnId: "t-after-drop-k1b", text: "[OPERATOR] Answer to Which way?: message 1" }, async () => ({ result: "ok" }));
+  await ha.handlers["turn.start"](ha.fake, { turnId: "t-after-drop-k1b", text: `${readerLabel("default-writer-k1b-1")} Answer to Which way?: message 1` }, async () => ({ result: "ok" }));
   check("section12.K1b: a later turn with the answer's text stamps nothing", readStoreRecord(ha, answerKey)?.turnId === undefined);
   await ha.handlers["turn.complete"](ha.fake, { turnId: "t-after-drop-k1b", answer: "unrelated", reason: "completed" }, async () => ({ result: "ok" }));
   clock.advance(10_000);
   await tickAndSettle(ha, clock, 50);
-  check("section12.K1b: the next tick retries nothing", (ha.promptSubmits || []).filter((p) => p.startsWith("[OPERATOR]")).length === 1 && readStoreRecord(ha, answerKey)?.status === "delivered");
+  check("section12.K1b: the next tick retries nothing", (ha.promptSubmits || []).filter((p) => p.startsWith(readerLabel("default-writer-k1b-1"))).length === 1 && readStoreRecord(ha, answerKey)?.status === "delivered");
 }
 
 // K1 (C): a nudge whose submit is dropped consumes its own entry and its
@@ -5128,8 +5143,8 @@ async function caseSection12_K2_settledTextMatchesTheDeliveryTurn(clock) {
   const { h, key, id } = await seedOwnerWithPendingRecord("section12_k2_d_settled", now, "writer-k2d");
   h.settleNextPromptSubmit((text) => "[relay] " + text);
   await tickAndSettle(h, clock, 50);
-  check("section12.K2d: the delivery was submitted with its own text (setup sanity)", (h.promptSubmits || []).includes("[OPERATOR] message 1"));
-  check("section12.K2d: the turn queued with the settled text (setup sanity)", h.queuedTurnTexts[0] === "[relay] [OPERATOR] message 1");
+  check("section12.K2d: the delivery was submitted with its own text (setup sanity)", (h.promptSubmits || []).includes(`${readerLabel(id)} message 1`));
+  check("section12.K2d: the turn queued with the settled text (setup sanity)", h.queuedTurnTexts[0] === `[relay] ${readerLabel(id)} message 1`);
   await h.handlers["turn.start"](h.fake, { turnId: "t-settled-k2d" }, async () => ({ result: "ok" }));
   check("section12.K2d: the turn opening with the settled text takes the stamp", readStoreRecord(h, key)?.turnId === "t-settled-k2d");
   check("section12.K2d: no operator_stamp_withheld", !getDecisions(h).some((d) => d.action === "operator_stamp_withheld"));
@@ -5216,7 +5231,7 @@ async function caseSection12_L1_withheldLineNamesTheFirstLiveRecord(clock) {
   const withheld = getDecisions(h).filter((d) => d.action === "operator_stamp_withheld");
   check("section12.L1c: the withheld line names the live second record and not the swept first",
     withheld.length === 1 && withheld[0].detail.includes(id2) && !withheld[0].detail.includes(id1), withheld);
-  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-l1c", text: "[OPERATOR] second message" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-l1c", text: `${readerLabel("default-writer-l1c2-1")} second message` }, async () => ({ result: "ok" }));
   check("section12.L1c: the second delivery's own turn still takes the stamp", readStoreRecord(h, key2)?.turnId === "t-delivery-l1c");
   await h.handlers["turn.complete"](h.fake, { turnId: "t-delivery-l1c", answer: "Delivered answer.", reason: "completed" }, async () => ({ result: "ok" }));
   check("section12.L1c: the second delivery's turn files the reply", readStoreRecord(h, `reply:default:${id2}`)?.text === "Delivered answer.");
@@ -5247,14 +5262,14 @@ async function caseSection12_M1_deliveryQueuedDuringTheWithheldReadIsKept(clock)
   h.releaseStoreGet();
   await tick;
   check("section12.M1a: the tick delivered R2 while the withheld read was parked (setup sanity)",
-    readStoreRecord(h, key2)?.status === "delivered" && (h.promptSubmits || []).includes("[OPERATOR] second message"));
+    readStoreRecord(h, key2)?.status === "delivered" && (h.promptSubmits || []).includes(`${readerLabel("default-writer-m1a2-1")} second message`));
   h.releaseStoreGet();
   await turnStart;
   const withheld = getDecisions(h).filter((d) => d.action === "operator_stamp_withheld");
   check("section12.M1a: the withheld line names E1", withheld.length === 1 && withheld[0].detail.includes(id1), withheld);
   await h.handlers["turn.complete"](h.fake, { turnId: "t-unmatched-m1a", answer: "typed answer", reason: "completed" }, async () => ({ result: "ok" }));
 
-  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-m1a", text: "[OPERATOR] second message" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-m1a", text: `${readerLabel("default-writer-m1a2-1")} second message` }, async () => ({ result: "ok" }));
   check("section12.M1a: R2's own turn takes the stamp", readStoreRecord(h, key2)?.turnId === "t-delivery-m1a");
   await h.handlers["turn.complete"](h.fake, { turnId: "t-delivery-m1a", answer: "Delivered answer.", reason: "completed" }, async () => ({ result: "ok" }));
   check("section12.M1a: R2's turn files the reply", readStoreRecord(h, `reply:default:${id2}`)?.text === "Delivered answer.");
@@ -5308,7 +5323,7 @@ async function caseSection12_close_entryLeavingDuringTheWithheldReadIsNotNamed(c
   h.holdStoreGets(key);
   const unmatched = h.handlers["turn.start"](h.fake, { turnId: "t-unmatched-cr", text: "typed first" }, async () => ({ result: "ok" }));
   check("section12.close recheck: the withheld read is parked (setup sanity)", await waitUntil(() => h.parkedStoreGetCount === 1));
-  const own = h.handlers["turn.start"](h.fake, { turnId: "t-own-cr", text: "[OPERATOR] message 1" }, async () => ({ result: "ok" }));
+  const own = h.handlers["turn.start"](h.fake, { turnId: "t-own-cr", text: `${readerLabel(id)} message 1` }, async () => ({ result: "ok" }));
   check("section12.close recheck: the delivery's own turn reached its stamp read (setup sanity)", await waitUntil(() => h.parkedStoreGetCount === 2));
   h.releaseStoreGet();
   await unmatched;
@@ -5340,7 +5355,7 @@ async function caseSection12_close_voidSubmitResultDoesNotThrow(clock) {
     threw = err;
   }
   h.fake.prompt.submit = realSubmit;
-  check("section12.close void: the delivery was submitted (setup sanity)", (h.promptSubmits || []).includes("[OPERATOR] message 1"));
+  check("section12.close void: the delivery was submitted (setup sanity)", (h.promptSubmits || []).includes(`${readerLabel("default-writer-cv-1")} message 1`));
   check("section12.close void: the tick does not throw", threw === null, threw && String(threw));
   await h.handlers["turn.start"](h.fake, { turnId: "t-own-cv" }, async () => ({ result: "ok" }));
   check("section12.close void: the delivery's own turn takes the stamp", readStoreRecord(h, key)?.turnId === "t-own-cv");
@@ -5416,7 +5431,7 @@ async function caseSection12_M1_throwingWithheldReadKeepsEveryEntry(clock) {
   check("section12.M1b: no operator_stamp_withheld on a refused read",
     !getDecisions(h).some((d) => d.action === "operator_stamp_withheld"));
 
-  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-m1b", text: "[OPERATOR] message 1" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-m1b", text: `${readerLabel(id)} message 1` }, async () => ({ result: "ok" }));
   check("section12.M1b: the delivery's entry was kept, so its own turn takes the stamp", readStoreRecord(h, key)?.turnId === "t-delivery-m1b");
   await h.handlers["turn.complete"](h.fake, { turnId: "t-delivery-m1b", answer: "Delivered answer.", reason: "completed" }, async () => ({ result: "ok" }));
   check("section12.M1b: the delivery's turn files the reply", readStoreRecord(h, `reply:default:${id}`)?.text === "Delivered answer.");
@@ -5562,8 +5577,12 @@ async function caseSection3_workerRecordIsDeliveredToTheCoordinatorOnTick(clock)
   const worker = readStoreRecord(h, workerKey);
   check("section3 worker delivery: the worker's record is delivered, not skipped", worker?.status === "delivered" && typeof worker?.deliveredAt === "number", worker);
   check("section3 worker delivery: the record's text was submitted to the coordinator's model", (h.promptSubmits || []).some((p) => p.includes("Finding: the suite is red outside my diff.")), h.promptSubmits);
+  check("section4 worker label: the submitted text opens [WORKER:dev id=<record id>], the writer's only standing being its owned persona",
+    (h.promptSubmits || []).includes("[WORKER:dev id=coordinator-worker-dev-001-1] Finding: the suite is red outside my diff."), h.promptSubmits);
   const decisions = getStateForPersona(h, "coordinator")?.decisions || [];
   check("section3 worker delivery: operator_delivered names the record", decisions.some((d) => d.action === "operator_delivered" && d.detail.includes("coordinator-worker-dev-001-1")), decisions.map((d) => d.action));
+  check("section4 worker label: operator_delivered names the label actually submitted",
+    decisions.some((d) => d.action === "operator_delivered" && d.detail.includes("submitted as [WORKER:dev id=coordinator-worker-dev-001-1]")), decisions.filter((d) => d.action === "operator_delivered"));
   check("section3 worker delivery: no operator_skipped_no_claim names the worker", !decisions.some((d) => d.action === "operator_skipped_no_claim" && d.detail.includes("worker-dev-001")));
   const chat = readStoreRecord(h, chatKey);
   check("section3 R44 delivery control: the persona:default record is marked skipped by the drain's reach gate", chat?.status === "skipped" && decisions.some((d) => d.action === "operator_skipped_no_claim" && d.detail.includes("chat-default-002")), chat);
@@ -5690,6 +5709,200 @@ async function caseSection3_defaultCoordinatorNameDoesNotOpenEveryInbox(clock) {
   check("section3 fix default name: no record was written", !h.storeMap.has(`inbox:worker:${SESSION_ID}:1`));
 }
 
+// ============================================================
+// Section 4: provenance labels and the urgent break-in's loop check
+// ============================================================
+
+// The coordinator ground: a record from the commons winner of the
+// coordinator persona is submitted as [COORDINATOR id=<record id>], and the
+// same writer taking a reader claim on the target as well is still labelled
+// COORDINATOR, the strongest ground it holds.
+async function caseSection4_coordinatorRecordIsLabelledCoordinator(clock) {
+  console.log("\n=== Section 4: a coordinator's record is labelled COORDINATOR, over a reader claim it also holds ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("section4_coordinator_label", now, "dev", "coordinator");
+  seedForeignClaims(h, "coord-001", now, ["persona:coordinator"]);
+  const key1 = seedRecordFor(h, "dev", "coord-001", 1, { at: now - 5000, text: "Pick up the failing suite." });
+  await tickAndSettle(h, clock, 50);
+  check("section4 coordinator label: the record is delivered", readStoreRecord(h, key1)?.status === "delivered", readStoreRecord(h, key1));
+  check("section4 coordinator label: the submitted text opens [COORDINATOR id=<record id>]",
+    (h.promptSubmits || []).includes("[COORDINATOR id=dev-coord-001-1] Pick up the failing suite."), h.promptSubmits);
+  const decisions = getStateForPersona(h, "dev")?.decisions || [];
+  check("section4 coordinator label: operator_delivered names the label actually submitted",
+    decisions.some((d) => d.action === "operator_delivered" && d.detail.includes("submitted as [COORDINATOR id=dev-coord-001-1]")), decisions.filter((d) => d.action === "operator_delivered"));
+
+  seedForeignClaims(h, "coord-001", now, ["persona:coordinator", "reader:dev"]);
+  const key2 = seedRecordFor(h, "dev", "coord-001", 2, { at: now - 4000, text: "Second steer." });
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock, 50);
+  check("section4 coordinator label: with a reader claim beside the coordinator claim the label is still COORDINATOR",
+    readStoreRecord(h, key2)?.status === "delivered" && (h.promptSubmits || []).includes("[COORDINATOR id=dev-coord-001-2] Second steer."), h.promptSubmits);
+}
+
+// The reader ground names the target when the writer reads it, whatever
+// else it reads: a writer holding reader claims on aios, dev and zed
+// addressing dev is labelled READER:dev. The single-claim shape is the S2
+// drain case (READER:default on the default persona).
+async function caseSection4_readerLabelNamesTheTargetAmongSeveralReaderClaims(clock) {
+  console.log("\n=== Section 4: a reader holding several reader claims is labelled with the target persona ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("section4_reader_label", now, "dev", "coordinator");
+  seedForeignClaims(h, "rev-002", now, ["reader:zed", "reader:dev", "reader:aios"]);
+  const key = seedRecordFor(h, "dev", "rev-002", 1, { at: now - 5000, text: "Review note for dev." });
+  await tickAndSettle(h, clock, 50);
+  check("section4 reader label: the record is delivered", readStoreRecord(h, key)?.status === "delivered", readStoreRecord(h, key));
+  check("section4 reader label: the submitted text opens [READER:dev id=<record id>], naming the target rather than the first claim",
+    (h.promptSubmits || []).includes("[READER:dev id=dev-rev-002-1] Review note for dev."), h.promptSubmits);
+}
+
+// Precedence below the coordinator ground on the worker-to-coordinator
+// delivery (the plain WORKER label is checked in the Section 3 delivery
+// case): a writer owning a persona and holding reader claims elsewhere is
+// labelled READER, naming the alphabetically first persona it reads since
+// the target is not among them; a writer owning two named personas and no
+// reader claim is labelled WORKER, naming the alphabetically first.
+async function caseSection4_readerClaimWinsOverWorkerAndFirstPersonaNames(clock) {
+  console.log("\n=== Section 4: a reader claim anywhere labels READER over WORKER; several claims name the first alphabetically ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("section4_worker_precedence", now, "coordinator", "coordinator");
+  seedForeignClaims(h, "mixed-003", now, ["persona:aios", "reader:zed", "reader:beta"]);
+  const mixedKey = seedRecordFor(h, "coordinator", "mixed-003", 1, { at: now - 5000, text: "From a worker that also reads." });
+  await tickAndSettle(h, clock, 50);
+  check("section4 precedence: the record from a persona owner holding reader claims is delivered", readStoreRecord(h, mixedKey)?.status === "delivered", readStoreRecord(h, mixedKey));
+  check("section4 precedence: it is labelled READER:beta, the first persona it reads, not WORKER:aios",
+    (h.promptSubmits || []).includes("[READER:beta id=coordinator-mixed-003-1] From a worker that also reads."), h.promptSubmits);
+
+  seedForeignClaims(h, "two-004", now, ["persona:zed", "persona:gamma"]);
+  const twoKey = seedRecordFor(h, "coordinator", "two-004", 1, { at: now - 4000, text: "From a two-persona owner." });
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock, 50);
+  check("section4 precedence: a two-persona owner with no reader claim is labelled WORKER:gamma, the first alphabetically",
+    readStoreRecord(h, twoKey)?.status === "delivered" && (h.promptSubmits || []).includes("[WORKER:gamma id=coordinator-two-004-1] From a two-persona owner."), h.promptSubmits);
+}
+
+// A record id that cannot sit inside the bracket ("[", "]", whitespace or a
+// control character) is refused by the bad-id rule at each site, apart from
+// the reach gate: the drain marks it skipped under operator_skipped_bad_id
+// naming the key; the urgent break-in leaves it pending and the tick's
+// drain then skips it; the ask-answer step logs it under the same action,
+// leaves the ask open, and the drain skips it. The writer holds a live
+// reader claim throughout, so no operator_skipped_no_claim is recorded.
+async function caseSection4_badRecordIdIsRefusedByItsOwnRule(clock) {
+  console.log("\n=== Section 4: a record id that could close the bracket is refused at all three sites ===");
+  clock.set(T0);
+  const now = T0;
+
+  // Urgent site, then the drain.
+  const hu = await seedNamedOwnerHarness("section4_bad_id_urgent", now, "dev", "coordinator");
+  seedForeignClaims(hu, "rev-001", now, ["reader:dev"]);
+  const urgentKey = seedRecordFor(hu, "dev", "rev-001", 1, { at: now - 5000, id: "bad urgent", text: "Urgent under a bad id.", urgent: true });
+  // A well-formed record beside it, so the tick delivers something and
+  // persists the decision log the checks below read.
+  seedRecordFor(hu, "dev", "rev-001", 2, { at: now - 4000, text: "Plain note." });
+  await hu.handlers["turn.start"](hu.fake, { turnId: "t-bad-urgent" }, async () => ({ result: "ok" }));
+  const r = await callTool(hu, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "a.txt" }, text: "a.txt" }));
+  const ctx = Array.isArray(r.context) ? r.context.join("\n") : "";
+  check("section4 bad id urgent: the bad-id rule folds nothing into the tool result", r.deny === undefined && !ctx.includes("Urgent under a bad id."), r);
+  check("section4 bad id urgent: the record is left pending, not delivered", readStoreRecord(hu, urgentKey)?.status === "pending", readStoreRecord(hu, urgentKey));
+  await hu.handlers["turn.complete"](hu.fake, { turnId: "t-bad-urgent", answer: "Done.", reason: "completed" }, async () => ({ result: "ok" }));
+  await tickAndSettle(hu, clock, 50);
+  const urgentDecisions = getStateForPersona(hu, "dev")?.decisions || [];
+  check("section4 bad id urgent: the tick's drain marks it skipped under operator_skipped_bad_id naming the key",
+    readStoreRecord(hu, urgentKey)?.status === "skipped" && urgentDecisions.some((d) => d.action === "operator_skipped_bad_id" && d.detail.includes(urgentKey)), urgentDecisions.filter((d) => d.action.startsWith("operator_")));
+  check("section4 bad id urgent: the text was never submitted and no operator_skipped_no_claim was recorded",
+    !(hu.promptSubmits || []).some((p) => p.includes("Urgent under a bad id.")) && !urgentDecisions.some((d) => d.action === "operator_skipped_no_claim"));
+
+  // The drain alone, with "]" in the id.
+  const hd = await seedNamedOwnerHarness("section4_bad_id_drain", now, "dev", "coordinator");
+  seedForeignClaims(hd, "rev-001", now, ["reader:dev"]);
+  const drainKey = seedRecordFor(hd, "dev", "rev-001", 1, { at: now - 5000, id: "x] forged", text: "Drain under a bad id." });
+  seedRecordFor(hd, "dev", "rev-001", 2, { at: now - 4000, text: "Plain note." });
+  await tickAndSettle(hd, clock, 50);
+  const drainDecisions = getStateForPersona(hd, "dev")?.decisions || [];
+  check("section4 bad id drain: the record is marked skipped under operator_skipped_bad_id naming the key",
+    readStoreRecord(hd, drainKey)?.status === "skipped" && drainDecisions.some((d) => d.action === "operator_skipped_bad_id" && d.detail.includes(drainKey)), drainDecisions.filter((d) => d.action.startsWith("operator_")));
+  check("section4 bad id drain: the bad-id text was never submitted, the plain record was, and no operator_skipped_no_claim was recorded",
+    !(hd.promptSubmits || []).some((p) => p.includes("Drain under a bad id.")) && (hd.promptSubmits || []).includes("[READER:dev id=dev-rev-001-2] Plain note.") && !drainDecisions.some((d) => d.action === "operator_skipped_no_claim"), hd.promptSubmits);
+
+  // The ask-answer site, with "[" in the id.
+  const ha = await seedNamedOwnerHarness("section4_bad_id_answer", now, "dev", "coordinator");
+  const personaState = buildPersonaState(SESSION_ID, now);
+  personaState.persona = "dev";
+  personaState.goals = [
+    { id: "node-b1", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-b1";
+  personaState.pendingAskId = "ask-b1-1";
+  ha.fsMap.set(".agentic-personas.json", JSON.stringify({ dev: personaState }));
+  ha.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ dev: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  seedForeignClaims(ha, "rev-001", now, ["reader:dev"]);
+  const answerKey = seedRecordFor(ha, "dev", "rev-001", 1, { at: now - 500, id: "ans[1", kind: "answer", answers: "ask-b1-1", text: "Ship it." });
+  const startH = ha.handlers["session.start"];
+  if (startH) await startH(ha.fake, {}, () => {});
+  const askKey = "ask:dev:ask-b1-1";
+  ha.storeMap.set(askKey, { id: "ask-b1-1", ownerSessionId: SESSION_ID, at: now - 1000, nodeId: "node-b1", question: "Ship or hold?", status: "open" });
+  ha.resetPromptSubmits();
+  clock.advance(65_000);
+  await tickAndSettle(ha, clock, 50);
+  const state = getStateForPersona(ha, "dev");
+  check("section4 bad id answer: the ask step logs operator_skipped_bad_id naming the key and leaves the ask open",
+    !!state && state.decisions.some((d) => d.action === "operator_skipped_bad_id" && d.detail.includes(answerKey)) && readStoreRecord(ha, askKey)?.status === "open" && state.pendingAskId === "ask-b1-1", state?.decisions.filter((d) => d.action.startsWith("operator_") || d.action === "ask_answered"));
+  check("section4 bad id answer: the drain then marks the answer skipped and nothing was submitted",
+    readStoreRecord(ha, answerKey)?.status === "skipped" && !(ha.promptSubmits || []).some((p) => p.includes("Ship it.")), readStoreRecord(ha, answerKey));
+  check("section4 bad id answer: no ask_answered and no operator_skipped_no_claim was recorded",
+    !!state && !state.decisions.some((d) => d.action === "ask_answered" || d.action === "operator_skipped_no_claim"));
+}
+
+// The urgent break-in belongs to the top-level loop: a tool call carrying
+// agentId (a subagent's own call) folds nothing in and leaves the record
+// pending, and does not advance the throttle either, so the top-level
+// loop's next call inside the same throttle window still delivers it.
+// Delivery on a plain top-level call is item 8.3's and Section 3's cases.
+async function caseSection4_subagentToolCallCarriesNoBreakIn(clock) {
+  console.log("\n=== Section 4: a subagent's tool call never carries the urgent break-in; the top-level call still does ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("section4_subagent_breakin", now, "dev", "coordinator");
+  seedForeignClaims(h, "rev-001", now, ["reader:dev"]);
+  const key = seedRecordFor(h, "dev", "rev-001", 1, { at: now - 5000, text: "Stop: wrong branch.", urgent: true });
+  await h.handlers["turn.start"](h.fake, { turnId: "t-top" }, async () => ({ result: "ok" }));
+  const sub = await callTool(h, { tool: "Edit", agentId: "agent-1" }, async () => ({ result: "edited", text: "edited" }));
+  const subCtx = Array.isArray(sub.context) ? sub.context.join("\n") : "";
+  check("section4 subagent: the subagent's tool result carries no break-in context", sub.deny === undefined && !subCtx.includes("Stop: wrong branch."), sub);
+  check("section4 subagent: the record is left pending by the subagent rule", readStoreRecord(h, key)?.status === "pending", readStoreRecord(h, key));
+  const decisionsAfterSub = getStateForPersona(h, "dev")?.decisions || [];
+  check("section4 subagent: no operator_delivered_urgent was recorded", !decisionsAfterSub.some((d) => d.action === "operator_delivered_urgent"));
+
+  // Same clock reading: had the subagent call advanced the throttle, this
+  // top-level call would be inside urgentCheckMinMs and fold nothing in.
+  const top = await callTool(h, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "a.txt" }, text: "a.txt" }));
+  const topCtx = Array.isArray(top.context) ? top.context.join("\n") : "";
+  check("section4 subagent control: the top-level call in the same throttle window delivers it as [READER:dev id=<record id>, urgent]",
+    top.deny === undefined && topCtx.includes("[READER:dev id=dev-rev-001-1, urgent] Stop: wrong branch."), top);
+  check("section4 subagent control: the record is delivered and stamped with the running turn",
+    readStoreRecord(h, key)?.status === "delivered" && readStoreRecord(h, key)?.turnId === "t-top", readStoreRecord(h, key));
+}
+
+// The operator's own channel path is untouched: a channel-origin prompt
+// reaches the hook chain beneath the plugin with its text as typed, and the
+// plugin's return rewrites no text and injects no provenance label, so the
+// labels above are never applied to the operator.
+async function caseSection4_channelOriginPromptCarriesNoLabel(clock) {
+  console.log("\n=== Section 4 control: a channel-origin prompt reaches the model unprefixed ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedOwnerHarness("section4_channel_unprefixed", now);
+  let seen = null;
+  const r = await h.handlers["prompt.submit"](h.fake, { text: "Ship it on main.", origin: { kind: "channel" } }, async (e) => { seen = e; return {}; });
+  check("section4 channel control: the text passed beneath the plugin is the operator's own, unprefixed", seen?.text === "Ship it on main.", seen);
+  check("section4 channel control: the plugin rewrites no text on the return", r.text === undefined && r.drop === undefined, r);
+  const labelled = (r.context || []).filter((c) => /^\[(COORDINATOR|READER:|WORKER:|OPERATOR)/.test(c));
+  check("section4 channel control: no injected context block opens with a provenance label", labelled.length === 0, r.context);
+}
+
 // agentic_say(urgent: true) writes urgent onto the record; a plain say does not.
 async function caseItem8p3_sayCarriesUrgent(clock) {
   console.log("\n=== Item 8.3: agentic_say threads the urgent flag onto the record ===");
@@ -5741,7 +5954,7 @@ async function caseItem8p3_urgentBreaksIntoRunningTurn(clock) {
   check("item8.3 urgent: real tool result kept", r.text === "a.txt" && r.deny === undefined);
   const ctx = Array.isArray(r.context) ? r.context.join("\n") : "";
   check("item8.3 urgent: tool result context carries the urgent text", ctx.includes("Stop and commit what you have."));
-  check("item8.3 urgent: context names it as an urgent operator message", ctx.includes("[OPERATOR"));
+  check("item8.3 urgent: context opens with the reader label, the record id and the urgent mark", ctx.includes("[READER:default id=urgent-1, urgent] Stop and commit what you have."), ctx);
   check("item8.3 urgent: control text not folded into the context", !ctx.includes("No hurry on this one.") && !ctx.includes("From a writer with no claim."));
 
   const urgentRec = h.storeMap.get(urgentKey);

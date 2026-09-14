@@ -50,7 +50,10 @@ import type { InboxRecord } from "./operator";
 import {
   claimReaderRole,
   mayReachPersona,
-  mayReachPersonaIn,
+  deliveryLabelIn,
+  deliveryIdProblem,
+  deliveryPrefix,
+  deliveryText,
   personaNameProblem,
   sweepExpiredRecords,
   SweepDeleteError,
@@ -693,7 +696,7 @@ export const register: Register = async (on, options) => {
   // begins with, against each queued entry's two keys (the ExpectedTurn type
   // above says why there are two) and removes the match wherever it sits;
   // that entry's kind is the turn's kind. A delivery entry carries the inbox
-  // record its [OPERATOR] prompt delivered, which only that turn stamps and
+  // record its labelled prompt delivered, which only that turn stamps and
   // answers; a nudge entry tells turn.complete to score with the
   // nudge-aware label set, since currentPrompt still holds the stale user
   // text; a plugin entry is the kaizen announcement, the reply backstop or
@@ -1469,10 +1472,10 @@ export const register: Register = async (on, options) => {
 
       // D3: drain operator inbox (one record per tick, owner only).
       // List pending inbox records whose writer may reach this persona
-      // (mayReachPersonaIn over one claims read: a reader claim on it, the
+      // (deliveryLabelIn over one claims read: a reader claim on it, the
       // coordinator persona owned, or a named persona owned when this persona
-      // is the coordinator), take the lowest at, mark delivered, submit as
-      // [OPERATOR] prompt.
+      // is the coordinator), take the lowest at, mark delivered, submit as a
+      // prompt opening with the provenance label that same read produced.
       // D5: if a pending record answers the open ask, close the ask first
       // (ask_answered path) before the general drain.
       if (sess.isOwner) {
@@ -1488,13 +1491,24 @@ export const register: Register = async (on, options) => {
           if (askRecord && askRecord.status === "open") {
             const answer = pending.find((rec) => rec.answers === askId);
             if (answer) {
-              const answerAlive = await mayReachPersona(store, persona, answer.from, coordinatorPersona, sess.staleAfterMs);
-              if (!answerAlive) {
+              // One claims read gates the answer and labels it; an id that
+              // cannot sit inside the bracket is refused the same way a
+              // dead writer is, and the general drain below skips it.
+              const answerGround = deliveryLabelIn(await readAllClaims(store, sess.staleAfterMs), persona, answer.from, coordinatorPersona);
+              const answerIdProblem = deliveryIdProblem(answer.id);
+              if (answerGround === null) {
                 sess.state.decisions.push({
                   timestamp: Date.now(),
                   loop: "monitor",
                   action: "operator_skipped_no_claim",
                   detail: `answer ${answer.id} from ${answer.from} holds no live claim that reaches '${persona}' (no reader claim, no '${coordinatorPersona}' persona claim, no named persona of its own)`,
+                });
+              } else if (answerIdProblem !== null) {
+                sess.state.decisions.push({
+                  timestamp: Date.now(),
+                  loop: "monitor",
+                  action: "operator_skipped_bad_id",
+                  detail: `answer at ${answer.key} carries an id that ${answerIdProblem}; not delivered`,
                 });
               } else {
                 // Close the ask
@@ -1519,7 +1533,7 @@ export const register: Register = async (on, options) => {
                 }
                 // Clear the pendingAskId
                 sess.state.pendingAskId = undefined;
-                // Deliver the answer as an [OPERATOR] prompt
+                // Deliver the answer as a labelled prompt.
                 // Look up the goal by the ask record's nodeId (more reliable than activeGoalId,
                 // which enforceInvariants may have cleared for a paused goal).
                 const askRecord2 = askRecord; // from outer scope
@@ -1545,7 +1559,7 @@ export const register: Register = async (on, options) => {
                   action: "ask_answered",
                   detail: `ask ${askId} closed by record ${answer.id}`,
                 });
-                const answerText = `[OPERATOR] Answer to ${askRecord.question}: ${answer.text}`;
+                const answerText = deliveryText(answerGround, answer.id, answer.text, { answerTo: askRecord.question });
                 const expectedAnswerTurn = expectTurn({ kind: "delivery", recordId: answer.id, text: answerText });
                 const answerOutcome = await submitExpectedTurn($, expectedTurns, expectedAnswerTurn);
                 if (!answerOutcome.ok) recordFailedDelivery(answer, answerOutcome);
@@ -1558,14 +1572,19 @@ export const register: Register = async (on, options) => {
 
         // General drain (D3)
         // Filter to writers whose live claims reach this persona, over one
-        // claims read for the whole pending list.
-        const withClaim: typeof pending = [];
+        // claims read for the whole pending list; the same read yields the
+        // label each deliverable record carries. A record whose id cannot
+        // sit inside the label's bracket is skipped like a dead writer's.
+        const withClaim: { rec: InboxRecord; ground: string }[] = [];
         const withoutClaim: typeof pending = [];
+        const badId: { rec: InboxRecord; problem: string }[] = [];
         const claims = pending.length > 0 ? await readAllClaims(store, sess.staleAfterMs) : [];
         for (const rec of pending) {
-          const alive = mayReachPersonaIn(claims, persona, rec.from, coordinatorPersona);
-          if (alive) withClaim.push(rec);
-          else withoutClaim.push(rec);
+          const ground = deliveryLabelIn(claims, persona, rec.from, coordinatorPersona);
+          const idProblem = deliveryIdProblem(rec.id);
+          if (ground === null) withoutClaim.push(rec);
+          else if (idProblem !== null) badId.push({ rec, problem: idProblem });
+          else withClaim.push({ rec, ground });
         }
         // Round 32/36: mark a dead writer's record skipped once, on its own
         // key, rather than re-logging the same decision every tick forever -
@@ -1580,10 +1599,19 @@ export const register: Register = async (on, options) => {
             detail: `record ${rec.id} writer ${rec.from} holds no live claim that reaches '${persona}' (no reader claim, no '${coordinatorPersona}' persona claim, no named persona of its own; marked skipped)`,
           });
         }
+        for (const { rec, problem } of badId) {
+          await store.set(rec.key, { ...rec, status: "skipped" });
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "operator_skipped_bad_id",
+            detail: `record at ${rec.key} carries an id that ${problem}; marked skipped`,
+          });
+        }
         // Take the oldest record with a live claim
         if (withClaim.length > 0) {
-          withClaim.sort((a, b) => a.at - b.at);
-          const oldest = withClaim[0];
+          withClaim.sort((a, b) => a.rec.at - b.rec.at);
+          const { rec: oldest, ground } = withClaim[0];
           oldest.status = "delivered";
           oldest.deliveredAt = Date.now();
           const existing = await store.get(oldest.key);
@@ -1593,14 +1621,14 @@ export const register: Register = async (on, options) => {
             parsed.deliveredAt = oldest.deliveredAt;
             await store.set(oldest.key, parsed);
           }
+          const submittedText = deliveryText(ground, oldest.id, oldest.text);
           sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "monitor",
             action: "operator_delivered",
-            detail: `record ${oldest.id} submitted as [OPERATOR]`,
+            detail: `record ${oldest.id} submitted as ${deliveryPrefix(ground, oldest.id, false)}`,
           });
-          const deliveryText = "[OPERATOR] " + oldest.text;
-          const expectedDeliveryTurn = expectTurn({ kind: "delivery", recordId: oldest.id, text: deliveryText });
+          const expectedDeliveryTurn = expectTurn({ kind: "delivery", recordId: oldest.id, text: submittedText });
           const deliveryOutcome = await submitExpectedTurn($, expectedTurns, expectedDeliveryTurn);
           if (!deliveryOutcome.ok) recordFailedDelivery(oldest, deliveryOutcome);
           await persist($);
@@ -4410,14 +4438,22 @@ export const register: Register = async (on, options) => {
     if ((r as { isError?: boolean }).isError === true) toolErrorsThisTurn++;
 
     // Plan item 8.3: an urgent record from a writer that may reach this
-    // persona (mayReachPersonaIn over one claims read, the tick's own rule)
+    // persona (deliveryLabelIn over one claims read, the tick's own rule)
     // reaches the owner inside the running turn. The controller tick cannot deliver while a
     // turn is in flight, so the record rides here instead: marked delivered
     // and stamped with this turn (turn.complete then records the turn's
     // answer as its reply), its text appended as context on this tool's
     // result, which the model reads after the result itself. A record that
     // answers an open ask is left to the tick, which owns the ask lifecycle.
-    if (sess.isOwner && r.deny === undefined && Date.now() - lastUrgentCheckAt >= urgentCheckMinMs) {
+    // Only the top-level loop's own tool calls carry a break-in: this hook
+    // also runs for a dispatched subagent's tool calls, and e.agentId (the
+    // loop's id, absent on the main loop) is non-empty on those. A steer
+    // delivered into a subagent's tool result reaches a loop that cannot
+    // verify it and never reaches the owner, so a subagent's call neither
+    // reads nor advances the throttle, and the record stays pending for
+    // the tick or for the owner's own next call.
+    const inSubagent = typeof e.agentId === "string" && e.agentId.length > 0;
+    if (!inSubagent && sess.isOwner && r.deny === undefined && Date.now() - lastUrgentCheckAt >= urgentCheckMinMs) {
       lastUrgentCheckAt = Date.now();
       try {
         const store = commonsStoreOf($);
@@ -4427,7 +4463,10 @@ export const register: Register = async (on, options) => {
         const lines: string[] = [];
         const claims = urgentPending.length > 0 ? await readAllClaims(store, sess.staleAfterMs) : [];
         for (const rec of urgentPending) {
-          if (!mayReachPersonaIn(claims, persona, rec.from, coordinatorPersona)) continue;
+          // A record whose id cannot sit inside the bracket is left pending
+          // here; the tick's drain marks it skipped.
+          const ground = deliveryLabelIn(claims, persona, rec.from, coordinatorPersona);
+          if (ground === null || deliveryIdProblem(rec.id) !== null) continue;
           const existing = await store.get(rec.key);
           if (!existing) continue;
           const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
@@ -4441,7 +4480,7 @@ export const register: Register = async (on, options) => {
             action: "operator_delivered_urgent",
             detail: `record ${rec.id} delivered inside the running turn as context on ${e.tool}`,
           });
-          lines.push(`[OPERATOR, urgent] ${rec.text}`);
+          lines.push(deliveryText(ground, rec.id, rec.text, { urgent: true }));
         }
         if (lines.length > 0) {
           await persist($);

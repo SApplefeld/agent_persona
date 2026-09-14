@@ -522,21 +522,81 @@ export async function hasLiveReaderClaim(
   return holdsReaderClaim(await readAllClaims(store, staleAfterMs), persona, sessionId);
 }
 
+// The personas `sessionId` holds a reader claim on, sorted, so a label that
+// must pick one of several picks the same one every time.
+function readerPersonasOf(claims: UnionedClaim[], sessionId: string): string[] {
+  return claims
+    .filter((c) => c.holder === sessionId && c.resource.startsWith(READER_PREFIX))
+    .map((c) => c.resource.slice(READER_PREFIX.length))
+    .sort();
+}
+
+// The named personas `sessionId` owns (commons winner, `default` excluded),
+// sorted. Non-empty exactly when holdsOwnerClaim(claims, sessionId,
+// undefined, "default") is true.
+function ownedNamedPersonasOf(claims: UnionedClaim[], sessionId: string): string[] {
+  const excluded = personaKey("default");
+  return claims
+    .filter((c) =>
+      c.holder === sessionId
+      && c.resource.startsWith(PERSONA_PREFIX)
+      && c.resource !== excluded
+      && commonsWinner(claims, c.resource) === sessionId)
+    .map((c) => c.resource.slice(PERSONA_PREFIX.length))
+    .sort();
+}
+
 /**
- * Whether `writer` may address `target`'s inbox, over claims already read.
- * True on any of three legs: the writer holds a reader claim on the target
- * (a reader steering the owner it reads); the writer owns the coordinator
- * persona (the coordinator addressing any persona); or the target is the
- * coordinator persona and the writer owns a named persona other than
- * `default` (a worker pushing to the coordinator). Every leg is a claim a
- * session issues itself: any plugin-loaded session on this machine can take
- * a reader claim, own a named persona through agentic_identity, or own the
- * coordinator persona while no live session holds it. Excluding
- * `persona:default` keeps out a session that has done none of that, which
- * is every plugin-loaded session at start, and nothing more. The send gate,
- * the inbox read and the ask-answer delivery call the reading form below;
- * the tick's drain and the urgent break-in read once and call this per
- * record.
+ * The provenance ground a record from `writer` carries when delivered to
+ * `target`, read from claims already read, or null when the writer may not
+ * reach the target at all. Reach holds on any of three legs: the writer
+ * holds a reader claim on the target (a reader steering the owner it
+ * reads); the writer owns the coordinator persona (the coordinator
+ * addressing any persona); or the target is the coordinator persona and
+ * the writer owns a named persona other than `default` (a worker pushing
+ * to the coordinator). Every leg is a claim a session issues itself: any
+ * plugin-loaded session on this machine can take a reader claim, own a
+ * named persona through agentic_identity, or own the coordinator persona
+ * while no live session holds it. Excluding `persona:default` keeps out a
+ * session that has done none of that, which is every plugin-loaded session
+ * at start, and nothing more.
+ *
+ * The ground names the strongest standing the writer holds, in this order:
+ * `COORDINATOR` when the writer owns the coordinator persona;
+ * `READER:<persona>` when the writer holds any reader claim, naming the
+ * target where the writer reads it and otherwise the alphabetically first
+ * persona it reads (a reader claim on another persona is not a reach leg
+ * by itself, so this branch is reached only through the worker leg then);
+ * `WORKER:<persona>` when the writer's only standing is an owned named
+ * persona, naming the alphabetically first one. The gate and the label are
+ * one rule over one claims array, so a record that is delivered is a
+ * record that is labelled, and a writer holding a reader claim anywhere is
+ * never labelled WORKER.
+ */
+export function deliveryLabelIn(
+  claims: UnionedClaim[],
+  target: string,
+  writer: string,
+  coordinatorPersona: string,
+): string | null {
+  if (holdsOwnerClaim(claims, writer, coordinatorPersona)) return "COORDINATOR";
+  const workerLeg = target === coordinatorPersona && holdsOwnerClaim(claims, writer, undefined, "default");
+  const readerPersonas = readerPersonasOf(claims, writer);
+  if (readerPersonas.length > 0) {
+    const readsTarget = readerPersonas.includes(target);
+    if (!readsTarget && !workerLeg) return null;
+    return `READER:${readsTarget ? target : readerPersonas[0]}`;
+  }
+  if (workerLeg) return `WORKER:${ownedNamedPersonasOf(claims, writer)[0]}`;
+  return null;
+}
+
+/**
+ * Whether `writer` may address `target`'s inbox, over claims already read:
+ * deliveryLabelIn's three legs, as a boolean. The send gate and the inbox
+ * read call the reading form below; the three delivery sites read once and
+ * call deliveryLabelIn per record, so the gate and the label they apply
+ * cannot disagree.
  */
 export function mayReachPersonaIn(
   claims: UnionedClaim[],
@@ -544,9 +604,48 @@ export function mayReachPersonaIn(
   writer: string,
   coordinatorPersona: string,
 ): boolean {
-  return holdsReaderClaim(claims, target, writer)
-    || holdsOwnerClaim(claims, writer, coordinatorPersona)
-    || (target === coordinatorPersona && holdsOwnerClaim(claims, writer, undefined, "default"));
+  return deliveryLabelIn(claims, target, writer, coordinatorPersona) !== null;
+}
+
+/**
+ * The one rule for a record id that reaches the model inside a delivery
+ * bracket: no "[", no "]", no whitespace and no control character. The id
+ * is store data any plugin-loaded session wrote, and one carrying "]"
+ * could close the bracket early and forge the text after it. Returns the
+ * reason an id is refused, or null when it is usable; the three delivery
+ * sites apply this rule and deliver nothing under a refused id.
+ */
+export function deliveryIdProblem(id: unknown): string | null {
+  if (typeof id !== "string" || id.length === 0) return "must be a non-empty string";
+  if (id.includes("[") || id.includes("]")) return "cannot contain '[' or ']'";
+  if (/[\s\p{Cc}]/u.test(id)) return "cannot contain whitespace or a control character";
+  return null;
+}
+
+/**
+ * The bracket every delivered record opens with: `[<ground> id=<id>]`, or
+ * `[<ground> id=<id>, urgent]` on the urgent break-in. `ground` is what
+ * deliveryLabelIn returned and `id` has passed deliveryIdProblem. The id
+ * rides in-band because agentic_inbox is reader-only, so nothing else tells
+ * the owner the id agentic_resolve takes.
+ */
+export function deliveryPrefix(ground: string, id: string, urgent: boolean): string {
+  return `[${ground} id=${id}${urgent ? ", urgent" : ""}]`;
+}
+
+/**
+ * The full text a delivery submits: the prefix, then `Answer to <question>:
+ * ` when the record answers an open ask, then the record's text. The three
+ * delivery sites build their text here and nowhere else.
+ */
+export function deliveryText(
+  ground: string,
+  id: string,
+  text: string,
+  opts: { urgent?: boolean; answerTo?: string } = {},
+): string {
+  const answer = opts.answerTo === undefined ? "" : `Answer to ${opts.answerTo}: `;
+  return `${deliveryPrefix(ground, id, opts.urgent === true)} ${answer}${text}`;
 }
 
 /**
