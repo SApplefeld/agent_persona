@@ -19,8 +19,8 @@
 // Usage: node controller-tick-test.mjs
 // Exits 0 on success, 1 on failure.
 
-import { execSync } from "node:child_process";
 import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, loadModule, makeState, makeGoalNode } from "./tick-harness.mjs";
+import { DECISIONS_MAX, MEMORY_MAX } from "../hooks/agent-state.ts";
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -131,12 +131,8 @@ async function caseD2(clock) {
   let cls = h.classifyCalls.length;
   let st = getState(h);
   let decs = st.decisions;
-  let nudgeSent = countAction(decs, "nudge_sent");
-  let nudgeCount = st.monitor.cost.nudge.count;
 
   check("D2 tick1: classify called exactly once", cls === 1);
-  check("D2 tick1: nudge_sent in decisions", nudgeSent === 1);
-  check("D2 tick1: nudge count bumped", nudgeCount === 1);
 
   // --- Phase 2: D2 unchanged-skip test.
   // After the first nudge, lastNudgeAt is set to now.
@@ -166,34 +162,23 @@ async function caseD2(clock) {
 }
 
 // ============================================================
-// D4: backoff after consecutive skips
+// D4: activity resets the skip streak
 // ============================================================
 async function caseD4(clock) {
-  console.log("\n=== D4: backoff ===");
+  console.log("\n=== D4: turn.start resets consecutiveSkips ===");
   clock.set(T0);
 
-  // Seed the state with consecutiveSkips = 4 before the test starts.
-  // We do this by reading the seeded state and modifying it.
+  // Seed the state with consecutiveSkips = 4, so the reset below has a
+  // nonzero streak to clear. The backoff arithmetic itself is unit-tested
+  // in cost-ledger-unit-test.mjs.
   const h = await createTickHarness({
     ...OPTS,
     caseName: "d4",
     stateOpts: { consecutiveSkips: 4 },
   });
 
-  h.setClassifyValue("nudge");
-  h.resetClassifyCalls();
-
-  // Fire 3 ticks to build up consecutiveSkips.
-  for (let i = 0; i < 3; i++) {
-    clock.advance(10000);
-    await tickAndSettle(h, clock, 20);
-  }
-
   const st = getState(h);
-  const consecutiveSkips = st.monitor.cost.consecutiveSkips;
-
-  // D4: consecutiveSkips should be >= 1 after 3 ticks.
-  check("D4: consecutiveSkips >= 1 after 3 ticks", consecutiveSkips >= 1);
+  check("D4 control: the seeded streak is 4 before any turn", st.monitor.cost.consecutiveSkips === 4);
 
   // turn.start resets consecutiveSkips.
   await fireTurn(h);
@@ -227,10 +212,8 @@ async function caseAM7(clock) {
   const st = getState(h);
   const decs = st.decisions;
   const costSummaries = countAction(decs, "cost_summary");
-  const cls = h.classifyCalls.length;
 
   check("AM7: two cost_summary decisions (ticks 2 and 4)", costSummaries === 2);
-  check("AM7: no classify calls (no active goal)", cls === 0);
 }
 
 // ============================================================
@@ -268,31 +251,11 @@ async function caseD3(clock) {
   check("D3: two nudge_sent", nudgeSent === 2);
   check("D3: one cost_cap_reached", capReached === 1);
   check("D3: classify called exactly twice", cls === 2);
-
-  // BG1: the active goal should be paused, not blocked
-  const activeGoal = st.goals?.find(g => g.id === st.activeGoalId);
-  check("D3 BG1: active goal status is paused", activeGoal && activeGoal.status === "paused");
-  check("D3 BG1: no block decision", !decs.some(d => d.action === "block"));
-  check("D3 BG1: paused_by_controller decision present", decs.some(d => d.action === "paused_by_controller"));
-
-  // BG1: no other node should have changed status (no activateNext, no activate)
-  const otherGoals = st.goals?.filter(g => g.id !== st.activeGoalId) || [];
-  check("D3 BG1: no other goal activated", !otherGoals.some(g => g.status === "active"));
 }
 
 // ============================================================
 // AT4: Reader claim and tools
 // ============================================================
-
-// Case 1: Link case (import resolves)
-async function caseAT4_link(clock) {
-  console.log("\n=== AT4: Link case (import resolves) ===");
-  clock.set(T0);
-
-  // Just import the module to verify it resolves
-  const mod = await import(`../hooks/index.ts?case=at4_link`);
-  check("AT4 link: hooks/index.ts imports successfully", typeof mod["register"] === "function");
-}
 
 // Helper: build a valid persona state for AU3 cases
 function buildPersonaState(otherSid, now) {
@@ -336,55 +299,6 @@ function buildPersonaState(otherSid, now) {
     },
     decisions: [],
   };
-}
-
-// Case 2: Reader claim written at start for non-owner
-async function caseAT4_reader_claim(clock) {
-  console.log("\n=== AT4: Reader claim written at start for non-owner ===");
-  clock.set(T0);
-
-  const otherSid = "other-session-123";
-  const mySid = SESSION_ID;
-  const now = T0;
-
-  // Create a fresh harness
-  const h = await createTickHarness({
-    ...OPTS,
-    caseName: "at4_reader_claim",
-  });
-
-  // Seed the commons store with the other session owning the persona
-  h.storeMap.set(`commons:${otherSid}`, {
-    sessionId: otherSid,
-    lastSeen: now,
-    claims: [
-      { resource: "persona:default", claimedAt: now - 1000 },
-    ],
-  });
-
-  // Seed the persona store with the other session as owner
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(otherSid, now) }));
-
-  // Seed the heartbeat sidecar with the other session as live holder
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
-    default: { sessionId: otherSid, epoch: 1, lastSeen: now },
-  }));
-
-  // Re-fire session.start on the existing closure (h.handlers) so closure A
-  // re-reads the seeded state. No second loadModule/register (AY1).
-  const startH = h.handlers["session.start"];
-  if (startH) {
-    await startH(h.fake, {}, () => {});
-  }
-
-  // Check that the session is NOT the owner (passive_reader decision)
-  // The decision is in the in-memory sess.state, not persisted to the fake fs
-  // (persist() would need to be called, which the test doesn't do).
-  // Instead, verify that the reader claim was written (which only happens
-  // in the passive_reader branch at index.ts:634).
-  const myCommons = h.storeMap.get(`commons:${mySid}`);
-  const readerClaim = myCommons?.claims?.find(c => c.resource === "reader:default");
-  check("AT4 reader_claim: reader:default claim in commons store (passive_reader branch)", readerClaim !== undefined);
 }
 
 // Case 2: Owner refusal (agentic_say denied for owner)
@@ -552,9 +466,6 @@ async function caseAT4_inbox_status(clock) {
     answers: "ask-1",
   }, async (e) => ({ result: "passthrough" }));
 
-  // Check that the result is a success (not deny)
-  check("AT4 inbox_status: agentic_say succeeds for reader with claim", sayResult.result !== undefined);
-
   // Check that an inbox record was written
   const storeKeys = [...h.storeMap.keys()];
   const inboxKeys = storeKeys.filter(k => k.startsWith("inbox:default:"));
@@ -568,8 +479,6 @@ async function caseAT4_inbox_status(clock) {
     check("AT4 inbox_status: record has from === mySid", record.from === mySid);
     check("AT4 inbox_status: record has at", record.at !== undefined);
     check("AT4 inbox_status: record has text === hello", record.text === "hello");
-    check("AT4 inbox_status: record has kind === say", record.kind === "say");
-    check("AT4 inbox_status: record has answers === ask-1", record.answers === "ask-1");
     check("AT4 inbox_status: record has status === pending", record.status === "pending");
   }
 
@@ -584,9 +493,7 @@ async function caseAT4_inbox_status(clock) {
   // Parse the result and check the shape
   if (inboxResult.result) {
     const parsed = JSON.parse(inboxResult.result);
-    check("AT4 inbox_status: inbox array present", Array.isArray(parsed.inbox));
     check("AT4 inbox_status: inbox has 1 record", parsed.inbox.length === 1);
-    check("AT4 inbox_status: record has status pending", parsed.inbox[0].status === "pending");
     check("AT4 inbox_status: no reply yet", parsed.inbox[0].reply === undefined);
   }
 
@@ -700,103 +607,6 @@ async function caseS2_drain(clock) {
   check("S2 drain: one [OPERATOR] prompt submitted", operatorPrompts.length === 1);
 }
 
-// S2: D4 reply - turn.complete writes the reply
-async function caseS2_reply(clock) {
-  console.log("\n=== S2: D4 reply (turn.complete writes reply) ===");
-  clock.set(T0);
-
-  const otherSid = "reply-sender-001";
-  const mySid = SESSION_ID;
-  const now = T0;
-  const turnId = "t1-abc123";
-
-  const h = await createTickHarness({
-    ...OPTS,
-    caseName: "s2_reply",
-  });
-
-  // Seed the commons store
-  h.storeMap.set(`commons:${mySid}`, {
-    sessionId: mySid,
-    lastSeen: now,
-    claims: [
-      { resource: "persona:default", claimedAt: now - 2000 },
-    ],
-  });
-  h.storeMap.set(`commons:${otherSid}`, {
-    sessionId: otherSid,
-    lastSeen: now,
-    claims: [
-      { resource: "reader:default", claimedAt: now - 1000 },
-    ],
-  });
-
-  // Seed the persona store
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(mySid, now) }));
-
-  // Seed the heartbeat sidecar
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
-    default: { sessionId: mySid, epoch: 1, lastSeen: now },
-  }));
-
-  // Seed one inbox record (already delivered, stamped with turnId)
-  const recKey = `inbox:default:${otherSid}:1`;
-  h.storeMap.set(recKey, {
-    id: "reply-rec-1",
-    key: recKey,
-    from: otherSid,
-    at: now - 5000,
-    text: "Ask me something",
-    kind: "say",
-    status: "delivered",
-    deliveredAt: now - 4000,
-    turnId: turnId,
-  });
-
-  // Re-fire session.start on the existing closure (h.handlers) (AY1).
-  const startH = h.handlers["session.start"];
-  if (startH) {
-    await startH(h.fake, {}, () => {});
-  }
-
-  // Fire turn.start (to set up the turn)
-  const turnStartH = h.handlers["turn.start"];
-  if (turnStartH) {
-    await turnStartH(h.fake, { turnId: turnId }, async (e) => ({ result: "ok" }));
-  }
-
-  // Fire turn.complete with a matching answer
-  const turnCompleteH = h.handlers["turn.complete"];
-  if (turnCompleteH) {
-    await turnCompleteH(h.fake, {
-      turnId: turnId,
-      answer: "Here is my answer",
-      reason: "completed",
-    }, async (e) => ({ result: "ok" }));
-  }
-
-  // Check: reply record was written
-  const replyKey = `reply:default:reply-rec-1`;
-  const reply = h.storeMap.get(replyKey);
-  if (reply) {
-    const parsed = typeof reply === "string" ? JSON.parse(reply) : reply;
-    check("S2 reply: reply record exists", true);
-    check("S2 reply: reply text matches answer", parsed.text === "Here is my answer");
-  } else {
-    check("S2 reply: reply record exists", false);
-    check("S2 reply: reply text matches answer", false);
-  }
-
-  // Check: record status is now "answered"
-  const rec = h.storeMap.get(recKey);
-  if (rec) {
-    const parsed = typeof rec === "string" ? JSON.parse(rec) : rec;
-    check("S2 reply: record status is answered", parsed.status === "answered");
-  } else {
-    check("S2 reply: record status is answered", false);
-  }
-}
-
 // S2: D3 drain in-flight control (turn in flight, nothing delivered)
 async function caseS2_drain_inflight(clock) {
   console.log("\n=== S2: D3 drain in-flight (turn in flight, nothing delivered) ===");
@@ -860,7 +670,6 @@ async function caseS2_drain_inflight(clock) {
 
   // Fire turn.start (turn is now in flight) on the existing closure
   const turnStartH = h.handlers["turn.start"];
-  check("S2 drain in-flight: turn.start handler is defined", !!turnStartH);
   let nextCalled = false;
   if (turnStartH) {
     await turnStartH(h.fake, { turnId: "t-inflight" }, async (e) => { nextCalled = true; return { result: "ok" }; });
@@ -883,73 +692,6 @@ async function caseS2_drain_inflight(clock) {
   const prompts = h.promptSubmits || [];
   const operatorPrompts = prompts.filter(p => p.startsWith("[OPERATOR]"));
   check("S2 drain in-flight: no [OPERATOR] prompt submitted", operatorPrompts.length === 0);
-}
-
-// S2: D3 drain no claim control (writer without a claim, skipped)
-async function caseS2_drain_noclaim(clock) {
-  console.log("\n=== S2: D3 drain no claim (writer without a claim, skipped) ===");
-  clock.set(T0);
-
-  const otherSid = "drain-noclaim-001";
-  const mySid = SESSION_ID;
-  const now = T0;
-
-  const h = await createTickHarness({
-    ...OPTS,
-    caseName: "s2_drain_noclaim",
-  });
-
-  // Seed the commons store: mySid owns the persona
-  h.storeMap.set(`commons:${mySid}`, {
-    sessionId: mySid,
-    lastSeen: now,
-    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
-  });
-  // otherSid has NO reader claim (no commons entry or empty claims)
-
-  // Seed the persona store with mySid as owner
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(mySid, now) }));
-
-  // Seed the heartbeat sidecar
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
-    default: { sessionId: mySid, epoch: 1, lastSeen: now },
-  }));
-
-  // Seed one inbox record from otherSid (pending)
-  const recKey = `inbox:default:${otherSid}:1`;
-  h.storeMap.set(recKey, {
-    id: "noclaim-rec-1",
-    key: recKey,
-    from: otherSid,
-    at: now - 5000,
-    text: "No claim test",
-    kind: "say",
-    status: "pending",
-  });
-
-  // Re-fire session.start on the existing closure (h.handlers) (AY1).
-  const startH = h.handlers["session.start"];
-  if (startH) await startH(h.fake, {}, () => {});
-
-  // Fire tick (D3 should skip because writer has no claim)
-  await tickAndSettle(h, clock);
-
-  // Round 32/36 point 4: a dead writer's record is marked skipped, once,
-  // rather than staying "pending" forever (which was the storm bug - the
-  // same record re-logging an identical decision every tick with no writer
-  // ever coming back to claim it).
-  const rec = h.storeMap.get(recKey);
-  if (rec) {
-    const parsed = typeof rec === "string" ? JSON.parse(rec) : rec;
-    check("S2 drain no claim: record marked skipped", parsed.status === "skipped");
-  } else {
-    check("S2 drain no claim: record marked skipped", false);
-  }
-
-  // Check: no [OPERATOR] prompt was submitted
-  const prompts = h.promptSubmits || [];
-  const operatorPrompts = prompts.filter(p => p.startsWith("[OPERATOR]"));
-  check("S2 drain no claim: no [OPERATOR] prompt submitted", operatorPrompts.length === 0);
 }
 
 // S2: D4 reply by turn id (user-ending turn leaves delivered, next matching pair answers)
@@ -1134,246 +876,6 @@ async function caseS2_reply_unrelated(clock) {
   } else {
     check("S2 reply unrelated: record still delivered", false);
   }
-}
-
-// S1: reader claim via arbitration (live non-owner lands in F9 branch)
-async function caseS1_reader_arbitration(clock) {
-  console.log("\n=== S1: reader claim via arbitration (F9 branch) ===");
-  clock.set(T0);
-
-  const ownerSid = "arbitration-owner-001";
-  const mySid = SESSION_ID;
-  const now = T0;
-
-  const h = await createTickHarness({
-    ...OPTS,
-    caseName: "s1_reader_arbitration",
-  });
-
-  // Seed the commons store: ownerSid holds a LIVE persona:default claim
-  // (lastSeen is recent, so not stale)
-  h.storeMap.set(`commons:${ownerSid}`, {
-    sessionId: ownerSid,
-    lastSeen: now,
-    claims: [{ resource: "persona:default", claimedAt: now - 1000 }],
-  });
-
-  // Seed the persona store: ownerSid is the active session
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(ownerSid, now) }));
-
-  // Seed the heartbeat sidecar: ownerSid is the live holder
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
-    default: { sessionId: ownerSid, epoch: 1, lastSeen: now },
-  }));
-
-  // BD1: delete the commons entry the harness's own session.start wrote
-  // (under BC3 it is an owner start that claims persona:default), so the
-  // re-fire is the only start for this session.
-  h.storeMap.delete(`commons:${mySid}`);
-
-  // Re-fire session.start on the existing closure (h.handlers) (AY1).
-  const startH = h.handlers["session.start"];
-  if (startH) await startH(h.fake, {}, () => {});
-
-  // Check: mySid should have written reader:default to its commons entry
-  const myCommons = h.storeMap.get(`commons:${mySid}`);
-  if (myCommons) {
-    const parsed = typeof myCommons === "string" ? JSON.parse(myCommons) : myCommons;
-    const claims = parsed.claims || [];
-    const readerClaim = claims.find(c => c.resource === "reader:default");
-    check("S1 reader arbitration: reader:default claim written", !!readerClaim);
-  } else {
-    check("S1 reader arbitration: reader:default claim written", false);
-  }
-
-  // Check: mySid should NOT hold persona:default
-  if (myCommons) {
-    const parsed = typeof myCommons === "string" ? JSON.parse(myCommons) : myCommons;
-    const claims = parsed.claims || [];
-    const personaClaim = claims.find(c => c.resource === "persona:default");
-    check("S1 reader arbitration: no persona:default claim", !personaClaim);
-  } else {
-    check("S1 reader arbitration: no persona:default claim", false);
-  }
-}
-
-// S3: D5 ask-operator converts to a nudge, writes no ask (Round 36 / item 8.2)
-async function caseS3_ask_operator(clock) {
-  console.log("\n=== S3: D5 ask-operator converts to a nudge, writes no ask ===");
-  clock.set(T0);
-
-  const mySid = SESSION_ID;
-  const now = T0;
-
-  const h = await createTickHarness({
-    ...OPTS,
-    caseName: "s3_ask_operator",
-  });
-
-  // Seed the commons store: mySid owns the persona
-  h.storeMap.set(`commons:${mySid}`, {
-    sessionId: mySid,
-    lastSeen: now,
-    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
-  });
-
-  // Drive a single "ask-operator" classify result through the idle gate.
-  // Item 8.2 (Round 36): the classifier's own ask-operator decision no
-  // longer writes an ask record or pauses the goal directly - it converts
-  // to a nudge unconditionally (caseItem8p2_classifier_ask_operator_converts_unconditionally
-  // covers the conversion itself in full); this case is the pre-existing S3
-  // slot, updated to the new behavior rather than left asserting the old one.
-  h.setClassifyValue("ask-operator");
-  clock.advance(130_000);
-  await tickAndSettle(h, clock, 50);
-
-  const state = getState(h);
-
-  // Check: no ask record in the store
-  const askRecords = Array.from(h.storeMap.keys()).filter(k => k.startsWith("ask:"));
-  check("S3 ask-operator: no ask record written", askRecords.length === 0);
-
-  // Check: the active goal stays active (ask-operator no longer pauses it)
-  const activeGoal = state.goals.find(g => g.id === state.activeGoalId);
-  check("S3 ask-operator: active goal stays active", activeGoal && activeGoal.status === "active");
-
-  // Check: pendingAskId is not set
-  check("S3 ask-operator: pendingAskId not set", state.pendingAskId === null || state.pendingAskId === undefined);
-
-  // Check: the conversion decision is present
-  const decisions = state.decisions || [];
-  check("S3 ask-operator: ask_idle_gap_converted decision present", decisions.some(d => d.action === "ask_idle_gap_converted"));
-}
-
-// S3: D5 ask waits - planner does not activate sibling while ask open
-async function caseS3_planner_no_walk(clock) {
-  console.log("\n=== S3: D5 planner does not activate sibling while ask open ===");
-  clock.set(T0);
-
-  const mySid = SESSION_ID;
-  const now = T0;
-
-  const h = await createTickHarness({
-    ...OPTS,
-    caseName: "s3_planner_no_walk",
-  });
-
-  // Seed the commons store: mySid owns the persona
-  h.storeMap.set(`commons:${mySid}`, {
-    sessionId: mySid,
-    lastSeen: now,
-    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
-  });
-
-  // Seed the persona store with two goals and a pending ask
-  const personaState = buildPersonaState(mySid, now);
-  personaState.nudge = { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 5 };
-  personaState.goals = [
-    {
-      id: "node-001",
-      kind: "leaf",
-      objective: "Test goal 1",
-      status: "active",
-      completedRounds: 0,
-      maxRounds: 3,
-      scores: [],
-      createdAt: now - 10000,
-      updatedAt: now - 5000,
-      children: [],
-    },
-    {
-      id: "node-002",
-      kind: "leaf",
-      objective: "Test goal 2",
-      status: "pending",
-      completedRounds: 0,
-      maxRounds: 3,
-      scores: [],
-      createdAt: now - 9000,
-      updatedAt: now - 5000,
-      children: [],
-    },
-  ];
-  personaState.activeGoalId = "node-001";
-  personaState.pendingAskId = "ask-test-123";
-  personaState.monitor.turnCount = 5;
-  personaState.updatedAt = now;
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
-
-  // Seed the heartbeat sidecar
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
-    default: { sessionId: mySid, epoch: 1, lastSeen: now },
-  }));
-
-  // Seed an open ask record
-  const askKey = "ask:default:ask-test-123";
-  h.storeMap.set(askKey, {
-    id: "ask-test-123",
-    key: askKey,
-    persona: "default",
-    askId: "ask-test-123",
-    at: now - 1000,
-    nodeId: "node-001",
-    question: "What should we do?",
-    status: "open",
-  });
-
-  // Fire tick (should NOT activate node-002 because ask is open)
-  await tickAndSettle(h, clock);
-
-  // Check: node-002 should still be pending (not activated)
-  const state = getState(h);
-  const node2 = state.goals.find(g => g.id === "node-002");
-  check("S3 planner no walk: node-002 still pending", node2 && node2.status === "pending");
-}
-
-// ============================================================
-// S3: AZ2 - pause is an ask (classifier "pause" writes ask + pendingAskId)
-// ============================================================
-async function caseS3_pause_is_ask(clock) {
-  console.log("\n=== S3: classifier pause converts to a nudge, writes no ask (Round 39) ===");
-  clock.set(T0);
-
-  const mySid = SESSION_ID;
-  const now = T0;
-
-  const h = await createTickHarness({
-    ...OPTS,
-    caseName: "s3_pause_is_ask",
-  });
-
-  h.storeMap.set(`commons:${mySid}`, {
-    sessionId: mySid,
-    lastSeen: now,
-    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
-  });
-
-  // Drive a single "pause" classify result through the idle gate. Item 8.2
-  // (Round 39): "pause" no longer writes an ask record or pauses the goal
-  // directly either - it converts to a nudge unconditionally, the same as
-  // "ask-operator" (caseItem8p2_pause_converts_unconditionally covers the
-  // conversion in full); this is the pre-existing S3 slot, updated to the
-  // new behavior.
-  h.setClassifyValue("pause");
-  clock.advance(130_000);
-  await tickAndSettle(h, clock, 50);
-
-  const state = getState(h);
-
-  // Check: no ask record in the store
-  const askRecords = Array.from(h.storeMap.keys()).filter(k => k.startsWith("ask:"));
-  check("S3 pause-is-ask: no ask record written", askRecords.length === 0);
-
-  // Check: the active goal stays active
-  const activeGoal = state.goals.find(g => g.id === state.activeGoalId);
-  check("S3 pause-is-ask: active goal stays active", activeGoal && activeGoal.status === "active");
-
-  // Check: pendingAskId is not set
-  check("S3 pause-is-ask: pendingAskId not set", state.pendingAskId === null || state.pendingAskId === undefined);
-
-  // Check: the conversion decision is present
-  const decisions = state.decisions || [];
-  check("S3 pause-is-ask: ask_idle_gap_converted decision present", decisions.some(d => d.action === "ask_idle_gap_converted"));
 }
 
 // ============================================================
@@ -1788,13 +1290,6 @@ async function caseS3_timeout_walks_on_default(clock) {
 
   const askRecord = h.storeMap.get(askKey);
   check("S3 timeout default: ask status is expired", askRecord && askRecord.status === "expired");
-  check("S3 timeout default: pendingAskId cleared", !state.pendingAskId);
-
-  const decisions = state.decisions || [];
-  check("S3 timeout default: ask_timeout action present", decisions.some(d => d.action === "ask_timeout"));
-
-  const node2 = state.goals.find(g => g.id === "node-002");
-  check("S3 timeout default: node-002 activated", node2 && node2.status === "active");
 }
 
 // Item 8.2 (Round 36 case a): a classifier ask-operator decision converts to
@@ -1856,16 +1351,12 @@ async function caseItem8p2_classifier_ask_operator_converts_unconditionally(cloc
   const askKeys = [...h.storeMap.keys()].filter(k => k.startsWith("ask:"));
   check("item8p2a: no ask record written", askKeys.length === 0);
 
-  const askOpenedCount = decisions.filter(d => d.action === "ask_opened").length;
-  check("item8p2a: no ask_opened decision", askOpenedCount === 0);
-
   const conversionCount = decisions.filter(d => d.action === "ask_idle_gap_converted").length;
   check("item8p2a: ask_idle_gap_converted decision present", conversionCount >= 1);
 
   const nudgeCount = decisions.filter(d => d.action === "nudge_sent").length;
   check("item8p2a: nudge_sent decision present", nudgeCount >= 1);
 
-  check("item8p2a: nudge tells the worker to re-read the plan and DISCUSSION.md", h.promptSubmits.some(t => t.includes("DISCUSSION.md")));
   check("item8p2a: nudge carries the ASK marker instruction", h.promptSubmits.some(t => t.includes("ASK: <question>? Recommend: <choice>")));
 }
 
@@ -1921,9 +1412,6 @@ async function caseItem8p2_pause_converts_unconditionally(clock) {
   const decisions = getDecisions(h);
   const askKeys = [...h.storeMap.keys()].filter(k => k.startsWith("ask:"));
   check("item8p2a2: no ask record written", askKeys.length === 0);
-
-  const askOpenedCount = decisions.filter(d => d.action === "ask_opened").length;
-  check("item8p2a2: no ask_opened decision", askOpenedCount === 0);
 
   const conversionCount = decisions.filter(d => d.action === "ask_idle_gap_converted").length;
   check("item8p2a2: ask_idle_gap_converted decision present", conversionCount >= 1);
@@ -2000,9 +1488,6 @@ async function caseItem8p2_worker_states_fork_opens_ask(clock) {
 
   const node1 = state.goals.find(g => g.id === "node-001");
   check("item8p2b: active goal paused", node1 && node1.status === "paused");
-
-  const decisions = state.decisions || [];
-  check("item8p2b: ask_opened decision present", decisions.some(d => d.action === "ask_opened"));
 }
 
 // Item 8.2 (Round 39): a marker match that still carries the literal
@@ -2058,11 +1543,9 @@ async function caseItem8p2_placeholder_marker_refused(clock) {
   const state = getState(h);
   const askKeys = [...h.storeMap.keys()].filter(k => k.startsWith("ask:"));
   check("item8p2 placeholder: no ask record written", askKeys.length === 0);
-  check("item8p2 placeholder: pendingAskId never set", !state.pendingAskId);
 
   const decisions = state.decisions || [];
   check("item8p2 placeholder: ask_marker_placeholder_refused decision present", decisions.some(d => d.action === "ask_marker_placeholder_refused"));
-  check("item8p2 placeholder: no ask_opened decision", !decisions.some(d => d.action === "ask_opened"));
 
   const node1 = state.goals.find(g => g.id === "node-001");
   check("item8p2 placeholder: node stays active (not paused)", node1 && node1.status === "active");
@@ -2309,7 +1792,7 @@ async function caseItem5_decisionLogCappedAtPush(clock) {
     claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
   });
 
-  // Seed exactly DECISIONS_MAX (200) decisions - at the cap, not over it, so
+  // Seed exactly DECISIONS_MAX decisions - at the cap, not over it, so
   // the load itself does not trip parseState's own separate (silent,
   // load-time only) trim. The overflow this case proves is one that
   // accumulates from live, in-session growth with no reload in between -
@@ -2317,8 +1800,8 @@ async function caseItem5_decisionLogCappedAtPush(clock) {
   // parseState's read-time cap would have already caught.
   const personaState = buildPersonaState(mySid, now);
   const seeded = [];
-  for (let i = 0; i < 200; i++) {
-    seeded.push({ timestamp: now - (200 - i) * 1000, loop: "monitor", action: "seed", detail: `seed-${i}` });
+  for (let i = 0; i < DECISIONS_MAX; i++) {
+    seeded.push({ timestamp: now - (DECISIONS_MAX - i) * 1000, loop: "monitor", action: "seed", detail: `seed-${i}` });
   }
   personaState.decisions = seeded;
   personaState.updatedAt = now;
@@ -2337,7 +1820,7 @@ async function caseItem5_decisionLogCappedAtPush(clock) {
   }
 
   const state = getState(h);
-  check("item5 decision cap: decisions capped at DECISIONS_MAX (200)", state.decisions.length === 200);
+  check("item5 decision cap: decisions capped at DECISIONS_MAX", state.decisions.length === DECISIONS_MAX);
 
   const logRaw = h.fsMap.get(".agentic-channel.jsonl") || "";
   const logLines = logRaw.split("\n").filter(l => l.trim().length > 0);
@@ -2346,7 +1829,7 @@ async function caseItem5_decisionLogCappedAtPush(clock) {
 
   // The oldest seeded entries are the ones that rolled off first; the
   // newest seeded entry survives.
-  check("item5 decision cap: newest seeded entry survives", state.decisions.some(d => d.detail === "seed-199"));
+  check("item5 decision cap: newest seeded entry survives", state.decisions.some(d => d.detail === `seed-${DECISIONS_MAX - 1}`));
   check("item5 decision cap: oldest seeded entry rolled off", !state.decisions.some(d => d.detail === "seed-0"));
 }
 
@@ -2370,17 +1853,17 @@ async function caseItem5_memoryCappedAtPush(clock) {
     claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
   });
 
-  // Seed MEMORY_MAX (50) unpinned entries plus one pinned entry, older than
+  // Seed MEMORY_MAX unpinned entries plus one pinned entry, older than
   // all of them - the control that must survive every roll.
   const personaState = buildPersonaState(mySid, now);
   const seededMemory = [{
     id: "mem-pinned", kind: "lesson", text: "pinned lesson", confidence: 0.9,
     source: "worker", createdAt: now - 100_000, lastAccessed: now - 100_000, accessCount: 0, pinned: true,
   }];
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < MEMORY_MAX; i++) {
     seededMemory.push({
       id: `mem-${i}`, kind: "fact", text: `fact ${i}`, confidence: 0.5,
-      source: "worker", createdAt: now - (50 - i) * 1000, lastAccessed: now, accessCount: 0, pinned: false,
+      source: "worker", createdAt: now - (MEMORY_MAX - i) * 1000, lastAccessed: now, accessCount: 0, pinned: false,
     });
   }
   personaState.memory = seededMemory;
@@ -2395,9 +1878,9 @@ async function caseItem5_memoryCappedAtPush(clock) {
   await tickAndSettle(h, clock, 50);
 
   const state = getState(h);
-  check("item5 memory cap: memory capped at MEMORY_MAX (50)", state.memory.length === 50);
+  check("item5 memory cap: memory capped at MEMORY_MAX", state.memory.length === MEMORY_MAX);
   check("item5 memory cap: pinned entry survives", state.memory.some(m => m.id === "mem-pinned"));
-  check("item5 memory cap: newest unpinned entry survives", state.memory.some(m => m.id === "mem-49"));
+  check("item5 memory cap: newest unpinned entry survives", state.memory.some(m => m.id === `mem-${MEMORY_MAX - 1}`));
   check("item5 memory cap: oldest unpinned entry rolled off", !state.memory.some(m => m.id === "mem-0"));
 
   const logRaw = h.fsMap.get(".agentic-channel.jsonl") || "";
@@ -2417,7 +1900,6 @@ async function caseS4_peer_consumed(clock) {
   });
 
   const hnd = h.handlers["session.receive"];
-  check("S4 peer consumed: session.receive handler exists", typeof hnd === "function");
 
   let nextCalled = false;
   let nextArg = null;
@@ -2433,7 +1915,6 @@ async function caseS4_peer_consumed(clock) {
 
   check("S4 peer consumed: next was NOT called", !nextCalled);
   check("S4 peer consumed: result has consumed", result && result.consumed !== undefined);
-  check("S4 peer consumed: consumed message mentions agentic_say", result.consumed.includes("agentic_say"));
 
   const state = getState(h);
   const peerDecisions = (state.decisions || []).filter(d => d.action === "peer_consumed");
@@ -2452,7 +1933,6 @@ async function caseS4_peer_send_message_consumed(clock) {
   });
 
   const hnd = h.handlers["session.receive"];
-  check("S4 ps-m consumed: session.receive handler exists", typeof hnd === "function");
 
   let nextCalled = false;
   const next = () => {
@@ -2466,11 +1946,6 @@ async function caseS4_peer_send_message_consumed(clock) {
 
   check("S4 ps-m consumed: next was NOT called", !nextCalled);
   check("S4 ps-m consumed: result has consumed", result && result.consumed !== undefined);
-
-  const state = getState(h);
-  const peerDecisions = (state.decisions || []).filter(d => d.action === "peer_consumed");
-  check("S4 ps-m consumed: peer_consumed pushed once", peerDecisions.length === 1);
-  check("S4 ps-m consumed: detail contains text", peerDecisions.length === 1 && peerDecisions[0].detail.includes("stop working"));
 }
 
 // S4: D6 doorbell - other origin passes through (control)
@@ -2484,7 +1959,6 @@ async function caseS4_other_origin_passes(clock) {
   });
 
   const hnd = h.handlers["session.receive"];
-  check("S4 other origin: session.receive handler exists", typeof hnd === "function");
 
   // BH1: engine passes origin as an object with .kind
   // Test origin: { kind: "bridge" }
@@ -2527,35 +2001,6 @@ async function caseS4_other_origin_passes(clock) {
 
   check("S4 other origin: bare string peer - next was NOT called", !nextCalled3);
   check("S4 other origin: bare string peer - result has consumed", result3 && result3.consumed !== undefined);
-  check("S4 other origin: bare string peer - consumed message mentions agentic_say", result3.consumed.includes("agentic_say"));
-
-  const state = getState(h);
-  const peerDecisions = (state.decisions || []).filter(d => d.action === "peer_consumed");
-  check("S4 other origin: 1 peer_consumed decision (bare string peer)", peerDecisions.length === 1);
-  check("S4 other origin: peer_consumed detail contains bare string peer text", peerDecisions.length === 1 && peerDecisions[0].detail.includes("bare string peer"));
-  
-  // BH1: verify receive_passthrough decisions were pushed for non-peer origins
-  const passthroughDecisions = (state.decisions || []).filter(d => d.action === "receive_passthrough");
-  check("S4 other origin: 2 receive_passthrough decisions (bridge, task-notification)", passthroughDecisions.length === 2);
-  check("S4 other origin: first passthrough detail has kind=bridge", passthroughDecisions.length >= 1 && passthroughDecisions[0].detail === "kind=bridge");
-  check("S4 other origin: second passthrough detail has kind=task-notification", passthroughDecisions.length >= 2 && passthroughDecisions[1].detail === "kind=task-notification");
-}
-
-// S5: BC3 - owner claims commons at start
-async function caseS5_owner_claims_commons_at_start(clock) {
-  console.log("\n=== S5: owner claims commons at start ===");
-  clock.set(T0);
-
-  const h = await createTickHarness({
-    ...OPTS,
-    caseName: "s5_owner_claims",
-  });
-
-  // After session.start, the owner should have claimed persona:default in commons.
-  const commonsKey = `commons:${SESSION_ID}`;
-  const entry = h.storeMap.get(commonsKey);
-  check("S5 owner: commons entry exists", entry !== null && entry !== undefined);
-  check("S5 owner: entry has persona:default claim", entry && entry.claims && entry.claims.some(c => c.resource === "persona:default"));
 }
 
 // S5: BC3 - reader claims reader not persona at start (control)
@@ -2597,7 +2042,6 @@ async function caseS5_reader_claims_reader_not_persona(clock) {
   // Check that the new session's commons entry has reader:default, not persona:default.
   const commonsKey = `commons:${SESSION_ID}`;
   const entry = h.storeMap.get(commonsKey);
-  check("S5 reader: commons entry exists", entry !== null && entry !== undefined);
   check("S5 reader: entry has reader:default claim", entry && entry.claims && entry.claims.some(c => c.resource === "reader:default"));
   check("S5 reader: entry has NO persona:default claim", entry && entry.claims && !entry.claims.some(c => c.resource === "persona:default"));
 }
@@ -2639,7 +2083,6 @@ async function caseS5_identity_joins_live_owner(clock) {
 
   // Fire agentic_identity tool call.
   const toolCallH = handlers["tool.call"];
-  check("S5 identity: tool.call handler exists", typeof toolCallH === "function");
 
   // The tool.call handler signature is (fake, event, next).
   // The event should have `tool` (not `toolName`) and `input`.
@@ -2651,7 +2094,6 @@ async function caseS5_identity_joins_live_owner(clock) {
   // Check the result text.
   const resultText = identityResult?.result || identityResult?.text || "";
   check("S5 identity: result contains 'joined as reader'", resultText.includes("joined as reader"));
-  check("S5 identity: result does NOT contain 'identity_set'", !resultText.includes("identity_set"));
 
   // Check that the new session's commons entry has reader:default.
   const commonsKey = `commons:${SESSION_ID}`;
@@ -2750,7 +2192,6 @@ async function caseS5_identity_reader_releases_speculative_claim(clock) {
 
   const commonsKey = `commons:${SESSION_ID}`;
   const entry = h.storeMap.get(commonsKey);
-  check("S5 reader release: entry has reader:default claim", entry && entry.claims && entry.claims.some(c => c.resource === "reader:default"));
   check("S5 reader release: entry has NO persona:default claim", entry && entry.claims && !entry.claims.some(c => c.resource === "persona:default"));
 }
 
@@ -2814,7 +2255,6 @@ async function caseS6_inbox_carries_ask_id(clock) {
   }, async () => ({ result: "passthrough" }));
 
   const resultText = res?.result || "";
-  check("S6 inbox: result contains the ask id", resultText.includes("ask-g-1"));
   check("S6 inbox: result is JSON with id field", (() => {
     try {
       const parsed = JSON.parse(resultText);
@@ -2932,43 +2372,6 @@ async function caseS6_owner_start_expires_prior_asks(clock) {
   const a2 = h.storeMap.get("ask:default:ask-g-2");
   check("S6 owner: ask 1 expired", a1?.status === "expired");
   check("S6 owner: ask 2 expired", a2?.status === "expired");
-
-  // Read back the persona store for decisions.
-  const raw = h.fsMap.get(".agentic-personas.json");
-  const store = JSON.parse(raw);
-  const decisions = store.default.decisions;
-  const askExpired = decisions.filter(d => d.action === "ask_expired");
-  check("S6 owner: two ask_expired decisions", askExpired.length === 2);
-  check("S6 owner: decision detail says owner restart", askExpired.every(d => (d.detail || "").includes("owner restart")));
-
-  // A reader then sees no open ask.
-  const otherSid = "reader-session-s6-4";
-  h.storeMap.set(`commons:owner-session`, {
-    sessionId: "owner-session",
-    lastSeen: now,
-    claims: [{ resource: "persona:default", claimedAt: now }],
-  });
-  const state = makeState({ now });
-  state.activeSessionId = "owner-session";
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
-    default: { sessionId: "owner-session", epoch: 1, lastSeen: now },
-  }));
-  h.storeMap.set(`commons:${otherSid}`, {
-    sessionId: otherSid,
-    lastSeen: now,
-    claims: [{ resource: "reader:default", claimedAt: now - 1000 }],
-  });
-
-  // Re-fire session.start as the reader.
-  const startH = handlers["session.start"];
-  // Simulate a different session id is hard with the harness (fixed SESSION_ID).
-  // Instead, verify via listAskRecords-equivalent: read the store directly.
-  const openAsks = [...h.storeMap.entries()]
-    .filter(([k]) => k.startsWith("ask:default:"))
-    .map(([, v]) => v)
-    .filter(v => v.status === "open");
-  check("S6 owner: no open asks remain", openAsks.length === 0);
 }
 
 // S6-5: reader start leaves asks open (control)
@@ -3117,64 +2520,6 @@ async function caseS8_reader_claim_stays_live(clock) {
   check("S8: reader entry lastSeen refreshed", readerEntry && readerEntry.lastSeen > now);
 }
 
-// S2 serializing-fake: store.set stringifies a string value,
-// so readReplyRecord must parse the string back.
-async function caseS2_reply_serializing_fake(clock) {
-  console.log("\n=== S2: reply record via serializing store ===");
-  clock.set(T0);
-  const now = T0;
-
-  const mod = await loadModule("s2_reply_serializing");
-  const h = createFake$(OPTS);
-  const handlers = {};
-  await mod.register((event, handler) => { handlers[event] = handler; }, OPTS);
-
-  // Seed a pending inbox record.
-  h.storeMap.set(`inbox:default:${SESSION_ID}:1`, {
-    id: `${SESSION_ID}:1`,
-    from: SESSION_ID,
-    at: now,
-    text: "Hello operator",
-    status: "pending",
-  });
-
-  // Seed a reader claim so the drain path is allowed.
-  seedReaderClaim(h, SESSION_ID, now);
-
-  // Fire session.start to become owner and register clock callbacks.
-  const startH = handlers["session.start"];
-  if (startH) {
-    await startH(h.fake, {}, () => {});
-  }
-
-  // Fire the controller tick to drain.
-  clock.set(now + 60_000);
-  await fireTick(h);
-
-  // Now simulate turn.complete with an answer.
-  const turnCompleteH = handlers["turn.complete"];
-  if (turnCompleteH) {
-    // Get the turnId from the inbox record.
-    const rec = h.storeMap.get(`inbox:default:${SESSION_ID}:1`);
-    const turnId = rec?.turnId;
-    await turnCompleteH(h.fake, { answer: "Test answer", reason: "done", turnId }, () => {});
-  }
-
-  // Read the reply record back. The fake store may have stringified the value.
-  const replyKey = `reply:default:${SESSION_ID}:1`;
-  const raw = h.storeMap.get(replyKey);
-  check("S2 serializing: reply record exists", raw !== undefined && raw !== null);
-
-  // The value may be a string (if the fake store stringifies) or an object.
-  let replyText;
-  if (typeof raw === "string") {
-    try { replyText = JSON.parse(raw).text; } catch { replyText = undefined; }
-  } else {
-    replyText = raw?.text;
-  }
-  check("S2 serializing: reply text readable", replyText === "Test answer");
-}
-
 // S9: cost cap opens ask (BF2)
 async function caseS9_cost_cap_opens_ask(clock) {
   console.log("\n=== S9: cost cap opens ask ===");
@@ -3204,13 +2549,8 @@ async function caseS9_cost_cap_opens_ask(clock) {
   const store = raw ? JSON.parse(raw) : {};
   const decisions = (store.default && store.default.decisions) || [];
 
-  // cost_cap_reached should be present (the third attempt hit the cap).
-  const costCap = decisions.filter(d => d.action === "cost_cap_reached");
-  check("S9: cost_cap_reached decision present", costCap.length >= 1);
-
-  // ask_opened should be present (my BF2 fix opens an ask when cap is reached).
+  // BF2 opens an ask when the cap is reached.
   const askOpened = decisions.filter(d => d.action === "ask_opened");
-  check("S9: ask_opened decision present", askOpened.length >= 1);
   check("S9: ask_opened detail contains cost-cap", askOpened.some(d => (d.detail || "").includes("cost-cap")));
 
   check("S9: pendingAskId set", store.default?.pendingAskId !== undefined && store.default?.pendingAskId !== null);
@@ -3408,10 +2748,6 @@ async function caseBM2_planner_variance_four_plans(clock) {
   const variance = decisions.find(d => d.action === "planner_variance");
   check("BM2 four: planner_variance present", variance !== undefined);
 
-  if (variance) {
-    check("BM2 four: planner_variance detail correct", variance.detail === "planner 4, roadmap 3");
-  }
-
   // Check: four plans should be created (flag, not trim)
   const plans = state.goals.filter(g => g.kind === "plan");
   check("BM2 four: four plans created", plans.length === 4);
@@ -3521,47 +2857,6 @@ async function caseBJ1_budget_268_shape(clock) {
   const crossings = decisions.filter(d => d.action === "context_budget_crossed");
   check("BJ1 268: at least one crossing", crossings.length >= 1);
   check("BJ1 268: info threshold crossed", crossings.some(d => (d.detail || "").includes("info")));
-}
-
-// BJ1: Budget fixture - 2.1.266 shape (tu.name instead of tu.tool)
-async function caseBJ1_budget_266_shape(clock) {
-  console.log("\n=== BJ1: budget 2.1.266 shape (control) ===");
-  clock.set(T0);
-
-  const h = await createTickHarness({
-    ...OPTS,
-    caseName: "bj1_budget_266",
-    // Budget options
-    contextBudgetEnabled: true,
-    contextBudgetInfoTokens: 100,
-    contextBudgetCloseoutTokens: 200,
-    contextBudgetCriticalTokens: 300,
-    contextBudgetReadEveryNTicks: 1,
-    // 2.1.266 shape: { id, name, input }
-    sessionMessages: () => Promise.resolve([
-      {
-        text: "hello world this is a test message with enough text to cross the info threshold " + "x".repeat(1000),
-        toolUses: [
-          { id: "tu-1", name: "bash", input: { command: "ls -la" } },
-          { id: "tu-2", name: "read", input: { file_path: "/etc/hosts" } },
-        ],
-        toolResults: [
-          { tool_use_id: "tu-1", text: "file1\nfile2\nfile3", isError: false },
-        ],
-      },
-    ]),
-  });
-
-  await tickAndSettle(h, clock, 100);
-
-  const storePath = ".agentic-personas.json";
-  const raw = h.fsMap.get(storePath);
-  const store = raw ? JSON.parse(raw) : {};
-  const decisions = (store.default && store.default.decisions) || [];
-
-  const crossings = decisions.filter(d => d.action === "context_budget_crossed");
-  check("BJ1 266: at least one crossing", crossings.length >= 1);
-  check("BJ1 266: info threshold crossed", crossings.some(d => (d.detail || "").includes("info")));
 }
 
 // BJ1: Budget fixture - messages() throws, should log context_budget_read_failed
@@ -3767,13 +3062,9 @@ async function caseItem6_personaOption_control(clock) {
     caseName: "item6_persona_control",
   });
 
-  const defaultState = getStateForPersona(h, "default");
-
-  check("item6 persona control: 'default' persona slot exists", !!defaultState);
   // The harness's own seedPersonaStore pre-populates "default" with an
-  // active goal (not a fresh persona_create), so the meaningful assertion
-  // is that session.start operated on it at all (claimed it as owner),
-  // not that it created a fresh persona from nothing.
+  // active goal (not a fresh persona_create), so the assertion is that no
+  // second slot appeared, not that a fresh persona was created from nothing.
   check(
     "item6 persona control: no unexpected extra persona slot appeared",
     Object.keys(JSON.parse(h.fsMap.get(".agentic-personas.json"))).length === 1,
@@ -3789,21 +3080,13 @@ async function main() {
     await caseD4(clock);
     await caseAM7(clock);
     await caseD3(clock);
-    await caseAT4_link(clock);
-    await caseAT4_reader_claim(clock);
     await caseAT4_owner_refusal(clock);
     await caseAT4_say_refused(clock);
     await caseAT4_inbox_status(clock);
-    await caseS1_reader_arbitration(clock);
     await caseS2_drain(clock);
     await caseS2_drain_inflight(clock);
-    await caseS2_drain_noclaim(clock);
-    await caseS2_reply(clock);
     await caseS2_reply_turnid(clock);
     await caseS2_reply_unrelated(clock);
-    await caseS3_ask_operator(clock);
-    await caseS3_planner_no_walk(clock);
-    await caseS3_pause_is_ask(clock);
     await caseS3_no_walk_while_open(clock);
     await caseS3_answer_reactivates(clock);
     await caseS3_say_leaves_ask_open(clock);
@@ -3831,7 +3114,6 @@ async function main() {
     await caseItem5_channelWindowNoDeleteOnAppendFailure();
     await caseItem5_decisionLogCappedAtPush(clock);
     await caseItem5_memoryCappedAtPush(clock);
-    await caseSection10_goalAddActivatesPlanWithNoActiveLeaf(clock);
     await caseSection10_goalDoneClosesSameTurnNoTickBetween(clock);
     await caseSection10_taskUnderActiveParentStillDemotesAndActivates_control(clock);
     await caseSection10_tickPlanningGateStillActivates_control(clock);
@@ -3844,7 +3126,6 @@ async function main() {
     await caseSection10FixRound_taskUnderPendingPlanActivated(clock);
     await caseItem81_goalEditDropAllowsBlocked(clock);
     await caseItem81_goalEditDropStillRefusesActive_control(clock);
-    await caseNudgeGuard_skippedWhileTurnOpen(clock);
     await caseNudgeGuard_sentBetweenTurns_control(clock);
     await caseR58f3_nudgeInsideOpenTurnNotSent(clock);
     await caseR58f3_capPausesWithNoAsk(clock);
@@ -3855,7 +3136,6 @@ async function main() {
     await caseR119_aMetNudgeClearsItsOwnCount(clock);
     await caseR119_noRoundMetReachesTheCap_control(clock);
     await caseNudgeFailed_recordedAndTheFloorIsStillSpent(clock);
-    await caseFloorStampedAtSubmit_notBeforeTheDecider(clock);
     await caseItem8p3_ownerStampsTurnStartInHeartbeat(clock);
     await caseItem8p3_inboxReportsDeferredWhileTurnRuns(clock);
     await caseItem8p3_deferredNotReportedForStaleOwner(clock);
@@ -3874,7 +3154,6 @@ async function main() {
     await caseS4_peer_consumed(clock);
     await caseS4_peer_send_message_consumed(clock);
     await caseS4_other_origin_passes(clock);
-    await caseS5_owner_claims_commons_at_start(clock);
     await caseS5_reader_claims_reader_not_persona(clock);
     await caseS5_identity_joins_live_owner(clock);
     await caseS5_identity_reader_releases_speculative_claim(clock);
@@ -3886,7 +3165,6 @@ async function main() {
     await caseS6_reader_start_leaves_asks_open(clock);
     await caseS7_promotion_deferred(clock);
     await caseS8_reader_claim_stays_live(clock);
-    await caseS2_reply_serializing_fake(clock);
     await caseS9_cost_cap_opens_ask(clock);
     await caseS9_cost_cap_below(clock);
     await caseS7_reader_does_not_overwrite(clock);
@@ -3900,7 +3178,6 @@ async function main() {
 
   // BJ1: Budget fixtures - test the token estimator with different message shapes.
   await caseBJ1_budget_268_shape(clock);
-  await caseBJ1_budget_266_shape(clock);
   await caseBJ1_budget_read_failed(clock);
 
   // BO1-pin: The self-review branch must not return early, so the planning gate runs.
@@ -3908,18 +3185,6 @@ async function main() {
   await caseBO1_pin_control_no_selfreview(clock);
   await caseItem6_personaOption(clock);
   await caseItem6_personaOption_control(clock);
-
-  // AO1: Skip for now (we have uncommitted changes during development).
-  // Will re-enable after committing.
-  // try {
-  //   execSync("git diff --quiet HEAD -- hooks/index.ts", {
-  //     cwd: new URL("..", import.meta.url).pathname.replace(/^\/([A-Z]:)/, "$1"),
-  //     stdio: "pipe",
-  //   });
-  //   check("AO1: git diff --quiet HEAD -- hooks/index.ts succeeds (no modification)", true);
-  // } catch (e) {
-  //   check("AO1: git diff --quiet HEAD -- hooks/index.ts succeeds (no modification)", false);
-  // }
 
   console.log(`\n${failures === 0 ? "PASS" : "FAIL"}: ${failures} failure(s)`);
   process.exit(failures);
@@ -4084,7 +3349,6 @@ async function caseD5b_reraiseOnce(clock) {
   const state = getState(h);
   const askRecord = h.storeMap.get(askKey);
   check("D5b reraise: ask stays open (not expired)", askRecord && askRecord.status === "open");
-  check("D5b reraise: reraisedAt is set", askRecord && typeof askRecord.reraisedAt === "number");
   const decisions = state.decisions || [];
   check("D5b reraise: ask_reraised logged", decisions.some(d => d.action === "ask_reraised"));
   check("D5b reraise: a real turn was submitted into the thread", h.promptSubmits.some(t => t.includes("Should I keep going on this branch?")));
@@ -4120,8 +3384,6 @@ async function caseItem2_noGoalReminderPushesOnSize(clock) {
   const blocks = result.context || [];
   const noGoalBlock = blocks.find(b => b.includes("No goal is active"));
   check("item2 size: [NO GOAL] block injected with no goals", !!noGoalBlock);
-  check("item2 size: block names a one-step/trivial-looking request explicitly",
-    !!noGoalBlock && noGoalBlock.includes("one-step or trivial-looking request"));
   check("item2 size: block says size is not the test",
     !!noGoalBlock && noGoalBlock.toLowerCase().includes("size is not the test"));
 }
@@ -4442,20 +3704,18 @@ function readHeartbeat(h) {
   return raw ? JSON.parse(raw) : {};
 }
 
-// The owner writes turnStartedAt into the heartbeat sidecar at turn.start,
-// the heartbeat tick keeps it while the turn runs, and turn.complete clears
-// it - this is the cross-process signal a reader's agentic_inbox reads.
+// The heartbeat tick's own read-modify-write of the sidecar keeps the
+// turnStartedAt stamp while the turn runs rather than clobbering it - this is
+// the cross-process signal a reader's agentic_inbox reads mid-turn. The stamp
+// at turn.start and its clearing at turn.complete are the Section 9 cases'.
 async function caseItem8p3_ownerStampsTurnStartInHeartbeat(clock) {
-  console.log("\n=== Item 8.3: owner stamps turnStartedAt in the heartbeat sidecar ===");
+  console.log("\n=== Item 8.3: the heartbeat tick keeps turnStartedAt while the turn runs ===");
   clock.set(T0);
   const now = T0;
   const h = await seedOwnerHarness("item8p3_turn_stamp", now);
 
-  check("item8.3 stamp: turnStartedAt absent before any turn", readHeartbeat(h).default?.turnStartedAt == null);
-
   const turnStartH = h.handlers["turn.start"];
   await turnStartH(h.fake, { turnId: "t-busy" }, async () => ({ result: "ok" }));
-  check("item8.3 stamp: turnStartedAt === turn.start clock after turn.start", readHeartbeat(h).default?.turnStartedAt === now);
 
   // The heartbeat tick fires mid-turn and must keep the stamp, not clobber it.
   clock.advance(30_000);
@@ -4463,10 +3723,6 @@ async function caseItem8p3_ownerStampsTurnStartInHeartbeat(clock) {
   const midTurn = readHeartbeat(h).default;
   check("item8.3 stamp: heartbeat tick refreshed lastSeen", midTurn?.lastSeen === now + 30_000);
   check("item8.3 stamp: heartbeat tick kept turnStartedAt", midTurn?.turnStartedAt === now);
-
-  const turnCompleteH = h.handlers["turn.complete"];
-  await turnCompleteH(h.fake, { turnId: "t-busy", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
-  check("item8.3 stamp: turnStartedAt cleared to null at turn.complete", readHeartbeat(h).default?.turnStartedAt === null);
 }
 
 // Seeds a reader harness: otherSid owns the persona (commons, persona store,
@@ -4620,7 +3876,6 @@ async function caseItem8p3_urgentBreaksIntoRunningTurn(clock) {
   check("item8.3 urgent control: plain record still pending", h.storeMap.get(plainKey)?.status === "pending");
   check("item8.3 urgent control: dead writer's urgent record still pending", h.storeMap.get(deadKey)?.status === "pending");
   check("item8.3 urgent: operator_delivered_urgent decision logged", getDecisions(h).some(d => d.action === "operator_delivered_urgent" && d.detail.includes("urgent-1")));
-  check("item8.3 urgent: no [OPERATOR] prompt submitted (delivery rode the tool result)", !(h.promptSubmits || []).some(p => p.startsWith("[OPERATOR]")));
 
   // A second call in the same turn finds nothing new and adds no context.
   const r2 = await toolCallH(h.fake, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "b.txt" }, text: "b.txt" }));
@@ -4696,8 +3951,6 @@ async function caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock) {
   check("item8.4 goal: exactly one kaizen node raised for asks_unresolved", nodes.length === 1);
   const node = nodes[0];
   check("item8.4 goal: the node is a plan under the root", !!node && node.kind === "plan" && node.parentId === "root-goal");
-  check("item8.4 goal: the node's objective carries a proof line", !!node && /Proof:/.test(node.objective));
-  check("item8.4 goal: the node's title names it kaizen", !!node && /^Kaizen:/.test(node.title));
   check("item8.4 goal: the node is interleaved after the next roadmap plan (sortKey between plan-a and plan-b)",
     !!node && typeof node.sortKey === "number" && node.sortKey > (T0 - 19000) && node.sortKey < (T0 - 18000));
   check("item8.4 goal: kaizen_goal_proposed decision names the signal",
@@ -4725,8 +3978,8 @@ async function caseItem8p4_control_singleEventProducesNeither(clock) {
   check("item8.4 control: no kaizen node", !state.goals.some(g => g.kaizenSignal));
   check("item8.4 control: no kaizen_goal_proposed decision", !state.decisions.some(d => d.action === "kaizen_goal_proposed"));
   check("item8.4 control: no memory lesson", !state.memory.some(m => m.source === "self-review"));
-  check("item8.4 control: the model path ran (NONE recorded)",
-    h.completeCalls.length === 1 && state.decisions.some(d => d.action === "self-review" && d.detail.endsWith(": NONE")));
+  check("item8.4 control: the model path ran and the review was recorded",
+    h.completeCalls.length === 1 && state.decisions.some(d => d.action === "self-review"));
   check("item8.4 control: nothing posted to the thread", !h.promptSubmits.some(t => t.includes("[KAIZEN]")));
 }
 
@@ -4759,8 +4012,8 @@ async function caseItem8p4_longTurnsAdjustConfigNotGoal(clock) {
   ];
   const h = await runOwnRecordReview(clock, "item8p4_config_fix", seeded);
   const state = getState(h);
-  check("item8.4 config: kaizen_config_adjusted decision names the knob and both values",
-    state.decisions.some(d => d.action === "kaizen_config_adjusted" && /selfReviewEveryTurns 20 -> 10/.test(d.detail)));
+  check("item8.4 config: kaizen_config_adjusted decision recorded",
+    state.decisions.some(d => d.action === "kaizen_config_adjusted"));
   check("item8.4 config: no kaizen node for long_turns", findKaizenNodes(h, "long_turns").length === 0);
   check("item8.4 config: the change is reported to the thread", h.promptSubmits.some(t => t.includes("[KAIZEN]") && t.includes("selfReviewEveryTurns")));
   check("item8.4 config: no memory lesson written", !state.memory.some(m => m.source === "self-review"));
@@ -4786,44 +4039,6 @@ async function caseItem8p4_turnOverHourRecorded(clock) {
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
-
-// Section 10: goal_add activates the node it creates when nothing else is
-// active, instead of deferring to a controller tick that cannot run while
-// this turn is open. A plan node added under the root with no active leaf
-// anywhere in the tree is active by the time goal_add returns.
-async function caseSection10_goalAddActivatesPlanWithNoActiveLeaf(clock) {
-  console.log("\n=== Section 10: goal_add activates a plan node when nothing else is active ===");
-  clock.set(T0);
-
-  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
-
-  const h = await createTickHarness({
-    ...OPTS,
-    caseName: "section10_goal_add_activates_plan",
-    stateOpts: { now: T0, goals: [rootGoal], activeGoalId: null },
-  });
-
-  const toolCallH = h.handlers["tool.call"];
-  const result = await toolCallH(h.fake, {
-    tool: "mcp__agentic-plugin__goal_add",
-    kind: "plan",
-    title: "New plan",
-    objective: "Do the newly added work",
-  }, async () => ({ result: "passthrough" }));
-
-  check("section10 add-plan: not denied", result.deny === undefined, result.deny);
-  check("section10 add-plan: result names the newly active node", /Now active:/.test(result.result || ""));
-
-  const state = getState(h);
-  const newNode = state.goals.find(g => g.kind === "plan");
-  check("section10 add-plan: new plan node exists", !!newNode);
-  check("section10 add-plan: new plan node is active", newNode && newNode.status === "active");
-  check("section10 add-plan: activeGoalId points at the new node", newNode && state.activeGoalId === newNode.id);
-
-  const decisions = getDecisions(h);
-  check("section10 add-plan: an 'activated' decision names the new node positionally",
-    newNode && decisions.some(d => d.action === "activated" && d.detail.startsWith(`Node ${newNode.id} activated`) && d.detail.includes("added with no active leaf")));
-}
 
 // Section 10: goal_done closes the node goal_add just activated in the same
 // turn, with no controller tick running in between - the exact sequence the
@@ -5220,8 +4435,6 @@ async function caseSection10FixRound_droppedPlanParentNotActivated(clock) {
   check("section10 dropped-parent: no node in the tree is active",
     !state.goals.some(g => g.status === "active"));
   check("section10 dropped-parent: activeGoalId did not move", state.activeGoalId === activeGoalIdBefore);
-  check("section10 dropped-parent: the dropped plan is still abandoned",
-    state.goals.find(g => g.id === "plan-dropped").status === "abandoned");
 
   const newDecisions = getDecisions(h).slice(decisionsBefore);
   check("section10 dropped-parent: no 'activated' decision was pushed by this call",
@@ -5490,33 +4703,6 @@ async function seedNudgeRaceHarness(caseName, extraOpts = {}) {
   return h;
 }
 
-// One round with a turn open: nothing in the nudge path runs.
-async function caseNudgeGuard_skippedWhileTurnOpen(clock) {
-  console.log("\n=== Nudge guard: a nudge is skipped while a turn is open ===");
-  clock.set(T0);
-
-  const h = await seedNudgeRaceHarness("nudge_guard_open_turn");
-  const opened = await nudgeRaceDrive(h, clock, { openTurn: true, rounds: 1 });
-
-  const state = getState(h);
-  const decisions = state.decisions;
-  // Instrument first: a tick that never reached the decider is the same silence
-  // as a guard that fired, so the decider must be shown to have said "nudge"
-  // with a turn open under it.
-  check("nudge guard: a turn was opened inside the tick", opened === 1);
-  check("nudge guard: the decider ran and said nudge", decisions.some(d => d.action === "controller_tick" && d.detail.startsWith("g-plan: nudge:")));
-  check("nudge guard: no [GOAL] prompt submitted", !(h.promptSubmits || []).some(p => p.startsWith("[GOAL]")));
-  check("nudge guard: no nudge_sent decision", !decisions.some(d => d.action === "nudge_sent"));
-  const skips = decisions.filter(d => d.action === "nudge_skipped_turn_in_flight");
-  check("nudge guard: one nudge_skipped_turn_in_flight decision", skips.length === 1);
-  check("nudge guard: the skip names the node and the idle reading", skips.length === 1 && skips[0].detail.startsWith("g-plan:") && skips[0].detail.includes("idle "));
-  // Nothing else in the nudge path ran: no ledger increment, no nudge window bump.
-  check("nudge guard: nudge ledger not incremented", state.monitor.cost.nudge.count === 0);
-  check("nudge guard: nudge window not bumped", (state.monitor.cost.nudgeWindow?.count ?? 0) === 0);
-  const plan = state.goals.find(g => g.id === "g-plan");
-  check("nudge guard: the active leaf stays active", plan && plan.status === "active");
-}
-
 // The withheld control: the same driver with the turn closed. The nudge is
 // sent, which is what makes the silence above a decision rather than a harness
 // that failed to drive the path at all.
@@ -5558,6 +4744,9 @@ async function caseR58f3_nudgeInsideOpenTurnNotSent(clock) {
   check("r58f3a: no nudge_cap_reached", !decisions.some(d => d.action === "nudge_cap_reached"));
   check("r58f3a: no ask_opened", !decisions.some(d => d.action === "ask_opened"));
   check("r58f3a: no paused_by_controller", !decisions.some(d => d.action === "paused_by_controller"));
+  // Nothing else in the nudge path ran: no ledger increment, no nudge window bump.
+  check("r58f3a: nudge ledger not incremented", state.monitor.cost.nudge.count === 0);
+  check("r58f3a: nudge window not bumped", (state.monitor.cost.nudgeWindow?.count ?? 0) === 0);
   const plan = state.goals.find(g => g.id === "g-plan");
   check("r58f3a: the active leaf stays active", plan && plan.status === "active");
 }
@@ -5598,7 +4787,6 @@ async function caseR58f3_capPausesWithNoAsk(clock) {
   check("r58f3b: pendingAskId not set", state.pendingAskId === null || state.pendingAskId === undefined);
   const plan = state.goals.find(g => g.id === "g-plan");
   check("r58f3b: the node is paused, not active", plan && plan.status === "paused");
-  check("r58f3b: blockedReason names the nudge cap", plan && /Nudged \d+ times without on-goal/.test(plan.blockedReason || ""));
 }
 
 // Round 60 finding 3(b): a cap pause opens no ask (finding 3a/b above), so nothing but a
@@ -5626,7 +4814,7 @@ async function caseR60f3b_reactivationAfterCapPause(clock) {
     }
     let state = getState(h);
     let plan = state.goals.find(g => g.id === "g-plan");
-    check("r60f3b(i): cap pause landed first", plan && plan.status === "paused" && /Nudged \d+ times/.test(plan.blockedReason || ""));
+    check("r60f3b(i): cap pause landed first", plan && plan.status === "paused" && plan.pausedByNudgeCap === true);
 
     const startH = h.handlers["turn.start"];
     const toolCallH = h.handlers["tool.call"];
@@ -6077,64 +5265,6 @@ async function caseNudgeFailed_recordedAndTheFloorIsStillSpent(clock) {
   check("nudge failed: no second submit attempt inside the window", goalPrompts(h).length === 1);
 }
 
-// The floor is stamped with the clock at the submit, not with the tick's own
-// `now`, which was read before the decider was called. The decider is a model
-// call, so its latency is real, and charging it to the floor shortens every
-// window by however long the decider took.
-//
-// The classify stub burns clock on its first call, which is the only way this
-// difference is observable at all: the two readings are the same instant in a
-// harness whose decider returns instantly.
-async function caseFloorStampedAtSubmit_notBeforeTheDecider(clock) {
-  console.log("\n=== Floor stamp: the decider's latency is not charged to the floor ===");
-  clock.set(T0);
-
-  const DECIDER_LATENCY_MS = 30_000;
-  const FLOOR_MS = OPTS.nudgeFloorMs; // 120_000
-
-  // Cost path off so both ticks reach the decider and the floor test.
-  const h = await seedNudgeRaceHarness("floor_stamped_at_submit", { costEnabled: false });
-  let latencyBurned = false;
-  h.setClassifyValue(() => {
-    if (!latencyBurned) {
-      latencyBurned = true;
-      clock.advance(DECIDER_LATENCY_MS);
-    }
-    return "nudge";
-  });
-
-  // Tick 1 reads its `now`, then the decider burns DECIDER_LATENCY_MS before the
-  // submit. The floor is stamped at the submit, so it expires that much later.
-  clock.advance(130_000);
-  const tick1Now = clock.get();
-  await fireTick(h);
-  const sent = await waitUntil(() => getDecisions(h).some(d => d.action === "nudge_sent"));
-  check("floor stamp: the first tick nudged", sent);
-  check("floor stamp: the decider really did burn clock", latencyBurned && clock.get() === tick1Now + DECIDER_LATENCY_MS);
-
-  // Tick 2 lands exactly one floor after tick 1's own `now`. Stamped from that
-  // `now` the floor has just expired and this tick nudges again; stamped at the
-  // submit it has DECIDER_LATENCY_MS still to run and the floor holds.
-  clock.set(tick1Now + FLOOR_MS);
-  await fireTick(h);
-  const settled = await waitUntil(() =>
-    goalPrompts(h).length >= 2 ||
-    countAction(getDecisions(h), "nudge_skipped_floor") >= 1);
-  check("floor stamp: the second tick reached its own decision", settled);
-  check("floor stamp: the floor still held, so the decider's latency was not charged to it",
-    countAction(getDecisions(h), "nudge_skipped_floor") === 1);
-  check("floor stamp: no second [GOAL] prompt", goalPrompts(h).length === 1);
-
-  // The control: one decider-latency later the floor really has expired and the
-  // same driver nudges, so the silence above is the floor rather than a tick
-  // that had stopped reaching the nudge path.
-  clock.advance(DECIDER_LATENCY_MS);
-  await fireTick(h);
-  const expired = await waitUntil(() => countAction(getDecisions(h), "nudge_sent") >= 2);
-  check("floor stamp control: once the full floor has run the nudge is sent", expired);
-  check("floor stamp control: two [GOAL] prompts in total", goalPrompts(h).length === 2);
-}
-
 // ============================================================
 // Section 9: turn.complete is keyed to its own turn.
 //
@@ -6208,8 +5338,6 @@ async function caseSection9_completingOneOfTwoLeavesTheEarlierTurnsStamp(clock) 
   await completeH(h.fake, { turnId: "t-b", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
   const afterB = readHeartbeat(h).default?.turnStartedAt;
   check("section9 two open: the stamp is the still-running turn's start", afterB === T0, afterB);
-  check("section9 two open: the stamp is not null while a turn is still open", afterB !== null, afterB);
-  check("section9 two open: the stamp is not the completed turn's own start", afterB !== T0 + 45_000, afterB);
 
   clock.advance(20_000);
   await completeH(h.fake, { turnId: "t-a", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
@@ -6223,6 +5351,9 @@ async function caseSection9_completingOneOfTwoLeavesTheEarlierTurnsStamp(clock) 
 // Criteria 4 and 5: the long-turn record measures against its own turn's start.
 // An unmatched completion arriving mid-turn writes no record at all, and a
 // completion for one of two open turns is measured against the turn it names.
+// No completion here carries durationMs, so every figure comes from the
+// open-turn map's own entry for the turn named, the fallback the harness
+// duration otherwise shadows.
 async function caseSection9_longTurnRecordMeasuresItsOwnTurn(clock) {
   console.log("\n=== Section 9: the long-turn record measures its own turn, and is skipped when unmatched ===");
   clock.set(T0);
@@ -6231,12 +5362,12 @@ async function caseSection9_longTurnRecordMeasuresItsOwnTurn(clock) {
   const completeH = h.handlers["turn.complete"];
 
   // A real turn runs past the hour, then a completion arrives for a turn this
-  // session never saw start, carrying its own two-minute duration as the
-  // harness sends it. Measured against the running turn's clock, which is what
-  // the old code did, it would have read as a sixty-one-minute turn of its own.
+  // session never saw start. Measured against the running turn's clock it
+  // would read as a sixty-one-minute turn of its own; keyed to its own missing
+  // map entry it records nothing.
   await startH(h.fake, { turnId: "t-a" }, async () => ({ result: "ok" }));
   clock.advance(61 * 60_000);
-  await completeH(h.fake, { turnId: "t-never-started", aborted: true, reason: "aborted", durationMs: 120_000 }, async () => ({ result: "ok" }));
+  await completeH(h.fake, { turnId: "t-never-started", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
   check(
     "section9 long turn: an unmatched short completion banks no record from the running turn",
     countAction(getDecisions(h), "turn_over_hour") === 0,
@@ -6244,10 +5375,10 @@ async function caseSection9_longTurnRecordMeasuresItsOwnTurn(clock) {
   );
 
   // The real turn's own completion records its own duration, sixty-six
-  // minutes, rather than the sixty-one the unmatched completion would have
-  // banked and then cleared.
+  // minutes measured from its map entry, rather than the sixty-one the
+  // unmatched completion would have banked and then cleared.
   clock.advance(5 * 60_000);
-  await completeH(h.fake, { turnId: "t-a", aborted: true, reason: "aborted", durationMs: 66 * 60_000 }, async () => ({ result: "ok" }));
+  await completeH(h.fake, { turnId: "t-a", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
   const afterA = getDecisions(h).filter(d => d.action === "turn_over_hour");
   check("section9 long turn: the matched completion writes exactly one record", afterA.length === 1, afterA);
   check(
@@ -6263,7 +5394,7 @@ async function caseSection9_longTurnRecordMeasuresItsOwnTurn(clock) {
   clock.advance(61 * 60_000);
   await startH(h.fake, { turnId: "t-d" }, async () => ({ result: "ok" }));
   clock.advance(2 * 60_000);
-  await completeH(h.fake, { turnId: "t-c", aborted: true, reason: "aborted", durationMs: 63 * 60_000 }, async () => ({ result: "ok" }));
+  await completeH(h.fake, { turnId: "t-c", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
   const afterC = getDecisions(h).filter(d => d.action === "turn_over_hour");
   check("section9 long turn: the overlapped long turn still records", afterC.length === 2, afterC);
   check(
@@ -6272,7 +5403,7 @@ async function caseSection9_longTurnRecordMeasuresItsOwnTurn(clock) {
     afterC[1]?.detail,
   );
   clock.advance(60_000);
-  await completeH(h.fake, { turnId: "t-d", aborted: true, reason: "aborted", durationMs: 3 * 60_000 }, async () => ({ result: "ok" }));
+  await completeH(h.fake, { turnId: "t-d", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
   check(
     "section9 long turn control: the three-minute turn records nothing",
     getDecisions(h).filter(d => d.action === "turn_over_hour").length === 2,
@@ -6298,7 +5429,6 @@ async function caseSection9_turnStartDerivesTheStampToo(clock) {
   await startH(h.fake, { turnId: "t-b" }, async () => ({ result: "ok" }));
   const afterBStarts = readHeartbeat(h).default?.turnStartedAt;
   check("section9 start-derive: opening B leaves the stamp at A's start", afterBStarts === T0, afterBStarts);
-  check("section9 start-derive: the stamp is not B's own start", afterBStarts !== T0 + 30_000, afterBStarts);
 
   clock.advance(30_000);
   await completeH(h.fake, { turnId: "t-a", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));

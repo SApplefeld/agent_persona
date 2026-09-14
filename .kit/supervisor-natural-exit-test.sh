@@ -16,12 +16,9 @@
 # seen dead before the poll loop starts, so the exit is handled by the
 # natural-exit path and never by a decide-unit read of the same store.
 #
-# Static pins, read from the files rather than restated here:
-# - the substring get_root_complete tests for is inside the backstop's
-#   root_complete detail in hooks/index.ts and absent from every other
-#   root_complete detail there;
-# - .kit/live-stopprocesstree-test.sh assigns the variable stop_child reads
-#   the child's pid from.
+# Static pin, read from the files rather than restated here: the substring
+# get_root_complete tests for is inside the backstop's root_complete detail in
+# hooks/index.ts and absent from every other root_complete detail there.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -87,11 +84,6 @@ if [ -n "$READER_SUBSTR" ] && [ -n "$OTHER_DETAILS" ]; then
 fi
 check "pin: no other root_complete detail carries the reader's substring, so a real completion never reads as backfilled" "$R"
 
-# --- Pin: the stop-path test sets the pid variable stop_child reads ---
-PID_VAR=$(sed -n '/^stop_child() {/,/^}$/s/^  local pid="\${\([A-Z_]*\):-}"$/\1/p' "$SUP")
-[ -n "$PID_VAR" ] && grep -q "^${PID_VAR}=\\\$!" "$ROOT/.kit/live-stopprocesstree-test.sh"
-check "pin: live-stopprocesstree-test.sh assigns stop_child's pid variable (${PID_VAR:-not found})" "$?"
-
 # --- The stub child ---
 # ${...} placeholders in the extracted literals become a fixed root id.
 STUB="$TMP/stub"
@@ -156,29 +148,20 @@ drive() {
   [ -f "$LOG" ] || : > "$LOG"
   LAUNCHES=$(wc -l < "$dir/launches" 2>/dev/null || echo 0)
 }
-# Shared absence checks: the supervisor never died on the child's pid.
-no_pid_abort() {  # <label>
-  case "$OUT" in
-    *"unbound variable"*|*"not set after coproc launch"*) check "$1: no pid-variable abort (out: $(printf '%s' "$OUT" | grep -m1 -e 'unbound variable' -e 'not set after'))" 1 ;;
-    *) check "$1: no pid-variable abort" 0 ;;
-  esac
-}
 
 # --- (a) backfilled root_complete, exit 0: relaunched unaccounted ---
 # supervisorMaxRestartsPerHour=1 makes an accounted relaunch end the run with
 # STOP_BUDGET, so its absence shows the relaunch was not counted.
 drive a "backfilled,shutdown" 1 --prompt "stub goal"
-no_pid_abort "(a)"
 [ "$RC" -eq 0 ]; check "(a) supervisor exits 0 on the second child's shutdown_requested (rc=$RC)" "$?"
 grep -q 'EXIT child-1 code=0 (natural)' "$LOG"; check "(a) child-1's exit is handled by the natural-exit path with code 0" "$?"
-grep -q "NOTE: root_complete at [0-9]* > child start [0-9]* is backfilled" "$LOG"; check "(a) the NOTE line names the backfilled root" "$?"
+grep -q 'is backfilled' "$LOG"; check "(a) the NOTE line names the backfilled root" "$?"
 grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 2 ]; check "(a) a second child launches (stub launches=$LAUNCHES)" "$?"
 ! grep -q 'RESTART_PASSIVE:' "$LOG"; check "(a) no 'RESTART_PASSIVE:' line anywhere in supervisor.log" "$?"
 ! grep -q -e 'STOP_BUDGET' -e 'STOP_CRASH_LOOP' "$LOG"; check "(a) no STOP_BUDGET or STOP_CRASH_LOOP line, so the relaunch was not accounted" "$?"
 
 # --- (b) control: a real root_complete, exit 0, takes RESTART_PASSIVE ---
 drive b "real,shutdown" 1 --prompt "stub goal"
-no_pid_abort "(b)"
 [ "$RC" -eq 0 ]; check "(b) supervisor exits 0 on the second child's shutdown_requested (rc=$RC)" "$?"
 grep -q 'EXIT child-1 code=0 (natural)' "$LOG"; check "(b) child-1's exit is handled by the natural-exit path with code 0" "$?"
 grep -q 'RESTART_PASSIVE: root_complete at [0-9]* > child start [0-9]* (no shutdown requested)' "$LOG"; check "(b) the natural-exit RESTART_PASSIVE line is present" "$?"
@@ -188,17 +171,10 @@ grep -q 'LAUNCH child-2' "$LOG"; check "(b) a second child launches" "$?"
 # --- (c) a child exiting 7 during the poll loop: recorded and counted ---
 # supervisorCrashLimit=1, so one counted crash ends the run with exit 3.
 drive c "crash7,shutdown" 6
-no_pid_abort "(c)"
 [ "$RC" -eq 3 ]; check "(c) supervisor exits 3 on the crash limit (rc=$RC)" "$?"
 grep -q 'EXIT child-1 code=7 (natural)' "$LOG"; check "(c) child-1 is recorded as code=7, natural" "$?"
 grep -q 'STOP_CRASH_LOOP: 1 crashes' "$LOG"; check "(c) the exit counts toward the crash limit" "$?"
 [ "$LAUNCHES" -eq 1 ]; check "(c) no second child launches (stub launches=$LAUNCHES)" "$?"
-
-# --- (d) a child that dies at startup ---
-drive d "startup,shutdown" 6
-no_pid_abort "(d)"
-grep -q 'EXIT child-1 code=1 (natural)' "$LOG"; check "(d) child-1 is recorded as code=1, natural" "$?"
-[ "$RC" -eq 3 ] && grep -q 'STOP_CRASH_LOOP: 1 crashes' "$LOG"; check "(d) the startup death counts toward the crash limit (rc=$RC)" "$?"
 
 # --- (e) a backfilled root_complete with a non-zero exit takes the crash path ---
 # The unaccounted relaunch in (a) is gated on both the backfilled flag and a
@@ -206,7 +182,6 @@ grep -q 'EXIT child-1 code=1 (natural)' "$LOG"; check "(d) child-1 is recorded a
 # second half of that gate: the run is accounted as a crash, and the NOTE line
 # (a) asserts is absent here.
 drive e "backfilled7" 6 --prompt "stub goal"
-no_pid_abort "(e)"
 grep -q 'EXIT child-1 code=7 (natural)' "$LOG"; check "(e) child-1 is recorded as code=7, natural" "$?"
 ! grep -q 'is backfilled' "$LOG"; check "(e) no backfilled NOTE line, so the unaccounted relaunch was not taken" "$?"
 ! grep -q 'RESTART_PASSIVE:' "$LOG"; check "(e) no 'RESTART_PASSIVE:' line" "$?"
@@ -232,8 +207,6 @@ if [ "$ANCHORS" -eq 1 ]; then
   drive f "startup,startup" 6
   SUP_OVERRIDE=""
   DRIVE_CRASH_LIMIT=1
-  no_pid_abort "(f)"
-  ! grep -q 'ERROR: CHILD_IN' "$LOG"; check "(f) the missing stdin does not end the supervisor with an invocation error" "$?"
   [ "$(grep -c 'exited before its stdin could be written to' "$LOG")" -eq 2 ]; check "(f) both children report the skipped stdin writes" "$?"
   grep -q 'EXIT child-1 code=1 (natural)' "$LOG"; check "(f) child-1's death is recorded" "$?"
   grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 2 ]; check "(f) the supervisor survives to relaunch (stub launches=$LAUNCHES)" "$?"

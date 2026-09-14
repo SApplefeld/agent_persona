@@ -14,6 +14,13 @@ else
   exit 1
 fi
 
+# The live lane's model and effort. Every gated suite that launches
+# bin/supervise.sh sources this file, and the supervisor is a separate
+# process, so the values are exported here once rather than in each suite.
+# A suite or a caller that sets either before sourcing keeps its own value.
+export MODEL="${MODEL:-haiku}"
+export EFFORT="${EFFORT:-medium}"
+
 # --- Helpers ---
 
 wait_turn() {  # $1 = number of result lines to wait for

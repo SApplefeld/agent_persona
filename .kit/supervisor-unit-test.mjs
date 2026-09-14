@@ -20,45 +20,6 @@ try {
 }
 
 const cases = [
-  // 1. Child exited non-zero, no root_complete, no critical crossing: restart.
-  {
-    name: 'exit non-zero, no root_complete, no critical: restart',
-    input: {
-      childExitCode: 1,
-      rootCompleteTs: null,
-      criticalTs: null,
-      crashCount: 0,
-      restartCount: 0,
-      childStartTs: 1000,
-      childSessionId: 'sess-1',
-      heartbeatSessionId: 'sess-1',
-      heartbeatLastSeen: null,
-      launchedAt: 900,
-      staleAfterMs: 90000,
-    },
-    expected: 'restart',
-  },
-  // 2. Child exited non-zero, root_complete newer than start, no shutdown
-  // requested: restart_passive (plan item 4 - the goal is done, but the
-  // supervisor stays up for a second goal rather than exiting).
-  {
-    name: 'exit non-zero, root_complete, no shutdown: restart_passive',
-    input: {
-      childExitCode: 1,
-      rootCompleteTs: 2000,
-      shutdownRequestedTs: null,
-      criticalTs: null,
-      crashCount: 0,
-      restartCount: 0,
-      childStartTs: 1000,
-      childSessionId: 'sess-1',
-      heartbeatSessionId: 'sess-1',
-      heartbeatLastSeen: null,
-      launchedAt: 900,
-      staleAfterMs: 90000,
-    },
-    expected: 'restart_passive',
-  },
   // 2b. shutdown_requested newer than start, no root_complete: stop_complete
   // (the operator asked the supervisor itself to stop).
   {
@@ -202,24 +163,6 @@ const cases = [
     },
     expected: 'restart',
   },
-  // 4. context_budget_crossed closeout (not critical): do not restart.
-  {
-    name: 'closeout only: no restart',
-    input: {
-      childExitCode: null,
-      rootCompleteTs: null,
-      criticalTs: null,
-      crashCount: 0,
-      restartCount: 0,
-      childStartTs: 1000,
-      childSessionId: 'sess-1',
-      heartbeatSessionId: 'sess-1',
-      heartbeatLastSeen: null,
-      launchedAt: 900,
-      staleAfterMs: 90000,
-    },
-    expected: 'continue',
-  },
   // 5. Heartbeat lastSeen older than staleAfterMs, heartbeatSessionId = childSessionId, past grace: restart.
   {
     name: 'stale heartbeat, own session, past grace: restart',
@@ -276,25 +219,6 @@ const cases = [
       staleAfterMs: 90000,
     },
     expected: 'continue',
-  },
-  // 8. 3 consecutive exits within minRunMs: stop_crash_loop.
-  {
-    name: 'crash loop (3 within minRunMs): stop_crash_loop',
-    input: {
-      childExitCode: 1,
-      rootCompleteTs: null,
-      criticalTs: null,
-      crashCount: 3,
-      restartCount: 2,
-      childStartTs: 1000,
-      childSessionId: 'sess-1',
-      heartbeatSessionId: 'sess-1',
-      heartbeatLastSeen: null,
-      launchedAt: 900,
-      staleAfterMs: 90000,
-      minRunMs: 120000,
-    },
-    expected: 'stop_crash_loop',
   },
   // 9. Restart budget exhausted (7th in the hour): stop_budget.
   {

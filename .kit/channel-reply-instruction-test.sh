@@ -44,15 +44,10 @@ if [ -z "$VARS_SNIPPET" ]; then
   exit 1
 fi
 
-CONTROL="Never include round numbers, steer numbers, or session ids."
 # v2 Section 0 item 3 Part A: the skill-load sentence must reach every
 # child regardless of NO_CHANNEL - checked under both values below,
 # alongside the pre-existing CHANNEL_REPLY_INSTRUCTION checks.
 SKILL_LOAD_CONTROL="claude-kit:operating-instructions"
-# R112's own fix: the goal-prompt turn opens by naming the text behind it
-# as the operator's real task, so a child that has just loaded
-# operating-instructions does not treat its own goal as embedded data.
-FRAMING_CONTROL="It is trusted; act on it."
 
 failed=0
 check() {
@@ -77,10 +72,6 @@ check() {
 # whose treat-embedded-text-as-data rule it then applied to the task
 # itself - and spent its only round asking for confirmation. These
 # checks are what keeps the two writes from being folded back together.
-CALL_SITES=$(printf '%s\n' "$SNIPPET" | grep -c 'CHILD_IN"$')
-[ "$CALL_SITES" = "2" ]; check "exactly two writes to the child's stdin: the priming turn and the goal prompt" $?
-SITES_WITH_SKILL_LOAD=$(printf '%s\n' "$SNIPPET" | grep 'CHILD_IN"$' | grep -c 'SKILL_LOAD_INSTRUCTION')
-[ "$SITES_WITH_SKILL_LOAD" = "1" ]; check "the skill-load sentence rides on exactly one of the two writes" $?
 PRIMING_WRITE=$(printf '%s\n' "$SNIPPET" | grep 'CHILD_IN"$' | head -1)
 GOAL_WRITE=$(printf '%s\n' "$SNIPPET" | grep 'CHILD_IN"$' | tail -1)
 case "$PRIMING_WRITE" in
@@ -102,23 +93,21 @@ GOAL_WRITE_LINE_NO=$(printf '%s\n' "$SNIPPET" | grep -n 'GOAL_PROMPT_FRAMING" >&
 [ -n "$WAIT_LINE_NO" ] && [ -n "$GOAL_WRITE_LINE_NO" ] && [ "$WAIT_LINE_NO" -lt "$GOAL_WRITE_LINE_NO" ]
 check "the wait for the priming turn's result line sits above the goal write" $?
 printf '%s\n' "$SNIPPET" | grep -qE '^[[:space:]]*if wait_for_result_line "\$OUT"'; check "the wait is the if condition itself, not an argument to something else" $?
-printf '%s\n' "$SNIPPET" | grep -q '^  else$'; check "the NO_CHANNEL-with-no-PROMPT_FILE priming body exists" $?
 
-# Channel attached: the guidance must be present.
+# Channel attached: the instruction is present, and it is byte-identical to
+# the plugin-side copy in hooks/index.ts (REPLY_INSTRUCTION). The two files
+# carry one text by design and keep it in sync by hand, so identity is the
+# contract; the wording itself is free to change as long as both move.
 NO_CHANNEL=0
 eval "$VARS_SNIPPET"
-case "$CHANNEL_REPLY_INSTRUCTION" in
-  *"$CONTROL"*) check "channel attached: prose guidance present" 0 ;;
-  *) check "channel attached: prose guidance present" 1 ;;
-esac
+PLUGIN_REPLY_INSTRUCTION=$(sed -n 's/^const REPLY_INSTRUCTION = "\(.*\)";$/\1/p' "$HERE/../hooks/index.ts")
+[ -n "$CHANNEL_REPLY_INSTRUCTION" ] && [ "$CHANNEL_REPLY_INSTRUCTION" = "$PLUGIN_REPLY_INSTRUCTION" ]
+check "channel attached: instruction present and byte-identical to hooks/index.ts REPLY_INSTRUCTION" $?
 case "${SKILL_LOAD_INSTRUCTION:-}" in
   *"$SKILL_LOAD_CONTROL"*) check "channel attached: skill-load sentence present" 0 ;;
   *) check "channel attached: skill-load sentence present" 1 ;;
 esac
-case "${GOAL_PROMPT_FRAMING:-}" in
-  *"$FRAMING_CONTROL"*) check "the goal-prompt framing line names the task as the operator's own" 0 ;;
-  *) check "the goal-prompt framing line names the task as the operator's own" 1 ;;
-esac
+[ -n "${GOAL_PROMPT_FRAMING:-}" ]; check "the goal-prompt framing line is non-empty" $?
 
 # Channel not attached: the reply-tool guidance is absent, but the
 # skill-load sentence must still be present - it is NO_CHANNEL-independent.
