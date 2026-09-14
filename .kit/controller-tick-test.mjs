@@ -694,9 +694,12 @@ async function caseS2_drain_inflight(clock) {
   check("S2 drain in-flight: no [OPERATOR] prompt submitted", operatorPrompts.length === 0);
 }
 
-// S2: D4 reply by turn id (user-ending turn leaves delivered, next matching pair answers)
+// S2: D4 reply by turn id. An aborted or empty-answer turn leaves the record
+// delivered with its stamp in place and no reply, and a later turn neither
+// re-stamps it nor answers it: the record reads as unanswered until the TTL
+// (Section 12 bullet 6, the retired abort re-stamp).
 async function caseS2_reply_turnid(clock) {
-  console.log("\n=== S2: D4 reply by turn id (next matching pair answers) ===");
+  console.log("\n=== S2: D4 reply by turn id (an aborted turn leaves the record delivered and unanswered) ===");
   clock.set(T0);
 
   const otherSid = "reply-turnid-001";
@@ -752,57 +755,50 @@ async function caseS2_reply_turnid(clock) {
   const turnStartH = h.handlers["turn.start"];
   if (turnStartH) await turnStartH(h.fake, { turnId: turnId }, () => {});
 
-  // Fire turn.complete with empty answer (AX4: clears turnId, leaves delivered)
+  // Fire turn.complete with empty answer: the record stays delivered with
+  // its stamp, and the turn is recorded as unanswered.
   const turnCompleteH = h.handlers["turn.complete"];
   if (turnCompleteH) await turnCompleteH(h.fake, { turnId: turnId, answer: "", reason: "aborted" }, () => {});
 
-  // Check: record should still be delivered (not answered)
   let rec = h.storeMap.get(recKey);
   if (rec) {
     const parsed = typeof rec === "string" ? JSON.parse(rec) : rec;
     check("S2 reply turnid: record still delivered after empty answer", parsed.status === "delivered");
-    check("S2 reply turnid: turnId cleared after empty answer", !parsed.turnId);
+    check("S2 reply turnid: turnId kept after empty answer", parsed.turnId === turnId);
   } else {
     check("S2 reply turnid: record still delivered after empty answer", false);
-    check("S2 reply turnid: turnId cleared after empty answer", false);
+    check("S2 reply turnid: turnId kept after empty answer", false);
   }
 
   // Check: no reply written
   const replyKey = `reply:default:turnid-rec-1`;
   const reply = h.storeMap.get(replyKey);
   check("S2 reply turnid: no reply written for empty answer", !reply);
+  check("S2 reply turnid: operator_turn_unanswered names the record", getDecisions(h).some(d => d.action === "operator_turn_unanswered" && d.detail.includes("turnid-rec-1")));
 
-  // Fire turn.start again (AS3 re-stamps turnId)
+  // A later turn the plugin did not open for the record neither re-stamps
+  // nor answers it.
   const turnId2 = "t-turnid-2";
   if (turnStartH) await turnStartH(h.fake, { turnId: turnId2 }, () => {});
 
-  // Check: turnId re-stamped
   rec = h.storeMap.get(recKey);
   if (rec) {
     const parsed = typeof rec === "string" ? JSON.parse(rec) : rec;
-    check("S2 reply turnid: turnId re-stamped on second turn.start", parsed.turnId === turnId2);
+    check("S2 reply turnid: second turn.start leaves the stamp alone", parsed.turnId === turnId);
   } else {
-    check("S2 reply turnid: turnId re-stamped on second turn.start", false);
+    check("S2 reply turnid: second turn.start leaves the stamp alone", false);
   }
 
-  // Fire turn.complete with a real answer
   if (turnCompleteH) await turnCompleteH(h.fake, { turnId: turnId2, answer: "Real answer", reason: "completed" }, () => {});
 
-  // Check: reply written, record answered
-  const reply2 = h.storeMap.get(replyKey);
-  if (reply2) {
-    const parsed = typeof reply2 === "string" ? JSON.parse(reply2) : reply2;
-    check("S2 reply turnid: reply written on second turn.complete", parsed.text === "Real answer");
-  } else {
-    check("S2 reply turnid: reply written on second turn.complete", false);
-  }
+  check("S2 reply turnid: no reply written on the second turn.complete", !h.storeMap.get(replyKey));
 
   rec = h.storeMap.get(recKey);
   if (rec) {
     const parsed = typeof rec === "string" ? JSON.parse(rec) : rec;
-    check("S2 reply turnid: record answered on second turn.complete", parsed.status === "answered");
+    check("S2 reply turnid: record still delivered after the second turn.complete", parsed.status === "delivered");
   } else {
-    check("S2 reply turnid: record answered on second turn.complete", false);
+    check("S2 reply turnid: record still delivered after the second turn.complete", false);
   }
 }
 
@@ -1666,8 +1662,10 @@ async function caseItem5_channelWindowRollsOverflow(clock) {
     claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
   });
 
-  // Seed 6 closed inbox records (already delivered, not pending) - twice the
-  // window of 3 - plus one open ask, which the window must never touch.
+  // Seed 6 closed inbox records (resolved, the state the window rolls) -
+  // twice the window of 3 - plus one open ask, which the window must never
+  // touch. A delivered or answered record staying put is the Section 12
+  // bullet 5 case.
   for (let i = 0; i < 6; i++) {
     const key = `inbox:default:writer-${i}:1`;
     h.storeMap.set(key, {
@@ -1677,7 +1675,10 @@ async function caseItem5_channelWindowRollsOverflow(clock) {
       at: now - (6 - i) * 1000,
       text: `message ${i}`,
       kind: "say",
-      status: "delivered",
+      status: "resolved",
+      resolvedAt: now - (6 - i) * 1000 + 500,
+      outcome: "done",
+      note: "",
     });
   }
   const openAskKey = "ask:default:ask-open-1";
@@ -1744,7 +1745,7 @@ async function caseItem5_channelWindowNoDeleteOnAppendFailure() {
   const seed = {};
   for (let i = 0; i < 6; i++) {
     const key = `inbox:default:writer-${i}:1`;
-    seed[key] = { id: `default-writer-${i}-1`, key, from: `writer-${i}`, at: 1000 + i, text: `m${i}`, kind: "say", status: "delivered" };
+    seed[key] = { id: `default-writer-${i}-1`, key, from: `writer-${i}`, at: 1000 + i, text: `m${i}`, kind: "say", status: "resolved", resolvedAt: 1500 + i, outcome: "done", note: "" };
   }
 
   // Failing case: appendLines always throws. Round 50 point 3: enforceChannelWindow
@@ -3144,6 +3145,14 @@ async function main() {
     await caseItem8p3_inboxReportsDeferredWhileTurnRuns(clock);
     await caseItem8p3_deferredNotReportedForStaleOwner(clock);
     await caseSection2_deferredReadsCommonsNotLocalHeartbeat(clock);
+    await caseSection12_1_resolveSetsOutcomeAndInboxReturnsIt(clock);
+    await caseSection12_2_resolveRefusals(clock);
+    await caseSection12_3_sweepKeepsPendingRecord(clock);
+    await caseSection12_4_sweepLogsBeforeDeleteAndKeepsOnRefusedAppend(clock);
+    await caseSection12_5_windowRollKeepsUnresolvedRecords(clock);
+    await caseSection12_6_foreignTurnDoesNotTakeTheStamp(clock);
+    await caseSection12_6_budgetNudgeFlagsTheTurnBeforeItsSubmit(clock);
+    await caseSection12_7_ownTurnStillTakesTheStamp_control(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
     await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
     await caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock);
@@ -3991,6 +4000,414 @@ async function caseSection2_deferredReadsCommonsNotLocalHeartbeat(clock) {
   check("section2 local-only: record still pending (setup sanity)", recL?.status === "pending");
   check("section2 local-only: no deferred field from the local heartbeat stamp", recL?.deferred === undefined);
   check("section2 local-only: no turnRunningMs field", recL?.turnRunningMs === undefined);
+}
+
+// ============================================================
+// Section 12: inbox upkeep (a handled state, cleanup that never loses
+// unread work, a reply link only the plugin's own turn can take)
+// ============================================================
+
+// Seeds one inbox record for the default persona and returns its store key.
+// The id follows writeInboxRecord's shape, <persona>-<writer>-<seq>.
+function seedInboxRecord(h, writerSid, seq, fields) {
+  const key = `inbox:default:${writerSid}:${seq}`;
+  h.storeMap.set(key, { id: `default-${writerSid}-${seq}`, key, from: writerSid, kind: "say", text: `message ${seq}`, ...fields });
+  return key;
+}
+
+function readStoreRecord(h, key) {
+  const raw = h.storeMap.get(key);
+  if (!raw) return undefined;
+  return typeof raw === "string" ? JSON.parse(raw) : raw;
+}
+
+// An owner harness on the default makeState tree (an active leaf, so the
+// tick can reach the nudge path), holding the persona in commons, with one
+// pending record from a writer holding a live reader claim.
+async function seedOwnerWithPendingRecord(caseName, now, writerSid) {
+  const h = await createTickHarness({ ...OPTS, caseName });
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  seedReaderClaim(h, writerSid, now);
+  const key = seedInboxRecord(h, writerSid, 1, { at: now - 5000, status: "pending" });
+  return { h, key, id: `default-${writerSid}-1` };
+}
+
+// Bullet 1: agentic_resolve on a delivered or answered record addressed to
+// the owner's persona sets status resolved with the outcome and note, and the
+// sender reads them back through agentic_inbox. The sender side is a reader
+// harness holding the same records under its own session id.
+async function caseSection12_1_resolveSetsOutcomeAndInboxReturnsIt(clock) {
+  console.log("\n=== Section 12 bullet 1: agentic_resolve marks a record resolved and agentic_inbox returns the outcome ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedOwnerHarness("section12_1_resolve", now);
+  const deliveredKey = seedInboxRecord(h, SESSION_ID, 1, { at: now - 5000, status: "delivered", deliveredAt: now - 4000, turnId: "t-d" });
+  const answeredKey = seedInboxRecord(h, SESSION_ID, 2, { at: now - 3000, status: "answered", deliveredAt: now - 2000, turnId: "t-a" });
+  const toolCallH = h.handlers["tool.call"];
+
+  const r1 = await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_resolve", id: `default-${SESSION_ID}-1`, outcome: "done", note: "shipped" }, async () => ({ result: "passthrough" }));
+  check("section12.1: resolve on a delivered record accepted", r1.deny === undefined && r1.result !== undefined && r1.result !== "passthrough", r1);
+  const d = readStoreRecord(h, deliveredKey);
+  check("section12.1: delivered record now resolved", d?.status === "resolved", d);
+  check("section12.1: outcome, note and resolvedAt written", d?.outcome === "done" && d?.note === "shipped" && d?.resolvedAt === now, d);
+
+  const r2 = await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_resolve", id: `default-${SESSION_ID}-2`, outcome: "declined", note: "" }, async () => ({ result: "passthrough" }));
+  check("section12.1: resolve on an answered record accepted", r2.deny === undefined && r2.result !== undefined && r2.result !== "passthrough", r2);
+  const a = readStoreRecord(h, answeredKey);
+  check("section12.1: answered record now resolved with outcome declined", a?.status === "resolved" && a?.outcome === "declined" && a?.note === "", a);
+  check("section12.1: one operator_resolved decision per resolve", countAction(getDecisions(h), "operator_resolved") === 2);
+
+  const hr = await seedReaderHarness("section12_1_inbox", now, "owner-001", {}, { turnStartedAt: null, workdir: HARNESS_CWD });
+  hr.storeMap.set(deliveredKey, d);
+  hr.storeMap.set(answeredKey, a);
+  const inbox = await hr.handlers["tool.call"](hr.fake, { tool: "mcp__agentic-plugin__agentic_inbox" }, async () => ({ result: "passthrough" }));
+  const recs = inbox.result ? JSON.parse(inbox.result).inbox : [];
+  const first = recs.find((r) => r.id === `default-${SESSION_ID}-1`);
+  const second = recs.find((r) => r.id === `default-${SESSION_ID}-2`);
+  check("section12.1: agentic_inbox returns outcome, note and resolvedAt for the done record",
+    first?.status === "resolved" && first?.outcome === "done" && first?.note === "shipped" && first?.resolvedAt === now, first);
+  check("section12.1: agentic_inbox returns the declined outcome too",
+    second?.status === "resolved" && second?.outcome === "declined" && second?.resolvedAt === now, second);
+}
+
+// Bullet 2: agentic_resolve is refused for a pending record, for a record
+// addressed to another persona, for a skipped record (a dead writer's record
+// has nothing to resolve), and for a caller that is not the owner. Each
+// refused record is unchanged afterwards.
+async function caseSection12_2_resolveRefusals(clock) {
+  console.log("\n=== Section 12 bullet 2: agentic_resolve refuses pending, other-persona, skipped and non-owner calls ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedOwnerHarness("section12_2_refusals", now);
+  const pendingKey = seedInboxRecord(h, "writer-p", 1, { at: now - 5000, status: "pending" });
+  const skippedKey = seedInboxRecord(h, "writer-s", 1, { at: now - 5000, status: "skipped" });
+  const otherKey = "inbox:other:writer-o:1";
+  h.storeMap.set(otherKey, { id: "other-writer-o-1", key: otherKey, from: "writer-o", at: now - 5000, text: "for another persona", kind: "say", status: "delivered", deliveredAt: now - 4000 });
+  const toolCallH = h.handlers["tool.call"];
+
+  const rp = await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_resolve", id: "default-writer-p-1", outcome: "done", note: "" }, async () => ({ result: "passthrough" }));
+  check("section12.2: pending record refused, and the refusal says pending", typeof rp.deny === "string" && rp.deny.includes("pending"), rp);
+  check("section12.2: pending record unchanged", readStoreRecord(h, pendingKey)?.status === "pending");
+
+  const ro = await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_resolve", id: "other-writer-o-1", outcome: "done", note: "" }, async () => ({ result: "passthrough" }));
+  check("section12.2: other-persona record refused as not addressed to this persona", typeof ro.deny === "string" && ro.deny.includes("default"), ro);
+  check("section12.2: other-persona record unchanged", readStoreRecord(h, otherKey)?.status === "delivered");
+
+  const rs = await toolCallH(h.fake, { tool: "mcp__agentic-plugin__agentic_resolve", id: "default-writer-s-1", outcome: "done", note: "" }, async () => ({ result: "passthrough" }));
+  check("section12.2: skipped record refused, and the refusal says skipped", typeof rs.deny === "string" && rs.deny.includes("skipped"), rs);
+  check("section12.2: skipped record unchanged", readStoreRecord(h, skippedKey)?.status === "skipped");
+  check("section12.2: no operator_resolved decision logged", countAction(getDecisions(h), "operator_resolved") === 0);
+
+  const hr = await seedReaderHarness("section12_2_reader", now, "owner-002", {}, { turnStartedAt: null, workdir: HARNESS_CWD });
+  const readerKey = seedInboxRecord(hr, SESSION_ID, 1, { at: now - 5000, status: "delivered", deliveredAt: now - 4000 });
+  const rr = await hr.handlers["tool.call"](hr.fake, { tool: "mcp__agentic-plugin__agentic_resolve", id: `default-${SESSION_ID}-1`, outcome: "done", note: "" }, async () => ({ result: "passthrough" }));
+  check("section12.2: a reader session is refused as not the owner", typeof rr.deny === "string" && rr.deny.includes("owner"), rr);
+  check("section12.2: the reader's record unchanged", readStoreRecord(hr, readerKey)?.status === "delivered");
+}
+
+// Bullet 3: a pending record older than the TTL survives the sweep. Direct
+// call against a mini store, as the item 5 append-failure case does: the
+// tick's drain consumes or skips every pending record before the sweep runs
+// on the same tick, so no tick-driven path puts a pending record in front of
+// the sweep. Control: an old delivered record is swept, and its log line
+// carries sweptAt.
+async function caseSection12_3_sweepKeepsPendingRecord(clock) {
+  console.log("\n=== Section 12 bullet 3: the TTL sweep never deletes a pending record ===");
+  clock.set(T0);
+  const now = T0;
+  const { sweepExpiredRecords } = await import("../hooks/operator.ts?case=section12_direct_unit");
+  const pendingKey = "inbox:default:writer-p:1";
+  const deliveredKey = "inbox:default:writer-d:1";
+  const freshKey = "inbox:default:writer-f:1";
+  const askKey = "ask:default:ask-old-1";
+  const store = makeMiniStore({
+    [pendingKey]: { id: "default-writer-p-1", key: pendingKey, from: "writer-p", at: now - 10_000, text: "old and unread", kind: "say", status: "pending" },
+    [deliveredKey]: { id: "default-writer-d-1", key: deliveredKey, from: "writer-d", at: now - 9_000, text: "old and read", kind: "say", status: "delivered", deliveredAt: now - 8_000 },
+    [freshKey]: { id: "default-writer-f-1", key: freshKey, from: "writer-f", at: now - 100, text: "fresh", kind: "say", status: "pending" },
+    [askKey]: { id: "ask-old-1", ownerSessionId: "owner-old", at: now - 9_500, nodeId: "node-old", question: "old question", status: "expired" },
+  });
+  const appended = [];
+  const swept = await sweepExpiredRecords(store, "default", async (lines) => { appended.push(...lines); }, 1000);
+  check("section12.3: old pending record still in the store", store._map.has(pendingKey));
+  check("section12.3: fresh pending record still in the store", store._map.has(freshKey));
+  check("section12.3 control: old delivered record swept", !store._map.has(deliveredKey));
+  check("section12.3 control: old ask record swept", !store._map.has(askKey));
+  check("section12.3 control: swept count is 2", swept === 2, swept);
+  const lines = appended.map((l) => { try { return JSON.parse(l); } catch { return null; } });
+  check("section12.3 control: the swept inbox record was appended with sweptAt and its key",
+    lines.some((l) => l && l.kind === "inbox" && l.key === deliveredKey && typeof l.sweptAt === "number" && l.record?.id === "default-writer-d-1"), appended);
+  check("section12.3 control: the swept ask record was appended with kind ask",
+    lines.length === 2 && lines.some((l) => l && l.kind === "ask" && l.key === askKey && typeof l.sweptAt === "number" && l.record?.id === "ask-old-1"), appended);
+}
+
+// Bullet 4: every record the TTL sweep removes reaches the channel log first,
+// and a refused append leaves it in the store with a decision naming the
+// refusal. Driven through the tick: the channel log write is made to throw
+// once, at the sweep cadence, then the next cadence sweeps cleanly.
+async function caseSection12_4_sweepLogsBeforeDeleteAndKeepsOnRefusedAppend(clock) {
+  console.log("\n=== Section 12 bullet 4: the TTL sweep appends before it deletes, and keeps the record on a refused append ===");
+  clock.set(T0);
+  const now = T0;
+  const DAY = 86_400_000;
+  const h = await seedOwnerHarness("section12_4_sweep_log", now);
+  const key = seedInboxRecord(h, "writer-old", 1, { at: now - 2 * DAY, status: "answered", deliveredAt: now - 2 * DAY + 1000, turnId: "t-old" });
+  const replyKey = "reply:default:default-writer-old-1";
+  h.storeMap.set(replyKey, { at: now - 2 * DAY + 2000, text: "old reply" });
+  const askKey = "ask:default:ask-old-1";
+  h.storeMap.set(askKey, { id: "ask-old-1", ownerSessionId: SESSION_ID, at: now - 2 * DAY + 3000, nodeId: "node-old", question: "old question", status: "expired" });
+
+  const realWrite = h.fake.fs.write;
+  let refused = 0;
+  h.fake.fs.write = (p, content) => {
+    if (p === ".agentic-channel.jsonl" && refused === 0) {
+      refused++;
+      return Promise.reject(new Error("log write refused"));
+    }
+    return realWrite(p, content);
+  };
+
+  // costSummaryEveryNTicks is 2 in OPTS; the second tick reaches the sweep.
+  // The tick returns without persisting on this goal-less tree, so a turn
+  // pair follows each cadence: turn.complete persists, which is how the
+  // sweep's in-memory decisions reach the file getDecisions reads.
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+  await fireTurn(h, "t-flush-1");
+
+  check("section12.4: the append was attempted and refused (setup sanity)", refused === 1);
+  check("section12.4: inbox record still in the store after the refused append", h.storeMap.has(key));
+  check("section12.4: reply record still in the store after the refused append", h.storeMap.has(replyKey));
+  check("section12.4: ask record still in the store after the refused append", h.storeMap.has(askKey));
+  let decisions = getDecisions(h);
+  check("section12.4: sweep_expired_records_failed decision names the refusal",
+    decisions.some((d) => d.action === "sweep_expired_records_failed" && d.detail.includes("log write refused")));
+  check("section12.4: no sweep_expired_records decision on the refused cadence", !decisions.some((d) => d.action === "sweep_expired_records"));
+  check("section12.4: nothing in the channel log yet", !h.fsMap.has(".agentic-channel.jsonl"));
+
+  // Next cadence: the append lands, then the delete.
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+  await fireTurn(h, "t-flush-2");
+
+  check("section12.4 control: inbox record removed after the append landed", !h.storeMap.has(key));
+  check("section12.4 control: reply record removed after the append landed", !h.storeMap.has(replyKey));
+  check("section12.4 control: ask record removed after the append landed", !h.storeMap.has(askKey));
+  const logLines = (h.fsMap.get(".agentic-channel.jsonl") || "").split("\n").filter((l) => l.trim().length > 0);
+  const parsed = logLines.map((l) => { try { return JSON.parse(l); } catch { return null; } });
+  check("section12.4 control: the log holds one line per swept record, each with sweptAt and its key",
+    parsed.length === 3 && parsed.every((l) => l && typeof l.sweptAt === "number") &&
+    parsed.some((l) => l.kind === "inbox" && l.key === key) && parsed.some((l) => l.kind === "reply" && l.key === replyKey) &&
+    parsed.some((l) => l.kind === "ask" && l.key === askKey), logLines);
+  decisions = getDecisions(h);
+  check("section12.4 control: sweep_expired_records decision counts all three", decisions.some((d) => d.action === "sweep_expired_records" && d.detail.includes("swept 3")));
+}
+
+// Bullet 5: the window roll leaves a delivered or answered record that is not
+// resolved in the store. Seven records over a window of 3: the two oldest are
+// delivered and answered, then four resolved and one skipped. Control: the
+// two oldest resolved records roll, so the rollable set is what the window
+// bounds.
+async function caseSection12_5_windowRollKeepsUnresolvedRecords(clock) {
+  console.log("\n=== Section 12 bullet 5: the window roll keeps delivered and answered records that are not resolved ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await createTickHarness({ ...OPTS, caseName: "section12_5_window", channelRecordWindow: 3 });
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  const deliveredKey = seedInboxRecord(h, "writer-d", 1, { at: now - 9000, status: "delivered", deliveredAt: now - 8900, turnId: "t-d" });
+  const answeredKey = seedInboxRecord(h, "writer-a", 1, { at: now - 8000, status: "answered", deliveredAt: now - 7900, turnId: "t-a" });
+  const resolvedKeys = [];
+  for (let i = 0; i < 4; i++) {
+    resolvedKeys.push(seedInboxRecord(h, `writer-r${i}`, 1, { at: now - 7000 + i * 1000, status: "resolved", deliveredAt: now - 6900 + i * 1000, resolvedAt: now - 6800 + i * 1000, outcome: "done", note: "" }));
+  }
+  const skippedKey = seedInboxRecord(h, "writer-s", 1, { at: now - 2000, status: "skipped" });
+
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+
+  check("section12.5: delivered record still in the store", h.storeMap.has(deliveredKey));
+  check("section12.5: answered record still in the store", h.storeMap.has(answeredKey));
+  check("section12.5 control: the two oldest resolved records rolled", !h.storeMap.has(resolvedKeys[0]) && !h.storeMap.has(resolvedKeys[1]));
+  check("section12.5 control: the newer resolved records and the skipped record stay within the window",
+    h.storeMap.has(resolvedKeys[2]) && h.storeMap.has(resolvedKeys[3]) && h.storeMap.has(skippedKey));
+  const logLines = (h.fsMap.get(".agentic-channel.jsonl") || "").split("\n").filter((l) => l.trim().length > 0);
+  check("section12.5 control: the log holds the two rolled records", logLines.length === 2 && logLines.every((l) => { try { return JSON.parse(l).kind === "inbox"; } catch { return false; } }), logLines);
+  check("section12.5 control: channel_window_rolled counts two", getDecisions(h).some((d) => d.action === "channel_window_rolled" && d.detail.includes("rolled 2")));
+}
+
+// Bullet 6: a turn the plugin did not open for the record, starting after a
+// delivery, does not take the stamp, and its answer is not written as the
+// reply. Two shapes: a turn opened from the Discord channel, and a turn
+// opened by a goal nudge. The plugin's own turn is the bullet 7 control.
+async function caseSection12_6_foreignTurnDoesNotTakeTheStamp(clock) {
+  console.log("\n=== Section 12 bullet 6: a channel-origin or nudge-opened turn does not take a delivered record's stamp ===");
+  clock.set(T0);
+  const now = T0;
+
+  // A Discord message opens the turn that starts first after the delivery.
+  const { h, key, id } = await seedOwnerWithPendingRecord("section12_6_channel", now, "writer-c");
+  await tickAndSettle(h, clock, 50);
+  check("section12.6 channel: record delivered (setup sanity)", readStoreRecord(h, key)?.status === "delivered");
+  await h.handlers["prompt.submit"](h.fake, { text: "What's the status?", origin: { kind: "channel" } }, async () => ({}));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-channel" }, async () => ({ result: "ok" }));
+  const afterStart = readStoreRecord(h, key);
+  check("section12.6 channel: record not stamped with the channel turn", afterStart?.turnId === undefined, afterStart);
+  check("section12.6 channel: operator_stamp_withheld names the record and channel-origin",
+    getDecisions(h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes(id) && d.detail.includes("channel-origin")));
+  check("section12.6 channel: no operator_turn_stamped decision", !getDecisions(h).some((d) => d.action === "operator_turn_stamped"));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-channel", answer: "Answer meant for Discord.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.6 channel: no reply written from the channel turn's answer", !h.storeMap.has(`reply:default:${id}`));
+  check("section12.6 channel: record still delivered, not answered", readStoreRecord(h, key)?.status === "delivered");
+
+  // A goal nudge opens the turn that starts first after the delivery.
+  const n = await seedOwnerWithPendingRecord("section12_6_nudge", now, "writer-n");
+  await tickAndSettle(n.h, clock, 50);
+  check("section12.6 nudge: record delivered (setup sanity)", readStoreRecord(n.h, n.key)?.status === "delivered");
+  n.h.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(n.h, clock, 50);
+  check("section12.6 nudge: nudge_sent fired (setup sanity)", getDecisions(n.h).some((d) => d.action === "nudge_sent"));
+  await n.h.handlers["turn.start"](n.h.fake, { turnId: "t-nudge" }, async () => ({ result: "ok" }));
+  const afterNudgeStart = readStoreRecord(n.h, n.key);
+  check("section12.6 nudge: record not stamped with the nudged turn", afterNudgeStart?.turnId === undefined, afterNudgeStart);
+  check("section12.6 nudge: operator_stamp_withheld names the record and nudged",
+    getDecisions(n.h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes(n.id) && d.detail.includes("nudged")));
+  await n.h.handlers["turn.complete"](n.h.fake, { turnId: "t-nudge", answer: "Working on the goal.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.6 nudge: no reply written from the nudged turn's answer", !n.h.storeMap.has(`reply:default:${n.id}`));
+  check("section12.6 nudge: record still delivered, not answered", readStoreRecord(n.h, n.key)?.status === "delivered");
+
+  // A keyboard turn opens first after the delivery: an external turn with no
+  // channel origin, seen only through the real prompt.submit hook, which the
+  // plugin's own submits never fire.
+  clock.set(T0);
+  const k = await seedOwnerWithPendingRecord("section12_6_keyboard", now, "writer-k");
+  await tickAndSettle(k.h, clock, 50);
+  check("section12.6 keyboard: record delivered (setup sanity)", readStoreRecord(k.h, k.key)?.status === "delivered");
+  await k.h.handlers["prompt.submit"](k.h.fake, { text: "Typed at the keyboard.", origin: { kind: "keyboard" } }, async () => ({}));
+  await k.h.handlers["turn.start"](k.h.fake, { turnId: "t-keyboard" }, async () => ({ result: "ok" }));
+  const afterKeyboardStart = readStoreRecord(k.h, k.key);
+  check("section12.6 keyboard: record not stamped with the keyboard turn", afterKeyboardStart?.turnId === undefined, afterKeyboardStart);
+  check("section12.6 keyboard: operator_stamp_withheld names the record and external",
+    getDecisions(k.h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes(k.id) && d.detail.includes("external")));
+  await k.h.handlers["turn.complete"](k.h.fake, { turnId: "t-keyboard", answer: "Answer to the typed prompt.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.6 keyboard: no reply written from the keyboard turn's answer", !k.h.storeMap.has(`reply:default:${k.id}`));
+  check("section12.6 keyboard: record still delivered, not answered", readStoreRecord(k.h, k.key)?.status === "delivered");
+}
+
+// The budget close-out nudge sets the nudged-turn flag on the synchronous
+// side of its submit, as the goal nudge does. The real submit parks until the
+// session is next idle, so a flag set after it lands only once the nudged
+// turn has run: a turn starting under the parked submit would then read as
+// the plugin's own and take a delivered record's stamp.
+async function caseSection12_6_budgetNudgeFlagsTheTurnBeforeItsSubmit(clock) {
+  console.log("\n=== Section 12 bullet 6: a budget-nudge turn starting under the parked submit does not take the stamp ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "section12_6_budget",
+    contextBudgetEnabled: true,
+    contextBudgetInfoTokens: 100,
+    contextBudgetCloseoutTokens: 200,
+    contextBudgetCriticalTokens: 1_000_000,
+    contextBudgetReadEveryNTicks: 1,
+    sessionMessages: () => Promise.resolve([{ text: "x".repeat(2000), toolUses: [], toolResults: [] }]),
+  });
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  seedReaderClaim(h, "writer-b", now);
+  const key = seedInboxRecord(h, "writer-b", 1, { at: now - 5000, status: "pending" });
+  const id = "default-writer-b-1";
+
+  // Tick 1 delivers the record and returns before the budget read.
+  await tickAndSettle(h, clock, 50);
+  check("section12.6 budget: record delivered (setup sanity)", readStoreRecord(h, key)?.status === "delivered");
+
+  // Tick 2 crosses the close-out threshold and submits the budget nudge,
+  // which parks; the nudged turn starts under it.
+  h.holdPromptSubmits();
+  clock.advance(10_000);
+  const tick2 = fireTick(h);
+  const nudgeQueued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith("[BUDGET]")));
+  check("section12.6 budget: the close-out nudge was submitted (setup sanity)", nudgeQueued);
+  await h.handlers["turn.start"](h.fake, { turnId: "t-budget" }, async () => ({ result: "ok" }));
+  const afterStart = readStoreRecord(h, key);
+  check("section12.6 budget: record not stamped with the budget-nudge turn", afterStart?.turnId === undefined, afterStart);
+  check("section12.6 budget: operator_stamp_withheld names the record and nudged",
+    getDecisions(h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes(id) && d.detail.includes("nudged")));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-budget", answer: "Banking state.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.6 budget: no reply written from the nudged turn's answer", !h.storeMap.has(`reply:default:${id}`));
+  h.releasePromptSubmits();
+  await tick2;
+}
+
+// Bullet 7 (control for bullet 6): the plugin's own delivery turn still takes
+// the stamp and writes the reply, at the general drain and at the ask-answer
+// delivery.
+async function caseSection12_7_ownTurnStillTakesTheStamp_control(clock) {
+  console.log("\n=== Section 12 bullet 7 (control): the plugin's own delivery turn takes the stamp and writes the reply ===");
+  clock.set(T0);
+  const now = T0;
+
+  // General drain.
+  const { h, key, id } = await seedOwnerWithPendingRecord("section12_7_drain", now, "writer-g");
+  await tickAndSettle(h, clock, 50);
+  check("section12.7 drain: record delivered (setup sanity)", readStoreRecord(h, key)?.status === "delivered");
+  await h.handlers["turn.start"](h.fake, { turnId: "t-own" }, async () => ({ result: "ok" }));
+  check("section12.7 drain: record stamped with the plugin's own turn", readStoreRecord(h, key)?.turnId === "t-own");
+  check("section12.7 drain: operator_turn_stamped names the record", getDecisions(h).some((d) => d.action === "operator_turn_stamped" && d.detail.includes(id)));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-own", answer: "Done.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.7 drain: reply written from the turn's answer", readStoreRecord(h, `reply:default:${id}`)?.text === "Done.");
+  check("section12.7 drain: record answered", readStoreRecord(h, key)?.status === "answered");
+
+  // Ask-answer delivery: a pending record answering the open ask.
+  const ha = await createTickHarness({ ...OPTS, caseName: "section12_7_ask" });
+  ha.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  const personaState = buildPersonaState(SESSION_ID, now);
+  personaState.goals = [
+    { id: "node-s12", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-s12";
+  personaState.pendingAskId = "ask-s12-1";
+  ha.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  ha.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  seedReaderClaim(ha, "writer-ans", now);
+  const answerKey = seedInboxRecord(ha, "writer-ans", 1, { at: now - 500, kind: "answer", answers: "ask-s12-1", status: "pending" });
+  const startH = ha.handlers["session.start"];
+  if (startH) await startH(ha.fake, {}, () => {});
+  ha.storeMap.set("ask:default:ask-s12-1", { id: "ask-s12-1", ownerSessionId: SESSION_ID, at: now - 1000, nodeId: "node-s12", question: "Which way?", status: "open" });
+  clock.advance(65_000);
+  await tickAndSettle(ha, clock, 50);
+  check("section12.7 ask: answer record delivered (setup sanity)", readStoreRecord(ha, answerKey)?.status === "delivered");
+  check("section12.7 ask: ask_answered logged (setup sanity)", getDecisions(ha).some((d) => d.action === "ask_answered"));
+  await ha.handlers["turn.start"](ha.fake, { turnId: "t-own-ask" }, async () => ({ result: "ok" }));
+  check("section12.7 ask: answer record stamped with the plugin's own turn", readStoreRecord(ha, answerKey)?.turnId === "t-own-ask");
+  await ha.handlers["turn.complete"](ha.fake, { turnId: "t-own-ask", answer: "Going left.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("section12.7 ask: reply written from the turn's answer", readStoreRecord(ha, "reply:default:default-writer-ans-1")?.text === "Going left.");
+  check("section12.7 ask: answer record answered", readStoreRecord(ha, answerKey)?.status === "answered");
 }
 
 // agentic_say(urgent: true) writes urgent onto the record; a plain say does not.

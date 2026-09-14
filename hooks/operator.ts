@@ -16,7 +16,10 @@
 // --- Types ---
 
 export type InboxKind = "say" | "answer";
-export type InboxStatus = "pending" | "delivered" | "answered" | "skipped";
+// "answered" means a turn replied; "resolved" means the owner finished or
+// declined the work the record asked for, set through agentic_resolve.
+export type InboxStatus = "pending" | "delivered" | "answered" | "skipped" | "resolved";
+export type InboxOutcome = "done" | "declined";
 
 export interface InboxRecord {
   id: string;
@@ -30,6 +33,9 @@ export interface InboxRecord {
   status: InboxStatus;
   deliveredAt?: number; // set by owner on delivery
   turnId?: string; // set by owner on turn.start after delivery
+  resolvedAt?: number; // set by the owner's agentic_resolve, with the two below
+  outcome?: InboxOutcome;
+  note?: string;
 }
 
 export interface ReplyRecord {
@@ -264,55 +270,52 @@ export async function listAskRecords(
 /**
  * Sweep records older than the TTL.
  * Returns the number of records swept.
+ *
+ * A `pending` record is never swept, whatever its age: a pending record whose
+ * writer has no live claim leaves the queue through the drain's own route
+ * (`skipped`), so one that is still pending is live work the owner has not
+ * consumed yet. Every record the sweep removes (inbox, reply, ask) is appended
+ * to the channel log first, one line per record in the shape `enforceChannelWindow`
+ * writes with `sweptAt` in place of `rolledAt`, so a reader of the log can tell
+ * the two routes apart. Append before delete, and never delete on a failed
+ * append: the error propagates with every record still in the store, so the
+ * caller records the refusal rather than a count.
  */
 export async function sweepExpiredRecords(
   store: CommonsStore,
   persona: string,
+  appendLines: (lines: string[]) => Promise<void>,
   ttlMs: number = DEFAULT_TTL_MS,
 ): Promise<number> {
   const cutoff = Date.now() - ttlMs;
   let swept = 0;
 
-  // Sweep inbox records
+  // Collect every record past the TTL (inbox, reply, ask), log them all in
+  // one append, then delete.
+  const expired: { key: string; kind: "inbox" | "reply" | "ask"; record: unknown }[] = [];
   const inboxRecords = await listInboxRecords(store, persona);
   for (const record of inboxRecords) {
-    if (record.at < cutoff) {
-      // Use the stored key (record.key) to delete the record
-      if (record.key) {
-        await store.delete(record.key);
-        swept++;
-      }
+    if (record.at < cutoff && record.status !== "pending" && record.key) {
+      expired.push({ key: record.key, kind: "inbox", record });
     }
   }
-
-  // Sweep reply records
   const keys = await store.keys();
   const replyPrefix = `${REPLY_PREFIX}${persona}:`;
-  for (const key of keys) {
-    if (key.startsWith(replyPrefix)) {
-      const raw = await store.get(key);
-      if (raw) {
-        const record = raw as ReplyRecord;
-        if (record.at < cutoff) {
-          await store.delete(key);
-          swept++;
-        }
-      }
-    }
-  }
-
-  // Sweep ask records
   const askPrefix = `${ASK_PREFIX}${persona}:`;
   for (const key of keys) {
-    if (key.startsWith(askPrefix)) {
-      const raw = await store.get(key);
-      if (raw) {
-        const record = raw as AskRecord;
-        if (record.at < cutoff) {
-          await store.delete(key);
-          swept++;
-        }
-      }
+    const kind = key.startsWith(replyPrefix) ? "reply" : key.startsWith(askPrefix) ? "ask" : null;
+    if (!kind) continue;
+    const raw = await store.get(key);
+    if (!raw) continue;
+    const record = raw as ReplyRecord | AskRecord;
+    if (record.at < cutoff) expired.push({ key, kind, record: raw });
+  }
+  if (expired.length > 0) {
+    const sweptAt = Date.now();
+    await appendLines(expired.map((e) => JSON.stringify({ persona, kind: e.kind, key: e.key, sweptAt, record: e.record })));
+    for (const e of expired) {
+      await store.delete(e.key);
+      swept++;
     }
   }
 
@@ -326,10 +329,13 @@ export async function sweepExpiredRecords(
  * one JSON file forever. This never touches `ask:` keys (an open ask has
  * its own lifecycle - answered, expired, or re-raised - and TTL-based
  * `sweepExpiredRecords` above is the only thing that ages one out); it
- * covers `inbox:` records not still `"pending"` (a pending record is live
- * work the drain has not consumed yet) and every `reply:` record, combined
- * and ordered oldest-first, keeping the newest `windowSize` and rolling the
- * rest. Returns the number of records rolled.
+ * covers `inbox:` records that are `"skipped"` or `"resolved"` and every
+ * `reply:` record, combined and ordered oldest-first, keeping the newest
+ * `windowSize` and rolling the rest. A `pending` record is live work the
+ * drain has not consumed yet, and a `delivered` or `answered` record is an
+ * open steer whose state the sender still reads, so both stay in the store
+ * whatever the window; the TTL sweep is the bound on those. Returns the
+ * number of records rolled.
  */
 export async function enforceChannelWindow(
   store: CommonsStore,
@@ -337,7 +343,7 @@ export async function enforceChannelWindow(
   windowSize: number,
   appendLines: (lines: string[]) => Promise<void>,
 ): Promise<number> {
-  const inbox = (await listInboxRecords(store, persona)).filter((r) => r.status !== "pending");
+  const inbox = (await listInboxRecords(store, persona)).filter((r) => r.status === "skipped" || r.status === "resolved");
   const keys = await store.keys();
   const replyPrefix = `${REPLY_PREFIX}${persona}:`;
   const combined: { key: string; at: number; kind: "inbox" | "reply"; record: unknown }[] = inbox.map((r) => ({

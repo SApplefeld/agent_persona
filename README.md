@@ -366,9 +366,16 @@ Writes an operator record into the commons store. `urgent: true` marks the recor
 
 **`agentic_inbox`** (reader only)
 
-Returns unread replies to the caller's records. A record still `pending` while the owner's commons entry shows a turn in flight (`turnStartedAt` in the machine-global commons store, live while the entry's `lastSeen` is within `staleAfterMs`) comes back with `deferred: true` and `turnRunningMs`. The store is shared across the machine, so a reader in another working directory sees the same state. Refused when:
+Returns unread replies to the caller's records. A record still `pending` while the owner's commons entry shows a turn in flight (`turnStartedAt` in the machine-global commons store, live while the entry's `lastSeen` is within `staleAfterMs`) comes back with `deferred: true` and `turnRunningMs`. A `resolved` record carries `outcome`, `note` and `resolvedAt` beside `reply`. The store is shared across the machine, so a reader in another working directory sees the same state. Refused when:
 - The calling session is the owner
 - The calling session does not hold a reader claim on the target persona
+
+**`agentic_resolve`** (owner only)
+
+Marks a record addressed to the owner's persona as `resolved`, writing `resolvedAt`, an `outcome` of `done` or `declined`, and a short `note`. `answered` means a turn replied; `resolved` means the work the record asked for is finished or will not be done, which is what a sender counting rounds per steer needs. Takes the record id (`<persona>-<sender session id>-<seq>`). Refused when:
+- The calling session is not the owner (a reader holding the persona cannot resolve)
+- The record is not listed under the caller's persona
+- The record is still `pending` (not delivered yet) or `skipped` (its writer had no live claim)
 
 ### Record shapes
 
@@ -376,24 +383,24 @@ All records live in the global store (machine-wide, one store per plugin). Key f
 
 | Key format | Type | Description |
 |---|---|---|
-| `inbox:<persona>:<writer session id>:<seq>` | `inbox` | An operator message from a reader to an owner |
+| `inbox:<persona>:<writer session id>:<seq>` | `inbox` | An operator message from a reader to an owner. `status` runs `pending` (written, not yet read), `delivered` (submitted to the owner's turn), `answered` (that turn replied), `resolved` (the owner marked the work done or declined through `agentic_resolve`), or `skipped` (the writer had no live claim when the tick reached it) |
 | `reply:<persona>:<record id>` | `reply` | The owner's reply to an inbox record |
 | `ask:<persona>:<ask id>` | `ask` | A question from the owner to a reader |
 | `reader:<persona>` | `reader` | A reader claim on a persona (no session id in the key) |
 
 **Record-id format:** `ask-<node id>-<ms>` where `<node id>` is the persona's node id and `<ms>` is a millisecond timestamp.
 
-**TTL:** 24 hours, swept on the cost-summary cadence (every `costSummaryEveryNTicks` ticks). Only the owner sweeps records; readers cannot delete records they do not own.
+**TTL:** 24 hours, swept on the cost-summary cadence (every `costSummaryEveryNTicks` ticks). Only the owner sweeps records; readers cannot delete records they do not own. The sweep never removes a `pending` record, whatever its age: a pending record whose writer is gone leaves through the drain's own `skipped` route, so one still pending is unread live work. Every record the sweep removes (inbox, reply, ask) is appended to `.agentic-channel.jsonl` first, one line per record with `sweptAt` (the window roll's lines carry `rolledAt`), and a refused append leaves every record in the store and logs `sweep_expired_records_failed`.
 
 ### Bounded store (item 5)
 
-The store keeps only open asks and a short window of recent inbox/reply records per persona; everything past that window rolls to an append-only `.agentic-channel.jsonl` in the work directory rather than staying in the one rewritten-whole JSON file forever. Enforced on the same cost-summary cadence as the TTL sweep, in `enforceChannelWindow`: `inbox` records not still `pending` and every `reply` record, combined and ordered oldest-first, past `channelRecordWindow` (default 50) roll to the log. Open asks are never touched by this window - only TTL sweeping or the ask's own answer/expire/re-raise lifecycle ends one.
+The store keeps only open asks and a short window of recent inbox/reply records per persona; everything past that window rolls to an append-only `.agentic-channel.jsonl` in the work directory rather than staying in the one rewritten-whole JSON file forever. Enforced on the same cost-summary cadence as the TTL sweep, in `enforceChannelWindow`: `inbox` records that are `skipped` or `resolved` and every `reply` record, combined and ordered oldest-first, past `channelRecordWindow` (default 50) roll to the log. A `pending` record is unread work, and a `delivered` or `answered` record is an open steer whose state the sender still reads, so those stay in the store whatever the window; the TTL is the bound on them. Open asks are never touched by this window - only TTL sweeping or the ask's own answer/expire/re-raise lifecycle ends one.
 
 The persona file is bounded the same way, enforced at push time in `persist()` rather than only when the file happens to be parsed at a session load (a long-lived child never reloads): the decision log past `DECISIONS_MAX` (200) and memory past `MEMORY_MAX` (50, pinned entries exempt) both roll their oldest overflow to the same `.agentic-channel.jsonl`.
 
 ### Delivery
 
-When the owner's controller drains the inbox on a quiet tick, it submits the text through `$.prompt.submit` as an `[OPERATOR]` user turn. The `[OPERATOR]` marker is prepended to the text before submission. After that turn completes, the controller reads the last assistant message from `$.session.messages()` and writes it back as the reply.
+When the owner's controller drains the inbox on a quiet tick, it submits the text through `$.prompt.submit` as an `[OPERATOR]` user turn. The `[OPERATOR]` marker is prepended to the text before submission. The delivery remembers which record it submitted, and the next `turn.start` stamps that turn's id onto that record only, and only when the turn is the plugin's own: not external (the real `prompt.submit` hook fired, which a keyboard, SDK or channel turn does and the plugin's own submits never do), not channel-origin, and not opened by a nudge; a turn the plugin did not open for the record starting first is withheld (`operator_stamp_withheld`, naming `channel-origin`, `nudged` or `external`), and the record stays `delivered` with no reply, which the sender reads as unanswered rather than as a wrong answer. When the stamped turn completes with an answer, the controller writes that answer back as the reply and marks the record `answered`. A stamped turn that ends aborted or with an empty answer leaves the record `delivered` with its stamp (`operator_turn_unanswered`); no later turn re-stamps it, and the TTL bounds it.
 
 An `urgent` record does not wait for a quiet tick. On the owner's next passthrough tool call (checked at most once per `urgentCheckMinMs`, default 5000), the record is marked delivered, stamped with the running turn, and its text is appended as `[OPERATOR, urgent] ...` context on that tool's result, which the model reads right after the result. The turn's own answer becomes the reply. A record that answers an open ask is never delivered this way; the tick owns the ask lifecycle.
 

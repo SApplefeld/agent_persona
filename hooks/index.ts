@@ -611,6 +611,14 @@ export const register: Register = async (on, options) => {
   // own prompt.submit hook, so currentPrompt still holds the stale user text.
   // This flag tells turn.complete to score with the nudge-aware label set.
   let nudgedTurn = false;
+  // The inbox record the tick's delivery just submitted as an [OPERATOR]
+  // prompt, set on the synchronous side of $.prompt.submit at both delivery
+  // sites and consumed by the next turn.start. Only that record is ever
+  // stamped with a turn id, and only when the turn starting is none of
+  // external (lastPromptWasExternal below), channel-origin, or nudged:
+  // another turn starting first would otherwise take the stamp and file
+  // its own answer as the record's reply.
+  let submittedRecordId: string | null = null;
   // Item 2 backstop safety (Round 28): true only when the real
   // prompt.submit hook (a genuine external turn) just saw the
   // [SUPERVISOR-PRIMING] marker bin/supervise.sh's priming turn carries.
@@ -629,6 +637,14 @@ export const register: Register = async (on, options) => {
   // bypass this hook and so never touch this flag). Consumed by the very
   // next turn.start, the same one-flag handoff isPrimingTurn already uses.
   let lastPromptWasChannelOrigin = false;
+  // Whether the real prompt.submit hook fired at all since the last
+  // turn.start: true for every genuine external turn (keyboard, SDK caller,
+  // channel), never for one of this plugin's own $.prompt.submit calls,
+  // which bypass the hook. Consumed by the very next turn.start, the same
+  // one-flag handoff as above; it is what tells the delivery's own turn
+  // from any other, since a keyboard turn carries no origin the channel
+  // flag would see.
+  let lastPromptWasExternal = false;
   // Whether THIS turn (the one now running) started from a channel
   // message, captured at turn.start from the flag above so turn.complete
   // can act on it after the flag has already reset for the next prompt.
@@ -1028,13 +1044,40 @@ export const register: Register = async (on, options) => {
       name: "agentic_inbox",
       description:
         "Read replies from the owner session of this persona. The reader session calls this to poll for replies to its messages. " +
-        "Returns {inbox: [{id, from, at, text, kind, status, reply?, deferred?, turnRunningMs?}], asks: [{id, at, nodeId, question, status}]}. " +
+        "Returns {inbox: [{id, from, at, text, kind, status, reply?, deferred?, turnRunningMs?, outcome?, note?, resolvedAt?}], asks: [{id, at, nodeId, question, status}]}. " +
         "A pending record carries deferred: true and turnRunningMs while the owner is inside a turn: it waits for that turn to end. " +
+        "A resolved record carries outcome (done or declined), note and resolvedAt: the owner finished or declined the work, which a reply alone does not say. " +
         "Answer an open ask with agentic_say(text, answers: <ask id>).",
       inputSchema: {
         type: "object",
         properties: {},
         required: [],
+      },
+    });
+
+    await $.tool.register({
+      name: "agentic_resolve",
+      description:
+        "Owner only. Mark an operator record addressed to this persona as resolved once the work it asked for is finished or declined. " +
+        "A reply says a turn answered; a resolution says the work is done. The sender reads outcome, note and resolvedAt through agentic_inbox. " +
+        "Refused for a record still pending (not delivered yet), for a skipped record, and for a record addressed to another persona.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "The record id, <persona>-<sender session id>-<seq>, the same id the sender sees in agentic_inbox.",
+          },
+          outcome: {
+            type: "string",
+            description: "done when the work finished, declined when it will not be done.",
+          },
+          note: {
+            type: "string",
+            description: "Optional short note for the sender: what was done, or why it was declined.",
+          },
+        },
+        required: ["id", "outcome"],
       },
     });
 
@@ -1375,6 +1418,7 @@ export const register: Register = async (on, options) => {
                   action: "ask_answered",
                   detail: `ask ${askId} closed by record ${answer.id}`,
                 });
+                submittedRecordId = answer.id;
                 await $.prompt.submit({ text: `[OPERATOR] Answer to ${askRecord.question}: ${answer.text}` });
                 await persist($);
                 return;
@@ -1424,6 +1468,7 @@ export const register: Register = async (on, options) => {
             action: "operator_delivered",
             detail: `record ${oldest.id} submitted as [OPERATOR]`,
           });
+          submittedRecordId = oldest.id;
           await $.prompt.submit({ text: "[OPERATOR] " + oldest.text });
           await persist($);
           return; // One record per tick
@@ -1448,16 +1493,35 @@ export const register: Register = async (on, options) => {
         });
         await persist($);
 
-        // AT5: Sweep expired operator records on the summary cadence (owner only)
+        // AT5: Sweep expired operator records on the summary cadence (owner only).
+        // The sweep appends each inbox and reply record to the channel log
+        // before deleting it and throws on a refused append with every record
+        // still in the store, so a refusal reads as its own decision rather
+        // than as a quiet count of zero, the same split the window roll below
+        // makes.
         if (sess.isOwner) {
           const ttlMs = typeof cfg.operatorRecordTtlMs === "number" ? (cfg.operatorRecordTtlMs as number) : 86400000;
-          const swept = await sweepExpiredRecords(commonsStoreOf($), sess.persona, ttlMs);
-          if (swept > 0) {
+          try {
+            const swept = await sweepExpiredRecords(
+              commonsStoreOf($),
+              sess.persona,
+              (lines) => appendToChannelLog($, lines),
+              ttlMs,
+            );
+            if (swept > 0) {
+              sess.state.decisions.push({
+                timestamp: Date.now(),
+                loop: "worker",
+                action: "sweep_expired_records",
+                detail: `swept ${swept} expired operator records (persona: ${sess.persona})`,
+              });
+            }
+          } catch (err) {
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "worker",
-              action: "sweep_expired_records",
-              detail: `swept ${swept} expired operator records (persona: ${sess.persona})`,
+              action: "sweep_expired_records_failed",
+              detail: `sweep refused, records left in store (persona: ${sess.persona}): ${err instanceof Error ? err.message : String(err)}`,
             });
           }
 
@@ -2133,8 +2197,11 @@ export const register: Register = async (on, options) => {
                   `[BUDGET] Context is at ${estimatedTokens} tokens (close-out threshold: ${sess.contextBudgetCloseoutTokens}).\n` +
                   `Bank your current state to memory and the plan doc, then reach a clean stopping point. ` +
                   `The session will be restarted at the critical threshold; bank state now.`;
-                await $.prompt.submit({ text: nudgeText });
+                // Set before the submit, as the goal nudge does: the submit
+                // parks until the session is next idle, so a flag set after
+                // it would land only once the nudged turn had already run.
                 nudgedTurn = true;
+                await $.prompt.submit({ text: nudgeText });
                 sess.state.decisions.push({
                   timestamp: budgetTs,
                   loop: "monitor",
@@ -2745,6 +2812,8 @@ export const register: Register = async (on, options) => {
     // it. Reset the reply-tracking flag for the turn now starting.
     currentTurnIsChannelOrigin = lastPromptWasChannelOrigin;
     lastPromptWasChannelOrigin = false;
+    const currentTurnIsExternal = lastPromptWasExternal;
+    lastPromptWasExternal = false;
     replyCalledThisTurn = false;
     // D4: reset backoff skip counter on new turn (activity breaks the skip streak).
     if (costEnabled && sess.state.monitor.cost) {
@@ -2758,29 +2827,54 @@ export const register: Register = async (on, options) => {
     });
 
     // AS3: the first turn.start after a delivery stamps e.turnId onto the
-    // delivered record that has none.
-    if (sess.isOwner) {
-      const persona = sess.persona;
-      const allRecords = await listInboxRecords(commonsStoreOf($), persona);
-      const undelivered = allRecords.find(
-        (rec) => rec.status === "delivered" && !rec.turnId
-      );
-      if (undelivered) {
-        undelivered.turnId = e.turnId;
-        const store = commonsStoreOf($);
-        const existing = await store.get(undelivered.key);
-        if (existing) {
-          const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
-          parsed.turnId = e.turnId;
-          await store.set(undelivered.key, parsed);
-        }
+    // record the delivery submitted, and onto no other. The stamp is what
+    // turn.complete uses to file this turn's answer as the record's reply,
+    // so a turn the plugin did not open for the record must not take it.
+    // Three readings say the turn is not the delivery's own: the real
+    // prompt.submit hook fired since the last turn.start (an external turn,
+    // keyboard or SDK or channel, which the plugin's own submits never
+    // fire), the turn is channel-origin (the more specific reading of the
+    // same hook, named first), or a nudge opened it (a plugin submit the
+    // hook cannot see, read from nudgedTurn, which is set on the synchronous
+    // side of the nudge's submit and reset only at turn.complete). On any of
+    // them the stamp is withheld and the record stays delivered with no
+    // reply, which the sender reads as unanswered rather than as a wrong
+    // answer. The submitted id is consumed either way, so the delivery's own
+    // turn arriving later takes no stamp either; the TTL bounds the record.
+    if (sess.isOwner && submittedRecordId) {
+      const recordId = submittedRecordId;
+      submittedRecordId = null;
+      const withheldReason = currentTurnIsChannelOrigin ? "channel-origin" : nudgedTurn ? "nudged" : currentTurnIsExternal ? "external" : null;
+      if (withheldReason) {
         sess.state.decisions.push({
           timestamp: Date.now(),
           loop: "monitor",
-          action: "operator_turn_stamped",
-          detail: `record ${undelivered.id} stamped with turn ${e.turnId}`,
+          action: "operator_stamp_withheld",
+          detail: `record ${recordId} not stamped with turn ${e.turnId} (${withheldReason} turn)`,
         });
         await persist($);
+      } else {
+        const store = commonsStoreOf($);
+        const persona = sess.persona;
+        const allRecords = await listInboxRecords(store, persona);
+        const submitted = allRecords.find(
+          (rec) => rec.id === recordId && rec.status === "delivered" && !rec.turnId
+        );
+        if (submitted) {
+          const existing = await store.get(submitted.key);
+          if (existing) {
+            const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
+            parsed.turnId = e.turnId;
+            await store.set(submitted.key, parsed);
+          }
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "operator_turn_stamped",
+            detail: `record ${submitted.id} stamped with turn ${e.turnId}`,
+          });
+          await persist($);
+        }
       }
     }
 
@@ -3229,19 +3323,14 @@ export const register: Register = async (on, options) => {
             detail: `record ${matching.id} replied`,
           });
         } else {
-          // AX4: empty answer or aborted. Leave delivered, clear turnId so
-          // the next turn.start re-stamps it.
-          const existing = await store.get(matching.key);
-          if (existing) {
-            const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
-            parsed.turnId = undefined;
-            await store.set(matching.key, parsed);
-          }
+          // AX4: empty answer or aborted. The record stays delivered with
+          // its stamp and no reply until the TTL: a later turn is not the
+          // one the plugin opened for it, so none re-stamps it.
           sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "monitor",
-            action: "operator_turn_cleared",
-            detail: `record ${matching.id} turnId cleared (answer empty or aborted)`,
+            action: "operator_turn_unanswered",
+            detail: `record ${matching.id} turn ${e.turnId} ended with no answer (empty or aborted); left delivered`,
           });
         }
       }
@@ -4017,6 +4106,68 @@ export const register: Register = async (on, options) => {
       return { result: JSON.stringify({ inbox: withReplies, asks: openAsks }, null, 2) };
     }
 
+    // Section 12: serve agentic_resolve (the owner marks a record's work
+    // finished or declined). Owner only, and only for a record listed under
+    // the session's own persona, so a reader holding the persona cannot
+    // resolve, and a record keyed to another persona does not resolve here.
+    // A pending record has not been read, and a skipped record's writer is
+    // gone, so neither has anything to resolve.
+    if ((e as any).tool === "mcp__agentic-plugin__agentic_resolve") {
+      const persona = sess.persona;
+      const id = String((e as any).id || "").trim();
+      const outcome = (e as any).outcome as string | undefined;
+      const note = typeof (e as any).note === "string" ? (e as any).note : "";
+      if (!sess.isOwner) {
+        toolErrorsThisTurn++;
+        return { deny: "agentic_resolve is for the owner session only; a reader does not resolve the owner's records." };
+      }
+      if (!id) {
+        toolErrorsThisTurn++;
+        return { deny: "agentic_resolve requires a non-empty 'id'." };
+      }
+      if (outcome !== "done" && outcome !== "declined") {
+        toolErrorsThisTurn++;
+        return { deny: "agentic_resolve requires 'outcome' of done or declined." };
+      }
+      const store = commonsStoreOf($);
+      const target = (await listInboxRecords(store, persona)).find((rec) => rec.id === id);
+      if (!target) {
+        toolErrorsThisTurn++;
+        return { deny: `no record '${id}' addressed to persona ${persona}.` };
+      }
+      if (target.status === "pending") {
+        toolErrorsThisTurn++;
+        return { deny: `record '${id}' is still pending (not delivered yet); nothing to resolve.` };
+      }
+      if (target.status === "skipped") {
+        toolErrorsThisTurn++;
+        return { deny: `record '${id}' was skipped (its writer had no live claim); nothing to resolve.` };
+      }
+      if (target.status !== "delivered" && target.status !== "answered") {
+        toolErrorsThisTurn++;
+        return { deny: `record '${id}' is already ${target.status} (${target.outcome ?? "no outcome"}).` };
+      }
+      const existing = await store.get(target.key);
+      if (!existing) {
+        toolErrorsThisTurn++;
+        return { deny: `record '${id}' left the store before it could be resolved.` };
+      }
+      const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
+      parsed.status = "resolved";
+      parsed.resolvedAt = Date.now();
+      parsed.outcome = outcome;
+      parsed.note = note;
+      await store.set(target.key, parsed);
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "worker",
+        action: "operator_resolved",
+        detail: `record ${id} resolved ${outcome}${note ? `: "${note.slice(0, 80)}"` : ""}`,
+      });
+      await persist($);
+      return { result: `Record ${id} resolved (${outcome}).` };
+    }
+
     // Goal constraint: deny Bash if the ROOT objective says so (R10).
     const rootForConstraint = sess.state.goals.find((g) => g.parentId === null);
     if (rootForConstraint &&
@@ -4088,6 +4239,7 @@ export const register: Register = async (on, options) => {
     isPrimingTurn = e.text.startsWith("[SUPERVISOR-PRIMING]");
     // Steer 68/69: a real Discord message carries e.origin.kind === "channel".
     lastPromptWasChannelOrigin = (e as { origin?: { kind?: string } }).origin?.kind === "channel";
+    lastPromptWasExternal = true;
 
     // D5b (bullet 1): an open ask never silences the worker. This hook fires
     // only for a genuine external turn - the controller's own $.prompt.submit
