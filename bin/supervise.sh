@@ -1682,6 +1682,7 @@ const restartCount = process.argv[13] ? parseInt(process.argv[13]) : 0;
 const shutdownRequestedTs = process.argv[14] ? parseInt(process.argv[14]) : null;
 const restartRequestedTs = process.argv[15] ? parseInt(process.argv[15]) : null;
 const rootCompleteBackfilled = process.argv[16] === '1';
+const crashLimit = process.argv[17] ? parseInt(process.argv[17]) : 3;
 console.log(JSON.stringify({
   childExitCode: null,
   rootCompleteTs,
@@ -1689,6 +1690,7 @@ console.log(JSON.stringify({
   restartRequestedTs,
   criticalTs,
   crashCount,
+  crashLimit,
   restartCount,
   childStartTs,
   childSessionId,
@@ -1701,7 +1703,7 @@ console.log(JSON.stringify({
   maxRestartsPerHour,
   rootCompleteBackfilled,
 }));
-" "${ROOT_COMPLETE_TS:-}" "${CRITICAL_TS:-}" "${HEARTBEAT_SESSION_ID:-}" "${HEARTBEAT_LAST_SEEN:-}" "${NOW:-}" "$CHILD_START_TS" "${CHILD_SESSION_ID:-}" "$LAUNCHED_AT" "$STALE_AFTER_MS" "$SUPERVISOR_MIN_RUN_MS" "$SUPERVISOR_MAX_RESTARTS_PER_HOUR" "$CRASH_COUNT" "$RESTART_COUNT" "${SHUTDOWN_REQUESTED_TS:-}" "${RESTART_REQUESTED_TS:-}" "${ROOT_COMPLETE_BACKFILLED:-}" 2>> "$RUNDIR/supervisor.err")
+" "${ROOT_COMPLETE_TS:-}" "${CRITICAL_TS:-}" "${HEARTBEAT_SESSION_ID:-}" "${HEARTBEAT_LAST_SEEN:-}" "${NOW:-}" "$CHILD_START_TS" "${CHILD_SESSION_ID:-}" "$LAUNCHED_AT" "$STALE_AFTER_MS" "$SUPERVISOR_MIN_RUN_MS" "$SUPERVISOR_MAX_RESTARTS_PER_HOUR" "$CRASH_COUNT" "$RESTART_COUNT" "${SHUTDOWN_REQUESTED_TS:-}" "${RESTART_REQUESTED_TS:-}" "${ROOT_COMPLETE_BACKFILLED:-}" "$SUPERVISOR_CRASH_LIMIT" 2>> "$RUNDIR/supervisor.err")
 
     # Call the decide unit.
     DECIDE_RESULT=$(node -e "

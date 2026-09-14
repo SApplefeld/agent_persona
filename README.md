@@ -45,7 +45,7 @@ or, once it's already running passively, by talking to its Discord thread (attac
 
 **Working on the plugin's own code** instead of just running it: pass `--dev` to `supervise.sh`, which loads this checkout directly (`--plugin-dir`) instead of the installed copy, so edits here take effect on the next launch with no reinstall.
 
-**Status: v0.11.0 : Stage 3 (supervisor).** `tsc --noEmit` clean. Supervisor (`bin/supervise.sh`) drives outer-loop runs: pre-gate (commons + heartbeat), coproc stdin with EOF stop, real exit codes, `supervisor.err` append (not truncate), `PROMPT=""` cleared after first send, `writeClaimDirect` shared across all three claim sites. 12 live tests in `.kit/` (including supervisor suite F1-F6 + F0).
+**Status: v0.11.0 : Stage 3 (supervisor).** `tsc --noEmit` clean. Supervisor (`bin/supervise.sh`) drives outer-loop runs: pre-gate (commons + heartbeat), coproc stdin with EOF stop, real exit codes, `supervisor.err` append (not truncate), `PROMPT=""` cleared after first send, `writeClaimDirect` shared across all three claim sites. The suites are catalogued under Test Coverage in the Supervisor section.
 
 ## Architecture
 
@@ -216,31 +216,109 @@ Declared in `plugin.json` with defaults. Read as `options.<name>` in `register(o
 
 ## Supervisor (v0.11.0)
 
-`bin/supervise.sh` is the outer-loop supervisor for days-long runs. It:
+`bin/supervise.sh` is the outer-loop supervisor for days-long runs. It takes `<workdir> <persona> <permission-mode>` plus the options `--prompt TEXT`, `--rundir DIR`, `--dev`, `--no-channel` and `--channel-name NAME`, and runs one child at a time: it checks its own settings, gates on the persona being free, launches the child, polls the persona store for signals, and stops or relaunches the child by the decision those signals produce. The supervisor never writes the persona store (invariant §8); it reads the store and writes only under its run directory.
 
-1. **Pre-gate**: waits for both the commons store and per-directory heartbeat to be free (no live persona claims) before launching a child.
-2. **Launch**: starts a child via coproc with stdin as a pipe (not a file), so EOF can be sent to stop it cleanly.
-3. **Poll**: watches the store for `context_budget_crossed` decisions and other signals; decides `continue`, `restart`, `stop_complete`, `stop_budget`, or `stop_crash_loop`.
-4. **Stop**: the stop runs in phases. A phase counts as stopped only once every process in the snapshot is verified gone; a phase can also end unverified or failed, and the stop falls through to the next one.
-   - It snapshots the child's Windows process tree first, recording each process's pid and start time.
-   - It sends EOF by closing the coproc write end, then waits `stopGraceMs`.
-   - It sends TERM to the wrapper, then waits another `stopGraceMs`.
-   - It runs `taskkill` on the tree and force-kills each snapshot process still matching both its pid and its start time.
-   - A survivor of a resolved snapshot gets up to 30 seconds of retries. A tree that could not be resolved at all is re-snapshotted once, and reported if that read fails too.
-   - If a stop that ends the supervisor still cannot be verified, the supervisor exits with code 5. A relaunch logs the failure and proceeds.
-   - On exit, the cleanup trap stops a live child the same way, or re-verifies the last snapshot when the wrapper is already gone. The supervisor waits for the child and records its real exit code.
-5. **Log**: appends to `supervisor.log` and `supervisor.err` (never truncates after launch).
+### Startup Checks
 
-The supervisor never writes the persona store (invariant §8). It uses `supervise-decide.mjs` (pure JS, 9/9 unit tests) for the decision logic. The prompt is cleared after the first send so subsequent launches don't inherit it.
+Every setting the script reads for itself is checked once at startup, before the run directory exists, and a refusal exits 1 with an `ERROR:` line naming the setting and the value it refused. The persona is checked first, since it is spliced into the child's settings JSON and into `node -e` programs: letters, digits, underscore and hyphen, the same class `valid_persona_name` enforces in `bin/agentic-common.sh`. The model is checked on shape rather than against a list, because model names ship without this script changing: lowercase letters, digits, `.` and `-`, starting with a letter or digit, plus an optional bracketed suffix such as the `[1m]` of `opus[1m]`, admitted only as a matched pair at the end. The effort is one of `low`, `medium`, `high`, `xhigh` or `max`. The `MODEL` and `EFFORT` environment overrides take the same two checks, since they are what reaches the launch flags.
 
-### Key files
+The numeric settings share one rule, `positive_number`: digits only, no leading zero, at most nine digits, and at least a minimum that defaults to 1. A leading zero reads as octal in shell arithmetic, a value past nine digits can wrap 64-bit arithmetic, a non-numeric value turns every `[ -lt ]` comparison into a shell error, and zero collapses every wait to no wait at all. Two settings the script divides by 1000 before use, `supervisorStopGraceMs` and `supervisorPollMs`, take a minimum of 1000, so a value under one second cannot floor to a zero-second wait. `staleAfterMs` is a plugin value the script also reads for itself, as the bound the pre-launch gate and the decide unit use, so it takes this rule on every launch, including a launch where a provided settings file skips the emitter's own check. One setting falls back instead of refusing: an unusable `supervisorPsBoundS` resolves to 30 with no error line, because a bad bound costs process-tree verification rather than the run.
+
+The plugin cadences the script only emits (`controllerTickMs`, `nudgeIdleMs`, `nudgeFloorMs`, `gitProbeMs`, `heartbeatMs`, and the budget, self-review and cost options) take `emit_settings_json`'s own rule in `bin/agentic-common.sh`: a non-negative integer with no leading zero. That rule admits zero and any length, and it runs only when the settings file is written, never when one is provided.
+
+| Setting (environment variable) | Default | Check |
+|---|---|---|
+| `supervisorModel` | `opus` | model shape; `MODEL` overrides it |
+| `supervisorEffort` | `medium` | `low`, `medium`, `high`, `xhigh` or `max`; `EFFORT` overrides it |
+| `supervisorPsBoundS` | 30 | shared numeric rule; a bad value falls back to 30 |
+| `supervisorStopGraceMs` | 60000 | shared numeric rule, minimum 1000 |
+| `supervisorMinRunMs` | 120000 | shared numeric rule |
+| `supervisorCrashLimit` | 3 | shared numeric rule; both crash readers stop on it |
+| `supervisorMaxRestartsPerHour` | 6 | shared numeric rule |
+| `supervisorPollMs` | 10000 | shared numeric rule, minimum 1000 |
+| `supervisorPrimingWaitS` | 180 | shared numeric rule |
+| `staleAfterMs` | 90000 | shared numeric rule; also emitted to the child |
+
+### Settings File
+
+The child reads its plugin options from `<rundir>/settings.json`, passed on `--settings`. `pluginConfigs` is keyed by plugin id, and the id differs by load mode: `agentic-plugin` under `--plugin-dir` (`--dev`), and `agentic-plugin@agent-persona` for the installed copy. Options under the other id are ignored without an error, and the child then claims persona `default` with default cadences. So `emit_settings_json` writes the same options under both ids. When the run directory already holds a settings file, the supervisor keeps it: `ensure_settings_plugin_ids` copies the options from whichever id carries them to the id that lacks them, every option as the caller wrote it. An id whose options object is missing or empty counts as absent, two ids that both carry options are left byte for byte, and the file is replaced by rename so an interrupted write never truncates it. A file that is not JSON, or whose `pluginConfigs`, id entry or options value is not a plain object, is refused: the supervisor exits 1 and the reason is in `supervisor.log`. A provided file's persona is not reconciled with the launch argument; `docs/backlog.md` records that gap. `.kit/settings-plugin-key-test.sh` pins both ids against the two manifests.
+
+### Pre-Launch Gate
+
+Before every launch the supervisor waits, up to 120 seconds and polling every 5 seconds, for the launch persona to be free in two places: the machine-global commons store for the load mode (`find_global_store` picks the inline store under `--dev` and the installed store otherwise), and the workdir's `.agentic-heartbeat.json`. The commons half counts a `persona:<persona>` claim live while its session's `lastSeen` is younger than `staleAfterMs`. The heartbeat half counts the holder stale once its entry's age exceeds `staleAfterMs`, and an absent file as free. Both halves receive the persona and the bound as program arguments rather than spliced into the program text, so a value carrying code is read as data, and a bound that is not a number counts every holder as live. A store or heartbeat file that fails to parse counts as held for that poll. No store found for the load mode is `GATE FAIL`, exit 2, and a timeout is `GATE TIMEOUT`, exit 2.
+
+### Launch
+
+The child is `claude -p` with stream-json on both ends, started as a coproc so its stdin is a pipe that EOF can close. It loads the installed plugin unless `--dev` adds `--plugin-dir` for this checkout, attaches the Discord relay unless `--no-channel`, and runs with `--model "${MODEL:-$SUPERVISOR_MODEL}" --effort "${EFFORT:-$SUPERVISOR_EFFORT}"`, so the default is opus at medium effort and an exported `MODEL` or `EFFORT` overrides it. The `.kit/live-*` suites export `haiku` for exactly that reason. The child's pid is saved from `$!` at launch and every later read uses that copy, because bash unsets the coproc's own variables the moment it reaps the child and the script runs under `set -u`.
+
+Every launch opens with one synthetic priming turn marked `[SUPERVISOR-PRIMING]`. It carries the skill-load instruction whatever `--no-channel` says, and the reply-tool instruction when the channel is attached. A `--prompt` goes to child 1 only, as its own second turn: the supervisor waits up to `supervisorPrimingWaitS` for the priming turn's `result` line, then writes the goal framed as the operator's trusted task. On a timeout it writes the goal anyway, and when the child has already died it skips the write. A child gone before its stdin could be written to is logged and falls through to the accounting below. The prompt is cleared after that first send, so a relaunch never inherits it.
+
+### Poll Loop
+
+Every `supervisorPollMs` the supervisor reads the persona store and the heartbeat and hands one snapshot to `bin/supervise-decide.mjs`, a pure function with no I/O: the newest `root_complete` together with whether its detail text contains `backfilled`, the newest `shutdown_requested`, `restart_requested` and critical `context_budget_crossed`, the heartbeat's session id and `lastSeen`, and the counters. The decision's priority order:
+
+1. `stop_budget`: the restart count reached `supervisorMaxRestartsPerHour`. Exit 4.
+2. `stop_crash_loop`: `supervisorCrashLimit` consecutive crashes, the same limit the natural-exit path reads. Exit 3.
+3. `stop_complete`: a `shutdown_requested` newer than the child's start. Exit 0.
+4. `restart_passive`: a `restart_requested` newer than the child's start. The child is stopped and relaunched with the goal tree kept, with no crash or restart accounting.
+5. `restart_passive`: a `root_complete` newer than the child's start that is not backfilled. The goal is done, and the supervisor returns to passive with a fresh child, again unaccounted.
+6. `restart`: a critical budget crossing newer than the child's start, or a hung child, which is a heartbeat for the child's own session older than `staleAfterMs` once `staleAfterMs` has passed since launch. Accounted: a crash when the exit was non-zero inside `supervisorMinRunMs`, and one more restart in the hour either way.
+7. `continue`.
+
+A backfilled `root_complete` is the hook's backstop for a turn that did tool work with no active goal tree, and it is not a completion. The child keeps running, and only the triggers below it can restart it. The reader, `get_root_complete`, takes the timestamp and the flag from one read of the newest `root_complete`, so a real completion followed within one poll by a backfilled one reads as backfilled; `docs/backlog.md` records that.
+
+### Natural Exit
+
+When the child exits on its own, the supervisor reads the store once more and takes the first match in this order: a `shutdown_requested` newer than the child's start ends the run with exit 0; a `restart_requested` newer than the start relaunches unaccounted; a `root_complete` newer than the start relaunches unaccounted, logged as `RESTART_PASSIVE` when the root is real, and as a `NOTE:` line naming the backfilled root when it is backfilled and the child exited 0. Every other exit is accounted. The crash counter increments when the exit was non-zero and the child ran less than `supervisorMinRunMs`, and resets to zero otherwise; the restart count is the number of restarts in the trailing hour. The budget is checked before the crash limit: exit 4 at `supervisorMaxRestartsPerHour`, then exit 3 at `supervisorCrashLimit`. A backfilled root with a non-zero exit takes this accounted path like any crash. A backfilled relaunch has no rate bound of its own, and the natural-exit relaunch never looks for a surviving `claude.exe` under a dead wrapper; both are on `docs/backlog.md`.
+
+### Stop Phases
+
+Every stop path calls `stop_child`, retries a failed tree kill for up to 30 seconds, then waits for the child's real exit code. The stop runs in phases. A phase counts as stopped only once every process in the snapshot is verified gone; a phase can also end unverified or failed, and the stop falls through to the next one.
+
+- It snapshots the child's Windows process tree first, recording each process's pid and start time.
+- It sends EOF by closing the coproc write end, then waits `supervisorStopGraceMs`.
+- It sends TERM to the wrapper, then waits another `supervisorStopGraceMs`.
+- It runs `taskkill` on the tree and force-kills each snapshot process still matching both its pid and its start time.
+- A survivor of a resolved snapshot gets up to 30 seconds of retries. A tree that could not be resolved at all is re-snapshotted once, and reported if that read fails too.
+- If a stop that ends the supervisor still cannot be verified, the supervisor exits with code 5. A relaunch logs the failure and proceeds.
+- On exit, the cleanup trap stops a live child the same way, or re-verifies the last snapshot when the wrapper is already gone.
+
+Every PowerShell call the stop makes is bounded by `supervisorPsBoundS`, since GNU `timeout` does not terminate a native `powershell.exe` on this box.
+
+### Exit Codes And Logs
+
+| Code | Meaning |
+|---|---|
+| 0 | `shutdown_requested` honored |
+| 1 | usage, a refused persona, model, effort or numeric setting, or a settings file that could not be written or completed |
+| 2 | no commons store for the load mode, or the pre-launch gate timed out |
+| 3 | crash loop |
+| 4 | restart budget exhausted |
+| 5 | stopped, but a process from the child is alive or unverifiable despite every retry |
+| 130, 143 | INT or TERM to the supervisor itself |
+
+`<rundir>/supervisor.log` is the narrative: gate polls, launches, `WAITING` liveness lines every sixth poll, decisions, stop phases and exits. `<rundir>/supervisor.err` collects the `node` and PowerShell stderr, truncated once at each launch and appended to after. Each child writes `stdout.jsonl`, `stderr.log`, `claude-debug.log` and a `.exit` marker under `<rundir>/child-N/`.
+
+### Key Files
 
 | File | Purpose |
 |---|---|
 | `bin/supervise.sh` | The supervisor script (bash) |
-| `bin/supervise-decide.mjs` | Decision logic (pure JS, 9/9 tests) |
-| `bin/agentic-common.sh` | Shared helpers (`wait_persona_free_both`, etc.) |
-| `.kit/live-supervisor-test.sh` | Supervisor acceptance test (F1-F6 + F0) |
+| `bin/supervise-decide.mjs` | Decision logic (pure JS) |
+| `bin/agentic-common.sh` | Shared helpers: `emit_settings_json`, `ensure_settings_plugin_ids`, `valid_persona_name`, `find_global_store`, `wait_persona_free_both`, `poll_decisions`, `poll_heartbeat` |
+
+### Test Coverage
+
+The offline suites run with no `claude` session and no persona claim, so they run beside a live fleet. The live suites launch real children and go through `.kit/live-all.sh`.
+
+- `.kit/supervisor-unit-test.mjs`: `bin/supervise-decide.mjs`'s decision unit, 19 cases, including a backfilled root yielding no restart, its real-root control, and a backfilled root still restarting on a hung heartbeat or a critical crossing. Offline.
+- `.kit/supervisor-natural-exit-test.sh`: the natural-exit path, driven through the real `bin/supervise.sh` with a stub `claude` and an isolated `HOME`. Cases: a backfilled root with exit 0 relaunches unaccounted with the `NOTE:` line and no `RESTART_PASSIVE`; a real root takes `RESTART_PASSIVE`; an exit 7 in the poll loop and a death at startup each count as a crash; a backfilled root with exit 7 takes the crash path; a child whose stdin is already gone at launch is counted and relaunched. It also pins that the `backfilled` substring the reader tests for sits inside the hook's backstop detail and no other `root_complete` detail. Offline.
+- `.kit/supervisor-model-test.sh`: the model and effort defaults and their env overrides across a real process boundary, the shared numeric rule clause by clause, each numeric setting's own refusal line driven through the real script, the `supervisorPsBoundS` fallback, a structural pin that every numeric setting is either checked by `positive_number` or emitted and never read by the script itself, and that every live suite launching `bin/supervise.sh` exports `MODEL` and `EFFORT`. Offline.
+- `.kit/settings-plugin-key-test.sh`: both plugin ids in the emitted settings, completion of a provided single-id file with its options and persona kept, refusal of shapes that cannot hold options, refusal of a persona or cadence that could break out of the JSON, the same persona class in both files that check it, and `staleAfterMs` refused at startup even with a settings file provided and read as data by both halves of the gate. Offline.
+- `.kit/channel-reply-instruction-test.sh`: the priming turn carries the skill-load instruction under both `--no-channel` values and the reply-tool instruction only with a channel attached, read from the script's own text. Offline.
+- `.kit/live-stopprocesstree-test.sh`: the stop-path helpers and `stop_child` itself, extracted from `bin/supervise.sh`, against real Windows processes: a wrapper whose native child survives it, a wrapper that ignores TERM and forces the KILL phase, the PowerShell bound holding, and a CIM failure read as unverified. Registered in `live-all.sh` as `stopprocesstree`; it launches no `claude` session.
+- `.kit/live-supervisor-test.sh`: the supervisor acceptance run (F1-F6 + F0).
+- `.kit/live-passive-test.sh`, `.kit/live-goalconvo-test.sh`, `.kit/live-restartpassive-test.sh`, `.kit/live-restartrequest-test.sh`: a passive start, a goal taken by conversation, `RESTART_PASSIVE` on a real `root_complete` with the supervisor staying up, and a reader's restart request relaunching the child with its plan kept.
 
 ## Cost and cadence options (item 6)
 
@@ -257,7 +335,7 @@ The plugin tracks its own model-call cost and caps nudge frequency. All options 
 | `costBackoffAfterTicks` | `10` | Number of consecutive unchanged ticks before backoff engages. |
 | `costBackoffMaxMs` | `300000` (5 min) | Maximum backoff duration. The backoff factor is derived from this value. |
 
-**Env shorthand:** The test runner uses `COST_*` env vars (`COST_MAX_NUDGES_PER_HOUR`, etc.) that `agentic-common.sh:59-70` translates into settings. A hook module cannot read the environment directly.
+**Env shorthand:** The test runner uses `COST_*` env vars (`COST_MAX_NUDGES_PER_HOUR`, etc.) that `emit_settings_json` in `bin/agentic-common.sh` translates into settings. A hook module cannot read the environment directly.
 
 **Ledger:** The plugin estimates token cost per site (classify, reason, selfReview, planner) as prompt chars over 4 plus the maxTokens cap. The `nudge` site is count-only because the nudge's cost is a main-model turn the hooks cannot measure.
 
@@ -347,11 +425,8 @@ The operator has not yet ruled on these options; the defaults are in force.
 - `.kit/live-operator-test.sh` : the full live suite (phases 1, 2, 3)
 - `.kit/controller-tick-test.mjs` : S4 (peer doorbell), S9 (cost cap ask opener)
 - `.kit/assert-decisions.js` : decision log assertions (ask lifecycle, reply check)
-- `.kit/supervisor-unit-test.mjs` : `bin/supervise-decide.mjs`'s decision unit, pure and offline
-- `.kit/supervisor-natural-exit-test.sh` : the path `bin/supervise.sh` takes when a child exits on its own, driven by a stub `claude`, offline
-- `.kit/supervisor-model-test.sh` : `bin/supervise.sh`'s startup validation of the model, effort and numeric settings, offline
-- `.kit/settings-plugin-key-test.sh` : the child settings JSON the supervisor writes, including the plugin key and the persona name rule, offline
-- `.kit/live-stopprocesstree-test.sh` : `bin/supervise.sh`'s stop-path helpers and `stop_child` itself, against real Windows processes (registered in `live-all.sh`'s `ALL_SUITES` as `stopprocesstree` - launches no `claude` session and holds no persona claim)
+
+The supervisor's own suites are listed under the Supervisor section's Test Coverage above.
 
 **Runner lock:** `live-all.sh` writes `.kit/RUNNING` at start and refuses to start if it already exists (exit 8). After a killed gate, confirm no `claude` child with `--plugin-dir` is running, then `rm .kit/RUNNING`.
 

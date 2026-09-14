@@ -11,6 +11,7 @@
  * @property {number|null} [restartRequestedTs] - Timestamp of the newest restart_requested decision, or null.
  * @property {number|null} [criticalTs] - Timestamp of the newest context_budget_crossed critical: decision, or null.
  * @property {number} [crashCount] - Number of consecutive non-zero exits within minRunMs.
+ * @property {number} [crashLimit] - The supervisor's crash-loop limit (supervisorCrashLimit); crashCount at or past it stops the run.
  * @property {number} [restartCount] - Number of restarts in the current hour window.
  * @property {number} [childStartTs] - Supervisor's clock at launch (before the launch call).
  * @property {string} [childSessionId] - The child's session id from the stream-json init line.
@@ -34,7 +35,7 @@
  *
  * Priority order (highest first):
  * 1. stop_budget - restart budget exhausted (maxRestartsPerHour reached)
- * 2. stop_crash_loop - 3 consecutive non-zero exits within minRunMs
+ * 2. stop_crash_loop - crashLimit consecutive non-zero exits within minRunMs
  * 3. stop_complete - an explicit shutdown_requested decision newer than child start
  *    (plan item 4: distinct from root_complete - the operator asked the
  *    supervisor itself to stop, not just the current goal)
@@ -66,6 +67,7 @@ export function decide(input) {
     restartRequestedTs,
     criticalTs,
     crashCount = 0,
+    crashLimit = 3,
     restartCount = 0,
     childStartTs,
     childSessionId,
@@ -84,8 +86,10 @@ export function decide(input) {
     return { action: 'stop_budget', reason: `restart budget exhausted (${restartCount}/${maxRestartsPerHour} in the hour)` };
   }
 
-  // 2. Crash loop: 3 consecutive non-zero exits within minRunMs: stop.
-  if (crashCount >= 3) {
+  // 2. Crash loop: crashLimit consecutive non-zero exits within minRunMs: stop.
+  // The limit is the supervisor's own setting, so both readers of the crash
+  // count, this unit and the natural-exit path, stop on the same number.
+  if (crashCount >= crashLimit) {
     return { action: 'stop_crash_loop', reason: `crash loop (${crashCount} non-zero exits within ${minRunMs}ms)` };
   }
 
