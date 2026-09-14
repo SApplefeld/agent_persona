@@ -50,6 +50,8 @@ import type { InboxRecord } from "./operator";
 import {
   claimReaderRole,
   mayReachPersona,
+  mayReachPersonaIn,
+  personaNameProblem,
   sweepExpiredRecords,
   SweepDeleteError,
   enforceChannelWindow,
@@ -100,16 +102,13 @@ function commonsStoreOf(dp: any): CommonsStore {
 }
 
 // The persona an agentic_say or agentic_inbox call addresses: the `persona`
-// argument when given, else the session's own persona. A name carrying ":"
-// is refused because records are keyed `inbox:<persona>:<session>:<seq>` and
-// listed by the `inbox:<persona>:` prefix, so a colon in a name would let one
-// persona's listing read another persona's keys.
+// argument when given, else the session's own persona. A given name passes
+// personaNameProblem, the one rule for a name that reaches a store key.
 function targetPersonaOf(arg: unknown, own: string): { persona: string } | { deny: string } {
   if (arg === undefined || arg === null) return { persona: own };
-  if (typeof arg !== "string" || !arg.trim()) return { deny: "'persona' must be a non-empty string when given." };
-  const name = arg.trim();
-  if (name.includes(":")) return { deny: `'persona' cannot contain ':' (got '${name}').` };
-  return { persona: name };
+  const problem = personaNameProblem(arg);
+  if (problem) return { deny: `'persona' ${problem}${typeof arg === "string" ? ` (got '${arg.trim()}')` : ""}.` };
+  return { persona: (arg as string).trim() };
 }
 
 // One turn this plugin's own $.prompt.submit has queued and that has not
@@ -806,9 +805,14 @@ export const register: Register = async (on, options) => {
   const staleAfterMs = typeof cfg.staleAfterMs === "number" ? (cfg.staleAfterMs as number) : 90_000;
   sess.staleAfterMs = staleAfterMs; // F9a: single-source the threshold
   const controllerTickMs = typeof cfg.controllerTickMs === "number" ? (cfg.controllerTickMs as number) : 30_000;
-  // The one persona name the inbox gates treat as the coordinator: its holder
-  // may address any persona, and any named persona owner may address it.
-  const coordinatorPersona = typeof cfg.coordinatorPersona === "string" && cfg.coordinatorPersona.trim()
+  // The one persona name the inbox gates treat as the coordinator: its owner
+  // may address any persona, and any named persona owner may address it. A
+  // configured name that fails the shared name rule, or that is "default",
+  // falls back: with "default" every plugin-loaded session would own the
+  // coordinator persona and reach every inbox.
+  const coordinatorPersona = typeof cfg.coordinatorPersona === "string"
+      && personaNameProblem(cfg.coordinatorPersona) === null
+      && cfg.coordinatorPersona.trim() !== "default"
     ? cfg.coordinatorPersona.trim()
     : "coordinator";
   const urgentCheckMinMs = typeof cfg.urgentCheckMinMs === "number" ? (cfg.urgentCheckMinMs as number) : 5_000;
@@ -1465,9 +1469,10 @@ export const register: Register = async (on, options) => {
 
       // D3: drain operator inbox (one record per tick, owner only).
       // List pending inbox records whose writer may reach this persona
-      // (mayReachPersona: a reader claim on it, the coordinator persona, or a
-      // named persona owner when this persona is the coordinator), take the
-      // lowest at, mark delivered, submit as [OPERATOR] prompt.
+      // (mayReachPersonaIn over one claims read: a reader claim on it, the
+      // coordinator persona owned, or a named persona owned when this persona
+      // is the coordinator), take the lowest at, mark delivered, submit as
+      // [OPERATOR] prompt.
       // D5: if a pending record answers the open ask, close the ask first
       // (ask_answered path) before the general drain.
       if (sess.isOwner) {
@@ -1483,7 +1488,7 @@ export const register: Register = async (on, options) => {
           if (askRecord && askRecord.status === "open") {
             const answer = pending.find((rec) => rec.answers === askId);
             if (answer) {
-              const answerAlive = await mayReachPersona(store, persona, answer.from, coordinatorPersona);
+              const answerAlive = await mayReachPersona(store, persona, answer.from, coordinatorPersona, sess.staleAfterMs);
               if (!answerAlive) {
                 sess.state.decisions.push({
                   timestamp: Date.now(),
@@ -1552,11 +1557,13 @@ export const register: Register = async (on, options) => {
         }
 
         // General drain (D3)
-        // Filter to writers whose live claims reach this persona
+        // Filter to writers whose live claims reach this persona, over one
+        // claims read for the whole pending list.
         const withClaim: typeof pending = [];
         const withoutClaim: typeof pending = [];
+        const claims = pending.length > 0 ? await readAllClaims(store, sess.staleAfterMs) : [];
         for (const rec of pending) {
-          const alive = await mayReachPersona(store, persona, rec.from, coordinatorPersona);
+          const alive = mayReachPersonaIn(claims, persona, rec.from, coordinatorPersona);
           if (alive) withClaim.push(rec);
           else withoutClaim.push(rec);
         }
@@ -3543,6 +3550,14 @@ export const register: Register = async (on, options) => {
     // holder exists, join as reader (no epoch bump, no ownership).
     if (e.tool === "mcp__agentic-plugin__agentic_identity") {
       const name = String((e as any).persona || "default").trim() || "default";
+      // The shared name rule, before any claim or store write: a persona
+      // that fails it could be owned but never addressed, and its inbox
+      // listing would read another persona's keys.
+      const nameProblem = personaNameProblem(name);
+      if (nameProblem) {
+        toolErrorsThisTurn++;
+        return { deny: `agentic_identity: 'persona' ${nameProblem} (got '${name}').` };
+      }
       const previousPersona = sess.persona;
       sess.persona = name;
       // Backlog fix (commons claim staleness): a commons session record shares
@@ -4229,7 +4244,7 @@ export const register: Register = async (on, options) => {
       // The reach rule: a live reader claim on the target, the coordinator
       // persona held by this session, or the target being the coordinator
       // persona while this session owns a named persona of its own.
-      const mayReach = await mayReachPersona(commonsStoreOf($), persona, sess.mySessionId, coordinatorPersona);
+      const mayReach = await mayReachPersona(commonsStoreOf($), persona, sess.mySessionId, coordinatorPersona, sess.staleAfterMs);
       if (!mayReach) {
         toolErrorsThisTurn++;
         return { deny: `agentic_say cannot reach '${persona}': this session holds no live reader claim on it and does not hold the '${coordinatorPersona}' persona, and ${persona === coordinatorPersona ? "owns no named persona of its own to push from" : `'${persona}' is not the coordinator persona`}.` };
@@ -4271,7 +4286,7 @@ export const register: Register = async (on, options) => {
         toolErrorsThisTurn++;
         return { deny: `agentic_inbox cannot address '${persona}': this session owns that persona, and the owner reads its own replies directly.` };
       }
-      const mayReach = await mayReachPersona(commonsStoreOf($), persona, sess.mySessionId, coordinatorPersona);
+      const mayReach = await mayReachPersona(commonsStoreOf($), persona, sess.mySessionId, coordinatorPersona, sess.staleAfterMs);
       if (!mayReach) {
         toolErrorsThisTurn++;
         return { deny: `agentic_inbox cannot reach '${persona}': this session holds no live reader claim on it and does not hold the '${coordinatorPersona}' persona, and ${persona === coordinatorPersona ? "owns no named persona of its own to read from" : `'${persona}' is not the coordinator persona`}.` };
@@ -4395,8 +4410,8 @@ export const register: Register = async (on, options) => {
     if ((r as { isError?: boolean }).isError === true) toolErrorsThisTurn++;
 
     // Plan item 8.3: an urgent record from a writer that may reach this
-    // persona (mayReachPersona, the tick's own rule) reaches the owner
-    // inside the running turn. The controller tick cannot deliver while a
+    // persona (mayReachPersonaIn over one claims read, the tick's own rule)
+    // reaches the owner inside the running turn. The controller tick cannot deliver while a
     // turn is in flight, so the record rides here instead: marked delivered
     // and stamped with this turn (turn.complete then records the turn's
     // answer as its reply), its text appended as context on this tool's
@@ -4410,8 +4425,9 @@ export const register: Register = async (on, options) => {
         const urgentPending = (await listInboxRecords(store, persona))
           .filter((rec) => rec.status === "pending" && rec.urgent === true && !rec.answers);
         const lines: string[] = [];
+        const claims = urgentPending.length > 0 ? await readAllClaims(store, sess.staleAfterMs) : [];
         for (const rec of urgentPending) {
-          if (!(await mayReachPersona(store, persona, rec.from, coordinatorPersona))) continue;
+          if (!mayReachPersonaIn(claims, persona, rec.from, coordinatorPersona)) continue;
           const existing = await store.get(rec.key);
           if (!existing) continue;
           const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;

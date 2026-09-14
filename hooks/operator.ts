@@ -68,7 +68,7 @@ const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 // --- Store interface ---
 
 import type { CommonsStore, CommonsMeta, UnionedClaim } from "./commons";
-import { claimResource, releaseResource, readAllClaims } from "./commons";
+import { claimResource, releaseResource, readAllClaims, commonsWinner } from "./commons";
 
 // --- Key helpers ---
 
@@ -92,6 +92,21 @@ function readerKey(persona: string): string {
 // builds the same string by hand at its claim and release sites.
 function personaKey(persona: string): string {
   return `${PERSONA_PREFIX}${persona}`;
+}
+
+/**
+ * The one rule for a persona name that reaches a store key: non-empty after
+ * trim, and no ":". Records are keyed `inbox:<persona>:<session>:<seq>` and
+ * listed by the `inbox:<persona>:` prefix, so a colon in a name would let one
+ * persona's listing read another persona's keys. Returns the reason a name is
+ * refused, or null when it is usable. Every reader of a persona name that
+ * ends up in a key (the tools' persona argument, agentic_identity, the
+ * configured coordinator name) applies this rule rather than its own.
+ */
+export function personaNameProblem(name: unknown): string | null {
+  if (typeof name !== "string" || !name.trim()) return "must be a non-empty string";
+  if (name.includes(":")) return "cannot contain ':'";
+  return null;
 }
 
 // --- D1: Records ---
@@ -473,6 +488,10 @@ function holdsReaderClaim(claims: UnionedClaim[], persona: string, sessionId: st
   return claims.some((c) => c.resource === readerResource && c.holder === sessionId);
 }
 
+// Ownership is the commons winner, the same arbitration readHolderMeta and
+// the yield check apply: a second session claims a persona at start and holds
+// that claim until its own yield fires, and in that window it is a holder but
+// not the owner.
 function holdsOwnerClaim(
   claims: UnionedClaim[],
   sessionId: string,
@@ -480,11 +499,14 @@ function holdsOwnerClaim(
   excludePersona?: string,
 ): boolean {
   if (persona !== undefined) {
-    const personaResource = personaKey(persona);
-    return claims.some((c) => c.resource === personaResource && c.holder === sessionId);
+    return commonsWinner(claims, personaKey(persona)) === sessionId;
   }
   const excluded = excludePersona === undefined ? null : personaKey(excludePersona);
-  return claims.some((c) => c.holder === sessionId && c.resource.startsWith(PERSONA_PREFIX) && c.resource !== excluded);
+  return claims.some((c) =>
+    c.holder === sessionId
+    && c.resource.startsWith(PERSONA_PREFIX)
+    && c.resource !== excluded
+    && commonsWinner(claims, c.resource) === sessionId);
 }
 
 /**
@@ -500,8 +522,9 @@ export async function hasLiveReaderClaim(
 }
 
 /**
- * Check if a session holds a live persona (owner) claim. With `persona`, the
- * claim must be `persona:<persona>`. Without it, any live `persona:*` claim
+ * Check if a session owns a persona in commons: it holds a live claim on it
+ * and wins the arbitration for it. With `persona`, the resource is
+ * `persona:<persona>`. Without it, any `persona:*` resource the session wins
  * counts, except one named by `opts.excludePersona`.
  */
 export async function hasLiveOwnerClaim(
@@ -515,16 +538,34 @@ export async function hasLiveOwnerClaim(
 }
 
 /**
- * Whether `writer` may address `target`'s inbox. True on any of three legs:
- * the writer holds a reader claim on the target (a reader steering the owner
- * it reads); the writer holds the coordinator persona (the coordinator
- * addressing any persona); or the target is the coordinator persona and the
- * writer owns a named persona of its own (a worker pushing to the
- * coordinator). A bare `persona:default` claim does not satisfy the third
- * leg: every plugin-loaded session holds one, so it proves nothing about
- * being a launched worker. The send gates, the inbox read, the tick's drain,
- * the ask-answer delivery and the urgent break-in all call this one check,
- * and it reads the claims once because the drain calls it per pending record.
+ * Whether `writer` may address `target`'s inbox, over claims already read.
+ * True on any of three legs: the writer holds a reader claim on the target
+ * (a reader steering the owner it reads); the writer owns the coordinator
+ * persona (the coordinator addressing any persona); or the target is the
+ * coordinator persona and the writer owns a named persona other than
+ * `default` (a worker pushing to the coordinator). Every leg is a claim a
+ * session issues itself: any plugin-loaded session on this machine can take
+ * a reader claim, own a named persona through agentic_identity, or own the
+ * coordinator persona while no live session holds it. Excluding
+ * `persona:default` keeps out a session that has done none of that, which
+ * is every plugin-loaded session at start, and nothing more. The send gate,
+ * the inbox read and the ask-answer delivery call the reading form below;
+ * the tick's drain and the urgent break-in read once and call this per
+ * record.
+ */
+export function mayReachPersonaIn(
+  claims: UnionedClaim[],
+  target: string,
+  writer: string,
+  coordinatorPersona: string,
+): boolean {
+  return holdsReaderClaim(claims, target, writer)
+    || holdsOwnerClaim(claims, writer, coordinatorPersona)
+    || (target === coordinatorPersona && holdsOwnerClaim(claims, writer, undefined, "default"));
+}
+
+/**
+ * mayReachPersonaIn over one fresh read of the commons claims.
  */
 export async function mayReachPersona(
   store: CommonsStore,
@@ -533,10 +574,7 @@ export async function mayReachPersona(
   coordinatorPersona: string,
   staleAfterMs: number = 90_000,
 ): Promise<boolean> {
-  const claims = await readAllClaims(store, staleAfterMs);
-  return holdsReaderClaim(claims, target, writer)
-    || holdsOwnerClaim(claims, writer, coordinatorPersona)
-    || (target === coordinatorPersona && holdsOwnerClaim(claims, writer, undefined, "default"));
+  return mayReachPersonaIn(await readAllClaims(store, staleAfterMs), target, writer, coordinatorPersona);
 }
 
 /**

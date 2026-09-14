@@ -3186,6 +3186,8 @@ async function main() {
     await caseSection3_workerAnswerReachesTheCoordinatorsAsk(clock);
     await caseSection3_urgentWorkerRecordBreaksIntoTheCoordinatorsTurn(clock);
     await caseSection3_personaArgumentShapeIsRefused(clock);
+    await caseSection3_coordinatorLegKeysOnTheCommonsWinner(clock);
+    await caseSection3_defaultCoordinatorNameDoesNotOpenEveryInbox(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
     await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
     await caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock);
@@ -5642,6 +5644,50 @@ async function caseSection3_personaArgumentShapeIsRefused(clock) {
   check("section3 persona shape: no record was written under any key", ![...h.storeMap.keys()].some((k) => k.startsWith("inbox:")));
   const bare = await callTool(h, { tool: SAY, text: "hello" });
   check("section3 persona shape control: the same reader's bare say still writes to the persona it reads", bare.deny === undefined && h.storeMap.has(`inbox:default:${SESSION_ID}:1`), bare);
+}
+
+// Ownership is the commons winner: a session that claimed the coordinator
+// persona after a live earlier holder is a holder, not the owner, until its
+// own yield fires. In that window it is refused at the send gate for a
+// worker, and the worker's drain skips its pending record while delivering
+// the earlier claimant's.
+async function caseSection3_coordinatorLegKeysOnTheCommonsWinner(clock) {
+  console.log("\n=== Section 3 fix: the coordinator leg keys on the commons winner, not on holding the claim ===");
+  clock.set(T0);
+  const now = T0;
+
+  // Send gate: this session's persona:coordinator claim is later than coord-earlier-000's.
+  const hs = await seedNamedOwnerHarness("section3_fix_winner_send", now, "coordinator", "coordinator");
+  hs.storeMap.set(`commons:${SESSION_ID}`, { sessionId: SESSION_ID, lastSeen: now, claims: [{ resource: "persona:coordinator", claimedAt: now - 500 }] });
+  seedForeignClaims(hs, "coord-earlier-000", now, ["persona:coordinator"]);
+  const refused = await callTool(hs, { tool: SAY, text: "Take this over.", persona: "dev" });
+  check("section3 fix winner: the later claimant is refused for a worker by the reach gate", typeof refused.deny === "string" && refused.deny.includes("cannot reach 'dev'"), refused);
+  check("section3 fix winner: no record was written", !hs.storeMap.has(`inbox:dev:${SESSION_ID}:1`));
+
+  // Drain: the worker owns dev; coord-a claimed the coordinator persona before coord-b.
+  const hd = await seedNamedOwnerHarness("section3_fix_winner_drain", now, "dev", "coordinator");
+  hd.storeMap.set("commons:coord-a", { sessionId: "coord-a", lastSeen: now, claims: [{ resource: "persona:coordinator", claimedAt: now - 2000 }] });
+  seedForeignClaims(hd, "coord-b", now, ["persona:coordinator"]);
+  const loserKey = seedRecordFor(hd, "dev", "coord-b", 1, { at: now - 5000, text: "From the later claimant." });
+  const winnerKey = seedRecordFor(hd, "dev", "coord-a", 1, { at: now - 4000, text: "From the arbitration winner." });
+  await tickAndSettle(hd, clock, 50);
+  const decisions = getStateForPersona(hd, "dev")?.decisions || [];
+  check("section3 fix winner: the later claimant's record is skipped by the drain's reach gate", readStoreRecord(hd, loserKey)?.status === "skipped" && decisions.some((d) => d.action === "operator_skipped_no_claim" && d.detail.includes("coord-b")), readStoreRecord(hd, loserKey));
+  check("section3 fix winner: the winner's record is delivered", readStoreRecord(hd, winnerKey)?.status === "delivered" && (hd.promptSubmits || []).some((p) => p.includes("From the arbitration winner.")), readStoreRecord(hd, winnerKey));
+  check("section3 fix winner: the later claimant's text was never submitted", !(hd.promptSubmits || []).some((p) => p.includes("From the later claimant.")));
+}
+
+// A coordinator name configured as "default" falls back rather than making
+// every plugin-loaded session the coordinator: under that setting a
+// persona:default holder is still refused for a third persona.
+async function caseSection3_defaultCoordinatorNameDoesNotOpenEveryInbox(clock) {
+  console.log("\n=== Section 3 fix: coordinatorPersona set to default does not open a third persona to a persona:default holder ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("section3_fix_default_name", now, "default", "default");
+  const refused = await callTool(h, { tool: SAY, text: "Hello from a plain chat session.", persona: "worker" });
+  check("section3 fix default name: a persona:default holder is refused for a third persona by the reach gate", typeof refused.deny === "string" && refused.deny.includes("cannot reach 'worker'"), refused);
+  check("section3 fix default name: no record was written", !h.storeMap.has(`inbox:worker:${SESSION_ID}:1`));
 }
 
 // agentic_say(urgent: true) writes urgent onto the record; a plain say does not.
