@@ -99,9 +99,10 @@ function personaKey(persona: string): string {
  * trim, and no ":". Records are keyed `inbox:<persona>:<session>:<seq>` and
  * listed by the `inbox:<persona>:` prefix, so a colon in a name would let one
  * persona's listing read another persona's keys. Returns the reason a name is
- * refused, or null when it is usable. Every reader of a persona name that
- * ends up in a key (the tools' persona argument, agentic_identity, the
- * configured coordinator name) applies this rule rather than its own.
+ * refused, or null when it is usable. The tools' persona argument,
+ * agentic_identity and the configured coordinator name apply this rule
+ * rather than their own; the persona a session starts under is the
+ * supervisor's to spell and is not checked here.
  */
 export function personaNameProblem(name: unknown): string | null {
   if (typeof name !== "string" || !name.trim()) return "must be a non-empty string";
@@ -519,22 +520,6 @@ export async function hasLiveReaderClaim(
   staleAfterMs: number = 90_000,
 ): Promise<boolean> {
   return holdsReaderClaim(await readAllClaims(store, staleAfterMs), persona, sessionId);
-}
-
-/**
- * Check if a session owns a persona in commons: it holds a live claim on it
- * and wins the arbitration for it. With `persona`, the resource is
- * `persona:<persona>`. Without it, any `persona:*` resource the session wins
- * counts, except one named by `opts.excludePersona`.
- */
-export async function hasLiveOwnerClaim(
-  store: CommonsStore,
-  sessionId: string,
-  persona?: string,
-  opts?: { excludePersona?: string; staleAfterMs?: number },
-): Promise<boolean> {
-  const claims = await readAllClaims(store, opts?.staleAfterMs ?? 90_000);
-  return holdsOwnerClaim(claims, sessionId, persona, opts?.excludePersona);
 }
 
 /**
