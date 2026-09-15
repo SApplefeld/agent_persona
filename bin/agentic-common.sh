@@ -1,15 +1,31 @@
 #!/usr/bin/env bash
 # bin/agentic-common.sh - Shared supervisor/test helpers.
 # Sourced by bin/supervise.sh and .kit/live-common.sh.
-# Provides: wait_persona_free, emit_settings_json, ensure_settings_plugin_ids,
-#           valid_persona_name, find_global_store, poll_decisions, poll_heartbeat.
+# Provides: wait_persona_free, refuse_if_persona_live, emit_settings_json,
+#           ensure_settings_plugin_ids, ensure_settings_arming,
+#           read_settings_coordinator_persona, valid_persona_name,
+#           find_global_store, list_installed_stores, poll_decisions,
+#           poll_heartbeat.
+# COORDINATOR_PERSONA is exported on both settings branches: emit_settings_json
+# exports the name it writes, and read_settings_coordinator_persona prints the
+# name a provided file resolves to, for the caller to export.
 # All functions use W2 read-error semantics: a read error is a transient mid-write
-# race, treated as "live" (or "not ready"), never an abort. The timeout is the only exit.
+# race, treated as "live" (or "not ready"), never an abort. The timeout is the only
+# exit. refuse_if_persona_live is the one exception: it is a start-only check with
+# no later poll to recover on, so it fails closed on a read error after its re-reads
+# instead of waiting it out.
 
 # --- Plugin ids ---
 # The two ids pluginConfigs is keyed by: --plugin-dir load, and installed load.
 AGENTIC_PLUGIN_DEV_ID="agentic-plugin"
 AGENTIC_PLUGIN_INSTALLED_ID="agentic-plugin@agent-persona"
+
+# --- Contention guards ---
+# The bound below which a commons entry counts as live, matching the plugin's
+# staleAfterMs default (hooks/index.ts). A fleet launched with heartbeatMs
+# above this value is read as stale here while its own arbitration still
+# treats it as live.
+PERSONA_STALE_MS=90000
 
 # --- Profiles ---
 # Selected by PROFILE=full|short (default: short).
@@ -37,7 +53,13 @@ esac
 # Usage: emit_settings_json <output-file>
 # Emits the settings.json JSON for the --settings flag.
 # Carries: controllerTickMs, nudgeIdleMs, nudgeFloorMs, gitProbeMs, heartbeatMs,
-#          staleAfterMs, contextBudgetEnabled, and budget thresholds when set.
+#          staleAfterMs, contextBudgetEnabled, budget thresholds when set,
+#          arming (always "owner": every supervisor launch is an owner), and
+#          coordinatorPersona (from COORDINATOR_PERSONA, default "coordinator").
+# Exports COORDINATOR_PERSONA to the value it wrote, so a caller can compare
+# its own persona against the same name without parsing the settings file.
+# This is the emit branch's half of that export; the provided-settings branch
+# reads the same name back through read_settings_coordinator_persona.
 emit_settings_json() {
   local out="$1"
   local self_review_opts=""
@@ -82,7 +104,8 @@ emit_settings_json() {
   # Every value below is spliced into JSON unescaped, so each is held to a
   # shape that cannot close a string or an object and that JSON accepts:
   # digits with no leading zero for the numbers, letters, digits, underscore
-  # and hyphen for the persona.
+  # and hyphen for the persona and for coordinatorPersona (the same
+  # valid_persona_name check, since both are spliced the same way).
   local var
   for var in TICK_MS NUDGE_IDLE_MS GIT_PROBE_MS NUDGE_FLOOR_MS HEARTBEAT_MS STALE_AFTER_MS \
     SELF_REVIEW_EVERY_TURNS CONTEXT_BUDGET_INFO_TOKENS CONTEXT_BUDGET_CLOSEOUT_TOKENS \
@@ -103,12 +126,27 @@ emit_settings_json() {
   if [ -n "${PERSONA:-}" ]; then
     persona_opt=",\"persona\":\"$PERSONA\""
   fi
+  # Section 6: a supervisor launch is always an owner, never a reader or an
+  # off session, so this value is fixed rather than read from an env var.
+  local coordinator_persona="${COORDINATOR_PERSONA:-coordinator}"
+  if ! valid_persona_name "$coordinator_persona"; then
+    echo "ERROR: emit_settings_json: COORDINATOR_PERSONA '$coordinator_persona' may hold only letters, digits, underscore and hyphen" >&2
+    return 1
+  fi
+  if [ "$coordinator_persona" = "default" ]; then
+    echo "ERROR: emit_settings_json: COORDINATOR_PERSONA must not be 'default'" >&2
+    return 1
+  fi
+  # This export lets a caller compare its own persona against the name this
+  # function just wrote into coordinatorPersona, without parsing the
+  # settings file itself.
+  export COORDINATOR_PERSONA="$coordinator_persona"
   # pluginConfigs is keyed by plugin id: the manifest name under --plugin-dir,
   # and "<name>@<marketplace>" for the installed copy. The installed form is
   # absent from the engine's type file, and options under the other id are
   # ignored without an error, so the same options are written under both.
   # .kit/settings-plugin-key-test.sh pins both ids against the two manifests.
-  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts$cost_opts$persona_opt}"
+  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts$cost_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"}"
   cat > "$out" <<EOF
 {"pluginConfigs":{"$AGENTIC_PLUGIN_DEV_ID":{"options":$options},"$AGENTIC_PLUGIN_INSTALLED_ID":{"options":$options}}}
 EOF
@@ -157,6 +195,101 @@ try {
 ' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID"
 }
 
+# --- ensure_settings_arming ---
+# Usage: ensure_settings_arming <settings-file>
+# For a settings file the caller already provided: under each of the two
+# plugin ids, creates pluginConfigs, the id entry and its options object
+# where any of them is absent, and sets options.arming to "owner" where an
+# id's options omit the key, leaving every other option the caller wrote
+# exactly as written. Where an id's options.arming is present and is not
+# exactly "owner", the function refuses and exits 1 without writing: a
+# supervisor launch always drives a goal tree as an owner, so a settings
+# file naming another tier is a mistake to refuse rather than a value to
+# honor. The file is replaced by rename, same as ensure_settings_plugin_ids,
+# so an interrupted write never leaves it truncated. Returns 1 on the same
+# conditions that function does, with the same error-line shape, plus the
+# arming refusal above; exits 0 when nothing needed changing.
+ensure_settings_arming() {
+  node -e '
+const fs = require("fs");
+const [file, devId, installedId] = process.argv.slice(1);
+const fail = (msg) => { console.error("ERROR: ensure_settings_arming: " + file + " " + msg); process.exit(1); };
+const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+let s;
+try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
+if (!plain(s)) fail("is not a JSON object");
+let changed = false;
+if (s.pluginConfigs === undefined) { s.pluginConfigs = {}; changed = true; }
+const pc = s.pluginConfigs;
+if (!plain(pc)) fail("has a pluginConfigs value that is not an object");
+for (const id of [devId, installedId]) {
+  if (pc[id] === undefined) { pc[id] = {}; changed = true; }
+  if (!plain(pc[id])) fail("has a " + id + " entry that is not an object");
+  if (pc[id].options === undefined) { pc[id].options = {}; changed = true; }
+  const opts = pc[id].options;
+  if (!plain(opts)) fail("has " + id + " options that are not an object");
+  if (opts.arming === undefined) { opts.arming = "owner"; changed = true; }
+  else if (opts.arming !== "owner") fail("carries arming '"'"'" + opts.arming + "'"'"' under " + id + "; a supervisor launch is always owner");
+}
+if (!changed) process.exit(0);
+const tmp = file + ".tmp-" + process.pid;
+try {
+  fs.writeFileSync(tmp, JSON.stringify(s));
+  fs.renameSync(tmp, file);
+} catch (e) {
+  try { fs.unlinkSync(tmp); } catch (_) {}
+  fail("could not be rewritten: " + e.message);
+}
+' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID"
+}
+
+# --- read_settings_coordinator_persona ---
+# Usage: read_settings_coordinator_persona <settings-file> <dev_mode: 0|1>
+# For a settings file the caller already provided: prints the coordinator
+# persona name the plugin will resolve from it, so the caller can export
+# COORDINATOR_PERSONA on the provided branch to the same value the emit
+# branch exports. Only the options under the id the launch loads are read,
+# dev_mode 1 being the --plugin-dir id and 0 the installed id, the same flag
+# find_global_store takes: the plugin reads its own id's options and nothing
+# under the other, and a file naming both ids is left as written by
+# ensure_settings_plugin_ids, so the two may carry different values. The
+# rule is the plugin's own (hooks/index.ts, the coordinatorPersona read): a
+# string that is non-empty after trim, carries no ":" and is bracket-safe
+# once trimmed (no "[", "]", ",", whitespace, control or format character),
+# and is not "default", is taken trimmed; anything else resolves to
+# "coordinator", a key missing under the loaded id included, whatever the
+# other id carries. Returns 1 on the same shapes ensure_settings_plugin_ids
+# refuses (not JSON, not an object, a pluginConfigs, id entry or options
+# value that is not an object), with the same error-line shape, and prints
+# nothing then.
+read_settings_coordinator_persona() {
+  local dev_mode="${2:-1}"
+  local id="$AGENTIC_PLUGIN_INSTALLED_ID"
+  if [ "$dev_mode" -eq 1 ]; then
+    id="$AGENTIC_PLUGIN_DEV_ID"
+  fi
+  node -e '
+const fs = require("fs");
+const [file, id] = process.argv.slice(1);
+const fail = (msg) => { console.error("ERROR: read_settings_coordinator_persona: " + file + " " + msg); process.exit(1); };
+const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+let s;
+try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
+if (!plain(s)) fail("is not a JSON object");
+const pc = s.pluginConfigs === undefined ? {} : s.pluginConfigs;
+if (!plain(pc)) fail("has a pluginConfigs value that is not an object");
+let value;
+if (pc[id] !== undefined) {
+  if (!plain(pc[id])) fail("has a " + id + " entry that is not an object");
+  if (pc[id].options !== undefined && !plain(pc[id].options)) fail("has " + id + " options that are not an object");
+  if (plain(pc[id].options)) value = pc[id].options.coordinatorPersona;
+}
+const usable = typeof value === "string" && value.trim() !== "" && !value.includes(":")
+  && !/[\[\],]/.test(value.trim()) && !/[\s\p{Cc}\p{Cf}]/u.test(value.trim());
+console.log(usable && value.trim() !== "default" ? value.trim() : "coordinator");
+' "$1" "$id"
+}
+
 # --- valid_persona_name ---
 # Usage: valid_persona_name <name>; returns 0 for a non-empty name of letters,
 # digits, underscore and hyphen, 1 otherwise.
@@ -198,22 +331,40 @@ find_global_store() {
         fi
       done
     else
-      # Installed mode: any agentic-plugin_*.json that is NOT an inline
-      # (dev-tree) store.
-      for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
-        if [ -f "$f" ]; then
-          case "$(basename "$f")" in
-            agentic-plugin_inline-*) continue ;;
-            *) echo "$f"; return 0 ;;
-          esac
-        fi
-      done
+      # Installed mode: the first store list_installed_stores names, so
+      # this branch and the runner's refuse-at-start check share one filter.
+      f="$(list_installed_stores | head -n 1)"
+      if [ -n "$f" ]; then
+        echo "$f"
+        return 0
+      fi
     fi
   fi
   echo ""
   return 0
 }
 
+# --- list_installed_stores ---
+# Prints every installed-mode commons store, one path per line: each
+# agentic-plugin_*.json under the plugin store directory that is not an
+# inline (dev-tree) store. This is the one filter that decides what counts
+# as an installed store. find_global_store's installed branch takes the
+# first line and .kit/live-all.sh's refuse-at-start check reads every
+# line, so the two cannot drift apart. Prints nothing when the directory
+# is absent or holds no such file. Reads $HOME at call time.
+# Usage: list_installed_stores
+list_installed_stores() {
+  local f
+  [ -d "$HOME/.claude/plugins/store" ] || return 0
+  for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
+    [ -f "$f" ] || continue
+    case "$(basename "$f")" in
+      agentic-plugin_inline-*) continue ;;
+    esac
+    echo "$f"
+  done
+  return 0
+}
 # --- wait_persona_free ---
 # T9/V3: pre-gate - wait until no live persona claim exists in the commons store.
 # Fails closed on a read error (V3). Prints live=/oldest_age= per poll (V3).
@@ -272,6 +423,103 @@ console.log('live=' + live + ' oldest_age=' + (oldest ? Math.round((now - oldest
     [ $n -ge $timeout ] && { echo "pre-gate timeout after ${n}s ($line)"; return 1; }
     sleep 5
   done
+}
+
+# --- refuse_if_persona_live ---
+# Start-only refuse-at-start check, beside wait_persona_free's own wait.
+# Reads every given store path once, with no polling, and refuses the moment
+# any store holds a live persona: claim of any name (a commons: key whose
+# lastSeen is within stale_after_ms, holding a claim whose resource starts
+# with "persona:"). A store path that does not exist is skipped (installed
+# mode may never have run on this machine). A store whose read fails is
+# re-read up to two more times, with no sleep between reads, before it
+# counts as a failure: the failure is either a mid-write race by a live
+# session or a corrupt file, and a start-only check has no later poll to
+# tell the two apart or recover on, so after three reads it fails closed
+# the same way a live claim does. A stale bound that is not a positive
+# number is refused immediately, on the first read, with no re-read (a
+# malformed bound reads the same way every time). Reading zero stores end
+# to end is itself a refusal, since a check that read nothing proved
+# nothing clean. The caller decides the exit code; this function only
+# returns and prints, it never exits the shell.
+# Usage: refuse_if_persona_live <stale_after_ms> <store-path>...
+refuse_if_persona_live() {
+  local stale_after_ms="$1"
+  shift
+  local store checked=0
+  for store in "$@"; do
+    [ -n "$store" ] || continue
+    if [ ! -f "$store" ]; then
+      echo "refuse-check: store not present, skipping: $store"
+      continue
+    fi
+    local store_w line rc attempt
+    store_w=$(cygpath -m "$store" 2>/dev/null || echo "$store")
+    for attempt in 1 2 3; do
+      line=$(node -e "
+const fs = require('fs');
+const staleAfterMs = Number(process.argv[2]);
+if (!Number.isFinite(staleAfterMs) || !(staleAfterMs > 0)) {
+  console.log('ERROR: stale bound is not a positive number: ' + process.argv[2]);
+  process.exit(2);
+}
+let s;
+try {
+  s = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+} catch (e) {
+  console.log('ERROR: ' + e.message);
+  process.exit(2);
+}
+const keys = Object.keys(s).filter(k => k.startsWith('commons:'));
+const now = Date.now();
+for (const key of keys) {
+  const e = s[key];
+  if (!e) continue;
+  if (e.lastSeen !== undefined && e.lastSeen !== null && (typeof e.lastSeen !== 'number' || !Number.isFinite(e.lastSeen))) {
+    console.log('ERROR: lastSeen is not a number under ' + key);
+    process.exit(2);
+  }
+  if (e.lastSeen && (now - e.lastSeen) < staleAfterMs && Array.isArray(e.claims)) {
+    for (const c of e.claims) {
+      if (c && typeof c.resource === 'string' && c.resource.indexOf('persona:') === 0) {
+        console.log('LIVE ' + c.resource + ' ' + Math.round((now - e.lastSeen) / 1000));
+        process.exit(0);
+      }
+    }
+  }
+}
+console.log('CLEAN');
+" "$store_w" "$stale_after_ms")
+      rc=$?
+      if echo "$line" | grep -q '^ERROR: stale bound is not a positive number:'; then
+        echo "refuse-check FAIL: ${line#ERROR: }"
+        return 1
+      fi
+      if [ $rc -eq 0 ] && ! echo "$line" | grep -q '^ERROR'; then
+        break
+      fi
+    done
+    if [ $rc -ne 0 ] || echo "$line" | grep -q '^ERROR'; then
+      echo "refuse-check FAIL: store could not be read after 3 attempts (a mid-write race or a corrupt file): $store ($line)"
+      return 1
+    fi
+    case "$line" in
+      LIVE\ *)
+        local resource age
+        resource=$(echo "$line" | sed -n 's/^LIVE \([^ ]*\) .*/\1/p')
+        age=$(echo "$line" | sed -n 's/^LIVE [^ ]* \(.*\)/\1/p')
+        echo "refuse-check FAIL: live persona claim in $store: $resource (age ${age}s)"
+        return 1
+        ;;
+    esac
+    checked=$((checked + 1))
+  done
+  if [ "$checked" -eq 0 ]; then
+    echo "refuse-check FAIL: no store was read (every path was empty or missing)"
+    return 1
+  fi
+  echo "refuse-check passed ($checked store(s) read, no live persona claim)"
+  return 0
 }
 
 # --- wait_persona_free_both ---

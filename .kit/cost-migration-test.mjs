@@ -22,20 +22,11 @@ check("cost field exists", state1.monitor.cost !== undefined && state1.monitor.c
 
 if (state1.monitor.cost) {
   const c = state1.monitor.cost;
-  check("classify exists", c.classify !== undefined);
+  check("classify.count is 0", c.classify?.count === 0);
+  check("classify.estTokens is 0", c.classify?.estTokens === 0);
   check("reason exists", c.reason !== undefined);
   check("selfReview exists", c.selfReview !== undefined);
   check("planner exists", c.planner !== undefined);
-  check("nudge exists", c.nudge !== undefined);
-  check("forkUsage exists", "forkUsage" in c);
-  check("consecutiveSkips exists", c.consecutiveSkips !== undefined);
-  check("nudgeWindow exists", c.nudgeWindow !== undefined);
-  check("callWindow exists", c.callWindow !== undefined);
-  check("lastSummaryHash exists", "lastSummaryHash" in c);
-  check("capNoticeWindowStart exists", "capNoticeWindowStart" in c);
-
-  check("classify.count is 0", c.classify.count === 0);
-  check("classify.estTokens is 0", c.classify.estTokens === 0);
   check("nudge.count is 0", c.nudge.count === 0);
   check("forkUsage is null", c.forkUsage === null);
   check("consecutiveSkips is 0", c.consecutiveSkips === 0);

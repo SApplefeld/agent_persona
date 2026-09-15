@@ -74,6 +74,18 @@
       "default": 50,
       "title": "Channel record window (count)",
       "description": "How many closed inbox/reply records the shared store keeps per persona before rolling the rest to .agentic-channel.jsonl. Open asks are never rolled by this window. Default 50."
+    },
+    "arming": {
+      "type": "string",
+      "default": "off",
+      "title": "Arming tier",
+      "description": "off, reader or owner. off registers no tool, timer or claim (a plain chat session). reader registers agentic_identity/agentic_say/agentic_inbox only, with no goal-tree tool and no ownership. owner is the full worker/coordinator shape. A supervisor launch always sets owner."
+    },
+    "coordinatorPersona": {
+      "type": "string",
+      "default": "coordinator",
+      "title": "Coordinator persona name",
+      "description": "The one persona name the inbox gates treat as the coordinator: its owner may address any persona, and any named persona owner may address it. A configured name of 'default' is refused and falls back to 'coordinator'."
     }
   }
 }

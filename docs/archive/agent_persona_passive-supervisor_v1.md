@@ -1,11 +1,11 @@
 # agent_persona: passive supervisor steered by conversation, v1
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR. `main` is protected on GitHub and accepts pull requests only, never a direct push. PRs #1-#4 were opened ready-for-review and the operator merged each one promptly, item by item, forcing a fresh branch every time a branch froze mid-work (`passive-supervisor` -> `-2` -> `-3`). Decided 2026-09-11: every PR from here on opens as **Draft**, stays Draft while more commits land on it, and the worker marks it ready for review explicitly, in words, when it should actually be merged. This lets one PR carry several items' commits instead of a fresh branch per merge. `passive-supervisor` carried Items 1-2 (PR #1, merged); `passive-supervisor-2` carried Item 3 (PR #2, merged); `passive-supervisor-3` carries Items 4, 5, and 6 on PR #4, open as Draft (correction, found by the Reviewer session: this line previously said PR #4 was merged, which was wrong).
 Worker: the plugin's own persona, running under `bin/supervise.sh` with this document as its roadmap.
 Executor's plugin runtime: today the stable copy at `D:\DeepSeekHarness\agentic-plugin`, loaded with `--plugin-dir`. The target runtime is this repository installed as a plugin from its own marketplace manifest, updated with `claude plugin update`, and item 6 carries the switch. The tree under edit is `D:\agent_persona` (this clone). The runtime and the edit tree are never the same directory, because a session whose working directory sits inside its own `--plugin-dir` does not initialize the plugin.
 
-Related: `docs/plans/agent_persona_coordinator_v2.md` builds on this plan's persona/commons/channel infrastructure once this one closes out; its own Section 0 is this plan's finishing pass.
+Related: `agent_persona_coordinator_v2.md` (archived beside this plan) builds on this plan's persona/commons/channel infrastructure once this one closes out; its own Section 0 is this plan's finishing pass.
 
 ## Goal
 
@@ -671,3 +671,9 @@ The script's own bytes are one of three disk surfaces those processes reach, and
 **Retired from `docs/backlog.md`, both with receipts above:** the `aios` launcher entry and the stale-dev-clone entry. One narrowed successor entry replaces both, because their caution outlives their fix: the on-disk half is done and the live half survives until each supervisor is relaunched.
 
 Commit model: Branch-and-PR, on `item0-3-followup-runtime-clone` off `0fc66d2`. PR #19 merged as `0fc66d2`, which supersedes the previous addendum's closing line about it staying Draft. That line is left standing rather than corrected in place, because Chapters are append-only history.
+
+### Close-out - 2026-09-15
+
+This plan is closed. Every roadmap item carries a Chapter above, every item is merged to `main`, and the two liveness defects the addenda record landed under this plan's own commit model as v2's Section 0 items 1 and 2. The finishing pass over that work ran as `agent_persona_coordinator_v2.md` Section 0 item 6 and is recorded at that plan's Chapter 4: QA, the security and adversarial reviews, the docs curation and the whole-gate evidence live there rather than here. The header's runtime note is history: since Section 0 item 5 the supervisor launches the installed marketplace plugin, and the `--plugin-dir` runtime it names is retired.
+
+The header was flipped to Complete and the file archived on 2026-09-15 by v2's finishing pass, which found it still reading In Progress in `docs/plans/` after its close-out had run.

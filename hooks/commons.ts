@@ -25,6 +25,16 @@ export interface CommonsEntry {
   sessionId: string;
   lastSeen: number; // ms timestamp, refreshed on every controller tick
   claims: CommonsClaim[];
+  turnStartedAt?: number | null; // the session's clock at turn.start, null between turns
+  workdir?: string; // the directory the session runs in, "" when unknown
+}
+
+// The per-turn fields a session publishes beside its claims, so a session in
+// another working directory can read this one's turn state. Entries written
+// by an older plugin lack both fields.
+export interface CommonsMeta {
+  turnStartedAt: number | null;
+  workdir: string;
 }
 
 export interface UnionedClaim extends CommonsClaim {
@@ -70,19 +80,21 @@ export function compareHolders(a: string, b: string): number {
 /**
  * Claim a resource. Idempotent: re-claiming a resource you already hold does not
  * update claimedAt (first-claim-wins arbitration depends on the original claim time).
- * Only refreshes lastSeen.
+ * Only refreshes lastSeen. With meta, also writes the entry's turn state and
+ * workdir; without it, whatever the entry already carries is kept.
  */
 export async function claimResource(
   store: CommonsStore,
   resource: string,
   mySessionId: string,
   now: number = Date.now(),
+  meta?: CommonsMeta,
 ): Promise<void> {
   const key = commonsKey(mySessionId);
   const raw = await store.get(key);
   const existing: CommonsEntry = raw
     ? (raw as CommonsEntry)
-    : { sessionId: mySessionId, lastSeen: now, claims: [] };
+    : { sessionId: mySessionId, lastSeen: now, claims: [], turnStartedAt: null, workdir: "" };
 
   // Check if we already hold this resource
   const existingClaim = existing.claims.find((c) => c.resource === resource);
@@ -95,19 +107,25 @@ export async function claimResource(
 
   // Refresh liveness
   existing.lastSeen = now;
+  if (meta) {
+    existing.turnStartedAt = meta.turnStartedAt;
+    existing.workdir = meta.workdir;
+  }
 
   // Write back (we own this key, no race)
   await store.set(key, existing);
 }
 
 /**
- * Release a resource. Removes the claim from the array.
+ * Release a resource. Removes the claim from the array. With meta, also writes
+ * the entry's turn state and workdir; without it, the entry's own are kept.
  */
 export async function releaseResource(
   store: CommonsStore,
   resource: string,
   mySessionId: string,
   now: number = Date.now(),
+  meta?: CommonsMeta,
 ): Promise<void> {
   const key = commonsKey(mySessionId);
   const raw = await store.get(key);
@@ -120,8 +138,40 @@ export async function releaseResource(
 
   // Refresh liveness
   existing.lastSeen = now;
+  if (meta) {
+    existing.turnStartedAt = meta.turnStartedAt;
+    existing.workdir = meta.workdir;
+  }
 
   // Write back (we own this key, no race)
+  await store.set(key, existing);
+}
+
+/**
+ * Stamp the session's turn state and workdir onto its own entry, leaving its
+ * claims as they are. Creates the entry with no claims when absent.
+ */
+export async function stampCommonsMeta(
+  store: CommonsStore,
+  mySessionId: string,
+  meta: CommonsMeta,
+  now: number = Date.now(),
+): Promise<void> {
+  const key = commonsKey(mySessionId);
+  const raw = await store.get(key);
+  const existing: CommonsEntry = raw
+    ? (raw as CommonsEntry)
+    : { sessionId: mySessionId, lastSeen: now, claims: [], turnStartedAt: null, workdir: "" };
+
+  existing.turnStartedAt = meta.turnStartedAt;
+  existing.workdir = meta.workdir;
+
+  // Refresh liveness
+  existing.lastSeen = now;
+
+  // Write back. One process writes this key, but claimResource, releaseResource
+  // and this stamp each read-modify-write it across an await, ordered by the
+  // event loop rather than by a lock.
   await store.set(key, existing);
 }
 
@@ -189,6 +239,53 @@ export async function readAllClaims(
   }
 
   return claims;
+}
+
+/**
+ * Read the turn state of the live session holding a resource. The holder is
+ * the same session commonsWinner resolves for every other reader, so a
+ * contended resource reads consistently. A read only: stale entries are
+ * skipped, never gc'd, and a missing or malformed entry is skipped too.
+ * Returns null when no live entry claims the resource. An entry written by
+ * an older plugin lacks the turn stamp, which normalizes to null. The
+ * holder's workdir rides beside the stamp; a missing or empty one reads as
+ * null too.
+ */
+export async function readHolderMeta(
+  store: CommonsStore,
+  resource: string,
+  stalenessThresholdMs: number = DEFAULT_STALE_AFTER_MS,
+  now: number = Date.now(),
+): Promise<{ holder: string; turnStartedAt: number | null; workdir: string | null } | null> {
+  const allKeys = await store.keys();
+  const keys = allKeys.filter((k) => k.startsWith(COMMONS_PREFIX));
+  const live: UnionedClaim[] = [];
+  const entries = new Map<string, CommonsEntry>();
+
+  for (const key of keys) {
+    const raw = await store.get(key);
+    if (!raw) continue;
+    const entry: CommonsEntry = raw as CommonsEntry;
+    if (typeof entry.sessionId !== "string") continue;
+    if (!Array.isArray(entry.claims)) continue;
+    if (typeof entry.lastSeen !== "number" || now - entry.lastSeen > stalenessThresholdMs) continue;
+
+    for (const claim of entry.claims) {
+      if (claim.resource !== resource) continue;
+      live.push({ resource: claim.resource, claimedAt: claim.claimedAt, holder: entry.sessionId });
+      entries.set(entry.sessionId, entry);
+    }
+  }
+
+  const holder = commonsWinner(live, resource);
+  if (holder === null) return null;
+  const entry = entries.get(holder);
+  if (!entry) return null;
+  return {
+    holder,
+    turnStartedAt: typeof entry.turnStartedAt === "number" ? entry.turnStartedAt : null,
+    workdir: typeof entry.workdir === "string" && entry.workdir !== "" ? entry.workdir : null,
+  };
 }
 
 /**

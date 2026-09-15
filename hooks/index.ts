@@ -18,7 +18,7 @@
 // never that it exited. A claim is non-destructive: the epoch bump makes
 // the old holder yield on its next write.
 
-import type { Register } from "claude-code";
+import type { PromptSubmitResult, Register } from "claude-code";
 import {
   createDefaultState,
   parseState,
@@ -41,13 +41,23 @@ import {
   readAllClaims,
   shouldYieldCommons,
   releaseResource,
+  stampCommonsMeta,
   commonsWinner,
+  readHolderMeta,
 } from "./commons";
 import type { CommonsStore } from "./commons";
+import type { InboxRecord } from "./operator";
 import {
   claimReaderRole,
-  hasLiveReaderClaim,
+  mayReachPersona,
+  deliveryGroundIn,
+  deliveryRecordProblem,
+  quoteContinuationLines,
+  deliveryPrefix,
+  deliveryText,
+  personaNameProblem,
   sweepExpiredRecords,
+  SweepDeleteError,
   enforceChannelWindow,
   writeInboxRecord,
   getHighestInboxSeq,
@@ -95,6 +105,68 @@ function commonsStoreOf(dp: any): CommonsStore {
   };
 }
 
+// The persona an agentic_say or agentic_inbox call addresses: the `persona`
+// argument when given, else the session's own persona. A given name passes
+// personaNameProblem, the one rule for a name that reaches a store key.
+function targetPersonaOf(arg: unknown, own: string): { persona: string } | { deny: string } {
+  if (arg === undefined || arg === null) return { persona: own };
+  const problem = personaNameProblem(arg);
+  if (problem) return { deny: `'persona' ${problem}${typeof arg === "string" ? ` (got '${arg.trim()}')` : ""}.` };
+  return { persona: (arg as string).trim() };
+}
+
+// One turn this plugin's own $.prompt.submit has queued and that has not
+// opened yet; the list and its match rules are described at register()'s
+// `expectedTurns`. An entry carries two match keys. `text` is the string
+// handed to the submit. `settledText` is the text the resolved submit
+// reports, which is the text as the hook chain beneath this plugin left it
+// (another plugin's prompt.submit hook may rewrite it, and the engine caps
+// it whole), and the text the turn then opens with. Both are kept because
+// the contract does not order the submit promise settling against
+// turn.start: a turn that opens before the submit's continuation has run
+// matches on `text` where nothing rewrote the text, and one that opens
+// after matches on `settledText` either way. A
+// UserPromptSubmit settings hook cannot rewrite the text, since its output
+// carries no text field, and a prompt it suppresses leaves no turn that
+// matches either key. A turn that opens with a rewritten or capped text
+// before the submit's continuation has stored the settled text matches
+// neither key either. Such a delivery's turn reads unaccounted, and its
+// entry then leaves the list at the withheld branch once its record is
+// swept or resolved.
+type ExpectedTurn = { text: string; settledText?: string } & ({ kind: "delivery"; recordId: string } | { kind: "nudge" } | { kind: "plugin" });
+type SubmitOutcome = { ok: true } | { ok: false; how: "failed" | "dropped"; reason: string };
+
+// Removes one entry from the expected-turn list by identity, never by
+// position; an entry already gone is left alone.
+function removeExpectedTurn(expectedTurns: ExpectedTurn[], entry: ExpectedTurn): void {
+  const i = expectedTurns.indexOf(entry);
+  if (i >= 0) expectedTurns.splice(i, 1);
+}
+
+// Runs one queued entry's $.prompt.submit and reads its result. A rejection
+// and a resolved `{ drop }` (a hook beneath this plugin dropped the submit,
+// which resolves rather than rejects) are one outcome: no turn is coming,
+// so the entry leaves the list (by identity, never by position) and the
+// caller gets the reason to record. A resolved `{ text }` stores the
+// settled text on the entry as its second match key. No site reads the
+// submit's result directly. A result that is not an object is read as an
+// accepted submit with no settled text. Top level because it takes `dp`.
+async function submitExpectedTurn(dp: any, expectedTurns: ExpectedTurn[], entry: ExpectedTurn): Promise<SubmitOutcome> {
+  let result: PromptSubmitResult | undefined;
+  try {
+    result = await dp.prompt.submit({ text: entry.text });
+  } catch (err) {
+    removeExpectedTurn(expectedTurns, entry);
+    return { ok: false, how: "failed", reason: err instanceof Error ? err.message : String(err) };
+  }
+  if (typeof result?.drop === "string") {
+    removeExpectedTurn(expectedTurns, entry);
+    return { ok: false, how: "dropped", reason: result.drop };
+  }
+  if (typeof result?.text === "string") entry.settledText = result.text;
+  return { ok: true };
+}
+
 /**
  * D5: handle an open ask during a tick.
  * Returns "waiting" if the ask is still open (persist and return),
@@ -107,6 +179,9 @@ async function tickOpenAsk(
   persona: string,
   cfg: Record<string, unknown>,
   contextId: string | null,
+  // register()'s list of queued plugin turns, so the re-raise below can be
+  // queued as a plugin-opened turn for the stamp guard at turn.start.
+  expectedTurns: ExpectedTurn[],
 ): Promise<"waiting" | "expired" | "none"> {
   if (!state.pendingAskId) return "none";
   const store = commonsStoreOf(dp);
@@ -138,9 +213,14 @@ async function tickOpenAsk(
       action: "ask_reraised",
       detail: `${contextId ? contextId + ": " : ""}ask ${state.pendingAskId} re-raised after ${Math.round(elapsed / 1000)}s: ${askRecord.question.slice(0, 100)}`,
     });
-    try {
-      await dp.prompt.submit({ text: `${REPLY_INSTRUCTION}[STILL WAITING] ${askRecord.question}` });
-    } catch { /* re-raise failed; non-fatal, the decision log still shows it */ }
+    // A refused re-raise is non-fatal: the decision log still shows the
+    // re-raise, and its entry has left the list.
+    // The question is store data, so its continuation lines are quoted
+    // the way a delivered record's are: the bracket line stays the only
+    // unquoted one.
+    const reraiseEntry: ExpectedTurn = { kind: "plugin", text: `${REPLY_INSTRUCTION}${quoteContinuationLines(`[STILL WAITING] ${askRecord.question}`)}` };
+    expectedTurns.push(reraiseEntry);
+    await submitExpectedTurn(dp, expectedTurns, reraiseEntry);
   }
 
   // Round 34: an absent option must still resolve to a real wait, not to 0 -
@@ -244,6 +324,7 @@ const sess: {
   controllerTickCount: number; // D4: in-session tick counter for backoff and cost_summary
   staleAfterMs: number; // F9a: single-source the staleness threshold
   turnStartedAt: number | null; // plan item 8.3: this session's clock at turn.start, null between turns
+  workdir: string; // the directory this session runs in, "" until session.start reads it
 } = {
   persona: "default",
   mySessionId: "pending",
@@ -265,7 +346,12 @@ const sess: {
   controllerTickCount: 0,
   staleAfterMs: 90_000,
   turnStartedAt: null,
+  workdir: "",
 };
+
+// The turn state and workdir every commons-entry write carries, so the entry
+// tracks the turn the way the heartbeat file's own stamp does.
+const commonsMeta = () => ({ turnStartedAt: sess.turnStartedAt, workdir: sess.workdir });
 
 // Reentrancy flag for the git probe (E4).
 let gitProbeInFlight = false;
@@ -354,6 +440,8 @@ const REPLY_INSTRUCTION = "You are attached to a Discord channel. When you want 
 // rewritten, so the file that grows without bound is this one, by design,
 // not the store the plugin reads and rewrites whole on every tick.
 const CHANNEL_LOG_PATH = ".agentic-channel.jsonl";
+// Bound on the note agentic_resolve writes into the shared commons store.
+const RESOLVE_NOTE_MAX = 2000;
 // Round 47 finding 1: this used to swallow every write error, and
 // enforceChannelWindow deleted the rolled store keys regardless of whether
 // the append actually landed - a failed write meant the record vanished
@@ -387,7 +475,7 @@ export const yieldNow = async (dp: any, onDisk: { activeSessionId: string; epoch
   // F13: release the commons claim so an exited session does not lock the
   // persona for the full 90s staleness window.
   try {
-    await releaseResource(commonsStoreOf(dp), `persona:${sess.persona}`, sess.mySessionId);
+    await releaseResource(commonsStoreOf(dp), `persona:${sess.persona}`, sess.mySessionId, Date.now(), commonsMeta());
   } catch { /* non-fatal */ }
 };
 
@@ -535,7 +623,7 @@ export const persist = async (dp: any): Promise<boolean> => {
       // F13: release the commons claim so an exited session does not lock the
       // persona for the full 90s staleness window.
       try {
-        await releaseResource(commonsStoreOf(dp), resource, sess.mySessionId);
+        await releaseResource(commonsStoreOf(dp), resource, sess.mySessionId, Date.now(), commonsMeta());
       } catch { /* non-fatal */ }
       // Persist the yield decision to disk before returning
       const store2: Record<string, unknown> = await dp.fs.exists(sess.storePath)
@@ -599,10 +687,44 @@ export const register: Register = async (on, options) => {
 
   // Track the user prompt for the current turn (the goal scorer needs it).
   let currentPrompt = "";
-  // When the controller nudges, $.prompt.submit bypasses this plugin's
-  // own prompt.submit hook, so currentPrompt still holds the stale user text.
-  // This flag tells turn.complete to score with the nudge-aware label set.
-  let nudgedTurn = false;
+  // The turns this plugin's own $.prompt.submit calls have queued and that
+  // have not opened yet. Every such call bypasses this plugin's own
+  // prompt.submit hook, so nothing else tells a turn it opened from any
+  // other: each submit site pushes its entry on the synchronous side
+  // immediately before its submit, carrying the exact text it hands the
+  // submit, and runs the submit through the top-level submitExpectedTurn,
+  // which removes that same entry (by identity, never by position) when no
+  // turn is coming. A delivery entry also leaves when the withheld branch
+  // in turn.start finds its record gone from the store, or no longer
+  // delivered and unstamped. turn.start matches e.text, the text the turn
+  // begins with, against each queued entry's two keys (the ExpectedTurn type
+  // above says why there are two) and removes the match wherever it sits;
+  // that entry's kind is the turn's kind. A delivery entry carries the inbox
+  // record its labelled prompt delivered, which only that turn stamps and
+  // answers; a nudge entry tells turn.complete to score with the
+  // nudge-aware label set, since currentPrompt still holds the stale user
+  // text; a plugin entry is the kaizen announcement, the reply backstop or
+  // the ask re-raise, a turn that stamps nothing. Two queued submits with
+  // identical text are a known limit: the first queued entry wins.
+  const expectedTurns: ExpectedTurn[] = [];
+  const expectTurn = (entry: ExpectedTurn): ExpectedTurn => { expectedTurns.push(entry); return entry; };
+  const unexpectTurn = (entry: ExpectedTurn): void => removeExpectedTurn(expectedTurns, entry);
+  // What the turn now running opened as, set at turn.start from the entry
+  // its text matched ("unaccounted" for one that matched none, whether
+  // external, a continuation or unknown) and read at turn.complete.
+  let currentTurnKind: ExpectedTurn["kind"] | "unaccounted" = "unaccounted";
+  // A delivery whose $.prompt.submit rejected or was dropped: its entry has
+  // left the list and the refusal is recorded, and nothing else. The record
+  // stays as the delivery wrote it and ages out under the TTL; no delivery
+  // is retried.
+  const recordFailedDelivery = (rec: InboxRecord, outcome: { how: string; reason: string }): void => {
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "monitor",
+      action: "operator_delivery_failed",
+      detail: `record ${rec.id} submit ${outcome.how}; left as it stands: ${outcome.reason}`.slice(0, 200),
+    });
+  };
   // Item 2 backstop safety (Round 28): true only when the real
   // prompt.submit hook (a genuine external turn) just saw the
   // [SUPERVISOR-PRIMING] marker bin/supervise.sh's priming turn carries.
@@ -621,6 +743,14 @@ export const register: Register = async (on, options) => {
   // bypass this hook and so never touch this flag). Consumed by the very
   // next turn.start, the same one-flag handoff isPrimingTurn already uses.
   let lastPromptWasChannelOrigin = false;
+  // Whether the real prompt.submit hook fired at all since the last
+  // turn.start: true for every genuine external turn (keyboard, SDK caller,
+  // channel), never for one of this plugin's own $.prompt.submit calls,
+  // which bypass the hook. Consumed by the very next turn.start, the same
+  // one-flag handoff as above; it is what tells the delivery's own turn
+  // from any other, since a keyboard turn carries no origin the channel
+  // flag would see.
+  let lastPromptWasExternal = false;
   // Whether THIS turn (the one now running) started from a channel
   // message, captured at turn.start from the flag above so turn.complete
   // can act on it after the flag has already reset for the next prompt.
@@ -682,6 +812,47 @@ export const register: Register = async (on, options) => {
   const staleAfterMs = typeof cfg.staleAfterMs === "number" ? (cfg.staleAfterMs as number) : 90_000;
   sess.staleAfterMs = staleAfterMs; // F9a: single-source the threshold
   const controllerTickMs = typeof cfg.controllerTickMs === "number" ? (cfg.controllerTickMs as number) : 30_000;
+  // The one persona name the inbox gates treat as the coordinator: its owner
+  // may address any persona, and any named persona owner may address it. A
+  // configured name that fails the shared name rule, or that is "default",
+  // falls back: with "default" every plugin-loaded session would own the
+  // coordinator persona and reach every inbox.
+  const coordinatorPersona = typeof cfg.coordinatorPersona === "string"
+      && personaNameProblem(cfg.coordinatorPersona) === null
+      && cfg.coordinatorPersona.trim() !== "default"
+    ? cfg.coordinatorPersona.trim()
+    : "coordinator";
+
+  // Section 6: the arming tier gates what this session's hooks do. "owner"
+  // is a worker or the coordinator: every hook below registers and every
+  // claim site fires exactly as it always has. "reader" is a passive seat
+  // like the Reviewer's: only agentic_identity/agentic_say/agentic_inbox
+  // register, with no goal-tree tool, no controller tick, and no claim on
+  // any owner-only claim site. "off" is a plain chat session: it registers
+  // nothing below this point but the one hook a few lines down, which logs
+  // the tier and nothing else. An absent or unrecognized value reads as
+  // "off"; an unrecognized one is remembered so that hook's log line can
+  // name it.
+  const armingRaw = typeof cfg.arming === "string" ? cfg.arming.trim() : "";
+  let armingUnrecognized: string | null = null;
+  let arming: "off" | "reader" | "owner";
+  if (armingRaw === "owner" || armingRaw === "reader") {
+    arming = armingRaw;
+  } else {
+    arming = "off";
+    if (armingRaw !== "" && armingRaw !== "off") armingUnrecognized = armingRaw;
+  }
+  if (arming === "off") {
+    // No tool registration, no timer, no claim, no store write: this is
+    // the only hook an "off" session installs.
+    on("session.start", async ($, e, next) => {
+      const suffix = armingUnrecognized ? `; unrecognized value '${armingUnrecognized}'` : "";
+      $.ui.log(`Agentic: arming off, no persona tools or claims in this session${suffix}`);
+      return next(e);
+    });
+    return;
+  }
+
   const urgentCheckMinMs = typeof cfg.urgentCheckMinMs === "number" ? (cfg.urgentCheckMinMs as number) : 5_000;
   const nudgeFloorMs = typeof cfg.nudgeFloorMs === "number" ? (cfg.nudgeFloorMs as number) : 5 * 60_000;
   const nudgeIdleMs = typeof cfg.nudgeIdleMs === "number" ? (cfg.nudgeIdleMs as number) : 2 * 60_000;
@@ -694,9 +865,15 @@ export const register: Register = async (on, options) => {
   // own hardcoded initial value) regardless of what was intended, so two
   // sessions meaning to operate under different personas collide on the same
   // shared "default" claim in commons. Read before session.start runs, since
-  // register()'s top-level statements execute before any hook fires.
+  // register()'s top-level statements execute before any hook fires. A
+  // provided name that fails the shared name rule (it would be spliced into
+  // record ids and delivery labels) is refused the way a missing one is:
+  // the session runs as "default", and session.start records the refusal
+  // once the state exists.
+  let startPersonaProblem: string | null = null;
   if (typeof cfg.persona === "string" && cfg.persona.trim()) {
-    sess.persona = cfg.persona.trim();
+    startPersonaProblem = personaNameProblem(cfg.persona);
+    if (startPersonaProblem === null) sess.persona = cfg.persona.trim();
   }
 
   // Self-review options (S6: options arrive through --settings pluginConfigs).
@@ -764,6 +941,17 @@ export const register: Register = async (on, options) => {
     } catch {
       // $.session.id unavailable; single-session still works
     }
+    // The event carries cwd; $.session.cwd() is the fallback when it does not.
+    try {
+      if (typeof e.cwd === "string" && e.cwd.length > 0) {
+        sess.workdir = e.cwd;
+      } else {
+        const cwd = await $.session.cwd();
+        if (typeof cwd === "string") sess.workdir = cwd;
+      }
+    } catch {
+      // cwd unavailable; the commons entry publishes "" for it
+    }
     $.ui.log(`Agentic: session.start (${sess.mySessionId})`);
 
     // Register tools.
@@ -789,6 +977,10 @@ export const register: Register = async (on, options) => {
       },
     });
 
+    // Section 6: the goal-tree tools never register under arming "reader".
+    // A reader session steers through agentic_say/agentic_inbox only; it
+    // owns no persona and so has no goal tree of its own to create or edit.
+    if (arming !== "reader") {
     await $.tool.register({
       name: "goal_create",
       description:
@@ -976,12 +1168,16 @@ export const register: Register = async (on, options) => {
         required: ["text"],
       },
     });
+    }
 
-    // D2: Reader tools (plan signatures: agentic_say(text, answers?), agentic_inbox())
+    // D2: inbox tools (plan signatures: agentic_say(text, answers?, urgent?, persona?), agentic_inbox(persona?))
     await $.tool.register({
       name: "agentic_say",
       description:
-        "Send a message to the owner session of this persona. The reader session calls this to send text to the owner. " +
+        "Send a message to the owner session of a persona. Without persona, the target is this session's own persona: a reader session " +
+        "calls this to send text to the owner it reads. With persona, the target is that persona's inbox, reached with no identity switch: " +
+        "the session holding the coordinator persona may address any persona, and a session owning a named persona may address the coordinator persona. " +
+        "Refused for the persona this session owns itself. " +
         "The owner sees the message on its next quiet tick; while the owner is inside a turn the record waits, and agentic_inbox " +
         "shows it as deferred with the turn's running time. Pass urgent: true to reach the owner inside the running turn instead, " +
         "folded into its next tool result. Use for steering, reporting, or asking questions.",
@@ -1000,6 +1196,10 @@ export const register: Register = async (on, options) => {
             type: "boolean",
             description: "Optional. Deliver inside the owner's current turn (as context on its next tool result) rather than waiting for a quiet tick. Not for answering an ask.",
           },
+          persona: {
+            type: "string",
+            description: "Optional. The persona whose owner receives the message. Defaults to this session's own persona. Not a persona this session owns.",
+          },
         },
         required: ["text"],
       },
@@ -1008,16 +1208,55 @@ export const register: Register = async (on, options) => {
     await $.tool.register({
       name: "agentic_inbox",
       description:
-        "Read replies from the owner session of this persona. The reader session calls this to poll for replies to its messages. " +
-        "Returns {inbox: [{id, from, at, text, kind, status, reply?, deferred?, turnRunningMs?}], asks: [{id, at, nodeId, question, status}]}. " +
+        "Read replies from the owner session of a persona. Without persona, the target is this session's own persona: a reader session " +
+        "calls this to poll for replies to its messages. With persona, the target is that persona, under the rule agentic_say uses: " +
+        "the session holding the coordinator persona may read any persona, and a session owning a named persona may read the coordinator persona. " +
+        "Refused for the persona this session owns itself. " +
+        "Returns {inbox: [{id, from, at, text, kind, status, reply?, deferred?, turnRunningMs?, outcome?, note?, resolvedAt?}], asks: [{id, at, nodeId, question, status}], workdir?}: workdir is the target persona's live owner's working directory, where its own store file sits. " +
         "A pending record carries deferred: true and turnRunningMs while the owner is inside a turn: it waits for that turn to end. " +
+        "A resolved record carries outcome (done or declined), note and resolvedAt: the owner finished or declined the work, which a reply alone does not say. " +
         "Answer an open ask with agentic_say(text, answers: <ask id>).",
       inputSchema: {
         type: "object",
-        properties: {},
+        properties: {
+          persona: {
+            type: "string",
+            description: "Optional. The persona whose inbox to read. Defaults to this session's own persona. Not a persona this session owns.",
+          },
+        },
         required: [],
       },
     });
+
+    // Section 12 registers agentic_resolve under arming "owner" only: a
+    // reader owns no persona's records to resolve.
+    if (arming !== "reader") {
+    await $.tool.register({
+      name: "agentic_resolve",
+      description:
+        "Owner only. Mark an operator record addressed to this persona as resolved once the work it asked for is finished or declined. " +
+        "A reply says a turn answered; a resolution says the work is done. The sender reads outcome, note and resolvedAt through agentic_inbox. " +
+        "Refused for a record still pending (not delivered yet), for a skipped record, and for a record addressed to another persona.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "The record id, <persona>-<sender session id>-<seq>, the same id the sender sees in agentic_inbox.",
+          },
+          outcome: {
+            type: "string",
+            description: "done when the work finished, declined when it will not be done.",
+          },
+          note: {
+            type: "string",
+            description: "Optional short note for the sender: what was done, or why it was declined. At most 2000 characters; a longer note is refused.",
+          },
+        },
+        required: ["id", "outcome"],
+      },
+    });
+    }
 
     // --- Claim or join the persona based on liveness (heartbeat sidecar) ---
     const existing = await $.fs.exists(storePath)
@@ -1025,7 +1264,27 @@ export const register: Register = async (on, options) => {
       : {};
     const existingPersona = existing[sess.persona];
 
-    if (existingPersona) {
+    if (arming === "reader") {
+      // Section 6: a reader session never takes ownership at start, whether
+      // or not a holder is alive and whether or not the persona exists in
+      // the store yet - it only ever joins as a reader, so the whole
+      // liveness/claim branch below never runs for it.
+      if (existingPersona) {
+        sess.state = parseState(JSON.stringify(existingPersona));
+        sess.state.persona = sess.persona;
+      } else {
+        sess.state = createDefaultState(sess.persona, sess.mySessionId);
+      }
+      sess.isOwner = false;
+      sess.myEpoch = existingPersona?.epoch ?? 0;
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "passive_reader",
+        detail: `Joining '${sess.persona}' as reader (arming reader)`,
+      });
+      await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId, Date.now(), commonsMeta());
+    } else if (existingPersona) {
       sess.state = parseState(JSON.stringify(existingPersona));
       sess.state.persona = sess.persona;
 
@@ -1069,7 +1328,7 @@ export const register: Register = async (on, options) => {
           detail: `Joining '${sess.persona}' as reader (holder: ${holderHb!.sessionId}, epoch ${existingPersona.epoch})`,
         });
         // D2: Claim the reader role
-        await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId);
+        await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId, Date.now(), commonsMeta());
       }
     } else {
       sess.state = createDefaultState(sess.persona, sess.mySessionId);
@@ -1081,6 +1340,16 @@ export const register: Register = async (on, options) => {
         action: "persona_create",
         detail: `Created persona '${sess.persona}'`,
       });
+    }
+
+    if (startPersonaProblem !== null) {
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "persona_name_refused",
+        detail: `configured persona ${startPersonaProblem}; running as '${sess.persona}'`,
+      });
+      startPersonaProblem = null;
     }
 
     sess.state.monitor.sessionStart = Date.now();
@@ -1105,7 +1374,7 @@ export const register: Register = async (on, options) => {
       // no live persona:default claim and takes ownership, evicting the owner.
       try {
         const resource = `persona:${sess.persona}`;
-        await claimResource(commonsStoreOf($), resource, sess.mySessionId);
+        await claimResource(commonsStoreOf($), resource, sess.mySessionId, Date.now(), commonsMeta());
       } catch { /* non-fatal */ }
       // BD3 part 3: expire open asks from prior owners. The owner that opened
       // them is gone or restarted; its pendingAskId is gone with it.
@@ -1161,7 +1430,7 @@ export const register: Register = async (on, options) => {
             // Commons: refresh lastSeen to signal liveness (Stage 2 integration).
             try {
               const resource = `persona:${sess.persona}`;
-              await claimResource(commonsStoreOf($), resource, sess.mySessionId);
+              await claimResource(commonsStoreOf($), resource, sess.mySessionId, Date.now(), commonsMeta());
             } catch { /* non-fatal */ }
           }
         }
@@ -1171,15 +1440,17 @@ export const register: Register = async (on, options) => {
         // denies the reader.
         if (!sess.isOwner) {
           try {
-            await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId);
+            await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId, Date.now(), commonsMeta());
           } catch { /* non-fatal */ }
         }
 
         // Passive reader: promote if the sidecar holder is stale and not self.
         // With the shouldYield check above, the sidecar is only ever
         // written by the store's current owner, so a stale sidecar means no
-        // live owner, no store-owner comparison needed.
-        if (!sess.isOwner) {
+        // live owner, no store-owner comparison needed. A reader-tier
+        // session never promotes: it stays a reader even when the holder
+        // it reads goes stale.
+        if (!sess.isOwner && arming !== "reader") {
           let holderHb: HeartbeatEntry | null = null;
           try {
             if (await $.fs.exists(heartbeatPath)) {
@@ -1275,6 +1546,10 @@ export const register: Register = async (on, options) => {
     //   "no active leaf, return" → idle gate → classify.
     // Eligibility in code. The model decides WHAT, never WHETHER.
     // Cap counts *sent* nudges only, resets only on on-goal or complete.
+    // Section 6: a reader session never runs this tick at all - it owns no
+    // goal tree to classify or actuate against, and the tick's own owner
+    // check would return immediately anyway, so the timer itself is skipped.
+    if (arming !== "reader") {
     $.clock.every(controllerTickMs, async () => {
       // 1. Owner check.
       if (!sess.isOwner) return;
@@ -1282,8 +1557,11 @@ export const register: Register = async (on, options) => {
       if (turnIsOpen()) return;
 
       // D3: drain operator inbox (one record per tick, owner only).
-      // List pending inbox records whose writer holds a live reader claim,
-      // take the lowest at, mark delivered, submit as [OPERATOR] prompt.
+      // List pending inbox records whose writer may reach this persona
+      // (deliveryGroundIn over one claims read: a reader claim on it, the
+      // coordinator persona owned, or a named persona owned when this persona
+      // is the coordinator), take the lowest at, mark delivered, submit as a
+      // prompt opening with the provenance label that same read produced.
       // D5: if a pending record answers the open ask, close the ask first
       // (ask_answered path) before the general drain.
       if (sess.isOwner) {
@@ -1299,15 +1577,39 @@ export const register: Register = async (on, options) => {
           if (askRecord && askRecord.status === "open") {
             const answer = pending.find((rec) => rec.answers === askId);
             if (answer) {
-              const answerAlive = await hasLiveReaderClaim(store, persona, answer.from);
-              if (!answerAlive) {
+              // One claims read gates the answer and labels it. A dead
+              // writer's answer is logged here and skipped by the general
+              // drain below; an answer whose writer persona cannot sit
+              // inside the bracket, or whose id or text fails the record
+              // rule, is marked skipped here, once, so the drain never
+              // lists it.
+              const answerGround = deliveryGroundIn(await readAllClaims(store, sess.staleAfterMs), persona, answer.from, coordinatorPersona);
+              const answerProblem = deliveryRecordProblem(answer);
+              if ("refused" in answerGround && answerGround.refused === "no_claim") {
                 sess.state.decisions.push({
                   timestamp: Date.now(),
                   loop: "monitor",
                   action: "operator_skipped_no_claim",
-                  detail: `answer ${answer.id} from ${answer.from} has no live reader claim`,
+                  detail: `answer ${answer.id} from ${answer.from} holds no live claim that reaches '${persona}' (no reader claim, no '${coordinatorPersona}' persona claim, no named persona of its own)`,
                 });
+              } else if ("refused" in answerGround || answerProblem !== null) {
+                answer.status = "skipped";
+                await store.set(answer.key, { ...answer });
+                sess.state.decisions.push("refused" in answerGround && answerGround.refused === "bad_name"
+                  ? {
+                    timestamp: Date.now(),
+                    loop: "monitor",
+                    action: "operator_skipped_bad_name",
+                    detail: `answer at ${answer.key} would be labelled with persona ${JSON.stringify(answerGround.persona)}, which ${answerGround.problem}; marked skipped`,
+                  }
+                  : {
+                    timestamp: Date.now(),
+                    loop: "monitor",
+                    action: "operator_skipped_bad_record",
+                    detail: `answer at ${answer.key}: ${answerProblem}; marked skipped`,
+                  });
               } else {
+                const answerLabel = answerGround.ground;
                 // Close the ask
                 askRecord.status = "answered";
                 await store.set(askKey(persona, askId), askRecord);
@@ -1330,7 +1632,7 @@ export const register: Register = async (on, options) => {
                 }
                 // Clear the pendingAskId
                 sess.state.pendingAskId = undefined;
-                // Deliver the answer as an [OPERATOR] prompt
+                // Deliver the answer as a labelled prompt.
                 // Look up the goal by the ask record's nodeId (more reliable than activeGoalId,
                 // which enforceInvariants may have cleared for a paused goal).
                 const askRecord2 = askRecord; // from outer scope
@@ -1356,7 +1658,10 @@ export const register: Register = async (on, options) => {
                   action: "ask_answered",
                   detail: `ask ${askId} closed by record ${answer.id}`,
                 });
-                await $.prompt.submit({ text: `[OPERATOR] Answer to ${askRecord.question}: ${answer.text}` });
+                const answerText = deliveryText(answerLabel, answer.id, answer.text, { answerTo: askRecord.question });
+                const expectedAnswerTurn = expectTurn({ kind: "delivery", recordId: answer.id, text: answerText });
+                const answerOutcome = await submitExpectedTurn($, expectedTurns, expectedAnswerTurn);
+                if (!answerOutcome.ok) recordFailedDelivery(answer, answerOutcome);
                 await persist($);
                 return;
               }
@@ -1365,13 +1670,27 @@ export const register: Register = async (on, options) => {
         }
 
         // General drain (D3)
-        // Filter to writers with live reader claims
-        const withClaim: typeof pending = [];
+        // Filter to writers whose live claims reach this persona, over one
+        // claims read for the whole pending list; the same read yields the
+        // label each deliverable record carries. A record whose writer's
+        // persona cannot sit inside the label's bracket, or whose id or
+        // text fails the record rule, is skipped like a dead writer's,
+        // under its own decision. An answer the ask step above already
+        // marked skipped is not listed again.
+        const withClaim: { rec: InboxRecord; ground: string }[] = [];
         const withoutClaim: typeof pending = [];
+        const badName: { rec: InboxRecord; persona: string; problem: string }[] = [];
+        const badRecord: { rec: InboxRecord; problem: string }[] = [];
+        const claims = pending.length > 0 ? await readAllClaims(store, sess.staleAfterMs) : [];
         for (const rec of pending) {
-          const alive = await hasLiveReaderClaim(store, persona, rec.from);
-          if (alive) withClaim.push(rec);
-          else withoutClaim.push(rec);
+          if (rec.status !== "pending") continue;
+          const ground = deliveryGroundIn(claims, persona, rec.from, coordinatorPersona);
+          const recordProblem = deliveryRecordProblem(rec);
+          if ("refused" in ground) {
+            if (ground.refused === "no_claim") withoutClaim.push(rec);
+            else badName.push({ rec, persona: ground.persona, problem: ground.problem });
+          } else if (recordProblem !== null) badRecord.push({ rec, problem: recordProblem });
+          else withClaim.push({ rec, ground: ground.ground });
         }
         // Round 32/36: mark a dead writer's record skipped once, on its own
         // key, rather than re-logging the same decision every tick forever -
@@ -1383,13 +1702,31 @@ export const register: Register = async (on, options) => {
             timestamp: Date.now(),
             loop: "monitor",
             action: "operator_skipped_no_claim",
-            detail: `record ${rec.id} writer ${rec.from} has no live reader claim (marked skipped)`,
+            detail: `record ${rec.id} writer ${rec.from} holds no live claim that reaches '${persona}' (no reader claim, no '${coordinatorPersona}' persona claim, no named persona of its own; marked skipped)`,
+          });
+        }
+        for (const { rec, persona: writerPersona, problem } of badName) {
+          await store.set(rec.key, { ...rec, status: "skipped" });
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "operator_skipped_bad_name",
+            detail: `record at ${rec.key} would be labelled with persona ${JSON.stringify(writerPersona)}, which ${problem}; marked skipped`,
+          });
+        }
+        for (const { rec, problem } of badRecord) {
+          await store.set(rec.key, { ...rec, status: "skipped" });
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "operator_skipped_bad_record",
+            detail: `record at ${rec.key}: ${problem}; marked skipped`,
           });
         }
         // Take the oldest record with a live claim
         if (withClaim.length > 0) {
-          withClaim.sort((a, b) => a.at - b.at);
-          const oldest = withClaim[0];
+          withClaim.sort((a, b) => a.rec.at - b.rec.at);
+          const { rec: oldest, ground } = withClaim[0];
           oldest.status = "delivered";
           oldest.deliveredAt = Date.now();
           const existing = await store.get(oldest.key);
@@ -1399,13 +1736,16 @@ export const register: Register = async (on, options) => {
             parsed.deliveredAt = oldest.deliveredAt;
             await store.set(oldest.key, parsed);
           }
+          const submittedText = deliveryText(ground, oldest.id, oldest.text);
           sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "monitor",
             action: "operator_delivered",
-            detail: `record ${oldest.id} submitted as [OPERATOR]`,
+            detail: `record ${oldest.id} submitted as ${deliveryPrefix(ground, oldest.id, false)}`,
           });
-          await $.prompt.submit({ text: "[OPERATOR] " + oldest.text });
+          const expectedDeliveryTurn = expectTurn({ kind: "delivery", recordId: oldest.id, text: submittedText });
+          const deliveryOutcome = await submitExpectedTurn($, expectedTurns, expectedDeliveryTurn);
+          if (!deliveryOutcome.ok) recordFailedDelivery(oldest, deliveryOutcome);
           await persist($);
           return; // One record per tick
         }
@@ -1429,16 +1769,37 @@ export const register: Register = async (on, options) => {
         });
         await persist($);
 
-        // AT5: Sweep expired operator records on the summary cadence (owner only)
+        // AT5: Sweep expired operator records on the summary cadence (owner only).
+        // The sweep appends each inbox and reply record to the channel log
+        // before deleting it and throws on a refused append with every record
+        // still in the store, so a refusal reads as its own decision rather
+        // than as a quiet count of zero, the same split the window roll below
+        // makes.
         if (sess.isOwner) {
           const ttlMs = typeof cfg.operatorRecordTtlMs === "number" ? (cfg.operatorRecordTtlMs as number) : 86400000;
-          const swept = await sweepExpiredRecords(commonsStoreOf($), sess.persona, ttlMs);
-          if (swept > 0) {
+          try {
+            const swept = await sweepExpiredRecords(
+              commonsStoreOf($),
+              sess.persona,
+              (lines) => appendToChannelLog($, lines),
+              ttlMs,
+            );
+            if (swept > 0) {
+              sess.state.decisions.push({
+                timestamp: Date.now(),
+                loop: "worker",
+                action: "sweep_expired_records",
+                detail: `swept ${swept} expired operator records (persona: ${sess.persona})`,
+              });
+            }
+          } catch (err) {
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "worker",
-              action: "sweep_expired_records",
-              detail: `swept ${swept} expired operator records (persona: ${sess.persona})`,
+              action: "sweep_expired_records_failed",
+              detail: err instanceof SweepDeleteError
+                ? `sweep partly applied, every record logged, ${err.removed} of ${err.total} removed (persona: ${sess.persona}): ${err.message}`
+                : `sweep refused, records left in store (persona: ${sess.persona}): ${err instanceof Error ? err.message : String(err)}`,
             });
           }
 
@@ -1623,12 +1984,12 @@ export const register: Register = async (on, options) => {
               sr.pendingPeriodic = false;
               sess.state.updatedAt = now;
               await persist($);
-              try {
-                await $.prompt.submit({
-                  text: `${REPLY_INSTRUCTION}[KAIZEN] Post each line below to the operator's thread as written, then continue your work:\n` +
-                    announced.map((line) => `- ${line}`).join("\n"),
-                });
-              } catch { /* announcement failed; the decision log still carries the finding */ }
+              const kaizenText =
+                `${REPLY_INSTRUCTION}[KAIZEN] Post each line below to the operator's thread as written, then continue your work:\n` +
+                announced.map((line) => `- ${line}`).join("\n");
+              // A refused announcement is non-fatal: the decision log still
+              // carries the finding, and its entry has left the list.
+              await submitExpectedTurn($, expectedTurns, expectTurn({ kind: "plugin", text: kaizenText }));
             }
             if (announced.length === 0) {
               const input = buildSelfReviewInput(
@@ -2109,20 +2470,32 @@ export const register: Register = async (on, options) => {
                 detail: `closeout: ${estimatedTokens} tokens`,
               });
               // D1: deliver a close-out nudge through $.prompt.submit.
-              try {
-                const nudgeText =
-                  `[BUDGET] Context is at ${estimatedTokens} tokens (close-out threshold: ${sess.contextBudgetCloseoutTokens}).\n` +
-                  `Bank your current state to memory and the plan doc, then reach a clean stopping point. ` +
-                  `The session will be restarted at the critical threshold; bank state now.`;
-                await $.prompt.submit({ text: nudgeText });
-                nudgedTurn = true;
+              // Queued before the submit, as the goal nudge does: the submit
+              // parks until the session is next idle, so an entry pushed
+              // after it would land only once the nudged turn had already run.
+              const nudgeText =
+                `[BUDGET] Context is at ${estimatedTokens} tokens (close-out threshold: ${sess.contextBudgetCloseoutTokens}).\n` +
+                `Bank your current state to memory and the plan doc, then reach a clean stopping point. ` +
+                `The session will be restarted at the critical threshold; bank state now.`;
+              const budgetOutcome = await submitExpectedTurn($, expectedTurns, expectTurn({ kind: "nudge", text: nudgeText }));
+              if (budgetOutcome.ok) {
                 sess.state.decisions.push({
                   timestamp: budgetTs,
                   loop: "monitor",
                   action: "context_budget_nudge",
                   detail: `${estimatedTokens} tokens, close-out nudge sent`,
                 });
-              } catch { /* nudge failed; non-fatal */ }
+              } else {
+                // Non-fatal. No nudged turn is coming, so its entry has left
+                // the list: left in, the tick's next delivery turn would open
+                // as the nudge and its record would go unstamped.
+                sess.state.decisions.push({
+                  timestamp: budgetTs,
+                  loop: "monitor",
+                  action: "context_budget_nudge_failed",
+                  detail: `close-out nudge submit ${budgetOutcome.how}: ${budgetOutcome.reason}`.slice(0, 200),
+                });
+              }
             }
             if (!sess.contextBudgetLatched.info && estimatedTokens >= sess.contextBudgetInfoTokens) {
               sess.contextBudgetLatched.info = true;
@@ -2154,7 +2527,7 @@ export const register: Register = async (on, options) => {
 
       // 4. No active leaf: activate pending work if any exists (H1), else return.
       if (!activeNode || activeNode.status !== "active") {
-        const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, null);
+        const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, null, expectedTurns);
         if (askResult !== "none") return;
         const nextId = activateNext(sess.state);
         if (nextId) {
@@ -2175,7 +2548,7 @@ export const register: Register = async (on, options) => {
 
       // D5: skip nudge and classify if an ask is open; record ask_waiting once per minute.
       if (sess.state.pendingAskId) {
-        const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, g.id);
+        const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, g.id, expectedTurns);
         if (askResult === "waiting") return;
         if (askResult === "expired") return;
         // Ask was closed by an answer; clear the flag.
@@ -2598,38 +2971,37 @@ export const register: Register = async (on, options) => {
               // score performs, so a nudge the worker met would not clear its
               // own count, and two unmet nudges after a met one would reach the
               // cap that pauses the node, a round earlier than the worker
-              // earned. The nudged-turn flag would land after the turn.complete
-              // that reads it, leaking into the following turn and scoring an
-              // ordinary turn with the nudge-aware label set. The prompt text
+              // earned. The nudge's expected-turn entry would be queued after
+              // its own turn.start had looked for it, so that turn would open
+              // unaccounted and be scored without the nudge-aware label set. The prompt text
               // would land after the scorer had already judged the answer
               // against the previous turn's prompt.
               currentPrompt = nudgeText;
-              nudgedTurn = true;
+              const expectedNudgeTurn = expectTurn({ kind: "nudge", text: nudgeText });
               sess.consecutiveNudgesWithoutOnGoal += 1;
               // What this nudge made the count, read here rather than after
               // the submit, so the record names the count this nudge reached
               // rather than whatever a turn completing in the meantime left
               // behind.
               const nudgeNumber = sess.consecutiveNudgesWithoutOnGoal;
-              let submitted = false;
-              // Only the submit is guarded, so a throw from the ledger writes
-              // below is not recorded as a submit failure.
-              try {
-                await $.prompt.submit({ text: nudgeText });
-                submitted = true;
-              } catch (err) {
+              // Only the submit's own outcome is read here, so a throw from
+              // the ledger writes below is not recorded as a submit failure.
+              const nudgeOutcome = await submitExpectedTurn($, expectedTurns, expectedNudgeTurn);
+              if (!nudgeOutcome.ok) {
                 // Non-fatal, as every actuator failure here is. It is recorded
-                // because the floor was already spent above, so a failed submit
+                // because the floor was already spent above, so a refused submit
                 // costs a whole nudge window and would otherwise leave nothing
-                // anywhere saying the worker went un-nudged.
+                // anywhere saying the worker went un-nudged. No nudged turn is
+                // coming, so its entry has left the list: left in, the tick's
+                // next delivery turn would open as the nudge and lose its stamp.
                 sess.state.decisions.push({
                   timestamp: tickTs,
                   loop: "monitor",
                   action: "nudge_failed",
-                  detail: `${g.id}: submit failed, floor already spent: ${String(err)}`.slice(0, 200),
+                  detail: `${g.id}: submit ${nudgeOutcome.how}, floor already spent: ${nudgeOutcome.reason}`.slice(0, 200),
                 });
               }
-              if (submitted) {
+              if (nudgeOutcome.ok) {
                 // D1: increment nudge ledger (count only, no token estimate)
                 sess.state.monitor.cost.nudge.count += 1;
                 // D3: update nudge window
@@ -2691,6 +3063,7 @@ export const register: Register = async (on, options) => {
         }
       });
     });
+    }
 
     return next(e);
   });
@@ -2709,6 +3082,12 @@ export const register: Register = async (on, options) => {
     if (sess.isOwner) {
       try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }
     }
+    // The commons copy of the stamp exists so a session in another working
+    // directory can read this turn's state, which the cwd-relative heartbeat
+    // file cannot give it. Owner or reader, the session's own entry carries
+    // its turn state: a session that yields mid-turn writes the stamp through
+    // releaseResource, and only this handler pair clears it.
+    try { await stampCommonsMeta(commonsStoreOf($), sess.mySessionId, commonsMeta()); } catch { /* commons stamp failed; non-fatal */ }
     // H2: record the active leaf at turn start for scoring.
     turnLeafId = sess.state.activeGoalId;
     // C4: reset tool error counter for this turn.
@@ -2720,6 +3099,8 @@ export const register: Register = async (on, options) => {
     // it. Reset the reply-tracking flag for the turn now starting.
     currentTurnIsChannelOrigin = lastPromptWasChannelOrigin;
     lastPromptWasChannelOrigin = false;
+    const currentTurnIsExternal = lastPromptWasExternal;
+    lastPromptWasExternal = false;
     replyCalledThisTurn = false;
     // D4: reset backoff skip counter on new turn (activity breaks the skip streak).
     if (costEnabled && sess.state.monitor.cost) {
@@ -2732,28 +3113,96 @@ export const register: Register = async (on, options) => {
       detail: `Turn ${sess.state.monitor.turnCount} leaf ${turnLeafId || "none"}`,
     });
 
-    // AS3: the first turn.start after a delivery stamps e.turnId onto the
-    // delivered record that has none.
-    if (sess.isOwner) {
-      const persona = sess.persona;
-      const allRecords = await listInboxRecords(commonsStoreOf($), persona);
-      const undelivered = allRecords.find(
-        (rec) => rec.status === "delivered" && !rec.turnId
+    // AS3: which turn is this? The text it begins with says: e.text is
+    // matched against the queued entries, on the text the entry submitted
+    // or on the settled text its resolved submit reported, and the match is
+    // removed wherever it sits, never by position, so one turn the list
+    // cannot place never shifts every later turn onto the wrong entry. A
+    // matched delivery entry stamps its record with this turn id, which is
+    // what turn.complete uses to file this turn's answer as the record's
+    // reply; a matched nudge or plugin entry stamps nothing. A turn whose text
+    // matches nothing is unaccounted and stamps nothing: an external turn
+    // (the real prompt.submit hook fired since the last turn.start, which
+    // the plugin's own submits never do), a continuation (empty text), or
+    // one the plugin cannot place; where a delivery is queued its stamp is
+    // withheld for this turn and the reason names what the hook saw
+    // (channel-origin, external) or unaccounted, and the delivery keeps its
+    // entry for the turn that opens with its text. The external flag never
+    // decides the match; it only names the reason.
+    const matched = expectedTurns.find((entry) => e.text !== "" && (entry.text === e.text || entry.settledText === e.text));
+    let stampRecordId: string | null = null;
+    if (matched) {
+      unexpectTurn(matched);
+      currentTurnKind = matched.kind;
+      if (matched.kind === "delivery") stampRecordId = matched.recordId;
+    } else {
+      currentTurnKind = "unaccounted";
+      // A delivery entry outlives its record when no turn opens with a
+      // matching text: the TTL sweep or a resolve moves the record on while
+      // the entry stays queued. So the store is read once per fire and every
+      // delivery entry leaves the list by identity unless its record is
+      // present, delivered and unstamped. The first entry that survives is
+      // the one the withheld line names; where none survives, nothing is
+      // written. Nudge and plugin entries are not read. The entries are taken
+      // before the read, because a tick can mark a record delivered and queue
+      // its entry while the read runs, and that copy is what keeps such an
+      // entry out of a read older than it. A read that throws removes nothing
+      // and writes nothing, and the turn goes on.
+      let queuedDelivery: Extract<ExpectedTurn, { kind: "delivery" }> | null = null;
+      const deliveryEntries = expectedTurns.filter(
+        (entry): entry is Extract<ExpectedTurn, { kind: "delivery" }> => entry.kind === "delivery"
       );
-      if (undelivered) {
-        undelivered.turnId = e.turnId;
-        const store = commonsStoreOf($);
-        const existing = await store.get(undelivered.key);
+      if (sess.isOwner && deliveryEntries.length > 0) {
+        let liveRecords: InboxRecord[] | null = null;
+        try {
+          liveRecords = await listInboxRecords(commonsStoreOf($), sess.persona);
+        } catch {
+          liveRecords = null;
+        }
+        if (liveRecords) {
+          for (const entry of deliveryEntries) {
+            // An entry that left the list while the read ran (its own turn
+            // opened, or its submit was refused) is neither named nor removed.
+            if (!expectedTurns.includes(entry)) continue;
+            const record = liveRecords.find((rec) => rec.id === entry.recordId);
+            const live = record !== undefined && record.status === "delivered" && !record.turnId;
+            if (live) {
+              if (!queuedDelivery) queuedDelivery = entry;
+            } else {
+              unexpectTurn(entry);
+            }
+          }
+        }
+      }
+      if (queuedDelivery) {
+        const reason = currentTurnIsChannelOrigin ? "channel-origin" : currentTurnIsExternal ? "external" : "unaccounted";
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "operator_stamp_withheld",
+          detail: `record ${queuedDelivery.recordId} not stamped with turn ${e.turnId} (${reason} turn)`,
+        });
+        await persist($);
+      }
+    }
+    if (sess.isOwner && stampRecordId) {
+      const store = commonsStoreOf($);
+      const allRecords = await listInboxRecords(store, sess.persona);
+      const submitted = allRecords.find(
+        (rec) => rec.id === stampRecordId && rec.status === "delivered" && !rec.turnId
+      );
+      if (submitted) {
+        const existing = await store.get(submitted.key);
         if (existing) {
           const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
           parsed.turnId = e.turnId;
-          await store.set(undelivered.key, parsed);
+          await store.set(submitted.key, parsed);
         }
         sess.state.decisions.push({
           timestamp: Date.now(),
           loop: "monitor",
           action: "operator_turn_stamped",
-          detail: `record ${undelivered.id} stamped with turn ${e.turnId}`,
+          detail: `record ${submitted.id} stamped with turn ${e.turnId}`,
         });
         await persist($);
       }
@@ -2810,17 +3259,23 @@ export const register: Register = async (on, options) => {
     // a read-modify-write called from both turn handlers and from the heartbeat
     // tick, so two in-flight calls can land out of build order and publish a
     // non-null stamp just after the map emptied. The next tick repairs it, so
-    // that exposure is one heartbeat interval rather than unbounded.
+    // that exposure is one heartbeat interval rather than unbounded. The
+    // commons entry carries the same exposure for the same reason, repaired by
+    // the owner's next tick claim write (a reader's tick passes no meta, so its
+    // copy holds until its next turn boundary).
     sess.turnStartedAt = deriveTurnStartedAt();
     if (sess.isOwner) {
       try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }
     }
+    try { await stampCommonsMeta(commonsStoreOf($), sess.mySessionId, commonsMeta()); } catch { /* commons stamp failed; non-fatal */ }
 
-    // Read and clear the nudge flag once, up front. This prevents
-    // a stale flag from leaking into a later real user turn (e.g. if the
-    // nudged turn is aborted or the goal is not active).
-    const wasNudged = nudgedTurn;
-    nudgedTurn = false;
+    // Read what this turn opened as once, up front, and reset it so a stale
+    // reading never leaks into a later turn (a completion for a turn whose
+    // start this session never saw reads as unaccounted). The expected-turn
+    // list itself is not touched here: its entries leave it at turn.start,
+    // one per turn the plugin opened.
+    const wasNudged = currentTurnKind === "nudge";
+    currentTurnKind = "unaccounted";
 
     // C3: error streak fold.
     const toolErrors = toolErrorsThisTurn;
@@ -2854,17 +3309,18 @@ export const register: Register = async (on, options) => {
           detail: `turn ${e.turnId} answered with no reply-tool call; sent through reply directly`,
         });
       } catch (directErr) {
-        try {
-          await $.prompt.submit({
-            text: `${REPLY_INSTRUCTION}[REPLY BACKSTOP] Send this exact text to the operator through the reply tool now, unchanged:\n${e.answer}`,
-          });
+        const backstopText = `${REPLY_INSTRUCTION}[REPLY BACKSTOP] Send this exact text to the operator through the reply tool now, unchanged:\n${e.answer}`;
+        // A refused re-prompt means both paths failed; nothing more to do
+        // without a live channel, and its entry has left the list.
+        const backstopOutcome = await submitExpectedTurn($, expectedTurns, expectTurn({ kind: "plugin", text: backstopText }));
+        if (backstopOutcome.ok) {
           sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "monitor",
             action: "channel_reply_backfill_reprompted",
             detail: `turn ${e.turnId} direct reply call failed (${(directErr as Error).message}); re-prompted instead`,
           });
-        } catch { /* both paths failed; nothing more to do without a live channel */ }
+        }
       }
     }
     currentTurnIsChannelOrigin = false;
@@ -3173,13 +3629,16 @@ export const register: Register = async (on, options) => {
       sess.state.monitor.selfReview.turnsSince += 1;
     }
 
-    // D4: if the turn.complete turnId matches a delivered record, write the
-    // reply and mark answered.
+    // D4: if the turn.complete turnId matches the record stamped with this
+    // turn, write the reply and mark answered. The record may already be
+    // resolved: the owner does the work and calls agentic_resolve inside the
+    // stamped turn, so the reply is filed for a resolved record too and its
+    // resolution stays as it is.
     if (sess.isOwner) {
       const persona = sess.persona;
       const allRecords = await listInboxRecords(commonsStoreOf($), persona);
       const matching = allRecords.find(
-        (rec) => rec.status === "delivered" && rec.turnId === e.turnId
+        (rec) => (rec.status === "delivered" || rec.status === "resolved") && rec.turnId === e.turnId
       );
       if (matching) {
         const store = commonsStoreOf($);
@@ -3190,7 +3649,7 @@ export const register: Register = async (on, options) => {
           const existing = await store.get(matching.key);
           if (existing) {
             const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
-            parsed.status = "answered";
+            if (parsed.status === "delivered") parsed.status = "answered";
             await store.set(matching.key, parsed);
           }
           sess.state.decisions.push({
@@ -3200,19 +3659,15 @@ export const register: Register = async (on, options) => {
             detail: `record ${matching.id} replied`,
           });
         } else {
-          // AX4: empty answer or aborted. Leave delivered, clear turnId so
-          // the next turn.start re-stamps it.
-          const existing = await store.get(matching.key);
-          if (existing) {
-            const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
-            parsed.turnId = undefined;
-            await store.set(matching.key, parsed);
-          }
+          // AX4: empty answer or aborted. The record keeps its status
+          // (delivered, or resolved with its resolution), its stamp and no
+          // reply until the TTL: a later turn is not the one the plugin
+          // opened for it, so none re-stamps it.
           sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "monitor",
-            action: "operator_turn_cleared",
-            detail: `record ${matching.id} turnId cleared (answer empty or aborted)`,
+            action: "operator_turn_unanswered",
+            detail: `record ${matching.id} turn ${e.turnId} ended with no answer (empty or aborted); left ${matching.status}`,
           });
         }
       }
@@ -3239,8 +3694,45 @@ export const register: Register = async (on, options) => {
     // holder exists, join as reader (no epoch bump, no ownership).
     if (e.tool === "mcp__agentic-plugin__agentic_identity") {
       const name = String((e as any).persona || "default").trim() || "default";
+      // The shared name rule, before any claim or store write: a persona
+      // that fails it could be owned but never addressed, and its inbox
+      // listing would read another persona's keys.
+      const nameProblem = personaNameProblem(name);
+      if (nameProblem) {
+        toolErrorsThisTurn++;
+        return { deny: `agentic_identity: 'persona' ${nameProblem} (got '${name}').` };
+      }
       const previousPersona = sess.persona;
       sess.persona = name;
+      if (arming === "reader") {
+        // A reader session never claims persona:<name> here, never
+        // arbitrates for it, and never becomes its owner: it only ever
+        // joins as a reader. It keeps every reader:<target> claim it has
+        // made, because delivery grounds each pending record on a live
+        // reader:<target> claim at delivery time.
+        const store: Record<string, unknown> = await $.fs.exists(storePath)
+          ? (JSON.parse(await $.fs.read(storePath)) as Record<string, unknown>)
+          : {};
+        const existing = store[name] as AgentState | undefined;
+        if (existing) {
+          sess.state = parseState(JSON.stringify(existing));
+          sess.state.persona = name;
+        } else {
+          sess.state = createDefaultState(name, sess.mySessionId);
+        }
+        sess.isOwner = false;
+        sess.myEpoch = existing?.epoch ?? 0;
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "passive_reader",
+          detail: `Joining '${sess.persona}' as reader (arming reader)`,
+        });
+        await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId, Date.now(), commonsMeta());
+        return {
+          result: `persona '${sess.persona}': joined as reader (arming reader). ${sess.state.memory.length} memories.`,
+        };
+      }
       // Backlog fix (commons claim staleness): a commons session record shares
       // one lastSeen across every claim it has ever made, so a persona claim
       // left behind on switch reads as live for as long as this session keeps
@@ -3249,7 +3741,7 @@ export const register: Register = async (on, options) => {
       // place a session's persona actually changes.
       if (previousPersona && previousPersona !== name) {
         try {
-          await releaseResource(commonsStoreOf($), `persona:${previousPersona}`, sess.mySessionId);
+          await releaseResource(commonsStoreOf($), `persona:${previousPersona}`, sess.mySessionId, Date.now(), commonsMeta());
         } catch { /* non-fatal: commons is a coordination layer */ }
       }
       const store: Record<string, unknown> = await $.fs.exists(storePath)
@@ -3268,7 +3760,7 @@ export const register: Register = async (on, options) => {
       let winnerId = sess.mySessionId; // default: we are the winner
       let shouldYieldTo: string | null = null;
       try {
-        await claimResource(commonsStoreOf($), resource, sess.mySessionId);
+        await claimResource(commonsStoreOf($), resource, sess.mySessionId, Date.now(), commonsMeta());
         const claims = await readAllClaims(commonsStoreOf($), sess.staleAfterMs);
         const winner = commonsWinner(claims, resource);
         if (winner && winner !== sess.mySessionId) {
@@ -3304,10 +3796,10 @@ export const register: Register = async (on, options) => {
         // `persona:default` claim did. Release it before claiming the reader
         // role, so the joiner ends with reader:<p> only.
         try {
-          await releaseResource(commonsStoreOf($), resource, sess.mySessionId);
+          await releaseResource(commonsStoreOf($), resource, sess.mySessionId, Date.now(), commonsMeta());
         } catch { /* non-fatal: commons is a coordination layer */ }
         // D2: Claim the reader role
-        await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId);
+        await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId, Date.now(), commonsMeta());
         return {
           result: `persona '${sess.persona}' is held by session ${shouldYieldTo}; joined as reader. ${sess.state.memory.length} memories.`,
         };
@@ -3897,10 +4389,17 @@ export const register: Register = async (on, options) => {
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
-    // D2: Serve agentic_say (reader sends a message to the owner)
-    // Plan D2: agentic_say(text, answers?), persona is the session's (sess.persona)
+    // D2: Serve agentic_say (a message to the owner of a persona)
+    // Plan D2: agentic_say(text, answers?, urgent?, persona?). The target is
+    // the persona argument when given, else sess.persona; sess.persona itself
+    // never changes here, and no claim is written.
     if ((e as any).tool === "mcp__agentic-plugin__agentic_say") {
-      const persona = sess.persona;
+      const targetOrDeny = targetPersonaOf((e as any).persona, sess.persona);
+      if ("deny" in targetOrDeny) {
+        toolErrorsThisTurn++;
+        return { deny: `agentic_say: ${targetOrDeny.deny}` };
+      }
+      const persona = targetOrDeny.persona;
       const text = String((e as any).text || "").trim();
       const answers = (e as any).answers as string | undefined;
       const urgent = (e as any).urgent === true;
@@ -3908,16 +4407,20 @@ export const register: Register = async (on, options) => {
         toolErrorsThisTurn++;
         return { deny: "agentic_say requires a non-empty 'text'." };
       }
-      // Check if we are a reader
-      if (sess.isOwner) {
+      // Self-message guard: an owner addressing the persona it owns is
+      // talking to itself. The guard keys on ownership rather than on the
+      // name alone, because a reader's sess.persona is the persona it reads.
+      if (sess.isOwner && persona === sess.persona) {
         toolErrorsThisTurn++;
-        return { deny: "agentic_say is for reader sessions only; the owner does not need to send itself a message." };
+        return { deny: `agentic_say cannot address '${persona}': this session owns that persona, and the owner does not need to send itself a message.` };
       }
-      // D2: require a live reader claim
-      const hasClaim = await hasLiveReaderClaim(commonsStoreOf($), persona, sess.mySessionId);
-      if (!hasClaim) {
+      // The reach rule: a live reader claim on the target, the coordinator
+      // persona held by this session, or the target being the coordinator
+      // persona while this session owns a named persona of its own.
+      const mayReach = await mayReachPersona(commonsStoreOf($), persona, sess.mySessionId, coordinatorPersona, sess.staleAfterMs);
+      if (!mayReach) {
         toolErrorsThisTurn++;
-        return { deny: "agentic_say requires a live reader claim; the reader role is not held by this session." };
+        return { deny: `agentic_say cannot reach '${persona}': this session holds no live reader claim on it and does not hold the '${coordinatorPersona}' persona, and ${persona === coordinatorPersona ? "owns no named persona of its own to push from" : `'${persona}' is not the coordinator persona`}.` };
       }
       // BD3 part 2: when answers is set, verify it names a live open ask.
       if (answers) {
@@ -3941,43 +4444,50 @@ export const register: Register = async (on, options) => {
       return { result: `Message sent to owner of ${persona} (id: ${id}${urgent ? ", urgent: delivered inside the owner's running turn if one is in flight" : ""})` };
     }
 
-    // D2: Serve agentic_inbox (reader reads replies)
-    // Plan D2: agentic_inbox(), persona is the session's (sess.persona)
+    // D2: Serve agentic_inbox (replies from the owner of a persona)
+    // Plan D2: agentic_inbox(persona?). The target is the persona argument
+    // when given, else sess.persona, under the same guard and reach rule as
+    // agentic_say; no identity switch, no claim written.
     if ((e as any).tool === "mcp__agentic-plugin__agentic_inbox") {
-      const persona = sess.persona;
-      // Check if we are a reader
-      if (sess.isOwner) {
+      const targetOrDeny = targetPersonaOf((e as any).persona, sess.persona);
+      if ("deny" in targetOrDeny) {
         toolErrorsThisTurn++;
-        return { deny: "agentic_inbox is for reader sessions only; the owner reads its own replies directly." };
+        return { deny: `agentic_inbox: ${targetOrDeny.deny}` };
       }
-      // D2: require a live reader claim
-      const hasClaim = await hasLiveReaderClaim(commonsStoreOf($), persona, sess.mySessionId);
-      if (!hasClaim) {
+      const persona = targetOrDeny.persona;
+      if (sess.isOwner && persona === sess.persona) {
         toolErrorsThisTurn++;
-        return { deny: "agentic_inbox requires a live reader claim; the reader role is not held by this session." };
+        return { deny: `agentic_inbox cannot address '${persona}': this session owns that persona, and the owner reads its own replies directly.` };
       }
-      // D2: List inbox records for this persona, filtered to the caller's messages
+      const mayReach = await mayReachPersona(commonsStoreOf($), persona, sess.mySessionId, coordinatorPersona, sess.staleAfterMs);
+      if (!mayReach) {
+        toolErrorsThisTurn++;
+        return { deny: `agentic_inbox cannot reach '${persona}': this session holds no live reader claim on it and does not hold the '${coordinatorPersona}' persona, and ${persona === coordinatorPersona ? "owns no named persona of its own to read from" : `'${persona}' is not the coordinator persona`}.` };
+      }
+      // D2: List inbox records for the target persona, filtered to the caller's messages
       const allRecords = await listInboxRecords(commonsStoreOf($), persona);
       const myRecords = allRecords.filter((rec) => rec.from === sess.mySessionId);
       // D2: Append open asks for this persona
       const allAsks = await listAskRecords(commonsStoreOf($), persona);
       const openAsks = allAsks.filter((ask) => ask.status === "open");
-      // Plan item 8.3: the owner's heartbeat entry carries turnStartedAt while
+      // Plan item 8.3: the owner's commons entry carries turnStartedAt while
       // a turn runs. A record still pending behind that turn is reported as
       // deferred, with how long the turn has run, so the sender knows the
       // message is held rather than lost. The stamp alone is not enough: an
       // owner killed mid-turn never clears it, so the report also requires
-      // the heartbeat's lastSeen within staleAfterMs of now, since a stale
-      // owner is dead rather than busy.
+      // the entry's lastSeen within staleAfterMs of now, since a stale owner
+      // is dead rather than busy. The commons store is machine-global, so a
+      // reader in another working directory sees the same entry, which the
+      // cwd-relative heartbeat file cannot give it.
       let ownerTurnStartedAt: number | null = null;
+      // The owner's working directory rides on the result too, so a
+      // coordinator in another repository knows where the worker's own
+      // store file sits without asking for it in a record.
+      let ownerWorkdir: string | null = null;
       try {
-        if (await $.fs.exists(heartbeatPath)) {
-          const hb = JSON.parse(await $.fs.read(heartbeatPath)) as Record<string, HeartbeatEntry>;
-          const entry = hb[persona];
-          const ownerLive = entry && typeof entry.lastSeen === "number" && (Date.now() - entry.lastSeen) <= sess.staleAfterMs;
-          if (ownerLive && typeof entry.turnStartedAt === "number") ownerTurnStartedAt = entry.turnStartedAt;
-        }
-      } catch { /* heartbeat read failed; report records without the deferred view */ }
+        const holder = await readHolderMeta(commonsStoreOf($), `persona:${persona}`, sess.staleAfterMs);
+        if (holder) { ownerTurnStartedAt = holder.turnStartedAt; ownerWorkdir = holder.workdir; }
+      } catch { /* commons read failed; report records without the deferred view */ }
       // Attach replies to records, and the deferred view to pending ones.
       const withReplies = await Promise.all(myRecords.map(async (rec) => {
         const reply = await readReplyRecord(commonsStoreOf($), persona, rec.id);
@@ -3987,7 +4497,75 @@ export const register: Register = async (on, options) => {
         }
         return base;
       }));
-      return { result: JSON.stringify({ inbox: withReplies, asks: openAsks }, null, 2) };
+      return { result: JSON.stringify({ inbox: withReplies, asks: openAsks, ...(ownerWorkdir !== null ? { workdir: ownerWorkdir } : {}) }, null, 2) };
+    }
+
+    // Section 12: serve agentic_resolve (the owner marks a record's work
+    // finished or declined). Owner only, and only for a record listed under
+    // the session's own persona, so a reader holding the persona cannot
+    // resolve, and a record keyed to another persona does not resolve here.
+    // A pending record has not been read, and a skipped record's writer is
+    // gone, so neither has anything to resolve.
+    if ((e as any).tool === "mcp__agentic-plugin__agentic_resolve") {
+      const persona = sess.persona;
+      const id = String((e as any).id || "").trim();
+      const outcome = (e as any).outcome as string | undefined;
+      const note = typeof (e as any).note === "string" ? (e as any).note : "";
+      if (!sess.isOwner) {
+        toolErrorsThisTurn++;
+        return { deny: "agentic_resolve is for the owner session only; a reader does not resolve the owner's records." };
+      }
+      // The note goes whole into the machine-global store, which every live
+      // session rewrites and polls, so it is bounded here at the handler.
+      if (note.length > RESOLVE_NOTE_MAX) {
+        toolErrorsThisTurn++;
+        return { deny: `agentic_resolve note is ${note.length} characters; the bound is ${RESOLVE_NOTE_MAX}. Shorten it.` };
+      }
+      if (!id) {
+        toolErrorsThisTurn++;
+        return { deny: "agentic_resolve requires a non-empty 'id'." };
+      }
+      if (outcome !== "done" && outcome !== "declined") {
+        toolErrorsThisTurn++;
+        return { deny: "agentic_resolve requires 'outcome' of done or declined." };
+      }
+      const store = commonsStoreOf($);
+      const target = (await listInboxRecords(store, persona)).find((rec) => rec.id === id);
+      if (!target) {
+        toolErrorsThisTurn++;
+        return { deny: `no record '${id}' addressed to persona ${persona}.` };
+      }
+      if (target.status === "pending") {
+        toolErrorsThisTurn++;
+        return { deny: `record '${id}' is still pending (not delivered yet); nothing to resolve.` };
+      }
+      if (target.status === "skipped") {
+        toolErrorsThisTurn++;
+        return { deny: `record '${id}' was skipped at delivery (the decision log names why); nothing to resolve.` };
+      }
+      if (target.status !== "delivered" && target.status !== "answered") {
+        toolErrorsThisTurn++;
+        return { deny: `record '${id}' is already ${target.status} (${target.outcome ?? "no outcome"}).` };
+      }
+      const existing = await store.get(target.key);
+      if (!existing) {
+        toolErrorsThisTurn++;
+        return { deny: `record '${id}' left the store before it could be resolved.` };
+      }
+      const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
+      parsed.status = "resolved";
+      parsed.resolvedAt = Date.now();
+      parsed.outcome = outcome;
+      parsed.note = note;
+      await store.set(target.key, parsed);
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "worker",
+        action: "operator_resolved",
+        detail: `record ${id} resolved ${outcome}${note ? `: "${note.slice(0, 80)}"` : ""}`,
+      });
+      await persist($);
+      return { result: `Record ${id} resolved (${outcome}).` };
     }
 
     // Goal constraint: deny Bash if the ROOT objective says so (R10).
@@ -4008,14 +4586,25 @@ export const register: Register = async (on, options) => {
     const r = await next(e);
     if ((r as { isError?: boolean }).isError === true) toolErrorsThisTurn++;
 
-    // Plan item 8.3: an urgent record from a live reader reaches the owner
-    // inside the running turn. The controller tick cannot deliver while a
+    // Plan item 8.3: an urgent record from a writer that may reach this
+    // persona (deliveryGroundIn over one claims read, the tick's own rule)
+    // reaches the owner inside the running turn. The controller tick cannot deliver while a
     // turn is in flight, so the record rides here instead: marked delivered
     // and stamped with this turn (turn.complete then records the turn's
     // answer as its reply), its text appended as context on this tool's
     // result, which the model reads after the result itself. A record that
     // answers an open ask is left to the tick, which owns the ask lifecycle.
-    if (sess.isOwner && r.deny === undefined && Date.now() - lastUrgentCheckAt >= urgentCheckMinMs) {
+    // Only the main loop's own tool calls carry a break-in: this hook also
+    // runs for every other loop's tool calls (a dispatched subagent, the
+    // case that matters, and also a teammate, a workflow's agents and the
+    // engine's own forks), and e.agentId, the loop's id, is non-empty on
+    // those and absent on the main loop. A steer delivered into a
+    // subagent's tool result reaches a loop that cannot verify it and never
+    // reaches the owner, so such a call neither reads nor advances the
+    // throttle, and the record stays pending for the tick or for the
+    // owner's own next call.
+    const inSubagent = typeof e.agentId === "string" && e.agentId.length > 0;
+    if (!inSubagent && sess.isOwner && r.deny === undefined && Date.now() - lastUrgentCheckAt >= urgentCheckMinMs) {
       lastUrgentCheckAt = Date.now();
       try {
         const store = commonsStoreOf($);
@@ -4023,8 +4612,13 @@ export const register: Register = async (on, options) => {
         const urgentPending = (await listInboxRecords(store, persona))
           .filter((rec) => rec.status === "pending" && rec.urgent === true && !rec.answers);
         const lines: string[] = [];
+        const claims = urgentPending.length > 0 ? await readAllClaims(store, sess.staleAfterMs) : [];
         for (const rec of urgentPending) {
-          if (!(await hasLiveReaderClaim(store, persona, rec.from))) continue;
+          // A record whose writer persona cannot sit inside the bracket, or
+          // whose id or text fails the record rule, is left pending here;
+          // the tick's drain marks it skipped.
+          const ground = deliveryGroundIn(claims, persona, rec.from, coordinatorPersona);
+          if ("refused" in ground || deliveryRecordProblem(rec) !== null) continue;
           const existing = await store.get(rec.key);
           if (!existing) continue;
           const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
@@ -4038,7 +4632,7 @@ export const register: Register = async (on, options) => {
             action: "operator_delivered_urgent",
             detail: `record ${rec.id} delivered inside the running turn as context on ${e.tool}`,
           });
-          lines.push(`[OPERATOR, urgent] ${rec.text}`);
+          lines.push(deliveryText(ground.ground, rec.id, rec.text, { urgent: true }));
         }
         if (lines.length > 0) {
           await persist($);
@@ -4061,11 +4655,12 @@ export const register: Register = async (on, options) => {
     isPrimingTurn = e.text.startsWith("[SUPERVISOR-PRIMING]");
     // Steer 68/69: a real Discord message carries e.origin.kind === "channel".
     lastPromptWasChannelOrigin = (e as { origin?: { kind?: string } }).origin?.kind === "channel";
+    lastPromptWasExternal = true;
 
     // D5b (bullet 1): an open ask never silences the worker. This hook fires
     // only for a genuine external turn - the controller's own $.prompt.submit
     // calls (nudges, operator-record delivery, the ask re-raise) bypass this
-    // handler, per the nudgedTurn comment above. So any turn that reaches
+    // handler, per the expected-turns comment above. So any turn that reaches
     // here while an ask is open is the operator answering it, whether it
     // came from the keyboard or a Discord thread reply, and whether or not
     // it carries the ask id: close the ask and reactivate the paused node.
@@ -4104,6 +4699,17 @@ export const register: Register = async (on, options) => {
 
     const r = await next(e);
     if (r.drop !== undefined) {
+      // A dropped prompt opens no turn, so the one-shot flags set above
+      // must not survive to the next turn.start.
+      lastPromptWasChannelOrigin = false;
+      lastPromptWasExternal = false;
+      return r;
+    }
+
+    if (arming === "reader") {
+      // Section 6: a reader session owns no goal tree, so no [GOAL TREE],
+      // paused, [NO GOAL], [ENV], [LESSON] or [MEMORY] block is appended -
+      // the prompt reaches the model exactly as the harness delivered it.
       return r;
     }
 

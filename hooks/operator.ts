@@ -16,7 +16,10 @@
 // --- Types ---
 
 export type InboxKind = "say" | "answer";
-export type InboxStatus = "pending" | "delivered" | "answered" | "skipped";
+// "answered" means a turn replied; "resolved" means the owner finished or
+// declined the work the record asked for, set through agentic_resolve.
+export type InboxStatus = "pending" | "delivered" | "answered" | "skipped" | "resolved";
+export type InboxOutcome = "done" | "declined";
 
 export interface InboxRecord {
   id: string;
@@ -30,6 +33,9 @@ export interface InboxRecord {
   status: InboxStatus;
   deliveredAt?: number; // set by owner on delivery
   turnId?: string; // set by owner on turn.start after delivery
+  resolvedAt?: number; // set by the owner's agentic_resolve, with the two below
+  outcome?: InboxOutcome;
+  note?: string;
 }
 
 export interface ReplyRecord {
@@ -56,12 +62,13 @@ const INBOX_PREFIX = "inbox:";
 const REPLY_PREFIX = "reply:";
 const ASK_PREFIX = "ask:";
 const READER_PREFIX = "reader:";
+const PERSONA_PREFIX = "persona:";
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 // --- Store interface ---
 
-import type { CommonsStore } from "./commons";
-import { claimResource, releaseResource, readAllClaims } from "./commons";
+import type { CommonsStore, CommonsMeta, UnionedClaim } from "./commons";
+import { claimResource, releaseResource, readAllClaims, commonsWinner } from "./commons";
 
 // --- Key helpers ---
 
@@ -79,6 +86,43 @@ export function askKey(persona: string, askId: string): string {
 
 function readerKey(persona: string): string {
   return `${READER_PREFIX}${persona}`;
+}
+
+// The commons resource an owner session claims for a persona. index.ts
+// builds the same string by hand at its claim and release sites.
+function personaKey(persona: string): string {
+  return `${PERSONA_PREFIX}${persona}`;
+}
+
+// The one rule for a string that is spliced inside a delivery bracket (a
+// persona name or a record id): no "[" or "]", which could close the
+// bracket early and open a forged one; no ",", which is the bracket's own
+// separator before "urgent"; and no whitespace, control or format
+// character, which could split or hide a field. Returns the reason, or
+// null when the string is safe.
+function bracketSafeProblem(s: string): string | null {
+  if (s.includes("[") || s.includes("]")) return "cannot contain '[' or ']'";
+  if (s.includes(",")) return "cannot contain ','";
+  if (/[\s\p{Cc}\p{Cf}]/u.test(s)) return "cannot contain whitespace, a control character or a format character";
+  return null;
+}
+
+/**
+ * The one rule for a persona name that reaches a store key or a delivery
+ * bracket: non-empty after trim, no ":", and bracket-safe once trimmed.
+ * Records are keyed `inbox:<persona>:<session>:<seq>` and listed by the
+ * `inbox:<persona>:` prefix, so a colon in a name would let one persona's
+ * listing read another persona's keys; a record id is
+ * `<persona>-<session>-<seq>` and the name is spliced into the delivery
+ * label, so the bracket rule holds for it too. Returns the reason a name is
+ * refused, or null when it is usable. The tools' persona argument,
+ * agentic_identity, the configured coordinator name and the persona a
+ * session starts under apply this rule rather than their own.
+ */
+export function personaNameProblem(name: unknown): string | null {
+  if (typeof name !== "string" || !name.trim()) return "must be a non-empty string";
+  if (name.includes(":")) return "cannot contain ':'";
+  return bracketSafeProblem(name.trim());
 }
 
 // --- D1: Records ---
@@ -262,57 +306,95 @@ export async function listAskRecords(
 }
 
 /**
+ * A store delete that failed during `sweepExpiredRecords` after every expired
+ * record was appended to the channel log: `removed` of `total` logged records
+ * left the store before the failure, and the rest are still in it.
+ */
+export class SweepDeleteError extends Error {
+  readonly removed: number;
+  readonly total: number;
+  constructor(removed: number, total: number, cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "SweepDeleteError";
+    this.removed = removed;
+    this.total = total;
+  }
+}
+
+/**
  * Sweep records older than the TTL.
  * Returns the number of records swept.
+ *
+ * A `pending` record is never swept, whatever its age: a pending record whose
+ * writer has no live claim leaves the queue through the drain's own route
+ * (`skipped`), so one that is still pending is live work the owner has not
+ * consumed yet. An inbox record's age is the latest of its write, delivery
+ * and resolution times, so a record that waited pending past the TTL and was
+ * then delivered is not swept on the next cadence. A reply is swept together
+ * with its inbox record, expired when that record is, and on its own `at`
+ * only when it is an orphan with no inbox record; the sender reads replies
+ * by walking inbox records, so a reply outliving its record is unreachable
+ * and a record outliving its reply reads as unanswered. Every record the
+ * sweep removes (inbox, reply, ask) is appended
+ * to the channel log first, one line per record in the shape `enforceChannelWindow`
+ * writes with `sweptAt` in place of `rolledAt`, so a reader of the log can tell
+ * the two routes apart. Append before delete, and never delete on a failed
+ * append: the error propagates with every record still in the store, so the
+ * caller records the refusal rather than a count. A delete that fails after
+ * the append landed throws a `SweepDeleteError` instead, carrying how many
+ * of the logged records were removed before it.
  */
 export async function sweepExpiredRecords(
   store: CommonsStore,
   persona: string,
+  appendLines: (lines: string[]) => Promise<void>,
   ttlMs: number = DEFAULT_TTL_MS,
 ): Promise<number> {
   const cutoff = Date.now() - ttlMs;
   let swept = 0;
 
-  // Sweep inbox records
+  // Collect every record past the TTL (inbox, reply, ask), log them all in
+  // one append, then delete.
+  const expired: { key: string; kind: "inbox" | "reply" | "ask"; record: unknown }[] = [];
   const inboxRecords = await listInboxRecords(store, persona);
+  // Inbox record ids present in the store, and those the sweep removes, so a
+  // reply follows its record's fate rather than its own age.
+  const inboxIds = new Set<string>();
+  const expiredInboxIds = new Set<string>();
   for (const record of inboxRecords) {
-    if (record.at < cutoff) {
-      // Use the stored key (record.key) to delete the record
-      if (record.key) {
-        await store.delete(record.key);
-        swept++;
-      }
+    inboxIds.add(record.id);
+    const age = Math.max(record.at, record.deliveredAt ?? 0, record.resolvedAt ?? 0);
+    if (age < cutoff && record.status !== "pending" && record.key) {
+      expired.push({ key: record.key, kind: "inbox", record });
+      expiredInboxIds.add(record.id);
     }
   }
-
-  // Sweep reply records
   const keys = await store.keys();
   const replyPrefix = `${REPLY_PREFIX}${persona}:`;
-  for (const key of keys) {
-    if (key.startsWith(replyPrefix)) {
-      const raw = await store.get(key);
-      if (raw) {
-        const record = raw as ReplyRecord;
-        if (record.at < cutoff) {
-          await store.delete(key);
-          swept++;
-        }
-      }
-    }
-  }
-
-  // Sweep ask records
   const askPrefix = `${ASK_PREFIX}${persona}:`;
   for (const key of keys) {
-    if (key.startsWith(askPrefix)) {
-      const raw = await store.get(key);
-      if (raw) {
-        const record = raw as AskRecord;
-        if (record.at < cutoff) {
-          await store.delete(key);
-          swept++;
-        }
+    const kind = key.startsWith(replyPrefix) ? "reply" : key.startsWith(askPrefix) ? "ask" : null;
+    if (!kind) continue;
+    const raw = await store.get(key);
+    if (!raw) continue;
+    if (kind === "reply") {
+      const msgId = key.slice(replyPrefix.length);
+      const isExpired = inboxIds.has(msgId) ? expiredInboxIds.has(msgId) : (raw as ReplyRecord).at < cutoff;
+      if (isExpired) expired.push({ key, kind, record: raw });
+      continue;
+    }
+    if ((raw as AskRecord).at < cutoff) expired.push({ key, kind, record: raw });
+  }
+  if (expired.length > 0) {
+    const sweptAt = Date.now();
+    await appendLines(expired.map((e) => JSON.stringify({ persona, kind: e.kind, key: e.key, sweptAt, record: e.record })));
+    try {
+      for (const e of expired) {
+        await store.delete(e.key);
+        swept++;
       }
+    } catch (err) {
+      throw new SweepDeleteError(swept, expired.length, err);
     }
   }
 
@@ -326,10 +408,17 @@ export async function sweepExpiredRecords(
  * one JSON file forever. This never touches `ask:` keys (an open ask has
  * its own lifecycle - answered, expired, or re-raised - and TTL-based
  * `sweepExpiredRecords` above is the only thing that ages one out); it
- * covers `inbox:` records not still `"pending"` (a pending record is live
- * work the drain has not consumed yet) and every `reply:` record, combined
- * and ordered oldest-first, keeping the newest `windowSize` and rolling the
- * rest. Returns the number of records rolled.
+ * covers `inbox:` records that are `"skipped"` or `"resolved"` and every
+ * `reply:` record except one whose inbox record is present as `"delivered"`
+ * or `"answered"`, combined and ordered oldest-first, keeping the newest
+ * `windowSize` and rolling the rest. A `pending` record is live work the
+ * drain has not consumed yet, and a `delivered` or `answered` record is an
+ * open steer whose state the sender still reads, so both stay in the store
+ * whatever the window, and so does the open steer's reply; the TTL sweep is
+ * the bound on those. Every other reply, whether its record is `resolved`,
+ * `skipped` or gone, enters the window on its own age, so it can roll on a
+ * different cadence from its record.
+ * Returns the number of records rolled.
  */
 export async function enforceChannelWindow(
   store: CommonsStore,
@@ -337,7 +426,9 @@ export async function enforceChannelWindow(
   windowSize: number,
   appendLines: (lines: string[]) => Promise<void>,
 ): Promise<number> {
-  const inbox = (await listInboxRecords(store, persona)).filter((r) => r.status !== "pending");
+  const allInbox = await listInboxRecords(store, persona);
+  const inbox = allInbox.filter((r) => r.status === "skipped" || r.status === "resolved");
+  const openSteerIds = new Set(allInbox.filter((r) => r.status === "delivered" || r.status === "answered").map((r) => r.id));
   const keys = await store.keys();
   const replyPrefix = `${REPLY_PREFIX}${persona}:`;
   const combined: { key: string; at: number; kind: "inbox" | "reply"; record: unknown }[] = inbox.map((r) => ({
@@ -348,6 +439,7 @@ export async function enforceChannelWindow(
   }));
   for (const key of keys) {
     if (key.startsWith(replyPrefix)) {
+      if (openSteerIds.has(key.slice(replyPrefix.length))) continue;
       const raw = await store.get(key);
       if (raw) combined.push({ key, at: (raw as ReplyRecord).at, kind: "reply", record: raw });
     }
@@ -385,9 +477,11 @@ export async function claimReaderRole(
   store: CommonsStore,
   persona: string,
   mySessionId: string,
+  now: number = Date.now(),
+  meta?: CommonsMeta,
 ): Promise<void> {
   // Use the commons claim path (same as persona claim)
-  await claimResource(store, readerKey(persona), mySessionId);
+  await claimResource(store, readerKey(persona), mySessionId, now, meta);
 }
 
 /**
@@ -397,22 +491,216 @@ export async function releaseReaderRole(
   store: CommonsStore,
   persona: string,
   mySessionId: string,
+  now: number = Date.now(),
+  meta?: CommonsMeta,
 ): Promise<void> {
-  await releaseResource(store, readerKey(persona), mySessionId);
+  await releaseResource(store, readerKey(persona), mySessionId, now, meta);
+}
+
+// The two claim tests over one claims read, so a caller that needs both
+// reads the commons store once.
+function holdsReaderClaim(claims: UnionedClaim[], persona: string, sessionId: string): boolean {
+  const readerResource = readerKey(persona);
+  return claims.some((c) => c.resource === readerResource && c.holder === sessionId);
+}
+
+// Ownership is the commons winner, the same arbitration readHolderMeta and
+// the yield check apply: a second session claims a persona at start and holds
+// that claim until its own yield fires, and in that window it is a holder but
+// not the owner.
+function holdsOwnerClaim(
+  claims: UnionedClaim[],
+  sessionId: string,
+  persona?: string,
+  excludePersona?: string,
+): boolean {
+  if (persona !== undefined) {
+    return commonsWinner(claims, personaKey(persona)) === sessionId;
+  }
+  const excluded = excludePersona === undefined ? null : personaKey(excludePersona);
+  return claims.some((c) =>
+    c.holder === sessionId
+    && c.resource.startsWith(PERSONA_PREFIX)
+    && c.resource !== excluded
+    && commonsWinner(claims, c.resource) === sessionId);
+}
+
+// The personas `sessionId` holds a reader claim on, sorted, so a label that
+// must pick one of several picks the same one every time.
+function readerPersonasOf(claims: UnionedClaim[], sessionId: string): string[] {
+  return claims
+    .filter((c) => c.holder === sessionId && c.resource.startsWith(READER_PREFIX))
+    .map((c) => c.resource.slice(READER_PREFIX.length))
+    .sort();
+}
+
+// The named personas `sessionId` owns (commons winner, `default` excluded),
+// sorted. Non-empty exactly when holdsOwnerClaim(claims, sessionId,
+// undefined, "default") is true.
+function ownedNamedPersonasOf(claims: UnionedClaim[], sessionId: string): string[] {
+  const excluded = personaKey("default");
+  return claims
+    .filter((c) =>
+      c.holder === sessionId
+      && c.resource.startsWith(PERSONA_PREFIX)
+      && c.resource !== excluded
+      && commonsWinner(claims, c.resource) === sessionId)
+    .map((c) => c.resource.slice(PERSONA_PREFIX.length))
+    .sort();
 }
 
 /**
- * Check if a session holds a live reader claim for a persona.
+ * The provenance ground a record from `writer` carries when delivered to
+ * `target`, read from claims already read, or null when the writer may not
+ * reach the target at all. Reach holds on any of three legs: the writer
+ * holds a reader claim on the target (a reader steering the owner it
+ * reads); the writer owns the coordinator persona (the coordinator
+ * addressing any persona); or the target is the coordinator persona and
+ * the writer owns a named persona other than `default` (a worker pushing
+ * to the coordinator). Every leg is a claim a session issues itself: any
+ * plugin-loaded session on this machine can take a reader claim, own a
+ * named persona through agentic_identity, or own the coordinator persona
+ * while no live session holds it. Excluding `persona:default` keeps out a
+ * session that has done none of that, which is every plugin-loaded session
+ * at start, and nothing more.
+ *
+ * The ground names the strongest standing the writer holds, in this order:
+ * `COORDINATOR` when the writer owns the coordinator persona;
+ * `READER:<persona>` when the writer holds any reader claim, naming the
+ * target where the writer reads it and otherwise the alphabetically first
+ * persona it reads (a reader claim on another persona is not a reach leg
+ * by itself, so this branch is reached only through the worker leg then);
+ * `WORKER:<persona>` when the writer's only standing is an owned named
+ * persona, naming the alphabetically first one. The gate and the label are
+ * one rule over one claims array, so a record that is delivered is a
+ * record that is labelled, and a writer holding a reader claim anywhere is
+ * never labelled WORKER.
+ *
+ * The persona a READER or WORKER ground would name is store data any
+ * process can write straight into the claims, so it is held to the bracket
+ * rule here as well as at the name rule's entry points: a name that fails
+ * it is refused as `bad_name`, with the reason, and the writer does not
+ * reach the target at all. `no_claim` is the refusal when no leg holds.
  */
-export async function hasLiveReaderClaim(
+export type DeliveryGround =
+  | { ground: string }
+  | { refused: "no_claim" }
+  | { refused: "bad_name"; persona: string; problem: string };
+
+export function deliveryGroundIn(
+  claims: UnionedClaim[],
+  target: string,
+  writer: string,
+  coordinatorPersona: string,
+): DeliveryGround {
+  if (holdsOwnerClaim(claims, writer, coordinatorPersona)) return { ground: "COORDINATOR" };
+  const workerLeg = target === coordinatorPersona && holdsOwnerClaim(claims, writer, undefined, "default");
+  const readerPersonas = readerPersonasOf(claims, writer);
+  let kind: string;
+  let persona: string;
+  if (readerPersonas.length > 0) {
+    const readsTarget = readerPersonas.includes(target);
+    if (!readsTarget && !workerLeg) return { refused: "no_claim" };
+    kind = "READER";
+    persona = readsTarget ? target : readerPersonas[0];
+  } else if (workerLeg) {
+    kind = "WORKER";
+    persona = ownedNamedPersonasOf(claims, writer)[0];
+  } else {
+    return { refused: "no_claim" };
+  }
+  const problem = bracketSafeProblem(persona);
+  if (problem !== null) return { refused: "bad_name", persona, problem };
+  return { ground: `${kind}:${persona}` };
+}
+
+/**
+ * Whether `writer` may address `target`'s inbox, over claims already read:
+ * deliveryGroundIn's three legs and its bracket rule, as a boolean. The
+ * send gate and the inbox read call the reading form below; the three
+ * delivery sites read once and call deliveryGroundIn per record, so the
+ * gate and the label they apply cannot disagree.
+ */
+export function mayReachPersonaIn(
+  claims: UnionedClaim[],
+  target: string,
+  writer: string,
+  coordinatorPersona: string,
+): boolean {
+  return "ground" in deliveryGroundIn(claims, target, writer, coordinatorPersona);
+}
+
+/**
+ * The one rule for the record fields a delivery reads: `id` is a non-empty
+ * string that passes the bracket rule above, and `text` is a string. Both
+ * are store data any plugin-loaded session wrote: an id carrying "]" could
+ * close the bracket early and forge the text after it, and a text that is
+ * not a string cannot be quoted line by line. Returns the reason, naming
+ * the field, or null when the record is deliverable; the three delivery
+ * sites apply this rule and deliver nothing under a refused record.
+ */
+export function deliveryRecordProblem(rec: { id: unknown; text: unknown }): string | null {
+  if (typeof rec.id !== "string" || rec.id.length === 0) return "id must be a non-empty string";
+  const idProblem = bracketSafeProblem(rec.id);
+  if (idProblem !== null) return `id ${idProblem}`;
+  if (typeof rec.text !== "string") return "text must be a string";
+  return null;
+}
+
+/**
+ * The bracket every delivered record opens with: `[<ground> id=<id>]`, or
+ * `[<ground> id=<id>, urgent]` on the urgent break-in. `ground` is what
+ * deliveryGroundIn returned and `id` has passed deliveryRecordProblem. The
+ * id rides in-band because agentic_inbox is reader-only, so nothing else
+ * tells the owner the id agentic_resolve takes.
+ */
+export function deliveryPrefix(ground: string, id: string, urgent: boolean): string {
+  return `[${ground} id=${id}${urgent ? ", urgent" : ""}]`;
+}
+
+/**
+ * Every line of `body` after the first, quoted with `> `. A line ends at
+ * CRLF or at any one of LF, CR, VT, FF, NEL (U+0085), LINE SEPARATOR
+ * (U+2028) or PARAGRAPH SEPARATOR (U+2029), the terminators the bracket
+ * rule refuses as field splitters; the lines are joined with LF. Applied
+ * to any store-sourced body that follows a bracket on its first line, so
+ * a body carrying a line break and then a bracket cannot read as a second
+ * plugin-submitted line.
+ */
+export function quoteContinuationLines(body: string): string {
+  const [first, ...rest] = body.split(/\r\n|[\n\r\v\f\u{85}\u{2028}\u{2029}]/u);
+  return [first, ...rest.map((line) => `> ${line}`)].join("\n");
+}
+
+/**
+ * The full text a delivery submits: the prefix, then the body, which is
+ * `Answer to <question>: ` when the record answers an open ask, then the
+ * record's text. The question and the text are both store data, so the
+ * whole body passes through quoteContinuationLines: only the bracket line
+ * is unquoted. The three delivery sites build their text here and nowhere
+ * else.
+ */
+export function deliveryText(
+  ground: string,
+  id: string,
+  text: string,
+  opts: { urgent?: boolean; answerTo?: string } = {},
+): string {
+  const answer = opts.answerTo === undefined ? "" : `Answer to ${opts.answerTo}: `;
+  return `${deliveryPrefix(ground, id, opts.urgent === true)} ${quoteContinuationLines(`${answer}${text}`)}`;
+}
+
+/**
+ * mayReachPersonaIn over one fresh read of the commons claims.
+ */
+export async function mayReachPersona(
   store: CommonsStore,
-  persona: string,
-  sessionId: string,
+  target: string,
+  writer: string,
+  coordinatorPersona: string,
   staleAfterMs: number = 90_000,
 ): Promise<boolean> {
-  const claims = await readAllClaims(store, staleAfterMs);
-  const readerResource = readerKey(persona);
-  return claims.some((c) => c.resource === readerResource && c.holder === sessionId);
+  return mayReachPersonaIn(await readAllClaims(store, staleAfterMs), target, writer, coordinatorPersona);
 }
 
 /**

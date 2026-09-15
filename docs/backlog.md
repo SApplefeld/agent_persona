@@ -14,13 +14,7 @@ A child that does one backfilled tool turn and exits 0 is relaunched outside bot
 
 The same shape holds under `--plugin-dir` and in installed mode. The narrow exposure today is that every launcher on the box passes its own `--rundir` or runs one persona per workdir. Coordinator v2 Section 6 launches a coordinator beside workers, so check its launch recipe gives every supervisor its own rundir, or refuse a provided file whose persona differs from the argument.
 
-## A supervisor's cadence env overrides never reach its child, so Section 6's coordinator tick would be ignored (found 2026-09-13)
-
-`bin/supervise.sh` sets `TICK_MS`, `NUDGE_IDLE_MS` and `GIT_PROBE_MS` from the `controllerTickMs`, `nudgeIdleMs` and `gitProbeMs` env vars, then sources `bin/agentic-common.sh`. The library's `PROFILE` block reassigns all three without a `${VAR:-}` guard, so the settings file carries the profile's values whatever the caller exported. With `NUDGE_IDLE_MS=600000` set before sourcing the library, the value reads `45000` afterwards.
-
-Two consumers are affected today. `.kit/live-restartrequest-test.sh` exports `nudgeIdleMs=600000` so no controller nudge can pause its plan, and it actually runs with 45-second nudges. Coordinator v2 Sections 5 and 6 set the coordinator's `controllerTickMs` to 60000 at launch through exactly this path, so neither can hold until this is fixed.
-
-Pre-existing since `b5cb8ae`, which moved the helpers into the library. Raised by the Section 0 item 5 review and ruled outside that item's scope. The likely fix is the profile block assigning `TICK_MS="${TICK_MS:-30000}"` and its siblings, but check every `.kit/live-*.sh` caller that sets `PROFILE` expecting it to win over an inherited value first.
+Coordinator v2 Section 8 adds one more consumer of the same assumption: the coordinator-role priming instruction fires when the supervisor's persona argument equals the coordinator name, and a provided file naming a different `persona` primes the wrong session or leaves the right one unprimed. The refuse form, when this entry is taken up, resolves the file's `persona` under the plugin's own rule, where a missing or invalid key resolves to `default`, and refuses when that value differs from the argument; a missing key is a mismatch, never a match, since the launcher refuses an empty argument. That fix reverses the pin in `.kit/settings-plugin-key-test.sh` that drives a differing file persona through to the pre-launch gate, so it takes its own plan line rather than a fix round.
 
 ## The harness delivers far more turn completions than turn starts, so the open-turn guard is blind for most turns (found 2026-09-13)
 
@@ -55,41 +49,29 @@ exit non-zero after passing will also read as failing to any gate that trusts th
 every gate here. The likely cause is a handle closed twice during teardown. Worth catching the next
 occurrence with `--trace-uncaught` rather than hunting it cold.
 
-## Arm the plugin's hooks only for sessions that want them (operator feedback, 2026-09-12)
-
-Promoted into `docs/plans/agent_persona_coordinator_v2.md` Section 6 (Reviewer Round 105 R5): every session loading this plugin fires its hooks and reminders every turn regardless of intent, and v2 adds more such sessions. No longer a separate future brainstorm; retire this entry when v2's Section 6 closes.
-
 ## Suite hardening
 
 _No open items. Resolved items are archived in `docs/archive/backlog-2026-09-11.md`._
 
-## Commons claim staleness (found and fixed working agent_persona_passive-supervisor_v1.md, Items 2-3)
-
-Fixed in Item 3 (Chapter 3): `agentic_identity`'s handler now releases its previous persona's commons claim on every switch, before claiming the new one.
-
-The root cause: a session's commons entry (`hooks/commons.ts`, `claimResource`/`releaseResource`) keys liveness on one `lastSeen` field shared across every resource that session has ever claimed. Any commons write the session makes for its *current* persona refreshes that one field, which also refreshes the apparent liveness of every other claim the session is still carrying, including a `persona:X` claim for a persona it switched away from and never released - `agentic_identity` claimed the new persona but never released the old one, so a session that started as `default` and switched to `dev` kept a `persona:default` claim alive in commons for as long as it kept heartbeating as `dev`. Reproduced three times across two sessions (this session's own residue in Item 2, then an unrelated live sibling session's residue in Items 2 and 3), each time permanently demoting a fresh scratch child to a passive reader (`sess.isOwner = false`, one-way for the life of that session) the moment it tried to persist under `default`.
-
-Residual caveat: the fix only takes effect for a session running the updated code. A session already live with the old code in memory (observed: one holding `persona:default`, `persona:relay`, `persona:dev`, and `reader:dev` simultaneously) keeps its already-leaked stale claim until it restarts. This is not mine to clear directly - it's another session's own commons state. If Item 7's `default`-persona live suites still see a wedged pre-gate after this fix lands, check for a live sibling session running pre-fix code before assuming a new regression.
-
-## Kit-side lesson: executing-work should say a fix round takes the reviewer pair too
+## Kit-side lesson: executing-work should say a fix round takes the reviewer pair too (parked 2026-09-12, backfilled from git history)
 
 Not this repo's fix - a pointer to the kit plugin repo. A worker that never loads `operating-instructions` or `executing-work` can claim a fix landed in a Chapter sentence when the fix is not actually in the diff, because a fix round inside a review loop is never treated as its own section needing a fresh-context adversarial and blind reviewer pair before posting (see `agent_persona_passive-supervisor_v1.md`'s "worker launch discipline" addendum, which fixes the priming-turn gap on this repo's side). The `executing-work` skill itself should say in words that a fix round inside a review loop is a section under its own dispatch rules, not an exception to them - carry this lesson to that skill's own repo when next working there.
 
-## A KILL-path variant of live-restartpassive-test.sh's F2 leg (Reviewer Round 126 R76 ruling, worded per R93, 2026-09-12)
+## A KILL-path variant of the restart-passive F2 leg, now the natural-exit suite's `real_live` case (Reviewer Round 126 R76 ruling, worded per R93, 2026-09-12)
 
-`.kit/live-restartpassive-test.sh` F2 proves the persona-claim-free and pre-gate-pass observables for a child that stops cleanly on the EOF path. `.kit/live-stopprocesstree-test.sh`'s own Phase-3 shape - a child that ignores both EOF and TERM, forcing `stop_child` to its final KILL escalation - has no equivalent live leg proving those same two observables; it only proves process death. Add an F2-shaped variant driving an EOF-and-TERM-ignoring child through the same claim-free/pre-gate-pass assertions when this is next picked up.
+`.kit/supervisor-natural-exit-test.sh` case (g), the `real_live` stub action, proves the decide path's `RESTART_PASSIVE` and relaunch for a child that stops cleanly on the EOF path, and `.kit/live-restartrequest-test.sh` proves the claim handover on a real child. `.kit/live-stopprocesstree-test.sh`'s own Phase-3 shape - a child that ignores both EOF and TERM, forcing `stop_child` to its final KILL escalation - has no equivalent live leg proving those same two observables; it only proves process death. Add an F2-shaped variant driving an EOF-and-TERM-ignoring child through the same claim-free/pre-gate-pass assertions when this is next picked up.
 
-## The supervisor treats a rate-limited child as merely quiet, and a credential swap never reaches it
+## The supervisor treats a rate-limited child as merely quiet, and a credential swap never reaches it (parked 2026-09-13, backfilled from git history)
 
 A running child never re-reads credentials, so a 429 carrying a `five_hour` limit parks it in a retry backoff (`retryInMs` up to 75 minutes, `maxRetries` 300) that survives an account swap the operator has already made. The supervisor sees only a live process and logs `WAITING`, so nothing distinguishes a working child from one asleep for over an hour. Two changes: read the child's `stdout.jsonl` for `api_error` records carrying `rateLimits.rateLimitType` and `resetsAt`, and log one `RATE_LIMITED until HH:MMZ` line in place of `WAITING`; and when the credential file's mtime is newer than the child's start, treat the child as restartable and take the `restart_passive` path. Not in item 3's PR.
 
-## A reader session cannot write restart_requested when the owner is the stuck process
+## A reader session cannot write restart_requested when the owner is the stuck process (parked 2026-09-13, backfilled from git history)
 
 `restart_requested` is writable by the owner alone. When the owner is itself the wedged child, the one session that can see the wedge (a reader holding the same persona) is refused by the tool, and the only remaining lever is killing the process from outside. Allow a reader to write the fact when the owner's heartbeat is stale, on the same staleness bound the stale-owner arbitration already uses. Not in item 3's PR.
 
-## A running supervisor keeps the script it launched with, so the dev supervisor lacks this branch's later fixes until it is relaunched
+## A running supervisor keeps the script it launched with, so the dev supervisor lacks this branch's later fixes until it is relaunched (parked 2026-09-13, backfilled from git history)
 
-A running `bin/supervise.sh` keeps reading its original open file handle and never picks up a later commit. The `dev` supervisor started at 2026-09-13 21:45Z, after the branch's settings-file commits and before `406a783`, so its own process still reads the child pid from a variable bash unsets at reap, still takes no shared numeric check on its settings, and still emits no backfilled NOTE on its natural-exit path. The `aios` supervisor started at 2026-09-14 00:11Z from this checkout with `MODEL=opus`, so it carries every supervisor fix up to `a4119cd` and lacks every supervisor commit after it, the pre-launch gate change in `8e0bcef` and the commons test leg in `2359d7d` among them. The file under both running supervisors has been rewritten since they started, and bash reads a script by offset, so code after each one's main loop is no longer what it launched with.
+A running `bin/supervise.sh` keeps reading its original open file handle and never picks up a later commit. The `dev` supervisor was relaunched on 2026-09-14 for Section 0 item 5 and the `aios` supervisor started at 2026-09-14 00:11Z, so each runs the script as it stood then and lacks every supervisor change coordinator v2 landed after it: the arming key and settings completion (Section 6), the worker steer instruction (Section 7) and the coordinator role instruction with the settings-file persona read (Section 8) among them. The file under both has been rewritten since they started, and bash reads a script by offset, so code after each one's main loop is no longer what it launched with.
 
 Nothing to fix in the tree. The remedy is relaunching each supervisor, then dropping this entry. Relaunching is destructive to whatever that supervisor's child is mid-way through, so it is taken at a quiet point rather than on sight of this entry. This is the narrowed remainder of the `aios` launcher entry and the stale-dev-clone entry, both retired in item 3's runtime-clone addendum.
 
@@ -109,41 +91,6 @@ The decide path's `restart` branch in `bin/supervise.sh` updates the crash and r
 
 `docs/plans/agentic-plugin_context-budget_v1.md` reads `Status: Independent part Complete; checkpoint section BLOCKED-on-operator (Path C open question resolved).`, which the kit's tooling cannot read as any of its status values. The curating-docs skill rules whether the plan splits into a complete part and an open part, archives, or takes one of the three headers.
 
-## live-stopprocesstree-test.sh runs 15 checks that the gate summary never collects
-
-In the whole-gate run `20260913T085812Z` this suite was the only one of seventeen whose
-summary line read `assert=[missing]`. Its checks are not missing. The suite's own log ends
-`15 checks run, 0 failed` and `live-stopprocesstree-test.sh: PASS`, and its assertions are
-substantive, covering that the real child is gone after `stop_child` returns on the TERM
-path and after the tree kill.
-
-The gap is collection, not coverage. `.kit/live-stopprocesstree-test.sh` has its
-`pass` and `failed` helpers print to stdout and bump their own counters, which is what
-produces the `15 checks run, 0 failed` line, but neither writes a file, while
-`.kit/live-all.sh:132` collects `$suite_dir/<suite>.assert.log`, a file this suite never
-writes. Its exit file is collected, which is why `exitfile=[0 ]` is populated beside an
-empty `assert=`.
-
-Fix: have `pass` and `failed` tee to `$SUITE_DIR/stopprocesstree.assert.log` as the other
-suites do. No new assertions are needed, and no control has to be built: the suite already
-fails if `stop_child` leaves the real child alive, so a mutation to signal a single pid
-would turn it red today. The effect of this gap is that a whole-gate summary understates
-the evidence for item 2's process-tree stop, which is exactly the fix that gate exists to
-validate.
-
-## Section 0 item 4's whole gate was run without its own precondition, and owes one re-run
-
-Item 4 conditions its whole-gate run on the operator confirming every other live `claude`
-process is stopped. The run `20260913T085812Z` was taken without that confirmation, with
-both supervisors and their children live, and with foreign `.NET` test runs going before
-and during it. Sixteen of seventeen suites passed clean, so the contention does not appear
-to have bitten, and the single failure is explained independently by the F5/F6 entry.
-
-What is owed is narrow: one re-run of `live-restartpassive-test.sh` on a genuinely quiet
-box, so its result rests on the condition the item sets rather than on a run that did not
-meet it. The whole gate does not need repeating for this. Drop this entry once that run is
-recorded in item 4's Chapter.
-
 ## Design direction: let the outer loops recover a session that stopped, rather than only preventing the stop (operator dialog, 2026-09-13)
 
 Not a defect and not yet a plan. Recorded from a design conversation with the operator so it survives the session that had it.
@@ -162,7 +109,7 @@ Design against one failure from the start: a loop that types "continue" on every
 
 Two limits worth knowing before anyone builds this. There is no working-on-it event in the stream, because the spinner is drawn by the interactive display, so silence during a long tool call is indistinguishable from death on the pipe alone and growth is the honest liveness evidence. And prompts the plugin submits to itself are not echoed into that stream, so a shell-side monitor sees the turn a self-nudge causes but never the nudge.
 
-## A design conversation with the operator has no capture rule, so whether it lands anywhere is a judgment call each time
+## A design conversation with the operator has no capture rule, so whether it lands anywhere is a judgment call each time (parked 2026-09-13, backfilled from git history)
 
 The outer-loop recovery conversation reached a real design direction and landed in zero
 files until the operator asked whether dialog is captured automatically. It is not. Nothing
@@ -191,3 +138,35 @@ a slower form.
 Open: where the rule itself should live. Project memory holds it for this repo only. The
 doctrine holds it everywhere and is the heavier edit. The lean is the doctrine, because the
 failure is not specific to this repo. Operator's call.
+
+## A v2 or v3 persona store reaches the tick with no cost ledger (found 2026-09-14)
+
+`parseState` in `hooks/agent-state.ts` fills `monitor.cost` at line 393, but its v2 branch returns at 343 and its v3 branch at 361, both before that fill, and the v2 branch copies `old.monitor` whole. `enforceInvariants` never touches `cost`. So a store written before the cost ledger existed is migrated to version 4 with no `monitor.cost`, and the first controller tick reads `monitor.cost.callWindow` on undefined. `.kit/cost-migration-test.mjs` covers a v4 store missing the block and never a v2 or v3 one. The remedy is to move the cost fill above both early returns, or into `enforceInvariants`, with one fixture per old version. Found by Section 13's audit while reading the migration suite; outside that section's goal.
+
+## The hourly cost-cap ask is controller prose of the kind Round 58 finding 3 removed elsewhere (found 2026-09-14)
+
+`hooks/index.ts:2317-2343` opens an operator ask when the per-hour nudge budget is spent, with a question the controller composes. Round 58 finding 3 removed the same shape from the consecutive-nudge cap (`:2251-2258`) on the ground that an ask with no concrete fork from the worker has nothing for the operator to decide, and item 8.2 says asks come only from real forks. Whether the hourly cap is the one legitimate exception, because the operator must choose between raising the budget and waiting, is a design question. `.kit/controller-tick-test.mjs:3214-3216` pins the ask as it stands and stays until that question is answered. Found by Section 13's audit; outside its goal.
+
+## `hooks/cost-ledger.ts` exports `isCapReached`, which no production code calls (found 2026-09-14)
+
+`isCapReached` at `hooks/cost-ledger.ts:31` has no caller under `hooks/` or `bin/` (grep `isCapReached` over `hooks/`, `bin/` and `.kit/`: only its own definition). The controller inlines the same comparison at `hooks/index.ts:2306` (`effectiveWindowCount(...) >= costMaxNudgesPerHour`), so the export is dead code that the test audit exposed when its only caller, a unit-test import, was removed. Delete the export, or route the controller through it, when the cost ledger is next touched. Not done in Section 13 because that section edits tests only.
+
+## `agentic_say` text and `agentic_resolve` note have no shared length bound at the commons store (found 2026-09-14)
+
+`agentic_say` writes its `text` argument whole into the machine-global commons store (`hooks/index.ts`, the `agentic_say` handler), which every live session rewrites whole and polls every tick, and `agentic_resolve` now writes a `note` the same way. Section 12 caps the note at its own handler. The cap is a property of the store boundary rather than of either producer, so it belongs in one exported helper both handlers call, with the bound named in each tool description. Not done in Section 12 because `agentic_say` is outside its files in scope and its text shape is pinned by the live operator suite. Raised by the round 1 security and adversarial lenses over Section 12.
+
+## A pending record to an unheld coordinator is lost when its writer restarts before the coordinator's first tick (found 2026-09-14, revisit with the self-healing supervisor loop)
+
+`hooks/index.ts:1684-1707` judges every `pending` record's ground at the coordinator's tick against the writer's live claim (`deliveryGroundIn` over `readAllClaims`), and marks a writer with no live claim `skipped` under `operator_skipped_no_claim`. A worker relaunch takes a new session id, so a finding sent while no session owns the coordinator, followed by that worker's exit or relaunch before a coordinator ticks, is skipped with one decision-log line and nothing to the worker or the operator. This is the README's Trust boundary working as designed: only a live claim gets text in front of the coordinator. Decided 2026-09-14 by the operator on the supervisor's Discord thread: accept the bound for now, state it in the code comment and README (done in coordinator v2's finishing pass), and revisit it in the self-healing and auto-launch discussion, where worker restarts become routine. The candidate remedy is delivery on the writer's standing at send time for a coordinator-addressed record, labelled `[WORKER:<persona>]` with a since-exited marker, which weakens the boundary (any process on the box can write a record) and so needs its own design pass; a cheaper sibling is surfacing the coordinator-leg `operator_skipped_no_claim` to the operator on the coordinator's channel.
+
+## `read_settings_coordinator_persona` hand-copies the plugin's persona name rule with no cross-pin (found 2026-09-14)
+
+`bin/agentic-common.sh:246-296` (`read_settings_coordinator_persona`, `valid_persona_name`) restates the name rule `hooks/index.ts` applies to `coordinatorPersona` (non-empty after trim, no `:`, bracket-safe, not `default`), and `.kit/settings-plugin-key-test.sh` pins the bash side against its own literals only. The two rules drift silently if either changes. Remedy: one fixture list of names with the expected resolution, run through the bash function and through the TS rule (the tick harness already loads `hooks/` from node), failing on any disagreement. Left out of coordinator v2's finishing pass because it is a new test module spanning shell and node, which owes a review round of its own.
+
+## `currentTurnKind` is one slot, so an overlapping external turn overwrites the reading the completion scores against (found 2026-09-14)
+
+`hooks/index.ts:715` holds `currentTurnKind` as a single `let`, set at `turn.start` (`:3136`, `:3139`) and read then reset at `turn.complete` (`:3277-3278`). Two `turn.start` events before a `turn.complete` leave the second's kind in the slot, so the first turn's completion scores as the second's. Whether the harness ever overlaps turns in one session is not pinned; the open-turn reading Section 11 built assumes it does not. Remedy if it does: key the kind on the turn id (a small map cleared at completion) rather than a slot. Raised as a Minor by the coordinator v2 finishing review and left as unconfirmed reachability.
+
+## The channel-reply backstop submits a turn from `turn.complete`, outside the controller tick the README calls the only submitter (found 2026-09-14)
+
+`README.md` states that the controller is the only thing that calls `$.prompt.submit`. The reply backstop at `hooks/index.ts:3312-3316` submits a `[REPLY BACKSTOP]` turn from the `turn.complete` handler when a channel-origin turn ended with an answer the model never sent through the reply tool, so a second submitter exists outside the tick and its idle gate. The turn is tracked on the plugin's own queued-turn list like every other plugin submit, so the reply-link guard is not affected. Predates coordinator v2 (it landed with the channel-reply backstop, `742015b`). Surfaced by v2's docs curation as a deviation and carried to that plan's pull request; the open question is design rather than defect: either the README's controller-only rule is loosened to name this second site, or the backstop moves onto the tick and accepts one tick of delay on a missed reply.

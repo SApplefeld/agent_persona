@@ -3,32 +3,16 @@
 # ... except these tracked sources:
 !/live-common.sh
 !/live-all.sh
-!/live-controller-test.sh
 !/live-goaltree-test.sh
-!/live-goaltree-stall-test.sh
-!/live-planfail-test.sh
-!/live-yield-test.sh
-!/live-errorstreak-test.sh
-!/live-gitprobe-test.sh
-!/live-health-test.sh
 !/live-budget-test.sh
-!/live-self-review-test.sh
 !/self-review-unit-test.mjs
 !/cost-ledger-unit-test.mjs
 !/cost-migration-test.mjs
 !/supervisor-unit-test.mjs
-!/live-supervisor-test.sh
-!/live-passive-test.sh
-!/live-goalconvo-test.sh
-!/live-restartpassive-test.sh
 !/live-restartrequest-test.sh
-!/health-probe.js
 !/assert-decisions.js
 !/roadmap-test.md
-!/live-cost-test.sh
 !/live-operator-test.sh
-!/check-cap-reached.mjs
-!/write-decisions-log.mjs
 !/tick-harness.mjs
 !/controller-tick-test.mjs
 !/channel-reply-instruction-test.sh
@@ -37,3 +21,4 @@
 !/fixtures/
 !/settings-plugin-key-test.sh
 !/supervisor-natural-exit-test.sh
+!/persona-live-refuse-test.sh

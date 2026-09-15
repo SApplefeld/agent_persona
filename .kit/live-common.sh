@@ -14,6 +14,15 @@ else
   exit 1
 fi
 
+# The live lane's model and effort. Every gated suite that launches
+# bin/supervise.sh sources this file, and the supervisor is a separate
+# process, so the values are exported here once rather than in each suite.
+# The exports are unconditional: a supervisor-launched shell already carries
+# MODEL=opus, and a gate run from one would otherwise launch the
+# restartrequest child at that model with nothing in the run saying so.
+export MODEL="haiku"
+export EFFORT="medium"
+
 # --- Helpers ---
 
 wait_turn() {  # $1 = number of result lines to wait for
@@ -27,24 +36,6 @@ wait_turn() {  # $1 = number of result lines to wait for
   sleep 3
 }
 
-wait_activation() {  # wait for "activated" to appear in the store
-  local n=0
-  local store=".agentic-personas.json"
-  until grep -q '"activated"' "$store" 2>/dev/null; do
-    sleep 2; n=$((n+2)); [ $n -ge 90 ] && return 1
-  done
-}
-
-count_turn_starts() {  # $1 = store path; returns count of turn_start decisions
-  local store="${1:-.agentic-personas.json}"
-  node -e "
-    const s = JSON.parse(require('fs').readFileSync('$store','utf8'));
-    const p = Object.keys(s)[0];
-    const d = (s[p].decisions||[]).filter(x => x.action === 'turn_start');
-    console.log(d.length);
-  " 2>/dev/null || echo 0
-}
-
 # find_global_store is defined in bin/agentic-common.sh (sourced above),
 # shared with bin/supervise.sh so both callers filter on dev_mode the same
 # way rather than carrying their own copies (a drift between two such
@@ -52,31 +43,6 @@ count_turn_starts() {  # $1 = store path; returns count of turn_start decisions
 # stamp: one copy resolved to the installed store while every child in
 # this harness runs under --plugin-dir, so the pre-gate read the wrong
 # store's claims). wait_persona_free is likewise in bin/agentic-common.sh.
-
-# N1: wait for a specific fact to appear in memory (used by yield suite to gate Session B)
-wait_for_fact() {  # $1 = fact text to wait for; $2 = store path (optional)
-  local fact="$1"
-  local store="${2:-.agentic-personas.json}"
-  local n=0
-  # Write the check script to a temp file to avoid shell quoting issues
-  local script_file
-  script_file=$(mktemp)
-  cat > "$script_file" <<'NODE'
-const fs = require('fs');
-const fact = process.argv[2];
-const store = process.argv[3];
-if (!fs.existsSync(store)) process.exit(1);
-const s = JSON.parse(fs.readFileSync(store,'utf8'));
-const p = Object.keys(s)[0];
-const m = (s[p].memory||[]);
-const found = m.some(x => x.text === fact);
-process.exit(found ? 0 : 1);
-NODE
-  until node "$script_file" "$fact" "$store" 2>/dev/null; do
-    sleep 2; n=$((n+2)); [ $n -ge 180 ] && { rm -f "$script_file"; return 1; }
-  done
-  rm -f "$script_file"
-}
 
 # Plan item 5 ("a proof child is stopped when its proof ends"): escalate
 # EOF -> TERM -> KILL and verify death, mirroring bin/supervise.sh's own

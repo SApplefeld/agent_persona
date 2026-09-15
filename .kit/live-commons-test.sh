@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Live test: commons two-session race suite (Stage 2 acceptance gate).
+# Live commons suite: two real claude processes contend for one persona.
+# Proves what no offline suite can: two real processes race on one commons
+# store, the plugin loads under --plugin-dir, and the engine honors the deny
+# that refuses the reader's write.
 # Two concurrent sessions both try to claim the same persona via agentic_identity.
 # Commons arbitration (claim-then-read, compareHolders) determines the winner;
 # the loser takes the reader path and its writes are refused.
 #
 # Asserts:
 #   F8:   Both sessions wrote a commons:<sessionId> claim entry; exactly one winner.
-#   F10c: The reader's session_id (read from its own out.jsonl) is the LATER
-#         claimant in the store. The earlier claimant is the winner (F9 rule).
+#   F10c: Read from the commons store under each child's own session_id, one
+#         child holds persona:default and the other holds reader:default only.
 #   F10d: CROSSDIR=1: B ran in its own directory and has its own
 #         .agentic-personas.json and .agentic-heartbeat.json there.
 #   F12b: Stale RUNNING markers are reclaimed by Windows-PID liveness check
@@ -362,139 +365,57 @@ fi
 
 # Step 4 (F10a/F10b): Strict mutual-exclusion assertions on out.jsonl content.
 # Primary assertions:
-#   (1) Exactly one child carries 'active (epoch N, owner)' and the other carries 'joined as reader'.
-#   (2) The reader is the later claimedAt (loser), confirmed via the commons store.
+#   (1) In the commons store, exactly one child holds persona:default and the other holds reader:default only.
+#   (2) Both session ids and their claims are logged, so a red names the session it saw.
 #   (3) The loser's memory_add was refused ('this write was not saved'); the winner's was saved.
-# Secondary: the yield log (if present) must have exactly one distinct yielder.
-# If the yield log is absent or has zero matches, that is a FAIL (not a skip).
 
-# --- F10(1): owner vs reader in out.jsonl ---
+# --- F10(1): owner vs reader in the commons store ---
 A_OUT="$SUITE_DIR/commons-A.out.jsonl"
 B_OUT="${B_OUT_DIR:-$SUITE_DIR}/commons-B.out.jsonl"
 A_IS_OWNER=0
 B_IS_OWNER=0
 A_IS_READER=0
 B_IS_READER=0
-if [ -f "$A_OUT" ] && grep -q "active (epoch [0-9]*, owner)" "$A_OUT" 2>/dev/null; then A_IS_OWNER=1; fi
-if [ -f "$B_OUT" ] && grep -q "active (epoch [0-9]*, owner)" "$B_OUT" 2>/dev/null; then B_IS_OWNER=1; fi
-if [ -f "$A_OUT" ] && grep -q "joined as reader" "$A_OUT" 2>/dev/null; then A_IS_READER=1; fi
-if [ -f "$B_OUT" ] && grep -q "joined as reader" "$B_OUT" 2>/dev/null; then B_IS_READER=1; fi
+# Owner and reader are read from the commons store rather than from the tool
+# result's wording: each child's session id comes from its own out.jsonl, and
+# the store entry under commons:<session id> says which claim it holds.
+# The winner holds persona:default and the loser holds reader:default only.
+if [ -n "${STORE_FILE_WIN:-}" ]; then
+  F10_ROLES=$(node -e "
+const fs = require('fs');
+function sessionOf(p) {
+  if (!fs.existsSync(p)) return '';
+  for (const line of fs.readFileSync(p, 'utf8').split('\n')) {
+    try { const r = JSON.parse(line); if (r.session_id) return r.session_id; } catch {}
+  }
+  return '';
+}
+const store = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const out = [];
+for (const [label, p] of [['A', process.argv[2]], ['B', process.argv[3]]]) {
+  const sid = sessionOf(p);
+  const claims = ((store['commons:' + sid] || {}).claims || []).map(c => c.resource);
+  console.error('F10(1): ' + label + ' session ' + (sid || '(none)') + ' claims ' + JSON.stringify(claims));
+  out.push(label + '_OWNER=' + (claims.includes('persona:default') ? 1 : 0));
+  out.push(label + '_READER=' + (claims.includes('reader:default') && !claims.includes('persona:default') ? 1 : 0));
+}
+console.log(out.join(' '));
+" "$STORE_FILE_WIN" "$(cygpath -m "$A_OUT")" "$(cygpath -m "$B_OUT")" 2>> "$K"/commons.assert.log | tr -d '\r')
+  for kv in $F10_ROLES; do
+    case "$kv" in
+      A_OWNER=1) A_IS_OWNER=1 ;; B_OWNER=1) B_IS_OWNER=1 ;;
+      A_READER=1) A_IS_READER=1 ;; B_READER=1) B_IS_READER=1 ;;
+    esac
+  done
+fi
 
 OWNER_COUNT=$((A_IS_OWNER + B_IS_OWNER))
 READER_COUNT=$((A_IS_READER + B_IS_READER))
 if [ "$OWNER_COUNT" -eq 1 ] && [ "$READER_COUNT" -eq 1 ]; then
   echo "F10(1): exactly one owner, one reader" >> "$K"/commons.assert.log
-  if [ "$A_IS_OWNER" -eq 1 ]; then OWNER_ID_A=1; READER_FILE="commons-B.out.jsonl"; else OWNER_ID_A=0; READER_FILE="commons-A.out.jsonl"; fi
 else
   echo "F10(1) FAIL: owner_count=$OWNER_COUNT reader_count=$READER_COUNT (A_owner=$A_IS_OWNER B_owner=$B_IS_OWNER A_reader=$A_IS_READER B_reader=$B_IS_READER)" >> "$K"/commons.assert.log
   ASSERT_FAILED=1
-fi
-
-# --- F10(2): the reader is the later claimedAt ---
-# F10c fix: read the reader's session_id from the READER_FILE's out.jsonl,
-# then verify in the commons store that this session has the later claimedAt.
-if [ "$OWNER_COUNT" -eq 1 ] && [ -n "$STORE_FILE_WIN" ] && [ "$ASSERT_FAILED" -eq 0 ]; then
-  # Determine which file is the reader's
-  READER_OUT="$A_OUT"
-  if [ "$B_IS_READER" -eq 1 ]; then READER_OUT="$B_OUT"; fi
-  READER_OUT_WIN=$(cygpath -m "$READER_OUT")
-  # Extract the reader's session_id from its out.jsonl (stream-json has "session_id" in the init line)
-  READER_SESSION=$(node -e "
-const fs = require('fs');
-const lines = fs.readFileSync(process.argv[1], 'utf8').trim().split('\n');
-for (const line of lines) {
-  try {
-    const rec = JSON.parse(line);
-    if (rec.session_id) { console.log(rec.session_id); process.exit(0); }
-  } catch {}
-}
-console.error('F10(2) FAIL: could not find session_id in reader out.jsonl');
-process.exit(1);
-" "$READER_OUT_WIN" 2>&1)
-  if [ $? -ne 0 ]; then
-    echo "F10(2) FAIL: $READER_SESSION" >> "$K"/commons.assert.log
-    ASSERT_FAILED=1
-  else
-    READER_SESSION_WIN=$(echo "$READER_SESSION" | tr -d '\r')
-    # Round 47 finding 2: this used to require two persona:default claims
-    # and compare claimedAt to find the later (losing) one. Round 32's fix
-    # (8d28ee6) releases the reader's speculative persona:default claim on
-    # arbitration loss, so there is only ever one persona:default claim in
-    # the store now - the owner's - and the old check reads that fix as a
-    # failure. The real proof of arbitration order is simpler and does not
-    # need timestamps: the reader session's own commons entry must carry
-    # reader:default and must NOT carry persona:default (the winner keeps
-    # persona:default; every loser is demoted to reader:default only).
-    node -e "
-const fs = require('fs');
-const store = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
-const readerSession = process.argv[2];
-const key = 'commons:' + readerSession;
-const entry = store[key];
-if (!entry || !entry.claims) {
-  console.error('F10(2) FAIL: no commons entry for reader ' + readerSession);
-  process.exit(1);
-}
-const hasReaderClaim = entry.claims.some(c => c.resource === 'reader:default');
-const hasPersonaClaim = entry.claims.some(c => c.resource === 'persona:default');
-if (!hasReaderClaim) {
-  console.error('F10(2) FAIL: reader ' + readerSession + ' has no reader:default claim');
-  process.exit(1);
-}
-if (hasPersonaClaim) {
-  console.error('F10(2) FAIL: reader ' + readerSession + ' still carries a persona:default claim (Round 32 regression)');
-  process.exit(1);
-}
-console.log('F10(2): reader ' + readerSession + ' holds reader:default only, no persona:default');
-" "$STORE_FILE_WIN" "$READER_SESSION_WIN" >> "$K"/commons.assert.log 2>&1
-    if [ $? -ne 0 ]; then
-      ASSERT_FAILED=1
-    fi
-  fi
-fi
-
-# --- F10(reader): the reader holds a reader:default claim ---
-# AU4: snapshot the store and assert the reader's commons entry carries
-# a claim with resource === 'reader:default'.
-# AW2: keep both the snapshot and a control derived from it (never edit the snapshot).
-if [ "$OWNER_COUNT" -eq 1 ] && [ -n "$STORE_FILE_WIN" ] && [ -n "${READER_SESSION_WIN:-}" ] && [ "$ASSERT_FAILED" -eq 0 ]; then
-  # Convert the Windows store path back to a Git Bash path for cp
-  STORE_FILE_UNIX=$(cygpath -u "$STORE_FILE_WIN")
-  # Snapshot the store file into the evidence directory
-  cp "$STORE_FILE_UNIX" "$K"/global-store.json
-  # Create a control: remove the reader's claim from a copy (never touch the snapshot)
-  node -e "
-const fs = require('fs');
-const src = process.argv[1];
-const dst = process.argv[2];
-const readerSession = process.argv[3];
-const store = JSON.parse(fs.readFileSync(src, 'utf8'));
-const entry = store['commons:' + readerSession];
-if (entry && entry.claims) {
-  entry.claims = entry.claims.filter(c => c.resource !== 'reader:default');
-}
-fs.writeFileSync(dst, JSON.stringify(store, null, 2));
-" "$K"/global-store.json "$K"/global-store-control.json "$READER_SESSION_WIN"
-  # Assert the reader holds a reader:default claim (on the snapshot)
-  node -e "
-const fs = require('fs');
-const store = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
-const readerSession = process.argv[2];
-const entry = store['commons:' + readerSession];
-if (!entry) {
-  console.error('F10(reader) FAIL: no commons entry for reader ' + readerSession);
-  process.exit(1);
-}
-const readerClaim = (entry.claims || []).find(c => c.resource === 'reader:default');
-if (!readerClaim) {
-  console.error('F10(reader) FAIL: reader ' + readerSession + ' does not hold reader:default');
-  process.exit(1);
-}
-console.log('F10(reader): ' + readerSession + ' holds reader:default');
-" "$K"/global-store.json "$READER_SESSION_WIN" >> "$K"/commons.assert.log 2>&1
-  if [ $? -ne 0 ]; then
-    ASSERT_FAILED=1
-  fi
 fi
 
 # --- F10(3): loser's write refused, winner's saved ---
@@ -526,40 +447,6 @@ else
   ASSERT_FAILED=1
 fi
 
-# --- F10 secondary: yield log must have zero or one distinct yielder, never two ---
-if [ -f "$SUITE_DIR/.agentic-yields.log" ]; then
-  # Log format is JSONL: {"ts":"...","persona":"default","yielded":"<sessionId>",...}
-  YIELDERS=$(node -e "
-const fs = require('fs');
-const lines = fs.readFileSync('$SUITE_DIR/.agentic-yields.log', 'utf8').trim().split('\n');
-const ids = new Set();
-for (const line of lines) {
-  try {
-    const rec = JSON.parse(line);
-    if (rec.yielded) ids.add(rec.yielded);
-  } catch {}
-}
-console.log([...ids].join('\n'));
-" 2>/dev/null)
-  # Round 47 finding 2: `grep -c . || echo 0` prints "0" twice when there
-  # are no yielders - grep -c already prints its own zero count, but still
-  # exits 1 on zero matches, so the `||` fallback appends a second "0" line,
-  # and the two-line value breaks the integer test below. `grep -c . || true`
-  # keeps grep's own zero and lets the exit code fail silently instead of
-  # triggering a second echo.
-  YIELDER_COUNT=$(echo "$YIELDERS" | grep -c . 2>/dev/null || true)
-  YIELDER_COUNT="${YIELDER_COUNT:-0}"
-  if [ "$YIELDER_COUNT" -le 1 ]; then
-    echo "F10(yieldlog): $YIELDER_COUNT distinct yielder(s)" >> "$K"/commons.assert.log
-  else
-    echo "F10(yieldlog) FAIL: expected 0 or 1 yielder, got $YIELDER_COUNT: $YIELDERS" >> "$K"/commons.assert.log
-    ASSERT_FAILED=1
-  fi
-else
-  # No yield log file: acceptable (reader path via agentic_identity writes no yield line).
-  echo "F10(yieldlog): no yield log file (reader path, acceptable)" >> "$K"/commons.assert.log
-fi
-
 # F10e: evidence retention: copy artifacts to .kit/runs/<utc-stamp>/ before exit
 # Use RUN_DIR if set (when run by live-all.sh), otherwise create own stamp
 if [ -n "${RUN_DIR:-}" ]; then
@@ -575,7 +462,7 @@ else
 fi
 mkdir -p "$RUNS_DIR"
 # Copy A's artifacts
-for f in commons-A.out.jsonl commons-A.debug.log commons-A.err.log commons.exit commons.assert.log global-store.json global-store-control.json; do
+for f in commons-A.out.jsonl commons-A.debug.log commons-A.err.log commons.exit commons.assert.log; do
   [ -f "$K/$f" ] && cp -f "$K/$f" "$RUNS_DIR/" 2>/dev/null
 done
 for f in .agentic-*.json .agentic-*.log; do

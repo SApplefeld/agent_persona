@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const SESSION_ID = "harness-session";
+const HARNESS_CWD = "D:/harness-root";
 
 // AO1: Resolve hook - when specifier starts with "./", has no extension, and
 // parent URL is under hooks/, append ".ts" and defer to next resolver.
@@ -40,6 +41,12 @@ function createFake$(opts = {}) {
   const toolRegisters = [];
   const toolCalls = [];
   const promptSubmits = [];
+  // The texts of accepted submits whose turn has not opened yet, in
+  // submission order. A turn.start a case fires without `text` takes the
+  // next one, the way the engine begins a plugin's turn with the text it
+  // submitted; a case whose turn is not the next queued submit's (an
+  // external turn, a continuation) passes its own `text`.
+  const queuedTurnTexts = [];
   const fsMap = new Map();
   const storeMap = new Map();
   let classifyValue = opts.classifyValue || "nudge";
@@ -53,6 +60,20 @@ function createFake$(opts = {}) {
   let releaseSubmitHold = null;
   // Non-null to make every subsequent prompt submission reject with it.
   let submitFailure = null;
+  // Non-null to make the next prompt submission resolve `{ drop: reason }`,
+  // the shape a hook beneath the plugin returns when it drops the plugin's
+  // own submit; no turn opens, so nothing is queued. Cleared by that call.
+  let submitDrop = null;
+  // Non-null to run the next prompt submission's text through it: the stub
+  // resolves `{ text: settled }` and queues the settled text, the way a
+  // hook beneath the plugin or the engine's cap rewrites the text a turn
+  // then opens with. Cleared by that call.
+  let submitSettle = null;
+  // Non-null while store reads of one key are held: every store.get of that
+  // key reads the value as it stands at the call, then parks in
+  // parkedStoreGets until releaseStoreGet() lets it resolve.
+  let storeGetHoldKey = null;
+  const parkedStoreGets = [];
 
   const fake = {
     ui: {
@@ -84,6 +105,9 @@ function createFake$(opts = {}) {
     },
     session: {
       id() { return Promise.resolve(SESSION_ID); },
+      // The harness fires session.start with no cwd on the event, so the
+      // plugin reads its workdir from here. A fixed literal cases can assert on.
+      cwd() { return Promise.resolve(HARNESS_CWD); },
       // BJ1: Add messages() for budget fixtures.
       // The test can override this with its own implementation.
       messages() {
@@ -116,12 +140,22 @@ function createFake$(opts = {}) {
       // turn runs. holdPromptSubmits() puts the stub in that shape. The text is
       // recorded before the wait, so promptSubmits counts submissions attempted
       // rather than submissions resolved, which is what a case asserting "only
-      // one copy was ever queued" needs to read.
+      // one copy was ever queued" needs to read. An accepted submit resolves
+      // `{ text }` with the text the turn will open with, as the real call
+      // does; a held one resolves that once released.
       submit({ text }) {
         promptSubmits.push(text);
         if (submitFailure) return Promise.reject(submitFailure);
-        if (submitHold) return submitHold;
-        return Promise.resolve();
+        if (submitDrop !== null) {
+          const drop = submitDrop;
+          submitDrop = null;
+          return Promise.resolve({ drop });
+        }
+        const settled = submitSettle ? submitSettle(text) : text;
+        submitSettle = null;
+        queuedTurnTexts.push(settled);
+        if (submitHold) return submitHold.then(() => ({ text: settled }));
+        return Promise.resolve({ text: settled });
       },
     },
     clock: {
@@ -131,7 +165,17 @@ function createFake$(opts = {}) {
       },
     },
     store: {
-      get(key) { return Promise.resolve(storeMap.has(key) ? storeMap.get(key) : null); },
+      // A copy, as the real store hands back a parsed JSON value: a plugin
+      // function that mutates what it fetched lands nothing until set runs.
+      // A held read keeps the value it read at the call, so it resolves with
+      // the store as it stood before any write that lands while it is parked.
+      get(key) {
+        const value = storeMap.has(key) ? structuredClone(storeMap.get(key)) : null;
+        if (storeGetHoldKey !== null && key === storeGetHoldKey) {
+          return new Promise((resolve) => { parkedStoreGets.push(() => resolve(value)); });
+        }
+        return Promise.resolve(value);
+      },
       set(key, value) { storeMap.set(key, value); return Promise.resolve(); },
       delete(key) { storeMap.delete(key); return Promise.resolve(); },
       keys() { return Promise.resolve([...storeMap.keys()]); },
@@ -156,6 +200,7 @@ function createFake$(opts = {}) {
     toolRegisters,
     toolCalls,
     promptSubmits,
+    queuedTurnTexts,
     fsMap,
     storeMap,
     classifyCalls,
@@ -171,6 +216,13 @@ function createFake$(opts = {}) {
     // can fail, and a case needs to tell a submit that was never attempted from
     // one that was attempted and threw.
     failPromptSubmits(err) { submitFailure = err; },
+    // Make the next prompt submission resolve `{ drop: reason }` and queue
+    // nothing; one shot, cleared by that submission. The text is still
+    // recorded, as for a rejection.
+    dropNextPromptSubmit(reason) { submitDrop = reason; },
+    // Run the next prompt submission's text through `fn` before it is
+    // queued; the submission resolves `{ text: fn(text) }`. One shot.
+    settleNextPromptSubmit(fn) { submitSettle = fn; },
     // Hold every subsequent prompt submission open until releasePromptSubmits().
     holdPromptSubmits() {
       submitHold = new Promise((resolve) => { releaseSubmitHold = resolve; });
@@ -182,6 +234,17 @@ function createFake$(opts = {}) {
       const resolve = releaseSubmitHold;
       submitHold = null;
       releaseSubmitHold = null;
+      if (resolve) resolve();
+    },
+    // Hold every subsequent store.get of `key` open until releaseStoreGet().
+    // Each held read keeps the value the store held at the call.
+    holdStoreGets(key) { storeGetHoldKey = key; },
+    get parkedStoreGetCount() { return parkedStoreGets.length; },
+    // Stop holding new reads, then resolve the oldest parked read. Called
+    // once per parked read, so a case chooses which reader resumes first.
+    releaseStoreGet() {
+      storeGetHoldKey = null;
+      const resolve = parkedStoreGets.shift();
       if (resolve) resolve();
     },
     resetToolCalls() { toolCalls.length = 0; },
@@ -363,6 +426,13 @@ async function createTickHarness(options = {}) {
   const handlers = {};
 
   const on = (event, handler) => {
+    if (event === "turn.start") {
+      // A turn.start fired without `text` begins with the next queued
+      // submit's text, "" when none is queued (a continuation).
+      handlers[event] = (dp, e, next) =>
+        handler(dp, e.text === undefined ? { ...e, text: h.queuedTurnTexts.shift() ?? "" } : e, next);
+      return;
+    }
     handlers[event] = handler;
   };
 
@@ -393,4 +463,5 @@ export {
   seedPersonaStore,
   loadModule,
   SESSION_ID,
+  HARNESS_CWD,
 };
