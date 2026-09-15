@@ -6,6 +6,18 @@
 // Proves:
 //   - one row per roster persona, for a healthy one, a held one, one backing
 //     off, one with no keeper.json and one absent from the commons
+//   - the action each of the keeper's own outcomes produces: a hold marker,
+//     a signalled exit with no marker, and a ladder that has climbed above
+//     the base after a first crash, whose next rung is not the wait served
+//   - nextDelaySeconds is the rung the keeper carries into its next decision,
+//     which is what keeper.json's currentDelay holds
+//   - the hold reason carries the path it was read from and is cut at the
+//     plugin's free-text bound
+//   - a roster and a keeper.json that carry a byte-order mark still parse
+//   - the three keeper-half branches that report in place of a row's fields:
+//     a roster entry naming no directory at all, a keeper.json that parses to
+//     something other than an object, and a hold marker with a blank first
+//     line, whose reason falls back to keeper.json
 //   - the run directory a roster entry without `rundir` derives
 //   - the two standings the reach rule admits (the coordinator persona's
 //     holder, and a session holding a live reader claim on it) and the two it
@@ -161,8 +173,8 @@ async function caseRows() {
 
   const alpha = rowFor(report, "alpha");
   check("healthy: enabled", alpha.enabled === true, alpha);
-  check("healthy: the keeper relaunches it at the base delay", alpha.action === "relaunching" && alpha.delaySeconds === 300, alpha);
-  check("healthy: no hold reason", alpha.holdReason === null, alpha);
+  check("healthy: the ladder sits at the base, so the keeper is relaunching", alpha.action === "relaunching" && alpha.nextDelaySeconds === 300, alpha);
+  check("healthy: no hold reason and no source for one", alpha.holdReason === null && alpha.holdReasonSource === null, alpha);
   check("healthy: the last supervisor exit is the state file's", alpha.lastExitCode === 2, alpha);
   check("healthy: a live session holds its commons claim", alpha.claimHeld === true, alpha);
   check("healthy: the heartbeat age is the claim's last-seen stamp", alpha.heartbeatAgeMs === 5_000, alpha);
@@ -172,25 +184,26 @@ async function caseRows() {
   const beta = rowFor(report, "beta");
   check("held: the hold marker makes it held", beta.action === "held", beta);
   check("held: the hold reason is the marker's first line", beta.holdReason === "supervisor exited 0: shutdown honored or stop complete", beta);
-  check("held: the delay and last exit come from the state file under the derived run directory", beta.delaySeconds === 300 && beta.lastExitCode === 0, beta);
+  check("held: the hold reason names the file it was read from", beta.holdReasonSource === "D:/fleet/beta/work/run/keeper.hold", beta);
+  check("held: the next delay and last exit come from the state file under the derived run directory", beta.nextDelaySeconds === 300 && beta.lastExitCode === 0, beta);
   check("held: no live session holds its commons claim", beta.claimHeld === false, beta);
   check("held: the stopped session's heartbeat age still reads", beta.heartbeatAgeMs === 600_000, beta);
   check("held: a session that is not live has no turn state", beta.turnState === "unknown" && beta.turnRunningMs === undefined, beta);
 
   const gamma = rowFor(report, "gamma");
-  check("backing off: a delay above the base is backing off", gamma.action === "backing off" && gamma.delaySeconds === 1200, gamma);
+  check("backing off: a ladder above the base is backing off", gamma.action === "backing off" && gamma.nextDelaySeconds === 1200, gamma);
   check("backing off: the exit code that earned it", gamma.lastExitCode === 3, gamma);
   check("backing off: nothing holds its commons claim and it has no entry", gamma.claimHeld === false && gamma.heartbeatAgeMs === null, gamma);
 
   const delta = rowFor(report, "delta");
   check("no keeper.json: the row says so and names the run directory", delta.action === "unknown" && typeof delta.note === "string" && delta.note.includes("D:/fleet/delta/work/run"), delta);
-  check("no keeper.json: the keeper fields read as absent rather than as zero", delta.delaySeconds === null && delta.lastExitCode === null && delta.holdReason === null, delta);
+  check("no keeper.json: the keeper fields read as absent rather than as zero", delta.nextDelaySeconds === null && delta.lastExitCode === null && delta.holdReason === null && delta.holdReasonSource === null, delta);
   check("no keeper.json: the commons half still reports", delta.claimHeld === true && delta.heartbeatAgeMs === 1_000 && delta.turnState === "idle", delta);
 
   const epsilon = rowFor(report, "epsilon");
   check("absent from the commons: no claim, no heartbeat age, no turn state", epsilon.claimHeld === false && epsilon.heartbeatAgeMs === null && epsilon.turnState === "unknown", epsilon);
   check("absent from the commons: a disabled entry is still a row, marked disabled", epsilon.enabled === false, epsilon);
-  check("absent from the commons: its keeper state still reads", epsilon.action === "relaunching" && epsilon.lastExitCode === 130, epsilon);
+  check("absent from the commons: its keeper state still reads, and a signalled exit is not a relaunch", epsilon.action === "stopped" && epsilon.lastExitCode === 130 && epsilon.nextDelaySeconds === 300, epsilon);
 }
 
 // ============================================================
@@ -206,6 +219,7 @@ async function caseDeniedToAWorker() {
   const result = await callFleetStatus(h);
   check("deny worker: the call is denied", typeof result?.deny === "string", result);
   check("deny worker: the deny names the rule that refused it", says(result?.deny, "reach rule") && says(result?.deny, "'coordinator'") && says(result?.deny, "reader claim"), result?.deny);
+  check("deny worker: the deny names the ground this session holds and says that ground is refused", says(result?.deny, "'WORKER:worker-a'") && says(result?.deny, "WORKER ground"), result?.deny);
   check("deny worker: no rows leak through the deny", result.result === undefined, result);
 }
 
@@ -224,6 +238,7 @@ async function caseDeniedToAReaderOfAnotherPersona() {
   const result = await callFleetStatus(h);
   check("deny other reader: the call is denied", typeof result?.deny === "string", result);
   check("deny other reader: the deny names the rule that refused it", says(result?.deny, "reach rule"), result?.deny);
+  check("deny other reader: the deny names the reader ground it holds, which is not one on the coordinator persona", says(result?.deny, "'READER:other'"), result?.deny);
 }
 
 async function caseAllowedToAReaderOfTheCoordinatorPersona() {
@@ -252,6 +267,7 @@ async function caseRosterUnreadable() {
   const missing = await callFleetStatus(h);
   const missingReport = reportOf(missing);
   check("missing roster: no rows and a problem naming the path", missingReport.rows.length === 0 && says(missingReport.problem, ROSTER_PATH), missingReport);
+  check("missing roster: the staleness threshold still rides beside the rows, as it does on a served read", missingReport.staleAfterMs === STALE_AFTER_MS, missingReport);
 
   h.fsMap.set(ROSTER_PATH, JSON.stringify({ alpha: {} }));
   const notArray = await callFleetStatus(h);
@@ -274,6 +290,161 @@ async function caseRosterSettingUnset() {
   const result = await callFleetStatus(h);
   const report = reportOf(result);
   check("unset roster: no rows and a problem naming the setting", report.rows.length === 0 && says(report.problem, "fleetRoster"), report);
+  check("unset roster: the staleness threshold still rides beside the rows", report.staleAfterMs === STALE_AFTER_MS, report);
+}
+
+// ============================================================
+// What the keeper's own outcomes make of a row
+// ============================================================
+
+// The three personas of .kit/fixtures/fleet-status.roster-actions.json, each
+// a keeper.json Start-Persona would have written after one supervisor exit:
+// a signalled stop the keeper does not relaunch, a first crash that doubled
+// the ladder to 600 while the wait it served was the base 300, and a
+// signalled stop that a hold marker also covers.
+function seedActions(h) {
+  h.fsMap.set(ROSTER_PATH, fixture("fleet-status.roster-actions.json"));
+  h.fsMap.set("D:/actions/stopped/run/keeper.json", fixture("fleet-status.keeper-stopped.json"));
+  h.fsMap.set("D:/actions/first-crash/run/keeper.json", fixture("fleet-status.keeper-first-crash.json"));
+  h.fsMap.set("D:/actions/signalled-held/run/keeper.json", fixture("fleet-status.keeper-signalled-held.json"));
+  h.fsMap.set("D:/actions/signalled-held/run/keeper.hold", fixture("fleet-status.hold-signalled.txt"));
+}
+
+async function caseKeeperActions() {
+  console.log("\n=== fleet_status: the action each keeper outcome produces ===");
+  const h = await startSession("keeper_actions");
+  seedActions(h);
+  const report = reportOf(await callFleetStatus(h));
+  check("actions: one row per entry", JSON.stringify(report.rows.map((r) => r.name)) === JSON.stringify(["stopped", "first-crash", "signalled-held"]), report.rows.map((r) => r.name));
+
+  // bin/keeper-functions.ps1 maps 130 and 143 to Action 'exit': the wrapper
+  // exits without a hold marker and without relaunching, so nothing restarts
+  // this persona until its scheduled task runs again.
+  const stopped = rowFor(report, "stopped");
+  check("signalled exit: the action says the persona is stopped, not that a relaunch is coming", stopped.action === "stopped", stopped);
+  check("signalled exit: the signal's exit code is the row's", stopped.lastExitCode === 143, stopped);
+  check("signalled exit: the ladder value is still reported, and no hold reason is invented for it", stopped.nextDelaySeconds === 300 && stopped.holdReason === null && stopped.holdReasonSource === null, stopped);
+  check("signalled exit: enabled, with no commons entry of its own", stopped.enabled === true && stopped.claimHeld === false && stopped.heartbeatAgeMs === null && stopped.turnState === "unknown", stopped);
+
+  // Get-KeeperDecision's default branch returns DelaySeconds = the ladder it
+  // was handed and NextDelaySeconds = twice it, and Start-Persona writes the
+  // second into currentDelay. A first crash therefore waits 300 and records
+  // 600, which is why the row's field is named for the next rung.
+  const firstCrash = rowFor(report, "first-crash");
+  check("first crash: the next rung is the state file's currentDelay, above the base", firstCrash.nextDelaySeconds === 600, firstCrash);
+  check("first crash: a ladder above the base reads as backing off", firstCrash.action === "backing off", firstCrash);
+  check("first crash: the row names no wait in force, so no field carries the 300 seconds actually served", JSON.stringify(firstCrash).includes("300") === false, firstCrash);
+  check("first crash: the crash exit is the row's, with no hold reason", firstCrash.lastExitCode === 3 && firstCrash.holdReason === null, firstCrash);
+
+  // A marker is what stops the next start, whatever the last exit was, so it
+  // decides the action over the exit code.
+  const held = rowFor(report, "signalled-held");
+  check("marker over signal: the hold marker decides the action", held.action === "held", held);
+  check("marker over signal: the marker's first line is the reason, named to the marker", held.holdReason === "held by the operator after the signalled stop" && held.holdReasonSource === "D:/actions/signalled-held/run/keeper.hold", held);
+  check("marker over signal: the signalled exit and the climbed ladder both still report", held.lastExitCode === 130 && held.nextDelaySeconds === 2400, held);
+}
+
+// ============================================================
+// The hold reason: where it came from, and how much of it there is
+// ============================================================
+async function caseHoldReasonProvenance() {
+  console.log("\n=== fleet_status: a hold reason carries its source and is cut at the bound ===");
+  const h = await startSession("hold_reason_bound");
+  h.fsMap.set(ROSTER_PATH, JSON.stringify([{ name: "loud", rundir: "D:/loud/run", enabled: true }]));
+  h.fsMap.set("D:/loud/run/keeper.json", fixture("fleet-status.keeper-alpha.json"));
+  // The run directory sits inside the persona's own writable tree, so this
+  // is text a persona can write and the steward relays. 5000 characters of
+  // it on one line, which is what a cap has to survive.
+  h.fsMap.set("D:/loud/run/keeper.hold", `${"z".repeat(5000)}\nthe second line is not the reason`);
+
+  const report = reportOf(await callFleetStatus(h));
+  const row = rowFor(report, "loud");
+  check("bound: the reason is cut at the plugin's free-text bound", typeof row.holdReason === "string" && row.holdReason.length === 2000, row.holdReason?.length);
+  check("bound: the cut is named in the text it returns, so a shortened reason does not read as the whole of it", says(row.holdReason, "[cut at the bound]"), row.holdReason?.slice(-40));
+  check("bound: only the marker's first line is the reason", says(row.holdReason, "the second line") === false, row.holdReason?.slice(-40));
+  check("provenance: the row names the file the text came from", row.holdReasonSource === "D:/loud/run/keeper.hold", row);
+  check("provenance: the rest of the row still reads", row.action === "held" && row.lastExitCode === 2 && row.nextDelaySeconds === 300, row);
+}
+
+// ============================================================
+// A byte-order mark
+// ============================================================
+async function caseByteOrderMark() {
+  console.log("\n=== fleet_status: a roster and a keeper.json written with a byte-order mark ===");
+  const h = await startSession("bom");
+  seedFleet(h);
+  // The same bytes the five-row case reads, with the mark Windows PowerShell
+  // 5.1 writes in front of each. Every keeper-side reader of this roster
+  // strips it, so a file the keeper is running the fleet from must not read
+  // here as an unreadable one.
+  h.fsMap.set(ROSTER_PATH, `\uFEFF${fixture("fleet-status.roster.json")}`);
+  h.fsMap.set("D:/fleet/alpha/run/keeper.json", `\uFEFF${fixture("fleet-status.keeper-alpha.json")}`);
+
+  const report = reportOf(await callFleetStatus(h));
+  check("byte-order mark: the roster parses and every row is there", JSON.stringify(report.rows.map((r) => r.name)) === JSON.stringify(["alpha", "beta", "gamma", "delta", "epsilon"]), report);
+  check("byte-order mark: no problem is reported for the roster", report.problem === undefined && report.problems === undefined, report);
+  const alpha = rowFor(report, "alpha");
+  check("byte-order mark: the keeper state parses and nothing went unread", alpha.action === "relaunching" && alpha.nextDelaySeconds === 300 && alpha.lastExitCode === 2 && alpha.note === undefined, alpha);
+}
+
+// ============================================================
+// The keeper half's three reporting branches
+// ============================================================
+async function caseKeeperHalfBranches() {
+  console.log("\n=== fleet_status: a row with no directory, a keeper.json that is not an object, a blank marker ===");
+  const h = await startSession("keeper_branches");
+  h.fsMap.set(ROSTER_PATH, JSON.stringify([
+    { name: "nowhere", enabled: true },
+    { name: "not-an-object", rundir: "D:/branches/not-an-object/run", enabled: true },
+    { name: "blank-marker", rundir: "D:/branches/blank-marker/run", enabled: true },
+  ]));
+  h.fsMap.set("D:/branches/not-an-object/run/keeper.json", JSON.stringify(["persona", "launchCount"]));
+  h.fsMap.set("D:/branches/blank-marker/run/keeper.json", fixture("fleet-status.keeper-beta.json"));
+  h.fsMap.set("D:/branches/blank-marker/run/keeper.hold", "   \nsupervisor exited 0: shutdown honored or stop complete");
+
+  const report = reportOf(await callFleetStatus(h));
+  check("branches: all three entries got rows", JSON.stringify(report.rows.map((r) => r.name)) === JSON.stringify(["nowhere", "not-an-object", "blank-marker"]), report);
+
+  const nowhere = rowFor(report, "nowhere");
+  check("no directory: the action is unknown and the keeper fields are absent", nowhere.action === "unknown" && nowhere.nextDelaySeconds === null && nowhere.lastExitCode === null && nowhere.holdReason === null && nowhere.holdReasonSource === null, nowhere);
+  check("no directory: the note says the entry names no directory to read from", says(nowhere.note, "neither a run directory nor a working directory"), nowhere);
+
+  const notAnObject = rowFor(report, "not-an-object");
+  check("not an object: the note names the file and says what it does not hold", says(notAnObject.note, "D:/branches/not-an-object/run/keeper.json") && says(notAnObject.note, "does not hold a JSON object"), notAnObject);
+  check("not an object: nothing is read out of it, so the keeper fields are absent and the action unknown", notAnObject.action === "unknown" && notAnObject.nextDelaySeconds === null && notAnObject.lastExitCode === null, notAnObject);
+
+  const blank = rowFor(report, "blank-marker");
+  check("blank marker: the marker still holds the persona", blank.action === "held", blank);
+  check("blank marker: the reason falls back to keeper.json, named to keeper.json", blank.holdReason === "supervisor exited 0: shutdown honored or stop complete" && blank.holdReasonSource === "D:/branches/blank-marker/run/keeper.json", blank);
+  check("blank marker: the rest of the keeper state still reads, with nothing unread", blank.lastExitCode === 0 && blank.nextDelaySeconds === 300 && blank.note === undefined, blank);
+}
+
+// ============================================================
+// What the tool says it returns against what it returns
+// ============================================================
+async function caseDescriptionMatchesTheRows() {
+  console.log("\n=== fleet_status: the registered description states the shape the rows carry ===");
+  const h = await startSession("description");
+  seedFleet(h);
+  const description = h.toolRegisters.find((t) => t.name === "fleet_status")?.description ?? "";
+  const report = reportOf(await callFleetStatus(h));
+
+  // The field list the description promises, against the keys a row with
+  // every optional field present actually carries. A renamed field that the
+  // description still spells the old way is the defect this catches.
+  const promised = (description.match(/rows: \[\{([^}]*)\}\]/)?.[1] ?? "").split(",").map((f) => f.trim().replace(/\?$/, "")).filter((f) => f !== "");
+  const alpha = rowFor(report, "alpha");
+  const delta = rowFor(report, "delta");
+  const carried = [...new Set([...Object.keys(alpha), ...Object.keys(delta)])];
+  check("description: it lists the fields a row carries, and no others", JSON.stringify([...promised].sort()) === JSON.stringify([...carried].sort()), { promised, carried });
+
+  // The two things a reader of this report would otherwise get wrong: that
+  // the delay figure is a countdown, and that the hold reason is the keeper
+  // speaking rather than text out of the persona's own directory.
+  check("description: it says the delay is the next one rather than a wait in force", says(description, "not a wait being served now"), description);
+  check("description: it says the wait in force cannot be read from the keeper's state file", says(description, "cannot be read from here"), description);
+  check("description: it says the hold reason is unverified text from the persona's own run directory", says(description, "the persona itself can write") && says(description, "unverified"), description);
+  check("description: it names the stopped action and what leaves a persona in it", says(description, "stopped, meaning the last supervisor exit was signalled"), description);
 }
 
 // ============================================================
@@ -322,6 +493,11 @@ async function main() {
     await caseAllowedToAReaderOfTheCoordinatorPersona();
     await caseRosterUnreadable();
     await caseRosterSettingUnset();
+    await caseKeeperActions();
+    await caseHoldReasonProvenance();
+    await caseByteOrderMark();
+    await caseKeeperHalfBranches();
+    await caseDescriptionMatchesTheRows();
     await caseWritesNothing();
     caseBaseDelayMatchesTheKeeper();
   } finally {

@@ -13,7 +13,9 @@
 # (COORDINATOR_ROLE_INSTRUCTION, the coordinator's own standing instruction,
 # present when the launch persona equals COORDINATOR_PERSONA and empty
 # otherwise, riding the same priming write, and carrying the compaction-
-# boundary clause that names the kit checkpoint CLI's boundary verb). Every direction is checked so
+# boundary clause that names the kit checkpoint CLI's boundary verb, and the
+# three fleet-keeper duties, each pinned by a distinctive fragment and by the
+# prompt label the plugin submits it under). Every direction is checked so
 # this cannot pass by always finding a string true. The block under test is
 # pulled out of
 # the real script by its start/end lines, not hand-copied, so this test
@@ -85,14 +87,35 @@ ROLE_BOUNDARY_CONTROL="kit-compact-checkpoint.js boundary"
 # The three fleet-keeper duties, one distinctive fragment each rather than a
 # whole paragraph, so a wording repair to the sentences around them leaves the
 # pin standing while deleting a duty reds it: the tool the fleet-health duty
-# calls every tick, the kit pass the seat duty runs every tick, and the
-# persona the design-escalation duty wakes. Each is checked present for the
-# launch persona that matches COORDINATOR_PERSONA and absent for a named
-# worker and for default, since a duty sentence leaking into a worker's
-# priming would have workers probing the machine's registry.
-ROLE_FLEET_CONTROL="fleet_status"
+# reports on, the kit pass the seat duty runs, and the tool argument the
+# design-escalation duty routes on. The architect fragment is the argument
+# rather than the surrounding prose, so a rewording that drops the persona
+# argument reds instead of passing. Each is checked present for the launch
+# persona that matches COORDINATOR_PERSONA and absent for a named worker and
+# for default, since a duty sentence leaking into a worker's priming would
+# have workers probing the machine's registry. The fleet-health fragment is
+# what that duty reports on rather than the tool it calls, since the
+# design-escalation duty calls that tool too and would hold the pin up on its
+# own; the tool name is carried separately, as an absence fragment and as its
+# own presence case.
+ROLE_FLEET_CONTROL="health class changed"
+ROLE_FLEET_TOOL_CONTROL="fleet_status"
 ROLE_SEAT_CONTROL="reconciliation pass"
-ROLE_ARCHITECT_CONTROL="to the architect"
+ROLE_ARCHITECT_CONTROL="persona argument set to architect"
+# Each duty runs on a prompt the plugin submits rather than on a cadence the
+# persona keeps for itself. The labels are pinned beside the fragments above,
+# so a duty rewritten back to a per-tick trigger loses its label and reds.
+ROLE_FLEET_LABEL_CONTROL="[FLEET]"
+ROLE_SEAT_LABEL_CONTROL="[RECONCILE]"
+# The fourth health class. An enabled persona that never comes up holds no
+# commons entry at all, so it reports a null heartbeat age and matches none of
+# held, backing off or stale; without this class a dead persona goes
+# unreported, which is the case the duty most exists for.
+ROLE_FLEET_CLASS_CONTROL="no live claim while the roster enables it"
+# agentic_say accepts a record whether or not a session holds the architect
+# persona, so the duty reports a route as delivered only against a live
+# architect. The undelivered branch is the half a green send would hide.
+ROLE_ARCHITECT_LIVE_CONTROL="the ask is undelivered"
 # The steer sentence's escalation clause, present for a worker's launch and
 # absent for the coordinator's own, which cannot address itself.
 STEER_ESCALATE_CONTROL="through agentic_say with persona set to"
@@ -100,6 +123,17 @@ STEER_ESCALATE_CONTROL="through agentic_say with persona set to"
 failed=0
 check() {
   if [ "$2" = "0" ]; then echo "  OK: $1"; else echo "  FAIL: $1"; failed=1; fi
+}
+
+# The whole text the priming write sends, which is what an absence case has to
+# read. Reading COORDINATOR_ROLE_INSTRUCTION alone only repeats the adjacent
+# emptiness check, since any value holding a duty fragment is non-empty; a duty
+# sentence arriving through the skill-load, steer or reply variable reaches the
+# worker just as surely and passes that narrower read. The variable set here is
+# pinned against the real write below, so a fifth variable joining that write
+# cannot leave this concatenation quietly short.
+priming_concat() {
+  printf '%s' "${SKILL_LOAD_INSTRUCTION:-}${COORDINATOR_STEER_INSTRUCTION:-}${COORDINATOR_ROLE_INSTRUCTION:-}${CHANNEL_REPLY_INSTRUCTION:-}"
 }
 
 # Reviewer Round 141 R111 (Major, reproduced): the prior extraction
@@ -153,6 +187,14 @@ case "$GOAL_WRITE" in
   *GOAL_PROMPT_FRAMING*) check "the goal-prompt write does not carry the coordinator role instruction" 0 ;;
   *) check "the goal-prompt write does not carry the coordinator role instruction" 1 ;;
 esac
+# The absence cases read the four variables priming_concat joins, so the write
+# itself is pinned to exactly those four in exactly that order. A fifth
+# instruction variable added to the write reds here rather than passing through
+# an absence case that never looks at it.
+PRIMING_VARS=$(printf '%s\n' "$PRIMING_WRITE" | grep -oE '\$[A-Z_]+' | grep -vE '^\$(PRIMING_BODY|CHILD_IN)$' | tr '\n' ' ')
+[ "$PRIMING_VARS" = '$SKILL_LOAD_INSTRUCTION $COORDINATOR_STEER_INSTRUCTION $COORDINATOR_ROLE_INSTRUCTION $CHANNEL_REPLY_INSTRUCTION ' ]
+check "the priming write joins exactly the four instruction variables the absence cases read" $?
+
 # v2 Section 7: the priming write the steer
 # sentence rides must stay independent of NO_CHANNEL. The presence checks
 # above stay green if that write is wrapped in a NO_CHANNEL guard, so the
@@ -204,17 +246,39 @@ esac
 # One case per duty, so a red names the duty that went missing rather than
 # the paragraph it sat in.
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_FLEET_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the fleet-health duty is present, naming the fleet status tool" 0 ;;
-  *) check "persona matches COORDINATOR_PERSONA: the fleet-health duty is present, naming the fleet status tool" 1 ;;
+  *"$ROLE_FLEET_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the fleet-health duty is present, reporting the personas whose health class changed" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the fleet-health duty is present, reporting the personas whose health class changed" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_FLEET_TOOL_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the fleet status tool is named for the on-demand read" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the fleet status tool is named for the on-demand read" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_FLEET_LABEL_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the fleet-health duty runs on the [FLEET] prompt" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the fleet-health duty runs on the [FLEET] prompt" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_FLEET_CLASS_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the fleet-health duty names the enabled-but-never-up health class" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the fleet-health duty names the enabled-but-never-up health class" 1 ;;
 esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_SEAT_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the kit Coordinator seat duty is present, naming the reconciliation pass" 0 ;;
   *) check "persona matches COORDINATOR_PERSONA: the kit Coordinator seat duty is present, naming the reconciliation pass" 1 ;;
 esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_ARCHITECT_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the design-escalation duty is present, naming the architect" 0 ;;
-  *) check "persona matches COORDINATOR_PERSONA: the design-escalation duty is present, naming the architect" 1 ;;
+  *"$ROLE_SEAT_LABEL_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the reconciliation pass runs on the [RECONCILE] prompt" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the reconciliation pass runs on the [RECONCILE] prompt" 1 ;;
 esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_ARCHITECT_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the design-escalation duty is present, naming the architect persona argument" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the design-escalation duty is present, naming the architect persona argument" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the design-escalation duty raises an ask no live architect received" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the design-escalation duty raises an ask no live architect received" 1 ;;
+esac
+# Every case above reads one fragment on its own, so reordering the three duty
+# sentences leaves all of them green and deleting one reds that one alone.
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *"$STEER_ESCALATE_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the steer sentence carries no escalation-to-coordinator clause" 1 ;;
   *) check "persona matches COORDINATOR_PERSONA: the steer sentence carries no escalation-to-coordinator clause" 0 ;;
@@ -253,11 +317,13 @@ else
   check "persona differs from COORDINATOR_PERSONA: coordinator role instruction is empty" 1
 fi
 # The emptiness check above covers the duties only while the whole instruction
-# stays gated. This one reads the duty fragments themselves, so a shared
-# preamble built for every launch could not carry them in unnoticed.
-case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*) check "persona differs from COORDINATOR_PERSONA: none of the three fleet-keeper duties reach a worker" 1 ;;
-  *) check "persona differs from COORDINATOR_PERSONA: none of the three fleet-keeper duties reach a worker" 0 ;;
+# stays gated. This one reads the duty fragments against everything the priming
+# write sends, so a duty sentence carried in through the skill-load, steer or
+# reply variable reds here rather than slipping past a read of the role
+# variable alone.
+case "$(priming_concat)" in
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*) check "persona differs from COORDINATOR_PERSONA: no fleet-keeper duty reaches a worker through any part of the priming write" 1 ;;
+  *) check "persona differs from COORDINATOR_PERSONA: no fleet-keeper duty reaches a worker through any part of the priming write" 0 ;;
 esac
 
 # The two evals above move NO_CHANNEL and the persona match together, so a
@@ -274,9 +340,20 @@ case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_SAY_CONTROL"*"$ROLE_CAP_CONTROL"*"$ROLE_BOUNDARY_CONTROL"*) check "channel not attached, persona matches: coordinator role instruction present, naming agentic_say, the round cap and the boundary verb" 0 ;;
   *) check "channel not attached, persona matches: coordinator role instruction present, naming agentic_say, the round cap and the boundary verb" 1 ;;
 esac
+# Three cases rather than one ordered pattern: an ordered match reds on a
+# reordering of the duty sentences, which changes nothing about what reaches
+# the persona, and it names the paragraph rather than the missing duty.
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_FLEET_CONTROL"*"$ROLE_SEAT_CONTROL"*"$ROLE_ARCHITECT_CONTROL"*) check "channel not attached, persona matches: all three fleet-keeper duties present" 0 ;;
-  *) check "channel not attached, persona matches: all three fleet-keeper duties present" 1 ;;
+  *"$ROLE_FLEET_CONTROL"*) check "channel not attached, persona matches: the fleet-health duty is present" 0 ;;
+  *) check "channel not attached, persona matches: the fleet-health duty is present" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_SEAT_CONTROL"*) check "channel not attached, persona matches: the kit Coordinator seat duty is present" 0 ;;
+  *) check "channel not attached, persona matches: the kit Coordinator seat duty is present" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_ARCHITECT_CONTROL"*) check "channel not attached, persona matches: the design-escalation duty is present" 0 ;;
+  *) check "channel not attached, persona matches: the design-escalation duty is present" 1 ;;
 esac
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *"$STEER_ESCALATE_CONTROL"*) check "channel not attached, persona matches: the steer sentence carries no escalation-to-coordinator clause" 1 ;;
@@ -292,9 +369,9 @@ if [ -z "${COORDINATOR_ROLE_INSTRUCTION:-}" ]; then
 else
   check "channel attached, COORDINATOR_PERSONA differs: coordinator role instruction is empty" 1
 fi
-case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*) check "channel attached, COORDINATOR_PERSONA differs: none of the three fleet-keeper duties are built" 1 ;;
-  *) check "channel attached, COORDINATOR_PERSONA differs: none of the three fleet-keeper duties are built" 0 ;;
+case "$(priming_concat)" in
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*) check "channel attached, COORDINATOR_PERSONA differs: no fleet-keeper duty reaches the priming write" 1 ;;
+  *) check "channel attached, COORDINATOR_PERSONA differs: no fleet-keeper duty reaches the priming write" 0 ;;
 esac
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *"$STEER_ESCALATE_CONTROL"*"$COORDINATOR_PERSONA"*) check "channel attached, COORDINATOR_PERSONA differs: the steer sentence routes findings and declined steers to the coordinator by name" 0 ;;
@@ -316,9 +393,9 @@ esac
 # A default-persona launch is the other side the duties must not reach: it
 # holds no named owner claim, so a fleet probe or a design escalation from it
 # would be refused by the reach rule anyway.
-case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*) check "default persona: none of the three fleet-keeper duties are built" 1 ;;
-  *) check "default persona: none of the three fleet-keeper duties are built" 0 ;;
+case "$(priming_concat)" in
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*) check "default persona: no fleet-keeper duty reaches the priming write" 1 ;;
+  *) check "default persona: no fleet-keeper duty reaches the priming write" 0 ;;
 esac
 if [ -z "${COORDINATOR_ROLE_INSTRUCTION:-}" ]; then
   check "default persona: coordinator role instruction is empty" 0

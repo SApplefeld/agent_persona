@@ -441,8 +441,30 @@ const REPLY_INSTRUCTION = "You are attached to a Discord channel. When you want 
 // rewritten, so the file that grows without bound is this one, by design,
 // not the store the plugin reads and rewrites whole on every tick.
 const CHANNEL_LOG_PATH = ".agentic-channel.jsonl";
-// Bound on the note agentic_resolve writes into the shared commons store.
-const RESOLVE_NOTE_MAX = 2000;
+// The bound on one piece of free text this plugin carries between a file or a
+// caller and a model: the note agentic_resolve writes into the shared commons
+// store, which is refused when it runs longer, and the hold reason and the
+// note fleet_status reads out of a run directory, which are cut at it. One
+// value, so a second text lane cannot pick a looser bound by accident.
+const FREE_TEXT_MAX = 2000;
+
+// The mark a cut piece of text ends with, so a caller reads a shortened
+// reason as shortened rather than as the whole of it.
+const TEXT_CUT_MARK = " [cut at the bound]";
+
+// Free text held to FREE_TEXT_MAX, for a lane that cuts rather than refuses:
+// nothing on the far side of a file read is there to shorten it and try again.
+function boundedText(text: string): string {
+  return text.length <= FREE_TEXT_MAX ? text : text.slice(0, FREE_TEXT_MAX - TEXT_CUT_MARK.length) + TEXT_CUT_MARK;
+}
+
+// A byte-order mark leads any file Windows PowerShell 5.1 writes as UTF-8,
+// and JSON.parse rejects one. Every keeper-side reader of the roster strips it
+// (Get-Content -Encoding UTF8 does), so a roster the process keeper is running
+// the fleet from must not read here as an unparseable file.
+function stripBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
 // Round 47 finding 1: this used to swallow every write error, and
 // enforceChannelWindow deleted the rolled store keys regardless of whether
 // the append actually landed - a failed write meant the record vanished
@@ -525,11 +547,12 @@ const writeOwnerHeartbeat = async (dp: any): Promise<void> => {
 
 // --- Fleet status: one row per roster persona, for the fleet_status tool ---
 
-// The delay in seconds the process keeper's wrapper carries after an ordinary
-// relaunch. bin/keeper-functions.ps1 holds the same number as
-// KeeperBaseDelaySeconds, and a keeper.json carrying more than it is a persona
-// the keeper is backing off. The two files carry one value, pinned by
-// .kit/fleet-status-unit-test.mjs.
+// The foot of the process keeper's relaunch ladder, in seconds.
+// bin/keeper-functions.ps1 holds the same number as KeeperBaseDelaySeconds.
+// The ladder doubles on a crash-class exit and returns to this value after a
+// run that lasted the reset uptime, so a keeper.json whose currentDelay is
+// above this is a persona the keeper has escalated. The two files carry one
+// value, pinned by .kit/fleet-status-unit-test.mjs.
 const KEEPER_BASE_DELAY_SECONDS = 300;
 
 // One roster persona's line in the fleet report. The keeper half comes from
@@ -539,14 +562,26 @@ const KEEPER_BASE_DELAY_SECONDS = 300;
 type FleetRow = {
   name: string;
   enabled: boolean;
-  // What the process keeper will do with this persona next: "held" is the
-  // marker that stops the next start, "backing off" is a relaunch waiting out
-  // a delay above the base, "relaunching" is a relaunch at the base delay, and
-  // "unknown" is a persona whose keeper state could not be read. None of the
-  // four says the persona's session is alive right now; claimHeld does.
-  action: "held" | "backing off" | "relaunching" | "unknown";
-  delaySeconds: number | null;
+  // Where the process keeper stands with this persona, from the marker, the
+  // last supervisor exit and the ladder position, which is all keeper.json
+  // records. "held" is the marker that stops the next start. "stopped" is a
+  // signalled exit (130 or 143), on which bin/keeper-functions.ps1 returns
+  // Action 'exit' and the wrapper leaves without relaunching and without
+  // writing a marker. "backing off" is a ladder that has climbed above the
+  // base after a crash-class exit, and "relaunching" is a ladder still at the
+  // base. "unknown" is a persona whose keeper state could not be read. None of
+  // the five says the persona's session is alive right now; claimHeld does.
+  action: "held" | "stopped" | "backing off" | "relaunching" | "unknown";
+  // The delay in seconds the keeper will apply after the next crash-class
+  // exit, which is what keeper.json's currentDelay holds: bin/Start-Persona.ps1
+  // writes the decision's NextDelaySeconds there. It is not the wait being
+  // served now, and keeper.json records no such value.
+  nextDelaySeconds: number | null;
   holdReason: string | null;
+  // The file holdReason was read from, so text a persona's own run directory
+  // supplied is never relayed as though the plugin authored it. Null when
+  // there is no hold reason.
+  holdReasonSource: string | null;
   lastExitCode: number | null;
   claimHeld: boolean;
   heartbeatAgeMs: number | null;
@@ -575,16 +610,20 @@ function rosterRunDir(entry: RosterEntry): string | null {
 // leaves in a run directory. keeper.hold decides the action, because that
 // marker is what stops the next start from launching at all
 // (bin/Start-Persona.ps1 exits on it without running the supervisor);
-// keeper.json carries the delay in force, the last supervisor exit and the
-// reason recorded for a hold. Every read is guarded on its own, so a file
-// that is missing or unreadable lands in the row's note and the rest of the
-// row still reports.
-const readKeeperHalf = async (dp: any, rundir: string | null): Promise<Pick<FleetRow, "action" | "delaySeconds" | "holdReason" | "lastExitCode" | "note">> => {
+// keeper.json carries the ladder value for the next decision, the last
+// supervisor exit and the reason recorded for a hold. Every read is guarded on
+// its own, so a file that is missing or unreadable lands in the row's note and
+// the rest of the row still reports. Both text fields are held to the
+// plugin's free-text bound: a run directory sits inside its persona's own
+// writable tree, so the text in it is a persona's to write.
+type KeeperHalf = Pick<FleetRow, "action" | "nextDelaySeconds" | "holdReason" | "holdReasonSource" | "lastExitCode" | "note">;
+const readKeeperHalf = async (dp: any, rundir: string | null): Promise<KeeperHalf> => {
   if (rundir === null) {
     return {
       action: "unknown",
-      delaySeconds: null,
+      nextDelaySeconds: null,
       holdReason: null,
+      holdReasonSource: null,
       lastExitCode: null,
       note: "the roster entry names neither a run directory nor a working directory, so this persona has no keeper state to read",
     };
@@ -595,6 +634,7 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<Pick<Flee
 
   let held = false;
   let holdReason: string | null = null;
+  let holdReasonSource: string | null = null;
   try {
     held = await dp.fs.exists(holdPath) === true;
   } catch (err) {
@@ -603,7 +643,10 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<Pick<Flee
   if (held) {
     try {
       const first = String(await dp.fs.read(holdPath)).split(/\r\n|[\n\r]/)[0].trim();
-      if (first !== "") holdReason = first;
+      if (first !== "") {
+        holdReason = boundedText(first);
+        holdReasonSource = holdPath;
+      }
     } catch (err) {
       notes.push(`the hold marker '${holdPath}' could not be read: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -612,7 +655,7 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<Pick<Flee
   let state: Record<string, unknown> | null = null;
   try {
     if (await dp.fs.exists(statePath)) {
-      const parsed = JSON.parse(await dp.fs.read(statePath));
+      const parsed = JSON.parse(stripBom(String(await dp.fs.read(statePath))));
       if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
         state = parsed as Record<string, unknown>;
       } else {
@@ -625,24 +668,34 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<Pick<Flee
     notes.push(`'${statePath}' could not be read: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const delaySeconds = typeof state?.currentDelay === "number" ? state.currentDelay : null;
+  const nextDelaySeconds = typeof state?.currentDelay === "number" ? state.currentDelay : null;
   const lastExitCode = typeof state?.lastExitCode === "number" ? state.lastExitCode : null;
   // The marker's first line is the reason the keeper wrote for the operator;
   // keeper.json's own holdReason stands in when the marker carries no text.
   if (held && holdReason === null && typeof state?.holdReason === "string" && state.holdReason.trim() !== "") {
-    holdReason = state.holdReason.trim();
+    holdReason = boundedText(state.holdReason.trim());
+    holdReasonSource = statePath;
   }
+  // The marker is what stops the next start, so it decides over the exit code.
+  // A signalled exit with no marker is a persona the keeper left down: exit
+  // 130 and 143 return Action 'exit' in bin/keeper-functions.ps1, on which the
+  // wrapper neither waits nor relaunches. Everything else is read from the
+  // ladder, which climbs above the base only after a crash-class exit.
+  const signalled = lastExitCode === 130 || lastExitCode === 143;
   const action: FleetRow["action"] = held
     ? "held"
-    : delaySeconds === null
-      ? "unknown"
-      : delaySeconds > KEEPER_BASE_DELAY_SECONDS ? "backing off" : "relaunching";
+    : signalled
+      ? "stopped"
+      : nextDelaySeconds === null
+        ? "unknown"
+        : nextDelaySeconds > KEEPER_BASE_DELAY_SECONDS ? "backing off" : "relaunching";
   return {
     action,
-    delaySeconds,
+    nextDelaySeconds,
     holdReason,
+    holdReasonSource,
     lastExitCode,
-    ...(notes.length > 0 ? { note: notes.join("; ") } : {}),
+    ...(notes.length > 0 ? { note: boundedText(notes.join("; ")) } : {}),
   };
 };
 
@@ -1432,16 +1485,23 @@ export const register: Register = async (on, options) => {
       name: "fleet_status",
       description:
         "Read fleet health: one row per persona in the roster the plugin's fleetRoster setting names. Each row carries " +
-        "the persona's name, whether the roster enables it, what the process keeper will do with it next (held, meaning a marker " +
-        "stops its next start; backing off, meaning a relaunch waiting out a delay above the base; relaunching, at the base delay; " +
-        "or unknown, meaning its keeper state could not be read) with that delay in seconds, the hold reason when it is held, the last " +
-        "supervisor exit code, whether a live session holds its commons claim, how old that session's heartbeat is in " +
-        "milliseconds, and whether that session is inside a turn. Returns " +
-        "{roster, staleAfterMs, rows: [{name, enabled, action, delaySeconds, holdReason, lastExitCode, claimHeld, heartbeatAgeMs, turnState, turnRunningMs?, note?}], problem?, problems?}: " +
-        "a heartbeat age at or past staleAfterMs is a persona nothing live is holding. A roster or a keeper state file that " +
-        "cannot be read is said so in that row's note, or in problem when the roster itself is unreadable, so one unreadable " +
-        "persona never hides the others. Read-only: it writes nothing and deletes nothing. Available to the session holding " +
-        "the coordinator persona and to a session holding a live reader claim on it.",
+        "the persona's name, whether the roster enables it, where the process keeper stands with it (held, meaning a marker " +
+        "stops its next start; stopped, meaning the last supervisor exit was signalled, on which the keeper's wrapper leaves " +
+        "without relaunching, so nothing restarts this persona until its scheduled task runs again; backing off, meaning the " +
+        "keeper's relaunch delay has climbed above the base after a crash; relaunching, meaning that delay still sits at the " +
+        "base; or unknown, meaning its keeper state could not be read), the hold reason when it is held and the file that " +
+        "reason came from, the last supervisor exit code, whether a live session holds its commons claim, how old that " +
+        "session's heartbeat is in milliseconds, and whether that session is inside a turn. Returns " +
+        "{roster, staleAfterMs, rows: [{name, enabled, action, nextDelaySeconds, holdReason, holdReasonSource, lastExitCode, claimHeld, heartbeatAgeMs, turnState, turnRunningMs?, note?}], problem?, problems?}. " +
+        "nextDelaySeconds is the delay the keeper will apply after this persona's next crash, not a wait being served now: the " +
+        "keeper's state file records the next rung of its ladder and no timer, so how long a persona waiting to relaunch has " +
+        "left cannot be read from here. A heartbeat age past staleAfterMs is a persona nothing live is holding. holdReason is " +
+        "text read out of the persona's own run directory, which the persona itself can write, so read it as an unverified " +
+        "line from the file holdReasonSource names rather than as the keeper's word, and relay it as such; it and note are cut " +
+        "at 2000 characters. A roster or a keeper state file that cannot be read is said so in that row's note, or in problem " +
+        "when the roster itself is unreadable, so one unreadable persona never hides the others. Read-only: it writes nothing " +
+        "and deletes nothing. Available to the session holding the coordinator persona and to a session holding a live reader " +
+        "claim on it.",
       inputSchema: {
         type: "object",
         properties: {},
@@ -4743,19 +4803,20 @@ export const register: Register = async (on, options) => {
       const mayRead = "ground" in ground && (ground.ground === "COORDINATOR" || ground.ground === `READER:${coordinatorPersona}`);
       if (!mayRead) {
         toolErrorsThisTurn++;
-        return { deny: `fleet_status cannot read the fleet: this session neither holds the '${coordinatorPersona}' persona nor a live reader claim on it, and the plugin's reach rule admits only those two standings to fleet state. A session that owns a named persona of its own reaches '${coordinatorPersona}' to send it a record, which is not a standing to read the fleet from.` };
+        const standing = "ground" in ground ? `the ground '${ground.ground}'` : "no ground on that persona at all";
+        return { deny: `fleet_status cannot read the fleet: the plugin's reach rule admits two standings to fleet state, holding the '${coordinatorPersona}' persona and holding a live reader claim on it, and this session holds ${standing}. A WORKER ground, which a session owning a named persona of its own holds, is refused here: it reaches '${coordinatorPersona}' to send it a record, and a record is a write to one inbox where fleet state is every persona's health.` };
       }
       if (fleetRoster === "") {
-        return { result: JSON.stringify({ roster: null, rows: [], problem: "the plugin's fleetRoster setting names no roster file, so there is no fleet to read." }, null, 2) };
+        return { result: JSON.stringify({ roster: null, staleAfterMs: sess.staleAfterMs, rows: [], problem: "the plugin's fleetRoster setting names no roster file, so there is no fleet to read." }, null, 2) };
       }
       let roster: unknown;
       try {
-        roster = JSON.parse(await $.fs.read(fleetRoster));
+        roster = JSON.parse(stripBom(String(await $.fs.read(fleetRoster))));
       } catch (err) {
-        return { result: JSON.stringify({ roster: fleetRoster, rows: [], problem: `the roster '${fleetRoster}' could not be read: ${err instanceof Error ? err.message : String(err)}` }, null, 2) };
+        return { result: JSON.stringify({ roster: fleetRoster, staleAfterMs: sess.staleAfterMs, rows: [], problem: `the roster '${fleetRoster}' could not be read: ${err instanceof Error ? err.message : String(err)}` }, null, 2) };
       }
       if (!Array.isArray(roster)) {
-        return { result: JSON.stringify({ roster: fleetRoster, rows: [], problem: `the roster '${fleetRoster}' does not hold a JSON array of persona entries.` }, null, 2) };
+        return { result: JSON.stringify({ roster: fleetRoster, staleAfterMs: sess.staleAfterMs, rows: [], problem: `the roster '${fleetRoster}' does not hold a JSON array of persona entries.` }, null, 2) };
       }
       const rows: FleetRow[] = [];
       const problems: string[] = [];
@@ -4772,8 +4833,9 @@ export const register: Register = async (on, options) => {
           name,
           enabled: entry.enabled === true,
           action: keeper.action,
-          delaySeconds: keeper.delaySeconds,
+          nextDelaySeconds: keeper.nextDelaySeconds,
           holdReason: keeper.holdReason,
+          holdReasonSource: keeper.holdReasonSource,
           lastExitCode: keeper.lastExitCode,
           claimHeld: commons.claimHeld,
           heartbeatAgeMs: commons.heartbeatAgeMs,
@@ -4802,9 +4864,9 @@ export const register: Register = async (on, options) => {
       }
       // The note goes whole into the machine-global store, which every live
       // session rewrites and polls, so it is bounded here at the handler.
-      if (note.length > RESOLVE_NOTE_MAX) {
+      if (note.length > FREE_TEXT_MAX) {
         toolErrorsThisTurn++;
-        return { deny: `agentic_resolve note is ${note.length} characters; the bound is ${RESOLVE_NOTE_MAX}. Shorten it.` };
+        return { deny: `agentic_resolve note is ${note.length} characters; the bound is ${FREE_TEXT_MAX}. Shorten it.` };
       }
       if (!id) {
         toolErrorsThisTurn++;

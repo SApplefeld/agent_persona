@@ -31,6 +31,13 @@ When this is done, the always-on coordinator persona is replaced by two personas
 
 **Order.** After the process keeper plan, because the fleet-health duty reads the roster and `keeper.json` that plan creates. Section 1 and Section 2 in either order, then 3, then 4, then 5.
 
+## Standing Brief Amendments
+
+- The steward is woken by the plugin, not by a cadence in its own instruction. A duty that says "on each tick" states a trigger the runtime does not have: the controller tick submits no prompt when the persona holds no active goal leaf and its inbox is empty, so a quiet fleet never wakes the steward at all. Every duty is written as a response to a labelled prompt the plugin submits, or to a delivered record, and never as something the steward does on a schedule of its own.
+- A prompt the plugin submits reaches the session only once it is idle, and repeated submits accumulate rather than replacing one another. So any submission the controller makes on a recurring timer is gated on a persisted state comparison, and the state is persisted at the moment of submission rather than when the model reports, or one slow turn collects a pile of identical prompts.
+- The reconciliation pass runs on the kit coordinator skill's own four-hour cadence and never more often. The claim probe's window is one full cadence and the registry prune's staleness test is twice the cadence, so a five-minute run of either can fire nothing a four-hourly run misses, and the skill states that the probe adds no timer to the seat.
+- A persona's health classes are held, backing off, stale, no live claim while the roster enables it, and healthy. The fourth is not optional: an enabled persona that never comes up has no commons entry at all, so it reports a null heartbeat age and satisfies none of the other conditions.
+
 ## Sections of Work
 
 ### 1. The steward's launch shape and standing instruction
@@ -61,7 +68,7 @@ Add a `fleet_status` tool to the plugin (`hooks/index.ts`, beside `agentic_inbox
 Acceptance: a unit test drives the tool with fixture files for a healthy persona, a held one, one backing off, one with no `keeper.json`, and one absent from the commons, and checks each row; the tool is denied to a session that does not hold the coordinator persona, with the deny text naming the rule.
 
 Files in scope: `hooks/index.ts`, `hooks/operator.ts` (the reach rule), a new `.kit/fleet-status-unit-test.mjs`, `README.md` (the tool list under the operator channel section).
-Tests: at minimum, lock every row shape above and the deny direction, since a worker reading fleet state would be a reach the trust boundary does not grant.
+Tests: at minimum, lock every row shape above and the deny direction: a session owning a named persona of its own holds a WORKER ground on the coordinator persona, which reaches it to send a record and is refused here, so fleet state is read only by that persona's holder or by a live reader claim on it.
 
 ### 4. The kit Coordinator seat under the steward, proven live
 Model: opus
@@ -78,6 +85,20 @@ Update `bin/fleet.example.json` and the machine's `D:/personas/fleet.json`: repl
 Acceptance: `bin/Register-PersonaTasks.ps1 -WhatIf`, the process keeper's registration script, prints a definition for `steward` and `architect` and none for `coordinator`; each launcher matches its roster entry by eye, recorded in the Chapter; the backlog entry is retired or re-dated with the reason.
 
 Files in scope: `bin/fleet.example.json`, `docs/backlog.md`, `docs/README.md`, `D:/personas/fleet.json` and `D:/personas/architect/launch.sh` (machine state).
+
+### 6. The fleet wake: the roster setting the launcher writes, and the plugin's change-driven prompt
+Model: opus
+
+Appended during execution. Sections 1 and 3 both shipped against a wake mechanism that does not exist, which round 1 found from three lenses and a consult ruled on. Two gaps, and they are one piece of work because neither is worth anything alone.
+
+First, nothing writes the `fleetRoster` option. `emit_settings_json` in `bin/agentic-common.sh` writes a fixed option set ending at `coordinatorPersona`, and the process keeper's roster-to-environment map carries no roster path either, so a supervised steward always reads an empty setting and `fleet_status` reports that it has no roster. Add a `FLEET_ROSTER` environment variable to the emitted options and a read-back beside `read_settings_coordinator_persona`, by the same two branches and under both plugin ids.
+
+Second, the controller tick submits no prompt on a quiet fleet, so a duty written "on each tick" never runs. In the tick, after the inbox drain and before the no-active-leaf return, add a block that runs only for the coordinator persona and only with a roster configured: compute the fleet rows with the module-scope helpers Section 3 wrote, reduce each row to one of the five health classes the Standing Brief Amendments name, compare against a persisted health map, and where any persona's class changed, persist the new map and submit a plugin-kind expected turn labelled `[FLEET]` carrying only the changed rows. Add a `reconcileEveryMs` option defaulting to 14400000, and submit a `[RECONCILE]` turn when that long has passed since the last one, coordinator persona only. Persist both state fields at submission rather than at report.
+
+Acceptance: `.kit/controller-tick-test.mjs` pins that a tick over an unchanged fleet submits nothing, that a persona changing class submits one `[FLEET]` prompt carrying that persona and not the unchanged ones, that a second tick with no further change submits nothing more, and that `[RECONCILE]` fires on the interval and not before; `.kit/settings-plugin-key-test.sh` pins `fleetRoster` emitted from `FLEET_ROSTER` and read back under both plugin ids, as `coordinatorPersona` is; a launch with `FLEET_ROSTER` unset emits no roster and the tick block stays silent.
+
+Files in scope: `hooks/index.ts`, `bin/agentic-common.sh`, `.claude-plugin/plugin.json`, `.kit/controller-tick-test.mjs`, `.kit/settings-plugin-key-test.sh`, `README.md`.
+Tests: at minimum, lock the silence on an unchanged fleet and the single submission on a change, since the accumulating-submit behaviour means a missing change gate delivers one prompt per tick as a pile at the next idle moment.
 
 ## Out of Scope
 

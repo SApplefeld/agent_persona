@@ -1,0 +1,23 @@
+[
+  {
+    "name": "stopped",
+    "workdir": "D:/actions/stopped/work",
+    "rundir": "D:/actions/stopped/run",
+    "permissionMode": "bypassPermissions",
+    "enabled": true
+  },
+  {
+    "name": "first-crash",
+    "workdir": "D:/actions/first-crash/work",
+    "rundir": "D:/actions/first-crash/run",
+    "permissionMode": "bypassPermissions",
+    "enabled": true
+  },
+  {
+    "name": "signalled-held",
+    "workdir": "D:/actions/signalled-held/work",
+    "rundir": "D:/actions/signalled-held/run",
+    "permissionMode": "bypassPermissions",
+    "enabled": true
+  }
+]
