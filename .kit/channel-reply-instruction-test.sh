@@ -128,6 +128,14 @@ ROLE_FLEET_CLASSES_CONTROL="The health classes are held, backing off, stale, no 
 ROLE_FLEET_NULL_CONTROL="whose heartbeat age is null"
 ROLE_FLEET_STALE_CONTROL="holds no live claim but reports a heartbeat age"
 ROLE_FLEET_STALE_CLASS_CONTROL="it is stale"
+# The tool's action field carries values the five classes do not name, stopped
+# and relaunching and unknown among them, so the duty says the field is the
+# keeper's record rather than a class and routes the off-list values by the
+# claim and heartbeat the two sentences above already read. This is an ordered
+# pair for the same reason the two above are: a rewrite that keeps the routing
+# and drops the statement that the field is not a class reds here.
+ROLE_FLEET_ACTION_CONTROL="is not itself a health class"
+ROLE_FLEET_ACTION_ROUTE_CONTROL="A row reading stopped or unknown"
 # The fleet duty tells the persona it polls the fleet at no point, so every
 # call the other duties make is named in that duty's own carve-out. The
 # architect liveness check is one of them, and without it the two sentences
@@ -314,6 +322,10 @@ case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *) check "persona matches COORDINATOR_PERSONA: a persona whose entry outlived its session is routed to the stale class" 1 ;;
 esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_FLEET_ACTION_CONTROL"*"$ROLE_FLEET_ACTION_ROUTE_CONTROL"*) check "persona matches COORDINATOR_PERSONA: an action the five classes do not name is routed by the claim and heartbeat rather than reported as a class" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: an action the five classes do not name is routed by the claim and heartbeat rather than reported as a class" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_FLEET_CARVEOUT_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the fleet duty's carve-out names the architect liveness check" 0 ;;
   *) check "persona matches COORDINATOR_PERSONA: the fleet duty's carve-out names the architect liveness check" 1 ;;
 esac
@@ -366,7 +378,7 @@ fi
 # reply variable reds here rather than slipping past a read of the role
 # variable alone.
 case "$(priming_concat)" in
-  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "persona differs from COORDINATOR_PERSONA: no fleet-keeper duty reaches a worker through any part of the priming write" 1 ;;
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_FLEET_ACTION_ROUTE_CONTROL"*|*"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "persona differs from COORDINATOR_PERSONA: no fleet-keeper duty reaches a worker through any part of the priming write" 1 ;;
   *) check "persona differs from COORDINATOR_PERSONA: no fleet-keeper duty reaches a worker through any part of the priming write" 0 ;;
 esac
 
@@ -414,7 +426,7 @@ else
   check "channel attached, COORDINATOR_PERSONA differs: coordinator role instruction is empty" 1
 fi
 case "$(priming_concat)" in
-  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "channel attached, COORDINATOR_PERSONA differs: no fleet-keeper duty reaches the priming write" 1 ;;
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_FLEET_ACTION_ROUTE_CONTROL"*|*"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "channel attached, COORDINATOR_PERSONA differs: no fleet-keeper duty reaches the priming write" 1 ;;
   *) check "channel attached, COORDINATOR_PERSONA differs: no fleet-keeper duty reaches the priming write" 0 ;;
 esac
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
@@ -438,7 +450,7 @@ esac
 # holds no named owner claim, so a fleet probe or a design escalation from it
 # would be refused by the reach rule anyway.
 case "$(priming_concat)" in
-  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "default persona: no fleet-keeper duty reaches the priming write" 1 ;;
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_FLEET_ACTION_ROUTE_CONTROL"*|*"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "default persona: no fleet-keeper duty reaches the priming write" 1 ;;
   *) check "default persona: no fleet-keeper duty reaches the priming write" 0 ;;
 esac
 if [ -z "${COORDINATOR_ROLE_INSTRUCTION:-}" ]; then

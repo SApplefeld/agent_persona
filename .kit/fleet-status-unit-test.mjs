@@ -436,6 +436,14 @@ function stoppedStateEndingAt(endMs) {
   return stoppedStateEnding(new Date(endMs).toISOString());
 }
 
+// The producer's own spelling. bin/Start-Persona.ps1 writes lastEnd from
+// [DateTime]::UtcNow.ToString('o'), which emits seven fractional digits where
+// toISOString emits three, so a case built on toISOString alone exercises a
+// string shape the keeper never writes.
+function stoppedStateEndingAtRoundTrip(endMs) {
+  return stoppedStateEnding(`${new Date(endMs).toISOString().slice(0, -1)}0000Z`);
+}
+
 // Five entries that share one keeper.json where they can, so the axis that
 // varies between the first three rows is the commons claim alone. The shared
 // state file is gamma's: a crash-class exit and a ladder the keeper doubled
@@ -577,6 +585,76 @@ async function caseSignalledExitAgainstTheClaim() {
   // the note above speaks about an unreadable stamp rather than riding on
   // every signalled row.
   check("note control: a row whose lastEnd read carries no such note", dead.note === undefined && restarted.note === undefined, { dead: dead.note, restarted: restarted.note });
+}
+
+// ============================================================
+// A restart inside the staleness window leaves two claimants on one persona
+// ============================================================
+// Commons arbitration is first-claim-wins on claimedAt, and a dead session's
+// entry is only reaped once it passes the staleness threshold. So for up to
+// that window after a hand restart, the predecessor's entry is still live and
+// still the earliest claim, and a row that read the winner's heartbeat would
+// report the dead session for the whole of it. The recorded exit is what
+// separates the two, which is the same rule the action already turns on,
+// applied at the selection rather than after it.
+function seedRestartInsideTheWindow(h) {
+  h.fsMap.set(ROSTER_PATH, JSON.stringify([
+    { name: "restarted-fast", rundir: "D:/window/restarted-fast/run", enabled: true },
+    { name: "both-before-the-exit", rundir: "D:/window/both-before-the-exit/run", enabled: true },
+  ]));
+  // The exit landed 30 seconds ago, spelled the way the keeper spells it.
+  h.fsMap.set("D:/window/restarted-fast/run/keeper.json", stoppedStateEndingAtRoundTrip(T0 - 30_000));
+  h.fsMap.set("D:/window/both-before-the-exit/run/keeper.json", stoppedStateEndingAt(T0 - 10_000));
+
+  // The predecessor claimed first and is still inside the window, so it wins
+  // plain commons arbitration; its heartbeat predates the exit.
+  h.storeMap.set("commons:restarted-fast-old", {
+    sessionId: "restarted-fast-old",
+    lastSeen: T0 - 45_000,
+    claims: [{ resource: "persona:restarted-fast", claimedAt: T0 - 600_000 }],
+    turnStartedAt: null,
+    workdir: "D:/window/restarted-fast/work",
+  });
+  // The session that came back: claimed later, last seen after the exit, and
+  // in a turn, which is a field the dead entry cannot supply.
+  h.storeMap.set("commons:restarted-fast-new", {
+    sessionId: "restarted-fast-new",
+    lastSeen: T0 - 2_000,
+    claims: [{ resource: "persona:restarted-fast", claimedAt: T0 - 20_000 }],
+    turnStartedAt: T0 - 5_000,
+    workdir: "D:/window/restarted-fast/work",
+  });
+
+  // Both claimants predate the exit, so the filter leaves none and the row
+  // falls back to reporting the exit rather than to no claim at all.
+  for (const [id, seen, claimed] of [["both-old", T0 - 30_000, T0 - 600_000], ["both-older", T0 - 20_000, T0 - 300_000]]) {
+    h.storeMap.set(`commons:${id}`, {
+      sessionId: id,
+      lastSeen: seen,
+      claims: [{ resource: "persona:both-before-the-exit", claimedAt: claimed }],
+      turnStartedAt: null,
+      workdir: "D:/window/both-before-the-exit/work",
+    });
+  }
+}
+
+async function caseRestartInsideTheStalenessWindow() {
+  console.log("\n=== fleet_status: a restart inside the staleness window is read against the session that came back ===");
+  const h = await startSession("restart_in_window");
+  seedRestartInsideTheWindow(h);
+  const report = reportOf(await callFleetStatus(h));
+
+  const restarted = rowFor(report, "restarted-fast");
+  check("two live claimants: the row reads running, because a session started after the recorded exit", restarted.action === "running", restarted);
+  check("two live claimants: the heartbeat age is the session that came back, not the one that went away", restarted.heartbeatAgeMs === 2_000, restarted);
+  check("two live claimants: the turn state comes from that same session", restarted.turnState === "in turn" && restarted.turnRunningMs === 5_000, restarted);
+  check("two live claimants: the seven-digit stamp the keeper actually writes parses, so this row settled on the clock rather than on an unreadable stamp", restarted.note === undefined, restarted.note);
+
+  // The control on the filter: with no claimant after the exit, the fallback
+  // is the live set itself, so the row still reports the exit and the claim.
+  const both = rowFor(report, "both-before-the-exit");
+  check("every claimant before the exit: the row reads stopped", both.action === "stopped", both);
+  check("every claimant before the exit: the claim is still reported rather than dropped by the filter", both.claimHeld === true && both.heartbeatAgeMs === 30_000, both);
 }
 
 // ============================================================
@@ -798,6 +876,7 @@ async function main() {
     await caseByteOrderMark();
     await caseActionAgainstTheCommons();
     await caseSignalledExitAgainstTheClaim();
+    await caseRestartInsideTheStalenessWindow();
     await caseFreeTextIsBracketSafe();
     await caseKeeperHalfBranches();
     await caseHoldCheckUnreadable();

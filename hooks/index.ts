@@ -813,8 +813,10 @@ function liveClaimsOf(entries: CommonsEntry[], staleAfterMs: number, now: number
 // whether it is inside a turn. The stamp rides beside the age because
 // fleetActionOf compares it against the keeper's last recorded exit, and null
 // exactly where the age is, which is where no entry was found to read it from.
-// The holder is the commons winner among the live claimants, the arbitration
-// every other reader applies. A persona no live session claims reports no
+// The holder is the commons winner, the arbitration every other reader
+// applies, run over the live claimants the recorded exit leaves standing
+// rather than over all of them, for the reason stated at that filter below.
+// A persona no live session claims reports no
 // claim; where a stopped session's entry is still in the store, its age says
 // how long ago the heartbeat stopped, and the turn state of a session that is
 // not live reads as unknown rather than as a turn still running.
@@ -823,6 +825,7 @@ function fleetCommonsOf(
   persona: string,
   staleAfterMs: number,
   now: number,
+  lastEndMs: number | null,
 ): Pick<FleetRow, "claimHeld" | "heartbeatAgeMs" | "turnState" | "turnRunningMs"> & { lastSeen: number | null } {
   const resource = `persona:${persona}`;
   const holders = entries.filter((entry) => entry.claims.some((claim) => claim && claim.resource === resource));
@@ -832,8 +835,19 @@ function fleetCommonsOf(
     const freshest = holders.reduce((a, b) => (b.lastSeen > a.lastSeen ? b : a));
     return { claimHeld: false, lastSeen: freshest.lastSeen, heartbeatAgeMs: Math.max(0, now - freshest.lastSeen), turnState: "unknown" };
   }
-  const winner = commonsWinner(liveClaimsOf(live, staleAfterMs, now), resource);
-  const entry = live.find((candidate) => candidate.sessionId === winner);
+  // The recorded exit places every live entry, not just the one arbitration
+  // picks. The keeper stamps lastEnd once the child tree is gone, so an entry
+  // whose heartbeat predates the stamp is the exiting session still standing
+  // in the store, and for the length of the staleness window it sits beside
+  // the restarted session's own entry. Commons arbitration is first-claim-wins
+  // on claimedAt, so that predecessor would win and the row would report the
+  // dead session's heartbeat, turn state and action. Arbitrate among the
+  // sessions the stamp leaves standing, and fall back to the whole live set
+  // where the stamp leaves none, which is the row reporting the exit.
+  const started = lastEndMs !== null ? live.filter((candidate) => candidate.lastSeen >= lastEndMs) : live;
+  const arbitrated = started.length > 0 ? started : live;
+  const winner = commonsWinner(liveClaimsOf(arbitrated, staleAfterMs, now), resource);
+  const entry = arbitrated.find((candidate) => candidate.sessionId === winner);
   if (!entry) return { claimHeld: false, lastSeen: null, heartbeatAgeMs: null, turnState: "unknown" };
   const heartbeatAgeMs = Math.max(0, now - entry.lastSeen);
   if (typeof entry.turnStartedAt === "number") {
@@ -4962,7 +4976,7 @@ export const register: Register = async (on, options) => {
           continue;
         }
         const keeper = await readKeeperHalf($, rosterRunDir(entry));
-        const commons = fleetCommonsOf(entries, name, sess.staleAfterMs, now);
+        const commons = fleetCommonsOf(entries, name, sess.staleAfterMs, now, keeper.lastEndMs);
         // Whatever the keeper half could not read, and then the one thing only
         // the two halves together can be short of: the stamp that places a
         // live claim against a signalled exit. The bound runs again over the
