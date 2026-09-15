@@ -116,6 +116,35 @@ ROLE_FLEET_CLASS_CONTROL="no live claim while the roster enables it"
 # persona, so the duty reports a route as delivered only against a live
 # architect. The undelivered branch is the half a green send would hide.
 ROLE_ARCHITECT_LIVE_CONTROL="the ask is undelivered"
+# The five classes as one literal, so a class dropped or renamed reds here
+# while the per-class pins below stay readable. The fourth class is pinned
+# again on its own above, since it is the one a green fleet never exercises.
+ROLE_FLEET_CLASSES_CONTROL="The health classes are held, backing off, stale, no live claim while the roster enables it, and healthy."
+# The fleet status tool reports claimHeld false in two unlike situations: a
+# persona with no commons entry, whose heartbeat age is null, and a persona
+# whose session died leaving its entry behind, whose heartbeat age is a number.
+# The first is the never-came-up class and the second is the stale class, so the
+# down verdict is pinned to the null age and the leftover entry is pinned to
+# stale. The anti-control is the wording that keyed the down verdict on the
+# missing claim alone, which called a persona that crashed an hour ago one that
+# never came up.
+ROLE_FLEET_NULL_CONTROL="whose heartbeat age is null"
+ROLE_FLEET_NEVER_CONTROL="has never come up"
+ROLE_FLEET_STALE_CONTROL="holds no live claim but reports a heartbeat age"
+ROLE_FLEET_STALE_CLASS_CONTROL="it is stale"
+ROLE_FLEET_DOWN_ANTICONTROL="holds no live claim has never come up"
+# The fleet duty tells the persona it polls the fleet at no point, so every
+# call the other duties make is named in that duty's own carve-out. The
+# architect liveness check is one of them, and without it the two sentences
+# read as a contradiction the persona has to settle for itself.
+ROLE_FLEET_CARVEOUT_CONTROL="checking whether the architect is live"
+# fleet_status returns rows only for the personas the roster carries, and
+# returns no rows at all with a top-level problem while the fleetRoster setting
+# names no roster. Neither reply says the architect is not live, so the duty
+# separates that answer from an architect row that holds no claim: the record
+# was written either way, and only the row proves nobody received it.
+ROLE_ARCHITECT_NOROW_CONTROL="no architect row at all"
+ROLE_ARCHITECT_UNCONFIRMED_CONTROL="its delivery is unconfirmed"
 # The steer sentence's escalation clause, present for a worker's launch and
 # absent for the coordinator's own, which cannot address itself.
 STEER_ESCALATE_CONTROL="through agentic_say with persona set to"
@@ -277,6 +306,30 @@ case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the design-escalation duty raises an ask no live architect received" 0 ;;
   *) check "persona matches COORDINATOR_PERSONA: the design-escalation duty raises an ask no live architect received" 1 ;;
 esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_FLEET_CLASSES_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the five health classes are named in the plan's own words" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the five health classes are named in the plan's own words" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_FLEET_NULL_CONTROL"*"$ROLE_FLEET_NEVER_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the never-came-up verdict keys on a null heartbeat age" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the never-came-up verdict keys on a null heartbeat age" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_FLEET_STALE_CONTROL"*"$ROLE_FLEET_STALE_CLASS_CONTROL"*) check "persona matches COORDINATOR_PERSONA: a persona whose entry outlived its session is routed to the stale class" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: a persona whose entry outlived its session is routed to the stale class" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_FLEET_DOWN_ANTICONTROL"*) check "persona matches COORDINATOR_PERSONA: no down verdict rests on the missing claim alone" 1 ;;
+  *) check "persona matches COORDINATOR_PERSONA: no down verdict rests on the missing claim alone" 0 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_FLEET_CARVEOUT_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the fleet duty's carve-out names the architect liveness check" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the fleet duty's carve-out names the architect liveness check" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_ARCHITECT_NOROW_CONTROL"*"$ROLE_ARCHITECT_UNCONFIRMED_CONTROL"*) check "persona matches COORDINATOR_PERSONA: a reply carrying no architect row is reported as sent with delivery unconfirmed" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: a reply carrying no architect row is reported as sent with delivery unconfirmed" 1 ;;
+esac
 # Every case above reads one fragment on its own, so reordering the three duty
 # sentences leaves all of them green and deleting one reds that one alone.
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
@@ -322,7 +375,7 @@ fi
 # reply variable reds here rather than slipping past a read of the role
 # variable alone.
 case "$(priming_concat)" in
-  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*) check "persona differs from COORDINATOR_PERSONA: no fleet-keeper duty reaches a worker through any part of the priming write" 1 ;;
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "persona differs from COORDINATOR_PERSONA: no fleet-keeper duty reaches a worker through any part of the priming write" 1 ;;
   *) check "persona differs from COORDINATOR_PERSONA: no fleet-keeper duty reaches a worker through any part of the priming write" 0 ;;
 esac
 
@@ -370,7 +423,7 @@ else
   check "channel attached, COORDINATOR_PERSONA differs: coordinator role instruction is empty" 1
 fi
 case "$(priming_concat)" in
-  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*) check "channel attached, COORDINATOR_PERSONA differs: no fleet-keeper duty reaches the priming write" 1 ;;
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "channel attached, COORDINATOR_PERSONA differs: no fleet-keeper duty reaches the priming write" 1 ;;
   *) check "channel attached, COORDINATOR_PERSONA differs: no fleet-keeper duty reaches the priming write" 0 ;;
 esac
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
@@ -394,7 +447,7 @@ esac
 # holds no named owner claim, so a fleet probe or a design escalation from it
 # would be refused by the reach rule anyway.
 case "$(priming_concat)" in
-  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*) check "default persona: no fleet-keeper duty reaches the priming write" 1 ;;
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "default persona: no fleet-keeper duty reaches the priming write" 1 ;;
   *) check "default persona: no fleet-keeper duty reaches the priming write" 0 ;;
 esac
 if [ -z "${COORDINATOR_ROLE_INSTRUCTION:-}" ]; then
