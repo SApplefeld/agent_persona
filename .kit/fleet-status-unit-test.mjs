@@ -350,7 +350,12 @@ async function caseKeeperActions() {
   const firstCrash = rowFor(report, "first-crash");
   check("first crash: the next rung is the state file's currentDelay, above the base", firstCrash.nextDelaySeconds === 600, firstCrash);
   check("first crash: a ladder above the base reads as backing off", firstCrash.action === "backing off", firstCrash);
-  check("first crash: the row names no wait in force, so no field carries the 300 seconds actually served", JSON.stringify(firstCrash).includes("300") === false, firstCrash);
+  // The row must not gain a field naming the wait actually being served, which
+  // the keeper's state file cannot supply. A substring sweep for the number
+  // cannot say that: it passes a field spelling the wait "5 minutes" and reds
+  // on an unrelated field holding those digits, naming the wrong cause either
+  // way. The key set is the claim, so a new field of any name reds here.
+  check("first crash: the row's fields are exactly the ten a row with no turn and nothing unread carries, so no field names a wait in force", JSON.stringify(Object.keys(firstCrash).sort()) === JSON.stringify(["action", "claimHeld", "enabled", "heartbeatAgeMs", "holdReason", "holdReasonSource", "lastExitCode", "name", "nextDelaySeconds", "turnState"]), Object.keys(firstCrash).sort());
   check("first crash: the crash exit is the row's, with no hold reason", firstCrash.lastExitCode === 3 && firstCrash.holdReason === null, firstCrash);
 
   // A marker is what stops the next start, whatever the last exit was, so it
@@ -793,6 +798,20 @@ async function caseDescriptionMatchesTheRows() {
   check("description: it says the delay is the next one rather than a wait in force", says(description, "not a wait being served now"), description);
   check("description: it says the wait in force cannot be read from the keeper's state file", says(description, "cannot be read from here"), description);
   check("description: it says the hold reason is unverified text from the persona's own run directory", says(description, "the persona itself can write") && says(description, "unverified"), description);
+
+  // The clock rule is the one part of this prose a reader acts on directly, so
+  // it is pinned against the tool rather than against a sentence. The two
+  // action words the description names for the two sides of the comparison are
+  // read out of it and checked against the actions the tool actually returns
+  // for those two cases, so the pin reds when either the prose or the rule
+  // moves without the other and leaves the wording itself free.
+  const beforeSays = description.match(/last seen before[^;]*?so the row reads (\w+)/)?.[1];
+  const afterSays = description.match(/last seen after[^;.]*?so the row reads (\w+)/)?.[1];
+  const clock = await startSession("description_clock");
+  seedSignalledAgainstClaim(clock);
+  const clockReport = reportOf(await callFleetStatus(clock));
+  check("description: the action it names for a claim older than the exit is the action the tool returns", beforeSays !== undefined && beforeSays === rowFor(clockReport, "dead-session").action, { beforeSays, actual: rowFor(clockReport, "dead-session").action });
+  check("description: the action it names for a claim newer than the exit is the action the tool returns", afterSays !== undefined && afterSays === rowFor(clockReport, "restarted").action, { afterSays, actual: rowFor(clockReport, "restarted").action });
 }
 
 // ============================================================

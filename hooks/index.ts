@@ -45,6 +45,7 @@ import {
   commonsWinner,
   commonsKey,
   readHolderMeta,
+  readAllEntries,
 } from "./commons";
 import type { CommonsStore, CommonsEntry, UnionedClaim } from "./commons";
 import type { InboxRecord } from "./operator";
@@ -771,27 +772,6 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<KeeperHal
   };
 };
 
-// Every commons entry on the machine, read without readAllClaims' staleness
-// filter and without the garbage collection it performs on its own read: the
-// fleet report writes and deletes nothing, and a persona whose heartbeat has
-// stopped is exactly what it exists to show. A malformed entry is skipped, as
-// readHolderMeta skips it.
-const readCommonsEntries = async (store: CommonsStore): Promise<CommonsEntry[]> => {
-  const prefix = commonsKey("");
-  const keys = (await store.keys()).filter((k) => k.startsWith(prefix));
-  const entries: CommonsEntry[] = [];
-  for (const key of keys) {
-    const raw = await store.get(key);
-    if (!raw) continue;
-    const entry = raw as CommonsEntry;
-    if (typeof entry.sessionId !== "string") continue;
-    if (!Array.isArray(entry.claims)) continue;
-    if (typeof entry.lastSeen !== "number") continue;
-    entries.push(entry);
-  }
-  return entries;
-};
-
 // The live claims the reach rule reads, from entries already in hand:
 // readAllClaims' staleness filter without its second store read and without
 // its garbage collection. One store read then serves both the reach check and
@@ -836,9 +816,13 @@ function fleetCommonsOf(
     return { claimHeld: false, lastSeen: freshest.lastSeen, heartbeatAgeMs: Math.max(0, now - freshest.lastSeen), turnState: "unknown" };
   }
   // The recorded exit places every live entry, not just the one arbitration
-  // picks. The keeper stamps lastEnd once the child tree is gone, so an entry
-  // whose heartbeat predates the stamp is the exiting session still standing
-  // in the store, and for the length of the staleness window it sits beside
+  // picks. The keeper stamps lastEnd once the supervisor has returned, which
+  // it does after killing the child tree or, on a kill it cannot verify, after
+  // a bounded wait it gives up on (bin/supervise.sh's cleanup trap logs
+  // "exiting anyway" on that branch). So an entry whose heartbeat predates the
+  // stamp is all but always the exiting session still standing in the store,
+  // and an orphan that outlived its supervisor is the case this reads the
+  // other way. For the length of the staleness window that entry sits beside
   // the restarted session's own entry. Commons arbitration is first-claim-wins
   // on claimedAt, so that predecessor would win and the row would report the
   // dead session's heartbeat, turn state and action. Arbitrate among the
@@ -875,9 +859,12 @@ function fleetCommonsOf(
 // claim reports a persona the operator restarted as stopped until it next
 // exits. A heartbeat older than the recorded exit is the exiting session still
 // standing in the store, which is the row the operator has to act on; a
-// heartbeat newer than it is a session that started afterwards. With no
-// readable exit stamp there is nothing to settle it against, so the claim
-// decides and the row's note says which reading was unavailable.
+// heartbeat newer than it is a session that started afterwards. The one shape
+// that reads the wrong way is an orphan the supervisor could not confirm dead,
+// which keeps writing its heartbeat after the stamp and so reads as running;
+// fleetCommonsOf above says where that bound comes from. With no readable exit
+// stamp there is nothing to settle it against, so the claim decides and the
+// row's note says which reading was unavailable.
 function fleetActionOf(
   standing: KeeperStanding,
   claimHeld: boolean,
@@ -4940,7 +4927,11 @@ export const register: Register = async (on, options) => {
     // heartbeat age is read from.
     if ((e as any).tool === "mcp__agentic-plugin__fleet_status") {
       const now = Date.now();
-      const entries = await readCommonsEntries(commonsStoreOf($));
+      // Every commons entry on the machine, read without readAllClaims'
+      // staleness filter and without the garbage collection it performs on its
+      // own read: the fleet report writes and deletes nothing, and a persona
+      // whose heartbeat has stopped is exactly what it exists to show.
+      const entries = await readAllEntries(commonsStoreOf($));
       // The reach rule with the coordinator persona as the target, narrowed
       // to the two standings that read fleet state: holding that persona, or
       // holding a live reader claim on it. deliveryGroundIn decides all three
@@ -4979,8 +4970,11 @@ export const register: Register = async (on, options) => {
         const commons = fleetCommonsOf(entries, name, sess.staleAfterMs, now, keeper.lastEndMs);
         // Whatever the keeper half could not read, and then the one thing only
         // the two halves together can be short of: the stamp that places a
-        // live claim against a signalled exit. The bound runs again over the
-        // joined text, because it is the finished field that the caller reads.
+        // live claim against a signalled exit. Only the second can appear
+        // today, since the keeper half pushes a note on exactly the branches
+        // that do not produce the "stopped" standing the second one needs; the
+        // join and the second bound are what keep that an accident of the
+        // current branches rather than a shape the field cannot carry.
         const notes = [
           ...(keeper.note !== undefined ? [keeper.note] : []),
           ...(fleetEndUnreadable(keeper.standing, commons.claimHeld, keeper.lastEndMs)
