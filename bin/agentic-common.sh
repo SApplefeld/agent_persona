@@ -3,12 +3,14 @@
 # Sourced by bin/supervise.sh and .kit/live-common.sh.
 # Provides: wait_persona_free, refuse_if_persona_live, emit_settings_json,
 #           ensure_settings_plugin_ids, ensure_settings_arming,
-#           read_settings_coordinator_persona, valid_persona_name,
+#           read_settings_coordinator_persona,
+#           read_settings_architect_persona, valid_persona_name,
 #           find_global_store, list_installed_stores, poll_decisions,
 #           poll_heartbeat.
-# COORDINATOR_PERSONA is exported on both settings branches: emit_settings_json
-# exports the name it writes, and read_settings_coordinator_persona prints the
-# name a provided file resolves to, for the caller to export.
+# COORDINATOR_PERSONA and ARCHITECT_PERSONA are exported on both settings
+# branches: emit_settings_json exports the names it writes, and the two
+# read_settings_*_persona functions print the names a provided file resolves
+# to, for the caller to export.
 # All functions use W2 read-error semantics: a read error is a transient mid-write
 # race, treated as "live" (or "not ready"), never an abort. The timeout is the only
 # exit. refuse_if_persona_live is the one exception: it is a start-only check with
@@ -54,12 +56,15 @@ esac
 # Emits the settings.json JSON for the --settings flag.
 # Carries: controllerTickMs, nudgeIdleMs, nudgeFloorMs, gitProbeMs, heartbeatMs,
 #          staleAfterMs, contextBudgetEnabled, budget thresholds when set,
-#          arming (always "owner": every supervisor launch is an owner), and
-#          coordinatorPersona (from COORDINATOR_PERSONA, default "coordinator").
-# Exports COORDINATOR_PERSONA to the value it wrote, so a caller can compare
-# its own persona against the same name without parsing the settings file.
-# This is the emit branch's half of that export; the provided-settings branch
-# reads the same name back through read_settings_coordinator_persona.
+#          arming (always "owner": every supervisor launch is an owner),
+#          coordinatorPersona (from COORDINATOR_PERSONA, default "coordinator")
+#          and architectPersona (from ARCHITECT_PERSONA, which has no default:
+#          the key is omitted where the variable is unset or empty).
+# Exports COORDINATOR_PERSONA and ARCHITECT_PERSONA to the values it wrote, so
+# a caller can compare its own persona against the same names without parsing
+# the settings file. This is the emit branch's half of those exports; the
+# provided-settings branch reads the same names back through
+# read_settings_coordinator_persona and read_settings_architect_persona.
 emit_settings_json() {
   local out="$1"
   local self_review_opts=""
@@ -104,8 +109,9 @@ emit_settings_json() {
   # Every value below is spliced into JSON unescaped, so each is held to a
   # shape that cannot close a string or an object and that JSON accepts:
   # digits with no leading zero for the numbers, letters, digits, underscore
-  # and hyphen for the persona and for coordinatorPersona (the same
-  # valid_persona_name check, since both are spliced the same way).
+  # and hyphen for the persona and for coordinatorPersona and architectPersona
+  # (the same valid_persona_name check, since all three are spliced the same
+  # way).
   local var
   for var in TICK_MS NUDGE_IDLE_MS GIT_PROBE_MS NUDGE_FLOOR_MS HEARTBEAT_MS STALE_AFTER_MS \
     SELF_REVIEW_EVERY_TURNS CONTEXT_BUDGET_INFO_TOKENS CONTEXT_BUDGET_CLOSEOUT_TOKENS \
@@ -141,12 +147,42 @@ emit_settings_json() {
   # function just wrote into coordinatorPersona, without parsing the
   # settings file itself.
   export COORDINATOR_PERSONA="$coordinator_persona"
+  # architectPersona names the persona that receives the architect's standing
+  # instruction. It carries no default, unlike coordinatorPersona: an unset or
+  # empty variable omits the key, and a launch reading a file without it builds
+  # no architect instruction for any persona, so a fleet with no architect
+  # carries no architect setting either. The name is held to the same character
+  # class as the two values above, since it is spliced into JSON the same way,
+  # and "default" is refused because every unnamed launch carries that persona
+  # and the charter would reach all of them.
+  local architect_persona="${ARCHITECT_PERSONA:-}"
+  local architect_opt=""
+  if [ -n "$architect_persona" ]; then
+    if ! valid_persona_name "$architect_persona"; then
+      echo "ERROR: emit_settings_json: ARCHITECT_PERSONA '$architect_persona' may hold only letters, digits, underscore and hyphen" >&2
+      return 1
+    fi
+    if [ "$architect_persona" = "default" ]; then
+      echo "ERROR: emit_settings_json: ARCHITECT_PERSONA must not be 'default'" >&2
+      return 1
+    fi
+    # One persona cannot hold both seats. The two names gate two standing
+    # instructions that contradict each other in one priming write: route
+    # design asks to the architect, and answer the coordinator by naming
+    # yourself, with a standing goal held and not held at once.
+    if [ "$architect_persona" = "$coordinator_persona" ]; then
+      echo "ERROR: emit_settings_json: ARCHITECT_PERSONA and COORDINATOR_PERSONA are both '$architect_persona'; one persona cannot hold both seats" >&2
+      return 1
+    fi
+    architect_opt=",\"architectPersona\":\"$architect_persona\""
+  fi
+  export ARCHITECT_PERSONA="$architect_persona"
   # pluginConfigs is keyed by plugin id: the manifest name under --plugin-dir,
   # and "<name>@<marketplace>" for the installed copy. The installed form is
   # absent from the engine's type file, and options under the other id are
   # ignored without an error, so the same options are written under both.
   # .kit/settings-plugin-key-test.sh pins both ids against the two manifests.
-  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts$cost_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"}"
+  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts$cost_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"$architect_opt}"
   cat > "$out" <<EOF
 {"pluginConfigs":{"$AGENTIC_PLUGIN_DEV_ID":{"options":$options},"$AGENTIC_PLUGIN_INSTALLED_ID":{"options":$options}}}
 EOF
@@ -287,6 +323,54 @@ if (pc[id] !== undefined) {
 const usable = typeof value === "string" && value.trim() !== "" && !value.includes(":")
   && !/[\[\],]/.test(value.trim()) && !/[\s\p{Cc}\p{Cf}]/u.test(value.trim());
 console.log(usable && value.trim() !== "default" ? value.trim() : "coordinator");
+' "$1" "$id"
+}
+
+# --- read_settings_architect_persona ---
+# Usage: read_settings_architect_persona <settings-file> [dev_mode: 0|1, default 1]
+# Prints the architectPersona a settings file the caller provided carries, so
+# bin/supervise.sh can export ARCHITECT_PERSONA on the provided branch to the
+# same value the emit branch exports. The setting is the supervisor's own: the
+# plugin under hooks/ reads coordinatorPersona and never this key, so this read
+# is the only consumer. The plugin id the launch loads is picked by dev_mode
+# exactly as in read_settings_coordinator_persona. The name rule is
+# valid_persona_name's own class, the one emit_settings_json holds
+# ARCHITECT_PERSONA to: a string that after trim is a non-empty run of letters,
+# digits, underscore and hyphen, and is not "default", is taken trimmed. The
+# read side and the emit side hold one class because the value is spliced into
+# the coordinator persona's standing instruction in bin/supervise.sh, at the
+# agentic_say target and at the fleet row it names, and a settings file sits in
+# a run directory the persona running there can rewrite. Anything
+# else prints the empty string, a missing key included, because this setting
+# has no default: an empty result is a launch with no architect, on which no
+# persona receives the architect's standing instruction. Returns 1 on the same shapes
+# read_settings_coordinator_persona refuses, with the same error-line shape,
+# and prints nothing then.
+read_settings_architect_persona() {
+  local dev_mode="${2:-1}"
+  local id="$AGENTIC_PLUGIN_INSTALLED_ID"
+  if [ "$dev_mode" -eq 1 ]; then
+    id="$AGENTIC_PLUGIN_DEV_ID"
+  fi
+  node -e '
+const fs = require("fs");
+const [file, id] = process.argv.slice(1);
+const fail = (msg) => { console.error("ERROR: read_settings_architect_persona: " + file + " " + msg); process.exit(1); };
+const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+let s;
+try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
+if (!plain(s)) fail("is not a JSON object");
+const pc = s.pluginConfigs === undefined ? {} : s.pluginConfigs;
+if (!plain(pc)) fail("has a pluginConfigs value that is not an object");
+let value;
+if (pc[id] !== undefined) {
+  if (!plain(pc[id])) fail("has a " + id + " entry that is not an object");
+  if (pc[id].options !== undefined && !plain(pc[id].options)) fail("has " + id + " options that are not an object");
+  if (plain(pc[id].options)) value = pc[id].options.architectPersona;
+}
+const name = typeof value === "string" ? value.trim() : "";
+const usable = /^[A-Za-z0-9_-]+$/.test(name) && name !== "default";
+console.log(usable ? name : "");
 ' "$1" "$id"
 }
 

@@ -15,7 +15,11 @@
 # otherwise, riding the same priming write, and carrying the compaction-
 # boundary clause that names the kit checkpoint CLI's boundary verb, and the
 # three fleet-keeper duties, each pinned by a distinctive fragment and by the
-# prompt label the plugin submits it under). Every direction is checked so
+# prompt label the plugin submits it under) plus the architect's own charter
+# (ARCHITECT_ROLE_INSTRUCTION, present when the launch persona equals
+# ARCHITECT_PERSONA and empty otherwise, including for every persona while
+# that setting is unset, riding the same priming write and pinned one clause
+# at a time). Every direction is checked so
 # this cannot pass by always finding a string true. The block under test is
 # pulled out of
 # the real script by its start/end lines, not hand-copied, so this test
@@ -49,10 +53,12 @@ fi
 # a real fd that does not exist here. Evaluating code that sends bytes
 # to a coproc pipe is not this test's job; reading its own text is.
 # The range ends at the PRIMING_BODY guard, the first code line after the
-# assignments, which is dropped from the range: three `if ... fi` blocks sit
-# inside it (the NO_CHANNEL guard around CHANNEL_REPLY_INSTRUCTION, the
-# worker-launch guard around the steer sentence's escalation clause, and the
-# COORDINATOR_PERSONA guard around COORDINATOR_ROLE_INSTRUCTION), so the
+# assignments, which is dropped from the range: five `if ... fi` blocks sit
+# inside it (the worker-launch guard around the steer sentence's escalation
+# clause, the NO_CHANNEL guard around CHANNEL_REPLY_INSTRUCTION, the
+# COORDINATOR_PERSONA guard around COORDINATOR_ROLE_INSTRUCTION, the
+# ARCHITECT_PERSONA guard around the design-escalation clause nested inside it,
+# and the ARCHITECT_PERSONA guard around ARCHITECT_ROLE_INSTRUCTION), so the
 # first `^  fi$` ends short of the later blocks, and only comments sit
 # between the last assignment and that guard.
 VARS_SNIPPET=$(sed -n '/^  SKILL_LOAD_INSTRUCTION="/,/^  if \[ -n "\$PROMPT_FILE" \] && \[ -f "\$PROMPT_FILE" \]; then$/p' "$SCRIPT" | sed '$d')
@@ -90,7 +96,9 @@ ROLE_BOUNDARY_CONTROL="kit-compact-checkpoint.js boundary"
 # reports on, the kit pass the seat duty runs, and the tool argument the
 # design-escalation duty routes on. The architect fragment is the argument
 # rather than the surrounding prose, so a rewording that drops the persona
-# argument reds instead of passing. Each is checked present for the launch
+# argument reds instead of passing, and it is read as an ordered pair with the
+# ARCHITECT_PERSONA of the eval, since the routing target is built from that
+# setting and a hardcoded name reaches a persona nothing holds. Each is checked present for the launch
 # persona that matches COORDINATOR_PERSONA and absent for a named worker and
 # for default, since a duty sentence leaking into a worker's priming would
 # have workers probing the machine's registry. The fleet-health fragment is
@@ -101,7 +109,13 @@ ROLE_BOUNDARY_CONTROL="kit-compact-checkpoint.js boundary"
 ROLE_FLEET_CONTROL="health class changed"
 ROLE_FLEET_TOOL_CONTROL="fleet_status"
 ROLE_SEAT_CONTROL="reconciliation pass"
-ROLE_ARCHITECT_CONTROL="persona argument set to architect"
+# One literal for the agentic_say persona argument, shared by the steward's
+# design-escalation duty and by the architect's own answer clause, which are two
+# sends of the same shape. The coupling binds every absence case that reads it:
+# a case asserting this fragment absent proves the duty absent only while the
+# architect's charter is unbuilt in that eval, so an eval whose launch persona
+# matches ARCHITECT_PERSONA reads the duty by another fragment.
+SAY_PERSONA_ARG_CONTROL="the persona argument set to"
 # Each duty runs on a prompt the plugin submits rather than on a cadence the
 # persona keeps for itself. The labels are pinned beside the fragments above,
 # so a duty rewritten back to a per-tick trigger loses its label and reds.
@@ -116,6 +130,12 @@ ROLE_FLEET_CLASS_CONTROL="no live claim while the roster enables it"
 # persona, so the duty reports a route as delivered only against a live
 # architect. The undelivered branch is the half a green send would hide.
 ROLE_ARCHITECT_LIVE_CONTROL="the ask is undelivered"
+# The kinds of ask the duty routes. The plan's Goal names five kinds of
+# architect work, and the finishing judgment is the one a shorter list leaves
+# unrouted, so it is the fragment pinned. The list ends open as well, since a
+# closed list reads as exhaustive to the persona following it.
+ROLE_ARCHITECT_KINDS_CONTROL="the finishing judgment on a high-stakes effort"
+ROLE_ARCHITECT_KINDS_OPEN_CONTROL="A design ask none of those names goes to the architect as well"
 # The five classes as one literal, so a class dropped or renamed reds here
 # while the per-class pins below stay readable. The fourth class is pinned
 # again on its own above, since it is the one a green fleet never exercises.
@@ -137,17 +157,91 @@ ROLE_FLEET_STALE_CLASS_CONTROL="it is stale"
 ROLE_FLEET_ACTION_CONTROL="is not itself a health class"
 ROLE_FLEET_ACTION_ROUTE_CONTROL="A row reading stopped or unknown"
 # The fleet duty tells the persona it polls the fleet at no point, so every
-# call the other duties make is named in that duty's own carve-out. The
-# architect liveness check is one of them, and without it the two sentences
-# read as a contradiction the persona has to settle for itself.
+# call the other duties make is named beside that duty's own carve-out. The
+# carve-out is bounded by the instruction rather than closed at two cases, and
+# it names the two this duty makes. The architect liveness check is named in the
+# design duty rather than here, since that duty is built only on a fleet that
+# names an architect, and a carve-out closed at two would contradict it: a
+# persona honouring the closed reading skips the liveness check and reports an
+# undelivered ask as routed. The two-case sentence and the cases it names are
+# pinned separately, so a carve-out that keeps the bound and drops the cases
+# reds on its own line.
 ROLE_FLEET_CARVEOUT_CONTROL="checking whether the architect is live"
+ROLE_FLEET_CARVEOUT_TWO_CONTROL="You call fleet_status only in the cases this instruction names, and none of them is polling."
+ROLE_FLEET_CARVEOUT_CASES_CONTROL="The operator asks for fleet state, and you need the whole picture behind a change."
 # fleet_status returns rows only for the personas the roster carries, and
 # returns no rows at all with a top-level problem while the fleetRoster setting
 # names no roster. Neither reply says the architect is not live, so the duty
 # separates that answer from an architect row that holds no claim: the record
 # was written either way, and only the row proves nobody received it.
-ROLE_ARCHITECT_NOROW_CONTROL="no architect row at all"
+ROLE_ARCHITECT_NOROW_CONTROL="no row for that persona at all"
 ROLE_ARCHITECT_UNCONFIRMED_CONTROL="its delivery is unconfirmed"
+# Section 2: the architect's own standing instruction, gated on the launch
+# persona matching ARCHITECT_PERSONA. One fragment per clause of its charter,
+# so a red names the clause that went missing: the seat itself, the two ways
+# an ask arrives, the worktree rule, the clone the worktree is cut from, the
+# commit-and-report rule, the ask that names no repository, the steer rule this
+# seat overrides, and the never-execute rule. None of these strings appears in the coordinator's own
+# instruction, so the absence cases below read the architect's charter alone.
+# ARCHITECT_PERSONA carries no default, so the unset cases prove that a fleet
+# naming no architect builds this instruction for no persona at all.
+ARCH_SEAT_CONTROL="design work only"
+ARCH_ASK_CONTROL="normally reaches you in one of two ways"
+# The two ways are how a design ask arrives and not the only text that reaches
+# the seat: a reader session delivers a [READER:<persona> ...] record and the
+# supervisor writes a launch prompt as a second turn. The charter places that
+# text rather than denying it exists, so this fragment is read beside the two
+# ways above.
+ARCH_OTHER_PATH_CONTROL="is information rather than an ask"
+ARCH_WORKTREE_CONTROL="cut a worktree of that repository under your own directory"
+ARCH_REPORT_CONTROL="report the branch and the filename"
+ARCH_NEVER_CONTROL="never execute a plan you write"
+# Half the architect's work produces no file: a plan review, a consult and a
+# finishing judgment are answered in the record or on its own channel. The
+# worktree, commit and report rules above are scoped to the other half, so this
+# fragment is what keeps them from reading as a rule for every ask.
+ARCH_NOFILE_CONTROL="you cut no branch for it"
+# An ask that produces a file and names no repository has no worktree to go in,
+# and the charter has just said this persona's own directory is not a
+# repository, so the charter says where that file lands.
+ARCH_NOREPO_CONTROL="names no repository is worked under your own directory"
+# git worktree add runs inside an existing clone, and the only other clones on
+# the machine are the checkouts live personas commit in, so the charter says
+# which clone the architect cuts from. The clone is taken from the repository's
+# remote URL, since a clone of a local checkout shares that checkout's object
+# store and carries it as origin: the push then lands inside another persona's
+# repository and never reaches the remote, which is the shape a green push
+# hides. The fetch is pinned beside it, because a clone made once and never
+# refreshed branches every later spec off a stale trunk.
+ARCH_CLONE_CONTROL="cloning its remote URL under your own directory"
+ARCH_CLONE_EXCLUSIVE_CONTROL="never from a checkout another persona is working in"
+ARCH_FETCH_CONTROL="fetch that clone before each ask"
+# A repository name travels to this seat inside a record, which can carry
+# content a worker read rather than the operator's own words, and the push runs
+# under the machine's stored credentials. The charter names the clone target
+# and the remote before the push for that reason.
+ARCH_PUSH_BOUND_CONTROL="you name the clone target and the remote the push goes to"
+# The report clause names the operator, and the charter is built independently
+# of NO_CHANNEL, so a launch with no channel has no reply tool to report
+# through. The fallback is the coordinator persona, the hop the steer sentence
+# already uses for its own operator leg.
+ARCH_NOCHANNEL_CONTROL="Where no channel is attached, your record to the coordinator persona is the whole report"
+# The skill-load sentence rides this same priming write and sends every session
+# to the kit's plan-execution skill before plan work. Writing a spec is plan
+# work, so without this clause the charter's own never-execute rule is
+# contradicted by the sentence above it. The charter names the skills a design
+# ask takes instead, in the shape the steer override beside it uses.
+ARCH_SKILLS_CONTROL="claude-kit:brainstorming"
+ARCH_SKILLS_OVERRIDE_CONTROL="That leg of it does not govern you either"
+# The steer sentence rides every priming write, including this one, and tells a
+# persona to put a [COORDINATOR ...] prompt that ties to no goal node to the
+# operator or to decline it. This seat holds no plan and no goal node, so the
+# charter names that rule and overrides it; without this clause the architect
+# bounces every ask the coordinator persona routes.
+ARCH_STEER_CONTROL="your own work item"
+# The architect answers the coordinator persona by name, the way a worker
+# does, so the send names the same value the reach rule matches on. It uses
+# SAY_PERSONA_ARG_CONTROL, the literal the steward's own routing duty carries.
 # The steer sentence's escalation clause, present for a worker's launch and
 # absent for the coordinator's own, which cannot address itself.
 STEER_ESCALATE_CONTROL="through agentic_say with persona set to"
@@ -165,7 +259,32 @@ check() {
 # pinned against the real write below, so a fifth variable joining that write
 # cannot leave this concatenation quietly short.
 priming_concat() {
-  printf '%s' "${SKILL_LOAD_INSTRUCTION:-}${COORDINATOR_STEER_INSTRUCTION:-}${COORDINATOR_ROLE_INSTRUCTION:-}${CHANNEL_REPLY_INSTRUCTION:-}"
+  printf '%s' "${SKILL_LOAD_INSTRUCTION:-}${COORDINATOR_STEER_INSTRUCTION:-}${COORDINATOR_ROLE_INSTRUCTION:-}${ARCHITECT_ROLE_INSTRUCTION:-}${CHANNEL_REPLY_INSTRUCTION:-}"
+}
+
+# Every persona name the priming write splices in, read as a class rather than
+# as the list of names the source happens to carry. Two shapes carry one: the
+# agentic_say target the design duty and the architect's answer clause name, and
+# the fleet row the liveness check reads back. Each must be the eval's own
+# COORDINATOR_PERSONA or ARCHITECT_PERSONA, both withheld from every literal
+# bin/supervise.sh carries, so a seat name hardcoded at any of those sites reds
+# here whatever clause it sits in. A pin naming the two sites it knows about
+# would answer for those two and stay silent on the next one.
+check_spliced_names() {  # <label>
+  local label="$1" name count=0 bad=""
+  while IFS= read -r name; do
+    [ -z "$name" ] && continue
+    count=$((count + 1))
+    case "$name" in
+      "${ARCHITECT_PERSONA:-}"|"${COORDINATOR_PERSONA:-}") ;;
+      *) bad="$bad [$name]" ;;
+    esac
+  done <<EOF
+$(priming_concat | grep -o "$SAY_PERSONA_ARG_CONTROL [^,]*," | sed "s/^$SAY_PERSONA_ARG_CONTROL //; s/,\$//")
+$(priming_concat | grep -o "the row for [^ ]*" | sed 's/^the row for //')
+EOF
+  [ "$count" -ge 1 ] && [ -z "$bad" ]
+  check "$label (names spliced=$count, off-class=$bad)" "$?"
 }
 
 # Reviewer Round 141 R111 (Major, reproduced): the prior extraction
@@ -219,13 +338,24 @@ case "$GOAL_WRITE" in
   *GOAL_PROMPT_FRAMING*) check "the goal-prompt write does not carry the coordinator role instruction" 0 ;;
   *) check "the goal-prompt write does not carry the coordinator role instruction" 1 ;;
 esac
-# The absence cases read the four variables priming_concat joins, so the write
-# itself is pinned to exactly those four in exactly that order. A fifth
+# The architect's own instruction rides that same priming write, for the same
+# reason: the value checks below read the variable and never the call site.
+case "$PRIMING_WRITE" in
+  *ARCHITECT_ROLE_INSTRUCTION*) check "the priming write carries the architect role instruction" 0 ;;
+  *) check "the priming write carries the architect role instruction" 1 ;;
+esac
+case "$GOAL_WRITE" in
+  *ARCHITECT_ROLE_INSTRUCTION*) check "the goal-prompt write does not carry the architect role instruction" 1 ;;
+  *GOAL_PROMPT_FRAMING*) check "the goal-prompt write does not carry the architect role instruction" 0 ;;
+  *) check "the goal-prompt write does not carry the architect role instruction" 1 ;;
+esac
+# The absence cases read the five variables priming_concat joins, so the write
+# itself is pinned to exactly those five in exactly that order. A sixth
 # instruction variable added to the write reds here rather than passing through
 # an absence case that never looks at it.
 PRIMING_VARS=$(printf '%s\n' "$PRIMING_WRITE" | grep -oE '\$[A-Z_]+' | grep -vE '^\$(PRIMING_BODY|CHILD_IN)$' | tr '\n' ' ')
-[ "$PRIMING_VARS" = '$SKILL_LOAD_INSTRUCTION $COORDINATOR_STEER_INSTRUCTION $COORDINATOR_ROLE_INSTRUCTION $CHANNEL_REPLY_INSTRUCTION ' ]
-check "the priming write joins exactly the four instruction variables the absence cases read" $?
+[ "$PRIMING_VARS" = '$SKILL_LOAD_INSTRUCTION $COORDINATOR_STEER_INSTRUCTION $COORDINATOR_ROLE_INSTRUCTION $ARCHITECT_ROLE_INSTRUCTION $CHANNEL_REPLY_INSTRUCTION ' ]
+check "the priming write joins exactly the five instruction variables the absence cases read" $?
 
 # v2 Section 7: the priming write the steer
 # sentence rides must stay independent of NO_CHANNEL. The presence checks
@@ -254,10 +384,13 @@ printf '%s\n' "$SNIPPET" | grep -qE '^[[:space:]]*if wait_for_result_line "\$OUT
 # carry one text by design and keep it in sync by hand, so identity is the
 # contract; the wording itself is free to change as long as both move.
 # This eval is also the matching case for the coordinator's own instruction:
-# the launch persona equals COORDINATOR_PERSONA.
+# the launch persona equals COORDINATOR_PERSONA. The fleet names an architect,
+# and the name warden is withheld from every literal bin/supervise.sh carries,
+# so the routing clause's target is proven to come from the setting.
 NO_CHANNEL=0
 PERSONA="lead"
 COORDINATOR_PERSONA="lead"
+ARCHITECT_PERSONA="warden"
 eval "$VARS_SNIPPET"
 PLUGIN_REPLY_INSTRUCTION=$(sed -n 's/^const REPLY_INSTRUCTION = "\(.*\)";$/\1/p' "$HERE/../hooks/index.ts")
 [ -n "$CHANNEL_REPLY_INSTRUCTION" ] && [ "$CHANNEL_REPLY_INSTRUCTION" = "$PLUGIN_REPLY_INSTRUCTION" ]
@@ -302,8 +435,26 @@ case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *) check "persona matches COORDINATOR_PERSONA: the reconciliation pass runs on the [RECONCILE] prompt" 1 ;;
 esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_ARCHITECT_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the design-escalation duty is present, naming the architect persona argument" 0 ;;
-  *) check "persona matches COORDINATOR_PERSONA: the design-escalation duty is present, naming the architect persona argument" 1 ;;
+  *"$SAY_PERSONA_ARG_CONTROL"*"$ARCHITECT_PERSONA"*) check "persona matches COORDINATOR_PERSONA: the design-escalation duty is present, routing to the ARCHITECT_PERSONA name" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the design-escalation duty is present, routing to the ARCHITECT_PERSONA name" 1 ;;
+esac
+# The same target read adjacently. The case above is an ordered pair, and a
+# case glob matches its parts with arbitrary text between them, so the fleet
+# row's own interpolation of the same name satisfies it on its own: reverting
+# this target to a literal seat name leaves that pair green. The comma belongs
+# to the literal, so a match cannot run past the argument into the sentence
+# behind it.
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$SAY_PERSONA_ARG_CONTROL $ARCHITECT_PERSONA,"*) check "persona matches COORDINATOR_PERSONA: the agentic_say target is the ARCHITECT_PERSONA name itself" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the agentic_say target is the ARCHITECT_PERSONA name itself" 1 ;;
+esac
+check_spliced_names "persona matches COORDINATOR_PERSONA: every persona name in the priming write comes from the settings"
+# The row the duty reads for a liveness answer is named from the same setting,
+# so a steward on a fleet whose design seat carries another name still knows
+# which row is the architect's.
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"the row for $ARCHITECT_PERSONA"*) check "persona matches COORDINATOR_PERSONA: the liveness check names the architect's own row by the ARCHITECT_PERSONA name" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the liveness check names the architect's own row by the ARCHITECT_PERSONA name" 1 ;;
 esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the design-escalation duty raises an ask no live architect received" 0 ;;
@@ -326,12 +477,36 @@ case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *) check "persona matches COORDINATOR_PERSONA: an action the five classes do not name is routed by the claim and heartbeat rather than reported as a class" 1 ;;
 esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_FLEET_CARVEOUT_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the fleet duty's carve-out names the architect liveness check" 0 ;;
-  *) check "persona matches COORDINATOR_PERSONA: the fleet duty's carve-out names the architect liveness check" 1 ;;
+  *"$ROLE_FLEET_CARVEOUT_TWO_CONTROL"*"$ROLE_FLEET_CARVEOUT_CASES_CONTROL"*"$ROLE_FLEET_CARVEOUT_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the carve-out is bounded by the instruction, names its two cases, and the design duty names the liveness check after them" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the carve-out is bounded by the instruction, names its two cases, and the design duty names the liveness check after them" 1 ;;
+esac
+# The kinds of ask the design duty routes. The finishing judgment is read on its
+# own because a shorter closed list drops it, and the open ending is read beside
+# it because a closed list of any length reads as exhaustive.
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_ARCHITECT_KINDS_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the design-escalation duty routes a finishing judgment" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the design-escalation duty routes a finishing judgment" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_ARCHITECT_KINDS_OPEN_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the kinds the design-escalation duty names are not a closed list" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the kinds the design-escalation duty names are not a closed list" 1 ;;
 esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_ARCHITECT_NOROW_CONTROL"*"$ROLE_ARCHITECT_UNCONFIRMED_CONTROL"*) check "persona matches COORDINATOR_PERSONA: a reply carrying no architect row is reported as sent with delivery unconfirmed" 0 ;;
   *) check "persona matches COORDINATOR_PERSONA: a reply carrying no architect row is reported as sent with delivery unconfirmed" 1 ;;
+esac
+# The coordinator persona's own launch is one of the personas the architect
+# setting must not reach, and the read is over the whole priming write rather
+# than the architect variable alone, so a charter clause arriving through any
+# other variable reds here too.
+if [ -z "${ARCHITECT_ROLE_INSTRUCTION:-}" ]; then
+  check "persona matches COORDINATOR_PERSONA: architect role instruction is empty" 0
+else
+  check "persona matches COORDINATOR_PERSONA: architect role instruction is empty" 1
+fi
+case "$(priming_concat)" in
+  *"$ARCH_SEAT_CONTROL"*|*"$ARCH_ASK_CONTROL"*|*"$ARCH_WORKTREE_CONTROL"*|*"$ARCH_REPORT_CONTROL"*|*"$ARCH_NEVER_CONTROL"*|*"$ARCH_NOREPO_CONTROL"*|*"$ARCH_CLONE_CONTROL"*|*"$ARCH_STEER_CONTROL"*|*"$ARCH_OTHER_PATH_CONTROL"*|*"$ARCH_FETCH_CONTROL"*|*"$ARCH_PUSH_BOUND_CONTROL"*|*"$ARCH_NOCHANNEL_CONTROL"*|*"$ARCH_SKILLS_CONTROL"*) check "persona matches COORDINATOR_PERSONA: no architect charter reaches the priming write" 1 ;;
+  *) check "persona matches COORDINATOR_PERSONA: no architect charter reaches the priming write" 0 ;;
 esac
 # Every case above reads one fragment on its own, so reordering the three duty
 # sentences leaves all of them green and deleting one reds that one alone.
@@ -340,15 +515,50 @@ case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *) check "persona matches COORDINATOR_PERSONA: the steer sentence carries no escalation-to-coordinator clause" 0 ;;
 esac
 
+# The same coordinator launch on a fleet that names no architect. The routing
+# clause is built from ARCHITECT_PERSONA, so with no name there is nowhere to
+# route: the whole clause is withheld rather than sending every design ask to a
+# persona nothing holds. The other two duties are read here as well, since a
+# clause dropped from the middle of the instruction must not take them with it.
+unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION ARCHITECT_ROLE_INSTRUCTION ARCHITECT_PERSONA
+NO_CHANNEL=0
+PERSONA="lead"
+COORDINATOR_PERSONA="lead"
+eval "$VARS_SNIPPET"
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$SAY_PERSONA_ARG_CONTROL"*|*"$ROLE_ARCHITECT_LIVE_CONTROL"*|*"$ROLE_ARCHITECT_NOROW_CONTROL"*|*"$ROLE_ARCHITECT_KINDS_CONTROL"*|*"$ROLE_FLEET_CARVEOUT_CONTROL"*) check "ARCHITECT_PERSONA unset, persona matches COORDINATOR_PERSONA: no design-escalation clause is built" 1 ;;
+  *) check "ARCHITECT_PERSONA unset, persona matches COORDINATOR_PERSONA: no design-escalation clause is built" 0 ;;
+esac
+# The liveness check rides the design clause above, so a fleet with no architect
+# is left with the carve-out naming the two calls its own duties make and no
+# case for a call nothing tells it to place.
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_FLEET_CARVEOUT_TWO_CONTROL"*"$ROLE_FLEET_CARVEOUT_CASES_CONTROL"*) check "ARCHITECT_PERSONA unset, persona matches COORDINATOR_PERSONA: the carve-out still names its two cases" 0 ;;
+  *) check "ARCHITECT_PERSONA unset, persona matches COORDINATOR_PERSONA: the carve-out still names its two cases" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_FLEET_CONTROL"*) check "ARCHITECT_PERSONA unset, persona matches COORDINATOR_PERSONA: the fleet-health duty still stands" 0 ;;
+  *) check "ARCHITECT_PERSONA unset, persona matches COORDINATOR_PERSONA: the fleet-health duty still stands" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_SEAT_CONTROL"*) check "ARCHITECT_PERSONA unset, persona matches COORDINATOR_PERSONA: the kit Coordinator seat duty still stands" 0 ;;
+  *) check "ARCHITECT_PERSONA unset, persona matches COORDINATOR_PERSONA: the kit Coordinator seat duty still stands" 1 ;;
+esac
+case "$(priming_concat)" in
+  *"$ARCH_SEAT_CONTROL"*|*"$ARCH_ASK_CONTROL"*|*"$ARCH_WORKTREE_CONTROL"*|*"$ARCH_REPORT_CONTROL"*|*"$ARCH_NEVER_CONTROL"*|*"$ARCH_NOREPO_CONTROL"*|*"$ARCH_CLONE_CONTROL"*|*"$ARCH_STEER_CONTROL"*|*"$ARCH_OTHER_PATH_CONTROL"*|*"$ARCH_FETCH_CONTROL"*|*"$ARCH_PUSH_BOUND_CONTROL"*|*"$ARCH_NOCHANNEL_CONTROL"*|*"$ARCH_SKILLS_CONTROL"*) check "ARCHITECT_PERSONA unset, persona matches COORDINATOR_PERSONA: no architect charter reaches the priming write" 1 ;;
+  *) check "ARCHITECT_PERSONA unset, persona matches COORDINATOR_PERSONA: no architect charter reaches the priming write" 0 ;;
+esac
+
 # Channel not attached: the reply-tool guidance is absent, but the
 # skill-load sentence and the coordinator steer sentence must still be
 # present - both are NO_CHANNEL-independent. This eval is also the control
 # for the coordinator's own instruction: an ordinary worker's launch, whose
 # persona differs from COORDINATOR_PERSONA, gets none of it.
-unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION
+unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION ARCHITECT_ROLE_INSTRUCTION
 NO_CHANNEL=1
 PERSONA="worker"
 COORDINATOR_PERSONA="lead"
+ARCHITECT_PERSONA="warden"
 eval "$VARS_SNIPPET"
 case "${SKILL_LOAD_INSTRUCTION:-}" in
   *"$SKILL_LOAD_CONTROL"*) check "channel not attached: skill-load sentence still present" 0 ;;
@@ -378,7 +588,7 @@ fi
 # reply variable reds here rather than slipping past a read of the role
 # variable alone.
 case "$(priming_concat)" in
-  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_FLEET_ACTION_ROUTE_CONTROL"*|*"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "persona differs from COORDINATOR_PERSONA: no fleet-keeper duty reaches a worker through any part of the priming write" 1 ;;
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$SAY_PERSONA_ARG_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_FLEET_ACTION_ROUTE_CONTROL"*|*"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "persona differs from COORDINATOR_PERSONA: no fleet-keeper duty reaches a worker through any part of the priming write" 1 ;;
   *) check "persona differs from COORDINATOR_PERSONA: no fleet-keeper duty reaches a worker through any part of the priming write" 0 ;;
 esac
 
@@ -387,10 +597,11 @@ esac
 # two vary one axis each: no channel with a matching persona must still
 # carry the instruction, and a channel with a mismatched COORDINATOR_PERSONA
 # must not.
-unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION
+unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION ARCHITECT_ROLE_INSTRUCTION
 NO_CHANNEL=1
 PERSONA="lead"
 COORDINATOR_PERSONA="lead"
+ARCHITECT_PERSONA="warden"
 eval "$VARS_SNIPPET"
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_SAY_CONTROL"*"$ROLE_CAP_CONTROL"*"$ROLE_BOUNDARY_CONTROL"*) check "channel not attached, persona matches: coordinator role instruction present, naming agentic_say, the round cap and the boundary verb" 0 ;;
@@ -408,17 +619,19 @@ case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *) check "channel not attached, persona matches: the kit Coordinator seat duty is present" 1 ;;
 esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_ARCHITECT_CONTROL"*) check "channel not attached, persona matches: the design-escalation duty is present" 0 ;;
-  *) check "channel not attached, persona matches: the design-escalation duty is present" 1 ;;
+  *"$SAY_PERSONA_ARG_CONTROL"*"$ARCHITECT_PERSONA"*) check "channel not attached, persona matches: the design-escalation duty is present, routing to the ARCHITECT_PERSONA name" 0 ;;
+  *) check "channel not attached, persona matches: the design-escalation duty is present, routing to the ARCHITECT_PERSONA name" 1 ;;
 esac
+check_spliced_names "channel not attached, persona matches: every persona name in the priming write comes from the settings"
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *"$STEER_ESCALATE_CONTROL"*) check "channel not attached, persona matches: the steer sentence carries no escalation-to-coordinator clause" 1 ;;
   *) check "channel not attached, persona matches: the steer sentence carries no escalation-to-coordinator clause" 0 ;;
 esac
-unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION
+unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION ARCHITECT_ROLE_INSTRUCTION
 NO_CHANNEL=0
 PERSONA="lead"
 COORDINATOR_PERSONA="worker"
+ARCHITECT_PERSONA="warden"
 eval "$VARS_SNIPPET"
 if [ -z "${COORDINATOR_ROLE_INSTRUCTION:-}" ]; then
   check "channel attached, COORDINATOR_PERSONA differs: coordinator role instruction is empty" 0
@@ -426,7 +639,7 @@ else
   check "channel attached, COORDINATOR_PERSONA differs: coordinator role instruction is empty" 1
 fi
 case "$(priming_concat)" in
-  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_FLEET_ACTION_ROUTE_CONTROL"*|*"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "channel attached, COORDINATOR_PERSONA differs: no fleet-keeper duty reaches the priming write" 1 ;;
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$SAY_PERSONA_ARG_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_FLEET_ACTION_ROUTE_CONTROL"*|*"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "channel attached, COORDINATOR_PERSONA differs: no fleet-keeper duty reaches the priming write" 1 ;;
   *) check "channel attached, COORDINATOR_PERSONA differs: no fleet-keeper duty reaches the priming write" 0 ;;
 esac
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
@@ -437,10 +650,11 @@ esac
 # worker leg of the reach rule refuses its agentic_say to the coordinator:
 # the clause is withheld rather than issued as a standing instruction the
 # plugin always denies.
-unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION
+unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION ARCHITECT_ROLE_INSTRUCTION
 NO_CHANNEL=1
 PERSONA="default"
 COORDINATOR_PERSONA="lead"
+ARCHITECT_PERSONA="warden"
 eval "$VARS_SNIPPET"
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *"$STEER_ESCALATE_CONTROL"*) check "default persona: the steer sentence carries no escalation-to-coordinator clause" 1 ;;
@@ -450,7 +664,7 @@ esac
 # holds no named owner claim, so a fleet probe or a design escalation from it
 # would be refused by the reach rule anyway.
 case "$(priming_concat)" in
-  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_FLEET_ACTION_ROUTE_CONTROL"*|*"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "default persona: no fleet-keeper duty reaches the priming write" 1 ;;
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$SAY_PERSONA_ARG_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_FLEET_ACTION_ROUTE_CONTROL"*|*"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "default persona: no fleet-keeper duty reaches the priming write" 1 ;;
   *) check "default persona: no fleet-keeper duty reaches the priming write" 0 ;;
 esac
 if [ -z "${COORDINATOR_ROLE_INSTRUCTION:-}" ]; then
@@ -458,6 +672,203 @@ if [ -z "${COORDINATOR_ROLE_INSTRUCTION:-}" ]; then
 else
   check "default persona: coordinator role instruction is empty" 1
 fi
+
+# Section 2: the architect's charter, gated on ARCHITECT_PERSONA the way the
+# coordinator's is gated on COORDINATOR_PERSONA. The matching eval below holds
+# a persona that is neither the coordinator's nor default, which is what an
+# architect launch is, and the name vellum is withheld from every literal
+# bin/supervise.sh carries so the gate is proven on the comparison. The
+# coordinator name here is quill, withheld from every literal in both files, so
+# the answer clause's name pin below cannot pass on a string the source carries.
+unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION ARCHITECT_ROLE_INSTRUCTION
+NO_CHANNEL=0
+PERSONA="vellum"
+COORDINATOR_PERSONA="quill"
+ARCHITECT_PERSONA="vellum"
+eval "$VARS_SNIPPET"
+# One case per charter clause, so a red names the clause that went missing
+# rather than the paragraph it sat in.
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_SEAT_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the architect instruction is present, naming the design seat" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the architect instruction is present, naming the design seat" 1 ;;
+esac
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_ASK_CONTROL"*"$STEER_LABEL_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the two ways an ask arrives are named, one of them the coordinator record's label" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the two ways an ask arrives are named, one of them the coordinator record's label" 1 ;;
+esac
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_WORKTREE_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the worktree rule is present" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the worktree rule is present" 1 ;;
+esac
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_REPORT_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the commit-and-report rule is present" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the commit-and-report rule is present" 1 ;;
+esac
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_NEVER_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the never-execute rule is present" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the never-execute rule is present" 1 ;;
+esac
+# The worktree, commit and report rules cover an ask whose product is a file.
+# A review, a consult and a judgment produce none, and are answered with no
+# branch at all, so the charter carries that half too.
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_NOFILE_CONTROL"*) check "persona matches ARCHITECT_PERSONA: an ask that produces no file is answered with no branch" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: an ask that produces no file is answered with no branch" 1 ;;
+esac
+# The third product shape: an ask that does produce a file and names no
+# repository, which the worktree rule and the no-file rule both leave out.
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_NOREPO_CONTROL"*) check "persona matches ARCHITECT_PERSONA: a file-producing ask that names no repository has a place to land" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: a file-producing ask that names no repository has a place to land" 1 ;;
+esac
+# The clone the worktree is cut from, read as an ordered pair with the exclusion
+# so a charter that says where the repository comes from and drops the exclusion
+# reds here: the machine's other clones are checkouts live personas commit in.
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_CLONE_CONTROL"*"$ARCH_CLONE_EXCLUSIVE_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the worktree is cut from a clone of the architect's own" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the worktree is cut from a clone of the architect's own" 1 ;;
+esac
+# The steer sentence is built for every launch, this one included, and it tells
+# a persona to put a [COORDINATOR ...] prompt that ties to no goal node to the
+# operator or decline it. Read as an ordered pair with the steer label, so the
+# override is pinned to the rule it overrides rather than to a loose phrase.
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$STEER_LABEL_CONTROL"*"$ARCH_STEER_CONTROL"*) check "persona matches ARCHITECT_PERSONA: a coordinator record is this seat's work item rather than a steer to put to the operator" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: a coordinator record is this seat's work item rather than a steer to put to the operator" 1 ;;
+esac
+# The rule the clause overrides is present in the same priming write, so the
+# contradiction the clause settles is real rather than assumed. The steer
+# sentence is read by the label it teaches rather than by a sentence of its own
+# prose: that wording belongs to no section of this plan, and pinning it here
+# would red on a later effort's defect-free rewording of it.
+case "${COORDINATOR_STEER_INSTRUCTION:-}" in
+  *"$STEER_LABEL_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the steer rule the charter overrides rides the same priming write" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the steer rule the charter overrides rides the same priming write" 1 ;;
+esac
+[ -n "${COORDINATOR_STEER_INSTRUCTION:-}" ]
+check "persona matches ARCHITECT_PERSONA: the steer sentence itself is non-empty on this launch" "$?"
+# The skill-load sentence rides this write too and sends every session to the
+# kit's plan-execution skill before plan work, which is what writing a spec is.
+# Read as an ordered pair with the override, so the charter names the rule it
+# overrides rather than naming three skills beside a sentence it never answers.
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_SKILLS_OVERRIDE_CONTROL"*"$ARCH_SKILLS_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the charter overrides the skill-load sentence's plan-execution leg and names the design skills" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the charter overrides the skill-load sentence's plan-execution leg and names the design skills" 1 ;;
+esac
+case "${SKILL_LOAD_INSTRUCTION:-}" in
+  *"claude-kit:executing-work"*) check "persona matches ARCHITECT_PERSONA: the plan-execution skill the charter overrides is named in the same priming write" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the plan-execution skill the charter overrides is named in the same priming write" 1 ;;
+esac
+# The clone is refreshed before each ask, so a branch cut months after the clone
+# was taken still starts from a current trunk.
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_FETCH_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the clone is fetched before each ask" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the clone is fetched before each ask" 1 ;;
+esac
+# A repository name can arrive inside a record rather than from the operator,
+# and the push runs under the machine's stored credentials.
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_PUSH_BOUND_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the clone target and the remote are named before the push" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the clone target and the remote are named before the push" 1 ;;
+esac
+# The report clause names the operator and the charter is NO_CHANNEL-
+# independent, so the fallback for a launch with no reply tool rides it.
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_NOCHANNEL_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the report clause carries its no-channel fallback" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the report clause carries its no-channel fallback" 1 ;;
+esac
+# The two ways an ask arrives are how a design ask normally comes, not a claim
+# that no other text reaches the seat: a reader session's record and the launch
+# prompt both do.
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_OTHER_PATH_CONTROL"*) check "persona matches ARCHITECT_PERSONA: text arriving any other way is placed rather than denied" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: text arriving any other way is placed rather than denied" 1 ;;
+esac
+check_spliced_names "persona matches ARCHITECT_PERSONA: every persona name in the priming write comes from the settings"
+# An ordered pair, so an answer clause that keeps agentic_say and drops the
+# coordinator persona's own name reds here: the name is what the reach rule
+# matches on, and a hardcoded one reaches a persona nothing holds.
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_SAY_CONTROL"*"$SAY_PERSONA_ARG_CONTROL"*"$COORDINATOR_PERSONA"*) check "persona matches ARCHITECT_PERSONA: the architect answers the coordinator persona by name" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the architect answers the coordinator persona by name" 1 ;;
+esac
+# The architect is not the coordinator persona, so it gets none of the
+# coordinator's own instruction beside its charter.
+if [ -z "${COORDINATOR_ROLE_INSTRUCTION:-}" ]; then
+  check "persona matches ARCHITECT_PERSONA: coordinator role instruction is empty" 0
+else
+  check "persona matches ARCHITECT_PERSONA: coordinator role instruction is empty" 1
+fi
+
+# The charter is NO_CHANNEL-independent, like every other part of the priming
+# write: an architect launched with no channel still knows what it is.
+unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION ARCHITECT_ROLE_INSTRUCTION
+NO_CHANNEL=1
+PERSONA="vellum"
+COORDINATOR_PERSONA="lead"
+ARCHITECT_PERSONA="vellum"
+eval "$VARS_SNIPPET"
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_SEAT_CONTROL"*"$ARCH_NEVER_CONTROL"*) check "channel not attached, persona matches ARCHITECT_PERSONA: the architect instruction is present" 0 ;;
+  *) check "channel not attached, persona matches ARCHITECT_PERSONA: the architect instruction is present" 1 ;;
+esac
+
+# A named worker launched on a fleet that does name an architect. This is the
+# direction a mis-set persona name would break: the charter reaching a session
+# that holds a plan to execute.
+unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION ARCHITECT_ROLE_INSTRUCTION
+NO_CHANNEL=0
+PERSONA="worker"
+COORDINATOR_PERSONA="lead"
+ARCHITECT_PERSONA="vellum"
+eval "$VARS_SNIPPET"
+if [ -z "${ARCHITECT_ROLE_INSTRUCTION:-}" ]; then
+  check "persona differs from ARCHITECT_PERSONA: architect role instruction is empty" 0
+else
+  check "persona differs from ARCHITECT_PERSONA: architect role instruction is empty" 1
+fi
+case "$(priming_concat)" in
+  *"$ARCH_SEAT_CONTROL"*|*"$ARCH_ASK_CONTROL"*|*"$ARCH_WORKTREE_CONTROL"*|*"$ARCH_REPORT_CONTROL"*|*"$ARCH_NEVER_CONTROL"*|*"$ARCH_NOREPO_CONTROL"*|*"$ARCH_CLONE_CONTROL"*|*"$ARCH_STEER_CONTROL"*|*"$ARCH_OTHER_PATH_CONTROL"*|*"$ARCH_FETCH_CONTROL"*|*"$ARCH_PUSH_BOUND_CONTROL"*|*"$ARCH_NOCHANNEL_CONTROL"*|*"$ARCH_SKILLS_CONTROL"*) check "persona differs from ARCHITECT_PERSONA: no charter clause reaches a worker through any part of the priming write" 1 ;;
+  *) check "persona differs from ARCHITECT_PERSONA: no charter clause reaches a worker through any part of the priming write" 0 ;;
+esac
+
+# The coordinator persona on that same fleet holds the other named seat, and
+# the two instructions are gated on different settings, so it gets its own and
+# not the architect's.
+unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION ARCHITECT_ROLE_INSTRUCTION
+NO_CHANNEL=0
+PERSONA="lead"
+COORDINATOR_PERSONA="lead"
+ARCHITECT_PERSONA="vellum"
+eval "$VARS_SNIPPET"
+if [ -z "${ARCHITECT_ROLE_INSTRUCTION:-}" ] && [ -n "${COORDINATOR_ROLE_INSTRUCTION:-}" ]; then
+  check "the coordinator persona on a fleet naming an architect gets its own instruction and not the architect's" 0
+else
+  check "the coordinator persona on a fleet naming an architect gets its own instruction and not the architect's" 1
+fi
+
+# ARCHITECT_PERSONA unset is a fleet with no architect, and it builds the
+# charter for no persona at all: not for the very name an architect launch
+# would carry, and not for default. The setting has no default value, unlike
+# COORDINATOR_PERSONA, so there is nothing for an unset launch to match.
+unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION ARCHITECT_ROLE_INSTRUCTION ARCHITECT_PERSONA
+NO_CHANNEL=0
+PERSONA="vellum"
+COORDINATOR_PERSONA="lead"
+eval "$VARS_SNIPPET"
+case "$(priming_concat)" in
+  *"$ARCH_SEAT_CONTROL"*|*"$ARCH_ASK_CONTROL"*|*"$ARCH_WORKTREE_CONTROL"*|*"$ARCH_REPORT_CONTROL"*|*"$ARCH_NEVER_CONTROL"*|*"$ARCH_NOREPO_CONTROL"*|*"$ARCH_CLONE_CONTROL"*|*"$ARCH_STEER_CONTROL"*|*"$ARCH_OTHER_PATH_CONTROL"*|*"$ARCH_FETCH_CONTROL"*|*"$ARCH_PUSH_BOUND_CONTROL"*|*"$ARCH_NOCHANNEL_CONTROL"*|*"$ARCH_SKILLS_CONTROL"*) check "ARCHITECT_PERSONA unset: no charter clause reaches the persona an architect launch would carry" 1 ;;
+  *) check "ARCHITECT_PERSONA unset: no charter clause reaches the persona an architect launch would carry" 0 ;;
+esac
+unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION ARCHITECT_ROLE_INSTRUCTION ARCHITECT_PERSONA
+NO_CHANNEL=1
+PERSONA="default"
+COORDINATOR_PERSONA="lead"
+eval "$VARS_SNIPPET"
+case "$(priming_concat)" in
+  *"$ARCH_SEAT_CONTROL"*|*"$ARCH_ASK_CONTROL"*|*"$ARCH_WORKTREE_CONTROL"*|*"$ARCH_REPORT_CONTROL"*|*"$ARCH_NEVER_CONTROL"*|*"$ARCH_NOREPO_CONTROL"*|*"$ARCH_CLONE_CONTROL"*|*"$ARCH_STEER_CONTROL"*|*"$ARCH_OTHER_PATH_CONTROL"*|*"$ARCH_FETCH_CONTROL"*|*"$ARCH_PUSH_BOUND_CONTROL"*|*"$ARCH_NOCHANNEL_CONTROL"*|*"$ARCH_SKILLS_CONTROL"*) check "ARCHITECT_PERSONA unset, default persona: no charter clause reaches the priming write" 1 ;;
+  *) check "ARCHITECT_PERSONA unset, default persona: no charter clause reaches the priming write" 0 ;;
+esac
 
 echo
 if [ "$failed" = "0" ]; then
