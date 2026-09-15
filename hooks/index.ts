@@ -598,10 +598,12 @@ type FleetRow = {
   // marker that stops the next start, and it outranks the rest because it
   // decides what happens next whatever is running now. "stopped" is a signalled
   // exit (130 or 143), on which bin/keeper-functions.ps1 returns Action 'exit'
-  // and the wrapper leaves without relaunching and without writing a marker,
-  // and it outranks a live claim for the reason "held" does. "running" is a
-  // live claim under neither of those: a session is up, whatever ladder the
-  // last supervisor exit left behind. The last three describe a persona no live
+  // and the wrapper leaves without relaunching and without writing a marker.
+  // Under a live claim it holds only while that claim's heartbeat is older
+  // than the exit, which is the exiting session still standing in the store.
+  // "running" is a live claim under no marker and under no exit newer than the
+  // claim: a session is up, whatever ladder the last supervisor exit left
+  // behind. The last three describe a persona no live
   // session is holding, read out of the ladder position keeper.json records.
   // "backing off" is a ladder that has climbed above the base after a
   // crash-class exit, and "relaunching" is a ladder still at the base.
@@ -656,12 +658,18 @@ function rosterRunDir(entry: RosterEntry): string | null {
 // record what the keeper decided at the last supervisor exit and cannot say
 // whether the persona is up now, so fleetActionOf below settles the action
 // against the commons half.
+// lastEndMs rides with the standing because a signalled exit under a live
+// claim is settled against it: it is the epoch time of keeper.json's lastEnd,
+// the moment the last supervisor exit was recorded, and null when the file
+// carries no readable stamp.
 type KeeperStanding = Exclude<FleetRow["action"], "running">;
-type KeeperHalf = { standing: KeeperStanding } & Pick<FleetRow, "nextDelaySeconds" | "holdReason" | "holdReasonSource" | "lastExitCode" | "note">;
+type KeeperHalf = { standing: KeeperStanding; lastEndMs: number | null }
+  & Pick<FleetRow, "nextDelaySeconds" | "holdReason" | "holdReasonSource" | "lastExitCode" | "note">;
 const readKeeperHalf = async (dp: any, rundir: string | null): Promise<KeeperHalf> => {
   if (rundir === null) {
     return {
       standing: "unknown",
+      lastEndMs: null,
       nextDelaySeconds: null,
       holdReason: null,
       holdReasonSource: null,
@@ -720,6 +728,11 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<KeeperHal
 
   const nextDelaySeconds = typeof state?.currentDelay === "number" ? state.currentDelay : null;
   const lastExitCode = typeof state?.lastExitCode === "number" ? state.lastExitCode : null;
+  // The stamp bin/Start-Persona.ps1 writes when the supervisor returns, as
+  // epoch milliseconds. A value that is not a string, and a string Date.parse
+  // will not take, both read as no stamp rather than as a time.
+  const parsedEnd = typeof state?.lastEnd === "string" ? Date.parse(state.lastEnd) : Number.NaN;
+  const lastEndMs = Number.isNaN(parsedEnd) ? null : parsedEnd;
   // The marker's first line is the reason the keeper wrote for the operator;
   // keeper.json's own holdReason stands in when the marker carries no text.
   if (hold === "yes" && holdReason === null && typeof state?.holdReason === "string" && state.holdReason.trim() !== "") {
@@ -728,8 +741,12 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<KeeperHal
   }
   // The marker is what stops the next start, so it decides over the exit code.
   // A marker check that threw decides next, because every standing below it is
-  // a statement that no marker is there. A signalled exit with no marker is a
-  // persona the keeper left down: exit 130 and 143 return Action 'exit' in
+  // a statement that no marker is there. That case reaches the reader in the
+  // row's note and not in its action: the standing it produces is "unknown",
+  // which fleetActionOf does not outrank a live claim with, so a persona that
+  // is up reads running and the note names the marker that went unchecked.
+  // A signalled exit with no marker is a persona the keeper left down at the
+  // moment it was recorded: exit 130 and 143 return Action 'exit' in
   // bin/keeper-functions.ps1, on which the wrapper neither waits nor
   // relaunches. Everything else is read from the ladder, which climbs above the
   // base only after a crash-class exit.
@@ -745,6 +762,7 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<KeeperHal
           : nextDelaySeconds > KEEPER_BASE_DELAY_SECONDS ? "backing off" : "relaunching";
   return {
     standing,
+    lastEndMs,
     nextDelaySeconds,
     holdReason,
     holdReasonSource,
@@ -791,7 +809,10 @@ function liveClaimsOf(entries: CommonsEntry[], staleAfterMs: number, now: number
 }
 
 // The commons half of one row: whether a live session holds the persona's
-// claim, how old that session's heartbeat is, and whether it is inside a turn.
+// claim, when that session was last seen and how old that heartbeat is, and
+// whether it is inside a turn. The stamp rides beside the age because
+// fleetActionOf compares it against the keeper's last recorded exit, and null
+// exactly where the age is, which is where no entry was found to read it from.
 // The holder is the commons winner among the live claimants, the arbitration
 // every other reader applies. A persona no live session claims reports no
 // claim; where a stopped session's entry is still in the store, its age says
@@ -802,23 +823,23 @@ function fleetCommonsOf(
   persona: string,
   staleAfterMs: number,
   now: number,
-): Pick<FleetRow, "claimHeld" | "heartbeatAgeMs" | "turnState" | "turnRunningMs"> {
+): Pick<FleetRow, "claimHeld" | "heartbeatAgeMs" | "turnState" | "turnRunningMs"> & { lastSeen: number | null } {
   const resource = `persona:${persona}`;
   const holders = entries.filter((entry) => entry.claims.some((claim) => claim && claim.resource === resource));
-  if (holders.length === 0) return { claimHeld: false, heartbeatAgeMs: null, turnState: "unknown" };
+  if (holders.length === 0) return { claimHeld: false, lastSeen: null, heartbeatAgeMs: null, turnState: "unknown" };
   const live = holders.filter((entry) => now - entry.lastSeen <= staleAfterMs);
   if (live.length === 0) {
     const freshest = holders.reduce((a, b) => (b.lastSeen > a.lastSeen ? b : a));
-    return { claimHeld: false, heartbeatAgeMs: Math.max(0, now - freshest.lastSeen), turnState: "unknown" };
+    return { claimHeld: false, lastSeen: freshest.lastSeen, heartbeatAgeMs: Math.max(0, now - freshest.lastSeen), turnState: "unknown" };
   }
   const winner = commonsWinner(liveClaimsOf(live, staleAfterMs, now), resource);
   const entry = live.find((candidate) => candidate.sessionId === winner);
-  if (!entry) return { claimHeld: false, heartbeatAgeMs: null, turnState: "unknown" };
+  if (!entry) return { claimHeld: false, lastSeen: null, heartbeatAgeMs: null, turnState: "unknown" };
   const heartbeatAgeMs = Math.max(0, now - entry.lastSeen);
   if (typeof entry.turnStartedAt === "number") {
-    return { claimHeld: true, heartbeatAgeMs, turnState: "in turn", turnRunningMs: Math.max(0, now - entry.turnStartedAt) };
+    return { claimHeld: true, lastSeen: entry.lastSeen, heartbeatAgeMs, turnState: "in turn", turnRunningMs: Math.max(0, now - entry.turnStartedAt) };
   }
-  return { claimHeld: true, heartbeatAgeMs, turnState: "idle" };
+  return { claimHeld: true, lastSeen: entry.lastSeen, heartbeatAgeMs, turnState: "idle" };
 }
 
 // The action one row reports, from the keeper's standing and whether a live
@@ -829,16 +850,40 @@ function fleetCommonsOf(
 // and relaunched leaves currentDelay above the base for as long as the new
 // session runs, and reading that standing out as the present would report a
 // healthy persona as backing off indefinitely. A live claim therefore reads as
-// running, whatever ladder that file records. "held" and "stopped" outrank the
-// claim all the same, because both are statements about what happens next
-// rather than about what is running now: the marker says the keeper will not
-// start this persona again, and a signalled exit says the wrapper has already
-// left without relaunching. A session still holding the claim under either one
-// is the session that is going away, which is what the operator needs to see
-// before it does.
-function fleetActionOf(standing: KeeperStanding, claimHeld: boolean): FleetRow["action"] {
-  if (standing === "held" || standing === "stopped") return standing;
-  return claimHeld ? "running" : standing;
+// running, whatever ladder that file records. "held" outranks the claim all
+// the same, because the marker is a statement about what happens next rather
+// than about what is running now: the keeper will not start this persona
+// again, and a session still holding the claim under it is the session that is
+// going away.
+// A signalled exit is settled against the clock, because that same file is
+// written at an exit and never at a launch: lastExitCode 143 stands in
+// keeper.json for the whole of the next run, so treating it as outranking the
+// claim reports a persona the operator restarted as stopped until it next
+// exits. A heartbeat older than the recorded exit is the exiting session still
+// standing in the store, which is the row the operator has to act on; a
+// heartbeat newer than it is a session that started afterwards. With no
+// readable exit stamp there is nothing to settle it against, so the claim
+// decides and the row's note says which reading was unavailable.
+function fleetActionOf(
+  standing: KeeperStanding,
+  claimHeld: boolean,
+  lastSeen: number | null,
+  lastEndMs: number | null,
+): FleetRow["action"] {
+  if (standing === "held") return "held";
+  if (!claimHeld) return standing;
+  if (standing === "stopped") {
+    return lastEndMs !== null && lastSeen !== null && lastSeen < lastEndMs ? "stopped" : "running";
+  }
+  return "running";
+}
+
+// Whether a row's signalled exit went unsettled: the keeper recorded a signal,
+// a live session holds the claim, and the exit carries no readable stamp to
+// place that session against. The note this gates is the only thing telling a
+// reader the row's "running" rests on the claim alone.
+function fleetEndUnreadable(standing: KeeperStanding, claimHeld: boolean, lastEndMs: number | null): boolean {
+  return standing === "stopped" && claimHeld && lastEndMs === null;
 }
 
 // M7: single guarded-write path shared by every store write site.
@@ -1561,10 +1606,9 @@ export const register: Register = async (on, options) => {
         "Read fleet health: one row per persona in the roster the plugin's fleetRoster setting names. Each row carries " +
         "the persona's name, whether the roster enables it, where it stands (held, meaning a marker " +
         "stops its next start, which is reported even while a session still holds the persona; stopped, meaning the last supervisor exit was " +
-        "signalled, on which the keeper's wrapper leaves " +
-        "without relaunching, so nothing restarts this persona until its scheduled task runs again, and which is reported even " +
-        "while a session still holds the persona, as a hold is, because both say what happens next rather than what is running " +
-        "now; running, meaning a live session holds the persona's claim under neither of those, which outranks the ladder the " +
+        "signalled and nothing has come up since, on which the keeper's wrapper leaves " +
+        "without relaunching, so nothing restarts this persona until its scheduled task runs again; running, meaning a live " +
+        "session holds the persona's claim under no marker, which outranks the ladder the " +
         "keeper's state file records because that file is written after a supervisor exit and so describes a decision already " +
         "carried out; backing off, meaning the " +
         "keeper's relaunch delay has climbed above the base after a crash; relaunching, meaning that delay still sits at the " +
@@ -1574,9 +1618,14 @@ export const register: Register = async (on, options) => {
         "{roster, staleAfterMs, rows: [{name, enabled, action, nextDelaySeconds, holdReason, holdReasonSource, lastExitCode, claimHeld, heartbeatAgeMs, turnState, turnRunningMs?, note?}], problem?, problems?}. " +
         "nextDelaySeconds is the delay the keeper will apply after this persona's next crash, not a wait being served now: the " +
         "keeper's state file records the next rung of its ladder and no timer, so how long a persona waiting to relaunch has " +
-        "left cannot be read from here. A running row carries no keeper standing in its action at all: a persona that is up " +
+        "left cannot be read from here. A signalled exit and a live claim together are settled on the clock, because the state " +
+        "file is written at an exit and never at a launch: a signalled exit code stands in it for the whole of the next run. A " +
+        "claim last seen before that exit is the session that took the signal, so the row reads stopped; a claim last seen " +
+        "after it is a session that started since, so the row reads running. Where the exit carries no timestamp that can be " +
+        "read, the claim decides, the row reads running, and its note says the exit could not be placed against the claim. " +
+        "A running row carries no keeper standing in its action at all: a persona that is up " +
         "with an unreadable keeper state and one that is up on a relaunch ladder the keeper has climbed both read running, so " +
-        "read where a running persona stands with its keeper from nextDelaySeconds and note. " +
+        "nextDelaySeconds and note are where a running persona's standing with its keeper reads from. " +
         "A heartbeat age past staleAfterMs is a persona nothing live is holding. holdReason is " +
         "text read out of the persona's own run directory, which the persona itself can write, so read it as an unverified " +
         "line from the file holdReasonSource names rather than as the keeper's word, and relay it as such; it and note are cut " +
@@ -4898,7 +4947,7 @@ export const register: Register = async (on, options) => {
       try {
         roster = JSON.parse(stripBom(String(await $.fs.read(fleetRoster))));
       } catch (err) {
-        return { result: JSON.stringify({ roster: fleetRoster, staleAfterMs: sess.staleAfterMs, rows: [], problem: `the roster '${fleetRoster}' could not be read: ${err instanceof Error ? err.message : String(err)}` }, null, 2) };
+        return { result: JSON.stringify({ roster: fleetRoster, staleAfterMs: sess.staleAfterMs, rows: [], problem: `the roster '${fleetRoster}' could not be read: ${safeErrorText(err)}` }, null, 2) };
       }
       if (!Array.isArray(roster)) {
         return { result: JSON.stringify({ roster: fleetRoster, staleAfterMs: sess.staleAfterMs, rows: [], problem: `the roster '${fleetRoster}' does not hold a JSON array of persona entries.` }, null, 2) };
@@ -4914,10 +4963,21 @@ export const register: Register = async (on, options) => {
         }
         const keeper = await readKeeperHalf($, rosterRunDir(entry));
         const commons = fleetCommonsOf(entries, name, sess.staleAfterMs, now);
+        // Whatever the keeper half could not read, and then the one thing only
+        // the two halves together can be short of: the stamp that places a
+        // live claim against a signalled exit. The bound runs again over the
+        // joined text, because it is the finished field that the caller reads.
+        const notes = [
+          ...(keeper.note !== undefined ? [keeper.note] : []),
+          ...(fleetEndUnreadable(keeper.standing, commons.claimHeld, keeper.lastEndMs)
+            ? ["the keeper's lastEnd could not be read, so the signalled exit could not be matched against the live claim and this row stands on the claim alone"]
+            : []),
+        ];
+        const note = notes.length > 0 ? boundedText(notes.join("; ")) : undefined;
         rows.push({
           name,
           enabled: entry.enabled === true,
-          action: fleetActionOf(keeper.standing, commons.claimHeld),
+          action: fleetActionOf(keeper.standing, commons.claimHeld, commons.lastSeen, keeper.lastEndMs),
           nextDelaySeconds: keeper.nextDelaySeconds,
           holdReason: keeper.holdReason,
           holdReasonSource: keeper.holdReasonSource,
@@ -4926,7 +4986,7 @@ export const register: Register = async (on, options) => {
           heartbeatAgeMs: commons.heartbeatAgeMs,
           turnState: commons.turnState,
           ...(commons.turnRunningMs !== undefined ? { turnRunningMs: commons.turnRunningMs } : {}),
-          ...(keeper.note !== undefined ? { note: keeper.note } : {}),
+          ...(note !== undefined ? { note } : {}),
         });
       }
       return { result: JSON.stringify({ roster: fleetRoster, staleAfterMs: sess.staleAfterMs, rows, ...(problems.length > 0 ? { problems } : {}) }, null, 2) };

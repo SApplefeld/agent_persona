@@ -12,9 +12,14 @@
 //   - nextDelaySeconds is the rung the keeper carries into its next decision,
 //     which is what keeper.json's currentDelay holds
 //   - the action against the commons half: a live claim reads as running over
-//     the ladder the last supervisor exit left behind, a hold marker and a
-//     signalled exit both outrank a live claim, and the four keeper-only
-//     standings stand for a persona nothing live is holding
+//     the ladder the last supervisor exit left behind, a hold marker outranks
+//     a live claim, and the four keeper-only standings stand for a persona
+//     nothing live is holding
+//   - a signalled exit under a live claim settled on the clock: a heartbeat
+//     older than the recorded exit is the session that took the signal and
+//     reads stopped, a newer one is a session that started since and reads
+//     running, and an exit stamp that cannot be read leaves the claim to
+//     decide with a note saying so
 //   - a hold marker check that threw, which is a standing of unknown rather
 //     than a persona reported as having no hold
 //   - the hold reason carries the path it was read from and is cut at the
@@ -417,6 +422,20 @@ async function caseByteOrderMark() {
 // what the persona is doing now
 // ============================================================
 
+// The signalled-exit fixture with its lastEnd moved to an offset from this
+// suite's clock. The row's action turns on whether the claim's heartbeat is
+// older than that stamp, so a stamp the fixture fixes in calendar time would
+// decide the case by the year the fixture was written rather than by the rule.
+// `end` is the string keeper.json carries, so a case can hand it text that is
+// not a timestamp at all.
+function stoppedStateEnding(end) {
+  return JSON.stringify({ ...JSON.parse(fixture("fleet-status.keeper-stopped.json")), lastEnd: end });
+}
+
+function stoppedStateEndingAt(endMs) {
+  return stoppedStateEnding(new Date(endMs).toISOString());
+}
+
 // Five entries that share one keeper.json where they can, so the axis that
 // varies between the first three rows is the commons claim alone. The shared
 // state file is gamma's: a crash-class exit and a ladder the keeper doubled
@@ -438,7 +457,9 @@ function seedStandings(h) {
   h.fsMap.set("D:/live/held-and-live/run/keeper.hold", fixture("fleet-status.hold-beta.txt"));
   h.fsMap.set("D:/live/down/run/keeper.json", crashed);
   h.fsMap.set("D:/live/idle-at-base/run/keeper.json", fixture("fleet-status.keeper-alpha.json"));
-  h.fsMap.set("D:/live/stopped-and-live/run/keeper.json", fixture("fleet-status.keeper-stopped.json"));
+  // The signal landed after this session's last heartbeat, which is the
+  // exiting session still standing in the store.
+  h.fsMap.set("D:/live/stopped-and-live/run/keeper.json", stoppedStateEndingAt(T0 - 3_000));
 
   for (const name of ["relaunched", "held-and-live", "stopped-and-live"]) {
     h.storeMap.set(`commons:${name}-session`, {
@@ -452,7 +473,7 @@ function seedStandings(h) {
 }
 
 async function caseActionAgainstTheCommons() {
-  console.log("\n=== fleet_status: a live claim outranks the keeper's ladder, and a marker or a signal outranks the claim ===");
+  console.log("\n=== fleet_status: a live claim outranks the keeper's ladder, and a marker outranks the claim ===");
   const h = await startSession("standings");
   seedStandings(h);
   const report = reportOf(await callFleetStatus(h));
@@ -473,10 +494,11 @@ async function caseActionAgainstTheCommons() {
   // bin/Start-Persona.ps1 writes keeper.json at the supervisor exit, while the
   // gone session's commons entry stays in the store until it ages out, so a
   // persona that was signalled carries a live claim for up to the staleness
-  // window. Reading that claim as running would hide the one row the operator
-  // has to act on for as long as it lasts.
+  // window. This row's heartbeat stopped before that exit, which is the
+  // exiting session itself, and reading its claim as running would hide the
+  // one row the operator has to act on for as long as the entry lasts.
   const stoppedAndLive = rowFor(report, "stopped-and-live");
-  check("signal over a live claim: a signalled exit still reads as stopped, because nothing is going to restart this persona", stoppedAndLive.action === "stopped", stoppedAndLive);
+  check("signal over a claim older than the exit: the row reads stopped, because nothing is going to restart this persona", stoppedAndLive.action === "stopped", stoppedAndLive);
   check("signal over a live claim: the live claim and the signal's exit code are both still reported beside it", stoppedAndLive.claimHeld === true && stoppedAndLive.lastExitCode === 143 && stoppedAndLive.heartbeatAgeMs === 4_000, stoppedAndLive);
 
   const down = rowFor(report, "down");
@@ -487,6 +509,74 @@ async function caseActionAgainstTheCommons() {
 
   const noState = rowFor(report, "no-state");
   check("no live claim: an unreadable keeper state still reads as unknown", noState.action === "unknown" && noState.claimHeld === false, noState);
+}
+
+// ============================================================
+// A signalled exit against the claim that is live now
+// ============================================================
+
+// Four entries that differ in one field, keeper.json's lastEnd. Each carries
+// the same signalled exit and the same live claim whose heartbeat is 4 seconds
+// old, so the only thing that can move the action between the rows is where
+// that heartbeat sits against the exit stamp.
+function seedSignalledAgainstClaim(h) {
+  h.fsMap.set(ROSTER_PATH, JSON.stringify([
+    { name: "dead-session", rundir: "D:/signal/dead-session/run", enabled: true },
+    { name: "restarted", rundir: "D:/signal/restarted/run", enabled: true },
+    { name: "unreadable-end", rundir: "D:/signal/unreadable-end/run", enabled: true },
+    { name: "absent-end", rundir: "D:/signal/absent-end/run", enabled: true },
+  ]));
+  h.fsMap.set("D:/signal/dead-session/run/keeper.json", stoppedStateEndingAt(T0 - 3_000));
+  h.fsMap.set("D:/signal/restarted/run/keeper.json", stoppedStateEndingAt(T0 - 3_600_000));
+  h.fsMap.set("D:/signal/unreadable-end/run/keeper.json", stoppedStateEnding("the supervisor did not say"));
+  const noEnd = JSON.parse(fixture("fleet-status.keeper-stopped.json"));
+  delete noEnd.lastEnd;
+  h.fsMap.set("D:/signal/absent-end/run/keeper.json", JSON.stringify(noEnd));
+
+  for (const name of ["dead-session", "restarted", "unreadable-end", "absent-end"]) {
+    h.storeMap.set(`commons:${name}-session`, {
+      sessionId: `${name}-session`,
+      lastSeen: T0 - 4_000,
+      claims: [{ resource: `persona:${name}`, claimedAt: T0 - 120_000 }],
+      turnStartedAt: null,
+      workdir: `D:/signal/${name}/work`,
+    });
+  }
+}
+
+async function caseSignalledExitAgainstTheClaim() {
+  console.log("\n=== fleet_status: a signalled exit is settled against the heartbeat of the claim that is live now ===");
+  const h = await startSession("signal_vs_claim");
+  seedSignalledAgainstClaim(h);
+  const report = reportOf(await callFleetStatus(h));
+  check("signal vs claim: one row per entry", JSON.stringify(report.rows.map((r) => r.name)) === JSON.stringify(["dead-session", "restarted", "unreadable-end", "absent-end"]), report.rows.map((r) => r.name));
+
+  // The exit landed after the last heartbeat, so the claim in the store is the
+  // session that took the signal and is on its way out.
+  const dead = rowFor(report, "dead-session");
+  check("heartbeat older than the exit: the row reads stopped, because the claim is the session that was signalled", dead.action === "stopped", dead);
+  check("heartbeat older than the exit: the signal's exit code and the live claim are both still reported", dead.lastExitCode === 143 && dead.claimHeld === true && dead.heartbeatAgeMs === 4_000, dead);
+
+  // Nothing writes keeper.json at a launch, so an hour-old signalled exit
+  // under a heartbeat from four seconds ago is a persona that came back.
+  const restarted = rowFor(report, "restarted");
+  check("heartbeat newer than the exit: the row reads running, because the claim is a session that started after the signal", restarted.action === "running", restarted);
+  check("heartbeat newer than the exit: the signalled exit is still reported beside it", restarted.lastExitCode === 143 && restarted.claimHeld === true, restarted);
+
+  // With no stamp to compare against, the claim decides: a live session is a
+  // persona that is up. The row says which reading it could not make.
+  const unreadable = rowFor(report, "unreadable-end");
+  check("lastEnd that is not a timestamp: the claim decides and the row reads running", unreadable.action === "running", unreadable);
+  check("lastEnd that is not a timestamp: the note says the exit could not be matched against the live claim", says(unreadable.note, "lastEnd") && says(unreadable.note, "could not be matched against the live claim"), unreadable.note);
+
+  const absent = rowFor(report, "absent-end");
+  check("no lastEnd at all: the claim decides and the row reads running", absent.action === "running", absent);
+  check("no lastEnd at all: the same note says why", says(absent.note, "could not be matched against the live claim"), absent.note);
+
+  // The control on the note: the two rows whose stamp read fine carry none, so
+  // the note above speaks about an unreadable stamp rather than riding on
+  // every signalled row.
+  check("note control: a row whose lastEnd read carries no such note", dead.note === undefined && restarted.note === undefined, { dead: dead.note, restarted: restarted.note });
 }
 
 // ============================================================
@@ -625,18 +715,6 @@ async function caseDescriptionMatchesTheRows() {
   check("description: it says the delay is the next one rather than a wait in force", says(description, "not a wait being served now"), description);
   check("description: it says the wait in force cannot be read from the keeper's state file", says(description, "cannot be read from here"), description);
   check("description: it says the hold reason is unverified text from the persona's own run directory", says(description, "the persona itself can write") && says(description, "unverified"), description);
-  check("description: it names the stopped action and what leaves a persona in it", says(description, "stopped, meaning the last supervisor exit was signalled"), description);
-  check("description: it says a signalled exit is reported while a session still holds the persona, as a hold is", says(description, "as a hold is"), description);
-
-  // The fields are neutralized piece by piece as untrusted text enters them,
-  // so a finished field does carry square brackets: the cut mark's own, and
-  // any in a file path the plugin composed the field out of.
-  check("description: it does not claim the fields carry no square brackets", says(description, "carry no square brackets") === false, description);
-  check("description: it says which text in those fields is neutralized and that the plugin's own words are not", says(description, "The plugin's own words around that text keep their brackets"), description);
-
-  // A running row's action no longer carries the keeper's standing at all,
-  // which a reader of the row has to be told.
-  check("description: it says where a running persona's keeper standing reads from", says(description, "read where a running persona stands with its keeper from nextDelaySeconds and note"), description);
 }
 
 // ============================================================
@@ -719,6 +797,7 @@ async function main() {
     await caseHoldReasonProvenance();
     await caseByteOrderMark();
     await caseActionAgainstTheCommons();
+    await caseSignalledExitAgainstTheClaim();
     await caseFreeTextIsBracketSafe();
     await caseKeeperHalfBranches();
     await caseHoldCheckUnreadable();

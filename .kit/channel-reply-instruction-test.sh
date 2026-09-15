@@ -123,16 +123,11 @@ ROLE_FLEET_CLASSES_CONTROL="The health classes are held, backing off, stale, no 
 # The fleet status tool reports claimHeld false in two unlike situations: a
 # persona with no commons entry, whose heartbeat age is null, and a persona
 # whose session died leaving its entry behind, whose heartbeat age is a number.
-# The first is the never-came-up class and the second is the stale class, so the
-# down verdict is pinned to the null age and the leftover entry is pinned to
-# stale. The anti-control is the wording that keyed the down verdict on the
-# missing claim alone, which called a persona that crashed an hour ago one that
-# never came up.
+# Each is routed to its own class by name, and the pins are ordered pairs so
+# that a rewrite which keeps the condition but renames the class reds here.
 ROLE_FLEET_NULL_CONTROL="whose heartbeat age is null"
-ROLE_FLEET_NEVER_CONTROL="has never come up"
 ROLE_FLEET_STALE_CONTROL="holds no live claim but reports a heartbeat age"
 ROLE_FLEET_STALE_CLASS_CONTROL="it is stale"
-ROLE_FLEET_DOWN_ANTICONTROL="holds no live claim has never come up"
 # The fleet duty tells the persona it polls the fleet at no point, so every
 # call the other duties make is named in that duty's own carve-out. The
 # architect liveness check is one of them, and without it the two sentences
@@ -311,16 +306,12 @@ case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *) check "persona matches COORDINATOR_PERSONA: the five health classes are named in the plan's own words" 1 ;;
 esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_FLEET_NULL_CONTROL"*"$ROLE_FLEET_NEVER_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the never-came-up verdict keys on a null heartbeat age" 0 ;;
-  *) check "persona matches COORDINATOR_PERSONA: the never-came-up verdict keys on a null heartbeat age" 1 ;;
+  *"$ROLE_FLEET_NULL_CONTROL"*"$ROLE_FLEET_CLASS_CONTROL"*) check "persona matches COORDINATOR_PERSONA: a null heartbeat age is routed to the no-live-claim class by that class's own name" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: a null heartbeat age is routed to the no-live-claim class by that class's own name" 1 ;;
 esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_FLEET_STALE_CONTROL"*"$ROLE_FLEET_STALE_CLASS_CONTROL"*) check "persona matches COORDINATOR_PERSONA: a persona whose entry outlived its session is routed to the stale class" 0 ;;
   *) check "persona matches COORDINATOR_PERSONA: a persona whose entry outlived its session is routed to the stale class" 1 ;;
-esac
-case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_FLEET_DOWN_ANTICONTROL"*) check "persona matches COORDINATOR_PERSONA: no down verdict rests on the missing claim alone" 1 ;;
-  *) check "persona matches COORDINATOR_PERSONA: no down verdict rests on the missing claim alone" 0 ;;
 esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_FLEET_CARVEOUT_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the fleet duty's carve-out names the architect liveness check" 0 ;;
