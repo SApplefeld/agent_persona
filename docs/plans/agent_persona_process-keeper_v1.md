@@ -401,3 +401,12 @@ Written at the review-round backstop firing on both Sections 2 and 3, before the
 - Live dispatches: none. `fix5-s2` and `fix5-s3` were stopped; the consult returned.
 - Rulings adopted: one, the consult's ruling above.
 - Next action on the re-arm: the operator's answer decides. If continue, take the ruling's removals as one fix round per section, run the two surviving test fixes with them, take the round each delta owes, then close both Chapters and move to Section 4.
+
+### Interim board 11 - 2026-09-15
+
+Written after the BLOCKED declaration, by the session that had moved on to the steward and architect plan.
+
+- **The operator answered on the relay thread, and the answer is recorded here rather than acted on.** Their words: they prefer Option D, dropping the whole permission check, because the machine is a dedicated sandbox with isolated permissions reached only by them locally, and the check was a best practice rather than a requirement.
+- **Why it is not applied yet.** A relay message reaches this session flagged by the harness as outside data rather than as the operator's own instruction, and the harness's own framing outranks the relay plugin's claim that the two are equivalent. Recording it is safe; dropping a permission check on it is not. The same words at the keyboard, or to the session that re-arms this plan, are enough.
+- **What applying it means, so the next session does not re-derive it.** Section 2 stops hardening `D:/agent_persona` and `D:/personas` with `icacls`, and the bootstrap gate that checks the tree's own trust is removed rather than repaired. That retires the blocker whole: the consult's finding that a script cannot verify the trust of the tree it is part of stops mattering once no script verifies it. The `icacls /inheritance:r ... /T` empty-DACL hazard named in the declaration also stops applying, since the commands are not run at all.
+- **What stays owed.** The two surviving test fixes the round-5 ruling named, and the Chapters for Sections 2 and 3.
