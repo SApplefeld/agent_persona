@@ -1,0 +1,28 @@
+[
+  {
+    "name": "alpha",
+    "workdir": "D:/personas/alpha/work",
+    "permissionMode": "bypassPermissions",
+    "rundir": "D:/personas/alpha/run",
+    "channelName": "supervisor-alpha",
+    "model": "opus",
+    "effort": "high",
+    "controllerTickMs": 60000,
+    "coordinatorPersona": "coordinator",
+    "args": ["--no-channel"],
+    "enabled": true
+  },
+  {
+    "name": "beta",
+    "workdir": "D:/personas/beta/work",
+    "permissionMode": "acceptEdits",
+    "args": ["--dev"],
+    "enabled": true
+  },
+  {
+    "name": "gamma",
+    "workdir": "D:/personas/gamma/work",
+    "permissionMode": "bypassPermissions",
+    "enabled": false
+  }
+]
