@@ -1,0 +1,1 @@
+supervisor exited 0: shutdown honored or stop complete

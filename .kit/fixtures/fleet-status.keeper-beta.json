@@ -1,0 +1,9 @@
+{
+  "persona": "beta",
+  "launchCount": 2,
+  "lastStart": "2026-09-15T01:00:00.0000000Z",
+  "lastEnd": "2026-09-15T04:22:13.0000000Z",
+  "lastExitCode": 0,
+  "currentDelay": 300,
+  "holdReason": "supervisor exited 0: shutdown honored or stop complete"
+}

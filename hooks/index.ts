@@ -43,9 +43,10 @@ import {
   releaseResource,
   stampCommonsMeta,
   commonsWinner,
+  commonsKey,
   readHolderMeta,
 } from "./commons";
-import type { CommonsStore } from "./commons";
+import type { CommonsStore, CommonsEntry, UnionedClaim } from "./commons";
 import type { InboxRecord } from "./operator";
 import {
   claimReaderRole,
@@ -522,6 +523,197 @@ const writeOwnerHeartbeat = async (dp: any): Promise<void> => {
   await dp.fs.write(heartbeatPath, JSON.stringify(hb, null, 2));
 };
 
+// --- Fleet status: one row per roster persona, for the fleet_status tool ---
+
+// The delay in seconds the process keeper's wrapper carries after an ordinary
+// relaunch. bin/keeper-functions.ps1 holds the same number as
+// KeeperBaseDelaySeconds, and a keeper.json carrying more than it is a persona
+// the keeper is backing off. The two files carry one value, pinned by
+// .kit/fleet-status-unit-test.mjs.
+const KEEPER_BASE_DELAY_SECONDS = 300;
+
+// One roster persona's line in the fleet report. The keeper half comes from
+// <rundir>/keeper.json and <rundir>/keeper.hold, the commons half from the
+// persona's own commons entry, and `note` carries whatever could not be read,
+// so an unreadable persona costs its own row's detail and not the report.
+type FleetRow = {
+  name: string;
+  enabled: boolean;
+  // What the process keeper will do with this persona next: "held" is the
+  // marker that stops the next start, "backing off" is a relaunch waiting out
+  // a delay above the base, "relaunching" is a relaunch at the base delay, and
+  // "unknown" is a persona whose keeper state could not be read. None of the
+  // four says the persona's session is alive right now; claimHeld does.
+  action: "held" | "backing off" | "relaunching" | "unknown";
+  delaySeconds: number | null;
+  holdReason: string | null;
+  lastExitCode: number | null;
+  claimHeld: boolean;
+  heartbeatAgeMs: number | null;
+  turnState: "in turn" | "idle" | "unknown";
+  turnRunningMs?: number;
+  note?: string;
+};
+
+// The fields of a roster entry this report reads. Everything else the roster
+// carries steers the supervisor and is the process keeper's business.
+type RosterEntry = { name?: unknown; workdir?: unknown; rundir?: unknown; enabled?: unknown };
+
+// The directory the process keeper works in for a roster entry: the entry's
+// `rundir`, or `<workdir>/run` when it carries none, which is what
+// bin/Start-Persona.ps1 derives. Null when the entry carries neither field,
+// and then the keeper half of the row has nowhere to read from.
+function rosterRunDir(entry: RosterEntry): string | null {
+  const rundir = typeof entry.rundir === "string" ? entry.rundir.trim() : "";
+  if (rundir !== "") return rundir.replace(/[/\\]+$/, "");
+  const workdir = typeof entry.workdir === "string" ? entry.workdir.trim() : "";
+  if (workdir === "") return null;
+  return `${workdir.replace(/[/\\]+$/, "")}/run`;
+}
+
+// The keeper half of one row, read from the two files the process keeper
+// leaves in a run directory. keeper.hold decides the action, because that
+// marker is what stops the next start from launching at all
+// (bin/Start-Persona.ps1 exits on it without running the supervisor);
+// keeper.json carries the delay in force, the last supervisor exit and the
+// reason recorded for a hold. Every read is guarded on its own, so a file
+// that is missing or unreadable lands in the row's note and the rest of the
+// row still reports.
+const readKeeperHalf = async (dp: any, rundir: string | null): Promise<Pick<FleetRow, "action" | "delaySeconds" | "holdReason" | "lastExitCode" | "note">> => {
+  if (rundir === null) {
+    return {
+      action: "unknown",
+      delaySeconds: null,
+      holdReason: null,
+      lastExitCode: null,
+      note: "the roster entry names neither a run directory nor a working directory, so this persona has no keeper state to read",
+    };
+  }
+  const statePath = `${rundir}/keeper.json`;
+  const holdPath = `${rundir}/keeper.hold`;
+  const notes: string[] = [];
+
+  let held = false;
+  let holdReason: string | null = null;
+  try {
+    held = await dp.fs.exists(holdPath) === true;
+  } catch (err) {
+    notes.push(`the hold marker '${holdPath}' could not be checked: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (held) {
+    try {
+      const first = String(await dp.fs.read(holdPath)).split(/\r\n|[\n\r]/)[0].trim();
+      if (first !== "") holdReason = first;
+    } catch (err) {
+      notes.push(`the hold marker '${holdPath}' could not be read: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  let state: Record<string, unknown> | null = null;
+  try {
+    if (await dp.fs.exists(statePath)) {
+      const parsed = JSON.parse(await dp.fs.read(statePath));
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        state = parsed as Record<string, unknown>;
+      } else {
+        notes.push(`'${statePath}' does not hold a JSON object`);
+      }
+    } else {
+      notes.push(`there is no keeper.json under '${rundir}': the process keeper has written no state for this persona`);
+    }
+  } catch (err) {
+    notes.push(`'${statePath}' could not be read: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const delaySeconds = typeof state?.currentDelay === "number" ? state.currentDelay : null;
+  const lastExitCode = typeof state?.lastExitCode === "number" ? state.lastExitCode : null;
+  // The marker's first line is the reason the keeper wrote for the operator;
+  // keeper.json's own holdReason stands in when the marker carries no text.
+  if (held && holdReason === null && typeof state?.holdReason === "string" && state.holdReason.trim() !== "") {
+    holdReason = state.holdReason.trim();
+  }
+  const action: FleetRow["action"] = held
+    ? "held"
+    : delaySeconds === null
+      ? "unknown"
+      : delaySeconds > KEEPER_BASE_DELAY_SECONDS ? "backing off" : "relaunching";
+  return {
+    action,
+    delaySeconds,
+    holdReason,
+    lastExitCode,
+    ...(notes.length > 0 ? { note: notes.join("; ") } : {}),
+  };
+};
+
+// Every commons entry on the machine, read without readAllClaims' staleness
+// filter and without the garbage collection it performs on its own read: the
+// fleet report writes and deletes nothing, and a persona whose heartbeat has
+// stopped is exactly what it exists to show. A malformed entry is skipped, as
+// readHolderMeta skips it.
+const readCommonsEntries = async (store: CommonsStore): Promise<CommonsEntry[]> => {
+  const prefix = commonsKey("");
+  const keys = (await store.keys()).filter((k) => k.startsWith(prefix));
+  const entries: CommonsEntry[] = [];
+  for (const key of keys) {
+    const raw = await store.get(key);
+    if (!raw) continue;
+    const entry = raw as CommonsEntry;
+    if (typeof entry.sessionId !== "string") continue;
+    if (!Array.isArray(entry.claims)) continue;
+    if (typeof entry.lastSeen !== "number") continue;
+    entries.push(entry);
+  }
+  return entries;
+};
+
+// The live claims the reach rule reads, from entries already in hand:
+// readAllClaims' staleness filter without its second store read and without
+// its garbage collection. One store read then serves both the reach check and
+// the rows.
+function liveClaimsOf(entries: CommonsEntry[], staleAfterMs: number, now: number): UnionedClaim[] {
+  const claims: UnionedClaim[] = [];
+  for (const entry of entries) {
+    if (now - entry.lastSeen > staleAfterMs) continue;
+    for (const claim of entry.claims) {
+      if (!claim || typeof claim.resource !== "string") continue;
+      claims.push({ resource: claim.resource, claimedAt: claim.claimedAt, holder: entry.sessionId });
+    }
+  }
+  return claims;
+}
+
+// The commons half of one row: whether a live session holds the persona's
+// claim, how old that session's heartbeat is, and whether it is inside a turn.
+// The holder is the commons winner among the live claimants, the arbitration
+// every other reader applies. A persona no live session claims reports no
+// claim; where a stopped session's entry is still in the store, its age says
+// how long ago the heartbeat stopped, and the turn state of a session that is
+// not live reads as unknown rather than as a turn still running.
+function fleetCommonsOf(
+  entries: CommonsEntry[],
+  persona: string,
+  staleAfterMs: number,
+  now: number,
+): Pick<FleetRow, "claimHeld" | "heartbeatAgeMs" | "turnState" | "turnRunningMs"> {
+  const resource = `persona:${persona}`;
+  const holders = entries.filter((entry) => entry.claims.some((claim) => claim && claim.resource === resource));
+  if (holders.length === 0) return { claimHeld: false, heartbeatAgeMs: null, turnState: "unknown" };
+  const live = holders.filter((entry) => now - entry.lastSeen <= staleAfterMs);
+  if (live.length === 0) {
+    const freshest = holders.reduce((a, b) => (b.lastSeen > a.lastSeen ? b : a));
+    return { claimHeld: false, heartbeatAgeMs: Math.max(0, now - freshest.lastSeen), turnState: "unknown" };
+  }
+  const winner = commonsWinner(liveClaimsOf(live, staleAfterMs, now), resource);
+  const entry = live.find((candidate) => candidate.sessionId === winner);
+  if (!entry) return { claimHeld: false, heartbeatAgeMs: null, turnState: "unknown" };
+  const heartbeatAgeMs = Math.max(0, now - entry.lastSeen);
+  if (typeof entry.turnStartedAt === "number") {
+    return { claimHeld: true, heartbeatAgeMs, turnState: "in turn", turnRunningMs: Math.max(0, now - entry.turnStartedAt) };
+  }
+  return { claimHeld: true, heartbeatAgeMs, turnState: "idle" };
+}
+
 // M7: single guarded-write path shared by every store write site.
 // Closes over sess so all write sites share one yield + write path.
 export const persist = async (dp: any): Promise<boolean> => {
@@ -822,6 +1014,10 @@ export const register: Register = async (on, options) => {
       && cfg.coordinatorPersona.trim() !== "default"
     ? cfg.coordinatorPersona.trim()
     : "coordinator";
+  // The roster fleet_status reads: the process keeper's own roster file, a
+  // JSON array of persona entries. An unset or blank setting leaves the tool
+  // with no fleet to read, which it reports in place of rows.
+  const fleetRoster = typeof cfg.fleetRoster === "string" ? cfg.fleetRoster.trim() : "";
 
   // Section 6: the arming tier gates what this session's hooks do. "owner"
   // is a worker or the coordinator: every hook below registers and every
@@ -1224,6 +1420,31 @@ export const register: Register = async (on, options) => {
             description: "Optional. The persona whose inbox to read. Defaults to this session's own persona. Not a persona this session owns.",
           },
         },
+        required: [],
+      },
+    });
+
+    // Section 3: fleet health, for the session that watches the fleet. It
+    // registers beside the inbox tools because it shares their reach rule,
+    // so a reader seat holding a live reader claim on the coordinator
+    // persona reads the fleet the same way it reads that persona's inbox.
+    await $.tool.register({
+      name: "fleet_status",
+      description:
+        "Read fleet health: one row per persona in the roster the plugin's fleetRoster setting names. Each row carries " +
+        "the persona's name, whether the roster enables it, what the process keeper will do with it next (held, meaning a marker " +
+        "stops its next start; backing off, meaning a relaunch waiting out a delay above the base; relaunching, at the base delay; " +
+        "or unknown, meaning its keeper state could not be read) with that delay in seconds, the hold reason when it is held, the last " +
+        "supervisor exit code, whether a live session holds its commons claim, how old that session's heartbeat is in " +
+        "milliseconds, and whether that session is inside a turn. Returns " +
+        "{roster, staleAfterMs, rows: [{name, enabled, action, delaySeconds, holdReason, lastExitCode, claimHeld, heartbeatAgeMs, turnState, turnRunningMs?, note?}], problem?, problems?}: " +
+        "a heartbeat age at or past staleAfterMs is a persona nothing live is holding. A roster or a keeper state file that " +
+        "cannot be read is said so in that row's note, or in problem when the roster itself is unreadable, so one unreadable " +
+        "persona never hides the others. Read-only: it writes nothing and deletes nothing. Available to the session holding " +
+        "the coordinator persona and to a session holding a live reader claim on it.",
+      inputSchema: {
+        type: "object",
+        properties: {},
         required: [],
       },
     });
@@ -4498,6 +4719,70 @@ export const register: Register = async (on, options) => {
         return base;
       }));
       return { result: JSON.stringify({ inbox: withReplies, asks: openAsks, ...(ownerWorkdir !== null ? { workdir: ownerWorkdir } : {}) }, null, 2) };
+    }
+
+    // Section 3: serve fleet_status (one row per roster persona: what the
+    // process keeper last decided for it and what its commons entry says).
+    // Read-only: the roster, each persona's keeper state and the commons
+    // entries are read, and nothing is written, created or deleted. The
+    // commons entries are read once, before the reach check, and serve both:
+    // the claims readAllClaims would return are derived from them, which
+    // keeps the read-only promise, since readAllClaims collects stale entries
+    // on its own read and those entries are what a stopped persona's
+    // heartbeat age is read from.
+    if ((e as any).tool === "mcp__agentic-plugin__fleet_status") {
+      const now = Date.now();
+      const entries = await readCommonsEntries(commonsStoreOf($));
+      // The reach rule with the coordinator persona as the target, narrowed
+      // to the two standings that read fleet state: holding that persona, or
+      // holding a live reader claim on it. deliveryGroundIn decides all three
+      // of its legs here; the third, a session owning a named persona of its
+      // own, reaches the coordinator persona to send it a record and is not a
+      // standing to read the fleet from, so its WORKER ground is refused.
+      const ground = deliveryGroundIn(liveClaimsOf(entries, sess.staleAfterMs, now), coordinatorPersona, sess.mySessionId, coordinatorPersona);
+      const mayRead = "ground" in ground && (ground.ground === "COORDINATOR" || ground.ground === `READER:${coordinatorPersona}`);
+      if (!mayRead) {
+        toolErrorsThisTurn++;
+        return { deny: `fleet_status cannot read the fleet: this session neither holds the '${coordinatorPersona}' persona nor a live reader claim on it, and the plugin's reach rule admits only those two standings to fleet state. A session that owns a named persona of its own reaches '${coordinatorPersona}' to send it a record, which is not a standing to read the fleet from.` };
+      }
+      if (fleetRoster === "") {
+        return { result: JSON.stringify({ roster: null, rows: [], problem: "the plugin's fleetRoster setting names no roster file, so there is no fleet to read." }, null, 2) };
+      }
+      let roster: unknown;
+      try {
+        roster = JSON.parse(await $.fs.read(fleetRoster));
+      } catch (err) {
+        return { result: JSON.stringify({ roster: fleetRoster, rows: [], problem: `the roster '${fleetRoster}' could not be read: ${err instanceof Error ? err.message : String(err)}` }, null, 2) };
+      }
+      if (!Array.isArray(roster)) {
+        return { result: JSON.stringify({ roster: fleetRoster, rows: [], problem: `the roster '${fleetRoster}' does not hold a JSON array of persona entries.` }, null, 2) };
+      }
+      const rows: FleetRow[] = [];
+      const problems: string[] = [];
+      for (let i = 0; i < roster.length; i++) {
+        const entry = (roster[i] ?? {}) as RosterEntry;
+        const name = typeof entry.name === "string" ? entry.name.trim() : "";
+        if (name === "") {
+          problems.push(`roster entry ${i + 1} carries no name, so it has no row.`);
+          continue;
+        }
+        const keeper = await readKeeperHalf($, rosterRunDir(entry));
+        const commons = fleetCommonsOf(entries, name, sess.staleAfterMs, now);
+        rows.push({
+          name,
+          enabled: entry.enabled === true,
+          action: keeper.action,
+          delaySeconds: keeper.delaySeconds,
+          holdReason: keeper.holdReason,
+          lastExitCode: keeper.lastExitCode,
+          claimHeld: commons.claimHeld,
+          heartbeatAgeMs: commons.heartbeatAgeMs,
+          turnState: commons.turnState,
+          ...(commons.turnRunningMs !== undefined ? { turnRunningMs: commons.turnRunningMs } : {}),
+          ...(keeper.note !== undefined ? { note: keeper.note } : {}),
+        });
+      }
+      return { result: JSON.stringify({ roster: fleetRoster, staleAfterMs: sess.staleAfterMs, rows, ...(problems.length > 0 ? { problems } : {}) }, null, 2) };
     }
 
     // Section 12: serve agentic_resolve (the owner marks a record's work

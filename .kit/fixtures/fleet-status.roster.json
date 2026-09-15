@@ -1,0 +1,38 @@
+[
+  {
+    "name": "alpha",
+    "workdir": "D:/fleet/alpha/work",
+    "permissionMode": "bypassPermissions",
+    "rundir": "D:/fleet/alpha/run",
+    "channelName": "supervisor-alpha",
+    "model": "opus",
+    "controllerTickMs": 60000,
+    "enabled": true
+  },
+  {
+    "name": "beta",
+    "workdir": "D:/fleet/beta/work",
+    "permissionMode": "acceptEdits",
+    "enabled": true
+  },
+  {
+    "name": "gamma",
+    "workdir": "D:/fleet/gamma/work",
+    "rundir": "D:/fleet/gamma/run",
+    "permissionMode": "bypassPermissions",
+    "enabled": true
+  },
+  {
+    "name": "delta",
+    "workdir": "D:/fleet/delta/work",
+    "permissionMode": "bypassPermissions",
+    "enabled": true
+  },
+  {
+    "name": "epsilon",
+    "workdir": "D:/fleet/epsilon/work",
+    "rundir": "D:/fleet/epsilon/run",
+    "permissionMode": "bypassPermissions",
+    "enabled": false
+  }
+]

@@ -86,6 +86,12 @@
       "default": "coordinator",
       "title": "Coordinator persona name",
       "description": "The one persona name the inbox gates treat as the coordinator: its owner may address any persona, and any named persona owner may address it. A configured name of 'default' is refused and falls back to 'coordinator'."
+    },
+    "fleetRoster": {
+      "type": "string",
+      "default": "",
+      "title": "Fleet roster path",
+      "description": "The roster file fleet_status reads: a JSON array of persona entries, each naming a persona, its working directory, optionally its run directory, and whether the fleet runs it. Left unset, fleet_status reports that it has no roster to read."
     }
   }
 }

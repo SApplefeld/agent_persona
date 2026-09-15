@@ -8140,15 +8140,17 @@ async function caseSection6_off_unrecognizedValueLogsAndBehavesAsOff(clock) {
   check("s6 off bogus: log line names the unrecognized value", h.uiLogs.some((l) => l.includes("arming off") && l.includes("bogus")), h.uiLogs);
 }
 
-// reader: the three inbox/identity tools only, one clock callback (the
-// heartbeat), and a session.start that joins as a reader with no
-// persona:default claim ever taken.
+// reader: the inbox/identity tools and fleet_status only, one clock callback
+// (the heartbeat), and a session.start that joins as a reader with no
+// persona:default claim ever taken. fleet_status is among them because it
+// shares the inbox tools' reach rule, which a reader seat satisfies through a
+// live reader claim on the coordinator persona.
 async function caseSection6_reader_toolsClockAndStartClaim(clock) {
-  console.log("\n=== Section 6 reader: agentic_identity/agentic_say/agentic_inbox only, one clock callback, joins as reader ===");
+  console.log("\n=== Section 6 reader: agentic_identity/agentic_say/agentic_inbox/fleet_status only, one clock callback, joins as reader ===");
   clock.set(T0);
   const h = await createTickHarness({ ...OPTS, arming: "reader", caseName: "s6_reader_start" });
   const names = h.toolRegisters.map((t) => t.name).sort();
-  check("s6 reader: exactly agentic_identity/agentic_say/agentic_inbox", JSON.stringify(names) === JSON.stringify(["agentic_identity", "agentic_inbox", "agentic_say"]), names);
+  check("s6 reader: exactly agentic_identity/agentic_say/agentic_inbox/fleet_status", JSON.stringify(names) === JSON.stringify(["agentic_identity", "agentic_inbox", "agentic_say", "fleet_status"]), names);
   check("s6 reader: one clock callback (the heartbeat)", h.clockEveryCallbacks.length === 1, h.clockEveryCallbacks.length);
   const entry = h.storeMap.get(`commons:${SESSION_ID}`);
   check("s6 reader: commons entry holds reader:default", !!entry && entry.claims.some((c) => c.resource === "reader:default"), entry);
@@ -8216,7 +8218,7 @@ async function caseSection6_owner_matchesTheFullExistingShape(clock) {
   console.log("\n=== Section 6 owner control: every tool and both clock timers still register, matching today ===");
   clock.set(T0);
   const h = await createTickHarness({ ...OPTS, arming: "owner", caseName: "s6_owner_control" });
-  check("s6 owner: thirteen tools registered", h.toolRegisters.length === 13, h.toolRegisters.map((t) => t.name));
+  check("s6 owner: fourteen tools registered", h.toolRegisters.length === 14, h.toolRegisters.map((t) => t.name));
   check("s6 owner: two clock callbacks (heartbeat, controller tick)", h.clockEveryCallbacks.length === 2, h.clockEveryCallbacks.length);
   const entry = h.storeMap.get(`commons:${SESSION_ID}`);
   check("s6 owner: commons entry holds persona:default (ownership taken)", !!entry && entry.claims.some((c) => c.resource === "persona:default"), entry);
