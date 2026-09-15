@@ -452,29 +452,47 @@ const FREE_TEXT_MAX = 2000;
 // reason as shortened rather than as the whole of it.
 const TEXT_CUT_MARK = " [cut at the bound]";
 
-// Free text held to FREE_TEXT_MAX and stripped of delivery brackets, for a
-// lane that cuts rather than refuses: nothing on the far side of a file read is
-// there to shorten it and try again. The bracket rule is the one
-// bracketSafeProblem in hooks/operator.ts applies, for the same reason: this
-// text comes out of a persona's own run directory and is relayed to a model,
-// where a '[' lets the text that a persona wrote forge a delivery label such as
-// [COORDINATOR id=7]. That rule refuses there, because a persona name arrives
-// from a caller who can be told to pick another; here it neutralizes, because a
-// file read has nobody to ask. The neutralization runs before the cut, so the
-// cut mark's own brackets reach the caller intact.
+// One piece of untrusted text with the delivery brackets neutralized. The
+// bracket rule is the one bracketSafeProblem in hooks/operator.ts applies, for
+// the same reason: this text comes out of a persona's own run directory and is
+// relayed to a model, where a '[' lets the text that a persona wrote forge a
+// delivery label such as [COORDINATOR id=7]. That rule refuses there, because a
+// persona name arrives from a caller who can be told to pick another; here it
+// neutralizes, because a file read has nobody to ask.
+// It is applied to each untrusted piece as that piece enters a field, never to
+// a finished field: the note field is composed out of file paths, and a run
+// directory named D:/text/noted[7]/run rewritten to round brackets is a path
+// nothing on the machine answers to.
+function bracketSafeText(text: string): string {
+  return text.replace(/\[/g, "(").replace(/\]/g, ")");
+}
+
+// A caught error's message as untrusted text: the string carries whatever the
+// filesystem put in it, including a path a persona chose, so it is neutralized
+// where it enters a note rather than where the note is finished.
+function safeErrorText(err: unknown): string {
+  return bracketSafeText(err instanceof Error ? err.message : String(err));
+}
+
+// Free text held to FREE_TEXT_MAX, for a lane that cuts rather than refuses:
+// nothing on the far side of a file read is there to shorten it and try again.
+// The cut runs on the finished field, after the neutralization above has run on
+// each untrusted piece in it, so the cut mark's own brackets reach the caller
+// intact and a shortened text says that it was shortened.
 function boundedText(text: string): string {
-  const safe = text.replace(/\[/g, "(").replace(/\]/g, ")");
-  return safe.length <= FREE_TEXT_MAX ? safe : safe.slice(0, FREE_TEXT_MAX - TEXT_CUT_MARK.length) + TEXT_CUT_MARK;
+  return text.length <= FREE_TEXT_MAX ? text : text.slice(0, FREE_TEXT_MAX - TEXT_CUT_MARK.length) + TEXT_CUT_MARK;
 }
 
 // A byte-order mark leads a UTF-8 file written through PowerShell's own
 // cmdlets - Set-Content -Encoding UTF8 under Windows PowerShell 5.1 writes one,
-// which is how an operator hand-writes a hold marker - and JSON.parse rejects
-// one. The keeper's own state writer emits none, writing through
-// UTF8Encoding($false) in bin/Start-Persona.ps1. Every keeper-side reader of
-// the roster strips it (Get-Content -Encoding UTF8 does), so a roster the
-// process keeper is running the fleet from must not read here as an
-// unparseable file.
+// which is how an operator hand-writes a file this plugin reads - and
+// JSON.parse rejects one. The two files parsed as JSON are what need it: a
+// marker's first line is trimmed instead, and U+FEFF is whitespace to
+// ECMAScript, so trim() takes it off. The keeper's own state writer emits
+// none, writing through UTF8Encoding($false) in bin/Start-Persona.ps1. Every
+// keeper-side reader of the roster strips it (Get-Content -Encoding UTF8 does),
+// so a roster the process keeper is running the fleet from must not read here
+// as an unparseable file.
 function stripBom(text: string): string {
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
@@ -578,15 +596,17 @@ type FleetRow = {
   // Where this persona stands, from the process keeper's marker and state file
   // qualified by whether a live session holds its commons claim. "held" is the
   // marker that stops the next start, and it outranks the rest because it
-  // decides what happens next whatever is running now. "running" is a live
-  // claim: a session is up, whatever the last supervisor exit decided. The
-  // other four describe a persona no live session is holding, read out of the
-  // last exit and the ladder position keeper.json records. "stopped" is a
-  // signalled exit (130 or 143), on which bin/keeper-functions.ps1 returns
-  // Action 'exit' and the wrapper leaves without relaunching and without
-  // writing a marker. "backing off" is a ladder that has climbed above the
-  // base after a crash-class exit, and "relaunching" is a ladder still at the
-  // base. "unknown" is a persona whose keeper state could not be read.
+  // decides what happens next whatever is running now. "stopped" is a signalled
+  // exit (130 or 143), on which bin/keeper-functions.ps1 returns Action 'exit'
+  // and the wrapper leaves without relaunching and without writing a marker,
+  // and it outranks a live claim for the reason "held" does. "running" is a
+  // live claim under neither of those: a session is up, whatever ladder the
+  // last supervisor exit left behind. The last three describe a persona no live
+  // session is holding, read out of the ladder position keeper.json records.
+  // "backing off" is a ladder that has climbed above the base after a
+  // crash-class exit, and "relaunching" is a ladder still at the base.
+  // "unknown" is a persona whose keeper state could not be read, the marker
+  // check that threw among them.
   action: "held" | "running" | "stopped" | "backing off" | "relaunching" | "unknown";
   // The delay in seconds the keeper will apply after the next crash-class
   // exit, which is what keeper.json's currentDelay holds: bin/Start-Persona.ps1
@@ -653,23 +673,32 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<KeeperHal
   const holdPath = `${rundir}/keeper.hold`;
   const notes: string[] = [];
 
-  let held = false;
+  // Three states rather than two: a check that did not run says nothing about
+  // whether the marker is there, and reporting it as "no marker" would stand a
+  // persona the operator has held among the personas the keeper will start
+  // again.
+  let hold: "yes" | "no" | "unreadable" = "no";
   let holdReason: string | null = null;
   let holdReasonSource: string | null = null;
   try {
-    held = await dp.fs.exists(holdPath) === true;
+    hold = await dp.fs.exists(holdPath) === true ? "yes" : "no";
   } catch (err) {
-    notes.push(`the hold marker '${holdPath}' could not be checked: ${err instanceof Error ? err.message : String(err)}`);
+    hold = "unreadable";
+    notes.push(`the hold marker '${holdPath}' could not be checked: ${safeErrorText(err)}`);
   }
-  if (held) {
+  if (hold === "yes") {
     try {
-      const first = stripBom(String(await dp.fs.read(holdPath))).split(/\r\n|[\n\r]/)[0].trim();
+      // trim() is what removes a byte-order mark from a marker written by hand
+      // through a cmdlet that emits one: U+FEFF is whitespace to ECMAScript, so
+      // it goes with the rest of the leading space and the reason starts at the
+      // first real character.
+      const first = String(await dp.fs.read(holdPath)).split(/\r\n|[\n\r]/)[0].trim();
       if (first !== "") {
-        holdReason = boundedText(first);
+        holdReason = boundedText(bracketSafeText(first));
         holdReasonSource = holdPath;
       }
     } catch (err) {
-      notes.push(`the hold marker '${holdPath}' could not be read: ${err instanceof Error ? err.message : String(err)}`);
+      notes.push(`the hold marker '${holdPath}' could not be read: ${safeErrorText(err)}`);
     }
   }
 
@@ -686,30 +715,34 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<KeeperHal
       notes.push(`there is no keeper.json under '${rundir}': the process keeper has written no state for this persona`);
     }
   } catch (err) {
-    notes.push(`'${statePath}' could not be read: ${err instanceof Error ? err.message : String(err)}`);
+    notes.push(`'${statePath}' could not be read: ${safeErrorText(err)}`);
   }
 
   const nextDelaySeconds = typeof state?.currentDelay === "number" ? state.currentDelay : null;
   const lastExitCode = typeof state?.lastExitCode === "number" ? state.lastExitCode : null;
   // The marker's first line is the reason the keeper wrote for the operator;
   // keeper.json's own holdReason stands in when the marker carries no text.
-  if (held && holdReason === null && typeof state?.holdReason === "string" && state.holdReason.trim() !== "") {
-    holdReason = boundedText(state.holdReason.trim());
+  if (hold === "yes" && holdReason === null && typeof state?.holdReason === "string" && state.holdReason.trim() !== "") {
+    holdReason = boundedText(bracketSafeText(state.holdReason.trim()));
     holdReasonSource = statePath;
   }
   // The marker is what stops the next start, so it decides over the exit code.
-  // A signalled exit with no marker is a persona the keeper left down: exit
-  // 130 and 143 return Action 'exit' in bin/keeper-functions.ps1, on which the
-  // wrapper neither waits nor relaunches. Everything else is read from the
-  // ladder, which climbs above the base only after a crash-class exit.
+  // A marker check that threw decides next, because every standing below it is
+  // a statement that no marker is there. A signalled exit with no marker is a
+  // persona the keeper left down: exit 130 and 143 return Action 'exit' in
+  // bin/keeper-functions.ps1, on which the wrapper neither waits nor
+  // relaunches. Everything else is read from the ladder, which climbs above the
+  // base only after a crash-class exit.
   const signalled = lastExitCode === 130 || lastExitCode === 143;
-  const standing: KeeperStanding = held
+  const standing: KeeperStanding = hold === "yes"
     ? "held"
-    : signalled
-      ? "stopped"
-      : nextDelaySeconds === null
-        ? "unknown"
-        : nextDelaySeconds > KEEPER_BASE_DELAY_SECONDS ? "backing off" : "relaunching";
+    : hold === "unreadable"
+      ? "unknown"
+      : signalled
+        ? "stopped"
+        : nextDelaySeconds === null
+          ? "unknown"
+          : nextDelaySeconds > KEEPER_BASE_DELAY_SECONDS ? "backing off" : "relaunching";
   return {
     standing,
     nextDelaySeconds,
@@ -796,11 +829,15 @@ function fleetCommonsOf(
 // and relaunched leaves currentDelay above the base for as long as the new
 // session runs, and reading that standing out as the present would report a
 // healthy persona as backing off indefinitely. A live claim therefore reads as
-// running, whatever the last exit decided. A hold marker outranks both, because
-// it says the keeper will not start this persona again once whatever holds the
-// claim now has gone.
+// running, whatever ladder that file records. "held" and "stopped" outrank the
+// claim all the same, because both are statements about what happens next
+// rather than about what is running now: the marker says the keeper will not
+// start this persona again, and a signalled exit says the wrapper has already
+// left without relaunching. A session still holding the claim under either one
+// is the session that is going away, which is what the operator needs to see
+// before it does.
 function fleetActionOf(standing: KeeperStanding, claimHeld: boolean): FleetRow["action"] {
-  if (standing === "held") return "held";
+  if (standing === "held" || standing === "stopped") return standing;
   return claimHeld ? "running" : standing;
 }
 
@@ -1523,11 +1560,13 @@ export const register: Register = async (on, options) => {
       description:
         "Read fleet health: one row per persona in the roster the plugin's fleetRoster setting names. Each row carries " +
         "the persona's name, whether the roster enables it, where it stands (held, meaning a marker " +
-        "stops its next start, which is reported even while a session still holds the persona; running, meaning a live session " +
-        "holds the persona's claim, which outranks what the keeper's state file records because that file is written after a " +
-        "supervisor exit and so describes a decision already carried out; stopped, meaning the last supervisor exit was " +
+        "stops its next start, which is reported even while a session still holds the persona; stopped, meaning the last supervisor exit was " +
         "signalled, on which the keeper's wrapper leaves " +
-        "without relaunching, so nothing restarts this persona until its scheduled task runs again; backing off, meaning the " +
+        "without relaunching, so nothing restarts this persona until its scheduled task runs again, and which is reported even " +
+        "while a session still holds the persona, as a hold is, because both say what happens next rather than what is running " +
+        "now; running, meaning a live session holds the persona's claim under neither of those, which outranks the ladder the " +
+        "keeper's state file records because that file is written after a supervisor exit and so describes a decision already " +
+        "carried out; backing off, meaning the " +
         "keeper's relaunch delay has climbed above the base after a crash; relaunching, meaning that delay still sits at the " +
         "base; or unknown, meaning its keeper state could not be read), the hold reason when it is held and the file that " +
         "reason came from, the last supervisor exit code, whether a live session holds its commons claim, how old that " +
@@ -1535,11 +1574,16 @@ export const register: Register = async (on, options) => {
         "{roster, staleAfterMs, rows: [{name, enabled, action, nextDelaySeconds, holdReason, holdReasonSource, lastExitCode, claimHeld, heartbeatAgeMs, turnState, turnRunningMs?, note?}], problem?, problems?}. " +
         "nextDelaySeconds is the delay the keeper will apply after this persona's next crash, not a wait being served now: the " +
         "keeper's state file records the next rung of its ladder and no timer, so how long a persona waiting to relaunch has " +
-        "left cannot be read from here. A heartbeat age past staleAfterMs is a persona nothing live is holding. holdReason is " +
+        "left cannot be read from here. A running row carries no keeper standing in its action at all: a persona that is up " +
+        "with an unreadable keeper state and one that is up on a relaunch ladder the keeper has climbed both read running, so " +
+        "read where a running persona stands with its keeper from nextDelaySeconds and note. " +
+        "A heartbeat age past staleAfterMs is a persona nothing live is holding. holdReason is " +
         "text read out of the persona's own run directory, which the persona itself can write, so read it as an unverified " +
         "line from the file holdReasonSource names rather than as the keeper's word, and relay it as such; it and note are cut " +
-        "at 2000 characters and carry no square brackets, which are turned into round ones so that text out of a run directory " +
-        "cannot forge a delivery label. A roster or a keeper state file that cannot be read is said so in that row's note, or in problem " +
+        "at 2000 characters, and the text out of a run directory inside them, a hold reason and the message of a read that " +
+        "failed, has its square brackets turned into round ones so that it cannot forge a delivery label. The plugin's own " +
+        "words around that text keep their brackets, so a file path that carries one is named as it stands and a cut text ends " +
+        "in a bracketed mark saying it was cut. A roster or a keeper state file that cannot be read is said so in that row's note, or in problem " +
         "when the roster itself is unreadable, so one unreadable persona never hides the others. Read-only: it writes nothing " +
         "and deletes nothing. Available to the session holding the coordinator persona and to a session holding a live reader " +
         "claim on it.",
