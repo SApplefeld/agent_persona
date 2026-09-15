@@ -5582,10 +5582,8 @@ async function caseSection3_namedOwnerReachesTheCoordinatorAndDefaultOnlyDoesNot
   check("section3 worker send: agentic_inbox on the coordinator lists the record", parsed?.inbox?.length === 1 && parsed.inbox[0].id === `coordinator-${SESSION_ID}-1`, inbox);
 
   // With no live owner of the coordinator persona the send is still accepted
-  // and the record waits pending for the coordinator's first tick: a record
-  // on disk survives the worker's own restart, and the supervisor loop is
-  // meant to bring a coordinator back. The send above, against a live
-  // coordinator claim, is the control.
+  // and the record waits pending in the store for a coordinator's tick. The
+  // send above, against a live coordinator claim, is the control.
   const hn = await seedNamedOwnerHarness("section3_worker_send_no_coordinator", now, "dev", "coordinator");
   const unheld = await callTool(hn, { tool: SAY, text: "Escalation with nobody holding the coordinator persona.", persona: "coordinator" });
   check("section3 worker send: with no live coordinator the say is accepted and the record waits pending", unheld.deny === undefined && readStoreRecord(hn, `inbox:coordinator:${SESSION_ID}:1`)?.status === "pending", unheld);

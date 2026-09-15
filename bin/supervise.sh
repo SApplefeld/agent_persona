@@ -1541,8 +1541,10 @@ while true; do
   # the same inbox path, labelled [WORKER:<persona> id=<record id>] at
   # delivery. The send is accepted whether or not a live session owns the
   # coordinator persona: the record waits pending on disk for the
-  # coordinator's first tick, so it survives the worker's own restart and
-  # the gap while a coordinator relaunches. Appended for every launch but
+  # coordinator's first tick, which judges the writer's claim again, so it
+  # reaches the coordinator only while this worker's session is still live
+  # then; a worker that exited or relaunched first is skipped there (the
+  # README's Trust boundary). Appended for every launch but
   # the coordinator's own, which cannot address itself; a default-persona
   # launch holds no named owner claim, so the reach rule would refuse its
   # send and the clause is withheld.
