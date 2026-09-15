@@ -79,7 +79,7 @@
       "type": "string",
       "default": "off",
       "title": "Arming tier",
-      "description": "off, reader or owner. off registers no tool, timer or claim (a plain chat session). reader registers agentic_identity/agentic_say/agentic_inbox only, with no goal-tree tool and no ownership. owner is the full worker/coordinator shape. A supervisor launch always sets owner."
+      "description": "off, reader or owner. off registers no tool, timer or claim (a plain chat session). reader registers agentic_identity/agentic_say/agentic_inbox/fleet_status only, with no goal-tree tool and no ownership. owner is the full worker/coordinator shape. A supervisor launch always sets owner."
     },
     "coordinatorPersona": {
       "type": "string",

@@ -1022,8 +1022,8 @@ export const register: Register = async (on, options) => {
   // Section 6: the arming tier gates what this session's hooks do. "owner"
   // is a worker or the coordinator: every hook below registers and every
   // claim site fires exactly as it always has. "reader" is a passive seat
-  // like the Reviewer's: only agentic_identity/agentic_say/agentic_inbox
-  // register, with no goal-tree tool, no controller tick, and no claim on
+  // like the Reviewer's: only agentic_identity/agentic_say/agentic_inbox and
+  // fleet_status register, with no goal-tree tool, no controller tick, and no claim on
   // any owner-only claim site. "off" is a plain chat session: it registers
   // nothing below this point but the one hook a few lines down, which logs
   // the tier and nothing else. An absent or unrecognized value reads as
