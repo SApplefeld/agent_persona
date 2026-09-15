@@ -12,7 +12,8 @@
 # priming write and never the goal write) plus v2 Section 8
 # (COORDINATOR_ROLE_INSTRUCTION, the coordinator's own standing instruction,
 # present when the launch persona equals COORDINATOR_PERSONA and empty
-# otherwise, riding the same priming write). Every direction is checked so
+# otherwise, riding the same priming write, and carrying the compaction-
+# boundary clause that names the kit checkpoint CLI's boundary verb). Every direction is checked so
 # this cannot pass by always finding a string true. The block under test is
 # pulled out of
 # the real script by its start/end lines, not hand-copied, so this test
@@ -78,6 +79,9 @@ STEER_RESOLVE_CONTROL="agentic_resolve"
 # the name "coordinator".
 ROLE_CAP_CONTROL="pushing a third round"
 ROLE_SAY_CONTROL="agentic_say"
+# The compaction-boundary clause: the kit checkpoint verb the instruction
+# tells the coordinator to run at the end of a turn whose state is on disk.
+ROLE_BOUNDARY_CONTROL="kit-compact-checkpoint.js boundary"
 # The steer sentence's escalation clause, present for a worker's launch and
 # absent for the coordinator's own, which cannot address itself.
 STEER_ESCALATE_CONTROL="through agentic_say with persona set to"
@@ -183,8 +187,8 @@ case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *) check "channel attached: coordinator steer sentence present, naming the label and agentic_resolve" 1 ;;
 esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_SAY_CONTROL"*"$ROLE_CAP_CONTROL"*) check "persona matches COORDINATOR_PERSONA: coordinator role instruction present, naming agentic_say and the round cap" 0 ;;
-  *) check "persona matches COORDINATOR_PERSONA: coordinator role instruction present, naming agentic_say and the round cap" 1 ;;
+  *"$ROLE_SAY_CONTROL"*"$ROLE_CAP_CONTROL"*"$ROLE_BOUNDARY_CONTROL"*) check "persona matches COORDINATOR_PERSONA: coordinator role instruction present, naming agentic_say, the round cap and the boundary verb" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: coordinator role instruction present, naming agentic_say, the round cap and the boundary verb" 1 ;;
 esac
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *"$STEER_ESCALATE_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the steer sentence carries no escalation-to-coordinator clause" 1 ;;
@@ -235,8 +239,8 @@ PERSONA="lead"
 COORDINATOR_PERSONA="lead"
 eval "$VARS_SNIPPET"
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_SAY_CONTROL"*"$ROLE_CAP_CONTROL"*) check "channel not attached, persona matches: coordinator role instruction present, naming agentic_say and the round cap" 0 ;;
-  *) check "channel not attached, persona matches: coordinator role instruction present, naming agentic_say and the round cap" 1 ;;
+  *"$ROLE_SAY_CONTROL"*"$ROLE_CAP_CONTROL"*"$ROLE_BOUNDARY_CONTROL"*) check "channel not attached, persona matches: coordinator role instruction present, naming agentic_say, the round cap and the boundary verb" 0 ;;
+  *) check "channel not attached, persona matches: coordinator role instruction present, naming agentic_say, the round cap and the boundary verb" 1 ;;
 esac
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *"$STEER_ESCALATE_CONTROL"*) check "channel not attached, persona matches: the steer sentence carries no escalation-to-coordinator clause" 1 ;;

@@ -1,6 +1,6 @@
 # agentic-plugin: context budget, v3
 
-Status: Independent part Complete; checkpoint section BLOCKED-on-operator (Path C open question resolved).
+Status: Complete
 
 ## 1. Purpose
 
@@ -45,7 +45,7 @@ The Program names a worker nudge above 250K: "ask the worker to close out above 
 
 Gate the whole feature behind `options.contextBudgetEnabled` (default `false`). When off, no budget read, no latch, no nudge. The plugin ships useful without it.
 
-## 5. Checkpoint (BLOCKED-on-operator)
+## 5. Checkpoint
 
 The Program named the operator's own compaction checkpoint, through the kit. The kit's `open` verb requires an armed kit goal, which a persona worker does not have by design (that is item 5's whole premise). The exact mechanism 2b assumed does not work as written. This is the operator's call, not ours to bake in.
 
@@ -55,7 +55,7 @@ Three paths, so the operator can pick:
 - **Path B (kit change):** The operator changes the kit so a no-goal plugin session may `open` a real compaction checkpoint. True integration, but it is a kit change the operator designs and it touches the compaction gate's safety model.
 - **Path C (existing `boundary` verb):** The plugin calls `kit-compact-checkpoint.js boundary` (no goal required, session-scoped). **Fact (read from kit source):** The `boundary` verb defers auto-compaction. It writes a role-boundary marker (`compact-role-boundary.<session>.json`) that the PreCompact gate (`kit-compact-gate.js:695-699`) reads; when the marker is valid (same session, within `ROLE_BOUNDARY_MAX_AGE_MS`, and no new turn has begun since it was written), the gate allows the next auto-compaction attempt and consumes the marker (`return decide({ verdict: 'allow', reason: 'role-boundary', consumed })`). It is not merely marking a role edge; it is actively enabling compaction at that boundary. The marker is single-shot: once the gate spends it, the boundary is done. **Caveat**: `cmdBoundary` writes the marker under `process.cwd()` (`kit-compact-checkpoint.js:549`), while the gate reads it under `payload.cwd || process.cwd()` (`kit-compact-gate.js:564`); the gate's `cwd` comes from the hook input JSON, not from `process.cwd()` alone. If the harness invokes the boundary hook from a session cwd that differs from the directory where the gate later runs, the marker will not be found; the seat must invoke `cmdBoundary` from the same cwd the gate will read under (in practice, the session's working directory).
 
-Do not build it. The plan marks this section BLOCKED-on-operator.
+**Resolution (Path D, the operator's ruling):** the boundary is the seat's own judgment, not a plugin act. The coordinator role instruction in `bin/supervise.sh` carries a standing sentence: at the end of a turn where the seat's worktree edits are none or handed off, every decision from the stretch is on disk, and every message owed is sent, the seat runs `kit-compact-checkpoint.js boundary` from its own working directory as the turn's last act, and skips it while a goal or a steer is still in flux. Path C's mechanical call at each `activated` boundary was not taken because whether a turn is a boundary depends on whether a conversation or a decision is mid-flight, which the plugin cannot read and the seat can. The clause reaches the coordinator persona only. A worker on an armed kit goal already lands its compaction through the chapter checkpoint; a worker with no kit goal is not covered by this section and is a follow-on if one is wanted. The cwd caveat above is met by construction: the seat runs the verb from the session's own working directory, which is the directory the gate reads under.
 
 ## 6. Acceptance test
 
@@ -128,3 +128,34 @@ Checkpoint section (section 5) remains BLOCKED-on-operator (Paths A/B/C). Not bu
 |---|---|
 | F1 | Removed `2026-09-11` from the Status line and the Path C fact line (kept in Revision 2 only). |
 | F2 | Added cwd caveat to Path C: `cmdBoundary` writes the marker under `process.cwd()` (`kit-compact-checkpoint.js:549`), while the gate reads it under `payload.cwd \|\| process.cwd()` (`kit-compact-gate.js:564`); if the harness invokes the boundary hook from a session cwd that differs from the directory where the gate later runs, the marker will not be found. |
+
+### Revision 4
+
+| Item | Change |
+|---|---|
+| G1 | Section 5 resolved by the operator's ruling as Path D: a standing judgment clause in the coordinator role instruction rather than a plugin call at each activation. Status flipped to Complete. |
+
+## 9. Close-out: Checkpoint
+
+### What shipped
+
+- `bin/supervise.sh`: the coordinator role instruction gains the compaction-boundary clause (the three-question test, the `boundary` verb run from the seat's own working directory as the turn's last act, skip while a goal or a steer is in flux, a quiet turn declares one too). The comment above the instruction names the clause and why the coordinator needs the goalless path.
+- `.kit/channel-reply-instruction-test.sh`: pins the boundary verb on both persona-matching cases through a new `ROLE_BOUNDARY_CONTROL` substring.
+- `README.md`: the launch paragraph states the clause.
+- `docs/README.md`: this plan moves to the archived list.
+
+### Decisions and surprises
+
+- The operator ruled for the seat's judgment over a mechanical plugin call, on the ground that a boundary is a reading of whether a conversation or a decision is mid-flight. Section 5 records it as Path D.
+- The clause names the plugin root by its relation to the operating-instructions skill's base directory, since a child's Bash tool does not see `CLAUDE_PLUGIN_ROOT` and the priming already assumes claude-kit is installed on the host.
+- A live run of the verb from the coordinator's own session confirmed the marker opens from this project directory, with no lapsed-marker warning, and the status read showed the gate honoring a sibling session's marker in the same directory. That session was a supervised `claude -p` stream-json child of `bin/supervise.sh` under the coordinator persona (its session id appears in the launch's `run/child-1/stdout.jsonl`), and `CLAUDE_CODE_SESSION_ID` was set in its Bash tool while `CLAUDE_PLUGIN_ROOT` was not, which is why the clause locates the plugin root through a loaded skill's base directory rather than the environment.
+- Review findings addressed: the docs index listed the archived plan as active; the plugin-root pointer assumed a skill the coordinator may never have loaded; the marker's age bound was unstated; a prior close-out's record line had been rewritten. One finding was discarded: the kit's seat Stop hook rewriting the same marker applies only to a seat with a registry entry under the coordinator directory, and the coordinator persona holds none.
+
+### Lanes that gated it
+
+- Targeted lane: `.kit/channel-reply-instruction-test.sh`, baseline 25 OK exit 0 on the untouched tree, 25 OK exit 0 after the change. Red probe: the boundary verb swapped for another verb in the script turned both new pins red (exit 1), and the script was restored byte-identical from the pre-probe copy.
+- `bash -n bin/supervise.sh` clean.
+
+### Commit model
+
+Branch-and-PR on `coordinator-compaction-boundary` off `01003f3`, the repository's convention for a protected `main`. Delivered in this changeset.
