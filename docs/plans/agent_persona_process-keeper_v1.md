@@ -181,3 +181,18 @@ Files in scope: `bin/fleet.example.json` (new), `README.md`, `D:/personas/fleet.
 - Whether the kit's doctor gains a step that reads each persona's `keeper.json` and reports a held or backing-off persona. The kit seat's call, after this plan ships.
 
 ## Chapters
+
+### Interim board 1 - 2026-09-15
+
+Written before Section 1's review round, at a compaction boundary the gate asked for.
+
+- Handoff: this plan arrived from the expert seat over the commons inbox as a reader record (writer holding `reader:dev`, confirmed in the installed store). The grant was traced to the operator's own advance yes on this session's relay thread on 2026-09-15 for the class of plans the expert would dispatch, since the expert both authored and cited the `## Dispatch Authorization` section and so could not be the citer under the author-citer rule. Armed with `kit-goal arm --self-armed` from `D:/agent_persona`, bound to this session. Handoff reply owed to the expert: armed. The reply rides the inbox record's turn answer, which lands when this turn ends.
+- Branch: `process-keeper`, cut from `origin/plan/process-keeper` at cf9e903 because the expert's worktree at `D:/agent_persona-wt/process-keeper` holds that branch. The pull request will open from `process-keeper`. The branch also carries `docs/plans/agent_persona_steward-architect_v1.md`, Status Ready, parked for the operator and not run here.
+- Section 1 stage: implemented by implementer-opus (DONE_WITH_CONCERNS), verified in the main thread (probe run exit 0, bash 5.3.15, node v24.19.0, claude 2.1.272 all exit 0), review round 1 not yet dispatched. Live dispatches: none.
+- Section 1 readings so far: (1) unelevated, `IsInRole Administrator` false in this session and in the probe's own out file; (2) S4U registration from this session fails, `Microsoft.Management.Infrastructure.CimException: Access is denied.`, HRESULT 0x80131500, nothing registered; (3) to (7) cannot measure: registration needs an elevated session, and this box has UAC on with consent prompting and no gsudo. Sections 2 and 3 proceed on the broker's documented S4U facts per the plan's own branch.
+- Machine state: `D:/personas/keeper.env` written by the main thread with all eight allowlisted keys; TEMP and TMP pinned to `D:\Temp`, the user-level value this box delivers today, rather than the profile Temp path. No scheduled task was created. The scratch persona directory `D:/personas/probe` was never created.
+- Gate baseline: no suite ran for this section (the plan names no test for it). The direct probe run is the section's evidence.
+- Assumptions declared this section (route b unless noted): the env file is written by the main thread rather than the implementer, since it is machine state outside the tree; new `.kit/*.mjs` suites in Sections 2 and 3 are added to the allowlist in `.kit/.gitignore`, which ignores everything not listed; the probe records `delivered.TMP` beside the six named keys, since TMP is on the allowlist.
+- Found work routed out of this plan: the installed plugin copy (0.10.0 cache, `hooks/index.ts:1408`) labels every drained inbox record `[OPERATOR]` while this repo's source labels by writer. Reported to the operator on the relay thread; remedy is a plugin update and a persona relaunch, the operator's act. A backlog entry follows with the Section 1 Chapter.
+- Rulings adopted: none.
+- Next action: dispatch round 1 (adversarial, blind, security at fable) over `bin/keeper-probe.ps1`, adjudicate, close Section 1 with its Chapter, then Sections 2 and 3.
