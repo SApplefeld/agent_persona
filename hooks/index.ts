@@ -50,7 +50,6 @@ import type { InboxRecord } from "./operator";
 import {
   claimReaderRole,
   mayReachPersona,
-  mayReachPersonaIn,
   deliveryGroundIn,
   deliveryRecordProblem,
   quoteContinuationLines,
@@ -4418,22 +4417,10 @@ export const register: Register = async (on, options) => {
       // The reach rule: a live reader claim on the target, the coordinator
       // persona held by this session, or the target being the coordinator
       // persona while this session owns a named persona of its own.
-      const sayClaims = await readAllClaims(commonsStoreOf($), sess.staleAfterMs);
-      if (!mayReachPersonaIn(sayClaims, persona, sess.mySessionId, coordinatorPersona)) {
+      const mayReach = await mayReachPersona(commonsStoreOf($), persona, sess.mySessionId, coordinatorPersona, sess.staleAfterMs);
+      if (!mayReach) {
         toolErrorsThisTurn++;
         return { deny: `agentic_say cannot reach '${persona}': this session holds no live reader claim on it and does not hold the '${coordinatorPersona}' persona, and ${persona === coordinatorPersona ? "owns no named persona of its own to push from" : `'${persona}' is not the coordinator persona`}.` };
-      }
-      // A record to the coordinator persona is read only by that persona's
-      // owner, so while no live session owns it the record would wait unread
-      // for a coordinator that may never launch. The send is refused instead,
-      // which also covers the gap while a coordinator relaunches, and a
-      // worker's standing instruction takes the refusal as the cue to send
-      // again later or put its finding to the operator. The refusal is that
-      // cue rather than a failure, so it is not counted as a tool error: a
-      // worker in a fleet with no coordinator would otherwise reach the error
-      // streak that pauses its goal by doing what its instruction says.
-      if (persona === coordinatorPersona && commonsWinner(sayClaims, `persona:${coordinatorPersona}`) === null) {
-        return { deny: `agentic_say cannot reach '${persona}': no live session holds the '${coordinatorPersona}' persona right now, so the record would wait for a coordinator that may never launch; send it again on a later turn.` };
       }
       // BD3 part 2: when answers is set, verify it names a live open ask.
       if (answers) {
