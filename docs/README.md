@@ -2,8 +2,6 @@
 
 ## Active plans
 
-- `plans/agent_persona_passive-supervisor_v1.md`: the supervisor starts with no goal and waits, takes goals and steering by conversation, returns to waiting between goals, and is reachable from a chat channel. Roadmap for the plugin's own persona working on this clone. In Progress; the close-out finishing pass is v2's own Section 0. See also `plans/agent_persona_coordinator_v2.md`.
-- `plans/agent_persona_coordinator_v2.md`: a Fable-tier coordinator persona that directs and assists many Sonnet-tier worker personas across repos, over an extended commons-store inbox path. Builds on v1's persona/commons/channel infrastructure. In Progress; Section 0 closes v1 and hardens `bin/supervise.sh` (backfilled roots, the process-tree stop, the opus default, the installed-plugin runtime) before Section 1 starts.
 - `plans/agentic-plugin_context-budget_v1.md`: context-budget thresholds and the close-out nudge. The independent part is Complete; the checkpoint section is blocked on an operator ruling.
 
 ## Archived plans
@@ -16,8 +14,10 @@
 - `archive/agentic-plugin_cost-cadence_v1.md`: Cost and cadence (the plugin's own spend ledger, nudge caps, idle backoff) (v13, commit d92b8f2). Complete.
 - `plans/archive/agentic-plugin_supervisor_v1.md`: Supervisor (the outer loop that relaunches a persona session across days-long runs). Complete.
 - `plans/archive/agentic-plugin_operator-channel_v1.md`: Operator channel (inbox, reply, ask waits, doorbell) (v17, commit e98c20f). Complete.
+- `archive/agent_persona_passive-supervisor_v1.md`: Passive supervisor (the plugin persona starts with no goal and waits, takes goals and steering by conversation, returns to waiting between goals, and is reachable from a chat channel). Complete; its close-out ran as the coordinator plan's Section 0.
+- `archive/agent_persona_coordinator_v2.md`: Coordinator (a Fable-tier coordinator persona directing many worker personas across repos over the commons-store inbox path: cross-repo status, addressing by persona, provenance labels, the inbox lifecycle, arming tiers, the worker and coordinator standing instructions, the test audit). Complete; the most recent plan.
 
 ## History
 
 - `archive/discussion/`: the review channel between the worker sessions and the reviewer session that built this plugin, every round through 166, with the gate logs the rounds cite. See its README.
-- `backlog.md`: open defects and design directions, each with its remedy; retired entries move to `archive/backlog-<date>.md`.
+- `backlog.md`: open defects and design directions, each with its remedy; retired entries move to a quarterly snapshot, `archive/backlog-2026-Q3.md` (the earlier one-off is `archive/backlog-2026-09-11.md`).
