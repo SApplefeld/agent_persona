@@ -82,6 +82,17 @@ ROLE_SAY_CONTROL="agentic_say"
 # The compaction-boundary clause: the kit checkpoint verb the instruction
 # tells the coordinator to run at the end of a turn whose state is on disk.
 ROLE_BOUNDARY_CONTROL="kit-compact-checkpoint.js boundary"
+# The three fleet-keeper duties, one distinctive fragment each rather than a
+# whole paragraph, so a wording repair to the sentences around them leaves the
+# pin standing while deleting a duty reds it: the tool the fleet-health duty
+# calls every tick, the kit pass the seat duty runs every tick, and the
+# persona the design-escalation duty wakes. Each is checked present for the
+# launch persona that matches COORDINATOR_PERSONA and absent for a named
+# worker and for default, since a duty sentence leaking into a worker's
+# priming would have workers probing the machine's registry.
+ROLE_FLEET_CONTROL="fleet_status"
+ROLE_SEAT_CONTROL="reconciliation pass"
+ROLE_ARCHITECT_CONTROL="to the architect"
 # The steer sentence's escalation clause, present for a worker's launch and
 # absent for the coordinator's own, which cannot address itself.
 STEER_ESCALATE_CONTROL="through agentic_say with persona set to"
@@ -190,6 +201,20 @@ case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_SAY_CONTROL"*"$ROLE_CAP_CONTROL"*"$ROLE_BOUNDARY_CONTROL"*) check "persona matches COORDINATOR_PERSONA: coordinator role instruction present, naming agentic_say, the round cap and the boundary verb" 0 ;;
   *) check "persona matches COORDINATOR_PERSONA: coordinator role instruction present, naming agentic_say, the round cap and the boundary verb" 1 ;;
 esac
+# One case per duty, so a red names the duty that went missing rather than
+# the paragraph it sat in.
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_FLEET_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the fleet-health duty is present, naming the fleet status tool" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the fleet-health duty is present, naming the fleet status tool" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_SEAT_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the kit Coordinator seat duty is present, naming the reconciliation pass" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the kit Coordinator seat duty is present, naming the reconciliation pass" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_ARCHITECT_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the design-escalation duty is present, naming the architect" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the design-escalation duty is present, naming the architect" 1 ;;
+esac
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *"$STEER_ESCALATE_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the steer sentence carries no escalation-to-coordinator clause" 1 ;;
   *) check "persona matches COORDINATOR_PERSONA: the steer sentence carries no escalation-to-coordinator clause" 0 ;;
@@ -227,6 +252,13 @@ if [ -z "${COORDINATOR_ROLE_INSTRUCTION:-}" ]; then
 else
   check "persona differs from COORDINATOR_PERSONA: coordinator role instruction is empty" 1
 fi
+# The emptiness check above covers the duties only while the whole instruction
+# stays gated. This one reads the duty fragments themselves, so a shared
+# preamble built for every launch could not carry them in unnoticed.
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*) check "persona differs from COORDINATOR_PERSONA: none of the three fleet-keeper duties reach a worker" 1 ;;
+  *) check "persona differs from COORDINATOR_PERSONA: none of the three fleet-keeper duties reach a worker" 0 ;;
+esac
 
 # The two evals above move NO_CHANNEL and the persona match together, so a
 # role assignment nested inside the NO_CHANNEL guard would pass both. These
@@ -242,6 +274,10 @@ case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_SAY_CONTROL"*"$ROLE_CAP_CONTROL"*"$ROLE_BOUNDARY_CONTROL"*) check "channel not attached, persona matches: coordinator role instruction present, naming agentic_say, the round cap and the boundary verb" 0 ;;
   *) check "channel not attached, persona matches: coordinator role instruction present, naming agentic_say, the round cap and the boundary verb" 1 ;;
 esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_FLEET_CONTROL"*"$ROLE_SEAT_CONTROL"*"$ROLE_ARCHITECT_CONTROL"*) check "channel not attached, persona matches: all three fleet-keeper duties present" 0 ;;
+  *) check "channel not attached, persona matches: all three fleet-keeper duties present" 1 ;;
+esac
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *"$STEER_ESCALATE_CONTROL"*) check "channel not attached, persona matches: the steer sentence carries no escalation-to-coordinator clause" 1 ;;
   *) check "channel not attached, persona matches: the steer sentence carries no escalation-to-coordinator clause" 0 ;;
@@ -256,6 +292,10 @@ if [ -z "${COORDINATOR_ROLE_INSTRUCTION:-}" ]; then
 else
   check "channel attached, COORDINATOR_PERSONA differs: coordinator role instruction is empty" 1
 fi
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*) check "channel attached, COORDINATOR_PERSONA differs: none of the three fleet-keeper duties are built" 1 ;;
+  *) check "channel attached, COORDINATOR_PERSONA differs: none of the three fleet-keeper duties are built" 0 ;;
+esac
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *"$STEER_ESCALATE_CONTROL"*"$COORDINATOR_PERSONA"*) check "channel attached, COORDINATOR_PERSONA differs: the steer sentence routes findings and declined steers to the coordinator by name" 0 ;;
   *) check "channel attached, COORDINATOR_PERSONA differs: the steer sentence routes findings and declined steers to the coordinator by name" 1 ;;
@@ -273,6 +313,18 @@ case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *"$STEER_ESCALATE_CONTROL"*) check "default persona: the steer sentence carries no escalation-to-coordinator clause" 1 ;;
   *) check "default persona: the steer sentence carries no escalation-to-coordinator clause" 0 ;;
 esac
+# A default-persona launch is the other side the duties must not reach: it
+# holds no named owner claim, so a fleet probe or a design escalation from it
+# would be refused by the reach rule anyway.
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$ROLE_ARCHITECT_CONTROL"*) check "default persona: none of the three fleet-keeper duties are built" 1 ;;
+  *) check "default persona: none of the three fleet-keeper duties are built" 0 ;;
+esac
+if [ -z "${COORDINATOR_ROLE_INSTRUCTION:-}" ]; then
+  check "default persona: coordinator role instruction is empty" 0
+else
+  check "default persona: coordinator role instruction is empty" 1
+fi
 
 echo
 if [ "$failed" = "0" ]; then
