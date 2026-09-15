@@ -216,11 +216,21 @@ ARCH_NOREPO_CONTROL="names no repository is worked under your own directory"
 ARCH_CLONE_CONTROL="cloning its remote URL under your own directory"
 ARCH_CLONE_EXCLUSIVE_CONTROL="never from a checkout another persona is working in"
 ARCH_FETCH_CONTROL="fetch that clone before each ask"
+# A fetch moves the remote-tracking ref and leaves the local trunk where the
+# clone left it, so a branch cut from the local trunk after a fetch is as stale
+# as the clone. The charter names the ref the branch is cut from.
+ARCH_FETCH_TRUNK_CONTROL="cut each branch from the fetched remote-tracking trunk"
 # A repository name travels to this seat inside a record, which can carry
-# content a worker read rather than the operator's own words, and the push runs
-# under the machine's stored credentials. The charter names the clone target
-# and the remote before the push for that reason.
-ARCH_PUSH_BOUND_CONTROL="you name the clone target and the remote the push goes to"
+# content a worker read rather than the operator's own words, and the clone and
+# the push both run under the machine's stored credentials. So the charter holds
+# the clone to a plain https or ssh remote URL, puts the operator's word ahead of
+# a clone the operator did not name, and names the clone target and the remote
+# before the push. The first two are the load-bearing ones: a guard that fires
+# only before the push guards a step the clone has already taken, and a hostile
+# repository is read as context by a session running at top privilege.
+ARCH_CLONE_SHAPE_CONTROL="You clone only a plain https or ssh remote URL"
+ARCH_CLONE_GATE_CONTROL="wait for the operator's word before you clone it"
+ARCH_PUSH_BOUND_CONTROL="name the clone target and the remote the push goes to"
 # The report clause names the operator, and the charter is built independently
 # of NO_CHANNEL, so a launch with no channel has no reply tool to report
 # through. The fallback is the coordinator persona, the hop the steer sentence
@@ -233,6 +243,24 @@ ARCH_NOCHANNEL_CONTROL="Where no channel is attached, your record to the coordin
 # ask takes instead, in the shape the steer override beside it uses.
 ARCH_SKILLS_CONTROL="claude-kit:brainstorming"
 ARCH_SKILLS_OVERRIDE_CONTROL="That leg of it does not govern you either"
+# The steward routes a plan review, a consult and a finishing judgment here, and
+# the skills clause overrides the skill-load sentence's plan-execution leg, so a
+# clause naming only the spec-writing skills leaves those three asks with no
+# skill named at all.
+# The bare skill name will not serve: the skill-load sentence names
+# claude-kit:finishing-work too, so a fragment of that shape is carried by every
+# launch and says nothing about the charter. The charter's own phrasing is what
+# is withheld from the rest of the priming write.
+ARCH_SKILLS_JUDGMENT_CONTROL="for a finishing judgment claude-kit:finishing-work"
+# The supervisor writes a launch prompt as its own turn behind a line naming the
+# text as the operator's trusted task. The charter places other inbound text as
+# information rather than an ask, so it has to say the launch prompt is not that
+# case, or the seat bounces the operator's own task back to the steward.
+ARCH_LAUNCH_PROMPT_CONTROL="the operator's own trusted task"
+# This seat holds no goal node and the tick starts no turn on an empty inbox, so
+# nothing resumes an ask left half done. The charter's answer is visibility: the
+# seat reports where it got to before the turn ends.
+ARCH_UNFINISHED_CONTROL="before you end a turn with an ask still open"
 # The steer sentence rides every priming write, including this one, and tells a
 # persona to put a [COORDINATOR ...] prompt that ties to no goal node to the
 # operator or to decline it. This seat holds no plan and no goal node, so the
@@ -262,14 +290,21 @@ priming_concat() {
   printf '%s' "${SKILL_LOAD_INSTRUCTION:-}${COORDINATOR_STEER_INSTRUCTION:-}${COORDINATOR_ROLE_INSTRUCTION:-}${ARCHITECT_ROLE_INSTRUCTION:-}${CHANNEL_REPLY_INSTRUCTION:-}"
 }
 
-# Every persona name the priming write splices in, read as a class rather than
-# as the list of names the source happens to carry. Two shapes carry one: the
-# agentic_say target the design duty and the architect's answer clause name, and
-# the fleet row the liveness check reads back. Each must be the eval's own
-# COORDINATOR_PERSONA or ARCHITECT_PERSONA, both withheld from every literal
-# bin/supervise.sh carries, so a seat name hardcoded at any of those sites reds
-# here whatever clause it sits in. A pin naming the two sites it knows about
-# would answer for those two and stay silent on the next one.
+# Every persona name the priming write splices in. Three shapes carry one: the
+# agentic_say target the design duty and the architect's answer clause name, the
+# fleet row the liveness check reads back, and the steer sentence's own send
+# target. Each must be the eval's own COORDINATOR_PERSONA or ARCHITECT_PERSONA,
+# both withheld from every literal bin/supervise.sh carries, so a seat name
+# hardcoded at any of those sites reds here whatever clause it sits in.
+#
+# This is an enumeration of the shapes the source carries, not a read of a class.
+# It cannot be one: the string it greps is rendered English prose, where a
+# persona name is indistinguishable from an ordinary word. What keeps the
+# enumeration honest is check_splice_site_count below, which counts the
+# interpolations in the source instead. A name reaches the priming write only by
+# interpolating one of the two persona variables, so a fourth shape is a fifth
+# interpolation, and the count reds when one appears in a shape this sweep does
+# not read.
 check_spliced_names() {  # <label>
   local label="$1" name count=0 bad=""
   while IFS= read -r name; do
@@ -282,9 +317,49 @@ check_spliced_names() {  # <label>
   done <<EOF
 $(priming_concat | grep -o "$SAY_PERSONA_ARG_CONTROL [^,]*," | sed "s/^$SAY_PERSONA_ARG_CONTROL //; s/,\$//")
 $(priming_concat | grep -o "the row for [^ ]*" | sed 's/^the row for //')
+$(priming_concat | grep -o "with persona set to [^:]*:" | sed 's/^with persona set to //; s/:$//')
 EOF
   [ "$count" -ge 1 ] && [ -z "$bad" ]
   check "$label (names spliced=$count, off-class=$bad)" "$?"
+}
+
+# The backstop under the enumeration above. bin/supervise.sh's instruction block
+# splices a persona name at four sites today, two per variable. A fifth reds
+# here, which is the signal to read the new site's shape and add it to
+# check_spliced_names rather than to raise this number.
+SPLICE_SITE_COUNT=4
+check_splice_site_count() {  # <label>
+  local coord arch total
+  # grep -o rather than grep -c: the design duty carries both of its splices on
+  # one line, and a line count would read that pair as one site.
+  coord=$(printf '%s' "$VARS_SNIPPET" | grep -o '\${COORDINATOR_PERSONA}' | wc -l | tr -d ' ')
+  arch=$(printf '%s' "$VARS_SNIPPET" | grep -o '\${ARCHITECT_PERSONA}' | wc -l | tr -d ' ')
+  total=$((coord + arch))
+  [ "$total" -eq "$SPLICE_SITE_COUNT" ]
+  check "$1 (splice sites in source=$total, expected $SPLICE_SITE_COUNT)" "$?"
+}
+
+# Reads the source rather than a rendered instruction, so it runs once here
+# rather than inside each eval block.
+check_splice_site_count "priming-write persona splice sites are all known to the sweep above"
+
+# No charter fragment anywhere in the priming write. The fragments are read off
+# the shell's own variable table rather than listed by hand, because the hand
+# list this replaces was carried in five places and three fragments were never
+# added to any of them: a constant written for a presence pin has to be
+# remembered five more times, and twice it was not. Reading the class means a
+# fragment added tomorrow is swept the day it is defined, and the absence cases
+# below say what their labels have always claimed.
+check_no_charter_fragment() {  # <label>
+  local v leaked="" concat
+  concat=$(priming_concat)
+  for v in $(compgen -v | grep '^ARCH_[A-Z_]*_CONTROL$'); do
+    case "$concat" in
+      *"${!v}"*) leaked="$leaked $v" ;;
+    esac
+  done
+  [ -z "$leaked" ]
+  check "$1 (leaked:${leaked:- none})" "$?"
 }
 
 # Reviewer Round 141 R111 (Major, reproduced): the prior extraction
@@ -504,10 +579,7 @@ if [ -z "${ARCHITECT_ROLE_INSTRUCTION:-}" ]; then
 else
   check "persona matches COORDINATOR_PERSONA: architect role instruction is empty" 1
 fi
-case "$(priming_concat)" in
-  *"$ARCH_SEAT_CONTROL"*|*"$ARCH_ASK_CONTROL"*|*"$ARCH_WORKTREE_CONTROL"*|*"$ARCH_REPORT_CONTROL"*|*"$ARCH_NEVER_CONTROL"*|*"$ARCH_NOREPO_CONTROL"*|*"$ARCH_CLONE_CONTROL"*|*"$ARCH_STEER_CONTROL"*|*"$ARCH_OTHER_PATH_CONTROL"*|*"$ARCH_FETCH_CONTROL"*|*"$ARCH_PUSH_BOUND_CONTROL"*|*"$ARCH_NOCHANNEL_CONTROL"*|*"$ARCH_SKILLS_CONTROL"*) check "persona matches COORDINATOR_PERSONA: no architect charter reaches the priming write" 1 ;;
-  *) check "persona matches COORDINATOR_PERSONA: no architect charter reaches the priming write" 0 ;;
-esac
+check_no_charter_fragment "persona matches COORDINATOR_PERSONA: no architect charter reaches the priming write"
 # Every case above reads one fragment on its own, so reordering the three duty
 # sentences leaves all of them green and deleting one reds that one alone.
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
@@ -544,10 +616,7 @@ case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_SEAT_CONTROL"*) check "ARCHITECT_PERSONA unset, persona matches COORDINATOR_PERSONA: the kit Coordinator seat duty still stands" 0 ;;
   *) check "ARCHITECT_PERSONA unset, persona matches COORDINATOR_PERSONA: the kit Coordinator seat duty still stands" 1 ;;
 esac
-case "$(priming_concat)" in
-  *"$ARCH_SEAT_CONTROL"*|*"$ARCH_ASK_CONTROL"*|*"$ARCH_WORKTREE_CONTROL"*|*"$ARCH_REPORT_CONTROL"*|*"$ARCH_NEVER_CONTROL"*|*"$ARCH_NOREPO_CONTROL"*|*"$ARCH_CLONE_CONTROL"*|*"$ARCH_STEER_CONTROL"*|*"$ARCH_OTHER_PATH_CONTROL"*|*"$ARCH_FETCH_CONTROL"*|*"$ARCH_PUSH_BOUND_CONTROL"*|*"$ARCH_NOCHANNEL_CONTROL"*|*"$ARCH_SKILLS_CONTROL"*) check "ARCHITECT_PERSONA unset, persona matches COORDINATOR_PERSONA: no architect charter reaches the priming write" 1 ;;
-  *) check "ARCHITECT_PERSONA unset, persona matches COORDINATOR_PERSONA: no architect charter reaches the priming write" 0 ;;
-esac
+check_no_charter_fragment "ARCHITECT_PERSONA unset, persona matches COORDINATOR_PERSONA: no architect charter reaches the priming write"
 
 # Channel not attached: the reply-tool guidance is absent, but the
 # skill-load sentence and the coordinator steer sentence must still be
@@ -667,6 +736,13 @@ case "$(priming_concat)" in
   *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$SAY_PERSONA_ARG_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_FLEET_ACTION_ROUTE_CONTROL"*|*"$ROLE_ARCHITECT_LIVE_CONTROL"*) check "default persona: no fleet-keeper duty reaches the priming write" 1 ;;
   *) check "default persona: no fleet-keeper duty reaches the priming write" 0 ;;
 esac
+# The charter's absence on this axis too. This eval is the only one that holds
+# default beside a fleet that does name an architect, so without it the charter
+# is pinned absent for default only on the ARCHITECT_PERSONA-unset axis, which
+# is a different question. No launch can reach the guard with default anyway,
+# since the emitter refuses that value and the read maps it to the empty string,
+# so this pins a bound rather than closing a live hole.
+check_no_charter_fragment "default persona on a fleet naming an architect: no charter clause reaches the priming write"
 if [ -z "${COORDINATOR_ROLE_INSTRUCTION:-}" ]; then
   check "default persona: coordinator role instruction is empty" 0
 else
@@ -752,8 +828,21 @@ check "persona matches ARCHITECT_PERSONA: the steer sentence itself is non-empty
 # Read as an ordered pair with the override, so the charter names the rule it
 # overrides rather than naming three skills beside a sentence it never answers.
 case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
-  *"$ARCH_SKILLS_OVERRIDE_CONTROL"*"$ARCH_SKILLS_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the charter overrides the skill-load sentence's plan-execution leg and names the design skills" 0 ;;
-  *) check "persona matches ARCHITECT_PERSONA: the charter overrides the skill-load sentence's plan-execution leg and names the design skills" 1 ;;
+  *"$ARCH_SKILLS_OVERRIDE_CONTROL"*"$ARCH_SKILLS_CONTROL"*"$ARCH_SKILLS_JUDGMENT_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the charter overrides the skill-load sentence's plan-execution leg and names a skill for every kind of ask the steward routes" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the charter overrides the skill-load sentence's plan-execution leg and names a skill for every kind of ask the steward routes" 1 ;;
+esac
+# The launch prompt is a separate write behind the supervisor's own trusted-task
+# line, so the charter places it as the operator's ask rather than as the other
+# text its arrival clause holds at arm's length.
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_LAUNCH_PROMPT_CONTROL"*) check "persona matches ARCHITECT_PERSONA: a launch prompt is placed as the operator's own ask" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: a launch prompt is placed as the operator's own ask" 1 ;;
+esac
+# Nothing wakes this seat on an ask it left unfinished, so the charter makes the
+# half-done state visible before the turn ends.
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_UNFINISHED_CONTROL"*) check "persona matches ARCHITECT_PERSONA: an unfinished ask is reported before the turn ends" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: an unfinished ask is reported before the turn ends" 1 ;;
 esac
 case "${SKILL_LOAD_INSTRUCTION:-}" in
   *"claude-kit:executing-work"*) check "persona matches ARCHITECT_PERSONA: the plan-execution skill the charter overrides is named in the same priming write" 0 ;;
@@ -762,11 +851,21 @@ esac
 # The clone is refreshed before each ask, so a branch cut months after the clone
 # was taken still starts from a current trunk.
 case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
-  *"$ARCH_FETCH_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the clone is fetched before each ask" 0 ;;
-  *) check "persona matches ARCHITECT_PERSONA: the clone is fetched before each ask" 1 ;;
+  *"$ARCH_FETCH_CONTROL"*"$ARCH_FETCH_TRUNK_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the clone is fetched before each ask and the branch is cut from the fetched trunk" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the clone is fetched before each ask and the branch is cut from the fetched trunk" 1 ;;
 esac
 # A repository name can arrive inside a record rather than from the operator,
-# and the push runs under the machine's stored credentials.
+# and the clone and the push both run under the machine's stored credentials.
+# The shape bound and the pre-clone gate are the two that guard the clone
+# itself; the push bound below guards only the step after it.
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_CLONE_SHAPE_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the clone is held to a plain https or ssh remote URL" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the clone is held to a plain https or ssh remote URL" 1 ;;
+esac
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_CLONE_GATE_CONTROL"*) check "persona matches ARCHITECT_PERSONA: a repository the operator did not name waits for the operator's word before the clone" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: a repository the operator did not name waits for the operator's word before the clone" 1 ;;
+esac
 case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
   *"$ARCH_PUSH_BOUND_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the clone target and the remote are named before the push" 0 ;;
   *) check "persona matches ARCHITECT_PERSONA: the clone target and the remote are named before the push" 1 ;;
@@ -827,10 +926,7 @@ if [ -z "${ARCHITECT_ROLE_INSTRUCTION:-}" ]; then
 else
   check "persona differs from ARCHITECT_PERSONA: architect role instruction is empty" 1
 fi
-case "$(priming_concat)" in
-  *"$ARCH_SEAT_CONTROL"*|*"$ARCH_ASK_CONTROL"*|*"$ARCH_WORKTREE_CONTROL"*|*"$ARCH_REPORT_CONTROL"*|*"$ARCH_NEVER_CONTROL"*|*"$ARCH_NOREPO_CONTROL"*|*"$ARCH_CLONE_CONTROL"*|*"$ARCH_STEER_CONTROL"*|*"$ARCH_OTHER_PATH_CONTROL"*|*"$ARCH_FETCH_CONTROL"*|*"$ARCH_PUSH_BOUND_CONTROL"*|*"$ARCH_NOCHANNEL_CONTROL"*|*"$ARCH_SKILLS_CONTROL"*) check "persona differs from ARCHITECT_PERSONA: no charter clause reaches a worker through any part of the priming write" 1 ;;
-  *) check "persona differs from ARCHITECT_PERSONA: no charter clause reaches a worker through any part of the priming write" 0 ;;
-esac
+check_no_charter_fragment "persona differs from ARCHITECT_PERSONA: no charter clause reaches a worker through any part of the priming write"
 
 # The coordinator persona on that same fleet holds the other named seat, and
 # the two instructions are gated on different settings, so it gets its own and
@@ -856,19 +952,13 @@ NO_CHANNEL=0
 PERSONA="vellum"
 COORDINATOR_PERSONA="lead"
 eval "$VARS_SNIPPET"
-case "$(priming_concat)" in
-  *"$ARCH_SEAT_CONTROL"*|*"$ARCH_ASK_CONTROL"*|*"$ARCH_WORKTREE_CONTROL"*|*"$ARCH_REPORT_CONTROL"*|*"$ARCH_NEVER_CONTROL"*|*"$ARCH_NOREPO_CONTROL"*|*"$ARCH_CLONE_CONTROL"*|*"$ARCH_STEER_CONTROL"*|*"$ARCH_OTHER_PATH_CONTROL"*|*"$ARCH_FETCH_CONTROL"*|*"$ARCH_PUSH_BOUND_CONTROL"*|*"$ARCH_NOCHANNEL_CONTROL"*|*"$ARCH_SKILLS_CONTROL"*) check "ARCHITECT_PERSONA unset: no charter clause reaches the persona an architect launch would carry" 1 ;;
-  *) check "ARCHITECT_PERSONA unset: no charter clause reaches the persona an architect launch would carry" 0 ;;
-esac
+check_no_charter_fragment "ARCHITECT_PERSONA unset: no charter clause reaches the persona an architect launch would carry"
 unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION ARCHITECT_ROLE_INSTRUCTION ARCHITECT_PERSONA
 NO_CHANNEL=1
 PERSONA="default"
 COORDINATOR_PERSONA="lead"
 eval "$VARS_SNIPPET"
-case "$(priming_concat)" in
-  *"$ARCH_SEAT_CONTROL"*|*"$ARCH_ASK_CONTROL"*|*"$ARCH_WORKTREE_CONTROL"*|*"$ARCH_REPORT_CONTROL"*|*"$ARCH_NEVER_CONTROL"*|*"$ARCH_NOREPO_CONTROL"*|*"$ARCH_CLONE_CONTROL"*|*"$ARCH_STEER_CONTROL"*|*"$ARCH_OTHER_PATH_CONTROL"*|*"$ARCH_FETCH_CONTROL"*|*"$ARCH_PUSH_BOUND_CONTROL"*|*"$ARCH_NOCHANNEL_CONTROL"*|*"$ARCH_SKILLS_CONTROL"*) check "ARCHITECT_PERSONA unset, default persona: no charter clause reaches the priming write" 1 ;;
-  *) check "ARCHITECT_PERSONA unset, default persona: no charter clause reaches the priming write" 0 ;;
-esac
+check_no_charter_fragment "ARCHITECT_PERSONA unset, default persona: no charter clause reaches the priming write"
 
 echo
 if [ "$failed" = "0" ]; then
