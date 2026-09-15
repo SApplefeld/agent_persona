@@ -3,6 +3,7 @@
 ## Active plans
 
 - `plans/agent_persona_process-keeper_v1.md`: Process keeper (each persona under a Windows scheduled task that starts at boot with no logon, a wrapper that relaunches or holds on the supervisor exit code with a growing delay, and the three supervisor self-heal fixes the keeper depends on). In Progress; handed to the dev persona.
+- `plans/agent_persona_steward-architect_v1.md`: Steward and architect (split the Fable coordinator persona into a Sonnet steward that keeps the fleet running and holds the kit Coordinator seat, and a Fable architect with no home repository that does design work when asked). Ready, parked for the operator's read; runs after the process keeper.
 
 ## Archived plans
 
