@@ -222,3 +222,16 @@ Delta: worktree against HEAD a95c571 on this checkout, 2026-09-15, no contention
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 2 - 2026-09-15
+
+Written after Sections 2 and 3 reached first green and before their review rounds, at a compaction boundary the gate asked for.
+
+- Section 2 stage: implemented by implementer-opus (DONE_WITH_CONCERNS), verified in the main thread (`node .kit/keeper-unit-test.mjs` 50 pass, 0 fail, exit 0 on my own run; probe re-run into a fresh out directory exit 0), first-green commit 6f0bc35 pushed. One fold: the probe's `New-Item -LiteralPath`, which Windows PowerShell 5.1 does not have, moved to `-Path`; confirmed by `(Get-Command New-Item).Parameters.Keys -contains 'LiteralPath'` reading False under 5.1 and by the probe creating a missing directory afterward. Review round 1 not yet dispatched.
+- Section 3 stage: implemented by implementer-sonnet (DONE), verified in the main thread (`node .kit/keeper-register-test.mjs` 23 pass, 0 fail, exit 0 on my own run), first-green commit 16075ad pushed. The idempotence check against a scratch task is cannot measure: this session is unelevated. Review round 1 not yet dispatched.
+- Live dispatches: none.
+- Contracts locked by the main thread before dispatch (route b, sections 2 and 3): the roster is a top-level JSON array of entry objects; the fixture of that shape is `.kit/fixtures/fleet.fixture.json`; `.kit/.gitignore` allowlists `keeper-unit-test.mjs`, `keeper-register-test.mjs` and `fixtures/*`; the wrapper's log tokens (`DECIDE`, `HOLD`, `RELEASE`, `ENV ignored:`, `ENV empty:`, `ENV duplicate:`, `ENV refused:`, `ENV dir-writers:`, `LAUNCH`, `EXIT`) and `keeper.json`'s camelCase fields; Section 3's script is self-contained (its own `Test-IsElevated`, its own roster read) so the two sections share no file.
+- Implementer route-b choices carried to the Chapters: Section 2 captures the supervisor's stdout and stderr through `Start-Process` redirects to two temp files appended to `supervisor.out` (interleaving is lost; a `2>&1` merge under 5.1 wraps stderr in ErrorRecord noise, confirmed by the implementer's probe); `-DelayScale` and `-OwnerSid` are test seams; positional argument order follows `bin/supervise.sh` line 37; a missing env file is tolerated only when `KEEPER_BASH_EXE` is already on the process environment; `keeper.json` is written fresh per wrapper process. Section 3 refuses a roster name outside `[A-Za-z0-9_-]+` and a path carrying a double quote at the action-string boundary; the battery settings print through the CIM object's inverted property names.
+- Gate baseline on the targeted lane: Section 2 suite 50/50 exit 0, Section 3 suite 23/23 exit 0, both measured on this checkout at 16075ad with a clean tree, no contention (no heavy-process claim, no foreign runner).
+- Rulings adopted: none.
+- Next action: round 1 for both sections (code pair at fable, security at fable, Agent tool), adjudicate, fix rounds as owed, close each with its Chapter, then Section 4.
