@@ -2,7 +2,7 @@
 
 ## Active plans
 
-- None.
+- `plans/agent_persona_process-keeper_v1.md`: Process keeper (each persona under a Windows scheduled task that starts at boot with no logon, a wrapper that relaunches or holds on the supervisor exit code with a growing delay, and the three supervisor self-heal fixes the keeper depends on). In Progress; handed to the dev persona.
 
 ## Archived plans
 
