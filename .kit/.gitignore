@@ -22,3 +22,6 @@
 !/settings-plugin-key-test.sh
 !/supervisor-natural-exit-test.sh
 !/persona-live-refuse-test.sh
+!/keeper-unit-test.mjs
+!/keeper-register-test.mjs
+!/fixtures/*
