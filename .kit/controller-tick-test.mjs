@@ -3217,6 +3217,7 @@ async function main() {
     await caseItem8p3_sayCarriesUrgent(clock);
     await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
     await caseBreakIn_agedRecordBreaksIntoTheRunningTurn(clock);
+    await caseBreakIn_stringPersistedRecordIsStillRead(clock);
     await caseBreakIn_theAgeLegDoesNotReachACoordinatorRecord(clock);
     await caseBreakIn_agedDeliveryIsUnstampedAndUrgentIsNot(clock);
     await caseBreakIn_oneAgedRecordRidesEachScan(clock);
@@ -6283,6 +6284,55 @@ async function caseBreakIn_agedRecordBreaksIntoTheRunningTurn(clock) {
     ctx.includes("[READER:default id=both-3, urgent] Stop and commit.") &&
     decisions.some((d) => d.action === "operator_delivered_urgent" && d.detail.includes("both-3")) &&
     !decisions.some((d) => d.action === "operator_delivered_waited" && d.detail.includes("both-3")), ctx);
+}
+
+
+// A record persisted as a JSON string rather than as an object is the shape an
+// older build left on disk. Every writer under hooks/ passes an object today,
+// and two read sites already parse a string for exactly this reason, so the
+// string form is legacy data rather than something current code produces.
+// The break-in scan filters on rec.status, so a record that reads back with
+// status undefined is dropped in silence and waits forever with nobody able
+// to see it. The delivery loop parses a string already, which is why the gap
+// sits on the read side alone. The control is a second string-persisted
+// record held one minute short of the bound. It is matched on text withheld
+// from the delivered record, so no assertion here can pass on the delivered
+// record's own literals, and a parse that read the record but ignored its
+// wait would still be caught.
+async function caseBreakIn_stringPersistedRecordIsStillRead(clock) {
+  console.log("\n=== Break-in: a record persisted as a JSON string is read, not dropped ===");
+  clock.set(T0);
+  const now = T0;
+  const readerSid = "waited-reader-004";
+  const h = await seedOwnerHarness("breakin_string_record", now);
+
+  h.storeMap.set(`commons:${readerSid}`, {
+    sessionId: readerSid,
+    lastSeen: now,
+    claims: [{ resource: "reader:default", claimedAt: now - 1000 }],
+  });
+  const strKey = `inbox:default:${readerSid}:1`;
+  h.storeMap.set(strKey, JSON.stringify({ id: "str-1", key: strKey, from: readerSid, at: now - 360_000, text: "Persisted as text.", kind: "say", status: "pending" }));
+  const youngStrKey = `inbox:default:${readerSid}:2`;
+  h.storeMap.set(youngStrKey, JSON.stringify({ id: "str-young-2", key: youngStrKey, from: readerSid, at: now - 240_000, text: "Also text, not due yet.", kind: "say", status: "pending" }));
+
+  await h.handlers["turn.start"](h.fake, { turnId: "t-long-str" }, async () => ({ result: "ok" }));
+  const r = await callTool(h, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "a.txt" }, text: "a.txt" }));
+  const ctx = Array.isArray(r.context) ? r.context.join("\n") : "";
+  const decisions = getDecisions(h);
+  const after = h.storeMap.get(strKey);
+  const afterParsed = typeof after === "string" ? JSON.parse(after) : after;
+  check("break-in string: the string-persisted aged record rides the tool result as [READER:default id=str-1, waited]",
+    ctx.includes("[READER:default id=str-1, waited] Persisted as text."), ctx);
+  check("break-in string: the string-persisted record is written back delivered and unstamped",
+    afterParsed?.status === "delivered" && afterParsed?.turnId === undefined, after);
+  check("break-in string: operator_delivered_waited names the string-persisted record",
+    decisions.some((d) => d.action === "operator_delivered_waited" && d.detail.includes("str-1")),
+    decisions.filter((d) => d.action.startsWith("operator_delivered")));
+  check("break-in string control: the string-persisted record short of the bound carries no context and stays pending",
+    !ctx.includes("Also text, not due yet.") &&
+    (typeof h.storeMap.get(youngStrKey) === "string" ? JSON.parse(h.storeMap.get(youngStrKey)).status : h.storeMap.get(youngStrKey)?.status) === "pending",
+    h.storeMap.get(youngStrKey));
 }
 
 // The age leg does not reach a coordinator-ground record. The worker's
