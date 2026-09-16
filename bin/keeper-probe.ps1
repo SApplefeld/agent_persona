@@ -6,7 +6,7 @@
 # The out file is plain text, one key=value per line, so a reader can grep it. It records the
 # running user, the session id, the elevation state, the environment as the process received it,
 # then applies the keeper env file by the keeper's allowlist rule and records whether bash, node and
-# claude resolve and report a version through that bash.
+# claude resolve and report a version through that bash, or that no bash resolved.
 #
 # The probe is a recorder, never a gate. Everything it can record it records instead of throwing,
 # and it exits 0 whenever the out file was written so the scheduler's last-result column stays
@@ -23,11 +23,9 @@ param(
     [string]$EnvFile = 'D:/personas/keeper.env'
 )
 
-# The allowlist ($script:KeeperEnvAllowlist), Read-KeeperEnvFile, Get-FileWriters,
-# Get-ForeignWriters and ConvertTo-Sid come from the shared functions file, so the probe's readings
-# and the wrapper's behavior (bin/Start-Persona.ps1) come from one list and one predicate. The
-# reading that shows whether the env file's guard holds is env.file.foreign_writers: the writers
-# and the owner outside the exempt set the wrapper refuses on.
+# The allowlist ($script:KeeperEnvAllowlist) and Read-KeeperEnvFile come from the shared functions
+# file, so the probe's readings and the wrapper's behavior (bin/Start-Persona.ps1) come from one
+# list.
 . (Join-Path $PSScriptRoot 'keeper-functions.ps1')
 
 # The six delivered variables the Approach names, plus TMP, which is on the allowlist and so is
@@ -61,12 +59,12 @@ function Test-IsElevated {
 Applies the allowlisted keys of an env file to this process and records what happened.
 
 .DESCRIPTION
-Returns the value of KEEPER_BASH_EXE when the file carries one, else $null. Every key outside the
-allowlist is recorded on an env.ignored line and not applied. An allowlisted key with an empty value
-is recorded on an env.empty line and not applied, because Set-Item on env: with an empty value
-removes the variable under Windows PowerShell 5.1 rather than setting it empty, and a probe that
-recorded that as applied would be lying. A missing file records env.file=missing and leaves the
-process environment as delivered.
+Returns the value of KEEPER_BASH_EXE when the file carries one, else $null.
+Every key outside the allowlist is recorded on an env.ignored line and not applied. An allowlisted
+key with an empty value is recorded on an env.empty line and not applied, because Set-Item on env:
+with an empty value removes the variable under Windows PowerShell 5.1 rather than setting it empty,
+and a probe that recorded that as applied would be lying. A missing file records env.file=missing
+and leaves the process environment as delivered.
 #>
 function Set-KeeperEnvironment {
     param([Parameter(Mandatory)][string]$Path)
@@ -76,15 +74,6 @@ function Set-KeeperEnvironment {
         return $null
     }
     Add-ProbeLine 'env.file' $Path
-    # One try per reading, so a failure on one still leaves the others recorded.
-    try { Add-ProbeLine 'env.file.owner' ([string](Get-Acl -LiteralPath $Path -ErrorAction Stop).Owner) }
-    catch { Add-ProbeLine 'env.file.owner.error' $_.Exception.Message }
-    try { Add-ProbeLine 'env.file.writers' (Get-FileWriters -Path $Path) }
-    catch { Add-ProbeLine 'env.file.writers.error' $_.Exception.Message }
-    try { Add-ProbeLine 'env.file.foreign_writers' (Get-ForeignWriters -Path $Path) }
-    catch { Add-ProbeLine 'env.file.foreign_writers.error' $_.Exception.Message }
-    try { Add-ProbeLine 'env.dir.writers' (Get-FileWriters -Path (Split-Path -Parent $Path)) }
-    catch { Add-ProbeLine 'env.dir.writers.error' $_.Exception.Message }
 
     try {
         $read = Read-KeeperEnvFile -Path $Path
@@ -94,6 +83,7 @@ function Set-KeeperEnvironment {
     }
     $values = $read.Values
     foreach ($dup in $read.Duplicates) { Add-ProbeLine 'env.duplicate' $dup }
+    foreach ($key in $read.Unquoted) { Add-ProbeLine 'env.unquoted' $key }
     $bashExe = $null
     foreach ($key in $values.Keys) {
         if ($script:KeeperEnvAllowlist -notcontains $key) {
@@ -173,7 +163,7 @@ function Invoke-ProbeCommand {
 
 <#
 .SYNOPSIS
-Records the version probes for bash, node and claude through the given bash, or their absence.
+Records the version probes for bash, node and claude through the given bash, or that none resolved.
 #>
 function Invoke-ToolchainProbes {
     param([AllowNull()][string]$BashExe)
