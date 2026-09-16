@@ -3216,6 +3216,14 @@ async function main() {
     await caseSection4_quotingCoversTheQuestionAndEveryTerminator(clock);
     await caseItem8p3_sayCarriesUrgent(clock);
     await caseItem8p3_urgentBreaksIntoRunningTurn(clock);
+    await caseBreakIn_agedRecordBreaksIntoTheRunningTurn(clock);
+    await caseBreakIn_theAgeLegDoesNotReachACoordinatorRecord(clock);
+    await caseBreakIn_agedDeliveryIsUnstampedAndUrgentIsNot(clock);
+    await caseBreakIn_oneAgedRecordRidesEachScan(clock);
+    await caseBreakIn_everyRecordInTheScanGetsTheTurnsAnswer(clock);
+    await caseBreakIn_theConfiguredBoundIsClamped(clock);
+    await caseBreakIn_anUndeliverableAgedRecordDoesNotHoldTheSlot(clock);
+    await caseReply_oneMalformedRecordDoesNotCostTheOthersTheirReplies(clock);
     await caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock);
     await caseItem8p4_control_singleEventProducesNeither(clock);
     await caseItem8p4_openKaizenGoalNotDuplicated(clock);
@@ -3774,9 +3782,9 @@ async function caseChannelBackstop_skipsKeyboardOrigin(clock) {
 
 // Seeds an owner harness: mySid holds the persona in commons, the persona
 // store names it, and the heartbeat sidecar carries its live entry.
-async function seedOwnerHarness(caseName, now) {
+async function seedOwnerHarness(caseName, now, extraOpts = {}) {
   const mySid = SESSION_ID;
-  const h = await createTickHarness({ ...OPTS, caseName });
+  const h = await createTickHarness({ ...OPTS, caseName, ...extraOpts });
   h.storeMap.set(`commons:${mySid}`, {
     sessionId: mySid,
     lastSeen: now,
@@ -6220,6 +6228,449 @@ async function caseItem8p3_urgentBreaksIntoRunningTurn(clock) {
   // A second call in the same turn finds nothing new and adds no context.
   const r2 = await toolCallH(h.fake, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "b.txt" }, text: "b.txt" }));
   check("item8.3 urgent: second call in the turn adds no context", r2.context === undefined);
+}
+
+// A record nobody flagged urgent reaches the owner inside a long turn once
+// it has waited past breakInAfterMs, marked `, waited` rather than
+// `, urgent`: no marker on this channel grants delegated authority, so the
+// bracket says truthfully why the record broke in. The control is a record one
+// minute short of the bound, which buys two things: it stays pending rather
+// than being delivered, and it is matched on text withheld from the delivered
+// case, so an assertion cannot pass on the delivered record's own literals.
+// A record that is both flagged and aged takes `, urgent`.
+async function caseBreakIn_agedRecordBreaksIntoTheRunningTurn(clock) {
+  console.log("\n=== Break-in: a record past the wait bound breaks into the running turn as `, waited` ===");
+  clock.set(T0);
+  const now = T0;
+  const readerSid = "waited-reader-001";
+  const h = await seedOwnerHarness("breakin_aged_record", now);
+
+  h.storeMap.set(`commons:${readerSid}`, {
+    sessionId: readerSid,
+    lastSeen: now,
+    claims: [{ resource: "reader:default", claimedAt: now - 1000 }],
+  });
+  // The send times straddle the bound: 6 minutes past the send for the aged
+  // record against 4 minutes for the control, one minute either side of the
+  // 5-minute breakInAfterMs default this case drives. Move that default and
+  // these move too. The control carries its own id and its own text, and that
+  // text is what the pending assertion matches on, so it is withheld from
+  // every literal the delivered record is matched on.
+  const agedKey = `inbox:default:${readerSid}:1`;
+  h.storeMap.set(agedKey, { id: "aged-1", key: agedKey, from: readerSid, at: now - 360_000, text: "The branch is wrong.", kind: "say", status: "pending" });
+  const youngKey = `inbox:default:${readerSid}:2`;
+  h.storeMap.set(youngKey, { id: "young-2", key: youngKey, from: readerSid, at: now - 240_000, text: "No hurry on this one.", kind: "say", status: "pending" });
+  const bothKey = `inbox:default:${readerSid}:3`;
+  h.storeMap.set(bothKey, { id: "both-3", key: bothKey, from: readerSid, at: now - 360_000, text: "Stop and commit.", kind: "say", status: "pending", urgent: true });
+
+  await h.handlers["turn.start"](h.fake, { turnId: "t-long" }, async () => ({ result: "ok" }));
+  const r = await callTool(h, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "a.txt" }, text: "a.txt" }));
+  const ctx = Array.isArray(r.context) ? r.context.join("\n") : "";
+  const decisions = getDecisions(h);
+  check("break-in aged: the real tool result is kept", r.deny === undefined && r.text === "a.txt", r);
+  check("break-in aged: the aged record rides the tool result as [READER:default id=aged-1, waited]",
+    ctx.includes("[READER:default id=aged-1, waited] The branch is wrong."), ctx);
+  check("break-in aged: the aged record is delivered and left unstamped",
+    h.storeMap.get(agedKey)?.status === "delivered" && h.storeMap.get(agedKey)?.turnId === undefined, h.storeMap.get(agedKey));
+  check("break-in aged: operator_delivered_waited names the record, the tool and the whole minutes waited",
+    decisions.some((d) => d.action === "operator_delivered_waited" && d.detail.includes("aged-1") && d.detail.includes("Bash") && d.detail.includes("after waiting 6 min")),
+    decisions.filter((d) => d.action.startsWith("operator_delivered")));
+  check("break-in aged control: the record one minute short of the bound carries no context and stays pending",
+    !ctx.includes("No hurry on this one.") && h.storeMap.get(youngKey)?.status === "pending", h.storeMap.get(youngKey));
+  check("break-in aged: the unflagged record is not logged as urgent",
+    !decisions.some((d) => d.action === "operator_delivered_urgent" && d.detail.includes("aged-1")), decisions.filter((d) => d.action.startsWith("operator_delivered")));
+  check("break-in aged: a record that is both flagged and aged keeps the urgent mark and the urgent decision",
+    ctx.includes("[READER:default id=both-3, urgent] Stop and commit.") &&
+    decisions.some((d) => d.action === "operator_delivered_urgent" && d.detail.includes("both-3")) &&
+    !decisions.some((d) => d.action === "operator_delivered_waited" && d.detail.includes("both-3")), ctx);
+}
+
+// The age leg does not reach a coordinator-ground record. The worker's
+// standing steer instruction names `[COORDINATOR id=<record id>, urgent]` as
+// the one coordinator form that carries no delegated authority, and says
+// nothing about a `, waited` bracket, so a coordinator record arriving on its
+// wait alone would read as a steer to act on without an operator round trip. A
+// coordinator record still breaks in on the sender's own urgent flag, and
+// otherwise waits for the tick. The reader-ground record here varies ground
+// alone: same store, same scan, same side of the bound, and it is delivered
+// `, waited`, so the three outcomes are set by ground and flag and nothing
+// else. The coordinator record held back carries its own text, withheld from
+// every literal the two delivered records are matched on.
+async function caseBreakIn_theAgeLegDoesNotReachACoordinatorRecord(clock) {
+  console.log("\n=== Break-in: the age leg passes over a coordinator-ground record ===");
+  clock.set(T0);
+  const now = T0;
+  const coordSid = "waited-coord-001";
+  const readerSid = "waited-reader-003";
+  const h = await seedOwnerHarness("breakin_coordinator_ground", now);
+  // The coordinator writer owns `persona:coordinator`, the coordinatorPersona
+  // this harness resolves by default, so deliveryGroundIn labels its records
+  // COORDINATOR. The other writer holds a reader claim on the owner's own
+  // persona, so its records are labelled READER:default.
+  h.storeMap.set(`commons:${coordSid}`, {
+    sessionId: coordSid,
+    lastSeen: now,
+    claims: [{ resource: "persona:coordinator", claimedAt: now - 1000 }],
+  });
+  h.storeMap.set(`commons:${readerSid}`, {
+    sessionId: readerSid,
+    lastSeen: now,
+    claims: [{ resource: "reader:default", claimedAt: now - 1000 }],
+  });
+  // All three are well past the 5-minute default bound, and the coordinator's
+  // unflagged record is the oldest, so a scan choosing on age alone would take
+  // it first and spend its one aged slot on it.
+  const coordAgedKey = `inbox:default:${coordSid}:1`;
+  h.storeMap.set(coordAgedKey, { id: "coord-aged-1", key: coordAgedKey, from: coordSid, at: now - 600_000, text: "Move to the release branch.", kind: "say", status: "pending" });
+  const coordFlaggedKey = `inbox:default:${coordSid}:2`;
+  h.storeMap.set(coordFlaggedKey, { id: "coord-flagged-2", key: coordFlaggedKey, from: coordSid, at: now - 540_000, text: "Hold the deploy.", kind: "say", status: "pending", urgent: true });
+  const readerAgedKey = `inbox:default:${readerSid}:1`;
+  h.storeMap.set(readerAgedKey, { id: "reader-aged-3", key: readerAgedKey, from: readerSid, at: now - 480_000, text: "And the remote is stale.", kind: "say", status: "pending" });
+
+  await h.handlers["turn.start"](h.fake, { turnId: "t-long" }, async () => ({ result: "ok" }));
+  const r = await callTool(h, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "a.txt" }, text: "a.txt" }));
+  const ctx = Array.isArray(r.context) ? r.context.join("\n") : "";
+  const decisions = getDecisions(h);
+  check("break-in coordinator: the aged coordinator record carries no context and stays pending",
+    !ctx.includes("Move to the release branch.") && h.storeMap.get(coordAgedKey)?.status === "pending",
+    [ctx, h.storeMap.get(coordAgedKey)]);
+  check("break-in coordinator: no waited delivery is logged for the aged coordinator record",
+    !decisions.some((d) => d.action === "operator_delivered_waited" && d.detail.includes("coord-aged-1")),
+    decisions.filter((d) => d.action.startsWith("operator_delivered")));
+  check("break-in coordinator: the flagged coordinator record breaks in as [COORDINATOR id=coord-flagged-2, urgent] and is stamped",
+    ctx.includes("[COORDINATOR id=coord-flagged-2, urgent] Hold the deploy.") &&
+    h.storeMap.get(coordFlaggedKey)?.status === "delivered" && h.storeMap.get(coordFlaggedKey)?.turnId === "t-long",
+    [ctx, h.storeMap.get(coordFlaggedKey)]);
+  check("break-in coordinator: the reader record of the same age is delivered as [READER:default id=reader-aged-3, waited] and left unstamped",
+    ctx.includes("[READER:default id=reader-aged-3, waited] And the remote is stale.") &&
+    h.storeMap.get(readerAgedKey)?.status === "delivered" && h.storeMap.get(readerAgedKey)?.turnId === undefined,
+    [ctx, h.storeMap.get(readerAgedKey)]);
+  check("break-in coordinator: passing over the coordinator record does not spend the scan's aged slot",
+    decisions.some((d) => d.action === "operator_delivered_waited" && d.detail.includes("reader-aged-3")),
+    decisions.filter((d) => d.action.startsWith("operator_delivered")));
+}
+
+// The two break-in legs make different claims about the turn they land in, and
+// the stamp is where that difference lives. A sender flagging a record urgent
+// asked for it to be read inside whatever turn is running, so the record is
+// stamped with that turn and turn.complete files the turn's answer as its
+// reply. An aged record broke in on the plugin's own initiative: that turn
+// opened for something else and its answer is not a reply to the message, so
+// the record is left unstamped, turn.complete passes over it, and the sender's
+// feedback path is the owner's own agentic_resolve call. Both legs run in the
+// one scan, so nothing but the leg distinguishes them. The urgent record is
+// young enough that only the flag qualifies it.
+async function caseBreakIn_agedDeliveryIsUnstampedAndUrgentIsNot(clock) {
+  console.log("\n=== Break-in: an aged delivery is unstamped and unanswered; a flagged one is stamped and answered ===");
+  clock.set(T0);
+  const now = T0;
+  const readerSid = "stamp-reader-001";
+  const h = await seedOwnerHarness("breakin_aged_unstamped", now);
+  h.storeMap.set(`commons:${readerSid}`, {
+    sessionId: readerSid,
+    lastSeen: now,
+    claims: [{ resource: "reader:default", claimedAt: now - 1000 }],
+  });
+  const agedKey = `inbox:default:${readerSid}:1`;
+  h.storeMap.set(agedKey, { id: "unstamped-1", key: agedKey, from: readerSid, at: now - 360_000, text: "The branch is wrong.", kind: "say", status: "pending" });
+  const flaggedKey = `inbox:default:${readerSid}:2`;
+  h.storeMap.set(flaggedKey, { id: "flagged-2", key: flaggedKey, from: readerSid, at: now - 1_000, text: "Stop and commit.", kind: "say", status: "pending", urgent: true });
+
+  await h.handlers["turn.start"](h.fake, { turnId: "t-long" }, async () => ({ result: "ok" }));
+  const r = await callTool(h, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "a.txt" }, text: "a.txt" }));
+  const ctx = Array.isArray(r.context) ? r.context.join("\n") : "";
+  check("break-in stamp: the one scan folded both records into the tool result",
+    ctx.includes("id=unstamped-1, waited] The branch is wrong.") && ctx.includes("id=flagged-2, urgent] Stop and commit."), ctx);
+  check("break-in stamp: the aged record is delivered with no turn stamp",
+    h.storeMap.get(agedKey)?.status === "delivered" && h.storeMap.get(agedKey)?.turnId === undefined, h.storeMap.get(agedKey));
+  check("break-in stamp: the flagged record is delivered and stamped with the running turn",
+    h.storeMap.get(flaggedKey)?.status === "delivered" && h.storeMap.get(flaggedKey)?.turnId === "t-long", h.storeMap.get(flaggedKey));
+
+  const theAnswer = "Committing now.";
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-long", answer: theAnswer, reason: "completed" }, async () => ({ result: "ok" }));
+
+  check("break-in stamp: the aged record is still delivered after the turn answered, never answered",
+    h.storeMap.get(agedKey)?.status === "delivered", h.storeMap.get(agedKey));
+  check("break-in stamp: the aged record gets no reply record",
+    h.storeMap.get("reply:default:unstamped-1") === undefined, h.storeMap.get("reply:default:unstamped-1"));
+  check("break-in stamp: the flagged record is answered with the turn's answer as its reply",
+    h.storeMap.get(flaggedKey)?.status === "answered" && h.storeMap.get("reply:default:flagged-2")?.text === theAnswer,
+    [h.storeMap.get(flaggedKey), h.storeMap.get("reply:default:flagged-2")]);
+  const answeredDecisions = getDecisions(h).filter((d) => d.action === "operator_answered");
+  check("break-in stamp: only the flagged record is logged as answered",
+    answeredDecisions.some((d) => d.detail.includes("flagged-2")) && !answeredDecisions.some((d) => d.detail.includes("unstamped-1")),
+    answeredDecisions);
+}
+
+// A backlog of aged records drains one per scan rather than all at once, so a
+// quiet stretch or a supervisor outage cannot empty the whole inbox into a
+// single tool result. The oldest goes first, the tick drain's own rule. The
+// rest stay pending for the next scan past the throttle.
+async function caseBreakIn_oneAgedRecordRidesEachScan(clock) {
+  console.log("\n=== Break-in: one aged record per scan, oldest first ===");
+  clock.set(T0);
+  const now = T0;
+  const readerSid = "backlog-reader-001";
+  const h = await seedOwnerHarness("breakin_one_per_scan", now);
+  h.storeMap.set(`commons:${readerSid}`, {
+    sessionId: readerSid,
+    lastSeen: now,
+    claims: [{ resource: "reader:default", claimedAt: now - 1000 }],
+  });
+  // What this case pins is that exactly one aged record is delivered per scan
+  // and that it is the older one. It does not pin the selection code as the
+  // source of that ordering: listInboxRecords sorts its result oldest first
+  // (hooks/operator.ts), so a first-match selection reads the same order and
+  // passes here too.
+  const youngerKey = `inbox:default:${readerSid}:1`;
+  h.storeMap.set(youngerKey, { id: "backlog-younger", key: youngerKey, from: readerSid, at: now - 360_000, text: "And the remote is stale.", kind: "say", status: "pending" });
+  const olderKey = `inbox:default:${readerSid}:2`;
+  h.storeMap.set(olderKey, { id: "backlog-older", key: olderKey, from: readerSid, at: now - 420_000, text: "The branch is wrong.", kind: "say", status: "pending" });
+
+  await h.handlers["turn.start"](h.fake, { turnId: "t-long" }, async () => ({ result: "ok" }));
+  const r1 = await callTool(h, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "a.txt" }, text: "a.txt" }));
+  const ctx1 = Array.isArray(r1.context) ? r1.context.join("\n") : "";
+  check("break-in backlog: the first scan carries the older record and not the younger",
+    ctx1.includes("The branch is wrong.") && !ctx1.includes("And the remote is stale."), ctx1);
+  check("break-in backlog: the older record is delivered and the younger is left pending",
+    h.storeMap.get(olderKey)?.status === "delivered" && h.storeMap.get(youngerKey)?.status === "pending",
+    [h.storeMap.get(olderKey), h.storeMap.get(youngerKey)]);
+
+  // Past urgentCheckMinMs, so the next tool call scans again.
+  clock.set(T0 + 6_000);
+  const r2 = await callTool(h, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "a.txt" }, text: "a.txt" }));
+  const ctx2 = Array.isArray(r2.context) ? r2.context.join("\n") : "";
+  check("break-in backlog: the next scan carries the younger record",
+    ctx2.includes("And the remote is stale."), ctx2);
+  check("break-in backlog: the younger record is delivered by that scan",
+    h.storeMap.get(youngerKey)?.status === "delivered", h.storeMap.get(youngerKey));
+}
+
+// The configured wait bound is clamped into a range the break-in stays sane
+// in. A zero or negative configuration cannot make a just-sent record break in,
+// because the floor holds it back. A configuration above the ceiling cannot
+// push the bound to or past the wait self-review counts as too slow, so a
+// record older than the ceiling breaks in however large the configured value.
+async function caseBreakIn_theConfiguredBoundIsClamped(clock) {
+  console.log("\n=== Break-in: the configured wait bound is clamped at both ends ===");
+
+  async function deliverOneRecord(caseName, extraOpts, recordAgeMs, id, text) {
+    clock.set(T0);
+    const now = T0;
+    const readerSid = "clamp-reader-001";
+    const h = await seedOwnerHarness(caseName, now, extraOpts);
+    h.storeMap.set(`commons:${readerSid}`, {
+      sessionId: readerSid,
+      lastSeen: now,
+      claims: [{ resource: "reader:default", claimedAt: now - 1000 }],
+    });
+    const key = `inbox:default:${readerSid}:1`;
+    h.storeMap.set(key, { id, key, from: readerSid, at: now - recordAgeMs, text, kind: "say", status: "pending" });
+    await h.handlers["turn.start"](h.fake, { turnId: "t-long" }, async () => ({ result: "ok" }));
+    const r = await callTool(h, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "a.txt" }, text: "a.txt" }));
+    return { h, key, ctx: Array.isArray(r.context) ? r.context.join("\n") : "" };
+  }
+
+  // Five seconds is past the configured zero and short of the 30000 floor, so
+  // the record stays pending only when the floor is applied. A younger record
+  // would stay pending under the default bound too and could not tell the two
+  // apart.
+  const floored = await deliverOneRecord("breakin_clamp_floor", { breakInAfterMs: 0 }, 5_000, "clamp-floor-1", "Sent five seconds ago.");
+  check("break-in clamp: a zero bound is floored, so a record sent five seconds ago stays pending and carries no context",
+    floored.h.storeMap.get(floored.key)?.status === "pending" && !floored.ctx.includes("Sent five seconds ago."),
+    [floored.h.storeMap.get(floored.key), floored.ctx]);
+
+  // Nine minutes is the ceiling exactly: the wait self-review's ten-minute
+  // threshold less the minute of headroom. A record this age breaks in only
+  // while that headroom is subtracted, so dropping it fails this case.
+  const capped = await deliverOneRecord("breakin_clamp_ceiling", { breakInAfterMs: 3_600_000 }, 540_000, "clamp-ceiling-1", "Sent nine minutes ago.");
+  check("break-in clamp: an hour-long bound is capped, so a record sent nine minutes ago still breaks in",
+    capped.h.storeMap.get(capped.key)?.status === "delivered" && capped.ctx.includes("Sent nine minutes ago."),
+    [capped.h.storeMap.get(capped.key), capped.ctx]);
+
+  // Forty seconds sits between the 30000 floor and the 300000 default, so the
+  // record breaks in only while the configured zero is read and floored. A
+  // bound that ignored the configuration and stayed at the default would leave
+  // it pending. That is the half the floor leg above cannot cover: the floor
+  // leg fails a bound left unclamped, this one fails a bound left unread, and
+  // the pair is what holds the clamp to both.
+  const floorRead = await deliverOneRecord("breakin_clamp_floor_read", { breakInAfterMs: 0 }, 40_000, "clamp-floor-2", "Sent forty seconds ago.");
+  check("break-in clamp: a zero bound is floored to 30000 rather than ignored, so a record sent forty seconds ago breaks in",
+    floorRead.h.storeMap.get(floorRead.key)?.status === "delivered" && floorRead.ctx.includes("Sent forty seconds ago."),
+    [floorRead.h.storeMap.get(floorRead.key), floorRead.ctx]);
+}
+
+// The scan's one aged slot goes to the oldest record that can actually be
+// delivered, not to the oldest record. A record whose writer has gone and
+// whose claim has expired can never pass the ground check, and the tick's
+// drain, the only path that marks it skipped, cannot run while the turn is in
+// flight. Taking the slot on age alone would therefore park that one record in
+// the slot for the whole turn and block every other sender behind it, which is
+// the case the wait leg exists to serve. The undeliverable record is left
+// pending here, exactly as before, and the drain still owns its skip.
+async function caseBreakIn_anUndeliverableAgedRecordDoesNotHoldTheSlot(clock) {
+  console.log("\n=== Break-in: an undeliverable aged record does not block the ones behind it ===");
+  clock.set(T0);
+  const now = T0;
+  const readerSid = "hol-reader-001";
+  const goneSid = "hol-gone-002";
+  const h = await seedOwnerHarness("breakin_head_of_line", now);
+  // Only the live reader has a commons entry. The other writer holds no
+  // claim at all, so deliveryGroundIn refuses every record it wrote.
+  h.storeMap.set(`commons:${readerSid}`, {
+    sessionId: readerSid,
+    lastSeen: now,
+    claims: [{ resource: "reader:default", claimedAt: now - 1000 }],
+  });
+  // All three are past the 5-minute default bound. The undeliverable one is
+  // the oldest, so it is what a selection made on age alone would pick.
+  const goneKey = `inbox:default:${goneSid}:1`;
+  h.storeMap.set(goneKey, { id: "hol-gone-1", key: goneKey, from: goneSid, at: now - 600_000, text: "From a writer with no claim.", kind: "say", status: "pending" });
+  const firstKey = `inbox:default:${readerSid}:1`;
+  h.storeMap.set(firstKey, { id: "hol-first-2", key: firstKey, from: readerSid, at: now - 500_000, text: "The branch is wrong.", kind: "say", status: "pending" });
+  const secondKey = `inbox:default:${readerSid}:2`;
+  h.storeMap.set(secondKey, { id: "hol-second-3", key: secondKey, from: readerSid, at: now - 400_000, text: "And the remote is stale.", kind: "say", status: "pending" });
+
+  await h.handlers["turn.start"](h.fake, { turnId: "t-long" }, async () => ({ result: "ok" }));
+  const r1 = await callTool(h, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "a.txt" }, text: "a.txt" }));
+  const ctx1 = Array.isArray(r1.context) ? r1.context.join("\n") : "";
+  check("break-in head-of-line: the scan delivers the oldest deliverable record, not the oldest one",
+    ctx1.includes("The branch is wrong.") && !ctx1.includes("From a writer with no claim."), ctx1);
+  check("break-in head-of-line: that record is marked delivered and the undeliverable one stays pending",
+    h.storeMap.get(firstKey)?.status === "delivered" && h.storeMap.get(goneKey)?.status === "pending",
+    [h.storeMap.get(firstKey), h.storeMap.get(goneKey)]);
+  check("break-in head-of-line: the scan still carries one aged record, so the third is left for the next one",
+    !ctx1.includes("And the remote is stale.") && h.storeMap.get(secondKey)?.status === "pending",
+    [ctx1, h.storeMap.get(secondKey)]);
+
+  // Past urgentCheckMinMs, so the next tool call scans again.
+  clock.set(T0 + 6_000);
+  const r2 = await callTool(h, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "a.txt" }, text: "a.txt" }));
+  const ctx2 = Array.isArray(r2.context) ? r2.context.join("\n") : "";
+  check("break-in head-of-line: the next scan carries the next deliverable record",
+    ctx2.includes("And the remote is stale.") && h.storeMap.get(secondKey)?.status === "delivered",
+    [ctx2, h.storeMap.get(secondKey)]);
+  check("break-in head-of-line: the undeliverable record is still pending and still undelivered",
+    !ctx2.includes("From a writer with no claim.") && h.storeMap.get(goneKey)?.status === "pending",
+    [ctx2, h.storeMap.get(goneKey)]);
+}
+
+// turn.complete files the turn's answer against every record the turn stamped,
+// one store read and write per record. One record whose stored value cannot be
+// read back costs that record its reply and nothing else: no reply is written
+// for it at all, the records after it are still answered, and the failure is
+// named in its own decision. Here the bad record's key field, itself store
+// data, points at a value that is not JSON, and it sorts first so the
+// surviving record is the one processed after the throw.
+async function caseReply_oneMalformedRecordDoesNotCostTheOthersTheirReplies(clock) {
+  console.log("\n=== Reply: one malformed record does not cost the surviving records their replies ===");
+  clock.set(T0);
+  const now = T0;
+  const readerSid = "malformed-reader-001";
+  const h = await seedOwnerHarness("reply_malformed_record", now);
+  h.storeMap.set(`commons:${readerSid}`, {
+    sessionId: readerSid,
+    lastSeen: now,
+    claims: [{ resource: "reader:default", claimedAt: now - 1000 }],
+  });
+  const blobKey = `inbox:default:${readerSid}:9`;
+  h.storeMap.set(blobKey, "{ this is not JSON");
+  const badKey = `inbox:default:${readerSid}:1`;
+  h.storeMap.set(badKey, { id: "malformed-1", key: blobKey, from: readerSid, at: now - 3_000, text: "The branch is wrong.", kind: "say", status: "delivered", turnId: "t-long" });
+  const goodKey = `inbox:default:${readerSid}:2`;
+  h.storeMap.set(goodKey, { id: "sound-2", key: goodKey, from: readerSid, at: now - 2_000, text: "And the remote is stale.", kind: "say", status: "delivered", turnId: "t-long" });
+
+  await h.handlers["turn.start"](h.fake, { turnId: "t-long" }, async () => ({ result: "ok" }));
+  const theAnswer = "Switching the branch and refreshing the remote.";
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-long", answer: theAnswer, reason: "completed" }, async () => ({ result: "ok" }));
+
+  check("reply malformed: the sound record is answered and carries the turn's answer as its reply",
+    h.storeMap.get(goodKey)?.status === "answered" && h.storeMap.get("reply:default:sound-2")?.text === theAnswer,
+    [h.storeMap.get(goodKey), h.storeMap.get("reply:default:sound-2")]);
+  check("reply malformed: the record whose value cannot be read is left delivered",
+    h.storeMap.get(badKey)?.status === "delivered", h.storeMap.get(badKey));
+  check("reply malformed: no reply record is written for the record whose value cannot be read",
+    h.storeMap.get("reply:default:malformed-1") === undefined,
+    h.storeMap.get("reply:default:malformed-1"));
+  const decisions = getDecisions(h);
+  check("reply malformed: operator_reply_failed names the bad record and the status it was left in",
+    decisions.some((d) => d.action === "operator_reply_failed" && d.detail.includes("malformed-1") && d.detail.includes("left delivered")),
+    decisions.filter((d) => d.action.startsWith("operator_")));
+  check("reply malformed: the bad record is not logged as answered and the sound one is",
+    decisions.some((d) => d.action === "operator_answered" && d.detail.includes("sound-2")) &&
+    !decisions.some((d) => d.action === "operator_answered" && d.detail.includes("malformed-1")),
+    decisions.filter((d) => d.action === "operator_answered"));
+}
+
+// One break-in scan stamps every flagged record with the same turn, so
+// turn.complete owes each of them a reply. The model read all of them before
+// it answered, which is why the one answer is filed against each. The negative
+// direction is the empty or aborted turn: every record keeps the status and the
+// stamp it had, gets no reply, and is named in its own operator_turn_unanswered
+// decision. Flagged records are the leg under test because they are the
+// unrestricted one: a scan carries at most one aged record.
+async function caseBreakIn_everyRecordInTheScanGetsTheTurnsAnswer(clock) {
+  console.log("\n=== Break-in: turn.complete answers every record the scan stamped, not just one ===");
+
+  async function seedTwoFlaggedRecordsAndBreakIn(caseName) {
+    clock.set(T0);
+    const now = T0;
+    const readerSid = "waited-reader-002";
+    const h = await seedOwnerHarness(caseName, now);
+    h.storeMap.set(`commons:${readerSid}`, {
+      sessionId: readerSid,
+      lastSeen: now,
+      claims: [{ resource: "reader:default", claimedAt: now - 1000 }],
+    });
+    const keyA = `inbox:default:${readerSid}:1`;
+    h.storeMap.set(keyA, { id: "scan-a", key: keyA, from: readerSid, at: now - 1_000, text: "The branch is wrong.", kind: "say", status: "pending", urgent: true });
+    const keyB = `inbox:default:${readerSid}:2`;
+    h.storeMap.set(keyB, { id: "scan-b", key: keyB, from: readerSid, at: now - 2_000, text: "And the remote is stale.", kind: "say", status: "pending", urgent: true });
+    await h.handlers["turn.start"](h.fake, { turnId: "t-long" }, async () => ({ result: "ok" }));
+    await callTool(h, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "a.txt" }, text: "a.txt" }));
+    return { h, keyA, keyB };
+  }
+
+  const answered = await seedTwoFlaggedRecordsAndBreakIn("breakin_scan_answered");
+  check("break-in scan setup: the one scan delivered and stamped both flagged records",
+    answered.h.storeMap.get(answered.keyA)?.status === "delivered" && answered.h.storeMap.get(answered.keyA)?.turnId === "t-long" &&
+    answered.h.storeMap.get(answered.keyB)?.status === "delivered" && answered.h.storeMap.get(answered.keyB)?.turnId === "t-long",
+    [answered.h.storeMap.get(answered.keyA), answered.h.storeMap.get(answered.keyB)]);
+
+  const theAnswer = "Both noted: switching the branch and refreshing the remote.";
+  await answered.h.handlers["turn.complete"](answered.h.fake, { turnId: "t-long", answer: theAnswer, reason: "completed" }, async () => ({ result: "ok" }));
+
+  const recA = answered.h.storeMap.get(answered.keyA);
+  const recB = answered.h.storeMap.get(answered.keyB);
+  check("break-in scan: the first stamped record ends answered and is not left delivered",
+    recA?.status === "answered", recA);
+  check("break-in scan: the second stamped record ends answered and is not left delivered",
+    recB?.status === "answered", recB);
+  check("break-in scan: the first record carries a reply record with the turn's answer",
+    answered.h.storeMap.get("reply:default:scan-a")?.text === theAnswer, answered.h.storeMap.get("reply:default:scan-a"));
+  check("break-in scan: the second record carries a reply record with the turn's answer",
+    answered.h.storeMap.get("reply:default:scan-b")?.text === theAnswer, answered.h.storeMap.get("reply:default:scan-b"));
+  const answeredDecisions = getDecisions(answered.h).filter((d) => d.action === "operator_answered");
+  check("break-in scan: each record gets its own operator_answered decision",
+    answeredDecisions.some((d) => d.detail.includes("scan-a")) && answeredDecisions.some((d) => d.detail.includes("scan-b")),
+    answeredDecisions);
+
+  const aborted = await seedTwoFlaggedRecordsAndBreakIn("breakin_scan_aborted");
+  await aborted.h.handlers["turn.complete"](aborted.h.fake, { turnId: "t-long", answer: "", reason: "aborted" }, async () => ({ result: "ok" }));
+
+  const abortedA = aborted.h.storeMap.get(aborted.keyA);
+  const abortedB = aborted.h.storeMap.get(aborted.keyB);
+  check("break-in scan aborted: the first record keeps its delivered status and its stamp",
+    abortedA?.status === "delivered" && abortedA?.turnId === "t-long", abortedA);
+  check("break-in scan aborted: the second record keeps its delivered status and its stamp",
+    abortedB?.status === "delivered" && abortedB?.turnId === "t-long", abortedB);
+  check("break-in scan aborted: neither record gets a reply",
+    !aborted.h.storeMap.get("reply:default:scan-a") && !aborted.h.storeMap.get("reply:default:scan-b"),
+    [aborted.h.storeMap.get("reply:default:scan-a"), aborted.h.storeMap.get("reply:default:scan-b")]);
+  const unansweredDecisions = getDecisions(aborted.h).filter((d) => d.action === "operator_turn_unanswered");
+  check("break-in scan aborted: each record gets its own operator_turn_unanswered decision",
+    unansweredDecisions.some((d) => d.detail.includes("scan-a")) && unansweredDecisions.some((d) => d.detail.includes("scan-b")),
+    unansweredDecisions);
 }
 
 // ============================================================
