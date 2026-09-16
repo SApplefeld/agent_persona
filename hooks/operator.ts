@@ -159,6 +159,28 @@ export async function writeInboxRecord(
 }
 
 /**
+ * Read a record value out of the commons store as its object form.
+ *
+ * A value an older build persisted as a JSON string reads back as a string,
+ * while every reader here wants the object. The parse belongs at this one
+ * boundary rather than at each call site, because a reader that omits it does
+ * not fail: it yields an object whose every field is undefined, which a status
+ * filter drops in silence. A value that does not parse reads as absent, so a
+ * corrupt entry is skipped rather than throwing out of the reader that met it.
+ */
+export function parseStoreRecord<T>(raw: unknown): T | null {
+  if (!raw) return null;
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
+  }
+  return raw as T;
+}
+
+/**
  * Read an inbox record.
  */
 export async function readInboxRecord(
@@ -169,7 +191,7 @@ export async function readInboxRecord(
 ): Promise<InboxRecord | null> {
   const key = inboxKey(persona, writerSessionId, seq);
   const raw = await store.get(key);
-  return raw ? (raw as InboxRecord) : null;
+  return parseStoreRecord<InboxRecord>(raw);
 }
 
 /**
@@ -185,7 +207,8 @@ export async function listInboxRecords(
   for (const key of keys) {
     if (key.startsWith(prefix)) {
       const raw = await store.get(key);
-      if (raw) records.push(raw as InboxRecord);
+      const rec = parseStoreRecord<InboxRecord>(raw);
+      if (rec) records.push(rec);
     }
   }
   return records.sort((a, b) => a.at - b.at);
@@ -215,12 +238,7 @@ export async function readReplyRecord(
 ): Promise<ReplyRecord | null> {
   const key = replyKey(persona, msgId);
   const raw = await store.get(key);
-  if (!raw) return null;
-  // BE2: accept a string value by parsing it, so records already on disk still read
-  if (typeof raw === "string") {
-    try { return JSON.parse(raw) as ReplyRecord; } catch { return null; }
-  }
-  return raw as ReplyRecord;
+  return parseStoreRecord<ReplyRecord>(raw);
 }
 
 /**
