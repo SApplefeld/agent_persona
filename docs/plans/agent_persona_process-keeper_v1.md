@@ -643,3 +643,30 @@ Section 4's ladder: the opening bound, with the round count at five. Section 3 i
 Gate baselines unchanged from interim board 26.
 
 Next action: verify the Critical fix on the main session's own runs with a census, record its delta, receive the consult ruling, then declare the backstop with its phase analysis.
+
+### Interim board 28 - 2026-09-16
+This plan changed hands. The session the leash was bound to died at 11:18 local, mid-flight, and this session took it over on the operator's instruction relayed over the Discord channel. The takeover ran through the kit-goal CLI under --self-armed rather than by editing the goal state, so the record says plainly that this run made the arming invocation. The authority is the plan's own committed Dispatch Authorization, which names any session holding the plan and the dev persona as its executor, and this session holds that persona. The queue now carries this plan and the steward-architect plan behind it, on the operator's naming of both.
+
+The dead run's evidence survived it and is the reason no work was repeated. Its round 5 adjudication, its captured delta and its pre-BLOCKED consult all sit under .kit/scratch/process-keeper/s4/. The consult had returned before the session died and nobody had read it. Its ruling is Option C: land the Critical and the two security-weight Majors now, then declare the backstop recommending a continue, with a per-finding disposition for each of the nine held Majors rather than one ruling over them as a class.
+
+The Critical fix the dead run left is not green, and this is the finding of the boundary. Its delta is uncommitted in the working tree and adds build_stop_snapshot, which unions the wrapper's walk, a walk from every Windows pid in the MSYS closure and the tree record, and calls refresh_child_tree on entry to stop_child. Run against the natural-exit suite it returns 171 OK, 10 FAIL, exit 1, against the baseline of 164 OK, 0 FAIL, exit 0 that interim board 26 recorded. The failures concentrate in two places: three shutdown cases return exit 5 where they must return 0, and the whole of case (h), which is the case that proves a real surviving process is named and killed. The log is kept at .kit/scratch/process-keeper/s4/c1-regression.log.
+
+That reading was nearly lost to the harness. The suite ran as a background task and its completion notification reported exit code 0, which is the wrapper's exit and not the run's. Only the marker the run wrote for itself carried exit 1. A notification read as a result would have recorded a ten-failure regression as a clean pass.
+
+The machine's heavy-process claim was still held by the dead session, written at 15:11Z with an expected 1500 seconds, and was over an hour past that when this session read it. Its holder had no heartbeat and no claim entry in the commons store while six other sessions heartbeat within seconds. This session replaced it with its own, kept the stale one at .kit/rescue-a581ce96/heavy-process.stale.md, and released its own before dispatching. A claim whose only permitted releaser is the session that died is a box claimed forever, and that is worth a kit note rather than a local workaround.
+
+Every uncommitted file the dead session left was copied to .kit/rescue-a581ce96/ before anything ran, with a full patch beside it, and each copy was verified against the tree by diff rather than by inspection.
+
+One file left that set. docs/README.md carried an uncommitted line announcing the unversioned-manifest plan as Ready and queued. That plan merged and was archived on main in pull requests 33 through 35, so the line states something untrue and describes a plan this branch does not own. It is outside Section 4's Files in scope, so it was reverted to its committed state rather than folded, and the dispatched implementer is told not to touch that file.
+
+Live dispatches: implementer-opus on the ten-case regression, over bin/supervise.sh and the supervisor suites, told to keep the Critical fix rather than revert to walking the wrapper pid alone, and given the regression hypothesis explicitly as unconfirmed. Its first-turn reading was taken and resolved healthy at 18 assistant turns with no synthetic line.
+
+Gate baselines, measured by this session on 2026-09-16 on this checkout at 5feaa3c plus the uncommitted Section 4 delta, box claimed and released, no foreign runner named: supervisor-unit 17 passed 0 failed exit 0; supervisor-tree-walk PASS exit 0; supervisor-natural-exit 171 OK 10 FAIL exit 1 against interim board 26's 164 OK 0 FAIL exit 0 at 78f20b6 plus 5b75823. The kill-performing runs took a process census before them; the after census is owed with the implementer's return.
+
+Rulings adopted since the last boundary: none of this session's own. The dead run's consult ruling is read and held for the declaration rather than adopted piecemeal.
+
+Section 4's ladder: unchanged at the opening bound with the round count at five. The backstop declaration is owed and is held only by the carve-out fix, which must land before it.
+
+Owed and unrun, carried forward from interim board 27: the review round over the Critical fix's delta.
+
+Next action: adjudicate the implementer's return, re-run the natural-exit suite with a census on this session's own surface, fold the live-cleanup security Major into the same delta as the consult directs, then declare the backstop with its phase analysis.
