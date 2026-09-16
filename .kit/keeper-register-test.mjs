@@ -17,7 +17,8 @@
 // closes the other routes to the service that it names. What the suite guarantees is exactly this:
 // no spawn it makes calls a ScheduledTasks export that reaches the service, other than the reads a
 // spawn declares, and no spawn runs whose request text or registration script text matches a route
-// shape in ROUTE_PAST_STUB_SHAPES below. The refusal reads text, so these routes are not covered:
+// shape in ROUTE_PAST_STUB_SHAPES below. The refusal reads text and names routes one by one, so any
+// route no shape names passes it. The routes below are examples of that class, not the whole of it:
 //
 //   - a nested engine or process started by bare name or by path (powershell.exe, pwsh, cmd.exe
 //     with a command line), since the registration script names powershell.exe as its task action
@@ -25,7 +26,11 @@
 //   - any file a spawn loads at run time other than the registration script, whose text is never
 //     read;
 //   - code assembled at run time from pieces and reaching the engine through a doorway the shape
-//     list does not name.
+//     list does not name;
+//   - the PSScheduledJob module's cmdlets (Register-ScheduledJob and its siblings), which write
+//     real tasks under \Microsoft\Windows\PowerShell\ScheduledJobs;
+//   - a remoting session (Invoke-Command -ComputerName, New-PSSession, Enter-PSSession), whose
+//     runspace holds none of the stubs.
 //
 //   1. At suite start the export list is read from the real Windows PowerShell 5.1, and every
 //      export is classified by its verb: New builds in memory and stays real, Get and Export read
@@ -1064,8 +1069,6 @@ function runFunctionCase(prune) {
   const result = runRegistrationScript(['-Roster', badNameRoster, '-EnvFile', scratchEnvFile, '-RepoRoot', repoRoot, '-WhatIf']);
   record('extension: a roster name outside the safe character class is refused', () => {
     assert.equal(result.status, 1, 'exit code');
-    // A long temp path can wrap at console width when the error host formats it; the basename is
-    // the distinguishing token and is never split by that wrap.
     const collapsed = result.stderr.replace(/\s+/g, ' ');
     assert.ok(collapsed.includes('bad-name.json'), 'stderr names the roster file: ' + result.stderr);
   });
@@ -1968,7 +1971,8 @@ record('control: the spawn guard refuses a request that removes or redefines a f
 // variable, class and task name is a random token. So no instance is a string the shape list
 // carries, and a shape speaks on one only through its own case-insensitive structure. Each route's
 // record asserts that every one of its forms is refused and that the refusal names that route, so
-// removing a route's shape, or one alternative inside it, turns that route's record red.
+// removing a route's shape, or an alternative inside it that one of its forms exercises, turns that
+// route's record red.
 function varyCase(text) {
   const bits = randomBytes(text.length);
   return [...text].map((ch, i) => (bits[i] & 1 ? ch.toUpperCase() : ch.toLowerCase())).join('');
