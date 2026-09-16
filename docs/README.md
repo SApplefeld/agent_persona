@@ -15,8 +15,9 @@
 - `plans/archive/agentic-plugin_supervisor_v1.md`: Supervisor (the outer loop that relaunches a persona session across days-long runs). Complete.
 - `plans/archive/agentic-plugin_operator-channel_v1.md`: Operator channel (inbox, reply, ask waits, doorbell) (v17, commit e98c20f). Complete.
 - `archive/agent_persona_passive-supervisor_v1.md`: Passive supervisor (the plugin persona starts with no goal and waits, takes goals and steering by conversation, returns to waiting between goals, and is reachable from a chat channel). Complete; its close-out ran as the coordinator plan's Section 0.
-- `archive/agent_persona_coordinator_v2.md`: Coordinator (a Fable-tier coordinator persona directing many worker personas across repos over the commons-store inbox path: cross-repo status, addressing by persona, provenance labels, the inbox lifecycle, arming tiers, the worker and coordinator standing instructions, the test audit). Complete; the most recent plan.
+- `archive/agent_persona_coordinator_v2.md`: Coordinator (a Fable-tier coordinator persona directing many worker personas across repos over the commons-store inbox path: cross-repo status, addressing by persona, provenance labels, the inbox lifecycle, arming tiers, the worker and coordinator standing instructions, the test audit). Complete.
 - `archive/agentic-plugin_context-budget_v1.md`: Context budget (thresholds, the close-out nudge, and the coordinator's compaction-boundary clause in the priming turn). Complete.
+- `archive/agent_persona_unversioned-manifest_v1.md`: Unversioned manifest (the plugin manifest carries no version field, so each plugin update installs the fetched commit under a hash-named cache folder; proven by the install record and a coordinator steer to the dev persona). Complete; the most recent plan.
 
 ## History
 
