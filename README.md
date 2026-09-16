@@ -13,7 +13,7 @@ claude plugin marketplace add SApplefeld/agent_persona
 claude plugin install agentic-plugin@agent-persona --scope user
 ```
 
-`claude plugin update` re-fetches from GitHub, so the installed runtime always tracks merged `main` rather than whatever happens to be checked out in any one clone. Registering the marketplace from a local directory (`claude plugin marketplace add /path/to/this/clone`) instead makes `claude plugin update` copy that directory's working tree verbatim, uncommitted edits included - useful only for developing the plugin itself, alongside `--dev` below, never for running it.
+`claude plugin update` re-fetches from GitHub, so the installed runtime always tracks merged `main` rather than whatever happens to be checked out in any one clone. The manifest at `.claude-plugin/plugin.json` carries no version field on purpose: Claude Code keys its plugin cache on the manifest version where one exists and rebuilds the cache only when that string changes, so a versioned manifest would leave every persona running the commit of the last bump. With no version, each update installs the fetched commit into its own cache folder. Registering the marketplace from a local directory (`claude plugin marketplace add /path/to/this/clone`) instead makes `claude plugin update` copy that directory's working tree verbatim, uncommitted edits included - useful only for developing the plugin itself, alongside `--dev` below, never for running it.
 
 **Start the supervisor** (passive, no goal yet):
 
