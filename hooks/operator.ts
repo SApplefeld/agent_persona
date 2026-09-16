@@ -159,6 +159,28 @@ export async function writeInboxRecord(
 }
 
 /**
+ * Read a record value out of the commons store as its object form.
+ *
+ * A value an older build persisted as a JSON string reads back as a string,
+ * while every reader here wants the object. The parse belongs at this one
+ * boundary rather than at each call site, because a reader that omits it does
+ * not fail: it yields an object whose every field is undefined, which a status
+ * filter drops in silence. A value that does not parse reads as absent, so a
+ * corrupt entry is skipped rather than throwing out of the reader that met it.
+ */
+export function parseStoreRecord<T>(raw: unknown): T | null {
+  if (!raw) return null;
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
+  }
+  return raw as T;
+}
+
+/**
  * Read an inbox record.
  */
 export async function readInboxRecord(
@@ -169,7 +191,7 @@ export async function readInboxRecord(
 ): Promise<InboxRecord | null> {
   const key = inboxKey(persona, writerSessionId, seq);
   const raw = await store.get(key);
-  return raw ? (raw as InboxRecord) : null;
+  return parseStoreRecord<InboxRecord>(raw);
 }
 
 /**
@@ -185,7 +207,8 @@ export async function listInboxRecords(
   for (const key of keys) {
     if (key.startsWith(prefix)) {
       const raw = await store.get(key);
-      if (raw) records.push(raw as InboxRecord);
+      const rec = parseStoreRecord<InboxRecord>(raw);
+      if (rec) records.push(rec);
     }
   }
   return records.sort((a, b) => a.at - b.at);
@@ -215,12 +238,7 @@ export async function readReplyRecord(
 ): Promise<ReplyRecord | null> {
   const key = replyKey(persona, msgId);
   const raw = await store.get(key);
-  if (!raw) return null;
-  // BE2: accept a string value by parsing it, so records already on disk still read
-  if (typeof raw === "string") {
-    try { return JSON.parse(raw) as ReplyRecord; } catch { return null; }
-  }
-  return raw as ReplyRecord;
+  return parseStoreRecord<ReplyRecord>(raw);
 }
 
 /**
@@ -550,6 +568,14 @@ function ownedNamedPersonasOf(claims: UnionedClaim[], sessionId: string): string
 }
 
 /**
+ * The ground string deliveryGroundIn returns for a writer holding the
+ * coordinator persona. Both the value this module produces and every check
+ * against it read this constant, so the producer and its readers cannot
+ * drift apart.
+ */
+export const COORDINATOR_GROUND = "COORDINATOR";
+
+/**
  * The provenance ground a record from `writer` carries when delivered to
  * `target`, read from claims already read, or null when the writer may not
  * reach the target at all. Reach holds on any of three legs: the writer
@@ -593,7 +619,7 @@ export function deliveryGroundIn(
   writer: string,
   coordinatorPersona: string,
 ): DeliveryGround {
-  if (holdsOwnerClaim(claims, writer, coordinatorPersona)) return { ground: "COORDINATOR" };
+  if (holdsOwnerClaim(claims, writer, coordinatorPersona)) return { ground: COORDINATOR_GROUND };
   const workerLeg = target === coordinatorPersona && holdsOwnerClaim(claims, writer, undefined, "default");
   const readerPersonas = readerPersonasOf(claims, writer);
   let kind: string;
@@ -648,14 +674,18 @@ export function deliveryRecordProblem(rec: { id: unknown; text: unknown }): stri
 }
 
 /**
- * The bracket every delivered record opens with: `[<ground> id=<id>]`, or
- * `[<ground> id=<id>, urgent]` on the urgent break-in. `ground` is what
- * deliveryGroundIn returned and `id` has passed deliveryRecordProblem. The
- * id rides in-band because agentic_inbox is reader-only, so nothing else
- * tells the owner the id agentic_resolve takes.
+ * The bracket every delivered record opens with: `[<ground> id=<id>]` on a
+ * plain delivery, `[<ground> id=<id>, urgent]` where the sender flagged the
+ * record, and `[<ground> id=<id>, waited]` where an unflagged record broke
+ * into a running turn because it had waited past the bound. The marker says
+ * why the record arrived and grants nothing: delegated authority comes only
+ * from a coordinator prompt, never from a bracket on a tool result.
+ * `ground` is what deliveryGroundIn returned and `id` has passed
+ * deliveryRecordProblem. The id rides in-band because agentic_inbox is
+ * reader-only, so nothing else tells the owner the id agentic_resolve takes.
  */
-export function deliveryPrefix(ground: string, id: string, urgent: boolean): string {
-  return `[${ground} id=${id}${urgent ? ", urgent" : ""}]`;
+export function deliveryPrefix(ground: string, id: string, mark: "plain" | "urgent" | "waited"): string {
+  return `[${ground} id=${id}${mark === "plain" ? "" : `, ${mark}`}]`;
 }
 
 /**
@@ -684,10 +714,10 @@ export function deliveryText(
   ground: string,
   id: string,
   text: string,
-  opts: { urgent?: boolean; answerTo?: string } = {},
+  opts: { mark?: "plain" | "urgent" | "waited"; answerTo?: string } = {},
 ): string {
   const answer = opts.answerTo === undefined ? "" : `Answer to ${opts.answerTo}: `;
-  return `${deliveryPrefix(ground, id, opts.urgent === true)} ${quoteContinuationLines(`${answer}${text}`)}`;
+  return `${deliveryPrefix(ground, id, opts.mark ?? "plain")} ${quoteContinuationLines(`${answer}${text}`)}`;
 }
 
 /**
