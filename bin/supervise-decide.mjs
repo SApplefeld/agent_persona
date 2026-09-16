@@ -53,7 +53,8 @@
  *    backfilled root_complete means the worker did real work with no active
  *    goal tree, not that a real goal actually finished, and restarting on it
  *    kills a child that was never done with anything.
- * 6. restart - child exited non-zero, or critical crossing, or hung (stale + own session + past grace)
+ * 6. restart - child exited non-zero, or critical crossing, or hung (stale +
+ *    own session + past grace)
  * 7. continue - none of the above
  *
  * @param {DecideInput} input

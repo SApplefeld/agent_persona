@@ -3,10 +3,10 @@
 # showed a bash wrapper TERMed while the claude.exe process underneath it
 # survived, still holding the persona claim, until the pre-gate timed out.
 #
-# An MSYS pid's WINPID (preferably /proc/<pid>/winpid; ps -p's column 4 as
-# a fallback - this environment's `ps` has no `-o` support) must be
-# resolved BEFORE the MSYS pid is signaled - once it exits, both reads
-# find nothing. A genuine native Windows child process (not an
+# An MSYS pid's WINPID (preferably /proc/<pid>/winpid; the `ps` row as a
+# fallback, read at the offset that row's own shift dictates - this
+# environment's `ps` has no `-o` support) must be resolved BEFORE the MSYS pid
+# is signaled - once it exits, both reads find nothing. A genuine native Windows child process (not an
 # MSYS-forked one, which does not expose a discoverable Win32 parent) is
 # exactly what Get-CimInstance Win32_Process's ParentProcessId walk
 # correctly finds and kills. And the snapshot must be taken before ANY
@@ -20,11 +20,12 @@
 # live-* suites already do, at real cost and real contention with any
 # other live session on the box).
 #
-# Extracts resolve_windows_pid, snapshot_process_tree, kill_process_snapshot,
-# and stop_child verbatim from bin/supervise.sh (sed ranges between each
-# function's own opening and closing brace) rather than duplicating them,
-# so this test exercises the actual shipped functions, not a copy that can
-# drift.
+# The functions under test are extracted verbatim from bin/supervise.sh (a sed
+# range between each function's own opening and closing brace) rather than
+# duplicated here, so this test exercises the actual shipped functions and not
+# a copy that can drift. Which functions those are is derived from the bodies
+# themselves: the cases name their entry points, and everything those bodies
+# call is walked in.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,18 +51,22 @@ CHECK_COUNT=0
 pass() { echo "OK: $1"; CHECK_COUNT=$((CHECK_COUNT + 1)); }
 failed() { echo "FAIL: $1"; CHECK_COUNT=$((CHECK_COUNT + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); }
 
+# The extractor and the closure walker are shared with the other suite that
+# drives the supervisor's own function bodies, so the two cannot disagree
+# about what gets extracted. The withheld-callee control below runs against
+# that shared copy.
+. "$SCRIPT_DIR/supervisor-fn-extract.sh"
+
+# The suite's own call shape over the shared extractor: a failed extraction is
+# an extraction problem and ends the run, never a quietly missing function.
 extract_fn() {
   local fn_name="$1"
   local out_file="$2"
-  local start end
-  start=$(grep -n "^${fn_name}() {" "$SUPERVISE" | head -1 | cut -d: -f1)
-  if [ -z "$start" ]; then
-    echo "FAIL: could not find ${fn_name}() in $SUPERVISE"
+  local file="${3:-$SUPERVISE}"
+  if ! supervisor_extract_fn "$file" "$fn_name" "$out_file"; then
+    echo "FAIL: could not extract ${fn_name}() from $file - the sed range or the upstream function name has drifted"
     exit 1
   fi
-  end=$(tail -n "+$start" "$SUPERVISE" | grep -n '^}' | head -1 | cut -d: -f1)
-  end=$((start + end - 1))
-  sed -n "${start},${end}p" "$SUPERVISE" >> "$out_file"
 }
 
 # STOP_PS_SENTINEL is a global the extracted functions close over, not
@@ -81,39 +86,146 @@ if [ -z "$SUPERVISOR_PS_BOUND_S" ]; then
   exit 1
 fi
 
+# The entry points the cases below call. Everything those reach is added by
+# the closure walk, so a helper the supervisor grows under one of them is
+# extracted without a line here.
+SEED_FNS="stop_child snapshot_process_tree check_snapshot_survivors kill_process_snapshot resolve_windows_pid run_bounded_powershell_capture run_bounded_powershell run_bounded_native"
+# `log` and `log_diag` are stubbed below, so the walk stops at them and the
+# real ones stay out of the extracted file.
+SUPERVISOR_CLOSURE_STUBS=" log log_diag "
+EXTRACTED_FNS=$(supervisor_fn_closure "$SUPERVISE" $SEED_FNS)
+
 FN_FILE="$RUNDIR/stop-process-tree-fns.sh"
 : > "$FN_FILE"
-extract_fn "resolve_windows_pid" "$FN_FILE"
-extract_fn "run_bounded_native" "$FN_FILE"
-extract_fn "run_bounded_powershell" "$FN_FILE"
-extract_fn "run_bounded_powershell_capture" "$FN_FILE"
-extract_fn "snapshot_process_tree" "$FN_FILE"
-extract_fn "check_snapshot_survivors" "$FN_FILE"
-extract_fn "kill_process_snapshot" "$FN_FILE"
-extract_fn "retry_stop_escalation" "$FN_FILE"
-extract_fn "stop_child" "$FN_FILE"
+for fn in $EXTRACTED_FNS; do
+  extract_fn "$fn" "$FN_FILE"
+done
 # The real functions shell out to `log` and read $RUNDIR (already set,
 # above, to this test's own scratch dir - real, not stubbed, since
 # kill_process_snapshot writes to "$RUNDIR/supervisor.err").
 log() { echo "[log] $*"; }
 log_diag() { echo "[log_diag] $*" >&2; }
+# The supervisor's own globals the extracted functions close over. Under
+# `set -u` a bare expansion of one that was never assigned aborts this suite,
+# and CHILD_INDEX names the child in every line sweep_child_tree logs.
+CHILD_INDEX="${CHILD_INDEX:-0}"
+CHILD_TREE_WALKED="${CHILD_TREE_WALKED:-}"
+CHILD_TREE_SEEN_WINPIDS="${CHILD_TREE_SEEN_WINPIDS:-}"
+CHILD_TREE_WINPIDS="${CHILD_TREE_WINPIDS:-}"
+CHILD_TREE_SNAPSHOT="${CHILD_TREE_SNAPSHOT:-}"
+CHILD_TREE_READ_FAILED="${CHILD_TREE_READ_FAILED:-}"
+CHILD_TREE_DESCENDANT_SEEN="${CHILD_TREE_DESCENDANT_SEEN:-}"
+CHILD_TREE_CONFIRMED_AT="${CHILD_TREE_CONFIRMED_AT:-}"
 source "$FN_FILE"
 
 # A truncated extraction (a sed range mismatch, a renamed function
 # upstream) must fail as an extraction problem, not silently produce a
 # no-op function that passes every check by doing nothing. Check each
-# function actually landed before trusting any of them. This count is
-# named here rather than pinned as a literal, since the function list has
-# grown before and will again.
-FNS_TO_EXTRACT="resolve_windows_pid run_bounded_native run_bounded_powershell run_bounded_powershell_capture snapshot_process_tree check_snapshot_survivors kill_process_snapshot retry_stop_escalation stop_child"
-FN_COUNT=$(echo "$FNS_TO_EXTRACT" | wc -w)
-for fn in $FNS_TO_EXTRACT; do
+# function actually landed before trusting any of them. The list checked here
+# is the same one the extraction ran over, so the two cannot disagree.
+FN_COUNT=$(echo "$EXTRACTED_FNS" | wc -w)
+for fn in $EXTRACTED_FNS; do
   if ! declare -F "$fn" > /dev/null; then
     echo "FAIL: extraction did not define $fn - the sed range or the upstream function name has drifted"
     exit 1
   fi
 done
 pass "setup: all $FN_COUNT functions extracted and defined"
+
+# --- Case: the walk reaches a callee no line of this suite names ---
+# The guard above is an absence check: it passes when nothing is undefined,
+# which is also how it reads when the walk never reached a function at all.
+# So put a callee the walk has to find in front of it. The name is built at
+# run time from this run's own pid, so it appears in no literal here and is
+# matched on its shape as a declaration under an extracted caller. The seed
+# list has to miss it and the closure has to carry it.
+CONTROL_SUPERVISE="$RUNDIR/supervise-with-withheld-callee.sh"
+CONTROL_FN="withheld_callee_$$"
+awk -v fn="$CONTROL_FN" '
+  { print }
+  /^sweep_child_tree\(\) \{$/ { print "  " fn " \"$1\" || true" }
+' "$SUPERVISE" > "$CONTROL_SUPERVISE"
+printf '%s() {\n  echo "withheld $1"\n}\n' "$CONTROL_FN" >> "$CONTROL_SUPERVISE"
+if grep -q "^  ${CONTROL_FN} " "$CONTROL_SUPERVISE" && grep -q "^${CONTROL_FN}() {$" "$CONTROL_SUPERVISE"; then
+  pass "control: the withheld callee is declared and called in the control copy"
+else
+  failed "control: the withheld callee was not injected into $CONTROL_SUPERVISE"
+fi
+case " $SEED_FNS " in
+  *" $CONTROL_FN "*) failed "control: the seed list names the withheld callee, so it is not withheld" ;;
+  *) pass "control: the seed list does not name the withheld callee" ;;
+esac
+CONTROL_CLOSURE=$(supervisor_fn_closure "$CONTROL_SUPERVISE" $SEED_FNS)
+case " $(echo "$CONTROL_CLOSURE" | tr '\n' ' ') " in
+  *" $CONTROL_FN "*) pass "control: the closure walk picks the withheld callee up from its caller's body" ;;
+  *) failed "control: the closure walk missed the withheld callee, so the extraction is still a typed list" ;;
+esac
+
+# --- Case: a walk that reaches this supervisor's own process is refused whole ---
+# The walk follows Windows ParentProcessId, which Windows recycles, so a
+# recycled id can pull this process into a tree it is no part of. Everything
+# the walk reached through this process sits under it, so dropping that one row
+# and keeping the rest hands a caller a kill list built out of an unrelated
+# tree. The walk's own result is stood in for by shadowing the single seam
+# snapshot_process_tree calls through, so the case turns on the refusal rather
+# than on what happens to be running on the box.
+SELF_WINPID=$(resolve_windows_pid "$$")
+if [ -z "$SELF_WINPID" ]; then
+  failed "setup: this suite's own Windows pid does not resolve, so the self-pid refusal cannot be driven"
+else
+  eval "$(declare -f run_bounded_powershell_capture | sed '1s/run_bounded_powershell_capture/_real_rbpc_for_selfpid/')"
+  run_bounded_powershell_capture() {
+    printf '%s\n' "4242,111" "$SELF_WINPID,222" "4243,333" "$STOP_PS_SENTINEL"
+  }
+  SELFPID_OUT=$(snapshot_process_tree 999999)
+  SELFPID_RC=$?
+  if [ "$SELFPID_RC" -eq 1 ] && [ -z "$SELFPID_OUT" ]; then
+    pass "self pid: a completed walk carrying this supervisor's own Windows pid is refused whole, every row with it (rc=$SELFPID_RC)"
+  else
+    failed "self pid: the walk returned rc=$SELFPID_RC and [$(echo "$SELFPID_OUT" | tr '\n' ' ')] - the rows reached through this process were kept"
+  fi
+  run_bounded_powershell_capture() {
+    printf '%s\n' "4242,111" "4243,333" "$STOP_PS_SENTINEL"
+  }
+  SELFPID_CONTROL_OUT=$(snapshot_process_tree 999999)
+  SELFPID_CONTROL_RC=$?
+  if [ "$SELFPID_CONTROL_RC" -eq 0 ] && [ "$(printf '%s' "$SELFPID_CONTROL_OUT" | tr '\n' ' ')" = "4242,111 4243,333" ]; then
+    pass "self pid: control: the same walk with no self pid in it is reported whole, so the refusal above is the self pid and not a dead instrument"
+  else
+    failed "self pid: control failed (rc=$SELFPID_CONTROL_RC, out=[$(echo "$SELFPID_CONTROL_OUT" | tr '\n' ' ')]) - the instrument cannot be trusted for the refusal above"
+  fi
+  eval "$(declare -f _real_rbpc_for_selfpid | sed '1s/_real_rbpc_for_selfpid/run_bounded_powershell_capture/')"
+fi
+
+# --- Case: a root pid that is not a number never reaches PowerShell ---
+# snapshot_process_tree interpolates its argument into a PowerShell command, so
+# a value that is not a Windows pid has no safe reading there. The seam it
+# would spawn through records that it ran, so this asserts the refusal landed
+# ahead of the spawn rather than that the spawn merely failed afterwards.
+SPAWN_MARKER="$RUNDIR/snapshot-spawn-marker"
+rm -f "$SPAWN_MARKER"
+eval "$(declare -f run_bounded_powershell_capture | sed '1s/run_bounded_powershell_capture/_real_rbpc_for_badpid/')"
+run_bounded_powershell_capture() {
+  : > "$SPAWN_MARKER"
+  printf '%s\n' "$STOP_PS_SENTINEL"
+}
+BADPID_OUT=$(snapshot_process_tree '1234; Write-Output reached')
+BADPID_RC=$?
+if [ "$BADPID_RC" -eq 1 ] && [ -z "$BADPID_OUT" ] && [ ! -f "$SPAWN_MARKER" ]; then
+  pass "bad root pid: a root that is not digits only is refused before any PowerShell command is built from it (rc=$BADPID_RC)"
+else
+  failed "bad root pid: rc=$BADPID_RC, out=[$BADPID_OUT], the spawn seam was reached=$([ -f "$SPAWN_MARKER" ] && echo yes || echo no)"
+fi
+rm -f "$SPAWN_MARKER"
+BADPID_CONTROL_OUT=$(snapshot_process_tree 4242)
+BADPID_CONTROL_RC=$?
+if [ "$BADPID_CONTROL_RC" -eq 0 ] && [ -f "$SPAWN_MARKER" ] && [ -z "$BADPID_CONTROL_OUT" ]; then
+  pass "bad root pid: control: a digits-only root does reach the spawn seam, so the refusal above is the validation and not a function that never spawns"
+else
+  failed "bad root pid: control failed (rc=$BADPID_CONTROL_RC, the spawn seam was reached=$([ -f "$SPAWN_MARKER" ] && echo yes || echo no))"
+fi
+rm -f "$SPAWN_MARKER"
+eval "$(declare -f _real_rbpc_for_badpid | sed '1s/_real_rbpc_for_badpid/run_bounded_powershell_capture/')"
 
 # Production runs every extracted call under real shell semantics,
 # including a pipeline whose upstream command fails silently unless
@@ -180,8 +292,11 @@ fi
 # --- Case: the wrapper's own exec target is killed directly by taskkill
 # on its resolved winpid ---
 # A bash subshell that tail-execs directly into a native binary with
-# nothing after it collapses into one process. Uses `taskkill //F //T`
-# rather than `kill -9` on the MSYS pid itself: a bare `kill -9` there
+# nothing after it collapses into one process. Uses `taskkill //F` on that
+# one pid, with no `//T`, since a tree kill re-walks live parent ids that
+# Windows keeps in orphans and reuses, and can reach a process this suite
+# never started. Uses it rather than `kill -9` on the MSYS pid itself: a
+# bare `kill -9` there
 # can block for minutes and return "Permission denied" instead, not a
 # safe fallback signal under load, which is why `run_bounded_powershell`
 # does not use it either. `resolve_windows_pid` must run before any
@@ -212,15 +327,15 @@ else
   if [ -z "$DIRECT_SNAPSHOT" ]; then
     failed "setup: snapshot_process_tree returned nothing for a confirmed-live winpid ($DIRECT_WINPID) - the walk itself failed, this case cannot proceed"
   else
-    taskkill //F //T //PID "$DIRECT_WINPID" > /dev/null 2>&1
+    taskkill //F //PID "$DIRECT_WINPID" > /dev/null 2>&1
     sleep 2
     DIRECT_SURVIVORS=$(check_snapshot_survivors "$DIRECT_SNAPSHOT")
     DIRECT_SURVIVORS_RC=$?
     if [ -z "$DIRECT_SURVIVORS" ] && [ "$DIRECT_SURVIVORS_RC" -eq 0 ]; then
-      pass "direct-exec case: taskkill //F //T on the resolved winpid kills the real Windows process (every snapshotted pid, matched by start time, confirmed dead)"
+      pass "direct-exec case: taskkill //F on the resolved winpid kills the real Windows process (every snapshotted pid, matched by start time, confirmed dead)"
     else
-      failed "direct-exec case: the real Windows process SURVIVED taskkill //F //T on its resolved winpid, or the check could not be verified (rc=$DIRECT_SURVIVORS_RC, survivors=$DIRECT_SURVIVORS)"
-      taskkill //F //T //PID "$DIRECT_WINPID" > /dev/null 2>&1
+      failed "direct-exec case: the real Windows process SURVIVED taskkill //F on its resolved winpid, or the check could not be verified (rc=$DIRECT_SURVIVORS_RC, survivors=$DIRECT_SURVIVORS)"
+      kill_process_snapshot "$DIRECT_SNAPSHOT" > /dev/null 2>&1
     fi
   fi
 fi
@@ -246,13 +361,17 @@ else
   else
     pass "setup: stop_child case's real child (winpid $REAL_CHILD_WINPID) confirmed alive before stop_child runs"
   fi
+  # Recorded before stop_child runs, so a cleanup after a failure below kills
+  # only this child, matched by its start ticks, and never a process that has
+  # taken its pid since.
+  REAL_CHILD_SNAPSHOT=$(snapshot_process_tree "$REAL_CHILD_WINPID")
   stop_child "test"
   sleep 2
   if [ -z "$(powershell -NoProfile -Command "Get-Process -Id $REAL_CHILD_WINPID -ErrorAction SilentlyContinue" 2>/dev/null)" ]; then
     pass "stop_child: the real child is gone after stop_child returns (STOP_PATH=$STOP_PATH) - the exact defect this fixes"
   else
     failed "stop_child: the real child SURVIVED stop_child (STOP_PATH=$STOP_PATH) - the orphan defect is not fixed"
-    run_bounded_native 5 taskkill //F //T //PID "$REAL_CHILD_WINPID"
+    kill_process_snapshot "$REAL_CHILD_SNAPSHOT" > /dev/null 2>&1
   fi
 fi
 
@@ -337,7 +456,7 @@ else
     pass "Phase-3 case: the real child (matched by pid and start time) is gone after stop_child's own tree kill (the CRLF bug's exact path)"
   else
     failed "Phase-3 case: the real child SURVIVED Phase 3's tree kill, or the check could not be verified (rc=$POST_KILL_SURVIVORS_RC) - the CRLF bug or an equivalent is back"
-    run_bounded_native 5 taskkill //F //T //PID "$REAL_CHILD_WINPID"
+    kill_process_snapshot "$PRE_KILL_SNAPSHOT" > /dev/null 2>&1
   fi
 fi
 
@@ -347,12 +466,11 @@ fi
 # powershell_capture` (the one seam `snapshot_process_tree` calls through)
 # to prepend a shadow function definition ahead of its real script - a
 # PowerShell function in the same -Command scope resolves before a
-# same-named cmdlet, so every call the walk makes fails exactly like a
+# same-named cmdlet, so the process table read fails exactly like a
 # real WMI outage would, without touching `snapshot_process_tree`'s own
-# extracted body at all. Asserts rc 1 (unverified): a CIMFAIL marker
-# landing inside `Get-Descendants`'s own captured output rather than
-# reaching real stdout would report a false-clean root-only tree, rc 0,
-# instead.
+# extracted body at all. Asserts rc 1 (unverified): a CIMFAIL marker that
+# never reached real stdout would report a false-clean root-only tree,
+# rc 0, instead.
 eval "$(declare -f run_bounded_powershell_capture | sed '1s/run_bounded_powershell_capture/_real_run_bounded_powershell_capture_for_r105/')"
 run_bounded_powershell_capture() {
   local bound="$1"
@@ -378,8 +496,8 @@ fi
 # kill -9 on $CIMFAIL_PID hits the MSYS stub only, not the live native
 # powershell.exe underneath it; uses the same taskkill-on-winpid
 # mechanism the rest of this file already extracted, targeting the
-# resolved winpid directly.
-run_bounded_native 5 taskkill //F //T //PID "$CIMFAIL_WINPID"
+# resolved winpid alone, with no `//T` tree walk.
+run_bounded_native 5 taskkill //F //PID "$CIMFAIL_WINPID"
 # Restore the real implementation for anything that runs after this case.
 eval "$(declare -f _real_run_bounded_powershell_capture_for_r105 | sed '1s/_real_run_bounded_powershell_capture_for_r105/run_bounded_powershell_capture/')"
 

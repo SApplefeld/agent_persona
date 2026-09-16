@@ -400,7 +400,42 @@ log_diag() {
 # bare `$CHILD_PID` expansion aborts the whole supervisor with exit 1.
 CHILD_LAUNCH_PID=""
 CHILD_IN=""  # coproc write fd number
-LAST_STOP_SNAPSHOT=""  # set by stop_child; the process-tree snapshot its own kill acted on
+# The live child's own processes, recorded while it runs by refresh_child_tree:
+# the MSYS pids of its process tree, the Windows pids those map to, and a
+# "pid,ticks" snapshot of the Windows trees under them. Every read of this has
+# to happen while the child is alive - `resolve_windows_pid` and the MSYS
+# process table both lose a process the moment it exits - and after the wrapper
+# is gone this snapshot is the only thing that can name what outlived it.
+#
+# CHILD_TREE_WINPIDS is the Windows pid set the standing snapshot was walked
+# from, and CHILD_TREE_SEEN_WINPIDS is the newest set seen under the child,
+# recorded whether or not its walk completed. The two differ exactly while the
+# snapshot describes an older shape of the tree than the one the child has now,
+# which is what `sweep_child_tree` refuses to read as a clean result.
+# CHILD_TREE_WALKED is set once a walk has completed, so "no walk ever ran" is
+# distinguishable from "a walk ran and found nothing alive".
+#
+# CHILD_TREE_READ_FAILED is set by a refresh that could read nothing at all,
+# so a child whose tree was never readable is told from one that genuinely ran
+# no Windows process. CHILD_TREE_DESCENDANT_SEEN is set once a walk has named
+# a process other than the one the launch pid runs as, and
+# CHILD_TREE_CONFIRMED_AT is when a poll last found the child running as the
+# pid set the record was walked from. `child_tree_record_state` reads all
+# three: a record naming only the wrapper, and one nothing has confirmed in a
+# while, are both records a clean verdict cannot rest on.
+CHILD_TREE_MSYS_PIDS=""
+CHILD_TREE_WINPIDS=""
+CHILD_TREE_SEEN_WINPIDS=""
+CHILD_TREE_SNAPSHOT=""
+CHILD_TREE_WALKED=""
+CHILD_TREE_READ_FAILED=""
+CHILD_TREE_DESCENDANT_SEEN=""
+CHILD_TREE_CONFIRMED_AT=""
+# The account identity the live child launched under, read from the profile
+# config `claude` itself reads. A running child never re-reads credentials, so
+# a change here reaches it only through a relaunch.
+CHILD_LAUNCH_ACCOUNT=""
+LAST_STOP_SNAPSHOT=""  # the process-tree snapshot a stop or a sweep acted on, left for the retry and the EXIT trap
 # Initialized here so it is never unset under `set -u`: the "no child to
 # stop" early return's own `log "... ($STOP_PATH)"` would otherwise abort
 # the script.
@@ -478,15 +513,18 @@ trap 'exit 143' TERM
 
 # --- AD3: Stop the child via EOF (close write end), then TERM, then KILL ---
 # --- Helper: resolve an MSYS pid's current Windows pid ---
-# `/proc/<pid>/winpid` is the primary read - Cygwin `ps` prints a state
-# character in column 1 for a stopped or orphaned process, which shifts
-# WINPID to column 5 and would feed a stray `?` or a state letter into the
-# PowerShell source unquoted below. `ps` column 4 is kept only as a
-# fallback for a pid `/proc` has no entry for. Either way the result is
-# validated as pure digits before it is trusted - an unvalidated read
-# here is exactly what would let a malformed value reach an interpolated
-# PowerShell command string. Must be called while the MSYS pid is still
-# alive and tracked - once it exits, both reads find nothing.
+# `/proc/<pid>/winpid` is the primary read, and `ps` is the fallback for a
+# pid `/proc` has no entry for. Cygwin `ps` prints a state character in
+# column 1 for a stopped or an orphaned process, which shifts every column
+# right by one: WINPID sits in column 4 on an ordinary row and column 5 on
+# a shifted one, while column 4 of a shifted row is the process group id,
+# which is digits and so passes every validation a bare column read would
+# apply. So the row is tested for the shift and read at the offset that
+# row actually uses. The result is validated as pure digits before it is
+# trusted - an unvalidated read here is exactly what would let a malformed
+# value reach an interpolated PowerShell command string. Must be called
+# while the MSYS pid is still alive and tracked - once it exits, both
+# reads find nothing.
 # Usage: resolve_windows_pid <msys-pid>
 resolve_windows_pid() {
   local pid="$1"
@@ -495,7 +533,9 @@ resolve_windows_pid() {
     winpid=$(cat "/proc/$pid/winpid" 2>/dev/null)
   fi
   if [ -z "$winpid" ]; then
-    winpid=$(ps -p "$pid" 2>/dev/null | tail -n +2 | awk '{print $4}')
+    winpid=$(ps -p "$pid" 2>/dev/null | tail -n +2 | awk '
+      $1 ~ /^[0-9]+$/ { print $4; exit }
+      $2 ~ /^[0-9]+$/ { print $5; exit }')
   fi
   case "$winpid" in
     ''|*[!0-9]*) return 0 ;;  # empty or non-numeric: refuse to interpolate it anywhere
@@ -526,8 +566,7 @@ resolve_windows_pid() {
 # open indefinitely; a plain read of a file that already exists cannot
 # hang the same way); and the Windows pid is resolved right after spawn
 # (polled, not only at the deadline, since it is easiest to read while
-# the process is fresh) and killed via `taskkill //F //T //PID` on
-# expiry.
+# the process is fresh) and killed via `taskkill //F //PID` on expiry.
 #
 # `kill -9` on the stub itself is not a safe fallback signal here - it
 # can block for minutes and then return "Permission denied", the same
@@ -536,19 +575,23 @@ resolve_windows_pid() {
 #
 # The tail-exec subshell does not always collapse into one process under
 # load: it can be three - the MSYS stub this function's own `$!` names,
-# an intermediate `bash.exe`, and `powershell.exe` itself. `taskkill //F
-# //T //PID` on the stub is a tree walk from that stub at kill time; if
-# the intermediate has already exited, `//T` has nothing to walk through
-# to reach `powershell.exe`. Rather than depend on that walk working, the
-# launched script's very first statement writes its own real Windows pid
-# (`$PID`, PowerShell's own automatic variable - always correct, no CIM
-# query needed) as a `PSPID:<pid>` line, read from the output file while
-# waiting rather than only at the deadline. On expiry, that self-reported
-# pid is killed directly, `taskkill //T` on the stub still runs as a
-# second attempt, and both calls' exit codes are logged rather than
-# discarded. Each `taskkill` is itself backgrounded and capped at 5s
-# rather than run as an unbounded native spawn inside a function that
-# exists to bound exactly that shape of call.
+# an intermediate `bash.exe`, and `powershell.exe` itself. No tree kill
+# reaches from the stub to `powershell.exe`: `taskkill //T` re-walks the
+# live parent ids at kill time, Windows keeps a dead parent's id in the
+# orphans it left and reuses the id, so a walk from the stub can reach a
+# process that was never started here. So the launched script's very
+# first statement writes its own real Windows pid (`$PID`, PowerShell's
+# own automatic variable - always correct, no CIM query needed) as a
+# `PSPID:<pid>` line, read from the output file while waiting rather than
+# only at the deadline. On expiry, that self-reported pid is killed
+# directly, the stub's own Windows pid is killed as a second call, and
+# both calls' exit codes are logged rather than discarded. A
+# `powershell.exe` that never wrote its `PSPID` line is not killed at all
+# and is left running, since nothing names it but a parent-id walk; the
+# caller reads the output file and is not blocked by it. Each `taskkill`
+# is itself backgrounded and capped at 5s rather than run as an unbounded
+# native spawn inside a function that exists to bound exactly that shape
+# of call.
 # Usage: run_bounded_powershell <bound-seconds> <script> <outfile>
 run_bounded_powershell() {
   local bound="$1"
@@ -588,10 +631,10 @@ run_bounded_powershell() {
       rc_real=$?
     fi
     if [ -n "$ps_winpid" ]; then
-      run_bounded_native 5 taskkill //F //T //PID "$ps_winpid"
+      run_bounded_native 5 taskkill //F //PID "$ps_winpid"
       rc_stub=$?
     fi
-    log_diag "STOP: taskkill on the real powershell pid ${ps_real_pid:-unresolved} rc=$rc_real; taskkill //T on stub winpid ${ps_winpid:-unresolved} rc=$rc_stub"
+    log_diag "STOP: taskkill on the real powershell pid ${ps_real_pid:-unresolved} rc=$rc_real; taskkill on stub winpid ${ps_winpid:-unresolved} rc=$rc_stub"
     # Bounded reap, not a blocking `wait`: taskkill is the only
     # termination attempted (see the addendum above). `wait`'s own exit
     # status is never used here (status is already 124, unconditionally,
@@ -607,7 +650,7 @@ run_bounded_powershell() {
     if ! kill -0 "$ps_pid" 2>/dev/null; then
       wait "$ps_pid" 2>/dev/null
     else
-      log_diag "STOP: the stub pid $ps_pid was still present 5s after taskkill //T on winpid ${ps_winpid:-unresolved} - leaving it for the OS to reap rather than blocking on it"
+      log_diag "STOP: the stub pid $ps_pid was still present 5s after taskkill on winpid ${ps_winpid:-unresolved} - leaving it for the OS to reap rather than blocking on it"
     fi
     status=124
     elapsed=$(( $(date +%s) - start_ts ))
@@ -645,6 +688,73 @@ run_bounded_powershell_capture() {
   return "$status"
 }
 
+# --- Helper: the PowerShell descendant walk, over a process table it is
+# handed ---
+# Prints the definition of a PowerShell function, `Select-ProcessTree
+# <rows> <rootId>`. `<rows>` is a process table, one object per process
+# carrying `ProcessId`, `ParentProcessId` and `CreationDate`, the shape
+# `Get-CimInstance Win32_Process` returns. The function returns an object
+# whose `Ids` are the root's descendants, root excluded, and whose
+# `Unverified` is true where the walk met a candidate it could not judge.
+#
+# A process is accepted as a child only where its own creation time is not
+# earlier than its parent's. Windows keeps a dead parent's id in every
+# orphan that parent left and hands the id out again, so a process whose
+# ParentProcessId names a tree member but which was created before that
+# member is an orphan of an earlier holder of the id. It is no part of this
+# tree, and neither is anything under it. Following the parent id alone
+# would put it on the kill list every caller of the snapshot acts on.
+#
+# A candidate whose own creation time, or whose parent's, cannot be read is
+# not accepted, since nothing tells it apart from such an orphan. That
+# includes every row naming a root that is absent from the table. Leaving
+# it out keeps it off the kill list, and `Unverified` reports that the walk
+# could not account for it, so a caller reads the tree as unverified rather
+# than as complete.
+#
+# The table is an argument rather than a query inside the function so that
+# a test can drive this exact walk against a synthetic table.
+# Usage: process_tree_walk_ps
+process_tree_walk_ps() {
+  cat <<'PS'
+    function Select-ProcessTree($rows, $rootId) {
+      $created = @{}
+      $byParent = @{}
+      foreach ($r in @($rows)) {
+        $rid = [int64]$r.ProcessId
+        $created[$rid] = $r.CreationDate
+        $rpp = [int64]$r.ParentProcessId
+        if (-not $byParent.ContainsKey($rpp)) { $byParent[$rpp] = New-Object System.Collections.ArrayList }
+        [void]$byParent[$rpp].Add($r)
+      }
+      $accepted = New-Object 'System.Collections.Generic.List[long]'
+      $seen = New-Object 'System.Collections.Generic.HashSet[long]'
+      $pending = New-Object 'System.Collections.Generic.Queue[long]'
+      $unverified = $false
+      [void]$seen.Add([int64]$rootId)
+      $pending.Enqueue([int64]$rootId)
+      while ($pending.Count -gt 0) {
+        $parentId = $pending.Dequeue()
+        if (-not $byParent.ContainsKey($parentId)) { continue }
+        $parentCreated = $created[$parentId]
+        foreach ($c in $byParent[$parentId]) {
+          $cid = [int64]$c.ProcessId
+          if ($cid -eq $parentId) { continue }
+          if ($null -eq $parentCreated -or $null -eq $c.CreationDate) {
+            $unverified = $true
+            continue
+          }
+          if ($c.CreationDate -lt $parentCreated) { continue }
+          if (-not $seen.Add($cid)) { continue }
+          $accepted.Add($cid)
+          $pending.Enqueue($cid)
+        }
+      }
+      [pscustomobject]@{ Ids = $accepted.ToArray(); Unverified = $unverified }
+    }
+PS
+}
+
 # --- Helper: snapshot a Windows pid's whole descendant tree, without
 # killing anything ---
 # Walking Win32_Process's ParentProcessId *after* the root pid has
@@ -655,8 +765,11 @@ run_bounded_powershell_capture() {
 # force-kill something that was never part of this tree at all. This
 # function only ever reads; the snapshot it returns is what stop_child
 # kills, at whatever point stop_child chooses to kill it - never a live
-# re-walk. A visited set stops a cycle (a recycled pid pointing back into
-# the same tree) from recursing forever.
+# re-walk. The walk itself is `process_tree_walk_ps`, which accepts a child
+# only where it is not older than its parent and marks a walk that met a
+# child it could not judge; this function reads that mark as an unverified
+# snapshot. A visited set stops a cycle (a recycled pid pointing back into
+# the same tree) from looping forever.
 #
 # A snapshot of bare pids is not enough - up to two minutes can pass
 # between this snapshot and the kill/verify that acts on it (the EOF and
@@ -692,44 +805,66 @@ run_bounded_powershell_capture() {
 # `run_bounded_powershell_capture` returns its bound status directly, so
 # no local `pipefail` scoping is needed here to preserve it through a
 # pipe.
+#
+# This is the single place a snapshot is produced, so it is where this
+# supervisor's own Windows pid is refused: the walk follows Windows
+# ParentProcessId, Windows recycles that id, and a recycled parent id is
+# enough to pull a process that is no part of the tree being walked into
+# the result a caller will later kill. A self pid appearing anywhere in
+# the walk refuses the whole snapshot rather than dropping that one row,
+# since every process the walk reached through this one is under it in a
+# tree this process is no part of. A self pid this cannot resolve at all
+# is refused the same way, since a filter that cannot name what it must
+# exclude has nothing to exclude it by, and every caller already reads a
+# non-zero return as a tree it may not act on.
+#
+# The root pid is validated as digits at entry, the way the two functions
+# that consume this output validate every pair they are handed: this
+# builds a PowerShell command with that value interpolated into it, so a
+# value that is not a number has no safe reading here.
 # Usage: snapshot_process_tree <windows-pid>
 snapshot_process_tree() {
   local winpid="$1"
   if [ -z "$winpid" ]; then
     return 0
   fi
-  # A `CIMFAIL` marker written *inside* `Get-Descendants` would become a
-  # string member of `$ids` (that function's own output stream is what
-  # `@(Get-Descendants $winpid)` unions into `$ids`) rather than reaching
-  # this script's real stdout, and `Get-Process -Id "CIMFAIL"` fails to
-  # bind (not an integer) and never assigns `$proc`, leaving the loop's
-  # `$proc` variable holding whatever process object the last successful
-  # iteration left in it, combined with the current (wrong) `$thisId` - a
-  # CIM failure would then read as a verified root-only tree. So a
-  # script-scope flag is set in the catch (invisible to the id loop), a
-  # bare `CIMFAIL` line is emitted only after that loop finishes and only
-  # from the top-level script (never from inside a function whose own
-  # output is captured elsewhere), and `$ids` is filtered with a
-  # numeric-string match rather than an `-is [int]` type check, since
-  # `Get-CimInstance`'s `ProcessId` is `[UInt32]`, not `[int]`, and an
-  # `-is [int]` check would silently drop every real descendant pid. So a
-  # stray non-numeric value can never reach `Get-Process -Id` again
-  # regardless.
+  case "$winpid" in
+    *[!0-9]*)
+      log_diag "STOP: a walk was asked for from '$winpid', which is not a Windows pid - refusing to build a process walk around it"
+      return 1
+      ;;
+  esac
+  local self_winpid
+  self_winpid=$(resolve_windows_pid "$$")
+  if [ -z "$self_winpid" ]; then
+    log_diag "STOP: this supervisor's own Windows pid does not resolve, so a walk under $winpid cannot be filtered of it - reporting the snapshot unverified rather than recording one that may name this process"
+    return 1
+  fi
+  if [ "$winpid" = "$self_winpid" ]; then
+    log_diag "STOP: a walk was asked for from this supervisor's own Windows pid $winpid - refusing to snapshot this process's own tree"
+    return 1
+  fi
+  # The process table is read once, in one query, and the walk runs over
+  # that table, so every creation time the walk compares comes from the
+  # same reading. A failed query sets a flag and the script emits a bare
+  # `CIMFAIL` line after the id loop, from the top-level script, so the
+  # marker reaches real stdout rather than joining the id list. A walk that
+  # met a child it could not judge emits `WALKUNVERIFIED` the same way. The
+  # id list is filtered with a numeric-string match rather than an
+  # `-is [int]` type check, so a stray non-numeric value never reaches
+  # `Get-Process -Id`.
   local raw
   raw=$(run_bounded_powershell_capture "$SUPERVISOR_PS_BOUND_S" "
-      \$visited = New-Object 'System.Collections.Generic.HashSet[int]'
-      \$script:cimFailed = \$false
-      function Get-Descendants(\$parentId) {
-        if (-not \$visited.Add(\$parentId)) { return }
-        try {
-          \$children = Get-CimInstance Win32_Process -Filter \"ParentProcessId=\$parentId\" -ErrorAction Stop
-        } catch {
-          \$script:cimFailed = \$true
-          return
-        }
-        foreach (\$c in \$children) { \$c.ProcessId; Get-Descendants \$c.ProcessId }
+      $(process_tree_walk_ps)
+      \$cimFailed = \$false
+      \$rows = @()
+      try {
+        \$rows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -ErrorAction Stop)
+      } catch {
+        \$cimFailed = \$true
       }
-      \$ids = @($winpid) + @(Get-Descendants $winpid) | Where-Object { \$_ -match '^[0-9]+\$' }
+      \$walk = Select-ProcessTree \$rows $winpid
+      \$ids = @($winpid) + @(\$walk.Ids) | Where-Object { \$_ -match '^[0-9]+\$' }
       foreach (\$thisId in \$ids) {
         \$proc = Get-Process -Id \$thisId -ErrorAction SilentlyContinue
         if (\$proc) {
@@ -737,7 +872,8 @@ snapshot_process_tree() {
           catch { Write-Output (\"\$thisId,UNREADABLE\") }
         }
       }
-      if (\$script:cimFailed) { Write-Output 'CIMFAIL' }
+      if (\$cimFailed) { Write-Output 'CIMFAIL' }
+      if (\$walk.Unverified) { Write-Output 'WALKUNVERIFIED' }
       Write-Output '$STOP_PS_SENTINEL'
     ")
   # A CIM query that fails (WMI down, a transient RPC error) under
@@ -752,8 +888,25 @@ snapshot_process_tree() {
     log_diag "STOP: snapshot_process_tree's own CIM query failed mid-walk - treating the snapshot as unverified rather than trusting a possibly-incomplete tree"
     return 1
   fi
+  # A child left out because its creation time, or its parent's, could not
+  # be read is off the kill list, and the tree it may belong to is not
+  # accounted for. So the snapshot is unverified, which every caller already
+  # reads as a tree it may neither kill from nor call clean.
+  if printf '%s\n' "$raw" | grep -qx 'WALKUNVERIFIED'; then
+    log_diag "STOP: the walk under $winpid met a process whose creation time, or its parent's, could not be read - treating the snapshot as unverified rather than trusting a tree that leaves it out"
+    return 1
+  fi
   if printf '%s\n' "$raw" | grep -qx "$STOP_PS_SENTINEL"; then
-    printf '%s\n' "$raw" | grep -vx "$STOP_PS_SENTINEL"
+    if printf '%s\n' "$raw" | grep -q "^$self_winpid,"; then
+      log_diag "STOP: the tree walked under $winpid reaches this supervisor's own Windows pid $self_winpid, so every process in it was reached through this process - reporting the whole walk unverified rather than the part of it that sits outside this tree"
+      return 1
+    fi
+    local line
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      [ "$line" = "$STOP_PS_SENTINEL" ] && continue
+      printf '%s\n' "$line"
+    done <<< "$raw"
     return 0
   fi
   # `powershell -Command`'s own exit code reflects whether its LAST
@@ -877,6 +1030,11 @@ check_snapshot_survivors() {
 # worst-case stop from taking minutes instead of the ~30s bound this
 # comment names. `retry_stop_escalation` is the single place that
 # retries over time, on its own wall-clock budget.
+#
+# Returns 0 when every pid in the snapshot is confirmed gone, and 1 when a
+# pid is confirmed alive after the kill or the re-check itself could not be
+# completed. Both are the same answer to a caller: nothing in this snapshot
+# is confirmed dead.
 # Usage: kill_process_snapshot <snapshot, "pid,ticks" per line>
 kill_process_snapshot() {
   local snapshot="$1"
@@ -923,7 +1081,366 @@ kill_process_snapshot() {
   if [ -z "$survivors" ] && [ "$rc" -eq 0 ]; then
     return 0
   fi
-  log "STOP: kill_failed - these Windows pids are alive or unverifiable: $(echo "$survivors" | tr '\n' ' ')"
+  if [ "$rc" -ne 0 ]; then
+    log "STOP: kill_unverified - the re-check after the kill did not complete, so nothing in this snapshot is confirmed alive or dead"
+    return 1
+  fi
+  log "STOP: kill_failed - these Windows pids still hold a live process after the kill: $(echo "$survivors" | tr '\n' ' ')"
+  return 1
+}
+
+# --- Helper: record the live child's process tree, pids and start ticks ---
+# The Windows parent chain does not reach the child. `claude` is launched
+# through `env`, and the chain read upward from the live child runs `claude`
+# under a live `env.exe` under a process id nothing holds any more, the Cygwin
+# fork intermediate above `env` having exited: a Win32 walk from the coproc's
+# own Windows pid finds that pid and nothing else. The MSYS process table is where the link survives,
+# since it keeps the coproc's pid as the parent of the `claude` process and
+# carries each one's Windows pid beside it. So the tree is read from there, and
+# only while the child is alive: an exited process is in neither table.
+#
+# The Windows pids are then snapshotted the way every other stop-path consumer
+# wants them, "pid,ticks" per line, so `check_snapshot_survivors` and
+# `kill_process_snapshot` can match a genuine survivor against a recycled pid
+# without any further identity check here.
+#
+# What a poll costs: one `ps` read, plus one `/proc/<pid>/winpid` read per MSYS
+# pid in the closure and one for this supervisor itself. The PowerShell walk
+# runs only where the Windows pid set differs from the set the standing
+# snapshot was walked from, so a child whose tree has settled pays no walk,
+# while a child whose walk keeps failing pays one on every poll until a walk
+# completes.
+refresh_child_tree() {
+  local pid="${CHILD_LAUNCH_PID:-}"
+  if [ -z "$pid" ]; then
+    return 0
+  fi
+  # Descendants are closed over the MSYS table rather than read one level
+  # deep: the chain from the coproc to `claude` is two MSYS processes on some
+  # launch shapes and one on others, and a wrapper script adds another.
+  local msys_pids
+  msys_pids=$(ps 2>/dev/null | awk -v root="$pid" '
+    NR > 1 {
+      # Cygwin ps prints a state character ahead of the pid for a stopped or
+      # an orphaned process, which shifts every column right by one. A row read
+      # at the unshifted offsets yields a parent id that is really a pid, so
+      # that pid and every descendant under it fall out of the closure, and an
+      # orphaned process is exactly what this closure exists to catch. So the
+      # shift is detected and the row re-indexed rather than discarded.
+      if ($1 ~ /^[0-9]+$/) { id = $1; pp = $2; wp = $4 }
+      else if ($2 ~ /^[0-9]+$/) { id = $2; pp = $3; wp = $5 }
+      else { next }
+      parent[id] = pp
+      if (wp ~ /^[0-9]+$/) winpid[id] = wp
+    }
+    END {
+      # Membership is tested with `in` on both sides. A bare `keep[parent[id]]`
+      # would create an entry for the parent as a side effect of looking it
+      # up, which is how every pid in the table, this supervisor included,
+      # ends up in a set that is about to be killed.
+      #
+      # The passes run until one adds nothing, so a chain of any depth is
+      # closed over rather than cut at a fixed count. Each pass adds at least
+      # one entry or ends the loop, and the table is finite, so this
+      # terminates; a parent-child cycle settles once both its members are in.
+      keep[root] = 1
+      do {
+        added = 0
+        for (id in parent) {
+          p = parent[id]
+          if ((p in keep) && !(id in keep)) { keep[id] = 1; added = 1 }
+        }
+      } while (added)
+      for (id in keep) { if (keep[id] == 1 && (id in winpid)) print id }
+    }' | sort -n | tr '\n' ' ')
+  msys_pids="${msys_pids% }"
+  local winpids="" root_winpid=""
+  local one
+  for one in $msys_pids; do
+    local resolved
+    resolved=$(resolve_windows_pid "$one")
+    if [ -n "$resolved" ]; then
+      winpids="$winpids $resolved"
+      [ "$one" = "$pid" ] && root_winpid="$resolved"
+    fi
+  done
+  winpids="${winpids# }"
+  # This list is what a later sweep kills, so the supervisor's own Windows pid
+  # is refused outright rather than trusted to be absent. The closure is rooted
+  # at the coproc, which is this process's child, so a self entry can only come
+  # from a misread of the process table, and the cost of acting on one is the
+  # supervisor killing itself and every session sharing its tree.
+  local self_winpid
+  self_winpid=$(resolve_windows_pid "$$")
+  if [ -z "$self_winpid" ]; then
+    log "CHILDTREE: this supervisor's own Windows pid does not resolve on this poll, so child-$CHILD_INDEX's pid set cannot be cleared of it and nothing is recorded from this poll"
+    CHILD_TREE_READ_FAILED=1
+    return 0
+  fi
+  local safe=""
+  for one in $winpids; do
+    if [ "$one" = "$self_winpid" ]; then
+      log "CHILDTREE: refusing this supervisor's own Windows pid $one in child-$CHILD_INDEX's tree"
+      continue
+    fi
+    safe="$safe $one"
+  done
+  winpids="${safe# }"
+  if [ -z "$winpids" ]; then
+    # A poll that resolves no Windows pid at all reads as "nothing to add":
+    # the standing record is what the child was last seen running as, and a
+    # momentary gap in the process table is not evidence the tree changed.
+    #
+    # Where the closure did name MSYS processes and none of them resolved,
+    # the child's own processes are there and this poll could not name any of
+    # them in Windows terms. That is a failed read rather than a child with no
+    # Windows process, and the two have to stay apart: only the second is a
+    # tree there is nothing to sweep.
+    #
+    # A closure whose every process has stopped running is not a failed read.
+    # The process table is read once at the top of this function and each
+    # pid's Windows id a moment later, so a child that exits at once can leave
+    # a closure naming the launch pid and a short-lived process under it, all
+    # gone by the lookup, which then resolves to nothing. With none of them
+    # running there is nothing left for this poll to have failed to name, and a
+    # child that dies at launch reaches the crash path rather than exit 5.
+    #
+    # Each member is checked, not only the launch pid. The wrapper dying says
+    # nothing about the processes under it, and a live one that did not resolve
+    # is a survivor nothing here can name. An MSYS pid reused by an unrelated
+    # process reads as running too, which keeps this a failed read.
+    if [ -n "$msys_pids" ]; then
+      for one in $msys_pids; do
+        if kill -0 "$one" 2>/dev/null; then
+          CHILD_TREE_READ_FAILED=1
+          break
+        fi
+      done
+    fi
+    return 0
+  fi
+  # The newest Windows pid set seen under the child, recorded here whether or
+  # not the walk below completes. `sweep_child_tree` compares it against the
+  # set the standing snapshot was walked from, so a walk that keeps failing
+  # leaves a record this marks as older than the tree it claims to describe.
+  CHILD_TREE_SEEN_WINPIDS="$winpids"
+  if [ "$winpids" = "${CHILD_TREE_WINPIDS:-}" ]; then
+    # The child is running as the pid set the standing record was walked
+    # from, which is this poll confirming that record still describes the
+    # tree. The stamp is what `child_tree_record_state` reads to tell a
+    # record confirmed a moment ago from one no poll has confirmed in a
+    # while.
+    CHILD_TREE_CONFIRMED_AT=$(date +%s)
+    return 0
+  fi
+  local snapshot="" walked rc
+  for one in $winpids; do
+    walked=$(snapshot_process_tree "$one")
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      # A walk that did not complete would leave a partial record standing in
+      # for the whole tree, which is what a later sweep would then call clean.
+      # The standing record is kept instead, the next poll tries again, and
+      # CHILD_TREE_SEEN_WINPIDS above is what tells a sweep that the record is
+      # behind the tree.
+      log "CHILDTREE: the walk under Windows pid $one did not complete (rc=$rc) - the standing tree record is kept and is now older than child-$CHILD_INDEX's Windows pid set"
+      return 0
+    fi
+    if [ -n "$walked" ]; then
+      snapshot="$snapshot$walked
+"
+    fi
+  done
+  # `snapshot_process_tree` refuses this supervisor's own Windows pid inside
+  # every tree it walks, so what arrives here is already clear of it.
+  snapshot=$(printf '%s' "$snapshot" | grep -v '^$' | sort -u)
+  CHILD_TREE_MSYS_PIDS="$msys_pids"
+  CHILD_TREE_WINPIDS="$winpids"
+  CHILD_TREE_SNAPSHOT="$snapshot"
+  CHILD_TREE_WALKED=1
+  CHILD_TREE_CONFIRMED_AT=$(date +%s)
+  # Whether any walk has yet named a Windows process other than the one the
+  # child's own launch pid runs as. The first refresh runs in the instant
+  # after the coproc starts, before the agent process under it exists, so a
+  # record taken then names the wrapper and nothing else. A child that dies
+  # inside the first poll interval would otherwise be swept against that
+  # record and reported clean while the process the sweep exists to catch was
+  # never in it.
+  if [ -z "${CHILD_TREE_DESCENDANT_SEEN:-}" ]; then
+    local snap_line snap_pid
+    while IFS= read -r snap_line; do
+      snap_pid="${snap_line%%,*}"
+      if [ -n "$snap_pid" ] && [ "$snap_pid" != "$root_winpid" ]; then
+        CHILD_TREE_DESCENDANT_SEEN=1
+        break
+      fi
+    done <<< "$snapshot"
+  fi
+  log "CHILDTREE: child-$CHILD_INDEX runs as Windows pid(s) $winpids (MSYS $msys_pids)"
+}
+
+# --- Helper: what the recorded child tree is worth right now ---
+# Every reader of `CHILD_TREE_SNAPSHOT` needs the same three-way answer before
+# it acts on that record, so the reading lives here rather than at each call
+# site: a record read without it stands in for the whole tree when it covers
+# part of one, and a partial record verified clean is how a `claude.exe` that
+# the record never named goes unnoticed while it holds the persona claim.
+#
+# Only `whole` licenses a clean verdict. Everything else names a way the
+# record falls short of the tree it claims to describe, and each one is a
+# separate state so the sweep's own line says which.
+#
+# Prints one of:
+#   none          - no Windows process was ever seen under this child, and
+#                   every reading this child got completed
+#   unread        - a reading failed, or a Windows pid set was seen and no
+#                   walk of it ever completed
+#   no_descendant - a walk completed and named only the process the child's
+#                   own launch pid runs as, so nothing under the wrapper has
+#                   ever been in the record
+#   stale         - the record was walked from the child's pid set and no
+#                   poll has confirmed it against the live tree since, for
+#                   long enough that a process could have appeared unseen
+#   behind        - the record was walked from one pid set and the child
+#                   moved to another afterwards, so it describes part of the
+#                   tree
+#   whole         - the record was walked from the pid set the child is
+#                   running as, a poll confirmed that recently, and it names
+#                   a process under the wrapper
+child_tree_record_state() {
+  if [ -z "${CHILD_TREE_WALKED:-}" ]; then
+    if [ -n "${CHILD_TREE_SEEN_WINPIDS:-}" ] || [ -n "${CHILD_TREE_READ_FAILED:-}" ]; then
+      echo "unread"
+      return 0
+    fi
+    echo "none"
+    return 0
+  fi
+  if [ "${CHILD_TREE_SEEN_WINPIDS:-}" != "${CHILD_TREE_WINPIDS:-}" ]; then
+    echo "behind"
+    return 0
+  fi
+  if [ -z "${CHILD_TREE_DESCENDANT_SEEN:-}" ]; then
+    echo "no_descendant"
+    return 0
+  fi
+  # Two poll intervals can pass between the last poll that confirmed the
+  # record and the sweep reading it: the child can die just after a poll, and
+  # the poll that finds it dead runs a full round of its own work first. So
+  # the bound is three intervals, and a record older than that means polls
+  # stopped confirming it rather than that one ordinary exit got in the way.
+  # The floor keeps a fast poll setting from making the bound shorter than a
+  # single stop path takes.
+  local max_age=$(( (${SUPERVISOR_POLL_MS:-10000} / 1000) * 3 ))
+  [ "$max_age" -lt 30 ] && max_age=30
+  if [ -z "${CHILD_TREE_CONFIRMED_AT:-}" ] || [ "$(( $(date +%s) - CHILD_TREE_CONFIRMED_AT ))" -gt "$max_age" ]; then
+    echo "stale"
+    return 0
+  fi
+  echo "whole"
+}
+
+# --- Helper: how long ago a poll last confirmed the recorded child tree ---
+# Printed in the sweep's own clean line, since a clean verdict is only worth
+# the age of the record it was read off.
+child_tree_record_age_s() {
+  if [ -z "${CHILD_TREE_CONFIRMED_AT:-}" ]; then
+    echo "unknown"
+    return 0
+  fi
+  echo "$(( $(date +%s) - CHILD_TREE_CONFIRMED_AT ))s"
+}
+
+# --- Helper: kill whatever outlived the child, from the recorded tree ---
+# A `claude.exe` whose wrapper died still holds the persona claim, and the next
+# child would spend the whole 120s pre-launch gate waiting on that claim and
+# then exit 2. Nothing can name that process once its wrapper is gone, so this
+# reads the record taken while the child ran; every entry carries the start
+# ticks of the process it named, so a pid Windows has recycled onto something
+# else is neither reported as a survivor nor killed.
+#
+# Where a retry of the same record can still settle the question, the snapshot
+# is left in LAST_STOP_SNAPSHOT, so `retry_stop_escalation` retries that tree
+# and the EXIT trap re-verifies it. A record that is behind the tree is the one
+# failure that is left out of LAST_STOP_SNAPSHOT: retrying it would confirm the
+# processes it does name dead and report a clean tree, which is the verdict
+# that branch exists to refuse.
+#
+# Each leg opens with a stable token after the label, so a caller or a test
+# reads the outcome from that token rather than from the prose beside it.
+#
+# Returns 0 when nothing of the child is left alive or every survivor was
+# confirmed dead, 2 when there is no tree for anything to have outlived, which
+# covers a child no Windows process was ever seen under and a completed walk
+# that found nothing under the wrapper, and 1 for every outcome where a process
+# is alive or no reading could account for the tree: a survivor the kill did
+# not settle, a walk that never completed, a record no poll has confirmed in a
+# while, and a record the child's pid set moved past.
+# `child_tree_record_state` names those ways one by one and the log line
+# carries the one that fired.
+# Usage: sweep_child_tree <label>
+sweep_child_tree() {
+  local label="$1"
+  case "$(child_tree_record_state)" in
+    none)
+      log "SWEEP[$label] no_tree: no Windows process was ever seen under child-$CHILD_INDEX, so there is no tree it could have left behind"
+      return 2
+      ;;
+    unread)
+      log "SWEEP[$label] tree_unread: child-$CHILD_INDEX ran as Windows pid(s) ${CHILD_TREE_SEEN_WINPIDS:-none that resolved} and no walk of that tree ever completed, so what it left behind cannot be read"
+      return 1
+      ;;
+    no_descendant)
+      # The walk completed and found nothing under the wrapper. A child that
+      # exits inside its first poll interval is swept against exactly that
+      # record, since the walk taken right after the coproc launch runs before
+      # the agent process exists. Nothing named means nothing to sweep, and a
+      # process that did appear and outlive the wrapper is met by the next
+      # launch's own persona gate, which waits on the claim and ends the run
+      # rather than running a second child beside the first.
+      log "SWEEP[$label] record_no_descendant: child-$CHILD_INDEX's recorded tree names only the process its own launch pid runs as, so nothing that ran under that wrapper was ever in it"
+      return 2
+      ;;
+    stale)
+      log "SWEEP[$label] record_stale: child-$CHILD_INDEX's recorded tree was last confirmed against the live process table $(child_tree_record_age_s) ago, long enough that a process could have appeared under it unseen, so no reading of it is a clean result"
+      return 1
+      ;;
+    behind)
+      # The record was walked from one Windows pid set and the child moved to
+      # another before any later walk completed, so it describes part of the
+      # tree. Reading an empty survivor list off it would call the child clean
+      # while a process the record never named holds the persona claim.
+      log "SWEEP[$label] record_behind_tree: child-$CHILD_INDEX's recorded tree was walked from Windows pid(s) ${CHILD_TREE_WINPIDS} and its pid set moved to ${CHILD_TREE_SEEN_WINPIDS} after that, so this record covers part of the tree and no reading of it is a clean result"
+      if [ -n "${CHILD_TREE_SNAPSHOT:-}" ]; then
+        if kill_process_snapshot "$CHILD_TREE_SNAPSHOT"; then
+          log "SWEEP[$label] record_behind_tree: every process that partial record names is confirmed dead, and whatever it never named is unaccounted for"
+        else
+          log "SWEEP[$label] record_behind_tree: a process that partial record names is alive or unverifiable after the kill"
+        fi
+      fi
+      return 1
+      ;;
+  esac
+  local alive rc
+  alive=$(check_snapshot_survivors "${CHILD_TREE_SNAPSHOT:-}")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log "SWEEP[$label] record_unverified: child-$CHILD_INDEX's recorded tree could not be verified - not killing on an unverified read"
+    LAST_STOP_SNAPSHOT="$CHILD_TREE_SNAPSHOT"
+    return 1
+  fi
+  if [ -z "$alive" ]; then
+    log "SWEEP[$label] clean: child-$CHILD_INDEX leaves no live process behind, read off a tree record a poll confirmed $(child_tree_record_age_s) ago"
+    return 0
+  fi
+  log "SWEEP[$label] survivors: processes from child-$CHILD_INDEX outlived it: $(echo "$alive" | tr '\n' ' ') - killing them before anything else runs"
+  LAST_STOP_SNAPSHOT="$CHILD_TREE_SNAPSHOT"
+  if kill_process_snapshot "$CHILD_TREE_SNAPSHOT"; then
+    log "SWEEP[$label] survivors_dead: the surviving tree is confirmed dead"
+    LAST_STOP_SNAPSHOT=""
+    return 0
+  fi
+  log "SWEEP[$label] survivors_alive: a process from child-$CHILD_INDEX is alive or unverifiable after the kill"
   return 1
 }
 
@@ -997,31 +1514,35 @@ retry_stop_escalation() {
   local RETRY_BUDGET_S=30
   local deadline
   deadline=$(( $(date +%s) + RETRY_BUDGET_S ))
-  local attempt=0
+  local attempt=0 kill_rc=1
   while [ "$(date +%s)" -lt "$deadline" ]; do
     attempt=$((attempt + 1))
     log "STOP[$label]: retrying the tree kill (attempt $attempt, $(( deadline - $(date +%s) ))s left in budget)"
-    if kill_process_snapshot "$LAST_STOP_SNAPSHOT"; then
+    kill_process_snapshot "$LAST_STOP_SNAPSHOT"
+    kill_rc=$?
+    if [ "$kill_rc" -eq 0 ]; then
       log "STOP[$label]: retry succeeded on attempt $attempt, tree confirmed dead"
       LAST_STOP_SNAPSHOT=""
       return 0
     fi
     sleep 2
   done
-  log "STOP[$label]: every retry FAILED over the ${RETRY_BUDGET_S}s budget - a process from the stopped child may be alive or unverifiable, and may still hold its persona claim; proceeding anyway rather than spending the pre-gate timeout to find out"
+  log "STOP[$label]: every retry FAILED over the ${RETRY_BUDGET_S}s budget - a process from the stopped child is alive or unverifiable and may still hold its persona claim"
   return 1
 }
 
 # Usage: stop_child <label>
-# Sets STOP_PATH to one of eight values: "eof", "term", or "kill" when the
+# Sets STOP_PATH to one of nine values: "eof", "term", or "kill" when the
 # tree is confirmed dead at that phase, "eof_kill_failed",
-# "term_kill_failed", "kill_failed" when a CONFIRMED survivor from the
-# snapshot remained after that phase's own escalation, "unverified" when the
-# snapshot itself could never be resolved or walked in the first place -
-# nothing was confirmed either way - or "gone" when the wrapper had already
-# exited and no Windows pid resolves for it, so there is nothing to verify
-# or kill. Returns 1 in every failed case; callers should read that return
-# rather than trusting STOP_PATH's clean-looking values by name alone.
+# "term_kill_failed", "kill_failed" when a survivor from the snapshot was
+# alive or unverifiable after that phase's own escalation, "unverified" when
+# the snapshot itself could never be resolved or walked in the first place -
+# nothing was confirmed either way - "gone" when the wrapper had already
+# exited and the tree recorded while the child ran leaves nothing alive, or
+# "gone_kill_failed" when that record holds a process that is alive or that no
+# reading could account for.
+# Returns 1 in every failed case; callers should read that
+# return rather than trusting STOP_PATH's clean-looking values by name alone.
 stop_child() {
   local label="$1"
   # If CHILD_LAUNCH_PID is empty, there's nothing to stop.
@@ -1036,19 +1557,37 @@ stop_child() {
   # fall all the way through to `unverified`: `resolve_windows_pid` finds
   # nothing for an already-gone pid, so a child that ended cleanly would
   # report as if a survivor were still alive. Checked explicitly here,
-  # before any snapshot is even attempted: if the wrapper is already gone
-  # and no winpid ever resolves for it, there is nothing to verify and
-  # nothing to kill - `STOP_PATH="gone"` reports exactly that, distinct
-  # from `unverified` (which means "cannot tell"), and `retry_stop_
-  # escalation` treats it as nothing to retry.
+  # before any snapshot is even attempted: where the wrapper is already
+  # gone and no winpid resolves for it, the only thing that can still name
+  # what ran under it is the tree recorded while the child was alive, so
+  # that record is what the sweep verifies. `STOP_PATH="gone"` reports a
+  # sweep that left nothing of the child running, distinct from
+  # `unverified` (which means "cannot tell"), and `retry_stop_escalation`
+  # treats it as nothing to retry.
   if ! kill -0 "$pid" 2>/dev/null; then
     local early_winpid
     early_winpid=$(resolve_windows_pid "$pid")
     if [ -z "$early_winpid" ]; then
-      log "STOP[$label]: wrapper gone before stop_child ran (pid $pid already exited, no winpid resolves) - nothing to verify or kill"
-      STOP_PATH="gone"
+      # The wrapper being gone says nothing about what ran under it: a
+      # `claude.exe` can be alive and still holding the persona claim. Nothing
+      # live can name that process any more, so the tree recorded while the
+      # child ran is what gets verified here, rather than reporting a clean
+      # stop on a tree nothing looked at.
+      log "STOP[$label]: wrapper gone before stop_child ran (pid $pid already exited, no winpid resolves) - verifying the tree recorded while the child ran"
       LAST_STOP_SNAPSHOT=""
-      return 0
+      sweep_child_tree "$label"
+      local sweep_rc=$?
+      # A sweep that found a tree and cleared it, and one that reports no
+      # Windows process was ever seen under this child, both leave nothing of
+      # the child running, which is what "gone" says. Every other reading
+      # leaves a process that is alive or that nothing accounted for, which is
+      # the one failure this reports.
+      if [ "$sweep_rc" -eq 0 ] || [ "$sweep_rc" -eq 2 ]; then
+        STOP_PATH="gone"
+        return 0
+      fi
+      STOP_PATH="gone_kill_failed"
+      return 1
     fi
   fi
 
@@ -1078,6 +1617,20 @@ stop_child() {
     snap_attempted=1
     snapshot=$(snapshot_process_tree "$snapshot_winpid")
     snap_rc=$?
+  elif [ -n "${CHILD_TREE_SNAPSHOT:-}" ] && [ "$(child_tree_record_state)" = "whole" ]; then
+    # The wrapper exited between the liveness check above and this resolve, so
+    # there is no live pid left to walk from. The tree recorded while the child
+    # ran carries its own start ticks, which is what every phase below matches
+    # against, so the stop is verified rather than reported unverified. Only a
+    # record that covers the child's whole pid set is adopted: a record the
+    # child's tree moved past names part of it, and every phase below would
+    # find that part dead and report a verified stop while a process the
+    # record never named is still running.
+    log "STOP[$label]: no Windows pid resolves for pid $pid now - verifying the tree recorded while the child ran"
+    snap_attempted=1
+    snapshot="$CHILD_TREE_SNAPSHOT"
+  elif [ -n "${CHILD_TREE_SNAPSHOT:-}" ]; then
+    log "STOP[$label]: no Windows pid resolves for pid $pid now, and the tree recorded while the child ran ($(child_tree_record_state)) covers part of its tree at most, so nothing here confirms a stop"
   fi
   # A failed resolve or a non-zero `snap_rc` (the PowerShell walk timed
   # out or errored - errors go only to supervisor.err, never here) does
@@ -1185,7 +1738,7 @@ stop_child() {
   # A bare `kill -9` on the wrapper's own MSYS pid is the same class of
   # call that can block on this box with a "Permission denied" - whether
   # `$pid` here is a real bash process or itself a stub for `claude.exe`
-  # decides whether it can hang the same way. `taskkill //F //T` on the
+  # decides whether it can hang the same way. `taskkill //F` on the
   # already-resolved `$snapshot_winpid` is tried first; `kill -9` remains
   # a fallback for the case `resolve_windows_pid` never found a winpid at
   # all.
@@ -1193,25 +1746,21 @@ stop_child() {
   # this script spawns, rather than left as a native spawn with nothing
   # capping how long it can run.
   if [ -n "$snapshot_winpid" ]; then
-    # Accepted hazard: `//T` re-walks the live process tree at kill time, not
-    # the snapshot, so an unrelated live process whose stale ParentProcessId
-    # happens to equal a pid in this tree is killed with it. The `kill -0`
-    # checks just before this phase rule out only that the wrapper's own pid
-    # has been recycled; they say nothing about what else now claims it as a
-    # parent. This call is therefore a best-effort reach for a `claude.exe`
-    # descendant, and `kill_process_snapshot` below is the bounded kill, since
-    # it matches each pid against the start time recorded in the snapshot.
-    run_bounded_native 5 taskkill //F //T //PID "$snapshot_winpid"
+    # The wrapper's own pid alone, with no `//T`. A tree kill re-walks the
+    # live parent ids at kill time rather than the snapshot, and Windows
+    # keeps a dead parent's id in the orphans it left and reuses the id, so
+    # it can reach a process that was never part of this tree. The tree
+    # below the wrapper is `kill_process_snapshot`'s, which kills only the
+    # processes the snapshot recorded, each matched against its start time.
+    run_bounded_native 5 taskkill //F //PID "$snapshot_winpid"
     # A failed or abandoned taskkill leaves nothing else touching `$pid`
     # at all: every caller of `stop_child` then runs an unbounded
     # `wait "$CHILD_LAUNCH_PID"`, which would block forever on a wrapper
-    # that was never actually signaled. `taskkill` reaching the whole
-    # tree is still tried first (it is the only mechanism that can reach
-    # a `claude.exe` descendant), but the wrapper's own pid is
+    # that was never actually signaled. So the wrapper's own pid is
     # independently confirmed signaled here, falling back to `kill -9` if
     # `taskkill` did not reach it.
     if kill -0 "$pid" 2>/dev/null; then
-      log "STOP[$label]: wrapper pid $pid still present after taskkill //T - falling back to kill -9 on it directly"
+      log "STOP[$label]: wrapper pid $pid still present after taskkill - falling back to kill -9 on it directly"
       kill -9 "$pid" 2>/dev/null
     fi
   else
@@ -1349,6 +1898,105 @@ console.log((newest.timestamp || 0) + ' ' + backfilled);
 " "$store" "$persona" 2>> "$RUNDIR/supervisor.err"
 }
 
+# --- Helper: how much longer a rate-limited child has to wait ---
+# A child that meets a rate limit parks in the engine's own retry backoff. From
+# outside it is a live process writing nothing, which reads as WAITING in the
+# log for as long as the park runs, so the operator cannot tell an hours-long
+# park from an idle child. The stream carries the fact: a `system` record with
+# subtype `api_retry` and `error_status` 429, whose `retry_delay_ms` names how
+# much of the wait is left. One is written every 30 seconds while the park
+# runs, each naming a smaller remaining wait than the last.
+#
+# Only the newest record in the stream is read. Every other record is the child
+# working, so a park ends by itself the moment the child writes one, and no
+# separate expiry is needed. The newest record is the last COMPLETE line: the
+# child may be mid-write at the end of the file, and a half-written line is not
+# a record yet.
+#
+# Prints "<epoch milliseconds> <ISO 8601>" for the moment the wait ends, or
+# "- -" when the newest record is anything else. Only the tail of the stream is
+# read, since a long-running child's stdout.jsonl reaches megabytes and this
+# runs on every poll.
+# Usage: get_rate_limit_reset <stdout.jsonl path>
+get_rate_limit_reset() {
+  local out_file="$1"
+  if [ ! -f "$out_file" ]; then
+    echo "- -"
+    return 0
+  fi
+  node -e "
+const fs = require('fs');
+const SCAN_BYTES = 262144;
+const now = Date.now();
+let text = '';
+let scanStart = 0;
+try {
+  const fd = fs.openSync(process.argv[1], 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    if (size > SCAN_BYTES) scanStart = size - SCAN_BYTES;
+    const len = size - scanStart;
+    const buf = Buffer.alloc(len);
+    if (len > 0) fs.readSync(fd, buf, 0, len, scanStart);
+    text = buf.toString('utf8');
+  } finally { fs.closeSync(fd); }
+} catch (e) { console.log('- -'); process.exit(0); }
+const lines = text.split('\n');
+// The tail can start mid-line, and the file can end mid-line while the child
+// is writing. Neither partial is a record.
+if (scanStart > 0) lines.shift();
+lines.pop();
+let newest = null;
+for (const line of lines) {
+  if (!line.trim()) continue;
+  let record;
+  try { record = JSON.parse(line); } catch (e) { continue; }
+  if (record && typeof record === 'object') newest = record;
+}
+const isRetry = newest
+  && newest.type === 'system'
+  && newest.subtype === 'api_retry'
+  && Number(newest.error_status) === 429
+  && Number.isFinite(Number(newest.retry_delay_ms))
+  && Number(newest.retry_delay_ms) > 0;
+if (!isRetry) { console.log('- -'); process.exit(0); }
+const until = now + Number(newest.retry_delay_ms);
+console.log(until + ' ' + new Date(until).toISOString());
+" "$out_file" 2>> "$RUNDIR/supervisor.err"
+}
+
+# --- Helper: the account identity the profile config names ---
+# `claude` reads its account from `.claude.json` under USERPROFILE, and the
+# account autoswitch task rewrites that file in place when it moves accounts.
+# A running child never re-reads its credentials, so the identity this prints
+# is what a launch pinned, and a change means a relaunch is what delivers the
+# new account. The credentials file itself is never opened here; this reads the
+# profile config and nothing else.
+#
+# Prints the account identity, or nothing when USERPROFILE names no profile
+# config, the file cannot be parsed, or it carries no account. All three read
+# as no identity, which is quiet: a swap is a change between two identities,
+# never the absence of one.
+read_account_uuid() {
+  local profile="${USERPROFILE:-}"
+  if [ -z "$profile" ]; then
+    return 0
+  fi
+  local config
+  config="$(cygpath -u "$profile" 2>/dev/null || echo "$profile")/.claude.json"
+  if [ ! -f "$config" ]; then
+    return 0
+  fi
+  node -e "
+const fs = require('fs');
+try {
+  const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+  const id = config && config.oauthAccount && config.oauthAccount.accountUuid;
+  if (typeof id === 'string' && id) console.log(id);
+} catch (e) { /* unreadable or unparsable reads as no identity */ }
+" "$config" 2>> "$RUNDIR/supervisor.err"
+}
+
 # --- Helper: read child session id from stream-json init line ---
 read_child_session_id() {
   local out_file="$1"
@@ -1367,6 +2015,26 @@ try {
 } catch (e) { /* not found yet */ }
 process.exit(1);
 " "$out_file" 2>> "$RUNDIR/supervisor.err"
+}
+
+# --- Helper: count a relaunch against the rolling-hour restart budget ---
+# Each relaunch is stamped, stamps older than an hour are dropped, and
+# RESTART_COUNT is what is left. Every relaunch whose trigger sits outside the
+# child's own exit counts here as well as the ones that follow a crash, since
+# a trigger that keeps firing would otherwise relaunch the child at poll
+# cadence with nothing to stop it.
+record_restart_in_hour() {
+  local now_ms t
+  now_ms=$(node -e "console.log(Date.now())")
+  RESTART_TIMES+=("$now_ms")
+  local pruned=()
+  for t in "${RESTART_TIMES[@]}"; do
+    if [ $((now_ms - t)) -lt 3600000 ]; then
+      pruned+=("$t")
+    fi
+  done
+  RESTART_TIMES=("${pruned[@]}")
+  RESTART_COUNT=${#RESTART_TIMES[@]}
 }
 
 # --- Main loop ---
@@ -1483,6 +2151,29 @@ while true; do
   # else in the launch block that can end the iteration, so no later path
   # (the EXIT trap included) can act on the old snapshot.
   LAST_STOP_SNAPSHOT=""
+
+  # The same holds for the previous child's own recorded tree and the account
+  # it launched under. A stale tree names pids some unrelated process may hold
+  # by now, and a stale account identity would read a swap that happened before
+  # this child started as one that happened during it.
+  CHILD_TREE_MSYS_PIDS=""
+  CHILD_TREE_WINPIDS=""
+  CHILD_TREE_SEEN_WINPIDS=""
+  CHILD_TREE_SNAPSHOT=""
+  CHILD_TREE_WALKED=""
+  CHILD_TREE_READ_FAILED=""
+  CHILD_TREE_DESCENDANT_SEEN=""
+  CHILD_TREE_CONFIRMED_AT=""
+  refresh_child_tree
+  CHILD_LAUNCH_ACCOUNT=$(read_account_uuid)
+  if [ -z "$CHILD_LAUNCH_ACCOUNT" ]; then
+    # A swap is a change between two identities, so with none readable there
+    # is nothing to compare and the check is quiet for this child's whole
+    # life. Named once here rather than left to look like a child nobody ever
+    # swapped the account under. A later poll that does read one takes it up
+    # and the check starts working from there.
+    log "ACCOUNT: the profile config under USERPROFILE names no account identity, so child-$CHILD_INDEX has nothing to compare an account swap against"
+  fi
 
   # Copy the fd number now: bash unsets the CHILD array the moment it reaps
   # the coproc, and under `set -u` a bare `${CHILD[1]}` after that aborts the
@@ -1674,6 +2365,11 @@ while true; do
   HEARTBEAT="$WORKDIR/.agentic-heartbeat.json"
   CHILD_SESSION_ID=""
   POLL_COUNT=0
+  # The end of the wait this child is parked on, and the value the log last
+  # named. Both belong to one child: a fresh child's stream is its own.
+  RATE_LIMIT_LOGGED=""
+  RATE_LIMIT_RESET=""
+  RATE_LIMIT_RESET_ISO=""
 
   if [ -z "$CHILD_LAUNCH_PID" ]; then
     log "ERROR: CHILD_LAUNCH_PID not set after coproc launch"
@@ -1684,12 +2380,67 @@ while true; do
     sleep $((SUPERVISOR_POLL_MS / 1000))
     POLL_COUNT=$((POLL_COUNT + 1))
 
+    # The child's own processes, recorded while they can still be read. A
+    # `claude.exe` appears under the wrapper a few seconds after the launch,
+    # and nothing can name it once its wrapper exits.
+    refresh_child_tree
+
+    # The heartbeat, and the clock it is measured against, read together: the
+    # staleness the decide unit computes is the gap between the two, and a
+    # clock sampled several node spawns later reports that gap wider than it
+    # was by however long those spawns took.
+    NOW=$(node -e "console.log(Date.now())")
+    HEARTBEAT_JSON=""
+    if [ -f "$HEARTBEAT" ]; then
+      HEARTBEAT_JSON=$(poll_heartbeat "$HEARTBEAT" "$PERSONA")
+    fi
+    HEARTBEAT_SESSION_ID=""
+    HEARTBEAT_LAST_SEEN=""
+    if [ -n "$HEARTBEAT_JSON" ]; then
+      HEARTBEAT_SESSION_ID=$(echo "$HEARTBEAT_JSON" | node -e "
+const o = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+console.log(o.sessionId || '');
+" 2>> "$RUNDIR/supervisor.err")
+      HEARTBEAT_LAST_SEEN=$(echo "$HEARTBEAT_JSON" | node -e "
+const o = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+console.log(o.lastSeen || '');
+" 2>> "$RUNDIR/supervisor.err")
+    fi
+
+    # How much longer this child is parked on a rate limit, read off the newest
+    # record in its stream. A reading with no park prints "-" in the first
+    # field, which is cleared here so everything downstream reads an empty
+    # value as no park.
+    read -r RATE_LIMIT_RESET RATE_LIMIT_RESET_ISO <<< "$(get_rate_limit_reset "$OUT")"
+    case "${RATE_LIMIT_RESET:-}" in
+      ''|*[!0-9]*) RATE_LIMIT_RESET=""; RATE_LIMIT_RESET_ISO="" ;;
+    esac
+
+    # Named the moment the park is seen, rather than only on the liveness
+    # cadence below: a child can sit in a rate limit's backoff for hours, and
+    # the log is where the operator tells that from a working child. Named once
+    # per park, since the child rewrites the remaining wait every 30 seconds
+    # and keying on that value would put a line in the log on every poll.
+    if [ -n "${RATE_LIMIT_RESET:-}" ]; then
+      if [ -z "$RATE_LIMIT_LOGGED" ]; then
+        log "RATE_LIMITED until $RATE_LIMIT_RESET_ISO: child-$CHILD_INDEX is waiting out a rate limit"
+        RATE_LIMIT_LOGGED=1
+      fi
+    else
+      RATE_LIMIT_LOGGED=""
+    fi
+
     # Prove liveness on a cadence: idleness and an empty goal tree are not
     # crash, restart, or completion signals (plan item 1), so this line is
     # the only thing that should appear in the log for a run that is simply
-    # waiting on the next chat-delivered goal.
+    # waiting on the next chat-delivered goal. A rate-limited child says so
+    # instead, since "waiting" on its own is what hid an hour-long backoff.
     if [ $((POLL_COUNT % ALIVE_LOG_EVERY_N_POLLS)) -eq 0 ]; then
-      log "WAITING: child-$CHILD_INDEX alive, persona held, no restart triggers (poll $POLL_COUNT)"
+      if [ -n "${RATE_LIMIT_RESET_ISO:-}" ]; then
+        log "RATE_LIMITED until $RATE_LIMIT_RESET_ISO: child-$CHILD_INDEX alive, persona held, waiting out the limit (poll $POLL_COUNT)"
+      else
+        log "WAITING: child-$CHILD_INDEX alive, persona held, no restart triggers (poll $POLL_COUNT)"
+      fi
     fi
 
     # Read the child's session id from the init line.
@@ -1724,26 +2475,6 @@ const newest = d[d.length - 1];
 console.log(newest.timestamp || 0);
 " "$STORE" "$PERSONA" 2>> "$RUNDIR/supervisor.err")
     fi
-
-    # Poll the heartbeat.
-    HEARTBEAT_JSON=""
-    if [ -f "$HEARTBEAT" ]; then
-      HEARTBEAT_JSON=$(poll_heartbeat "$HEARTBEAT" "$PERSONA")
-    fi
-    HEARTBEAT_SESSION_ID=""
-    HEARTBEAT_LAST_SEEN=""
-    if [ -n "$HEARTBEAT_JSON" ]; then
-      HEARTBEAT_SESSION_ID=$(echo "$HEARTBEAT_JSON" | node -e "
-const o = JSON.parse(require('fs').readFileSync(0, 'utf8'));
-console.log(o.sessionId || '');
-" 2>> "$RUNDIR/supervisor.err")
-      HEARTBEAT_LAST_SEEN=$(echo "$HEARTBEAT_JSON" | node -e "
-const o = JSON.parse(require('fs').readFileSync(0, 'utf8'));
-console.log(o.lastSeen || '');
-" 2>> "$RUNDIR/supervisor.err")
-    fi
-
-    NOW=$(node -e "console.log(Date.now())")
 
     # Build the decide input JSON.
     DECIDE_INPUT=$(node -e "
@@ -1813,6 +2544,35 @@ const o = JSON.parse(require('fs').readFileSync(0, 'utf8'));
 console.log(o.reason || '');
 " 2>> "$RUNDIR/supervisor.err")
 
+    # The account the child launched under, against the one the profile config
+    # names now. A running child never re-reads credentials, so a swap reaches
+    # it only through a relaunch, and it is the same passive relaunch a
+    # finished goal takes: the goal tree is kept and the fresh child resumes.
+    # Read only where nothing else is due, so a stop or a restart the decide
+    # unit ordered keeps its own priority. `continue` is the steady state of a
+    # healthy child, so this reads and parses the profile config on nearly
+    # every poll, and it is skipped only on the polls where something else is
+    # already about to act. A rewrite that kept the identity, and a profile
+    # config that is absent or unparsable, both leave this quiet.
+    if [ "$DECIDE_ACTION" = "continue" ]; then
+      ACCOUNT_NOW=$(read_account_uuid)
+      if [ -z "${CHILD_LAUNCH_ACCOUNT:-}" ] && [ -n "${ACCOUNT_NOW:-}" ]; then
+        # The launch read found no identity, which a profile config being
+        # rewritten at that instant also looks like. Taking the first identity
+        # a later poll does read is what keeps one such instant from leaving
+        # this child with no swap check for the rest of its life.
+        CHILD_LAUNCH_ACCOUNT="$ACCOUNT_NOW"
+        log "ACCOUNT: child-$CHILD_INDEX is holding account ${ACCOUNT_NOW:0:8}, read on poll $POLL_COUNT, the profile config having named none at its launch"
+      fi
+      if [ -n "${CHILD_LAUNCH_ACCOUNT:-}" ] && [ -n "${ACCOUNT_NOW:-}" ] && [ "$ACCOUNT_NOW" != "$CHILD_LAUNCH_ACCOUNT" ]; then
+        # Both identities are named by a short prefix. They are account
+        # identifiers in a plaintext log the operator reads, and a prefix is
+        # enough to tell one from the other.
+        DECIDE_ACTION="restart_passive"
+        DECIDE_REASON="account_changed: the profile config names ${ACCOUNT_NOW:0:8}, child-$CHILD_INDEX launched under ${CHILD_LAUNCH_ACCOUNT:0:8}"
+      fi
+    fi
+
     case "$DECIDE_ACTION" in
       stop_complete)
         log "STOP_COMPLETE: $DECIDE_REASON"
@@ -1823,10 +2583,10 @@ console.log(o.reason || '');
         CHILD_LAUNCH_PID=""
         echo "$EXIT_CODE" > "$EXIT_MARKER"
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
-        # Exiting 0 here when a survivor is still confirmed alive after
-        # every retry would read as a clean shutdown when it is not one.
-        # Exit 5 instead, a code distinct from every other exit this
-        # script uses, so the operator can tell the two apart.
+        # Exiting 0 here when a process from the child is alive, or when no
+        # reading could account for its tree, would read as a clean shutdown
+        # when it is not one. Exit 5 instead, a code distinct from every other
+        # exit this script uses, so the operator can tell the two apart.
         if [ "${STOP_ESCALATION_RESULT:-0}" -ne 0 ]; then
           log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable despite every stop retry (STOP_PATH=$STOP_PATH)"
           exit 5
@@ -1842,6 +2602,9 @@ console.log(o.reason || '');
         CHILD_LAUNCH_PID=""
         echo "$EXIT_CODE" > "$EXIT_MARKER"
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
+        # A tree that is alive or unverifiable outranks the crash loop this
+        # path reports, since it is the one state the next launch cannot work
+        # around.
         if [ "${STOP_ESCALATION_RESULT:-0}" -ne 0 ]; then
           log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable despite every stop retry (STOP_PATH=$STOP_PATH)"
           exit 5
@@ -1857,6 +2620,8 @@ console.log(o.reason || '');
         CHILD_LAUNCH_PID=""
         echo "$EXIT_CODE" > "$EXIT_MARKER"
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
+        # A tree that is alive or unverifiable outranks the restart budget
+        # this path reports, for the same reason.
         if [ "${STOP_ESCALATION_RESULT:-0}" -ne 0 ]; then
           log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable despite every stop retry (STOP_PATH=$STOP_PATH)"
           exit 5
@@ -1873,28 +2638,59 @@ console.log(o.reason || '');
         log "RESTART_PASSIVE: $DECIDE_REASON"
         stop_child "restart_passive"
         retry_stop_escalation "restart_passive" $?
+        STOP_ESCALATION_RESULT=$?
         wait "$CHILD_LAUNCH_PID"; EXIT_CODE=$?
         CHILD_LAUNCH_PID=""
         echo "$EXIT_CODE" > "$EXIT_MARKER"
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
+        # Launching the next child beside a process this one left running puts
+        # two children on one persona claim, so a tree that is alive or that
+        # no reading could account for refuses the relaunch and ends the run
+        # at exit 5. The natural-exit path draws the same line.
+        if [ "${STOP_ESCALATION_RESULT:-0}" -ne 0 ]; then
+          log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable despite every stop retry (STOP_PATH=$STOP_PATH)"
+          exit 5
+        fi
         case "$DECIDE_REASON" in
           restart_requested*)
             log "PASSIVE: restart requested; relaunching the child with the goal tree kept, the new child resumes the active plan"
+            ;;
+          account_changed*)
+            log "PASSIVE: the account identity changed since launch; relaunching the child so it runs under the account the profile config names now"
+            # This trigger is a file another process rewrites, read against
+            # what this launch read, so it can differ on every poll and every
+            # launch. The relaunch is counted against the restart budget for
+            # that reason: the budget is what ends a relaunch loop no signal
+            # from the child itself is driving.
+            record_restart_in_hour
+            if [ $RESTART_COUNT -ge $SUPERVISOR_MAX_RESTARTS_PER_HOUR ]; then
+              log "STOP_BUDGET: $RESTART_COUNT/$SUPERVISOR_MAX_RESTARTS_PER_HOUR restarts in the hour"
+              exit 4
+            fi
             ;;
           *)
             log "PASSIVE: goal complete; returning to passive state, waiting for the next goal delivered by chat"
             ;;
         esac
-        continue 2  # break out of the poll loop and go to the next child; no crash/restart accounting
+        continue 2  # break out of the poll loop and go to the next child
         ;;
       restart)
         log "RESTART: $DECIDE_REASON"
         stop_child "restart"
         retry_stop_escalation "restart" $?
+        STOP_ESCALATION_RESULT=$?
         wait "$CHILD_LAUNCH_PID"; EXIT_CODE=$?
         CHILD_LAUNCH_PID=""
         echo "$EXIT_CODE" > "$EXIT_MARKER"
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
+        # A tree from this child that is alive or unverifiable is one terminal
+        # state, and it reports as exit 5 here as it does on every other path,
+        # ahead of the limit checks below: those end the run for a different
+        # reason and would report it under a different code.
+        if [ "${STOP_ESCALATION_RESULT:-0}" -ne 0 ]; then
+          log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable despite every stop retry (STOP_PATH=$STOP_PATH)"
+          exit 5
+        fi
 
         # Update crash counter.
         CHILD_RUN_MS=$(( ( $(node -e "console.log(Date.now())") - LAUNCHED_AT ) ))
@@ -1903,19 +2699,21 @@ console.log(o.reason || '');
         else
           CRASH_COUNT=0
         fi
-        RESTART_COUNT=$((RESTART_COUNT + 1))
-        RESTART_TIMES+=($(node -e "console.log(Date.now())"))
+        record_restart_in_hour
 
-        # Prune restart times older than 1 hour.
-        NOW_MS=$(node -e "console.log(Date.now())")
-        PRUNED=()
-        for t in "${RESTART_TIMES[@]}"; do
-          if [ $((NOW_MS - t)) -lt 3600000 ]; then
-            PRUNED+=("$t")
-          fi
-        done
-        RESTART_TIMES=("${PRUNED[@]}")
-        RESTART_COUNT=${#RESTART_TIMES[@]}
+        # Both limits are read here, before the relaunch, on the same counts
+        # the natural-exit path checks and with the same exit codes. A limit
+        # read only at the next child's first poll stops the run one launch
+        # late, and that launch claims the persona, takes a priming turn and
+        # attaches the channel before anything stops it.
+        if [ $RESTART_COUNT -ge $SUPERVISOR_MAX_RESTARTS_PER_HOUR ]; then
+          log "STOP_BUDGET: $RESTART_COUNT/$SUPERVISOR_MAX_RESTARTS_PER_HOUR restarts in the hour"
+          exit 4
+        fi
+        if [ $CRASH_COUNT -ge $SUPERVISOR_CRASH_LIMIT ]; then
+          log "STOP_CRASH_LOOP: $CRASH_COUNT crashes within $SUPERVISOR_MIN_RUN_MS ms"
+          exit 3
+        fi
         continue 2  # break out of the poll loop and go to the next child
         ;;
     esac
@@ -1930,12 +2728,57 @@ console.log(o.reason || '');
 
   log "EXIT child-$CHILD_INDEX code=$EXIT_CODE (natural)"
 
-  # Check for shutdown_requested / root_complete to decide whether to stop,
-  # go passive, or restart (plan item 4: the two are distinct signals).
+  # The shutdown the operator asked for is read before anything else this path
+  # does. It is the ordinary way a persona goes down: the child records
+  # shutdown_requested and exits on its own, and the answer the keeper needs
+  # from that is exit 0, which is what writes the hold marker and keeps the
+  # persona down. A reading taken after the sweep below could end that run on
+  # a code that relaunches instead.
   SHUTDOWN_REQUESTED_TS=$(get_fact "$WORKDIR" "$PERSONA" "shutdown_requested")
   if [ -n "$SHUTDOWN_REQUESTED_TS" ] && [ "$SHUTDOWN_REQUESTED_TS" -gt "$CHILD_START_TS" ]; then
     log "STOP_COMPLETE: shutdown_requested at $SHUTDOWN_REQUESTED_TS > child start $CHILD_START_TS"
+    # The run ends here whatever the sweep finds, since exit 0 is what the
+    # keeper reads as the shutdown being honored and any other code brings the
+    # persona back. The sweep still runs, because nothing downstream ever
+    # reaches this child's tree again: the keeper writes its hold and stops, so
+    # a process left alive here goes on holding the persona claim with nothing
+    # left to kill it.
+    sweep_child_tree "shutdown"
+    SWEEP_RC=$?
+    if [ "$SWEEP_RC" -eq 1 ] && [ -n "$LAST_STOP_SNAPSHOT" ]; then
+      retry_stop_escalation "shutdown" "$SWEEP_RC"
+      SWEEP_RC=$?
+    fi
+    if [ "$SWEEP_RC" -eq 1 ]; then
+      log "NOTE: child-$CHILD_INDEX leaves a process that is alive or a tree that could not be read, and the shutdown the operator asked for is still what this run reports"
+    fi
     exit 0
+  fi
+
+  # A child that exits on its own was never stopped, so nothing has looked at
+  # what it left running. Anything still alive holds the persona claim, and the
+  # next child would spend the whole pre-launch gate waiting on that claim
+  # before exiting 2. Swept here, ahead of every branch below, so no relaunch
+  # and no exit leaves one behind.
+  sweep_child_tree "natural_exit"
+  SWEEP_RC=$?
+  if [ "$SWEEP_RC" -eq 1 ]; then
+    # The retry backstop runs on the record the sweep left standing, which the
+    # sweep sets only where retrying that same record can still settle the
+    # question. A sweep with nothing to retry against has already said so, and
+    # sending it through the backstop would only re-derive that same nothing.
+    if [ -n "$LAST_STOP_SNAPSHOT" ]; then
+      retry_stop_escalation "natural_exit" "$SWEEP_RC"
+      SWEEP_RC=$?
+    fi
+    # Relaunching beside a survivor is what makes the next child spend the
+    # whole pre-launch gate waiting on a persona claim it can never win. Exit 5
+    # instead, the same code every other stop path uses for a child whose tree
+    # is alive or unverifiable after every retry.
+    if [ "$SWEEP_RC" -ne 0 ]; then
+      log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable after every sweep retry"
+      exit 5
+    fi
   fi
   RESTART_REQUESTED_TS=$(get_fact "$WORKDIR" "$PERSONA" "restart_requested")
   if [ -n "$RESTART_REQUESTED_TS" ] && [ "$RESTART_REQUESTED_TS" -gt "$CHILD_START_TS" ]; then
@@ -1976,19 +2819,7 @@ console.log(o.reason || '');
   else
     CRASH_COUNT=0
   fi
-  RESTART_COUNT=$((RESTART_COUNT + 1))
-  RESTART_TIMES+=($(node -e "console.log(Date.now())"))
-
-  # Prune restart times older than 1 hour.
-  NOW_MS=$(node -e "console.log(Date.now())")
-  PRUNED=()
-  for t in "${RESTART_TIMES[@]}"; do
-    if [ $((NOW_MS - t)) -lt 3600000 ]; then
-      PRUNED+=("$t")
-    fi
-  done
-  RESTART_TIMES=("${PRUNED[@]}")
-  RESTART_COUNT=${#RESTART_TIMES[@]}
+  record_restart_in_hour
 
   # Check budget.
   if [ $RESTART_COUNT -ge $SUPERVISOR_MAX_RESTARTS_PER_HOUR ]; then
