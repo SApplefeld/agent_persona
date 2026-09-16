@@ -626,3 +626,20 @@ Gate baselines, measured by the main session on 2026-09-16 on this checkout, box
 Rulings adopted: none this boundary.
 
 Next action: adjudicate Section 4's round 5 and capture its delta at return, fix or declare per the backstop, write Chapter 4 routing the two README sentences from interim board 22 to Section 5, then Section 5.
+
+### Interim board 27 - 2026-09-16
+Section 4's fifth review round returned, and its adjudication leaves the terminal condition unmet, so the section meets the operator backstop. The adversarial and blind lenses returned CHANGES_REQUIRED and the security lens returned CONCERNS, all at opus effort max through Workflow on the compensation route. The round bracket is clean and the reviewed delta is captured at `.kit/scratch/process-keeper/s4/fix-round-5.diff`. The adjudication, with every finding's provenance, is at `.kit/scratch/process-keeper/s4/round5-adjudication.md`.
+
+The Critical is confirmed live, and this session is the evidence. A stop never reaches `claude.exe`. `stop_child` walks only from the coproc wrapper's Windows pid, and `claude.exe` sits under `env.exe`, whose parent is a dead fork intermediate. The dev supervisor's log reads `RESTART: hung`, TERM to pid 582 and `EXIT child-1 code=143` at 11:57Z, then a gate timeout at 11:59Z. The child it named is this main session, still writing its stream at 14:12Z. The gap predates the section's diff and sits in the words of fix 1, "snapshot its tree on every stop". It and one security-weight Major, a walk root not tied to the process table its age guard judged, take the fix-before-declaration route, and an implementer is out on both, barred from the kill-performing suites.
+
+Nine Majors are held after merging duplicates across lenses. One is from the spec's first cut: one account change relaunched each persona twice, the identity flipping to cdae0019 and back within 91 seconds, confirmed in the aios log at 13:16:55Z and 13:18:26Z. One is pre-existing in a suite: a bare-pid cleanup kill at `.kit/live-stopprocesstree-test.sh:500`. Seven were introduced by fix rounds on the tree-record apparatus: the walk root tie, the shutdown exit-code split (exit 5 on the decide path, present at base, against exit 0 on the natural-exit path, added in the board 22 round), the wall-clock staleness bound, a record never re-walked for native children, case (u) not reaching its injected failure, four untested refusal legs, and assertions pinned on log prose.
+
+Pre-BLOCKED acts: the expert ask went to the agent_persona expert seat, and a consult is out at opus effort max on whether the tree apparatus and the account check should continue or narrow. The design stop of interim board 23 ruled on the three-way verdict, another mechanism, so it does not stand in for this consult. The journal carries `kit.review.cap fail` for this section at 5 rounds.
+
+Owed and unrun: the review round over the Critical fix's delta, taken on the re-arm before anything else.
+
+Section 4's ladder: the opening bound, with the round count at five. Section 3 is closed.
+
+Gate baselines unchanged from interim board 26.
+
+Next action: verify the Critical fix on the main session's own runs with a census, record its delta, receive the consult ruling, then declare the backstop with its phase analysis.
