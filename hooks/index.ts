@@ -829,10 +829,15 @@ export const register: Register = async (on, options) => {
   // like the Reviewer's: only agentic_identity/agentic_say/agentic_inbox
   // register, with no goal-tree tool, no controller tick, and no claim on
   // any owner-only claim site. "off" is a plain chat session: it registers
-  // nothing below this point but the one hook a few lines down, which logs
-  // the tier and nothing else. An absent or unrecognized value reads as
-  // "off"; an unrecognized one is remembered so that hook's log line can
-  // name it.
+  // nothing but the session.start hook, whose first lines log the tier and
+  // return, and register() itself returns right after that hook is
+  // installed. The option reads between here and that hook run for every
+  // tier; they touch only the module's own state. An absent or unrecognized
+  // value reads as "off"; an unrecognized one is remembered so the log line
+  // can name it. The loader judges the compiled module statically and
+  // refuses the whole file when one event is registered twice without a
+  // matcher, so the off tier cannot install a session.start hook of its
+  // own: this file registers each event exactly once.
   const armingRaw = typeof cfg.arming === "string" ? cfg.arming.trim() : "";
   let armingUnrecognized: string | null = null;
   let arming: "off" | "reader" | "owner";
@@ -841,16 +846,6 @@ export const register: Register = async (on, options) => {
   } else {
     arming = "off";
     if (armingRaw !== "" && armingRaw !== "off") armingUnrecognized = armingRaw;
-  }
-  if (arming === "off") {
-    // No tool registration, no timer, no claim, no store write: this is
-    // the only hook an "off" session installs.
-    on("session.start", async ($, e, next) => {
-      const suffix = armingUnrecognized ? `; unrecognized value '${armingUnrecognized}'` : "";
-      $.ui.log(`Agentic: arming off, no persona tools or claims in this session${suffix}`);
-      return next(e);
-    });
-    return;
   }
 
   const urgentCheckMinMs = typeof cfg.urgentCheckMinMs === "number" ? (cfg.urgentCheckMinMs as number) : 5_000;
@@ -900,42 +895,15 @@ export const register: Register = async (on, options) => {
   const costBackoffAfterTicks = typeof cfg.costBackoffAfterTicks === "number" ? (cfg.costBackoffAfterTicks as number) : 10;
   const costBackoffMaxMs = typeof cfg.costBackoffMaxMs === "number" ? (cfg.costBackoffMaxMs as number) : 300_000;
 
-  // --- D6: doorbell ---
-  // Consume peer text so the model never reads it. The only steering that
-  // reaches the model from another session comes through a record whose
-  // writer holds a reader claim.
-  on("session.receive", async ($, e, next) => {
-    // BH1: e.origin may be a string (per types) or an object with .kind (runtime)
-    const originVal = (e as any)?.origin;
-    const kind = typeof originVal === "string" ? originVal : originVal?.kind || "unknown";
-    if (e && (kind === "peer" || kind === "peer-send-message")) {
-      const text = typeof e.text === "string" ? e.text : "";
-      const detail = text.slice(0, 80);
-      sess.state.decisions.push({
-        timestamp: Date.now(),
-        loop: "monitor",
-        action: "peer_consumed",
-        detail: detail || "(empty peer text)",
-      });
-      await persist($);
-      try {
-        $.ui.toast("agentic: peer text consumed; use agentic_say");
-      } catch { /* toast unavailable; non-fatal */ }
-      return { consumed: "agentic: peer text is not steering; use agentic_say" };
-    }
-    // BH1: push decision on pass-through branch
-    sess.state.decisions.push({
-      timestamp: Date.now(),
-      loop: "monitor",
-      action: "receive_passthrough",
-      detail: `kind=${kind}`,
-    });
-    await persist($);
-    return next(e);
-  });
-
   // --- session.start: register tools, claim or join the persona ---
+  // The one session.start registration in this file. An "off" session logs
+  // its tier here and does nothing else; every other tier runs the body.
   on("session.start", async ($, e, next) => {
+    if (arming === "off") {
+      const suffix = armingUnrecognized ? `; unrecognized value '${armingUnrecognized}'` : "";
+      $.ui.log(`Agentic: arming off, no persona tools or claims in this session${suffix}`);
+      return next(e);
+    }
     try {
       sess.mySessionId = String(await $.session.id());
     } catch {
@@ -3065,6 +3033,44 @@ export const register: Register = async (on, options) => {
     });
     }
 
+    return next(e);
+  });
+
+  // An "off" session installs nothing past the session.start hook above:
+  // no doorbell, no turn hooks, no tool.call guard, no prompt hook.
+  if (arming === "off") return;
+
+  // --- D6: doorbell ---
+  // Consume peer text so the model never reads it. The only steering that
+  // reaches the model from another session comes through a record whose
+  // writer holds a reader claim.
+  on("session.receive", async ($, e, next) => {
+    // BH1: e.origin may be a string (per types) or an object with .kind (runtime)
+    const originVal = (e as any)?.origin;
+    const kind = typeof originVal === "string" ? originVal : originVal?.kind || "unknown";
+    if (e && (kind === "peer" || kind === "peer-send-message")) {
+      const text = typeof e.text === "string" ? e.text : "";
+      const detail = text.slice(0, 80);
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "peer_consumed",
+        detail: detail || "(empty peer text)",
+      });
+      await persist($);
+      try {
+        $.ui.toast("agentic: peer text consumed; use agentic_say");
+      } catch { /* toast unavailable; non-fatal */ }
+      return { consumed: "agentic: peer text is not steering; use agentic_say" };
+    }
+    // BH1: push decision on pass-through branch
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "monitor",
+      action: "receive_passthrough",
+      detail: `kind=${kind}`,
+    });
+    await persist($);
     return next(e);
   });
 

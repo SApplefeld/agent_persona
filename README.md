@@ -323,6 +323,8 @@ Every PowerShell call the stop makes is bounded by `supervisorPsBoundS`, since G
 
 The offline suites run with no `claude` session and no persona claim, so they run beside a live fleet. The live suites launch real children. `.kit/live-all.sh` runs the five its roster names: `goaltree`, `budget`, `commons`, `operator` and `restartrequest`, each a `.kit/live-<name>-test.sh`. `.kit/live-common.sh` is the shared harness they source.
 
+`.kit/check-loader-rule.mjs` is a static check over `hooks/*.ts` for the shapes the engine's loader refuses whole, which the mock-driven suites in `.kit/` do not exercise: a `$` noun used as a value, a nested function that takes `$`, and one event pattern registered twice without a matcher. A refused module loads no hook and registers no tool, and the session runs with the plugin absent; the refusal appears only in the engine's debug log (`--debug-file`), never in the session itself. `.kit/live-all.sh` runs it before spawning any child and exits 7 on a violation; run it directly after any edit to `hooks/`.
+
 The plugin-side live suites in that roster:
 
 - `.kit/live-goaltree-test.sh`: the core loop end to end on a real child: `goal_create` fills the tree from `.kit/roadmap-test.md`, real nudges start real turns, and the chain runs to `root_complete` on the engine's own timing. Live.
