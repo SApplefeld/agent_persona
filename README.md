@@ -13,7 +13,7 @@ claude plugin marketplace add SApplefeld/agent_persona
 claude plugin install agentic-plugin@agent-persona --scope user
 ```
 
-`claude plugin update` re-fetches from GitHub, so the installed runtime always tracks merged `main` rather than whatever happens to be checked out in any one clone. Registering the marketplace from a local directory (`claude plugin marketplace add /path/to/this/clone`) instead makes `claude plugin update` copy that directory's working tree verbatim, uncommitted edits included - useful only for developing the plugin itself, alongside `--dev` below, never for running it.
+`claude plugin update` re-fetches from GitHub, so the installed runtime always tracks merged `main` rather than whatever happens to be checked out in any one clone. The manifest at `.claude-plugin/plugin.json` carries no version field on purpose. Claude Code installs each plugin under `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`. A manifest that names a version installs under that name and is rebuilt only when the name changes, so every persona keeps running the commit of the last bump however many commits merge behind it. A manifest that names none installs under the fetched commit's hash instead, one folder per update, which is the shape the kit plugin already uses. Registering the marketplace from a local directory (`claude plugin marketplace add /path/to/this/clone`) instead makes `claude plugin update` copy that directory's working tree verbatim, uncommitted edits included - useful only for developing the plugin itself, alongside `--dev` below, never for running it.
 
 **Start the supervisor** (passive, no goal yet):
 
@@ -55,7 +55,7 @@ The persona argument and `COORDINATOR_PERSONA` name the same persona. The thread
 
 **The arming key** gates what a session's hooks do, in three values. `owner` is the full worker/coordinator shape; a supervisor launch always writes it. `reader` registers `agentic_identity`/`agentic_say`/`agentic_inbox` only, with no goal-tree tool and no ownership ever - an interactive reader session takes this shape by passing a settings file with `"arming":"reader"` under both plugin ids through `--settings`. `off`, the default for a session that omits the key, registers no tool, timer, or claim at all: a peer message still reaches an `off` session as the harness delivers it, since no hook consumes it, and nothing is written to `.agentic-personas.json` or the commons store.
 
-**Status: v0.11.0 : Stage 3 (supervisor).** `tsc --noEmit` clean. Supervisor (`bin/supervise.sh`) drives outer-loop runs: pre-gate (commons + heartbeat), coproc stdin with EOF stop, real exit codes, `PROMPT=""` cleared after first send, `writeClaimDirect` shared across all three claim sites. The suites are catalogued under Test Coverage in the Supervisor section.
+**Status: Stage 3 (supervisor).** `tsc --noEmit` clean. Supervisor (`bin/supervise.sh`) drives outer-loop runs: pre-gate (commons + heartbeat), coproc stdin with EOF stop, real exit codes, `PROMPT=""` cleared after first send, `writeClaimDirect` shared across all three claim sites. The suites are catalogued under Test Coverage in the Supervisor section.
 
 ## Architecture
 
@@ -226,7 +226,7 @@ Declared in `plugin.json` with defaults. Read as `options.<name>` in `register(o
 | `.agentic-heartbeat.json` | Heartbeat sidecar (project root) |
 | `.agentic-yields.log` | Yield sidecar, JSONL (project root) |
 
-## Supervisor (v0.11.0)
+## Supervisor
 
 `bin/supervise.sh` is the outer-loop supervisor for days-long runs. It takes `<workdir> <persona> <permission-mode>` plus the options `--prompt TEXT`, `--rundir DIR`, `--dev`, `--no-channel` and `--channel-name NAME`, and runs one child at a time: it checks its own settings, gates on the persona being free, launches the child, polls the persona store for signals, and stops or relaunches the child by the decision those signals produce. The supervisor never writes the persona store (invariant §8). It only reads it.
 
