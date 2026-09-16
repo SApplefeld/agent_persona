@@ -340,12 +340,15 @@ console.log(usable && value.trim() !== "default" ? value.trim() : "coordinator")
 # read side and the emit side hold one class because the value is spliced into
 # the coordinator persona's standing instruction in bin/supervise.sh, at the
 # agentic_say target and at the fleet row it names, and a settings file sits in
-# a run directory the persona running there can rewrite. Anything
-# else prints the empty string, a missing key included, because this setting
+# a run directory the persona running there can rewrite. A missing key
+# or an empty string prints the empty string, because this setting
 # has no default: an empty result is a launch with no architect, on which no
 # persona receives the architect's standing instruction. Returns 1 on the same shapes
-# read_settings_coordinator_persona refuses, with the same error-line shape,
-# and prints nothing then.
+# read_settings_coordinator_persona refuses, and on a present value outside the
+# persona character class or naming "default", the two values emit_settings_json
+# refuses, so a mis-set name is a refused launch named in the log rather than a
+# fleet that comes up with no architect; the error-line shape is the same, and
+# it prints nothing then.
 read_settings_architect_persona() {
   local dev_mode="${2:-1}"
   local id="$AGENTIC_PLUGIN_INSTALLED_ID"
@@ -368,9 +371,11 @@ if (pc[id] !== undefined) {
   if (pc[id].options !== undefined && !plain(pc[id].options)) fail("has " + id + " options that are not an object");
   if (plain(pc[id].options)) value = pc[id].options.architectPersona;
 }
+if (value !== undefined && typeof value !== "string") fail("has an architectPersona that is not a string");
 const name = typeof value === "string" ? value.trim() : "";
-const usable = /^[A-Za-z0-9_-]+$/.test(name) && name !== "default";
-console.log(usable ? name : "");
+if (name !== "" && !/^[A-Za-z0-9_-]+$/.test(name)) fail("resolves architectPersona to \u0027" + name + "\u0027, which may hold only letters, digits, underscore and hyphen");
+if (name === "default") fail("resolves architectPersona to \u0027default\u0027, and architectPersona must not be \u0027default\u0027");
+console.log(name);
 ' "$1" "$id"
 }
 

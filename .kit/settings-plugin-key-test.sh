@@ -246,8 +246,9 @@ printf '%s' '{"pluginConfigs":{"agentic-plugin@agent-persona":{"options":{"archi
 OUT=$(read_arch "$TMP/arch-vellum.json" 0)
 [ "$OUT" = "vellum" ]; check "read_settings_architect_persona prints the loaded id's architectPersona (out=$OUT)" "$?"
 printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"architectPersona":"default"}}}}' > "$TMP/arch-default-value.json"
-OUT=$(read_arch "$TMP/arch-default-value.json" 1)
-[ -z "$OUT" ]; check "read_settings_architect_persona resolves an architectPersona of default to no architect (out=$OUT)" "$?"
+ERR=$(read_arch "$TMP/arch-default-value.json" 1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "read_settings_architect_persona refuses an architectPersona of default" 1 ;; *"must not be 'default'"*) check "read_settings_architect_persona refuses an architectPersona of default (err=$ERR)" 0 ;; *) check "read_settings_architect_persona refuses an architectPersona of default (rc=$RC err=$ERR)" 1 ;; esac
 printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":7}}}}' > "$TMP/arch-nokey.json"
 OUT=$(read_arch "$TMP/arch-nokey.json" 1)
 [ -z "$OUT" ]; check "read_settings_architect_persona resolves a missing architectPersona to no architect (out=$OUT)" "$?"
@@ -262,17 +263,31 @@ OUT=$(read_arch "$TMP/arch-other.json" 1)
 printf '﻿%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"architectPersona":"vellum"}}}}' > "$TMP/arch-bom.json"
 OUT=$(read_arch "$TMP/arch-bom.json" 1)
 [ "$OUT" = "vellum" ]; check "read_settings_architect_persona strips a leading BOM before parsing (out=$OUT)" "$?"
-# A name the persona character class refuses resolves to no architect, the same
-# answer a missing key gets. The value reaches the steward's standing
-# instruction as the agentic_say target and as the row name it reads back, so a
-# name carrying a quote, a brace or a period would put persona-written text into
-# a top-privilege session's priming write. The three below are each bracket-safe
-# and colon-free, which is what the plugin's own coordinatorPersona rule admits.
-for badname in 'vellum.two' 'vellum{x}' 'vellum\two'; do
+# A name the persona character class refuses is refused with the value named,
+# rather than read as no architect: emit_settings_json refuses the same value,
+# and a mis-set coordinatorPersona refuses the launch, so a typo in the file
+# surfaces in the log instead of bringing the fleet up with no architect. The
+# value reaches the steward's standing instruction as the agentic_say target
+# and as the row name it reads back, so a name carrying a quote, a brace or a
+# period would put persona-written text into a top-privilege session's priming
+# write. The three below are each bracket-safe and colon-free, which is what
+# the plugin's own coordinatorPersona rule admits.
+for badname in 'vellum.two' 'vellum{x}' 'vellum	wo'; do
   node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({pluginConfigs:{"agentic-plugin":{options:{architectPersona:process.argv[2]}}}}))' "$TMP/arch-outofclass.json" "$badname"
-  OUT=$(read_arch "$TMP/arch-outofclass.json" 1)
-  [ -z "$OUT" ]; check "read_settings_architect_persona resolves a name outside the persona class to no architect ($badname, out=$OUT)" "$?"
+  ERR=$(read_arch "$TMP/arch-outofclass.json" 1)
+  RC=$?
+  case "$RC:$ERR" in 0:*) check "read_settings_architect_persona refuses a name outside the persona class ($badname)" 1 ;; *"letters, digits, underscore and hyphen"*) check "read_settings_architect_persona refuses a name outside the persona class ($badname, err=$ERR)" 0 ;; *) check "read_settings_architect_persona refuses a name outside the persona class ($badname, rc=$RC err=$ERR)" 1 ;; esac
+  case "$ERR" in *"'$badname'"*) check "the refusal names the value it refused ($badname)" 0 ;; *) check "the refusal names the value it refused ($badname, err=$ERR)" 1 ;; esac
 done
+# A present value that is not a string is refused for the same reason, and an
+# empty string reads as no architect, the same answer a missing key gets.
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"architectPersona":7}}}}' > "$TMP/arch-number.json"
+ERR=$(read_arch "$TMP/arch-number.json" 1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "read_settings_architect_persona refuses an architectPersona that is not a string" 1 ;; *"is not a string"*) check "read_settings_architect_persona refuses an architectPersona that is not a string (err=$ERR)" 0 ;; *) check "read_settings_architect_persona refuses an architectPersona that is not a string (rc=$RC err=$ERR)" 1 ;; esac
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"architectPersona":"  "}}}}' > "$TMP/arch-empty.json"
+OUT=$(read_arch "$TMP/arch-empty.json" 1)
+[ -z "$OUT" ]; check "read_settings_architect_persona resolves an empty architectPersona to no architect (out=$OUT)" "$?"
 # A shape that cannot hold options is refused rather than read as no architect,
 # which would be indistinguishable from an unset setting.
 printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":"x"}}}' > "$TMP/arch-shape.json"
