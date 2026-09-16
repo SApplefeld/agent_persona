@@ -408,10 +408,13 @@ CHILD_IN=""  # coproc write fd number
 # is gone this snapshot is the only thing that can name what outlived it.
 #
 # CHILD_TREE_WINPIDS is the Windows pid set the standing snapshot was walked
-# from, and CHILD_TREE_SEEN_WINPIDS is the newest set seen under the child,
-# recorded whether or not its walk completed. The two differ exactly while the
-# snapshot describes an older shape of the tree than the one the child has now,
-# which is what `sweep_child_tree` refuses to read as a clean result.
+# from, and CHILD_TREE_SEEN_WINPIDS is the newest set seen under a child that
+# was still running it at the end of the poll that saw it, recorded whether or
+# not its walk completed. The two differ exactly while the snapshot describes
+# an older shape of the tree than the one the child has now, which is what
+# `sweep_child_tree` refuses to read as a clean result. A closure member that
+# exited inside its own walk is in neither set, since the pid it ran as is no
+# longer its own and nothing the walk read of that pid is evidence about it.
 # CHILD_TREE_WALKED is set once a walk has completed, so "no walk ever ran" is
 # distinguishable from "a walk ran and found nothing alive".
 #
@@ -423,9 +426,15 @@ CHILD_IN=""  # coproc write fd number
 # pid set the record was walked from. `child_tree_record_state` reads all
 # three: a record naming only the wrapper, and one nothing has confirmed in a
 # while, are both records a clean verdict cannot rest on.
+#
+# CHILD_TREE_SEEN_PAIRS is the latest poll's closure as "msys:winpid" pairs,
+# which `stop_child` walks again when it stops the child. A pair whose MSYS
+# process has since exited is walked there too and discarded there, so a stale
+# pair costs a walk and never reaches the snapshot.
 CHILD_TREE_MSYS_PIDS=""
 CHILD_TREE_WINPIDS=""
 CHILD_TREE_SEEN_WINPIDS=""
+CHILD_TREE_SEEN_PAIRS=""
 CHILD_TREE_SNAPSHOT=""
 CHILD_TREE_WALKED=""
 CHILD_TREE_READ_FAILED=""
@@ -436,6 +445,7 @@ CHILD_TREE_CONFIRMED_AT=""
 # a change here reaches it only through a relaunch.
 CHILD_LAUNCH_ACCOUNT=""
 LAST_STOP_SNAPSHOT=""  # the process-tree snapshot a stop or a sweep acted on, left for the retry and the EXIT trap
+STOP_SNAPSHOT_BUILT=""  # the merged snapshot build_stop_snapshot last built, empty where it could not verify one
 # Initialized here so it is never unset under `set -u`: the "no child to
 # stop" early return's own `log "... ($STOP_PATH)"` would otherwise abort
 # the script.
@@ -775,10 +785,20 @@ PS
 # between this snapshot and the kill/verify that acts on it (the EOF and
 # TERM grace periods), during which a short-lived descendant (a hook's
 # own `node`, a `git`) can exit and have its pid reused by an unrelated
-# process. Each line is `pid,starttickss` - `Get-Process`'s own
-# `StartTime.Ticks` for that pid at snapshot time - so every later
-# consumer can tell a genuinely surviving process from a same-numbered
-# impostor by comparing tick values, not just pid presence.
+# process. Each line is `pid,startticks`, so every later consumer can tell a
+# genuinely surviving process from a same-numbered impostor by comparing tick
+# values, not just pid presence.
+#
+# The ticks are tied to the process table the walk judged. A pid is listed
+# only where that table holds a row for it, the root included, and only where
+# `Get-Process`'s `StartTime` for the pid agrees with that row's
+# `CreationDate`. `CreationDate` carries microseconds and `StartTime` carries
+# 100-nanosecond ticks, so the two agree where the live ticks, floored to a
+# whole microsecond, equal the row's. The line records the live ticks, which
+# is the value `check_snapshot_survivors` and `kill_process_snapshot` compare
+# against. A pid whose live start time disagrees with its row is held by a
+# process the walk never judged, so the whole snapshot reads as unverified. A
+# pid with no row is not in the table the walk judged, and is left out.
 #
 # This call is bounded like the kill and verify calls below it - a hung
 # CIM query here wedges stop_child exactly as one in the kill path would.
@@ -793,7 +813,9 @@ PS
 # here, at the source, so nothing downstream ever sees a `\r` at all.
 #
 # A process whose `StartTime` is unreadable (access denied, a transient
-# race) emits the literal marker `UNREADABLE` in the ticks field rather
+# race, or a protected process that reads back no start time), or whose row
+# carries no `CreationDate`, emits the literal marker `UNREADABLE` in the
+# ticks field rather
 # than a bare `pid,` with nothing after the comma, so `check_snapshot_
 # survivors` below can treat it as an automatic, unconditional survivor
 # rather than silently discarding it: kept on the kill list but dropped
@@ -849,8 +871,9 @@ snapshot_process_tree() {
   # same reading. A failed query sets a flag and the script emits a bare
   # `CIMFAIL` line after the id loop, from the top-level script, so the
   # marker reaches real stdout rather than joining the id list. A walk that
-  # met a child it could not judge emits `WALKUNVERIFIED` the same way. The
-  # id list is filtered with a numeric-string match rather than an
+  # met a child it could not judge emits `WALKUNVERIFIED` the same way, and a
+  # root that has no row while a live process still holds its id emits
+  # `ROOTUNJUDGED`. The id list is filtered with a numeric-string match rather than an
   # `-is [int]` type check, so a stray non-numeric value never reaches
   # `Get-Process -Id`.
   local raw
@@ -864,16 +887,40 @@ snapshot_process_tree() {
         \$cimFailed = \$true
       }
       \$walk = Select-ProcessTree \$rows $winpid
+      \$rowCreated = @{}
+      foreach (\$r in \$rows) { \$rowCreated[[int64]\$r.ProcessId] = \$r.CreationDate }
+      \$ticksMismatch = \$false
+      \$rootUnjudged = \$false
       \$ids = @($winpid) + @(\$walk.Ids) | Where-Object { \$_ -match '^[0-9]+\$' }
       foreach (\$thisId in \$ids) {
-        \$proc = Get-Process -Id \$thisId -ErrorAction SilentlyContinue
-        if (\$proc) {
-          try { Write-Output (\"\$thisId,\" + \$proc.StartTime.Ticks) }
-          catch { Write-Output (\"\$thisId,UNREADABLE\") }
+        if (-not \$rowCreated.ContainsKey([int64]\$thisId)) {
+          if ([int64]\$thisId -eq [int64]$winpid) {
+            \$rootProc = Get-Process -Id \$thisId -ErrorAction SilentlyContinue
+            if (\$rootProc) { \$rootUnjudged = \$true }
+          }
+          continue
         }
+        \$rowWhen = \$rowCreated[[int64]\$thisId]
+        \$proc = Get-Process -Id \$thisId -ErrorAction SilentlyContinue
+        if (-not \$proc) { continue }
+        \$started = \$null
+        try { \$started = \$proc.StartTime } catch {}
+        if (\$null -eq \$rowWhen -or \$null -eq \$started) {
+          Write-Output (\"\$thisId,UNREADABLE\")
+          continue
+        }
+        \$liveTicks = [int64]\$started.Ticks
+        \$rowTicks = [int64]\$rowWhen.Ticks
+        if (\$liveTicks -ne \$rowTicks -and (\$liveTicks - (\$liveTicks % 10)) -ne \$rowTicks) {
+          \$ticksMismatch = \$true
+          continue
+        }
+        Write-Output (\"\$thisId,\" + \$liveTicks)
       }
       if (\$cimFailed) { Write-Output 'CIMFAIL' }
       if (\$walk.Unverified) { Write-Output 'WALKUNVERIFIED' }
+      if (\$ticksMismatch) { Write-Output 'TICKSMISMATCH' }
+      if (\$rootUnjudged) { Write-Output 'ROOTUNJUDGED' }
       Write-Output '$STOP_PS_SENTINEL'
     ")
   # A CIM query that fails (WMI down, a transient RPC error) under
@@ -894,6 +941,25 @@ snapshot_process_tree() {
   # reads as a tree it may neither kill from nor call clean.
   if printf '%s\n' "$raw" | grep -qx 'WALKUNVERIFIED'; then
     log_diag "STOP: the walk under $winpid met a process whose creation time, or its parent's, could not be read - treating the snapshot as unverified rather than trusting a tree that leaves it out"
+    return 1
+  fi
+  # A pid whose live start time disagrees with the row the walk judged is held
+  # by a different process than the one the walk accepted, so the snapshot
+  # cannot say which of the two its line would name.
+  if printf '%s\n' "$raw" | grep -qx 'TICKSMISMATCH'; then
+    log_diag "STOP: the walk under $winpid names a pid whose live start time disagrees with the process table the walk judged - treating the snapshot as unverified rather than recording a process the walk never judged"
+    return 1
+  fi
+  # The root is this walk's argument rather than a row the walk found, so a
+  # root with no row in the table is a pid the walk never judged and is left
+  # off the kill list. Whether that is the whole answer depends on the pid: a
+  # root that exited between the walk and the table read leaves an honestly
+  # empty tree, while a root a live process still holds cannot have been
+  # missing from a table read across its own lifetime. That reading is a
+  # partial enumeration, so the tree under it is unaccounted for and the whole
+  # walk is unverified rather than an empty result a caller would call clean.
+  if printf '%s\n' "$raw" | grep -qx 'ROOTUNJUDGED'; then
+    log_diag "STOP: the walk under $winpid found no process table row for that root while a live process still holds the id - treating the snapshot as unverified rather than reporting an empty tree under a root the table never named"
     return 1
   fi
   if printf '%s\n' "$raw" | grep -qx "$STOP_PS_SENTINEL"; then
@@ -1089,6 +1155,51 @@ kill_process_snapshot() {
   return 1
 }
 
+# --- Helper: walk an MSYS process's Windows tree, and keep the walk only while
+# the MSYS process still runs as that Windows pid ---
+# An MSYS pid is resolved to a Windows pid and walked one PowerShell spawn
+# later. Windows hands a dead process's id out again, so where the MSYS
+# process exits in between, the walk can read whatever now holds that id, and
+# every line it returns names a process the child never started. So after the
+# walk returns, the MSYS pid must still be running and must still resolve to
+# the Windows pid that was walked. Otherwise the walk's lines are discarded.
+#
+# The liveness check runs ahead of the walk's own return code, and that order
+# is what tells two discards apart. An MSYS process that has exited is no part
+# of the tree any more, whatever its walk said: the walk read a Windows pid the
+# process no longer holds, so an unverified reading of that pid is no more
+# evidence about the child's tree than a clean one would be. An MSYS process
+# that is still running and now holds a different Windows pid is the other
+# case: the process is part of the tree and this walk says nothing about it.
+#
+# Prints the walk's "pid,ticks" lines on success.
+# Returns 0 for a walk that holds, 3 where the MSYS process exited during the
+# walk, 4 where it is still running under a different Windows pid, and the
+# walk's own non-zero code for a walk that did not complete under an MSYS
+# process that is still running as the pid walked.
+# Usage: walk_msys_process_tree <msys-pid> <windows-pid>
+walk_msys_process_tree() {
+  local msys_pid="$1" winpid="$2" walked rc now_winpid
+  walked=$(snapshot_process_tree "$winpid")
+  rc=$?
+  if ! kill -0 "$msys_pid" 2>/dev/null; then
+    log_diag "CHILDTREE: MSYS pid $msys_pid exited while Windows pid $winpid was walked - discarding that walk, which may have read a process that reused the id"
+    return 3
+  fi
+  if [ "$rc" -ne 0 ]; then
+    return "$rc"
+  fi
+  now_winpid=$(resolve_windows_pid "$msys_pid")
+  if [ "$now_winpid" != "$winpid" ]; then
+    log_diag "CHILDTREE: MSYS pid $msys_pid runs as Windows pid ${now_winpid:-none} after its walk of Windows pid $winpid - discarding that walk"
+    return 4
+  fi
+  if [ -n "$walked" ]; then
+    printf '%s\n' "$walked"
+  fi
+  return 0
+}
+
 # --- Helper: record the live child's process tree, pids and start ticks ---
 # The Windows parent chain does not reach the child. `claude` is launched
 # through `env`, and the chain read upward from the live child runs `claude`
@@ -1115,6 +1226,11 @@ refresh_child_tree() {
   if [ -z "$pid" ]; then
     return 0
   fi
+  # This poll's closure as "msys:winpid" pairs, cleared of this supervisor's
+  # own Windows pid. `stop_child` walks each pair again at the stop. Emptied
+  # here first, so a poll that cannot name the closure leaves no pairs from an
+  # earlier poll standing in for it.
+  CHILD_TREE_SEEN_PAIRS=""
   # Descendants are closed over the MSYS table rather than read one level
   # deep: the chain from the coproc to `claude` is two MSYS processes on some
   # launch shapes and one on others, and a wrapper script adds another.
@@ -1154,13 +1270,14 @@ refresh_child_tree() {
       for (id in keep) { if (keep[id] == 1 && (id in winpid)) print id }
     }' | sort -n | tr '\n' ' ')
   msys_pids="${msys_pids% }"
-  local winpids="" root_winpid=""
+  local winpids="" root_winpid="" pairs=""
   local one
   for one in $msys_pids; do
     local resolved
     resolved=$(resolve_windows_pid "$one")
     if [ -n "$resolved" ]; then
       winpids="$winpids $resolved"
+      pairs="$pairs $one:$resolved"
       [ "$one" = "$pid" ] && root_winpid="$resolved"
     fi
   done
@@ -1177,15 +1294,18 @@ refresh_child_tree() {
     CHILD_TREE_READ_FAILED=1
     return 0
   fi
-  local safe=""
-  for one in $winpids; do
-    if [ "$one" = "$self_winpid" ]; then
-      log "CHILDTREE: refusing this supervisor's own Windows pid $one in child-$CHILD_INDEX's tree"
+  local safe="" safe_pairs=""
+  for one in $pairs; do
+    if [ "${one#*:}" = "$self_winpid" ]; then
+      log "CHILDTREE: refusing this supervisor's own Windows pid ${one#*:} in child-$CHILD_INDEX's tree"
       continue
     fi
-    safe="$safe $one"
+    safe="$safe ${one#*:}"
+    safe_pairs="$safe_pairs $one"
   done
   winpids="${safe# }"
+  pairs="${safe_pairs# }"
+  CHILD_TREE_SEEN_PAIRS="$pairs"
   if [ -z "$winpids" ]; then
     # A poll that resolves no Windows pid at all reads as "nothing to add":
     # the standing record is what the child was last seen running as, and a
@@ -1219,43 +1339,73 @@ refresh_child_tree() {
     fi
     return 0
   fi
-  # The newest Windows pid set seen under the child, recorded here whether or
-  # not the walk below completes. `sweep_child_tree` compares it against the
-  # set the standing snapshot was walked from, so a walk that keeps failing
-  # leaves a record this marks as older than the tree it claims to describe.
-  CHILD_TREE_SEEN_WINPIDS="$winpids"
   if [ "$winpids" = "${CHILD_TREE_WINPIDS:-}" ]; then
     # The child is running as the pid set the standing record was walked
     # from, which is this poll confirming that record still describes the
     # tree. The stamp is what `child_tree_record_state` reads to tell a
     # record confirmed a moment ago from one no poll has confirmed in a
     # while.
+    CHILD_TREE_SEEN_WINPIDS="$winpids"
     CHILD_TREE_CONFIRMED_AT=$(date +%s)
     return 0
   fi
-  local snapshot="" walked rc
-  for one in $winpids; do
-    walked=$(snapshot_process_tree "$one")
+  # A closure member that exited inside its own walk is left out of this poll
+  # rather than read as a walk this poll could not complete. The child's own
+  # short-lived helpers - a `node` the agent spawns, a hook's `git` - come and
+  # go inside one poll, and every one of them lands here. Treating each as an
+  # unreadable tree would leave the record permanently behind the pid set,
+  # which is the state that refuses every later stop and sweep. What the
+  # member left behind, if anything, is an orphan no walk can name once its
+  # MSYS parent is gone, and the next launch's own persona gate is what meets
+  # that, exactly as it meets one under a record that never named a
+  # descendant.
+  local snapshot="" walked rc live_pairs="" live_winpids="" live_msys=""
+  for one in $pairs; do
+    walked=$(walk_msys_process_tree "${one%%:*}" "${one#*:}")
     rc=$?
+    if [ "$rc" -eq 3 ]; then
+      log "CHILDTREE: MSYS pid ${one%%:*} exited inside its own walk, so child-$CHILD_INDEX's pid set for this poll leaves out the Windows pid ${one#*:} it ran as"
+      continue
+    fi
     if [ "$rc" -ne 0 ]; then
-      # A walk that did not complete would leave a partial record standing in
-      # for the whole tree, which is what a later sweep would then call clean.
-      # The standing record is kept instead, the next poll tries again, and
-      # CHILD_TREE_SEEN_WINPIDS above is what tells a sweep that the record is
-      # behind the tree.
-      log "CHILDTREE: the walk under Windows pid $one did not complete (rc=$rc) - the standing tree record is kept and is now older than child-$CHILD_INDEX's Windows pid set"
+      # A walk that did not complete under a live MSYS process, or one
+      # discarded because that process now runs as another Windows pid, would
+      # leave a partial record standing in for the whole tree, which is what a
+      # later sweep would then call clean. The standing record is kept
+      # instead, the next poll tries again, and CHILD_TREE_SEEN_WINPIDS is
+      # what tells a sweep that the record is behind the tree.
+      CHILD_TREE_SEEN_WINPIDS="$winpids"
+      log "CHILDTREE: the walk under Windows pid ${one#*:} did not complete or was discarded (rc=$rc) - the standing tree record is kept and is now older than child-$CHILD_INDEX's Windows pid set"
       return 0
     fi
+    live_pairs="$live_pairs ${one}"
+    live_winpids="$live_winpids ${one#*:}"
+    live_msys="$live_msys ${one%%:*}"
     if [ -n "$walked" ]; then
       snapshot="$snapshot$walked
 "
     fi
   done
+  live_pairs="${live_pairs# }"
+  live_winpids="${live_winpids# }"
+  live_msys="${live_msys# }"
+  if [ -z "$live_winpids" ]; then
+    # Every member of this poll's closure exited inside its own walk, which is
+    # the shape a child that dies at launch leaves: there is nothing left for
+    # this poll to have read, so it adds nothing and the standing record and
+    # the pid set seen under the child both stand as they were.
+    log "CHILDTREE: every process in child-$CHILD_INDEX's closure exited inside its own walk on this poll, so this poll records nothing"
+    return 0
+  fi
   # `snapshot_process_tree` refuses this supervisor's own Windows pid inside
   # every tree it walks, so what arrives here is already clear of it.
   snapshot=$(printf '%s' "$snapshot" | grep -v '^$' | sort -u)
-  CHILD_TREE_MSYS_PIDS="$msys_pids"
-  CHILD_TREE_WINPIDS="$winpids"
+  # The pid set this poll walked, and so the set the record now describes. A
+  # member that exited inside its own walk is out of all four.
+  CHILD_TREE_MSYS_PIDS="$live_msys"
+  CHILD_TREE_SEEN_PAIRS="$live_pairs"
+  CHILD_TREE_SEEN_WINPIDS="$live_winpids"
+  CHILD_TREE_WINPIDS="$live_winpids"
   CHILD_TREE_SNAPSHOT="$snapshot"
   CHILD_TREE_WALKED=1
   CHILD_TREE_CONFIRMED_AT=$(date +%s)
@@ -1276,7 +1426,7 @@ refresh_child_tree() {
       fi
     done <<< "$snapshot"
   fi
-  log "CHILDTREE: child-$CHILD_INDEX runs as Windows pid(s) $winpids (MSYS $msys_pids)"
+  log "CHILDTREE: child-$CHILD_INDEX runs as Windows pid(s) $live_winpids (MSYS $live_msys)"
 }
 
 # --- Helper: what the recorded child tree is worth right now ---
@@ -1444,6 +1594,97 @@ sweep_child_tree() {
   return 1
 }
 
+# --- Helper: build the snapshot a stop verifies and kills ---
+# A Windows walk from the wrapper does not reach the child. The live launch
+# runs `claude.exe` under `env.exe`, whose Windows parent is a Cygwin fork
+# intermediate that has already exited, so the wrapper's own walk names the
+# wrapper alone. The snapshot is therefore the union of three readings: the
+# wrapper's own walk, a walk from the Windows pid of every process in the
+# MSYS closure the latest refresh read, and the tree record, which must be
+# `whole`. Lines are deduplicated on pid and start ticks together, so a pid
+# recorded under two different processes keeps both lines and each is
+# matched against its own start time.
+#
+# Every other record state names a way the record falls short of the tree,
+# and a union built on it could verify part of the tree dead while a
+# process it never named runs on. So any other state is unverified, the same
+# answer a walk that did not complete gives. A walk whose MSYS pid has exited
+# is discarded rather than failed, since that process is no part of the tree
+# any more and the pid the walk read is not its own. A walk whose MSYS pid is
+# still running under a different Windows pid is the other case and fails the
+# build: that process is part of the tree, it now holds a Windows pid no walk
+# here reached, and the union names only the pid it used to run as. Discarding
+# such a walk would report a stop verified while a live member of the closure
+# sits outside every line the snapshot carries.
+# The union is cleared of this supervisor's own Windows pid the way
+# `snapshot_process_tree` clears a single walk: a union naming it, or a self
+# pid that cannot be resolved, is unverified as a whole.
+#
+# `stop_child` and `retry_stop_escalation` both build their snapshot here, each
+# after a `refresh_child_tree`, so the retry backstop never kills from a
+# narrower tree than the stop itself would.
+#
+# Sets STOP_SNAPSHOT_BUILT to the snapshot, "pid,ticks" per line, and to empty
+# on every unverified result. Returns 0 where the snapshot is verified, which
+# includes a verified empty one, and non-zero where it is not.
+# Usage: build_stop_snapshot <label>
+build_stop_snapshot() {
+  local label="$1"
+  local pid="${CHILD_LAUNCH_PID:-}"
+  STOP_SNAPSHOT_BUILT=""
+  local record_state
+  record_state=$(child_tree_record_state)
+  if [ "$record_state" != "whole" ]; then
+    log "STOP[$label]: tree_record_$record_state: child-$CHILD_INDEX's tree record is not whole, so no snapshot built on it can confirm the tree dead"
+    return 1
+  fi
+  local union="$CHILD_TREE_SNAPSHOT" walk_pairs="" pair walked walk_rc wrapper_winpid=""
+  if [ -n "$pid" ]; then
+    wrapper_winpid=$(resolve_windows_pid "$pid")
+  fi
+  if [ -n "$wrapper_winpid" ]; then
+    walk_pairs="$pid:$wrapper_winpid"
+  fi
+  for pair in ${CHILD_TREE_SEEN_PAIRS:-}; do
+    case " $walk_pairs " in *" $pair "*) continue ;; esac
+    walk_pairs="$walk_pairs $pair"
+  done
+  for pair in $walk_pairs; do
+    walked=$(walk_msys_process_tree "${pair%%:*}" "${pair#*:}")
+    walk_rc=$?
+    # Only an exited MSYS process (rc 3) drops out of the union. Its walk read
+    # a Windows pid it no longer holds, and the process itself is gone, so
+    # there is nothing left of it for the snapshot to have missed. Every other
+    # non-zero code, rc 4 among them, leaves a member of the closure alive and
+    # unaccounted for, which is the same answer `refresh_child_tree` gives the
+    # two codes.
+    if [ "$walk_rc" -eq 3 ]; then
+      continue
+    fi
+    if [ "$walk_rc" -ne 0 ]; then
+      log "STOP[$label]: the walk under Windows pid ${pair#*:} (MSYS pid ${pair%%:*}) did not complete or was discarded (rc=$walk_rc)"
+      return "$walk_rc"
+    fi
+    if [ -n "$walked" ]; then
+      union="$union
+$walked"
+    fi
+  done
+  local snapshot self_winpid
+  snapshot=$(printf '%s\n' "$union" | grep -v '^$' | sort -u)
+  self_winpid=$(resolve_windows_pid "$$")
+  if [ -z "$self_winpid" ]; then
+    log "STOP[$label]: this supervisor's own Windows pid does not resolve, so the stop's snapshot cannot be cleared of it"
+    return 1
+  fi
+  if printf '%s\n' "$snapshot" | grep -q "^$self_winpid,"; then
+    log "STOP[$label]: the stop's snapshot names this supervisor's own Windows pid $self_winpid, so every process in it may have been reached through this process"
+    return 1
+  fi
+  STOP_SNAPSHOT_BUILT="$snapshot"
+  return 0
+}
+
 # --- Helper: on a stop_child failure, keep retrying the tree kill on a
 # cadence, bounded well under the pre-gate's own ceiling, before the
 # caller proceeds ---
@@ -1468,11 +1709,12 @@ sweep_child_tree() {
 # `RETRY_BUDGET_S` (a quarter of the 120s pre-gate ceiling), checked
 # before and after each attempt rather than assumed from a sleep count.
 #
-# A caller can reach this backstop with `LAST_STOP_SNAPSHOT` empty (the
-# very first snapshot attempt in `stop_child` never resolved). This
-# backstop tries to re-snapshot rather than give up outright - the
-# wrapper's own pid may still be resolvable even though the earlier walk
-# failed or timed out.
+# A caller can reach this backstop with `LAST_STOP_SNAPSHOT` empty, where
+# `stop_child` could not verify a snapshot. This backstop re-snapshots once
+# rather than give up outright, through the same refresh and merged build
+# `stop_child` uses, since a snapshot of the wrapper alone would confirm bash
+# dead while the `claude.exe` behind it runs on. A build that still cannot
+# verify the tree returns failure.
 # Usage: retry_stop_escalation <label> <stop_child's own return code>
 retry_stop_escalation() {
   local label="$1"
@@ -1490,25 +1732,22 @@ retry_stop_escalation() {
     log "STOP[$label]: stop_child reported failure (STOP_PATH=$STOP_PATH) with no snapshot to retry against; attempting one re-snapshot"
     local resnap_rc=1
     if [ -n "${CHILD_LAUNCH_PID:-}" ]; then
-      local resnap_winpid
-      resnap_winpid=$(resolve_windows_pid "$CHILD_LAUNCH_PID")
-      if [ -n "$resnap_winpid" ]; then
-        LAST_STOP_SNAPSHOT=$(snapshot_process_tree "$resnap_winpid")
-        resnap_rc=$?
-      fi
+      refresh_child_tree
+      build_stop_snapshot "$label"
+      resnap_rc=$?
+      LAST_STOP_SNAPSHOT="$STOP_SNAPSHOT_BUILT"
     fi
-    # The walk's own rc distinguishes a resolve failure or a walk
-    # failure from a genuinely clean "already gone" empty result: a clean
-    # empty result (rc 0) means there is nothing left to retry against,
-    # not that the retry failed, so it does not take the same fail-fast
-    # return as the other two.
-    if [ -z "$LAST_STOP_SNAPSHOT" ]; then
-      if [ "$resnap_rc" -eq 0 ]; then
-        log "STOP[$label]: re-snapshot ran clean and found nothing (the wrapper's descendants are already gone) - nothing left to retry"
-        return 0
-      fi
-      log "STOP[$label]: re-snapshot found nothing to retry against (rc=$resnap_rc; the wrapper's own pid no longer resolves, or the walk failed) - failing fast rather than sleeping out the budget"
+    # Only a snapshot the merged build verified can end the retry: an
+    # unverified build fails fast, since sleeping out the budget cannot make it
+    # verifiable, and a verified empty build means nothing of the child is left
+    # to retry against.
+    if [ "$resnap_rc" -ne 0 ]; then
+      log "STOP[$label]: re-snapshot could not verify the child's tree (rc=$resnap_rc; no child pid, a record that is not whole, a walk that did not complete, or a self pid it could not clear) - failing fast rather than sleeping out the budget"
       return 1
+    fi
+    if [ -z "$LAST_STOP_SNAPSHOT" ]; then
+      log "STOP[$label]: re-snapshot was verified and found nothing - nothing left to retry"
+      return 0
     fi
   fi
   local RETRY_BUDGET_S=30
@@ -1536,8 +1775,10 @@ retry_stop_escalation() {
 # tree is confirmed dead at that phase, "eof_kill_failed",
 # "term_kill_failed", "kill_failed" when a survivor from the snapshot was
 # alive or unverifiable after that phase's own escalation, "unverified" when
-# the snapshot itself could never be resolved or walked in the first place -
-# nothing was confirmed either way - "gone" when the wrapper had already
+# the snapshot itself could never be built in the first place, because a walk
+# did not complete, the tree record is not whole, or the snapshot could not be
+# cleared of this supervisor's own pid - nothing was confirmed either way -
+# "gone" when the wrapper had already
 # exited and the tree recorded while the child ran leaves nothing alive, or
 # "gone_kill_failed" when that record holds a process that is alive or that no
 # reading could account for.
@@ -1551,6 +1792,9 @@ stop_child() {
     log "STOP[$label]: no child to stop (CHILD_LAUNCH_PID empty)"
     return 0
   fi
+  # The record is refreshed before anything reads it, so the stop works from
+  # the child's tree as it stands now rather than as the last poll saw it.
+  refresh_child_tree
   # A wrapper that exits on its own in the window between the poll
   # loop's own `kill -0` check and `stop_child` actually running (the
   # decide-unit's own node calls, the `case` dispatch) would otherwise
@@ -1602,36 +1846,19 @@ stop_child() {
   # ParentProcessId associations after a process exits) - so this list is
   # fixed once, before anything is signaled, and is the same list checked
   # and killed at every phase below.
+  #
+  # A Windows walk from the wrapper does not reach the child, so the snapshot
+  # is the merged one `build_stop_snapshot` builds from the record the refresh
+  # at entry took.
   local snapshot_winpid
   snapshot_winpid=$(resolve_windows_pid "$pid")
-  # The walk's own empty output is distinct from a failed walk: a
-  # completed walk from a genuinely live winpid always lists at least the
-  # root, so an empty snapshot with `snap_rc` 0 means the walk ran fine
-  # and found nothing (the process was already gone), not that nothing
-  # was looked at. `snap_attempted` tracks whether the walk ran at all,
-  # separately from whether it found anything, so "ran clean and found
-  # nothing" (verified dead) is not read the same as "never ran" or "ran
-  # and failed" (genuinely unverified).
-  local snapshot="" snap_rc=0 snap_attempted=0
-  if [ -n "$snapshot_winpid" ]; then
-    snap_attempted=1
-    snapshot=$(snapshot_process_tree "$snapshot_winpid")
-    snap_rc=$?
-  elif [ -n "${CHILD_TREE_SNAPSHOT:-}" ] && [ "$(child_tree_record_state)" = "whole" ]; then
-    # The wrapper exited between the liveness check above and this resolve, so
-    # there is no live pid left to walk from. The tree recorded while the child
-    # ran carries its own start ticks, which is what every phase below matches
-    # against, so the stop is verified rather than reported unverified. Only a
-    # record that covers the child's whole pid set is adopted: a record the
-    # child's tree moved past names part of it, and every phase below would
-    # find that part dead and report a verified stop while a process the
-    # record never named is still running.
-    log "STOP[$label]: no Windows pid resolves for pid $pid now - verifying the tree recorded while the child ran"
-    snap_attempted=1
-    snapshot="$CHILD_TREE_SNAPSHOT"
-  elif [ -n "${CHILD_TREE_SNAPSHOT:-}" ]; then
-    log "STOP[$label]: no Windows pid resolves for pid $pid now, and the tree recorded while the child ran ($(child_tree_record_state)) covers part of its tree at most, so nothing here confirms a stop"
-  fi
+  # `snap_attempted` stays 1 once the build has run, and `snap_rc` carries its
+  # verdict, so "built and found nothing alive" (verified dead) is not read the
+  # same as "the build could not verify the tree" (unverified).
+  local snapshot="" snap_rc=0 snap_attempted=1
+  build_stop_snapshot "$label"
+  snap_rc=$?
+  snapshot="$STOP_SNAPSHOT_BUILT"
   # A failed resolve or a non-zero `snap_rc` (the PowerShell walk timed
   # out or errored - errors go only to supervisor.err, never here) does
   # not read as "verified dead" - it means the tree was never actually
@@ -2159,6 +2386,7 @@ while true; do
   CHILD_TREE_MSYS_PIDS=""
   CHILD_TREE_WINPIDS=""
   CHILD_TREE_SEEN_WINPIDS=""
+  CHILD_TREE_SEEN_PAIRS=""
   CHILD_TREE_SNAPSHOT=""
   CHILD_TREE_WALKED=""
   CHILD_TREE_READ_FAILED=""

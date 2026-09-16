@@ -297,6 +297,7 @@ FN_FILE="$1"; TABLE="$2"; ROOT="$3"
 ps() { cat "$TABLE"; }
 resolve_windows_pid() { echo "9$1"; }
 snapshot_process_tree() { echo "$1,111"; return 0; }
+walk_msys_process_tree() { snapshot_process_tree "$2"; }
 log() { :; }
 CHILD_LAUNCH_PID="$ROOT"
 CHILD_INDEX=1
@@ -375,6 +376,7 @@ resolve_windows_pid() {
   echo "9$1"
 }
 snapshot_process_tree() { if [ "$WALK" = "ok" ]; then echo "$1,111"; return 0; fi; return 124; }
+walk_msys_process_tree() { snapshot_process_tree "$2"; }
 check_snapshot_survivors() { return 0; }
 kill_process_snapshot() { return 0; }
 log() { echo "$*"; }
@@ -491,6 +493,387 @@ check "unit: a child no Windows process was ever seen under has no tree to have 
 SW=$(bash "$UNIT/sweep-driver-survivor.sh" "$UNIT/refresh.sh" "$UNIT/sweep.sh" "$UNIT/ps-sibling.txt" ok - ok 100)
 printf '%s\n' "$SW" | grep -q '^RC=1$' && printf '%s\n' "$SW" | grep -q 'SWEEP\[unit\] survivors_alive:'
 check "unit: a survivor still alive after the kill is the one leg that reports a survivor" "$?"
+
+# --- What stop_child verifies and kills, against the live launch shape ---
+# The real launch runs `claude.exe` under `env.exe`, and `env.exe`'s Windows
+# parent is a Cygwin fork intermediate that has already exited. A Windows walk
+# from the coproc wrapper therefore reaches the wrapper alone. These drivers run
+# the real stop_child with every process read, walk, survivor check, kill and
+# signal stubbed over files in a state directory, so nothing real is signaled:
+# a Windows pid is alive while its "pid,ticks" line is in win-alive, and an
+# MSYS pid while it is in msys-alive.
+STOP_FN_NAMES=$(SUPERVISOR_CLOSURE_STUBS=" log log_diag resolve_windows_pid snapshot_process_tree check_snapshot_survivors kill_process_snapshot run_bounded_native " supervisor_fn_closure "$SUP" stop_child refresh_child_tree retry_stop_escalation)
+: > "$UNIT/stop.sh"
+R=0
+for fn in $STOP_FN_NAMES; do
+  extract_supervisor_fn "$fn" "$UNIT/stop.sh" || R=1
+done
+[ "$R" -eq 0 ] && bash -n "$UNIT/stop.sh"
+V=$?
+check "unit: stop_child and what it calls extracted from bin/supervise.sh and parse ($(echo $STOP_FN_NAMES))" "$V"
+
+cat > "$UNIT/stop-driver.sh" <<'DRVEOF'
+# Records the child's tree with one poll, arms the state directory's on-walk
+# effects, runs stop_child, and prints its return code, STOP_PATH, the Windows
+# pids still alive, every "pid,ticks" line a survivor check or a kill was
+# handed, and what it left for the retry backstop.
+#
+# In a state directory: ps-table (Cygwin ps shape), msys-alive, win-alive,
+# walks ("<winpid>|<line>;<line>"), ps-table-stop (the table once armed, where
+# present), noterm-<msys pid> (a process no signal ends), heal-before-retry
+# (every armed walk failure clears before the retry), exit-before-stop (MSYS pids that exit, with their Windows pids,
+# the moment the driver arms), nokill-<winpid> (a process no kill ends), and
+# per Windows pid, once armed:
+# fail-<winpid> fails that walk, impostor-<winpid> adds its lines to that walk,
+# on-walk-<winpid> is a shell snippet run as that walk is taken, and self-in-
+# <winpid> adds this process's own Windows pid to that walk. MODE no_self makes
+# this process's own Windows pid unresolvable once armed, MODE retry runs
+# retry_stop_escalation on the stop's own return code after the stop and
+# prints what is alive after it, and MODE refresh arms
+# before the poll and prints the record that poll took instead of stopping.
+set -u
+FN_FILE="$1"; ST="$2"; MODE="${3:-plain}"
+. "$FN_FILE"
+SUPERVISOR_POLL_MS=10000
+SUPERVISOR_STOP_GRACE_MS=2000
+CHILD_IN=""
+ps() {
+  local table="$ST/ps-table"
+  if [ -f "$ST/armed" ] && [ -f "$ST/ps-table-stop" ]; then table="$ST/ps-table-stop"; fi
+  awk -v alive="$(tr '\n' ' ' < "$ST/msys-alive")" '
+    BEGIN { n = split(alive, a, " "); for (i = 1; i <= n; i++) live[a[i]] = 1 }
+    NR == 1 || ($1 in live)' "$table"
+}
+kill() {
+  local sig="$1" target="$2"
+  if [ "$sig" = "-0" ]; then
+    grep -qx "$target" "$ST/msys-alive"
+    return $?
+  fi
+  echo "$sig $target" >> "$ST/signals"
+  [ -f "$ST/noterm-$target" ] && return 0
+  grep -vx "$target" "$ST/msys-alive" > "$ST/msys-alive.new"; mv "$ST/msys-alive.new" "$ST/msys-alive"
+  grep -v "^9$target," "$ST/win-alive" > "$ST/win-alive.new"; mv "$ST/win-alive.new" "$ST/win-alive"
+  return 0
+}
+resolve_windows_pid() {
+  if [ "$1" = "$$" ]; then
+    if [ "$MODE" = "no_self" ] && [ -f "$ST/armed" ]; then return 0; fi
+    echo "9$1"
+    return 0
+  fi
+  if [ -f "$ST/moved-$1" ]; then cat "$ST/moved-$1"; return 0; fi
+  if grep -qx "$1" "$ST/msys-alive" || [ -f "$ST/zombie-$1" ]; then echo "9$1"; fi
+  return 0
+}
+snapshot_process_tree() {
+  echo "$1" >> "$ST/walked"
+  if [ -f "$ST/armed" ]; then
+    # The snippet runs as the walk is taken, ahead of the result the walk
+    # returns, so a case can hold a process that exits inside a walk that also
+    # fails.
+    [ -f "$ST/on-walk-$1" ] && . "$ST/on-walk-$1"
+    [ -f "$ST/fail-$1" ] && return 1
+    [ -f "$ST/impostor-$1" ] && cat "$ST/impostor-$1"
+    [ -f "$ST/self-in-$1" ] && echo "9$$,5"
+  fi
+  grep "^$1|" "$ST/walks" | cut -d'|' -f2 | tr ';' '\n' | grep -v '^$'
+  return 0
+}
+check_snapshot_survivors() {
+  printf '%s\n' "$1" >> "$ST/handed"
+  local line
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    grep -qx "$line" "$ST/win-alive" && echo "${line%%,*}"
+  done <<< "$1"
+  return 0
+}
+kill_process_snapshot() {
+  printf '%s\n' "$1" >> "$ST/handed"
+  local line left=0
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    if [ -f "$ST/nokill-${line%%,*}" ]; then
+      grep -qx "$line" "$ST/win-alive" && left=1
+      continue
+    fi
+    grep -vx "$line" "$ST/win-alive" > "$ST/win-alive.new"; mv "$ST/win-alive.new" "$ST/win-alive"
+  done <<< "$1"
+  return "$left"
+}
+run_bounded_native() { echo "$*" >> "$ST/native"; return 0; }
+sleep() { :; }
+log() { echo "$*"; }
+log_diag() { echo "$*"; }
+CHILD_LAUNCH_PID=100
+CHILD_INDEX=1
+CHILD_TREE_MSYS_PIDS=""
+CHILD_TREE_WINPIDS=""
+CHILD_TREE_SEEN_WINPIDS=""
+CHILD_TREE_SNAPSHOT=""
+CHILD_TREE_WALKED=""
+CHILD_TREE_READ_FAILED=""
+CHILD_TREE_DESCENDANT_SEEN=""
+CHILD_TREE_CONFIRMED_AT=""
+LAST_STOP_SNAPSHOT=""
+STOP_PATH=""
+: > "$ST/handed"
+if [ "$MODE" = "refresh" ]; then
+  : > "$ST/armed"
+  refresh_child_tree
+  echo "WALKED=[$CHILD_TREE_WALKED]"
+  echo "RECORD=[$(printf '%s' "$CHILD_TREE_SNAPSHOT" | tr '\n' ' ')]"
+  echo "WINPIDS=[$CHILD_TREE_WINPIDS]"
+  echo "SEEN=[$CHILD_TREE_SEEN_WINPIDS]"
+  exit 0
+fi
+refresh_child_tree
+: > "$ST/armed"
+if [ -f "$ST/exit-before-stop" ]; then
+  for gone in $(cat "$ST/exit-before-stop"); do
+    grep -vx "$gone" "$ST/msys-alive" > "$ST/msys-alive.new"; mv "$ST/msys-alive.new" "$ST/msys-alive"
+    grep -v "^9$gone," "$ST/win-alive" > "$ST/win-alive.new"; mv "$ST/win-alive.new" "$ST/win-alive"
+  done
+fi
+stop_child "unit"
+STOP_RC=$?
+echo "RC=$STOP_RC"
+echo "STOP_PATH=$STOP_PATH"
+echo "ALIVE=[$(cut -d, -f1 "$ST/win-alive" | sort -n | tr '\n' ' ')]"
+echo "HANDED=[$(grep -v '^$' "$ST/handed" | sort -u | tr '\n' ' ')]"
+echo "BACKSTOP=[$(printf '%s' "$LAST_STOP_SNAPSHOT" | tr '\n' ' ')]"
+if [ "$MODE" = "retry" ]; then
+  if [ -f "$ST/heal-before-retry" ]; then rm -f "$ST"/fail-*; fi
+  retry_stop_escalation "unit" "$STOP_RC"
+  echo "RETRY_RC=$?"
+  echo "RETRY_ALIVE=[$(cut -d, -f1 "$ST/win-alive" | sort -n | tr '\n' ' ')]"
+fi
+DRVEOF
+
+# Builds a state directory holding the child the live launch runs: wrapper 100
+# on Windows pid 9100, env 101 on 9101 and claude 102 on 9102, where a walk
+# from 9100 reaches 9100 alone. `launch` holds the wrapper and nothing under it.
+stop_state() {  # <case name> <chain|launch>
+  local st="$UNIT/stop-$1"
+  rm -rf "$st"; mkdir -p "$st"
+  if [ "$2" = "chain" ]; then
+    printf '%s\n' \
+      '      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND' \
+      '      100       1     100       9100  ?         197613 22:20:40 /usr/bin/bash' \
+      '      101     100     100       9101  ?         197613 22:20:41 /usr/bin/env' \
+      '      102     101     100       9102  ?         197613 22:20:42 /c/Users/x/claude' > "$st/ps-table"
+    printf '%s\n' 100 101 102 > "$st/msys-alive"
+    printf '%s\n' 9100,1 9101,2 9102,3 > "$st/win-alive"
+    printf '%s\n' '9100|9100,1' '9101|9101,2;9102,3' '9102|9102,3' > "$st/walks"
+  else
+    printf '%s\n' \
+      '      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND' \
+      '      100       1     100       9100  ?         197613 22:20:40 /usr/bin/bash' > "$st/ps-table"
+    printf '%s\n' 100 > "$st/msys-alive"
+    printf '%s\n' 9100,1 > "$st/win-alive"
+    printf '%s\n' '9100|9100,1' > "$st/walks"
+  fi
+  printf '%s' "$st"
+}
+stop_run() {  # <state dir> [mode]
+  bash "$UNIT/stop-driver.sh" "$UNIT/stop.sh" "$@"
+}
+stop_field() {  # <output> <field>
+  printf '%s\n' "$1" | sed -n "s/^$2=//p" | tail -1
+}
+
+ST=$(stop_state chain chain)
+SO=$(stop_run "$ST")
+[ "$(stop_field "$SO" RC)" = "0" ] && [ "$(stop_field "$SO" STOP_PATH)" = "term" ] && [ "$(stop_field "$SO" ALIVE)" = "[]" ]
+V=$?
+check "unit: a TERM that ends the wrapper while claude.exe runs under a dead fork intermediate kills claude.exe before the stop reports clean (RC=$(stop_field "$SO" RC) STOP_PATH=$(stop_field "$SO" STOP_PATH) ALIVE=$(stop_field "$SO" ALIVE))" "$V"
+case "$(stop_field "$SO" HANDED)" in *" 9102,3 "*|"[9102,3 "*) R=0 ;; *) R=1 ;; esac
+check "unit: claude.exe reaches the stop's kill list by its own pid and start ticks (HANDED=$(stop_field "$SO" HANDED))" "$R"
+grep -q '//T' "$ST/native" 2>/dev/null
+[ "$?" -ne 0 ]
+V=$?
+check "unit: the stop issues no tree kill (native calls: $(cat "$ST/native" 2>/dev/null | tr '\n' ';'))" "$V"
+
+# The last poll saw the wrapper alone, and claude.exe started under it before
+# the stop. The stop reads the tree as it stands when the stop begins.
+ST=$(stop_state grown chain)
+cp "$ST/ps-table" "$ST/ps-table-stop"
+head -2 "$ST/ps-table-stop" > "$ST/ps-table"
+SO=$(stop_run "$ST")
+[ "$(stop_field "$SO" RC)" = "0" ] && [ "$(stop_field "$SO" STOP_PATH)" = "term" ] && [ "$(stop_field "$SO" ALIVE)" = "[]" ]
+V=$?
+check "unit: a child whose tree grew after the last poll is stopped from its tree as it stands at the stop (RC=$(stop_field "$SO" RC) STOP_PATH=$(stop_field "$SO" STOP_PATH) ALIVE=$(stop_field "$SO" ALIVE))" "$V"
+
+# The wrapper exits before the stop begins and claude.exe outlives it, where no
+# kill ends it. The stop reports the failure under its own name.
+ST=$(stop_state gone-survivor chain)
+printf '%s\n' 100 > "$ST/exit-before-stop"
+: > "$ST/nokill-9102"
+SO=$(stop_run "$ST")
+[ "$(stop_field "$SO" RC)" = "1" ] && [ "$(stop_field "$SO" STOP_PATH)" = "gone_kill_failed" ] && [ "$(stop_field "$SO" ALIVE)" = "[9102 ]" ]
+V=$?
+check "unit: a wrapper gone before the stop, leaving a claude.exe no kill ends, reports gone_kill_failed (RC=$(stop_field "$SO" RC) STOP_PATH=$(stop_field "$SO" STOP_PATH) ALIVE=$(stop_field "$SO" ALIVE))" "$V"
+ST=$(stop_state gone-clean chain)
+printf '%s\n' 100 > "$ST/exit-before-stop"
+SO=$(stop_run "$ST")
+[ "$(stop_field "$SO" RC)" = "0" ] && [ "$(stop_field "$SO" STOP_PATH)" = "gone" ] && [ "$(stop_field "$SO" ALIVE)" = "[]" ]
+V=$?
+check "unit: control: the same wrapper gone before the stop, with claude.exe killable, reports gone with nothing alive (RC=$(stop_field "$SO" RC) STOP_PATH=$(stop_field "$SO" STOP_PATH) ALIVE=$(stop_field "$SO" ALIVE))" "$V"
+
+# A record that never named a process under the wrapper is not a whole record,
+# so the stop cannot call the tree clean, however cleanly the wrapper ends.
+ST=$(stop_state no-descendant launch)
+SO=$(stop_run "$ST")
+[ "$(stop_field "$SO" RC)" = "1" ] && [ "$(stop_field "$SO" STOP_PATH)" = "unverified" ] && [ "$(stop_field "$SO" BACKSTOP)" = "[]" ]
+V=$?
+check "unit: a stop whose tree record is not whole fails closed as unverified and leaves nothing for the retry backstop (RC=$(stop_field "$SO" RC) STOP_PATH=$(stop_field "$SO" STOP_PATH) BACKSTOP=$(stop_field "$SO" BACKSTOP))" "$V"
+
+# The retry backstop after a stop that failed closed. The last poll saw the
+# wrapper alone, claude.exe then started behind the dead fork intermediate,
+# the walk that would record it fails, and the wrapper survives every signal.
+# The stop leaves no snapshot, so the retry builds its own, and a snapshot of
+# the wrapper alone would kill bash and report the tree dead.
+retry_state() {  # <case name>
+  local st
+  st=$(stop_state "$1" chain)
+  cp "$st/ps-table" "$st/ps-table-stop"
+  head -2 "$st/ps-table-stop" > "$st/ps-table"
+  : > "$st/fail-9102"
+  : > "$st/noterm-100"
+  printf '%s' "$st"
+}
+ST=$(retry_state retry-unverified)
+SO=$(stop_run "$ST" retry)
+[ "$(stop_field "$SO" RC)" = "1" ] && [ "$(stop_field "$SO" STOP_PATH)" = "unverified" ] && [ "$(stop_field "$SO" RETRY_RC)" = "1" ] && [ "$(stop_field "$SO" RETRY_ALIVE)" = "[9100 9101 9102 ]" ]
+V=$?
+check "unit: the retry after a stop that failed closed, with the wrapper alive and claude.exe unrecorded, reports failure rather than a dead tree (RC=$(stop_field "$SO" RC) STOP_PATH=$(stop_field "$SO" STOP_PATH) RETRY_RC=$(stop_field "$SO" RETRY_RC) RETRY_ALIVE=$(stop_field "$SO" RETRY_ALIVE))" "$V"
+ST=$(retry_state retry-healed)
+: > "$ST/heal-before-retry"
+SO=$(stop_run "$ST" retry)
+[ "$(stop_field "$SO" RC)" = "1" ] && [ "$(stop_field "$SO" RETRY_RC)" = "0" ] && [ "$(stop_field "$SO" RETRY_ALIVE)" = "[]" ]
+V=$?
+check "unit: control: the same retry once the failed walk completes records claude.exe and kills it before reporting the tree dead (RC=$(stop_field "$SO" RC) RETRY_RC=$(stop_field "$SO" RETRY_RC) RETRY_ALIVE=$(stop_field "$SO" RETRY_ALIVE))" "$V"
+
+# A walk from a closure member that does not complete leaves that member's
+# tree unaccounted for, even where the record from the last poll names it.
+ST=$(stop_state walk-fails chain)
+: > "$ST/fail-9102"
+SO=$(stop_run "$ST")
+[ "$(stop_field "$SO" RC)" = "1" ] && [ "$(stop_field "$SO" STOP_PATH)" = "unverified" ] && [ "$(stop_field "$SO" BACKSTOP)" = "[]" ]
+V=$?
+check "unit: a stop whose walk from a closure member fails is unverified rather than clean (RC=$(stop_field "$SO" RC) STOP_PATH=$(stop_field "$SO" STOP_PATH))" "$V"
+
+# The walk from env's Windows pid reads back an unrelated process, and by the
+# time it returns env's MSYS pid runs as another Windows pid. That walk's lines
+# describe whatever held the id, so none of them reaches a kill list. The
+# process itself is still running, now under a Windows pid no walk in this
+# stop reached, so the stop has a live member of the child's closure it cannot
+# account for and reports unverified rather than clean. The log line naming
+# the discarded walk is read, since several other refusals in stop_child reach
+# the same STOP_PATH.
+ST=$(stop_state moved chain)
+printf '9999,9\n' > "$ST/impostor-9101"
+printf '%s\n' '9999,9' >> "$ST/win-alive"
+printf 'echo 9555 > "$ST/moved-101"\n' > "$ST/on-walk-9101"
+SO=$(stop_run "$ST")
+case "$(stop_field "$SO" HANDED)" in *9999*) R=1 ;; *) R=0 ;; esac
+[ "$R" -eq 0 ] && [ "$(stop_field "$SO" RC)" = "1" ] && [ "$(stop_field "$SO" STOP_PATH)" = "unverified" ] \
+  && [ "$(stop_field "$SO" ALIVE)" = "[9101 9102 9999 ]" ]
+V=$?
+check "unit: a walk whose MSYS pid maps to another Windows pid once it returns leaves that process unaccounted for, so the stop is unverified and the process the walk read is never checked or killed (RC=$(stop_field "$SO" RC) STOP_PATH=$(stop_field "$SO" STOP_PATH) HANDED=$(stop_field "$SO" HANDED) ALIVE=$(stop_field "$SO" ALIVE))" "$V"
+case "$SO" in *"(MSYS pid 101) did not complete or was discarded (rc=4)"*) R=0 ;; *) R=1 ;; esac
+check "unit: that refusal is the moved walk's own discard rather than another of the stop's refusals" "$R"
+
+# The same walk where env's MSYS pid has exited by the time it returns, with
+# its old Windows pid mapping still readable.
+ST=$(stop_state exited chain)
+printf '9999,9\n' > "$ST/impostor-9101"
+printf '%s\n' '9999,9' >> "$ST/win-alive"
+printf '%s\n' ': > "$ST/zombie-101"' 'grep -vx 101 "$ST/msys-alive" > "$ST/msys-alive.new"; mv "$ST/msys-alive.new" "$ST/msys-alive"' > "$ST/on-walk-9101"
+SO=$(stop_run "$ST")
+case "$(stop_field "$SO" HANDED)" in *9999*) R=1 ;; *) R=0 ;; esac
+[ "$R" -eq 0 ] && [ "$(stop_field "$SO" RC)" = "0" ] && [ "$(stop_field "$SO" ALIVE)" = "[9999 ]" ]
+V=$?
+check "unit: a walk whose MSYS pid is gone once it returns is discarded, so the process it read is never checked or killed (HANDED=$(stop_field "$SO" HANDED) ALIVE=$(stop_field "$SO" ALIVE))" "$V"
+
+# The merged snapshot is where the self filter reads, so a walk the stop takes
+# itself that names this process refuses the stop.
+ST=$(stop_state self-in-walk chain)
+: > "$ST/self-in-9102"
+SO=$(stop_run "$ST")
+[ "$(stop_field "$SO" RC)" = "1" ] && [ "$(stop_field "$SO" STOP_PATH)" = "unverified" ]
+V=$?
+check "unit: a merged snapshot naming this process's own Windows pid is unverified rather than killed from (RC=$(stop_field "$SO" RC) STOP_PATH=$(stop_field "$SO" STOP_PATH) HANDED=$(stop_field "$SO" HANDED))" "$V"
+ST=$(stop_state no-self chain)
+SO=$(stop_run "$ST" no_self)
+[ "$(stop_field "$SO" RC)" = "1" ] && [ "$(stop_field "$SO" STOP_PATH)" = "unverified" ]
+V=$?
+check "unit: a stop that cannot resolve this process's own Windows pid is unverified, since the merged snapshot cannot be cleared of it (RC=$(stop_field "$SO" RC) STOP_PATH=$(stop_field "$SO" STOP_PATH))" "$V"
+
+# The poll that records the tree discards a walk the same way, keeping the
+# standing record rather than taking one built on a mapping that moved.
+ST=$(stop_state refresh-moved chain)
+printf 'echo 9555 > "$ST/moved-101"\n' > "$ST/on-walk-9101"
+SO=$(stop_run "$ST" refresh)
+[ "$(stop_field "$SO" WALKED)" = "[]" ] && [ "$(stop_field "$SO" RECORD)" = "[]" ]
+V=$?
+check "unit: a poll whose walk ends with its MSYS pid mapped to another Windows pid records nothing from that poll (WALKED=$(stop_field "$SO" WALKED) RECORD=$(stop_field "$SO" RECORD))" "$V"
+ST=$(stop_state refresh-control chain)
+SO=$(stop_run "$ST" refresh)
+[ "$(stop_field "$SO" WALKED)" = "[1]" ] && [ "$(stop_field "$SO" RECORD)" = "[9100,1 9101,2 9102,3]" ]
+V=$?
+check "unit: control: the same poll with every mapping held records the whole tree (WALKED=$(stop_field "$SO" WALKED) RECORD=$(stop_field "$SO" RECORD))" "$V"
+
+# A closure member that exits inside its own walk is a different discard from
+# one that moved. The agent's own short-lived helpers do this on nearly every
+# poll, and a poll that read each of them as a tree it could not walk would
+# leave the record permanently behind the child's pid set, which is the state
+# that refuses every later stop and sweep. So the member drops out of the
+# poll's pid set and the rest of the tree is still recorded.
+ST=$(stop_state refresh-exited chain)
+printf '%s\n' 'grep -vx 101 "$ST/msys-alive" > "$ST/msys-alive.new"; mv "$ST/msys-alive.new" "$ST/msys-alive"' > "$ST/on-walk-9101"
+SO=$(stop_run "$ST" refresh)
+[ "$(stop_field "$SO" WALKED)" = "[1]" ] && [ "$(stop_field "$SO" RECORD)" = "[9100,1 9102,3]" ] \
+  && [ "$(stop_field "$SO" WINPIDS)" = "[9100 9102]" ] && [ "$(stop_field "$SO" SEEN)" = "[9100 9102]" ]
+V=$?
+check "unit: a poll whose closure member exits inside its own walk records the rest of the tree and leaves that member's Windows pid out of the pid set (WALKED=$(stop_field "$SO" WALKED) RECORD=$(stop_field "$SO" RECORD) WINPIDS=$(stop_field "$SO" WINPIDS) SEEN=$(stop_field "$SO" SEEN))" "$V"
+
+# The same drop where that member's walk also did not complete. An exited
+# process no longer holds the Windows pid the walk read, so an unverified
+# reading of that pid is no more evidence about the child's tree than a clean
+# one, and the liveness check is what runs first to say so.
+ST=$(stop_state refresh-exited-failed chain)
+printf '%s\n' 'grep -vx 101 "$ST/msys-alive" > "$ST/msys-alive.new"; mv "$ST/msys-alive.new" "$ST/msys-alive"' > "$ST/on-walk-9101"
+: > "$ST/fail-9101"
+SO=$(stop_run "$ST" refresh)
+[ "$(stop_field "$SO" WALKED)" = "[1]" ] && [ "$(stop_field "$SO" RECORD)" = "[9100,1 9102,3]" ] \
+  && [ "$(stop_field "$SO" WINPIDS)" = "[9100 9102]" ]
+V=$?
+check "unit: a poll whose closure member exits inside a walk that also failed drops that member rather than reading the poll as a failed walk (WALKED=$(stop_field "$SO" WALKED) RECORD=$(stop_field "$SO" RECORD) WINPIDS=$(stop_field "$SO" WINPIDS))" "$V"
+
+# Control, the direction the drop must not swallow: the walk fails while its
+# MSYS process is still running as the Windows pid walked. That member is part
+# of the tree and this poll has no reading of it, so the standing record is
+# kept and the pid set seen under the child runs ahead of it.
+ST=$(stop_state refresh-live-walk-fails chain)
+: > "$ST/fail-9101"
+SO=$(stop_run "$ST" refresh)
+[ "$(stop_field "$SO" WALKED)" = "[]" ] && [ "$(stop_field "$SO" RECORD)" = "[]" ] \
+  && [ "$(stop_field "$SO" WINPIDS)" = "[]" ] && [ "$(stop_field "$SO" SEEN)" = "[9100 9101 9102]" ]
+V=$?
+check "unit: control: a poll whose walk fails under a live MSYS process records nothing and leaves the pid set seen ahead of the record (WALKED=$(stop_field "$SO" WALKED) RECORD=$(stop_field "$SO" RECORD) SEEN=$(stop_field "$SO" SEEN))" "$V"
+
+# Every member of the closure exiting inside its own walk is the shape a child
+# that dies at its own launch leaves. There is nothing left for the poll to
+# have read, so it records nothing and leaves the pid set seen under the child
+# as it was, rather than marking a tree that could not be read.
+ST=$(stop_state refresh-all-exited launch)
+printf '%s\n' 'grep -vx 100 "$ST/msys-alive" > "$ST/msys-alive.new"; mv "$ST/msys-alive.new" "$ST/msys-alive"' > "$ST/on-walk-9100"
+SO=$(stop_run "$ST" refresh)
+[ "$(stop_field "$SO" WALKED)" = "[]" ] && [ "$(stop_field "$SO" RECORD)" = "[]" ] && [ "$(stop_field "$SO" SEEN)" = "[]" ]
+V=$?
+check "unit: a poll whose whole closure exits inside its own walks records nothing and leaves the pid set seen under the child as it was (WALKED=$(stop_field "$SO" WALKED) RECORD=$(stop_field "$SO" RECORD) SEEN=$(stop_field "$SO" SEEN))" "$V"
 
 # The rate limit reader, against the record shape a parked child writes: a
 # `system` record with subtype `api_retry`, `error_status` 429 and the

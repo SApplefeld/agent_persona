@@ -289,19 +289,20 @@ else
   fi
 fi
 
-# --- Case: the wrapper's own exec target is killed directly by taskkill
-# on its resolved winpid ---
+# --- Case: the wrapper's own exec target is killed by its recorded pid and
+# start ticks ---
 # A bash subshell that tail-execs directly into a native binary with
-# nothing after it collapses into one process. Uses `taskkill //F` on that
-# one pid, with no `//T`, since a tree kill re-walks live parent ids that
-# Windows keeps in orphans and reuses, and can reach a process this suite
-# never started. Uses it rather than `kill -9` on the MSYS pid itself: a
-# bare `kill -9` there
-# can block for minutes and return "Permission denied" instead, not a
-# safe fallback signal under load, which is why `run_bounded_powershell`
-# does not use it either. `resolve_windows_pid` must run before any
-# termination attempt, same as production - once the pid exits, the read
-# finds nothing.
+# nothing after it collapses into one process. The kill is
+# `kill_process_snapshot` over the snapshot recorded while that process was
+# confirmed alive, so it reaches that process only while the pid still holds
+# the start ticks the snapshot recorded. A bare `taskkill //F //PID` on a pid
+# read before a PowerShell call bounded at 30s would kill whatever holds the
+# number by then, and a tree kill re-walks live parent ids that Windows keeps
+# in orphans and reuses. A bare `kill -9` on the MSYS pid itself can block
+# for minutes and return "Permission denied" instead, which is why
+# `run_bounded_powershell` does not use it either. `resolve_windows_pid` must
+# run before any termination attempt, same as production - once the pid
+# exits, the read finds nothing.
 ( exec powershell.exe -NoProfile -Command "Start-Sleep -Seconds 90" ) &
 DIRECT_PID=$!
 sleep 2
@@ -327,14 +328,14 @@ else
   if [ -z "$DIRECT_SNAPSHOT" ]; then
     failed "setup: snapshot_process_tree returned nothing for a confirmed-live winpid ($DIRECT_WINPID) - the walk itself failed, this case cannot proceed"
   else
-    taskkill //F //PID "$DIRECT_WINPID" > /dev/null 2>&1
+    kill_process_snapshot "$DIRECT_SNAPSHOT" > /dev/null 2>&1
     sleep 2
     DIRECT_SURVIVORS=$(check_snapshot_survivors "$DIRECT_SNAPSHOT")
     DIRECT_SURVIVORS_RC=$?
     if [ -z "$DIRECT_SURVIVORS" ] && [ "$DIRECT_SURVIVORS_RC" -eq 0 ]; then
-      pass "direct-exec case: taskkill //F on the resolved winpid kills the real Windows process (every snapshotted pid, matched by start time, confirmed dead)"
+      pass "direct-exec case: the ticks-matched snapshot kill ends the real Windows process (every snapshotted pid, matched by start time, confirmed dead)"
     else
-      failed "direct-exec case: the real Windows process SURVIVED taskkill //F on its resolved winpid, or the check could not be verified (rc=$DIRECT_SURVIVORS_RC, survivors=$DIRECT_SURVIVORS)"
+      failed "direct-exec case: the real Windows process SURVIVED the ticks-matched snapshot kill, or the check could not be verified (rc=$DIRECT_SURVIVORS_RC, survivors=$DIRECT_SURVIVORS)"
       kill_process_snapshot "$DIRECT_SNAPSHOT" > /dev/null 2>&1
     fi
   fi
@@ -471,6 +472,20 @@ fi
 # extracted body at all. Asserts rc 1 (unverified): a CIMFAIL marker that
 # never reached real stdout would report a false-clean root-only tree,
 # rc 0, instead.
+#
+# The sleeper this case walks is launched, resolved and recorded as its pid
+# and start ticks before the shadow goes in, since the shadowed walk cannot
+# record it. The cleanup kills that record through `kill_process_snapshot`,
+# so it ends the sleeper only while its pid still holds the recorded start
+# ticks, never whatever process holds the number by then.
+( exec powershell.exe -NoProfile -Command "Start-Sleep -Seconds 30" ) &
+CIMFAIL_PID=$!
+sleep 2
+CIMFAIL_WINPID=$(resolve_windows_pid "$CIMFAIL_PID")
+CIMFAIL_PAIR=""
+if [ -n "$CIMFAIL_WINPID" ]; then
+  CIMFAIL_PAIR=$(snapshot_process_tree "$CIMFAIL_WINPID" | grep -E "^${CIMFAIL_WINPID},[0-9]+$" | head -1)
+fi
 eval "$(declare -f run_bounded_powershell_capture | sed '1s/run_bounded_powershell_capture/_real_run_bounded_powershell_capture_for_r105/')"
 run_bounded_powershell_capture() {
   local bound="$1"
@@ -478,10 +493,6 @@ run_bounded_powershell_capture() {
   _real_run_bounded_powershell_capture_for_r105 "$bound" "function Get-CimInstance { throw 'R105_SIMULATED_CIM_FAILURE' }
 $script"
 }
-( exec powershell.exe -NoProfile -Command "Start-Sleep -Seconds 30" ) &
-CIMFAIL_PID=$!
-sleep 2
-CIMFAIL_WINPID=$(resolve_windows_pid "$CIMFAIL_PID")
 if [ -z "$CIMFAIL_WINPID" ]; then
   failed "setup: could not resolve a winpid for the R105 CIM-failure case"
 else
@@ -493,13 +504,17 @@ else
     failed "R101/R104/R105: snapshot_process_tree returned rc=$CIMFAIL_SNAP_RC (expected 1) when the CIM walk fails - R104's exact defect is back"
   fi
 fi
-# kill -9 on $CIMFAIL_PID hits the MSYS stub only, not the live native
-# powershell.exe underneath it; uses the same taskkill-on-winpid
-# mechanism the rest of this file already extracted, targeting the
-# resolved winpid alone, with no `//T` tree walk.
-run_bounded_native 5 taskkill //F //PID "$CIMFAIL_WINPID"
 # Restore the real implementation for anything that runs after this case.
 eval "$(declare -f _real_run_bounded_powershell_capture_for_r105 | sed '1s/_real_run_bounded_powershell_capture_for_r105/run_bounded_powershell_capture/')"
+# kill -9 on $CIMFAIL_PID hits the MSYS stub only, not the live native
+# powershell.exe underneath it. The sleeper is ended by the pid and start
+# ticks recorded while it was alive. With no record there is nothing to match
+# a kill against, and the sleeper ends on its own within 30s.
+if [ -n "$CIMFAIL_PAIR" ]; then
+  kill_process_snapshot "$CIMFAIL_PAIR" > /dev/null 2>&1
+else
+  echo "  NOTE: no pid and start ticks were recorded for the R105 sleeper, so it is left to end on its own"
+fi
 
 rm -f "$RUNDIR/child.pid" "$RUNDIR/child3.pid"
 kill -9 "$DIRECT_PID" "$CHILD_LAUNCH_PID" 2>/dev/null  # best-effort cleanup
