@@ -605,3 +605,24 @@ Delta: measured by the main session on 2026-09-16 on this checkout, worktree 0f0
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 26 - 2026-09-16
+Section 3 is closed. Its Chapter is above, committed with the closing comment edits as 78f20b6 and pushed. Its fix round before that landed as 0f027ff.
+
+Section 4 is committed at first green as 5b75823 and pushed, with all eight of its files. The two natural-exit rate-limit cadence cases and the unit case interim board 25 named are green on the main session's own run.
+
+A defect in the last red fix was found by the main session's close-gate run and fixed before the commit. The supervisor model suite's launch control exited 5 where it expects 3, in 3 of 13 runs on this box. The supervisor log from a preserved failing run shows a child that exited at once with a closure naming the launch pid and a short-lived process under it, both gone by the Windows pid lookup, read as a tree that could not be read. The rule looked only at the launch pid. It now reads an unresolved closure as a failed read only where some process in it still runs. A Section 4 implementer made the change with a red-first unit case and a mutation that turned three cases red. After it the model suite passed 8 of 8.
+
+One natural-exit run of the fixed tree had a single failure, case (y), by timeout (rc 124) rather than by a wrong exit code. It ran in the same minute both the coordinator and aios supervisors relaunched their children. The re-run passed 164 OK, 0 FAIL, exit 0. It is recorded as not reproduced rather than as a flake, and the round now reviewing the delta can weigh it.
+
+The process census across that run showed the coordinator's and aios's agent processes gone. The main session traced it before anything else. Both supervisors are alive, and both logs read `RESTART_PASSIVE: account_changed` at 13:18Z followed by a relaunch. That is Section 4's account-identity check firing live when the account autoswitch moved accounts, not the suites. No persona supervisor was killed in any run this stretch.
+
+Live dispatches: Section 4 review round 5 through Workflow, three lenses at opus effort max over base 78f20b6. The adversarial and security lenses carry the plan and the trace target; the blind lens carries the commit range alone. The Fable tier is still ruled out on this account, per interim boards 18 and 22, so this is the compensation route. Round bracket `.kit/scratch/process-keeper/s4/round5-pre.txt` names only the two files that are not this plan's.
+
+Section 4's ladder: this is its fifth review round. Per the assumption on interim board 24, the operator's answer settled its two open items, so if this round's adjudication leaves the terminal condition unmet, that adjudication meets the backstop and declares.
+
+Gate baselines, measured by the main session on 2026-09-16 on this checkout, box claimed and released: registration suite 110/0/0 exit 0 at 78f20b6; natural-exit 164 OK 0 FAIL exit 0, supervisor-unit 17 passed exit 0, tree-walk PASS exit 0, supervisor-model 8 of 8 exit 0, settings-plugin-key, channel-reply-instruction and persona-live-refuse exit 0, live stop-tree 22 checks 0 failed exit 0, all at 78f20b6 plus the delta 5b75823 commits.
+
+Rulings adopted: none this boundary.
+
+Next action: adjudicate Section 4's round 5 and capture its delta at return, fix or declare per the backstop, write Chapter 4 routing the two README sentences from interim board 22 to Section 5, then Section 5.
