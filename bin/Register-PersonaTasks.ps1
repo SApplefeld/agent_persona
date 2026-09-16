@@ -388,7 +388,21 @@ function Register-PersonaTasks {
     foreach ($definition in $definitions) { $definitionsByTaskName[$definition.TaskName] = $definition }
 
     if ($null -eq $ExistingTaskNames) {
-        $existingTasks = @(Get-ScheduledTask -TaskName 'AgentPersona-*' -TaskPath '\' -ErrorAction SilentlyContinue)
+        # A wildcard that matches no task is an error from Get-ScheduledTask whose id starts
+        # CmdletizationQuery_NotFound, and that one error reads as an empty list. Every other read
+        # failure refuses the run here, before any write: a run that read "no tasks" from a failed
+        # query would call Register-ScheduledTask on a name that already exists and throw partway
+        # through the roster.
+        try {
+            $existingTasks = @(Get-ScheduledTask -TaskName 'AgentPersona-*' -TaskPath '\' -ErrorAction Stop)
+        } catch {
+            if ($_.FullyQualifiedErrorId -notlike 'CmdletizationQuery_NotFound*') {
+                throw "Register-PersonaTasks: could not read the existing AgentPersona-* tasks from " +
+                    "the Task Scheduler, so nothing was registered, updated, disabled or removed: " +
+                    "$($_.Exception.Message)"
+            }
+            $existingTasks = @()
+        }
         $existing = @($existingTasks | ForEach-Object { $_.TaskName })
     } else {
         $existing = @($ExistingTaskNames)

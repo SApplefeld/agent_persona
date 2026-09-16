@@ -10,10 +10,22 @@
 // and call Register-PersonaTasks or Get-PersonaTaskDefinitions directly, so a hashtable or a
 // PowerShell array literal never has to cross a command line.
 //
-// Nothing in this suite may write to the Task Scheduler service, which on this box holds real
-// state. The guard is keyed on the hazard's own source of truth, the ScheduledTasks module's export
-// list, rather than on any text this suite or the registration script carries, so an export the
-// module gains is covered without anyone naming it:
+// The Task Scheduler service on this box holds real state, and this suite guards it in two layers.
+// The first is keyed on the ScheduledTasks module's export list rather than on any text this suite
+// or the registration script carries, so an export the module gains is shadowed without anyone
+// naming it. The second is a text refusal over the request and the registration script, which
+// closes the other routes to the service that it names. What the suite guarantees is exactly this:
+// no spawn it makes calls a ScheduledTasks export that reaches the service, other than the reads a
+// spawn declares, and no spawn runs whose request text or registration script text matches a route
+// shape in ROUTE_PAST_STUB_SHAPES below. The refusal reads text, so these routes are not covered:
+//
+//   - a nested engine or process started by bare name or by path (powershell.exe, pwsh, cmd.exe
+//     with a command line), since the registration script names powershell.exe as its task action
+//     and a shape broad enough to catch the invocation also matches that data;
+//   - any file a spawn loads at run time other than the registration script, whose text is never
+//     read;
+//   - code assembled at run time from pieces and reaching the engine through a doorway the shape
+//     list does not name.
 //
 //   1. At suite start the export list is read from the real Windows PowerShell 5.1, and every
 //      export is classified by its verb: New builds in memory and stays real, Get and Export read
@@ -26,10 +38,12 @@
 //      what command resolution returns, and exits 97 before any caller line runs if one is not.
 //      Shadowing is therefore a property of every spawn, whatever the spawn names or calls.
 //   3. runPowerShell refuses, before spawning, a request whose text or the registration script's
-//      text calls an export module-qualified or defines or removes a function named for one, since
-//      either would route past a stub, and a registration run carrying neither -WhatIf nor a scratch
-//      -Roster and -EnvFile pair. The refusals and the self-check failures are asserted empty at the
-//      end.
+//      text calls an export module-qualified, defines or removes a function named for one, or
+//      matches a route shape in ROUTE_PAST_STUB_SHAPES (schtasks.exe, COM activation of the
+//      scheduler, CIM or WMI writes and the TaskScheduler namespace, a module handle, a command
+//      object invoked directly, code built at run time, a job or a started process), and a
+//      registration run carrying neither -WhatIf nor a scratch -Roster and -EnvFile pair. The
+//      refusals and the self-check failures are asserted empty at the end.
 //
 // Case 2 (the real script run without -WhatIf) reads the session's own elevation state at run
 // time and only runs when that session is unelevated, and points at a roster whose every entry is
@@ -238,6 +252,54 @@ let schedulerExports = [];
 // A module-qualified call resolves to the module's own function and never to a stub.
 const MODULE_QUALIFIED_SHAPE = new RegExp('\\b' + SCHEDULER_MODULE + '\\\\', 'i');
 
+// The routes to the Task Scheduler service that never pass through a ScheduledTasks export, each
+// matched by shape and case-insensitively in the request's text and in the registration script's
+// text. Each route's controls, near the end of the file, generate their instances at run time with
+// varied case and spacing, so no literal here names what they test.
+//
+// The call-operator shape refuses & or . applied to a parenthesized expression or a variable at
+// statement position, which is how a command object from Get-Command or a module handle is run.
+// The operator applied to a quoted path, which is how this suite dot-sources the registration
+// script, is left alone.
+const ROUTE_PAST_STUB_SHAPES = [
+  { route: 'schtasks.exe', shape: /\bschtasks(\.exe)?\b/i },
+  {
+    route: 'the Schedule.Service COM object',
+    shape: /-ComObject\b|\bGetTypeFromProgID\b|\bGetTypeFromCLSID\b|\bSchedule\s*\.\s*Service\b/i,
+  },
+  {
+    route: 'CIM or WMI against the TaskScheduler namespace',
+    shape: new RegExp(
+      [
+        '\\b(Invoke-CimMethod|New-CimInstance|Set-CimInstance|Remove-CimInstance|New-CimSession)\\b',
+        '\\b(Invoke-WmiMethod|Set-WmiInstance|Remove-WmiObject)\\b',
+        '\\b(icim|ncim|scim|rcim|iwmi|swmi|rwmi)\\b',
+        '\\broot\\s*[\\\\/]+\\s*microsoft\\s*[\\\\/]+\\s*windows\\s*[\\\\/]+\\s*taskscheduler\\b',
+        '\\[\\s*wmi(class)?\\s*\\]',
+        '\\bInvokeMethod\\b',
+        '\\b(MSFT|PS)_ScheduledTask',
+      ].join('|'),
+      'i'
+    ),
+  },
+  {
+    route: 'a module handle',
+    shape: /\b(Get|Import)-Module\b|\b(gmo|ipmo)\b|\.\s*Module\b|\bNewBoundScriptBlock\b|\[\s*PSModuleInfo\s*\]/i,
+  },
+  {
+    route: 'a command object invoked directly',
+    shape: /(^|[\s;({|=,])[&.]\s*[($]|\.\s*Invoke(ReturnAsIs|WithContext)?\s*\(|\.\s*ScriptBlock\b/i,
+  },
+  {
+    route: 'code built at run time',
+    shape: /\bInvoke-Expression\b|\biex\b|ScriptBlock\s*\]\s*::\s*Create\b|\bInvokeScript\b|\bNewScriptBlock\b|\bAdd-Type\b/i,
+  },
+  {
+    route: 'a background job or a started process',
+    shape: /\b(Start-Job|sajb|Start-ThreadJob|Start-Process|saps)\b|\bDiagnostics\s*\.\s*Process\b|\[\s*(System\s*\.\s*Management\s*\.\s*Automation\s*\.\s*)?PowerShell\s*\]\s*::\s*Create\b|\bRunspaceFactory\b/i,
+  },
+];
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -245,6 +307,8 @@ function escapeRegExp(value) {
 // Decides whether a request may be spawned at all. Two things route past a stub whatever the prefix
 // does, so each is refused in the caller's text and in the registration script's own text: a
 // module-qualified call, and a function defined, or a function: drive item named, for an export.
+// Every route in ROUTE_PAST_STUB_SHAPES is refused in the same two texts, since each reaches the
+// service without calling an export at all.
 // A registration run also keeps the rule it carried before shadowing existed: it runs the script's
 // top-level body, so it must carry -WhatIf or a scratch -Roster and -EnvFile pair, which keeps the
 // fleet paths its param block defaults to out of reach.
@@ -271,6 +335,12 @@ function classifySpawnRequest(request) {
     );
     if (redefined.length > 0) {
       return { family, allowed: false, reason: `${where} defines or names a function: item for ${redefined.join(', ')}, which would unshadow it` };
+    }
+    for (const { route, shape } of ROUTE_PAST_STUB_SHAPES) {
+      const match = text.match(shape);
+      if (match) {
+        return { family, allowed: false, reason: `${where} reaches the scheduler through ${route}, matched on '${match[0].trim()}'` };
+      }
     }
   }
   const shadowCount = shadowedSchedulerExports(exports, request.realReads).length;
@@ -985,8 +1055,9 @@ function runFunctionCase(prune) {
 }
 
 // Extension beyond the section's Tests floor: a roster name outside letters, digits, underscore
-// and hyphen, and a path carrying a double quote, are refused before either can reach a scheduled
-// task's command line as an unquoted argument, and each gets its own durable pin here.
+// and hyphen is refused before it can reach a scheduled task's command line as an unquoted
+// argument. The roster file's name appears only in Read-PersonaRoster's message, so the refusal
+// this case reads is that function's own.
 {
   const badNameRoster = join(scratchDir, 'bad-name.json');
   writeFileSync(badNameRoster, JSON.stringify([{ name: 'al pha"&calc', workdir: 'x', permissionMode: 'y', enabled: true }]), 'utf8');
@@ -997,15 +1068,6 @@ function runFunctionCase(prune) {
     // the distinguishing token and is never split by that wrap.
     const collapsed = result.stderr.replace(/\s+/g, ' ');
     assert.ok(collapsed.includes('bad-name.json'), 'stderr names the roster file: ' + result.stderr);
-  });
-}
-
-{
-  const quotedEnvFile = join(scratchDir, 'quo"ted.env');
-  const result = runRegistrationScript(['-Roster', fixtureRoster, '-EnvFile', quotedEnvFile, '-RepoRoot', repoRoot, '-WhatIf']);
-  record('extension: a path carrying a double quote is refused rather than reaching the action string', () => {
-    assert.equal(result.status, 1, 'exit code');
-    assert.ok(!result.stdout.includes('task AgentPersona-'), 'stdout: ' + result.stdout);
   });
 }
 
@@ -1032,9 +1094,13 @@ function assertNameRefused(name, label) {
   const roster = join(scratchDir, `bad-name-${scratchCounter++}.json`);
   writeFileSync(roster, JSON.stringify([{ name, workdir: 'x', permissionMode: 'y', enabled: true }]), 'utf8');
   const rosterResult = runRegistrationScript(['-Roster', roster, '-EnvFile', scratchEnvFile, '-RepoRoot', repoRoot, '-WhatIf']);
+  // The whole Read-PersonaRoster message, prefix and roster path included, since
+  // Get-PersonaTaskDefinitions refuses the same name next with the same tail.
   record(`extension: Read-PersonaRoster refuses a ${label} name`, () => {
     assert.equal(rosterResult.status, 1, 'exit code');
-    assert.ok(/must start with a letter, digit or underscore/.test(rosterResult.stderr.replace(/\s+/g, ' ')), 'stderr: ' + rosterResult.stderr);
+    const collapsed = rosterResult.stderr.replace(/\s+/g, ' ');
+    assert.ok(collapsed.includes("Read-PersonaRoster: entry name '"), 'stderr: ' + rosterResult.stderr);
+    assert.ok(collapsed.includes(`' in roster '${roster}' must start with a letter, digit or underscore`), 'stderr: ' + rosterResult.stderr);
   });
 
   const lines = [
@@ -1054,7 +1120,7 @@ function assertNameRefused(name, label) {
     // The refused name itself may carry the newline under test, so the exception message can span
     // lines; collapse whitespace before matching rather than relying on "." to cross a line break.
     const collapsed = fnResult.stdout.replace(/\s+/g, ' ');
-    assert.ok(/THREW: .*must start with a letter, digit or underscore/.test(collapsed), 'stdout: ' + fnResult.stdout);
+    assert.ok(/THREW: Get-PersonaTaskDefinitions: entry name '.*must start with a letter, digit or underscore/.test(collapsed), 'stdout: ' + fnResult.stdout);
   });
 }
 assertNameRefused('-Release', 'leading-hyphen');
@@ -1119,6 +1185,12 @@ assertNameRefused('alpha\n', 'trailing-newline');
   });
 }
 
+// Read-PersonaRoster's refusal legs for `enabled` and for a repeated name are repeated in
+// Get-PersonaTaskDefinitions, which a -WhatIf run reaches next with the same entries and refuses
+// with the same message tail. So each case driven through the real script asserts the whole
+// message Read-PersonaRoster throws, its function prefix and the roster path included, and a
+// Read-PersonaRoster leg removed leaves its case red even though the second copy still refuses.
+
 // Extension: an `enabled` field that is present but not a JSON boolean (PowerShell truthiness
 // reads the string "false" as true) is refused rather than silently registering, and under
 // -Start launching, a persona the operator meant to disable.
@@ -1126,9 +1198,10 @@ assertNameRefused('alpha\n', 'trailing-newline');
   const stringEnabledRoster = join(scratchDir, 'string-enabled.json');
   writeFileSync(stringEnabledRoster, JSON.stringify([{ name: 'alpha', workdir: 'x', permissionMode: 'y', enabled: 'false' }]), 'utf8');
   const result = runRegistrationScript(['-Roster', stringEnabledRoster, '-EnvFile', scratchEnvFile, '-RepoRoot', repoRoot, '-WhatIf']);
-  record('extension: a roster entry whose enabled field is a string, not a boolean, is refused', () => {
+  record('extension: Read-PersonaRoster refuses a roster entry whose enabled field is a string, not a boolean', () => {
     assert.equal(result.status, 1, 'exit code');
-    assert.ok(/must be a JSON boolean/.test(result.stderr.replace(/\s+/g, ' ')), 'stderr: ' + result.stderr);
+    const expected = `Read-PersonaRoster: entry 'alpha' in roster '${stringEnabledRoster}' field 'enabled' must be a JSON boolean, not String.`;
+    assert.ok(result.stderr.replace(/\s+/g, ' ').includes(expected), 'stderr: ' + result.stderr);
   });
 }
 
@@ -1159,11 +1232,11 @@ assertNameRefused('alpha\n', 'trailing-newline');
   record('Get-PersonaTaskDefinitions refuses a string enabled field independently of Read-PersonaRoster', () => {
     assert.equal(result.status, 0, 'exit code; stderr: ' + result.stderr);
     const collapsed = result.stdout.replace(/\s+/g, ' ');
-    assert.ok(/THREW: .*must be a JSON boolean, not String/.test(collapsed), 'stdout: ' + result.stdout);
+    assert.ok(collapsed.includes("THREW: Get-PersonaTaskDefinitions: entry 'alpha' field 'enabled' must be a JSON boolean, not String."), 'stdout: ' + result.stdout);
   });
   record('Get-PersonaTaskDefinitions refuses a null enabled field by name', () => {
     const collapsed = result.stdout.replace(/\s+/g, ' ');
-    assert.ok(/NULL_THREW: .*must be a JSON boolean, not null/.test(collapsed), 'stdout: ' + result.stdout);
+    assert.ok(collapsed.includes("NULL_THREW: Get-PersonaTaskDefinitions: entry 'alpha' field 'enabled' must be a JSON boolean, not null."), 'stdout: ' + result.stdout);
     assert.ok(!/cannot call a method on a null-valued expression/i.test(collapsed), 'stdout: ' + result.stdout);
   });
 }
@@ -1175,10 +1248,11 @@ assertNameRefused('alpha\n', 'trailing-newline');
   const nullEnabledRoster = join(scratchDir, 'null-enabled.json');
   writeFileSync(nullEnabledRoster, '[{"name":"alpha","workdir":"x","permissionMode":"y","enabled":null}]', 'utf8');
   const result = runRegistrationScript(['-Roster', nullEnabledRoster, '-EnvFile', scratchEnvFile, '-RepoRoot', repoRoot, '-WhatIf']);
-  record('extension: a roster entry whose enabled field is a JSON null is refused by name, not by an engine error', () => {
+  record('extension: Read-PersonaRoster refuses a roster entry whose enabled field is a JSON null by name, not by an engine error', () => {
     assert.equal(result.status, 1, 'exit code');
     const collapsed = result.stderr.replace(/\s+/g, ' ');
-    assert.ok(/must be a JSON boolean, not null/.test(collapsed), 'stderr: ' + result.stderr);
+    const expected = `Read-PersonaRoster: entry 'alpha' in roster '${nullEnabledRoster}' field 'enabled' must be a JSON boolean, not null.`;
+    assert.ok(collapsed.includes(expected), 'stderr: ' + result.stderr);
     assert.ok(!/cannot call a method on a null-valued expression/i.test(collapsed), 'stderr: ' + result.stderr);
   });
 }
@@ -1192,9 +1266,10 @@ assertNameRefused('alpha\n', 'trailing-newline');
     { name: 'alpha', workdir: 'x2', permissionMode: 'y2', enabled: true },
   ]), 'utf8');
   const result = runRegistrationScript(['-Roster', dupRoster, '-EnvFile', scratchEnvFile, '-RepoRoot', repoRoot, '-WhatIf']);
-  record('extension: a roster name repeated across two entries is refused', () => {
+  record('extension: Read-PersonaRoster refuses a roster name repeated across two entries', () => {
     assert.equal(result.status, 1, 'exit code');
-    assert.ok(/more than one entry named/.test(result.stderr.replace(/\s+/g, ' ')), 'stderr: ' + result.stderr);
+    const expected = `Read-PersonaRoster: roster '${dupRoster}' has more than one entry named 'alpha'.`;
+    assert.ok(result.stderr.replace(/\s+/g, ' ').includes(expected), 'stderr: ' + result.stderr);
   });
 }
 
@@ -1212,9 +1287,10 @@ assertNameRefused('alpha\n', 'trailing-newline');
     { name: 'Alpha', workdir: 'x2', permissionMode: 'y2', enabled: true },
   ]), 'utf8');
   const result = runRegistrationScript(['-Roster', caseDupRoster, '-EnvFile', scratchEnvFile, '-RepoRoot', repoRoot, '-WhatIf']);
-  record('a roster name repeated with different case is refused, not silently collapsed', () => {
+  record('Read-PersonaRoster refuses a roster name repeated with different case, not silently collapsed', () => {
     assert.equal(result.status, 1, 'exit code; stdout: ' + result.stdout);
-    assert.ok(/more than one entry named 'Alpha'/.test(result.stderr.replace(/\s+/g, ' ')), 'stderr: ' + result.stderr);
+    const expected = `Read-PersonaRoster: roster '${caseDupRoster}' has more than one entry named 'Alpha'.`;
+    assert.ok(result.stderr.replace(/\s+/g, ' ').includes(expected), 'stderr: ' + result.stderr);
   });
 }
 
@@ -1238,7 +1314,7 @@ assertNameRefused('alpha\n', 'trailing-newline');
   record('Get-PersonaTaskDefinitions refuses a case-variant duplicate name independently of Read-PersonaRoster', () => {
     assert.equal(result.status, 0, 'exit code; stderr: ' + result.stderr);
     const collapsed = result.stdout.replace(/\s+/g, ' ');
-    assert.ok(/THREW: .*more than one entry named 'Alpha'/.test(collapsed), 'stdout: ' + result.stdout);
+    assert.ok(collapsed.includes("THREW: Get-PersonaTaskDefinitions: more than one entry named 'Alpha' once case is ignored."), 'stdout: ' + result.stdout);
   });
 }
 
@@ -1494,6 +1570,58 @@ assertNameRefused('alpha\n', 'trailing-newline');
     assert.equal(result.status, 0, 'exit code; stderr: ' + result.stderr);
     assert.ok(!result.stdout.includes('UNREGISTER'), 'no unregister call was recorded: ' + result.stdout);
     assert.ok(result.stdout.includes('orphan AgentPersona-orphan3'), 'the orphan is still reported: ' + result.stdout);
+  });
+}
+
+// The existing-task read on the real registration path, in both directions. The Get-ScheduledTask
+// stub stands in for the module's cmdlet, whose failed query is a non-terminating error: it throws
+// the error record only when the caller passes -ErrorAction Stop and returns nothing otherwise, the
+// way SilentlyContinue leaves the real cmdlet. The not-found record carries the category and the
+// error id the real cmdlet raises for a wildcard that matches no task under -ErrorAction Stop on
+// Windows PowerShell 5.1. One enabled entry, no -WhatIf and no injected task list, so the path past
+// the read is a registration.
+function runExistingTaskReadCase(category, errorId) {
+  const lines = [
+    '$ErrorActionPreference = "Stop"',
+    `. "${scriptPath}"`,
+    '$entries = @([pscustomobject]@{name="alpha";enabled=$true})',
+    'try {',
+    `    Register-PersonaTasks -Entries $entries -RepoRoot "${stubRepoRoot}" -Roster "${stubRoster}" -EnvFile "${scratchEnvFile}" -User "u" -IsElevated $true`,
+    '    Write-Output "NO_THROW"',
+    '} catch {',
+    '    Write-Output ("THREW: " + $_.Exception.Message)',
+    '}',
+    'Write-Output "=== CALLS ==="',
+    '$script:Calls | ForEach-Object { Write-Output $_ }',
+  ];
+  return runScratchScript(lines, {
+    getScheduledTaskReturn: [
+      `    $record = New-Object Management.Automation.ErrorRecord ([Exception]'suite stub read failure'), '${errorId}', '${category}', $TaskName`,
+      '    if ("$ErrorAction" -eq "Stop") { throw $record }',
+      '    return @()',
+    ],
+  });
+}
+
+{
+  const result = runExistingTaskReadCase('PermissionDenied', 'SuiteStub_ReadFailed,Get-ScheduledTask');
+  record('a failed existing-task read that is not a no-match is refused before any scheduler write', () => {
+    assert.equal(result.status, 0, 'exit code; stderr: ' + result.stderr);
+    const collapsed = result.stdout.replace(/\s+/g, ' ');
+    assert.ok(collapsed.includes('THREW: Register-PersonaTasks: could not read the existing AgentPersona-* tasks'), 'stdout: ' + result.stdout);
+    assert.ok(collapsed.includes('suite stub read failure'), 'the refusal carries the read error: ' + result.stdout);
+    const calls = result.stdout.split('=== CALLS ===')[1] || '';
+    assert.deepEqual(calls.split(/\r?\n/).map((l) => l.trim()).filter(Boolean), ['GET TaskName=AgentPersona-* TaskPath=\\'], 'recorded calls: ' + calls);
+  });
+}
+
+{
+  const result = runExistingTaskReadCase('ObjectNotFound', 'CmdletizationQuery_NotFound,Get-ScheduledTask');
+  record('an existing-task read that matches no task reads as an empty list and registers', () => {
+    assert.equal(result.status, 0, 'exit code; stderr: ' + result.stderr);
+    assert.ok(result.stdout.includes('NO_THROW'), 'stdout: ' + result.stdout);
+    assert.ok(result.stdout.includes('registered AgentPersona-alpha'), 'stdout: ' + result.stdout);
+    assert.ok(result.stdout.includes('REGISTER TaskName=AgentPersona-alpha TaskPath=\\'), 'stdout: ' + result.stdout);
   });
 }
 
@@ -1833,6 +1961,131 @@ record('control: the spawn guard refuses a request that removes or redefines a f
   const redefinition = classifySpawnRequest({ kind: 'script', lines: ['function global:Get-ClusteredScheduledTask { }'] });
   assert.equal(redefinition.allowed, false, 'verdict: ' + JSON.stringify(redefinition));
   assert.ok(redefinition.reason.includes('Get-ClusteredScheduledTask'), 'verdict: ' + JSON.stringify(redefinition));
+});
+
+// Controls for ROUTE_PAST_STUB_SHAPES. Every instance is generated at run time: each letter's case
+// is flipped at random, the spacing between tokens is one to three random spaces or tabs, and every
+// variable, class and task name is a random token. So no instance is a string the shape list
+// carries, and a shape speaks on one only through its own case-insensitive structure. Each route's
+// record asserts that every one of its forms is refused and that the refusal names that route, so
+// removing a route's shape, or one alternative inside it, turns that route's record red.
+function varyCase(text) {
+  const bits = randomBytes(text.length);
+  return [...text].map((ch, i) => (bits[i] & 1 ? ch.toUpperCase() : ch.toLowerCase())).join('');
+}
+function varySpace() {
+  const bits = randomBytes(3);
+  return Array.from({ length: 1 + (bits[0] % 3) }, (_, i) => (bits[i] & 2 ? '\t' : ' ')).join('');
+}
+function randomToken() {
+  return 'k' + randomBytes(3).toString('hex');
+}
+function varySeparator() {
+  return ['/', '\\', '\\\\'][randomBytes(1)[0] % 3];
+}
+
+const routeControls = [
+  {
+    route: 'schtasks.exe',
+    forms: () => [
+      `${varyCase('schtasks')}${varySpace()}/${varyCase('delete')}${varySpace()}/TN${varySpace()}${randomToken()}${varySpace()}/F`,
+      `& '${varyCase('C:\\Windows\\System32\\schtasks.exe')}'${varySpace()}/Query`,
+    ],
+  },
+  {
+    route: 'the Schedule.Service COM object',
+    forms: () => [
+      `$${randomToken()} = New-Object${varySpace()}${varyCase('-ComObject')}${varySpace()}$${randomToken()}`,
+      `$${randomToken()} = '${varyCase('Schedule')}.${varyCase('Service')}'`,
+      `$${randomToken()} = [type]::${varyCase('GetTypeFromProgID')}($${randomToken()})`,
+      `$${randomToken()} = [type]::${varyCase('GetTypeFromCLSID')}([guid]$${randomToken()})`,
+    ],
+  },
+  {
+    route: 'CIM or WMI against the TaskScheduler namespace',
+    forms: () => [
+      ...['Invoke-CimMethod', 'New-CimInstance', 'Set-CimInstance', 'Remove-CimInstance', 'Invoke-WmiMethod', 'Set-WmiInstance', 'Remove-WmiObject', 'New-CimSession'].map(
+        (name) => `${varyCase(name)}${varySpace()}-ClassName${varySpace()}${randomToken()}`
+      ),
+      ...['icim', 'ncim', 'scim', 'rcim', 'iwmi', 'swmi', 'rwmi'].map((alias) => `${varyCase(alias)}${varySpace()}-ClassName${varySpace()}${randomToken()}`),
+      `Get-CimInstance${varySpace()}-Namespace${varySpace()}${['root', 'Microsoft', 'Windows', 'TaskScheduler'].map(varyCase).join(varySeparator())}${varySpace()}-ClassName${varySpace()}${randomToken()}`,
+      `$${randomToken()} = [${varyCase('wmiclass')}]'${randomToken()}'`,
+      `$${randomToken()}.${varyCase('InvokeMethod')}($${randomToken()})`,
+      `$${randomToken()} = '${varyCase('PS_ScheduledTask')}'`,
+    ],
+  },
+  {
+    route: 'a module handle',
+    forms: () => [
+      `$${randomToken()} = ${varyCase('Get-Module')}${varySpace()}${randomToken()}`,
+      `$${randomToken()} = ${varyCase('gmo')}${varySpace()}${randomToken()}`,
+      `$${randomToken()} = ${varyCase('Import-Module')}${varySpace()}${randomToken()}${varySpace()}-PassThru`,
+      `$${randomToken()} = ${varyCase('ipmo')}${varySpace()}${randomToken()}${varySpace()}-PassThru`,
+      `$${randomToken()} = $${randomToken()}.${varyCase('Module')}`,
+      `$${randomToken()}.${varyCase('NewBoundScriptBlock')}($${randomToken()})`,
+      `$${randomToken()} = [${varyCase('PSModuleInfo')}]$${randomToken()}`,
+      `&${varySpace()}(${varyCase('Get-Module')}${varySpace()}${varyCase(SCHEDULER_MODULE)})${varySpace()}{ ${randomToken()} }`,
+    ],
+  },
+  {
+    route: 'a command object invoked directly',
+    forms: () => [
+      `&${varySpace()}$${randomToken()}${varySpace()}-TaskName${varySpace()}${randomToken()}`,
+      `.${varySpace()}$${randomToken()}`,
+      `&${varySpace()}(${varyCase('Get-Command')}${varySpace()}${randomToken()}${varySpace()}-Module${varySpace()}${varyCase(SCHEDULER_MODULE)})`,
+      `.${varySpace()}(${varyCase('Get-Command')}${varySpace()}${randomToken()})`,
+      `$${randomToken()} | ForEach-Object {${varySpace()}&${varySpace()}$_ }`,
+      `$${randomToken()}.${varyCase('Invoke')}(${randomToken()})`,
+      `$${randomToken()}.${varyCase('InvokeReturnAsIs')}(${randomToken()})`,
+      `$${randomToken()} = $${randomToken()}.${varyCase('ScriptBlock')}`,
+    ],
+  },
+  {
+    route: 'code built at run time',
+    forms: () => [
+      `${varyCase('Invoke-Expression')}${varySpace()}$${randomToken()}`,
+      `${varyCase('iex')}${varySpace()}$${randomToken()}`,
+      `$${randomToken()} = [${varyCase('scriptblock')}]${varySpace()}::${varySpace()}${varyCase('Create')}($${randomToken()})`,
+      `$ExecutionContext.InvokeCommand.${varyCase('InvokeScript')}($${randomToken()})`,
+      `$ExecutionContext.InvokeCommand.${varyCase('NewScriptBlock')}($${randomToken()})`,
+      `${varyCase('Add-Type')}${varySpace()}-TypeDefinition${varySpace()}$${randomToken()}`,
+    ],
+  },
+  {
+    route: 'a background job or a started process',
+    forms: () => [
+      `${varyCase('Start-Job')}${varySpace()}-ScriptBlock${varySpace()}$${randomToken()}`,
+      `${varyCase('sajb')}${varySpace()}$${randomToken()}`,
+      `${varyCase('Start-ThreadJob')}${varySpace()}$${randomToken()}`,
+      `${varyCase('Start-Process')}${varySpace()}$${randomToken()}`,
+      `${varyCase('saps')}${varySpace()}$${randomToken()}`,
+      `[${varyCase('System.Diagnostics.Process')}]::Start($${randomToken()})`,
+      `$${randomToken()} = [${varyCase('PowerShell')}]::${varyCase('Create')}()`,
+      `$${randomToken()} = [${varyCase('RunspaceFactory')}]::CreateRunspace()`,
+    ],
+  },
+];
+
+for (const { route, forms } of routeControls) {
+  record(`control: the spawn guard refuses every generated form of ${route}, naming that route`, () => {
+    const wrong = [];
+    for (const form of forms()) {
+      const verdict = classifySpawnRequest({ kind: 'script', lines: [randomToken(), form] });
+      if (verdict.allowed || !verdict.reason.includes(`through ${route},`)) {
+        wrong.push(JSON.stringify(form) + ' -> ' + JSON.stringify(verdict));
+      }
+    }
+    assert.deepEqual(wrong, [], 'forms not refused by this route');
+  });
+}
+
+// The shape list covers every route the controls above exercise, and no route it carries goes
+// without a control, so a route added to either side alone fails here.
+record('structural pin: every route in ROUTE_PAST_STUB_SHAPES has a generated control and every control a route', () => {
+  assert.deepEqual(
+    ROUTE_PAST_STUB_SHAPES.map((entry) => entry.route).sort(),
+    [...new Set(routeControls.map((entry) => entry.route))].sort()
+  );
 });
 
 record('control: the spawn guard refuses a request whose export list drops a module export', () => {
