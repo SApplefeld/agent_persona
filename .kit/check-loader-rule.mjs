@@ -11,13 +11,20 @@
 //       declaration, indented inside register() or another function). The
 //       loader refuses to call such a function at all - it is not a $-noun
 //       misuse R1/R2 can see, since the body may use $ correctly throughout.
+//   R4: the same event registered twice in one file without a matcher
+//       (two `on("<event>", hook)` calls). The loader judges the compiled
+//       module statically and refuses the whole file, so a second
+//       registration inside a branch that never runs alongside the first
+//       is still a refusal: no hook of the module loads, no tool registers,
+//       and the session runs with the plugin silently absent.
 //
 // This check must be run BEFORE any live suite spawns children. A green unit
 // suite over mocks is NOT sufficient: the mocks accept $.store as a value,
 // and a mock-driven harness calls a nested helper directly rather than
 // through the real loader, so neither catches an R3 violation; the loader
 // does not accept $-as-value (R1/R2) and does not accept a nested $-taking
-// declaration (R3) regardless of how correctly its body reads $.
+// declaration (R3) regardless of how correctly its body reads $. The mock
+// `on` also accepts a repeated event, so R4 is likewise invisible to it.
 
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -98,11 +105,49 @@ function checkNestedDollarParam(path) {
   }
 }
 
+// R4: `on("<pattern>", hook)` registered more than once in one file with no
+// matcher between the pattern and the hook. The pattern is a double- or
+// single-quoted string containing neither quote (an event name, a glob
+// such as `session.*` or `*`, a negation); a template literal is not read.
+// The matcher form is `on("<pattern>", matcher, hook)`, and the heuristic
+// for it is a second argument that opens an object literal `{`; a matcher
+// held in a variable reads as a hook and counts, which errs toward a
+// violation rather than a silence. Anything else after the comma is the
+// no-matcher form: a function literal, an identifier, on the same line or
+// the next. The call must start its line (`on(` after indentation), so
+// `proc.on("exit", ...)` on an EventEmitter is not read as a hook
+// registration; a call that does not start its line (`return on(...)`,
+// `const r = on(...)`) is not scanned.
+function checkDuplicateRegistration(path) {
+  const src = readFileSync(path, "utf8");
+  const rel = path.replace(/\\/g, "/");
+
+  const registration = /^[ \t]*on\(\s*(["'])([^"'\n]+)\1\s*,\s*([^\s])/gm;
+  const seen = new Map();
+  let m;
+  while ((m = registration.exec(src)) !== null) {
+    const [, , event, secondArgStart] = m;
+    if (secondArgStart === "{") continue; // matcher form
+    const lineNo = src.slice(0, m.index).split("\n").length;
+    const first = seen.get(event);
+    if (first === undefined) {
+      seen.set(event, lineNo);
+      continue;
+    }
+    console.error(
+      `VIOLATION [R4] ${rel}:${lineNo}: on("${event}") is registered without a matcher a second time; ` +
+        `the first is at line ${first} - the loader refuses the whole module for a repeated event.`,
+    );
+    violations++;
+  }
+}
+
 // Find all .ts files in hooks/
 const files = readdirSync(hooksDir).filter((f) => f.endsWith(".ts"));
 for (const f of files) {
   checkFile(join(hooksDir, f));
   checkNestedDollarParam(join(hooksDir, f));
+  checkDuplicateRegistration(join(hooksDir, f));
 }
 
 if (violations > 0) {
