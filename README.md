@@ -290,7 +290,7 @@ Every stop path calls `stop_child`. A failed tree kill is retried against a 30-s
 - It snapshots the child's Windows process tree first, recording each process's pid and start time.
 - It sends EOF by closing the coproc write end, then waits `supervisorStopGraceMs`.
 - It sends TERM to the wrapper, then waits another `supervisorStopGraceMs`.
-- It runs `taskkill` on the tree and force-kills each snapshot process still matching both its pid and its start time.
+- It force-kills each snapshot process still matching both its pid and its start time.
 - A survivor of a resolved snapshot gets up to 30 seconds of retries. A tree that could not be resolved at all is re-snapshotted once, and reported if that read fails too.
 - If a stop that ends the supervisor still cannot be verified, the supervisor exits with code 5. A relaunch never proceeds beside such a tree either: a survivor confirmed alive and a tree no reading could account for both end the run at exit 5 rather than launching the next child beside either one.
 - On exit, the cleanup trap stops a live child the same way, or re-verifies the last snapshot when the wrapper is already gone.
@@ -367,7 +367,7 @@ The scheduled task carries a restart policy of its own, separate from this one: 
 
 **Stopping and starting a persona.** Stop one through its own shutdown tool. That gives the supervisor a clean exit 0, which the keeper turns into a hold, and the persona stays down until it is released. One case departs from that: where a process from the child is still alive or cannot be verified after every stop retry, the supervisor exits 5 instead, which the keeper reads as a crash and relaunches after a delay. `docs/backlog.md` carries that fork.
 
-`Stop-ScheduledTask` is not documented here as a way to stop a persona, because whether it ends the whole process tree under an S4U task has not been measured on this machine. Killing the supervisor directly gives 130 or 143, which exits the wrapper with no hold marker, so the persona returns at the next boot.
+`Stop-ScheduledTask` is not documented here as a way to stop a persona, because whether it ends the whole process tree under an S4U task has not been measured on this machine. A TERM or INT signal sent to the supervisor from a bash shell gives 130 or 143, which exits the wrapper with no hold marker, so the persona returns at the next boot. A kill from Task Manager, `taskkill` or `Stop-Process` delivers no signal at all, so the wrapper reads an ordinary failure code instead and relaunches under the exit-code policy above. To keep a persona down rather than have it come back, write a `keeper.hold` file in its run directory first, or disable its scheduled task, and then kill it.
 
 Start one with `Start-ScheduledTask AgentPersona-<name>`. Where the persona is held, release it first with `Start-Persona.ps1 -Name <name> -Release`; a start against a standing hold marker logs the hold and exits without launching, and the task reports success either way.
 
