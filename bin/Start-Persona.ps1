@@ -361,14 +361,10 @@ function Write-KeeperState {
     }
 }
 
-if ([string]::IsNullOrWhiteSpace($Name)) {
-    [Console]::Error.WriteLine('Start-Persona: -Name is required.')
-    exit 1
-}
-
-# Every refusal from here to the run directory being ready has no keeper.log to reach, and a
-# scheduled task gives stderr no console either, so each one is also written beside the roster file.
-# That is the one location known without reading anything the roster says.
+# Every refusal until the run directory is ready has no keeper.log to reach, and a scheduled task
+# gives stderr no console either, so each one is also written beside the roster file. That is the one
+# location known without reading anything the roster says, so it is resolved before the first refusal
+# rather than after it.
 $rosterDir = Split-Path -Parent $Roster
 if ([string]::IsNullOrWhiteSpace($rosterDir)) { $rosterDir = '.' }
 # Resolved against PowerShell's own current location before anything writes it. Write-KeeperLog
@@ -376,6 +372,12 @@ if ([string]::IsNullOrWhiteSpace($rosterDir)) { $rosterDir = '.' }
 # against different roots, so a path resolved here is the one both halves act on.
 $fallbackLog = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(
     (Join-Path $rosterDir 'keeper-refused.log'))
+
+if ([string]::IsNullOrWhiteSpace($Name)) {
+    Write-KeeperLog -Path $fallbackLog -Text 'ROSTER error: -Name is required.'
+    [Console]::Error.WriteLine('Start-Persona: -Name is required.')
+    exit 1
+}
 
 try {
     $entry = Read-KeeperRoster -Path $Roster -Name $Name
