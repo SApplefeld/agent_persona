@@ -3,6 +3,7 @@
 ## Active plans
 
 - `plans/agent_persona_supervisor-peer_v1.md`: Supervisor as peer (the supervisor judges its child gone only on five silent signals together and after one final ask, never restarts a child whose output names a usage limit, puts a deliberate shutdown to the child through a run-directory mailbox it answers at a boundary, launches the child under a holder process so it outlives the supervisor, adopts a live child at start, and keeps the kill as the last rung). Ready, parked behind the process-keeper plan.
+- `plans/agent_persona_context-budget-removal_v1.md`: Context-budget monitor removal (the plugin stops estimating a session's context and sending a close-out turn, the supervisor stops restarting a child on a critical crossing, and context is left to the harness's compaction and the kit's gate). Ready, parked behind the process-keeper plan.
 
 ## Archived plans
 
