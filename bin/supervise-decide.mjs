@@ -157,7 +157,11 @@ export function decide(input) {
     // positive evidence the child is alive, so the restart is withheld.
     // Evidence only ever suppresses: a null transcript reading leaves the hung
     // check exactly as it was, so a genuinely wedged child still restarts.
-    if (transcriptLastWriteTs !== null && transcriptLastWriteTs !== undefined && (now - transcriptLastWriteTs) <= staleAfterMs) {
+    // The bound is symmetric. The write time and this poll's clock come from
+    // two readers, so a stamp slightly ahead is skew and still corroborates,
+    // while a stamp further ahead than the bound is a future write time or a
+    // backward clock step and says nothing about whether the child is alive.
+    if (transcriptLastWriteTs !== null && transcriptLastWriteTs !== undefined && Math.abs(now - transcriptLastWriteTs) <= staleAfterMs) {
       return {
         action: 'continue',
         reason: `hung_corroborated: heartbeat lastSeen ${heartbeatLastSeen} is older than ${staleAfterMs}ms, but the harness transcript was last written at ${transcriptLastWriteTs}, inside ${staleAfterMs}ms of the clock this poll read at ${now}, so the child is alive and its heartbeat is being stamped somewhere this supervisor does not read`,

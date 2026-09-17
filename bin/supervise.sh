@@ -2812,10 +2812,11 @@ console.log(o.lastSeen || '');
     # heartbeat alone.
     #
     # That leaves this reading later in the poll than the clock it is compared
-    # against, so a slow poll body reports the transcript younger than it is.
-    # The error runs toward withholding a restart rather than toward taking
-    # one, which is the side this check is for, and it is bounded by one poll:
-    # a child that wedges inside the poll body restarts at the next one.
+    # against. A transcript written during the poll body carries a time ahead
+    # of that clock by up to the body's length, which still corroborates while
+    # the body is shorter than the staleness bound. A body longer than the
+    # bound reads that write as too far ahead to corroborate, and the hung
+    # check then runs on the heartbeat alone.
     TRANSCRIPT_LAST_WRITE_TS=""
     if [ -n "$CHILD_SESSION_ID" ]; then
       TRANSCRIPT_LAST_WRITE_TS=$(read_transcript_mtime_ms "$WORKDIR" "$CHILD_SESSION_ID")

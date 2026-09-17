@@ -1562,7 +1562,7 @@ DRIVE_ENV=()
 grep -q '"subtype":"api_retry"' "$TMP/t/rd/child-1/stdout.jsonl"; check "(t) setup: the stub's retry record reached the child's stream" "$?"
 T_HB=$(wc -l < "$TMP/t/heartbeat-writes" 2>/dev/null || echo 0)
 [ "$T_HB" -ge 3 ]; check "(t) setup: the heartbeat moved $T_HB times while the child ran" "$?"
-T_RECORDS=$(grep -cv '"subtype":"api_retry"' "$TMP/t/rd/child-1/stdout.jsonl" 2>/dev/null || echo 0)
+T_RECORDS=$(grep -cv '"subtype":"api_retry"' "$TMP/t/rd/child-1/stdout.jsonl" 2>/dev/null); T_RECORDS=${T_RECORDS:-0}
 [ "$T_RECORDS" -eq 1 ]; check "(t) setup: the only record the child wrote after the retry is the init line before it (other records=$T_RECORDS)" "$?"
 [ "$RC" -eq 0 ]; check "(t) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"
 grep -q 'RATE_LIMITED until [0-9][0-9]*-[0-9][0-9]-[0-9][0-9]T' "$LOG"; check "(t) the log names the park and when the wait ends" "$?"
@@ -1617,7 +1617,7 @@ check "(aa) the log names the transcript reading that withheld the restart" "$?"
 ! grep -q 'RESTART: hung' "$LOG"; check "(aa) a child whose transcript is moving is not restarted on its still heartbeat" "$?"
 [ "$RC" -eq 0 ]; check "(aa) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"
 [ "$LAUNCHES" -eq 1 ]; check "(aa) no second child launches (stub launches=$LAUNCHES)" "$?"
-AA_LINES=$(grep -c 'HUNG_CORROBORATED:' "$LOG" 2>/dev/null || echo 0)
+AA_LINES=$(grep -c 'HUNG_CORROBORATED:' "$LOG" 2>/dev/null); AA_LINES=${AA_LINES:-0}
 [ "$AA_LINES" -eq 1 ]; check "(aa) the corroboration is named once rather than on every poll (lines=$AA_LINES)" "$?"
 
 # --- (ab) control: a transcript as still as the heartbeat ---

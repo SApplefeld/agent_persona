@@ -437,6 +437,74 @@ const cases = [
     expected: 'restart',
     expectedReasonIncludes: 'hung: heartbeat lastSeen 1000 older than 90000ms',
   },
+  // The transcript's write time and this poll's clock come from two readers,
+  // so a write stamped slightly ahead of the clock is ordinary skew and still
+  // corroborates.
+  {
+    name: 'stale heartbeat, transcript 1s ahead of the clock: continue',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: null,
+      criticalTs: null,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: 1000,
+      transcriptLastWriteTs: 101000,
+      now: 100000,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'continue',
+    expectedReasonIncludes: 'hung_corroborated',
+  },
+  // The edge of the ahead side: a stamp exactly the bound ahead still sits
+  // inside it.
+  {
+    name: 'stale heartbeat, transcript exactly the bound ahead: continue',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: null,
+      criticalTs: null,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: 1000,
+      transcriptLastWriteTs: 190000,
+      now: 100000,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'continue',
+    expectedReasonIncludes: 'hung_corroborated',
+  },
+  // A transcript stamped further ahead than the staleness bound is no evidence
+  // of life. A future stamp or a backward clock step would otherwise hold a
+  // wedged child's restart off for as long as the gap lasts.
+  {
+    name: 'stale heartbeat, transcript ahead by more than the bound: restart',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: null,
+      criticalTs: null,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: 1000,
+      transcriptLastWriteTs: 190001,
+      now: 100000,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'restart',
+    expectedReasonIncludes: 'hung: heartbeat lastSeen 1000 older than 90000ms',
+  },
   // The corroboration belongs to the hung branch alone. A live transcript says
   // the child is running, which is exactly what a child over its context
   // budget is doing, so it must not suppress any other restart trigger.
