@@ -364,6 +364,102 @@ const cases = [
     },
     expected: 'stop_crash_loop',
   },
+  // The hung check corroborates a stale heartbeat against the harness
+  // transcript, an instrument the child does not write and whose path its
+  // working directory does not move. A transcript written inside the staleness
+  // bound is positive evidence of life, so the restart is withheld and the
+  // reason says which reading withheld it.
+  {
+    name: 'stale heartbeat, transcript written recently: continue',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: null,
+      criticalTs: null,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: 1000,
+      transcriptLastWriteTs: 95000,
+      now: 100000,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'continue',
+    expectedReasonIncludes: 'hung_corroborated: heartbeat lastSeen 1000 is older than 90000ms, but the harness transcript was last written at 95000, inside 90000ms of the clock this poll read at 100000',
+  },
+  // Control: the same shape with a transcript as old as the heartbeat. Two
+  // stale instruments are not evidence of life, so the child restarts exactly
+  // as it did before the corroboration existed.
+  {
+    name: 'stale heartbeat, transcript also stale: restart',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: null,
+      criticalTs: null,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: 1000,
+      transcriptLastWriteTs: 1000,
+      now: 100000,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'restart',
+    expectedReasonIncludes: 'hung: heartbeat lastSeen 1000 older than 90000ms',
+  },
+  // The fail-safe direction. A transcript that could not be found or read
+  // arrives here as null, and the hung check then runs on the heartbeat alone.
+  // A reading that suppressed on null would leave a genuinely wedged child
+  // running forever, since an unreadable transcript is the state a wedged
+  // child and a misconfigured profile both produce.
+  {
+    name: 'stale heartbeat, transcript unreadable (null): restart',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: null,
+      criticalTs: null,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: 1000,
+      transcriptLastWriteTs: null,
+      now: 100000,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'restart',
+    expectedReasonIncludes: 'hung: heartbeat lastSeen 1000 older than 90000ms',
+  },
+  // The corroboration belongs to the hung branch alone. A live transcript says
+  // the child is running, which is exactly what a child over its context
+  // budget is doing, so it must not suppress any other restart trigger.
+  {
+    name: 'critical crossing with a fresh transcript: still restart',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: null,
+      criticalTs: 2000,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: 1000,
+      transcriptLastWriteTs: 99000,
+      now: 100000,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'restart',
+    expectedReasonIncludes: 'context_budget_crossed critical:',
+  },
 ];
 
 let pass = 0, fail = 0;
@@ -371,6 +467,15 @@ for (const c of cases) {
   try {
     const result = decide(c.input);
     assert.equal(result.action, c.expected, c.name + ': expected ' + c.expected + ', got ' + result.action);
+    // A case that names expectedReasonIncludes is asserting on what the
+    // operator reads in the log, not only on the action, so the reason is
+    // checked as well. Cases without it assert on the action alone.
+    if (c.expectedReasonIncludes) {
+      assert.ok(
+        String(result.reason).includes(c.expectedReasonIncludes),
+        c.name + ": expected the reason to contain '" + c.expectedReasonIncludes + "', got '" + result.reason + "'",
+      );
+    }
     console.log('PASS: ' + c.name);
     pass++;
   } catch (e) {

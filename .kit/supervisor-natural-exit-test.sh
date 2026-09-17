@@ -86,7 +86,8 @@ for fn in $KILL_FN_NAMES; do
   declare -F "$fn" > /dev/null || { echo "FAIL: $fn is called by an extracted body and is neither extracted nor stubbed"; exit 1; }
 done
 [ -n "$STOP_PS_SENTINEL" ] && [ -n "$SUPERVISOR_PS_BOUND_S" ] && [ "$KILL_FN_COUNT" -ge 3 ]
-check "setup: $KILL_FN_COUNT stop-path helpers extracted from bin/supervise.sh ($(echo $KILL_FN_NAMES | tr '\n' ' '))" "$?"
+V=$?
+check "setup: $KILL_FN_COUNT stop-path helpers extracted from bin/supervise.sh ($(echo $KILL_FN_NAMES | tr '\n' ' '))" "$V"
 
 # The same helpers with quiet logging and their own globals, for a stub child
 # to record the process it leaves behind as a "pid,ticks" pair.
@@ -210,7 +211,8 @@ mkdir -p "$UNIT"
 extract_supervisor_fn_alone refresh_child_tree "$UNIT/refresh.sh"
 check "unit: refresh_child_tree extracted from bin/supervise.sh and parses" "$?"
 : > "$UNIT/sweep.sh"
-extract_supervisor_fn child_tree_record_state "$UNIT/sweep.sh" &&
+extract_supervisor_fn child_tree_stale_reason "$UNIT/sweep.sh" &&
+  extract_supervisor_fn child_tree_record_state "$UNIT/sweep.sh" &&
   extract_supervisor_fn child_tree_record_age_s "$UNIT/sweep.sh" &&
   extract_supervisor_fn sweep_child_tree "$UNIT/sweep.sh" &&
   bash -n "$UNIT/sweep.sh"
@@ -334,7 +336,7 @@ for (let i = 0; i < 20; i++) {
 fs.writeFileSync(process.argv[1], rows.join("\n") + "\n");
 ' "$UNIT/ps-deep.txt"
 CL=$(closure "$UNIT/refresh.sh" ps-deep.txt 500)
-[ "$(echo "$CL" | wc -w)" -eq 20 ]; check "unit: a chain twenty processes deep is closed over whole (members=$(echo "$CL" | wc -w))" "$?"
+[ "$(echo "$CL" | wc -w)" -eq 20 ]; V=$?; check "unit: a chain twenty processes deep is closed over whole (members=$(echo "$CL" | wc -w))" "$V"
 CL=$(closure "$UNIT/refresh.sh" ps-sibling.txt 999)
 [ -z "$CL" ]; check "unit: a root absent from the table closes over nothing (got [$CL])" "$?"
 CL=$(closure "$UNIT/refresh.sh" ps-empty.txt 100)
@@ -361,10 +363,15 @@ cat > "$UNIT/sweep-driver.sh" <<'DRVEOF'
 # RESOLVE names which Windows pids resolve: `all`, `no_self` for a run where
 # this process's own pid cannot be resolved, and `no_win` for one where the
 # child's pids cannot. BACKDATE ages the record's own confirmation stamp by
-# that many seconds before the sweep reads it.
+# that many seconds before the sweep reads it. FAILPOLLS runs that many further
+# polls that cannot confirm the record, by making this process's own Windows
+# pid unresolvable for them, and CONFIRM_AFTER set to `confirm` runs one
+# ordinary poll after those, which finds the child on the pid set the record
+# was walked from. BACKDATE set to `clear` drops the stamp instead of ageing
+# it, which is the record no poll is known to have confirmed at all.
 set -u
 REFRESH_FN="$1"; SWEEP_FN="$2"; TABLE1="$3"; WALK1="$4"; TABLE2="$5"; WALK2="$6"; ROOT="$7"
-RESOLVE="${8:-all}"; BACKDATE="${9:-0}"
+RESOLVE="${8:-all}"; BACKDATE="${9:-0}"; FAILPOLLS="${10:-0}"; CONFIRM_AFTER="${11:-none}"
 TABLE="$TABLE1"; WALK="$WALK1"
 SUPERVISOR_POLL_MS=10000
 ps() { cat "$TABLE"; }
@@ -390,14 +397,26 @@ CHILD_TREE_WALKED=""
 CHILD_TREE_READ_FAILED=""
 CHILD_TREE_DESCENDANT_SEEN=""
 CHILD_TREE_CONFIRMED_AT=""
+CHILD_TREE_FAILED_CONFIRMS=0
 LAST_STOP_SNAPSHOT=""
 . "$REFRESH_FN"
 . "$SWEEP_FN"
 refresh_child_tree
 if [ "$TABLE2" != "-" ]; then TABLE="$TABLE2"; WALK="$WALK2"; refresh_child_tree; fi
-if [ "$BACKDATE" != "0" ] && [ -n "$CHILD_TREE_CONFIRMED_AT" ]; then
+FAILED=0
+while [ "$FAILED" -lt "$FAILPOLLS" ]; do
+  RESOLVE=no_self
+  refresh_child_tree
+  FAILED=$(( FAILED + 1 ))
+done
+RESOLVE="${8:-all}"
+if [ "$CONFIRM_AFTER" = "confirm" ]; then refresh_child_tree; fi
+if [ "$BACKDATE" = "clear" ]; then
+  CHILD_TREE_CONFIRMED_AT=""
+elif [ "$BACKDATE" != "0" ] && [ -n "$CHILD_TREE_CONFIRMED_AT" ]; then
   CHILD_TREE_CONFIRMED_AT=$(( CHILD_TREE_CONFIRMED_AT - BACKDATE ))
 fi
+echo "FAILED_CONFIRMS=${CHILD_TREE_FAILED_CONFIRMS:-unset}"
 sweep_child_tree "unit"
 echo "RC=$?"
 echo "BACKSTOP=[$LAST_STOP_SNAPSHOT]"
@@ -411,6 +430,12 @@ sed -e 's/^check_snapshot_survivors() { return 0; }$/check_snapshot_survivors() 
     "$UNIT/sweep-driver.sh" > "$UNIT/sweep-driver-survivor.sh"
 ! cmp -s "$UNIT/sweep-driver.sh" "$UNIT/sweep-driver-survivor.sh"
 check "unit: setup: the survivor driver differs from the clean one in its survivor and kill stubs" "$?"
+# The same driver with a survivor check that cannot complete, which is the leg
+# that refuses to read a record nothing could verify as a clean result.
+sed -e 's/^check_snapshot_survivors() { return 0; }$/check_snapshot_survivors() { return 1; }/' \
+    "$UNIT/sweep-driver.sh" > "$UNIT/sweep-driver-unverified.sh"
+! cmp -s "$UNIT/sweep-driver.sh" "$UNIT/sweep-driver-unverified.sh"
+check "unit: setup: the unverified driver differs from the clean one in its survivor check" "$?"
 
 # Each leg is read by the stable token its log line opens with, so the prose
 # beside it stays free to change without moving what a caller keys on.
@@ -428,11 +453,51 @@ check "unit: the clean line names how long ago a poll confirmed the record it wa
 SW=$(sweep "$UNIT/ps-launch.txt" ok - ok 100)
 printf '%s\n' "$SW" | grep -q '^RC=2$' && printf '%s\n' "$SW" | grep -q 'SWEEP\[unit\] record_no_descendant:'
 check "unit: a record that never named anything under the wrapper leaves nothing to sweep, and says which reading it was" "$?"
-# The same record, confirmed long enough ago that a process could have
-# appeared under it between the last poll that looked and this sweep.
+# What makes a record stale is mostly polls that stopped confirming it, and a
+# poll body's own work varies by tens of seconds on a loaded box. So a record
+# every poll confirmed is a clean verdict at an age no poll interval predicts,
+# and reading that as stale is what ends a natural exit at exit 5 on a child
+# that left nothing behind. The driver polls every 10s, so this age is twelve
+# intervals past the last confirmation and still inside the ceiling.
+SW=$(sweep "$UNIT/ps-sibling.txt" ok - ok 100 all 120)
+printf '%s\n' "$SW" | grep -q '^RC=0$' && printf '%s\n' "$SW" | grep -q 'SWEEP\[unit\] clean:' \
+  && printf '%s\n' "$SW" | grep -q '^FAILED_CONFIRMS=0$'
+check "unit: a record every poll confirmed is a clean verdict however long the poll that confirmed it took" "$?"
+# The count alone cannot see a box that suspends between the poll that last
+# confirmed the record and the child's death: one poll runs on resume, the
+# count reaches 1, and a record walked hours ago reads clean. So the
+# confirmation itself expires, well past any poll body's own variance.
 SW=$(sweep "$UNIT/ps-sibling.txt" ok - ok 100 all 9999)
-printf '%s\n' "$SW" | grep -q '^RC=1$' && printf '%s\n' "$SW" | grep -q 'SWEEP\[unit\] record_stale:'
-check "unit: a record no poll has confirmed in a long while is not a clean verdict" "$?"
+printf '%s\n' "$SW" | grep -q '^RC=1$' && printf '%s\n' "$SW" | grep -q 'SWEEP\[unit\] record_stale:' \
+  && printf '%s\n' "$SW" | grep -q '^FAILED_CONFIRMS=0$'
+check "unit: a confirmation older than the ceiling leaves the record stale even where no poll ever failed to confirm it" "$?"
+printf '%s\n' "$SW" | grep -q 'record_stale: no poll has confirmed .* inside the 300s ceiling'
+check "unit: that line names the ceiling the record aged past rather than a count of failed confirms" "$?"
+# A record with no stamp at all is the same answer, and its line says which
+# reading it was rather than reporting a failed-confirm count of zero.
+SW=$(sweep "$UNIT/ps-sibling.txt" ok - ok 100 all clear)
+printf '%s\n' "$SW" | grep -q '^RC=1$' && printf '%s\n' "$SW" | grep -q 'record_stale: no poll is known to have confirmed'
+check "unit: a record no poll is known to have confirmed at all is stale, and its line names that rather than a count" "$?"
+! printf '%s\n' "$SW" | grep -q '0 polls in a row'
+check "unit: that line does not claim zero polls in a row ran without confirming a record no poll ever confirmed" "$?"
+# Three polls in a row that ran and could not confirm the record is what the
+# stale verdict counts, and the sweep's own line names the count.
+SW=$(sweep "$UNIT/ps-sibling.txt" ok - ok 100 all 0 3)
+printf '%s\n' "$SW" | grep -q '^RC=1$' && printf '%s\n' "$SW" | grep -q 'SWEEP\[unit\] record_stale:' \
+  && printf '%s\n' "$SW" | grep -q '^FAILED_CONFIRMS=3$'
+check "unit: three polls in a row that could not confirm the record leave it stale, which is not a clean verdict" "$?"
+# One short of the bound, so the refusal above is the third failed confirm
+# rather than any failed confirm at all.
+SW=$(sweep "$UNIT/ps-sibling.txt" ok - ok 100 all 0 2)
+printf '%s\n' "$SW" | grep -q '^RC=0$' && printf '%s\n' "$SW" | grep -q 'SWEEP\[unit\] clean:' \
+  && printf '%s\n' "$SW" | grep -q '^FAILED_CONFIRMS=2$'
+check "unit: control: two failed confirms leave the record clean, so the stale verdict is the third one" "$?"
+# A poll that confirms the record puts the count back to zero, so a run of
+# failed confirms a later poll healed never reaches the bound.
+SW=$(sweep "$UNIT/ps-sibling.txt" ok - ok 100 all 0 3 confirm)
+printf '%s\n' "$SW" | grep -q '^RC=0$' && printf '%s\n' "$SW" | grep -q 'SWEEP\[unit\] clean:' \
+  && printf '%s\n' "$SW" | grep -q '^FAILED_CONFIRMS=0$'
+check "unit: a poll that confirms the record clears the failed confirms behind it" "$?"
 # Two readings that could not be taken at all. Both leave the record empty,
 # which is also what a child that genuinely ran no Windows process leaves, and
 # only one of those is a tree there is nothing to sweep.
@@ -493,6 +558,22 @@ check "unit: a child no Windows process was ever seen under has no tree to have 
 SW=$(bash "$UNIT/sweep-driver-survivor.sh" "$UNIT/refresh.sh" "$UNIT/sweep.sh" "$UNIT/ps-sibling.txt" ok - ok 100)
 printf '%s\n' "$SW" | grep -q '^RC=1$' && printf '%s\n' "$SW" | grep -q 'SWEEP\[unit\] survivors_alive:'
 check "unit: a survivor still alive after the kill is the one leg that reports a survivor" "$?"
+# A survivor check that could not be completed says nothing about the record it
+# was handed, so the sweep neither kills from it nor calls it clean. The record
+# is left for the retry backstop, which is the one reading that can still settle
+# it. Reached through the sweep the same way every caller reaches it: with the
+# leg gone the same run reads the empty survivor list as a clean tree.
+SW=$(bash "$UNIT/sweep-driver-unverified.sh" "$UNIT/refresh.sh" "$UNIT/sweep.sh" "$UNIT/ps-sibling.txt" ok - ok 100)
+printf '%s\n' "$SW" | grep -q '^RC=1$' && printf '%s\n' "$SW" | grep -q 'SWEEP\[unit\] record_unverified:'
+check "unit: a survivor check that did not complete leaves the record unverified rather than clean" "$?"
+printf '%s\n' "$SW" | tr '\n' ' ' | grep -q 'BACKSTOP=\[9100,111 9101,111 9102,111\]'
+V=$?
+check "unit: that unverified record is left for the retry backstop, which can still settle it (BACKSTOP=$(printf '%s\n' "$SW" | sed -n 's/^BACKSTOP=//p'))" "$V"
+# Control: the same run with the check completing reads the record clean, so
+# the refusal above is the check that could not complete and not the record.
+SW=$(sweep "$UNIT/ps-sibling.txt" ok - ok 100)
+printf '%s\n' "$SW" | grep -q '^RC=0$' && printf '%s\n' "$SW" | grep -q 'SWEEP\[unit\] clean:'
+check "unit: control: the same record with the survivor check completing is clean, so the refusal above is the check" "$?"
 
 # --- What stop_child verifies and kills, against the live launch shape ---
 # The real launch runs `claude.exe` under `env.exe`, and `env.exe`'s Windows
@@ -524,8 +605,10 @@ cat > "$UNIT/stop-driver.sh" <<'DRVEOF'
 # (every armed walk failure clears before the retry), exit-before-stop (MSYS pids that exit, with their Windows pids,
 # the moment the driver arms), nokill-<winpid> (a process no kill ends), and
 # per Windows pid, once armed:
-# fail-<winpid> fails that walk, impostor-<winpid> adds its lines to that walk,
-# on-walk-<winpid> is a shell snippet run as that walk is taken, and self-in-
+# fail-<winpid> fails that walk, emptywalk-<winpid> completes that walk over
+# nothing at all, impostor-<winpid> adds its lines to that walk,
+# on-walk-<winpid> is a shell snippet run as that walk is taken, on-signal-<msys
+# pid> is a snippet run as that process is signaled, and self-in-
 # <winpid> adds this process's own Windows pid to that walk. MODE no_self makes
 # this process's own Windows pid unresolvable once armed, MODE retry runs
 # retry_stop_escalation on the stop's own return code after the stop and
@@ -551,6 +634,9 @@ kill() {
     return $?
   fi
   echo "$sig $target" >> "$ST/signals"
+  # The snippet runs as the signal is delivered, so a case can move a process's
+  # Windows pid in the window between the stop's own entry and a later phase.
+  [ -f "$ST/on-signal-$target" ] && . "$ST/on-signal-$target"
   [ -f "$ST/noterm-$target" ] && return 0
   grep -vx "$target" "$ST/msys-alive" > "$ST/msys-alive.new"; mv "$ST/msys-alive.new" "$ST/msys-alive"
   grep -v "^9$target," "$ST/win-alive" > "$ST/win-alive.new"; mv "$ST/win-alive.new" "$ST/win-alive"
@@ -574,6 +660,9 @@ snapshot_process_tree() {
     # fails.
     [ -f "$ST/on-walk-$1" ] && . "$ST/on-walk-$1"
     [ -f "$ST/fail-$1" ] && return 1
+    # A walk that completes and names nothing at all, not even its own root,
+    # which is what a process table read that missed the root yields.
+    [ -f "$ST/emptywalk-$1" ] && return 0
     [ -f "$ST/impostor-$1" ] && cat "$ST/impostor-$1"
     [ -f "$ST/self-in-$1" ] && echo "9$$,5"
   fi
@@ -605,7 +694,11 @@ kill_process_snapshot() {
 run_bounded_native() { echo "$*" >> "$ST/native"; return 0; }
 sleep() { :; }
 log() { echo "$*"; }
-log_diag() { echo "$*"; }
+# The supervisor's own log_diag writes to stderr and the log file, never to
+# stdout, and a function whose output a caller captures is why: a diagnostic on
+# stdout rides into `walk_msys_process_tree`'s captured "pid,ticks" lines. The
+# stub keeps that split, and the runner merges the two streams back.
+log_diag() { echo "$*" >&2; }
 CHILD_LAUNCH_PID=100
 CHILD_INDEX=1
 CHILD_TREE_MSYS_PIDS=""
@@ -616,6 +709,7 @@ CHILD_TREE_WALKED=""
 CHILD_TREE_READ_FAILED=""
 CHILD_TREE_DESCENDANT_SEEN=""
 CHILD_TREE_CONFIRMED_AT=""
+CHILD_TREE_FAILED_CONFIRMS=0
 LAST_STOP_SNAPSHOT=""
 STOP_PATH=""
 : > "$ST/handed"
@@ -677,7 +771,7 @@ stop_state() {  # <case name> <chain|launch>
   printf '%s' "$st"
 }
 stop_run() {  # <state dir> [mode]
-  bash "$UNIT/stop-driver.sh" "$UNIT/stop.sh" "$@"
+  bash "$UNIT/stop-driver.sh" "$UNIT/stop.sh" "$@" 2>&1
 }
 stop_field() {  # <output> <field>
   printf '%s\n' "$1" | sed -n "s/^$2=//p" | tail -1
@@ -796,6 +890,85 @@ case "$(stop_field "$SO" HANDED)" in *9999*) R=1 ;; *) R=0 ;; esac
 [ "$R" -eq 0 ] && [ "$(stop_field "$SO" RC)" = "0" ] && [ "$(stop_field "$SO" ALIVE)" = "[9999 ]" ]
 V=$?
 check "unit: a walk whose MSYS pid is gone once it returns is discarded, so the process it read is never checked or killed (HANDED=$(stop_field "$SO" HANDED) ALIVE=$(stop_field "$SO" ALIVE))" "$V"
+
+# A walk that completes and names nothing at all, not even its own root, while
+# the MSYS process that root runs as is alive and still maps to the Windows pid
+# walked. A completed walk always names its own root, so a walk that named
+# nothing read a table that did not cover a process living across its own
+# reading. That tree is unaccounted for, and reading it as an empty one is what
+# lets a stop report clean over a `claude.exe` the table never named.
+ST=$(stop_state empty-walk chain)
+: > "$ST/emptywalk-9102"
+SO=$(stop_run "$ST")
+[ "$(stop_field "$SO" RC)" = "1" ] && [ "$(stop_field "$SO" STOP_PATH)" = "unverified" ]
+V=$?
+check "unit: a walk that named nothing while its own root is alive leaves the stop unverified rather than clean (RC=$(stop_field "$SO" RC) STOP_PATH=$(stop_field "$SO" STOP_PATH))" "$V"
+case "$SO" in *"named no process at all while MSYS pid 102 still runs as that pid"*) R=0 ;; *) R=1 ;; esac
+check "unit: that refusal is the empty walk under a live root rather than another of the stop's refusals" "$R"
+
+# The same empty walk where the MSYS process exited inside it. That process is
+# no part of the tree any more and the Windows pid the walk read is not its own,
+# so the walk is discarded and the stop reads the rest of the tree.
+ST=$(stop_state empty-walk-exited chain)
+: > "$ST/emptywalk-9102"
+printf '%s\n' 'grep -vx 102 "$ST/msys-alive" > "$ST/msys-alive.new"; mv "$ST/msys-alive.new" "$ST/msys-alive"' > "$ST/on-walk-9102"
+SO=$(stop_run "$ST")
+[ "$(stop_field "$SO" RC)" = "0" ] && [ "$(stop_field "$SO" ALIVE)" = "[]" ]
+V=$?
+check "unit: control: the same empty walk whose MSYS pid has exited is discarded rather than refused, so the refusal above is the live root (RC=$(stop_field "$SO" RC) ALIVE=$(stop_field "$SO" ALIVE))" "$V"
+
+# The wrapper's Windows pid at the force kill. The pid was resolved at stop
+# entry, two grace windows back, and Windows hands a dead process's id out
+# again, so a force kill on the entry value can land on a process the child
+# never started. The wrapper here moves to another Windows pid as the TERM
+# reaches it, which is the window the two grace periods open.
+ST=$(stop_state kill-moved chain)
+: > "$ST/noterm-100"
+printf 'echo 9555 > "$ST/moved-100"\n' > "$ST/on-signal-100"
+SO=$(stop_run "$ST")
+! grep -q 'taskkill' "$ST/native" 2>/dev/null
+V=$?
+check "unit: a wrapper whose Windows pid moved between the stop's entry and its force kill is not force-killed on the entry value (native calls: $(tr '\n' ';' < "$ST/native" 2>/dev/null))" "$V"
+case "$SO" in *"runs as Windows pid 9555 now, not the 9100 this stop resolved at entry"*) R=0 ;; *) R=1 ;; esac
+check "unit: the stop names the Windows pid the wrapper moved to rather than killing the number it held at entry" "$R"
+grep -qx -- "-9 100" "$ST/signals"
+V=$?
+check "unit: that stop still signals the wrapper's own MSYS pid (signals: $(tr '\n' ';' < "$ST/signals" 2>/dev/null))" "$V"
+# The snapshot was walked from the pid the wrapper has left, so whatever it
+# started under the new one is in no snapshot and killing from that list would
+# report a tree dead that nothing ever read. The stop fails closed, and leaves
+# nothing for the retry backstop, which would otherwise confirm that partial
+# list dead and turn the refusal back into a clean report.
+[ "$(stop_field "$SO" RC)" = "1" ] && [ "$(stop_field "$SO" STOP_PATH)" = "unverified" ] && [ "$(stop_field "$SO" BACKSTOP)" = "[]" ]
+V=$?
+check "unit: a stop whose wrapper moved to a Windows pid the snapshot was never walked from fails closed rather than reporting a kill (RC=$(stop_field "$SO" RC) STOP_PATH=$(stop_field "$SO" STOP_PATH) BACKSTOP=$(stop_field "$SO" BACKSTOP))" "$V"
+case "$SO" in *"cannot be confirmed dead from it"*) R=0 ;; *) R=1 ;; esac
+check "unit: the stop says the snapshot it holds cannot settle the tree the wrapper moved to" "$R"
+
+# A wrapper the stop can still signal but whose Windows pid no reading names is
+# a failed read, not a move: nothing says the entry value has been handed to
+# another process, so the ticks-matched snapshot kill still runs.
+ST=$(stop_state kill-unresolved chain)
+: > "$ST/noterm-100"
+printf 'printf "" > "$ST/moved-100"\n' > "$ST/on-signal-100"
+SO=$(stop_run "$ST")
+case "$SO" in *"no Windows pid could be read for wrapper pid 100 at the force kill"*) R=0 ;; *) R=1 ;; esac
+check "unit: a wrapper whose Windows pid no reading names at the force kill is reported as a failed read rather than a move" "$R"
+[ "$(stop_field "$SO" RC)" = "0" ] && [ "$(stop_field "$SO" STOP_PATH)" = "kill" ] && [ "$(stop_field "$SO" ALIVE)" = "[]" ]
+V=$?
+check "unit: that stop signals the wrapper and still kills the recorded tree (RC=$(stop_field "$SO" RC) STOP_PATH=$(stop_field "$SO" STOP_PATH) ALIVE=$(stop_field "$SO" ALIVE))" "$V"
+! grep -q 'taskkill' "$ST/native" 2>/dev/null
+V=$?
+check "unit: that stop force-kills no Windows pid number, since none was read (native calls: $(tr '\n' ';' < "$ST/native" 2>/dev/null))" "$V"
+case "$SO" in *"is still present after the kill -9"*) R=0 ;; *) R=1 ;; esac
+check "unit: a wrapper that outlives the force kill is named, since every caller then waits on it" "$R"
+
+ST=$(stop_state kill-held chain)
+: > "$ST/noterm-100"
+SO=$(stop_run "$ST")
+grep -q 'taskkill //F //PID 9100' "$ST/native" 2>/dev/null
+V=$?
+check "unit: control: a wrapper still running as the Windows pid the stop resolved at entry is force-killed on it, so the refusal above is the move (native calls: $(tr '\n' ';' < "$ST/native" 2>/dev/null))" "$V"
 
 # The merged snapshot is where the self filter reads, so a walk the stop takes
 # itself that names this process refuses the stop.
@@ -1027,6 +1200,31 @@ wait_for_poll_line() {  # <poll number> <bound seconds>
   done
   return 0
 }
+# Blocks until the supervisor's log carries a line matching the pattern, so a
+# case that has to act after the supervisor read something waits on the reading
+# itself rather than on a time that assumes how long a poll takes. Bounded, so a
+# supervisor that never writes the line still lets the case end and fail.
+wait_for_log_line() {  # <grep pattern> <bound seconds>
+  local waited=0
+  until grep -q "\$1" "\$CASE_DIR/rd/supervisor.log" 2>/dev/null; do
+    [ "\$waited" -ge "\$2" ] && return 1
+    sleep 1
+    waited=\$((waited + 1))
+  done
+  return 0
+}
+# Blocks until the supervisor's log carries the pattern that many times, which
+# is how a case waits on a line the supervisor writes more than once. Bounded,
+# so a supervisor that writes it fewer times still lets the case end and fail.
+wait_for_log_count() {  # <grep pattern> <count> <bound seconds>
+  local waited=0 seen
+  until seen=\$(grep -c "\$1" "\$CASE_DIR/rd/supervisor.log" 2>/dev/null); [ "\${seen:-0}" -ge "\$2" ]; do
+    [ "\$waited" -ge "\$3" ] && return 1
+    sleep 1
+    waited=\$((waited + 1))
+  done
+  return 0
+}
 # Ends this child's heartbeat writer and waits for it to exit.
 stop_heartbeat() {
   : > "\$CASE_DIR/heartbeat-stop"
@@ -1088,6 +1286,21 @@ case "\$action" in
     record shutdown_requested ""
     exit 0
     ;;
+  # The same again, held across two polls so the supervisor records the tree the
+  # survivor is in. A child that exits inside its first poll interval is swept
+  # against a record taken before the agent process existed, which names nothing
+  # to sweep.
+  survivor_shutdown_held)
+    IFS= read -r _
+    leave_survivor
+    # The record and the exit land in the tail of a poll the supervisor has
+    # already read its facts on, which is the shape that reaches the
+    # natural-exit path with a shutdown recorded: a poll that reads the fact
+    # while the child still runs takes the decide path's own stop instead.
+    wait_for_log_line "TAILWINDOW" 90
+    record shutdown_requested ""
+    exit 0
+    ;;
   # A critical context-budget crossing with the child still alive, so the
   # decide path's restart branch acts on it rather than the natural-exit path.
   critical_live) IFS= read -r _; record context_budget_crossed "\$S/detail-critical"; while IFS= read -r _; do :; done; exit 0 ;;
@@ -1101,24 +1314,108 @@ case "\$action" in
   # The profile config is rewritten with the identity it already carried, the
   # shape an ordinary token refresh leaves behind.
   rewrite_same) IFS= read -r _; write_account "11111111-1111-4111-8111-111111111111"; sleep 15; record shutdown_requested ""; exit 0 ;;
+  # The account moves and then moves back, which is the shape the autoswitch
+  # task leaves while it rewrites the profile config in place.
+  swap_revert)
+    IFS= read -r _
+    write_account "22222222-2222-4222-8222-222222222222"
+    wait_for_log_line "ACCOUNT hold_opened" 60
+    write_account "11111111-1111-4111-8111-111111111111"
+    # The supervisor's own reading of the revert ends this child, rather than a
+    # time that assumes how long a poll takes on a loaded box.
+    wait_for_log_line "ACCOUNT hold_cancelled" 90
+    record shutdown_requested ""
+    exit 0
+    ;;
+  # The account moves to one identity and then to a second before the first has
+  # held long enough to relaunch anything.
+  swap_third)
+    IFS= read -r _
+    write_account "22222222-2222-4222-8222-222222222222"
+    wait_for_log_line "ACCOUNT hold_opened: .*names 22222222" 60
+    write_account "33333333-3333-4333-8333-333333333333"
+    while IFS= read -r _; do :; done
+    exit 0
+    ;;
+  # The account moves, and the profile config then cannot be read for longer
+  # than the whole hold. An unreadable file is not evidence of a revert, so
+  # nothing is cancelled, and it is not evidence of a hold either, so nothing
+  # is confirmed and the hold is dropped. The identity is written again at the
+  # end, and the poll that reads it opens a hold of its own rather than
+  # completing the one those polls could say nothing about. This child ends the
+  # run at that poll, so a supervisor that completed the old hold instead has
+  # already relaunched by the time the case reads the log.
+  swap_unreadable)
+    IFS= read -r _
+    write_account "22222222-2222-4222-8222-222222222222"
+    wait_for_log_line "ACCOUNT hold_opened" 60
+    rm -f "\$USERPROFILE/.claude.json"
+    wait_for_log_line "ACCOUNT hold_cleared" 90
+    sleep 20
+    write_account "22222222-2222-4222-8222-222222222222"
+    wait_for_log_count "ACCOUNT hold_opened" 2 60
+    record shutdown_requested ""
+    exit 0
+    ;;
+  # A child that runs for two polls and exits on its own, leaving nothing
+  # behind. Paired with a supervisor whose poll body is slow, it is the shape a
+  # loaded box produces: every poll confirmed the tree, and the wall clock
+  # between the last confirmation and the sweep ran long anyway.
+  slow)
+    IFS= read -r _
+    # A process under this child that outlives a whole poll, so the record the
+    # sweep later reads names something that ran under the wrapper. A transient
+    # helper is dropped by the poll that meets it exiting inside its own walk,
+    # which leaves the record naming the wrapper alone.
+    sleep 60 &
+    slow_helper=\$!
+    wait_for_log_line "runs as Windows pid(s) [0-9][0-9]* [0-9]" 90
+    kill "\$slow_helper" 2>/dev/null
+    exit 0
+    ;;
   # Parked on a rate limit: the newest record this child writes is the engine's
   # own 429 retry, and it writes nothing after it. Held until the liveness
   # cadence has reported on the sixth poll, which is the line the case reads.
-  rate_limited) IFS= read -r _; emit_init; write_heartbeat_repeatedly 40 3; emit_rate_limit 600000; wait_for_poll_line 6 90; stop_heartbeat; record shutdown_requested ""; exit 0 ;;
+  # These two cases run under a five-second staleness bound, so the heartbeat
+  # has to keep moving for as long as the supervisor takes to reach that poll
+  # or the park reads as a hung child. The writer stops on this child's own
+  # signal, so the write count is a ceiling rather than a schedule, and it sits
+  # past the bound the whole run is capped at: a loaded box that takes minutes
+  # over six polls ends the park on the supervisor's line, as the case means
+  # it to, rather than on the writer running out.
+  rate_limited) IFS= read -r _; emit_init; write_heartbeat_repeatedly 200 3; emit_rate_limit 600000; wait_for_poll_line 6 300; stop_heartbeat; record shutdown_requested ""; exit 0 ;;
   # Control: the same park with the child's own work written after it, which is
   # how a park ends. The newest record is that work, not the retry.
-  rate_limited_worked_past) IFS= read -r _; emit_init; write_heartbeat_repeatedly 40 3; emit_rate_limit 600000; emit_work; wait_for_poll_line 6 90; stop_heartbeat; record shutdown_requested ""; exit 0 ;;
+  rate_limited_worked_past) IFS= read -r _; emit_init; write_heartbeat_repeatedly 200 3; emit_rate_limit 600000; emit_work; wait_for_poll_line 6 300; stop_heartbeat; record shutdown_requested ""; exit 0 ;;
   # A park held across several polls with the heartbeat moving on its own
   # timer, which is what a held session keeps doing while the child itself
   # writes nothing.
   rate_limited_quiet) IFS= read -r _; emit_init; write_heartbeat_repeatedly 8 3; emit_rate_limit 600000; sleep 26; record shutdown_requested ""; exit 0 ;;
+  # A heartbeat stamped once and then never again, which is what the supervisor
+  # sees when the writer follows the child into another directory: the child
+  # keeps stamping, into a file this supervisor does not read. The child holds
+  # until the supervisor's own line says the transcript corroborated it, then
+  # ends the run itself, since a corroborated child is never stopped from
+  # outside. A supervisor that restarts it instead closes this stdin first, so
+  # the case ends either way.
+  hung_corroborated) IFS= read -r _; emit_init; write_heartbeat; wait_for_log_line "HUNG_CORROBORATED" 180; record shutdown_requested ""; exit 0 ;;
+  # The same stamped-once heartbeat with nothing alive to corroborate it. The
+  # child blocks until the supervisor's hung restart closes its stdin.
+  hung_quiet) IFS= read -r _; emit_init; write_heartbeat; while IFS= read -r _; do :; done; exit 0 ;;
   *) exit 1 ;;
 esac
 EOF
 chmod +x "$STUB/claude"
 
 # Usage: drive <case> <plan actions, comma-separated> <restart budget> [extra supervise.sh args...]
-# Runs the supervisor to its own exit (bounded at 120s) and sets RC, LOG, OUT.
+# Runs the supervisor to its own exit (bounded at 420s) and sets RC, LOG, OUT.
+# The bound is a backstop against a supervisor that never ends, not a schedule.
+# It is sized for the longest case rather than the average one: the rate-limit
+# cases hold their child until the supervisor's liveness cadence reports on its
+# sixth poll, and a poll body that spawns PowerShell walks takes tens of seconds
+# while the box carries other work, which has put that sixth poll past a minute
+# and a half. A bound those cases can cross reports a timeout as the case's own
+# exit code, which reads as a defect in whatever the case was about.
 # The crash limit is always 1. The restart budget is per case, because the
 # natural-exit path checks the budget before the crash limit.
 # SUP_OVERRIDE runs a case against a copy of the supervisor instead of the
@@ -1137,7 +1434,7 @@ drive() {
   printf '%s' "$dir" > "$STUB/case"
   OUT=$(env -i PATH="$STUB:$PATH" HOME="$TMP/home" "${DRIVE_ENV[@]}" \
     supervisorPollMs=5000 supervisorCrashLimit="$DRIVE_CRASH_LIMIT" supervisorMaxRestartsPerHour="$budget" \
-    timeout 120 bash "${SUP_OVERRIDE:-$SUP}" "$dir/wd" "$PERSONA_NAME" default --rundir "$dir/rd" --no-channel "$@" 2>&1)
+    timeout 420 bash "${SUP_OVERRIDE:-$SUP}" "$dir/wd" "$PERSONA_NAME" default --rundir "$dir/rd" --no-channel "$@" 2>&1)
   RC=$?
   LOG="$dir/rd/supervisor.log"
   [ -f "$LOG" ] || : > "$LOG"
@@ -1279,16 +1576,107 @@ grep -q 'STOP_CRASH_LOOP: 1 crashes' "$LOG"; check "(k) the crash-loop line name
 # A running child never re-reads credentials, so only a relaunch picks up a
 # swapped account. The identity is read from the profile config claude itself
 # reads, under this case's own USERPROFILE.
+#
+# The identity has to hold on every poll across supervisorAccountHoldS before
+# the relaunch is taken, so the case names a hold short enough to run and long
+# enough to need more than the one poll that first reads the change.
 mkdir -p "$TMP/l/profile"
 printf '%s' '{"oauthAccount":{"accountUuid":"11111111-1111-4111-8111-111111111111"}}' > "$TMP/l/profile/.claude.json"
-DRIVE_ENV=(USERPROFILE="$TMP/l/profile")
+DRIVE_ENV=(USERPROFILE="$TMP/l/profile" supervisorAccountHoldS=10)
 drive l "swap,shutdown" 6
 DRIVE_ENV=()
 [ -f "$TMP/l/account-rewritten" ]; check "(l) setup: the stub rewrote the profile config" "$?"
 [ "$RC" -eq 0 ]; check "(l) supervisor exits 0 on the second child's shutdown_requested (rc=$RC)" "$?"
-grep -q 'RESTART_PASSIVE: account_changed' "$LOG"; check "(l) the account change takes RESTART_PASSIVE" "$?"
+grep -q 'ACCOUNT hold_opened: .*names 22222222' "$LOG"
+check "(l) the first poll that reads the change opens a window rather than relaunching" "$?"
+grep -q 'RESTART_PASSIVE: account_changed' "$LOG"; check "(l) the account change takes RESTART_PASSIVE once it has held" "$?"
+L_WINDOW=$(grep -n 'ACCOUNT hold_opened:' "$LOG" | head -n 1 | cut -d: -f1)
+L_RESTART=$(grep -n 'RESTART_PASSIVE: account_changed' "$LOG" | head -n 1 | cut -d: -f1)
+[ -n "$L_WINDOW" ] && [ -n "$L_RESTART" ] && [ "$L_WINDOW" -lt "$L_RESTART" ]
+check "(l) the relaunch follows the window rather than the poll that first read the change (lines $L_WINDOW < $L_RESTART)" "$?"
+[ "$(grep -c 'RESTART_PASSIVE: account_changed' "$LOG")" -eq 1 ]
+check "(l) the change that held restarts the child exactly once" "$?"
+! grep -q 'ACCOUNT hold_cancelled:' "$LOG"
+check "(l) no cancellation, since the identity never went back to the one the child launched under" "$?"
+! grep -q 'ACCOUNT hold_cleared:' "$LOG"
+check "(l) no cleared hold either, since every poll across the window read an identity" "$?"
 grep -q 'PASSIVE: the account identity changed since launch' "$LOG"; check "(l) the passive line says why the child is relaunching" "$?"
 grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 2 ]; check "(l) a second child launches (stub launches=$LAUNCHES)" "$?"
+
+# --- (q) a change that goes back before the window ends relaunches nothing ---
+# The account autoswitch task rewrites the profile config in place, and the
+# file can read back as another account for a minute or two while it does. A
+# relaunch on the first poll that sees one of those readings restarts a healthy
+# child, and the log has to say the window was cancelled rather than going
+# quiet, so the operator can read a flip-back for what it was.
+mkdir -p "$TMP/q/profile"
+printf '%s' '{"oauthAccount":{"accountUuid":"11111111-1111-4111-8111-111111111111"}}' > "$TMP/q/profile/.claude.json"
+DRIVE_ENV=(USERPROFILE="$TMP/q/profile" supervisorAccountHoldS=60)
+drive q "swap_revert" 6
+DRIVE_ENV=()
+[ -f "$TMP/q/account-rewritten" ]; check "(q) setup: the stub rewrote the profile config" "$?"
+grep -q '"accountUuid":"11111111-1111-4111-8111-111111111111"' "$TMP/q/profile/.claude.json"
+check "(q) setup: the profile config carries the launch identity again at the end of the run" "$?"
+grep -q 'ACCOUNT hold_opened: .*names 22222222' "$LOG"
+check "(q) the poll that read the change opened a window" "$?"
+grep -q 'ACCOUNT hold_cancelled: .*names 11111111 again' "$LOG"
+check "(q) the log names the cancellation rather than going quiet" "$?"
+! grep -q 'RESTART_PASSIVE:' "$LOG"; check "(q) no relaunch for a change that went back inside the window" "$?"
+[ "$RC" -eq 0 ]; check "(q) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"
+[ "$LAUNCHES" -eq 1 ]; check "(q) no second child launches (stub launches=$LAUNCHES)" "$?"
+
+# --- (w) a third identity inside the window is a new change ---
+# The window belongs to the identity that opened it. A reading different from
+# both the launch identity and the pending one is a change of its own, so the
+# window restarts at that poll and the relaunch delivers the identity the
+# profile config actually settled on.
+#
+# The hold is wide rather than tight. The stub writes the third identity once
+# it reads the first window's own line, which takes a poll and the stub's own
+# second of granularity, and a hold near that span turns the case into a race
+# the box can lose without anything being wrong.
+mkdir -p "$TMP/w/profile"
+printf '%s' '{"oauthAccount":{"accountUuid":"11111111-1111-4111-8111-111111111111"}}' > "$TMP/w/profile/.claude.json"
+DRIVE_ENV=(USERPROFILE="$TMP/w/profile" supervisorAccountHoldS=30)
+drive w "swap_third,shutdown" 6
+DRIVE_ENV=()
+grep -q 'ACCOUNT hold_opened: .*names 22222222' "$LOG"
+check "(w) the first identity opened a window" "$?"
+grep -q 'ACCOUNT hold_opened: .*names 33333333' "$LOG"
+check "(w) the third identity opened a window of its own rather than inheriting the first one's" "$?"
+grep -q 'RESTART_PASSIVE: account_changed: the profile config names 33333333' "$LOG"
+check "(w) the relaunch delivers the identity that held, not the one the window opened on" "$?"
+! grep -q 'RESTART_PASSIVE: account_changed: the profile config names 22222222' "$LOG"
+check "(w) no relaunch for the identity the profile config moved off before the window ended" "$?"
+[ "$RC" -eq 0 ]; check "(w) supervisor exits 0 on the second child's shutdown_requested (rc=$RC)" "$?"
+grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 2 ]; check "(w) a second child launches (stub launches=$LAUNCHES)" "$?"
+
+# --- (d) a profile config that cannot be read confirms no hold ---
+# The relaunch is taken only where the changed identity read the same on every
+# poll across the hold, and a poll that reads no identity at all has read
+# nothing to confirm. An absent or unparsable file is not evidence that the
+# account went back either, so the hold is dropped rather than cancelled: the
+# child keeps running and the next poll that reads the changed identity opens a
+# hold of its own. Killing a live child on a hold completed across polls that
+# read nothing is the failure this case exists to refuse.
+mkdir -p "$TMP/d/profile"
+printf '%s' '{"oauthAccount":{"accountUuid":"11111111-1111-4111-8111-111111111111"}}' > "$TMP/d/profile/.claude.json"
+DRIVE_ENV=(USERPROFILE="$TMP/d/profile" supervisorAccountHoldS=10)
+drive d "swap_unreadable" 6
+DRIVE_ENV=()
+D_CLEARED=$(grep -c 'ACCOUNT hold_cleared:' "$LOG")
+[ "$D_CLEARED" -ge 1 ]
+check "(d) the first poll that reads no identity drops the hold and says so (lines=$D_CLEARED)" "$?"
+! grep -q 'ACCOUNT hold_cancelled:' "$LOG"
+check "(d) a profile config that cannot be read is not read as the account going back" "$?"
+! grep -q 'RESTART_PASSIVE:' "$LOG"
+check "(d) no relaunch, since no hold was ever confirmed on every poll across it" "$?"
+D_WINDOWS=$(grep -c 'ACCOUNT hold_opened:' "$LOG")
+[ "$D_WINDOWS" -eq 2 ]
+check "(d) the poll that reads the identity again opens a fresh hold rather than completing the dropped one (lines=$D_WINDOWS)" "$?"
+[ "$RC" -eq 0 ]; check "(d) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"
+! grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 1 ]
+check "(d) the child that was running through the unreadable window is still the one running (stub launches=$LAUNCHES)" "$?"
 
 # --- (m) control: the profile config is rewritten with the same identity ---
 # An ordinary token refresh rewrites that file without moving the account, and
@@ -1300,7 +1688,7 @@ DRIVE_ENV=(USERPROFILE="$TMP/m/profile")
 drive m "rewrite_same,shutdown" 6
 DRIVE_ENV=()
 [ -f "$TMP/m/account-rewritten" ]; check "(m) setup: the stub rewrote the profile config" "$?"
-! grep -q 'names no account identity' "$LOG"; check "(m) control: no such line where an identity is readable, so that line names the state and not every launch" "$?"
+! grep -q 'ACCOUNT no_identity:' "$LOG"; check "(m) control: no such line where an identity is readable, so that line names the state and not every launch" "$?"
 [ "$RC" -eq 0 ]; check "(m) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"
 ! grep -q 'RESTART_PASSIVE:' "$LOG"; check "(m) no RESTART_PASSIVE line for a rewrite that kept the identity" "$?"
 [ "$LAUNCHES" -eq 1 ]; check "(m) no second child launches (stub launches=$LAUNCHES)" "$?"
@@ -1319,7 +1707,7 @@ DRIVE_ENV=()
 # With no identity readable the swap check has nothing to compare and stays
 # quiet for this child's whole life, which otherwise looks exactly like a
 # child nobody swapped the account under.
-N_QUIET=$(grep -c 'names no account identity' "$LOG")
+N_QUIET=$(grep -c 'ACCOUNT no_identity:' "$LOG")
 [ "$N_QUIET" -eq 1 ]; check "(n) the log says once that this child has no account identity to compare a swap against (lines=$N_QUIET)" "$?"
 
 # --- (o) a parked child's log says it is parked, not that it is waiting ---
@@ -1371,6 +1759,94 @@ grep -q 'RATE_LIMITED until [0-9][0-9]*-[0-9][0-9]-[0-9][0-9]T' "$LOG"; check "(
 ! grep -q 'RESTART: hung' "$LOG"; check "(t) the parked child is not read as hung while its heartbeat keeps moving" "$?"
 [ "$LAUNCHES" -eq 1 ]; check "(t) no second child launches (stub launches=$LAUNCHES)" "$?"
 
+# The harness transcript path for a case, derived here from the rule the
+# harness itself uses: the launch directory in Windows form with every
+# character outside A-Za-z0-9 replaced by a hyphen. Derived independently of
+# bin/supervise.sh rather than read back from it, so a supervisor that resolves
+# the key any other way finds no file and the cases below say so.
+transcript_path() {  # <workdir> <profile dir> <session id>
+  local key
+  key=$(node -e 'console.log(process.argv[1].replace(/[^A-Za-z0-9]/g, "-"))' "$(cygpath -w "$1")")
+  printf '%s\n' "$2/.claude/projects/$key/$3.jsonl"
+}
+# Writes a transcript at that path, stamped the given number of seconds ago, so
+# a case sets its age rather than inheriting whatever the setup happened to
+# take.
+write_transcript_aged() {  # <path> <age seconds>
+  mkdir -p "$(dirname "$1")"
+  node -e '
+const fs = require("fs");
+const [file, age] = process.argv.slice(1);
+fs.writeFileSync(file, "");
+const t = new Date(Date.now() - Number(age) * 1000);
+fs.utimesSync(file, t, t);
+' "$1" "$2"
+}
+
+# --- (aa) a stale heartbeat the harness transcript contradicts ---
+# The heartbeat sidecar is written relative to the child's own working
+# directory, so a child that moves into a subdirectory goes on stamping a file
+# the supervisor does not read while the watched one goes still. The harness
+# transcript is the instrument the child does not write: it sits under the
+# launch directory's own project key and the harness appends to it every turn.
+# This case stamps the heartbeat once and then keeps only the transcript
+# moving, which is that child as the supervisor sees it.
+mkdir -p "$TMP/aa/wd" "$TMP/aa/profile"
+AA_TRANSCRIPT=$(transcript_path "$TMP/aa/wd" "$TMP/aa/profile" "stub-sess-1")
+write_transcript_aged "$AA_TRANSCRIPT" 0
+( until [ -f "$TMP/aa/touch-stop" ]; do touch "$AA_TRANSCRIPT"; sleep 1; done ) &
+AA_TOUCHER=$!
+DRIVE_ENV=(staleAfterMs=5000 USERPROFILE="$TMP/aa/profile")
+drive aa "hung_corroborated" 6
+: > "$TMP/aa/touch-stop"
+wait "$AA_TOUCHER" 2>/dev/null
+DRIVE_ENV=()
+[ -f "$AA_TRANSCRIPT" ]; check "(aa) setup: a transcript sits under the launch directory's own project key" "$?"
+grep -q 'HUNG_CORROBORATED: hung_corroborated: heartbeat lastSeen [0-9][0-9]* is older than 5000ms, but the harness transcript was last written at [0-9][0-9]*, inside 5000ms of the clock this poll read at [0-9][0-9]*' "$LOG"
+check "(aa) the log names the transcript reading that withheld the restart" "$?"
+! grep -q 'RESTART: hung' "$LOG"; check "(aa) a child whose transcript is moving is not restarted on its still heartbeat" "$?"
+[ "$RC" -eq 0 ]; check "(aa) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"
+[ "$LAUNCHES" -eq 1 ]; check "(aa) no second child launches (stub launches=$LAUNCHES)" "$?"
+AA_LINES=$(grep -c 'HUNG_CORROBORATED:' "$LOG" 2>/dev/null || echo 0)
+[ "$AA_LINES" -eq 1 ]; check "(aa) the corroboration is named once rather than on every poll (lines=$AA_LINES)" "$?"
+
+# --- (ab) control: a transcript as still as the heartbeat ---
+# The same shape with the transcript written an hour ago and never touched
+# again. Two still instruments are not evidence of life, so this is the
+# direction that decides whether the supervisor reads the modification time at
+# all rather than the file merely being there.
+mkdir -p "$TMP/ab/wd" "$TMP/ab/profile"
+AB_TRANSCRIPT=$(transcript_path "$TMP/ab/wd" "$TMP/ab/profile" "stub-sess-1")
+write_transcript_aged "$AB_TRANSCRIPT" 3600
+# The stopped child exits on its own stdin closing, so nothing counts as a
+# crash. The limit is raised anyway, so a kill that reports a signal code does
+# not end this case under a crash loop instead of the restart it is about.
+DRIVE_CRASH_LIMIT=2
+DRIVE_ENV=(staleAfterMs=5000 USERPROFILE="$TMP/ab/profile")
+drive ab "hung_quiet,shutdown" 6
+DRIVE_ENV=()
+DRIVE_CRASH_LIMIT=1
+[ -f "$AB_TRANSCRIPT" ]; check "(ab) setup: the transcript exists at the derived path and was never written again" "$?"
+grep -q 'RESTART: hung' "$LOG"; check "(ab) a transcript as still as the heartbeat corroborates nothing, so the hung restart runs" "$?"
+! grep -q 'HUNG_CORROBORATED' "$LOG"; check "(ab) no corroboration line for a transcript that is not moving" "$?"
+[ "$LAUNCHES" -eq 2 ]; check "(ab) a second child launches (stub launches=$LAUNCHES)" "$?"
+
+# --- (ac) fail safe: no transcript to read at all ---
+# An unreadable transcript is the state a wedged child and a profile the
+# supervisor cannot resolve both produce, so reading it as life would leave a
+# genuinely wedged child running forever. The corroboration only ever withholds
+# a restart on positive evidence, and this case is what holds it to that.
+mkdir -p "$TMP/ac/wd" "$TMP/ac/profile"
+DRIVE_CRASH_LIMIT=2
+DRIVE_ENV=(staleAfterMs=5000 USERPROFILE="$TMP/ac/profile")
+drive ac "hung_quiet,shutdown" 6
+DRIVE_ENV=()
+DRIVE_CRASH_LIMIT=1
+[ ! -e "$TMP/ac/profile/.claude/projects" ]; check "(ac) setup: no transcript exists anywhere under this case's USERPROFILE" "$?"
+grep -q 'RESTART: hung' "$LOG"; check "(ac) a child with no readable transcript is restarted on its stale heartbeat exactly as before" "$?"
+! grep -q 'HUNG_CORROBORATED' "$LOG"; check "(ac) no corroboration line where there is nothing to corroborate with" "$?"
+[ "$LAUNCHES" -eq 2 ]; check "(ac) a second child launches (stub launches=$LAUNCHES)" "$?"
+
 # --- (r) a survivor that cannot be killed stops the run instead of relaunching ---
 # The stub leaves the same native Windows process behind that case (h) uses,
 # against a supervisor whose tree kill never confirms anything dead. A relaunch
@@ -1400,19 +1876,40 @@ if [ "$KILL_ANCHORS" -eq 1 ]; then
   # claim with nobody left to kill it, and the run still has to report the
   # shutdown. Driven against the same kill failure that makes case (r) exit 5,
   # so the exit code turns on the shutdown rather than on a sweep that
-  # happened to succeed. The --prompt launch is what puts the exit on the
-  # natural-exit path, since a child that dies before writing a result line is
-  # seen dead before the poll loop starts.
-  SUP_OVERRIDE="$TMP/injectkill/bin/supervise.sh"
-  drive u "survivor_shutdown" 6 --prompt "stub goal"
+  # happened to succeed. The child is held across a poll and launched with
+  # no --prompt, so a poll records the tree the survivor is in: a child that
+  # dies inside its first poll interval is swept against the record taken in
+  # the instant after the coproc started, which names the wrapper alone and
+  # leaves the sweep nothing to find. The survivors token is what says this
+  # case reached the leg it is about, so it is read before the exit code.
+  #
+  # Which of two paths a recorded shutdown takes is decided by where in a poll
+  # the child exits, and both are real: a poll that reads the fact while the
+  # child runs takes the decide path's stop, and a child that exits after that
+  # reading reaches the natural-exit path, which is the one this case is about.
+  # So the copy driven here holds each poll open after its own readings and
+  # names the window in the log, and the child exits inside it.
+  mkdir -p "$TMP/injectkilltail/bin"
+  cp "$TMP/injectkill/bin/"* "$TMP/injectkilltail/bin/"
+  TAIL_ANCHORS=$(grep -c '^    DECIDE_ERR=\$?$' "$TMP/injectkill/bin/supervise.sh")
+  [ "$TAIL_ANCHORS" -eq 1 ]; check "(u) the decide call the tail injection keys on appears once in the injected copy (found $TAIL_ANCHORS)" "$?"
+  awk '{ print }
+       /^    DECIDE_ERR=\$\?$/ { print "    log \"TAILWINDOW: poll $POLL_COUNT read its facts\""; print "    sleep 8" }' \
+    "$TMP/injectkill/bin/supervise.sh" > "$TMP/injectkilltail/bin/supervise.sh"
+  bash -n "$TMP/injectkilltail/bin/supervise.sh"
+  check "(u) setup: the injected copy parses" "$?"
+  SUP_OVERRIDE="$TMP/injectkilltail/bin/supervise.sh"
+  drive u "survivor_shutdown_held" 6
   SUP_OVERRIDE=""
   U_PAIR=$(grep -E '^[0-9]+,[0-9]+$' "$TMP/u/survivor.snapshot" 2>/dev/null | head -1)
   [ -n "$U_PAIR" ]; check "(u) setup: the stub left a process behind and recorded it as pid and start ticks (${U_PAIR:-none})" "$?"
   grep -q 'EXIT child-1 code=0 (natural)' "$LOG"; check "(u) child-1's exit is handled by the natural-exit path" "$?"
-  [ "$RC" -eq 0 ]; check "(u) the supervisor reports the requested shutdown as exit 0 (rc=$RC)" "$?"
   grep -q 'STOP_COMPLETE: shutdown_requested' "$LOG"; check "(u) the log names the shutdown the child recorded" "$?"
-  grep -qE 'SWEEP\[shutdown\] (clean|survivors|survivors_dead|survivors_alive|no_tree|tree_unread|record_behind_tree|record_no_descendant|record_stale|record_unverified):' "$LOG"
-  check "(u) the sweep runs on the shutdown path and names its verdict" "$?"
+  grep -q 'SWEEP\[shutdown\] survivors: processes from child-1 outlived it' "$LOG"
+  check "(u) the shutdown sweep reads the tree a poll recorded and names the surviving process" "$?"
+  grep -q 'SWEEP\[shutdown\] survivors_alive:' "$LOG"
+  check "(u) the injected kill leaves that survivor alive, so the exit code below turns on the shutdown alone" "$?"
+  [ "$RC" -eq 0 ]; check "(u) the supervisor reports the requested shutdown as exit 0 (rc=$RC)" "$?"
   ! grep -q 'SWEEP\[natural_exit\]' "$LOG"; check "(u) the natural-exit sweep does not also run once the shutdown is read" "$?"
   [ "$LAUNCHES" -eq 1 ]; check "(u) no second child launches (stub launches=$LAUNCHES)" "$?"
 
@@ -1489,7 +1986,7 @@ fi
 # well, one child later.
 mkdir -p "$TMP/z/profile"
 printf '%s' '{"oauthAccount":{"accountUuid":"11111111-1111-4111-8111-111111111111"}}' > "$TMP/z/profile/.claude.json"
-DRIVE_ENV=(USERPROFILE="$TMP/z/profile")
+DRIVE_ENV=(USERPROFILE="$TMP/z/profile" supervisorAccountHoldS=10)
 drive z "swap,shutdown" 1
 DRIVE_ENV=()
 [ -f "$TMP/z/account-rewritten" ]; check "(z) setup: the stub rewrote the profile config" "$?"
@@ -1497,6 +1994,34 @@ grep -q 'RESTART_PASSIVE: account_changed' "$LOG"; check "(z) the account change
 [ "$RC" -eq 4 ]; check "(z) the supervisor exits 4 at the restart budget (rc=$RC)" "$?"
 grep -q 'STOP_BUDGET: 1/1 restarts in the hour' "$LOG"; check "(z) the budget line names the limit it stopped at" "$?"
 ! grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 1 ]; check "(z) no second child launches (stub launches=$LAUNCHES)" "$?"
+
+# --- (s) a slow poll body does not forge a stale tree record ---
+# A poll body's own work varies by tens of seconds on a loaded box, and the
+# record is confirmed at the top of each poll. So a record every poll confirmed
+# can still be older than any bound derived from the poll interval by the time
+# the sweep reads it, and reading that as a tree no poll has confirmed ends a
+# natural exit at exit 5 on a child that left nothing behind. The slow poll is
+# injected rather than waited for, since a box fast enough to run this suite
+# will not produce one on its own.
+POLL_ANCHORS=$(grep -c '^    refresh_child_tree$' "$SUP")
+[ "$POLL_ANCHORS" -eq 1 ]; check "(s) the poll-loop refresh the injection keys on appears once in bin/supervise.sh (found $POLL_ANCHORS)" "$?"
+if [ "$POLL_ANCHORS" -eq 1 ]; then
+  mkdir -p "$TMP/injectslow/bin"
+  cp "$ROOT"/bin/*.sh "$ROOT"/bin/*.mjs "$TMP/injectslow/bin/"
+  awk '{ print }
+       /^    refresh_child_tree$/ { print "    sleep 33" }' "$SUP" > "$TMP/injectslow/bin/supervise.sh"
+  bash -n "$TMP/injectslow/bin/supervise.sh"
+  check "(s) setup: the injected copy parses" "$?"
+  SUP_OVERRIDE="$TMP/injectslow/bin/supervise.sh"
+  drive s "slow,shutdown" 6
+  SUP_OVERRIDE=""
+  grep -q 'EXIT child-1 code=0 (natural)' "$LOG"; check "(s) child-1's exit is handled by the natural-exit path" "$?"
+  ! grep -q 'SWEEP\[natural_exit\] record_stale:' "$LOG"
+  check "(s) a record every poll confirmed is not read as stale, however long the poll body took" "$?"
+  grep -q 'SWEEP\[natural_exit\] clean:' "$LOG"; check "(s) the natural-exit sweep reads that record as clean" "$?"
+  [ "$RC" -eq 0 ]; check "(s) the run ends at the second child's shutdown rather than at exit 5 (rc=$RC)" "$?"
+  grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 2 ]; check "(s) a second child launches (stub launches=$LAUNCHES)" "$?"
+fi
 
 if [ "$failed" -eq 0 ]; then
   echo "supervisor-natural-exit-test.sh: PASS"

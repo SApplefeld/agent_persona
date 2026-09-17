@@ -17,6 +17,7 @@
  * @property {string} [childSessionId] - The child's session id from the stream-json init line.
  * @property {string} [heartbeatSessionId] - The sessionId in the heartbeat sidecar.
  * @property {number|null} [heartbeatLastSeen] - The lastSeen timestamp in the heartbeat sidecar.
+ * @property {number|null} [transcriptLastWriteTs] - When the harness last appended to the child session's transcript, in epoch milliseconds, or null where no transcript could be read. The harness writes that file on every turn, and it sits at a path the child's own working directory never moves, so it corroborates a stale heartbeat. Null is the fail-safe value: the hung check then runs on the heartbeat alone.
  * @property {number} [now] - Current time (for hung check).
  * @property {number} [launchedAt] - Timestamp when the child was launched.
  * @property {number} [staleAfterMs] - Plugin's staleAfterMs setting.
@@ -54,7 +55,8 @@
  *    goal tree, not that a real goal actually finished, and restarting on it
  *    kills a child that was never done with anything.
  * 6. restart - child exited non-zero, or critical crossing, or hung (stale +
- *    own session + past grace)
+ *    own session + past grace, and no transcript write inside the staleness
+ *    bound to corroborate the heartbeat)
  * 7. continue - none of the above
  *
  * @param {DecideInput} input
@@ -74,6 +76,7 @@ export function decide(input) {
     childSessionId,
     heartbeatSessionId,
     heartbeatLastSeen,
+    transcriptLastWriteTs = null,
     now,
     launchedAt,
     staleAfterMs = 90000,
@@ -144,6 +147,22 @@ export function decide(input) {
     launchedAt !== null &&
     (now - launchedAt) > staleAfterMs
   ) {
+    // Corroboration, ahead of the restart. The heartbeat sidecar is written
+    // relative to the child's own working directory, while this unit is handed
+    // the one the supervisor watches, so a child working out of a subdirectory
+    // stamps a file nobody reads and looks hung from here. The harness
+    // transcript is the second instrument: the child never writes it, it sits
+    // at a path fixed by the launch directory, and the harness appends to it on
+    // every turn. A transcript written inside the same staleness bound is
+    // positive evidence the child is alive, so the restart is withheld.
+    // Evidence only ever suppresses: a null transcript reading leaves the hung
+    // check exactly as it was, so a genuinely wedged child still restarts.
+    if (transcriptLastWriteTs !== null && transcriptLastWriteTs !== undefined && (now - transcriptLastWriteTs) <= staleAfterMs) {
+      return {
+        action: 'continue',
+        reason: `hung_corroborated: heartbeat lastSeen ${heartbeatLastSeen} is older than ${staleAfterMs}ms, but the harness transcript was last written at ${transcriptLastWriteTs}, inside ${staleAfterMs}ms of the clock this poll read at ${now}, so the child is alive and its heartbeat is being stamped somewhere this supervisor does not read`,
+      };
+    }
     return {
       action: 'restart',
       reason: `hung: heartbeat lastSeen ${heartbeatLastSeen} older than ${staleAfterMs}ms, sessionId ${heartbeatSessionId} matches child, past grace (${now - launchedAt}ms > ${staleAfterMs}ms)`,

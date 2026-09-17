@@ -955,3 +955,32 @@ Local state altered to get the work done, named rather than left unsaid. This se
 Live dispatches: none. The heartbeat corroboration implementer returned and was verified. Rulings adopted since the last boundary: none.
 
 Next action: re-run `.kit/supervisor-natural-exit-test.sh` alone, since the run this session stopped is not a result. Then take round 10, the owed review round over the combined delta, at one adversarial lens at opus and effort high through Workflow, carrying the two findings this entry records and the box contention in its workspace-constraint line. Then adjudicate it, and declare to the operator if it leaves the terminal condition unmet, since that adjudication is the third on this stage. Then the Minor close pass carrying M-prose, then Chapter 4 with M-shutdown-code's justified-not-fixed statement and the shutdown race it records, then Section 5. Two operator answers are outstanding and neither blocks the section: the disposition of the foreign steward edits, on which the operator now holds a decline-and-escalate from this session and a recorded discard decision from another seat, and nothing else.
+
+### Interim board 37 - 2026-09-17
+
+Written after a fifth handover, the foreign discard and the solo natural-exit result. No section closed and no review round ran at this boundary.
+
+**This plan changed hands a fifth time, on a fleet-wide restart.** The session interim board 36 records last wrote its transcript at 09:01 local, while it waited in-turn on the solo natural-exit run. The dev, aios and coordinator supervisors all relaunched between 09:08 and 09:10, and no running process belongs to the old session. This session is the dev persona's relaunched child. It took the plan on a coordinator record carrying the operator's delegated authority for this plan. The leash is still bound to the dead session and was not re-armed here, because the coordinator's record withholds steward-architect, the plan queued behind this one, pending the operator. The plan doc is the source of truth for the run.
+
+**The solo natural-exit run that board 36 owed completed after its session died, and it is green.** `.kit/supervisor-natural-exit-test.sh` returned 258 OK, 0 FAIL, exit 0, read from its own marker at `.kit/scratch/process-keeper/s4/natexit-solo/run.exit`, written 09:22 local. No other suite ran beside it. The fleet restart fell inside its window, which is load rather than a competing suite, and it is named as contention. The run is taken as a result rather than re-run: every Section 4 code and suite file carries an mtime of 07:11, before the run began at 08:37, so it ran this tree. The count equals the 258 recorded earlier today, so nothing was added or lost. The coordinator's record asked for a re-run on the premise that the run never finished. That premise is superseded by the marker, and the coordinator is told so.
+
+**The foreign steward edits are discarded, on the operator's own word to this seat's channel.** The dead session received it at 13:01Z, verbatim: "I agree, I think everything we need for the Steward plan was sorted by the Coordinator, and PRed. You should be able to discard them and have a clean setup to continue on that plan when Process Keeper is done." That answers the question interim board 36 left with the operator. The dead session verified the backups but held the discard, because the running suite reads helper functions out of `bin/supervise.sh`.
+
+The discard ran only after the backups were re-checked on this session's own surface. `git apply --reverse --check` exited 0 for both `.kit/scratch/process-keeper/s4/foreign-supervise-hunks.patch`, the two hunks, and `.kit/scratch/expert/steward-stray/three-files.patch`. That patch covers `.kit/channel-reply-instruction-test.sh`, `README.md` and `docs/plans/agent_persona_steward-architect_v1.md`. The dead session's control showed the same check speaking at exit 1 on a mutated hunk body. Filesystem copies of all four files, the full tree diff and the stale claim were taken to `.kit/scratch/process-keeper/s4/pre-discard-093815/` before the first mutation. Both reverse applies exited 0. `bin/supervise.sh` now carries 32 hunks, zero lines naming the foreign markers, and `bash -n` exits 0. The two-hunk patch still applies forward, which shows the removed content was exactly that patch. The rollback is `git apply` of both patches, or the copies.
+
+The working tree now holds this plan's files alone: `bin/supervise.sh`, `bin/supervise-decide.mjs`, the three supervisor suites and `docs/backlog.md`. So the filtered stage board 36 designed is no longer needed, and Section 4 commits whole.
+
+**The heavy-process claim named the dead session under this seat's name, and it was removed.** It read `Name: supervisor-dev`, `Session: 6ae304de`, started 12:37Z with 900 seconds expected. This session holds that seat, so the claim was its own seat's residue rather than a foreign holder's. A copy is kept beside the discard copies.
+
+**The lane on the cleaned tree, every exit code read from the run itself.** Measured by this session on 2026-09-17 at 9a00156 plus the uncommitted Section 4 delta, no foreign dirty files, no foreign test runner in the poll.
+
+- `.kit/supervisor-unit-test.mjs` 21 passed, 0 failed, exit 0, against board 36's 21.
+- `.kit/supervisor-tree-walk-test.sh` PASS, exit 0, against board 36's 19 OK exit 0.
+- `.kit/channel-reply-instruction-test.sh` all passed, exit 0, run because the discard reverted that file.
+- `.kit/supervisor-natural-exit-test.sh` 258 OK, 0 FAIL, exit 0, as above, on the tree before the discard. The discard removed only the coordinator role instruction text and its comment, which no helper the suite extracts reads.
+
+Live dispatches: none at this writing. Rulings adopted since the last boundary: none.
+
+**Section 4's ladder stands at the second stage with the count at two, unchanged.** Round 10 is the owed round over the combined delta, and its adjudication is the third on this stage.
+
+Next action: commit Section 4 whole at first green and push. Then take round 10, one adversarial lens at opus effort high through Workflow, over the committed range. It carries the two findings board 36 raised as questions rather than rated findings. Then adjudicate it and declare if the terminal condition is still unmet. Then the Minor close pass carrying M-prose, Chapter 4 with M-shutdown-code's justified-not-fixed statement, and Section 5.

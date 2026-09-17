@@ -280,6 +280,36 @@ RC=$?
 V=$?
 check "ticks: control: the same absent root with nothing live holding its id is a completed walk over an empty tree (rc=$RC, got: $(echo $SNAP))" "$V"
 
+# --- The snapshot's refusal when its own Windows pid does not resolve ---
+# The walk follows Windows ParentProcessId, Windows hands that id out again,
+# and a recycled parent id is enough to pull this supervisor's own process into
+# a result a caller will later kill. So the snapshot filters itself out, and a
+# self pid it cannot resolve leaves it with nothing to filter by. The refusal is
+# reached the way every caller reaches it, by calling the snapshot with the
+# resolver answering nothing for this process, rather than by calling the guard
+# itself: with the leg gone the walk below completes and returns a kill list.
+WIRING_TABLE=main
+WIRING_SHIFT=""
+WIRING_LIVE_ONLY=""
+resolve_windows_pid() { return 0; }
+SNAP=$(snapshot_process_tree "$ROOT_ID" 2> "$TMP/no-self-diag")
+RC=$?
+[ "$RC" -eq 1 ] && [ -z "$SNAP" ]
+V=$?
+check "self: a snapshot whose own supervisor pid does not resolve is unverified with no kill list (rc=$RC, got: $(echo $SNAP))" "$V"
+grep -q "own Windows pid does not resolve" "$TMP/no-self-diag"
+V=$?
+check "self: that refusal is the unresolved self pid rather than one of the walk's other refusals (diag: $(tr -d '\n' < "$TMP/no-self-diag"))" "$V"
+# The resolver is the only thing that differed, restored from the same
+# extraction the suite ran every case above against.
+. "$WALK_FNS"
+SNAP=$(snapshot_process_tree "$ROOT_ID")
+RC=$?
+EXPECTED=$(printf '%s\n' "$ROOT_ID,$ROOT_TICKS" "$CHILD_ID,$CHILD_TICKS" "$GRANDCHILD_ID,$GRANDCHILD_TICKS" | sort)
+[ "$RC" -eq 0 ] && [ "$(printf '%s\n' "$SNAP" | sort)" = "$EXPECTED" ]
+V=$?
+check "self: control: the same table with this supervisor's pid resolving yields the whole kill list, so the refusal above is the unresolved pid and not a dead instrument (rc=$RC, got: $(echo $SNAP))" "$V"
+
 if [ "$failed" -ne 0 ]; then
   echo "supervisor-tree-walk-test.sh: FAIL"
   exit 1
