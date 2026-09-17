@@ -52,6 +52,7 @@ import {
   mayReachPersona,
   deliveryGroundIn,
   deliveryRecordProblem,
+  COORDINATOR_GROUND,
   quoteContinuationLines,
   deliveryPrefix,
   deliveryText,
@@ -79,6 +80,7 @@ import {
   reviewOwnRecord,
   kaizenSortKey,
   KAIZEN_LONG_TURN_MS,
+  KAIZEN_MESSAGE_WAIT_MS,
 } from "./self-review";
 import { estimateTokens, fnv1aHash, effectiveWindowCount, bumpWindow, backoffFactor, shouldRunClassify } from "./cost-ledger";
 
@@ -793,10 +795,11 @@ export const register: Register = async (on, options) => {
     }
     return earliest;
   };
-  // Plan item 8.3: an urgent inbox record is looked for on the owner's
+  // Plan item 8.3: an inbox record that may break into the running turn, on
+  // the sender's urgent flag or on its own wait, is looked for on the owner's
   // passthrough tool calls; this throttles that store read to once per
   // urgentCheckMinMs, since a long turn can make a tool call every second.
-  let lastUrgentCheckAt = 0;
+  let lastBreakInCheckAt = 0;
   // H2: record the active leaf at turn start; score against THAT node at turn
   // end (not whichever node is active then, which may have been activated
   // mid-turn by goal_done / scorer complete).
@@ -829,10 +832,15 @@ export const register: Register = async (on, options) => {
   // like the Reviewer's: only agentic_identity/agentic_say/agentic_inbox
   // register, with no goal-tree tool, no controller tick, and no claim on
   // any owner-only claim site. "off" is a plain chat session: it registers
-  // nothing below this point but the one hook a few lines down, which logs
-  // the tier and nothing else. An absent or unrecognized value reads as
-  // "off"; an unrecognized one is remembered so that hook's log line can
-  // name it.
+  // nothing but the session.start hook, whose first lines log the tier and
+  // return, and register() itself returns right after that hook is
+  // installed. The option reads between here and that hook run for every
+  // tier; they touch only the module's own state. An absent or unrecognized
+  // value reads as "off"; an unrecognized one is remembered so the log line
+  // can name it. The loader judges the compiled module statically and
+  // refuses the whole file when one event is registered twice without a
+  // matcher, so the off tier cannot install a session.start hook of its
+  // own: this file registers each event exactly once.
   const armingRaw = typeof cfg.arming === "string" ? cfg.arming.trim() : "";
   let armingUnrecognized: string | null = null;
   let arming: "off" | "reader" | "owner";
@@ -842,18 +850,28 @@ export const register: Register = async (on, options) => {
     arming = "off";
     if (armingRaw !== "" && armingRaw !== "off") armingUnrecognized = armingRaw;
   }
-  if (arming === "off") {
-    // No tool registration, no timer, no claim, no store write: this is
-    // the only hook an "off" session installs.
-    on("session.start", async ($, e, next) => {
-      const suffix = armingUnrecognized ? `; unrecognized value '${armingUnrecognized}'` : "";
-      $.ui.log(`Agentic: arming off, no persona tools or claims in this session${suffix}`);
-      return next(e);
-    });
-    return;
-  }
 
   const urgentCheckMinMs = typeof cfg.urgentCheckMinMs === "number" ? (cfg.urgentCheckMinMs as number) : 5_000;
+  // The clamp keeps the bound below self-review.ts KAIZEN_MESSAGE_WAIT_MS, the
+  // wait a record is counted as too slow at, with a minute of headroom. That
+  // headroom is a floor on when a record qualifies, not a promise about when
+  // it is delivered: delivery waits for the next tool call past the throttle,
+  // and a record that qualifies inside the headroom can still be delivered
+  // past the threshold. A bound equal to the threshold would leave no headroom
+  // at all. The floor keeps a configured zero or negative from making every
+  // pending record qualify on the first tool call of every turn. A value that
+  // is not a finite number takes the default instead, because the clamp cannot
+  // repair one: NaN is a number, and both Math.max and Math.min carry it
+  // through, leaving a bound no record's wait ever reaches. The floor is
+  // applied after the ceiling, so 30000 is a real floor whatever the wait
+  // constant is, rather than one a lower ceiling could pull the bound under.
+  const breakInAfterMs = Math.max(
+    30_000,
+    Math.min(
+      Number.isFinite(cfg.breakInAfterMs) ? (cfg.breakInAfterMs as number) : 300_000,
+      KAIZEN_MESSAGE_WAIT_MS - 60_000,
+    ),
+  );
   const nudgeFloorMs = typeof cfg.nudgeFloorMs === "number" ? (cfg.nudgeFloorMs as number) : 5 * 60_000;
   const nudgeIdleMs = typeof cfg.nudgeIdleMs === "number" ? (cfg.nudgeIdleMs as number) : 2 * 60_000;
   const healthTimeoutMs = typeof cfg.healthTimeoutMs === "number" ? Math.min(cfg.healthTimeoutMs as number, 120_000) : 60_000;
@@ -900,42 +918,15 @@ export const register: Register = async (on, options) => {
   const costBackoffAfterTicks = typeof cfg.costBackoffAfterTicks === "number" ? (cfg.costBackoffAfterTicks as number) : 10;
   const costBackoffMaxMs = typeof cfg.costBackoffMaxMs === "number" ? (cfg.costBackoffMaxMs as number) : 300_000;
 
-  // --- D6: doorbell ---
-  // Consume peer text so the model never reads it. The only steering that
-  // reaches the model from another session comes through a record whose
-  // writer holds a reader claim.
-  on("session.receive", async ($, e, next) => {
-    // BH1: e.origin may be a string (per types) or an object with .kind (runtime)
-    const originVal = (e as any)?.origin;
-    const kind = typeof originVal === "string" ? originVal : originVal?.kind || "unknown";
-    if (e && (kind === "peer" || kind === "peer-send-message")) {
-      const text = typeof e.text === "string" ? e.text : "";
-      const detail = text.slice(0, 80);
-      sess.state.decisions.push({
-        timestamp: Date.now(),
-        loop: "monitor",
-        action: "peer_consumed",
-        detail: detail || "(empty peer text)",
-      });
-      await persist($);
-      try {
-        $.ui.toast("agentic: peer text consumed; use agentic_say");
-      } catch { /* toast unavailable; non-fatal */ }
-      return { consumed: "agentic: peer text is not steering; use agentic_say" };
-    }
-    // BH1: push decision on pass-through branch
-    sess.state.decisions.push({
-      timestamp: Date.now(),
-      loop: "monitor",
-      action: "receive_passthrough",
-      detail: `kind=${kind}`,
-    });
-    await persist($);
-    return next(e);
-  });
-
   // --- session.start: register tools, claim or join the persona ---
+  // The one session.start registration in this file. An "off" session logs
+  // its tier here and does nothing else; every other tier runs the body.
   on("session.start", async ($, e, next) => {
+    if (arming === "off") {
+      const suffix = armingUnrecognized ? `; unrecognized value '${armingUnrecognized}'` : "";
+      $.ui.log(`Agentic: arming off, no persona tools or claims in this session${suffix}`);
+      return next(e);
+    }
     try {
       sess.mySessionId = String(await $.session.id());
     } catch {
@@ -1179,8 +1170,11 @@ export const register: Register = async (on, options) => {
         "the session holding the coordinator persona may address any persona, and a session owning a named persona may address the coordinator persona. " +
         "Refused for the persona this session owns itself. " +
         "The owner sees the message on its next quiet tick; while the owner is inside a turn the record waits, and agentic_inbox " +
-        "shows it as deferred with the turn's running time. Pass urgent: true to reach the owner inside the running turn instead, " +
-        "folded into its next tool result. Use for steering, reporting, or asking questions.",
+        "shows it as deferred with the turn's running time. A record still undelivered past the wait bound breaks into the running " +
+        "turn on its own, folded into the owner's next tool result; a record labelled COORDINATOR at delivery does not, and waits " +
+        "for the tick. A record delivered on its wait alone gets no reply: the owner closes it with agentic_resolve, which " +
+        "agentic_inbox reports as its outcome. Pass urgent: true to break in immediately, without the wait, and take the turn's own " +
+        "answer as the reply. Use for steering, reporting, or asking questions.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1194,7 +1188,7 @@ export const register: Register = async (on, options) => {
           },
           urgent: {
             type: "boolean",
-            description: "Optional. Deliver inside the owner's current turn (as context on its next tool result) rather than waiting for a quiet tick. Not for answering an ask.",
+            description: "Optional. Deliver inside the owner's current turn (as context on its next tool result) immediately, without the wait. Not for answering an ask.",
           },
           persona: {
             type: "string",
@@ -1213,7 +1207,8 @@ export const register: Register = async (on, options) => {
         "the session holding the coordinator persona may read any persona, and a session owning a named persona may read the coordinator persona. " +
         "Refused for the persona this session owns itself. " +
         "Returns {inbox: [{id, from, at, text, kind, status, reply?, deferred?, turnRunningMs?, outcome?, note?, resolvedAt?}], asks: [{id, at, nodeId, question, status}], workdir?}: workdir is the target persona's live owner's working directory, where its own store file sits. " +
-        "A pending record carries deferred: true and turnRunningMs while the owner is inside a turn: it waits for that turn to end. " +
+        "A pending record carries deferred: true and turnRunningMs while the owner is inside a turn: it waits for that turn to end, or breaks into it once it has waited past the break-in bound, which a record labelled COORDINATOR at delivery never does. " +
+        "A record delivered on its wait alone is never replied to: it stays delivered until the owner resolves it, so read its outcome rather than polling for a reply. " +
         "A resolved record carries outcome (done or declined), note and resolvedAt: the owner finished or declined the work, which a reply alone does not say. " +
         "Answer an open ask with agentic_say(text, answers: <ask id>).",
       inputSchema: {
@@ -1741,7 +1736,7 @@ export const register: Register = async (on, options) => {
             timestamp: Date.now(),
             loop: "monitor",
             action: "operator_delivered",
-            detail: `record ${oldest.id} submitted as ${deliveryPrefix(ground, oldest.id, false)}`,
+            detail: `record ${oldest.id} submitted as ${deliveryPrefix(ground, oldest.id, "plain")}`,
           });
           const expectedDeliveryTurn = expectTurn({ kind: "delivery", recordId: oldest.id, text: submittedText });
           const deliveryOutcome = await submitExpectedTurn($, expectedTurns, expectedDeliveryTurn);
@@ -3068,6 +3063,44 @@ export const register: Register = async (on, options) => {
     return next(e);
   });
 
+  // An "off" session installs nothing past the session.start hook above:
+  // no doorbell, no turn hooks, no tool.call guard, no prompt hook.
+  if (arming === "off") return;
+
+  // --- D6: doorbell ---
+  // Consume peer text so the model never reads it. The only steering that
+  // reaches the model from another session comes through a record whose
+  // writer holds a reader claim.
+  on("session.receive", async ($, e, next) => {
+    // BH1: e.origin may be a string (per types) or an object with .kind (runtime)
+    const originVal = (e as any)?.origin;
+    const kind = typeof originVal === "string" ? originVal : originVal?.kind || "unknown";
+    if (e && (kind === "peer" || kind === "peer-send-message")) {
+      const text = typeof e.text === "string" ? e.text : "";
+      const detail = text.slice(0, 80);
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "peer_consumed",
+        detail: detail || "(empty peer text)",
+      });
+      await persist($);
+      try {
+        $.ui.toast("agentic: peer text consumed; use agentic_say");
+      } catch { /* toast unavailable; non-fatal */ }
+      return { consumed: "agentic: peer text is not steering; use agentic_say" };
+    }
+    // BH1: push decision on pass-through branch
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "monitor",
+      action: "receive_passthrough",
+      detail: `kind=${kind}`,
+    });
+    await persist($);
+    return next(e);
+  });
+
   // --- turn.start: track turn ---
   on("turn.start", async ($, e, next) => {
     sess.state.monitor.turnCount += 1;
@@ -3629,45 +3662,76 @@ export const register: Register = async (on, options) => {
       sess.state.monitor.selfReview.turnsSince += 1;
     }
 
-    // D4: if the turn.complete turnId matches the record stamped with this
-    // turn, write the reply and mark answered. The record may already be
-    // resolved: the owner does the work and calls agentic_resolve inside the
-    // stamped turn, so the reply is filed for a resolved record too and its
-    // resolution stays as it is.
+    // D4: every record stamped with this turn gets the turn's answer as its
+    // reply and is marked answered. One break-in scan can stamp several
+    // flagged records with the running turn, so a turn can close over more
+    // than one; the model read all of them before it answered, so the one
+    // answer is the reply to each. A record may already be resolved: the owner
+    // does the work and calls agentic_resolve inside the stamped turn, so the
+    // reply is filed for a resolved record too and its resolution stays as it
+    // is. A record delivered on its wait alone is never stamped, so it never
+    // matches here.
     if (sess.isOwner) {
       const persona = sess.persona;
-      const allRecords = await listInboxRecords(commonsStoreOf($), persona);
-      const matching = allRecords.find(
-        (rec) => (rec.status === "delivered" || rec.status === "resolved") && rec.turnId === e.turnId
+      const store = commonsStoreOf($);
+      const allRecords = await listInboxRecords(store, persona);
+      // An absent turn id matches nothing. A record delivered on its wait
+      // alone is delivered and unstamped by design, so an undefined id
+      // compared against an unstamped record would match every one of them
+      // at once and file this turn's answer as a reply to each.
+      const turnId = typeof e.turnId === "string" && e.turnId.length > 0 ? e.turnId : null;
+      const matching = turnId === null ? [] : allRecords.filter(
+        (rec) => (rec.status === "delivered" || rec.status === "resolved") && rec.turnId === turnId
       );
-      if (matching) {
-        const store = commonsStoreOf($);
-        if (e.answer && e.reason !== "aborted") {
-          // AX4: write reply, mark answered
-          // BE2: use writeReplyRecord so the value is an object, not a string
-          await writeReplyRecord(store, persona, matching.id, e.answer);
-          const existing = await store.get(matching.key);
-          if (existing) {
-            const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
-            if (parsed.status === "delivered") parsed.status = "answered";
-            await store.set(matching.key, parsed);
+      const answering = Boolean(e.answer) && e.reason !== "aborted";
+      for (const record of matching) {
+        // One record whose stored value fails to read or parse must not cost
+        // the rest of them their replies, nor the persist below. The guard is
+        // the per-record body and nothing wider: the listInboxRecords read
+        // that feeds this loop sits outside it, and a failure there throws
+        // past the persist.
+        try {
+          if (answering) {
+            // AX4: write reply, mark answered
+            // The read and the parse, the only steps here that can throw, run
+            // before either write, so a stored value that cannot be read back
+            // leaves nothing written at all: no reply record on a record that
+            // never reaches answered, which is the state the failure decision
+            // below reports.
+            const existing = await store.get(record.key);
+            const parsed = existing
+              ? (typeof existing === "string" ? JSON.parse(existing) : existing)
+              : null;
+            // BE2: use writeReplyRecord so the value is an object, not a string
+            await writeReplyRecord(store, persona, record.id, e.answer);
+            if (parsed !== null) {
+              if (parsed.status === "delivered") parsed.status = "answered";
+              await store.set(record.key, parsed);
+            }
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "monitor",
+              action: "operator_answered",
+              detail: `record ${record.id} replied`,
+            });
+          } else {
+            // AX4: empty answer or aborted. The record keeps its status
+            // (delivered, or resolved with its resolution), its stamp and no
+            // reply until the TTL: a later turn is not the one the plugin
+            // opened for it, so none re-stamps it.
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "monitor",
+              action: "operator_turn_unanswered",
+              detail: `record ${record.id} turn ${e.turnId} ended with no answer (empty or aborted); left ${record.status}`,
+            });
           }
+        } catch (err) {
           sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "monitor",
-            action: "operator_answered",
-            detail: `record ${matching.id} replied`,
-          });
-        } else {
-          // AX4: empty answer or aborted. The record keeps its status
-          // (delivered, or resolved with its resolution), its stamp and no
-          // reply until the TTL: a later turn is not the one the plugin
-          // opened for it, so none re-stamps it.
-          sess.state.decisions.push({
-            timestamp: Date.now(),
-            loop: "monitor",
-            action: "operator_turn_unanswered",
-            detail: `record ${matching.id} turn ${e.turnId} ended with no answer (empty or aborted); left ${matching.status}`,
+            action: "operator_reply_failed",
+            detail: `record ${record.id} reply refused, left ${record.status}: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200),
           });
         }
       }
@@ -4441,7 +4505,7 @@ export const register: Register = async (on, options) => {
         action: "say_sent",
         detail: `${persona}: "${text.slice(0, 80)}" (id: ${id}${urgent ? ", urgent" : ""})`,
       });
-      return { result: `Message sent to owner of ${persona} (id: ${id}${urgent ? ", urgent: delivered inside the owner's running turn if one is in flight" : ""})` };
+      return { result: `Message sent to owner of ${persona} (id: ${id}${urgent ? ", urgent: delivered inside the owner's running turn if one is in flight" : ", delivered on the owner's next quiet tick, or, unless it is labelled COORDINATOR at delivery, into a turn already running once it has waited past the break-in bound; a delivery on the wait alone is not replied to, and the owner closes the record with agentic_resolve"})` };
     }
 
     // D2: Serve agentic_inbox (replies from the owner of a persona)
@@ -4586,14 +4650,29 @@ export const register: Register = async (on, options) => {
     const r = await next(e);
     if ((r as { isError?: boolean }).isError === true) toolErrorsThisTurn++;
 
-    // Plan item 8.3: an urgent record from a writer that may reach this
-    // persona (deliveryGroundIn over one claims read, the tick's own rule)
-    // reaches the owner inside the running turn. The controller tick cannot deliver while a
-    // turn is in flight, so the record rides here instead: marked delivered
-    // and stamped with this turn (turn.complete then records the turn's
-    // answer as its reply), its text appended as context on this tool's
-    // result, which the model reads after the result itself. A record that
-    // answers an open ask is left to the tick, which owns the ask lifecycle.
+    // Plan item 8.3: a record from a writer that may reach this persona
+    // (deliveryGroundIn over one claims read, the tick's own rule) reaches
+    // the owner inside the running turn, either because the sender flagged
+    // it urgent or because it has waited breakInAfterMs without being
+    // delivered, a leg no coordinator-ground record takes. The age leg is
+    // what a long turn needs: a turn that runs for
+    // hours holds every record sent during it, and no sender can be asked to
+    // predict that, so waiting past the bound is itself the qualification.
+    // The controller tick cannot deliver while a turn is in flight, so the
+    // record rides here instead: marked delivered, its text appended as
+    // context on this tool's result, which the model reads after the result
+    // itself. The two legs differ in what they claim about the turn. A
+    // flagged record is stamped with it, and turn.complete files that turn's
+    // answer as the record's reply, which is what flagging asked for. An aged
+    // record is not stamped: the turn opened for something else and its answer
+    // is not a reply to the message, so the sender's feedback path is the
+    // owner's own agentic_resolve call. One scan carries at most one aged
+    // record, the oldest deliverable one, matching the tick drain's own rule
+    // that one record rides each pass, so a backlog
+    // built up over a quiet stretch drains one record per scan rather than
+    // emptying into a single tool result. Flagged records are unrestricted.
+    // A record that answers an open ask is left to the tick, which owns the
+    // ask lifecycle.
     // Only the main loop's own tool calls carry a break-in: this hook also
     // runs for every other loop's tool calls (a dispatched subagent, the
     // case that matters, and also a teammate, a workflow's agents and the
@@ -4604,35 +4683,94 @@ export const register: Register = async (on, options) => {
     // throttle, and the record stays pending for the tick or for the
     // owner's own next call.
     const inSubagent = typeof e.agentId === "string" && e.agentId.length > 0;
-    if (!inSubagent && sess.isOwner && r.deny === undefined && Date.now() - lastUrgentCheckAt >= urgentCheckMinMs) {
-      lastUrgentCheckAt = Date.now();
+    if (!inSubagent && sess.isOwner && r.deny === undefined && Date.now() - lastBreakInCheckAt >= urgentCheckMinMs) {
+      // One clock reading for the whole scan, so every record in it is
+      // judged against the same instant.
+      const scanAt = Date.now();
+      lastBreakInCheckAt = scanAt;
       try {
         const store = commonsStoreOf($);
         const persona = sess.persona;
-        const urgentPending = (await listInboxRecords(store, persona))
-          .filter((rec) => rec.status === "pending" && rec.urgent === true && !rec.answers);
+        const pending = (await listInboxRecords(store, persona))
+          .filter((rec) => rec.status === "pending" && !rec.answers);
+        const candidates = pending.filter((rec) => rec.urgent === true || scanAt - rec.at >= breakInAfterMs);
         const lines: string[] = [];
-        const claims = urgentPending.length > 0 ? await readAllClaims(store, sess.staleAfterMs) : [];
-        for (const rec of urgentPending) {
-          // A record whose writer persona cannot sit inside the bracket, or
-          // whose id or text fails the record rule, is left pending here;
-          // the tick's drain marks it skipped.
+        const claims = candidates.length > 0 ? await readAllClaims(store, sess.staleAfterMs) : [];
+        // A record whose writer persona cannot sit inside the bracket, or
+        // whose id or text fails the record rule, is left pending here; the
+        // tick's drain marks it skipped. The ground a record passes on is the
+        // label its text opens with, so it is kept here rather than recomputed
+        // at delivery, and no record is judged twice in one scan.
+        const grounds = new Map<InboxRecord, string>();
+        const groundFor = (rec: InboxRecord): string | null => {
           const ground = deliveryGroundIn(claims, persona, rec.from, coordinatorPersona);
-          if ("refused" in ground || deliveryRecordProblem(rec) !== null) continue;
+          if ("refused" in ground || deliveryRecordProblem(rec) !== null) return null;
+          return ground.ground;
+        };
+        for (const rec of candidates) {
+          if (rec.urgent !== true) continue;
+          const ground = groundFor(rec);
+          if (ground !== null) grounds.set(rec, ground);
+        }
+        // The oldest deliverable record qualifying on its wait alone, and only
+        // that one; listInboxRecords returns its records oldest first. The
+        // deliverability check comes before the slot rather than after it,
+        // because the drain that would mark an undeliverable record skipped
+        // cannot run while the turn is in flight: a record picked on age alone
+        // and then refused would hold the scan's one aged slot for the whole
+        // turn and block every sender behind it. A record that is both flagged
+        // and aged rides the flagged leg, so it never consumes the slot.
+        //
+        // A coordinator-ground record is not eligible on its wait at all, and
+        // is passed over here without spending the slot. The worker's standing
+        // steer instruction names `[COORDINATOR id=<record id>, urgent]` as
+        // the one coordinator form carrying no delegated authority, and covers
+        // no other marker, so a coordinator bracket reading `, waited` is one
+        // a worker has no instruction for and would read as a steer to act on
+        // without an operator round trip. A coordinator record still breaks in
+        // on the sender's own urgent flag, and otherwise waits for the tick.
+        // Reader and worker brackets carry no delegated authority under that
+        // instruction whatever marker they arrive with.
+        for (const rec of candidates) {
+          if (rec.urgent === true) continue;
+          const ground = groundFor(rec);
+          // A coordinator-ground record never takes the wait leg. The worker
+          // steer instruction names only the flagged coordinator bracket as
+          // carrying no delegated authority, so a coordinator record reaches a
+          // tool result on the flagged leg alone. The ground it is compared
+          // against is the one deliveryGroundIn produces, read from the same
+          // constant, so producer and check cannot drift.
+          if (ground === null || ground === COORDINATOR_GROUND) continue;
+          grounds.set(rec, ground);
+          break;
+        }
+        for (const rec of candidates) {
+          const ground = grounds.get(rec);
+          if (ground === undefined) continue;
           const existing = await store.get(rec.key);
           if (!existing) continue;
           const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
           parsed.status = "delivered";
-          parsed.deliveredAt = Date.now();
-          parsed.turnId = sess.state.monitor.lastTurnId;
+          // The scan's own reading, the same instant the age test used, so the
+          // minutes the decision logs and the wait self-review measures as
+          // deliveredAt - at cannot disagree.
+          parsed.deliveredAt = scanAt;
+          // A record that is both flagged and aged reads as urgent: the
+          // sender's own flag is the stronger statement of why it is here.
+          const waited = rec.urgent !== true;
+          // Only a flagged record is stamped, so only a flagged record takes
+          // the turn's answer as its reply in turn.complete.
+          if (!waited) parsed.turnId = sess.state.monitor.lastTurnId;
           await store.set(rec.key, parsed);
           sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "monitor",
-            action: "operator_delivered_urgent",
-            detail: `record ${rec.id} delivered inside the running turn as context on ${e.tool}`,
+            action: waited ? "operator_delivered_waited" : "operator_delivered_urgent",
+            detail: waited
+              ? `record ${rec.id} delivered inside the running turn as context on ${e.tool} after waiting ${Math.floor((scanAt - rec.at) / 60_000)} min`
+              : `record ${rec.id} delivered inside the running turn as context on ${e.tool}`,
           });
-          lines.push(deliveryText(ground.ground, rec.id, rec.text, { urgent: true }));
+          lines.push(deliveryText(ground, rec.id, rec.text, { mark: waited ? "waited" : "urgent" }));
         }
         if (lines.length > 0) {
           await persist($);
