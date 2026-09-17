@@ -195,12 +195,6 @@ SUPERVISOR_MIN_RUN_MS="${supervisorMinRunMs:-120000}"
 SUPERVISOR_CRASH_LIMIT="${supervisorCrashLimit:-3}"
 SUPERVISOR_MAX_RESTARTS_PER_HOUR="${supervisorMaxRestartsPerHour:-6}"
 SUPERVISOR_POLL_MS="${supervisorPollMs:-10000}"
-# How long a changed account identity has to hold, on every poll and unchanged,
-# before a relaunch is taken to deliver it. The account autoswitch task rewrites
-# the profile config in place, and a rewrite in progress can read back as
-# another account for a minute or two before the file settles. A single poll is
-# therefore not evidence of a swap, and acting on one restarts a healthy child.
-SUPERVISOR_ACCOUNT_HOLD_S="${supervisorAccountHoldS:-180}"
 # v2 spec Section 0 item 3 Part B (operator decision, DISCUSSION.md Round
 # 136 addendum): the worker's own main thread - where PR #17's kill path
 # was actually written - defaults to opus at medium effort, not sonnet.
@@ -293,10 +287,6 @@ if ! positive_number "$SUPERVISOR_MAX_RESTARTS_PER_HOUR"; then
 fi
 if ! positive_number "$SUPERVISOR_POLL_MS" 1000; then
   echo "ERROR: supervisorPollMs '$SUPERVISOR_POLL_MS' is not a whole number of milliseconds of at least 1000, written with digits only, no leading zero and at most 9 digits. The poll interval is divided by 1000, so anything smaller polls with no wait at all." >&2
-  exit 1
-fi
-if ! positive_number "$SUPERVISOR_ACCOUNT_HOLD_S"; then
-  echo "ERROR: supervisorAccountHoldS '$SUPERVISOR_ACCOUNT_HOLD_S' is not a whole number of seconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
   exit 1
 fi
 
@@ -460,16 +450,6 @@ CHILD_TREE_CONFIRMED_AT=""
 # confirm it and not by time: a poll body that takes a minute confirms the
 # record just as a poll body that takes a second does.
 CHILD_TREE_FAILED_CONFIRMS=0
-# The account identity the live child launched under, read from the profile
-# config `claude` itself reads. A running child never re-reads credentials, so
-# a change here reaches it only through a relaunch.
-CHILD_LAUNCH_ACCOUNT=""
-# A changed account identity a poll has read, and the epoch second of the first
-# poll that read it. The relaunch waits until that identity has held for
-# SUPERVISOR_ACCOUNT_HOLD_S, so the window is what a flip back to the launch
-# identity cancels.
-ACCOUNT_CHANGE_ID=""
-ACCOUNT_CHANGE_SINCE=""
 LAST_STOP_SNAPSHOT=""  # the process-tree snapshot a stop or a sweep acted on, left for the retry and the EXIT trap
 STOP_TREE_MOVED=""  # set where stop_child refused because the wrapper moved to a Windows pid no snapshot was walked from; the retry fails on it
 STOP_SNAPSHOT_BUILT=""  # the merged snapshot build_stop_snapshot last built, empty where it could not verify one
@@ -2340,38 +2320,6 @@ console.log(until + ' ' + new Date(until).toISOString());
 " "$out_file" 2>> "$RUNDIR/supervisor.err"
 }
 
-# --- Helper: the account identity the profile config names ---
-# `claude` reads its account from `.claude.json` under USERPROFILE, and the
-# account autoswitch task rewrites that file in place when it moves accounts.
-# A running child never re-reads its credentials, so the identity this prints
-# is what a launch pinned, and a change means a relaunch is what delivers the
-# new account. The credentials file itself is never opened here; this reads the
-# profile config and nothing else.
-#
-# Prints the account identity, or nothing when USERPROFILE names no profile
-# config, the file cannot be parsed, or it carries no account. All three read
-# as no identity, which is quiet: a swap is a change between two identities,
-# never the absence of one.
-read_account_uuid() {
-  local profile="${USERPROFILE:-}"
-  if [ -z "$profile" ]; then
-    return 0
-  fi
-  local config
-  config="$(cygpath -u "$profile" 2>/dev/null || echo "$profile")/.claude.json"
-  if [ ! -f "$config" ]; then
-    return 0
-  fi
-  node -e "
-const fs = require('fs');
-try {
-  const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
-  const id = config && config.oauthAccount && config.oauthAccount.accountUuid;
-  if (typeof id === 'string' && id) console.log(id);
-} catch (e) { /* unreadable or unparsable reads as no identity */ }
-" "$config" 2>> "$RUNDIR/supervisor.err"
-}
-
 # --- Helper: read child session id from stream-json init line ---
 read_child_session_id() {
   local out_file="$1"
@@ -2543,26 +2491,6 @@ while true; do
     CHANNEL_ARGS=(--name "$CHANNEL_NAME" --channels "plugin:relay@sapplefeld-channels")
     CHILD_PROCESS_TOKEN=$(node -e "console.log(require('crypto').randomUUID())")
     CHANNEL_ENV+=(CHANNEL_SESSION="$CHANNEL_NAME" CHANNEL_PROCESS_TOKEN="$CHILD_PROCESS_TOKEN" CHANNEL_SESSION_MIRROR=off)
-  fi
-
-  # The account identity this child launches under, read as close to the launch
-  # instant as the code allows. Everything between this read and the coproc is
-  # bash's own work, while a read taken after the launch sits behind the first
-  # tree refresh and the PowerShell walks it spawns, which take real time. A
-  # swap landing inside that gap would be recorded as the account the child
-  # launched under, and the poll loop would then read the child as running under
-  # an identity it had never held. A previous child's pending change window is
-  # cleared here for the same reason: it belongs to the child that saw it.
-  CHILD_LAUNCH_ACCOUNT=$(read_account_uuid)
-  ACCOUNT_CHANGE_ID=""
-  ACCOUNT_CHANGE_SINCE=""
-  if [ -z "$CHILD_LAUNCH_ACCOUNT" ]; then
-    # A swap is a change between two identities, so with none readable there
-    # is nothing to compare and the check is quiet for this child's whole
-    # life. Named once here rather than left to look like a child nobody ever
-    # swapped the account under. A later poll that does read one takes it up
-    # and the check starts working from there.
-    log "ACCOUNT no_identity: the profile config under USERPROFILE names no account identity, so child-$CHILD_INDEX has nothing to compare an account swap against"
   fi
 
   coproc CHILD { env "${CHANNEL_ENV[@]}" claude -p --input-format stream-json --output-format stream-json --verbose \
@@ -2991,77 +2919,6 @@ const o = JSON.parse(require('fs').readFileSync(0, 'utf8'));
 console.log(o.reason || '');
 " 2>> "$RUNDIR/supervisor.err")
 
-    # The account the child launched under, against the one the profile config
-    # names now. A running child never re-reads credentials, so a swap reaches
-    # it only through a relaunch, and it is the same passive relaunch a
-    # finished goal takes: the goal tree is kept and the fresh child resumes.
-    # Read only where nothing else is due, so a stop or a restart the decide
-    # unit ordered keeps its own priority. `continue` is the steady state of a
-    # healthy child, so this reads and parses the profile config on nearly
-    # every poll, and it is skipped only on the polls where something else is
-    # already about to act. A poll skipped that way neither confirms a pending
-    # change nor cancels one: it took no reading at all. A rewrite that kept the
-    # identity, and a profile config that is absent or unparsable, both leave
-    # this quiet.
-    if [ "$DECIDE_ACTION" = "continue" ]; then
-      ACCOUNT_NOW=$(read_account_uuid)
-      if [ -z "${CHILD_LAUNCH_ACCOUNT:-}" ] && [ -n "${ACCOUNT_NOW:-}" ]; then
-        # The launch read found no identity, which a profile config being
-        # rewritten at that instant also looks like. Taking the first identity
-        # a later poll does read is what keeps one such instant from leaving
-        # this child with no swap check for the rest of its life.
-        CHILD_LAUNCH_ACCOUNT="$ACCOUNT_NOW"
-        log "ACCOUNT identity_backfilled: child-$CHILD_INDEX is holding account ${ACCOUNT_NOW:0:8}, read on poll $POLL_COUNT, the profile config having named none at its launch"
-      fi
-      # A changed identity has to hold before it restarts anything. The account
-      # autoswitch task rewrites the profile config in place and the file can
-      # read back as another account for a minute or two while it does, so the
-      # first poll that sees a different identity opens a window rather than
-      # ordering a relaunch, and only an identity that held on every poll across
-      # SUPERVISOR_ACCOUNT_HOLD_S is a swap.
-      #
-      # Every identity a poll reads has one answer here, and the four differ.
-      # The launch identity read again cancels the window outright: the child is
-      # running under the account the profile config names and there is nothing
-      # to deliver. A third identity, different from both, is a new change and
-      # resets the window to this poll, since the window belongs to the identity
-      # that opened it. No identity at all clears the window and keeps nothing,
-      # because an unreadable file is not evidence of a revert and not evidence
-      # of a hold either, and completing a hold is the act that kills a live
-      # child. The next poll that reads the changed identity opens a fresh
-      # window, so a hole in the readings restarts the clock rather than
-      # cancelling the change or counting towards it.
-      #
-      # Each outcome's log line opens with a stable token after the label, so a
-      # caller or a test reads the outcome from that token rather than from the
-      # prose beside it.
-      if [ -n "${CHILD_LAUNCH_ACCOUNT:-}" ]; then
-        # Every identity in these lines is named by a short prefix. They are
-        # account identifiers in a plaintext log the operator reads, and a
-        # prefix is enough to tell one from another.
-        if [ -z "${ACCOUNT_NOW:-}" ]; then
-          if [ -n "${ACCOUNT_CHANGE_ID:-}" ]; then
-            log "ACCOUNT hold_cleared: the profile config named no identity on poll $POLL_COUNT, so the hold on ${ACCOUNT_CHANGE_ID:0:8} is dropped and child-$CHILD_INDEX keeps running; a later poll that reads that identity opens a fresh hold"
-            ACCOUNT_CHANGE_ID=""
-            ACCOUNT_CHANGE_SINCE=""
-          fi
-        elif [ "$ACCOUNT_NOW" = "$CHILD_LAUNCH_ACCOUNT" ]; then
-          if [ -n "${ACCOUNT_CHANGE_ID:-}" ]; then
-            log "ACCOUNT hold_cancelled: the profile config names ${CHILD_LAUNCH_ACCOUNT:0:8} again, the account child-$CHILD_INDEX launched under, so the pending relaunch for ${ACCOUNT_CHANGE_ID:0:8} is cancelled and the child keeps running"
-            ACCOUNT_CHANGE_ID=""
-            ACCOUNT_CHANGE_SINCE=""
-          fi
-        elif [ "$ACCOUNT_NOW" != "${ACCOUNT_CHANGE_ID:-}" ]; then
-          ACCOUNT_CHANGE_ID="$ACCOUNT_NOW"
-          ACCOUNT_CHANGE_SINCE=$(date +%s)
-          log "ACCOUNT hold_opened: the profile config names ${ACCOUNT_NOW:0:8}, child-$CHILD_INDEX launched under ${CHILD_LAUNCH_ACCOUNT:0:8}; holding the relaunch until that identity has held on every poll for ${SUPERVISOR_ACCOUNT_HOLD_S}s"
-        elif [ "$(( $(date +%s) - ACCOUNT_CHANGE_SINCE ))" -ge "$SUPERVISOR_ACCOUNT_HOLD_S" ]; then
-          DECIDE_ACTION="restart_passive"
-          DECIDE_REASON="account_changed: the profile config names ${ACCOUNT_NOW:0:8}, child-$CHILD_INDEX launched under ${CHILD_LAUNCH_ACCOUNT:0:8}, and has named it on every poll for ${SUPERVISOR_ACCOUNT_HOLD_S}s"
-        fi
-      fi
-    fi
-
     case "$DECIDE_ACTION" in
       stop_complete)
         log "STOP_COMPLETE: $DECIDE_REASON"
@@ -3143,19 +3000,6 @@ console.log(o.reason || '');
         case "$DECIDE_REASON" in
           restart_requested*)
             log "PASSIVE: restart requested; relaunching the child with the goal tree kept, the new child resumes the active plan"
-            ;;
-          account_changed*)
-            log "PASSIVE: the account identity changed since launch; relaunching the child so it runs under the account the profile config names now"
-            # This trigger is a file another process rewrites, read against
-            # what this launch read, so it can differ on every poll and every
-            # launch. The relaunch is counted against the restart budget for
-            # that reason: the budget is what ends a relaunch loop no signal
-            # from the child itself is driving.
-            record_restart_in_hour
-            if [ $RESTART_COUNT -ge $SUPERVISOR_MAX_RESTARTS_PER_HOUR ]; then
-              log "STOP_BUDGET: $RESTART_COUNT/$SUPERVISOR_MAX_RESTARTS_PER_HOUR restarts in the hour"
-              exit 4
-            fi
             ;;
           *)
             log "PASSIVE: goal complete; returning to passive state, waiting for the next goal delivered by chat"

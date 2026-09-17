@@ -162,11 +162,6 @@ fi
 refused_by "supervisorCrashLimit 'abc' is refused at its own call site" "ERROR: supervisorCrashLimit 'abc'" supervisorCrashLimit=abc
 refused_by "supervisorStopGraceMs '500' is refused by the 1000 minimum" "ERROR: supervisorStopGraceMs '500'" supervisorStopGraceMs=500
 refused_by "supervisorPollMs '500' is refused by the 1000 minimum" "ERROR: supervisorPollMs '500'" supervisorPollMs=500
-# supervisorAccountHoldS is compared against an age in seconds on every poll, so
-# a non-number or a zero hold reaches that comparison unrefused without its
-# own call site.
-refused_by "supervisorAccountHoldS 'abc' is refused at its own call site" "ERROR: supervisorAccountHoldS 'abc'" supervisorAccountHoldS=abc
-refused_by "supervisorAccountHoldS '0' is refused at its own call site" "ERROR: supervisorAccountHoldS '0'" supervisorAccountHoldS=0
 
 # supervisorPsBoundS is the one setting on this rule that falls back to 30
 # rather than refusing, so its resolution is read by running the script's own

@@ -1161,16 +1161,6 @@ s[persona].decisions.push({ timestamp: Date.now(), loop: "goal", action: act, de
 fs.writeFileSync(f, JSON.stringify(s));
 ' "\$1" "\$2" "$PERSONA_NAME"
 }
-# Rewrites the profile config \`claude\` itself reads, under this case's own
-# USERPROFILE, with the account identity named.
-write_account() {  # <account uuid>
-  node -e '
-const fs = require("fs");
-const [file, uuid] = process.argv.slice(1);
-fs.writeFileSync(file, JSON.stringify({ numStartups: 7, oauthAccount: { accountUuid: uuid, emailAddress: "stub@example.invalid" } }));
-' "\$USERPROFILE/.claude.json" "\$1"
-  : > "\$CASE_DIR/account-rewritten"
-}
 # The stream-json init line the supervisor reads this child's session id from.
 emit_init() {
   echo '{"type":"system","subtype":"init","session_id":"stub-sess-1"}'
@@ -1228,18 +1218,6 @@ wait_for_log_line() {  # <grep pattern> <bound seconds>
   local waited=0
   until grep -q "\$1" "\$CASE_DIR/rd/supervisor.log" 2>/dev/null; do
     [ "\$waited" -ge "\$2" ] && return 1
-    sleep 1
-    waited=\$((waited + 1))
-  done
-  return 0
-}
-# Blocks until the supervisor's log carries the pattern that many times, which
-# is how a case waits on a line the supervisor writes more than once. Bounded,
-# so a supervisor that writes it fewer times still lets the case end and fail.
-wait_for_log_count() {  # <grep pattern> <count> <bound seconds>
-  local waited=0 seen
-  until seen=\$(grep -c "\$1" "\$CASE_DIR/rd/supervisor.log" 2>/dev/null); [ "\${seen:-0}" -ge "\$2" ]; do
-    [ "\$waited" -ge "\$3" ] && return 1
     sleep 1
     waited=\$((waited + 1))
   done
@@ -1327,56 +1305,6 @@ case "\$action" in
   # The same crossing, with the child exiting non-zero when its stdin closes,
   # so the decide path's restart counts as a crash.
   critical_live7) IFS= read -r _; record context_budget_crossed "\$S/detail-critical"; while IFS= read -r _; do :; done; exit 7 ;;
-  # Alive across a few polls, then a shutdown that ends the run.
-  quiet) IFS= read -r _; sleep 15; record shutdown_requested ""; exit 0 ;;
-  # The account identity moves to another account while this child runs.
-  swap) IFS= read -r _; write_account "22222222-2222-4222-8222-222222222222"; while IFS= read -r _; do :; done; exit 0 ;;
-  # The profile config is rewritten with the identity it already carried, the
-  # shape an ordinary token refresh leaves behind.
-  rewrite_same) IFS= read -r _; write_account "11111111-1111-4111-8111-111111111111"; sleep 15; record shutdown_requested ""; exit 0 ;;
-  # The account moves and then moves back, which is the shape the autoswitch
-  # task leaves while it rewrites the profile config in place.
-  swap_revert)
-    IFS= read -r _
-    write_account "22222222-2222-4222-8222-222222222222"
-    wait_for_log_line "ACCOUNT hold_opened" 60
-    write_account "11111111-1111-4111-8111-111111111111"
-    # The supervisor's own reading of the revert ends this child, rather than a
-    # time that assumes how long a poll takes on a loaded box.
-    wait_for_log_line "ACCOUNT hold_cancelled" 90
-    record shutdown_requested ""
-    exit 0
-    ;;
-  # The account moves to one identity and then to a second before the first has
-  # held long enough to relaunch anything.
-  swap_third)
-    IFS= read -r _
-    write_account "22222222-2222-4222-8222-222222222222"
-    wait_for_log_line "ACCOUNT hold_opened: .*names 22222222" 60
-    write_account "33333333-3333-4333-8333-333333333333"
-    while IFS= read -r _; do :; done
-    exit 0
-    ;;
-  # The account moves, and the profile config then cannot be read for longer
-  # than the whole hold. An unreadable file is not evidence of a revert, so
-  # nothing is cancelled, and it is not evidence of a hold either, so nothing
-  # is confirmed and the hold is dropped. The identity is written again at the
-  # end, and the poll that reads it opens a hold of its own rather than
-  # completing the one those polls could say nothing about. This child ends the
-  # run at that poll, so a supervisor that completed the old hold instead has
-  # already relaunched by the time the case reads the log.
-  swap_unreadable)
-    IFS= read -r _
-    write_account "22222222-2222-4222-8222-222222222222"
-    wait_for_log_line "ACCOUNT hold_opened" 60
-    rm -f "\$USERPROFILE/.claude.json"
-    wait_for_log_line "ACCOUNT hold_cleared" 90
-    sleep 20
-    write_account "22222222-2222-4222-8222-222222222222"
-    wait_for_log_count "ACCOUNT hold_opened" 2 60
-    record shutdown_requested ""
-    exit 0
-    ;;
   # A child that runs for two polls and exits on its own, leaving nothing
   # behind. Paired with a supervisor whose poll body is slow, it is the shape a
   # loaded box produces: every poll confirmed the tree, and the wall clock
@@ -1591,144 +1519,6 @@ drive k "critical_live7,shutdown" 6
 [ "$RC" -eq 3 ]; check "(k) supervisor exits 3 at the crash limit (rc=$RC)" "$?"
 grep -q 'STOP_CRASH_LOOP: 1 crashes' "$LOG"; check "(k) the crash-loop line names the limit it stopped at" "$?"
 ! grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 1 ]; check "(k) no second child launches (stub launches=$LAUNCHES)" "$?"
-
-# --- (l) the account identity changes while the child runs ---
-# A running child never re-reads credentials, so only a relaunch picks up a
-# swapped account. The identity is read from the profile config claude itself
-# reads, under this case's own USERPROFILE.
-#
-# The identity has to hold on every poll across supervisorAccountHoldS before
-# the relaunch is taken, so the case names a hold short enough to run and long
-# enough to need more than the one poll that first reads the change.
-mkdir -p "$TMP/l/profile"
-printf '%s' '{"oauthAccount":{"accountUuid":"11111111-1111-4111-8111-111111111111"}}' > "$TMP/l/profile/.claude.json"
-DRIVE_ENV=(USERPROFILE="$TMP/l/profile" supervisorAccountHoldS=10)
-drive l "swap,shutdown" 6
-DRIVE_ENV=()
-[ -f "$TMP/l/account-rewritten" ]; check "(l) setup: the stub rewrote the profile config" "$?"
-[ "$RC" -eq 0 ]; check "(l) supervisor exits 0 on the second child's shutdown_requested (rc=$RC)" "$?"
-grep -q 'ACCOUNT hold_opened: .*names 22222222' "$LOG"
-check "(l) the first poll that reads the change opens a window rather than relaunching" "$?"
-grep -q 'RESTART_PASSIVE: account_changed' "$LOG"; check "(l) the account change takes RESTART_PASSIVE once it has held" "$?"
-L_WINDOW=$(grep -n 'ACCOUNT hold_opened:' "$LOG" | head -n 1 | cut -d: -f1)
-L_RESTART=$(grep -n 'RESTART_PASSIVE: account_changed' "$LOG" | head -n 1 | cut -d: -f1)
-[ -n "$L_WINDOW" ] && [ -n "$L_RESTART" ] && [ "$L_WINDOW" -lt "$L_RESTART" ]
-check "(l) the relaunch follows the window rather than the poll that first read the change (lines $L_WINDOW < $L_RESTART)" "$?"
-[ "$(grep -c 'RESTART_PASSIVE: account_changed' "$LOG")" -eq 1 ]
-check "(l) the change that held restarts the child exactly once" "$?"
-! grep -q 'ACCOUNT hold_cancelled:' "$LOG"
-check "(l) no cancellation, since the identity never went back to the one the child launched under" "$?"
-! grep -q 'ACCOUNT hold_cleared:' "$LOG"
-check "(l) no cleared hold either, since every poll across the window read an identity" "$?"
-grep -q 'PASSIVE: the account identity changed since launch' "$LOG"; check "(l) the passive line says why the child is relaunching" "$?"
-grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 2 ]; check "(l) a second child launches (stub launches=$LAUNCHES)" "$?"
-
-# --- (q) a change that goes back before the window ends relaunches nothing ---
-# The account autoswitch task rewrites the profile config in place, and the
-# file can read back as another account for a minute or two while it does. A
-# relaunch on the first poll that sees one of those readings restarts a healthy
-# child, and the log has to say the window was cancelled rather than going
-# quiet, so the operator can read a flip-back for what it was.
-mkdir -p "$TMP/q/profile"
-printf '%s' '{"oauthAccount":{"accountUuid":"11111111-1111-4111-8111-111111111111"}}' > "$TMP/q/profile/.claude.json"
-DRIVE_ENV=(USERPROFILE="$TMP/q/profile" supervisorAccountHoldS=60)
-drive q "swap_revert" 6
-DRIVE_ENV=()
-[ -f "$TMP/q/account-rewritten" ]; check "(q) setup: the stub rewrote the profile config" "$?"
-grep -q '"accountUuid":"11111111-1111-4111-8111-111111111111"' "$TMP/q/profile/.claude.json"
-check "(q) setup: the profile config carries the launch identity again at the end of the run" "$?"
-grep -q 'ACCOUNT hold_opened: .*names 22222222' "$LOG"
-check "(q) the poll that read the change opened a window" "$?"
-grep -q 'ACCOUNT hold_cancelled: .*names 11111111 again' "$LOG"
-check "(q) the log names the cancellation rather than going quiet" "$?"
-! grep -q 'RESTART_PASSIVE:' "$LOG"; check "(q) no relaunch for a change that went back inside the window" "$?"
-[ "$RC" -eq 0 ]; check "(q) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"
-[ "$LAUNCHES" -eq 1 ]; check "(q) no second child launches (stub launches=$LAUNCHES)" "$?"
-
-# --- (w) a third identity inside the window is a new change ---
-# The window belongs to the identity that opened it. A reading different from
-# both the launch identity and the pending one is a change of its own, so the
-# window restarts at that poll and the relaunch delivers the identity the
-# profile config actually settled on.
-#
-# The hold is wide rather than tight. The stub writes the third identity once
-# it reads the first window's own line, which takes a poll and the stub's own
-# second of granularity, and a hold near that span turns the case into a race
-# the box can lose without anything being wrong.
-mkdir -p "$TMP/w/profile"
-printf '%s' '{"oauthAccount":{"accountUuid":"11111111-1111-4111-8111-111111111111"}}' > "$TMP/w/profile/.claude.json"
-DRIVE_ENV=(USERPROFILE="$TMP/w/profile" supervisorAccountHoldS=30)
-drive w "swap_third,shutdown" 6
-DRIVE_ENV=()
-grep -q 'ACCOUNT hold_opened: .*names 22222222' "$LOG"
-check "(w) the first identity opened a window" "$?"
-grep -q 'ACCOUNT hold_opened: .*names 33333333' "$LOG"
-check "(w) the third identity opened a window of its own rather than inheriting the first one's" "$?"
-grep -q 'RESTART_PASSIVE: account_changed: the profile config names 33333333' "$LOG"
-check "(w) the relaunch delivers the identity that held, not the one the window opened on" "$?"
-! grep -q 'RESTART_PASSIVE: account_changed: the profile config names 22222222' "$LOG"
-check "(w) no relaunch for the identity the profile config moved off before the window ended" "$?"
-[ "$RC" -eq 0 ]; check "(w) supervisor exits 0 on the second child's shutdown_requested (rc=$RC)" "$?"
-grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 2 ]; check "(w) a second child launches (stub launches=$LAUNCHES)" "$?"
-
-# --- (d) a profile config that cannot be read confirms no hold ---
-# The relaunch is taken only where the changed identity read the same on every
-# poll across the hold, and a poll that reads no identity at all has read
-# nothing to confirm. An absent or unparsable file is not evidence that the
-# account went back either, so the hold is dropped rather than cancelled: the
-# child keeps running and the next poll that reads the changed identity opens a
-# hold of its own. Killing a live child on a hold completed across polls that
-# read nothing is the failure this case exists to refuse.
-mkdir -p "$TMP/d/profile"
-printf '%s' '{"oauthAccount":{"accountUuid":"11111111-1111-4111-8111-111111111111"}}' > "$TMP/d/profile/.claude.json"
-DRIVE_ENV=(USERPROFILE="$TMP/d/profile" supervisorAccountHoldS=10)
-drive d "swap_unreadable" 6
-DRIVE_ENV=()
-D_CLEARED=$(grep -c 'ACCOUNT hold_cleared:' "$LOG")
-[ "$D_CLEARED" -ge 1 ]
-check "(d) the first poll that reads no identity drops the hold and says so (lines=$D_CLEARED)" "$?"
-! grep -q 'ACCOUNT hold_cancelled:' "$LOG"
-check "(d) a profile config that cannot be read is not read as the account going back" "$?"
-! grep -q 'RESTART_PASSIVE:' "$LOG"
-check "(d) no relaunch, since no hold was ever confirmed on every poll across it" "$?"
-D_WINDOWS=$(grep -c 'ACCOUNT hold_opened:' "$LOG")
-[ "$D_WINDOWS" -eq 2 ]
-check "(d) the poll that reads the identity again opens a fresh hold rather than completing the dropped one (lines=$D_WINDOWS)" "$?"
-[ "$RC" -eq 0 ]; check "(d) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"
-! grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 1 ]
-check "(d) the child that was running through the unreadable window is still the one running (stub launches=$LAUNCHES)" "$?"
-
-# --- (m) control: the profile config is rewritten with the same identity ---
-# An ordinary token refresh rewrites that file without moving the account, and
-# a supervisor that restarted on the rewrite would restart a healthy child
-# every time one happened.
-mkdir -p "$TMP/m/profile"
-printf '%s' '{"oauthAccount":{"accountUuid":"11111111-1111-4111-8111-111111111111"}}' > "$TMP/m/profile/.claude.json"
-DRIVE_ENV=(USERPROFILE="$TMP/m/profile")
-drive m "rewrite_same,shutdown" 6
-DRIVE_ENV=()
-[ -f "$TMP/m/account-rewritten" ]; check "(m) setup: the stub rewrote the profile config" "$?"
-! grep -q 'ACCOUNT no_identity:' "$LOG"; check "(m) control: no such line where an identity is readable, so that line names the state and not every launch" "$?"
-[ "$RC" -eq 0 ]; check "(m) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"
-! grep -q 'RESTART_PASSIVE:' "$LOG"; check "(m) no RESTART_PASSIVE line for a rewrite that kept the identity" "$?"
-[ "$LAUNCHES" -eq 1 ]; check "(m) no second child launches (stub launches=$LAUNCHES)" "$?"
-
-# --- (n) control: no profile config under USERPROFILE at all ---
-# An absent or unparsable file reads as no identity, which is quiet: the
-# supervisor has nothing to compare and relaunches nothing.
-mkdir -p "$TMP/n/profile"
-DRIVE_ENV=(USERPROFILE="$TMP/n/profile")
-drive n "quiet,shutdown" 6
-DRIVE_ENV=()
-[ ! -f "$TMP/n/profile/.claude.json" ]; check "(n) setup: no profile config exists under this case's USERPROFILE" "$?"
-[ "$RC" -eq 0 ]; check "(n) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"
-! grep -q 'RESTART_PASSIVE:' "$LOG"; check "(n) no RESTART_PASSIVE line with no identity to read" "$?"
-[ "$LAUNCHES" -eq 1 ]; check "(n) no second child launches (stub launches=$LAUNCHES)" "$?"
-# With no identity readable the swap check has nothing to compare and stays
-# quiet for this child's whole life, which otherwise looks exactly like a
-# child nobody swapped the account under.
-N_QUIET=$(grep -c 'ACCOUNT no_identity:' "$LOG")
-[ "$N_QUIET" -eq 1 ]; check "(n) the log says once that this child has no account identity to compare a swap against (lines=$N_QUIET)" "$?"
 
 # --- (o) a parked child's log says it is parked, not that it is waiting ---
 # The newest record in the child's stream is the engine's own 429 retry, which
@@ -1997,23 +1787,6 @@ if [ "$CHECK_ANCHORS" -eq 1 ]; then
   [ "$RC" -eq 5 ]; check "(y) the supervisor exits 5 rather than relaunching on a reading that did not complete (rc=$RC)" "$?"
   ! grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 1 ]; check "(y) no second child launches (stub launches=$LAUNCHES)" "$?"
 fi
-
-# --- (z) an account swap relaunch is counted against the restart budget ---
-# The swap signal is a file another process rewrites, so it can differ on every
-# poll and drive a relaunch loop no signal from the child itself is behind. The
-# budget is what ends one. The discriminating assertion is the launch count: a
-# run that relaunches first and stops at the next child's first poll exits 4 as
-# well, one child later.
-mkdir -p "$TMP/z/profile"
-printf '%s' '{"oauthAccount":{"accountUuid":"11111111-1111-4111-8111-111111111111"}}' > "$TMP/z/profile/.claude.json"
-DRIVE_ENV=(USERPROFILE="$TMP/z/profile" supervisorAccountHoldS=10)
-drive z "swap,shutdown" 1
-DRIVE_ENV=()
-[ -f "$TMP/z/account-rewritten" ]; check "(z) setup: the stub rewrote the profile config" "$?"
-grep -q 'RESTART_PASSIVE: account_changed' "$LOG"; check "(z) the account change takes RESTART_PASSIVE" "$?"
-[ "$RC" -eq 4 ]; check "(z) the supervisor exits 4 at the restart budget (rc=$RC)" "$?"
-grep -q 'STOP_BUDGET: 1/1 restarts in the hour' "$LOG"; check "(z) the budget line names the limit it stopped at" "$?"
-! grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 1 ]; check "(z) no second child launches (stub launches=$LAUNCHES)" "$?"
 
 # --- (s) a slow poll body does not forge a stale tree record ---
 # A poll body's own work varies by tens of seconds on a loaded box, and the
