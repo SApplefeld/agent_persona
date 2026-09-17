@@ -123,7 +123,7 @@ Files in scope: `README.md` whole, with the exit-code table pinned unchanged, `d
 ## Assumptions
 
 - assumed 2026-09-16 (kit leash-takeover spec): the silence bound is fifteen minutes, the measured tool-call cap plus margin, overridable through `supervisorSilenceBoundMs`; reversal: a different default is one option edit, and a bound below ten minutes reads a working session as frozen.
-- assumed 2026-09-16 (default): a signal to the supervisor detaches it from a live handled child rather than stopping the child, so a scheduled-task stop leaves the session running and the shutdown request file is the deliberate stop; reversal: keeping the trap's stop makes the child die with its supervisor, which is the coupling the Goal removes, and Operator Verification item 1 cannot pass.
+- decided 2026-09-17 by the operator, at the keyboard of the AP: Expert seat and on the coordinator's thread, confirming the default assumed 2026-09-16: a signal to the supervisor detaches it from a live handled child rather than stopping the child, so a scheduled-task stop leaves the session running and the shutdown request file is the deliberate stop. The operator's words: "leave the child running, I think that will help a lot." Rationale: keeping the trap's stop makes the child die with its supervisor, which is the coupling the Goal removes, and Operator Verification item 1 cannot pass.
 - assumed 2026-09-16 (sibling plans in this repository): Branch-and-PR; reversal: none, a header edit.
 - assumed 2026-09-16 (default): this plan runs after the process-keeper and steward-architect plans close; reversal: running beside either puts two plans in `bin/supervise.sh`, the priming text or `README.md` at once.
 - assumed 2026-09-17 (default): the heartbeat timer may also starve during a long tool call; the forty-one-minute silence first read as starvation is now attributed to the path drift the Approach names, so starvation is unmeasured rather than observed; reversal: Section 1's second measurement, and a heartbeat that stamps through a tool call makes the heartbeat a stronger signal than the Approach credits and changes no section's acceptance.
@@ -138,8 +138,8 @@ Files in scope: `README.md` whole, with the exit-code table pinned unchanged, `d
 
 - Which launch form Section 1 finds. Owner: the executing session, recorded as an amendment in Section 1's Chapter.
 - When the keeper's stop path moves from signaling the wrapper to writing the shutdown request file. Owner: the keeper plan's follow-on, recorded by Section 6.
-- Whether the heartbeat path fix lands in the keeper plan's Section 4 now or in this plan's Section 3. Put to the operator by the dev session on 2026-09-17 with a recommendation for now; either answer leaves Section 3's acceptance in place, and a fix landed first is inherited.
-- Whether a deliberate stop of the scheduled task should also stop the child, or detach as the Assumptions state. Asked of the operator on 2026-09-16 with the coordinator's recommendation to detach; the answer is recorded here before Section 5 is dispatched.
+- Whether the heartbeat path fix lands in the keeper plan's Section 4 now or in this plan's Section 3. Decided 2026-09-17 by the operator on the dev session's own channel: now, in the keeper plan's Section 4, as one corroboration check against the harness transcript, which that plan's interim board 35 records. Section 3's acceptance stands and inherits it as landed.
+- Whether a deliberate stop of the scheduled task should also stop the child, or detach as the Assumptions state. Decided 2026-09-17 by the operator: detach, leaving the child running for the next supervisor to adopt. The Assumptions entry carries the words and the rationale.
 
 ## Related
 
