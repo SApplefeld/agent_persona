@@ -795,3 +795,36 @@ Live dispatches: none. Rulings adopted since the last boundary: none.
 **Section 4's ladder is unchanged at the second stage, count at one.** No review round was adjudicated at this boundary, and a round nobody ran is a round no ladder counts.
 
 Next action: run the owed lanes on the current tree, which is the section's own verification step and has to precede the round that reads the delta. Then the owed review round over the fix delta, which reaches process execution and so is owed under the fix-delta bar whatever else it touches. Then the live stop-tree suite once the operator gives the quiet-fleet window, then the Minor close pass carrying M-prose, then Chapter 4 with M-shutdown-code's justified-not-fixed statement and the shutdown race it records, then Section 5.
+
+### Interim board 34 - 2026-09-17
+
+Written after the owed lanes ran, at a compaction boundary the gate asked for. No section closed and no review round ran at this boundary.
+
+**Interim board 32's reading of the previous gate is corrected: that run had not died, and it finished while this session worked.** Board 32 read the natural-exit leg as unrun because its log stopped at 122 OK and it had written no exit file. The leg was in fact still running, orphaned from the session its supervisor killed, and it went on writing for another half hour. A process poll taken before this session spawned anything found it: the gate wrapper at Windows pid 16884, started 01:58:30, and the suite under it at 17124, started 02:00:05, five seconds before the kill. The log grew 446 bytes across two readings ninety seconds apart, which is what established it was live rather than stalled. Nothing was spawned beside it; this session waited it out.
+
+That orphan completed with 231 OK, 1 FAIL, exit 1, read from the marker its own wrapper wrote. The single red is case (m), the same-identity profile rewrite, returning exit 5 where the case asserts 0.
+
+**The red did not reproduce, and the re-run was taken on a quiet box rather than beside the orphan.** This session's own run of the same suite against a byte-identical tree returned 232 OK, 0 FAIL, exit 0, with case (m) at rc=0. The two runs carry the same total check count, so exactly one check flipped. It is recorded as not reproduced under a named contention rather than dismissed as a flake: the orphan ran through this session's own plan-doc read, commit and push, and interim board 29 records the same shape, a shutdown case returning 5, on the same ground of a poll body slowed under load. The failing case is not evidence against the fix round, and nothing about it is claimed as settled.
+
+**The tree the orphan ran is this tree.** Every Section 4 code and suite file carries an mtime before the wrapper's 01:58:30 launch, the natural-exit suite's own 01:58:20 among them, so the killed session's last edit is in the run. The only commit since is this plan's own doc.
+
+Gate, every exit code read from the run's own marker and never from a completion notification, measured by this session on 2026-09-17 on this checkout at 6d18c7c plus the uncommitted Section 4 delta and the two foreign hunks, box not claimed and the contention named:
+
+- `.kit/supervisor-natural-exit-test.sh` 232 OK, 0 FAIL, exit 0, against interim board 30's 186 OK 0 FAIL exit 0. The count grew by the fix round's own cases and nothing was removed.
+- `.kit/supervisor-tree-walk-test.sh` 19 OK, 0 FAIL, exit 0, against board 30's 16 OK exit 0.
+- `.kit/supervisor-unit-test.mjs` 17 passed, 0 failed, exit 0, unchanged against board 30.
+- `.kit/supervisor-model-test.sh`, `.kit/settings-plugin-key-test.sh`, `.kit/channel-reply-instruction-test.sh` and `.kit/persona-live-refuse-test.sh` each exit 0.
+- The rest of this box's whole gate, which the six supervisor suites do not cover: `npx tsc --noEmit`, `node .kit/check-loader-rule.mjs`, `bash -n` over both shell entry points, and the commons-unit, controller-tick, cost-ledger-unit, cost-migration and self-review-unit suites, each exit 0.
+- The sibling sections' own lanes, re-run to show this delta broke neither: `.kit/keeper-unit-test.mjs` 63 passed 0 failed exit 0 against Chapter 2's 63/0, and `.kit/keeper-register-test.mjs` 110 passed 0 failed 0 skipped exit 0 against Chapter 3's 110/0. Both unchanged.
+
+`.kit/live-stopprocesstree-test.sh` remains OWED AND UNRUN pending the quiet-fleet window asked of the operator, and it is the one leg of the acceptance suite list still outstanding.
+
+A process census of the live fleet was taken before and after every kill-performing run, compared on id, name and creation time. All nine processes, three `env.exe` and six `claude.exe`, are identical across all of them, so neither the orphan nor this session's runs took collateral. The machine's heavy-process claim is still the dead session's, written 2026-09-16T17:09:10Z with an expected 5400 seconds and more than a day past it, so it was left standing and every run above was taken unclaimed under that named contention.
+
+The two foreign hunks in `bin/supervise.sh` stand untouched, as do the other steward-architect paths. Nothing foreign entered any staged list.
+
+Live dispatches: none. Rulings adopted since the last boundary: none.
+
+**Section 4's ladder is unchanged at the second stage, count at one.** No review round was adjudicated at this boundary.
+
+Next action: the owed review round over the fix delta, which reaches process execution and so is owed under the fix-delta bar. Then the live stop-tree suite once the operator gives the quiet-fleet window, then the Minor close pass carrying M-prose, then Chapter 4 with M-shutdown-code's justified-not-fixed statement and the shutdown race it records, then Section 5.
