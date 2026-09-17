@@ -2,7 +2,7 @@
 
 ## Active plans
 
-- None.
+- `plans/agent_persona_supervisor-peer_v1.md`: Supervisor as peer (the supervisor judges its child gone only on four silent signals together, asks for a restart through a run-directory mailbox the child answers at a boundary, launches the child under a holder process so it outlives the supervisor, adopts a live child at start, and keeps the kill as the last rung). Ready, parked behind the process-keeper plan.
 
 ## Archived plans
 
