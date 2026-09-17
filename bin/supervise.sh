@@ -471,6 +471,7 @@ CHILD_LAUNCH_ACCOUNT=""
 ACCOUNT_CHANGE_ID=""
 ACCOUNT_CHANGE_SINCE=""
 LAST_STOP_SNAPSHOT=""  # the process-tree snapshot a stop or a sweep acted on, left for the retry and the EXIT trap
+STOP_TREE_MOVED=""  # set where stop_child refused because the wrapper moved to a Windows pid no snapshot was walked from; the retry fails on it
 STOP_SNAPSHOT_BUILT=""  # the merged snapshot build_stop_snapshot last built, empty where it could not verify one
 # Initialized here so it is never unset under `set -u`: the "no child to
 # stop" early return's own `log "... ($STOP_PATH)"` would otherwise abort
@@ -1809,6 +1810,16 @@ retry_stop_escalation() {
   if [ "$result" -eq 0 ]; then
     return 0
   fi
+  # A stop that met its wrapper under a Windows pid no snapshot was walked from
+  # has already run the ticks-matched kill over the processes a verified
+  # snapshot names. A snapshot built here comes from the same record plus a
+  # walk of the new pid, which cannot name what the wrapper started between
+  # the two, so no retry can confirm that tree dead and this fails without
+  # building one.
+  if [ -n "${STOP_TREE_MOVED:-}" ]; then
+    log "STOP[$label]: stop_child refused because the wrapper moved to a Windows pid its snapshot was never walked from (STOP_PATH=$STOP_PATH) - no retry can confirm that tree dead, failing without a re-snapshot"
+    return 1
+  fi
   # A re-snapshot attempt from a dead or zombie `CHILD_LAUNCH_PID`
   # reliably resolves to no winpid at all, so looping and sleeping
   # through the whole budget on a re-resolve that structurally cannot
@@ -1875,6 +1886,7 @@ retry_stop_escalation() {
 # return rather than trusting STOP_PATH's clean-looking values by name alone.
 stop_child() {
   local label="$1"
+  STOP_TREE_MOVED=""
   # If CHILD_LAUNCH_PID is empty, there's nothing to stop.
   local pid="${CHILD_LAUNCH_PID:-}"
   if [ -z "$pid" ]; then
@@ -2090,20 +2102,31 @@ stop_child() {
   elif [ -n "$snapshot_winpid" ] && [ -n "$kill_winpid" ]; then
     # The wrapper is running as a Windows pid this stop has never walked. The
     # snapshot describes the tree under the pid it held at entry, so anything
-    # started under the new one is in no snapshot: killing from that snapshot
-    # would confirm the processes it does name dead and report the whole tree
-    # settled, which is the same fail-open `build_stop_snapshot` refuses with
-    # rc 4 when it meets this condition. The wrapper is signaled and the stop
-    # fails closed instead, and the snapshot is kept out of the retry
-    # backstop, which would otherwise confirm that partial list dead and turn
-    # the refusal back into a clean report.
+    # started under the new one is in no snapshot: a kill from that snapshot
+    # confirms the processes it does name dead and says nothing of the rest,
+    # so reading its result as the stop's verdict is the same fail-open
+    # `build_stop_snapshot` refuses with rc 4 when it meets this condition.
+    # So the wrapper's own MSYS pid is signaled, the ticks-matched snapshot
+    # kill still runs over the processes a verified snapshot names, and the
+    # stop fails closed whatever that kill reports. STOP_TREE_MOVED marks the
+    # refusal for `retry_stop_escalation`, which fails on it rather than
+    # rebuilding a snapshot from the same record and reporting that partial
+    # tree dead as a clean stop.
     log "STOP[$label]: wrapper pid $pid runs as Windows pid $kill_winpid now, not the $snapshot_winpid this stop resolved at entry - not force-killing that number, signaling the wrapper's own pid instead"
     kill -9 "$pid" 2>/dev/null
     if kill -0 "$pid" 2>/dev/null; then
       log "STOP[$label]: wrapper pid $pid is still present after the kill -9, so a caller's wait on it can block until it ends on its own"
     fi
+    if [ "$snap_rc" -eq 0 ]; then
+      if kill_process_snapshot "$snapshot"; then
+        log "STOP[$label]: every process the snapshot walked from Windows pid $snapshot_winpid names is confirmed dead, and whatever the wrapper started under $kill_winpid is unaccounted for"
+      else
+        log "STOP[$label]: a process the snapshot walked from Windows pid $snapshot_winpid names is alive or unverifiable after the kill"
+      fi
+    fi
     log "STOP[$label]: the snapshot this stop holds was walked from Windows pid $snapshot_winpid and names nothing the wrapper started under $kill_winpid, so the tree cannot be confirmed dead from it"
     STOP_PATH="unverified"
+    STOP_TREE_MOVED=1
     LAST_STOP_SNAPSHOT=""
     return 1
   else
@@ -2560,6 +2583,7 @@ while true; do
   # else in the launch block that can end the iteration, so no later path
   # (the EXIT trap included) can act on the old snapshot.
   LAST_STOP_SNAPSHOT=""
+  STOP_TREE_MOVED=""
 
   # The same holds for the previous child's own recorded tree. A stale tree
   # names pids some unrelated process may hold by now.

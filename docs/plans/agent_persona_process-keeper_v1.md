@@ -984,3 +984,35 @@ Live dispatches: none at this writing. Rulings adopted since the last boundary: 
 **Section 4's ladder stands at the second stage with the count at two, unchanged.** Round 10 is the owed round over the combined delta, and its adjudication is the third on this stage.
 
 Next action: commit Section 4 whole at first green and push. Then take round 10, one adversarial lens at opus effort high through Workflow, over the committed range. It carries the two findings board 36 raised as questions rather than rated findings. Then adjudicate it and declare if the terminal condition is still unmet. Then the Minor close pass carrying M-prose, Chapter 4 with M-shutdown-code's justified-not-fixed statement, and Section 5.
+
+### Interim board 38 - 2026-09-17
+
+Written after round 10 was adjudicated and the backstop fired at the ladder's second stage. No section closed at this boundary.
+
+Section 4 was committed at first green as c87ff3b and pushed to `process-keeper`. No pull request is open yet.
+
+**Round 10 ran and is adjudicated.** Roster: one adversarial lens at opus, effort high, through Workflow, over the committed range 9a00156..c87ff3b. The capture `.kit/scratch/process-keeper/s4/fix-round-10.diff` is byte-identical to that range by `cmp`. Verdict CHANGES_REQUIRED, no Critical. The bracket held: `round10-pre.txt` and `round10-post.txt` are identical. The adjudication is at `.kit/scratch/process-keeper/s4/round10-adjudication.md`. It answers both questions board 36 raised: nothing bounds a transcript time ahead of the poll clock, and nothing holds the two project-key derivations together.
+
+Three Majors, each confirmed by this session against the code, each fix-introduced.
+
+- R10-M1. The moved-wrapper branch of `stop_child`'s phase 3, written by round 9's S-M1 fix, returns 1 and clears `LAST_STOP_SNAPSHOT` without running the ticks-matched snapshot kill. The retry backstop then rebuilds a snapshot, which either reports the old record clean or fails into exit 5 with the EXIT trap holding nothing to kill. A known `claude.exe` can outlive the stop. It is on the process-execution surface, so it takes the security carve-out and is fixed before this declaration.
+- R10-M3. The `supervisorAccountHoldS` refusal at `bin/supervise.sh:298` has no test, against the standing amendment on refusal legs. It is on the configuration surface, so it takes the carve-out too.
+- R10-M2. Branch 4c of `bin/supervise-decide.mjs:160` has no lower bound on the transcript's age. A transcript stamped ahead of the box's clock delays a wedged child's restart by that offset. It is pure decision logic off the security list, so it is FROZEN by the backstop.
+
+No design stop. Round 9's counting Majors sat in the account window and the staleness ceiling. Round 10's one counting Major sits in the transcript bound, a different mechanism.
+
+Six Minors joined `.kit/scratch/process-keeper/minors-section-4.md` for the close pass. One is a fold: `.kit/supervisor-tree-walk-test.sh` was edited under this section and is not on its Files in scope line, so Chapter 4 widens that line.
+
+**The backstop fired at this adjudication.** It is the third on the second stage and it leaves the terminal condition unmet. So the section declares to the operator rather than opening the fix round round 10 owes. The journal carries `kit.review.cap fail` for this section at ten rounds.
+
+Pre-declaration acts. The expert ask went to the AP: Expert seat. A consult ran at fable through the Agent tool. Its ruling is at `.kit/scratch/process-keeper/s4/round10-backstop-consult.md`, and this session adopted it. The ruling is to recommend CONTINUE, with R10-M2 left frozen now. On a continue it is fixed with a skew-tolerant symmetric bound and two unit cases, under an author re-read rather than a round.
+
+**Owed and unrun: the review round over the R10-M1 and R10-M3 carve-out delta.** That delta reaches process execution, so it owes a round under the fix-delta bar. The backstop opens no round, so it is taken first on a continue. **The carve-out fix landed and is verified on this session's surface.** implementer-opus returned DONE. For R10-M1, the moved-wrapper branch now runs `kill_process_snapshot` over a verified snapshot, still returns 1 with STOP_PATH=unverified, and sets a new `STOP_TREE_MOVED` mark. `retry_stop_escalation` fails on that mark before any re-snapshot. The mark is cleared at stop entry and at each child launch. The new natural-exit case `kill-moved-retry` drives the real `stop_child` and then the real retry. It went red on the unedited file (`ALIVE=[9100 9101 9102]`, `RETRY_RC=0`). It went red again with the kill removed, with the guard removed and with the mark removed, each on a copy under `.kit/scratch/process-keeper/s4/r10fix/`. For R10-M3, two `refused_by` cases in `.kit/supervisor-model-test.sh` cover `abc` and `0`. Both went red on a copy of `bin/` with the refusal lines removed, because the refusal message never appears there.
+
+The lane, exit codes read from each run. The implementer's `.kit/supervisor-natural-exit-test.sh` returned 262 OK, 0 FAIL, exit 0 from its own marker at 11:04 local, against board 37's 258. The four added checks are the new case. The implementer then reflowed one comment line and reset line endings in `bin/supervise.sh`, at 11:05, after that run. So this session re-ran the fast lanes on the final file. `bash -n` exits 0, `.kit/supervisor-unit-test.mjs` 21 passed 0 failed exit 0, `.kit/supervisor-tree-walk-test.sh` PASS exit 0, and `.kit/supervisor-model-test.sh` 29 OK 0 FAIL exit 0. The model suite ran beside a live heavy-process claim held by the KIT: Worker session for `D:\claude-kit`, written 15:04Z, and that contention is named here.
+
+**Section 4's ladder: the second stage, count at three, backstop declared.** A continue restarts the count at the operator's answer.
+
+Live dispatches: none. Rulings adopted since the last boundary: the round 10 backstop consult. The expert ask is unanswered at this writing.
+
+Next action: declare the backstop to the operator. On a continue, the order is the owed round over the carve-out delta, then R10-M2 per the ruling, then the Minor close pass, the close gate, Chapter 4 and Section 5.

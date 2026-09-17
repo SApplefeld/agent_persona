@@ -935,15 +935,35 @@ grep -qx -- "-9 100" "$ST/signals"
 V=$?
 check "unit: that stop still signals the wrapper's own MSYS pid (signals: $(tr '\n' ';' < "$ST/signals" 2>/dev/null))" "$V"
 # The snapshot was walked from the pid the wrapper has left, so whatever it
-# started under the new one is in no snapshot and killing from that list would
-# report a tree dead that nothing ever read. The stop fails closed, and leaves
-# nothing for the retry backstop, which would otherwise confirm that partial
-# list dead and turn the refusal back into a clean report.
+# started under the new one is in no snapshot and a kill from that list cannot
+# report the tree dead. The stop fails closed and leaves no snapshot behind.
 [ "$(stop_field "$SO" RC)" = "1" ] && [ "$(stop_field "$SO" STOP_PATH)" = "unverified" ] && [ "$(stop_field "$SO" BACKSTOP)" = "[]" ]
 V=$?
 check "unit: a stop whose wrapper moved to a Windows pid the snapshot was never walked from fails closed rather than reporting a kill (RC=$(stop_field "$SO" RC) STOP_PATH=$(stop_field "$SO" STOP_PATH) BACKSTOP=$(stop_field "$SO" BACKSTOP))" "$V"
 case "$SO" in *"cannot be confirmed dead from it"*) R=0 ;; *) R=1 ;; esac
 check "unit: the stop says the snapshot it holds cannot settle the tree the wrapper moved to" "$R"
+
+# The same moved wrapper through the retry backstop every caller runs after a
+# failed stop, where a walk from the Windows pid the wrapper moved to completes.
+# The stop still kills every process its snapshot names, ticks-matched, since
+# those are the child's own and nothing else will reach them. The retry then
+# fails without a re-snapshot: one built from the same record plus that walk
+# would confirm the list dead and turn the refusal into a clean rc 0.
+ST=$(stop_state kill-moved-retry chain)
+: > "$ST/noterm-100"
+printf 'echo 9555 > "$ST/moved-100"\n' > "$ST/on-signal-100"
+printf '%s\n' '9555|9555,7' >> "$ST/walks"
+SO=$(stop_run "$ST" retry)
+[ "$(stop_field "$SO" RC)" = "1" ] && [ "$(stop_field "$SO" STOP_PATH)" = "unverified" ] && [ "$(stop_field "$SO" ALIVE)" = "[]" ]
+V=$?
+check "unit: a stop whose wrapper moved Windows pid still kills every process its snapshot names before failing closed (RC=$(stop_field "$SO" RC) STOP_PATH=$(stop_field "$SO" STOP_PATH) ALIVE=$(stop_field "$SO" ALIVE))" "$V"
+[ "$(stop_field "$SO" RETRY_RC)" = "1" ]
+V=$?
+check "unit: the retry after that refusal fails rather than rebuilding a snapshot and reporting the tree dead (RETRY_RC=$(stop_field "$SO" RETRY_RC))" "$V"
+case "$SO" in *"no retry can confirm that tree dead, failing without a re-snapshot"*) R=0 ;; *) R=1 ;; esac
+check "unit: that retry failure is the moved-wrapper refusal rather than a re-snapshot that could not verify" "$R"
+case "$SO" in *"attempting one re-snapshot"*) R=1 ;; *) R=0 ;; esac
+check "unit: that retry never attempts a re-snapshot" "$R"
 
 # A wrapper the stop can still signal but whose Windows pid no reading names is
 # a failed read, not a move: nothing says the entry value has been handed to
