@@ -1054,3 +1054,13 @@ Review: the adversarial and blind pair at opus, effort high, through Workflow, o
 Live dispatches: none. Rulings adopted: none new.
 
 Next action: once the KIT: Worker claim clears, run `.kit/persona-live-refuse-test.sh` against e10df21 in a scratch worktree and against this tree, alternately, and root-cause any red that reproduces on the new tree alone. Resolve the coordinator record and tell the operator. The backstop declaration of board 38 is still unanswered.
+
+### Interim board 41 - 2026-09-17
+
+Written after the persona-live-refuse red was discriminated. No section closed at this boundary.
+
+**The persona-live-refuse red predates the account-check removal, and it is load, not a regression.** Once the KIT: Worker claim cleared at 16:29:49Z, this session wrote its own claim and ran `.kit/persona-live-refuse-test.sh` three times each, alternating, against e10df21 in a scratch worktree and against fdca3f8. Exit codes, read from each run: base 0, new 0; base 0, new 1; base 1, new 0. The base red was case (f) at 3s. The new red was case (e) together with case (f) at 11s. CPU load read 60 before and 66 after. The commit without the removal fails the same bound at the same rate, so the removal did not cause it. It is filed in `docs/backlog.md` as a load-sensitive bound with its remedy and proof, rather than dismissed. It still stands between Section 4 and its acceptance bullet that the suite passes, which the close gate owes.
+
+This session's claim was released after the runs. Its Repo line was written as `D:gent_persona`, because `printf` read the backslash-a as a bell character. The claim carried a correct Name and Session and no longer exists. The scratch worktree was removed.
+
+Live dispatches: none. Next action: resolve the coordinator's removal record and tell the operator. The backstop declaration of board 38 is still unanswered, and the continue question stays open.
