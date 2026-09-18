@@ -56,7 +56,7 @@ Tests: at minimum, lock the instruction's presence and absence per persona and t
 ### 3. The fleet status tool
 Model: opus
 
-Add a `fleet_status` tool to the plugin (`hooks/index.ts`, beside `agentic_inbox`), available under the plugin's reach rule with the coordinator persona as the target: the caller holds the coordinator persona or a live reader claim on it, which is what `mayReachPersonaIn` in `hooks/operator.ts` already states. It reads the roster at the path a new `fleetRoster` setting names, each roster persona's `keeper.json` under that persona's run directory, enabled or not, and each persona's commons entry, and returns one row per roster persona: name, enabled, keeper action and delay, hold reason if any, last supervisor exit, commons claim held or not, heartbeat age, and turn state. `keeper.json` is the process keeper's state file and carries the persona name, launch count, last start and end, last exit code, current delay and the hold reason if any; the commons entry carries the claim's last-seen stamp, from which the heartbeat age is derived, and the turn state. The implementer opens `docs/plans/agent_persona_process-keeper_v1.md` for the roster and state-file layout. A missing roster or a missing `keeper.json` is a row that says so, never an error that hides the other rows.
+Add a `fleet_status` tool to the plugin (`hooks/index.ts`, beside `agentic_inbox`), available under the plugin's reach rule with the coordinator persona as the target: the caller holds the coordinator persona or a live reader claim on it, which is what `mayReachPersonaIn` in `hooks/operator.ts` already states. It reads the roster at the path a new `fleetRoster` setting names, each roster persona's `keeper.json` under that persona's run directory, enabled or not, and each persona's commons entry, and returns one row per roster persona: name, enabled, keeper action and delay, hold reason if any, last supervisor exit, commons claim held or not, heartbeat age, and turn state. `keeper.json` is the process keeper's state file and carries the persona name, launch count, last start and end, last exit code, current delay and the hold reason if any; the commons entry carries the claim's last-seen stamp, from which the heartbeat age is derived, and the turn state. The implementer opens `docs/archive/agent_persona_process-keeper_v1.md` for the roster and state-file layout. A missing roster or a missing `keeper.json` is a row that says so, never an error that hides the other rows.
 
 Acceptance: a unit test drives the tool with fixture files for a healthy persona, a held one, one backing off, one with no `keeper.json`, and one absent from the commons, and checks each row; the tool is denied to a session that does not hold the coordinator persona, with the deny text naming the rule.
 
@@ -111,7 +111,7 @@ Files in scope: `bin/fleet.example.json`, `docs/backlog.md`, `docs/README.md`, `
 
 ## Related
 
-- `docs/plans/agent_persona_process-keeper_v1.md`: the process keeper, which this plan follows and whose roster and `keeper.json` the steward reads.
+- `docs/archive/agent_persona_process-keeper_v1.md`: the process keeper, which this plan follows and whose roster and `keeper.json` the steward reads.
 - `docs/archive/agent_persona_coordinator_v2.md`: the coordinator persona this plan splits.
 
 ## Chapters
