@@ -11,6 +11,7 @@
 - `plans/agent_persona_context-budget-removal_v1.md`: Context-budget monitor removal (the plugin stops estimating a session's context and sending a close-out turn, the supervisor stops restarting a child on a critical crossing, and context is left to the harness's compaction and the kit's gate). Ready, parked behind the steward-architect plan.
 - `plans/agent_persona_lean-injection_v1.md`: Lean injection (every prompt the plugin or supervisor writes into a session, and every tool description, says only what its reader cannot already know and points at the owner for the rest, with a duplicate-sentence test and a size ledger as the guard). Ready, parked behind the steward-architect and context-budget-removal plans and ahead of the supervisor-peer plan.
 - `plans/agent_persona_deferred-gate-run_v1.md`: Deferred gate run (the runs that hold the box, the live suites and the driven supervisor suite, are deferred from every queued plan to one whole gate after the last of them merges, with each red traced to its plan and fixed or filed; it owns the gate policy the four plans cite). Ready, parked last.
+- `plans/agent_persona_supervisor-poll-cost_v1.md`: Supervisor poll cost (one pass of the supervisor's poll loop launches one process instead of fourteen, so the loop stops spending most of its life launching processes; every decision on well-formed inputs is unchanged). Complete, outside the armed queue.
 
 ## Archived plans
 
