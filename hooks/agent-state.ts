@@ -162,9 +162,8 @@ export interface NudgeBudget {
  * has never come up has no commons entry at all, so it reports a null
  * heartbeat age and satisfies none of the other four.
  *
- * They live here rather than beside the reduction that produces them because
- * the persisted reading is written in these words, and parseState refuses a
- * stored memo whose class is not one of them.
+ * They live here beside the memo the watcher's reading is made of, which is
+ * written in these words.
  */
 export const FLEET_HEALTH = {
   held: "held",
@@ -213,43 +212,13 @@ export function fleetClassValue(health: FleetHealth, enabled: boolean, keeperSta
 }
 
 /**
- * Whether a string is one of the values fleetClassValue produces. parseState
- * holds a persona key's stored class, its reported class and every entry of
- * its window to this, because that text is composed into the `- ` lines of the
- * watcher's prompt, where a composed line is the reader's signal that the
- * plugin wrote it. The persisted state is a file inside a persona's own
- * working tree, so without this a persona writes its own transition line.
- */
-export function isFleetClassValue(value: string): boolean {
-  for (const health of Object.values(FLEET_HEALTH)) {
-    for (const enabled of [true, false]) {
-      for (const unwritten of [true, false]) {
-        if (value === fleetClassValue(health, enabled, unwritten)) return true;
-      }
-    }
-  }
-  return false;
-}
-
-/**
  * The two entries the watcher's reading holds that are not personas: how the
  * roster file itself read, and what its entries could not be turned into. Both
  * keys carry spaces, which the persona-name rule refuses, so no roster persona
- * can take either key from them, and parseState tells the two tiers apart by
- * these names: a persona key's class is one of the five above, while these two
- * take their value from text the roster file supplied.
+ * can take either key from them.
  */
 export const FLEET_ROSTER_STATE_KEY = "the roster reading itself";
 export const FLEET_ENTRY_PROBLEMS_KEY = "the roster entries that carry a problem";
-
-/**
- * The longest class value parseState keeps for the two roster keys above.
- * Their values are composed out of a roster path and a failed read's message,
- * which the watcher holds to the plugin's free-text bound before storing, so
- * this ceiling sits clear of anything the watcher writes and drops a memo a
- * hand-written store padded instead.
- */
-export const FLEET_MEMO_TEXT_MAX = 4000;
 
 /**
  * What the controller tick's fleet watcher remembers about one key of its
@@ -272,10 +241,12 @@ export const FLEET_MEMO_TEXT_MAX = 4000;
  *
  * `class` and `reported` are typed as plain strings because the reading holds
  * two keys that are not personas, and those two take their value from text the
- * roster file supplied rather than from the class list. A persona key is
- * narrower than the type: parseState keeps one only while its class, its
- * reported class and every entry of its window are values fleetClassValue
- * produces.
+ * roster file supplied rather than from the class list.
+ *
+ * The reading these memos make up is held in the session's own memory for the
+ * life of that session and is written to no file, so every memo the watcher
+ * compares against is one the watcher itself produced on an earlier tick of
+ * this same session.
  */
 export interface FleetHealthMemo {
   class: string;
@@ -313,18 +284,17 @@ export interface AgentState {
     action: string;
     detail: string;
   }>;
-  // The controller tick's fleet watcher, for the coordinator persona alone.
-  // `fleetHealth` is the last reading, one entry per roster persona plus the
-  // two the watcher keeps about the roster file itself; `lastReconcileAt` is
-  // the clock at the last [RECONCILE] prompt. Both live here, in the persisted
-  // state, rather than in the session's own memory: a steward that forgot them
-  // at every launch would re-report every already-unhealthy persona as a fresh
-  // change, and would restart the reconciliation cadence from its first tick,
-  // so a steward relaunched more often than that cadence would never reconcile
-  // at all. Both are absent until the watcher first runs, and an absent
-  // `fleetHealth` is what tells the watcher its reading is the first one and
-  // so says nothing.
-  fleetHealth?: Record<string, FleetHealthMemo>;
+  // The clock at the last [RECONCILE] prompt, for the coordinator persona
+  // alone. It lives in the persisted state rather than in the session's own
+  // memory because the reconciliation cadence is four hours and a steward
+  // relaunched more often than that would otherwise restart the wait at every
+  // launch and never reconcile at all. It is absent until the watcher's first
+  // tick, which stamps it rather than firing the pass.
+  //
+  // The fleet watcher's reading is not here. It is held in session memory, so
+  // nothing a file carries can decide what the watcher says about a persona;
+  // the cost of that is a steward restating each currently unhealthy persona
+  // once when it comes up.
   lastReconcileAt?: number;
   createdAt: number;
   updatedAt: number;
@@ -567,72 +537,23 @@ export function parseState(json: string): AgentState {
     state.monitor.cost.capNoticeWindowStart = 0;
   }
 
-  // The fleet watcher's reading and its cadence stamp, both held to the shape
-  // the tick reads them back at. This file sits inside a persona's own working
-  // tree and the live roster gives more than one persona the same one, so the
-  // values below are read as a stranger's rather than as the watcher's own.
+  // The fleet watcher's reading is dropped from anything this file carries.
+  // The watcher holds its reading in session memory and reads it back from
+  // nowhere, so a `fleetHealth` key here is a legacy state a previous version
+  // wrote or one a hand-written store seeded, and either way it contributes
+  // nothing to what the watcher says. Dropping it keeps it out of the state
+  // the session then writes back, so the key does not survive as a value no
+  // reader has.
   //
-  // Three shapes silence a key for good, and each is refused here. A
-  // `reportedAt` that is not a number makes `fleetNow - reportedAt` NaN, which
-  // is never at or past the quiet window, so the key is suppressed for the
-  // life of the session. A `reportedAt` in the future does the same for as
-  // long as it stands, and a `window` holding every class leaves every change
-  // flapping, which copies the stamp forward untouched and so never expires.
-  // And a class the reduction cannot produce is text a file supplied standing
-  // where the watcher's prompt puts a class on a line the plugin composed.
-  //
-  // A memo that does not read whole is dropped rather than repaired. Its key
-  // is then absent from the reading the next tick compares against, which puts
-  // it exactly where a persona the roster has just gained sits: its next line
-  // reads as a move from "not in the previous reading", once, and never as a
-  // move from health nobody observed it in.
+  // Nothing the watcher reads out of a file may decide silence about an
+  // unhealthy persona, and that is why the reading is not stored at all. The
+  // store sits inside a persona's own working directory, which the live roster
+  // gives to more than one persona, and every field of a memo that silences a
+  // key is a value the watcher itself legitimately produces, so no check on
+  // the value can tell a watcher's own memo from a persona's memo about
+  // itself.
   const readClock = Date.now();
-  if (state.fleetHealth !== undefined) {
-    const stored: unknown = state.fleetHealth;
-    if (stored === null || typeof stored !== "object" || Array.isArray(stored)) {
-      delete state.fleetHealth;
-    } else {
-      // No prototype, and every read by own key, because a roster persona may
-      // be named `constructor`, `toString` or `__proto__`.
-      const kept: Record<string, FleetHealthMemo> = Object.create(null);
-      for (const key of Object.keys(stored as Record<string, unknown>)) {
-        const memo = (stored as Record<string, unknown>)[key];
-        if (memo === null || typeof memo !== "object" || Array.isArray(memo)) continue;
-        const read = memo as Partial<FleetHealthMemo>;
-        if (typeof read.class !== "string") continue;
-        if (typeof read.reportedAt !== "number" || !Number.isFinite(read.reportedAt)) continue;
-        if (read.reportedAt > readClock) continue;
-        if (typeof read.suppressed !== "number" || !Number.isFinite(read.suppressed)) continue;
-        if (read.suppressed < 0) continue;
-        // The last two fields joined the memo after the first three, so a
-        // state written without them reads as a key whose reported class is
-        // the one it was last observed in, or as one nothing has been reported
-        // about at all where its stamp says no line was ever submitted.
-        const reported = typeof read.reported === "string"
-          ? read.reported
-          : read.reportedAt === 0 ? "" : read.class;
-        // The two tiers of key. A persona's class is one of the five the
-        // reduction produces, qualified by the roster's own enabled flag and
-        // by whether the keeper has written state for it, and nothing else:
-        // that value is composed into a `- ` line of the
-        // watcher's prompt, which is the reader's signal that the plugin wrote
-        // it. The two roster keys take their value from text the roster file
-        // supplied, which reaches no such line, so they are held to a length
-        // instead.
-        const isRosterKey = key === FLEET_ROSTER_STATE_KEY || key === FLEET_ENTRY_PROBLEMS_KEY;
-        const classHolds = isRosterKey
-          ? (value: string) => value.length <= FLEET_MEMO_TEXT_MAX
-          : isFleetClassValue;
-        if (!classHolds(read.class)) continue;
-        if (reported !== "" && !classHolds(reported)) continue;
-        const window = Array.isArray(read.window)
-          ? read.window.filter((entry): entry is string => typeof entry === "string" && classHolds(entry)).slice(0, FLEET_WINDOW_CLASSES_MAX)
-          : reported === "" ? [] : [reported];
-        kept[key] = { class: read.class, reported, reportedAt: read.reportedAt, suppressed: read.suppressed, window };
-      }
-      state.fleetHealth = kept;
-    }
-  }
+  delete (state as { fleetHealth?: unknown }).fleetHealth;
 
   // The reconciliation cadence's stamp, held to a number the clock can have
   // passed. The tick asks for the pass when `reconcileNow - lastReconcileAt`

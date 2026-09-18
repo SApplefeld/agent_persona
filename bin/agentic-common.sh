@@ -415,7 +415,6 @@ console.log(name);
 ' "$1" "$id"
 }
 
-
 # --- read_settings_fleet_roster ---
 # Usage: read_settings_fleet_roster <settings-file> [dev_mode: 0|1, default 1]
 # Prints the roster path the plugin will resolve from a settings file the caller
@@ -428,7 +427,9 @@ console.log(name);
 # path to fall back to, so an empty result is the whole of that state. Returns 1
 # on the same shapes read_settings_coordinator_persona refuses (not JSON, not an
 # object, a pluginConfigs, id entry or options value that is not an object),
-# with the same error-line shape, and prints nothing then.
+# with the same error-line shape, and prints nothing then. Nothing in the
+# launch calls this: it exists so the shell side can pin the plugin's rule
+# under test, the supervisor needing no roster path of its own.
 read_settings_fleet_roster() {
   local dev_mode="${2:-1}"
   local id="$AGENTIC_PLUGIN_INSTALLED_ID"
@@ -454,6 +455,7 @@ if (pc[id] !== undefined) {
 console.log(typeof value === "string" ? value.trim() : "");
 ' "$1" "$id"
 }
+
 # --- valid_persona_name ---
 # Usage: valid_persona_name <name>; returns 0 for a non-empty name of letters,
 # digits, underscore and hyphen, 1 otherwise.
