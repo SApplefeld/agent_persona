@@ -355,32 +355,59 @@ EOF
   check "$label (names spliced=$count, off-class=$bad)" "$?"
 }
 
+# The countable remainder of a shell line: the control-flow expression removed
+# and whatever it guarded kept. Dropping the whole line instead, which is what
+# this did before, hid any splice sharing a line with its own condition.
+strip_control_flow() {  # reads stdin
+  sed -E \
+    -e 's/^([[:space:]]*)(if|elif|while|until)[[:space:]].*;[[:space:]]*(then|do)([[:space:]]|$)/\1/' \
+    -e 's/^([[:space:]]*)case[[:space:]].*[[:space:]]in[[:space:]]*$/\1/' \
+    -e 's/^([[:space:]]*)(else|fi|done|esac|then|do)([[:space:]]|$)/\1/'
+}
+
+# Counts persona splice sites in a block of shell.
+#
+# grep -o rather than grep -c: the design duty carries both of its splices on
+# one line, and a line count would read that pair as one site.
+#
+# Both spellings are counted. Shell expands $ARCHITECT_PERSONA exactly as it
+# expands ${ARCHITECT_PERSONA}, so a braced-only count leaves an unbraced splice
+# uncounted here and unread by check_spliced_names, which is a name reaching a
+# standing instruction with nothing watching its class. The lookahead-free way
+# to say "not followed by a name character" is the character-class alternation
+# below, and the `:-` guard shape used in tests rather than in a splice is
+# excluded by requiring a word boundary.
+count_splices() {  # <shell text>
+  local body coord arch
+  body=$(printf '%s' "$1" | strip_control_flow)
+  coord=$(printf '%s' "$body" | grep -oE '\$\{COORDINATOR_PERSONA\}|\$COORDINATOR_PERSONA([^A-Za-z0-9_]|$)' | wc -l | tr -d ' ')
+  arch=$(printf '%s' "$body" | grep -oE '\$\{ARCHITECT_PERSONA\}|\$ARCHITECT_PERSONA([^A-Za-z0-9_]|$)' | wc -l | tr -d ' ')
+  printf '%s' "$((coord + arch))"
+}
+
+# The control on that strip, run against a line withheld from the filter's own
+# literals and matched on its shape rather than on a string the filter was
+# handed. A condition reading both persona variables, and a splice of one of
+# them after `then`, which is exactly the site the whole-line drop made
+# invisible. The condition's two reads must not count and the splice must, so
+# the answer is 1: a 0 is the old whole-line drop still in place, and a 3 is no
+# strip happening at all.
+SPLICE_CONTROL_LINE='if [ "$PERSONA" = "$COORDINATOR_PERSONA" ] && [ -n "${ARCHITECT_PERSONA}" ]; then INSTR="ask ${ARCHITECT_PERSONA} first"'
+SPLICE_CONTROL_COUNT=$(count_splices "$SPLICE_CONTROL_LINE")
+[ "$SPLICE_CONTROL_COUNT" -eq 1 ]
+check "splice counter control: a splice sharing a line with its own condition is counted, and the condition's own reads are not (count=$SPLICE_CONTROL_COUNT, expected 1)" "$?"
+
 # The backstop under the enumeration above. bin/supervise.sh's instruction block
 # splices a persona name at four sites today, two per variable. A fifth reds
 # here, which is the signal to read the new site's shape and add it to
 # check_spliced_names rather than to raise this number.
 SPLICE_SITE_COUNT=4
 check_splice_site_count() {  # <label>
-  local coord arch total
-  # grep -o rather than grep -c: the design duty carries both of its splices on
-  # one line, and a line count would read that pair as one site.
-  #
-  # Both spellings are counted. Shell expands $ARCHITECT_PERSONA exactly as it
-  # expands ${ARCHITECT_PERSONA}, so a braced-only count leaves an unbraced
-  # splice uncounted here and unread by check_spliced_names, which is a name
-  # reaching a standing instruction with nothing watching its class. The
-  # negative lookahead-free way to say "not followed by a name character" is
-  # the character-class alternation below, and the `:-` guard shape used in
-  # tests rather than in a splice is excluded by requiring a word boundary.
+  local total
   # The snippet's own control flow is not the priming write. Its persona
-  # comparisons read the same two variables and would be counted as splices,
-  # which is why the shell lines are dropped before the count rather than
-  # absorbed by raising the expected number.
-  local body
-  body=$(printf '%s' "$VARS_SNIPPET" | grep -vE '^[[:space:]]*(if|elif|else|fi|while|until|case|esac|do|done)\b')
-  coord=$(printf '%s' "$body" | grep -oE '\$\{COORDINATOR_PERSONA\}|\$COORDINATOR_PERSONA([^A-Za-z0-9_]|$)' | wc -l | tr -d ' ')
-  arch=$(printf '%s' "$body" | grep -oE '\$\{ARCHITECT_PERSONA\}|\$ARCHITECT_PERSONA([^A-Za-z0-9_]|$)' | wc -l | tr -d ' ')
-  total=$((coord + arch))
+  # comparisons read the same two variables and would be counted as splices, so
+  # the control-flow expression is stripped before the count.
+  total=$(count_splices "$VARS_SNIPPET")
   [ "$total" -eq "$SPLICE_SITE_COUNT" ]
   check "$1 (splice sites in source=$total, expected $SPLICE_SITE_COUNT)" "$?"
 }

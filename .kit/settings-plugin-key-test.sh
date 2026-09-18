@@ -295,10 +295,6 @@ ERR=$(read_arch "$TMP/arch-shape.json" 1)
 RC=$?
 case "$RC:$ERR" in 0:*) check "read_settings_architect_persona refuses options that are not an object" 1 ;; *"not an object"*) check "read_settings_architect_persona refuses options that are not an object" 0 ;; *) check "read_settings_architect_persona refuses options that are not an object (rc=$RC, err=$ERR)" 1 ;; esac
 
-# --- resolve_architect_persona: the launch environment wins ---
-# The precedence inverts coordinatorPersona's, so the file-wins case is pinned
-# beside the environment-wins one rather than only the new direction. Reading
-# only the winner would leave a resolver that ignored its second argument green.
 # --- the emitted file is what the reader reads ---
 # Both legs above are proven against JSON this suite writes by hand, so a shape
 # the emitter produces and the reader cannot parse is invisible to every case
@@ -316,27 +312,6 @@ OUT=$(read_arch "$TMP/arch-roundtrip.json" 0)
 run_lib PERSONA="keyprobe" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/arch-roundtrip-none.json"
 OUT=$(read_arch "$TMP/arch-roundtrip-none.json" 1)
 [ -z "$OUT" ]; check "round trip: an emitted file naming no architect reads back as no architect (out=$OUT)" "$?"
-
-resolve_arch() {
-  run_lib bash -c 'source "$1/bin/agentic-common.sh" && resolve_architect_persona "$2" "$3"' _ "$ROOT" "$1" "$2"
-}
-OUT=$(resolve_arch "vellum" "drafter")
-[ "$OUT" = "vellum" ]; check "resolve_architect_persona: the launch environment wins over the settings file (out=$OUT)" "$?"
-OUT=$(resolve_arch "" "drafter")
-[ "$OUT" = "drafter" ]; check "resolve_architect_persona: the settings file answers where the environment names none (out=$OUT)" "$?"
-OUT=$(resolve_arch "vellum" "")
-[ "$OUT" = "vellum" ]; check "resolve_architect_persona: the environment answers where the file names none (out=$OUT)" "$?"
-OUT=$(resolve_arch "" "")
-[ -z "$OUT" ]; check "resolve_architect_persona: neither side naming an architect is a launch with no architect (out=$OUT)" "$?"
-# An environment-supplied name is spliced into the coordinator's standing
-# instruction exactly as a file-supplied one is, so it is held to the class the
-# file reader holds its own value to rather than trusted for its origin.
-ERR=$(resolve_arch 'x"}}},"hooks":{"a":1' "" 2>&1)
-RC=$?
-case "$RC:$ERR" in 0:*) check "resolve_architect_persona refuses an environment name outside the persona class" 1 ;; *"letters, digits, underscore and hyphen"*) check "resolve_architect_persona refuses an environment name outside the persona class" 0 ;; *) check "resolve_architect_persona refuses an environment name outside the persona class (rc=$RC err=$ERR)" 1 ;; esac
-ERR=$(resolve_arch "default" "" 2>&1)
-RC=$?
-case "$RC:$ERR" in 0:*) check "resolve_architect_persona refuses an environment name of default" 1 ;; *"must not be 'default'"*) check "resolve_architect_persona refuses an environment name of default" 0 ;; *) check "resolve_architect_persona refuses an environment name of default (rc=$RC err=$ERR)" 1 ;; esac
 
 # Shapes that cannot hold options are refused rather than repaired.
 for shape in '{"pluginConfigs":[]}' '{"pluginConfigs":{"agentic-plugin":"x"}}' '{"pluginConfigs":{"agentic-plugin":{"options":"x"}}}'; do
@@ -442,37 +417,40 @@ RC=$?
 R=$(inspect "$TMP/rd-arch/settings.json")
 case "$R" in *"ARCH_DEV=vellum;"*"ARCH_INSTALLED=vellum;"*) check "supervise.sh emits architectPersona into the settings file under both ids (out=$R)" 0 ;; *) check "supervise.sh emits architectPersona into the settings file under both ids (out=$R)" 1 ;; esac
 
-# --- the launch environment's architectPersona wins, and the disagreement is logged ---
-# The supervisor is this key's only reader, so there is no second reader the
-# file has to agree with and the launcher's word is the fresher fact. A launch
-# into a rundir written before the setting existed would otherwise build the
-# charter for nobody, which is the failure the log is there to show. These two
-# cases are the pin on the call site rather than on the resolver: the six unit
-# pins above drive resolve_architect_persona directly, and only a driven run
-# reads the order bin/supervise.sh passes its two arguments in. So the assertion
-# is on the resolved value the log names, not on the names merely appearing.
-# The names warden and drafter are withheld from every literal bin/supervise.sh
-# carries.
-mkdir -p "$TMP/rd-arch-conflict"
-printf '%s' '{"pluginConfigs":{"agentic-plugin@agent-persona":{"options":{"architectPersona":"drafter","coordinatorPersona":"lead"}}}}' > "$TMP/rd-arch-conflict/settings.json"
+# --- the provided file governs architectPersona, as it governs coordinatorPersona ---
+# This branch writes nothing, so the name is read back from the file and the
+# launch environment does not enter the read at all. That is the pin on the call
+# site, which is now the only place the rule lives: no library function resolves
+# this key any more, so a driven run is the only thing that reads the order
+# bin/supervise.sh actually takes its value in. Each case is written so that the
+# two possible read orders end the launch with different exit codes rather than
+# with different log text, since nothing logs the resolved name on a clean read,
+# exactly as nothing logs the coordinator's. The names warden and drafter are
+# withheld from every literal bin/supervise.sh carries.
+#
+# A file naming one persona for both seats is refused. So a file naming its own
+# coordinator as its architect refuses only if the architect the launch took is
+# the file's value, and an environment naming a different architect would clear
+# the collision and reach the gate instead.
+mkdir -p "$TMP/rd-arch-file-wins"
+printf '%s' '{"pluginConfigs":{"agentic-plugin@agent-persona":{"options":{"coordinatorPersona":"drafter","architectPersona":"drafter"}}}}' > "$TMP/rd-arch-file-wins/settings.json"
 OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" ARCHITECT_PERSONA=warden \
-  bash "$SUP" "$TMP/wd" tester default --rundir "$TMP/rd-arch-conflict" --no-channel 2>&1)
+  bash "$SUP" "$TMP/wd" tester default --rundir "$TMP/rd-arch-file-wins" --no-channel 2>&1)
 RC=$?
-[ "$RC" -eq 2 ]; check "driven supervise.sh with a provided architectPersona stops at the gate (rc=$RC)" "$?"
-LOGLINE=$(grep "ARCHITECT_PERSONA" "$TMP/rd-arch-conflict/supervisor.log" | head -1)
-case "$LOGLINE" in *"warden"*"drafter"*) check "a launch environment's architect name disagreeing with the file is logged with both values" 0 ;; *) check "a launch environment's architect name disagreeing with the file is logged with both values (line=$LOGLINE)" 1 ;; esac
-case "$LOGLINE" in *"this launch resolves architectPersona to 'warden'"*) check "driven supervise.sh resolves architectPersona to the launch environment name, not the file's" 0 ;; *) check "driven supervise.sh resolves architectPersona to the launch environment name, not the file's (line=$LOGLINE)" 1 ;; esac
-# The same read against a file that names no architect at all, which is the
-# rundir written before the setting existed. The environment's name is what
-# the launch resolves to, which is the case the precedence inversion exists for.
-mkdir -p "$TMP/rd-arch-absent"
-printf '%s' '{"pluginConfigs":{"agentic-plugin@agent-persona":{"options":{"coordinatorPersona":"lead"}}}}' > "$TMP/rd-arch-absent/settings.json"
+[ "$RC" -eq 1 ]; check "an environment naming another architect does not displace the file's name: the file's both-seats pair is still refused (rc=$RC)" "$?"
+case "$OUT" in *"both coordinatorPersona and architectPersona"*) check "the refusal fires, so the architect the launch took is the file's value and not the environment's" 0 ;; *) check "the refusal fires, so the architect the launch took is the file's value and not the environment's (out=$OUT)" 1 ;; esac
+# The mirror, so neither case passes on a resolver that ignores one input. A
+# file naming no architect is a launch with no architect even where the
+# environment names one that would collide with the coordinator. Under the
+# removed precedence this launch refused; under the file's rule it reaches the
+# gate, so the exit code alone separates the two read orders in both directions.
+mkdir -p "$TMP/rd-arch-file-empty"
+printf '%s' '{"pluginConfigs":{"agentic-plugin@agent-persona":{"options":{"coordinatorPersona":"warden"}}}}' > "$TMP/rd-arch-file-empty/settings.json"
 OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" ARCHITECT_PERSONA=warden \
-  bash "$SUP" "$TMP/wd" tester default --rundir "$TMP/rd-arch-absent" --no-channel 2>&1)
+  bash "$SUP" "$TMP/wd" tester default --rundir "$TMP/rd-arch-file-empty" --no-channel 2>&1)
 RC=$?
-[ "$RC" -eq 2 ]; check "driven supervise.sh with a provided file naming no architect stops at the gate (rc=$RC)" "$?"
-LOGLINE=$(grep "ARCHITECT_PERSONA" "$TMP/rd-arch-absent/supervisor.log" | head -1)
-case "$LOGLINE" in *"this launch resolves architectPersona to 'warden'"*) check "a rundir naming no architect resolves to the launch environment name rather than to no architect" 0 ;; *) check "a rundir naming no architect resolves to the launch environment name rather than to no architect (line=$LOGLINE)" 1 ;; esac
+[ "$RC" -eq 2 ]; check "a file naming no architect is a launch with no architect, whatever the environment names (rc=$RC)" "$?"
+case "$OUT" in *"both coordinatorPersona and architectPersona"*) check "no both-seats refusal fires, since the environment's name never became the architect" 1 ;; *) check "no both-seats refusal fires, since the environment's name never became the architect" 0 ;; esac
 # A file naming one persona for both seats is refused on the provided branch as
 # the emitter refuses it on its own, since the two reads are independent.
 mkdir -p "$TMP/rd-arch-same"
@@ -482,10 +460,9 @@ OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" \
 RC=$?
 [ "$RC" -eq 1 ]; check "driven supervise.sh refuses a provided file naming one persona for both seats (rc=$RC)" "$?"
 case "$OUT" in *"both coordinatorPersona and architectPersona"*) check "the refusal names the two keys that carry the same persona" 0 ;; *) check "the refusal names the two keys that carry the same persona (out=$OUT)" 1 ;; esac
-# The architect's name can now come from the launch environment while the file
-# names no architect at all, so the refusal says where each name came from
-# rather than blaming the file for both. Here both do come from the file.
-case "$OUT" in *"architectPersona from $TMP/rd-arch-same/settings.json"*) check "the refusal names where the architect's name came from" 0 ;; *) check "the refusal names where the architect's name came from (out=$OUT)" 1 ;; esac
+# Both names are read out of the same file, so the refusal names that file
+# rather than attributing either name to the launch environment.
+case "$OUT" in *"$TMP/rd-arch-same/settings.json resolves"*) check "the refusal names the settings file both names were read from" 0 ;; *) check "the refusal names the settings file both names were read from (out=$OUT)" 1 ;; esac
 grep -q "both coordinatorPersona and architectPersona" "$TMP/rd-arch-same/supervisor.log" && ! grep -q "LAUNCH" "$TMP/rd-arch-same/supervisor.log"; check "the refusal is in supervisor.log and nothing was launched" "$?"
 
 # --- a coordinatorPersona outside the persona class refuses the launch ---

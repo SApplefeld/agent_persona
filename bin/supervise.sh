@@ -388,37 +388,27 @@ else
   fi
   # The architect's name travels the same two branches for the same reason,
   # and carries no default: an empty value is a launch with no architect, on
-  # which the architect-role comparison below matches no persona at all.
-  # Precedence runs the other way from the coordinator's name above, and
-  # resolve_architect_persona owns the rule and the reason it inverts. The file
-  # is still read and still refuses a malformed value, so a mis-set name is a
-  # refused launch either way, and a disagreement is logged with both values
-  # rather than taken in silence.
-  ARCHITECT_PERSONA_GIVEN="${ARCHITECT_PERSONA:-}"
-  if ! ARCHITECT_PERSONA_FILE="$(read_settings_architect_persona "$SETTINGS_FILE" "$DEV_MODE" 2>>"$LOG")"; then
+  # which the architect-role comparison below matches no persona at all. This
+  # branch writes nothing, so the name is read back from the provided file
+  # exactly as the coordinator's name above is, and the architect-role
+  # comparison at launch sees the name the file carries rather than whatever
+  # this launcher's environment happened to hold. read_settings_architect_persona
+  # holds that value to the persona character class and refuses "default", so a
+  # mis-set name is a refused launch named in the log rather than a fleet that
+  # comes up under a doctored charter.
+  if ! ARCHITECT_PERSONA="$(read_settings_architect_persona "$SETTINGS_FILE" "$DEV_MODE" 2>>"$LOG")"; then
     echo "ERROR: could not read architectPersona from $SETTINGS_FILE; see $LOG" | tee -a "$LOG" >&2
     exit 1
   fi
-  if ! ARCHITECT_PERSONA="$(resolve_architect_persona "$ARCHITECT_PERSONA_GIVEN" "$ARCHITECT_PERSONA_FILE" 2>>"$LOG")"; then
-    echo "ERROR: could not resolve architectPersona for this launch; see $LOG" | tee -a "$LOG" >&2
-    exit 1
-  fi
   export ARCHITECT_PERSONA
-  if [ -n "$ARCHITECT_PERSONA_GIVEN" ] && [ "$ARCHITECT_PERSONA_GIVEN" != "$ARCHITECT_PERSONA_FILE" ]; then
-    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) NOTE: launch environment carries ARCHITECT_PERSONA '$ARCHITECT_PERSONA_GIVEN' and $SETTINGS_FILE resolves architectPersona to '$ARCHITECT_PERSONA_FILE'; this launch resolves architectPersona to '$ARCHITECT_PERSONA'" >> "$LOG"
-  fi
   # One name for both seats builds the coordinator's role instruction and the
   # architect's charter into a single priming write, each telling that session
   # what the other denies: route design asks to the architect, and answer the
   # coordinator by naming yourself. emit_settings_json refuses the pair on the
-  # other branch, and on this branch the two names are resolved separately and
-  # from different places, so the pair is refused here too. The message names
-  # where each name came from, since the architect's can now be the launch
-  # environment's while the settings file names no architect at all.
+  # other branch, and on this branch both names are read back from the same
+  # provided file, so the pair is refused here too.
   if [ -n "$ARCHITECT_PERSONA" ] && [ "$ARCHITECT_PERSONA" = "$COORDINATOR_PERSONA" ]; then
-    ARCHITECT_PERSONA_SOURCE="$SETTINGS_FILE"
-    [ -z "$ARCHITECT_PERSONA_GIVEN" ] || ARCHITECT_PERSONA_SOURCE="the launch environment"
-    echo "ERROR: this launch resolves '$ARCHITECT_PERSONA' as both coordinatorPersona and architectPersona; coordinatorPersona came from $SETTINGS_FILE and architectPersona from $ARCHITECT_PERSONA_SOURCE; one persona cannot hold both seats" | tee -a "$LOG" >&2
+    echo "ERROR: $SETTINGS_FILE resolves '$ARCHITECT_PERSONA' as both coordinatorPersona and architectPersona; one persona cannot hold both seats" | tee -a "$LOG" >&2
     exit 1
   fi
 fi
