@@ -108,3 +108,25 @@ So the cost of running the two in parallel is three mechanical conflicts in one 
 **Live dispatches.** None. No implementer, reviewer or scout is in flight.
 
 **Next action.** Nothing, until the operator answers whether this plan may run out of the order they set. On a yes, Section 1 starts by cutting a branch off `origin/main`, repeating the Sweep section's two searches against that base, and amending Files in scope where a file has gained a mention. On a no, this plan waits for `docs/plans/agent_persona_steward-architect_v1.md` to close.
+
+### Interim board 2 - 2026-09-18
+
+Not a Chapter. Section 1 is still unstarted and no repository code changed.
+
+**Stage.** The armed queue's leash advanced to this plan a second time, after `docs/plans/agent_persona_supervisor-peer_v1.md` was recorded blocked on its own arming gate. Nothing of this plan ran. The `Status:` header stays at `Ready`, for the reason board 1 gives.
+
+**The preceding plan's blocker does not carry, and was tested rather than restated.** That blocker is the supervisor-peer plan's second arming condition, which requires the steward-architect plan to have closed. This plan's Dispatch Authorization carries no such condition. It carries one: the operator's own word. So that blocker stops nothing here and is not the ground below.
+
+**What stops this plan now is the operator's own live instruction, which is a stronger and different ground than board 1 recorded.** Board 1 rested on the `## Assumptions` line's third clause, the bar on running beside a plan that edits `bin/supervise.sh`, `bin/supervise-decide.mjs` or `hooks/index.ts`, and it noted that the clause's reversal hands the order to the operator at arming. The operator has since exercised exactly that reversal. Asked this session whether the run should depart from the order they set, they answered that it should keep going on the steward-architect plan and reach this plan later.
+
+So the ordering question board 1 sent up is answered, and the answer is no. This plan runs third, after the steward-architect plan closes. That word ranks above this plan's own assumption text, so the assumption's clause is no longer the operative bar and the measured overlap is no longer the operative argument.
+
+**The overlap finding from board 1 still stands and is unchanged.** Three mechanical conflict sites in `bin/agentic-common.sh`, all in one file: a header comment line, two lines of a name list, and one long options-assembly line. That is a rebase rather than a structural conflict. It argued for running now and it did not decide it, because the order was the operator's. It now is.
+
+**Gate baseline.** None taken. No repository file changed beyond this plan document, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** None. Two were open when this entry was begun and both were answered before it was committed. The ordering ask board 1 recorded is answered no: this plan runs third. The steward-architect plan's Section 2 decision is answered no as well, which unblocks that plan rather than this one, so the ordering above is unchanged and that plan resumes ahead of the supervisor-peer plan and of this one.
+
+**Next action.** Nothing, until the two plans ahead of this one close. Section 1 then starts by cutting a branch off `origin/main`, repeating the Sweep section's two searches against that base, and amending Files in scope where a file has gained a mention since.
