@@ -11,7 +11,6 @@
 - `plans/agent_persona_context-budget-removal_v1.md`: Context-budget monitor removal (the plugin stops estimating a session's context and sending a close-out turn, the supervisor stops restarting a child on a critical crossing, and context is left to the harness's compaction and the kit's gate). Ready, parked behind the steward-architect plan.
 - `plans/agent_persona_lean-injection_v1.md`: Lean injection (every prompt the plugin or supervisor writes into a session, and every tool description, says only what its reader cannot already know and points at the owner for the rest, with a duplicate-sentence test and a size ledger as the guard). Ready, parked behind the steward-architect and context-budget-removal plans and ahead of the supervisor-peer plan.
 - `plans/agent_persona_deferred-gate-run_v1.md`: Deferred gate run (the runs that hold the box, the live suites and the driven supervisor suite, are deferred from every queued plan to one whole gate after the last of them merges, with each red traced to its plan and fixed or filed; it owns the gate policy the four plans cite). Ready, parked last.
-- `plans/agent_persona_supervisor-poll-cost_v1.md`: Supervisor poll cost (one pass of the supervisor's poll loop launches one process instead of fourteen, so the loop stops spending most of its life launching processes; every decision on well-formed inputs is unchanged). Complete, outside the armed queue.
 
 ## Archived plans
 
@@ -27,7 +26,8 @@
 - `archive/agent_persona_coordinator_v2.md`: Coordinator (a Fable-tier coordinator persona directing many worker personas across repos over the commons-store inbox path: cross-repo status, addressing by persona, provenance labels, the inbox lifecycle, arming tiers, the worker and coordinator standing instructions, the test audit). Complete.
 - `archive/agentic-plugin_context-budget_v1.md`: Context budget (thresholds, the close-out nudge, and the coordinator's compaction-boundary clause in the priming turn). Complete.
 - `archive/agent_persona_unversioned-manifest_v1.md`: Unversioned manifest (the plugin manifest carries no version field, so each plugin update installs the fetched commit under a hash-named cache folder; proven by the install record and a coordinator steer to the dev persona). Complete.
-- `archive/agent_persona_process-keeper_v1.md`: Process keeper (each persona under a Windows scheduled task that starts at boot with no logon, a wrapper that relaunches or holds on the supervisor exit code with a growing delay, and the supervisor self-heal fixes the keeper depends on). Complete; the most recent plan. Registering the tasks is the operator's own elevated act and is listed under its Operator Verification.
+- `archive/agent_persona_process-keeper_v1.md`: Process keeper (each persona under a Windows scheduled task that starts at boot with no logon, a wrapper that relaunches or holds on the supervisor exit code with a growing delay, and the supervisor self-heal fixes the keeper depends on). Complete. Registering the tasks is the operator's own elevated act and is listed under its Operator Verification.
+- `archive/agent_persona_supervisor-poll-cost_v1.md`: Supervisor poll cost (one pass of the supervisor's poll loop launches one process instead of fourteen, so the loop stops spending most of its life launching processes; every decision on well-formed inputs is unchanged). Complete; the most recent plan. It takes effect for a persona when its supervisor is restarted, which is listed under its Operator Verification.
 
 ## History
 
