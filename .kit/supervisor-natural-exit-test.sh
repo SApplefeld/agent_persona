@@ -34,6 +34,11 @@ check() {
 }
 
 TMP="$(mktemp -d)"
+# Seconds spent inside each driven supervisor run, one line per case, printed as
+# a profile at the end. This suite's cost is the driven runs rather than the
+# case count, so a run that gets slower needs to say which case grew.
+CASE_TIMES="$TMP/case-times"
+: > "$CASE_TIMES"
 
 # The extractor and the closure walker are shared with the other suite that
 # drives the supervisor's own function bodies, so the two cannot disagree
@@ -1374,16 +1379,27 @@ chmod +x "$STUB/claude"
 SUP_OVERRIDE=""
 DRIVE_CRASH_LIMIT=1
 DRIVE_ENV=()
+# The poll interval every driven run takes, and the single biggest term in this
+# suite's wall clock. Most cases here do not wait a fixed number of seconds:
+# they wait for the supervisor to reach its Nth poll, so the whole suite scales
+# with this value. 1000 is the floor rather than a preference. bin/supervise.sh
+# sleeps a whole number of seconds (`sleep $((SUPERVISOR_POLL_MS / 1000))`) and
+# refuses anything under 1000 outright, because a smaller value divides to zero
+# and polls with no wait at all. Going below a second is therefore a change to
+# the supervisor's own sleep granularity, not a change a case may make.
+DRIVE_POLL_MS=1000
 drive() {
   local name="$1" plan="$2" budget="$3"; shift 3
   local dir="$TMP/$name"
   mkdir -p "$dir/wd" "$dir/rd"
   printf '%s\n' "$plan" | tr ',' '\n' > "$dir/plan"
   printf '%s' "$dir" > "$STUB/case"
+  local _t0=$(date +%s)
   OUT=$(env -i PATH="$STUB:$PATH" HOME="$TMP/home" "${DRIVE_ENV[@]}" \
-    supervisorPollMs=5000 supervisorCrashLimit="$DRIVE_CRASH_LIMIT" supervisorMaxRestartsPerHour="$budget" \
+    supervisorPollMs="$DRIVE_POLL_MS" supervisorCrashLimit="$DRIVE_CRASH_LIMIT" supervisorMaxRestartsPerHour="$budget" \
     timeout 420 bash "${SUP_OVERRIDE:-$SUP}" "$dir/wd" "$PERSONA_NAME" default --rundir "$dir/rd" --no-channel "$@" 2>&1)
   RC=$?
+  printf '%s %s\n' "$(( $(date +%s) - _t0 ))" "$name" >> "$CASE_TIMES"
   LOG="$dir/rd/supervisor.log"
   [ -f "$LOG" ] || : > "$LOG"
   LAUNCHES=$(wc -l < "$dir/launches" 2>/dev/null || echo 0)
@@ -1815,6 +1831,10 @@ if [ "$POLL_ANCHORS" -eq 1 ]; then
   [ "$RC" -eq 0 ]; check "(s) the run ends at the second child's shutdown rather than at exit 5 (rc=$RC)" "$?"
   grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 2 ]; check "(s) a second child launches (stub launches=$LAUNCHES)" "$?"
 fi
+
+echo "driven-run profile (seconds, slowest first, poll interval ${DRIVE_POLL_MS}ms):"
+sort -rn "$CASE_TIMES" | while read -r secs name; do printf '  %5ss  %s\n' "$secs" "$name"; done
+awk '{t+=$1; n++} END {printf "  total %ss across %s driven runs\n", t, n}' "$CASE_TIMES"
 
 if [ "$failed" -eq 0 ]; then
   echo "supervisor-natural-exit-test.sh: PASS"
