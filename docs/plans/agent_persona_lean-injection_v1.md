@@ -120,3 +120,21 @@ Files in scope: `README.md`, `docs/README.md`, this plan document.
 - `docs/plans/agent_persona_supervisor-peer_v1.md`: runs after this plan and adds one priming sentence under the guard.
 
 ## Chapters
+
+### Interim board 1 - 2026-09-18
+
+Not a Chapter. Section 1 is unstarted and no repository file changed beyond this document.
+
+**Stage.** The armed queue's leash advanced to this plan after `docs/plans/agent_persona_context-budget-removal_v1.md` was recorded blocked. Nothing of this plan ran. The `Status:` header stays at `Ready`, because the run is not starting.
+
+**The preceding plan's blocker was tested and does not carry, but this plan's own gate is unmet.** That blocker is the context-budget plan's ordering bar, which is specific to that plan. It stops nothing here. What stops this plan is its own text, read this session from this file. Line 33 states "this plan cannot run before steward-architect". Line 27 sets this plan's base as the trunk after that plan merges, and states that the strings Sections 2 to 4 rewrite exist only on that plan's branch until then. Line 101 records the reversal as unavailable for the same reason. So the bar here is not a preference about ordering. Sections 2 to 4 have nothing to edit at `origin/main`.
+
+**The queue is one chain.** `docs/plans/agent_persona_context-budget-removal_v1.md`'s interim board 3 carries the full analysis, including the operator's recorded word on the order and the corrections to three readings this run had wrong. It is not repeated here.
+
+**Gate baseline.** None taken. No repository code changed, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** One to the repository's Expert seat, recorded in the context-budget plan's board 3, covering this whole set of ordering blocks. It does not gate and was unanswered at the time of writing.
+
+**Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes and merges. Section 1 then starts by building the injection ledger against the merged trunk and recording the duplicate test's red baseline.
