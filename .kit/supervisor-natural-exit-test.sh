@@ -43,6 +43,18 @@ TMP="$(mktemp -d)"
 # case count, so a run that gets slower needs to say which case grew.
 CASE_TIMES="$TMP/case-times"
 : > "$CASE_TIMES"
+# Seconds spent in each stretch of the unit blocks, which are the suite's cost
+# when the driven cases are not running. They are one straight-line region, so
+# this is the only way to see inside them without splitting them up.
+UNIT_MARKS="$TMP/unit-marks"
+: > "$UNIT_MARKS"
+UNIT_T0=$(date +%s)
+mark() {  # <label for the stretch that just finished>
+  local now
+  now=$(date +%s)
+  printf '%s %s\n' "$(( now - UNIT_T0 ))" "$1" >> "$UNIT_MARKS"
+  UNIT_T0=$now
+}
 
 # Which part of the suite this process runs. With no arguments it runs
 # everything, which is what a plain invocation and every existing caller gets.
@@ -183,6 +195,7 @@ if [ -n "$RECYCLE_PAIR" ]; then
   check "kill: control: the same pair with its own start ticks kills the process, so the refusal above is the ticks and not a dead instrument" "$?"
 fi
 
+mark setup-and-survivor-kill
 fi  # end of the survivor-kill unit block
 
 # The literals below are read by the stub child rather than only pinned here,
@@ -242,6 +255,7 @@ if [ -n "$READER_SUBSTR" ] && [ -n "$OTHER_DETAILS" ]; then
 fi
 check "pin: no other root_complete detail carries the reader's substring, so a real completion never reads as backfilled" "$R"
 
+mark backfill-pins
 # --- Unit pins, run before any case drives a supervisor ---
 # The child-tree closure decides which processes a sweep kills, so a closure
 # that names a process outside the child's own subtree kills whatever else is
@@ -305,6 +319,7 @@ cat > "$UNIT/ps-grown.txt" <<'PSEOF'
       102     101     100      15590  ?         197613 22:20:42 /c/Users/x/claude
 PSEOF
 
+mark unit-pins
 # --- Which column of a ps row the Windows pid sits in ---
 # `/proc/<pid>/winpid` answers for a pid that has an entry; the `ps` row is the
 # fallback for one that does not. A stopped or an orphaned process carries a
@@ -617,6 +632,7 @@ SW=$(sweep "$UNIT/ps-sibling.txt" ok - ok 100)
 printf '%s\n' "$SW" | grep -q '^RC=0$' && printf '%s\n' "$SW" | grep -q 'SWEEP\[unit\] clean:'
 check "unit: control: the same record with the survivor check completing is clean, so the refusal above is the check" "$?"
 
+mark ps-column-and-closure
 # --- What stop_child verifies and kills, against the live launch shape ---
 # The real launch runs `claude.exe` under `env.exe`, and `env.exe`'s Windows
 # parent is a Cygwin fork intermediate that has already exited. A Windows walk
@@ -1170,6 +1186,7 @@ RL=$(ratelimit rl-empty.jsonl)
 [ "$RL" = "- -" ]; check "unit: an empty stream reports no park (got [$RL])" "$?"
 RL=$(ratelimit rl-absent.jsonl)
 [ "$RL" = "- -" ]; check "unit: a stream that does not exist yet reports no park (got [$RL])" "$?"
+mark stop-child-and-ratelimit
 fi  # end of the unit blocks
 
 # --- The stub child ---
@@ -1885,6 +1902,12 @@ if [ "$POLL_ANCHORS" -eq 1 ]; then
   grep -q 'SWEEP\[natural_exit\] clean:' "$LOG"; check "(s) the natural-exit sweep reads that record as clean" "$?"
   [ "$RC" -eq 0 ]; check "(s) the run ends at the second child's shutdown rather than at exit 5 (rc=$RC)" "$?"
   grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 2 ]; check "(s) a second child launches (stub launches=$LAUNCHES)" "$?"
+fi
+
+if [ -s "$UNIT_MARKS" ]; then
+  echo "unit-block profile (seconds per stretch, in the order they run):"
+  while read -r secs label; do printf '  %5ss  %s\n' "$secs" "$label"; done < "$UNIT_MARKS"
+  awk '{t+=$1} END {printf "  total %ss in the unit blocks\n", t}' "$UNIT_MARKS"
 fi
 
 if [ -s "$CASE_TIMES" ]; then
