@@ -30,6 +30,10 @@ PERSONA_NAME="natexit"
 
 failed=0
 check() {
+  # A check belonging to a case this process did not run reads whatever the
+  # previous case left in RC, LOG and LAUNCHES, so it is suppressed rather
+  # than evaluated. drive() clears the flag for every case it does run.
+  if [ "${SKIP_CASE:-0}" = 1 ]; then return 0; fi
   if [ "$2" = "0" ]; then echo "  OK: $1"; else echo "  FAIL: $1"; failed=1; fi
 }
 
@@ -39,6 +43,29 @@ TMP="$(mktemp -d)"
 # case count, so a run that gets slower needs to say which case grew.
 CASE_TIMES="$TMP/case-times"
 : > "$CASE_TIMES"
+
+# Which part of the suite this process runs. With no arguments it runs
+# everything, which is what a plain invocation and every existing caller gets.
+# The split exists so several processes can cover the suite at once: each one
+# makes its own temp root, so the stub directory every case writes its current
+# case into is per-process and cannot be raced.
+#   --units          the extracted-function unit blocks only, no driven runs
+#   --cases a b g    only the named driven cases, no unit blocks
+RUN_UNITS=1
+WANT_CASES=""
+if [ "${1:-}" = "--units" ]; then
+  WANT_CASES="__none__"
+elif [ "${1:-}" = "--cases" ]; then
+  shift
+  RUN_UNITS=0
+  WANT_CASES=" $* "
+  [ -n "$*" ] || { echo "ERROR: --cases needs at least one case name" >&2; exit 2; }
+fi
+# True when the named driven case is in this process's share of the suite.
+want() {
+  [ -z "$WANT_CASES" ] && return 0
+  case "$WANT_CASES" in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
 
 # The extractor and the closure walker are shared with the other suite that
 # drives the supervisor's own function bodies, so the two cannot disagree
@@ -124,6 +151,7 @@ kill_leaked_survivors() {
 }
 trap 'kill_leaked_survivors; rm -rf "$TMP"' EXIT
 
+if [ "$RUN_UNITS" = 1 ]; then
 # --- What this suite's own survivor kill does with a pid that moved on ---
 # Every recorded survivor is a pid and the start ticks of the process that
 # held it. A pid Windows has already recycled onto something else no longer
@@ -155,6 +183,14 @@ if [ -n "$RECYCLE_PAIR" ]; then
   check "kill: control: the same pair with its own start ticks kills the process, so the refusal above is the ticks and not a dead instrument" "$?"
 fi
 
+fi  # end of the survivor-kill unit block
+
+# The literals below are read by the stub child rather than only pinned here,
+# so they are extracted whatever this process is running. Their pins are
+# checks and stay in the unit part. Leaving the extraction inside that part is
+# what made a case run alone behave differently from the same case run in the
+# whole suite: the stub wrote an empty detail and the supervisor read it as a
+# different decision.
 # --- Pin: the backfill literal, writer against reader ---
 # get_root_complete's node script is the one place bin/supervise.sh tests a
 # decision's detail with includes(); more than one match fails the pin below.
@@ -176,6 +212,7 @@ DETAILS=$(awk '
 BACKSTOP_DETAIL=$(printf '%s\n' "$DETAILS" | sed -n 's/^BACKSTOP\t//p')
 OTHER_DETAILS=$(printf '%s\n' "$DETAILS" | sed -n 's/^OTHER\t//p')
 
+if [ "$RUN_UNITS" = 1 ]; then
 [ -n "$READER_SUBSTR" ] && [ "$(printf '%s\n' "$READER_SUBSTR" | wc -l)" -eq 1 ]
 check "pin: exactly one backfill substring test is found in bin/supervise.sh ('$READER_SUBSTR')" "$?"
 [ -n "$BACKSTOP_DETAIL" ] && [ "$(printf '%s\n' "$BACKSTOP_DETAIL" | wc -l)" -eq 1 ]
@@ -1133,6 +1170,7 @@ RL=$(ratelimit rl-empty.jsonl)
 [ "$RL" = "- -" ]; check "unit: an empty stream reports no park (got [$RL])" "$?"
 RL=$(ratelimit rl-absent.jsonl)
 [ "$RL" = "- -" ]; check "unit: a stream that does not exist yet reports no park (got [$RL])" "$?"
+fi  # end of the unit blocks
 
 # --- The stub child ---
 # ${...} placeholders in the extracted literals become a fixed root id.
@@ -1390,6 +1428,23 @@ DRIVE_ENV=()
 DRIVE_POLL_MS=1000
 drive() {
   local name="$1" plan="$2" budget="$3"; shift 3
+  # A case outside this process's share is not run, and every check that
+  # follows it is suppressed until the next driven case begins. The checks a
+  # case makes before its own drive (that an injected copy parses, that an
+  # anchor appears once) do not depend on the run and are left to run here, so
+  # they are covered by every process rather than by exactly one.
+  # The assertions after a skipped case still run, and this suite runs under
+  # `set -u`, so they are given a harmless state to read rather than the
+  # previous case's. An empty log makes every `grep -q` fail and a zero rc
+  # makes every comparison decide something; check() discards the verdicts
+  # either way. Without this the first assertion after a skipped case aborts
+  # the whole process on an unbound RC.
+  if ! want "$name"; then
+    SKIP_CASE=1
+    RC=0; OUT=""; LAUNCHES=0; LOG="$TMP/skipped.log"; : > "$LOG"
+    return 0
+  fi
+  SKIP_CASE=0
   local dir="$TMP/$name"
   mkdir -p "$dir/wd" "$dir/rd"
   printf '%s\n' "$plan" | tr ',' '\n' > "$dir/plan"
@@ -1832,9 +1887,11 @@ if [ "$POLL_ANCHORS" -eq 1 ]; then
   grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 2 ]; check "(s) a second child launches (stub launches=$LAUNCHES)" "$?"
 fi
 
-echo "driven-run profile (seconds, slowest first, poll interval ${DRIVE_POLL_MS}ms):"
-sort -rn "$CASE_TIMES" | while read -r secs name; do printf '  %5ss  %s\n' "$secs" "$name"; done
-awk '{t+=$1; n++} END {printf "  total %ss across %s driven runs\n", t, n}' "$CASE_TIMES"
+if [ -s "$CASE_TIMES" ]; then
+  echo "driven-run profile (seconds, slowest first, poll interval ${DRIVE_POLL_MS}ms):"
+  sort -rn "$CASE_TIMES" | while read -r secs name; do printf '  %5ss  %s\n' "$secs" "$name"; done
+  awk '{t+=$1; n++} END {printf "  total %ss across %s driven runs\n", t, n}' "$CASE_TIMES"
+fi
 
 if [ "$failed" -eq 0 ]; then
   echo "supervisor-natural-exit-test.sh: PASS"

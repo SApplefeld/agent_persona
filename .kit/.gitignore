@@ -21,6 +21,7 @@
 !/fixtures/
 !/settings-plugin-key-test.sh
 !/supervisor-natural-exit-test.sh
+!/supervisor-natural-exit-parallel.sh
 !/supervisor-fn-extract.sh
 !/supervisor-tree-walk-test.sh
 !/persona-live-refuse-test.sh
