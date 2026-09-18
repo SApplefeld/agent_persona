@@ -75,3 +75,36 @@ Tests: at minimum, lock that a critical crossing in the store no longer restarts
 - `docs/archive/agent_persona_process-keeper_v1.md`: closes before this plan runs.
 
 ## Chapters
+
+### Interim board 1 - 2026-09-18
+
+Not a Chapter. No section closed, and no section started.
+
+**Stage.** Section 1 is unstarted. The armed queue's leash advanced to this plan after `docs/plans/agent_persona_supervisor-peer_v1.md` was recorded blocked. The plan was read in full, its arming gate was tested, and the run stopped before any edit. The `Status:` header is deliberately left at `Ready` rather than normalized to `In Progress`, because the run is not starting. The preceding plan's status was flipped ahead of its gate earlier in this queue and had to be reverted, and this entry records the choice not to repeat it.
+
+**The gate, tested rather than assumed.** This plan's Dispatch Authorization states one condition: "Execution is armed only on the operator's own word, typed into the executing session's thread or relayed through the coordinator." That is one condition where the supervisor-peer plan's gate carried two, so the blocker recorded against that plan does not carry over by itself and was re-tested here rather than restated.
+
+The operator's word exists. They asked for all three plans to be armed and run "in order." That authorizes this plan's execution and sequences it third. What is missing is not authorization but permission to depart from the order they gave, since plans 1 and 2 have not closed.
+
+**The Assumptions line's third clause is unmet.** The dated assumption at the head of this plan's `## Assumptions` section bars it from running "never beside a plan that edits `bin/supervise.sh`, `bin/supervise-decide.mjs` or `hooks/index.ts`." `docs/plans/agent_persona_steward-architect_v1.md` edits two of those three and is blocked rather than closed. Its reversal clause hands the ordering to the operator at arming, and it reverses the sequencing clause only. It does not speak to the "beside" clause, so the reversal cannot be read as licensing this.
+
+**The overlap, measured rather than estimated.** Read from `git diff origin/main...HEAD` on branch `steward-architect` at `2923cbe`, searched for the monitor's own identifiers (`contextBudget`, `CONTEXT_BUDGET`, `criticalTs`, `budget_opts`, `context_budget`).
+
+- `bin/supervise.sh`: the steward plan's diff touches no monitor line. Seven monitor lines stand at `origin/main` for this plan to remove. Disjoint.
+- `hooks/index.ts`: the steward plan's diff touches no monitor line. Thirty-eight monitor lines stand at `origin/main`. Disjoint.
+- `bin/supervise-decide.mjs`: the steward plan does not touch the file at all. Five monitor lines stand. No overlap.
+- `bin/agentic-common.sh`: three collision sites. At line 149 the steward plan rewrote the `options` JSON assembly to append its `$architect_opt`, and this plan must remove `$budget_opts` from that same line. At line 56 the monitor's entry in the `emit_settings_json` header comment abuts a steward hunk at lines 57 to 62. At lines 111 and 112 the four `CONTEXT_BUDGET_*` names in the numeric-validation loop abut a steward hunk at lines 107 to 108. The `budget_opts` blob itself, lines 69 to 81, sits clear of every steward hunk and deletes cleanly.
+
+The first count taken here was one site rather than three. It came from searching the steward plan's diff for the monitor's own identifiers, which finds a collision only where both sides name the same thing. Two of the three sites are adjacency inside the three lines of context a merge reads, where the two sides name nothing in common. The method that finds them compares the steward plan's changed line ranges against the monitor's line positions at `origin/main`, and it is the one this entry's figures come from. The identifier search is recorded because it is the one that was wrong, and because it reported the other three files clear on the same evidence the range comparison independently confirms.
+
+So the cost of running the two in parallel is three mechanical conflicts in one file: a comment line, two lines of a name list, and one long assembly line. It is a rebase rather than a structural conflict. That finding argues for running now. It does not decide it, because the order is the operator's.
+
+**Rulings adopted since the last boundary.** One, carried in from the preceding plan and recorded in full in that plan's board: a gate's stated reason is not the gate, and a positional grant covers its stated scope only. That ruling is why this plan's gate was read as written here rather than through its evident purpose. Applying it in the other direction would be the same error: the "beside" clause bars this run on its own text, whatever its purpose, and the fact that the collision turns out to be one line does not narrow the clause.
+
+**Asks in flight.** The operator holds the ordering question, sent to their thread with both options and a marked recommendation to run now. The repository's Expert seat was asked, before this declaration, whether a prior operator decision or memory record already settles whether a blocked plan counts as "beside." That ask does not gate and was unanswered at the time of writing. The coordinator seat holds a routing notice.
+
+**Gate baseline.** None taken. No repository file changed beyond this plan document, so no test lane ran and there is no baseline to diff.
+
+**Live dispatches.** None. No implementer, reviewer or scout is in flight.
+
+**Next action.** Nothing, until the operator answers whether this plan may run out of the order they set. On a yes, Section 1 starts by cutting a branch off `origin/main`, repeating the Sweep section's two searches against that base, and amending Files in scope where a file has gained a mention. On a no, this plan waits for `docs/plans/agent_persona_steward-architect_v1.md` to close.
