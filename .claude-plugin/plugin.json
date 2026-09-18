@@ -86,6 +86,12 @@
       "title": "Coordinator persona name",
       "description": "The one persona name the inbox gates treat as the coordinator: its owner may address any persona, and any named persona owner may address it. A configured name of 'default' is refused and falls back to 'coordinator'."
     },
+    "architectPersona": {
+      "type": "string",
+      "default": "",
+      "title": "Architect persona name",
+      "description": "The one persona name the supervisor treats as the architect: the design seat the coordinator routes design asks to, and the seat whose own launch receives the architect charter. Left unset, the fleet has no architect and no design-escalation clause is built."
+    },
     "fleetRoster": {
       "type": "string",
       "default": "",

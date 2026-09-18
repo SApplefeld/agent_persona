@@ -295,6 +295,31 @@ ERR=$(read_arch "$TMP/arch-shape.json" 1)
 RC=$?
 case "$RC:$ERR" in 0:*) check "read_settings_architect_persona refuses options that are not an object" 1 ;; *"not an object"*) check "read_settings_architect_persona refuses options that are not an object" 0 ;; *) check "read_settings_architect_persona refuses options that are not an object (rc=$RC, err=$ERR)" 1 ;; esac
 
+# --- resolve_architect_persona: the launch environment wins ---
+# The precedence inverts coordinatorPersona's, so the file-wins case is pinned
+# beside the environment-wins one rather than only the new direction. Reading
+# only the winner would leave a resolver that ignored its second argument green.
+resolve_arch() {
+  run_lib bash -c 'source "$1/bin/agentic-common.sh" && resolve_architect_persona "$2" "$3"' _ "$ROOT" "$1" "$2"
+}
+OUT=$(resolve_arch "vellum" "drafter")
+[ "$OUT" = "vellum" ]; check "resolve_architect_persona: the launch environment wins over the settings file (out=$OUT)" "$?"
+OUT=$(resolve_arch "" "drafter")
+[ "$OUT" = "drafter" ]; check "resolve_architect_persona: the settings file answers where the environment names none (out=$OUT)" "$?"
+OUT=$(resolve_arch "vellum" "")
+[ "$OUT" = "vellum" ]; check "resolve_architect_persona: the environment answers where the file names none (out=$OUT)" "$?"
+OUT=$(resolve_arch "" "")
+[ -z "$OUT" ]; check "resolve_architect_persona: neither side naming an architect is a launch with no architect (out=$OUT)" "$?"
+# An environment-supplied name is spliced into the coordinator's standing
+# instruction exactly as a file-supplied one is, so it is held to the class the
+# file reader holds its own value to rather than trusted for its origin.
+ERR=$(resolve_arch 'x"}}},"hooks":{"a":1' "" 2>&1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "resolve_architect_persona refuses an environment name outside the persona class" 1 ;; *"letters, digits, underscore and hyphen"*) check "resolve_architect_persona refuses an environment name outside the persona class" 0 ;; *) check "resolve_architect_persona refuses an environment name outside the persona class (rc=$RC err=$ERR)" 1 ;; esac
+ERR=$(resolve_arch "default" "" 2>&1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "resolve_architect_persona refuses an environment name of default" 1 ;; *"must not be 'default'"*) check "resolve_architect_persona refuses an environment name of default" 0 ;; *) check "resolve_architect_persona refuses an environment name of default (rc=$RC err=$ERR)" 1 ;; esac
+
 # Shapes that cannot hold options are refused rather than repaired.
 for shape in '{"pluginConfigs":[]}' '{"pluginConfigs":{"agentic-plugin":"x"}}' '{"pluginConfigs":{"agentic-plugin":{"options":"x"}}}'; do
   for fn in ensure_settings_plugin_ids ensure_settings_arming; do

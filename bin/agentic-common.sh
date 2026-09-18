@@ -4,7 +4,8 @@
 # Provides: wait_persona_free, refuse_if_persona_live, emit_settings_json,
 #           ensure_settings_plugin_ids, ensure_settings_arming,
 #           read_settings_coordinator_persona,
-#           read_settings_architect_persona, valid_persona_name,
+#           read_settings_architect_persona, resolve_architect_persona,
+#           valid_persona_name,
 #           find_global_store, list_installed_stores, poll_decisions,
 #           poll_heartbeat.
 # COORDINATOR_PERSONA and ARCHITECT_PERSONA are exported on both settings
@@ -377,6 +378,36 @@ if (name !== "" && !/^[A-Za-z0-9_-]+$/.test(name)) fail("resolves architectPerso
 if (name === "default") fail("resolves architectPersona to \u0027default\u0027, and architectPersona must not be \u0027default\u0027");
 console.log(name);
 ' "$1" "$id"
+}
+
+# --- resolve_architect_persona ---
+# Usage: resolve_architect_persona <environment value> <settings-file value>
+# Prints the architect name a launch resolves to, given what the launch
+# environment carried and what the settings file resolved to. The environment
+# wins wherever it names an architect, and the file answers where it does not.
+#
+# That is the opposite of coordinatorPersona's precedence, and the reason that
+# key gives does not transfer. The plugin under hooks/ reads coordinatorPersona
+# itself, so the launcher and the plugin have to agree on one name and the file
+# is the copy that outlives the launch. bin/supervise.sh is architectPersona's
+# only consumer. With no second reader to agree with, a launcher that names an
+# architect is the fresher fact, and a run directory written before this key
+# existed stops silently resolving a fleet to no architect at all.
+#
+# Prints the empty string where neither side names one, which is a launch with
+# no architect. Returns 1 on a resolved name outside valid_persona_name's class
+# or naming "default", the two values emit_settings_json and the file reader
+# both refuse, so an environment-supplied name is held to the class it is
+# spliced under rather than trusted for coming from the launcher. It prints
+# nothing then, and names the resolved value on stderr.
+resolve_architect_persona() {
+  local resolved="$1"
+  [ -n "$resolved" ] || resolved="$2"
+  if [ -n "$resolved" ] && { ! valid_persona_name "$resolved" || [ "$resolved" = "default" ]; }; then
+    echo "ERROR: resolve_architect_persona: architectPersona resolves to '$resolved', which may hold only letters, digits, underscore and hyphen and must not be 'default'" >&2
+    return 1
+  fi
+  printf '%s\n' "$resolved"
 }
 
 # --- valid_persona_name ---
