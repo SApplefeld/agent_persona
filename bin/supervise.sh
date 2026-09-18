@@ -589,8 +589,10 @@ trap 'exit 143' TERM
 resolve_windows_pid() {
   local pid="$1"
   local winpid=""
+  # Read with the shell's own `read`, which launches nothing: this runs for
+  # every process under the child on every poll.
   if [ -r "/proc/$pid/winpid" ]; then
-    winpid=$(cat "/proc/$pid/winpid" 2>/dev/null)
+    { IFS= read -r winpid < "/proc/$pid/winpid"; } 2>/dev/null || true
   fi
   if [ -z "$winpid" ]; then
     winpid=$(ps -p "$pid" 2>/dev/null | tail -n +2 | awk '
@@ -1409,7 +1411,9 @@ refresh_child_tree() {
     # record confirmed a moment ago from one no poll has confirmed in a
     # while.
     CHILD_TREE_SEEN_WINPIDS="$winpids"
-    CHILD_TREE_CONFIRMED_AT=$(date +%s)
+    # The shell's own clock rather than `date`: this branch is the one a
+    # settled child takes on every poll, and it launches nothing.
+    printf -v CHILD_TREE_CONFIRMED_AT '%(%s)T' -1
     CHILD_TREE_FAILED_CONFIRMS=0
     return 0
   fi
@@ -2383,6 +2387,24 @@ process.exit(1);
 " "$out_file" 2>> "$RUNDIR/supervisor.err"
 }
 
+# --- Helper: where the harness keeps the transcripts of sessions launched
+# from a directory ---
+# Prints the directory, or nothing where the profile is unknown. The poll loop
+# resolves it once per child and hands it to the poll reader, which adds the
+# session id, since the launch directory does not move under a live child.
+# The layout is described under read_transcript_mtime_ms below.
+# Usage: transcript_dir_for <workdir>
+transcript_dir_for() {
+  local workdir="$1"
+  local profile="${USERPROFILE:-${HOME:-}}"
+  [ -n "$profile" ] || return 0
+  local profile_u workdir_w key
+  profile_u="$(cygpath -u "$profile" 2>/dev/null || echo "$profile")"
+  workdir_w="$(cygpath -w "$workdir" 2>/dev/null || echo "$workdir")"
+  key="${workdir_w//[^A-Za-z0-9]/-}"
+  printf '%s\n' "$profile_u/.claude/projects/$key"
+}
+
 # --- Helper: when the harness last wrote a session's transcript ---
 # The harness appends to its transcript for a session on every turn, so that
 # file's modification time is a liveness instrument the child itself does not
@@ -2402,15 +2424,11 @@ process.exit(1);
 # fail-safe answer: the decide unit then runs its hung check on the heartbeat
 # alone, exactly as it did before this reading existed.
 read_transcript_mtime_ms() {
-  local workdir="$1" session_id="$2"
+  local session_id="$2" transcript_dir transcript
   [ -n "$session_id" ] || return 0
-  local profile="${USERPROFILE:-${HOME:-}}"
-  [ -n "$profile" ] || return 0
-  local profile_u workdir_w key transcript
-  profile_u="$(cygpath -u "$profile" 2>/dev/null || echo "$profile")"
-  workdir_w="$(cygpath -w "$workdir" 2>/dev/null || echo "$workdir")"
-  key="$(printf '%s' "$workdir_w" | sed 's/[^A-Za-z0-9]/-/g')"
-  transcript="$profile_u/.claude/projects/$key/$session_id.jsonl"
+  transcript_dir=$(transcript_dir_for "$1")
+  [ -n "$transcript_dir" ] || return 0
+  transcript="$transcript_dir/$session_id.jsonl"
   [ -f "$transcript" ] || return 0
   node -e "
 const fs = require('fs');
@@ -2862,6 +2880,11 @@ while true; do
   STORE="$WORKDIR/.agentic-personas.json"
   HEARTBEAT="$WORKDIR/.agentic-heartbeat.json"
   CHILD_SESSION_ID=""
+  # Where the harness keeps this child's transcript, resolved here once: it
+  # turns on the launch directory alone, which does not move while the child
+  # lives. Empty where the profile is unknown, which leaves the hung check
+  # running on the heartbeat alone.
+  TRANSCRIPT_DIR=$(transcript_dir_for "$WORKDIR")
   POLL_COUNT=0
   # The end of the wait this child is parked on, and the value the log last
   # named. Both belong to one child: a fresh child's stream is its own.
@@ -2888,36 +2911,52 @@ while true; do
     # and nothing can name it once its wrapper exits.
     refresh_child_tree
 
-    # The heartbeat, and the clock it is measured against, read together: the
-    # staleness the decide unit computes is the gap between the two, and a
-    # clock sampled several node spawns later reports that gap wider than it
-    # was by however long those spawns took.
-    NOW=$(node -e "console.log(Date.now())")
-    HEARTBEAT_JSON=""
-    if [ -f "$HEARTBEAT" ]; then
-      HEARTBEAT_JSON=$(poll_heartbeat "$HEARTBEAT" "$PERSONA")
-    fi
-    HEARTBEAT_SESSION_ID=""
-    HEARTBEAT_LAST_SEEN=""
-    if [ -n "$HEARTBEAT_JSON" ]; then
-      HEARTBEAT_SESSION_ID=$(echo "$HEARTBEAT_JSON" | node -e "
-const o = JSON.parse(require('fs').readFileSync(0, 'utf8'));
-console.log(o.sessionId || '');
-" 2>> "$RUNDIR/supervisor.err")
-      HEARTBEAT_LAST_SEEN=$(echo "$HEARTBEAT_JSON" | node -e "
-const o = JSON.parse(require('fs').readFileSync(0, 'utf8'));
-console.log(o.lastSeen || '');
-" 2>> "$RUNDIR/supervisor.err")
+    # Every reading this poll takes, and the decision on them, in one process.
+    # The clock and the heartbeat are read together inside it: the staleness the
+    # decide unit computes is the gap between the two. The store is read once,
+    # so every fact off it describes the same moment. A process launch costs
+    # tenths of a second on a loaded box, and a poll that launches one per
+    # reading runs longer than the interval it sleeps.
+    #
+    # The transcript's modification time is read after the clock it is compared
+    # against. A transcript written in between carries a time ahead of that
+    # clock, which still corroborates while the gap is shorter than the
+    # staleness bound.
+    POLL_RESULT=$(node "$PLUGIN_DIR/bin/supervise-poll.mjs" \
+      "$HEARTBEAT" "$STORE" "$PERSONA" "$OUT" "${TRANSCRIPT_DIR:-}" "${CHILD_SESSION_ID:-}" \
+      "$CHILD_START_TS" "$LAUNCHED_AT" "$STALE_AFTER_MS" "$SUPERVISOR_MIN_RUN_MS" \
+      "$SUPERVISOR_MAX_RESTARTS_PER_HOUR" "$CRASH_COUNT" "$RESTART_COUNT" "$SUPERVISOR_CRASH_LIMIT" \
+      2>> "$RUNDIR/supervisor.err")
+    DECIDE_ERR=$?
+    DECIDE_ACTION=""; DECIDE_REASON=""; POLL_RATE_LIMIT=""; POLL_SESSION_ID=""
+    {
+      IFS= read -r DECIDE_ACTION
+      IFS= read -r DECIDE_REASON
+      IFS= read -r POLL_RATE_LIMIT
+      IFS= read -r POLL_SESSION_ID
+    } <<< "$POLL_RESULT"
+    DECIDE_ACTION="${DECIDE_ACTION%$'\r'}"
+    DECIDE_REASON="${DECIDE_REASON%$'\r'}"
+    POLL_RATE_LIMIT="${POLL_RATE_LIMIT%$'\r'}"
+    POLL_SESSION_ID="${POLL_SESSION_ID%$'\r'}"
+
+    # The child's session id, off the init line of its stream.
+    if [ -z "$CHILD_SESSION_ID" ] && [ -n "$POLL_SESSION_ID" ]; then
+      CHILD_SESSION_ID="$POLL_SESSION_ID"
     fi
 
     # How much longer this child is parked on a rate limit, read off the newest
     # record in its stream. A reading with no park prints "-" in the first
     # field, which is cleared here so everything downstream reads an empty
-    # value as no park.
-    read -r RATE_LIMIT_RESET RATE_LIMIT_RESET_ISO <<< "$(get_rate_limit_reset "$OUT")"
-    case "${RATE_LIMIT_RESET:-}" in
-      ''|*[!0-9]*) RATE_LIMIT_RESET=""; RATE_LIMIT_RESET_ISO="" ;;
-    esac
+    # value as no park. A poll whose reader failed says nothing about the park
+    # either way, so it leaves the last reading standing: clearing it would
+    # name the same park in the log a second time on the next poll.
+    if [ -n "$DECIDE_ACTION" ] && [ $DECIDE_ERR -eq 0 ]; then
+      read -r RATE_LIMIT_RESET RATE_LIMIT_RESET_ISO <<< "$POLL_RATE_LIMIT"
+      case "${RATE_LIMIT_RESET:-}" in
+        ''|*[!0-9]*) RATE_LIMIT_RESET=""; RATE_LIMIT_RESET_ISO="" ;;
+      esac
+    fi
 
     # Named the moment the park is seen, rather than only on the liveness
     # cadence below: a child can sit in a rate limit's backoff for hours, and
@@ -2946,125 +2985,10 @@ console.log(o.lastSeen || '');
       fi
     fi
 
-    # Read the child's session id from the init line.
-    if [ -z "$CHILD_SESSION_ID" ] && [ -f "$OUT" ]; then
-      CHILD_SESSION_ID=$(read_child_session_id "$OUT")
-    fi
-
-    # The harness transcript for that session, read here rather than beside the
-    # heartbeat above because it is addressed by the session id the line above
-    # resolves. Empty until the init line names a session, and empty wherever
-    # the file cannot be read, which leaves the hung check running on the
-    # heartbeat alone.
-    #
-    # That leaves this reading later in the poll than the clock it is compared
-    # against. A transcript written during the poll body carries a time ahead
-    # of that clock by up to the body's length, which still corroborates while
-    # the body is shorter than the staleness bound. A body longer than the
-    # bound reads that write as too far ahead to corroborate, and the hung
-    # check then runs on the heartbeat alone.
-    TRANSCRIPT_LAST_WRITE_TS=""
-    if [ -n "$CHILD_SESSION_ID" ]; then
-      TRANSCRIPT_LAST_WRITE_TS=$(read_transcript_mtime_ms "$WORKDIR" "$CHILD_SESSION_ID")
-    fi
-
-    # Poll the decision log for signals.
-    read -r ROOT_COMPLETE_TS ROOT_COMPLETE_BACKFILLED_FLAG <<< "$(get_root_complete "$WORKDIR" "$PERSONA")"
-    [ "$ROOT_COMPLETE_BACKFILLED_FLAG" = "1" ] && ROOT_COMPLETE_BACKFILLED=1 || ROOT_COMPLETE_BACKFILLED=""
-    # Plan item 4: a distinct signal from root_complete. root_complete means
-    # "this goal is done"; shutdown_requested means "the operator asked the
-    # supervisor itself to stop" - only the second one should exit the loop.
-    SHUTDOWN_REQUESTED_TS=$(get_fact "$WORKDIR" "$PERSONA" "shutdown_requested")
-    # Plan item 8.3: a reader asked for the child to be relaunched (written by
-    # the supervisor_restart tool). Maps to restart_passive: the goal tree is
-    # kept and the fresh child resumes the active plan.
-    RESTART_REQUESTED_TS=$(get_fact "$WORKDIR" "$PERSONA" "restart_requested")
-    CRITICAL_TS=""
-    if [ -f "$STORE" ]; then
-      CRITICAL_TS=$(node -e "
-const fs = require('fs');
-let s;
-try {
-  s = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
-} catch (e) { process.exit(1); }
-const p = s[process.argv[2]];
-if (!p) process.exit(1);
-const d = (p.decisions||[]).filter(x => x.action === 'context_budget_crossed' && x.detail && x.detail.includes('critical'));
-if (d.length === 0) process.exit(1);
-const newest = d[d.length - 1];
-console.log(newest.timestamp || 0);
-" "$STORE" "$PERSONA" 2>> "$RUNDIR/supervisor.err")
-    fi
-
-    # Build the decide input JSON.
-    DECIDE_INPUT=$(node -e "
-const rootCompleteTs = process.argv[1] ? parseInt(process.argv[1]) : null;
-const criticalTs = process.argv[2] ? parseInt(process.argv[2]) : null;
-const hbSession = process.argv[3] || null;
-const hbLastSeen = process.argv[4] ? parseInt(process.argv[4]) : null;
-const now = process.argv[5] ? parseInt(process.argv[5]) : null;
-const childStartTs = process.argv[6] ? parseInt(process.argv[6]) : 0;
-const childSessionId = process.argv[7] || null;
-const launchedAt = process.argv[8] ? parseInt(process.argv[8]) : 0;
-const staleAfterMs = process.argv[9] ? parseInt(process.argv[9]) : 90000;
-const minRunMs = process.argv[10] ? parseInt(process.argv[10]) : 120000;
-const maxRestartsPerHour = process.argv[11] ? parseInt(process.argv[11]) : 6;
-const crashCount = process.argv[12] ? parseInt(process.argv[12]) : 0;
-const restartCount = process.argv[13] ? parseInt(process.argv[13]) : 0;
-const shutdownRequestedTs = process.argv[14] ? parseInt(process.argv[14]) : null;
-const restartRequestedTs = process.argv[15] ? parseInt(process.argv[15]) : null;
-const rootCompleteBackfilled = process.argv[16] === '1';
-const crashLimit = process.argv[17] ? parseInt(process.argv[17]) : 3;
-const transcriptLastWriteTs = process.argv[18] ? parseInt(process.argv[18]) : null;
-console.log(JSON.stringify({
-  childExitCode: null,
-  rootCompleteTs,
-  shutdownRequestedTs,
-  restartRequestedTs,
-  criticalTs,
-  crashCount,
-  crashLimit,
-  restartCount,
-  childStartTs,
-  childSessionId,
-  heartbeatSessionId: hbSession,
-  heartbeatLastSeen: hbLastSeen,
-  transcriptLastWriteTs,
-  now,
-  launchedAt,
-  staleAfterMs,
-  minRunMs,
-  maxRestartsPerHour,
-  rootCompleteBackfilled,
-}));
-" "${ROOT_COMPLETE_TS:-}" "${CRITICAL_TS:-}" "${HEARTBEAT_SESSION_ID:-}" "${HEARTBEAT_LAST_SEEN:-}" "${NOW:-}" "$CHILD_START_TS" "${CHILD_SESSION_ID:-}" "$LAUNCHED_AT" "$STALE_AFTER_MS" "$SUPERVISOR_MIN_RUN_MS" "$SUPERVISOR_MAX_RESTARTS_PER_HOUR" "$CRASH_COUNT" "$RESTART_COUNT" "${SHUTDOWN_REQUESTED_TS:-}" "${RESTART_REQUESTED_TS:-}" "${ROOT_COMPLETE_BACKFILLED:-}" "$SUPERVISOR_CRASH_LIMIT" "${TRANSCRIPT_LAST_WRITE_TS:-}" 2>> "$RUNDIR/supervisor.err")
-
-    # Call the decide unit.
-    DECIDE_RESULT=$(node -e "
-import { pathToFileURL } from 'node:url';
-import { resolve } from 'node:path';
-const pluginDir = process.argv[2];
-const decidePath = resolve(pluginDir, 'bin/supervise-decide.mjs');
-const mod = await import(pathToFileURL(decidePath).href);
-const input = JSON.parse(process.argv[1]);
-const result = mod.decide(input);
-console.log(JSON.stringify(result));
-" "$DECIDE_INPUT" "$PLUGIN_DIR" 2>> "$RUNDIR/supervisor.err")
-    DECIDE_ERR=$?
-
-    if [ -z "$DECIDE_RESULT" ] || [ $DECIDE_ERR -ne 0 ]; then
+    if [ -z "$DECIDE_ACTION" ] || [ $DECIDE_ERR -ne 0 ]; then
       log "DECIDE ERR $DECIDE_ERR (see supervisor.err)"
       continue
     fi
-
-    DECIDE_ACTION=$(echo "$DECIDE_RESULT" | node -e "
-const o = JSON.parse(require('fs').readFileSync(0, 'utf8'));
-console.log(o.action || 'continue');
-" 2>> "$RUNDIR/supervisor.err")
-    DECIDE_REASON=$(echo "$DECIDE_RESULT" | node -e "
-const o = JSON.parse(require('fs').readFileSync(0, 'utf8'));
-console.log(o.reason || '');
-" 2>> "$RUNDIR/supervisor.err")
 
     case "$DECIDE_ACTION" in
       stop_complete)
