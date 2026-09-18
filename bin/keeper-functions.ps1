@@ -1,7 +1,7 @@
 # Pure functions shared by the process keeper's scripts. Dot-sourced by bin/Start-Persona.ps1 (the
 # wrapper the scheduled task runs) and bin/keeper-probe.ps1 (the recorder that measures what a
-# task delivers), so the allowlist, the env file reader, the file-writers predicate, the roster
-# reader, the supervisor invocation builder and the exit-code policy each exist once.
+# task delivers), so the allowlist, the env file reader, the roster reader, the supervisor
+# invocation builder and the exit-code policy each exist once.
 #
 #   . (Join-Path $PSScriptRoot 'keeper-functions.ps1')
 #
@@ -10,13 +10,9 @@
 # logs it and decides what to do. Both callers run under Windows PowerShell 5.1.
 
 # Every environment variable the keeper is willing to take from the env file. Named explicitly so
-# that no key outside this list reaches the process that launches the supervisor. The list narrows
-# what is exported and is not the security boundary: KEEPER_BASH_EXE names the executable that
-# runs and KEEPER_PATH_PREPEND decides where node and claude resolve, so whoever can write the file
-# controls what runs as the persona at every boot. The file's ACL is what guards that: the wrapper
-# refuses the file when Get-ForeignWriters names anyone, and the probe records the same reading.
-# KEEPER_BASH_EXE is not exported; KEEPER_PATH_PREPEND is prepended to the process PATH rather than
-# set as a variable of its own.
+# that no key outside this list reaches the process that launches the supervisor. KEEPER_BASH_EXE
+# names the executable that runs and is not exported; KEEPER_PATH_PREPEND decides where node and
+# claude resolve and is prepended to the process PATH rather than set as a variable of its own.
 $script:KeeperEnvAllowlist = @(
     'KEEPER_BASH_EXE',
     'KEEPER_PATH_PREPEND',
@@ -124,9 +120,9 @@ Reads the roster file and returns the enabled entry with the given name.
 .DESCRIPTION
 The roster is a JSON array of entry objects (see the roster table in the process keeper plan and
 bin/fleet.example.json). The file is read as UTF-8. A file that cannot be read or parsed, a name no
-entry carries, or an entry whose enabled field is not true is a thrown error naming the roster
-path and the name, so a wrapper started for a persona the roster does not run stops with a message
-rather than launching something.
+entry carries, an entry that carries no enabled field, and an entry whose enabled field is not the
+JSON boolean true are each a thrown error naming the roster path and the name, so a wrapper started
+for a persona the roster does not run stops with a message rather than launching something.
 #>
 function Read-KeeperRoster {
     param(
@@ -150,10 +146,48 @@ function Read-KeeperRoster {
     if ($null -eq $match) {
         throw "roster '$Path' has no entry named '$Name'"
     }
-    if ($match.enabled -ne $true) {
+    # -ne coerces its right side to the left side's type, so a string "false" would compare against
+    # "True" case-insensitively and pass as enabled. The field must be a JSON boolean. The property
+    # is looked up rather than read through $match.enabled, so an entry that carries no such field
+    # is told that, and one that carries the wrong type is told that instead.
+    $enabledProperty = $match.PSObject.Properties['enabled']
+    if ($null -eq $enabledProperty) {
+        throw "roster '$Path' entry '$Name' has no 'enabled' field: write enabled true or false without quotes"
+    }
+    if ($enabledProperty.Value -isnot [bool]) {
+        throw "roster '$Path' entry '$Name' has an 'enabled' field that is not a JSON boolean: write true or false without quotes"
+    }
+    if (-not $match.enabled) {
         throw "roster '$Path' entry '$Name' is not enabled"
     }
     return $match
+}
+
+<#
+.SYNOPSIS
+Spells a Windows path the way the bash that runs the supervisor resolves it.
+
+.DESCRIPTION
+bin/supervise.sh treats any --rundir that does not start with / as relative to the directory bash
+was started in and prefixes it, so D:/personas/dev/run would become <repo>/D:/personas/dev/run and
+the supervisor's own files would land somewhere the wrapper never looks. Git bash mounts each drive
+at /<letter>, so D:/personas/dev/run and /d/personas/dev/run name the same directory to bash while
+only the second is absolute to it. Backslashes become forward slashes; a UNC path keeps its leading
+//server/share; a path already in the bash form, and anything with no drive letter, is returned
+with its separators normalized and nothing else changed. This converts arguments only: the wrapper's
+own keeper.log, keeper.hold and supervisor.out keep the Windows spelling the roster carries, which
+is what .NET resolves.
+#>
+function ConvertTo-BashPath {
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
+    if ($Path.Length -eq 0) { return $Path }
+    $text = $Path -replace '\\', '/'
+    if ($text -match '^([A-Za-z]):(/.*)?$') {
+        $drive = $Matches[1].ToLowerInvariant()
+        $rest = $Matches[2]
+        return "/$drive$rest"
+    }
+    return $text
 }
 
 <#
@@ -163,7 +197,10 @@ Builds the supervisor's argument list and environment map from one roster entry.
 .DESCRIPTION
 Follows the roster table: the three positional arguments in the order bin/supervise.sh parses
 them (<workdir> <persona> <permission-mode>), then --rundir and --channel-name where the entry
-carries them, then the args field verbatim. model, effort, controllerTickMs and coordinatorPersona
+carries them, then the args field verbatim. workdir and rundir go through ConvertTo-BashPath,
+because bash is the consumer of these two and a Windows spelling of the rundir reads to it as a
+relative path. The args field is passed as written, since the keeper does not know what a flag it
+has no row for means. model, effort, controllerTickMs and coordinatorPersona
 become the MODEL, EFFORT, controllerTickMs and COORDINATOR_PERSONA environment variables, each
 present only where the entry carries the field. A missing required field, or an args element that
 is --prompt or starts with --prompt=, is a thrown error naming the roster path, because the roster
@@ -184,11 +221,11 @@ function Build-SupervisorInvocation {
         }
     }
     $arguments = New-Object System.Collections.Generic.List[string]
-    $arguments.Add([string]$Entry.workdir)
+    $arguments.Add((ConvertTo-BashPath ([string]$Entry.workdir)))
     $arguments.Add($name)
     $arguments.Add([string]$Entry.permissionMode)
     if (-not [string]::IsNullOrWhiteSpace([string]$Entry.rundir)) {
-        $arguments.Add('--rundir'); $arguments.Add([string]$Entry.rundir)
+        $arguments.Add('--rundir'); $arguments.Add((ConvertTo-BashPath ([string]$Entry.rundir)))
     }
     if (-not [string]::IsNullOrWhiteSpace([string]$Entry.channelName)) {
         $arguments.Add('--channel-name'); $arguments.Add([string]$Entry.channelName)
@@ -223,130 +260,42 @@ Reads a KEY=value env file into an ordered hashtable.
 
 .DESCRIPTION
 Blank lines and lines whose first non-blank character is # are skipped. The first = is the
-separator, so a value may itself contain = or ;. The key is trimmed of surrounding whitespace; the
-value is kept as written. A line with no =, or with nothing before it, is skipped. A key that
-appears twice takes the last value and is named in the Duplicates list, so the caller can record
-that the earlier value was overridden. The file is read as UTF-8 (Windows PowerShell 5.1 would
-otherwise read a BOM-less file in the ANSI code page) and a read failure throws so the caller
-records it rather than treating the file as empty.
+separator, so a value may itself contain = or ;. Key and value are both trimmed of surrounding
+whitespace, since a space either side of the = is spacing in the file rather than part of a path,
+and an untrimmed one reaches CreateProcess as a file name that does not exist. A line with no =, or
+with nothing before it, is skipped. A key that appears twice takes the last
+value and is named in the Duplicates list, so the caller can record that the earlier value was
+overridden. The file is read as UTF-8 (Windows PowerShell 5.1 would otherwise read a BOM-less file
+in the ANSI code page) and a read failure throws so the caller records it rather than treating the
+file as empty.
+
+A value wrapped in a matching pair of double or single quotes loses that pair and is named in the
+Unquoted list. Quoting a path with spaces is how the same value would be written in a shell, and a
+quoted value passed through as written reaches CreateProcess with the quotes inside the file name,
+which fails as file-not-found. Only a matching outer pair is stripped: a value carrying one quote,
+or two that do not match, is kept as written.
+
+Returns a hashtable: Values is an ordered hashtable of key to value; Duplicates and Unquoted are
+lists of key names.
 #>
 function Read-KeeperEnvFile {
     param([Parameter(Mandatory)][string]$Path)
     $result = [ordered]@{}
     $duplicates = New-Object System.Collections.Generic.List[string]
+    $unquoted = New-Object System.Collections.Generic.List[string]
     foreach ($line in Get-Content -LiteralPath $Path -Encoding UTF8 -ErrorAction Stop) {
         if ([string]::IsNullOrWhiteSpace($line) -or $line.TrimStart().StartsWith('#')) { continue }
         $parts = $line -split '=', 2
         if ($parts.Count -ne 2) { continue }
         $key = $parts[0].Trim()
         if ($key.Length -eq 0) { continue }
+        $value = $parts[1].Trim()
+        if ($value.Length -ge 2 -and ($value[0] -eq '"' -or $value[0] -eq "'") -and $value[-1] -eq $value[0]) {
+            $value = $value.Substring(1, $value.Length - 2)
+            if (-not $unquoted.Contains($key)) { $unquoted.Add($key) }
+        }
         if ($result.Contains($key) -and -not $duplicates.Contains($key)) { $duplicates.Add($key) }
-        $result[$key] = $parts[1]
+        $result[$key] = $value
     }
-    return @{ Values = $result; Duplicates = $duplicates }
-}
-
-<#
-.SYNOPSIS
-Names every principal holding a write grant on a file or directory, from its DACL.
-
-.DESCRIPTION
-A grant counts as write when it carries any right that changes the file's content or lets the
-holder make itself a writer: WriteData, AppendData, WriteAttributes, WriteExtendedAttributes,
-Delete, ChangePermissions or TakeOwnership, or a composite that includes one (Modify, FullControl).
-On a directory, DeleteSubdirectoriesAndFiles counts too, since it lets the holder remove a file
-beneath the directory without holding Delete on the file itself. An ACE can also carry the generic
-access bits (GENERIC_WRITE 0x40000000, GENERIC_ALL 0x10000000, MAXIMUM_ALLOWED 0x02000000), which
-the FileSystemRights enum does not name and a specific-rights mask would miss, so those count as
-write too. Inherited and explicit grants count alike, because the file is written under either.
-Deny entries are not subtracted: the reading names who is granted, and a deny that happens to
-cancel a grant is for the reader to weigh.
-#>
-function Get-FileWriters {
-    param([Parameter(Mandatory)][string]$Path)
-    $writeMask = [int]([System.Security.AccessControl.FileSystemRights]::WriteData -bor
-        [System.Security.AccessControl.FileSystemRights]::AppendData -bor
-        [System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor
-        [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
-        [System.Security.AccessControl.FileSystemRights]::Delete -bor
-        [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-        [System.Security.AccessControl.FileSystemRights]::TakeOwnership)
-    $genericMask = 0x40000000 -bor 0x10000000 -bor 0x02000000
-    $isContainer = Test-Path -LiteralPath $Path -PathType Container
-    if ($isContainer) {
-        $writeMask = $writeMask -bor [int][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles
-    }
-    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
-    $writers = New-Object System.Collections.Generic.List[string]
-    foreach ($rule in $acl.Access) {
-        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
-        # On a directory an InheritOnly rule grants nothing on the directory itself, only on what is
-        # created beneath it, so it is not a writer of the directory.
-        if ($isContainer -and ($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly)) { continue }
-        $rights = [int]$rule.FileSystemRights
-        if (($rights -band $writeMask) -eq 0 -and ($rights -band $genericMask) -eq 0) { continue }
-        $name = [string]$rule.IdentityReference
-        if (-not $writers.Contains($name)) { $writers.Add($name) }
-    }
-    return ($writers -join ';')
-}
-
-<#
-.SYNOPSIS
-Names the principals that can write a file and are not the process's own account, Administrators or SYSTEM.
-
-.DESCRIPTION
-This is the predicate the keeper wrapper refuses on. Two sources count: every DACL writer, and the
-file's owner, who holds WRITE_DAC and READ_CONTROL implicitly with no ACE at all and so can grant
-itself write in one call. Without the owner leg, a principal that created the file while it was
-absent and wrote a clean-looking DACL would pass. The exempt set is fixed rather than "the owner"
-for that same reason, and it is compared by SID (Administrators S-1-5-32-544, SYSTEM S-1-5-18, the
-current user's own SID) rather than by display name, so a localized or untranslatable name cannot
-make the file read as foreign. The file check alone is a partial guard: a principal with write on
-the file's directory can create or replace the file, so the caller records the directory's writers
-beside this reading. The return is the foreign principals joined by ';', an owner outside the set
-spelled owner:<name>.
-
--OwnerSid substitutes the given SID for the owner the ACL reports. It exists for the unit test,
-which runs unelevated and so cannot make a file owned by another principal; the wrapper and the
-probe never pass it.
-#>
-function Get-ForeignWriters {
-    param(
-        [Parameter(Mandatory)][string]$Path,
-        [string]$OwnerSid
-    )
-    $exempt = @(
-        [Security.Principal.WindowsIdentity]::GetCurrent().User.Value,
-        'S-1-5-32-544',
-        'S-1-5-18'
-    )
-    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
-    $foreign = New-Object System.Collections.Generic.List[string]
-    foreach ($name in ((Get-FileWriters -Path $Path) -split ';')) {
-        if ($name.Length -eq 0) { continue }
-        if ($exempt -contains (ConvertTo-Sid $name)) { continue }
-        $foreign.Add($name)
-    }
-    $owner = [string]$acl.Owner
-    if (-not [string]::IsNullOrEmpty($OwnerSid)) { $owner = $OwnerSid }
-    if ($owner.Length -gt 0 -and $exempt -notcontains (ConvertTo-Sid $owner)) {
-        $foreign.Add("owner:$owner")
-    }
-    return ($foreign -join ';')
-}
-
-<#
-.SYNOPSIS
-Translates an account name to its SID string, or returns the input when it is already a SID or cannot translate.
-#>
-function ConvertTo-Sid {
-    param([Parameter(Mandatory)][string]$Account)
-    if ($Account -match '^S-1-') { return $Account }
-    try {
-        $nt = [System.Security.Principal.NTAccount]::new($Account)
-        return $nt.Translate([System.Security.Principal.SecurityIdentifier]).Value
-    } catch {
-        return $Account
-    }
+    return @{ Values = $result; Duplicates = $duplicates; Unquoted = $unquoted }
 }

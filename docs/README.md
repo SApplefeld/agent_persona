@@ -1,9 +1,14 @@
 # agentic-plugin docs
 
+## Reference
+
+- `architecture.md`: how the plugin, the supervisor and the process keeper fit together: each layer's process, what it owns and writes, the boot-time data flow, the keeper's roster, env file, policy and state files, the supervisor self-heal paths the keeper depends on, the external integrations, and the failure modes by layer. `README.md` at the repository root is the operator-facing reference each section points back to.
+
 ## Active plans
 
-- `plans/agent_persona_process-keeper_v1.md`: Process keeper (each persona under a Windows scheduled task that starts at boot with no logon, a wrapper that relaunches or holds on the supervisor exit code with a growing delay, and the three supervisor self-heal fixes the keeper depends on). In Progress; handed to the dev persona.
-- `plans/agent_persona_steward-architect_v1.md`: Steward and architect (split the Fable coordinator persona into a Sonnet steward that keeps the fleet running and holds the kit Coordinator seat, and a Fable architect with no home repository that does design work when asked). Ready, parked for the operator's read; runs after the process keeper.
+- `plans/agent_persona_steward-architect_v1.md`: Steward and architect (split the Fable coordinator persona into a Sonnet steward that keeps the fleet running and holds the kit Coordinator seat, and a Fable architect with no home repository that does design work when asked). Ready, parked for the operator's read; next in the running order.
+- `plans/agent_persona_supervisor-peer_v1.md`: Supervisor as peer (the supervisor judges its child gone only on five silent signals together and after one final ask, never restarts a child whose output names a usage limit, turns off the harness usage-limit pause for supervised children, puts a deliberate shutdown to the child through a run-directory mailbox it answers at a boundary, launches the child under a holder process so it outlives the supervisor, adopts a live child at start, and keeps the kill as the last rung). Ready, parked behind the steward-architect plan.
+- `plans/agent_persona_context-budget-removal_v1.md`: Context-budget monitor removal (the plugin stops estimating a session's context and sending a close-out turn, the supervisor stops restarting a child on a critical crossing, and context is left to the harness's compaction and the kit's gate). Ready, parked behind the steward-architect plan.
 
 ## Archived plans
 
@@ -16,8 +21,10 @@
 - `plans/archive/agentic-plugin_supervisor_v1.md`: Supervisor (the outer loop that relaunches a persona session across days-long runs). Complete.
 - `plans/archive/agentic-plugin_operator-channel_v1.md`: Operator channel (inbox, reply, ask waits, doorbell) (v17, commit e98c20f). Complete.
 - `archive/agent_persona_passive-supervisor_v1.md`: Passive supervisor (the plugin persona starts with no goal and waits, takes goals and steering by conversation, returns to waiting between goals, and is reachable from a chat channel). Complete; its close-out ran as the coordinator plan's Section 0.
-- `archive/agent_persona_coordinator_v2.md`: Coordinator (a Fable-tier coordinator persona directing many worker personas across repos over the commons-store inbox path: cross-repo status, addressing by persona, provenance labels, the inbox lifecycle, arming tiers, the worker and coordinator standing instructions, the test audit). Complete; the most recent plan.
+- `archive/agent_persona_coordinator_v2.md`: Coordinator (a Fable-tier coordinator persona directing many worker personas across repos over the commons-store inbox path: cross-repo status, addressing by persona, provenance labels, the inbox lifecycle, arming tiers, the worker and coordinator standing instructions, the test audit). Complete.
 - `archive/agentic-plugin_context-budget_v1.md`: Context budget (thresholds, the close-out nudge, and the coordinator's compaction-boundary clause in the priming turn). Complete.
+- `archive/agent_persona_unversioned-manifest_v1.md`: Unversioned manifest (the plugin manifest carries no version field, so each plugin update installs the fetched commit under a hash-named cache folder; proven by the install record and a coordinator steer to the dev persona). Complete.
+- `archive/agent_persona_process-keeper_v1.md`: Process keeper (each persona under a Windows scheduled task that starts at boot with no logon, a wrapper that relaunches or holds on the supervisor exit code with a growing delay, and the supervisor self-heal fixes the keeper depends on). Complete; the most recent plan. Registering the tasks is the operator's own elevated act and is listed under its Operator Verification.
 
 ## History
 

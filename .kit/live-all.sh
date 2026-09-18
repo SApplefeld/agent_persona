@@ -29,6 +29,17 @@ else
   SUITES=("$@")
 fi
 
+# --- Static loader rules first ---
+# The loader refuses a hooks module for shapes no mock-driven suite sees
+# (a $-noun used as a value, a nested $-taking function, one event
+# registered twice), and a refused module leaves every live child running
+# with the plugin silently absent. So the static check runs before any
+# child spawns, and a violation ends the run before the lock is taken.
+if ! node "$SCRIPT_DIR/check-loader-rule.mjs"; then
+  echo "live-all.sh: check-loader-rule.mjs failed; the loader would refuse hooks/*.ts. Not spawning children." >&2
+  exit 7
+fi
+
 # --- Setup ---
 # BP2: check for an existing lock before creating a run directory
 GLOBAL_RUNNING="$PLUGIN_DIR/.kit/RUNNING"

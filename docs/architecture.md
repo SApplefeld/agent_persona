@@ -1,0 +1,132 @@
+# Architecture
+
+This repository ships one Claude Code plugin and two outer loops around it. The plugin (`hooks/`) runs inside a `claude` session and keeps a persona's goal tree, memory and heartbeat. The supervisor (`bin/supervise.sh` with `bin/supervise-decide.mjs`) runs one such session at a time for days and relaunches or stops it on the signals the session writes. The process keeper (`bin/Start-Persona.ps1`, `bin/keeper-functions.ps1`, `bin/Register-PersonaTasks.ps1`, `bin/keeper-probe.ps1`) runs one supervisor per persona under a Windows scheduled task that starts at boot with no logon. `README.md` at the repository root carries the plugin's design and the operator-facing reference for the supervisor and the keeper. This document states how the three layers fit together, what each owns, and how each fails.
+
+## Layers
+
+| Layer | Process | Owns | Reads | Writes |
+|---|---|---|---|---|
+| Plugin | `claude` (the child) | goal tree, memory, decision log, heartbeat, commons inbox | its own store, the commons store | `<workdir>/.agentic-personas.json`, `.agentic-heartbeat.json`, the machine-global commons store |
+| Supervisor | `bash bin/supervise.sh` | launch, poll, stop, relaunch of one child | the persona store, the heartbeat, the child's `stdout.jsonl`, the harness transcript's write time | `<rundir>/supervisor.log`, `supervisor.err`, `settings.json`, `child-N/` |
+| Keeper | `powershell.exe -File bin/Start-Persona.ps1` | relaunch, hold or exit on the supervisor's exit code | the roster, the env file, the supervisor's exit code and stderr | `<rundir>/keeper.log`, `keeper.json`, `keeper.hold`, `supervisor.out` |
+| Task Scheduler | `AgentPersona-<name>` | starting the keeper at boot, restarting it when the keeper itself fails | the task definition | the task's last-run result |
+
+Each layer's whole input from the layer below is one channel. The supervisor reads the child through files the child writes. The keeper reads the supervisor through its exit code, plus the last stderr line for the hold marker's text. The scheduler reads the keeper through the keeper's exit code alone. The supervisor never writes the persona store, and the keeper never reads it.
+
+## Data flow at boot
+
+1. Windows starts the `AgentPersona-<name>` task under an S4U logon for the registered user, at RunLevel Limited. No profile loads, so the user-scoped `PATH` and the profile variables are absent.
+2. The task's action runs `powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File <repo>/bin/Start-Persona.ps1 -Name <name> -Roster <roster> -EnvFile <envfile>`, every path absolute (`bin/Register-PersonaTasks.ps1:277-279`).
+3. The wrapper reads the roster entry (`Read-KeeperRoster`), resolves the run directory, and stops if a hold marker exists there.
+4. It applies the env file's allowlisted keys to its own process (`Set-KeeperEnvironment` in `bin/Start-Persona.ps1:144-182`), which pins `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP`, prepends `KEEPER_PATH_PREPEND` to `PATH`, and takes `KEEPER_BASH_EXE` as the bash to run.
+5. It builds the supervisor's argument list and environment from the entry (`Build-SupervisorInvocation`), sets `MODEL`, `EFFORT`, `controllerTickMs` and `COORDINATOR_PERSONA` where the entry carries them, and launches `bash <repo>/bin/supervise.sh <workdir> <name> <permissionMode> [--rundir ...] [--channel-name ...] [args...]` with the repository root as the working directory.
+6. The supervisor checks its settings, gates on the persona being free in the commons store and the heartbeat file, launches `claude -p` as a coproc, and polls it. The child claims the persona, attaches to the Discord relay thread, and idles until a goal arrives.
+7. When the supervisor exits, the wrapper appends the supervisor's stdout and stderr to `<rundir>/supervisor.out`, writes `keeper.json`, logs a `DECIDE` line, and either sleeps and relaunches, writes `keeper.hold` and exits 0, or exits 0 with no marker.
+
+## The keeper
+
+### Files
+
+- `bin/keeper-functions.ps1`: pure functions, dot-sourced by the wrapper and the probe. Nothing in it writes a file, sets an environment variable or launches a process. It holds the env allowlist (`$script:KeeperEnvAllowlist`, eight keys), the policy constants (base delay 300 s, cap 14400 s, reset uptime 3600 s, exit-1 hold count 3, exit-1 short uptime 60 s), `Get-KeeperDecision`, `Read-KeeperRoster`, `ConvertTo-BashPath`, `Build-SupervisorInvocation` and `Read-KeeperEnvFile`.
+- `bin/Start-Persona.ps1`: the wrapper the task runs. Parameters: `-Name` (required, checked in the body so a missing value fails rather than prompting under a task with no console), `-Roster` (default `D:/personas/fleet.json`), `-EnvFile` (default `D:/personas/keeper.env`), `-Release`, and `-DelayScale`, a multiplier on every relaunch sleep that exists for the unit test and that no task passes.
+- `bin/Register-PersonaTasks.ps1`: builds one task definition per enabled roster entry and registers, updates, enables, disables, reports on or (under `-Prune`) unregisters tasks named `AgentPersona-*`.
+- `bin/keeper-probe.ps1`: a recorder, never a gate. Run by hand or as a scratch task's action, it writes one `key=value` file naming the running user, the session id, the elevation state, the delivered `USERPROFILE`, `HOME`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP` and `PATH`, then applies the env file through the shared allowlist and records the exit code and first output line of `bash --version`, `node --version` and `claude --version` through that bash. It exits 1 only when the out file could not be written.
+- `bin/fleet.example.json`: a worked roster for this machine's three personas (`coordinator`, `aios`, `dev`), mapped from the launchers under `D:/personas`.
+- `.kit/keeper-unit-test.mjs` and `.kit/keeper-register-test.mjs`: the two suites, both driving the real `powershell.exe` from node. The register suite shadows every Task Scheduler cmdlet inside the spawned PowerShell so nothing real is registered.
+
+### Roster contract
+
+The roster is a top-level JSON array. `Read-KeeperRoster` (`bin/keeper-functions.ps1:127-164`) returns the entry whose `name` matches, and throws, naming the roster path and the name, when the file cannot be read or parsed, no entry matches, the entry has no `enabled` field, `enabled` is not a JSON boolean, or `enabled` is false. `Build-SupervisorInvocation` (`:211-255`) throws when `name`, `workdir` or `permissionMode` is missing or blank, or when `args` carries `--prompt` or `--prompt=...`. `workdir` and `rundir` are converted to the bash spelling (`D:/x` becomes `/d/x`) because `bin/supervise.sh` treats a `--rundir` that does not start with `/` as relative. The wrapper's own files keep the Windows spelling.
+
+`bin/Register-PersonaTasks.ps1` has a second roster reader, `Read-PersonaRoster` (`:102-162`), with its own rules: the top level must be an array, every entry needs `name` and a boolean `enabled`, names match `\A[A-Za-z0-9_][A-Za-z0-9_-]*\z`, and a name repeated once case is ignored is refused. It does not check `workdir` or `permissionMode`, so a roster the registration accepts can still fail at the wrapper on every launch. `docs/backlog.md` files that gap under "The registration script accepts a roster entry the wrapper cannot launch".
+
+### Env file contract
+
+`Read-KeeperEnvFile` (`bin/keeper-functions.ps1:281-301`) reads every `KEY=value` line as UTF-8, skips blank lines, `#` comments and lines with no `=` or an empty key, splits on the first `=`, trims both sides, strips one matching pair of outer double or single quotes from the value, and takes the last value for a repeated key. It returns every key, not only allowlisted ones, plus `Duplicates` and `Unquoted` lists. The allowlist is applied by the two callers. In the wrapper, a key outside the list is named on one `ENV ignored:` line; an allowlisted key whose value is empty or whitespace is named on an `ENV empty:` line and not applied, because `Set-Item env:` with an empty value removes the variable under Windows PowerShell 5.1 and keeps it under PowerShell 7; a repeated key is named on `ENV duplicate:`, a quote-stripped one on `ENV unquoted:`. `KEEPER_BASH_EXE` is returned to the caller and never exported. `KEEPER_PATH_PREPEND` is prepended to the process `PATH` with a semicolon.
+
+When the env file is absent the wrapper logs `ENV missing:` and takes `KEEPER_BASH_EXE` from its own process environment if present (`bin/Start-Persona.ps1:444-458`). With neither source it exits 1 with `no bash executable`.
+
+### The decision function
+
+`Get-KeeperDecision` (`bin/keeper-functions.ps1:55-114`) takes the exit code, the uptime in seconds, the previous delay and the consecutive short exit-1 count, and returns `Action` (`hold`, `relaunch` or `exit`), `DelaySeconds`, `NextDelaySeconds`, `NextExit1Count` and one-line `Reason`. Before the row is applied, a previous delay below 300 is raised to 300 and an uptime of 3600 or more resets the ladder to 300.
+
+| Exit | Action | Delay now | Ladder after |
+|---|---|---|---|
+| 0 | hold | 0 | unchanged |
+| 1, uptime under 60 s, count reaches 3 | hold | 0 | unchanged |
+| 1 otherwise | relaunch | 300 | unchanged; count increments only when uptime is under 60 s, else resets to 0 |
+| 2 | relaunch | 300 | unchanged |
+| 130, 143 | exit | 0 | unchanged |
+| 3, 4, 5, any other | relaunch | current ladder | doubled, capped at 14400 |
+
+A hold on exit 1 writes three lines to `keeper.hold`: the reason, the supervisor's last non-blank stderr line, and the path of `supervisor.out`. A hold on exit 0 writes the reason alone.
+
+### The wrapper's run loop
+
+Each launch (`Invoke-Supervisor`, `bin/Start-Persona.ps1:298-348`) starts bash with `Start-Process -PassThru -NoNewWindow`, redirecting stdout and stderr to two files named `supervisor.out.<pid>-<start time>.<launch>.stdout` and `.stderr` in the run directory. The wait is on the launched process alone, renewed every second, never on its descendants, so a supervisor that exits 5 and leaves a survivor is still read the moment it exits. After exit, both files are appended to `supervisor.out` (stdout first) with a share mode that tolerates a descendant still holding the write end, the stderr file's last non-blank line is read from its final 64 KB, and both files are removed. A file a survivor still holds is logged `CAPTURE held:` and swept by a later launch of the same wrapper incarnation (`Remove-KeeperCaptureLeftovers`); a pair another wrapper or an earlier incarnation left is never touched.
+
+The loop then writes `keeper.json` (`persona`, `launchCount`, `lastStart`, `lastEnd`, `lastExitCode`, `currentDelay`, `holdReason`), logs `DECIDE exit=<n> uptime=<s> action=<a> delay=<d> reason=<r>`, and acts. A `hold` writes the marker and exits 0. An `exit` exits 0 with no marker. A `relaunch` sleeps `DelaySeconds * DelayScale` and loops.
+
+### Logs and state under the run directory
+
+- `keeper.log`: one UTF-8 line per event, each prefixed with a UTC ISO timestamp. Line families: `LAUNCH <n> <bash> <args>`, `EXIT <n> code=<c> uptime=<s>`, `DECIDE ...`, `HOLD <reason>`, `RELEASE <path>` or `RELEASE none`, `ENV ignored:|empty:|duplicate:|unquoted:|failed:|missing:`, `CAPTURE failed:|held:`, `STATE failed:`, `ROTATE failed:`, `ERROR ...`. Rotation renames the log to `keeper.log.1` when it exceeds 5 MB, immediately before the append that would cross it.
+- `keeper.json`: the last run's facts, rewritten whole after every supervisor exit.
+- `keeper.hold`: present while the persona is held. Its first line is the reason the next start logs as `HOLD <reason>`.
+- `supervisor.out`: the supervisor's own stdout and stderr, appended per launch, with no size cap.
+- `keeper-refused.log`, beside the roster file rather than in the run directory: every refusal raised before the roster has named a run directory (a missing `-Name`, an unreadable roster, a run directory that could not be created), because a scheduled task gives stderr no console. The path is the roster's directory plus `keeper-refused.log`.
+
+### Exit codes of the wrapper
+
+0 when the policy said hold or exit, when `-Release` ran, or when a hold marker was already present at start. 1 on a fault of the wrapper's own: an unknown switch, a missing `-Name`, a roster or env file that cannot be read, a run directory that cannot be created, no bash executable, a `--prompt` in `args`, a launch that fails to start, a supervisor that reported no exit code, or a hold marker that could not be removed under `-Release`. A hold marker that could not be written still exits 0, logged as `ERROR`, because exiting 1 would have the scheduler relaunch within the minute a persona the policy just said to stop.
+
+### Registration
+
+`bin/Register-PersonaTasks.ps1` resolves `-RepoRoot` (default: the parent of its own directory), `-Roster` and `-EnvFile` to absolute canonical paths, reads and validates the roster, then calls `Register-PersonaTasks`. Without `-WhatIf` that function throws before any ScheduledTasks cmdlet when the session is not elevated. It reads the existing `AgentPersona-*` tasks at the scheduler root (`-TaskPath '\'`), treating a not-found query as an empty list and any other read failure as a refusal of the whole run. For each enabled entry it builds a definition (`Get-PersonaTaskDefinitions`, `:193-304`): action as above with `powershell.exe` pinned under `$env:SystemRoot\System32\WindowsPowerShell\v1.0`; trigger AtStartup; principal S4U at RunLevel Limited for `-User` (default: the current identity); settings RestartCount 999, RestartInterval one minute, ExecutionTimeLimit zero, MultipleInstances IgnoreNew, StartWhenAvailable, AllowStartIfOnBatteries, DontStopIfGoingOnBatteries. The builder refuses a `-RepoRoot`, `-Roster`, `-EnvFile` or target script path carrying a double quote or ending in a path separator, a missing `bin/Start-Persona.ps1` under `-RepoRoot`, a missing env file, and an unusable `$env:SystemRoot`. Those checks run under `-WhatIf` too.
+
+An existing task is updated with `Set-ScheduledTask`, a new one registered with `Register-ScheduledTask`, and either is then passed to `Enable-ScheduledTask`. `-Start` runs `Start-ScheduledTask` after each. A disabled entry's existing task is passed to `Disable-ScheduledTask`; one with no task is reported. A task with no roster entry is reported as an orphan and removed only under `-Prune` without `-WhatIf`. `-WhatIf` prints each definition's fields read back off the built CIM objects, says `would register`, `would update`, `would disable` or `would start`, and touches nothing.
+
+The keeper reads no file permissions. No script reads an access control list, an owner or a writer set, and none refuses, warns or skips on such a reading. The roster, the env file and the repository tree are the operator's machine state and are trusted as such.
+
+### Machine state outside the tree
+
+- `D:/personas/fleet.json`: the real roster, same content as `bin/fleet.example.json`.
+- `D:/personas/keeper.env`: the real env file, carrying all eight allowlisted keys at this machine's values.
+- `D:/personas/aios/launch.sh`, `D:/personas/coordinator/launch.sh`, `D:/personas/dev/relaunch.sh`: the hand launchers the roster was mapped from. They remain the manual fallback.
+- The `AgentPersona-*` tasks, once an elevated operator runs the registration. The plan's Operator Verification section holds the cutover steps.
+
+## The supervisor's self-heal paths the keeper depends on
+
+The keeper's policy assumes the supervisor's exit code means what the exit table says. Three supervisor behaviors make that hold across a relaunch.
+
+**No orphan at a natural-exit relaunch.** The supervisor walks the child's Windows process tree from the coproc's pid and keeps a snapshot of each process's pid and creation time (`CHILD_TREE_SNAPSHOT`). The walk accepts a process as a descendant only where its creation time is not earlier than its parent's, because Windows reuses a dead parent's pid and a walk on parent ids alone adopts unrelated processes. Before every natural-exit relaunch, `sweep_child_tree` (`bin/supervise.sh:1597`) kills each snapshot process still matching pid and creation time and confirms it dead. A stop the poll loop orders goes through `stop_child`, whose force-kill phase does the same against its own snapshot; `README.md` under Stop Phases states the phases. On the natural-exit path the shutdown branch exits 0 whatever the sweep found, recording a survivor as a `NOTE:` line; every other branch exits 5 rather than relaunch beside a process it could not confirm dead. The sweep reaches only what the snapshot names; a process the child started after the last walk is outside it (`docs/backlog.md`).
+
+**Limits enforced on the decide path.** The poll loop's `restart` branch updates the crash counter and the hourly restart count, then checks `SUPERVISOR_MAX_RESTARTS_PER_HOUR` (exit 4) and `SUPERVISOR_CRASH_LIMIT` (exit 3) before it relaunches (`bin/supervise.sh:3038-3050`), on the same counts and codes the natural-exit path uses. Without this a limit stopped the run one launch late, after the next child had claimed the persona and attached the channel.
+
+**A rate-limited child is logged as parked, not read as hung.** The poll loop reads the newest record of the child's `stdout.jsonl`. While that record is an `api_retry` with `error_status` 429 and a positive `retry_delay_ms` (`bin/supervise.sh:2313-2318`), the supervisor logs `RATE_LIMITED until <ISO>` in place of `WAITING`. The state ends by itself when the child writes any newer record. The reading suppresses nothing and sends no notification. A parked child keeps stamping its heartbeat, so it never reaches the hung branch on its own.
+
+The supervisor reads no account identity and takes no action when the child's account changes. An account swap is transparent to a running `claude`.
+
+The hung check corroborates a stale heartbeat against the harness transcript's own modification time: a transcript written within `staleAfterMs` of the poll's clock, in either direction, keeps the child running; one as stale as the heartbeat, further ahead than the bound, or unreadable leaves the restart standing. `README.md` under Poll Loop states the full priority order.
+
+## External integrations
+
+- **Windows Task Scheduler**: one `AgentPersona-<name>` task per enabled roster entry, S4U at boot. Its restart-on-failure setting (999 at one minute) is the backstop for the wrapper crashing, not the policy for the supervisor.
+- **Git for Windows bash**: `KEEPER_BASH_EXE` names it. The wrapper runs `bash <script>` with no `-l`, so the supervisor's children resolve on the delivered `PATH`, not on a login profile's rewrite.
+- **`claude` CLI**: the supervisor's child, launched with stream-json on both ends. `KEEPER_PATH_PREPEND` is what makes it and `node` resolvable under a task with no user `PATH`.
+- **Discord relay** (`D:/discord-channels`): the child attaches to a thread named `supervisor-<persona>`, or the roster's `channelName`, unless `args` carries `--no-channel`.
+- **The commons store**: machine-global, one per installed plugin; the supervisor's pre-launch gate reads it for a live claim on the persona, and the plugin's inbox path runs through it.
+
+## Failure modes by layer
+
+| Symptom | Where to read | Likely cause |
+|---|---|---|
+| Task ran, nothing in the run directory | `keeper-refused.log` beside the roster | roster unreadable, entry missing or disabled, run directory not creatable |
+| `HOLD` lines at every boot, no launch | `keeper.hold` first line | the persona was shut down through its tool (exit 0), or three fast exit-1 runs; release with `-Release` |
+| `LAUNCH` then `EXIT ... code=1` every 300 s | `keeper.hold` line 2 and `supervisor.out` | a supervisor setting or argument refused; the roster's `permissionMode` or `workdir` wrong |
+| `EXIT ... code=2` every 300 s | `<rundir>/supervisor.log` gate lines | the persona is held in the commons store or heartbeat by another process; no store for the load mode |
+| Growing `DECIDE ... delay=` values | `keeper.log` | crash loop (3), restart budget (4) or a survivor (5) on repeat; read `supervisor.log` for which |
+| Wrapper exits 1, scheduler restarts each minute | `keeper.log` `ERROR` lines | no bash executable, launch failed, no exit code read |
+| Persona came back after a `Stop-Process` or `taskkill` | `keeper.log` `EXIT` code | a kill delivers no signal, so the exit is read as a crash and relaunched; write `keeper.hold` or disable the task first |
+| `CAPTURE held:` lines | the run directory's `supervisor.out.*` files | a child process outlived the supervisor and holds the capture handle; the next launch of the same wrapper removes it |
+
+Whether `Stop-ScheduledTask` ends the whole process tree under an S4U task is not measured on this machine, and the wrapper has no stop path of its own. `README.md` under Process keeper states the stop options that are known to work.

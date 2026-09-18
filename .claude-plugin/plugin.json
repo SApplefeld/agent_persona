@@ -1,6 +1,5 @@
 {
   "name": "agentic-plugin",
-  "version": "0.10.0",
   "description": "PIANO-esque cognitive layer: persona-keyed state, heartbeat liveness, controller with classify/actuate",
   "userConfig": {
     "persona": {
