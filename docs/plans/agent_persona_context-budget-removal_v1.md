@@ -54,7 +54,7 @@ Tests: at minimum, lock that a critical crossing in the store no longer restarts
 ## Assumptions
 
 - decided 2026-09-17 by the operator on the coordinator's thread: the monitor is cut, as its own plan. The words are in the Dispatch Authorization. The coordinator's evidence put to the operator before that answer: every recorded compaction was the harness's own and fired below the restart threshold, and the monitor is off for the running fleet.
-- assumed 2026-09-17 (default): this plan runs after `docs/plans/agent_persona_process-keeper_v1.md` closes and before `docs/plans/agent_persona_supervisor-peer_v1.md` is armed, and never beside a plan that edits `bin/supervise.sh`, `bin/supervise-decide.mjs` or `hooks/index.ts`; reversal: the order is the operator's at arming, and running after the supervisor plan instead means that plan's executor meets a `criticalTs` input it leaves alone, which costs nothing.
+- assumed 2026-09-17 (default): this plan runs after `docs/archive/agent_persona_process-keeper_v1.md` closes and before `docs/plans/agent_persona_supervisor-peer_v1.md` is armed, and never beside a plan that edits `bin/supervise.sh`, `bin/supervise-decide.mjs` or `hooks/index.ts`; reversal: the order is the operator's at arming, and running after the supervisor plan instead means that plan's executor meets a `criticalTs` input it leaves alone, which costs nothing.
 - assumed 2026-09-17 (sibling plans in this repository): Branch-and-PR; reversal: none, a header edit.
 - assumed 2026-09-17 (default): the removal is whole, with no flag left behind; reversal: a flag is a revert of this plan's commit, since the monitor is self-contained.
 - assumed 2026-09-17 (default): tests that pin the monitor retire, and tests that only borrow it as a trigger are re-triggered on the hung restart; reversal: where the hung restart cannot be reached inside the suite's time bounds, the executing session stops and reports rather than retiring the four cases.
@@ -72,6 +72,6 @@ Tests: at minimum, lock that a critical crossing in the store no longer restarts
 
 - `docs/archive/agentic-plugin_context-budget_v1.md`: the plan that built the monitor, and the priming sentence that stays.
 - `docs/plans/agent_persona_supervisor-peer_v1.md`: its open question about the context-budget restart is retired by this plan.
-- `docs/plans/agent_persona_process-keeper_v1.md`: closes before this plan runs.
+- `docs/archive/agent_persona_process-keeper_v1.md`: closes before this plan runs.
 
 ## Chapters

@@ -1,0 +1,27 @@
+[
+  {
+    "name": "coordinator",
+    "workdir": "D:/agent_persona",
+    "permissionMode": "bypassPermissions",
+    "rundir": "D:/personas/coordinator/run",
+    "channelName": "coordinator",
+    "model": "fable",
+    "controllerTickMs": 60000,
+    "coordinatorPersona": "coordinator",
+    "enabled": true
+  },
+  {
+    "name": "aios",
+    "workdir": "D:/ai-os",
+    "permissionMode": "bypassPermissions",
+    "rundir": "D:/personas/aios/run",
+    "enabled": true
+  },
+  {
+    "name": "dev",
+    "workdir": "D:/agent_persona",
+    "permissionMode": "bypassPermissions",
+    "model": "opus",
+    "enabled": true
+  }
+]
