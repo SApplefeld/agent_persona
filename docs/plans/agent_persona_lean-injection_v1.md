@@ -96,6 +96,7 @@ Files in scope: `README.md`, `docs/README.md`, this plan document.
 
 ## Assumptions
 
+- decided 2026-09-18 by the operator on the coordinator's thread: the runs that hold the box are deferred to one end-run, `docs/plans/agent_persona_deferred-gate-run_v1.md`, which states the gate policy whole. Under it, `.kit/live-all.sh`, every `.kit/live-*-test.sh`, `.kit/supervisor-natural-exit-test.sh` and any check that launches a `claude` child or runs past two minutes of wall clock do not run at this plan's section closes or its finishing pass. Every other check this plan names still runs. A Chapter names each deferred run as deferred, never as passed. Where an acceptance line above names a deferred suite, that clause is met by the end-run.
 - decided 2026-09-18 by the operator on the coordinator's thread: the pass is worth doing as a plan of its own. The words are in the Intent.
 - assumed 2026-09-18 (default): the order the Approach states, after steward-architect and the context-budget removal and before supervisor-peer; reversal: the operator's word at arming, except that running before steward-architect is not available, since the strings Sections 2 to 4 name exist only once that plan merges.
 - assumed 2026-09-18 (default): eight words is the duplicate bound; reversal: one constant in the test, and a lower bound catches pointers as duplicates.
