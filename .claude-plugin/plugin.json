@@ -90,7 +90,7 @@
       "type": "string",
       "default": "",
       "title": "Architect persona name",
-      "description": "The one persona name the supervisor treats as the architect: the design seat the coordinator routes design asks to, and the seat whose own launch receives the architect charter. Left unset, the fleet has no architect and no design-escalation clause is built."
+      "description": "The persona name this file offers as the architect: the design seat the coordinator routes design asks to, and the seat whose own launch receives the architect charter. The supervisor is this setting's only reader, and a launch whose environment names an architect uses that name instead of this one. Where neither names an architect, the fleet has none and no design-escalation clause is built."
     },
     "fleetRoster": {
       "type": "string",

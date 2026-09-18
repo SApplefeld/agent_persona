@@ -176,6 +176,18 @@ ROLE_FLEET_CARVEOUT_CASES_CONTROL="The operator asks for fleet state, and you ne
 # was written either way, and only the row proves nobody received it.
 DESIGN_ARCHITECT_NOROW_CONTROL="no row for that persona at all"
 DESIGN_ARCHITECT_UNCONFIRMED_CONTROL="its delivery is unconfirmed"
+# The clause's remaining sentences carry constants too, so the class the absence
+# sweep reads covers the whole clause rather than the part someone happened to
+# write a presence pin for. The sweep is only as wide as the class, and the
+# class is only as wide as the constants defined for it.
+DESIGN_ARCHITECT_SEND_CONTROL="A record that turns on a design decision goes to the architect"
+DESIGN_ARCHITECT_TOLD_CONTROL="You tell the operator you routed it"
+DESIGN_ARCHITECT_RELAY_CONTROL="You relay that answer to the worker that escalated as a coordinator record"
+DESIGN_ARCHITECT_ROW_READ_CONTROL="says whether a live commons claim is held"
+# An operator design question is one of the kinds the duty routes, and the relay
+# sentence names only the escalating worker. Without this leg the architect's
+# answer to an operator's own question reaches nobody.
+DESIGN_ARCHITECT_OPERATOR_RELAY_CONTROL="Where the ask was the operator's own rather than a worker's, you relay the answer to the operator on your own channel"
 # Section 2: the architect's own standing instruction, gated on the launch
 # persona matching ARCHITECT_PERSONA. One fragment per clause of its charter,
 # so a red names the clause that went missing: the seat itself, the two ways
@@ -231,9 +243,19 @@ ARCH_FETCH_TRUNK_CONTROL="cut each branch from the fetched remote-tracking trunk
 # The gate is one rule with one source rather than a chain of exceptions: the
 # operator's own word on the architect's own channel, with every other arrival
 # reported and never cloned.
-ARCH_CLONE_SHAPE_CONTROL="You clone only a plain https or ssh remote URL"
-ARCH_CLONE_GATE_CONTROL="You clone only a repository the operator named to you themselves, on your own channel or in the prompt written at your launch"
-ARCH_CLONE_NOCHANNEL_CONTROL="Where no channel is attached, that report to the coordinator persona is the whole of it, and an ask whose repository the operator named nowhere you leave uncloned"
+ARCH_CLONE_SHAPE_CONTROL="You clone only a plain https or ssh remote URL, with no credentials, query or fragment in it"
+ARCH_CLONE_GATE_CONTROL="You clone only a repository the operator named to you on your own channel"
+# The two arrivals a reader would otherwise resolve the other way, named in the
+# charter so that neither is left to inference. A record carrying a repository
+# is the ordinary shape of a design ask, and the prompt a launch writes is text
+# the charter elsewhere calls the operator's own task.
+ARCH_CLONE_ARRIVALS_CONTROL="one arriving inside a record among them and one written in the prompt at your launch among them"
+ARCH_CLONE_LAUNCH_PROMPT_CONTROL="a repository it names is not a repository the operator named to you on your channel"
+# The record case's outcome, stated rather than left as a gap between a sentence
+# ordering a worktree and a sentence forbidding the clone that would allow one.
+ARCH_CLONE_RECORD_CASE_CONTROL="a record naming a repository you hold no clone of is reported and not cloned, so you cut no worktree for it and push nothing"
+ARCH_CLONE_WORKTREE_GUARD_CONTROL="when an ask of that kind names a repository you hold a clone of"
+ARCH_CLONE_NOCHANNEL_CONTROL="Where no channel is attached you make that report to the coordinator persona alone"
 ARCH_CLONE_REPORT_CONTROL="you report to the operator and to the coordinator persona and never clone"
 ARCH_PUSH_BOUND_CONTROL="name the clone target and the remote the push goes to"
 # The report clause names the operator, and the charter is built independently
@@ -337,8 +359,22 @@ check_splice_site_count() {  # <label>
   local coord arch total
   # grep -o rather than grep -c: the design duty carries both of its splices on
   # one line, and a line count would read that pair as one site.
-  coord=$(printf '%s' "$VARS_SNIPPET" | grep -o '\${COORDINATOR_PERSONA}' | wc -l | tr -d ' ')
-  arch=$(printf '%s' "$VARS_SNIPPET" | grep -o '\${ARCHITECT_PERSONA}' | wc -l | tr -d ' ')
+  #
+  # Both spellings are counted. Shell expands $ARCHITECT_PERSONA exactly as it
+  # expands ${ARCHITECT_PERSONA}, so a braced-only count leaves an unbraced
+  # splice uncounted here and unread by check_spliced_names, which is a name
+  # reaching a standing instruction with nothing watching its class. The
+  # negative lookahead-free way to say "not followed by a name character" is
+  # the character-class alternation below, and the `:-` guard shape used in
+  # tests rather than in a splice is excluded by requiring a word boundary.
+  # The snippet's own control flow is not the priming write. Its persona
+  # comparisons read the same two variables and would be counted as splices,
+  # which is why the shell lines are dropped before the count rather than
+  # absorbed by raising the expected number.
+  local body
+  body=$(printf '%s' "$VARS_SNIPPET" | grep -vE '^[[:space:]]*(if|elif|else|fi|while|until|case|esac|do|done)\b')
+  coord=$(printf '%s' "$body" | grep -oE '\$\{COORDINATOR_PERSONA\}|\$COORDINATOR_PERSONA([^A-Za-z0-9_]|$)' | wc -l | tr -d ' ')
+  arch=$(printf '%s' "$body" | grep -oE '\$\{ARCHITECT_PERSONA\}|\$ARCHITECT_PERSONA([^A-Za-z0-9_]|$)' | wc -l | tr -d ' ')
   total=$((coord + arch))
   [ "$total" -eq "$SPLICE_SITE_COUNT" ]
   check "$1 (splice sites in source=$total, expected $SPLICE_SITE_COUNT)" "$?"
@@ -348,31 +384,57 @@ check_splice_site_count() {  # <label>
 # rather than inside each eval block.
 check_splice_site_count "priming-write persona splice sites are all known to the sweep above"
 
-# No charter fragment anywhere in the priming write. The fragments are read off
-# the shell's own variable table rather than listed by hand, because the hand
-# list this replaces was carried in five places and three fragments were never
-# added to any of them: a constant written for a presence pin has to be
-# remembered five more times, and twice it was not. Reading the class means a
-# fragment added tomorrow is swept the day it is defined, and the absence cases
-# below say what their labels have always claimed.
-# The design-escalation clause's own fragments, swept as a class for the same
-# reason the charter fragments above are. The list this replaces was a hand
-# alternation of five literals, and two members of the clause had never been
-# added to it: the open-ended reading of the kinds it routes, and the sentence
-# that reports a reply carrying no architect row as delivery-unconfirmed. A
-# sixth duty sentence added to the clause tomorrow is swept the day its
-# constant is defined, rather than sliding past a case whose label claims no
-# part of the clause is built.
+
+# Two families of charter fragment are swept as classes read off the shell's own
+# variable table rather than listed by hand. ARCH_ is the architect's charter,
+# which must reach no launch but the architect's own. DESIGN_ is the
+# coordinator's design-escalation clause, which is built only on a fleet that
+# names an architect. A class read is what makes a fragment added tomorrow
+# swept the day its constant is defined; a hand list has to be remembered at
+# every site that reads it, and a site that forgets stays green while claiming
+# in its label that no part of the family is present.
 #
-# The class is the DESIGN_ prefix rather than ROLE_, because ROLE_ also holds
+# DESIGN_ is its own prefix rather than part of ROLE_, because ROLE_ also holds
 # the fleet-health and seat duties, which are built on every coordinator launch
-# and must be present here. SAY_PERSONA_ARG_CONTROL is read beside the class
+# and must be present. SAY_PERSONA_ARG_CONTROL is read beside the DESIGN_ class
 # rather than in it: it is the agentic_say splice literal, which the architect's
 # own charter carries too, so it belongs to no one clause and a prefix rename
 # would misfile it.
+#
+# Each class declares a floor, and every read asserts it. A class read is itself
+# an absence-proving instrument, so it has the failure the absence cases have: a
+# renamed prefix, or a shell whose compgen answers differently, returns nothing
+# and every sweep over it passes while testing nothing. The floor is what makes
+# that speak. It is a lower bound rather than the count, so adding a member
+# never touches it and removing the family reds every site at once.
+ARCH_CLASS_FLOOR=28
+DESIGN_CLASS_FLOOR=11
+
+# Prints the class's members, one per line. Returns 1 when the read comes back
+# below the floor, with the reason on stderr, so a caller that ignores the
+# status still leaves the reason in the run's output.
+class_members() {  # <prefix> <floor>
+  local members count
+  members=$(compgen -v | grep "^$1[A-Z_]*_CONTROL\$")
+  count=$(printf '%s' "$members" | grep -c . )
+  printf '%s\n' "$members"
+  if [ "$count" -lt "$2" ]; then
+    echo "class read for $1 returned $count members, below the floor of $2" >&2
+    return 1
+  fi
+}
+
+check_class_floors() {  # <label>
+  local ok=0
+  class_members ARCH_ "$ARCH_CLASS_FLOOR" >/dev/null || ok=1
+  class_members DESIGN_ "$DESIGN_CLASS_FLOOR" >/dev/null || ok=1
+  check "$1" "$ok"
+}
+
 check_no_design_clause_fragment() {  # <label> <text>
-  local v leaked=""
-  for v in $(compgen -v | grep '^DESIGN_[A-Z_]*_CONTROL$'); do
+  local v leaked="" members rc=0
+  members=$(class_members DESIGN_ "$DESIGN_CLASS_FLOOR") || rc=1
+  for v in $members; do
     case "$2" in
       *"${!v}"*) leaked="$leaked $v" ;;
     esac
@@ -380,37 +442,41 @@ check_no_design_clause_fragment() {  # <label> <text>
   case "$2" in
     *"$SAY_PERSONA_ARG_CONTROL"*) leaked="$leaked SAY_PERSONA_ARG_CONTROL" ;;
   esac
-  [ -z "$leaked" ]
+  [ -z "$leaked" ] && [ "$rc" -eq 0 ]
   check "$1 (leaked:${leaked:- none})" "$?"
 }
 
-# The control for the sweep above, and a presence pin for the whole class in
-# its own right. It runs the same class read against a launch that does build
-# the clause, so a sweep that silently reads an empty class speaks here instead
-# of going quiet in both directions. The members are read off the variable
-# table on both sides, so a fragment added tomorrow joins the control the same
-# day it joins the sweep.
+# The presence half, and the control for the sweep above. It runs the same class
+# read against a launch that does build the clause, so a read that came back
+# short speaks here as well as at the floor check.
 check_design_clause_fragments_present() {  # <label> <text>
-  local v missing=""
-  for v in $(compgen -v | grep '^DESIGN_[A-Z_]*_CONTROL$'); do
+  local v missing="" members rc=0
+  members=$(class_members DESIGN_ "$DESIGN_CLASS_FLOOR") || rc=1
+  for v in $members; do
     case "$2" in
       *"${!v}"*) ;;
       *) missing="$missing $v" ;;
     esac
   done
-  [ -z "$missing" ]
+  [ -z "$missing" ] && [ "$rc" -eq 0 ]
   check "$1 (missing:${missing:- none})" "$?"
 }
 
+# Run once, before any sweep leans on either class. It is the instrument check
+# the sweeps cannot make for themselves: a sweep that reports its own short read
+# reds, but only at a site something happened to call.
+check_class_floors "both charter-fragment classes read at or above their floors"
+
 check_no_charter_fragment() {  # <label>
-  local v leaked="" concat
+  local v leaked="" concat members rc=0
   concat=$(priming_concat)
-  for v in $(compgen -v | grep '^ARCH_[A-Z_]*_CONTROL$'); do
+  members=$(class_members ARCH_ "$ARCH_CLASS_FLOOR") || rc=1
+  for v in $members; do
     case "$concat" in
       *"${!v}"*) leaked="$leaked $v" ;;
     esac
   done
-  [ -z "$leaked" ]
+  [ -z "$leaked" ] && [ "$rc" -eq 0 ]
   check "$1 (leaked:${leaked:- none})" "$?"
 }
 
@@ -712,9 +778,10 @@ fi
 # reply variable reds here rather than slipping past a read of the role
 # variable alone.
 case "$(priming_concat)" in
-  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$SAY_PERSONA_ARG_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_FLEET_ACTION_ROUTE_CONTROL"*|*"$DESIGN_ARCHITECT_LIVE_CONTROL"*) check "persona differs from COORDINATOR_PERSONA: no fleet-keeper duty reaches a worker through any part of the priming write" 1 ;;
-  *) check "persona differs from COORDINATOR_PERSONA: no fleet-keeper duty reaches a worker through any part of the priming write" 0 ;;
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$SAY_PERSONA_ARG_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_FLEET_ACTION_ROUTE_CONTROL"*|*"$DESIGN_ARCHITECT_LIVE_CONTROL"*) check "persona differs from COORDINATOR_PERSONA: none of the named fleet-keeper duty literals reaches a worker through any part of the priming write" 1 ;;
+  *) check "persona differs from COORDINATOR_PERSONA: none of the named fleet-keeper duty literals reaches a worker through any part of the priming write" 0 ;;
 esac
+check_no_design_clause_fragment "persona differs from COORDINATOR_PERSONA: no design-escalation fragment reaches a worker through any part of the priming write" "$(priming_concat)"
 
 # The two evals above move NO_CHANNEL and the persona match together, so a
 # role assignment nested inside the NO_CHANNEL guard would pass both. These
@@ -763,9 +830,10 @@ else
   check "channel attached, COORDINATOR_PERSONA differs: coordinator role instruction is empty" 1
 fi
 case "$(priming_concat)" in
-  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$SAY_PERSONA_ARG_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_FLEET_ACTION_ROUTE_CONTROL"*|*"$DESIGN_ARCHITECT_LIVE_CONTROL"*) check "channel attached, COORDINATOR_PERSONA differs: no fleet-keeper duty reaches the priming write" 1 ;;
-  *) check "channel attached, COORDINATOR_PERSONA differs: no fleet-keeper duty reaches the priming write" 0 ;;
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$SAY_PERSONA_ARG_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_FLEET_ACTION_ROUTE_CONTROL"*|*"$DESIGN_ARCHITECT_LIVE_CONTROL"*) check "channel attached, COORDINATOR_PERSONA differs: none of the named fleet-keeper duty literals reaches the priming write" 1 ;;
+  *) check "channel attached, COORDINATOR_PERSONA differs: none of the named fleet-keeper duty literals reaches the priming write" 0 ;;
 esac
+check_no_design_clause_fragment "channel attached, COORDINATOR_PERSONA differs: no design-escalation fragment reaches the priming write" "$(priming_concat)"
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *"$STEER_ESCALATE_CONTROL"*"$COORDINATOR_PERSONA"*) check "channel attached, COORDINATOR_PERSONA differs: the steer sentence routes findings and declined steers to the coordinator by name" 0 ;;
   *) check "channel attached, COORDINATOR_PERSONA differs: the steer sentence routes findings and declined steers to the coordinator by name" 1 ;;
@@ -788,9 +856,10 @@ esac
 # holds no named owner claim, so a fleet probe or a design escalation from it
 # would be refused by the reach rule anyway.
 case "$(priming_concat)" in
-  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$SAY_PERSONA_ARG_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_FLEET_ACTION_ROUTE_CONTROL"*|*"$DESIGN_ARCHITECT_LIVE_CONTROL"*) check "default persona: no fleet-keeper duty reaches the priming write" 1 ;;
-  *) check "default persona: no fleet-keeper duty reaches the priming write" 0 ;;
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$SAY_PERSONA_ARG_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_CLASS_CONTROL"*|*"$ROLE_FLEET_ACTION_ROUTE_CONTROL"*|*"$DESIGN_ARCHITECT_LIVE_CONTROL"*) check "default persona: none of the named fleet-keeper duty literals reaches the priming write" 1 ;;
+  *) check "default persona: none of the named fleet-keeper duty literals reaches the priming write" 0 ;;
 esac
+check_no_design_clause_fragment "default persona: no design-escalation fragment reaches the priming write" "$(priming_concat)"
 # The charter's absence on this axis too. This eval is the only one that holds
 # default beside a fleet that does name an architect, so without it the charter
 # is pinned absent for default only on the ARCHITECT_PERSONA-unset axis, which
@@ -930,14 +999,37 @@ case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
   *"$ARCH_CLONE_GATE_CONTROL"*"$ARCH_CLONE_REPORT_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the clone source is the operator's own naming and every other arrival is reported rather than cloned" 0 ;;
   *) check "persona matches ARCHITECT_PERSONA: the clone source is the operator's own naming and every other arrival is reported rather than cloned" 1 ;;
 esac
-# The launch with no channel. The gate's two admissible sources are a channel
-# message and the launch prompt, and the refusal reports to an operator. On a
-# no-channel launch the first source and the report's operator leg are both
-# absent, so the charter states that case outright rather than leaving the
-# architect to infer it.
+# The gate admits one source, so every other arrival is a refusal, and two of
+# them are read on their own because a reader has a reason to resolve each the
+# other way. A repository named inside a coordinator record is the ordinary
+# shape of a design ask, and a repository named in the launch prompt sits behind
+# a line the supervisor writes calling the text the operator's own task.
 case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
-  *"$ARCH_CLONE_NOCHANNEL_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the no-channel launch's clone case is stated outright" 0 ;;
-  *) check "persona matches ARCHITECT_PERSONA: the no-channel launch's clone case is stated outright" 1 ;;
+  *"$ARCH_CLONE_ARRIVALS_CONTROL"*) check "persona matches ARCHITECT_PERSONA: a record and the launch prompt are both named as arrivals the gate refuses" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: a record and the launch prompt are both named as arrivals the gate refuses" 1 ;;
+esac
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_CLONE_LAUNCH_PROMPT_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the launch-prompt sentence says outright that it names no clone source" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the launch-prompt sentence says outright that it names no clone source" 1 ;;
+esac
+# The record case's outcome, and the worktree sentence bounded to a repository
+# already cloned. Without both, one sentence orders a worktree cut and a push
+# for a repository another sentence forbids cloning, and the charter states no
+# outcome for the ask that is its own ordinary shape.
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_CLONE_RECORD_CASE_CONTROL"*) check "persona matches ARCHITECT_PERSONA: a record-borne repository with no clone cuts no worktree and pushes nothing" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: a record-borne repository with no clone cuts no worktree and pushes nothing" 1 ;;
+esac
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_CLONE_WORKTREE_GUARD_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the worktree sentence is bounded to a repository already cloned" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the worktree sentence is bounded to a repository already cloned" 1 ;;
+esac
+# The launch with no channel. The gate's one admissible source and the refusal's
+# operator leg are both absent there, so the charter states that case outright
+# rather than leaving the architect to infer it.
+case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
+  *"$ARCH_CLONE_NOCHANNEL_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the no-channel launch's clone report is stated outright" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the no-channel launch's clone report is stated outright" 1 ;;
 esac
 case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
   *"$ARCH_PUSH_BOUND_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the clone target and the remote are named before the push" 0 ;;
