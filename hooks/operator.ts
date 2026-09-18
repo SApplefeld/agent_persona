@@ -108,6 +108,26 @@ function bracketSafeProblem(s: string): string | null {
 }
 
 /**
+ * One piece of untrusted text with the delivery brackets neutralized, under
+ * the same rule bracketSafeProblem refuses on and for the same reason: a '['
+ * in text the plugin did not compose lets that text forge a delivery label
+ * such as [COORDINATOR id=7]. The two are one rule read two ways. A caller
+ * who supplies a persona name can be told to pick another, so that path
+ * refuses; a file read has nobody to ask, so this path rewrites. Text
+ * carrying no bracket comes through byte for byte.
+ * The guard belongs to the channel the text leaves by rather than to the
+ * field that first needed it, so every site that puts text out of a
+ * persona's own tree in front of a model calls this one helper: the fleet
+ * report's fields as each is read, and the fleet prompt the controller tick
+ * submits, over every field it carries. The prompt takes the wider sweep
+ * because a tool result is framed as JSON and a submitted turn is not, so a
+ * path the plugin composed loses its own brackets there.
+ */
+export function bracketSafeText(text: string): string {
+  return text.replace(/\[/g, "(").replace(/\]/g, ")");
+}
+
+/**
  * The one rule for a persona name that reaches a store key or a delivery
  * bracket: non-empty after trim, no ":", and bracket-safe once trimmed.
  * Records are keyed `inbox:<persona>:<session>:<seq>` and listed by the
@@ -689,17 +709,37 @@ export function deliveryPrefix(ground: string, id: string, mark: "plain" | "urge
 }
 
 /**
- * Every line of `body` after the first, quoted with `> `. A line ends at
- * CRLF or at any one of LF, CR, VT, FF, NEL (U+0085), LINE SEPARATOR
- * (U+2028) or PARAGRAPH SEPARATOR (U+2029), the terminators the bracket
- * rule refuses as field splitters; the lines are joined with LF. Applied
- * to any store-sourced body that follows a bracket on its first line, so
- * a body carrying a line break and then a bracket cannot read as a second
- * plugin-submitted line.
+ * Where one line of text ends: CRLF, or any one of LF, CR, VT, FF, NEL
+ * (U+0085), LINE SEPARATOR (U+2028) or PARAGRAPH SEPARATOR (U+2029). These
+ * are the terminators the bracket rule refuses as field splitters, and every
+ * site that splits store-sourced or file-sourced text into lines reads the
+ * set from here: a splitter that knows only LF and CR leaves a persona four
+ * more characters that start a line the reader of that text will see.
+ */
+export const LINE_TERMINATOR = /\r\n|[\n\r\v\f\u{85}\u{2028}\u{2029}]/u;
+
+/**
+ * Every line of `body` after the first, quoted with `> `, split on
+ * LINE_TERMINATOR and joined with LF. Applied to any store-sourced body that
+ * follows a bracket on its first line, so a body carrying a line break and
+ * then a bracket cannot read as a second plugin-submitted line.
  */
 export function quoteContinuationLines(body: string): string {
-  const [first, ...rest] = body.split(/\r\n|[\n\r\v\f\u{85}\u{2028}\u{2029}]/u);
+  const [first, ...rest] = body.split(LINE_TERMINATOR);
   return [first, ...rest.map((line) => `> ${line}`)].join("\n");
+}
+
+/**
+ * Every line of `body` quoted with `> `, its first included. Applied where a
+ * whole line of a line-structured prompt is text carried out of a file rather
+ * than composed by the plugin, so the reader can tell the two apart by the
+ * line's own opening: a composed line of such a prompt opens with "- " and a
+ * carried one opens with "> ". quoteContinuationLines leaves the first line
+ * bare because there the first line is the plugin's own bracket; here there is
+ * no such line and the whole body is carried.
+ */
+export function quoteCarriedLines(body: string): string {
+  return `> ${quoteContinuationLines(body)}`;
 }
 
 /**

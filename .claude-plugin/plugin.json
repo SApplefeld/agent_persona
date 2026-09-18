@@ -96,7 +96,13 @@
       "type": "string",
       "default": "",
       "title": "Fleet roster path",
-      "description": "The roster file fleet_status reads: a JSON array of persona entries, each naming a persona, its working directory, optionally its run directory, and whether the fleet runs it. Left unset, fleet_status reports that it has no roster to read."
+      "description": "The roster file the fleet reading uses: a JSON array of persona entries, each naming a persona, its working directory, optionally its run directory, and whether the fleet runs it. The fleet_status tool reads it on demand, and the coordinator persona's controller tick reads it every tick to watch each roster persona's health class. Left unset, fleet_status reports that it has no roster to read and the tick's watcher stays silent."
+    },
+    "reconcileEveryMs": {
+      "type": "number",
+      "default": 14400000,
+      "title": "Reconciliation cadence (ms)",
+      "description": "How long between the [RECONCILE] prompts the coordinator persona's controller tick submits, which are the only trigger for the kit Coordinator seat's reconciliation pass. Default 4 hours, that seat's own cadence: the claim probe's window is one full cadence and the registry prune's staleness test is twice it, so a shorter run of either could fire nothing a four-hourly run misses. A value at or below zero takes the default, since it would otherwise be satisfied by every tick."
     }
   }
 }

@@ -295,10 +295,15 @@ async function caseRosterUnreadable() {
   h.fsMap.set("D:/fleet/alpha/run/keeper.json", fixture("fleet-status.keeper-alpha.json"));
   const nameless = await callFleetStatus(h);
   const namelessReport = reportOf(nameless);
+  // The problem names what is wrong with the entry rather than where the entry
+  // sits. A position is what the reading compares against the last one, so a
+  // roster whose entries an operator reordered would report the same problems
+  // again under new numbers.
   check("roster entry with no name: reported as a problem, and the named entry still gets its row", namelessReport.rows.length === 1
     && namelessReport.rows[0].name === "alpha"
     && namelessReport.problems?.length === 1
-    && says(namelessReport.problems?.[0], "entry 1"), namelessReport);
+    && says(namelessReport.problems?.[0], "carries no name"), namelessReport);
+  check("roster entry with no name: the problem does not place the entry by its position in the file", !says(namelessReport.problems?.[0], "entry 1"), namelessReport);
 }
 
 async function caseRosterSettingUnset() {
@@ -355,7 +360,7 @@ async function caseKeeperActions() {
   // cannot say that: it passes a field spelling the wait "5 minutes" and reds
   // on an unrelated field holding those digits, naming the wrong cause either
   // way. The key set is the claim, so a new field of any name reds here.
-  check("first crash: the row's fields are exactly the ten a row with no turn and nothing unread carries, so no field names a wait in force", JSON.stringify(Object.keys(firstCrash).sort()) === JSON.stringify(["action", "claimHeld", "enabled", "heartbeatAgeMs", "holdReason", "holdReasonSource", "lastExitCode", "name", "nextDelaySeconds", "turnState"]), Object.keys(firstCrash).sort());
+  check("first crash: the row's fields are exactly the eleven a row with no turn and nothing unread carries, so no field names a wait in force", JSON.stringify(Object.keys(firstCrash).sort()) === JSON.stringify(["action", "claimHeld", "enabled", "heartbeatAgeMs", "holdReason", "holdReasonSource", "keeperStateUnwritten", "lastExitCode", "name", "nextDelaySeconds", "turnState"]), Object.keys(firstCrash).sort());
   check("first crash: the crash exit is the row's, with no hold reason", firstCrash.lastExitCode === 3 && firstCrash.holdReason === null, firstCrash);
 
   // A marker is what stops the next start, whatever the last exit was, so it

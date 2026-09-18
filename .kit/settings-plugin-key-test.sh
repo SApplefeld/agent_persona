@@ -51,6 +51,10 @@ console.log("ARCH_DEV_PRESENT=" + (!dev ? "noid" : dev.architectPersona !== unde
 console.log("ARCH_INSTALLED_PRESENT=" + (!inst ? "noid" : inst.architectPersona !== undefined ? 1 : 0) + ";");
 console.log("ARCH_DEV=" + (dev && dev.architectPersona !== undefined ? dev.architectPersona : "") + ";");
 console.log("ARCH_INSTALLED=" + (inst && inst.architectPersona !== undefined ? inst.architectPersona : "") + ";");
+console.log("ROSTER_DEV_PRESENT=" + (!dev ? "noid" : dev.fleetRoster !== undefined ? 1 : 0) + ";");
+console.log("ROSTER_INSTALLED_PRESENT=" + (!inst ? "noid" : inst.fleetRoster !== undefined ? 1 : 0) + ";");
+console.log("ROSTER_DEV=" + (dev && dev.fleetRoster !== undefined ? dev.fleetRoster : "") + ";");
+console.log("ROSTER_INSTALLED=" + (inst && inst.fleetRoster !== undefined ? inst.fleetRoster : "") + ";");
 console.log("TICK_DEV=" + (dev ? dev.controllerTickMs : "") + ";");
 ' "$ROOT" "$1"
 }
@@ -537,6 +541,14 @@ run_lib PWN="$PWN" bash -c 'source "$1/bin/agentic-common.sh" && wait_persona_fr
 [ ! -e "$PWN" ]; check "a staleAfterMs carrying JavaScript never runs inside the heartbeat program" "$?"
 OUT=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && wait_persona_free_both "$2" probe 1 1 ""' _ "$ROOT" "$TMP/hb" 2>&1)
 case "$OUT" in *"heartbeat=OK"*) check "a 1ms stale bound reads the 60s-old holder as stale" 0 ;; *) check "a 1ms stale bound reads the 60s-old holder as stale (out=$OUT)" 1 ;; esac
+# Re-stamp before the large-bound read. The holder is written 60 seconds old
+# and read against a 90000 ms bound, so the reading only means what this leg
+# says while fewer than 30 seconds have passed since the write. The legs
+# between the two spawn a process each, which on a loaded box costs more than
+# that, and the holder then ages past the bound and reads stale for a reason
+# the check is not about. The small-bound leg needs no re-stamp: any age at
+# all is past a 1 ms bound.
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({probe:{lastSeen:Date.now()-60000}}))' "$TMP/hb/.agentic-heartbeat.json"
 OUT=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && wait_persona_free_both "$2" probe 1 90000 ""' _ "$ROOT" "$TMP/hb" 2>&1)
 case "$OUT" in *"heartbeat=FAIL"*) check "a 90000ms stale bound reads the same holder as live" 0 ;; *) check "a 90000ms stale bound reads the same holder as live (out=$OUT)" 1 ;; esac
 
@@ -562,9 +574,105 @@ run_lib PWN="$PWN" bash -c 'source "$1/bin/agentic-common.sh" && wait_persona_fr
 [ ! -e "$PWN" ]; check "a persona carrying JavaScript never runs inside the commons program" "$?"
 OUT=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && wait_persona_free_both "$2" probe 1 1 "$3"' _ "$ROOT" "$TMP/wd-commons" "$COMMONS_STORE" 2>&1)
 case "$OUT" in *"commons=OK"*) check "a 1ms stale bound reads the 60s-old commons claim as free" 0 ;; *) check "a 1ms stale bound reads the 60s-old commons claim as free (out=$OUT)" 1 ;; esac
+# Re-stamp before the large-bound read, for the reason the heartbeat leg above
+# states: this claim is written 60 seconds old and read against a 90000 ms
+# bound, so it reads held only while fewer than 30 seconds have passed.
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({"commons:probe-session":{sessionId:"probe-session",lastSeen:Date.now()-60000,claims:[{resource:"persona:probe",claimedAt:Date.now()-60000}]}}))' "$COMMONS_STORE"
 OUT=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && wait_persona_free_both "$2" probe 1 90000 "$3"' _ "$ROOT" "$TMP/wd-commons" "$COMMONS_STORE" 2>&1)
 case "$OUT" in *"commons=FAIL"*) check "a 90000ms stale bound reads the same commons claim as held" 0 ;; *) check "a 90000ms stale bound reads the same commons claim as held (out=$OUT)" 1 ;; esac
 
+
+# --- Section 6: fleetRoster travels the same two branches ---
+# The roster path is what the plugin's fleet watcher and its fleet_status tool
+# read, and nothing wrote the key before this section, so a supervised steward
+# always read an empty setting. Like architectPersona it has no default, so an
+# unset variable leaves the key out rather than writing it empty.
+# The path D:/withheld/pinboard.json is held out of every literal the emitter
+# carries, so a value that arrives is one that travelled.
+run_lib PERSONA="keyprobe" FLEET_ROSTER="D:/withheld/pinboard.json" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/roster.json"
+check "emit_settings_json exits 0 with a FLEET_ROSTER set" "$?"
+[ -s "$TMP/roster.json" ]; check "the FLEET_ROSTER emit wrote a non-empty settings file" "$?"
+R=$(inspect "$TMP/roster.json")
+case "$R" in *"SAME_OPTIONS=1"*"ROSTER_DEV=D:/withheld/pinboard.json;"*"ROSTER_INSTALLED=D:/withheld/pinboard.json;"*) check "emitted: both ids carry the given fleetRoster" 0 ;; *) check "emitted: both ids carry the given fleetRoster (out=$R)" 1 ;; esac
+
+# The absence leg. Its subject is asserted produced first - the emit exited 0
+# and wrote a non-empty file, and inspect found both id entries rather than
+# reporting noid - so the missing key is read off a file that exists and holds
+# options, not off a run that never wrote one.
+run_lib PERSONA="keyprobe" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/roster-none.json"
+check "emit_settings_json exits 0 with no FLEET_ROSTER set" "$?"
+[ -s "$TMP/roster-none.json" ]; check "the no-roster emit wrote a non-empty settings file to read the absence from" "$?"
+R=$(inspect "$TMP/roster-none.json")
+case "$R" in *"DEV_KEY=1"*"INSTALLED_KEY=1"*) check "the no-roster emit wrote both id entries, so the absence below is a missing key" 0 ;; *) check "the no-roster emit wrote both id entries (out=$R)" 1 ;; esac
+case "$R" in *"ROSTER_DEV_PRESENT=0;"*"ROSTER_INSTALLED_PRESENT=0;"*) check "emitted: FLEET_ROSTER unset leaves fleetRoster out of both ids" 0 ;; *) check "emitted: FLEET_ROSTER unset leaves fleetRoster out of both ids (out=$R)" 1 ;; esac
+
+# A Windows path is written with backslashes, which JSON does not carry raw.
+# The emitter doubles them, so the value the plugin parses back is the path as
+# it was given.
+run_lib PERSONA="keyprobe" FLEET_ROSTER='D:\withheld\pinboard.json' bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/roster-win.json"
+check "emit_settings_json exits 0 with a backslash FLEET_ROSTER" "$?"
+OUT=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && read_settings_fleet_roster "$2" 1' _ "$ROOT" "$TMP/roster-win.json" 2>&1)
+[ "$OUT" = 'D:\withheld\pinboard.json' ]; check "a backslash roster path parses back as the path that was given (out=$OUT)" "$?"
+
+# A double quote would close the JSON string and open whatever follows it, the
+# same break-out the persona names are refused for.
+ERR=$(run_lib PERSONA="ok" FLEET_ROSTER='x"}}},"hooks":{"a":1' bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/roster-quote.json" 2>&1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "emit_settings_json refuses a fleet roster carrying a quote" 1 ;; *"must not hold a double quote"*) check "emit_settings_json refuses a fleet roster carrying a quote" 0 ;; *) check "emit_settings_json refuses a fleet roster carrying a quote (rc=$RC, err=$ERR)" 1 ;; esac
+[ ! -e "$TMP/roster-quote.json" ]; check "a refused FLEET_ROSTER leaves no settings file" "$?"
+ERR=$(run_lib PERSONA="ok" FLEET_ROSTER="$(printf 'a\tb')" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/roster-ctrl.json" 2>&1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "emit_settings_json refuses a fleet roster carrying a control character" 1 ;; *"must not hold a control character"*) check "emit_settings_json refuses a fleet roster carrying a control character" 0 ;; *) check "emit_settings_json refuses a fleet roster carrying a control character (rc=$RC, err=$ERR)" 1 ;; esac
+# The refusal has to leave nothing behind, as the quote leg's does: a settings
+# file written and then refused is a file the next launch reads.
+[ ! -e "$TMP/roster-ctrl.json" ]; check "a FLEET_ROSTER refused for a control character leaves no settings file" "$?"
+
+# --- read_settings_fleet_roster resolves the plugin's own rule ---
+# The plugin takes any string trimmed and reads everything else as no roster,
+# so this read is wider than the two persona reads: there is no name class to
+# hold a path to, and no default to fall back to.
+read_roster() {
+  run_lib bash -c 'source "$1/bin/agentic-common.sh" && read_settings_fleet_roster "$2" "$3"' _ "$ROOT" "$1" "$2" 2>&1
+}
+printf '%s' '{"pluginConfigs":{"agentic-plugin@agent-persona":{"options":{"fleetRoster":"D:/withheld/pinboard.json"}}}}' > "$TMP/rr-installed.json"
+OUT=$(read_roster "$TMP/rr-installed.json" 0)
+[ "$OUT" = "D:/withheld/pinboard.json" ]; check "read_settings_fleet_roster prints the loaded id's fleetRoster (out=$OUT)" "$?"
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"coordinatorPersona":"lead"}}}}' > "$TMP/rr-missing.json"
+OUT=$(read_roster "$TMP/rr-missing.json" 1)
+[ -z "$OUT" ]; check "read_settings_fleet_roster resolves a missing fleetRoster to no roster (out=$OUT)" "$?"
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"fleetRoster":"D:/one/a.json"}},"agentic-plugin@agent-persona":{"options":{"fleetRoster":"D:/two/b.json"}}}}' > "$TMP/rr-both.json"
+OUT=$(read_roster "$TMP/rr-both.json" 1)
+[ "$OUT" = "D:/one/a.json" ]; check "two ids with differing fleetRoster: mode 1 prints the --plugin-dir id's value (out=$OUT)" "$?"
+OUT=$(read_roster "$TMP/rr-both.json" 0)
+[ "$OUT" = "D:/two/b.json" ]; check "two ids with differing fleetRoster: mode 0 prints the installed id's value (out=$OUT)" "$?"
+printf '%s' '{"pluginConfigs":{"agentic-plugin@agent-persona":{"options":{"fleetRoster":"D:/two/b.json"}}}}' > "$TMP/rr-other.json"
+OUT=$(read_roster "$TMP/rr-other.json" 1)
+[ -z "$OUT" ]; check "control: a fleetRoster under the other id only leaves the loaded id with no roster (out=$OUT)" "$?"
+printf '\357\273\277%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"fleetRoster":"D:/bom/c.json"}}}}' > "$TMP/rr-bom.json"
+OUT=$(read_roster "$TMP/rr-bom.json" 1)
+[ "$OUT" = "D:/bom/c.json" ]; check "read_settings_fleet_roster strips a leading BOM before parsing (out=$OUT)" "$?"
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"fleetRoster":7}}}}' > "$TMP/rr-number.json"
+OUT=$(read_roster "$TMP/rr-number.json" 1)
+[ -z "$OUT" ]; check "read_settings_fleet_roster reads a non-string fleetRoster as no roster, the plugin's own answer (out=$OUT)" "$?"
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"fleetRoster":"   "}}}}' > "$TMP/rr-blank.json"
+OUT=$(read_roster "$TMP/rr-blank.json" 1)
+[ -z "$OUT" ]; check "read_settings_fleet_roster resolves a blank fleetRoster to no roster (out=$OUT)" "$?"
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":[]}}}' > "$TMP/rr-badoptions.json"
+ERR=$(read_roster "$TMP/rr-badoptions.json" 1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "read_settings_fleet_roster refuses options that are not an object" 1 ;; *"not an object"*) check "read_settings_fleet_roster refuses options that are not an object" 0 ;; *) check "read_settings_fleet_roster refuses options that are not an object (rc=$RC, err=$ERR)" 1 ;; esac
+
+# The round trip both ways, each leg asserting the emit produced a file before
+# it reads anything back out of it.
+run_lib PERSONA="keyprobe" FLEET_ROSTER="D:/withheld/tureen.json" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/rr-trip.json"
+check "emit_settings_json exits 0 for the roster round trip" "$?"
+[ -s "$TMP/rr-trip.json" ]; check "the roster round trip wrote a non-empty settings file to read back" "$?"
+OUT=$(read_roster "$TMP/rr-trip.json" 1)
+[ "$OUT" = "D:/withheld/tureen.json" ]; check "round trip: read_settings_fleet_roster reads back the emitted roster under the --plugin-dir id (out=$OUT)" "$?"
+OUT=$(read_roster "$TMP/rr-trip.json" 0)
+[ "$OUT" = "D:/withheld/tureen.json" ]; check "round trip: read_settings_fleet_roster reads back the emitted roster under the installed id (out=$OUT)" "$?"
+OUT=$(read_roster "$TMP/roster-none.json" 1)
+[ -z "$OUT" ]; check "round trip: an emitted file naming no roster reads back as no roster (out=$OUT)" "$?"
 if [ "$failed" -eq 0 ]; then
   echo "settings-plugin-key-test.sh: PASS"
   exit 0

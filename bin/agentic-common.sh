@@ -5,6 +5,7 @@
 #           ensure_settings_plugin_ids, ensure_settings_arming,
 #           read_settings_coordinator_persona,
 #           read_settings_architect_persona,
+#           read_settings_fleet_roster,
 #           valid_persona_name,
 #           find_global_store, list_installed_stores, poll_decisions,
 #           poll_heartbeat.
@@ -60,7 +61,9 @@ esac
 #          arming (always "owner": every supervisor launch is an owner),
 #          coordinatorPersona (from COORDINATOR_PERSONA, default "coordinator")
 #          and architectPersona (from ARCHITECT_PERSONA, which has no default:
-#          the key is omitted where the variable is unset or empty).
+#          the key is omitted where the variable is unset or empty),
+#          and fleetRoster (from FLEET_ROSTER, which has no default either
+#          and is omitted the same way).
 # Exports COORDINATOR_PERSONA and ARCHITECT_PERSONA to the values it wrote, so
 # a caller can compare its own persona against the same names without parsing
 # the settings file. This is the emit branch's half of those exports; the
@@ -178,12 +181,44 @@ emit_settings_json() {
     architect_opt=",\"architectPersona\":\"$architect_persona\""
   fi
   export ARCHITECT_PERSONA="$architect_persona"
+  # fleetRoster names the roster file the plugin reads: its fleet_status tool
+  # on demand, and its controller tick to watch each roster persona's health.
+  # The setting carries no default, as architectPersona does not: an unset or
+  # empty variable omits the key, and a launch reading a file without it has no
+  # fleet to read, on which the tool reports that it has no roster and the tick
+  # watches nothing.
+  # The value is a filesystem path rather than a name, so it is held to what a
+  # JSON string can carry rather than to the persona character class. Three
+  # characters decide that: a backslash, which a Windows path is written with
+  # and which is doubled here so the parser reads back the path that was given;
+  # a double quote, which would close the string; and a control character,
+  # which JSON refuses raw. The last two are refused, neither belonging in a
+  # path a fleet runs from.
+  local fleet_roster="${FLEET_ROSTER:-}"
+  local roster_opt=""
+  if [ -n "$fleet_roster" ]; then
+    case "$fleet_roster" in
+      *'"'*)
+        echo "ERROR: emit_settings_json: FLEET_ROSTER '$fleet_roster' must not hold a double quote" >&2
+        return 1
+        ;;
+      *[[:cntrl:]]*)
+        echo "ERROR: emit_settings_json: FLEET_ROSTER must not hold a control character" >&2
+        return 1
+        ;;
+    esac
+    # The pattern and the replacement are held in a variable rather than
+    # written as escapes, because bash 5.2 changed how a backslash inside a
+    # substitution pattern is read and the literal form matches nothing there.
+    local backslash='\'
+    roster_opt=",\"fleetRoster\":\"${fleet_roster//"$backslash"/"$backslash$backslash"}\""
+  fi
   # pluginConfigs is keyed by plugin id: the manifest name under --plugin-dir,
   # and "<name>@<marketplace>" for the installed copy. The installed form is
   # absent from the engine's type file, and options under the other id are
   # ignored without an error, so the same options are written under both.
   # .kit/settings-plugin-key-test.sh pins both ids against the two manifests.
-  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts$cost_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"$architect_opt}"
+  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts$cost_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"$architect_opt$roster_opt}"
   cat > "$out" <<EOF
 {"pluginConfigs":{"$AGENTIC_PLUGIN_DEV_ID":{"options":$options},"$AGENTIC_PLUGIN_INSTALLED_ID":{"options":$options}}}
 EOF
@@ -380,6 +415,45 @@ console.log(name);
 ' "$1" "$id"
 }
 
+
+# --- read_settings_fleet_roster ---
+# Usage: read_settings_fleet_roster <settings-file> [dev_mode: 0|1, default 1]
+# Prints the roster path the plugin will resolve from a settings file the caller
+# provided, so the provided branch can read back what the emit branch writes.
+# The plugin id the launch loads is picked by dev_mode exactly as in
+# read_settings_coordinator_persona. The rule is the plugin's own
+# (hooks/index.ts, the fleetRoster read): a string is taken trimmed, and
+# anything else, a missing key under the loaded id included, resolves to the
+# empty string, which is a launch with no fleet to read. There is no default
+# path to fall back to, so an empty result is the whole of that state. Returns 1
+# on the same shapes read_settings_coordinator_persona refuses (not JSON, not an
+# object, a pluginConfigs, id entry or options value that is not an object),
+# with the same error-line shape, and prints nothing then.
+read_settings_fleet_roster() {
+  local dev_mode="${2:-1}"
+  local id="$AGENTIC_PLUGIN_INSTALLED_ID"
+  if [ "$dev_mode" -eq 1 ]; then
+    id="$AGENTIC_PLUGIN_DEV_ID"
+  fi
+  node -e '
+const fs = require("fs");
+const [file, id] = process.argv.slice(1);
+const fail = (msg) => { console.error("ERROR: read_settings_fleet_roster: " + file + " " + msg); process.exit(1); };
+const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+let s;
+try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
+if (!plain(s)) fail("is not a JSON object");
+const pc = s.pluginConfigs === undefined ? {} : s.pluginConfigs;
+if (!plain(pc)) fail("has a pluginConfigs value that is not an object");
+let value;
+if (pc[id] !== undefined) {
+  if (!plain(pc[id])) fail("has a " + id + " entry that is not an object");
+  if (pc[id].options !== undefined && !plain(pc[id].options)) fail("has " + id + " options that are not an object");
+  if (plain(pc[id].options)) value = pc[id].options.fleetRoster;
+}
+console.log(typeof value === "string" ? value.trim() : "");
+' "$1" "$id"
+}
 # --- valid_persona_name ---
 # Usage: valid_persona_name <name>; returns 0 for a non-empty name of letters,
 # digits, underscore and hyphen, 1 otherwise.
