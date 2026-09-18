@@ -2761,8 +2761,10 @@ while true; do
   # persona it addresses. Holding no goal node also means nothing wakes it on
   # an ask it left half done, since the tick starts no turn on an empty inbox,
   # so the charter has it report where it got to before it ends such a turn. Built only when this launch's persona equals
-  # ARCHITECT_PERSONA, which both settings branches above export from the name
-  # the plugin resolves, the same comparison the coordinator instruction takes.
+  # ARCHITECT_PERSONA, which both settings branches above export from the
+  # settings file, the same comparison the coordinator instruction takes. The
+  # supervisor is this setting's only reader: the plugin reads coordinatorPersona
+  # and never this key.
   # That setting carries no default, so a launch whose settings file names no
   # architect builds this for no persona at all. Empty for every other launch,
   # and it rides the same NO_CHANNEL-independent priming write.

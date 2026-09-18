@@ -309,7 +309,15 @@ OUT=$(read_arch "$TMP/arch-roundtrip.json" 0)
 [ "$OUT" = "tureen" ]; check "round trip: read_settings_architect_persona reads back the emitted name under the installed id (out=$OUT)" "$?"
 # The same trip for a fleet with no architect, which the emitter writes by
 # leaving the key out rather than writing it empty.
+#
+# The emit's own exit is checked before the read below, because this leg accepts
+# an empty result. An emit that failed leaves no file at all, the read prints
+# empty, and the acceptance would be satisfied by the very failure it exists to
+# exclude. The sibling leg above needs no such check: it asserts a name, which a
+# missing file cannot produce.
 run_lib PERSONA="keyprobe" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/arch-roundtrip-none.json"
+check "emit_settings_json exits 0 for the no-architect round trip" "$?"
+[ -s "$TMP/arch-roundtrip-none.json" ]; check "the no-architect round trip wrote a non-empty settings file to read back" "$?"
 OUT=$(read_arch "$TMP/arch-roundtrip-none.json" 1)
 [ -z "$OUT" ]; check "round trip: an emitted file naming no architect reads back as no architect (out=$OUT)" "$?"
 

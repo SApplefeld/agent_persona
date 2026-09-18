@@ -358,10 +358,15 @@ EOF
 # The countable remainder of a shell line: the control-flow expression removed
 # and whatever it guarded kept. Dropping the whole line instead, which is what
 # this did before, hid any splice sharing a line with its own condition.
+# The condition is matched with [^;]* rather than .*, so the strip ends at the
+# first `; then` on the line instead of the last. A greedy match reaches past a
+# splice that itself contains `; then` inside a quoted string and deletes it
+# with the condition, which is the same silent zero this strip exists to remove,
+# reappearing on a narrower input.
 strip_control_flow() {  # reads stdin
   sed -E \
-    -e 's/^([[:space:]]*)(if|elif|while|until)[[:space:]].*;[[:space:]]*(then|do)([[:space:]]|$)/\1/' \
-    -e 's/^([[:space:]]*)case[[:space:]].*[[:space:]]in[[:space:]]*$/\1/' \
+    -e 's/^([[:space:]]*)(if|elif|while|until)[[:space:]][^;]*;[[:space:]]*(then|do)([[:space:]]|$)/\1/' \
+    -e 's/^([[:space:]]*)case[[:space:]][^;]*[[:space:]]in[[:space:]]*$/\1/' \
     -e 's/^([[:space:]]*)(else|fi|done|esac|then|do)([[:space:]]|$)/\1/'
 }
 
@@ -385,17 +390,28 @@ count_splices() {  # <shell text>
   printf '%s' "$((coord + arch))"
 }
 
-# The control on that strip, run against a line withheld from the filter's own
-# literals and matched on its shape rather than on a string the filter was
-# handed. A condition reading both persona variables, and a splice of one of
-# them after `then`, which is exactly the site the whole-line drop made
-# invisible. The condition's two reads must not count and the splice must, so
-# the answer is 1: a 0 is the old whole-line drop still in place, and a 3 is no
-# strip happening at all.
+# Two controls on that strip. What is withheld from them is the shape, a splice
+# standing after the condition that guards it, rather than the literals: the
+# keywords and the two variable spellings below are all strings the filter and
+# the greps were handed, so these prove the strip's reach on that shape and
+# claim nothing wider.
+#
+# The first is the shape the old whole-line drop made invisible. The condition's
+# two reads must not count and the splice must, so the answer is 1: a 0 is the
+# whole-line drop still in place, and a 3 is no strip happening at all.
 SPLICE_CONTROL_LINE='if [ "$PERSONA" = "$COORDINATOR_PERSONA" ] && [ -n "${ARCHITECT_PERSONA}" ]; then INSTR="ask ${ARCHITECT_PERSONA} first"'
 SPLICE_CONTROL_COUNT=$(count_splices "$SPLICE_CONTROL_LINE")
 [ "$SPLICE_CONTROL_COUNT" -eq 1 ]
 check "splice counter control: a splice sharing a line with its own condition is counted, and the condition's own reads are not (count=$SPLICE_CONTROL_COUNT, expected 1)" "$?"
+# The second is the shape a greedy condition match loses. The spliced text here
+# itself contains "; then", so a strip reaching to the last one on the line
+# deletes the splice along with the condition and reads 0. That is the same
+# silent zero as the whole-line drop on a narrower input, which is why it is
+# pinned rather than left to the first control.
+SPLICE_GREEDY_LINE='if [ -n "${ARCHITECT_PERSONA}" ]; then INSTR="ask ${ARCHITECT_PERSONA}; then report"'
+SPLICE_GREEDY_COUNT=$(count_splices "$SPLICE_GREEDY_LINE")
+[ "$SPLICE_GREEDY_COUNT" -eq 1 ]
+check "splice counter control: a splice whose own text carries \"; then\" is still counted, so the condition match ends at the first one (count=$SPLICE_GREEDY_COUNT, expected 1)" "$?"
 
 # The backstop under the enumeration above. bin/supervise.sh's instruction block
 # splices a persona name at four sites today, two per variable. A fifth reds
