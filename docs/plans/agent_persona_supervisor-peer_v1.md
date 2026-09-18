@@ -202,3 +202,23 @@ The second is not. The process-keeper plan is archived. The steward-architect pl
 **Asks in flight.** The operator holds the steward-architect plan's Section 2 decision, which is what closes that plan and so what opens this gate. No new ask was raised, because a second ask about this plan's ordering would re-put a question they have already answered.
 
 **Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes. Section 1 then resumes at its three held measurements, with measurement 5 taking its own yes and a quiet fleet.
+
+### Interim board 3 - 2026-09-18
+
+Not a Chapter. Section 1 is unstarted and no repository file changed beyond this document.
+
+**Stage.** The armed queue's leash advanced to this plan for the third time, after `docs/plans/agent_persona_lean-injection_v1.md` was recorded blocked. Nothing of this plan ran. The `Status:` header stays at `Ready`.
+
+**The preceding plan's blocker was tested and does not carry, but this plan's own arming gate is still unmet.** That blocker is the lean-injection plan's missing base, which is specific to that plan's own sections. It stops nothing here. What stops this plan is the second condition in its own Dispatch Authorization, read again this session from that section: execution is armed "only after both `docs/archive/agent_persona_process-keeper_v1.md` and `docs/plans/agent_persona_steward-architect_v1.md` close". The first is archived and closed. The second is blocked at its Section 6 and has not closed. Boards 1 and 2 recorded this same condition unmet, and nothing has changed it.
+
+**This is the same gate as before rather than a new one.** The steward plan has since taken a review-round backstop in its Section 6 and is waiting on the operator. That moves it no closer to closed, so this plan's condition reads exactly as boards 1 and 2 found it.
+
+**The queue is one chain.** `docs/plans/agent_persona_context-budget-removal_v1.md`'s interim board 3 carries the full analysis of why every queued plan waits on the same answer. It is not repeated here.
+
+**Gate baseline.** None taken. No repository code changed, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** One to the repository's Expert seat, recorded in the context-budget plan's board 3, covering this set of ordering blocks. It does not gate and was unanswered at the time of writing.
+
+**Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes and the operator arms this plan on their own word, which the Dispatch Authorization requires separately from the close.
