@@ -16,7 +16,7 @@ The operator asked for this on 2026-09-18 on the coordinator's own Discord threa
 
 This section owns the policy. The queued plans point here, and a Chapter that cites it cites this file.
 
-The policy applies to `docs/plans/agent_persona_steward-architect_v1.md` from its finishing pass onward, and to `docs/plans/agent_persona_context-budget-removal_v1.md`, `docs/plans/agent_persona_lean-injection_v1.md` and `docs/plans/agent_persona_supervisor-peer_v1.md` whole. It ends when this plan closes.
+The policy applies to `docs/archive/agent_persona_steward-architect_v1.md` from its finishing pass onward, and to `docs/plans/agent_persona_context-budget-removal_v1.md`, `docs/plans/agent_persona_lean-injection_v1.md` and `docs/plans/agent_persona_supervisor-peer_v1.md` whole. It ends when this plan closes.
 
 Deferred to this plan's run: `.kit/live-all.sh`, every `.kit/live-*-test.sh`, `.kit/supervisor-natural-exit-test.sh`, and any other check that launches a `claude` child, real or stub, or runs past two minutes of wall clock. The named files are instances; the class is any run that holds the box.
 
@@ -81,7 +81,7 @@ Files in scope: this plan document, `docs/README.md`.
 
 ## Related
 
-- `docs/plans/agent_persona_steward-architect_v1.md`, `docs/plans/agent_persona_context-budget-removal_v1.md`, `docs/plans/agent_persona_lean-injection_v1.md`, `docs/plans/agent_persona_supervisor-peer_v1.md`: the plans this policy covers.
+- `docs/archive/agent_persona_steward-architect_v1.md`, `docs/plans/agent_persona_context-budget-removal_v1.md`, `docs/plans/agent_persona_lean-injection_v1.md`, `docs/plans/agent_persona_supervisor-peer_v1.md`: the plans this policy covers.
 - `README.md`, Test Coverage: which suites are live and which are offline.
 
 ## Chapters
