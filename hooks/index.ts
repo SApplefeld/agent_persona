@@ -1155,9 +1155,9 @@ const FLEET_ENTRIES_CLEAN = "every entry has a row";
 // persona can delete its own entry, exit, and leave the fleet with nothing
 // said about it before, during or after. That is the disabled tail's own
 // failure in its stronger form: a deleted entry defeats the tail outright,
-// because there is no entry left to carry one. This text is composed into a
-// line rather than held as a class: the key that departed is left out of the
-// reading, so no window carries it and no later reading compares against it.
+// because there is no entry left to carry one. It is a class like any other,
+// held in the reading against the departed key, so the quiet window runs over
+// a departure and a return exactly as it runs over any other pair of moves.
 const FLEET_ROSTER_DEPARTED = "no longer in the roster";
 // What a key that the last reading did not hold is reported as having moved
 // from. It is not "healthy": a persona the roster gained since the last
@@ -1403,7 +1403,21 @@ export const persist = async (dp: any, rollBackOnYield?: () => void): Promise<bo
       await dp.fs.write(sess.storePath, JSON.stringify(store2, null, 2));
       return false;
     }
-  } catch { /* non-fatal: commons is a coordination layer */ }
+  } catch {
+    // Non-fatal: commons is a coordination layer, so a claims read that
+    // refused, a release that failed or the yield's own store write leaves
+    // the write below to stand as the one this call was asked for.
+    // The one thing the swallow may not carry past it is the yield itself.
+    // The branch above gives the persona up before it writes, so a write
+    // that threw after that line leaves this session a non-owner while
+    // control falls through to a write that succeeds and a true return. A
+    // caller reads that true as the seat still being held and submits
+    // against a persona this session has already handed over. The rollback
+    // the caller passed has already run on that path, at the line above the
+    // yield's own write, so a false return here is the same false return
+    // every other yield path makes.
+    if (!sess.isOwner) return false;
+  }
   store[sess.persona] = sess.state;
   await dp.fs.write(sess.storePath, JSON.stringify(store, null, 2));
   return true;
@@ -1705,6 +1719,11 @@ export const register: Register = async (on, options) => {
   // the session runs as "default", and session.start records the refusal
   // once the state exists.
   let startPersonaProblem: string | null = null;
+  // The store this session came up on, where it could not be read. It is held
+  // until a [FLEET] prompt carries it rather than cleared at session.start,
+  // because the operator hears about the fleet on that prompt and about a
+  // decision line only by asking for one.
+  let startStoreProblem: FleetLine | null = null;
   if (typeof cfg.persona === "string" && cfg.persona.trim()) {
     startPersonaProblem = personaNameProblem(cfg.persona);
     if (startPersonaProblem === null) sess.persona = cfg.persona.trim();
@@ -2121,10 +2140,30 @@ export const register: Register = async (on, options) => {
     }
 
     // --- Claim or join the persona based on liveness (heartbeat sidecar) ---
-    const existing = await $.fs.exists(storePath)
-      ? JSON.parse(await $.fs.read(storePath))
-      : {};
-    const existingPersona = existing[sess.persona];
+    // The store is a file inside a persona's own working directory, and the
+    // live roster gives one directory to more than one persona, so a watched
+    // persona can leave it unparseable. A parse thrown from here leaves the
+    // rest of session.start unrun: no tools, no heartbeat and no controller
+    // tick, so a steward relaunched onto such a store watches nothing while
+    // the process keeper sees a live process and relaunches nothing either.
+    // The session starts on the state a session with no stored persona starts
+    // on instead. That is not silence by itself: what the last session
+    // recorded is gone, so the refusal is carried to the first [FLEET] prompt
+    // below and written into this session's own decisions, a steward that
+    // quietly starts fresh being the same silence in another shape.
+    let existing: Record<string, unknown> = {};
+    try {
+      existing = await $.fs.exists(storePath)
+        ? JSON.parse(await $.fs.read(storePath))
+        : {};
+    } catch (err) {
+      startStoreProblem = {
+        composed: `the steward's own state store '${storePath}' could not be read when this session started, so it came up on a default state and carries none of what the last session recorded. The error the read returned is on the line under this one.`,
+        carried: boundedText(safeErrorText(err)),
+      };
+      try { $.ui.log(`Agentic: the persona store could not be read at session start; '${sess.persona}' is coming up on a default state`); } catch { /* non-fatal */ }
+    }
+    const existingPersona = existing[sess.persona] as AgentState | undefined;
 
     if (arming === "reader") {
       // Section 6: a reader session never takes ownership at start, whether
@@ -2214,6 +2253,15 @@ export const register: Register = async (on, options) => {
       startPersonaProblem = null;
     }
 
+    if (startStoreProblem !== null) {
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "persona_store_unreadable",
+        detail: `${startStoreProblem.composed} ${startStoreProblem.carried ?? ""}`.slice(0, 400),
+      });
+    }
+
     sess.state.monitor.sessionStart = Date.now();
     sess.state.monitor.turnCount = 0;
     sess.state.monitor.totalToolCalls = 0;
@@ -2222,7 +2270,13 @@ export const register: Register = async (on, options) => {
     // first tick look like hours of idle time.
     sess.state.monitor.lastTurnComplete = Date.now();
 
-    await persist($);
+    // Attempted rather than depended on. persist reads the store before it
+    // writes, so the same unparseable file the branch above fell back from
+    // refuses this write too, and a throw here would leave the heartbeat, the
+    // commons claim and the controller tick below unregistered. The state
+    // stands in memory and the first write that finds a store it can parse
+    // carries it.
+    try { await persist($); } catch { /* the store refused; this session's state waits for one that parses */ }
 
     // Write the initial heartbeat. L3: owner-only, a passive reader must not
     // stamp its own id over the holder's heartbeat.
@@ -2412,7 +2466,21 @@ export const register: Register = async (on, options) => {
     // goal tree to classify or actuate against, and the tick's own owner
     // check would return immediately anyway, so the timer itself is skipped.
     if (arming !== "reader") {
-    $.clock.every(controllerTickMs, async () => {
+    // The tick's body, held in a name so that the registration below can run
+    // it inside a catch. Every write this body makes reads the persona store
+    // first, the store is a file inside a persona's own working directory,
+    // and the live roster gives one directory to more than one persona: a
+    // watched persona that leaves the file unparseable makes some write of
+    // every tick throw, and which write it is depends on where the tick got
+    // to. The fleet and reconciliation blocks answer that store failure
+    // themselves, each submitting its prompt and carrying its own line, so
+    // what is left for the catch is the tick ending where it stood rather
+    // than ending in a rejection nobody receives: $.clock.every takes a
+    // callback it does not await, so an exception out of this body reaches no
+    // caller and becomes an unhandled rejection whose consequence is the host
+    // process's own to decide. The actuator at the foot of the body already
+    // runs inside a catch of exactly this shape.
+    const controllerTick = async () => {
       // 1. Owner check.
       if (!sess.isOwner) return;
       // 2. In-flight check.
@@ -2653,20 +2721,42 @@ export const register: Register = async (on, options) => {
         if (report.problem === undefined && previousMap !== undefined) {
           for (const key of Object.keys(previousMap)) {
             if (Object.hasOwn(current, key)) continue;
-            const memo = previousMap[key];
-            // The class the operator was last told, read the way every other
-            // line reads its `from`, so a departure never names a class nobody
-            // was told. The key is left out of the reading rather than carried
-            // into it, which is what makes this line go out once: the reading
-            // the next tick compares against does not hold the key either.
-            const told = memo.reported === "" ? memo.class : memo.reported;
+            // The departure goes through the same comparison every other
+            // reading does, which is what keeps the key in the reading and
+            // what puts both halves of a flap under one window. A key left
+            // out of the reading reads as new to the next reading that sees
+            // the name again, so a persona that deletes its own roster entry
+            // and writes it back on alternate ticks would drive one prompt
+            // per tick with nothing holding either half: the departure would
+            // be unconditional and the return would compare against no memo
+            // at all. Carried in the reading, the two are class moves on one
+            // key and the window holds the flap as it holds any other.
+            // A departure that stands is still one line. The next reading
+            // finds this key already in the departed class, and a class equal
+            // to the one last observed reports nothing.
+            // The `well` argument is never read on this path: it is what a key
+            // with no memo compares against, and every key here comes out of
+            // the previous reading and so has one.
+            const moved = compare(key, FLEET_ROSTER_DEPARTED, FLEET_ROSTER_DEPARTED);
+            if (moved === null) continue;
             // The key came out of a roster entry, so it is neutralized and
             // bounded here as every other field a file supplied is. The name
             // rule the roster reader applies refuses a name that would need
             // either, and this line holds whatever that rule let through.
-            notes.push({ composed: `${boundedText(bracketSafeText(key))}: ${bracketSafeText(told)} -> ${FLEET_ROSTER_DEPARTED}`, carried: null });
+            // `from` is the class the operator was last told, read the way
+            // every other line reads it, so a departure never names a class
+            // nobody was told, and the tail names the moves this line stands
+            // for and does not name.
+            notes.push({ composed: `${boundedText(bracketSafeText(key))}: ${bracketSafeText(moved.from)} -> ${FLEET_ROSTER_DEPARTED}${fleetSuppressedTail(moved.suppressed)}`, carried: null });
           }
         }
+        // The store this session came up on, where it could not be read. It
+        // rides the first prompt that goes out rather than one of its own,
+        // and it is a note rather than a compared reading: there is one of
+        // them per session and no later reading to compare it against. It is
+        // cleared only once a prompt carrying it has been submitted, below,
+        // so a prompt that never went out leaves the line for the next tick.
+        if (startStoreProblem !== null) notes.push(startStoreProblem);
         // The reading is advanced here, before the submit below, and not when
         // the model reports. What the order guards is the window between a
         // submit and the turn it opens: $.prompt.submit does not resolve until
@@ -2713,24 +2803,71 @@ export const register: Register = async (on, options) => {
             detail: [...changed.map(({ row, from, to }) => `${row.name}: ${from} -> ${to}`), ...notes.map((note) => note.composed)].join("; ").slice(0, 400),
           };
           sess.state.decisions.push(changeDecision);
-          // The submit runs only on a persist that landed. persist returns
-          // false where this session has just given the persona up, on a
-          // raised epoch or a lost commons claim: submitting then would put a
-          // fleet reading in front of a session that no longer holds the seat,
-          // and the reading it was composed against would be nowhere.
-          // The rollback goes with the call rather than after it, because the
-          // lost-claim path writes the state as it gives the persona up, the
-          // owner check refuses every write after that, and an exception out
-          // of the read or the write unwinds past every line below the call.
-          // persistOrRollBack is what covers the third of those. Without it the
-          // advanced reading rests in memory with every changed key stamped as
-          // reported and no prompt ever submitted, so this session says
-          // nothing further about those keys: a persona that went held at this
-          // tick is reported to the operator at no point in its life.
-          if (!await persistOrRollBack($, () => {
-            sess.fleetHealth = previousMap;
-            dropDecision(changeDecision);
-          })) return;
+          // The submit runs on a persist that landed, and a persist that did
+          // not land fails in two ways this branch reads apart.
+          // A false return is the seat. This session has just given the
+          // persona up, on a raised epoch or a lost commons claim, and
+          // submitting then would put a fleet reading in front of a session
+          // that no longer holds the seat, the reading it was composed
+          // against being nowhere. The rollback goes with the call rather
+          // than after it, because the lost-claim path writes the state as it
+          // gives the persona up and the owner check refuses every write
+          // after that, so a rollback assigned below the call would rest in
+          // memory while the advanced value rested on disk.
+          // A throw is the store. It is a file inside a persona's own working
+          // directory, and the live roster gives one directory to more than
+          // one persona, so a watched persona that leaves it unparseable
+          // makes every persist of every tick throw. A report gated on that
+          // write is a report held back about every persona of the fleet for
+          // as long as one persona chooses to hold it, which is the silence
+          // this whole block exists to refuse. The reading itself needs no
+          // file, being this session's own memory, so what the throw costs is
+          // the audit line and nothing else: the report goes out carrying a
+          // line that names the refusal, the reading stays advanced so the
+          // next tick does not compose these same lines again, and the
+          // decision line waits in memory for a store that parses.
+          // Submitting there does not race the seat. A parse that refuses
+          // fires before persist's own yield check, and the same parse
+          // refuses any successor's claim write, so no other session took the
+          // seat through a store that does not parse; a write that fails
+          // comes after a yield check that passed.
+          try {
+            if (!await persistOrRollBack($, () => {
+              sess.fleetHealth = previousMap;
+              dropDecision(changeDecision);
+            })) return;
+          } catch (err) {
+            // persistOrRollBack ran the rollback on its way out, which is
+            // what a caller that does not submit needs. This branch does
+            // submit, so the reading goes forward again and the line saying
+            // the change was reported goes back with it, to be written by the
+            // first persist that finds a store it can parse.
+            sess.fleetHealth = current;
+            if (!sess.state.decisions.includes(changeDecision)) sess.state.decisions.push(changeDecision);
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "monitor",
+              action: "fleet_store_write_failed",
+              detail: `the store refused the write that carries this tick's fleet line, so the report went out and both lines wait for a store that parses: ${safeErrorText(err)}`.slice(0, 400),
+            });
+            // The line the prompt carries, composed the way the roster read's
+            // own failure is. A failed write's message is built out of the
+            // store path and, for a parse, out of the bytes the parser
+            // stopped on, so it carries store text whoever wrote the store:
+            // it rides a carried line of its own, and the composed line above
+            // it holds the plugin's own sentence alone.
+            notes.push({
+              composed: `the steward's own state store '${sess.storePath}' refused the write that carries this report's audit line, so the report below went out and that line lands when the store parses again. The error the write returned is on the line under this one.`,
+              carried: boundedText(safeErrorText(err)),
+            });
+            // Swallowed rather than rethrown. $.clock.every takes a callback
+            // it does not await, so an exception out of this tick reaches no
+            // caller at all and becomes an unhandled rejection whose
+            // consequence is the host process's to decide. The store read in
+            // the heartbeat tick swallows this same failure for the same
+            // reason. The tick carries on from here and the next one runs.
+            try { $.ui.log(`Agentic: the persona store refused a write during the fleet read; the [FLEET] report goes out and its decision line waits for a store that parses`); } catch { /* non-fatal */ }
+          }
           const fleetOutcome = await submitExpectedTurn($, expectedTurns, expectTurn({ kind: "plugin", text: fleetPromptText(changed, notes) }));
           if (!fleetOutcome.ok) {
             // No turn is coming, so nothing in that prompt was reported. The
@@ -2747,7 +2884,17 @@ export const register: Register = async (on, options) => {
               action: "fleet_prompt_failed",
               detail: `the [FLEET] prompt was ${fleetOutcome.how}, so the reading is back at the one before it: ${fleetOutcome.reason}`.slice(0, 200),
             });
-            await persist($);
+            // Attempted rather than depended on: a store that refuses the
+            // write is one of the things this tick reaches this line for, and
+            // the rolled-back reading is session memory and stands whatever
+            // the file does. The line waits in memory for a store that parses.
+            try { await persist($); } catch { /* the store refused; the line above waits for one that parses */ }
+          } else {
+            // A prompt carrying the start-up store line went out, so the line
+            // is done. It is cleared here rather than where it was composed
+            // into the notes, because every path that does not submit leaves
+            // it for the next tick to carry.
+            startStoreProblem = null;
           }
         }
       }
@@ -2802,18 +2949,46 @@ export const register: Register = async (on, options) => {
               detail: `submitted the [RECONCILE] prompt on the ${reconcileEveryMs}ms cadence`,
             };
             sess.state.decisions.push(reconcileDecision);
-            // As at the fleet submit above: a persist that returned false is a
-            // session that has just given the persona up, and the seat is no
-            // longer this session's to reconcile. The stamp rolls back with the
-            // call for the reason the reading above does. The lost-claim path
-            // writes this state, so a stamp left advanced would rest on disk
-            // with no [RECONCILE] submitted, and the successor would find the
-            // cadence freshly satisfied and skip the pass for a whole four
-            // hours behind a decision line saying it was asked for.
-            if (!await persistOrRollBack($, () => {
-              sess.state.lastReconcileAt = lastReconcileAt;
-              dropDecision(reconcileDecision);
-            })) return;
+            // As at the fleet submit above, and read apart the same way.
+            // A persist that returned false is a session that has just given
+            // the persona up, and the seat is no longer this session's to
+            // reconcile. The stamp rolls back with the call for the reason
+            // the reading above does: the lost-claim path writes this state,
+            // so a stamp left advanced would rest on disk with no [RECONCILE]
+            // submitted, and the successor would find the cadence freshly
+            // satisfied and skip the pass for a whole four hours behind a
+            // decision line saying it was asked for.
+            // A persist that threw is the store, which a watched persona can
+            // hold unparseable for as long as it likes. An unreconciled seat
+            // for that whole time is the worse of the two outcomes, so the
+            // pass is asked for and the stamp stays advanced in memory. What
+            // that costs is one extra pass after a relaunch inside the
+            // cadence, the stamp being off disk, against a prompt pile this
+            // session cannot make: the in-memory stamp holds the cadence for
+            // as long as the session runs.
+            try {
+              if (!await persistOrRollBack($, () => {
+                sess.state.lastReconcileAt = lastReconcileAt;
+                dropDecision(reconcileDecision);
+              })) return;
+            } catch (err) {
+              // The rollback ran on the way out, and this branch submits, so
+              // the stamp goes forward again and the line naming the
+              // submission goes back with it for the first persist that finds
+              // a store it can parse.
+              sess.state.lastReconcileAt = reconcileNow;
+              if (!sess.state.decisions.includes(reconcileDecision)) sess.state.decisions.push(reconcileDecision);
+              sess.state.decisions.push({
+                timestamp: Date.now(),
+                loop: "monitor",
+                action: "reconcile_store_write_failed",
+                detail: `the store refused the write that carries the cadence stamp, so the pass was asked for and the stamp stands in memory alone: ${safeErrorText(err)}`.slice(0, 400),
+              });
+              // Swallowed for the reason the fleet submit above swallows: the
+              // timer does not await this callback, so an exception reaches no
+              // caller and the tick would end in an unhandled rejection.
+              try { $.ui.log(`Agentic: the persona store refused the write carrying the reconciliation cadence stamp; the [RECONCILE] prompt goes out and the stamp stands in memory`); } catch { /* non-fatal */ }
+            }
             const reconcileOutcome = await submitExpectedTurn($, expectedTurns, expectTurn({ kind: "plugin", text: RECONCILE_TEXT }));
             if (!reconcileOutcome.ok) {
               // No turn is coming, so the pass was never asked for. The stamp
@@ -2828,7 +3003,10 @@ export const register: Register = async (on, options) => {
                 action: "reconcile_prompt_failed",
                 detail: `the [RECONCILE] prompt was ${reconcileOutcome.how}, so the cadence stamp is back at its previous value: ${reconcileOutcome.reason}`.slice(0, 200),
               });
-              await persist($);
+              // Attempted rather than depended on, as at the fleet submit
+              // above: the store may be the thing that failed, and the
+              // rolled-back stamp stands in memory whatever the file does.
+              try { await persist($); } catch { /* the store refused; the line above waits for one that parses */ }
             }
           }
         }
@@ -4348,6 +4526,17 @@ export const register: Register = async (on, options) => {
           // Controller tick failed; non-fatal.
         }
       });
+    };
+    $.clock.every(controllerTickMs, async () => {
+      try {
+        await controllerTick();
+      } catch (err) {
+        // Logged rather than swallowed in silence. The store is the failure
+        // this catch exists for and a decision line about it would need that
+        // same store to be written, so the log is the one channel left that
+        // does not depend on what failed. The next tick runs.
+        try { $.ui.log(`Agentic: the controller tick ended early: ${safeErrorText(err)}`); } catch { /* non-fatal */ }
+      }
     });
     }
 

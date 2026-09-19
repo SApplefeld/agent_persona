@@ -3315,8 +3315,11 @@ async function main() {
     await caseSection6Fleet_aHandWrittenMemoCannotSilenceAPersona(clock);
     await caseSection6Reconcile_aHandWrittenStampCannotSilenceThePass(clock);
     await caseSection6_theStoredStewardStateIsHeldToItsShape(clock);
-    await caseSection6Fleet_aThrownPersistRollsTheReadingBack(clock);
-    await caseSection6Reconcile_aThrownPersistRollsTheStampBack(clock);
+    await caseSection6Fleet_aThrownPersistStillReports(clock);
+    await caseSection6Reconcile_aThrownPersistStillAsksForThePass(clock);
+    await caseSection6Fleet_aFlappingRosterEntryIsHeldByTheWindow(clock);
+    await caseSection6Fleet_aYieldingWriteThatFailsSubmitsNothing(clock);
+    await caseSection6_anUnreadableStoreAtStartComesUpAndSaysSo(clock);
     await caseSection6Fleet_aRosterParseErrorRidesACarriedLine(clock);
   } finally {
     clock.restore();
@@ -9174,15 +9177,15 @@ async function caseSection6_theStoredStewardStateIsHeldToItsShape(clock) {
   check("s6 memo shape control: a cadence stamp at the read clock is kept", stampAfter(T0) === T0, stampAfter(T0));
 }
 // persist reads the store and writes it with no try of its own, so a store
-// that does not parse or a write that fails leaves the exception to the caller.
-// The rollback the caller passes used to run on the false returns alone, and an
-// exception unwinds past every line below the call: the advanced reading would
-// rest in memory with every changed key stamped as reported and no prompt
-// behind it, so this session would say nothing further about those keys for the
-// rest of its life. The exception still reaches the tick, because a swallowed
-// one would leave the tick running as though the store were healthy.
-async function caseSection6Fleet_aThrownPersistRollsTheReadingBack(clock) {
-  console.log("\n=== Section 6 fleet: a persist that throws rolls the reading back and the next tick reports the change ===");
+// that does not parse leaves the exception to the caller. That store is a file
+// inside a persona's own working directory and the live roster gives one
+// directory to more than one persona, so the exception is a watched persona's
+// to raise whenever it likes. The health reading is session memory and needs no
+// file, so what the throw costs is the audit line and not the report: the
+// [FLEET] prompt goes out carrying a line that names the refusal, the reading
+// stays advanced, and the decision line waits for a store that parses.
+async function caseSection6Fleet_aThrownPersistStillReports(clock) {
+  console.log("\n=== Section 6 fleet: a persist that throws still reports the fleet and says the store refused ===");
   clock.set(T0);
   const now = T0;
   const h = await seedFleetWakeHarness("s6_fleet_persist_throw", now);
@@ -9202,23 +9205,43 @@ async function caseSection6Fleet_aThrownPersistRollsTheReadingBack(clock) {
     threw = err;
   }
   await new Promise((r) => setTimeout(r, 50));
-  check("s6 fleet persist throw: the tick carries the exception out rather than swallowing it", threw instanceof Error, String(threw));
-  check("s6 fleet persist throw: and nothing was submitted on that tick", fleetPrompts(h).length === 0, h.promptSubmits);
+  check("s6 fleet persist throw: the tick completes rather than rejecting", threw === null, String(threw));
+  const spoke = fleetPrompts(h);
+  check("s6 fleet persist throw: exactly one [FLEET] went out on that tick", spoke.length === 1, h.promptSubmits);
+  check("s6 fleet persist throw: it carries the persona whose class moved", spoke.length === 1 && spoke[0].includes("beta: healthy -> held"), spoke);
+  check("s6 fleet persist throw: and the line saying the steward's own store refused the write",
+    spoke.length === 1 && spoke[0].includes("refused the write that carries this report's audit line"), spoke);
+  // The message a failed write returns carries store text, so it rides a
+  // carried line and the composed line above it holds the plugin's sentence
+  // alone. The shape is what is read here, not a string the guard was handed.
+  const thrownLines = spoke.length === 1 ? fleetPromptLines(spoke[0]) : [];
+  check("s6 fleet persist throw: the write's own message rides a carried line",
+    thrownLines.some((l) => l.startsWith("> ") && l.includes("JSON")), thrownLines);
+  check("s6 fleet persist throw: and no composed line carries it",
+    !thrownLines.some((l) => l.startsWith("- ") && l.includes("JSON at position")), thrownLines);
 
-  // The store is readable again, and the fleet has not moved a second time.
+  // The reading advanced behind that prompt, so a second tick over the same
+  // broken store has nothing to say. The prompt above is the producing step
+  // this silence is read against.
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 fleet persist throw: a second tick on the same broken store submits nothing more", fleetPrompts(h).length === 0, h.promptSubmits);
+
+  // The store parses again. Nothing moved a second time, so nothing is said a
+  // second time, and the lines that waited in memory land once each.
   h.fsMap.set(".agentic-personas.json", good);
   h.resetPromptSubmits();
   await tickAndSettle(h, clock);
-  const spoke = fleetPrompts(h);
-  check("s6 fleet persist throw: the next tick reports the change the throw interrupted", spoke.length === 1 && spoke[0].includes("beta: healthy -> held"), h.promptSubmits);
+  check("s6 fleet persist throw: the tick after the store heals re-reports nobody", fleetPrompts(h).length === 0, h.promptSubmits);
   const after = getStateForPersona(h, "steward");
-  check("s6 fleet persist throw: and the store carries one line saying it was reported, not one per attempt",
+  check("s6 fleet persist throw: the store carries one line saying the change was reported",
     after?.decisions.filter((d) => d.action === "fleet_health_changed").length === 1, after?.decisions.map((d) => d.action));
+  check("s6 fleet persist throw: and one line naming the write it refused",
+    after?.decisions.filter((d) => d.action === "fleet_store_write_failed").length === 1, after?.decisions.map((d) => d.action));
 
   // The control, withheld from the corrupted store and matched on its shape:
-  // the same fixture and the same change on a store that parses reports once
-  // and then goes quiet. So the line above is the rollback's doing rather than
-  // a watcher that reports the same change at every tick.
+  // the same fixture and the same change on a store that parses reports once,
+  // carries no line about the store, and then goes quiet.
   const control = await seedFleetWakeHarness("s6_fleet_persist_throw_control", now);
   seedHealthyFleet(control, now);
   control.resetPromptSubmits();
@@ -9226,17 +9249,29 @@ async function caseSection6Fleet_aThrownPersistRollsTheReadingBack(clock) {
   check("s6 fleet persist throw control: its own baseline is silent", fleetPrompts(control).length === 0, control.promptSubmits);
   control.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
   await tickAndSettle(control, clock);
-  check("s6 fleet persist throw control: the change is reported once", fleetPrompts(control).length === 1 && fleetPrompts(control)[0].includes("beta: healthy -> held"), control.promptSubmits);
+  const controlSpoke = fleetPrompts(control);
+  check("s6 fleet persist throw control: the change is reported once",
+    controlSpoke.length === 1 && controlSpoke[0].includes("beta: healthy -> held"), control.promptSubmits);
+  // The absence is read against a prompt proven to exist and to carry the same
+  // change as the one above, so a missing store line is a line nothing composed
+  // rather than a prompt that never went out.
+  check("s6 fleet persist throw control: its prompt carries no line about the store",
+    controlSpoke.length === 1 && !controlSpoke[0].includes("refused the write"), controlSpoke);
+  const controlState = getStateForPersona(control, "steward");
+  check("s6 fleet persist throw control: and no write-refused line reached its store",
+    !!controlState && !controlState.decisions.some((d) => d.action === "fleet_store_write_failed"), controlState?.decisions.map((d) => d.action));
   await tickAndSettle(control, clock);
   check("s6 fleet persist throw control: and the tick after it says nothing", fleetPrompts(control).length === 1, control.promptSubmits);
 }
 
-// The cadence stamp under the same throw. A stamp left advanced with no
-// [RECONCILE] submitted costs the seat a whole four-hour cadence, and the
-// decision line saying the pass was asked for is what a reader would be left
-// with.
-async function caseSection6Reconcile_aThrownPersistRollsTheStampBack(clock) {
-  console.log("\n=== Section 6 reconcile: a persist that throws rolls the cadence stamp back ===");
+// The cadence stamp under the same throw. The seat is the kit Coordinator's,
+// and an unreconciled seat lasts as long as a watched persona chooses to hold
+// the store unparseable, so the pass is asked for and the stamp stands in
+// memory. What that costs is one extra pass after a relaunch inside the
+// cadence, against a prompt pile the in-memory stamp will not let this session
+// make.
+async function caseSection6Reconcile_aThrownPersistStillAsksForThePass(clock) {
+  console.log("\n=== Section 6 reconcile: a persist that throws still asks for the pass ===");
   clock.set(T0);
   const h = await seedFleetWakeHarness("s6_reconcile_persist_throw", T0, { fleetRoster: "", reconcileEveryMs: 60_000 });
   h.resetPromptSubmits();
@@ -9255,20 +9290,29 @@ async function caseSection6Reconcile_aThrownPersistRollsTheStampBack(clock) {
     threw = err;
   }
   await new Promise((r) => setTimeout(r, 50));
-  check("s6 reconcile throw: the tick carries the exception out", threw instanceof Error, String(threw));
-  check("s6 reconcile throw: and no [RECONCILE] was submitted", reconcilePrompts(h).length === 0, h.promptSubmits);
+  check("s6 reconcile throw: the tick completes rather than rejecting", threw === null, String(threw));
+  check("s6 reconcile throw: one [RECONCILE] went out", reconcilePrompts(h).length === 1, h.promptSubmits);
+
+  // The stamp stands in memory, so a second tick on the same broken store asks
+  // for nothing. The prompt above is the producing step this silence is read
+  // against.
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 reconcile throw: a second tick on the same broken store asks for nothing", reconcilePrompts(h).length === 0, h.promptSubmits);
 
   h.fsMap.set(".agentic-personas.json", good);
   h.resetPromptSubmits();
   await tickAndSettle(h, clock);
-  check("s6 reconcile throw: the next tick asks for the pass, so the stamp went back", reconcilePrompts(h).length === 1, h.promptSubmits);
+  check("s6 reconcile throw: the tick after the store heals asks for nothing either", reconcilePrompts(h).length === 0, h.promptSubmits);
   const after = getStateForPersona(h, "steward");
-  check("s6 reconcile throw: and the store carries one line saying the pass was asked for, not one per attempt",
+  check("s6 reconcile throw: the healed store carries the advanced stamp", after?.lastReconcileAt === T0 + 61_000, after?.lastReconcileAt);
+  check("s6 reconcile throw: and one line saying the pass was asked for, not one per attempt",
     after?.decisions.filter((d) => d.action === "reconcile_due").length === 1, after?.decisions.map((d) => d.action));
+  check("s6 reconcile throw: and one line naming the write it refused",
+    after?.decisions.filter((d) => d.action === "reconcile_store_write_failed").length === 1, after?.decisions.map((d) => d.action));
 
   // The control, withheld from the corrupted store: the same cadence on a store
-  // that parses fires once and then waits out the next cadence, so the line
-  // above is the rollback's doing.
+  // that parses fires once and writes no line about a refused write.
   const control = await seedFleetWakeHarness("s6_reconcile_persist_throw_control", clock.get(), { fleetRoster: "", reconcileEveryMs: 60_000 });
   control.resetPromptSubmits();
   await tickAndSettle(control, clock);
@@ -9277,8 +9321,205 @@ async function caseSection6Reconcile_aThrownPersistRollsTheStampBack(clock) {
   refreshStewardClaim(control, clock.get());
   await tickAndSettle(control, clock);
   check("s6 reconcile throw control: the pass is asked for once the cadence has passed", reconcilePrompts(control).length === 1, control.promptSubmits);
+  const controlState = getStateForPersona(control, "steward");
+  check("s6 reconcile throw control: and no write-refused line reached its store",
+    !!controlState && !controlState.decisions.some((d) => d.action === "reconcile_store_write_failed"), controlState?.decisions.map((d) => d.action));
   await tickAndSettle(control, clock);
   check("s6 reconcile throw control: and the tick after it asks for nothing", reconcilePrompts(control).length === 1, control.promptSubmits);
+}
+
+// A roster is a file every persona of this fleet can write, so a persona can
+// delete its own entry and write it back on alternate ticks. Departure and
+// return are class moves on one key and go through the same comparison every
+// other reading does, so the quiet window holds that flap as it holds any
+// other: the first move of each kind goes out, and the ones after it inside
+// the window are counted and named on the next line about that key.
+async function caseSection6Fleet_aFlappingRosterEntryIsHeldByTheWindow(clock) {
+  console.log("\n=== Section 6 fleet: a roster entry deleted and written back on alternate ticks costs one line each way ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedFleetWakeHarness("s6_fleet_departure_flap", now);
+  seedHealthyFleet(h, now);
+  const withBeta = h.fsMap.get(FLEET_WAKE_ROSTER);
+  const withoutBeta = JSON.stringify([
+    { name: "alpha", workdir: "D:/fleetwake/p0/work", rundir: "D:/fleetwake/p0/run", enabled: true },
+  ]);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 fleet departure flap: the healthy baseline submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
+
+  // The first departure and the first return, each a class the window does not
+  // yet carry, so each goes out at once.
+  h.fsMap.set(FLEET_WAKE_ROSTER, withoutBeta);
+  await tickAndSettle(h, clock);
+  check("s6 fleet departure flap: the departure is reported",
+    fleetPrompts(h).length === 1 && fleetPrompts(h)[0].includes("beta: healthy -> no longer in the roster"), h.promptSubmits);
+  h.fsMap.set(FLEET_WAKE_ROSTER, withBeta);
+  await tickAndSettle(h, clock);
+  check("s6 fleet departure flap: the return is reported from the class the operator was last told",
+    fleetPrompts(h).length === 2 && fleetPrompts(h)[1].includes("beta: no longer in the roster -> healthy"), h.promptSubmits);
+
+  // Four further alternations inside the same window, each landing back in a
+  // class this key has already been reported in.
+  for (let i = 0; i < 4; i++) {
+    clock.advance(60_000);
+    refreshFleetHeartbeats(h, clock.get());
+    // The steward's own claim goes with them: the reading below is taken
+    // through the tool, whose reach rule reads that claim out of commons.
+    refreshStewardClaim(h, clock.get());
+    h.fsMap.set(FLEET_WAKE_ROSTER, i % 2 === 0 ? withoutBeta : withBeta);
+    await tickAndSettle(h, clock);
+  }
+  // The subject of the silence: the roster really is alternating under the
+  // tick, which the reading the tool makes over the same files shows.
+  const rows = await fleetRowsVia(h);
+  check("s6 fleet departure flap: the roster the ticks read still names both personas again",
+    rows.rows.length === 2 && rows.problem === undefined, rows);
+  check("s6 fleet departure flap: the four alternations inside the window submit nothing more", fleetPrompts(h).length === 2, h.promptSubmits);
+
+  // Past the window the key is reported once, with the count it stands for. So
+  // the silence above is the window's doing and not a watcher that stopped
+  // reading the roster.
+  clock.advance(11 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  h.fsMap.set(FLEET_WAKE_ROSTER, withoutBeta);
+  await tickAndSettle(h, clock);
+  const all = fleetPrompts(h);
+  check("s6 fleet departure flap: the first tick past the window submits exactly one more", all.length === 3, h.promptSubmits);
+  check("s6 fleet departure flap: and that line names the changes it stands for and does not name",
+    (all[2] || "").includes("further class change"), all[2]);
+}
+
+// persist's commons branch gives the persona up and then writes the store. A
+// write that fails there is swallowed by the branch's own catch, which is what
+// the branch wants for a coordination layer, and the seat is gone whatever that
+// write did: a true return would put a fleet reading in front of a session that
+// has already handed the persona over.
+async function caseSection6Fleet_aYieldingWriteThatFailsSubmitsNothing(clock) {
+  console.log("\n=== Section 6 fleet: a yield whose own store write fails submits no prompt ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedFleetWakeHarness("s6_fleet_yield_write_fails", now);
+  seedHealthyFleet(h, now);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 fleet yield write: the clean baseline submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
+
+  // A live rival whose claim on this persona is older than this session's, so
+  // commons arbitration hands it the persona at the next write, and a store
+  // write that refuses from that point on.
+  h.storeMap.set("commons:rival-steward", {
+    sessionId: "rival-steward",
+    lastSeen: now,
+    claims: [{ resource: "persona:steward", claimedAt: now - 600_000 }],
+  });
+  const realWrite = h.fake.fs.write;
+  h.fake.fs.write = (path, content) => (path === ".agentic-personas.json"
+    ? Promise.reject(new Error("the store write refused"))
+    : realWrite(path, content));
+  h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  await tickAndSettle(h, clock);
+  // The subject of the silence: the write ran and did give the persona up,
+  // which the yield log records. Without it the leg would pass on a tick that
+  // never reached the fleet block at all.
+  check("s6 fleet yield write: the write ran and gave the persona up", (h.fsMap.get(".agentic-yields.log") || "").length > 0, h.fsMap.get(".agentic-yields.log"));
+  check("s6 fleet yield write: no [FLEET] was submitted", fleetPrompts(h).length === 0, h.promptSubmits);
+  h.fake.fs.write = realWrite;
+
+  // The control, on its own harness and varying the one axis: the same failing
+  // store write with no rival keeps the seat, and the report goes out carrying
+  // the line that names the refusal. So the silence above is the lost persona's
+  // doing rather than the failed write's.
+  const control = await seedFleetWakeHarness("s6_fleet_yield_write_fails_control", now);
+  seedHealthyFleet(control, now);
+  control.resetPromptSubmits();
+  await tickAndSettle(control, clock);
+  check("s6 fleet yield write control: its own baseline is silent", fleetPrompts(control).length === 0, control.promptSubmits);
+  const controlWrite = control.fake.fs.write;
+  control.fake.fs.write = (path, content) => (path === ".agentic-personas.json"
+    ? Promise.reject(new Error("the store write refused"))
+    : controlWrite(path, content));
+  control.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  await tickAndSettle(control, clock);
+  check("s6 fleet yield write control: a session that kept the persona submits the prompt",
+    fleetPrompts(control).length === 1 && fleetPrompts(control)[0].includes("beta: healthy -> held"), control.promptSubmits);
+  check("s6 fleet yield write control: and it gave nothing up", !(control.fsMap.get(".agentic-yields.log") || "").length, control.fsMap.get(".agentic-yields.log"));
+  control.fake.fs.write = controlWrite;
+}
+
+// The store a session finds at start is the same file a watched persona can
+// write. A parse thrown out of session.start leaves the rest of it unrun: no
+// tools, no heartbeat and no controller tick, so the steward watches nothing
+// while the process keeper sees a live process. The session comes up on a
+// default state instead, and says so on the first prompt that goes out, a
+// steward that quietly starts fresh being the same silence in another shape.
+async function caseSection6_anUnreadableStoreAtStartComesUpAndSaysSo(clock) {
+  console.log("\n=== Section 6: a store that does not parse at session.start comes up and says so ===");
+  clock.set(T0);
+  const now = T0;
+  const opts = { ...OPTS, caseName: "s6_start_store_unreadable", persona: "steward", coordinatorPersona: "steward", fleetRoster: FLEET_WAKE_ROSTER };
+  // The files a relaunched steward finds, with a store written by something
+  // that is not a steward.
+  const seeded = { fsMap: new Map(), storeMap: new Map() };
+  seedHealthyFleet(seeded, now);
+  seeded.fsMap.set(".agentic-personas.json", "{ this is not the JSON a store holds");
+  seeded.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:steward", claimedAt: now - 2000 }],
+  });
+  let startThrew = null;
+  let h = null;
+  try {
+    h = await relaunchStewardHarness("s6_start_store_unreadable", seeded, opts);
+  } catch (err) {
+    startThrew = err;
+  }
+  check("s6 start store: session.start comes up rather than throwing", startThrew === null, String(startThrew));
+  if (h === null) return;
+  check("s6 start store: and it registered its timers, so the watcher runs at all", h.clockEveryCallbacks.length > 0, h.clockEveryCallbacks.length);
+
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  const spoke = fleetPrompts(h);
+  check("s6 start store: the first [FLEET] says the store could not be read at start",
+    spoke.length === 1 && spoke[0].includes("could not be read when this session started"), h.promptSubmits);
+
+  // Said once rather than on every tick: the prompt above is the producing step
+  // this silence is read against.
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 start store: the line is said once rather than on every tick", fleetPrompts(h).length === 0, h.promptSubmits);
+
+  // The state the session came up on, read once the store parses again.
+  h.fsMap.set(".agentic-personas.json", "{}");
+  await tickAndSettle(h, clock);
+  const after = getStateForPersona(h, "steward");
+  check("s6 start store: the session came up on a default state and recorded the refusal",
+    !!after && after.decisions.some((d) => d.action === "persona_store_unreadable") && after.decisions.some((d) => d.action === "persona_create"),
+    after?.decisions.map((d) => d.action));
+
+  // The control, varying the one axis: the same relaunch onto a store that
+  // parses, with a persona already held so that a prompt goes out to carry the
+  // line if anything composed one.
+  const controlOpts = { ...opts, caseName: "s6_start_store_readable" };
+  const controlSeed = { fsMap: new Map(), storeMap: new Map() };
+  seedHealthyFleet(controlSeed, now);
+  controlSeed.fsMap.set(".agentic-personas.json", "{}");
+  controlSeed.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  controlSeed.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:steward", claimedAt: now - 2000 }],
+  });
+  const control = await relaunchStewardHarness("s6_start_store_readable", controlSeed, controlOpts);
+  control.resetPromptSubmits();
+  await tickAndSettle(control, clock);
+  const controlSpoke = fleetPrompts(control);
+  check("s6 start store control: a store that parses still reports the held persona",
+    controlSpoke.length === 1 && controlSpoke[0].includes("beta: healthy -> held"), control.promptSubmits);
+  check("s6 start store control: and its prompt says nothing about a store it could not read",
+    controlSpoke.length === 1 && !controlSpoke[0].includes("could not be read when this session started"), controlSpoke);
 }
 
 // A roster that does not parse produces an error message built out of the bytes
