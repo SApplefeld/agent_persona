@@ -3281,7 +3281,9 @@ async function main() {
     await caseSection6Fleet_aForgedRowOnALineBreakIsQuoted(clock);
     await caseSection6Fleet_aBrokenRosterSpeaksAndSoDoesItsReturn(clock);
     await caseSection6Fleet_aDroppedSubmitRollsTheReadingBack(clock);
-    await caseSection6Fleet_aFlappingPersonaCostsOnePromptNotOnePerTick(clock);
+    await caseSection6Fleet_aDroppedFirstReadingIsStillAFirstReading(clock);
+    await caseSection6Fleet_aChangeInsideTheWindowIsHeldAndReportedAtItsEnd(clock);
+    await caseSection6Fleet_aDepartureIsReportedOnceAndTheMemoStands(clock);
     await caseSection6Fleet_aRelaunchedStewardRestatesWhatIsStillUnhealthy(clock);
     await caseSection6Fleet_aPersonaNewToTheRosterIsNotReportedAsHealthy(clock);
     await caseSection6Fleet_aPersonaNamedLikeAnObjectKeyIsStillCompared(clock);
@@ -3291,15 +3293,14 @@ async function main() {
     await caseSection6Reconcile_theCadenceSurvivesARelaunch(clock);
     await caseSection6Reconcile_aCadenceAtOrBelowZeroTakesTheDefault(clock);
     await caseSection6Fleet_aForgedRowInsideALineIsCarriedNotComposed(clock);
-    await caseSection6Fleet_aNewClassInsideTheWindowIsReportedAtOnce(clock);
-    await caseSection6Fleet_aSettleLineNamesTheClassLastReported(clock);
+    await caseSection6Fleet_theLineNamesTheClassLastReportedAndASettleIsSilent(clock);
     await caseSection6Fleet_aPendingInboxDoesNotStarveTheFleetBlock(clock);
     await caseSection6Fleet_anUnreadableRosterSaysNothingAboutItsEntries(clock);
     await caseSection6Reconcile_aTurnOpenedUnderTheFleetSubmitHoldsThePass(clock);
     await caseSection6Fleet_aSignalledExitWithNoClaimIsNotBackingOff(clock);
     await caseSection6Fleet_oneShutdownIsOneClassWhateverTheEntryDoes(clock);
     await caseSection6Fleet_reorderingAProblemRosterRepeatsNothing(clock);
-    await caseSection6Fleet_theWindowHoldsABoundedNumberOfClasses(clock);
+    await caseSection6Fleet_aKeyWhoseValueIsFileTextCostsOneLinePerWindow(clock);
     await caseSection6Fleet_aRefusedRosterNameCannotComposeALine(clock);
     await caseSection6Fleet_problemLinesAreBoundedAndCounted(clock);
     await caseSection6Fleet_theHeaderCountsReadingsNotLines(clock);
@@ -3315,6 +3316,9 @@ async function main() {
     await caseSection6_theStoredStewardStateIsHeldToItsShape(clock);
     await caseSection6Fleet_aThrownPersistStillReports(clock);
     await caseSection6Reconcile_aThrownPersistStillAsksForThePass(clock);
+    await caseSection6Reconcile_aRefusedStampLineRidesTheNextFleetPrompt(clock);
+    await caseSection6Reconcile_aDroppedPassSendsNoRefusedStampLine(clock);
+    await caseSection6Reconcile_aDroppedPassKeepsAnEarlierTicksLine(clock);
     await caseSection6Fleet_aYieldingWriteThatFailsSubmitsNothing(clock);
     await caseSection6_anUnreadableStoreAtStartComesUpAndSaysSo(clock);
     await caseSection6_aStoreThatParsesToNothingComesUp(clock);
@@ -3322,6 +3326,18 @@ async function main() {
     await caseSection6_aRefusedWriteInsideTheTickDoesNotEndIt(clock);
     await caseSection6Fleet_aTickThatEndedEarlyReachesTheOperator(clock);
     await caseSection6Fleet_aRosterParseErrorRidesACarriedLine(clock);
+    await caseSection6Fleet_anUnreadableRosterReportsNoDeparture(clock);
+    await caseSection6Fleet_aFirstTickOnAnUnreadableRosterIsStillAFirstReading(clock);
+    await caseSection6Fleet_theFirstReadingRemembersEveryPersona(clock);
+    await caseSection6Fleet_theReadingReachesNoFile(clock);
+    await caseSection6Fleet_anOverLongPersonaNameIsCutAtTheBound(clock);
+    await caseSection6Fleet_anOverLongRunDirIsCutOnTheHoldReasonLine(clock);
+    await caseSection6Fleet_theHeaderCountsKeysNotNotes(clock);
+    await caseSection6Fleet_aSecondTickInsideTheFleetSubmitSubmitsNothing(clock);
+    await caseSection6Fleet_departureLinesAreBoundedAndCounted(clock);
+    await caseSection6Fleet_aReturnInTheClassLastToldCountsNothing(clock);
+    await caseSection6Fleet_theDepartureLineNamesWhatWasObserved(clock);
+    await caseSection6Reconcile_noRosterComposesNoRefusedStampLine(clock);
   } finally {
     clock.restore();
   }
@@ -6997,6 +7013,21 @@ function seedHealthyFleet(h, now, names = ["alpha", "beta"]) {
   });
 }
 
+// The roster as it stands after a persona is taken out of it or written back
+// into it, over the fixture seedHealthyFleet laid down. The entry a name gets
+// carries the same directories that name's keeper and commons files sit under
+// whatever its position in the file, so a roster the case rewrites names the
+// same persona seedHealthyFleet seeded.
+const FLEET_FIXTURE_INDEX = { alpha: 0, beta: 1 };
+function setFleetRoster(h, names) {
+  h.fsMap.set(FLEET_WAKE_ROSTER, JSON.stringify(names.map((name) => ({
+    name,
+    workdir: `D:/fleetwake/p${FLEET_FIXTURE_INDEX[name]}/work`,
+    rundir: `D:/fleetwake/p${FLEET_FIXTURE_INDEX[name]}/run`,
+    enabled: true,
+  }))));
+}
+
 // The rows the fleet_status tool reads over the same fixture the tick reads.
 // A case asserting the tick stayed silent calls this first: the silence is
 // only evidence once the reading it is silent about is proven to have
@@ -7505,65 +7536,203 @@ async function caseSection6Fleet_aDroppedSubmitRollsTheReadingBack(clock) {
   check("s6 fleet dropped: the next tick reports the same change rather than losing it", again.length === 1 && again[0].includes("beta: healthy -> held"), h.promptSubmits);
 }
 
+// The reading and the flag saying a clean reading has been made are one thing,
+// and a rollback puts both back. A first reading whose prompt is dropped rolls
+// the reading back to none at all, so a flag left standing would leave the next
+// tick holding no memo for any persona and counting every one of them as a name
+// the roster has gained: a whole fleet reported as new, one line each.
+async function caseSection6Fleet_aDroppedFirstReadingIsStillAFirstReading(clock) {
+  console.log("\n=== Section 6 fleet: a dropped first reading is made again as a first reading ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedFleetWakeHarness("s6_fleet_dropped_first", now);
+  seedHealthyFleet(h, now);
+  // beta is held before this session has ticked at all, so the session's very
+  // first reading is one that has something to submit.
+  h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held before this steward ever read it\n");
+  const rows = await fleetRowsVia(h);
+  check("s6 fleet dropped first: the first reading really produces a held row and a running one",
+    rows.rows.length === 2 && rows.rows[0].action === "running" && rows.rows[1].action === "held", rows.rows);
+  h.dropNextPromptSubmit("a hook below the plugin dropped it");
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 fleet dropped first: the first reading's submit was attempted", fleetPrompts(h).length === 1, h.promptSubmits);
+
+  // The next tick over the same fixture makes that first reading again: the
+  // held persona is reported from health, and the well one is in no line.
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  const again = fleetPrompts(h);
+  check("s6 fleet dropped first: the next tick reports the held persona from health", again.length === 1 && again[0].includes("beta: healthy -> held"), h.promptSubmits);
+  check("s6 fleet dropped first: and reports no persona as one the roster has gained", !again[0].includes("not in the previous reading"), again[0]);
+  check("s6 fleet dropped first: and says nothing about the persona that is well", !again[0].includes("alpha"), again[0]);
+}
+
 // A persona that creates and deletes its own keeper.hold on the tick cadence
 // flips class at every reading. Reporting each flip would submit one prompt per
 // tick, and submitted prompts accumulate rather than replacing one another, so
 // a long steward turn would come back to a pile of them. The quiet window is
-// what bounds that, and the count of what it held back rides the next line.
-// What the window holds back is a flap and only a flap, so the bound is one
-// line per class per window rather than one line per window: the move into
-// healthy is a class the window does not yet carry and goes out, and every move
-// after it lands in a class the window already carries and is counted. Two
-// classes, two lines, then silence until the window runs out.
+// what bounds that: one line per persona per ten minutes, whatever the class
+// does in between.
+// A change inside the window is held rather than dropped. The window's end
+// compares the class the persona actually stands in against the class the last
+// line named, so the line that comes out carries the latest reading and the
+// count of the changes behind it.
 // The tick must also finish: the block used to return straight after its
 // submit, which skipped the reconcile block and everything below it.
-async function caseSection6Fleet_aFlappingPersonaCostsOnePromptNotOnePerTick(clock) {
-  console.log("\n=== Section 6 fleet: a flapping persona costs one line per class per quiet window, and the tick still finishes ===");
+async function caseSection6Fleet_aChangeInsideTheWindowIsHeldAndReportedAtItsEnd(clock) {
+  console.log("\n=== Section 6 fleet: a second change inside ten minutes is held, and the window's end carries the latest class ===");
   clock.set(T0);
   const now = T0;
-  const h = await seedFleetWakeHarness("s6_fleet_flap", now);
+  const h = await seedFleetWakeHarness("s6_fleet_window_hold", now);
   seedHealthyFleet(h, now);
   h.resetPromptSubmits();
   await tickAndSettle(h, clock);
-  check("s6 fleet flap: the healthy baseline submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
+  check("s6 fleet window hold: the healthy baseline submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
 
-  // The first flip is reported, and that report is the tick's second, so the
-  // cost summary cadence of two ticks lands on it: a tick that returned at the
-  // submit would never reach the counter that cadence is read from.
+  // The first change is reported and opens the window. That report is the
+  // tick's second, so the cost summary cadence of two ticks lands on it: a
+  // tick that returned at the submit would never reach the counter that
+  // cadence is read from.
   h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held\n");
   await tickAndSettle(h, clock);
-  check("s6 fleet flap: the first flip submits one [FLEET]", fleetPrompts(h).length === 1, h.promptSubmits);
+  check("s6 fleet window hold: the first change submits one [FLEET]", fleetPrompts(h).length === 1 && fleetPrompts(h)[0].includes("beta: healthy -> held"), h.promptSubmits);
   const reported = getStateForPersona(h, "steward");
-  check("s6 fleet flap: the tick that submitted carried on past the fleet block", !!reported && reported.decisions.some((d) => d.action === "cost_summary"), reported?.decisions.map((d) => d.action));
+  check("s6 fleet window hold: the tick that submitted carried on past the fleet block", !!reported && reported.decisions.some((d) => d.action === "cost_summary"), reported?.decisions.map((d) => d.action));
 
-  // Six further flips inside the quiet window, each on its own tick. The first
-  // of them moves beta into healthy, which the window does not yet carry, so it
-  // goes out at once; the five after it land back in classes the window already
-  // carries and are counted instead.
-  for (let i = 0; i < 6; i++) {
-    clock.advance(60_000);
+  // Two minutes in, beta is well again. That is a class the operator has not
+  // been told about, and it is still held: the window is one line per persona,
+  // not one line per class.
+  clock.advance(2 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.delete("D:/fleetwake/p1/run/keeper.hold");
+  const well = await fleetRowsVia(h);
+  check("s6 fleet window hold: beta really is running again on that reading", well.rows.length === 2 && well.rows[1].name === "beta" && well.rows[1].action === "running", well.rows);
+  await tickAndSettle(h, clock);
+  check("s6 fleet window hold: the change inside the window submits nothing", fleetPrompts(h).length === 1, h.promptSubmits);
+
+  // Two minutes after that, still inside the window, beta's keeper state stops
+  // parsing, which is a third class again.
+  clock.advance(2 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.set("D:/fleetwake/p1/run/keeper.json", "{ this is not JSON");
+  const stale = await fleetRowsVia(h);
+  check("s6 fleet window hold: the keeper state that will not parse really is on that reading", stale.rows.length === 2 && stale.rows[1].note !== undefined, stale.rows);
+  await tickAndSettle(h, clock);
+  check("s6 fleet window hold: the second change inside the window submits nothing either", fleetPrompts(h).length === 1, h.promptSubmits);
+
+  // Past the window. The line carries the class beta stands in now rather than
+  // the one that was held first, which is what makes the hold a hold rather
+  // than a drop, and it counts the changes that had no line of their own.
+  clock.advance(7 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  await tickAndSettle(h, clock);
+  const past = fleetPrompts(h);
+  check("s6 fleet window hold: the first tick past the window submits exactly one more", past.length === 2, h.promptSubmits);
+  check("s6 fleet window hold: that line carries the latest class and the class the operator was last told", (past[1] || "").includes("beta: held -> stale"), past[1]);
+  check("s6 fleet window hold: and names how many changes it stands for and does not name", (past[1] || "").includes("1 further class change this line does not name"), past[1]);
+  check("s6 fleet window hold control: the count excludes the move this line itself names", !(past[1] || "").includes("2 further class changes"), past[1]);
+  // The withheld control on the same harness: the persona that never moved is
+  // in no line of any of it, so the silence above is the window holding rather
+  // than a block that stopped reading personas.
+  check("s6 fleet window hold control: the persona that never moved is in neither prompt", !past.some((text) => text.includes("alpha")), past);
+}
+
+// The roster is the operator's own machine state, so a name leaving it is a
+// fleet event and is reported once, as its own line. The memo stands for the
+// life of the session, holding the class the operator was last told, and that
+// is what the name's return is compared against: a return in the same class
+// says nothing and a return in another is reported like any other reading.
+// The departure rides a note rather than a row, a persona the roster no longer
+// names having no row for a line to carry.
+async function caseSection6Fleet_aDepartureIsReportedOnceAndTheMemoStands(clock) {
+  console.log("\n=== Section 6 fleet: a persona leaving a clean roster is reported once, and its return is compared against the class last reported ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedFleetWakeHarness("s6_fleet_departed", now);
+  seedHealthyFleet(h, now);
+  const both = await fleetRowsVia(h);
+  check("s6 fleet departed: the reading the tick makes produces both roster rows", both.rows.length === 2, both);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 fleet departed: the healthy baseline submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
+
+  // beta is reported held. That line is what its quiet window runs from, and
+  // the class every return below is compared against.
+  clock.advance(60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 fleet departed: the held persona is reported once", fleetPrompts(h).length === 1 && fleetPrompts(h)[0].includes("beta: healthy -> held"), h.promptSubmits);
+
+  // beta leaves the roster, past its quiet window, on the tick alpha goes
+  // held. One prompt carries both: the row for the persona that moved and the
+  // note for the one the roster stopped naming.
+  clock.advance(11 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  setFleetRoster(h, ["alpha"]);
+  h.fsMap.set("D:/fleetwake/p0/run/keeper.hold", "held while the disk fills\n");
+  const one = await fleetRowsVia(h);
+  check("s6 fleet departed: the roster the tick now reads names one persona", one.rows.length === 1 && one.rows[0].name === "alpha", one.rows);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  const spoke = fleetPrompts(h);
+  check("s6 fleet departed: that tick submits one [FLEET] naming the persona that moved", spoke.length === 1 && spoke[0].includes("alpha: healthy -> held"), h.promptSubmits);
+  check("s6 fleet departed: and reports the departure in it, with the class that persona was last reported in",
+    spoke.length === 1 && spoke[0].includes("beta: the roster reading holds no row for this persona, last known held"), spoke);
+
+  // Eight further ticks with beta still out of the roster, four of them past a
+  // further window: the departure is one line, not one per tick.
+  for (let i = 0; i < 8; i++) {
+    clock.advance(4 * 60_000);
     refreshFleetHeartbeats(h, clock.get());
-    if (i % 2 === 0) h.fsMap.delete("D:/fleetwake/p1/run/keeper.hold");
-    else h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held\n");
+    refreshStewardClaim(h, clock.get());
     await tickAndSettle(h, clock);
   }
-  const inside = fleetPrompts(h);
-  check("s6 fleet flap: the move into a class the window does not carry is reported inside the window", inside.length === 2 && (inside[1] || "").includes("beta: held -> healthy"), h.promptSubmits);
-  check("s6 fleet flap: the five moves back into classes the window already carries submit nothing more", inside.length === 2, h.promptSubmits);
+  const still = await fleetRowsVia(h);
+  check("s6 fleet departed: the roster still reads, so those ticks had a reading to compare", still.rows.length === 1, still);
+  check("s6 fleet departed: none of those ticks reports the departure again", fleetPrompts(h).length === 1, h.promptSubmits);
 
-  // Past the window the persona is reported once, with the count it stands for.
-  clock.advance(10 * 60_000);
+  // beta comes back in the class it was last reported in, past the window, so
+  // the comparison has both a memo and no reason to hold anything: nothing is
+  // submitted.
+  clock.advance(11 * 60_000);
   refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  setFleetRoster(h, ["alpha", "beta"]);
+  const returned = await fleetRowsVia(h);
+  check("s6 fleet departed: the roster that tick reads names both personas again", returned.rows.length === 2, returned.rows);
   await tickAndSettle(h, clock);
-  const all = fleetPrompts(h);
-  check("s6 fleet flap: the first tick past the window submits exactly one more", all.length === 3, h.promptSubmits);
-  check("s6 fleet flap: that line names how many changes it stands for and does not name", (all[2] || "").includes("5 further class changes this line does not name"), all[2]);
-  // The line names the class the last line about beta actually carried, which
-  // is healthy, rather than the class the last reading observed. Reading the
-  // observed one would make this a settle line about a class no line ever told
-  // the operator beta had left.
-  check("s6 fleet flap: the line past the window names the class the operator was last told", (all[2] || "").includes("beta: healthy -> held"), all[2]);
-  check("s6 fleet flap: it is not written as a settle, because that is not where the last line left beta", !(all[2] || "").includes("beta: still"), all[2]);
+  check("s6 fleet departed: a return in the class last reported for it submits nothing", fleetPrompts(h).length === 1, h.promptSubmits);
+
+  // What proves that silence was the memo rather than a key that stopped being
+  // compared: beta leaves again and comes back in another class, which is
+  // reported from the class the operator was last told rather than as a
+  // persona nothing was ever known about.
+  clock.advance(11 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  setFleetRoster(h, ["alpha"]);
+  await tickAndSettle(h, clock);
+  const again = fleetPrompts(h);
+  check("s6 fleet departed: the second departure is reported once", again.length === 2 && (again[1] || "").includes("beta: the roster reading holds no row for this persona, last known held"), h.promptSubmits);
+
+  clock.advance(11 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.delete("D:/fleetwake/p1/run/keeper.hold");
+  setFleetRoster(h, ["alpha", "beta"]);
+  await tickAndSettle(h, clock);
+  const back = fleetPrompts(h);
+  check("s6 fleet departed: the return in another class is reported once", back.length === 3, h.promptSubmits);
+  check("s6 fleet departed: and names the class the operator was last told", (back[2] || "").includes("beta: held -> healthy"), back[2]);
+  check("s6 fleet departed: not one saying it was in no previous reading", !(back[2] || "").includes("not in the previous reading"), back[2]);
 }
 
 // A steward that comes up again reads the fleet against nothing, because the
@@ -7638,6 +7807,31 @@ async function caseSection6Fleet_aPersonaNewToTheRosterIsNotReportedAsHealthy(cl
   const spoke = fleetPrompts(h);
   check("s6 fleet new persona: the persona added to the roster submits one [FLEET]", spoke.length === 1, h.promptSubmits);
   check("s6 fleet new persona: it is reported against the previous reading and not against healthy", spoke.length === 1 && spoke[0].includes("beta: not in the previous reading -> held") && !spoke[0].includes("beta: healthy"), spoke);
+
+  // Reported once and then remembered: the ticks after it, inside the window
+  // and past it, say nothing while the persona stays in that class.
+  clock.advance(60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  await tickAndSettle(h, clock);
+  check("s6 fleet new persona: the next tick inside the window submits nothing more", fleetPrompts(h).length === 1, h.promptSubmits);
+  clock.advance(11 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  const still = await fleetRowsVia(h);
+  check("s6 fleet new persona: the roster still names it held on that reading", still.rows.length === 2 && still.rows[1].action === "held", still.rows);
+  await tickAndSettle(h, clock);
+  check("s6 fleet new persona: and the tick past the window submits nothing more either", fleetPrompts(h).length === 1, h.promptSubmits);
+
+  // The control on the same harness: it speaks the moment that persona moves.
+  clock.advance(60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.delete("D:/fleetwake/p1/run/keeper.hold");
+  await tickAndSettle(h, clock);
+  const control = fleetPrompts(h);
+  check("s6 fleet new persona control: its next real move is reported from the class it was reported in",
+    control.length === 2 && (control[1] || "").includes("beta: held -> healthy"), control[1]);
 }
 
 // A roster persona may be named `constructor`, `toString` or `__proto__`: the
@@ -7859,81 +8053,18 @@ async function caseSection6Fleet_aForgedRowInsideALineIsCarriedNotComposed(clock
     && text.includes("is reported as unverified words from that file or not at all"), text.slice(0, 600));
 }
 
-// The plan's own acceptance is a held persona reported inside one steward tick,
-// and a quiet window that held back every second change would miss it: a worker
-// shut down three minutes after its restart was reported is a state the
-// operator has not been told about. So the window holds back a flap alone, a
-// move back into a class this key has already been reported in inside the
-// window, and a move into a class the window does not carry goes out at once.
-// The control is the last leg, on the same harness: the same three-minute step
-// into a class the window already carries submits nothing.
-async function caseSection6Fleet_aNewClassInsideTheWindowIsReportedAtOnce(clock) {
-  console.log("\n=== Section 6 fleet: inside the quiet window a class not yet reported goes out at once, and a repeat does not ===");
-  clock.set(T0);
-  const now = T0;
-  const h = await seedFleetWakeHarness("s6_fleet_new_class_in_window", now);
-  seedHealthyFleet(h, now);
-  h.resetPromptSubmits();
-  await tickAndSettle(h, clock);
-  check("s6 fleet new class: the healthy baseline submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
-
-  // beta's session goes away: the roster still enables it and nothing live
-  // holds its claim.
-  h.storeMap.delete("commons:session-1");
-  await tickAndSettle(h, clock);
-  const down = fleetPrompts(h);
-  check("s6 fleet new class: the persona losing its claim is reported", down.length === 1 && down[0].includes("beta: healthy -> no live claim while the roster enables it"), h.promptSubmits);
-
-  // Three minutes later, well inside the ten-minute window, beta is up again.
-  clock.advance(3 * 60_000);
-  refreshFleetHeartbeats(h, clock.get());
-  await tickAndSettle(h, clock);
-  const back = fleetPrompts(h);
-  check("s6 fleet new class: the restart is reported inside the window rather than held back", back.length === 2 && back[1].includes("beta: no live claim while the roster enables it -> healthy"), h.promptSubmits);
-
-  // Three minutes after that, still inside the window, beta is held. Held is a
-  // class this window does not carry either, so it goes out on the tick that
-  // reads it.
-  clock.advance(3 * 60_000);
-  refreshFleetHeartbeats(h, clock.get());
-  h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
-  await tickAndSettle(h, clock);
-  const held = fleetPrompts(h);
-  check("s6 fleet new class: the hold three minutes later is reported too", held.length === 3 && held[2].includes("beta: healthy -> held"), h.promptSubmits);
-
-  // The control: a move back into a class the window already carries is what
-  // the window is for, and it is still held back.
-  clock.advance(3 * 60_000);
-  refreshFleetHeartbeats(h, clock.get());
-  refreshStewardClaim(h, clock.get());
-  h.fsMap.delete("D:/fleetwake/p1/run/keeper.hold");
-  const rows = await fleetRowsVia(h);
-  check("s6 fleet new class control: beta really is healthy again on this reading", rows.rows.length === 2 && rows.rows[1].name === "beta" && rows.rows[1].action === "running", rows.rows);
-  await tickAndSettle(h, clock);
-  check("s6 fleet new class control: the repeat of a class already reported in this window submits nothing", fleetPrompts(h).length === 3, h.promptSubmits);
-  // That repeat was counted rather than dropped, which the first line past the
-  // window names: a change the window held back and never named at all would
-  // leave this line with no count on it.
-  clock.advance(11 * 60_000);
-  refreshFleetHeartbeats(h, clock.get());
-  refreshStewardClaim(h, clock.get());
-  await tickAndSettle(h, clock);
-  const past = fleetPrompts(h);
-  check("s6 fleet new class control: the first line past the window names the change the window counted",
-    past.length === 4 && past[3].includes("1 further class change this line does not name"), past[3]);
-}
-
-// A change the window counts rather than reports parts the class last observed
-// from the class the operator was last told about. A line built from the
-// observed one names a transition out of a class no line ever carried, and on
-// a key that came back to where the reading last saw it, it reads as a settle
-// the operator has no line to settle against.
-// alpha and beta flap together and part on the last step, so the two readings
-// sit in one prompt on one harness: alpha's line names the move the operator
-// has not heard, and beta's is the withheld control, a key that really did
-// settle where the last line about it left it.
-async function caseSection6Fleet_aSettleLineNamesTheClassLastReported(clock) {
-  console.log("\n=== Section 6 fleet: a line past the window names the class last reported, not the class last observed ===");
+// A change the window holds parts the class last observed from the class the
+// operator was last told about. A line built from the observed one names a
+// transition out of a class no line ever carried. And a key found back in the
+// class its last line named is not news at all: the operator already believes
+// it to be there, so the window's end reports nothing about it and the count
+// of what was held goes with it.
+// alpha and beta move together and part on the last step, so both readings sit
+// on one harness: alpha's line names the move the operator has not heard, and
+// beta is the withheld control, a key that really did come back to where the
+// last line about it left it and has no line at all.
+async function caseSection6Fleet_theLineNamesTheClassLastReportedAndASettleIsSilent(clock) {
+  console.log("\n=== Section 6 fleet: a line past the window names the class last reported, and a key back in that class says nothing ===");
   clock.set(T0);
   const now = T0;
   const h = await seedFleetWakeHarness("s6_fleet_reported_class", now);
@@ -7947,38 +8078,48 @@ async function caseSection6Fleet_aSettleLineNamesTheClassLastReported(clock) {
   await tickAndSettle(h, clock);
   check("s6 fleet reported class: both personas are reported held", fleetPrompts(h).length === 1 && fleetPrompts(h)[0].includes("alpha: healthy -> held") && fleetPrompts(h)[0].includes("beta: healthy -> held"), h.promptSubmits);
 
+  // Both come back to health inside the window, which is held rather than
+  // reported.
   clock.advance(60_000);
   refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
   h.fsMap.delete("D:/fleetwake/p0/run/keeper.hold");
   h.fsMap.delete("D:/fleetwake/p1/run/keeper.hold");
+  const well = await fleetRowsVia(h);
+  check("s6 fleet reported class: both rows really do read running on that reading", well.rows.length === 2 && well.rows.every((r) => r.action === "running"), well.rows);
   await tickAndSettle(h, clock);
-  check("s6 fleet reported class: healthy is a class this window does not carry, so both are reported again", fleetPrompts(h).length === 2 && fleetPrompts(h)[1].includes("alpha: held -> healthy") && fleetPrompts(h)[1].includes("beta: held -> healthy"), h.promptSubmits);
+  check("s6 fleet reported class: the change inside the window submits nothing", fleetPrompts(h).length === 1, h.promptSubmits);
 
-  // Back into held, which the window already carries: counted for both.
+  // alpha alone goes back into the hold. beta is left where its last line said
+  // it was not: healthy, against a line that reported it held.
   clock.advance(60_000);
   refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
   h.fsMap.set("D:/fleetwake/p0/run/keeper.hold", "held\n");
-  h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held\n");
   await tickAndSettle(h, clock);
-  check("s6 fleet reported class: the move back into held is counted, not reported", fleetPrompts(h).length === 2, h.promptSubmits);
-
-  // beta alone comes back to healthy, where its last line left it. alpha stays
-  // held, which is not where its last line left it.
-  clock.advance(60_000);
-  refreshFleetHeartbeats(h, clock.get());
-  h.fsMap.delete("D:/fleetwake/p1/run/keeper.hold");
-  await tickAndSettle(h, clock);
-  check("s6 fleet reported class: still nothing further inside the window", fleetPrompts(h).length === 2, h.promptSubmits);
+  check("s6 fleet reported class: still nothing further inside the window", fleetPrompts(h).length === 1, h.promptSubmits);
 
   clock.advance(11 * 60_000);
   refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
   await tickAndSettle(h, clock);
   const all = fleetPrompts(h);
-  check("s6 fleet reported class: the first tick past the window submits one more", all.length === 3, h.promptSubmits);
-  const settle = all[2] || "";
-  check("s6 fleet reported class: the persona that did not come back names the move from the class last reported", settle.includes("alpha: healthy -> held, after 1 further class change this line does not name"), settle);
-  check("s6 fleet reported class: it is not written as a settle, because held is not where alpha's last line left it", !settle.includes("alpha: still"), settle);
-  check("s6 fleet reported class control: the persona that did come back reads as a settle", settle.includes("beta: still healthy, after 2 further class changes this line does not name"), settle);
+  check("s6 fleet reported class: the first tick past the window submits one more", all.length === 2, h.promptSubmits);
+  const past = all[1] || "";
+  check("s6 fleet reported class: the persona that moved names the move from the class last reported", past.includes("beta: held -> healthy ("), past);
+  check("s6 fleet reported class: and carries no count, the one change held back being the move this line names", !past.includes("further class change"), past);
+  check("s6 fleet reported class control: the persona back in the class its last line named is in no line of it", !past.includes("alpha"), past);
+
+  // And the count that key was carrying is cleared with the silence, so the
+  // next real move about it stands for itself alone.
+  clock.advance(11 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.delete("D:/fleetwake/p0/run/keeper.hold");
+  await tickAndSettle(h, clock);
+  const cleared = fleetPrompts(h);
+  check("s6 fleet reported class: the next move of the settled persona is reported", cleared.length === 3 && (cleared[2] || "").includes("alpha: held -> healthy"), h.promptSubmits);
+  check("s6 fleet reported class: and stands for itself, the held-back changes having been cleared with the settle", !(cleared[2] || "").includes("further class change"), cleared[2]);
 }
 
 // The inbox drain below delivers one record and returns for the rest of the
@@ -8266,16 +8407,15 @@ async function caseSection6Fleet_reorderingAProblemRosterRepeatsNothing(clock) {
   check("s6 fleet problem order control: a problem the last reading did not carry is reported", third.length === 2 && third[1].includes("gam:ma"), third);
 }
 
-// The window holds back a move into a class it already carries, which bounds a
-// persona to five class names. Two keys of the reading are not personas and
-// carry file text rather than a class name: how the roster read, and what its
-// entries could not be turned into. A value that is different every tick is
-// never a repeat, so on those two keys the flap rule alone bounds nothing at
-// all. The window therefore holds a fixed number of classes as well, and a move
-// past that number is held back whether or not it repeats one.
-// The control is the same key past the window, which speaks.
-async function caseSection6Fleet_theWindowHoldsABoundedNumberOfClasses(clock) {
-  console.log("\n=== Section 6 fleet: a key whose value is file text is bounded by the window's size, not only by repeats ===");
+// One key of the reading carries file text rather than a class name: what the
+// roster's entries could not be turned into. Its value can differ at every
+// tick, so no rule that keys on repeats bounds it at all, and the roster is
+// read again on every tick. The window is what bounds it, being one line per
+// key per ten minutes whatever the value does.
+// The control is the same key past the window, which speaks, carrying the
+// value it stands at then rather than the one that opened the window.
+async function caseSection6Fleet_aKeyWhoseValueIsFileTextCostsOneLinePerWindow(clock) {
+  console.log("\n=== Section 6 fleet: a key whose value is file text costs one line per window, however often it changes ===");
   clock.set(T0);
   const now = T0;
   const h = await seedFleetWakeHarness("s6_fleet_window_cap", now);
@@ -8286,38 +8426,31 @@ async function caseSection6Fleet_theWindowHoldsABoundedNumberOfClasses(clock) {
   await tickAndSettle(h, clock);
   check("s6 fleet window cap: the clean baseline submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
 
-  // Six readings inside one window, each naming a problem none of the others
+  // Seven readings inside one window, each naming a problem none of the others
   // names, so no two of them are the same value.
-  for (let i = 1; i <= 6; i++) {
+  for (let i = 1; i <= 7; i++) {
     clock.advance(60_000);
     refreshFleetHeartbeats(h, clock.get());
     refreshStewardClaim(h, clock.get());
     h.fsMap.set(FLEET_WAKE_ROSTER, JSON.stringify([alpha, beta, { name: `p:${i}`, workdir: `D:/fleetwake/q${i}/work`, enabled: true }]));
     await tickAndSettle(h, clock);
   }
-  const six = fleetPrompts(h);
-  check("s6 fleet window cap: six values the window did not already carry are each reported", six.length === 6 && six[5].includes("p:6"), h.promptSubmits);
-
-  // The seventh, still inside the window and still a value none of the others
-  // held.
-  clock.advance(60_000);
-  refreshFleetHeartbeats(h, clock.get());
-  refreshStewardClaim(h, clock.get());
-  h.fsMap.set(FLEET_WAKE_ROSTER, JSON.stringify([alpha, beta, { name: "p:7", workdir: "D:/fleetwake/q7/work", enabled: true }]));
   const seventh = await fleetRowsVia(h);
   check("s6 fleet window cap: the seventh reading really does carry a problem of its own", seventh.problems?.length === 1 && seventh.problems[0].includes("p:7"), seventh.problems);
-  await tickAndSettle(h, clock);
-  check("s6 fleet window cap: it is held back, because the window carries as many values as it holds", fleetPrompts(h).length === 6, h.promptSubmits);
+  const inside = fleetPrompts(h);
+  check("s6 fleet window cap: the first of the seven opens the window and is reported", inside.length === 1 && inside[0].includes("p:1"), h.promptSubmits);
+  check("s6 fleet window cap: the six after it are held, however different each value is", inside.length === 1, h.promptSubmits);
 
-  // The control: past the window the same key speaks again, with the count it
-  // stands for.
+  // Past the window the same key speaks again, with the value it stands at and
+  // the count of the changes behind it.
   clock.advance(11 * 60_000);
   refreshFleetHeartbeats(h, clock.get());
   refreshStewardClaim(h, clock.get());
   await tickAndSettle(h, clock);
   const past = fleetPrompts(h);
-  check("s6 fleet window cap control: the first tick past the window reports the value it settled on", past.length === 7 && past[6].includes("p:7"), h.promptSubmits);
-  check("s6 fleet window cap control: that line names the change it stands for and does not name", (past[6] || "").includes("after 1 further class change this line does not name"), past[6]);
+  check("s6 fleet window cap control: the first tick past the window reports the value it stands at", past.length === 2 && past[1].includes("p:7"), h.promptSubmits);
+  check("s6 fleet window cap control: and names none of the values it held back", past.length === 2 && !past[1].includes("p:1") && !past[1].includes("p:6"), past[1]);
+  check("s6 fleet window cap control: that line names how many changes it stands for and does not name", (past[1] || "").includes("after 5 further class changes this line does not name"), past[1]);
 }
 // The roster is the second file a persona writes that this prompt carries
 // text out of, and the one round 2's fix did not move. A refused roster name
@@ -8576,20 +8709,29 @@ async function caseSection6Fleet_deletingTheKeeperStateFileIsReported(clock) {
   await tickAndSettle(h, clock);
   check("s6 fleet keeper deleted: the clean baseline submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
 
-  // beta is held, then held no longer, then backing off. The three lines put
-  // healthy into beta's quiet window as a class it has been reported in, which
-  // is what a later fall back to healthy is measured against.
+  // beta is held, then held no longer, then backing off, each a window apart
+  // so that each is reported. Those three lines are what the deletion below is
+  // measured against: the last of them leaves beta reported backing off.
   h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while its disk is replaced\n");
   await tickAndSettle(h, clock);
   check("s6 fleet keeper deleted: the hold is reported", fleetPrompts(h).length === 1 && fleetPrompts(h)[0].includes("beta: healthy -> held"), h.promptSubmits);
+  clock.advance(11 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
   h.fsMap.delete("D:/fleetwake/p1/run/keeper.hold");
   await tickAndSettle(h, clock);
-  check("s6 fleet keeper deleted: the return to health is reported, which is what puts healthy in the window",
+  check("s6 fleet keeper deleted: the return to health is reported",
     fleetPrompts(h).length === 2 && fleetPrompts(h)[1].includes("beta: held -> healthy"), h.promptSubmits);
+  clock.advance(11 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
   h.fsMap.set("D:/fleetwake/p1/run/keeper.json", JSON.stringify({ persona: "beta", currentDelay: 600, lastExitCode: 1 }));
   await tickAndSettle(h, clock);
   check("s6 fleet keeper deleted: the climbed ladder is reported",
     fleetPrompts(h).length === 3 && fleetPrompts(h)[2].includes("beta: healthy -> backing off"), h.promptSubmits);
+  clock.advance(11 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
 
   // beta now deletes its own keeper.json. The row still reports, and says the
   // only thing it could not read is a keeper.json the keeper has not written,
@@ -8613,7 +8755,6 @@ async function caseSection6Fleet_deletingTheKeeperStateFileIsReported(clock) {
   // move out of the value that names the missing file. The clock goes back
   // where it was afterwards, because the harnesses the legs below build are
   // seeded from the clock this case started at.
-  const keeperDeletedAt = clock.get();
   clock.advance(11 * 60_000);
   refreshFleetHeartbeats(h, clock.get());
   refreshStewardClaim(h, clock.get());
@@ -8623,7 +8764,7 @@ async function caseSection6Fleet_deletingTheKeeperStateFileIsReported(clock) {
   const rewritten = fleetPrompts(h);
   check("s6 fleet keeper deleted: the keeper state coming back reads as a move out of the value that named it missing",
     rewritten.length === 1 && rewritten[0].includes("beta: healthy with no keeper state written -> healthy"), h.promptSubmits);
-  clock.set(keeperDeletedAt);
+  clock.set(now);
 
   // The control, on its own harness, withheld from the deletion and matched on
   // the same shape: the same three lines, and then a keeper.json rewritten
@@ -8639,8 +8780,14 @@ async function caseSection6Fleet_deletingTheKeeperStateFileIsReported(clock) {
   check("s6 fleet keeper deleted control: its own baseline is silent", fleetPrompts(control).length === 0, control.promptSubmits);
   control.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while its disk is replaced\n");
   await tickAndSettle(control, clock);
+  clock.advance(11 * 60_000);
+  refreshFleetHeartbeats(control, clock.get());
+  refreshStewardClaim(control, clock.get());
   control.fsMap.delete("D:/fleetwake/p1/run/keeper.hold");
   await tickAndSettle(control, clock);
+  clock.advance(11 * 60_000);
+  refreshFleetHeartbeats(control, clock.get());
+  refreshStewardClaim(control, clock.get());
   control.fsMap.set("D:/fleetwake/p1/run/keeper.json", JSON.stringify({ persona: "beta", currentDelay: 600, lastExitCode: 1 }));
   await tickAndSettle(control, clock);
   check("s6 fleet keeper deleted control: it reaches the same three lines",
@@ -8657,15 +8804,16 @@ async function caseSection6Fleet_deletingTheKeeperStateFileIsReported(clock) {
   // line carried and carries the count of what was held back. The clock goes
   // back where it was afterwards, the leg below building a harness of its own
   // from the clock this case started at.
-  const keeperControlAt = clock.get();
   clock.advance(11 * 60_000);
   refreshFleetHeartbeats(control, clock.get());
   refreshStewardClaim(control, clock.get());
   await tickAndSettle(control, clock);
   const settledLine = fleetPrompts(control);
-  check("s6 fleet keeper deleted control: the line past the window names the held-back return and its count",
-    settledLine.length === 1 && settledLine[0].includes("beta: backing off -> healthy") && settledLine[0].includes("1 further class change this line does not name"), settledLine);
-  clock.set(keeperControlAt);
+  check("s6 fleet keeper deleted control: the line past the window names the held-back return",
+    settledLine.length === 1 && settledLine[0].includes("beta: backing off -> healthy"), settledLine);
+  check("s6 fleet keeper deleted control: and carries no count, the held-back move being the one it names",
+    settledLine.length === 1 && !settledLine[0].includes("further class change"), settledLine);
+  clock.set(now);
 
   // The other direction, which is what a fleet on its first launch does on its
   // own: the keeper writes state for a persona that had none, and that moves
@@ -8960,8 +9108,8 @@ async function caseSection6Fleet_aHandWrittenMemoCannotSilenceAPersona(clock) {
   // steward found it, beta still held.
   const seeded = JSON.parse(first.fsMap.get(".agentic-personas.json"));
   seeded.steward.fleetHealth = {
-    alpha: { class: "healthy", reported: "", reportedAt: 0, suppressed: 0, window: [] },
-    beta: { class: "held", reported: "held", reportedAt: now - 1000, suppressed: 0, window: ["held"] },
+    alpha: { class: "healthy", reported: "", reportedAt: 0, suppressed: 0, departed: false },
+    beta: { class: "held", reported: "held", reportedAt: now - 1000, suppressed: 0, departed: false },
   };
   first.fsMap.set(".agentic-personas.json", JSON.stringify(seeded));
   check("s6 fleet memo silence: the seeded memo really is in the file the next steward reads",
@@ -9077,7 +9225,7 @@ async function caseSection6_theStoredStewardStateIsHeldToItsShape(clock) {
     written?.fleetHealth === undefined, Object.keys(written || {}));
 
   // A reading seeded into the file by hand, read back through the parse.
-  const wellFormed = { class: "held", reported: "held", reportedAt: T0 - 1000, suppressed: 0, window: ["held"] };
+  const wellFormed = { class: "held", reported: "held", reportedAt: T0 - 1000, suppressed: 0, departed: false };
   const parsedWith = (reading) => parseState(JSON.stringify({ ...written, fleetHealth: reading }));
   check("s6 memo shape: a well-formed stored reading is dropped whole rather than read",
     parsedWith({ beta: wellFormed }).fleetHealth === undefined, parsedWith({ beta: wellFormed }).fleetHealth);
@@ -9253,6 +9401,213 @@ async function caseSection6Reconcile_aThrownPersistStillAsksForThePass(clock) {
     !!controlState && !controlState.decisions.some((d) => d.action === "reconcile_store_write_failed"), controlState?.decisions.map((d) => d.action));
   await tickAndSettle(control, clock);
   check("s6 reconcile throw control: and the tick after it asks for nothing", reconcilePrompts(control).length === 1, control.promptSubmits);
+}
+
+// One refused store write and one only, so that the tick runs to the end of
+// its body either side of it. A store held unparseable refuses every write of
+// every tick, which is the case above; this is the narrow one where the write
+// carrying the cadence stamp is the write that failed, and it is what leaves
+// the fleet block's own reading and the tick state unmoved.
+function refuseOneStoreWrite(h) {
+  const realWrite = h.fake.fs.write;
+  const state = { refused: false, restore: () => { h.fake.fs.write = realWrite; } };
+  h.fake.fs.write = (path, content) => {
+    if (path === ".agentic-personas.json" && !state.refused) {
+      state.refused = true;
+      return Promise.reject(new Error("the store write refused"));
+    }
+    return realWrite(path, content);
+  };
+  return state;
+}
+
+// The operator's own copy of a refused cadence-stamp write. The decision line
+// naming it is held by the file that refused it, and the [RECONCILE] text is a
+// fixed constant that says nothing about a store, so without this line the
+// failure reaches the operator nowhere. It rides the next [FLEET] prompt, and
+// the prompt that carries it is what clears it.
+async function caseSection6Reconcile_aRefusedStampLineRidesTheNextFleetPrompt(clock) {
+  console.log("\n=== Section 6 reconcile: a refused cadence-stamp write rides the next [FLEET] and no prompt after it ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedFleetWakeHarness("s6_reconcile_line_rides", now, { reconcileEveryMs: 60_000 });
+  seedHealthyFleet(h, now);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  const started = getStateForPersona(h, "steward");
+  check("s6 reconcile line: the first tick starts the cadence and submits nothing",
+    reconcilePrompts(h).length === 0 && fleetPrompts(h).length === 0 && started?.lastReconcileAt === T0, { prompts: h.promptSubmits, stamp: started?.lastReconcileAt });
+
+  clock.advance(61_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  const refusal = refuseOneStoreWrite(h);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 reconcile line: the write that carries the stamp was refused", refusal.refused === true, refusal);
+  check("s6 reconcile line: and the pass was asked for anyway", reconcilePrompts(h).length === 1, h.promptSubmits);
+  const refused = getStateForPersona(h, "steward");
+  check("s6 reconcile line: the store carries the line naming the refused write",
+    refused?.decisions.filter((d) => d.action === "reconcile_store_write_failed").length === 1, refused?.decisions.map((d) => d.action));
+  // The fleet has not moved and the tick ran to the end of its body, so no
+  // [FLEET] went out on the tick that composed the line. The [RECONCILE] above
+  // is what proves the tick reached the block at all.
+  check("s6 reconcile line: no [FLEET] carried it on the tick that composed it", fleetPrompts(h).length === 0, h.promptSubmits);
+
+  // The next tick, with the fleet exactly as it was. The waiting line is a
+  // note, and a note is enough on its own to compose a prompt, so the line
+  // reaches the operator without waiting for a persona to move.
+  clock.advance(60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  const carried = fleetPrompts(h);
+  check("s6 reconcile line: the next tick submits one [FLEET] over a fleet that has not moved",
+    carried.length === 1 && !carried[0].includes("alpha:") && !carried[0].includes("beta:"), h.promptSubmits);
+  check("s6 reconcile line: and it carries the line naming the refused cadence-stamp write",
+    carried.length === 1 && carried[0].includes("refused the write that carries the reconciliation cadence stamp"), carried);
+  // The header counts readings of the fleet, and this prompt carries none: the
+  // store-refusal line is about the steward's own state file. So the count is
+  // nought and the prompt is composed all the same, a note being enough on its
+  // own to compose one.
+  check("s6 reconcile line: its header counts no reading of the fleet, the line being about the steward's own store",
+    carried.length === 1 && carried[0].includes("[FLEET] 0 readings of the fleet moved"), (carried[0] || "").slice(0, 220));
+  // The write's own message carries store text, so it rides a carried line and
+  // the composed line above it holds the plugin's sentence alone. The shape is
+  // what is read here.
+  const lines = carried.length === 1 ? fleetPromptLines(carried[0]) : [];
+  check("s6 reconcile line: the write's own message rides a carried line",
+    lines.some((l) => l.startsWith("> ") && l.includes("the store write refused")), lines);
+  check("s6 reconcile line: and no composed line carries it",
+    !lines.some((l) => l.startsWith("- ") && l.includes("the store write refused")), lines);
+
+  // The prompt that carried it cleared it. The absence is read against a prompt
+  // proven to have gone out and to carry a persona of its own, which takes a
+  // persona moving: with the line gone there is nothing else to compose one.
+  clock.advance(60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  const after = fleetPrompts(h);
+  check("s6 reconcile line: the tick after it submits a [FLEET] of its own",
+    after.length === 1 && after[0].includes("beta: healthy -> held"), h.promptSubmits);
+  check("s6 reconcile line: which carries no line about the cadence stamp",
+    after.length === 1 && !after[0].includes("the reconciliation cadence stamp"), after);
+  refusal.restore();
+}
+
+// The same refusal on a tick whose [RECONCILE] is then dropped. No turn is
+// coming, so the pass was never asked for, and a line whose own text says it
+// was must reach no prompt at all.
+async function caseSection6Reconcile_aDroppedPassSendsNoRefusedStampLine(clock) {
+  console.log("\n=== Section 6 reconcile: a refused write whose own [RECONCILE] was dropped reaches no [FLEET] ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedFleetWakeHarness("s6_reconcile_line_dropped", now, { reconcileEveryMs: 60_000 });
+  seedHealthyFleet(h, now);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 reconcile dropped line: the first tick starts the cadence and submits nothing",
+    reconcilePrompts(h).length === 0 && getStateForPersona(h, "steward")?.lastReconcileAt === T0, h.promptSubmits);
+
+  clock.advance(61_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  const refusal = refuseOneStoreWrite(h);
+  h.dropNextPromptSubmit("a hook below the plugin dropped it");
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 reconcile dropped line: the write that carries the stamp was refused", refusal.refused === true, refusal);
+  check("s6 reconcile dropped line: the [RECONCILE] submit was attempted", reconcilePrompts(h).length === 1, h.promptSubmits);
+  const rolled = getStateForPersona(h, "steward");
+  check("s6 reconcile dropped line: and no turn came of it", !!rolled && rolled.decisions.some((d) => d.action === "reconcile_prompt_failed"), rolled?.decisions.map((d) => d.action));
+  check("s6 reconcile dropped line: the stamp is back where it was", rolled?.lastReconcileAt === T0, rolled?.lastReconcileAt);
+  check("s6 reconcile dropped line: and the line naming the refused write went back out of the store",
+    !!rolled && !rolled.decisions.some((d) => d.action === "reconcile_store_write_failed"), rolled?.decisions.map((d) => d.action));
+
+  // The prompt the absence is read against: the fleet moves, one [FLEET] goes
+  // out carrying the persona that moved, and it carries nothing about a stamp.
+  clock.advance(60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  const spoke = fleetPrompts(h);
+  check("s6 reconcile dropped line: the next [FLEET] goes out for the persona that moved",
+    spoke.length === 1 && spoke[0].includes("beta: healthy -> held"), h.promptSubmits);
+  check("s6 reconcile dropped line: and carries no line about a refused cadence-stamp write",
+    spoke.length === 1 && !spoke[0].includes("the reconciliation cadence stamp"), spoke);
+  refusal.restore();
+}
+
+// A line one tick composed and no prompt has carried yet, against a later tick
+// whose own write landed and whose [RECONCILE] was then dropped. That tick
+// refused nothing, so it has no such line of its own to take back, and the one
+// standing from the earlier tick is a refusal it had nothing to do with. Taken
+// back with it, that refusal reaches the operator nowhere: the decision line is
+// held by the store that refused it and the [RECONCILE] text says nothing about
+// a store.
+async function caseSection6Reconcile_aDroppedPassKeepsAnEarlierTicksLine(clock) {
+  console.log("\n=== Section 6 reconcile: a dropped [RECONCILE] takes back its own refused-write line and no earlier one ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedFleetWakeHarness("s6_reconcile_line_survives", now, { reconcileEveryMs: 60_000 });
+  seedHealthyFleet(h, now);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 reconcile surviving line: the first tick starts the cadence and submits nothing",
+    reconcilePrompts(h).length === 0 && getStateForPersona(h, "steward")?.lastReconcileAt === T0, h.promptSubmits);
+
+  // The earlier tick: the stamp's write is refused, the pass is asked for, and
+  // the line waits for a [FLEET] that this tick has no reason to submit.
+  clock.advance(61_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  const refusal = refuseOneStoreWrite(h);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 reconcile surviving line: the write that carries the stamp was refused", refusal.refused === true, refusal);
+  check("s6 reconcile surviving line: the pass was asked for", reconcilePrompts(h).length === 1, h.promptSubmits);
+  check("s6 reconcile surviving line: and no [FLEET] carried the line away", fleetPrompts(h).length === 0, h.promptSubmits);
+
+  // The later tick, with every submission refused. The [FLEET] that would have
+  // carried the line away is refused too, so the line is still waiting when the
+  // reconciliation block runs; that block's own write lands, so it composes no
+  // line of its own, and its [RECONCILE] is refused like the prompt before it.
+  clock.advance(61_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.failPromptSubmits(new Error("the submit was rejected"));
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 reconcile surviving line: the later tick attempted the [FLEET] carrying the line", fleetPrompts(h).length === 1, h.promptSubmits);
+  check("s6 reconcile surviving line: and attempted its own [RECONCILE]", reconcilePrompts(h).length === 1, h.promptSubmits);
+  h.failPromptSubmits(null);
+  const rolled = getStateForPersona(h, "steward");
+  check("s6 reconcile surviving line: no turn came of either", !!rolled
+    && rolled.decisions.some((d) => d.action === "fleet_prompt_failed")
+    && rolled.decisions.some((d) => d.action === "reconcile_prompt_failed"), rolled?.decisions.map((d) => d.action));
+  check("s6 reconcile surviving line: one line naming a refused write stands, the earlier tick's",
+    rolled?.decisions.filter((d) => d.action === "reconcile_store_write_failed").length === 1, rolled?.decisions.map((d) => d.action));
+
+  // The tick after it, with the fleet exactly as it was. The line is the only
+  // thing there is to compose a prompt out of, so a [FLEET] going out at all is
+  // the line having survived a tick that refused nothing of its own.
+  clock.advance(60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  const carried = fleetPrompts(h);
+  check("s6 reconcile surviving line: the next tick submits one [FLEET] over a fleet that has not moved",
+    carried.length === 1 && !carried[0].includes("alpha:") && !carried[0].includes("beta:"), h.promptSubmits);
+  check("s6 reconcile surviving line: and it still carries the earlier tick's refused-write line",
+    carried.length === 1 && carried[0].includes("refused the write that carries the reconciliation cadence stamp"), carried);
+  refusal.restore();
 }
 
 // persist's commons branch gives the persona up and then writes the store. A
@@ -9715,10 +10070,14 @@ async function caseSection6Fleet_aTickThatEndedEarlyReachesTheOperator(clock) {
   await tickAndSettle(h, clock);
   check("s6 tick failure: a further tick failing the same way submits nothing more", fleetPrompts(h).length === 0, h.promptSubmits);
 
-  // And the recovery is a move like any other. The first tick with the writes
-  // landing again is the one that reaches the end of its body, and the tick
-  // after it is the one that reads that and says so.
+  // And the recovery is a move like any other, reported past the quiet window
+  // the failure opened. The first tick with the writes landing again is the
+  // one that reaches the end of its body, and the tick after it is the one
+  // that reads that and says so.
   refusing = false;
+  clock.advance(11 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
   h.resetPromptSubmits();
   await tickAndSettle(h, clock);
   await tickAndSettle(h, clock);
@@ -9727,7 +10086,9 @@ async function caseSection6Fleet_aTickThatEndedEarlyReachesTheOperator(clock) {
     back.length === 1 && back[0].includes("ran to the end of its body"), h.promptSubmits);
 
   // The control, varying the one axis: the same fixture with every write
-  // landing never composes a line about the tick at all.
+  // landing never composes a line about the tick at all. The clock goes back
+  // to where this case started, its harness being seeded from that.
+  clock.set(now);
   const control = await seedFleetWakeHarness("s6_tick_failure_control", now);
   seedHealthyFleet(control, now);
   await tickAndSettle(control, clock);
@@ -9790,6 +10151,789 @@ async function caseSection6Fleet_aRosterParseErrorRidesACarriedLine(clock) {
   const control = fleetPrompts(h);
   check("s6 fleet roster error control: the roster that parses and is not an array is reported too", control.length === 1 && control[0].includes("does not hold a JSON array of persona entries"), h.promptSubmits);
   check("s6 fleet roster error control: and that reading carries no line out of the file", fleetPromptLines(control[0] || "").filter((line) => line.startsWith("> ")).length === 0, fleetPromptLines(control[0] || ""));
+}
+
+
+// A roster naming any subset of a fixture the case seeded, for the cases below
+// that seed three personas. setFleetRoster above carries a two-name index and
+// writes the directories that index names; this takes the fixture's own name
+// list and reads each persona's directory off its position in it.
+function setFleetRosterOf(h, names, fixture) {
+  h.fsMap.set(FLEET_WAKE_ROSTER, JSON.stringify(names.map((name) => {
+    const i = fixture.indexOf(name);
+    return { name, workdir: `D:/fleetwake/p${i}/work`, rundir: `D:/fleetwake/p${i}/run`, enabled: true };
+  })));
+}
+
+
+// A roster that could not be read says nothing about the personas it would
+// have named, so no length of unreadable ticks is a departure for one of them.
+// The tick that reads the roster again is the reading that decides, and it
+// reports a departure only for the name that read did not carry.
+async function caseSection6Fleet_anUnreadableRosterReportsNoDeparture(clock) {
+  console.log("\n=== Section 6 fleet: unreadable ticks report no departure, and the clean tick reports only the name it did not carry ===");
+  clock.set(T0);
+  const now = T0;
+  const fixture = ["alpha", "beta", "gamma"];
+  const h = await seedFleetWakeHarness("s6_fleet_unreadable_departure", now);
+  seedHealthyFleet(h, now, fixture);
+  const all = await fleetRowsVia(h);
+  check("s6 fleet unreadable departure: the reading the tick makes produces all three roster rows", all.rows.length === 3, all);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 fleet unreadable departure: the healthy baseline submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
+
+  // beta and gamma are reported held, which is the class each is compared
+  // against below and the line each one's quiet window runs from.
+  clock.advance(60_000);
+  refreshFleetHeartbeats(h, clock.get(), fixture);
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  h.fsMap.set("D:/fleetwake/p2/run/keeper.hold", "held while the disk fills\n");
+  await tickAndSettle(h, clock);
+  const held = fleetPrompts(h);
+  check("s6 fleet unreadable departure: both held personas are reported in one prompt", held.length === 1 && held[0].includes("beta: healthy -> held") && held[0].includes("gamma: healthy -> held"), h.promptSubmits);
+
+  // The roster goes away for over an hour, every tick of it well past the
+  // quiet window, so nothing is holding any line back.
+  h.fsMap.delete(FLEET_WAKE_ROSTER);
+  for (let i = 0; i < 5; i++) {
+    clock.advance(15 * 60_000);
+    refreshFleetHeartbeats(h, clock.get(), fixture);
+    refreshStewardClaim(h, clock.get());
+    await tickAndSettle(h, clock);
+  }
+  const missing = await fleetRowsVia(h);
+  check("s6 fleet unreadable departure: the roster those ticks read really produced no rows", missing.rows.length === 0 && typeof missing.problem === "string", missing);
+  const quiet = fleetPrompts(h);
+  check("s6 fleet unreadable departure: that run reports the roster reading once and nothing further", quiet.length === 2 && quiet[1].includes("the roster reading itself"), h.promptSubmits);
+  check("s6 fleet unreadable departure: and reports no persona as having left", !quiet.some((text) => text.includes("no longer names this persona")), quiet);
+
+  // The roster reads again and names two of the three.
+  clock.advance(15 * 60_000);
+  refreshFleetHeartbeats(h, clock.get(), fixture);
+  refreshStewardClaim(h, clock.get());
+  setFleetRosterOf(h, ["alpha", "beta"], fixture);
+  const two = await fleetRowsVia(h);
+  check("s6 fleet unreadable departure: the roster that tick reads names two personas", two.rows.length === 2, two.rows);
+  await tickAndSettle(h, clock);
+  const clean = fleetPrompts(h);
+  check("s6 fleet unreadable departure: that tick reports the roster reading recovering", clean.length === 3 && clean[2].includes("the roster reading itself"), h.promptSubmits);
+  check("s6 fleet unreadable departure: and reports the departure of the name that read did not carry",
+    (clean[2] || "").includes("gamma: the roster reading holds no row for this persona, last known held"), clean[2]);
+  check("s6 fleet unreadable departure: and says nothing about the persona it named again, whose memo the unreadable run kept", !clean[2].includes("beta"), clean[2]);
+
+  // The name that left comes back in the class it left in, which the memo it
+  // kept is what compares: nothing is submitted.
+  clock.advance(15 * 60_000);
+  refreshFleetHeartbeats(h, clock.get(), fixture);
+  refreshStewardClaim(h, clock.get());
+  setFleetRosterOf(h, fixture, fixture);
+  const three = await fleetRowsVia(h);
+  check("s6 fleet unreadable departure: the roster that tick reads names all three again", three.rows.length === 3, three.rows);
+  await tickAndSettle(h, clock);
+  check("s6 fleet unreadable departure: the return in the class it left in submits nothing", fleetPrompts(h).length === 3, h.promptSubmits);
+
+  // The control: the same persona speaks the moment it actually moves, so the
+  // silence above is the comparison rather than a key that stopped being read.
+  clock.advance(15 * 60_000);
+  refreshFleetHeartbeats(h, clock.get(), fixture);
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.delete("D:/fleetwake/p2/run/keeper.hold");
+  await tickAndSettle(h, clock);
+  const moved = fleetPrompts(h);
+  check("s6 fleet unreadable departure control: the returned persona's next move is reported from the class it left in",
+    moved.length === 4 && (moved[3] || "").includes("gamma: held -> healthy"), moved[3]);
+}
+
+// A steward whose first tick meets an unreadable roster has made a reading,
+// and that reading holds the keys about the roster file and no persona at all.
+// The next clean tick is the first reading of every persona, so a fleet that
+// is well says nothing. Read as a reading that simply lacks those keys, it
+// would report one line per persona saying each was in no previous reading,
+// which is a whole healthy fleet reported as new on the first tick that could
+// read it.
+async function caseSection6Fleet_aFirstTickOnAnUnreadableRosterIsStillAFirstReading(clock) {
+  console.log("\n=== Section 6 fleet: a first tick on an unreadable roster does not report the healthy fleet as new ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedFleetWakeHarness("s6_fleet_first_unreadable", now);
+  seedHealthyFleet(h, now);
+  // The roster is gone before this session has ticked at all, so the first
+  // reading it makes is the one that cannot read it.
+  h.fsMap.delete(FLEET_WAKE_ROSTER);
+  const missing = await fleetRowsVia(h);
+  check("s6 fleet first unreadable: the first reading really cannot read the roster", missing.rows.length === 0 && typeof missing.problem === "string", missing);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  const first = fleetPrompts(h);
+  check("s6 fleet first unreadable: the first tick reports the roster it could not read", first.length === 1 && first[0].includes("the roster reading itself"), h.promptSubmits);
+  check("s6 fleet first unreadable: and names no persona", !first[0].includes("alpha") && !first[0].includes("beta"), first[0]);
+
+  // The roster reads again, past the quiet window its failure opened, and the
+  // fleet it names is well.
+  clock.advance(11 * 60_000);
+  refreshStewardClaim(h, clock.get());
+  seedHealthyFleet(h, clock.get());
+  const back = await fleetRowsVia(h);
+  check("s6 fleet first unreadable: the clean tick's reading produces both rows and both read running",
+    back.rows.length === 2 && back.rows.every((r) => r.action === "running"), back.rows);
+  await tickAndSettle(h, clock);
+  const clean = fleetPrompts(h);
+  check("s6 fleet first unreadable: that tick reports the roster reading recovering", clean.length === 2 && clean[1].includes("the roster reading itself"), h.promptSubmits);
+  const lines = fleetPromptLines(clean[1] || "");
+  check("s6 fleet first unreadable: and no line of it names a persona of the healthy fleet",
+    !lines.some((line) => line.includes("alpha") || line.includes("beta")), lines);
+
+  // The control, matched on shape rather than on a name the checks above
+  // carry: a persona that moves after that first clean reading is reported
+  // from the class it was read in, so the silence above is the comparison and
+  // not a block that stopped speaking about personas.
+  clock.advance(60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  await tickAndSettle(h, clock);
+  const control = fleetPrompts(h);
+  check("s6 fleet first unreadable control: a persona moving after that reading is reported from the class it was read in",
+    control.length === 3 && (control[2] || "").includes("beta: healthy -> held"), control[2]);
+}
+
+// The first clean roster reading remembers every persona it names and reports
+// only the ones outside the healthy class. A whole healthy fleet is not news,
+// so that reading submits nothing at all; what it must not do is forget the
+// personas it said nothing about, since every later comparison is against
+// them. The two legs that prove the memory are a departure line, which names
+// the class the silent reading stored, and a later move, which is reported
+// from that class rather than as a persona nothing was known about.
+async function caseSection6Fleet_theFirstReadingRemembersEveryPersona(clock) {
+  console.log("\n=== Section 6 fleet: the first clean reading says nothing about a healthy fleet and remembers all of it ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedFleetWakeHarness("s6_fleet_first_remembers", now);
+  seedHealthyFleet(h, now);
+  const both = await fleetRowsVia(h);
+  check("s6 fleet first remembers: the first reading really produces two running rows",
+    both.rows.length === 2 && both.rows.every((r) => r.action === "running"), both.rows);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 fleet first remembers: the first clean reading over a well fleet submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
+
+  // The roster stops naming beta. The departure line names the class the
+  // silent first reading stored for it, which a reading that had forgotten it
+  // could not compose at all.
+  clock.advance(11 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  setFleetRoster(h, ["alpha"]);
+  await tickAndSettle(h, clock);
+  const gone = fleetPrompts(h);
+  check("s6 fleet first remembers: the departure names the class the first reading stored",
+    gone.length === 1 && gone[0].includes("beta: the roster reading holds no row for this persona, last known healthy"), h.promptSubmits);
+
+  // And the persona the roster kept naming is reported from that same stored
+  // class when it moves, rather than as a reading with no previous one.
+  clock.advance(11 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.set("D:/fleetwake/p0/run/keeper.hold", "held while the disk fills\n");
+  await tickAndSettle(h, clock);
+  const moved = fleetPrompts(h);
+  check("s6 fleet first remembers: the persona that stayed is reported from the class the first reading stored",
+    moved.length === 2 && (moved[1] || "").includes("alpha: healthy -> held"), moved[1]);
+  check("s6 fleet first remembers: and not as a persona no reading had held", !(moved[1] || "").includes("not in the previous reading"), moved[1]);
+}
+
+// The reading lives in the session's own memory and reaches no file. The
+// persisted state is a file inside a persona's own working directory, which
+// the live roster gives to more than one persona, and every field of a memo
+// that silences a key is a value the watcher itself produces, so a stored
+// reading is one a watched party could write to decide what is said about it.
+// The absence is read off the harness's record of every write the plugin made
+// rather than off a path this case would have to name, a path never written
+// and a path guessed wrong reading the same way. Its control is a write the
+// same tick really made, found by the fleet text the plugin itself composed.
+async function caseSection6Fleet_theReadingReachesNoFile(clock) {
+  console.log("\n=== Section 6 fleet: the reading advances in session memory and reaches no file ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedFleetWakeHarness("s6_fleet_no_file", now);
+  seedHealthyFleet(h, now);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 fleet no file: the healthy baseline submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
+
+  h.resetFsWrites();
+  h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  await tickAndSettle(h, clock);
+  check("s6 fleet no file: the change is reported", fleetPrompts(h).length === 1 && fleetPrompts(h)[0].includes("beta: healthy -> held"), h.promptSubmits);
+
+  // The control: that tick did write a file, and the write carries the fleet
+  // line the plugin composed for itself. So the record is live and the
+  // absences below are absences rather than a recorder that saw nothing.
+  const writes = h.fsWrites;
+  check("s6 fleet no file control: the tick wrote at least one file", writes.length > 0, writes.map((w) => w.path));
+  check("s6 fleet no file control: and one of those writes carries the fleet line the tick composed",
+    writes.some((w) => w.content.includes("beta: healthy -> held")), writes.map((w) => w.path));
+
+  // The second control, for the reads below rather than for the record: the
+  // same three reads over a write that does carry a reading all find it. The
+  // reading is built to the shape the interface states rather than copied out
+  // of a literal the reads are handed, so a read that would go quiet on a real
+  // written reading goes quiet here too.
+  const withReading = [...writes, {
+    path: "a store that carried the reading",
+    content: JSON.stringify({ steward: { fleetHealth: { beta: { class: "held", reported: "held", reportedAt: now, suppressed: 0, departed: false } } } }),
+  }];
+  check("s6 fleet no file control: the same reads find a reading in a write that carries one",
+    withReading.some((w) => w.content.includes("reportedAt"))
+    && withReading.some((w) => w.content.includes("suppressed"))
+    && withReading.some((w) => w.content.includes("fleetHealth")), withReading.map((w) => w.path));
+
+  // The memo's own fields are what a written reading would carry, and they
+  // reach no write the tick made.
+  check("s6 fleet no file: no write carries a memo's report stamp", !writes.some((w) => w.content.includes("reportedAt")), writes.map((w) => w.path));
+  check("s6 fleet no file: no write carries a memo's suppression count", !writes.some((w) => w.content.includes("suppressed")), writes.map((w) => w.path));
+  check("s6 fleet no file: no write carries the reading under a name of its own", !writes.some((w) => w.content.includes("fleetHealth")), writes.map((w) => w.path));
+  const stored = getStateForPersona(h, "steward");
+  check("s6 fleet no file: the state the tick stored holds no reading", stored?.fleetHealth === undefined, Object.keys(stored || {}));
+
+  // And the reading did advance, in memory: the next tick over the same fleet
+  // has something to compare against and says nothing.
+  clock.advance(11 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  await tickAndSettle(h, clock);
+  check("s6 fleet no file: the next tick over the unmoved fleet submits nothing, so the reading advanced", fleetPrompts(h).length === 1, h.promptSubmits);
+}
+
+// The name on a row's own line is roster-supplied text, and the name rule
+// refuses characters rather than length: a name of any length is accepted, so
+// without the plugin's free-text bound at this splice one roster entry is
+// worth as much of a submitted turn as its writer cares to spend.
+async function caseSection6Fleet_anOverLongPersonaNameIsCutAtTheBound(clock) {
+  console.log("\n=== Section 6 fleet: an over-long roster name is cut at the free-text bound ===");
+  clock.set(T0);
+  const now = T0;
+  const longName = "n".repeat(2500);
+  const h = await seedFleetWakeHarness("s6_fleet_long_name", now);
+  seedHealthyFleet(h, now, ["alpha", longName]);
+  const both = await fleetRowsVia(h);
+  check("s6 fleet long name: the name rule admits it, so it reaches the prompt at all",
+    both.rows.length === 2 && both.rows.some((r) => r.name === longName), both.rows.map((r) => r.name.length));
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 fleet long name: the healthy baseline submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
+
+  clock.advance(60_000);
+  refreshFleetHeartbeats(h, clock.get(), ["alpha", longName]);
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  await tickAndSettle(h, clock);
+  const spoke = fleetPrompts(h);
+  check("s6 fleet long name: the persona that moved is reported once", spoke.length === 1, h.promptSubmits);
+  check("s6 fleet long name: the prompt does not carry the name whole", !(spoke[0] || "").includes(longName), (spoke[0] || "").length);
+  const lines = fleetPromptLines(spoke[0] || "");
+  const head = lines.find((line) => line.startsWith("- n"));
+  check("s6 fleet long name: the row's line is cut at the plugin's free-text bound and says so",
+    typeof head === "string" && head.length < 2300 && head.includes("cut at the bound"), head === undefined ? lines : head.length);
+  check("s6 fleet long name: and the cut mark's brackets are neutralized like every other field of this prompt",
+    !lines.some((line) => line.includes("[") || line.includes("]")), lines.filter((line) => line.includes("[") || line.includes("]")));
+
+  // The control, withheld from the bound above: a name inside it rides its
+  // line whole and carries no cut mark, so the checks above read the bound
+  // rather than a line this prompt always cuts.
+  clock.advance(60_000);
+  refreshFleetHeartbeats(h, clock.get(), ["alpha", longName]);
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.set("D:/fleetwake/p0/run/keeper.hold", "held while the disk fills\n");
+  await tickAndSettle(h, clock);
+  const control = fleetPrompts(h);
+  const controlHead = fleetPromptLines(control[1] || "").find((line) => line.startsWith("- alpha"));
+  check("s6 fleet long name control: a name inside the bound rides its line whole",
+    typeof controlHead === "string" && controlHead.includes("alpha: healthy -> held") && !controlHead.includes("cut at the bound"), controlHead);
+}
+
+
+// The other roster-supplied text on a row's lines: the file the hold reason
+// was read from, which is the run directory the roster entry names with the
+// marker's filename after it. The producers of this prompt are a set, and a
+// bound on the name alone leaves the same roster entry buying the same line
+// through its `rundir` instead.
+async function caseSection6Fleet_anOverLongRunDirIsCutOnTheHoldReasonLine(clock) {
+  console.log("\n=== Section 6 fleet: an over-long run directory is cut on the line naming the file it came from ===");
+  clock.set(T0);
+  const now = T0;
+  const longDir = `D:/fleetwake/${"d".repeat(2500)}`;
+  const h = await seedFleetWakeHarness("s6_fleet_long_rundir", now);
+  seedHealthyFleet(h, now);
+  // beta's roster entry names an over-long run directory, and its keeper state
+  // sits under it, so the row reads exactly as it did before.
+  h.fsMap.set(FLEET_WAKE_ROSTER, JSON.stringify([
+    { name: "alpha", workdir: "D:/fleetwake/p0/work", rundir: "D:/fleetwake/p0/run", enabled: true },
+    { name: "beta", workdir: "D:/fleetwake/p1/work", rundir: longDir, enabled: true },
+  ]));
+  h.fsMap.set(`${longDir}/keeper.json`, JSON.stringify({ persona: "beta", currentDelay: 300, lastExitCode: 0 }));
+  const both = await fleetRowsVia(h);
+  check("s6 fleet long rundir: the reading produces both rows and both read running",
+    both.rows.length === 2 && both.rows.every((r) => r.action === "running"), both.rows.map((r) => r.action));
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 fleet long rundir: the healthy baseline submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
+
+  clock.advance(60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.set(`${longDir}/keeper.hold`, "held while the disk fills\n");
+  await tickAndSettle(h, clock);
+  const spoke = fleetPrompts(h);
+  check("s6 fleet long rundir: the persona that moved is reported once", spoke.length === 1 && (spoke[0] || "").includes("beta: healthy -> held"), h.promptSubmits);
+  check("s6 fleet long rundir: the prompt does not carry the run directory whole", !(spoke[0] || "").includes(longDir), (spoke[0] || "").length);
+  const carried = fleetPromptLines(spoke[0] || "").filter((line) => line.startsWith("> "));
+  const source = carried.find((line) => line.includes("hold reason for beta"));
+  check("s6 fleet long rundir: the line naming the file the reason came from is cut at the bound and says so",
+    typeof source === "string" && source.length < 2300 && source.includes("cut at the bound"), source === undefined ? carried : source.length);
+  check("s6 fleet long rundir: and the cut mark's brackets are neutralized like every other field of this prompt",
+    !carried.some((line) => line.includes("[") || line.includes("]")), carried.filter((line) => line.includes("[") || line.includes("]")));
+
+  // The control, withheld from the bound above: the same line for a run
+  // directory inside the bound carries the path whole and no cut mark, so the
+  // checks above read the bound rather than a line this prompt always cuts.
+  clock.advance(60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.set("D:/fleetwake/p0/run/keeper.hold", "held while the disk fills\n");
+  await tickAndSettle(h, clock);
+  const control = fleetPromptLines(fleetPrompts(h)[1] || "").filter((line) => line.startsWith("> "));
+  const controlSource = control.find((line) => line.includes("hold reason for alpha"));
+  check("s6 fleet long rundir control: a run directory inside the bound rides its line whole",
+    typeof controlSource === "string" && controlSource.includes("D:/fleetwake/p0/run/keeper.hold") && !controlSource.includes("cut at the bound"), controlSource);
+}
+
+// The prompt's header counts the keys of the reading that moved, and one key
+// can put several lines into the prompt. The entry-problems key writes a line
+// per named entry and another naming the rest by count, all of it that one
+// key's account of itself, so a header counting notes would tell the steward
+// that a roster carrying twenty refused entries beside one persona moving is
+// twenty-one readings of the fleet moving.
+async function caseSection6Fleet_theHeaderCountsKeysNotNotes(clock) {
+  console.log("\n=== Section 6 fleet: the header counts the keys that moved, and one key writing several notes counts once ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedFleetWakeHarness("s6_fleet_header_keys", now);
+  seedHealthyFleet(h, now);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 fleet header keys: the clean baseline submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
+
+  // One persona moves, and the roster gains three entries the name rule
+  // refuses. Two keys moved: the persona, and the entries-of-the-roster key,
+  // whose three lines are one key's account of itself.
+  clock.advance(60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  h.fsMap.set(FLEET_WAKE_ROSTER, JSON.stringify([
+    { name: "alpha", workdir: "D:/fleetwake/p0/work", rundir: "D:/fleetwake/p0/run", enabled: true },
+    { name: "beta", workdir: "D:/fleetwake/p1/work", rundir: "D:/fleetwake/p1/run", enabled: true },
+    { name: "bad name one", workdir: "D:/fleetwake/r1/work", enabled: true },
+    { name: "bad name two", workdir: "D:/fleetwake/r2/work", enabled: true },
+    { name: "bad name three", workdir: "D:/fleetwake/r3/work", enabled: true },
+  ]));
+  const report = await fleetRowsVia(h);
+  check("s6 fleet header keys: the reading carries both rows and all three refused entries",
+    report.rows?.length === 2 && report.problems?.length === 3, { rows: report.rows?.length, problems: report.problems?.length });
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  const spoke = fleetPrompts(h);
+  check("s6 fleet header keys: one prompt is submitted", spoke.length === 1, h.promptSubmits);
+  const lines = fleetPromptLines(spoke[0] || "");
+  // The subject of the count below: the prompt really does carry more lines
+  // than readings, which is what makes the two numbers tell each other apart.
+  check("s6 fleet header keys: it carries the moved persona and each refused entry on a composed line of its own",
+    lines.filter((l) => l.startsWith("- ")).length === 4 && lines.some((l) => l.startsWith("- ") && l.includes("beta: healthy -> held")) && lines.filter((l) => l.startsWith("- a roster entry:")).length === 3,
+    lines.filter((l) => l.startsWith("- ")));
+  check("s6 fleet header keys: the header names two readings, the persona and the entries key",
+    (spoke[0] || "").includes("[FLEET] 2 readings of the fleet moved"), (spoke[0] || "").slice(0, 220));
+
+  // The control, withheld from the count above and matched on shape: the same
+  // three refused entries with no persona moving is one key and one reading,
+  // still three composed entry lines. A header counting notes would read three
+  // here and disagree with the line count nowhere, which is what tells a
+  // header that counts keys from one that counts notes.
+  const control = await seedFleetWakeHarness("s6_fleet_header_keys_control", now);
+  seedHealthyFleet(control, now);
+  control.resetPromptSubmits();
+  await tickAndSettle(control, clock);
+  check("s6 fleet header keys control: its own baseline is silent", fleetPrompts(control).length === 0, control.promptSubmits);
+  control.fsMap.set(FLEET_WAKE_ROSTER, JSON.stringify([
+    { name: "alpha", workdir: "D:/fleetwake/p0/work", rundir: "D:/fleetwake/p0/run", enabled: true },
+    { name: "beta", workdir: "D:/fleetwake/p1/work", rundir: "D:/fleetwake/p1/run", enabled: true },
+    { name: "bad name one", workdir: "D:/fleetwake/r1/work", enabled: true },
+    { name: "bad name two", workdir: "D:/fleetwake/r2/work", enabled: true },
+    { name: "bad name three", workdir: "D:/fleetwake/r3/work", enabled: true },
+  ]));
+  await tickAndSettle(control, clock);
+  const controlText = fleetPrompts(control)[0] || "";
+  check("s6 fleet header keys control: three refused entries and no persona moving still write three composed entry lines",
+    fleetPromptLines(controlText).filter((l) => l.startsWith("- a roster entry:")).length === 3, fleetPromptLines(controlText));
+  check("s6 fleet header keys control: and the header names one reading",
+    controlText.includes("[FLEET] 1 reading of the fleet moved"), controlText.slice(0, 220));
+}
+
+// $.clock.every takes a callback it does not await, so a tick whose work
+// outlasts controllerTickMs does not hold the next tick off, and the submit is
+// the longest wait in the block: $.prompt.submit does not resolve until the
+// session is next idle. Advancing the reading before the submit covers every
+// key the block compares, because a tick entering behind that advance finds
+// those keys where the last tick left them. It covers neither of the two notes
+// that are carried rather than compared: the store this session came up on and
+// the refused cadence stamp are cleared only once a prompt carrying them has
+// gone out, so a tick entering while that prompt is still in flight composes
+// the same line again and queues a second copy of it. Submitted prompts
+// accumulate rather than replacing one another, so that is the pile at the
+// next idle moment.
+async function caseSection6Fleet_aSecondTickInsideTheFleetSubmitSubmitsNothing(clock) {
+  console.log("\n=== Section 6 fleet: a tick entering while the [FLEET] submit is still out submits nothing, and the guard clears ===");
+  clock.set(T0);
+  const now = T0;
+  const opts = { ...OPTS, caseName: "s6_fleet_reentry", persona: "steward", coordinatorPersona: "steward", fleetRoster: FLEET_WAKE_ROSTER };
+  // A steward that came up on a store it could not read, which is the line
+  // that is carried rather than compared and so is composed again by every
+  // tick until a prompt carrying it has gone out.
+  const seeded = { fsMap: new Map(), storeMap: new Map() };
+  seedHealthyFleet(seeded, now);
+  seeded.fsMap.set(".agentic-personas.json", "{ this is not the JSON a store holds");
+  seeded.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:steward", claimedAt: now - 2000 }],
+  });
+  const h = await relaunchStewardHarness("s6_fleet_reentry", seeded, opts);
+  check("s6 fleet reentry: the steward came up and registered its timers", h.clockEveryCallbacks.length > 0, h.clockEveryCallbacks.length);
+
+  // The first tick is held open at its submit, which is inside the guard and
+  // ahead of the point the carried line is cleared.
+  h.resetPromptSubmits();
+  h.holdPromptSubmits();
+  const first = fireTick(h);
+  const reached = await waitUntil(() => fleetPrompts(h).length >= 1);
+  check("s6 fleet reentry: the first tick reached its submit and is held there", reached === true, h.promptSubmits);
+  check("s6 fleet reentry: the prompt it is holding carries the start-up store line",
+    fleetPrompts(h)[0].includes("could not be read when this session started"), fleetPrompts(h)[0]?.slice(0, 200));
+
+  // The second tick, entering while the first is still in flight.
+  const second = fireTick(h);
+  await new Promise((r) => setTimeout(r, 50));
+  check("s6 fleet reentry: the second tick queues no second [FLEET] while the first is out", fleetPrompts(h).length === 1, h.promptSubmits);
+
+  // Both are let go. What went out across the two ticks is one prompt.
+  h.releasePromptSubmits();
+  await Promise.all([first, second]);
+  await new Promise((r) => setTimeout(r, 50));
+  const spoke = fleetPrompts(h);
+  check("s6 fleet reentry: exactly one [FLEET] went out across the two ticks", spoke.length === 1, h.promptSubmits);
+  check("s6 fleet reentry: and the start-up store line was carried once", spoke.filter((t) => t.includes("could not be read when this session started")).length === 1, spoke.length);
+
+  // The other direction: the guard is clear once the first tick has finished,
+  // so a later change is reported. It is released in a finally, so it would be
+  // clear here even had the held submit thrown.
+  h.fsMap.set(".agentic-personas.json", "{}");
+  clock.advance(11 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  const after = fleetPrompts(h);
+  check("s6 fleet reentry: a later tick reports the persona that moved, so the guard did not wedge shut",
+    after.length === 1 && after[0].includes("beta: healthy -> held"), h.promptSubmits);
+  check("s6 fleet reentry: and says nothing further about the store it came up on",
+    after.length === 1 && !after[0].includes("could not be read when this session started"), after);
+}
+
+// A departure costs one line per persona, and one edit to the roster can take
+// every name out of it at once. The roster is a file, so without a bound that
+// is one line per persona of the fleet spliced into a single submitted turn.
+// The bound is the one the refused-entry lines take, and the rest are named by
+// their count in the same shape.
+async function caseSection6Fleet_departureLinesAreBoundedAndCounted(clock) {
+  console.log("\n=== Section 6 fleet: departure lines are bounded and the rest named by count ===");
+  clock.set(T0);
+  const now = T0;
+  // A roster of twenty-two personas, twenty-one of which leave it in one edit.
+  const names = [];
+  for (let i = 0; i < 22; i++) names.push(`p${String(i).padStart(2, "0")}`);
+  const survivor = { name: names[0], workdir: "D:/fleetwake/p0/work", rundir: "D:/fleetwake/p0/run", enabled: true };
+  const h = await seedFleetWakeHarness("s6_fleet_departed_bound", now);
+  seedHealthyFleet(h, now, names);
+  const before = await fleetRowsVia(h);
+  check("s6 fleet departed bound: the reading the tick makes produces all twenty-two rows", before.rows.length === 22, before.rows.length);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 fleet departed bound: the first clean reading over a well fleet submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
+
+  // The clock does not move, so every surviving reading stands exactly where
+  // it was and the only keys that move are the twenty-one with no row.
+  h.fsMap.set(FLEET_WAKE_ROSTER, JSON.stringify([survivor]));
+  const one = await fleetRowsVia(h);
+  check("s6 fleet departed bound: the roster the tick now reads names one persona and reads cleanly",
+    one.rows.length === 1 && one.rows[0].name === names[0] && one.problem === undefined, { rows: one.rows.length, problem: one.problem });
+  await tickAndSettle(h, clock);
+  const spoke = fleetPrompts(h);
+  check("s6 fleet departed bound: one prompt is submitted", spoke.length === 1, h.promptSubmits);
+  const lines = fleetPromptLines(spoke[0] || "");
+  const departureLines = lines.filter((l) => l.startsWith("- ") && l.includes("holds no row for this persona"));
+  check("s6 fleet departed bound: it names twenty of them and no more", departureLines.length === 20, departureLines.length);
+  check("s6 fleet departed bound: the rest are named by their count on a line of their own",
+    lines.some((l) => l.startsWith("- ") && l.includes("1 further persona has no row in this roster reading either")), lines.filter((l) => l.startsWith("- ")));
+  check("s6 fleet departed bound: the surviving persona is in no line of it",
+    !lines.some((l) => l.includes(`${names[0]}:`)), lines.filter((l) => l.includes(names[0])));
+  check("s6 fleet departed bound: and the header counts every key that moved, named or not",
+    (spoke[0] || "").includes("[FLEET] 21 readings of the fleet moved"), (spoke[0] || "").slice(0, 220));
+  // Every departing key is marked, including the one past the cap, so the next
+  // tick over the same roster reports none of them again.
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 fleet departed bound: the next tick over the same roster repeats none of it", fleetPrompts(h).length === 0, h.promptSubmits);
+
+  // The control at the cap exactly, withheld from the fixture above and
+  // matched on shape: twenty personas leaving are each named and no count line
+  // is written. So the count line above is the cap firing rather than a line
+  // this prompt always carries.
+  const atCapNames = names.slice(0, 21);
+  const atCap = await seedFleetWakeHarness("s6_fleet_departed_bound_at_cap", now);
+  seedHealthyFleet(atCap, now, atCapNames);
+  atCap.resetPromptSubmits();
+  await tickAndSettle(atCap, clock);
+  check("s6 fleet departed bound at cap: its own baseline is silent", fleetPrompts(atCap).length === 0, atCap.promptSubmits);
+  atCap.fsMap.set(FLEET_WAKE_ROSTER, JSON.stringify([survivor]));
+  await tickAndSettle(atCap, clock);
+  const atCapLines = fleetPromptLines(fleetPrompts(atCap)[0] || "");
+  check("s6 fleet departed bound at cap: twenty departures are each named",
+    atCapLines.filter((l) => l.startsWith("- ") && l.includes("holds no row for this persona")).length === 20, atCapLines.length);
+  check("s6 fleet departed bound at cap: and no count line is written",
+    !atCapLines.some((l) => l.includes("no row in this roster reading either")), atCapLines.filter((l) => l.startsWith("- ")));
+
+  // And one below the cap, for the same reason.
+  const belowNames = names.slice(0, 20);
+  const below = await seedFleetWakeHarness("s6_fleet_departed_bound_below_cap", now);
+  seedHealthyFleet(below, now, belowNames);
+  below.resetPromptSubmits();
+  await tickAndSettle(below, clock);
+  check("s6 fleet departed bound below cap: its own baseline is silent", fleetPrompts(below).length === 0, below.promptSubmits);
+  below.fsMap.set(FLEET_WAKE_ROSTER, JSON.stringify([survivor]));
+  await tickAndSettle(below, clock);
+  const belowLines = fleetPromptLines(fleetPrompts(below)[0] || "");
+  check("s6 fleet departed bound below cap: nineteen departures are each named",
+    belowLines.filter((l) => l.startsWith("- ") && l.includes("holds no row for this persona")).length === 19, belowLines.length);
+  check("s6 fleet departed bound below cap: and no count line is written",
+    !belowLines.some((l) => l.includes("no row in this roster reading either")), belowLines.filter((l) => l.startsWith("- ")));
+}
+
+// A departed memo keeps `class` at the last class observed while `reported`
+// holds the last class told, and the two part whenever a change was held back
+// before the departure. A name returning inside the window in the class it was
+// last told in has moved nowhere the operator was not told about, so it counts
+// nothing: counting it would make the key's next line claim one more unnamed
+// change than happened.
+async function caseSection6Fleet_aReturnInTheClassLastToldCountsNothing(clock) {
+  console.log("\n=== Section 6 fleet: a departed persona returning in the class last told of it inflates no held-back count ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedFleetWakeHarness("s6_fleet_departed_count", now);
+  seedHealthyFleet(h, now);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 fleet departed count: the healthy baseline submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
+
+  // beta is reported held. That line is what every window below runs from and
+  // the class every comparison below is made against.
+  clock.advance(60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  await tickAndSettle(h, clock);
+  check("s6 fleet departed count: the held persona is reported once", fleetPrompts(h).length === 1 && fleetPrompts(h)[0].includes("beta: healthy -> held"), h.promptSubmits);
+  const windowFrom = clock.get();
+
+  // Inside that window beta recovers. The change is held rather than dropped,
+  // and counted: one class change has gone unnamed.
+  clock.advance(2 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.delete("D:/fleetwake/p1/run/keeper.hold");
+  await tickAndSettle(h, clock);
+  check("s6 fleet departed count: the recovery inside the window submits nothing", fleetPrompts(h).length === 1, h.promptSubmits);
+
+  // Past that window beta leaves the roster, and the departure is reported.
+  // The memo now holds healthy as the class observed and held as the class
+  // told, which is the pair that makes the return below look like a move.
+  clock.set(windowFrom + 11 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  setFleetRoster(h, ["alpha"]);
+  await tickAndSettle(h, clock);
+  const departed = fleetPrompts(h);
+  check("s6 fleet departed count: the departure is reported once, naming the class last told",
+    departed.length === 2 && departed[1].includes("beta: the roster reading holds no row for this persona, last known held"), h.promptSubmits);
+  const departedAt = clock.get();
+
+  // Inside the departure's own window beta comes back held, which is the class
+  // the operator was last told. Nothing is submitted, and nothing is counted:
+  // the operator's picture of beta has not moved.
+  clock.set(departedAt + 2 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  setFleetRoster(h, ["alpha", "beta"]);
+  h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  const back = await fleetRowsVia(h);
+  check("s6 fleet departed count: the roster that tick reads names beta again and it reads held",
+    back.rows.length === 2 && back.rows[1].name === "beta" && back.rows[1].action === "held", back.rows);
+  await tickAndSettle(h, clock);
+  check("s6 fleet departed count: the return inside the window submits nothing", fleetPrompts(h).length === 2, h.promptSubmits);
+
+  // Past that window beta recovers, which is a class the last line did not
+  // name, so a line goes out. The one change it stands for and does not name
+  // is the recovery held back before the departure, and that one alone.
+  clock.set(departedAt + 11 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.delete("D:/fleetwake/p1/run/keeper.hold");
+  await tickAndSettle(h, clock);
+  const spoke = fleetPrompts(h);
+  check("s6 fleet departed count: the move away from the class last told is reported once",
+    spoke.length === 3 && spoke[2].includes("beta: held -> healthy"), h.promptSubmits);
+  check("s6 fleet departed count: and the line stands for one unnamed change, not two",
+    spoke.length === 3 && spoke[2].includes("after 1 further class change this line does not name"), spoke[2]);
+  check("s6 fleet departed count: the two the return would have made reach the line at no point",
+    spoke.length === 3 && !spoke[2].includes("after 2 further class changes"), spoke[2]);
+}
+
+// A roster entry the name rule refuses produces no row, and so does one
+// repeating a name an earlier entry holds. The carry-forward loop cannot tell
+// either of those from a removal, so a line asserting the roster dropped the
+// persona would be false while the roster still names it. The line says what
+// the tick observed instead: the reading holds no row for the name.
+async function caseSection6Fleet_theDepartureLineNamesWhatWasObserved(clock) {
+  console.log("\n=== Section 6 fleet: the departure line names the reading that holds no row, not a roster that dropped the name ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedFleetWakeHarness("s6_fleet_departed_wording", now);
+  seedHealthyFleet(h, now);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 fleet departed wording: the healthy baseline submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
+
+  clock.advance(60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  await tickAndSettle(h, clock);
+  check("s6 fleet departed wording: the held persona is reported once", fleetPrompts(h).length === 1 && fleetPrompts(h)[0].includes("beta: healthy -> held"), h.promptSubmits);
+
+  // beta's entry is replaced by one whose name the rule refuses for its colon.
+  // The roster is read cleanly and still carries an entry where beta's sat, so
+  // this tick observed a reading with no row for beta rather than a roster
+  // that stopped naming it.
+  const refusedName = "beta:2";
+  clock.advance(11 * 60_000);
+  refreshFleetHeartbeats(h, clock.get());
+  refreshStewardClaim(h, clock.get());
+  h.fsMap.set(FLEET_WAKE_ROSTER, JSON.stringify([
+    { name: "alpha", workdir: "D:/fleetwake/p0/work", rundir: "D:/fleetwake/p0/run", enabled: true },
+    { name: refusedName, workdir: "D:/fleetwake/p1/work", rundir: "D:/fleetwake/p1/run", enabled: true },
+  ]));
+  const reading = await fleetRowsVia(h);
+  check("s6 fleet departed wording: the roster reads cleanly, holds one row and refuses the second entry",
+    reading.problem === undefined && reading.rows.length === 1 && reading.rows[0].name === "alpha" && reading.problems?.length === 1,
+    { problem: reading.problem, rows: reading.rows.map((r) => r.name), problems: reading.problems });
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  const spoke = fleetPrompts(h);
+  check("s6 fleet departed wording: one prompt is submitted", spoke.length === 1, h.promptSubmits);
+  const lines = fleetPromptLines(spoke[0] || "");
+  check("s6 fleet departed wording: the line names the reading that holds no row for beta",
+    lines.some((l) => l.startsWith("- ") && l.includes("beta: the roster reading holds no row for this persona, last known held")), lines);
+  check("s6 fleet departed wording: and asserts nothing about what the roster names",
+    !lines.some((l) => l.includes("the roster no longer names this persona")), lines);
+  // The subject of that absence: the roster of this same reading does carry a
+  // beta-ish entry, reported on the entries key, so a line saying the roster
+  // dropped the name would have been false in this very prompt.
+  check("s6 fleet departed wording: the refused entry rides the same prompt, so the roster was still naming something here",
+    lines.some((l) => l.startsWith("> ") && l.includes(refusedName)), lines);
+  check("s6 fleet departed wording: the header counts two readings, beta and the entries key",
+    (spoke[0] || "").includes("[FLEET] 2 readings of the fleet moved"), (spoke[0] || "").slice(0, 220));
+}
+
+// The operator's copy of a refused cadence-stamp write is carried by the
+// [FLEET] prompt and by nothing else, and that prompt is composed nowhere
+// without a roster. So a steward launched with no roster composes no such
+// line: composed there it would stand uncarried and uncleared for the life of
+// the session and reach the operator at no point at all.
+async function caseSection6Reconcile_noRosterComposesNoRefusedStampLine(clock) {
+  console.log("\n=== Section 6 reconcile: a steward with no roster composes no refused cadence-stamp line ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedFleetWakeHarness("s6_reconcile_line_no_roster", now, { fleetRoster: "", reconcileEveryMs: 60_000 });
+  seedHealthyFleet(h, now);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  const started = getStateForPersona(h, "steward");
+  check("s6 reconcile no roster: the first tick starts the cadence and submits nothing",
+    reconcilePrompts(h).length === 0 && fleetPrompts(h).length === 0 && started?.lastReconcileAt === T0, { prompts: h.promptSubmits, stamp: started?.lastReconcileAt });
+
+  clock.advance(61_000);
+  const refusal = refuseOneStoreWrite(h);
+  h.resetPromptSubmits();
+  await tickAndSettle(h, clock);
+  check("s6 reconcile no roster: the write that carries the stamp was refused", refusal.refused === true, refusal);
+  check("s6 reconcile no roster: and the pass was asked for anyway", reconcilePrompts(h).length === 1, h.promptSubmits);
+  const refused = getStateForPersona(h, "steward");
+  check("s6 reconcile no roster: the store carries the line naming the refused write",
+    refused?.decisions.filter((d) => d.action === "reconcile_store_write_failed").length === 1, refused?.decisions.map((d) => d.action));
+  check("s6 reconcile no roster: the log line naming it reached this session's own output",
+    h.uiLogs.some((l) => l.includes("refused the write carrying the reconciliation cadence stamp")), h.uiLogs);
+
+  // Six further ticks, one of them moving a persona of the fleet the roster
+  // does not name. No prompt of any kind carries the line, because no [FLEET]
+  // is composed at all without a roster.
+  for (let i = 0; i < 6; i++) {
+    clock.advance(60_000);
+    await tickAndSettle(h, clock);
+  }
+  check("s6 reconcile no roster: no [FLEET] is composed on any of those ticks", fleetPrompts(h).length === 0, h.promptSubmits);
+  check("s6 reconcile no roster: and no prompt of any kind carries the cadence-stamp line",
+    !(h.promptSubmits || []).some((t) => t.includes("the reconciliation cadence stamp")), h.promptSubmits);
+  refusal.restore();
+
+  // The control, on its own harness, varying the roster and nothing else: the
+  // same refusal under a configured roster does compose the line and the next
+  // [FLEET] does carry it. So the silence above is the roster's absence rather
+  // than a refusal that never happened or a scan that cannot see the line.
+  const control = await seedFleetWakeHarness("s6_reconcile_line_no_roster_control", now, { reconcileEveryMs: 60_000 });
+  seedHealthyFleet(control, now);
+  control.resetPromptSubmits();
+  clock.set(T0);
+  await tickAndSettle(control, clock);
+  check("s6 reconcile no roster control: its own first tick starts the cadence and submits nothing",
+    reconcilePrompts(control).length === 0 && fleetPrompts(control).length === 0, control.promptSubmits);
+  clock.advance(61_000);
+  refreshFleetHeartbeats(control, clock.get());
+  refreshStewardClaim(control, clock.get());
+  const controlRefusal = refuseOneStoreWrite(control);
+  control.resetPromptSubmits();
+  await tickAndSettle(control, clock);
+  check("s6 reconcile no roster control: its write was refused and its pass was asked for",
+    controlRefusal.refused === true && reconcilePrompts(control).length === 1, control.promptSubmits);
+  clock.advance(60_000);
+  refreshFleetHeartbeats(control, clock.get());
+  refreshStewardClaim(control, clock.get());
+  control.resetPromptSubmits();
+  await tickAndSettle(control, clock);
+  check("s6 reconcile no roster control: the next [FLEET] carries the cadence-stamp line",
+    fleetPrompts(control).length === 1 && fleetPrompts(control)[0].includes("refused the write that carries the reconciliation cadence stamp"), control.promptSubmits);
+  controlRefusal.restore();
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

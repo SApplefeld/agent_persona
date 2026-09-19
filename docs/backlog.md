@@ -270,3 +270,27 @@ This is the cheapest memory and time attack on that file, and it is upstream of 
 This is a different channel from the submitted `[FLEET]` prompt, which Section 6 of the steward plan bounded on its own line, so it is a separate call rather than an unfinished one. The tool result is JSON framed for a caller rather than text spliced into a labelled turn, which is why the bracket neutraliser does not apply here and why the bound is the only guard in question.
 
 The finding is the asymmetry: one field of the row has the bound and three do not, on a row whose every field comes from the same untrusted places. The remedy is the same `boundedText` already applied to `note`, and the reason to weigh it rather than apply it blind is that a caller reading `holdReasonSource` as a path may want the whole path rather than a cut one.
+
+## The watcher's reading has no bound while its problem lines do, on two opposite premises about the roster (found 2026-09-19)
+
+`hooks/index.ts:2796` carries forward every key of the previous reading for the life of the session, with no eviction rule. `FLEET_PROBLEM_LINES_MAX` at `hooks/index.ts:1228` cuts the per-entry lines at twenty, and its own reason is that the roster is a file every persona of the fleet can write. Those two reasons cannot both be the file's, and the same function holds them a few hundred lines apart.
+
+The operator's decision of 2026-09-19, recorded in the steward plan's Standing Brief Amendments and in project memory as `fleet-watcher-decisions-2026-09-19`, settles the eviction half: there is no eviction rule, because the roster is trusted operator machine state, and distrusting the roster is a new plan rather than a fix round. It does not settle the coherence. One file still bounds one list because the roster is untrusted and leaves another unbounded because it is trusted, and a reader cannot tell from the code which premise the next guard should take.
+
+This is a question for a plan rather than a defect to fix. The answer is a single stated premise about the roster that both guards can rest on, and choosing it decides whether `readFleetRows` gains an entry cap too.
+
+## A persona name is cut to a length bound before it is neutralised, so two names can render as one line (found 2026-09-19)
+
+`fleetPromptText` composes a row's name at `hooks/index.ts:1294` as `bracketSafeText(boundedText(row.name))`. `boundedText` at `hooks/index.ts:521` cuts anything past the free-text bound and appends a fixed cut mark, so two distinct roster names sharing a prefix longer than that bound both render as the same prefix plus the same mark. The cut runs first, so the prompt carries two rows whose head text is identical.
+
+The cost is a reader who cannot tell which of two personas a line is about, on a prompt whose whole purpose is to name the persona that moved. It is not a forgery: both lines are the plugin's own composed lines and the fields on each are that row's real ones.
+
+Remedy: make the cut collision-resistant rather than positional, by carrying a short digest of the full name into the cut mark, or refuse a roster name past the bound at `readFleetRows` and report it as an entry problem the way a name the rule refuses is reported. The second is the smaller change and the one consistent with how every other unusable name is handled. Proof: two roster names sharing a prefix past the bound, asserting the two composed row lines differ.
+
+## `README.md`'s persona-store paragraph names the `coordinator` entry that Section 5 replaces (found 2026-09-19)
+
+`README.md:522` states that two personas configured with the same working directory share one store file, and names `bin/fleet.example.json` as such a roster because `coordinator` and `dev` are both homed in `D:/agent_persona`. That is true today: `bin/fleet.example.json` carries a `coordinator` entry.
+
+Section 5 of `docs/plans/agent_persona_steward-architect_v1.md` replaces that `coordinator` entry with `steward`, homed in its own subdirectory of `D:/personas`. So when Section 5 lands, the sentence names an entry the file no longer has, and its example of two personas sharing one store stops being an example that file provides.
+
+This is a README sentence to restate rather than a defect: the trust-boundary point it makes stands whatever the roster holds. Remedy, at Section 5: restate it against whatever pair the example roster then carries, or state the shared-directory hazard without naming an entry.

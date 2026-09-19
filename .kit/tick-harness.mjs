@@ -40,6 +40,11 @@ function createFake$(opts = {}) {
   const clockEveryCallbacks = [];
   const toolRegisters = [];
   const toolCalls = [];
+  // Every write the plugin makes through $.fs.write, in order, as
+  // { path, content }. A case pinning that some state reached no file at all
+  // reads this rather than a path it would have to name itself: a path that
+  // was never written and a path the case guessed wrong read the same way.
+  const fsWrites = [];
   const promptSubmits = [];
   // The texts of accepted submits whose turn has not opened yet, in
   // submission order. A turn.start a case fires without `text` takes the
@@ -88,7 +93,9 @@ function createFake$(opts = {}) {
         return Promise.resolve(fsMap.get(p));
       },
       write(p, content) {
-        fsMap.set(p, typeof content === "string" ? content : JSON.stringify(content));
+        const text = typeof content === "string" ? content : JSON.stringify(content);
+        fsMap.set(p, text);
+        fsWrites.push({ path: p, content: text });
         return Promise.resolve();
       },
     },
@@ -202,6 +209,7 @@ function createFake$(opts = {}) {
     promptSubmits,
     queuedTurnTexts,
     fsMap,
+    fsWrites,
     storeMap,
     classifyCalls,
     completeCalls,
@@ -211,6 +219,7 @@ function createFake$(opts = {}) {
     resetClassifyCalls() { classifyCalls.length = 0; },
     resetCompleteCalls() { completeCalls.length = 0; },
     resetPromptSubmits() { promptSubmits.length = 0; },
+    resetFsWrites() { fsWrites.length = 0; },
     // Make every subsequent prompt submission reject. The text is still
     // recorded, because the real call has taken the submission by the time it
     // can fail, and a case needs to tell a submit that was never attempted from

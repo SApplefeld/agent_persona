@@ -193,9 +193,9 @@ export const FLEET_DISABLED_TAIL = " under a disabled roster entry";
  * for the whole of that run, and that reading is borrowable: the file sits in
  * the persona's own run directory, so a persona whose class the watcher is
  * reporting can delete it and fall back to healthy, which the quiet window
- * then holds back as a flap into a class it has already been reported in. The
- * file's presence is part of the value compared for that reason, so gaining or
- * losing it is a change with a line of its own whatever the class does.
+ * then holds back. The file's presence is part of the value compared for that
+ * reason, so gaining or losing it is a change with a line of its own whatever
+ * the class does.
  */
 export const FLEET_KEEPER_UNWRITTEN_TAIL = " with no keeper state written";
 
@@ -212,10 +212,11 @@ export function fleetClassValue(health: FleetHealth, enabled: boolean, keeperSta
 }
 
 /**
- * The two entries the watcher's reading holds that are not personas: how the
- * roster file itself read, and what its entries could not be turned into. Both
- * keys carry spaces, which the persona-name rule refuses, so no roster persona
- * can take either key from them.
+ * Two of the three entries the watcher's reading holds that are not personas:
+ * how the roster file itself read, and what its entries could not be turned
+ * into. The third, how the last controller tick ended, belongs to the tick and
+ * is named there. All three keys carry spaces, which the persona-name rule
+ * refuses, so no roster persona can take any of them.
  */
 export const FLEET_ROSTER_STATE_KEY = "the roster reading itself";
 export const FLEET_ENTRY_PROBLEMS_KEY = "the roster entries that carry a problem";
@@ -232,16 +233,21 @@ export const FLEET_ENTRY_PROBLEMS_KEY = "the roster entries that carry a problem
  * the watcher composes reads its `from` out of `reported`, so a line never
  * names a class nobody was told.
  *
- * `reportedAt` is the clock at that line, 0 when there has been none, and
- * `suppressed` is how many class changes have happened since it with no line
- * of their own. `window` holds the classes already reported inside the quiet
- * window that stamp opens, and it is what bounds a flapping key: a move back
- * into a class the window already carries is counted here instead of
- * prompting, while a move into one it does not carry is reported at once.
+ * `reportedAt` is the clock at that line, 0 when there has been none, and it
+ * is what the quiet window runs from: one line per key per window, whatever
+ * the class does in between. `suppressed` is how many class changes have
+ * happened since that line with no line of their own, and it rides the next
+ * line about the key.
+ *
+ * `departed` is true between the line reporting that a cleanly read roster has
+ * stopped naming this persona and the reading that names it again. It is what
+ * makes that departure one line rather than one per tick, and the memo stands
+ * throughout, so a name that comes back is compared against the class the
+ * operator was last told rather than read as a persona nothing is known about.
  *
  * `class` and `reported` are typed as plain strings because the reading holds
- * two keys that are not personas, and those two take their value from text the
- * roster file supplied rather than from the class list.
+ * three keys that are not personas, and those three take their value from text
+ * the roster file and the tick supplied rather than from the class list.
  *
  * The reading these memos make up is held in the session's own memory for the
  * life of that session and is written to no file, so every memo the watcher
@@ -253,19 +259,8 @@ export interface FleetHealthMemo {
   reported: string;
   reportedAt: number;
   suppressed: number;
-  window: string[];
+  departed: boolean;
 }
-
-/**
- * How many distinct classes one key's quiet window carries before every
- * further change in it is counted rather than reported. A persona has five
- * classes to move between, so this binds nothing there; the two keys the
- * watcher holds about the roster file itself take their value from text a
- * file supplied, and without a bound a file whose reading changed at every
- * tick would submit one prompt per tick, which is the pile the window exists
- * to stop.
- */
-export const FLEET_WINDOW_CLASSES_MAX = 6;
 
 export interface AgentState {
   version: 4;
