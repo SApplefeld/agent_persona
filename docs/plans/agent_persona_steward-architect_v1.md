@@ -919,3 +919,35 @@ Delta: reading taken 2026-09-19T22:18Z on this worktree at `b962c97`.
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 38 - 2026-09-19
+
+**Stage: the finishing pass, with steps 1 through 3 run and step 3 not yet adjudicated.** All six sections are closed. Chapter 6's `Next:` line reads `finishing-work`, and this entry records the pass's first three steps so a session resuming after a compaction adjudicates from disk rather than from context.
+
+**The effort's base ref is `266b396`, derived rather than inherited.** Under Branch-and-PR the base is the merge-base with the integration branch. Local `main` is 81 commits behind `origin/main`, measured with `git rev-list --left-right --count`, and the two merge-bases differ. The base against live `origin/main` is `266b396`, spanning 83 commits and 36 changed files. The base against the stale local `main` would have been `1134c36`, which widens the changeset to 164 commits. Every dispatch and read in this pass carries `266b396`.
+
+**Step 1, QA verification: PASS-WITH-DEFERRED.** The `qa-verifier` ran the whole gate as the gate policy of 2026-09-18 bounds it. `npx tsc --noEmit` exit 0. Seventeen gate commands, every exit code read from its own run, 401 passed, 0 failed, 1 skipped, no failing case in any suite. Ten of eleven acceptance criteria confirmed by direct execution or by reading the cited lines, including `Register-PersonaTasks.ps1 -WhatIf` printing definitions for `steward` and `architect` and none for `coordinator`, and both launchers read against the roster.
+
+**Two acceptance legs and the contention lane are deferred under the gate policy of 2026-09-18 to `docs/plans/agent_persona_deferred-gate-run_v1.md`, never passed.** Section 4's live Coordinator-seat check and Section 5's clause reading `architectPersona` from a real keeper-launched architect both require launching a `claude` child. The contention lane, `.kit/live-all.sh`, is deferred by the same policy and separately refused: `refuse_if_persona_live` in `bin/agentic-common.sh` exits 10 while any `persona:` claim is live, and the fleet is up.
+
+**Steps 2 and 3 ran as one Workflow round, `wf_5cac8e4e-9fc`, three lenses at fable and high effort.** The security lens, the adversarial lens and the prose lens, each on its own brief under `.kit/scratch/steward-architect/finishing/`, all sharing a `common-context.md` that carries the base ref, the file-to-section map, the standing repository properties and the standing directives. Three agents, zero errors, zero empty results. The harness clamps this box to two concurrent agents, so the prose lens queued and then ran.
+
+**The round ran at its assigned tier, confirmed rather than assumed.** The resolved-model distribution was read per agent from the `message.model` field of each transcript's assistant lines, excluding the `<synthetic>` placeholder. Every turn on every agent resolved to `claude-fable-5-1`, which satisfies the requested `fable` alias. No substitution, partial or total, so the unavailability ladder was never entered.
+
+**The security waiver did not apply and the review ran.** The waiver needs every file in the changeset to be prose. This changeset carries TypeScript hook modules, shell scripts, a PowerShell module, a plugin manifest and JSON fixtures.
+
+**The spec carries no `Audience:` line and no `Disclosure:` line.** That is the authoring lapse the waiver's audience predicate exists to catch. Rather than let it skip the sweep, the security brief carried a disclosure predicate built here and the instruction to sweep every document in the changeset against it.
+
+**Reports are on disk and survive a compaction**, extracted from the run's `journal.jsonl` under its `result` key: `report-finishing-security.md`, `report-finishing-adversarial.md` and `report-finishing-prose.md`, all under `.kit/scratch/steward-architect/finishing/`.
+
+**Two record gaps found by this pass's own scope check, owed to the final Chapter rather than to a fix round.** `.kit/tick-harness.mjs` is a pre-existing shared harness that took 10 insertions and 1 deletion in Section 6's commit `cdfa4b3`, and no section's `Files in scope:` line and no Chapter names it. And Chapter 4 carries its gate, review and assumption content as bold prose rather than the field form the other five Chapters use, and carries no `Metrics:` field in either form. Neither is a code defect; both are places the record is short of what shipped.
+
+**The scope check's other surfacings are accounted for.** `.kit/.gitignore` and `.kit/fixtures/*` are recorded as Section 3's folds at Chapter 3's own entry; `hooks/commons.ts` is the routed fold recorded at Chapter 3's close. The four other plan docs on this branch are the queued plans' interim boards, this session's queue bookkeeping, and are outside the deliverable.
+
+**The tree-state bracket has held clean across every dispatch so far**, reading `?? .claude/worktrees/` before step 1, after step 1, and on the round's return. That directory is untracked and predates this session.
+
+**One reviewer instrument to re-check at adjudication.** The prose lens's em-dash grep is reported to have failed once with a character-value error and once to have returned exit 0 with no matches. An em-dash sweep is an absence-proving check, so its silence is unproven until a working instrument is run here against a control that holds the byte.
+
+**Machine state.** Unchanged and still half-cut-over: the retired `coordinator` wrapper alive and holding its claim, no steward and no architect ever launched, every worker repointed at `steward`. This session holds a heavy-process claim at `~/.claude/coordinator/SCOTT-CLAUDE/claims/heavy-process.md` under its own session id, to be released after the close gate.
+
+**Next action.** Adjudicate the round's three reports against the code on this session's own surface, each finding verified before it is routed. Then step 4's goal read, whose brief is already written at `.kit/scratch/steward-architect/finishing/brief-goalread.md`. Then the fix path, the Minor pass, step 5's documentation curation, and step 6's close.
