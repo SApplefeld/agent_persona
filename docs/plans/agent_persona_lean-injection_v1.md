@@ -158,3 +158,25 @@ Not a Chapter. Section 1 is still unstarted and no repository code changed. The 
 **Asks in flight.** One to the repository's Expert seat, recorded in the context-budget plan's board 3, covering this whole set of ordering blocks. It does not gate and is still unanswered.
 
 **Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes and merges. Section 1 then starts by building the injection ledger against the merged trunk and recording the duplicate test's red baseline.
+
+### Interim board 3 - 2026-09-19
+
+Not a Chapter. Section 1 is still unstarted and no repository code changed. The `Status:` header stays at `Ready`.
+
+**Stage.** The armed queue's leash advanced to this plan a third time, after `docs/plans/agent_persona_context-budget-removal_v1.md` was recorded blocked for the fifth time. Nothing of this plan ran.
+
+**The preceding plan's blocker was tested and does not carry.** It is the context-budget plan's own bar against running beside a plan that edits three named files. That says nothing about the injection ledger or the strings this plan trims.
+
+**This plan's gate is confirmed unmet from the trunk's content, which is a different reading from boards 1 and 2.** Those argued from this document's own sentences. This one opened the files at `origin/main`, now `266b396`. `bin/supervise.sh` there carries no `ARCHITECT_ROLE_INSTRUCTION`, and `hooks/index.ts` there carries no `[FLEET]` frame, no `[RECONCILE]` frame and no `fleet_status` tool. So Section 2 has no architect string to rewrite, Section 3 has no fleet frames to trim, and Section 4 has no `fleet_status` description to reduce. `REPLY_INSTRUCTION` is the one named string that does exist at the trunk, at five occurrences.
+
+Section 1 is gated by the same fact rather than merely by the order. Its acceptance requires the ledger's names to cover every string the Approach's inventory lists, and four of those strings are absent at the trunk. A ledger built there would record a baseline that every later section reports against, and it would be the wrong baseline.
+
+**The ground below the chain has moved again since board 2.** `docs/plans/agent_persona_steward-architect_v1.md:3` still reads `Status: In Progress`. Its blocker is no longer the working-directory ownership fork board 2 names. It is now the review-round backstop question its Section 6 records, which is the operator's to answer. No pull request exists for the `steward-architect` branch in any state, so the merge this plan's base waits on has not been opened, let alone landed.
+
+**Gate baseline.** None taken. No repository code changed, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** One to the repository's Expert seat, recorded in the context-budget plan's board 3, covering this whole set of ordering blocks. It does not gate and is still unanswered.
+
+**Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes and merges. Section 1 then starts by building the injection ledger against the merged trunk and recording the duplicate test's red baseline.
