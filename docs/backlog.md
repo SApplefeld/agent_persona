@@ -242,3 +242,23 @@ What the change looks like: the kit resolves the project from the repository the
 ## The installed agentic plugin labels every drained inbox record `[OPERATOR]`, so a reader speaks in the operator's voice (found 2026-09-15)
 
 Not a defect in this repository. The installed plugin cache at `~/.claude/plugins/cache/agent-persona/agentic-plugin/0.10.0/hooks/index.ts` prefixes every drained record with `[OPERATOR] ` at its drain site, while the repository source labels by writer (`deliveryGroundIn` in `hooks/operator.ts`, README lines 436 to 442). A reader-written record therefore arrives in a persona's prompt labelled as operator steering. Observed when the Expert seat's plan pointer arrived under `[OPERATOR]` and had to be verified against the commons store before acting. Remedy: update the installed plugin to the repository's version and relaunch every live persona so the new hooks load; until then a persona verifies any plugin-delivered `[OPERATOR]` prompt against the store record's writer before treating it as steering. Owner: the operator, since the update and the relaunch are theirs.
+
+## A persona name has no length bound at the validator, so one accepted name can be a megabyte (found 2026-09-19)
+
+`personaNameProblem` (`hooks/operator.ts:142-146`) refuses a non-string, an empty string and a `:`, then delegates to `bracketSafeProblem` (`hooks/operator.ts:103-108`), which refuses `[`, `]`, `,`, and whitespace, control and format characters. Neither bounds the length. An accepted name becomes a key in the watcher's session-memory reading, a key in the persona store, and a field spliced into a submitted prompt. The roster is writable by every persona in the fleet, so the name is attacker-supplied at every one of those.
+
+Section 6 of the steward plan bounded the one site it owns, wrapping the name in `boundedText` where `fleetPromptText` splices it. That closes the prompt line and not the class. The rule's four callers are the tools' `persona` argument, `agentic_identity`, the configured coordinator name and the persona a session starts under, so a bound belongs at the validator rather than at each splice, per the plan's own standing amendment that a guard on a channel is finished only when every producer passes it.
+
+Not done in that section because changing a shared validation rule that four call sites apply is a decision with its own blast radius: a name already in use that exceeds the new bound would stop validating. The remedy is a maximum length in `bracketSafeProblem` beside the character rules, chosen above any name the live roster or `bin/fleet.example.json` carries, with a cross-pin so the shell side in `bin/agentic-common.sh` cannot drift from it.
+
+## The fleet prompt caps its problem lines and not its changed lines (found 2026-09-19)
+
+`fleetPromptText` (`hooks/index.ts:1243-1267`) loops the whole `changed` array with no cap, while the entry-problem lines beside it are cut to twenty at `hooks/index.ts:2819` through `FLEET_PROBLEM_LINES_MAX` (`hooks/index.ts:1200`) with a count line saying how many were dropped. So a roster that gains ten thousand valid names composes ten thousand lines into one submitted prompt on the tick they appear, where ten thousand unparseable entries compose twenty lines and a count.
+
+The asymmetry is the finding rather than the volume: one of the two line kinds on one channel has the guard. The remedy is the same treatment the problem lines already have, a cap with a count line naming what was dropped, which also gives the reader a signal that the fleet moved more than the prompt shows.
+
+## `readFleetRows` caps neither the roster's entry count nor the work each entry costs (found 2026-09-19)
+
+`readFleetRows` (`hooks/index.ts:989-1090`) parses the whole roster file and loops every candidate, and each candidate costs a keeper-state read. There is no cap on the array's length and no budget on the loop. The roster is writable by every persona in the fleet and the loop runs on every controller tick, so a large roster is a per-tick cost rather than a one-off.
+
+This is the cheapest memory and time attack on that file, and it is upstream of the watcher's reading rather than inside it. The remedy is a cap on entries read, reported the way the problem lines are reported, so that a roster past the cap says so rather than being silently truncated.
