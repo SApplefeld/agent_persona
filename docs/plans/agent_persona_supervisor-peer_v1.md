@@ -270,3 +270,29 @@ Not a Chapter. Section 1 stays part-run where board 1 left it, two measurements 
 **A kaizen note was filed against the kit rather than against this plan.** An armed queue whose plans form a dependency chain pays one plan read and one board commit per plan on every stop, and each lap re-derives the same answer. This plan alone now carries five such boards. The note is in the kit's own inbox and names candidate remedies.
 
 **Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes and the operator arms this plan on their own word, which the Dispatch Authorization requires separately from the close. Section 1 then resumes at its three held measurements, with measurement 5 taking its own yes and a quiet fleet.
+
+### Interim board 6 - 2026-09-19
+
+Not a Chapter. Section 1 stays part-run where board 1 left it, two measurements taken and three held, and no repository code changed. The `Status:` header stays at `Ready`.
+
+**Stage.** The armed queue's leash advanced to this plan a sixth time, after `docs/plans/agent_persona_lean-injection_v1.md` was recorded blocked a fourth time. Nothing of this plan ran.
+
+**The preceding plan's blocker was tested and does not carry.** It is the lean-injection plan's missing base: the instruction strings three of its sections rewrite do not exist at the trunk, measured there this session, so those sections have nothing to edit. That is a statement about injected prompt text. It says nothing about this plan's liveness signals, its mailbox or its holder, and it is not the ground below.
+
+**Both conjuncts of this plan's Dispatch Authorization were read from their own files this session rather than carried from a board.** Line 13 arms execution "only after both `docs/archive/agent_persona_process-keeper_v1.md` and `docs/plans/agent_persona_steward-architect_v1.md` close". The first exists at that archive path and its line 3 reads `Status: Complete`, so that conjunct is met. The second's line 3 reads `Status: In Progress`. Blocked is not closed, so the conjunct is unmet, as boards 1 through 5 each found.
+
+**The remote was checked with a direct predicate this time, which is a different reading from board 5's.** Board 5 established the absence by counting the repository's 48 pull requests and finding none headed by the branch. This board ran `gh pr list --head steward-architect --state all`, which returned an empty list. So the close this gate waits on has not been proposed in any state, confirmed by a query scoped to the branch rather than by an enumeration.
+
+**The authorization's other requirement is met and is not what holds the plan.** Line 13 also requires the operator's own word arming execution, separately from the close. They typed the five-plan queue that names this plan, and under the kit-goal skill's arming-is-approval rule a typed invocation carries that authority. So exactly one of the two requirements is outstanding, and a later session should not read this board as reporting two.
+
+**Nothing of this plan is workable in the meantime, re-checked against Section 1's own text rather than carried.** Measurements 1 and 3 are the two board 1 records as taken; neither launches a child. Measurements 2, 4 and 5 each launch a real `claude -p` child in the operator's own profile, and this plan's first `## Assumptions` entry defers any check that launches a `claude` child to `docs/plans/agent_persona_deferred-gate-run_v1.md`. Measurement 5 needs its own separate yes besides. Every later section waits on arming. There is no unblocked work here.
+
+**Gate baseline.** None taken. No repository code changed beyond this plan document, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** None of this plan's own. An ask to the repository's Expert seat covering this set of ordering blocks went out again this session under the context-budget plan's declaration and is unanswered, as are the two before it. A routing notice to the coordinator seat naming the whole chain went out beside it.
+
+**No second kaizen note was filed.** Board 5 filed one against the kit for exactly this cost, an armed queue of chained plans paying a plan read and a board commit per plan on every lap. A second note on the same friction would be the duplicate the kaizen bar refuses.
+
+**Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes. Section 1 then resumes at its three held measurements, with measurement 5 taking its own yes and a quiet fleet.
