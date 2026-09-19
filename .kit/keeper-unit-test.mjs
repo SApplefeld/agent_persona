@@ -314,9 +314,11 @@ function build(name) {
 test('build: a full entry maps every roster field in the supervisor argument order', () => {
   const r = build('full');
   assert.deepEqual(r.Arguments, ['/d/scratch/full work', 'full', 'bypassPermissions', '--rundir', '/d/scratch/full/run', '--channel-name', 'chan-full', '--no-channel', '--dev']);
-  // One leg pins the whole map, so a row added to $map without a row added here
-  // fails rather than passing on a subset. The fixture above carries every
-  // mapped field for that reason.
+  // This leg pins the variable name and the value of every mapped field the
+  // fixture carries, so a renamed target or an unconditional emit fails here. It
+  // does not catch a row added to $map alone: the fixture would then not carry
+  // that field, the builder skips a field the entry lacks, and this expectation
+  // stays green. A new row means a new fixture field and a new key here too.
   assert.deepEqual(r.Environment, { MODEL: 'opus', EFFORT: 'high', controllerTickMs: '60000', COORDINATOR_PERSONA: 'coordinator', ARCHITECT_PERSONA: 'architect', FLEET_ROSTER: 'D:/scratch/fleet.json' });
 });
 test('build: a minimal entry yields the three positional arguments and an empty environment', () => {
