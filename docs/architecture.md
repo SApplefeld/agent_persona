@@ -31,7 +31,7 @@ Each layer's whole input from the layer below is one channel. The supervisor rea
 - `bin/Start-Persona.ps1`: the wrapper the task runs. Parameters: `-Name` (required, checked in the body so a missing value fails rather than prompting under a task with no console), `-Roster` (default `D:/personas/fleet.json`), `-EnvFile` (default `D:/personas/keeper.env`), `-Release`, and `-DelayScale`, a multiplier on every relaunch sleep that exists for the unit test and that no task passes.
 - `bin/Register-PersonaTasks.ps1`: builds one task definition per enabled roster entry and registers, updates, enables, disables, reports on or (under `-Prune`) unregisters tasks named `AgentPersona-*`.
 - `bin/keeper-probe.ps1`: a recorder, never a gate. Run by hand or as a scratch task's action, it writes one `key=value` file naming the running user, the session id, the elevation state, the delivered `USERPROFILE`, `HOME`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP` and `PATH`, then applies the env file through the shared allowlist and records the exit code and first output line of `bash --version`, `node --version` and `claude --version` through that bash. It exits 1 only when the out file could not be written.
-- `bin/fleet.example.json`: a worked roster for this machine's three personas (`coordinator`, `aios`, `dev`), mapped from the launchers under `D:/personas`.
+- `bin/fleet.example.json`: a four-entry worked roster (`steward`, `architect`, `aios`, `dev`). It is an example rather than a copy of any machine's roster.
 - `.kit/keeper-unit-test.mjs` and `.kit/keeper-register-test.mjs`: the two suites, both driving the real `powershell.exe` from node. The register suite shadows every Task Scheduler cmdlet inside the spawned PowerShell so nothing real is registered.
 
 ### Roster contract
@@ -89,9 +89,11 @@ The keeper reads no file permissions. No script reads an access control list, an
 
 ### Machine state outside the tree
 
-- `D:/personas/fleet.json`: the real roster, same content as `bin/fleet.example.json`.
+- `D:/personas/fleet.json`: the real roster, and the one the keeper reads by default. It is the machine's own, so its entries need not match `bin/fleet.example.json`.
 - `D:/personas/keeper.env`: the real env file, carrying all eight allowlisted keys at this machine's values.
-- `D:/personas/aios/launch.sh`, `D:/personas/coordinator/launch.sh`, `D:/personas/dev/relaunch.sh`: the hand launchers the roster was mapped from. They remain the manual fallback.
+- `D:/personas/steward/launch.sh`, `D:/personas/architect/launch.sh`: the hand launchers for the two seats, each matching its roster entry field for field, and the manual fallback for them.
+- `D:/personas/aios/launch.sh`, `D:/personas/dev/relaunch.sh`: the workers' hand launchers. They predate the roster's per-entry settings and carry no coordinator name of their own.
+- `D:/personas/coordinator/launch.sh.retired`: the retired coordinator persona's launcher, renamed so it is not run out of habit for a persona the roster no longer names.
 - The `AgentPersona-*` tasks, once an elevated operator runs the registration. The plan's Operator Verification section holds the cutover steps.
 
 ## The supervisor's self-heal paths the keeper depends on
