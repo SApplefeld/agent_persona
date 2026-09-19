@@ -2,7 +2,7 @@
 
 ## Reference
 
-- `architecture.md`: how the plugin, the supervisor and the process keeper fit together: each layer's process, what it owns and writes, the boot-time data flow, the keeper's roster, env file, policy and state files, the supervisor self-heal paths the keeper depends on, the external integrations, and the failure modes by layer. `README.md` at the repository root is the operator-facing reference each section points back to.
+- `architecture.md`: how the plugin, the supervisor and the process keeper fit together: each layer's process, what it owns and writes, the boot-time data flow, the keeper's roster, env file, policy and state files, the fleet reading the coordinator persona's plugin runs over the keeper's own state files, the supervisor self-heal paths the keeper depends on, the external integrations, and the failure modes by layer. `README.md` at the repository root is the operator-facing reference each section points back to.
 
 ## Active plans
 

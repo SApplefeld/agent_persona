@@ -542,8 +542,8 @@ export function parseState(json: string): AgentState {
   //
   // Nothing the watcher reads out of a file may decide silence about an
   // unhealthy persona, and that is why the reading is not stored at all. The
-  // store sits inside a persona's own working directory, which the live roster
-  // gives to more than one persona, and every field of a memo that silences a
+  // store sits inside a persona's own working directory, which a roster can
+  // give to more than one persona, and every field of a memo that silences a
   // key is a value the watcher itself legitimately produces, so no check on
   // the value can tell a watcher's own memo from a persona's memo about
   // itself.

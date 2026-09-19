@@ -345,7 +345,7 @@ const sess: {
   // that class rather than read as new.
   // It sits here, in the session's own memory, and is written to no file. The
   // persisted state is a file inside a persona's own working directory, which
-  // the live roster gives to more than one persona, and every field of a memo
+  // a roster can give to more than one persona, and every field of a memo
   // that silences a key is a value the watcher itself produces, so a stored
   // reading is a value the watched party can write to decide what is said
   // about it. A reading held here is one this session composed.
@@ -2231,8 +2231,8 @@ export const register: Register = async (on, options) => {
     }
 
     // --- Claim or join the persona based on liveness (heartbeat sidecar) ---
-    // The store is a file inside a persona's own working directory, and the
-    // live roster gives one directory to more than one persona, so a watched
+    // The store is a file inside a persona's own working directory, and a
+    // roster can give one directory to more than one persona, so a watched
     // persona can leave it unparseable. A parse thrown from here leaves the
     // rest of session.start unrun: no tools, no heartbeat and no controller
     // tick, so a steward relaunched onto such a store watches nothing while
@@ -2618,7 +2618,7 @@ export const register: Register = async (on, options) => {
     // The tick's body, held in a name so that the registration below can run
     // it inside a catch. Every write this body makes reads the persona store
     // first, the store is a file inside a persona's own working directory,
-    // and the live roster gives one directory to more than one persona: a
+    // and a roster can give one directory to more than one persona: a
     // watched persona that leaves the file unparseable makes some write of
     // every tick throw, and which write it is depends on where the tick got
     // to. The fleet and reconciliation blocks answer that store failure

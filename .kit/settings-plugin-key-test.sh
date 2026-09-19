@@ -234,7 +234,7 @@ OUT=$(read_coord "$TMP/coord-bom.json" 1)
 # --- Section 2: read_settings_architect_persona resolves the same way ---
 # The provided-settings branch of bin/supervise.sh exports ARCHITECT_PERSONA
 # from this read, so the architect-role comparison sees the name the file
-# carries. The same six classes the coordinator read is checked on, plus a BOM,
+# carries. The same classes the coordinator read is checked on, plus a BOM,
 # with one difference that is the whole point of the setting: there is no
 # default, so every class that falls through prints the empty string and the
 # launch builds the architect instruction for nobody. The names vellum, mentor
