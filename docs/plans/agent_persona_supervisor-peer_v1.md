@@ -246,3 +246,27 @@ Not a Chapter. Section 1 stays part-run where board 1 left it, two measurements 
 **Asks in flight.** One to the repository's Expert seat, recorded in the context-budget plan's board 3, covering this set of ordering blocks. It does not gate and is still unanswered.
 
 **Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes and the operator arms this plan on their own word, which the Dispatch Authorization requires separately from the close. Section 1 then resumes at its three held measurements, with measurement 5 taking its own yes and a quiet fleet.
+
+### Interim board 5 - 2026-09-19
+
+Not a Chapter. Section 1 stays part-run where board 1 left it, two measurements taken and three held, and no repository code changed. The `Status:` header stays at `Ready`.
+
+**Stage.** The armed queue's leash advanced to this plan a fifth time, after `docs/plans/agent_persona_lean-injection_v1.md` was recorded blocked a third time. Nothing of this plan ran.
+
+**The preceding blocker was tested and does not carry.** It is the lean-injection plan's missing base: three of its sections rewrite instruction strings that exist only on the steward-architect branch, so the trunk has nothing for them to edit. That says nothing about this plan's liveness signals, its mailbox or its holder.
+
+**This plan's own gate is unmet, on the second conjunct of its Dispatch Authorization at line 13.** Execution is armed "only after both `docs/archive/agent_persona_process-keeper_v1.md` and `docs/plans/agent_persona_steward-architect_v1.md` close". The first is archived, confirmed by the file's presence at that path. The second reads `Status: In Progress` at line 3 of its own file. Blocked is not closed.
+
+**One fact is new since board 4, and it strengthens the reading rather than changing it.** Boards 1 through 4 all argued the second conjunct from the steward plan's `Status:` header. This board checked the remote as well. The repository carries 48 pull requests and not one has `steward-architect` as its head branch, in any state. So the close this gate waits on has not been proposed, let alone landed.
+
+**Nothing of this plan is workable in the meantime.** Section 1's three held measurements each launch a real `claude -p` child in the operator's own profile and spend their API quota, and measurement 5 needs its own separate yes. Every later section waits on arming.
+
+**Gate baseline.** None taken. No repository code changed beyond this plan document, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** One to the repository's Expert seat, recorded in the context-budget plan's board 3, covering this set of ordering blocks. It does not gate and is still unanswered.
+
+**A kaizen note was filed against the kit rather than against this plan.** An armed queue whose plans form a dependency chain pays one plan read and one board commit per plan on every stop, and each lap re-derives the same answer. This plan alone now carries five such boards. The note is in the kit's own inbox and names candidate remedies.
+
+**Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes and the operator arms this plan on their own word, which the Dispatch Authorization requires separately from the close. Section 1 then resumes at its three held measurements, with measurement 5 taking its own yes and a quiet fleet.
