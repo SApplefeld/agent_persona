@@ -222,3 +222,27 @@ Not a Chapter. Section 1 is unstarted and no repository file changed beyond this
 **Asks in flight.** One to the repository's Expert seat, recorded in the context-budget plan's board 3, covering this set of ordering blocks. It does not gate and was unanswered at the time of writing.
 
 **Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes and the operator arms this plan on their own word, which the Dispatch Authorization requires separately from the close.
+
+### Interim board 4 - 2026-09-19
+
+Not a Chapter. Section 1 stays part-run where board 1 left it, two measurements taken and three held, and no repository code changed. The `Status:` header stays at `Ready`.
+
+**Stage.** The armed queue's leash advanced to this plan a fourth time, after `docs/plans/agent_persona_lean-injection_v1.md` was recorded blocked a second time. Nothing of this plan ran.
+
+**The preceding plan's blocker was tested and does not carry.** That blocker is the lean-injection plan's own missing base: three of its five sections rewrite strings that exist only on the steward-architect branch, so there is nothing at the trunk for them to edit. That is a statement about injected prompt strings and says nothing about the supervisor's liveness signals, its mailbox or its holder. It stops nothing here.
+
+**What stops this plan is the second conjunct of its own Dispatch Authorization, re-read this session from line 13 of this file.** Execution is armed "only after both `docs/archive/agent_persona_process-keeper_v1.md` and `docs/plans/agent_persona_steward-architect_v1.md` close". The first is archived and closed. The second reads `Status: In Progress` at line 3 of its own file, confirmed here rather than carried from a board. Blocked is not closed, so the conjunct is unmet exactly as boards 1, 2 and 3 found it.
+
+**The gate's first conjunct is unaffected by any of this.** The Dispatch Authorization requires the operator's own word arming execution, separately from the close. Board 2 records that word as given for the queue's order. That condition's state is unchanged and is not what holds the plan.
+
+**The steward plan's blocker has changed since board 3, and the change does not reach this gate.** That plan now waits on the ownership fork its interim board 25 records: whether the steward persona gets its own working directory. This plan's condition turns on the close rather than on the reason the close is waiting, so the reading is the same.
+
+**Nothing of this plan is workable in the meantime, re-checked rather than carried.** Section 1's three held measurements each launch a real `claude -p` child in the operator's own profile and spend their API quota, and measurement 5 needs its own separate yes besides. Every later section waits on arming. There is no unblocked work here.
+
+**Gate baseline.** None taken. No repository code changed beyond this plan document, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** One to the repository's Expert seat, recorded in the context-budget plan's board 3, covering this set of ordering blocks. It does not gate and is still unanswered.
+
+**Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes and the operator arms this plan on their own word, which the Dispatch Authorization requires separately from the close. Section 1 then resumes at its three held measurements, with measurement 5 taking its own yes and a quiet fleet.
