@@ -138,3 +138,23 @@ Not a Chapter. Section 1 is unstarted and no repository file changed beyond this
 **Asks in flight.** One to the repository's Expert seat, recorded in the context-budget plan's board 3, covering this whole set of ordering blocks. It does not gate and was unanswered at the time of writing.
 
 **Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes and merges. Section 1 then starts by building the injection ledger against the merged trunk and recording the duplicate test's red baseline.
+
+### Interim board 2 - 2026-09-19
+
+Not a Chapter. Section 1 is still unstarted and no repository code changed. The `Status:` header stays at `Ready`, for the reason board 1 gives.
+
+**Stage.** The armed queue's leash advanced to this plan a second time, after `docs/plans/agent_persona_context-budget-removal_v1.md` was recorded blocked for the fourth time. Nothing of this plan ran.
+
+**The preceding plan's blocker was tested and does not carry.** That blocker is the context-budget plan's own ordering bar: its Assumptions forbid it running beside a plan that edits three named files, and the steward plan edits two of them and is blocked rather than closed. That is a statement about the context-budget plan's files and says nothing about the injection ledger or the strings this plan trims. It stops nothing here.
+
+**This plan's own gate is unmet, re-read from this file this session rather than carried from board 1.** Line 33 states "this plan cannot run before steward-architect". Line 27 sets the base as the trunk after that plan merges, and states that the strings Sections 2 to 4 rewrite live on that plan's branch and in its Section 6 worked tree, with the trunk carrying four instruction strings and none of them. Line 101 records the reversal as unavailable for the same reason. Sections 2 to 4 have nothing to edit at `origin/main`.
+
+**The ground below the chain is confirmed and has moved since board 1.** `docs/plans/agent_persona_steward-architect_v1.md:3` reads `Status: In Progress`, so it has neither closed nor merged. Its blocker is now the ownership fork its interim board 25 records: whether the steward persona gets its own working directory. That is a different question from the one standing at board 1, and it is the operator's to answer. It does not change this plan's bar, which turns on the merge rather than on the reason the merge is waiting.
+
+**Gate baseline.** None taken. No repository code changed, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** One to the repository's Expert seat, recorded in the context-budget plan's board 3, covering this whole set of ordering blocks. It does not gate and is still unanswered.
+
+**Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes and merges. Section 1 then starts by building the injection ledger against the merged trunk and recording the duplicate test's red baseline.
