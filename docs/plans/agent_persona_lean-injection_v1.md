@@ -180,3 +180,27 @@ Section 1 is gated by the same fact rather than merely by the order. Its accepta
 **Asks in flight.** One to the repository's Expert seat, recorded in the context-budget plan's board 3, covering this whole set of ordering blocks. It does not gate and is still unanswered.
 
 **Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes and merges. Section 1 then starts by building the injection ledger against the merged trunk and recording the duplicate test's red baseline.
+
+### Interim board 4 - 2026-09-19
+
+Not a Chapter. Section 1 is still unstarted and no repository code changed. The `Status:` header stays at `Ready`, for the reason board 1 gives.
+
+**Stage.** The armed queue's leash advanced to this plan a fourth time, after `docs/plans/agent_persona_context-budget-removal_v1.md` was recorded blocked for the sixth time. Nothing of this plan ran.
+
+**The preceding plan's blocker was tested and does not carry.** It is the context-budget plan's own bar against running beside a plan that edits `bin/supervise.sh`, `bin/supervise-decide.mjs` or `hooks/index.ts`, together with the operator's recorded word on the order. That is a statement about that plan's files and about its place in the queue. It says nothing about the injection ledger or the strings this plan trims, and it is not the ground below.
+
+**This plan's gate is confirmed unmet from the trunk's own content, measured this session and sharper than board 3's reading.** `origin/main` is at `266b396`, unmoved since board 3. Predicate `git grep -c` over `bin/supervise.sh` and `hooks/index.ts` at that ref, for each string Sections 2 to 4 name: `ARCHITECT_ROLE_INSTRUCTION`, `[FLEET]`, `[RECONCILE]` and `fleet_status` all returned no match. The control was `REPLY_INSTRUCTION` over the same two files at the same ref, which returned 4 and 5, so the predicate and the scope both speak.
+
+The count settles Section 1 on its own terms rather than by order alone. `git grep -o -E "[A-Z_]+_INSTRUCTION=" ` over `bin/supervise.sh` at that ref returns exactly four names: `CHANNEL_REPLY_INSTRUCTION`, `COORDINATOR_ROLE_INSTRUCTION`, `COORDINATOR_STEER_INSTRUCTION` and `SKILL_LOAD_INSTRUCTION`. Section 1's own text names "the five `*_INSTRUCTION` variables", and its acceptance requires the ledger's names to cover every string the Approach's inventory lists. A ledger built at this base would be short by one instruction string, one tool description and two prompt frames, and it would be the baseline every later section reports against.
+
+**One route was considered and rejected, recorded so it is not re-litigated.** Two of Section 1's three new files, the ledger script and the duplicate test, extract by anchor and would run against either base, so only `.kit/injection-ledger.json` is base-dependent. Writing the two now was rejected on two grounds. The checkout sits on `steward-architect`, so a commit would land this plan's work on another plan's branch and into that plan's pull request, against the doctrine's stay-in-scope rule. And the Approach's base paragraph sets the base as the trunk after that plan merges, which is a statement about where the work lands rather than about the order it runs in.
+
+**The ground below the chain, re-read rather than carried.** `docs/plans/agent_persona_steward-architect_v1.md:3` still reads `Status: In Progress`. `gh pr list --head steward-architect --state all` returns an empty list, so no pull request has been opened in any state and the merge this plan's base waits on has not happened. That plan's current blocker is the review-round backstop its Section 5 records, which is the operator's to answer.
+
+**Gate baseline.** None taken. No repository code changed beyond this document, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** None of this plan's own. An ask to the repository's Expert seat covering this set of ordering blocks went out again this session under the context-budget plan's declaration, and remains unanswered, as do the two before it.
+
+**Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes and merges. Section 1 then starts by building the injection ledger against the merged trunk and recording the duplicate test's red baseline.
