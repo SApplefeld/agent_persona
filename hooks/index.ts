@@ -348,8 +348,8 @@ const sess: {
   // session composed. It is undefined until the watcher's first tick, which is
   // what tells that tick its reading is the first one: each persona that is
   // then held, backing off, stale or holding no claim is reported once, and a
-  // healthy one says nothing. The cost is that a recovery or a roster
-  // departure that happened while this session was down is never reported.
+  // healthy one says nothing. The cost is that a recovery that happened
+  // while this session was down is never reported.
   fleetHealth: Record<string, FleetHealthMemo> | undefined;
 } = {
   persona: "default",
@@ -990,11 +990,15 @@ const readFleetRows = async (
     // every persona of this fleet can write. The watcher's prompt splices the
     // composed half into a '- ' line, which is the reader's signal that the
     // plugin wrote it, and the carried half onto a '> ' line of its own.
+    // The sentence names no line of its own to point at, because the two
+    // halves reach a reader in two shapes: the prompt's pair of lines, and
+    // the single string fleetLineText joins for the fleet_status tool, whose
+    // result is JSON and holds no line under this one.
     return {
       roster: fleetRoster,
       rows: [],
       problem: {
-        composed: `the roster '${fleetRoster}' could not be read, and the error the read returned is on the line below it.`,
+        composed: `the roster '${fleetRoster}' could not be read, and the error the read returned is carried beside this sentence.`,
         carried: boundedText(safeErrorText(err)),
       },
     };
@@ -1160,16 +1164,6 @@ const FLEET_ENTRIES_CLEAN = "every entry has a row";
 // hooks/agent-state.ts, which this section's file list does not name.
 const FLEET_TICK_STATE_KEY = "the controller tick itself";
 const FLEET_TICK_RUNS = "ran to the end of its body";
-// What a key the last reading held and this one does not is reported as
-// having moved to. The roster is a file every persona of this fleet can
-// write and the keeper starts no persona the roster does not name, so a
-// persona can delete its own entry, exit, and leave the fleet with nothing
-// said about it before, during or after. That is the disabled tail's own
-// failure in its stronger form: a deleted entry defeats the tail outright,
-// because there is no entry left to carry one. It is a class like any other,
-// held in the reading against the departed key, so the quiet window runs over
-// a departure and a return exactly as it runs over any other pair of moves.
-const FLEET_ROSTER_DEPARTED = "no longer in the roster";
 // What a key that the last reading did not hold is reported as having moved
 // from. It is not "healthy": a persona the roster gained since the last
 // reading has no previous class, and calling one healthy that is in fact held
@@ -1443,8 +1437,14 @@ export const persist = async (dp: any, rollBackOnYield?: () => void): Promise<bo
 // assigned with nothing submitted behind it, and the rest of the session
 // compares against a reading whose changed keys are already stamped as
 // reported. The rollback runs and the exception carries on, so the tick fails
-// the way it would without this and the value it left behind is the one the
-// next tick reads.
+// the way it would without this.
+// That throw path is for a caller that does not submit. Both callers here do:
+// the fleet report and the reconciliation pass each catch the exception and
+// advance the value again, because the store is a file a watched persona can
+// hold unparseable for as long as it likes and a report gated on that write is
+// a report held back for exactly that long. So what the two of them take from
+// this wrapper is the false return's rollback, and each undoes the throw
+// path's on its way to submitting.
 const persistOrRollBack = async (dp: any, rollBack: () => void): Promise<boolean> => {
   try {
     return await persist(dp, rollBack);
@@ -1734,7 +1734,21 @@ export const register: Register = async (on, options) => {
   // until a [FLEET] prompt carries it rather than cleared at session.start,
   // because the operator hears about the fleet on that prompt and about a
   // decision line only by asking for one.
+  // The prompt that drains it goes out for the coordinator persona over a
+  // configured roster and for no other session, so a worker, and a coordinator
+  // whose roster setting names no file, holds this line for the whole of its
+  // run and leaves the operator the decision log alone. Reaching those
+  // sessions means a prompt composed outside the fleet block, which is an
+  // actuation path the plugin does not have. The reconciliation line below is
+  // drained in the same place and stands behind the same gate.
   let startStoreProblem: FleetLine | null = null;
+  // The write that carries the reconciliation cadence stamp, where the store
+  // refused it. The pass is asked for anyway and the stamp stands in memory
+  // alone, so what the operator would otherwise read about it is a decision
+  // line the refusing store cannot hold. It rides the next [FLEET] prompt, as
+  // the line above does, the [RECONCILE] text being a fixed constant that
+  // carries nothing this session read.
+  let reconcileStoreProblem: FleetLine | null = null;
   // Whether this session's own claim is in the store. It is false for every
   // session that read the store at start, and true for one that came up owner
   // without being able to write into a store it could not read: the claim is
@@ -2742,10 +2756,11 @@ export const register: Register = async (on, options) => {
         // a process the keeper reads as healthy and the operator as running.
         // It is compared rather than carried once, so a failure that keeps
         // happening is one line and a tick that recovers says so.
-        // It runs unconditionally and above the departed-key loop below, as
-        // the roster reading's own comparison does, so that this key is in
-        // every reading that loop walks and is never read there as a persona
-        // that left the roster.
+        // It runs unconditionally, as the roster reading's own comparison
+        // does, so the key is in every reading and a tick that recovers is a
+        // move the comparison can see. Written only on the ticks that failed,
+        // the key would leave the reading and the recovery would be compared
+        // against nothing.
         const tickState = boundedText(tickFailure === null ? FLEET_TICK_RUNS : fleetLineText(tickFailure));
         const tickMoved = compare(FLEET_TICK_STATE_KEY, tickState, FLEET_TICK_RUNS);
         if (tickMoved !== null) {
@@ -2803,56 +2818,6 @@ export const register: Register = async (on, options) => {
             }
           }
         }
-        // A key the previous reading held and this one does not is a persona
-        // the roster no longer names. The loop above walks the rows this
-        // reading produced, so a departure makes no entry in `changed` and
-        // would otherwise move the reading with no line at all. The roster is
-        // a file every persona of this fleet can write and the keeper starts no
-        // persona the roster does not name, so a persona could delete its own
-        // entry and exit with nothing said about it before, during or after.
-        // What this line covers is a departure between two ticks of one
-        // steward. A departure that happens while no steward is running is
-        // reported at no point: the reading is session memory, so the next
-        // steward's first reading never held the key that left.
-        // A roster that could not be read is not this case. It is a reading
-        // about the roster and says nothing about its entries, and the branch
-        // above carries every key of the previous reading forward rather than
-        // reading them as gone, so this runs on a clean read only.
-        // Both keys the reading holds about the roster file itself are written
-        // by the comparisons above on this branch, so neither is ever read here
-        // as a persona that left.
-        if (report.problem === undefined && previousMap !== undefined) {
-          for (const key of Object.keys(previousMap)) {
-            if (Object.hasOwn(current, key)) continue;
-            // The departure goes through the same comparison every other
-            // reading does, which is what keeps the key in the reading and
-            // what puts both halves of a flap under one window. A key left
-            // out of the reading reads as new to the next reading that sees
-            // the name again, so a persona that deletes its own roster entry
-            // and writes it back on alternate ticks would drive one prompt
-            // per tick with nothing holding either half: the departure would
-            // be unconditional and the return would compare against no memo
-            // at all. Carried in the reading, the two are class moves on one
-            // key and the window holds the flap as it holds any other.
-            // A departure that stands is still one line. The next reading
-            // finds this key already in the departed class, and a class equal
-            // to the one last observed reports nothing.
-            // The `well` argument is never read on this path: it is what a key
-            // with no memo compares against, and every key here comes out of
-            // the previous reading and so has one.
-            const moved = compare(key, FLEET_ROSTER_DEPARTED, FLEET_ROSTER_DEPARTED);
-            if (moved === null) continue;
-            // The key came out of a roster entry, so it is neutralized and
-            // bounded here as every other field a file supplied is. The name
-            // rule the roster reader applies refuses a name that would need
-            // either, and this line holds whatever that rule let through.
-            // `from` is the class the operator was last told, read the way
-            // every other line reads it, so a departure never names a class
-            // nobody was told, and the tail names the moves this line stands
-            // for and does not name.
-            notes.push({ composed: `${boundedText(bracketSafeText(key))}: ${bracketSafeText(moved.from)} -> ${FLEET_ROSTER_DEPARTED}${fleetSuppressedTail(moved.suppressed)}`, carried: null });
-          }
-        }
         // The store this session came up on, where it could not be read. It
         // rides the first prompt that goes out rather than one of its own,
         // and it is a note rather than a compared reading: there is one of
@@ -2860,6 +2825,10 @@ export const register: Register = async (on, options) => {
         // cleared only once a prompt carrying it has been submitted, below,
         // so a prompt that never went out leaves the line for the next tick.
         if (startStoreProblem !== null) notes.push(startStoreProblem);
+        // The reconciliation block's own refused write, carried here for the
+        // reason the line above is: it is composed on a tick that has already
+        // passed this point, so the prompt that takes it is the next one.
+        if (reconcileStoreProblem !== null) notes.push(reconcileStoreProblem);
         // The reading is advanced here, before the submit below, and not when
         // the model reports. What the order guards is the window between a
         // submit and the turn it opens: $.prompt.submit does not resolve until
@@ -3014,8 +2983,10 @@ export const register: Register = async (on, options) => {
             // A prompt carrying the start-up store line went out, so the line
             // is done. It is cleared here rather than where it was composed
             // into the notes, because every path that does not submit leaves
-            // it for the next tick to carry.
+            // it for the next tick to carry. The reconciliation block's line
+            // rides the same prompt and is done on the same terms.
             startStoreProblem = null;
+            reconcileStoreProblem = null;
           }
         }
       }
@@ -3121,6 +3092,19 @@ export const register: Register = async (on, options) => {
                 detail: `the store refused the write that carries the cadence stamp, so the pass was asked for and the stamp stands in memory alone: ${safeErrorText(err)}`.slice(0, 400),
               };
               sess.state.decisions.push(reconcileStoreRefusedDecision);
+              // The line the operator reads, composed the way the fleet
+              // block's own refused write is and carried on the next [FLEET]
+              // prompt. Without it this failure reaches them nowhere: the
+              // [RECONCILE] text is fixed and says nothing about the store,
+              // and the decision line above is held by the file that refused
+              // it. A failed write's message is built out of the store path
+              // and, for a parse, out of the bytes the parser stopped on, so
+              // it carries store text whoever wrote the store and rides a
+              // carried line of its own.
+              reconcileStoreProblem = {
+                composed: `the steward's own state store '${sess.storePath}' refused the write that carries the reconciliation cadence stamp, so the pass was asked for and the stamp stands in this session's memory alone. The error the write returned is carried beside this sentence.`,
+                carried: boundedText(safeErrorText(err)),
+              };
               // Swallowed for the reason the fleet submit above swallows: the
               // timer does not await this callback, so an exception reaches no
               // caller and the tick would end in an unhandled rejection.
@@ -3135,8 +3119,12 @@ export const register: Register = async (on, options) => {
               sess.state.lastReconcileAt = lastReconcileAt;
               dropDecision(reconcileDecision);
               // And the line naming the refused write, whose own text says the
-              // pass was asked for.
+              // pass was asked for. The operator's copy of that line goes with
+              // it, for the same reason: it would otherwise reach the next
+              // prompt saying a pass was asked for that this tick never asked
+              // for.
               if (reconcileStoreRefusedDecision !== null) dropDecision(reconcileStoreRefusedDecision);
+              reconcileStoreProblem = null;
               sess.state.decisions.push({
                 timestamp: Date.now(),
                 loop: "monitor",
