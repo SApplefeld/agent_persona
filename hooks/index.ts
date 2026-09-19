@@ -1149,6 +1149,17 @@ function fleetHealthOf(row: FleetRow): FleetHealth {
 // a problem is a change and the return to which is a change back.
 const FLEET_ROSTER_READS = "reads back as an array of persona entries";
 const FLEET_ENTRIES_CLEAN = "every entry has a row";
+// The third entry the watcher's reading holds that is not a persona: how the
+// last controller tick ended. It carries spaces, which the persona-name rule
+// refuses, so no roster persona can take this key from it. The tick's own
+// registration catches a throw and holds it, and this key is what decides
+// whether it is said: a tick failing the same way at every tick is a reading
+// that has not moved, and a report gated on the key alone would otherwise
+// submit one prompt per tick, which submitted prompts accumulate into a pile
+// at the next idle moment. It sits here rather than beside its two siblings in
+// hooks/agent-state.ts, which this section's file list does not name.
+const FLEET_TICK_STATE_KEY = "the controller tick itself";
+const FLEET_TICK_RUNS = "ran to the end of its body";
 // What a key the last reading held and this one does not is reported as
 // having moved to. The roster is a file every persona of this fleet can
 // write and the keeper starts no persona the roster does not name, so a
@@ -1724,6 +1735,21 @@ export const register: Register = async (on, options) => {
   // because the operator hears about the fleet on that prompt and about a
   // decision line only by asking for one.
   let startStoreProblem: FleetLine | null = null;
+  // Whether this session's own claim is in the store. It is false for every
+  // session that read the store at start, and true for one that came up owner
+  // without being able to write into a store it could not read: the claim is
+  // in the heartbeat sidecar and in commons, and the store alone does not
+  // carry it. The heartbeat tick below reads it, because a store that names
+  // another session is that unread store's own previous holder there rather
+  // than a successor, and yielding to it hands the persona to a name that
+  // predates this session with nothing left to promote it back.
+  let claimUnpublished = false;
+  // The last controller tick that ended in a throw, carried to the operator
+  // on the fleet prompt. The tick's own registration below sets it and clears
+  // it, so it says how the last tick ended rather than accumulating, and the
+  // fleet block compares it as it compares the roster reading: a tick that
+  // keeps failing the same way is one line rather than one prompt per tick.
+  let tickFailure: FleetLine | null = null;
   if (typeof cfg.persona === "string" && cfg.persona.trim()) {
     startPersonaProblem = personaNameProblem(cfg.persona);
     if (startPersonaProblem === null) sess.persona = cfg.persona.trim();
@@ -2153,10 +2179,26 @@ export const register: Register = async (on, options) => {
     // quietly starts fresh being the same silence in another shape.
     let existing: Record<string, unknown> = {};
     try {
-      existing = await $.fs.exists(storePath)
+      const parsed = await $.fs.exists(storePath)
         ? JSON.parse(await $.fs.read(storePath))
         : {};
+      // A parse that returned is not a store that read. JSON.parse("null")
+      // returns null, and an array, a number and a string all parse as
+      // cleanly, so a store holding any of them reaches the persona lookup
+      // below as something that has no entry to look up: on null that lookup
+      // throws a TypeError out of session.start, which leaves the rest of it
+      // unrun exactly as a parse error would. The shape is what this branch
+      // needs, so it is what is checked, and anything else is the same
+      // refusal as a file that would not parse at all.
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error(`the file parsed as ${parsed === null ? "null" : Array.isArray(parsed) ? "an array" : typeof parsed} rather than as an object of persona entries`);
+      }
+      existing = parsed as Record<string, unknown>;
     } catch (err) {
+      // The claim this session takes below cannot be written into a store
+      // that would not read, so the heartbeat tick publishes it at the first
+      // read that parses rather than yielding to whatever that store names.
+      claimUnpublished = true;
       startStoreProblem = {
         composed: `the steward's own state store '${storePath}' could not be read when this session started, so it came up on a default state and carries none of what the last session recorded. The error the read returned is on the line under this one.`,
         carried: boundedText(safeErrorText(err)),
@@ -2337,9 +2379,51 @@ export const register: Register = async (on, options) => {
           } catch { /* store read failed */ }
 
           if (onDisk && shouldYield(onDisk, sess.mySessionId, sess.myEpoch)) {
-            await yieldNow($, onDisk);
+            // A session that came up on a store it could not read holds the
+            // persona by its heartbeat and its commons claim, and by nothing
+            // in the store. The name the store carries at the first read that
+            // parses is then the one it held before this session started
+            // rather than a successor's, and yielding to it hands the persona
+            // to a session that is very likely gone. What it costs is the
+            // whole watcher: this session's own sidecar stamp names the
+            // holder for the promotion check below, which reads that holder
+            // as itself and so never promotes again for the life of the
+            // process, and the controller tick returns at its owner check
+            // from here on, so no [FLEET] and no [RECONCILE] prompt is ever
+            // submitted and the start-up refusal above reaches nobody. The
+            // claim is taken here instead, at the first read that parses,
+            // with commons deciding whether a live session got there first.
+            let claimTaken = false;
+            if (claimUnpublished) {
+              try {
+                const claims = await readAllClaims(commonsStoreOf($), staleAfterMs);
+                const winner = commonsWinner(claims, `persona:${sess.persona}`);
+                if (winner === null || winner === sess.mySessionId) {
+                  sess.state.activeSessionId = sess.mySessionId;
+                  // Above the epoch the store carries, so that the guarded
+                  // write this session makes next reads its own claim rather
+                  // than yielding to the epoch it just wrote past.
+                  sess.state.epoch = Math.max(sess.state.epoch, onDisk.epoch) + 1;
+                  sess.myEpoch = sess.state.epoch;
+                  await writeClaimDirect($);
+                  claimUnpublished = false;
+                  claimTaken = true;
+                  sess.state.decisions.push({
+                    timestamp: Date.now(),
+                    loop: "monitor",
+                    action: "persona_claim_published",
+                    detail: `Wrote this session's claim on '${sess.persona}' into a store that would not read when it started (prev ${onDisk.activeSessionId}, epoch ${sess.state.epoch})`,
+                  });
+                }
+              } catch { /* commons or the store refused; the yield below stands */ }
+            }
+            if (!claimTaken) await yieldNow($, onDisk);
             // Do NOT stamp: fall through to the reader check below.
           } else {
+            // The store read and carries this session's own claim, so there
+            // is nothing left waiting to be published into it and a later
+            // name in it is a successor's rather than a predecessor's.
+            if (onDisk !== null) claimUnpublished = false;
             try {
               await writeOwnerHeartbeat($);
             } catch { /* heartbeat write failed */ }
@@ -2651,6 +2735,25 @@ export const register: Register = async (on, options) => {
             carried: rosterProblem?.carried ?? null,
           });
         }
+        // How the last tick ended is its own entry in the comparison, for the
+        // reason the roster reading is one. The tick body runs inside a catch
+        // that logs, and a log line reaches a persona's own stdout and nobody
+        // else: a tick failing at every tick leaves the fleet unwatched behind
+        // a process the keeper reads as healthy and the operator as running.
+        // It is compared rather than carried once, so a failure that keeps
+        // happening is one line and a tick that recovers says so.
+        // It runs unconditionally and above the departed-key loop below, as
+        // the roster reading's own comparison does, so that this key is in
+        // every reading that loop walks and is never read there as a persona
+        // that left the roster.
+        const tickState = boundedText(tickFailure === null ? FLEET_TICK_RUNS : fleetLineText(tickFailure));
+        const tickMoved = compare(FLEET_TICK_STATE_KEY, tickState, FLEET_TICK_RUNS);
+        if (tickMoved !== null) {
+          notes.push({
+            composed: `${FLEET_TICK_STATE_KEY}: ${tickFailure === null ? FLEET_TICK_RUNS : tickFailure.composed}${fleetSuppressedTail(tickMoved.suppressed)}`,
+            carried: tickFailure?.carried ?? null,
+          });
+        }
         // The entries that could not be turned into rows are compared too,
         // rather than re-sent with every prompt: they change when the roster
         // does and not when a persona does.
@@ -2788,7 +2891,14 @@ export const register: Register = async (on, options) => {
             action: "fleet_skipped_turn_in_flight",
             detail: `a turn opened while the fleet was being read, so the reading is back at the one before it and the next quiet tick reports it: ${[...changed.map(({ row, from, to }) => `${row.name}: ${from} -> ${to}`), ...notes.map((note) => note.composed)].join("; ")}`.slice(0, 400),
           });
-          await persist($);
+          // Attempted rather than depended on, as at the submit below. The
+          // store is a file a watched persona can leave unparseable, and a
+          // throw from here ends the tick where it stands: the reconciliation
+          // block, the inbox drain and the actuator would all be skipped for
+          // as long as that persona chooses to hold the store. The reading is
+          // session memory and stands whatever the file does, so what a
+          // refused write costs is the audit line alone.
+          try { await persist($); } catch { /* the store refused; the line above waits for one that parses */ }
         } else {
           // The line saying the change was reported, pushed before the write
           // that carries it and taken back out with the reading wherever the
@@ -2831,6 +2941,12 @@ export const register: Register = async (on, options) => {
           // refuses any successor's claim write, so no other session took the
           // seat through a store that does not parse; a write that fails
           // comes after a yield check that passed.
+          // The line naming the refused write, held here because its own text
+          // says the report went out. Where the submit below then fails, that
+          // sentence is untrue and the line goes back out of the store beside
+          // the one saying the change was reported, rather than standing there
+          // asserting a submission this tick did not make.
+          let storeRefusedDecision: AgentState["decisions"][number] | null = null;
           try {
             if (!await persistOrRollBack($, () => {
               sess.fleetHealth = previousMap;
@@ -2844,12 +2960,13 @@ export const register: Register = async (on, options) => {
             // first persist that finds a store it can parse.
             sess.fleetHealth = current;
             if (!sess.state.decisions.includes(changeDecision)) sess.state.decisions.push(changeDecision);
-            sess.state.decisions.push({
+            storeRefusedDecision = {
               timestamp: Date.now(),
               loop: "monitor",
               action: "fleet_store_write_failed",
               detail: `the store refused the write that carries this tick's fleet line, so the report went out and both lines wait for a store that parses: ${safeErrorText(err)}`.slice(0, 400),
-            });
+            };
+            sess.state.decisions.push(storeRefusedDecision);
             // The line the prompt carries, composed the way the roster read's
             // own failure is. A failed write's message is built out of the
             // store path and, for a parse, out of the bytes the parser
@@ -2878,6 +2995,10 @@ export const register: Register = async (on, options) => {
             // what this tick actually did.
             sess.fleetHealth = previousMap;
             dropDecision(changeDecision);
+            // And the line naming the refused write, whose own text says the
+            // report went out. Left standing it would put "the report went
+            // out" and "the prompt failed" in one store.
+            if (storeRefusedDecision !== null) dropDecision(storeRefusedDecision);
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "monitor",
@@ -2912,7 +3033,14 @@ export const register: Register = async (on, options) => {
         const lastReconcileAt = sess.state.lastReconcileAt;
         if (lastReconcileAt === undefined) {
           sess.state.lastReconcileAt = reconcileNow;
-          await persist($);
+          // Attempted rather than depended on, as at the submit below. A
+          // throw from here ends the tick where it stands, so the inbox drain
+          // and the actuator would be skipped for as long as a watched
+          // persona chooses to hold the store unparseable. The stamp stands in
+          // memory and holds the cadence for as long as this session runs,
+          // which is what a refused write costs: one extra pass after a
+          // relaunch inside the cadence.
+          try { await persist($); } catch { /* the store refused; the stamp stands in memory */ }
         } else if (reconcileNow - lastReconcileAt >= reconcileEveryMs) {
           // The open-turn reading is taken again here rather than trusted from
           // the top of the tick. The fleet block above submits, and a submit
@@ -2934,7 +3062,11 @@ export const register: Register = async (on, options) => {
               action: "reconcile_skipped_turn_in_flight",
               detail: "the reconciliation pass is due and a turn is in flight, so the cadence stamp stands and the next quiet tick asks for it",
             });
-            await persist($);
+            // Attempted rather than depended on, for the reason the write
+            // above is: the tick has the inbox drain and the actuator still
+            // to run, and the stamp this branch leaves alone is unaffected by
+            // what the file does.
+            try { await persist($); } catch { /* the store refused; the line above waits for one that parses */ }
           } else {
             sess.state.lastReconcileAt = reconcileNow;
             // The line naming the submission, taken back out with the stamp
@@ -2966,6 +3098,10 @@ export const register: Register = async (on, options) => {
             // cadence, the stamp being off disk, against a prompt pile this
             // session cannot make: the in-memory stamp holds the cadence for
             // as long as the session runs.
+            // Held for the reason the fleet block's own is: its text says the
+            // pass was asked for, so it goes back out of the store wherever
+            // the submit below does not make that true.
+            let reconcileStoreRefusedDecision: AgentState["decisions"][number] | null = null;
             try {
               if (!await persistOrRollBack($, () => {
                 sess.state.lastReconcileAt = lastReconcileAt;
@@ -2978,12 +3114,13 @@ export const register: Register = async (on, options) => {
               // a store it can parse.
               sess.state.lastReconcileAt = reconcileNow;
               if (!sess.state.decisions.includes(reconcileDecision)) sess.state.decisions.push(reconcileDecision);
-              sess.state.decisions.push({
+              reconcileStoreRefusedDecision = {
                 timestamp: Date.now(),
                 loop: "monitor",
                 action: "reconcile_store_write_failed",
                 detail: `the store refused the write that carries the cadence stamp, so the pass was asked for and the stamp stands in memory alone: ${safeErrorText(err)}`.slice(0, 400),
-              });
+              };
+              sess.state.decisions.push(reconcileStoreRefusedDecision);
               // Swallowed for the reason the fleet submit above swallows: the
               // timer does not await this callback, so an exception reaches no
               // caller and the tick would end in an unhandled rejection.
@@ -2997,6 +3134,9 @@ export const register: Register = async (on, options) => {
               // naming the submission goes with it.
               sess.state.lastReconcileAt = lastReconcileAt;
               dropDecision(reconcileDecision);
+              // And the line naming the refused write, whose own text says the
+              // pass was asked for.
+              if (reconcileStoreRefusedDecision !== null) dropDecision(reconcileStoreRefusedDecision);
               sess.state.decisions.push({
                 timestamp: Date.now(),
                 loop: "monitor",
@@ -4530,11 +4670,25 @@ export const register: Register = async (on, options) => {
     $.clock.every(controllerTickMs, async () => {
       try {
         await controllerTick();
+        // The tick reached the end of its body, so the reading the fleet
+        // block compares says so and a tick that was failing reports that it
+        // recovered. It is cleared here rather than at the top of the body,
+        // where the block that reports it would never see a failure at all.
+        tickFailure = null;
       } catch (err) {
-        // Logged rather than swallowed in silence. The store is the failure
-        // this catch exists for and a decision line about it would need that
-        // same store to be written, so the log is the one channel left that
-        // does not depend on what failed. The next tick runs.
+        // Logged and carried. The store is the failure this catch exists for
+        // and a decision line about it would need that same store to be
+        // written, so the log does not depend on what failed; but a log line
+        // reaches a persona's own stdout and nobody else, and a tick that
+        // fails at every tick leaves the fleet unwatched behind a process the
+        // keeper reads as healthy. The line rides the next [FLEET] prompt,
+        // composed as the start-up store refusal is: the plugin's own
+        // sentence on the composed half and the error's own text, neutralized
+        // and bounded, on the carried half. The next tick runs.
+        tickFailure = {
+          composed: "the controller tick ended before the end of its body, so what runs after the point it stopped at did not run on that tick. The error it ended on is on the line under this one.",
+          carried: boundedText(safeErrorText(err)),
+        };
         try { $.ui.log(`Agentic: the controller tick ended early: ${safeErrorText(err)}`); } catch { /* non-fatal */ }
       }
     });
