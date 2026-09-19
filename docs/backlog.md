@@ -262,3 +262,11 @@ The asymmetry is the finding rather than the volume: one of the two line kinds o
 `readFleetRows` (`hooks/index.ts:989-1090`) parses the whole roster file and loops every candidate, and each candidate costs a keeper-state read. There is no cap on the array's length and no budget on the loop. The roster is writable by every persona in the fleet and the loop runs on every controller tick, so a large roster is a per-tick cost rather than a one-off.
 
 This is the cheapest memory and time attack on that file, and it is upstream of the watcher's reading rather than inside it. The remedy is a cap on entries read, reported the way the problem lines are reported, so that a roster past the cap says so rather than being silently truncated.
+
+## The `fleet_status` tool result carries three roster-supplied fields unbounded, where the row beside them is bounded (found 2026-09-19)
+
+`readFleetRows` builds each row at `hooks/index.ts:1069-1080`. The `note` field is passed through `boundedText` on the line above the row, and `name`, `holdReason` and `holdReasonSource` are carried straight into it. Those three are roster-supplied or come from a file inside a persona's own run directory, both of which any persona in the fleet can write.
+
+This is a different channel from the submitted `[FLEET]` prompt, which Section 6 of the steward plan bounded on its own line, so it is a separate call rather than an unfinished one. The tool result is JSON framed for a caller rather than text spliced into a labelled turn, which is why the bracket neutraliser does not apply here and why the bound is the only guard in question.
+
+The finding is the asymmetry: one field of the row has the bound and three do not, on a row whose every field comes from the same untrusted places. The remedy is the same `boundedText` already applied to `note`, and the reason to weigh it rather than apply it blind is that a caller reading `holdReasonSource` as a path may want the whole path rather than a cut one.
