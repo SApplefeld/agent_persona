@@ -1,6 +1,6 @@
 # Lean injection: every injected prompt says only what its reader cannot already know
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-09-18
 
@@ -142,6 +142,7 @@ Files in scope: `README.md`, `docs/README.md`, this plan document.
 - `docs/archive/agent_persona_steward-architect_v1.md`: runs before this plan and rewrites two of the strings it trims.
 - `docs/archive/agent_persona_context-budget-removal_v1.md`: ran before this plan and deleted the `[BUDGET]` prompt.
 - `docs/plans/agent_persona_supervisor-peer_v1.md`: runs after this plan and adds one priming sentence under the guard.
+- `docs/plans/agent_persona_deferred-gate-run_v1.md`: holds the live suites this plan's Assumptions defer, and runs them once against the trunk after the last queued plan merges.
 
 ## Chapters
 
@@ -890,4 +891,38 @@ Assumptions: assumed 2026-09-20 (route (b)): the detector stays a shaped pattern
 Gate: the targeted lane over this fix delta, each exit code read from its own unpiped run. Duplicate test exit 0 at 46 OK lines, against the Section 4 and Section 5 baseline of 45 on the same lane: the one added is this round's own control and no other count moved. Ledger exit 0 at zero bytes on stderr. Type check exit 0 at zero bytes of output. Contention named rather than cleared: the box carried several `node` processes at the poll, all attributable to editor sessions and their tool servers, with no test runner and no `dotnet` or `testhost` among them.
 
 Next: the rest of the finishing pass, which is the documentation curator, the plan's close-out to Complete and its archival, and the pull request. The pull request step is blocked outside this session: the GitHub CLI on this machine returns HTTP 401 and only the operator can sign it in.
+Commit Model: Branch-and-PR
+
+### Chapter 6 - 2026-09-20
+Completed: the whole-effort finishing pass. The plan is Complete.
+Implemented By: main session, with the documentation curation dispatched to the `claude-kit:docs-curator` agent and every other step run inline.
+Metrics: drift items 5 raised, 3 fixed, 1 left as pre-existing with its remedy already filed, 1 carried to the operator as this plan's own Open Question; library hygiene items 2 raised, 2 fixed; consults 0; escalations 0.
+Decisions / Surprises: the curator's report is a fresh read of the as-built code rather than of the plan's account of it, and every finding below was confirmed against the cited line before anything was done with it.
+
+
+## At the pass's open
+
+Three of the pass's steps had already returned before this session took the work up: the step 1 gate at nineteen lanes, the security lens clear with no Critical, and the adversarial and blind lenses with one Major between them. What remained was that Major, the documentation curation, this close-out and the pull request.
+
+**The Major was a guard whose stated reach exceeded its real one.** Interim board 17 carries it in full. In short, the fleet-note prose rule found its sites with a pattern requiring a colon, so a note written in shorthand property form would have carried its sentence past the ledger unsized, while the rule's own comment claimed a site added anywhere in the file is sized the moment it is written. No site is written that way today, so the gap was latent. It was taken as gating rather than advisory because the guard is this plan's whole deliverable and the false sentence was about the guard itself.
+
+**The curator found four further drift items and two broken cross-references, and three of the four were real defects in text this plan wrote.** Each was opened at its cited line before it was acted on.
+
+The first is a sentence the plan's own Section 2 rewrote and left malformed. `bin/supervise.sh` carried "...goes to the operator before you take it.Close a coordinator record with agentic_resolve...", with no space after the full stop, in the clause a security finding had restored. It reaches every launch shape and every persona. The space is now there, which grew `COORDINATOR_STEER_INSTRUCTION` from 1,419 characters to 1,420 and so required the ledger baseline to move in the same commit. That is the rule this plan built, and the guard enforced it exactly as designed: the duplicate test exited 1 naming the entry, the one character and the two numbers, and went green once the baseline was refreshed. One entry moved and one character with it, confirmed by diffing the regenerated ledger against the committed one entry by entry rather than by reading the totals.
+
+The second is the duplicate test's own usage header, which read "Exits 0 when no condition fires, 1 when any does" and named no exit 2. The round-3 fix of Section 3 split the exit codes so a broken instrument reads differently from a real duplicate, and the header still described the contract that split replaced. It now states all three codes and what the 2 means. The header is what a peer reads before trusting a red, so a wrong exit contract there defeats the split it documents.
+
+The third is `README.md`'s rendering of the ask re-raise turn as `[STILL WAITING] <question>`, the label immediately followed by the question. Section 3 moved the question onto its own line precisely so that every line of it is quoted and none rides the label line unquoted. The README now states that shape.
+
+The fourth is the single-submitter claim at `README.md:234`, which calls the controller the only caller of `$.prompt.submit` while the reply backstop at `hooks/index.ts:5042` calls it too. It is pre-existing, already carried in `docs/backlog.md` with its remedy fork, and outside this plan's delta. It is named here and left there.
+
+**The fifth is the operator's, and it is this plan's own Open Question rather than a defect.** The `fleet_status` tool description sits at 4,926 characters and is registered unconditionally, so it reaches every session at every launch whatever the persona, while the tool's call is still refused unless the caller owns or reads the coordinator persona. That is 43 percent of the 11,307 characters of tool description registering into workers that cannot call it. Registering the tool for the coordinator alone is the lever, and this plan refused to pull it without the operator's word. The question stands as written.
+
+**The two cross-references were load-bearing rather than courteous.** This plan's Related list did not name the deferred gate run, though its own Assumptions defer every live suite to that plan. And the supervisor-peer plan's Related list named neither this plan nor the guard the priming sentence it adds will be written under. That sentence is injected text, so its ledger entry must be refreshed in the same commit that writes it or the build fails, which is the lesson this pass learned the hard way one paragraph above. Both lists now say so.
+
+Gate: the whole offline gate, run twice, each exit code read from its own unpiped run with no pipe between the command and the code. Nineteen lanes both times, all exit 0, with zero non-zero results counted from the results file rather than read by eye. The roster was enumerated from the directory rather than from a list, which is what caught that `.kit/` now holds twenty-three suite files and five `live-*-test.sh` rather than the twenty-two and four a project memory recorded. Sixteen are runnable under the deferred-gate policy and three further lanes ride beside them: the type check, the ledger and the loader rule. The second run followed the three fixes, because the delta reached `bin/supervise.sh`, which several supervisor suites read. Counts against the Section 5 baseline on this same lane: duplicate test 46 checks against 45, the one added being the shorthand control; keeper 64 passed 0 failed; supervisor unit 22 passed 0 failed; supervisor poll 23 passed 0 failed; keeper register 105 passed, 0 failed, 1 skipped; controller tick, fleet-status, self-review, commons and channel-reply each at their own baselines. The live suites this plan's Assumptions defer are recorded as deferred rather than passed, and they belong to `docs/plans/agent_persona_deferred-gate-run_v1.md`.
+
+Assumptions: assumed 2026-09-20 (route (a)): the plan is archived to `docs/archive/`, which holds every other archived plan of this project, rather than to `docs/plans/archive/`, which holds two strays. Source: the two directories' own contents, and this plan's Related list, which already points at `docs/archive/` for the two plans that ran before it.
+
+Next: none. The plan is Complete.
 Commit Model: Branch-and-PR

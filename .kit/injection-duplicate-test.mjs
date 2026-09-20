@@ -37,7 +37,10 @@
 // a pointer, never two copies.
 //
 // Usage: node .kit/injection-duplicate-test.mjs
-// Exits 0 when no condition fires, 1 when any does.
+// Exits 0 when nothing fires, 1 when a real check fires and every control
+// passed, and 2 when a control or a guard itself failed. The 2 is what tells
+// a broken instrument from a real duplicate: a run that exits 2 says nothing
+// about the duplicates, because the thing that reads them is what broke.
 //
 // This file also carries its own fixture-based controls (run first, always,
 // regardless of the real result below them), each exercising the
