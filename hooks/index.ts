@@ -5534,6 +5534,15 @@ export const register: Register = async (on, options) => {
         }
         g.updatedAt = Date.now();
         } catch (err) {
+          // The score joiner above sits after the awaited classify, so a
+          // classify that throws leaves the hold set and the next turn that
+          // does score writes its outcome against this controller call with
+          // an unscored turn in between. The journal defines next_score as
+          // the first turn scored after the call, which that row would still
+          // satisfy, and a load reading it as the very next turn's verdict
+          // would still be misled. Clearing here writes nothing and loses
+          // one measurement rather than recording a misleading one.
+          sess.jevScoreOutcomeStampId = null;
           sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "goal",

@@ -400,9 +400,14 @@ export async function ask(
   //
   // When the request wins, the timer is not cancelled: SeamHost.sleep carries
   // no abort signal, so it runs to its end as an orphan. That is accepted.
-  // It is bounded at SHADOW_TIMEOUT_MS, there is at most one per call and one
-  // call per tick, and its settling is handled here, so it can neither
-  // reject nor touch the result.
+  // It is bounded at SHADOW_TIMEOUT_MS and there is at most one per call.
+  // The per-tick bound this sentence used to give is no longer the real one:
+  // the wiring puts two shadow calls on a tick, the controller decision and
+  // the plan switch, and two more on a scored turn, the turn score and the
+  // memory kind gate, so up to four orphans can be live across a tick and a
+  // turn. Still bounded, still harmless, and worth stating truthfully.
+  // Its settling is handled here, so it can neither reject nor touch the
+  // result.
   const timer: Promise<Settled> = Promise.resolve()
     .then(() => host.sleep(SHADOW_TIMEOUT_MS))
     .then(
@@ -436,7 +441,12 @@ export async function ask(
   // An integer in 200 to 299 and nothing else: NaN is a number that fails
   // both range comparisons, and a fraction or a numeric string is no status.
   if (typeof status !== "number" || !Number.isInteger(status) || status < 200 || status > 299) {
-    return failure(httpReason(status), safeString(status, "unconvertible status"), questionSetId, question, latencyMs, haikuValue, sent);
+    // A status that failed the number test is a value this plugin did not
+    // author, since a co-loaded hook may answer the fetch. Every other
+    // host-supplied detail on this path is scrubbed before it can reach a
+    // journal line, and the journal clamps a detail at 512 characters, which
+    // is wide enough to hold a whole key. So this one is scrubbed too.
+    return failure(httpReason(status), withoutKey(safeString(status, "unconvertible status"), key), questionSetId, question, latencyMs, haikuValue, sent);
   }
 
   if (typeof text !== "string") return failure("parse", "body is not text", questionSetId, question, latencyMs, haikuValue, sent);

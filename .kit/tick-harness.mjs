@@ -44,6 +44,11 @@ const JOURNAL_MARK = "/.claude/agentic-decisions/";
 // one path would queue their writes behind each other and would read each
 // other's last state, which is a property of this suite's module loading and
 // of nothing a supervised persona does.
+// Isolation is per NAMED case. A case built without a caseName shares the
+// "default" home with every other unnamed case, and so shares the journal
+// module's per-path write chain, its state dedup and its day latch. No
+// unnamed case reads the journal today, so nothing is red, but the sharing
+// is real and the next author adding a journal-reading case has to name it.
 function homeFor(caseName) {
   return `${HARNESS_HOME}/${caseName || "default"}`;
 }
@@ -82,6 +87,9 @@ function createFake$(opts = {}) {
   // reads this rather than a path it would have to name itself: a path that
   // was never written and a path the case guessed wrong read the same way.
   const fsWrites = [];
+  // Every path a refusal turned away, and the predicate deciding which.
+  const fsWriteRefusals = [];
+  let writeRefusal = null;
   const promptSubmits = [];
   // The texts of accepted submits whose turn has not opened yet, in
   // submission order. A turn.start a case fires without `text` takes the
@@ -118,6 +126,65 @@ function createFake$(opts = {}) {
   // while the journal can still name a file to write its line to. A case
   // driving a real request sets the key itself through setEnv.
   const envMap = new Map([["USERPROFILE", homeFor(opts.caseName)]]);
+
+  // The suite-wide Jev sweep. Section 5 accepts on "every existing case
+  // passes unchanged with Jev faked to fail, to hang, and to answer the
+  // opposite of Haiku", and the default above cannot deliver that: with no
+  // key the seam stops at its absent-key guard, so an existing case never
+  // reaches any fake and the three drives would be proved over the handful
+  // of cases that seed a key themselves. JEV_SUITE_FAKE seeds the key and
+  // one fake into every harness the suite builds, so one run of the whole
+  // suite under each value is what the bullet actually asks for.
+  //
+  // A case that sets its own response through setHttpResponse still wins,
+  // since this only moves the default. That is what keeps the section's own
+  // cases meaningful under a sweep run.
+  const suiteFake = process.env.JEV_SUITE_FAKE;
+  if (suiteFake) {
+    // Sixteen characters is the seam's floor for a usable bearer token, and
+    // a shorter value would be treated as absent and defeat the sweep.
+    envMap.set("TYPESAFE_API_KEY", "jev-suite-sweep-key-0000");
+    if (suiteFake === "fail") {
+      httpResponse = { status: 429, ok: false, headers: {}, text: "" };
+    } else if (suiteFake === "hang") {
+      // Never settles. Nothing in the harness fires a sleep on its own, so
+      // the seam's own timer does not rescue this either: the call stays
+      // pending for the life of the case, which is the point.
+      httpResponse = () => new Promise(() => {});
+    } else if (suiteFake === "opposite") {
+      // Answers every question with the LAST option id the request offered.
+      // Stated plainly rather than as "the opposite of Haiku": this fake
+      // cannot see Haiku's value, so where the plugin itself chose the last
+      // option the two agree. What the sweep proves is that a well-formed
+      // answer the plugin did not author changes nothing, across every case
+      // rather than across one drive shape. The six cases written for this
+      // section drive true opposition at a known site and keep that job.
+      httpResponse = (url, init) => {
+        let body;
+        try { body = JSON.parse(String(init && init.body)); } catch { body = null; }
+        const questions = body && body.questions;
+        const answers = Object.create(null);
+        if (questions && typeof questions === "object") {
+          for (const [qid, q] of Object.entries(questions)) {
+            const ids = q && q.criteria && typeof q.criteria === "object" ? Object.keys(q.criteria) : [];
+            if (!ids.length) continue;
+            const pick = ids[ids.length - 1];
+            const probabilities = Object.create(null);
+            for (const id of ids) probabilities[id] = id === pick ? 1 : 0;
+            answers[qid] = { type: "choice", choice: pick, probabilities, confidence: 1 };
+          }
+        }
+        return {
+          status: 200,
+          ok: true,
+          headers: {},
+          text: JSON.stringify({ model: "jev-suite-sweep", answers, usage: { input_tokens: 1, output_tokens: 1 } }),
+        };
+      };
+    } else {
+      throw new Error(`JEV_SUITE_FAKE must be fail, hang or opposite; got ${suiteFake}`);
+    }
+  }
   const envGets = [];
   // Every $.clock.sleep call, in order, each holding its own resolve and
   // reject so a case decides when a timer fires. Nothing fires on its own,
@@ -163,6 +230,15 @@ function createFake$(opts = {}) {
         return Promise.resolve(fsMap.get(p));
       },
       write(p, content) {
+        // A case can refuse a write by path, which is the only way to drive
+        // the journal's once-a-day failure latch and the one decision the
+        // shadow wiring is allowed to push. A refusal rejects rather than
+        // returning false, because that is what a real filesystem does and
+        // what the journal's own writers are written to survive.
+        if (writeRefusal && writeRefusal(p)) {
+          fsWriteRefusals.push(p);
+          return Promise.reject(new Error("EACCES: " + p));
+        }
         const text = typeof content === "string" ? content : JSON.stringify(content);
         fsMap.set(p, text);
         fsWrites.push({ path: p, content: text });
@@ -312,6 +388,9 @@ function createFake$(opts = {}) {
     // What every subsequent $.http.fetch resolves with: a response object,
     // or a function of (url, init) returning a promise.
     setHttpResponse(v) { httpResponse = v; },
+    // Refuse every write whose path the predicate accepts. Pass null to lift.
+    setWriteRefusal(predicate) { writeRefusal = predicate; },
+    fsWriteRefusals,
     // Set (or, with undefined, unset) a variable $.env.get reads.
     setEnv(name, value) {
       if (value === undefined) envMap.delete(name); else envMap.set(name, value);

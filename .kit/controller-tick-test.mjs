@@ -19,7 +19,7 @@
 // Usage: node controller-tick-test.mjs
 // Exits 0 on success, 1 on failure.
 
-import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, HARNESS_CWD, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, JEV_FAKE_KEY } from "./tick-harness.mjs";
+import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, HARNESS_CWD, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, JEV_FAKE_KEY, JOURNAL_MARK } from "./tick-harness.mjs";
 import { DECISIONS_MAX, MEMORY_MAX, parseState } from "../hooks/agent-state.ts";
 
 let failures = 0;
@@ -3255,6 +3255,7 @@ async function main() {
     await caseSeamEachSiteWritesItsCallAndAnswerLines(clock);
     await caseSeamJoinersFireOncePerControllerCall(clock);
     await caseSeamSkippedTickAndOffModeWriteNothing(clock);
+    await caseSeamAnUnwritableJournalPushesOneDecisionADay(clock);
   } finally {
     clock.restore();
   }
@@ -13040,6 +13041,22 @@ async function caseSeamEachSiteWritesItsCallAndAnswerLines(clock) {
     controllerRequest !== null
     && Object.keys(controllerRequest.questions["controller-decision"].criteria).join(",") === [...controllerLabels].join(","),
     { offered: controllerRequest && Object.keys(controllerRequest.questions["controller-decision"].criteria), labels: [...controllerLabels] });
+
+  // The end-to-end key pin, the security lens's finding. The seam's own suite
+  // proves the scrub in isolation and nothing proved it across the four wired
+  // sites. A writer and a reader each tested only against its own literal is
+  // exactly how a contract gap stays invisible, so this reads every journal
+  // line these four sites wrote and asserts the seeded key appears in none of
+  // them. The control is the assertion above that lines were written at all:
+  // an empty journal would satisfy an absence check for the wrong reason.
+  {
+    const allLines = journalLines(h);
+    check("four sites control: the journal is not empty, so the key sweep has something to sweep",
+      allLines.length > 0, allLines.length);
+    const carrying = allLines.filter((line) => JSON.stringify(line).includes(JEV_FAKE_KEY));
+    check("four sites: no journal line any site wrote carries the key",
+      carrying.length === 0, carrying.length);
+  }
 }
 
 async function caseSeamJoinersFireOncePerControllerCall(clock) {
@@ -13085,6 +13102,51 @@ async function caseSeamJoinersFireOncePerControllerCall(clock) {
     after.filter((o) => o.kind === "ask_marker").length === 1, after);
 }
 
+// The one state write this section adds, driven rather than argued. The
+// journal holds a once-a-day failure latch in memory, so a day whose every
+// write fails must push exactly one decision and not one per call. Nothing
+// drove this before: no case made a journal write fail, so neither the latch
+// nor the push nor the decision's survival of the persist trim was exercised.
+async function caseSeamAnUnwritableJournalPushesOneDecisionADay(clock) {
+  console.log("\n=== Section 5 seam: an unwritable journal pushes exactly one decision a day ===");
+
+  const refused = await seedSeamHarness("seam_journal_refused", clock);
+  refused.setHttpResponse(jevOpposite);
+  refused.setWriteRefusal((path) => path.includes(JOURNAL_MARK));
+  await driveSeamSites(refused, clock, "t-jrefuse");
+
+  // The control for every read below: the writes were really attempted and
+  // really turned away. Without it, a run that never reached the journal at
+  // all produces the same single decision count as one that reached it and
+  // latched, and the two are indistinguishable from the assertion alone.
+  check("journal refused control: writes under the journal path were attempted and turned away",
+    refused.fsWriteRefusals.length >= 3, refused.fsWriteRefusals.length);
+
+  const refusedDecisions = getState(refused).decisions;
+  const failures = refusedDecisions.filter((d) => d.action === "journal_write_failed");
+  check("journal refused: exactly one journal_write_failed across the day's calls",
+    failures.length === 1, refusedDecisions.map((d) => d.action));
+  check("journal refused: the decision names the site and carries no journal text",
+    failures.length === 1
+      && typeof failures[0].detail === "string"
+      && failures[0].detail.includes("the decision journal could not be written"),
+    failures.length === 1 ? failures[0].detail : failures.length);
+  check("journal refused: it is the only action this section adds to the decisions",
+    refusedDecisions.every((d) => d.action !== "journal_write_failed" || d.detail.includes("decision journal")),
+    refusedDecisions.map((d) => d.action));
+
+  // The other half of the control: the same drive with writes allowed must
+  // push none, so the assertion above cannot pass because the push is dead.
+  const allowed = await seedSeamHarness("seam_journal_allowed", clock);
+  allowed.setHttpResponse(jevOpposite);
+  await driveSeamSites(allowed, clock, "t-jallow");
+  const allowedDecisions = getState(allowed).decisions;
+  check("journal allowed control: the same drive with writes allowed pushes none",
+    allowedDecisions.every((d) => d.action !== "journal_write_failed"),
+    allowedDecisions.map((d) => d.action));
+  check("journal allowed control: and that run really did write its lines",
+    journalLines(allowed).length > 0, journalLines(allowed).length);
+}
 async function caseSeamSkippedTickAndOffModeWriteNothing(clock) {
   console.log("\n=== Section 5 seam: a skipped tick and an off run write nothing ===");
 
