@@ -156,6 +156,7 @@ Files in scope: `README.md` whole, with the exit-code table pinned unchanged, `d
 - `docs/archive/agent_persona_process-keeper_v1.md`: complete and archived. It leaves this plan the tree kill kept as the last rung, the rate-limit reader whose record the verdict's usage-limit reading shares, and the account-identity check it removed. It held the `autoContinue` setting briefly and handed it here before building it, so Section 2 carries the setting as well as the verdict that guards it.
 - `docs/plans/claude-kit_leash-takeover_spec_v1.md` in the claude-kit repository: the transcript instrument this plan reimplements.
 - `docs/archive/agent_persona_context-budget-removal_v1.md`: removed the context-budget monitor and the critical restart, which retires this plan's question about that restart.
+- `docs/plans/agent_persona_lean-injection_v1.md`: runs before this plan and puts every injected string under a size ledger and a duplicate test. The priming sentence this plan adds is injected text, so its ledger entry is refreshed in the same commit that writes it or the guard fails the build.
 
 ## Chapters
 

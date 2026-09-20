@@ -108,7 +108,50 @@ The comparison state is what keeps the report quiet. The tick holds the last rep
 
 Both settings reach the child through `<rundir>/settings.json`. The supervisor emits that file from `COORDINATOR_PERSONA` and `FLEET_ROSTER`, and the keeper sets both from the roster entry's `coordinatorPersona` and `fleetRoster` fields. The supervisor writes the file only where none exists, so a roster edit repointing either one reaches nothing until the stale file is deleted. `README.md` holds the cutover steps that cover it.
 
-The seats themselves are instruction text the supervisor writes at priming. A launch whose persona equals `coordinatorPersona` gets the coordinator role instruction, which carries the fleet duty, the kit Coordinator seat and the design-escalation clause. A launch whose persona equals `architectPersona` gets the architect's charter instead: design work only, no standing goal, worktrees cut under its own directory, and a plan handed back through the coordinator persona. `architectPersona` has no default, so a fleet that names no architect builds that charter for nobody and the escalation clause for nobody.
+The seats themselves are instruction text the supervisor writes at priming. A launch whose persona equals `coordinatorPersona` gets the coordinator role instruction, which carries the fleet duty, the kit Coordinator seat and the design-escalation clause. A launch whose persona equals `architectPersona` gets the architect's charter instead: design work only, no standing goal, worktrees cut under its own directory, and a plan handed back through the coordinator persona. That launch is also the one that takes neither the skill-load sentence nor the coordinator steer sentence: both are cleared to the empty string for it (`bin/supervise.sh:2813-2814`), because the charter already states which skills a design ask takes and what it does with a coordinator record. `architectPersona` has no default, so a fleet that names no architect builds that charter for nobody and the escalation clause for nobody.
+
+Which class a fleet row takes, the order the five are tried in, and how the two words they share with a row's own `action` field behave are stated once, in the `fleet_status` tool description (`hooks/index.ts:2158-2172`). The `[FLEET]` prompt frame and `README.md` point there rather than restating it, because a session calling the tool holds that description and holds no file in this repository.
+
+## Injected text and its guard
+
+Two files write text into a child session that nobody typed: `bin/supervise.sh` at priming, and `hooks/index.ts` on every recurring prompt and at every tool registration. Each such string carries the meaning of the label at its head, the one thing to do with that prompt, and a pointer to the surface that owns the rest. The owners are `CLAUDE.md` for writing and channel conduct, the kit's skills for a seat's duties, and a tool's own description for that tool's contract. A sentence with an owner does not ride a second copy in a prompt, and the guard below is what keeps it that way rather than an eye.
+
+### What is injected, and how large
+
+`.kit/injection-ledger.json` is the committed size baseline, 39 entries totalling 28,663 characters. Ten entries come from `bin/supervise.sh` and total 13,046; twenty-nine come from `hooks/index.ts` and total 15,617, of which the fourteen registered tool descriptions are 11,307.
+
+| What a launch reads | Characters |
+|---|---|
+| A worker with a channel: skill-load, coordinator steer, reply-tool | 2,474 |
+| The coordinator: those three plus the coordinator role instruction | 7,193 |
+| The architect: reply-tool plus its charter, the other two cleared | 5,908 |
+| The fourteen tool descriptions, registered into every session | 11,307 |
+
+`fleet_status` alone is 4,926 of that last row, because the five health-class definitions live in it and every other surface points there. It registers into every session whatever the persona, including a worker that cannot call it.
+
+The startup message is assembled at one `printf` (`bin/supervise.sh:2862`) from `SKILL_LOAD_INSTRUCTION`, `COORDINATOR_STEER_INSTRUCTION`, `COORDINATOR_ROLE_INSTRUCTION`, `ARCHITECT_ROLE_INSTRUCTION`, `CHANNEL_REPLY_INSTRUCTION` and the priming body. Each is empty for the launch shapes it does not apply to. The reply-tool instruction is built only with a channel attached, and it states the operator-writing rules inline rather than by pointer alone: four of the five persona launch directories hold no `CLAUDE.md`, so a pointer at that file reaches one persona of five. Its closing sentence points there for the rules the kit doctrine carries, where the child's own working directory holds the file.
+
+On the plugin side there is no shared prefix. Each recurring frame (`[FLEET]`, `[RECONCILE]`, `[KAIZEN]`, `[STILL WAITING]`, the reply backstop, the idle nudges and the goal-tree blocks) carries its own label, its own instruction, and names the reply tool in its own words where its text is for the operator. The `goal_done` clause sits once, in that tool's description, and the prompts that deliver a reading point at it.
+
+### The ledger and the duplicate test
+
+`.kit/injection-ledger.mjs` extracts every one of those strings from the two source files and prints `{ basis, entries: [{ name, file, chars, words }] }` on stdout. It normalizes CRLF to LF, decodes standard backslash escapes, and strips `${...}` interpolation, so a count does not depend on the checkout's line endings or on per-launch data. It resolves no identifiers: it reads text with patterns.
+
+`.kit/injection-duplicate-test.mjs` runs the ledger and fails on four conditions: a sentence of eight or more words shared between an injected string and `CLAUDE.md` or between two injected strings; a string whose live size exceeds its baseline number; a name in the baseline with no live counterpart or a live string with no baseline entry; and any throw out of the ledger. It exits 0 when everything passes, 1 when a real check fires, and 2 when one of its own controls or a ledger guard broke, which is the reading that says the run says nothing about duplicates.
+
+The ledger fails closed rather than recording a short value. Each rule asserts it consumed the whole source construct and throws with a tag naming the entry: `[instruction-count]` when a variable's assignment count moves, `[instruction-reassign]` when a bare reassignment carries text a growth-only size check could not see, `[priming-shape]` when a clause is appended to a priming body, `[fleet-note-prose]` when a fleet note's authored half changes shape, and `[delivery-exclusion]` when a record-delivery call site gains literal text. Four structural checks read a family's shape off the source rather than off the file's own list, so a string nobody added to the table fails the build instead of going unsized.
+
+### What the guard does not reach
+
+Three bounds are declared in the ledger's header and in `README.md` rather than closed, and each is a place where new text can reach a child unsized.
+
+- A name. The extraction resolves no identifier, so prose hoisted out of a literal into a constant looks exactly like a variable carrying data. Closing it needs a parser rather than a further pattern. The fleet-note prose rule and the still-waiting re-raise rule do refuse that shape at their own sites, each under a control of its own.
+- Prose a fleet note splices into its own line through an interpolation whose value is not itself a literal: a named constant, a helper's return, or a value read off another note. A literal inside an interpolation is sized, both arms of a ternary included.
+- The three record-delivery prompts, whose whole text `hooks/operator.ts` builds. Two are named exclusions; the third delivers as tool-result context and is reached by no name, so the class is bounded by a count the ledger asserts over every `deliveryText` call site, with each site required to pass only data.
+
+### Operating it
+
+Run `node .kit/injection-ledger.mjs` to read the live sizes and `node .kit/injection-duplicate-test.mjs` to gate. Both are offline, so they run beside a live fleet, and both take seconds. When an edit changes an injected string, refresh `.kit/injection-ledger.json` from the ledger's own output in the same commit: a rise is declared there rather than discovered later. A ledger throw is the tool refusing a source shape no rule names, and the fix is to re-anchor the rule beside the edit that moved it, never to delete the rule. A failure at exit 2 is the instrument, not the subject, and is read before anything is concluded from the run.
 
 ## The supervisor's self-heal paths the keeper depends on
 

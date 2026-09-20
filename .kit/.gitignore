@@ -29,3 +29,6 @@
 !/keeper-register-test.mjs
 !/fleet-status-unit-test.mjs
 !/fixtures/*
+!/injection-ledger.mjs
+!/injection-ledger.json
+!/injection-duplicate-test.mjs
