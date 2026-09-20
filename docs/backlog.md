@@ -359,3 +359,13 @@ The path is unreachable from the four typed call sites this plan wires, all of w
 Remedy: return a failure on the conversion's fallback path, or carry a null state so the line reads as a call that measured nothing, which is the shape the plan already gives a call that read no key.
 
 Raised by the round 6 adversarial lens over the decision-seam plan's Section 3 and confirmed here by reading the fallback. Not fixed in that section under the same operator decision as the entry above.
+
+## `costEnabled` is read but has no emit path, so a value the operator sets never reaches the plugin (found 2026-09-20)
+
+`costEnabled` is read at `hooks/index.ts:2035` as `cfg.costEnabled !== false`, so a session turns the cost ledger's master switch off only where the settings file's own options object carries `costEnabled: false`. No emitter ever writes that key.
+
+`emit_settings_json` in `bin/agentic-common.sh` carries every other cost option from a `COST_*` environment variable: `costSummaryEveryNTicks`, `costMaxNudgesPerHour`, `costMaxPluginCallsPerHour`, `costBackoffAfterTicks` and `costBackoffMaxMs`. It carries none for `costEnabled`. So an operator setting `COST_ENABLED=false`, or adding a roster field meant to carry it, has nothing for the value to travel on. It never reaches a launched child, and every session runs with the ledger's caps and its idle skip on.
+
+Remedy: add a `COST_ENABLED` branch to `emit_settings_json` beside the other `COST_*` options, and a roster field with a keeper map entry if the roster is meant to set it.
+
+Raised while documenting the decision seam, whose own `jevMode` option travels all five option surfaces precisely so it cannot fall into this gap. Confirmed here against the cited line and against the emitter, which carries no such branch.
