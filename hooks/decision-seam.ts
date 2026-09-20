@@ -204,7 +204,12 @@ function choiceAnswerOf(v: unknown, optionIds: readonly string[]): { answer: Cho
   if (v.type !== "choice") return { problem: "answer type is not choice" };
   if (typeof v.choice !== "string" || !optionIds.includes(v.choice)) return { problem: "answer choice is not an offered option" };
   if (!isRecord(v.probabilities)) return { problem: "answer probabilities is not an object" };
-  const probabilities: Record<string, number> = {};
+  // Prototype-free for the reason the request's criteria map is. This is the
+  // inbound half of the same channel and the less trusted one: a co-loaded
+  // hook may answer the fetch with a body of its own, and JSON.parse makes
+  // __proto__ an own property that a literal would then discard, dropping a
+  // probability from the answer the journal records.
+  const probabilities: Record<string, number> = Object.create(null);
   for (const [id, p] of Object.entries(v.probabilities)) {
     if (typeof p !== "number" || !Number.isFinite(p)) return { problem: "answer probabilities carry a value that is not a finite number" };
     probabilities[id] = p;
@@ -282,7 +287,12 @@ export async function ask(
   // Exactly the ids in force, each with the catalog's description where the
   // set carries one and null where it does not (the plan switch's pending
   // plan ids are the caller's own and have no catalog entry).
-  const criteria: Record<string, string | null> = {};
+  // Prototype-free for the reason the catalog builds its own maps that way: a
+  // literal's __proto__ setter would swallow an option of that id and null the
+  // map's prototype for a null description, so what is sent would differ from
+  // what was validated. No id in force carries that name today. The guard sits
+  // on the channel rather than on the producer that first needed it.
+  const criteria: Record<string, string | null> = Object.create(null);
   for (const id of optionIds) {
     criteria[id] = Object.hasOwn(question.options, id) ? question.options[id] : null;
   }

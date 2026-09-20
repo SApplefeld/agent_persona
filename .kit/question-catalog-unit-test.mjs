@@ -132,6 +132,24 @@ const VALID_CONTROLLER_OVERRIDE = {
   check("Test 1f: each variant is a subset of its superset",
     CONTROLLER_LABELS.every((x) => CONTROLLER_LABELS_WITH_SWITCH.includes(x))
       && SCORER_LABELS_AFTER_NUDGE.every((x) => SCORER_LABELS.includes(x)));
+
+  // The freeze has already been removed once with this suite green, which is
+  // why it is pinned rather than trusted. Each classify site passes one shared
+  // constant now instead of a fresh literal per call, and the classify call is
+  // an op event that hands its labels to any co-loaded hook, so an unfrozen
+  // array is corruptible for the process lifetime rather than for one call.
+  const frozen = [
+    ["CONTROLLER_LABELS", CONTROLLER_LABELS],
+    ["CONTROLLER_LABELS_WITH_SWITCH", CONTROLLER_LABELS_WITH_SWITCH],
+    ["SCORER_LABELS", SCORER_LABELS],
+    ["SCORER_LABELS_AFTER_NUDGE", SCORER_LABELS_AFTER_NUDGE],
+    ["MEMORY_KIND_LABELS", MEMORY_KIND_LABELS],
+    ["QUESTION_SET_IDS", QUESTION_SET_IDS],
+    ["FIXED_OPTION_SETS", FIXED_OPTION_SETS],
+  ];
+  for (const [name, arr] of frozen) {
+    check(`Test 1g: ${name} is frozen`, Object.isFrozen(arr), name);
+  }
 }
 
 // --- Test 2: the option-id pin, the check a drifting catalog fails ---
@@ -165,7 +183,8 @@ const VALID_CONTROLLER_OVERRIDE = {
       q.id === id && q.version === SHIPPED_VERSION && q.overrideRefused === null && q.primitive === "choice"
         && typeof q.instructions === "string" && q.instructions.trim().length > 0, id);
   }
-  check("Test 2i: the option bounds are the vendor's", MIN_OPTIONS === 2 && MAX_OPTIONS === 255, [MIN_OPTIONS, MAX_OPTIONS]);
+  check("Test 2i: the upper option bound is the vendor's and the lower is this catalog's",
+    MIN_OPTIONS === 2 && MAX_OPTIONS === 255, [MIN_OPTIONS, MAX_OPTIONS]);
 }
 
 // --- Test 3: no override at all resolves to the shipped default, no reason ---
@@ -244,6 +263,11 @@ const VALID_CONTROLLER_OVERRIDE = {
     }],
     ["active.json's version tries to traverse out of the directory", "active.json names no v<N> version label", (h) => {
       h.fsMap.set(activePathOf(CONTROLLER_DECISION), JSON.stringify({ version: "../../../secrets" }));
+      // The withheld control. joined(dir, "../../../secrets.json") builds this
+      // exact key and the fs fake has no directory model, so a valid override
+      // sits at the traversal target and is reachable the moment VERSION_LABEL
+      // stops refusing. Without it the case cannot tell the guard working from
+      // nothing having been planted.
       h.fsMap.set(`${dirOf(CONTROLLER_DECISION)}/../../../secrets.json`, JSON.stringify(VALID_CONTROLLER_OVERRIDE));
     }],
     ["the named version file is missing", "the named version file is missing", (h) => {
@@ -336,6 +360,99 @@ const VALID_CONTROLLER_OVERRIDE = {
   const rp = await settle(resolverOf(fakeHostOf(hp))(PLAN_SWITCH));
   check("Test 5 exemption: a plan switch override with ids the shipped set does not carry is admitted",
     rp.resolved && rp.value.overrideRefused === null && rp.value.version === "v2", rp);
+
+  // The two-option floor bounds a set whose options are all this catalog's
+  // own. The plan switch's are not, so an override mirroring its one-option
+  // shipped map is admitted rather than refused.
+  const hp1 = harness();
+  plant(hp1, PLAN_SWITCH, "v2", {
+    primitive: "choice",
+    instructions: "override plan switch, one option",
+    options: { no_match: "none fits" },
+  });
+  const rp1 = await settle(resolverOf(fakeHostOf(hp1))(PLAN_SWITCH));
+  check("Test 5 floor: a one-option plan switch override is admitted",
+    rp1.resolved && rp1.value.overrideRefused === null && rp1.value.version === "v2"
+      && sameSet(Object.keys(rp1.value.options), ["no_match"]),
+    rp1.resolved ? rp1.value.overrideRefused : rp1);
+
+  // Withheld control on the same axis: the floor still refuses a one-option
+  // override of a set the catalog does own, so the case above passes because
+  // the set is exempt rather than because the floor stopped working.
+  const hp2 = harness();
+  plant(hp2, TURN_SCORE, "v2", {
+    primitive: "choice",
+    instructions: "override turn score, one option",
+    options: { "on-goal": "only one" },
+  });
+  const rp2 = await settle(resolverOf(fakeHostOf(hp2))(TURN_SCORE));
+  check("Test 5 floor control: a one-option override of a catalog-owned set is still refused",
+    rp2.resolved && rp2.value.overrideRefused === "the override has fewer than 2 options",
+    rp2.resolved ? rp2.value.overrideRefused : rp2);
+
+  // The refusing side of the plan switch's own floor, which nothing else
+  // drives: an empty options map is below even a floor of one.
+  const hp0 = harness();
+  plant(hp0, PLAN_SWITCH, "v2", {
+    primitive: "choice",
+    instructions: "override plan switch, no options at all",
+    options: {},
+  });
+  const rp0 = await settle(resolverOf(fakeHostOf(hp0))(PLAN_SWITCH));
+  check("Test 5 floor zero: a plan switch override with no options is refused",
+    rp0.resolved && rp0.value.overrideRefused === "the override has fewer than 1 option",
+    rp0.resolved ? rp0.value.overrideRefused : rp0);
+
+  // Every key the validation counted is copied as an own property. The body is
+  // planted as raw JSON rather than an object literal, because a literal would
+  // hit the very __proto__ setter this case is about.
+  const hp3 = harness();
+  plant(hp3, PLAN_SWITCH, "v2",
+    '{"primitive":"choice","instructions":"plan switch, prototype-shaped id","options":{"no_match":"none fits","__proto__":"an option, not a prototype"}}');
+  const rp3 = await settle(resolverOf(fakeHostOf(hp3))(PLAN_SWITCH));
+  check("Test 5 proto: an option id of __proto__ is copied as an own property rather than swallowed",
+    rp3.resolved && rp3.value.overrideRefused === null
+      && Object.hasOwn(rp3.value.options, "__proto__")
+      && rp3.value.options["__proto__"] === "an option, not a prototype"
+      && sameSet(Object.keys(rp3.value.options), ["no_match", "__proto__"]),
+    rp3.resolved ? Object.keys(rp3.value.options) : rp3);
+
+  // The null-valued form of the same id, which through a literal's setter
+  // rewires the map's prototype instead of storing an option.
+  const hp4 = harness();
+  plant(hp4, PLAN_SWITCH, "v2",
+    '{"primitive":"choice","instructions":"plan switch, null prototype-shaped id","options":{"no_match":"none fits","__proto__":null}}');
+  const rp4 = await settle(resolverOf(fakeHostOf(hp4))(PLAN_SWITCH));
+  check("Test 5 proto null: a null __proto__ option is stored rather than rewiring the map",
+    rp4.resolved && rp4.value.overrideRefused === null
+      && Object.hasOwn(rp4.value.options, "__proto__")
+      && rp4.value.options["__proto__"] === null,
+    rp4.resolved ? Object.keys(rp4.value.options) : rp4);
+
+  // One shape on every path the resolver returns on. Pinning the admitted path
+  // alone would let the other three revert to a literal with the suite still
+  // green, since every other case reads options through Object.keys, which
+  // passes on either shape.
+  const shapeCases = [
+    ["no override at all", () => resolverOf(fakeHostOf(harness()))(CONTROLLER_DECISION)],
+    ["a refused override", () => {
+      const h = harness();
+      plant(h, CONTROLLER_DECISION, "v2", { primitive: "noul", instructions: "x", options: { a: null, b: null } });
+      return resolverOf(fakeHostOf(h))(CONTROLLER_DECISION);
+    }],
+    ["an admitted override", () => {
+      const h = harness();
+      plant(h, CONTROLLER_DECISION, "v2", VALID_CONTROLLER_OVERRIDE);
+      return resolverOf(fakeHostOf(h))(CONTROLLER_DECISION);
+    }],
+    ["an unknown question set", () => resolverOf(fakeHostOf(harness()))("no-such-question")],
+  ];
+  for (const [label, run] of shapeCases) {
+    const rs = await settle(run());
+    check(`Test 5 shape: the options map from ${label} is prototype-free`,
+      rs.resolved && Object.getPrototypeOf(rs.value.options) === null,
+      rs.resolved ? String(Object.getPrototypeOf(rs.value.options)) : rs);
+  }
 }
 
 // --- Test 6: a host that cannot answer is reported, never thrown ---
@@ -478,6 +595,35 @@ const VALID_CONTROLLER_OVERRIDE = {
   check("Test 8e: an unreadable override layer still sends the shipped question, with the reason on the result",
     r5.resolved && r5.value.ok === true && r5.value.questionVersion === SHIPPED_VERSION
       && r5.value.overrideRefused === "active.json could not be checked" && h5.httpCalls.length === 1, r5.resolved ? r5.value.overrideRefused : r5);
+
+  // The same invariant on the seam's own outbound map, which the catalog's
+  // copy does not reach. An option id in force naming the prototype must ride
+  // the request rather than rewiring the map it is written into.
+  const hs = harness();
+  hs.setHttpResponse(response(answerBody(PLAN_SWITCH, "no_match")));
+  await settle(ask(fakeHostOf(hs), PLAN_SWITCH, ["no_match", "__proto__"], STATE, "shadow", "no_match", resolverOf(fakeHostOf(hs))));
+  const sentCriteria = hs.httpCalls.length === 1
+    ? JSON.parse(hs.httpCalls[0].init.body).questions[PLAN_SWITCH].criteria
+    : null;
+  check("Test 8f: an option id of __proto__ in force rides the request rather than rewiring the criteria map",
+    sentCriteria !== null && Object.hasOwn(sentCriteria, "__proto__") && sentCriteria["__proto__"] === null,
+    sentCriteria === null ? hs.httpCalls.length : Object.keys(sentCriteria));
+
+  // The inbound half of the same channel, and the less trusted one: the module
+  // header says a co-loaded hook may answer the fetch with a body of its own.
+  // The body is built by concatenation rather than as an object literal,
+  // because a literal would hit the very setter this case is about.
+  const hi = harness();
+  const protoBody = '{"model":"jev-fake","answers":{"' + PLAN_SWITCH +
+    '":{"type":"choice","choice":"no_match","probabilities":{"no_match":0.75,"__proto__":0.25},"confidence":0.9}},' +
+    '"usage":{"input_tokens":10,"output_tokens":1}}';
+  hi.setHttpResponse(response(protoBody));
+  const ri = await settle(ask(fakeHostOf(hi), PLAN_SWITCH, ["no_match", "__proto__"], STATE, "shadow", "no_match", resolverOf(fakeHostOf(hi))));
+  check("Test 8g: a probability keyed __proto__ in the response body survives into the validated answer",
+    ri.resolved && ri.value.ok === true
+      && Object.hasOwn(ri.value.answer.probabilities, "__proto__")
+      && ri.value.answer.probabilities["__proto__"] === 0.25,
+    ri.resolved ? (ri.value.ok ? Object.keys(ri.value.answer.probabilities) : ri.value.reason) : ri);
 }
 
 // Give any rejection the last case left behind one turn of the loop to surface.
