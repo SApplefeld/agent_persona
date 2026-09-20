@@ -303,11 +303,6 @@ if ! positive_number "$STALE_AFTER_MS"; then
   echo "ERROR: staleAfterMs '$STALE_AFTER_MS' is not a whole number of milliseconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
   exit 1
 fi
-# Budget thresholds (from the test profile, or defaults)
-CONTEXT_BUDGET_INFO_TOKENS="${contextBudgetInfoTokens:-}"
-CONTEXT_BUDGET_CLOSEOUT_TOKENS="${contextBudgetCloseoutTokens:-}"
-CONTEXT_BUDGET_CRITICAL_TOKENS="${contextBudgetCriticalTokens:-}"
-CONTEXT_BUDGET_READ_EVERY_N_TICKS="${contextBudgetReadEveryNTicks:-1}"
 
 # --- Paths ---
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

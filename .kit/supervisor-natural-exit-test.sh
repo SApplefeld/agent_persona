@@ -1196,9 +1196,6 @@ mkdir -p "$STUB" "$TMP/home/.claude/plugins/store"
 printf '{}' > "$TMP/home/.claude/plugins/store/agentic-plugin_agent-persona-natexit.json"
 printf '%s' "${BACKSTOP_DETAIL:-}" | sed 's/\${[^}]*}/root-r1/g' > "$STUB/detail-backfilled"
 printf '%s\n' "${OTHER_DETAILS:-}" | head -n 1 | tr -d '\n' | sed 's/\${[^}]*}/root-r1/g' > "$STUB/detail-real"
-# The decide unit reads a context_budget_crossed decision whose detail names
-# the critical threshold, so the stub's own crossing carries that word.
-printf '%s' 'critical: stub crossing' > "$STUB/detail-critical"
 cat > "$STUB/claude" <<EOF
 #!/usr/bin/env bash
 # Reads its action for this launch from the current case's plan, one line per
@@ -1359,12 +1356,6 @@ case "\$action" in
     record shutdown_requested ""
     exit 0
     ;;
-  # A critical context-budget crossing with the child still alive, so the
-  # decide path's restart branch acts on it rather than the natural-exit path.
-  critical_live) IFS= read -r _; record context_budget_crossed "\$S/detail-critical"; while IFS= read -r _; do :; done; exit 0 ;;
-  # The same crossing, with the child exiting non-zero when its stdin closes,
-  # so the decide path's restart counts as a crash.
-  critical_live7) IFS= read -r _; record context_budget_crossed "\$S/detail-critical"; while IFS= read -r _; do :; done; exit 7 ;;
   # A child that runs for two polls and exits on its own, leaving nothing
   # behind. Paired with a supervisor whose poll body is slow, it is the shape a
   # loaded box produces: every poll confirmed the tree, and the wall clock
@@ -1410,6 +1401,9 @@ case "\$action" in
   # The same stamped-once heartbeat with nothing alive to corroborate it. The
   # child blocks until the supervisor's hung restart closes its stdin.
   hung_quiet) IFS= read -r _; emit_init; write_heartbeat; while IFS= read -r _; do :; done; exit 0 ;;
+  # The same stamped-once heartbeat, with the child exiting non-zero when its
+  # stdin closes, so the decide path's hung restart counts as a crash.
+  hung_quiet7) IFS= read -r _; emit_init; write_heartbeat; while IFS= read -r _; do :; done; exit 7 ;;
   *) exit 1 ;;
 esac
 EOF
@@ -1583,27 +1577,47 @@ if [ "$R" -eq 0 ]; then
 fi
 
 # --- (i) the decide path's restart stops at the restart budget ---
-# A critical crossing with the child alive takes the decide path's restart
-# branch. The budget is 1, so this restart reaches it. The discriminating
-# assertion is the launch count: a run that relaunches first and stops at the
-# next child's first poll exits 4 as well, one child later.
-drive i "critical_live,shutdown" 1
+# A hung child takes the decide path's restart branch: its heartbeat is
+# stamped once and never again, under a five-second staleness bound and a
+# USERPROFILE holding no transcript to corroborate it. The budget is 1, so
+# this restart reaches it. The discriminating assertion is the launch count: a
+# run that relaunches first and stops at the next child's first poll exits 4 as
+# well, one child later.
+# The stopped child exits on its own stdin closing, so nothing counts as a
+# crash. The limit is raised for symmetry with (j), where the raise can decide
+# the case. Here it cannot: the decide path reads the restart budget before
+# the crash limit, and the budget is 1, so no crash count reaches its own
+# check ahead of the exit 4 this case asserts.
+mkdir -p "$TMP/i/wd" "$TMP/i/profile"
+DRIVE_CRASH_LIMIT=2
+DRIVE_ENV=(staleAfterMs=5000 USERPROFILE="$TMP/i/profile")
+drive i "hung_quiet,shutdown" 1
+DRIVE_ENV=()
+DRIVE_CRASH_LIMIT=1
 [ "$RC" -eq 4 ]; check "(i) supervisor exits 4 at the restart budget (rc=$RC)" "$?"
-grep -q 'RESTART: context_budget_crossed critical' "$LOG"; check "(i) the decide path took the restart branch" "$?"
+grep -q 'RESTART: hung' "$LOG"; check "(i) the decide path took the restart branch" "$?"
 grep -q 'STOP_BUDGET: 1/1 restarts in the hour' "$LOG"; check "(i) the budget line names the limit it stopped at" "$?"
 ! grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 1 ]; check "(i) no second child launches (stub launches=$LAUNCHES)" "$?"
 
 # --- (j) control: one below the budget, the decide path still relaunches ---
-drive j "critical_live,shutdown" 2
+mkdir -p "$TMP/j/wd" "$TMP/j/profile"
+DRIVE_CRASH_LIMIT=2
+DRIVE_ENV=(staleAfterMs=5000 USERPROFILE="$TMP/j/profile")
+drive j "hung_quiet,shutdown" 2
+DRIVE_ENV=()
+DRIVE_CRASH_LIMIT=1
 [ "$RC" -eq 0 ]; check "(j) supervisor exits 0 on the second child's shutdown_requested (rc=$RC)" "$?"
-grep -q 'RESTART: context_budget_crossed critical' "$LOG"; check "(j) the decide path took the restart branch" "$?"
+grep -q 'RESTART: hung' "$LOG"; check "(j) the decide path took the restart branch" "$?"
 ! grep -q 'STOP_BUDGET' "$LOG"; check "(j) no STOP_BUDGET line one below the budget" "$?"
 grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 2 ]; check "(j) a second child launches (stub launches=$LAUNCHES)" "$?"
 
 # --- (k) the decide path's restart stops at the crash limit ---
 # The same decide-path restart, with the child exiting 7 when its stdin
 # closes, so the stop counts as a crash against a limit of 1.
-drive k "critical_live7,shutdown" 6
+mkdir -p "$TMP/k/wd" "$TMP/k/profile"
+DRIVE_ENV=(staleAfterMs=5000 USERPROFILE="$TMP/k/profile")
+drive k "hung_quiet7,shutdown" 6
+DRIVE_ENV=()
 [ "$RC" -eq 3 ]; check "(k) supervisor exits 3 at the crash limit (rc=$RC)" "$?"
 grep -q 'STOP_CRASH_LOOP: 1 crashes' "$LOG"; check "(k) the crash-loop line names the limit it stopped at" "$?"
 ! grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 1 ]; check "(k) no second child launches (stub launches=$LAUNCHES)" "$?"
@@ -1855,10 +1869,13 @@ if [ "$CHECK_ANCHORS" -eq 1 ]; then
   # The same refusal on the decide path's other relaunch branch, sitting ahead
   # of that branch's own limit checks so a survivor is reported as one rather
   # than under a budget or crash-limit code.
+  mkdir -p "$TMP/x/wd" "$TMP/x/profile"
   SUP_OVERRIDE="$TMP/injectsurvivor/bin/supervise.sh"
-  drive x "critical_live,shutdown" 6
+  DRIVE_ENV=(staleAfterMs=5000 USERPROFILE="$TMP/x/profile")
+  drive x "hung_quiet,shutdown" 6
+  DRIVE_ENV=()
   SUP_OVERRIDE=""
-  grep -q 'RESTART: context_budget_crossed critical' "$LOG"; check "(x) the decide path took the accounted restart branch" "$?"
+  grep -q 'RESTART: hung' "$LOG"; check "(x) the decide path took the accounted restart branch" "$?"
   [ "$RC" -eq 5 ]; check "(x) the supervisor exits 5 rather than relaunching beside a survivor (rc=$RC)" "$?"
   ! grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 1 ]; check "(x) no second child launches (stub launches=$LAUNCHES)" "$?"
 

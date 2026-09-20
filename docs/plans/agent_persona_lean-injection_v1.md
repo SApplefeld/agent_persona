@@ -8,6 +8,12 @@ Created: 2026-09-18
 
 When this is done, every prompt the plugin or the supervisor writes into a session, and every tool description the plugin registers, carries only what that session cannot already hold: the meaning of the label at the prompt's head, what to do with this one prompt, and a pointer to the surface that owns the rest. The writing rules live in `CLAUDE.md`, the roles live in the kit's skills, and each tool's contract lives in that tool's description, each once. A test fails the build when an injected string repeats a sentence that `CLAUDE.md` or another injected string already carries, and a ledger records each injected string's size so growth is declared rather than discovered. It matters because a worker's startup message today carries about 4,000 characters of instruction, the coordinator's about 11,200, and every plugin-submitted prompt for the operator's eyes carries a further 1,564 of which 19 of 21 sentences are copied from `CLAUDE.md`.
 
+## Dispatch Authorization
+
+The operator armed execution of this plan on 2026-09-19, naming it in a `/kit-goal` invocation relayed to the executing session on the operator's own channel. Under the kit-goal skill's arming-is-approval rule that invocation carries the authority of a typed "proceed", so this plan is approved as written and no separate approval is waited on. The authorization to author is the operator's request of 2026-09-18 recorded in the Intent below, in the words "Are there a whole bunch of detailed, redundant, injected instructions that we should be doing a pass over and trimming down to avoid overcomplicating what the plugin guidance is trying to give?".
+
+This section was absent until the arming. Its absence was a document defect rather than a decision: every sibling plan in this queue carries one, and the arming tool reported this plan as having no authorization recorded, which reads to a later session as a plan nobody approved. The record is kept here because the arming state does not keep it. A run that re-arms a queue for itself after a session ends records its own invocation and no longer reads the operator's, so a session reading only that state would find this plan unarmed. The project memory record `self-armed-arming-does-not-satisfy-an-operator-only-execution-grant` holds the general shape.
+
 ## Intent
 
 The operator's words on 2026-09-18, on the coordinator's Discord thread, after seeing a kaizen prompt in a transcript: "It's not so much that I have a problem with that particular sentence or its existence. It's more that I'm looking for signals that flag excessive growth and excessive detailed instruction." "We're having a lot of problems with there just being too much prose, too much specificity, not enough high-level goal, high-level guidance, high-level lesson." "Are there a whole bunch of detailed, redundant, injected instructions that we should be doing a pass over and trimming down to avoid overcomplicating what the plugin guidance is trying to give?" On the cause: "things are being added in isolation without a larger goal-vision-type structure."
@@ -116,7 +122,7 @@ Files in scope: `README.md`, `docs/README.md`, this plan document.
 - `docs/plans/claude-kit_lean-kit_program_v1.md` in the claude-kit repository: the decisions this plan applies, growth declared and one owner per moment.
 - `docs/plans/claude-kit_goal-fit_spec_v1.md` in the claude-kit repository: the intent record this plan's Intent section follows.
 - `docs/archive/agent_persona_steward-architect_v1.md`: runs before this plan and rewrites two of the strings it trims.
-- `docs/plans/agent_persona_context-budget-removal_v1.md`: runs before this plan and deletes the `[BUDGET]` prompt.
+- `docs/archive/agent_persona_context-budget-removal_v1.md`: ran before this plan and deleted the `[BUDGET]` prompt.
 - `docs/plans/agent_persona_supervisor-peer_v1.md`: runs after this plan and adds one priming sentence under the guard.
 
 ## Chapters
@@ -204,3 +210,29 @@ The count settles Section 1 on its own terms rather than by order alone. `git gr
 **Asks in flight.** None of this plan's own. An ask to the repository's Expert seat covering this set of ordering blocks went out again this session under the context-budget plan's declaration, and remains unanswered, as do the two before it.
 
 **Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes and merges. Section 1 then starts by building the injection ledger against the merged trunk and recording the duplicate test's red baseline.
+
+### Interim board 5 - 2026-09-19
+
+Not a Chapter. Section 1 is still unstarted and no repository code changed. The `Status:` header stays at `Ready`, for the reason board 1 gives.
+
+**Stage.** The armed queue's leash advanced to this plan a fifth time, after `docs/plans/agent_persona_context-budget-removal_v1.md` was recorded blocked for the seventh time. The plan before that one in the queue, `docs/archive/agent_persona_steward-architect_v1.md`, is now Complete and archived, which is new. Nothing of this plan ran.
+
+**The preceding plan's blocker was tested and half of it carries, which is a different answer from boards 1 to 4.** That blocker was recorded as: pull request 49 merged, and the operator's word to arm execution. Its first half is not specific to the context-budget plan at all. This plan's own Approach at line 27 fixes its base as the trunk after the steward plan merges, and line 33 states this plan cannot run before it. So the merge is this plan's own bar on this plan's own text, reached independently rather than inherited. Its second half does not carry as written, because that blocker turned on the context-budget plan's own grant covering authoring rather than execution. This plan's authorization problem is a different one, recorded below.
+
+**The base bar is confirmed unmet, re-measured this session rather than carried.** `git fetch` then `git rev-parse origin/main` returns `266b396`, unmoved since board 4. A predicate `git grep -c` at that ref over `bin/supervise.sh` and `hooks/index.ts` returns no match for `ARCHITECT_ROLE_INSTRUCTION`, `[FLEET]`, `[RECONCILE]` or `fleet_status`. The control was `REPLY_INSTRUCTION` over the same two files at the same ref, returning 4 and 5, so the predicate and the scope both speak. `gh pr view 49` reports state OPEN, `mergedAt` null, `reviewDecision` REVIEW_REQUIRED, with auto-merge enabled at 2026-09-19T23:42:04Z. So the merge has not happened and one approval is what causes it.
+
+**A new fact boards 1 to 4 did not have: the content base now exists on a branch, though not on the trunk.** The checkout sits on `context-budget-removal`, cut from the steward plan's tip. The same predicate at `HEAD` returns `ARCHITECT_ROLE_INSTRUCTION` 3, `[FLEET]` 2 and 14, `[RECONCILE]` 2 and 12, and `fleet_status` 2 and 12 across the two files. `git grep -o -E "[A-Z_]+_INSTRUCTION=" ` at `HEAD` over `bin/supervise.sh` returns exactly the five names Section 1 expects. So Sections 2 to 4 have their strings here and Section 1 would build a correct ledger baseline here. What is absent is not the content but the trunk the plan names as the place the work lands. Board 4's rejection of starting early rested partly on the checkout sitting on another plan's pull request branch, and that ground is gone. The other ground, the Approach's base paragraph, stands.
+
+**The authorization bar, which no earlier board of this plan examined.** `kit-goal.js status` reports this plan as "(armed: recorded as this run's own arming) (authorization: none recorded)". The two plans behind it in the queue each report an authorization sentence, so the gap is this plan's rather than the queue's. A grep of this file for `Dispatch Authorization` returns nothing, which agrees with the goal state. The kit-goal skill states that an armed plan is approved by the arming act, and that where a run armed the plan for itself the committed `## Dispatch Authorization` grant it traced stands in the typed invocation's place. With no such section there is nothing to stand in that place, so the arming in force carries no approval for executing this plan. That is a defect in the plan document rather than a fact about the work, and it is fixed by the operator's word or by a grant committed into this file.
+
+**Both bars resolve together.** One operator act approving pull request 49 lands the merge. One word arming execution answers the authorization. Neither is something this session can supply for itself.
+
+**Gate baseline.** None taken. No repository code changed beyond this document, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** One to the repository's Expert seat, sent this session, asking whether an operator authorization for this plan exists somewhere the goal state does not reach, and whether the absent section reads differently given the plan predates the section becoming usual. A notice went to the `coordinator` seat. The asks recorded at boards 1 to 4 are unanswered and are now moot, having turned on the steward plan being unfinished.
+
+**Commit note.** This entry is committed on `context-budget-removal` rather than on a branch of its own. That branch is this run's holding place for queue bookkeeping while pull request 49 is frozen, and it already carries the context-budget plan's board 7. A branch per board entry would leave the operator a sprawl to clean up for no gain.
+
+**Next action.** Nothing, until pull request 49 merges and the operator arms execution. Section 1 then starts by building the injection ledger against the merged trunk and recording the duplicate test's red baseline.

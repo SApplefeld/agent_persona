@@ -57,8 +57,7 @@ esac
 # Usage: emit_settings_json <output-file>
 # Emits the settings.json JSON for the --settings flag.
 # Carries: controllerTickMs, nudgeIdleMs, nudgeFloorMs, gitProbeMs, heartbeatMs,
-#          staleAfterMs, contextBudgetEnabled, budget thresholds when set,
-#          arming (always "owner": every supervisor launch is an owner),
+#          staleAfterMs, arming (always "owner": every supervisor launch is an owner),
 #          coordinatorPersona (from COORDINATOR_PERSONA, default "coordinator")
 #          and architectPersona (from ARCHITECT_PERSONA, which has no default:
 #          the key is omitted where the variable is unset or empty),
@@ -74,20 +73,6 @@ emit_settings_json() {
   local self_review_opts=""
   if [ -n "${SELF_REVIEW_EVERY_TURNS:-}" ]; then
     self_review_opts=",\"selfReviewEveryTurns\":$SELF_REVIEW_EVERY_TURNS"
-  fi
-  local budget_opts=""
-  if [ -n "${CONTEXT_BUDGET_INFO_TOKENS:-}" ]; then
-    budget_opts=",\"contextBudgetEnabled\":true"
-    budget_opts="$budget_opts,\"contextBudgetInfoTokens\":$CONTEXT_BUDGET_INFO_TOKENS"
-  fi
-  if [ -n "${CONTEXT_BUDGET_CLOSEOUT_TOKENS:-}" ]; then
-    budget_opts="$budget_opts,\"contextBudgetCloseoutTokens\":$CONTEXT_BUDGET_CLOSEOUT_TOKENS"
-  fi
-  if [ -n "${CONTEXT_BUDGET_CRITICAL_TOKENS:-}" ]; then
-    budget_opts="$budget_opts,\"contextBudgetCriticalTokens\":$CONTEXT_BUDGET_CRITICAL_TOKENS"
-  fi
-  if [ -n "${CONTEXT_BUDGET_READ_EVERY_N_TICKS:-}" ]; then
-    budget_opts="$budget_opts,\"contextBudgetReadEveryNTicks\":$CONTEXT_BUDGET_READ_EVERY_N_TICKS"
   fi
   local cost_opts=""
   if [ -n "${COST_SUMMARY_EVERY_N_TICKS:-}" ]; then
@@ -118,8 +103,7 @@ emit_settings_json() {
   # way).
   local var
   for var in TICK_MS NUDGE_IDLE_MS GIT_PROBE_MS NUDGE_FLOOR_MS HEARTBEAT_MS STALE_AFTER_MS \
-    SELF_REVIEW_EVERY_TURNS CONTEXT_BUDGET_INFO_TOKENS CONTEXT_BUDGET_CLOSEOUT_TOKENS \
-    CONTEXT_BUDGET_CRITICAL_TOKENS CONTEXT_BUDGET_READ_EVERY_N_TICKS COST_SUMMARY_EVERY_N_TICKS \
+    SELF_REVIEW_EVERY_TURNS COST_SUMMARY_EVERY_N_TICKS \
     COST_MAX_NUDGES_PER_HOUR COST_MAX_PLUGIN_CALLS_PER_HOUR COST_BACKOFF_AFTER_TICKS COST_BACKOFF_MAX_MS; do
     case "${!var:-0}" in
       ''|*[!0-9]*|0[0-9]*)
@@ -218,7 +202,7 @@ emit_settings_json() {
   # absent from the engine's type file, and options under the other id are
   # ignored without an error, so the same options are written under both.
   # .kit/settings-plugin-key-test.sh pins both ids against the two manifests.
-  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$budget_opts$self_review_opts$cost_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"$architect_opt$roster_opt}"
+  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$self_review_opts$cost_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"$architect_opt$roster_opt}"
   cat > "$out" <<EOF
 {"pluginConfigs":{"$AGENTIC_PLUGIN_DEV_ID":{"options":$options},"$AGENTIC_PLUGIN_INSTALLED_ID":{"options":$options}}}
 EOF

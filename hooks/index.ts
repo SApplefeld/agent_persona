@@ -325,13 +325,6 @@ const sess: {
   lastNudgeAt: number;
   consecutiveNudgesWithoutOnGoal: number;
   options: { healthTimeoutMs?: number; gitProbeMs?: number };
-  contextBudgetEnabled: boolean;
-  contextBudgetInfoTokens: number;
-  contextBudgetCloseoutTokens: number;
-  contextBudgetCriticalTokens: number;
-  contextBudgetReadEveryNTicks: number;
-  contextBudgetTickCount: number;
-  contextBudgetLatched: { info: boolean; closeout: boolean; critical: boolean };
   controllerTickCount: number; // D4: in-session tick counter for backoff and cost_summary
   staleAfterMs: number; // F9a: single-source the staleness threshold
   turnStartedAt: number | null; // plan item 8.3: this session's clock at turn.start, null between turns
@@ -373,13 +366,6 @@ const sess: {
   lastNudgeAt: 0,
   consecutiveNudgesWithoutOnGoal: 0,
   options: {},
-  contextBudgetEnabled: false,
-  contextBudgetInfoTokens: 100_000,
-  contextBudgetCloseoutTokens: 250_000,
-  contextBudgetCriticalTokens: 350_000,
-  contextBudgetReadEveryNTicks: 3,
-  contextBudgetTickCount: 0,
-  contextBudgetLatched: { info: false, closeout: false, critical: false },
   controllerTickCount: 0,
   staleAfterMs: 90_000,
   turnStartedAt: null,
@@ -394,9 +380,6 @@ const commonsMeta = () => ({ turnStartedAt: sess.turnStartedAt, workdir: sess.wo
 
 // Reentrancy flag for the git probe (E4).
 let gitProbeInFlight = false;
-
-// B1: reentrancy flag for the budget read (serialize to prevent race conditions).
-let budgetReadInFlight = false;
 
 // Reentrancy flag for the fleet block of the controller tick. $.clock.every
 // takes a callback it does not await, so a tick whose reads outlast
@@ -1829,13 +1812,6 @@ export const register: Register = async (on, options) => {
   let selfReviewEveryTurns = typeof cfg.selfReviewEveryTurns === "number" ? (cfg.selfReviewEveryTurns as number) : 20;
   const selfReviewDebounceTurns = typeof cfg.selfReviewDebounceTurns === "number" ? (cfg.selfReviewDebounceTurns as number) : 5;
   const selfReviewMaxPerHour = typeof cfg.selfReviewMaxPerHour === "number" ? (cfg.selfReviewMaxPerHour as number) : 2;
-  
-  // Context budget (2b).
-  sess.contextBudgetEnabled = cfg.contextBudgetEnabled === true;
-  sess.contextBudgetInfoTokens = typeof cfg.contextBudgetInfoTokens === "number" ? (cfg.contextBudgetInfoTokens as number) : 100_000;
-  sess.contextBudgetCloseoutTokens = typeof cfg.contextBudgetCloseoutTokens === "number" ? (cfg.contextBudgetCloseoutTokens as number) : 250_000;
-  sess.contextBudgetCriticalTokens = typeof cfg.contextBudgetCriticalTokens === "number" ? (cfg.contextBudgetCriticalTokens as number) : 350_000;
-  sess.contextBudgetReadEveryNTicks = typeof cfg.contextBudgetReadEveryNTicks === "number" ? (cfg.contextBudgetReadEveryNTicks as number) : 3;
 
   // Cost and cadence (item 6).
   const costEnabled = cfg.costEnabled !== false; // default true
@@ -4213,115 +4189,6 @@ export const register: Register = async (on, options) => {
           planningInFlight = false;
         }
         return; // Planning gate consumed this tick.
-      }
-
-      // 3.5. Context budget (2b): read on a sub-cadence, latch on crossing, nudge above close-out.
-      // Runs regardless of whether there's an active goal.
-      // B1: guard the whole block to serialize reads and prevent race conditions.
-      if (sess.contextBudgetEnabled && !budgetReadInFlight) {
-        sess.contextBudgetTickCount += 1;
-        if (sess.contextBudgetTickCount % sess.contextBudgetReadEveryNTicks === 0) {
-          budgetReadInFlight = true;
-          try {
-            const messages = await $.session.messages();
-            // Estimate tokens: sum text, toolUses input, toolResults output.
-            let chars = 0;
-            for (const m of messages) {
-              chars += m.text.length;
-              for (const tu of m.toolUses) {
-                // BJ1: tu.name is undefined on 2.1.268+ (uses tu.tool instead).
-                const tuAny = tu as any;
-                const toolName = tuAny.tool ?? tuAny.name ?? "";
-                chars += toolName.length;
-                try { chars += JSON.stringify(tu.input).length; } catch { chars += 100; }
-              }
-              if (m.toolResults) {
-                for (const tr of m.toolResults) {
-                  chars += tr.text.length;
-                }
-              }
-            }
-            const estimatedTokens = Math.floor(chars / 4);
-            
-            // Re-arm with hysteresis: only when the estimate falls 5% below the threshold.
-            const hysteresis = 0.95;
-            if (estimatedTokens < sess.contextBudgetInfoTokens * hysteresis) sess.contextBudgetLatched.info = false;
-            if (estimatedTokens < sess.contextBudgetCloseoutTokens * hysteresis) sess.contextBudgetLatched.closeout = false;
-            if (estimatedTokens < sess.contextBudgetCriticalTokens * hysteresis) sess.contextBudgetLatched.critical = false;
-            
-            // Latch on crossing (highest first).
-            const budgetTs = Date.now();
-            if (!sess.contextBudgetLatched.critical && estimatedTokens >= sess.contextBudgetCriticalTokens) {
-              sess.contextBudgetLatched.critical = true;
-              sess.state.decisions.push({
-                timestamp: budgetTs,
-                loop: "monitor",
-                action: "context_budget_crossed",
-                detail: `critical: ${estimatedTokens} tokens`,
-              });
-            }
-            if (!sess.contextBudgetLatched.closeout && estimatedTokens >= sess.contextBudgetCloseoutTokens) {
-              sess.contextBudgetLatched.closeout = true;
-              sess.state.decisions.push({
-                timestamp: budgetTs,
-                loop: "monitor",
-                action: "context_budget_crossed",
-                detail: `closeout: ${estimatedTokens} tokens`,
-              });
-              // D1: deliver a close-out nudge through $.prompt.submit.
-              // Queued before the submit, as the goal nudge does: the submit
-              // parks until the session is next idle, so an entry pushed
-              // after it would land only once the nudged turn had already run.
-              const nudgeText =
-                `[BUDGET] Context is at ${estimatedTokens} tokens (close-out threshold: ${sess.contextBudgetCloseoutTokens}).\n` +
-                `Bank your current state to memory and the plan doc, then reach a clean stopping point. ` +
-                `The session will be restarted at the critical threshold; bank state now.`;
-              const budgetOutcome = await submitExpectedTurn($, expectedTurns, expectTurn({ kind: "nudge", text: nudgeText }));
-              if (budgetOutcome.ok) {
-                sess.state.decisions.push({
-                  timestamp: budgetTs,
-                  loop: "monitor",
-                  action: "context_budget_nudge",
-                  detail: `${estimatedTokens} tokens, close-out nudge sent`,
-                });
-              } else {
-                // Non-fatal. No nudged turn is coming, so its entry has left
-                // the list: left in, the tick's next delivery turn would open
-                // as the nudge and its record would go unstamped.
-                sess.state.decisions.push({
-                  timestamp: budgetTs,
-                  loop: "monitor",
-                  action: "context_budget_nudge_failed",
-                  detail: `close-out nudge submit ${budgetOutcome.how}: ${budgetOutcome.reason}`.slice(0, 200),
-                });
-              }
-            }
-            if (!sess.contextBudgetLatched.info && estimatedTokens >= sess.contextBudgetInfoTokens) {
-              sess.contextBudgetLatched.info = true;
-              sess.state.decisions.push({
-                timestamp: budgetTs,
-                loop: "monitor",
-                action: "context_budget_crossed",
-                detail: `info: ${estimatedTokens} tokens`,
-              });
-            }
-            sess.state.updatedAt = budgetTs;
-            await persist($);
-          } catch (err) {
-            // BJ1: Log the failure so the next silent break names itself.
-            const errMsg = err instanceof Error ? err.message : String(err);
-            sess.state.decisions.push({
-              timestamp: Date.now(),
-              loop: "monitor",
-              action: "context_budget_read_failed",
-              detail: errMsg,
-            });
-            await persist($);
-          }
-          finally {
-            budgetReadInFlight = false;
-          }
-        }
       }
 
       // 4. No active leaf: activate pending work if any exists (H1), else return.

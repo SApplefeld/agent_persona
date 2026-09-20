@@ -2828,84 +2828,83 @@ async function caseBM2_planner_variance_three_plans(clock) {
   check("BM2 three: three plans created", plans.length === 3);
 }
 
-// BJ1: Budget fixture - 2.1.268 shape (tu.tool instead of tu.name)
-async function caseBJ1_budget_268_shape(clock) {
-  console.log("\n=== BJ1: budget 2.1.268 shape ===");
+// The controller tick estimates no context and acts on no estimate. A session
+// whose whole message history runs past 350,000 estimated tokens logs no
+// crossing and submits no turn. The options below are the ones the retired
+// launcher could emit, and every settings file an older launcher wrote still
+// carries the read cadence, so the case pins that such a file changes nothing.
+// The fixture seeds a root with one pending plan, so the tick runs past the
+// planning gate and activates that plan. The `activated` decision is this
+// case's positive control: the two absences it asserts are read off a tick
+// that is shown to have run its body, not off one that returned early for
+// some unrelated reason.
+async function caseNoContextEstimate(clock) {
+  console.log("\n=== no context estimate: a history past 350,000 estimated tokens logs no crossing and submits no turn ===");
   clock.set(T0);
 
-  // Create a harness with a custom session.messages() that returns 2.1.268 shape.
-  // Enable budget and set thresholds low enough to be crossed by the test message.
+  const rootGoal = {
+    id: "root-goal",
+    parentId: null,
+    kind: "root",
+    title: "Test goal",
+    objective: "Test goal",
+    status: "pending",
+    source: "controller",
+    maxRounds: 10,
+    completedRounds: 0,
+    scores: [],
+    notes: [],
+    planningRounds: 0,
+    consecutiveBlockedPlannings: 0,
+    consecutivePlanningFailures: 0,
+    planningRound: 0,
+    createdAt: T0 - 10000,
+    updatedAt: T0 - 5000,
+  };
+  const pendingPlan = {
+    id: "plan-1",
+    parentId: "root-goal",
+    kind: "leaf",
+    objective: "Test plan",
+    title: "Test plan",
+    status: "pending",
+    createdAt: T0 - 9000,
+    updatedAt: T0 - 4000,
+    children: [],
+  };
+
   const h = await createTickHarness({
     ...OPTS,
-    caseName: "bj1_budget_268",
-    // Budget options (passed to mod.register as options)
+    caseName: "no_context_estimate",
     contextBudgetEnabled: true,
-    contextBudgetInfoTokens: 100,
-    contextBudgetCloseoutTokens: 200,
-    contextBudgetCriticalTokens: 300,
     contextBudgetReadEveryNTicks: 1,
-    // 2.1.268 shape: { tool_use_id, tool, input }
+    stateOpts: {
+      now: T0,
+      goals: [rootGoal, pendingPlan],
+      activeGoalId: null,
+    },
+    // 1,600,000 characters, 400,000 tokens at four characters each. The size
+    // is the point: it sits well past 350,000, so a tick that read the history
+    // at all would have something to act on.
     sessionMessages: () => Promise.resolve([
-      {
-        text: "hello world this is a test message with enough text to cross the info threshold " + "x".repeat(1000),
-        toolUses: [
-          { tool_use_id: "tu-1", tool: "bash", input: { command: "ls -la" } },
-          { tool_use_id: "tu-2", tool: "read", input: { file_path: "/etc/hosts" } },
-        ],
-        toolResults: [
-          { tool_use_id: "tu-1", text: "file1\nfile2\nfile3", isError: false },
-        ],
-      },
+      { text: "x".repeat(1_600_000), toolUses: [], toolResults: [] },
     ]),
   });
 
-  // Fire a tick to trigger the budget check.
   await tickAndSettle(h, clock, 100);
 
-  const storePath = ".agentic-personas.json";
-  const raw = h.fsMap.get(storePath);
+  const raw = h.fsMap.get(".agentic-personas.json");
   const store = raw ? JSON.parse(raw) : {};
   const decisions = (store.default && store.default.decisions) || [];
-
-  // Check for context_budget_crossed decisions.
-  const crossings = decisions.filter(d => d.action === "context_budget_crossed");
-  check("BJ1 268: at least one crossing", crossings.length >= 1);
-  check("BJ1 268: info threshold crossed", crossings.some(d => (d.detail || "").includes("info")));
-}
-
-// BJ1: Budget fixture - messages() throws, should log context_budget_read_failed
-async function caseBJ1_budget_read_failed(clock) {
-  console.log("\n=== BJ1: budget read failed ===");
-  clock.set(T0);
-
-  const h = await createTickHarness({
-    ...OPTS,
-    caseName: "bj1_budget_read_failed",
-    // Budget options
-    contextBudgetEnabled: true,
-    contextBudgetInfoTokens: 100,
-    contextBudgetCloseoutTokens: 200,
-    contextBudgetCriticalTokens: 300,
-    contextBudgetReadEveryNTicks: 1,
-    // messages() throws an error
-    sessionMessages: () => Promise.reject(new Error("simulated messages() failure")),
-  });
-
-  await tickAndSettle(h, clock, 100);
-
-  const storePath = ".agentic-personas.json";
-  const raw = h.fsMap.get(storePath);
-  const store = raw ? JSON.parse(raw) : {};
-  const decisions = (store.default && store.default.decisions) || [];
-
-  // Check for context_budget_read_failed.
-  const readFailed = decisions.filter(d => d.action === "context_budget_read_failed");
-  check("BJ1 read_failed: context_budget_read_failed present", readFailed.length >= 1);
-  check("BJ1 read_failed: detail contains error message", readFailed.some(d => (d.detail || "").includes("simulated")));
-
-  // No crossings should be present.
-  const crossings = decisions.filter(d => d.action === "context_budget_crossed");
-  check("BJ1 read_failed: no crossings", crossings.length === 0);
+  check("no context estimate: no context_budget_crossed decision",
+    !decisions.some((d) => d.action === "context_budget_crossed"),
+    decisions.filter((d) => (d.action || "").startsWith("context_budget")).map((d) => d.action));
+  check("no context estimate: no turn submitted",
+    (h.promptSubmits || []).length === 0,
+    h.promptSubmits);
+  check("no context estimate: the tick ran its body (the pending plan was activated)",
+    decisions.some((d) => d.action === "activated"),
+    decisions.map((d) => d.action));
 }
 
 // BO1-pin: The self-review branch must not return early, so the planning gate runs.
@@ -3164,11 +3163,9 @@ async function main() {
     await caseSection12_4_sweepLogsBeforeDeleteAndKeepsOnRefusedAppend(clock);
     await caseSection12_5_windowRollKeepsUnresolvedRecords(clock);
     await caseSection12_6_foreignTurnDoesNotTakeTheStamp(clock);
-    await caseSection12_6_budgetNudgeFlagsTheTurnBeforeItsSubmit(clock);
     await caseSection12_7_ownTurnStillTakesTheStamp_control(clock);
     await caseSection12_F1_resolveInsideTheAnsweringTurnKeepsTheReply(clock);
     await caseSection12_F2_windowRollKeepsAnOpenSteersReply(clock);
-    await caseSection12_F3_failedNudgeConsumesItsEntry(clock);
     await caseSection12_F4_failedDeliverySubmitLeavesTheRecordDelivered(clock);
     await caseSection12_G1_lateRejectingSubmitLeavesAnAnsweredRecord(clock);
     await caseSection12_G2_sweepAgesOffDeliveryAndKeepsReplyWithRecord(clock);
@@ -3181,7 +3178,6 @@ async function main() {
     await caseSection12_J2_droppedPromptDoesNotLeaveTheExternalFlagSet(clock);
     await caseSection12_K1_droppedDeliverySubmitIsHandledLikeARejectedOne(clock);
     await caseSection12_K1_droppedAskAnswerSubmitLeavesTheAskClosed(clock);
-    await caseSection12_K1_droppedNudgeSubmitConsumesItsEntry(clock);
     await caseSection12_K2_settledTextMatchesTheDeliveryTurn(clock);
     await caseSection12_L1_sweptRecordDropsItsDeliveryEntry(clock);
     await caseSection12_L1_resolvedRecordDropsItsDeliveryEntry(clock);
@@ -3260,7 +3256,6 @@ async function main() {
     await caseS13_planFail_threeFailuresBlockTheRoot(clock);
     await caseS13_identity_takesOverAStaleHolder(clock);
     await caseS13_lessonInject_newestLessonReachesTheNextTurnOnce(clock);
-    await caseS13_budget_latchCrossesEachThresholdOnce(clock);
     await caseSection6_off_noToolNoClaimNoTimer(clock);
     await caseSection6_off_unrecognizedValueLogsAndBehavesAsOff(clock);
     await caseSection6_reader_toolsClockAndStartClaim(clock);
@@ -3346,9 +3341,8 @@ async function main() {
   await caseBM2_planner_variance_four_plans(clock);
   await caseBM2_planner_variance_three_plans(clock);
 
-  // BJ1: Budget fixtures - test the token estimator with different message shapes.
-  await caseBJ1_budget_268_shape(clock);
-  await caseBJ1_budget_read_failed(clock);
+  // The tick reads no context estimate and no option turns one on.
+  await caseNoContextEstimate(clock);
 
   // BO1-pin: The self-review branch must not return early, so the planning gate runs.
   await caseBO1_pin_selfreview_then_planning(clock);
@@ -4485,64 +4479,6 @@ async function caseSection12_6_foreignTurnDoesNotTakeTheStamp(clock) {
   check("section12.6 keyboard: record still delivered, not answered", readStoreRecord(k.h, k.key)?.status === "delivered");
 }
 
-// The budget close-out nudge pushes its expected-turn entry on the
-// synchronous side of its submit, as the goal nudge does. The real submit
-// parks until the session is next idle, so an entry pushed after it would
-// land only once the nudged turn has run: a turn starting under the parked
-// submit would then match nothing it could place. The harness stub hands a
-// turn.start fired without text the queued submit texts in order, so the
-// nudge's turn opens first and the delivery's own turn second.
-async function caseSection12_6_budgetNudgeFlagsTheTurnBeforeItsSubmit(clock) {
-  console.log("\n=== Section 12 bullet 6: a budget-nudge turn starting under the parked submit does not take the stamp ===");
-  clock.set(T0);
-  const now = T0;
-  const h = await createTickHarness({
-    ...OPTS,
-    caseName: "section12_6_budget",
-    contextBudgetEnabled: true,
-    contextBudgetInfoTokens: 100,
-    contextBudgetCloseoutTokens: 200,
-    contextBudgetCriticalTokens: 1_000_000,
-    contextBudgetReadEveryNTicks: 1,
-    sessionMessages: () => Promise.resolve([{ text: "x".repeat(2000), toolUses: [], toolResults: [] }]),
-  });
-  h.storeMap.set(`commons:${SESSION_ID}`, {
-    sessionId: SESSION_ID,
-    lastSeen: now,
-    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
-  });
-  seedReaderClaim(h, "writer-b", now);
-  const key = seedInboxRecord(h, "writer-b", 1, { at: now - 5000, status: "pending" });
-  const id = "default-writer-b-1";
-
-  // Tick 1 delivers nothing (the record is not seeded yet), crosses the
-  // close-out threshold and submits the budget nudge, which parks.
-  h.storeMap.delete(key);
-  h.holdPromptSubmits();
-  const tick1 = fireTick(h);
-  const nudgeQueued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith("[BUDGET]")));
-  check("section12.6 budget: the close-out nudge was submitted (setup sanity)", nudgeQueued);
-
-  // Tick 2 delivers the record behind the parked nudge.
-  seedInboxRecord(h, "writer-b", 1, { at: now - 5000, status: "pending" });
-  clock.advance(10_000);
-  const tick2 = fireTick(h);
-  const delivered = await waitUntil(() => readStoreRecord(h, key)?.status === "delivered");
-  check("section12.6 budget: record delivered behind the parked nudge (setup sanity)", delivered);
-
-  // The nudged turn opens first, then the delivery's own.
-  await h.handlers["turn.start"](h.fake, { turnId: "t-budget" }, async () => ({ result: "ok" }));
-  const afterStart = readStoreRecord(h, key);
-  check("section12.6 budget: record not stamped with the budget-nudge turn", afterStart?.turnId === undefined, afterStart);
-  await h.handlers["turn.complete"](h.fake, { turnId: "t-budget", answer: "Banking state.", reason: "completed" }, async () => ({ result: "ok" }));
-  check("section12.6 budget: no reply written from the nudged turn's answer", !h.storeMap.has(`reply:default:${id}`));
-  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-after-budget" }, async () => ({ result: "ok" }));
-  check("section12.6 budget: the delivery's own turn, opening next, takes the stamp", readStoreRecord(h, key)?.turnId === "t-delivery-after-budget");
-  h.releasePromptSubmits();
-  await tick1;
-  await tick2;
-}
-
 // Bullet 7 (control for bullet 6): the plugin's own delivery turn still takes
 // the stamp and writes the reply, at the general drain and at the ask-answer
 // delivery.
@@ -4670,57 +4606,6 @@ async function caseSection12_F2_windowRollKeepsAnOpenSteersReply(clock) {
   const inbox = await hr.handlers["tool.call"](hr.fake, { tool: "mcp__agentic-plugin__agentic_inbox" }, async () => ({ result: "passthrough" }));
   const seen = inbox.result ? JSON.parse(inbox.result).inbox.find((x) => x.id === "default-writer-a-1") : undefined;
   check("section12.F2: agentic_inbox still returns the reply", seen?.reply === "the open steer's reply", seen);
-}
-
-// F3: a budget nudge whose submit is refused removes the entry it pushed
-// before the submit, so the tick's next delivery turn is the plugin's own
-// and takes the stamp.
-async function caseSection12_F3_failedNudgeConsumesItsEntry(clock) {
-  console.log("\n=== Section 12 F3: a refused budget nudge does not withhold the next delivery turn's stamp ===");
-  clock.set(T0);
-  const now = T0;
-  const h = await createTickHarness({
-    ...OPTS,
-    caseName: "section12_f3_nudge_failed",
-    contextBudgetEnabled: true,
-    contextBudgetInfoTokens: 100,
-    contextBudgetCloseoutTokens: 200,
-    contextBudgetCriticalTokens: 1_000_000,
-    contextBudgetReadEveryNTicks: 1,
-    sessionMessages: () => Promise.resolve([{ text: "x".repeat(2000), toolUses: [], toolResults: [] }]),
-  });
-  // A goal-less tree, so the tick returns after the budget read and no goal
-  // nudge rides on the same refused submit.
-  h.storeMap.set(`commons:${SESSION_ID}`, {
-    sessionId: SESSION_ID,
-    lastSeen: now,
-    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
-  });
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(SESSION_ID, now) }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
-  const startH = h.handlers["session.start"];
-  if (startH) await startH(h.fake, {}, () => {});
-
-  h.failPromptSubmits(new Error("submit refused for the nudge"));
-  clock.advance(10_000);
-  await tickAndSettle(h, clock, 50);
-  check("section12.F3: the budget nudge was attempted (setup sanity)", (h.promptSubmits || []).some((p) => p.startsWith("[BUDGET]")));
-  // No turn pair here: the decisions are read after the turn.start below,
-  // which persists.
-
-  h.failPromptSubmits(null);
-  seedReaderClaim(h, "writer-f3", clock.get());
-  const key = seedInboxRecord(h, "writer-f3", 1, { at: clock.get() - 500, status: "pending" });
-  clock.advance(10_000);
-  await tickAndSettle(h, clock, 50);
-  check("section12.F3: record delivered (setup sanity)", readStoreRecord(h, key)?.status === "delivered");
-  await h.handlers["turn.start"](h.fake, { turnId: "t-own-after-failed-nudge" }, async () => ({ result: "ok" }));
-  check("section12.F3: the delivery's own turn takes the stamp", readStoreRecord(h, key)?.turnId === "t-own-after-failed-nudge");
-  await fireTurn(h, "t-flush-f3");
-  const decisions = getDecisions(h);
-  check("section12.F3: no operator_stamp_withheld", !decisions.some((d) => d.action === "operator_stamp_withheld"));
-  check("section12.F3: the refused budget nudge is recorded and no context_budget_nudge was logged",
-    decisions.some((d) => d.action === "context_budget_nudge_failed" && d.detail.includes("submit refused for the nudge")) && !decisions.some((d) => d.action === "context_budget_nudge"));
 }
 
 // F4 (ruled form): a refused delivery submit consumes the stamp handoff it
@@ -5179,62 +5064,6 @@ async function caseSection12_K1_droppedAskAnswerSubmitLeavesTheAskClosed(clock) 
   clock.advance(10_000);
   await tickAndSettle(ha, clock, 50);
   check("section12.K1b: the next tick retries nothing", (ha.promptSubmits || []).filter((p) => p.startsWith(readerLabel("default-writer-k1b-1"))).length === 1 && readStoreRecord(ha, answerKey)?.status === "delivered");
-}
-
-// K1 (C): a nudge whose submit is dropped consumes its own entry and its
-// failure decision names the reason. Observed through a queued delivery: a
-// turn opening with the dropped nudge's text matches nothing, so it reads
-// unaccounted and withholds the delivery's stamp, where a surviving nudge
-// entry would have matched it as the nudge and withheld nothing.
-async function caseSection12_K1_droppedNudgeSubmitConsumesItsEntry(clock) {
-  console.log("\n=== Section 12 K1 (C): a dropped budget nudge consumes its entry and records the drop reason ===");
-  clock.set(T0);
-  const now = T0;
-  const h = await createTickHarness({
-    ...OPTS,
-    caseName: "section12_k1_c_nudge_dropped",
-    contextBudgetEnabled: true,
-    contextBudgetInfoTokens: 100,
-    contextBudgetCloseoutTokens: 200,
-    contextBudgetCriticalTokens: 1_000_000,
-    contextBudgetReadEveryNTicks: 1,
-    sessionMessages: () => Promise.resolve([{ text: "x".repeat(2000), toolUses: [], toolResults: [] }]),
-  });
-  // A goal-less tree, so the tick returns after the budget read and no goal
-  // nudge rides on the same dropped submit.
-  h.storeMap.set(`commons:${SESSION_ID}`, {
-    sessionId: SESSION_ID,
-    lastSeen: now,
-    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
-  });
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(SESSION_ID, now) }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
-  const startH = h.handlers["session.start"];
-  if (startH) await startH(h.fake, {}, () => {});
-
-  h.dropNextPromptSubmit("hook beneath refused the nudge");
-  clock.advance(10_000);
-  await tickAndSettle(h, clock, 50);
-  const nudgeText = (h.promptSubmits || []).find((p) => p.startsWith("[BUDGET]"));
-  check("section12.K1c: the budget nudge was attempted (setup sanity)", typeof nudgeText === "string");
-  check("section12.K1c: context_budget_nudge_failed names the drop reason and no context_budget_nudge was logged",
-    getDecisions(h).some((d) => d.action === "context_budget_nudge_failed" && d.detail.includes("submit dropped") && d.detail.includes("hook beneath refused the nudge")) && !getDecisions(h).some((d) => d.action === "context_budget_nudge"));
-
-  // A delivery queues behind the dropped nudge, then a turn opens with the
-  // nudge's own text.
-  seedReaderClaim(h, "writer-k1c", clock.get());
-  const key = seedInboxRecord(h, "writer-k1c", 1, { at: clock.get() - 500, status: "pending" });
-  const id = "default-writer-k1c-1";
-  clock.advance(10_000);
-  await tickAndSettle(h, clock, 50);
-  check("section12.K1c: record delivered (setup sanity)", readStoreRecord(h, key)?.status === "delivered");
-  await h.handlers["turn.start"](h.fake, { turnId: "t-nudge-text-k1c", text: nudgeText }, async () => ({ result: "ok" }));
-  check("section12.K1c: a turn with the dropped nudge's text reads unaccounted and withholds the delivery's stamp",
-    getDecisions(h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes(id) && d.detail.includes("unaccounted")));
-  await h.handlers["turn.complete"](h.fake, { turnId: "t-nudge-text-k1c", answer: "not the nudge", reason: "completed" }, async () => ({ result: "ok" }));
-  await h.handlers["turn.start"](h.fake, { turnId: "t-delivery-k1c" }, async () => ({ result: "ok" }));
-  check("section12.K1c: the delivery's own turn still takes the stamp", readStoreRecord(h, key)?.turnId === "t-delivery-k1c");
-  await fireTurn(h, "t-flush-k1c");
 }
 
 // K2 (D): the text a turn opens with is the text as the hook chain beneath
@@ -12364,7 +12193,7 @@ async function caseSection9_durationMsCountsAnUnmatchedLongTurn(clock) {
 // Section 13: hook paths driven whole through the harness: the scorer's
 // round, the error streak, the git probe, the health probe, plan activation
 // and the post-completion guard, the planner failure cap, stale-holder
-// takeover, lesson injection, and the budget latch.
+// takeover, and lesson injection.
 // ============================================================
 
 // Ordered-subsequence match, the shape assert-decisions.js reads a live
@@ -12631,32 +12460,6 @@ async function caseS13_lessonInject_newestLessonReachesTheNextTurnOnce(clock) {
   check("s13 lesson_inject: one lesson_inject decision names that lesson", injects.length === 1 && injects[0].detail.includes("Run the tests before claiming done."), injects);
   const second = await submitH(h.fake, { text: "continue again" }, async () => ({}));
   check("s13 lesson_inject: the same lesson is not injected again on the next prompt", !(second.context || []).some((b) => b.startsWith("[LESSON]")), second.context);
-}
-
-// Budget latch: each threshold's crossing is latched, so
-// three reads of one over-critical estimate log info, closeout and critical
-// once each and send the close-out nudge once (D2 latch).
-async function caseS13_budget_latchCrossesEachThresholdOnce(clock) {
-  console.log("\n=== S13 budget latch: each threshold crosses once and the close-out nudge is sent once ===");
-  clock.set(T0);
-  const h = await createTickHarness({
-    ...OPTS,
-    caseName: "s13_budget_latch",
-    contextBudgetEnabled: true,
-    contextBudgetInfoTokens: 100,
-    contextBudgetCloseoutTokens: 200,
-    contextBudgetCriticalTokens: 300,
-    contextBudgetReadEveryNTicks: 1,
-    sessionMessages: () => Promise.resolve([{ text: "x".repeat(2000), toolUses: [], toolResults: [] }]),
-  });
-  for (let i = 0; i < 3; i++) {
-    clock.advance(10_000);
-    await tickAndSettle(h, clock, 50);
-  }
-  const decisions = getDecisions(h);
-  const crossings = decisions.filter((d) => d.action === "context_budget_crossed").map((d) => d.detail.split(":")[0]);
-  check("s13 budget latch: info, closeout and critical each crossed exactly once over three reads", ["info", "closeout", "critical"].every((t) => crossings.filter((c) => c === t).length === 1), crossings);
-  check("s13 budget latch: exactly one context_budget_nudge", countAction(decisions, "context_budget_nudge") === 1, countAction(decisions, "context_budget_nudge"));
 }
 
 // ============================================================

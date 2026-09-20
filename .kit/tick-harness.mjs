@@ -115,8 +115,10 @@ function createFake$(opts = {}) {
       // The harness fires session.start with no cwd on the event, so the
       // plugin reads its workdir from here. A fixed literal cases can assert on.
       cwd() { return Promise.resolve(HARNESS_CWD); },
-      // BJ1: Add messages() for budget fixtures.
-      // The test can override this with its own implementation.
+      // The session's own message history. The tick reads it for nothing, and
+      // the case that pins that hands its own implementation through
+      // sessionMessages: a history past 350,000 estimated tokens, which logs
+      // no crossing and submits no turn.
       messages() {
         if (typeof opts.sessionMessages === "function") {
           return opts.sessionMessages();

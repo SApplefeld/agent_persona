@@ -124,13 +124,6 @@ switch (testName) {
     else fail(`goaltree: ${badScores.length} score(s) on non-turn-leaf: ${badScores.map(d => d.detail.slice(0, 40)).join("; ")}`);
     break;
   }
-  case "budget": {
-    // The real session.messages() shape still parses: the estimate climbs past
-    // every threshold, so context_budget_crossed is logged at least three times.
-    const crossings = decisions.filter(a => a === "context_budget_crossed");
-    check2("budget: at least 3 crossings", crossings.length >= 3);
-    break;
-  }
   case "operator": {
     // Phase 1: the operator message reaches the owner and the reply comes back
     // (operator_turn_stamped precedes operator_answered).

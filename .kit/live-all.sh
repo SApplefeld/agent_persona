@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Live test runner: runs the five live suites serially, one real claude child at a time.
+# Live test runner: runs the four live suites serially, one real claude child at a time.
 # Usage: live-all.sh [suite...]
-#   Suites: goaltree, budget, commons, operator, restartrequest
-#   Default: all five.
+#   Suites: goaltree, commons, operator, restartrequest
+#   Default: all four.
 #
 # Each suite proves one thing the offline lane cannot: the real engine and plugin
 # together. The offline suites (controller-tick-test.mjs and its siblings) own the rest.
@@ -22,7 +22,7 @@ RUN_DIR="$RUNS_DIR/$STAMP"
 HEAD_SHORT="$(cd "$PLUGIN_DIR" && git log -1 --format=%h)"
 
 # --- Suite list ---
-ALL_SUITES=(goaltree budget commons operator restartrequest)
+ALL_SUITES=(goaltree commons operator restartrequest)
 if [ $# -eq 0 ]; then
   SUITES=("${ALL_SUITES[@]}")
 else
@@ -184,7 +184,7 @@ run_suite() {
   [ -f "$suite_dir/$suite.decisions.log" ] && cp -f "$suite_dir/$suite.decisions.log" "$RUN_DIR/$suite.decisions.log"
   # AL8: preserve both artifact name shapes
   # Most suites: $suite-test.out.jsonl, $suite-test.err.log, $suite-test.debug.log
-  # Budget, goaltree: $suite.out.jsonl, $suite.err.log
+  # goaltree: $suite.out.jsonl, $suite.err.log
   [ -f "$suite_dir/$suite-test.err.log" ] && cp -f "$suite_dir/$suite-test.err.log" "$RUN_DIR/$suite.err.log"
   [ -f "$suite_dir/$suite-test.out.jsonl" ] && cp -f "$suite_dir/$suite-test.out.jsonl" "$RUN_DIR/$suite.out.jsonl"
   [ -f "$suite_dir/$suite-test.debug.log" ] && cp -f "$suite_dir/$suite-test.debug.log" "$RUN_DIR/$suite.debug.log"

@@ -4,7 +4,6 @@
 !/live-common.sh
 !/live-all.sh
 !/live-goaltree-test.sh
-!/live-budget-test.sh
 !/self-review-unit-test.mjs
 !/cost-ledger-unit-test.mjs
 !/cost-migration-test.mjs

@@ -119,6 +119,13 @@ exit non-zero after passing will also read as failing to any gate that trusts th
 every gate here. The likely cause is a handle closed twice during teardown. Worth catching the next
 occurrence with `--trace-uncaught` rather than hunting it cold.
 
+Recurred 2026-09-19 during the context-budget plan's finishing pass, on a tree that does not touch
+that file, with the same assertion at the same source line and the same disagreement between the
+printed result and the exit code. Three immediate reruns in isolation came back clean at exit 0, 23
+passed. Two occurrences six days apart on unrelated trees rules out the change in flight as the
+cause, which strengthens the teardown-handle reading. The recurrence was seen through a chained
+command, so the next hunt should keep the suite's own unpiped exit code beside the assertion text.
+
 ## Suite hardening
 
 _No open items. Resolved items are archived in `docs/archive/backlog-2026-09-11.md`._
@@ -151,7 +158,7 @@ Nothing to fix in the tree. The remedy is relaunching each supervisor, then drop
 
 ## The context-budget plan's status header is none of the kit's values (found 2026-09-13)
 
-`docs/plans/agentic-plugin_context-budget_v1.md` reads `Status: Independent part Complete; checkpoint section BLOCKED-on-operator (Path C open question resolved).`, which the kit's tooling cannot read as any of its status values. The curating-docs skill rules whether the plan splits into a complete part and an open part, archives, or takes one of the three headers.
+`docs/archive/agentic-plugin_context-budget_v1.md` reads `Status: Independent part Complete; checkpoint section BLOCKED-on-operator (Path C open question resolved).`, which the kit's tooling cannot read as any of its status values. The curating-docs skill rules whether the plan splits into a complete part and an open part, archives, or takes one of the three headers.
 
 ## Design direction: let the outer loops recover a session that stopped, rather than only preventing the stop (operator dialog, 2026-09-13)
 
@@ -296,3 +303,13 @@ Remedy: make the cut collision-resistant rather than positional, by carrying a s
 ## A misspelled roster key is silent, so a persona launches without the setting its entry meant to give it (found 2026-09-19)
 
 `Read-KeeperRoster` in `bin/keeper-functions.ps1:127-164` validates `name` and `enabled` and nothing else. `Build-SupervisorInvocation` validates the three required positional fields at `:218-223`, and at `:243-256` skips any key its map names that the entry does not carry. So a roster entry spelling `architectPersona` as `architetPersona` launches an architect with no charter and a steward that routes no design ask, with no log line and no failed launch. A case difference is not the failing shape: PowerShell member access on a `ConvertFrom-Json` object is case-insensitive, so `architectpersona` resolves through the literal and the dynamic form alike and the variable is set, while a genuine typo resolves to empty through both. The class covers every mapped field and predates the steward plan; that plan widened it by adding two fields whose absence is silent by design, neither carrying a default. Remedy: have `Build-SupervisorInvocation` log or throw on an entry key outside the known set (the required fields, `rundir`, `channelName`, `args`, `enabled` and the map's own keys). Raised by the round 1 adversarial lens over the steward plan's Section 5 and ruled out of that plan's scope by the scope adjudicator, whose ground is that the Goal takes up no change to the keeper's roster handling.
+
+## The supervisor model suite went red once and has not reproduced in seven further runs (found 2026-09-19)
+
+`.kit/supervisor-model-test.sh` exited 1 and printed `FAILED` on one run taken 2026-09-19 at commit `87b082d`, on a worktree whose only changes were plan documents. It has since run seven times at that same commit and passed every time, each exit code read from its own unpiped run: four standalone, and three inside the same three-suite sequence the red came from. The suite passes 27 checks when it passes, and the whole gate recorded in `docs/archive/agent_persona_steward-architect_v1.md` has it green at that count.
+
+The failure output was not captured. The command that produced the red kept only each suite's last line, so the assertion that failed is not recoverable from any artifact. That is the reason this entry cannot name a cause, and it is the first thing to fix if the red returns: run the suite with its whole output redirected to a file before reading anything from it.
+
+The red is therefore unreproduced rather than explained, and it is deliberately not recorded as a flake. One sample cannot distinguish a genuine intermittent failure from a condition nobody has identified, and the conditions that differed on the red run were not isolated: it ran inside a backgrounded shell immediately after `node .kit/controller-tick-test.mjs`, with the live fleet holding five `claude` processes on the box. The sequence itself was tested and did not reproduce it, which rules out the sequence alone and leaves memory pressure and the preceding node run untested as causes.
+
+The cost lands on `docs/plans/agent_persona_deferred-gate-run_v1.md`, whose whole job is one full pass over every suite. A suite that fails once in eight runs for an unknown reason will most likely surface during that pass, where it will read as a regression against the plans the pass is attributing reds to. Remedy: capture full output per suite in that run, and where this suite reds again, keep the artifact and compare its failing assertion against this entry before attributing it to any plan's diff.
