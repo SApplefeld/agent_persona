@@ -156,6 +156,112 @@ export interface NudgeBudget {
   consecutiveNudgesWithoutOnGoal: number;
 }
 
+/**
+ * The five health classes the steward reports on. Each is one word for a whole
+ * fleet row. The fourth is not a variant of the third: an enabled persona that
+ * has never come up has no commons entry at all, so it reports a null
+ * heartbeat age and satisfies none of the other four.
+ *
+ * They live here beside the memo the watcher's reading is made of, which is
+ * written in these words.
+ */
+export const FLEET_HEALTH = {
+  held: "held",
+  backingOff: "backing off",
+  stale: "stale",
+  noClaim: "no live claim while the roster enables it",
+  healthy: "healthy",
+} as const;
+export type FleetHealth = (typeof FLEET_HEALTH)[keyof typeof FLEET_HEALTH];
+
+/**
+ * What a class value carries when the roster's own entry for that persona is
+ * disabled. The roster flag is part of the value the watcher compares rather
+ * than a field beside it, so flipping an entry to disabled is itself a change
+ * with a line of its own. Without that the flip is invisible: a running
+ * persona reads the same class either way, and once it exits its commons entry
+ * ages out and the disabled branch reads healthy again, so a persona can write
+ * `"enabled": false` into its own roster entry, exit, and leave the fleet with
+ * nothing reported before, during or after.
+ */
+export const FLEET_DISABLED_TAIL = " under a disabled roster entry";
+
+/**
+ * What a class value carries when the process keeper has written no state file
+ * for that persona. An absent keeper.json is the one unread thing the health
+ * reduction passes over, because a persona on its first-ever launch has none
+ * for the whole of that run, and that reading is borrowable: the file sits in
+ * the persona's own run directory, so a persona whose class the watcher is
+ * reporting can delete it and fall back to healthy, which the quiet window
+ * then holds back. The file's presence is part of the value compared for that
+ * reason, so gaining or losing it is a change with a line of its own whatever
+ * the class does.
+ */
+export const FLEET_KEEPER_UNWRITTEN_TAIL = " with no keeper state written";
+
+/**
+ * The value the watcher compares and stores for one persona: its health class,
+ * whether the roster enables it, and whether the process keeper has written
+ * any state for it. The two qualifiers are independent, so a value can carry
+ * both, and they are appended in a fixed order because this text is compared
+ * as text.
+ */
+export function fleetClassValue(health: FleetHealth, enabled: boolean, keeperStateUnwritten: boolean): string {
+  const disabled = enabled ? "" : FLEET_DISABLED_TAIL;
+  return `${health}${disabled}${keeperStateUnwritten ? FLEET_KEEPER_UNWRITTEN_TAIL : ""}`;
+}
+
+/**
+ * Two of the three entries the watcher's reading holds that are not personas:
+ * how the roster file itself read, and what its entries could not be turned
+ * into. The third, how the last controller tick ended, belongs to the tick and
+ * is named there. All three keys carry spaces, which the persona-name rule
+ * refuses, so no roster persona can take any of them.
+ */
+export const FLEET_ROSTER_STATE_KEY = "the roster reading itself";
+export const FLEET_ENTRY_PROBLEMS_KEY = "the roster entries that carry a problem";
+
+/**
+ * What the controller tick's fleet watcher remembers about one key of its
+ * reading between ticks.
+ *
+ * `class` is the class the last reading produced, which is what a further
+ * reading is compared against. `reported` is the class the last line the
+ * watcher submitted actually named, which is what the operator was last told,
+ * and it is the empty string while no line has been submitted at all. The two
+ * differ whenever a change was counted rather than reported, and every line
+ * the watcher composes reads its `from` out of `reported`, so a line never
+ * names a class nobody was told.
+ *
+ * `reportedAt` is the clock at that line, 0 when there has been none, and it
+ * is what the quiet window runs from: one line per key per window, whatever
+ * the class does in between. `suppressed` is how many class changes have
+ * happened since that line with no line of their own, and it rides the next
+ * line about the key.
+ *
+ * `departed` is true between the line reporting that a cleanly read roster has
+ * stopped naming this persona and the reading that names it again. It is what
+ * makes that departure one line rather than one per tick, and the memo stands
+ * throughout, so a name that comes back is compared against the class the
+ * operator was last told rather than read as a persona nothing is known about.
+ *
+ * `class` and `reported` are typed as plain strings because the reading holds
+ * three keys that are not personas, and those three take their value from text
+ * the roster file and the tick supplied rather than from the class list.
+ *
+ * The reading these memos make up is held in the session's own memory for the
+ * life of that session and is written to no file, so every memo the watcher
+ * compares against is one the watcher itself produced on an earlier tick of
+ * this same session.
+ */
+export interface FleetHealthMemo {
+  class: string;
+  reported: string;
+  reportedAt: number;
+  suppressed: number;
+  departed: boolean;
+}
+
 export interface AgentState {
   version: 4;
   persona: string;
@@ -173,6 +279,18 @@ export interface AgentState {
     action: string;
     detail: string;
   }>;
+  // The clock at the last [RECONCILE] prompt, for the coordinator persona
+  // alone. It lives in the persisted state rather than in the session's own
+  // memory because the reconciliation cadence is four hours and a steward
+  // relaunched more often than that would otherwise restart the wait at every
+  // launch and never reconcile at all. It is absent until the watcher's first
+  // tick, which stamps it rather than firing the pass.
+  //
+  // The fleet watcher's reading is not here. It is held in session memory, so
+  // nothing a file carries can decide what the watcher says about a persona;
+  // the cost of that is a steward restating each currently unhealthy persona
+  // once when it comes up.
+  lastReconcileAt?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -412,6 +530,40 @@ export function parseState(json: string): AgentState {
   // AK2: ensure capNoticeWindowStart exists (for states created before this field).
   if (typeof state.monitor.cost.capNoticeWindowStart !== "number") {
     state.monitor.cost.capNoticeWindowStart = 0;
+  }
+
+  // The fleet watcher's reading is dropped from anything this file carries.
+  // The watcher holds its reading in session memory and reads it back from
+  // nowhere, so a `fleetHealth` key here is a legacy state a previous version
+  // wrote or one a hand-written store seeded, and either way it contributes
+  // nothing to what the watcher says. Dropping it keeps it out of the state
+  // the session then writes back, so the key does not survive as a value no
+  // reader has.
+  //
+  // Nothing the watcher reads out of a file may decide silence about an
+  // unhealthy persona, and that is why the reading is not stored at all. The
+  // store sits inside a persona's own working directory, which a roster can
+  // give to more than one persona, and every field of a memo that silences a
+  // key is a value the watcher itself legitimately produces, so no check on
+  // the value can tell a watcher's own memo from a persona's memo about
+  // itself.
+  const readClock = Date.now();
+  delete (state as { fleetHealth?: unknown }).fleetHealth;
+
+  // The reconciliation cadence's stamp, held to a number the clock can have
+  // passed. The tick asks for the pass when `reconcileNow - lastReconcileAt`
+  // reaches the cadence, and a stamp that is a string, an object or NaN makes
+  // that difference NaN, which is never at or past the cadence; the stamp is
+  // no longer absent either, so the branch that starts the cadence does not
+  // run. The pass would then never be asked for again, with nothing written
+  // down saying why. A stamp ahead of the clock silences it the same way for
+  // as long as it stands. Dropping it puts the next tick on the branch that
+  // starts the cadence, so the pass runs one cadence later at worst.
+  if (state.lastReconcileAt !== undefined
+    && (typeof state.lastReconcileAt !== "number"
+      || !Number.isFinite(state.lastReconcileAt)
+      || state.lastReconcileAt > readClock)) {
+    delete state.lastReconcileAt;
   }
 
   // L10: invariant block runs on both v2 and v3 branches.

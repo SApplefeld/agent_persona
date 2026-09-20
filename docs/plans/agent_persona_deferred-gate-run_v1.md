@@ -16,7 +16,7 @@ The operator asked for this on 2026-09-18 on the coordinator's own Discord threa
 
 This section owns the policy. The queued plans point here, and a Chapter that cites it cites this file.
 
-The policy applies to `docs/plans/agent_persona_steward-architect_v1.md` from its finishing pass onward, and to `docs/plans/agent_persona_context-budget-removal_v1.md`, `docs/plans/agent_persona_lean-injection_v1.md` and `docs/plans/agent_persona_supervisor-peer_v1.md` whole. It ends when this plan closes.
+The policy applies to `docs/archive/agent_persona_steward-architect_v1.md` from its finishing pass onward, and to `docs/plans/agent_persona_context-budget-removal_v1.md`, `docs/plans/agent_persona_lean-injection_v1.md` and `docs/plans/agent_persona_supervisor-peer_v1.md` whole. It ends when this plan closes.
 
 Deferred to this plan's run: `.kit/live-all.sh`, every `.kit/live-*-test.sh`, `.kit/supervisor-natural-exit-test.sh`, and any other check that launches a `claude` child, real or stub, or runs past two minutes of wall clock. The named files are instances; the class is any run that holds the box.
 
@@ -81,7 +81,105 @@ Files in scope: this plan document, `docs/README.md`.
 
 ## Related
 
-- `docs/plans/agent_persona_steward-architect_v1.md`, `docs/plans/agent_persona_context-budget-removal_v1.md`, `docs/plans/agent_persona_lean-injection_v1.md`, `docs/plans/agent_persona_supervisor-peer_v1.md`: the plans this policy covers.
+- `docs/archive/agent_persona_steward-architect_v1.md`, `docs/plans/agent_persona_context-budget-removal_v1.md`, `docs/plans/agent_persona_lean-injection_v1.md`, `docs/plans/agent_persona_supervisor-peer_v1.md`: the plans this policy covers.
 - `README.md`, Test Coverage: which suites are live and which are offline.
 
 ## Chapters
+
+### Interim board 1 - 2026-09-18
+
+Not a Chapter. Section 1 is unstarted and no repository file changed beyond this document.
+
+**Stage.** The armed queue's leash advanced to this plan, the last of five, after `docs/plans/agent_persona_supervisor-peer_v1.md` was recorded blocked. Nothing of this plan ran. The `Status:` header stays at `Ready`.
+
+**The preceding plan's blocker was tested and does not carry, but this plan's own gate is unmet on two independent grounds.** That blocker is the supervisor-peer plan's arming condition, which is specific to that plan. It stops nothing here.
+
+The first ground is this plan's own subject. Its Goal requires the deferred runs to happen "against the trunk after the last queued plan merges", and Section 1 opens by confirming the trunk carries the merge of every plan the policy covers. Read this session: `origin/main` stands at `266b396`, whose newest commit archives an unrelated poll-cost plan. None of the four covered plans has merged. So there is nothing on the trunk for this run to gate, and running now would measure a tree that carries none of the work the policy deferred.
+
+The second ground is the Dispatch Authorization, which arms execution only on the operator's own word, typed into the executing session's thread or relayed through the coordinator. No such word has been given for this plan.
+
+**Why this matters more than the other blocks.** This plan is where every deferred run is owed. The gate policy of 2026-09-18 suspended the live suites, the natural-exit suite and every check that holds the box, across four plans, on the promise that this one run would take them all. Until this plan runs, that debt stands unpaid and no combined behavior of the four plans has been read.
+
+**The queue is one chain.** `docs/plans/agent_persona_context-budget-removal_v1.md`'s interim board 3 carries the full analysis. It is not repeated here.
+
+**Gate baseline.** None taken. No repository code changed, so no test lane ran and there is nothing to diff. The baseline this plan's Section 1 will need is named there as the newest trunk Chapter recording a whole gate, and it is not selected here because the trunk it must be read against does not yet exist.
+
+**Live dispatches.** None.
+
+**Asks in flight.** One to the repository's Expert seat, recorded in the context-budget plan's board 3. It does not gate and was unanswered at the time of writing.
+
+**Next action.** Nothing, until the four covered plans merge to the trunk and the operator arms this plan on their own word. This is the last plan of the armed queue, so its blocked state releases the session's leash. The goal state stays armed here, and the recovery when work resumes is the run's own `arm --self-armed` naming the plans still to run, in order.
+
+### Interim board 2 - 2026-09-19
+
+Not a Chapter. Section 1 is still unstarted and no repository code changed. The `Status:` header stays at `Ready`.
+
+**Stage.** The armed queue's leash advanced to this plan a second time, the last of five, after `docs/plans/agent_persona_supervisor-peer_v1.md` was recorded blocked a fourth time. Nothing of this plan ran.
+
+**The preceding plan's blocker was tested and does not carry.** That blocker is the supervisor-peer plan's own arming condition, which names that plan's two predecessors. It says nothing about the deferred suites or the trunk this run must gate. It stops nothing here.
+
+**The first ground is unchanged and was re-measured rather than carried from board 1.** Section 1 at line 36 opens by confirming the trunk carries the merge of every plan the policy covers. `origin/main` stands at `266b396`, fetched this session, which is the same commit board 1 recorded and whose newest commit archives an unrelated poll-cost plan. The working branch `steward-architect` is not an ancestor of it. None of the four covered plans has merged, so there is nothing on the trunk for this run to gate.
+
+**The second ground is also unchanged.** The Dispatch Authorization at line 13 arms execution only on the operator's own word, typed into the executing session's thread or relayed through the coordinator. No such word has been given for this plan. Either ground alone holds the run.
+
+**The debt this plan owes is unchanged and still unpaid.** The gate policy of 2026-09-18 suspended every check that holds the box across four plans, on the promise that this one run would take them all. No combined behavior of those four plans has been read, and none can be until they merge.
+
+**Gate baseline.** None taken. No repository code changed, so no test lane ran and there is nothing to diff. Section 1's baseline is still unselectable, because the trunk it must be read against does not yet exist.
+
+**Live dispatches.** None.
+
+**Asks in flight.** One to the repository's Expert seat, recorded in the context-budget plan's board 3. It does not gate and is still unanswered.
+
+**Next action.** Nothing, until the four covered plans merge to the trunk and the operator arms this plan on their own word. This is the last plan of the armed queue, so its blocked state releases the session's leash. The recovery when work resumes is the run's own `arm --self-armed` naming the plans still to run, in order.
+
+### Interim board 3 - 2026-09-19
+
+Not a Chapter. Section 1 is still unstarted and no repository code changed. The `Status:` header stays at `Ready`.
+
+**Stage.** The armed queue's leash advanced to this plan a third time, the last of five, after `docs/plans/agent_persona_supervisor-peer_v1.md` was recorded blocked a fifth time. Nothing of this plan ran.
+
+**The preceding blocker was tested and does not carry.** It is the supervisor-peer plan's own arming condition, naming that plan's two predecessors. It says nothing about the deferred suites or the trunk this run must gate.
+
+**The first ground is re-measured rather than carried.** Section 1 at line 36 opens by confirming the trunk carries the merge of every plan the policy covers. `origin/main` stands at `266b396`, fetched this session. `git merge-base --is-ancestor` confirms the working branch is not an ancestor of it, which is a direct test rather than a reading of the commit's subject line. None of the four covered plans has merged, so there is nothing on the trunk for this run to gate.
+
+**The second ground is unchanged.** The Dispatch Authorization at line 13 arms execution only on the operator's own word, typed into the executing session's thread or relayed through the coordinator. No such word has been given for this plan. Either ground alone holds the run.
+
+**The debt this plan owes is unchanged and still unpaid.** The gate policy of 2026-09-18 suspended every check that holds the box across four plans, on the promise that this one run would take them all. No combined behavior of those four plans has been read, and none can be until they merge.
+
+**Gate baseline.** None taken. No repository code changed, so no test lane ran and there is nothing to diff. Section 1's baseline is still unselectable, because the trunk it must be read against does not yet exist.
+
+**Live dispatches.** None.
+
+**Asks in flight.** One to the repository's Expert seat, recorded in the context-budget plan's board 3. It does not gate and is still unanswered.
+
+**This advance completes the queue's third full lap, and the lap's cost is now filed against the kit rather than against these plans.** Every plan behind the steward plan is held by that one plan closing, and each lap re-derives that fact plan by plan. The kaizen note recorded in `docs/plans/agent_persona_supervisor-peer_v1.md`'s interim board 5 names the friction and two candidate remedies.
+
+**Next action.** Nothing, until the four covered plans merge to the trunk and the operator arms this plan on their own word. This is the last plan of the armed queue, so its blocked state releases the session's leash. The recovery when work resumes is the run's own `arm --self-armed` naming the plans still to run, in order.
+
+### Interim board 4 - 2026-09-19
+
+Not a Chapter. Section 1 is still unstarted and no repository code changed. The `Status:` header stays at `Ready`.
+
+**Stage.** The armed queue's leash advanced to this plan a fourth time, the last of five, after `docs/plans/agent_persona_supervisor-peer_v1.md` was recorded blocked a sixth time. Nothing of this plan ran.
+
+**The preceding blocker was tested and does not carry.** It is the supervisor-peer plan's own arming condition, which names that plan's two predecessors and turns on one of them still being open. It says nothing about the deferred suites or about the trunk this run must gate.
+
+**The first ground is re-measured this session rather than carried.** Section 1 at line 36 opens by confirming the trunk carries the merge of every plan the policy covers. `git fetch origin` ran first, so the tracking ref is fresh rather than assumed, and `origin/main` stands at `266b396`. `git merge-base --is-ancestor HEAD origin/main` exited 1, so the working branch is not an ancestor of the trunk, and `git rev-list --count origin/main..HEAD` returns 81 commits held back. None of the four covered plans has merged.
+
+**One alternative reading was tested and ruled out, which is new since board 3.** Four local branches carry the covered plans' names: `plan/context-budget-removal`, `plan/deferred-gate-run`, `plan/lean-injection` and `plan/supervisor-peer-liveness-amend`. Each could in principle have carried its plan's work to the trunk by another route. Each returns zero for `git rev-list --count origin/main..<branch>` and exits 0 for `git merge-base --is-ancestor <branch> origin/main`, so every one of them sits at or behind the trunk and holds no unmerged work. They are stale pointers from authoring time. So the absence measured above is the whole picture rather than one branch's view of it.
+
+**Board 3's second ground was wrong and is corrected here.** That board held that the Dispatch Authorization's requirement of the operator's own word was unmet. It is met. The operator typed the five-plan queue that names this plan, and the kit-goal skill's arming-is-approval rule states that a typed invocation carries the same authority as a typed "proceed". So one ground holds this run, not two, and a later session should not go looking for a second answer from the operator. The same correction was made this session on `docs/plans/agent_persona_supervisor-peer_v1.md`'s interim board 6, where the two boards had read the same fact in opposite ways.
+
+**The debt this plan owes is unchanged and still unpaid.** The gate policy of 2026-09-18 suspended every check that holds the box across four plans, on the promise that this one run would take them all. No combined behavior of those four plans has been read, and none can be until they merge.
+
+**An observation about machine state, not acted on.** `git worktree list` reports `D:/agent_persona-wt/peer-detach-decision` as prunable. It is left as found, since pruning it is outside this plan and belongs to whoever owns that tree.
+
+**Gate baseline.** None taken. No repository code changed beyond this plan document, so no test lane ran and there is nothing to diff. Section 1's baseline is still unselectable, because the trunk it must be read against does not yet exist.
+
+**Live dispatches.** None.
+
+**Asks in flight.** None of this plan's own. An ask to the repository's Expert seat covering this set of ordering blocks went out again this session and is unanswered, as are the two before it. A routing notice to the coordinator seat naming the whole chain went out beside it.
+
+**This advance completes the queue's fourth full lap.** The kaizen note filed at `docs/plans/agent_persona_supervisor-peer_v1.md`'s interim board 5 names the friction and two candidate remedies. No second note was filed, since a duplicate on the same friction is what the kaizen bar refuses.
+
+**Next action.** Nothing, until the four covered plans merge to the trunk. This is the last plan of the armed queue, so its blocked state releases the session's leash. The recovery when work resumes is the run's own `arm --self-armed` naming the plans still to run, in order, with `docs/plans/agent_persona_steward-architect_v1.md` first.

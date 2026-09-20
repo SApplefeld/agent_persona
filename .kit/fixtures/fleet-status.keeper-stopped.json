@@ -1,0 +1,9 @@
+{
+  "persona": "stopped",
+  "launchCount": 3,
+  "lastStart": "2026-09-15T00:40:00.0000000Z",
+  "lastEnd": "2026-09-15T05:12:09.0000000Z",
+  "lastExitCode": 143,
+  "currentDelay": 300,
+  "holdReason": null
+}

@@ -1,0 +1,9 @@
+{
+  "persona": "first-crash",
+  "launchCount": 2,
+  "lastStart": "2026-09-15T05:44:00.0000000Z",
+  "lastEnd": "2026-09-15T05:46:02.0000000Z",
+  "lastExitCode": 3,
+  "currentDelay": 600,
+  "holdReason": null
+}

@@ -76,3 +76,166 @@ Tests: at minimum, lock that a critical crossing in the store no longer restarts
 - `docs/archive/agent_persona_process-keeper_v1.md`: closes before this plan runs.
 
 ## Chapters
+
+### Interim board 1 - 2026-09-18
+
+Not a Chapter. No section closed, and no section started.
+
+**Stage.** Section 1 is unstarted. The armed queue's leash advanced to this plan after `docs/plans/agent_persona_supervisor-peer_v1.md` was recorded blocked. The plan was read in full, its arming gate was tested, and the run stopped before any edit. The `Status:` header is deliberately left at `Ready` rather than normalized to `In Progress`, because the run is not starting. The preceding plan's status was flipped ahead of its gate earlier in this queue and had to be reverted, and this entry records the choice not to repeat it.
+
+**The gate, tested rather than assumed.** This plan's Dispatch Authorization states one condition: "Execution is armed only on the operator's own word, typed into the executing session's thread or relayed through the coordinator." That is one condition where the supervisor-peer plan's gate carried two, so the blocker recorded against that plan does not carry over by itself and was re-tested here rather than restated.
+
+The operator's word exists. They asked for all three plans to be armed and run "in order." That authorizes this plan's execution and sequences it third. What is missing is not authorization but permission to depart from the order they gave, since plans 1 and 2 have not closed.
+
+**The Assumptions line's third clause is unmet.** The dated assumption at the head of this plan's `## Assumptions` section bars it from running "never beside a plan that edits `bin/supervise.sh`, `bin/supervise-decide.mjs` or `hooks/index.ts`." `docs/plans/agent_persona_steward-architect_v1.md` edits two of those three and is blocked rather than closed. Its reversal clause hands the ordering to the operator at arming, and it reverses the sequencing clause only. It does not speak to the "beside" clause, so the reversal cannot be read as licensing this.
+
+**The overlap, measured rather than estimated.** Read from `git diff origin/main...HEAD` on branch `steward-architect` at `2923cbe`, searched for the monitor's own identifiers (`contextBudget`, `CONTEXT_BUDGET`, `criticalTs`, `budget_opts`, `context_budget`).
+
+- `bin/supervise.sh`: the steward plan's diff touches no monitor line. Seven monitor lines stand at `origin/main` for this plan to remove. Disjoint.
+- `hooks/index.ts`: the steward plan's diff touches no monitor line. Thirty-eight monitor lines stand at `origin/main`. Disjoint.
+- `bin/supervise-decide.mjs`: the steward plan does not touch the file at all. Five monitor lines stand. No overlap.
+- `bin/agentic-common.sh`: three collision sites. At line 149 the steward plan rewrote the `options` JSON assembly to append its `$architect_opt`, and this plan must remove `$budget_opts` from that same line. At line 56 the monitor's entry in the `emit_settings_json` header comment abuts a steward hunk at lines 57 to 62. At lines 111 and 112 the four `CONTEXT_BUDGET_*` names in the numeric-validation loop abut a steward hunk at lines 107 to 108. The `budget_opts` blob itself, lines 69 to 81, sits clear of every steward hunk and deletes cleanly.
+
+The first count taken here was one site rather than three. It came from searching the steward plan's diff for the monitor's own identifiers, which finds a collision only where both sides name the same thing. Two of the three sites are adjacency inside the three lines of context a merge reads, where the two sides name nothing in common. The method that finds them compares the steward plan's changed line ranges against the monitor's line positions at `origin/main`, and it is the one this entry's figures come from. The identifier search is recorded because it is the one that was wrong, and because it reported the other three files clear on the same evidence the range comparison independently confirms.
+
+So the cost of running the two in parallel is three mechanical conflicts in one file: a comment line, two lines of a name list, and one long assembly line. It is a rebase rather than a structural conflict. That finding argues for running now. It does not decide it, because the order is the operator's.
+
+**Rulings adopted since the last boundary.** One, carried in from the preceding plan and recorded in full in that plan's board: a gate's stated reason is not the gate, and a positional grant covers its stated scope only. That ruling is why this plan's gate was read as written here rather than through its evident purpose. Applying it in the other direction would be the same error: the "beside" clause bars this run on its own text, whatever its purpose, and the fact that the collision turns out to be one line does not narrow the clause.
+
+**Asks in flight.** The operator holds the ordering question, sent to their thread with both options and a marked recommendation to run now. The repository's Expert seat was asked, before this declaration, whether a prior operator decision or memory record already settles whether a blocked plan counts as "beside." That ask does not gate and was unanswered at the time of writing. The coordinator seat holds a routing notice.
+
+**Gate baseline.** None taken. No repository file changed beyond this plan document, so no test lane ran and there is no baseline to diff.
+
+**Live dispatches.** None. No implementer, reviewer or scout is in flight.
+
+**Next action.** Nothing, until the operator answers whether this plan may run out of the order they set. On a yes, Section 1 starts by cutting a branch off `origin/main`, repeating the Sweep section's two searches against that base, and amending Files in scope where a file has gained a mention. On a no, this plan waits for `docs/plans/agent_persona_steward-architect_v1.md` to close.
+
+### Interim board 2 - 2026-09-18
+
+Not a Chapter. Section 1 is still unstarted and no repository code changed.
+
+**Stage.** The armed queue's leash advanced to this plan a second time, after `docs/plans/agent_persona_supervisor-peer_v1.md` was recorded blocked on its own arming gate. Nothing of this plan ran. The `Status:` header stays at `Ready`, for the reason board 1 gives.
+
+**The preceding plan's blocker does not carry, and was tested rather than restated.** That blocker is the supervisor-peer plan's second arming condition, which requires the steward-architect plan to have closed. This plan's Dispatch Authorization carries no such condition. It carries one: the operator's own word. So that blocker stops nothing here and is not the ground below.
+
+**What stops this plan now is the operator's own live instruction, which is a stronger and different ground than board 1 recorded.** Board 1 rested on the `## Assumptions` line's third clause, the bar on running beside a plan that edits `bin/supervise.sh`, `bin/supervise-decide.mjs` or `hooks/index.ts`, and it noted that the clause's reversal hands the order to the operator at arming. The operator has since exercised exactly that reversal. Asked this session whether the run should depart from the order they set, they answered that it should keep going on the steward-architect plan and reach this plan later.
+
+So the ordering question board 1 sent up is answered, and the answer is no. This plan runs third, after the steward-architect plan closes. That word ranks above this plan's own assumption text, so the assumption's clause is no longer the operative bar and the measured overlap is no longer the operative argument.
+
+**The overlap finding from board 1 still stands and is unchanged.** Three mechanical conflict sites in `bin/agentic-common.sh`, all in one file: a header comment line, two lines of a name list, and one long options-assembly line. That is a rebase rather than a structural conflict. It argued for running now and it did not decide it, because the order was the operator's. It now is.
+
+**Gate baseline.** None taken. No repository file changed beyond this plan document, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** None. Two were open when this entry was begun and both were answered before it was committed. The ordering ask board 1 recorded is answered no: this plan runs third. The steward-architect plan's Section 2 decision is answered no as well, which unblocks that plan rather than this one, so the ordering above is unchanged and that plan resumes ahead of the supervisor-peer plan and of this one.
+
+**Next action.** Nothing, until the two plans ahead of this one close. Section 1 then starts by cutting a branch off `origin/main`, repeating the Sweep section's two searches against that base, and amending Files in scope where a file has gained a mention since.
+
+### Interim board 3 - 2026-09-18
+
+Not a Chapter. Section 1 is still unstarted and no repository code changed.
+
+**Stage.** The armed queue's leash advanced to this plan a third time, after `docs/plans/agent_persona_steward-architect_v1.md` was recorded blocked on the review-round backstop in its Section 6. Nothing of this plan ran. The `Status:` header stays at `Ready`, for the reason board 1 gives.
+
+**The preceding plan's blocker does not carry, and was tested rather than restated.** That blocker is a five-round review backstop inside the steward plan's own Section 6. It is a bound on that section's fix rounds and says nothing about this plan. So it stops nothing here and is not the ground below.
+
+**What stops this plan is the operator's own recorded word, which board 2 already established and which this entry re-tested rather than assumed.** Board 2 recorded the operator answering that the run should keep going on the steward plan and reach this plan later. This run doubted that answer still applied, on the theory that it was given while the steward plan was still advanceable and that the situation had therefore changed. That doubt is wrong on the record. Line 131 of this document states that the steward plan's Section 2 decision was answered in the same exchange, which unblocks that plan. So the steward plan was blocked on an operator decision at the moment the operator was asked whether this plan could run meanwhile, and they said no. The situation is the same one, not a new one.
+
+**A ruling this run relied on was misattributed, and the correction matters.** This run read a consultant ruling holding that the overlap between two plans is "a rebase rather than a block" and placed it in the steward plan's board, as a ruling about the steward plan and this one. It is at `docs/plans/agent_persona_supervisor-peer_v1.md:177`, and it rules on the overlap between the supervisor-peer plan and this one. The phrase appears nowhere in the steward plan. The misreading came from a diff hunk that was editing the supervisor-peer plan file, read as though it were content of the file being diffed against. No ruling licenses this plan to start beside the steward plan.
+
+**The queue's advance is a mechanism and not an authorization.** The goal CLI's own status reports every queued plan's arming as this run's own rather than as an invocation the operator typed. So the leash advancing past a blocked plan moves a pointer. It does not stand in for the operator's word on the order, and this run's contrary reading is recorded here because it was wrong.
+
+**Every plan behind this one is gated on the steward plan by its own text.** Read this session from each plan's own file. `docs/plans/agent_persona_lean-injection_v1.md:33` states "this plan cannot run before steward-architect", and `:27` states its target strings exist only on that plan's branch until it merges. `docs/plans/agent_persona_supervisor-peer_v1.md:13` requires every plan before it to have closed. `docs/plans/agent_persona_deferred-gate-run_v1.md:36` opens Section 1 by confirming the trunk carries the merge of every plan the gate policy covers. So the queue is one chain rather than five independent plans, and blocking here costs no runnable work: no later plan becomes available by skipping this one.
+
+**A defect in this plan's own Section 1, found by this session's sweep and owed whenever the plan runs.** The Sweep section requires the executing session to repeat the searches against its own base and amend Files in scope. Done, against `origin/main` at `266b396`. Two files carry the monitor and are named nowhere in Section 1's Files in scope: `bin/supervise-poll.mjs`, with four lines, and `.kit/supervisor-poll-unit-test.mjs`, with three. The first is load-bearing rather than incidental. Section 1 says `bin/supervise.sh` loses "the store reader that finds the critical decision, and the argument that hands it to the decide unit". At `origin/main` that file carries only the four `CONTEXT_BUDGET_*` assignments at lines 307 to 310, and no `criticalTs`, `crossed` or `supervise-decide` reference at all. The store reader is at `bin/supervise-poll.mjs:100-101`, which selects the newest `context_budget_crossed` decision, and the handoff is at `:201`. So Section 1 as written removes the monitor from a file that does not hold it and leaves the reader standing in a file it never names. Both files join Files in scope, and the acceptance grep would have caught this at the section's end rather than at its start.
+
+**Rulings adopted since the last boundary: one.** A consultant at fable ruled that this plan is declared blocked rather than run, and overturned two of the three legs this run's contrary framing rested on. Its grounds were checked here before adoption rather than taken from the report: the misattributed ruling was located at its true file and line, and the line establishing that the steward plan was blocked when the operator answered was read in this document. Its third correction, that the arming is the run's own, is confirmed from the goal CLI's own status output rather than from this run's failed probe of the goal state file, which used wrong field names and returned nothing. That probe proved nothing and no claim here rests on it. The ruling also holds that no single whole-queue declaration exists, because the Stop hook consumes one declaration per stop and advances one plan.
+
+**Gate baseline.** None taken. No repository file changed beyond this plan document, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None. The consultant named above has returned and no implementer, reviewer or scout is in flight.
+
+**Asks in flight.** One, to the repository's Expert seat, asking whether any prior operator decision or memory record settles whether a plan stopped on a blocker counts as running "beside" another. It does not gate and was unanswered at the time of writing. Board 1 records an identical ask to the same seat that also went unanswered.
+
+**Next action.** Nothing, until the operator answers the steward plan's Section 6 backstop brief. That one answer releases this plan and the three behind it. On the operator's word that this plan should instead run in parallel, Section 1 starts by cutting a branch off `origin/main`, repeating the Sweep section's two searches against that base, and amending Files in scope with the two files named above.
+
+### Interim board 4 - 2026-09-19
+
+Not a Chapter. Section 1 is still unstarted and no repository code changed. The `Status:` header stays at `Ready`, for the reason board 1 gives.
+
+**Stage.** The armed queue's leash advanced to this plan a fourth time, after `docs/plans/agent_persona_steward-architect_v1.md` was recorded blocked. Nothing of this plan ran.
+
+**The preceding plan's blocker does not carry, and was tested rather than restated.** That blocker asks the operator whether the steward persona gets its own working directory, which decides how that plan's Section 6 closes. It is a question about one persona's deployment and about that section's scope. It says nothing about the context-budget monitor, so it stops nothing here and is not the ground below.
+
+**The steward plan's blocker is new, and the question board 3 answered is therefore re-asked here rather than assumed.** Boards 2 and 3 rest on the operator's recorded word that the run should keep going on the steward plan and reach this plan later. That word was given while the steward plan was blocked on an operator decision. The steward plan is now blocked on a different operator decision. So the situation is the same shape, an operator decision holding that plan, which is exactly the case board 3 examined and ruled unchanged. The answer is unchanged for the same reason: what the operator was asked was whether this plan could run while that one waited on them, and they said no.
+
+**The Assumptions line's third clause is still unmet, and it is an independent bar.** That clause bars this plan from running beside a plan that edits `bin/supervise.sh`, `bin/supervise-decide.mjs` or `hooks/index.ts`. The steward plan edits two of the three and is blocked rather than closed. Its reversal clause hands the sequencing to the operator at arming and does not reach the beside clause, per the ruling board 1 records. So even setting the operator's live word aside, this clause bars the run on its own text.
+
+**Blocking here still costs no runnable work, and that was re-read rather than carried.** Board 3 established from each plan's own file that every plan behind this one is gated on the steward plan: `docs/plans/agent_persona_lean-injection_v1.md:33` states it cannot run before steward-architect, `docs/plans/agent_persona_supervisor-peer_v1.md:13` requires every plan before it to have closed, and `docs/plans/agent_persona_deferred-gate-run_v1.md:36` opens by confirming the trunk carries the merge of every plan the gate policy covers. The queue is one chain. Skipping this plan makes no later plan available.
+
+**The Section 1 defect board 3 found is still owed and is restated here so it is not lost to a boundary.** Two files carry the monitor and are named nowhere in Section 1's Files in scope: `bin/supervise-poll.mjs`, which holds the store reader selecting the newest crossing and the handoff to the decide unit, and `.kit/supervisor-poll-unit-test.mjs`. Section 1 as written removes the monitor from `bin/supervise.sh`, which does not hold the reader, and leaves the reader standing in a file the section never names. Both files join Files in scope whenever this plan runs.
+
+**Gate baseline.** None taken. No repository file changed beyond this plan document, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** None of this plan's own. Two asks to the repository's Expert seat on whether a blocked plan counts as running "beside" another, recorded at boards 1 and 3, both went unanswered.
+
+**Next action.** Nothing, until the operator answers the steward plan's working-directory question. That one answer releases the steward plan and the three behind it, this one included. On the operator's word that this plan should instead run in parallel, Section 1 starts by cutting a branch off `origin/main`, repeating the Sweep section's two searches against that base, and amending Files in scope with the two files named above.
+
+### Interim board 5 - 2026-09-19
+
+Not a Chapter. Section 1 is still unstarted and no repository code changed. The `Status:` header stays at `Ready`, for the reason board 1 gives.
+
+**Stage.** The armed queue's leash advanced to this plan a fifth time, after `docs/plans/agent_persona_steward-architect_v1.md` was recorded blocked on its Section 6 review-round backstop at eleven rounds. Nothing of this plan ran.
+
+**The preceding plan's blocker does not carry, and was tested rather than restated.** That blocker asks the operator what to do with a fleet-watching mechanism the steward plan's Section 6 has failed to close in eleven review rounds, the finding being that the mechanism is specified nowhere in that plan's approval-scoped text. It is a question about one section's design standard. It says nothing about the context-budget monitor, so it stops nothing here and is not the ground below.
+
+**What stops this plan is the operator's own recorded word, unchanged in shape since board 2.** Board 2 records the operator, asked this session whether the run should depart from the order they set, answering that it should keep going on the steward plan and reach this plan later. That word was given while the steward plan was blocked on an operator decision. It is blocked on an operator decision again now, a different question with the same shape, which is exactly the case boards 3 and 4 examined and ruled unchanged. The answer is unchanged for the same reason: what the operator was asked was whether this plan could run while that one waited on them, and they said no.
+
+**This run reached the opposite conclusion first, and the record is what corrected it.** Before reading this document's Chapters, this run had decided to proceed: commit the steward plan's Section 6 code to its own branch, cut a branch off `origin/main` here, and run Section 1 against that clean base. The reasoning was that the assumption's beside clause names a tree-collision hazard, that a separate base removes the hazard, and that the doctrine prefers working a plan to stopping it. That reasoning is not wrong on its own terms and it is beside the point, because it weighs an operator instruction against this run's own judgment of the hazard behind it. The instruction governs whatever the hazard turns out to be. The near-miss is recorded because the failure mode is general: a run that reads a plan's body and its Sections and skips its Chapters holds the plan's design and none of its decisions, and the decisions are where the operator's word lives.
+
+**The Assumptions line's third clause is still unmet, and it is an independent bar.** That clause bars this plan from running beside a plan that edits `bin/supervise.sh`, `bin/supervise-decide.mjs` or `hooks/index.ts`. The steward plan edits two of the three and is blocked rather than closed. Its reversal clause hands the sequencing to the operator at arming and does not reach the beside clause, per the ruling board 1 records.
+
+**A measured fact that argues for running and does not decide it, taken here on this run's own tree rather than carried from board 1.** The monitor's lines in `hooks/index.ts` stand at 329 to 335, 369 to 375, 391, 1819 to 1823 and 4124 onward. The steward plan's uncommitted Section 6 hunks in that same file stand at 338, 1168, 1198, 1273, 1289 and 2644 through 3218. No hunk overlaps a monitor line, so the textual conflict in this file is none. What the shared file still costs is that git cannot split it: a commit of the monitor's removal taken on this worktree would necessarily carry the steward plan's frozen Section 6 work, whose two Majors are unfixed and whose disposition the operator holds. That is the concrete harm the beside clause prevents here, and it is why the clause is not satisfied by the absence of a line conflict.
+
+**Blocking here still costs no runnable work, re-read this session from each plan's own file rather than carried.** `docs/plans/agent_persona_lean-injection_v1.md` states its base is the trunk after the steward plan merges and closes its Order paragraph with "this plan cannot run before steward-architect". `docs/plans/agent_persona_supervisor-peer_v1.md:13` arms only after both the process-keeper plan and the steward plan close. `docs/plans/agent_persona_deferred-gate-run_v1.md:36` opens Section 1 by confirming the trunk carries the merge of every plan the gate policy covers. The queue is one chain. Skipping this plan makes no later plan available, and the leash will walk the three behind it to the same result.
+
+**The Section 1 defect boards 3 and 4 found is still owed and is restated so it survives this boundary.** Two files carry the monitor and are named nowhere in Section 1's Files in scope: `bin/supervise-poll.mjs`, which holds the store reader selecting the newest crossing and the handoff to the decide unit, and `.kit/supervisor-poll-unit-test.mjs`. Section 1 as written removes the monitor from `bin/supervise.sh`, which does not hold the reader, and leaves the reader standing in a file the section never names. Both files join Files in scope whenever this plan runs.
+
+**Gate baseline.** None taken. No repository file changed beyond this plan document, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** None of this plan's own. Two asks to the repository's Expert seat on whether a blocked plan counts as running "beside" another, recorded at boards 1 and 3, both went unanswered. A third ask to that seat on the steward plan's Section 6, and a routing notice to the coordinator seat, went out this session under that plan's blocker path and are unanswered.
+
+**Next action.** Nothing, until the operator answers the steward plan's Section 6 backstop brief. That one answer releases this plan and the three behind it. On the operator's word that this plan should instead run in parallel, Section 1 starts by cutting a branch off `origin/main`, repeating the Sweep section's two searches against that base, and amending Files in scope with the two files named above.
+
+### Interim board 6 - 2026-09-19
+
+Not a Chapter. Section 1 is still unstarted and no repository code changed. The `Status:` header stays at `Ready`, for the reason board 1 gives.
+
+**Stage.** The armed queue's leash advanced to this plan a sixth time, after `docs/plans/agent_persona_steward-architect_v1.md` was recorded blocked on its Section 5 review-round backstop at five rounds. Nothing of this plan ran.
+
+**The preceding plan's blocker does not carry, and was tested rather than restated.** That blocker is a five-round review backstop inside the steward plan's own Section 5, which hands back to the operator the question of whether that section's repair loop continues. It is a bound on one section's fix rounds. It says nothing about the context-budget monitor, so it stops nothing here and is not the ground below.
+
+**Board 5's concrete-harm argument has lapsed, and is retired here rather than repeated.** Board 5 argued that the beside clause bit because git cannot split a shared file: a commit of the monitor's removal taken on this worktree would necessarily carry the steward plan's frozen Section 6 work, which was uncommitted at that writing. That is no longer true. The steward plan's work is committed at `df31c34` and pushed, and `git status --porcelain` on this tree returns one untracked line, `?? .claude/worktrees/`, and nothing tracked. So a commit here would carry nothing of that plan's. The argument is withdrawn. This entry records the withdrawal because a board that restated it unchanged would be carrying a measured claim past the measurement that supported it.
+
+**What stops this plan is unchanged even so, and it is two independent bars.** The first is the operator's own recorded word, read from board 2 of this document rather than from the original exchange, which this session cannot reach. Asked whether the run should depart from the order they set, they answered that it should keep going on the steward plan and reach this plan later. That word was given while the steward plan was blocked on an operator decision, and it is blocked on an operator decision again now. Boards 3, 4 and 5 each examined that same shape and ruled it unchanged.
+
+The second is the `## Assumptions` line's third clause, which bars this plan from running beside a plan that edits `bin/supervise.sh`, `bin/supervise-decide.mjs` or `hooks/index.ts`. Measured this session with `git diff --stat origin/main...HEAD`: the steward branch changes 154 lines of `bin/supervise.sh` and 1,910 of `hooks/index.ts`, and that plan is blocked rather than closed. Board 1's ruling is what makes this bar survive the withdrawal above: the clause bars on its own text whatever hazard sits behind it, and a hazard that turns out to be absent does not narrow the clause. Its reversal hands the sequencing to the operator at arming and does not reach the beside clause.
+
+**Blocking here still costs no runnable work, re-read this session from each plan's own file.** `docs/plans/agent_persona_lean-injection_v1.md:33` states "this plan cannot run before steward-architect", and `:27` sets its base as the trunk after that plan merges, the strings its sections rewrite existing only on that branch until then. `docs/plans/agent_persona_supervisor-peer_v1.md:13` arms only after both the process-keeper plan and the steward plan close. `docs/plans/agent_persona_deferred-gate-run_v1.md:36` opens Section 1 by confirming the trunk carries the merge of every plan the policy covers. The queue is one chain. Skipping this plan makes no later plan available.
+
+**The Section 1 defect boards 3 to 5 found is still owed, and was re-verified here with a control rather than carried.** Predicate `git grep -n -i -e "context.\?budget" -e "criticalTs"` over `origin/main`, scoped to the two files. `bin/supervise-poll.mjs` matched at lines 84, 100, 101 and 201, holding the store reader that selects the newest crossing and the handoff to the decide unit. `.kit/supervisor-poll-unit-test.mjs` matched at lines 115, 119 and 144. Neither file appears in Section 1's Files in scope at line 40. The control was the same predicate over `bin/supervise-decide.mjs`, a file the section does name, which returned 5 matches, so the predicate speaks. Section 1 as written removes the monitor from `bin/supervise.sh`, which does not hold the reader, and leaves the reader standing in a file it never names. Both files join Files in scope whenever this plan runs.
+
+**Gate baseline.** None taken. No repository file changed beyond this plan document, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** None of this plan's own. Two asks to the repository's Expert seat on whether a blocked plan counts as running "beside" another, recorded at boards 1 and 3, both went unanswered. A third to that seat and a notice to the coordinator seat went out under the steward plan's backstop path and are unanswered.
+
+**Operator traffic this session.** The operator asked on the relay whether disabling a persona's scheduled task, rebooting, and re-enabling it would work around the steward plan's cutover ordering defect, and whether that defect recurs on every reboot. Answered from the code: the route works and the defect does not recur, the supervisor writing a settings file only where none exists (`bin/supervise.sh:341`), the tasks firing at startup only (`bin/Register-PersonaTasks.ps1:281`), and a fresh wrapper reading the roster above its relaunch loop (`bin/Start-Persona.ps1:383` and `:482`). That exchange concerns the steward plan and moves nothing here.
+
+**Next action.** Nothing, until the operator answers the steward plan's Section 5 backstop declaration. That one answer releases this plan and the three behind it. On the operator's word that this plan should instead run in parallel, Section 1 starts by cutting a branch off `origin/main`, repeating the Sweep section's two searches against that base, and amending Files in scope with the two files named above.

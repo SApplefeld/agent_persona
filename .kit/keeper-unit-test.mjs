@@ -249,8 +249,9 @@ const decisionCases = [
 // ---------------------------------------------------------------------------------------------
 const rosterFile = path.join(tmp, 'roster.json');
 fs.writeFileSync(rosterFile, JSON.stringify([
-  { name: 'full', workdir: 'D:/scratch/full work', permissionMode: 'bypassPermissions', rundir: 'D:/scratch/full/run', channelName: 'chan-full', model: 'opus', effort: 'high', controllerTickMs: 60000, coordinatorPersona: 'coordinator', args: ['--no-channel', '--dev'], enabled: true },
+  { name: 'full', workdir: 'D:/scratch/full work', permissionMode: 'bypassPermissions', rundir: 'D:/scratch/full/run', channelName: 'chan-full', model: 'opus', effort: 'high', controllerTickMs: 60000, coordinatorPersona: 'coordinator', architectPersona: 'architect', fleetRoster: 'D:/scratch/fleet.json', args: ['--no-channel', '--dev'], enabled: true },
   { name: 'minimal', workdir: 'D:/scratch/minimal', permissionMode: 'acceptEdits', enabled: true },
+  { name: 'partial', workdir: 'D:/scratch/partial', permissionMode: 'acceptEdits', coordinatorPersona: 'steward', enabled: true },
   { name: 'prompted', workdir: 'D:/scratch/p', permissionMode: 'acceptEdits', args: ['--prompt', 'hello'], enabled: true },
   { name: 'prompted-eq', workdir: 'D:/scratch/p', permissionMode: 'acceptEdits', args: ['--prompt=hello'], enabled: true },
   { name: 'noworkdir', permissionMode: 'acceptEdits', enabled: true },
@@ -313,12 +314,24 @@ function build(name) {
 test('build: a full entry maps every roster field in the supervisor argument order', () => {
   const r = build('full');
   assert.deepEqual(r.Arguments, ['/d/scratch/full work', 'full', 'bypassPermissions', '--rundir', '/d/scratch/full/run', '--channel-name', 'chan-full', '--no-channel', '--dev']);
-  assert.deepEqual(r.Environment, { MODEL: 'opus', EFFORT: 'high', controllerTickMs: '60000', COORDINATOR_PERSONA: 'coordinator' });
+  // This leg pins the variable name and the value of every mapped field the
+  // fixture carries, so a renamed target or an unconditional emit fails here. It
+  // does not catch a row added to $map alone: the fixture would then not carry
+  // that field, the builder skips a field the entry lacks, and this expectation
+  // stays green. A new row means a new fixture field and a new key here too.
+  assert.deepEqual(r.Environment, { MODEL: 'opus', EFFORT: 'high', controllerTickMs: '60000', COORDINATOR_PERSONA: 'coordinator', ARCHITECT_PERSONA: 'architect', FLEET_ROSTER: 'D:/scratch/fleet.json' });
 });
 test('build: a minimal entry yields the three positional arguments and an empty environment', () => {
   const r = build('minimal');
   assert.deepEqual(r.Arguments, ['/d/scratch/minimal', 'minimal', 'acceptEdits']);
-  assert.deepEqual(r.Environment, {});
+  assert.deepEqual(r.Environment, {}, 'an entry carrying none of the mapped fields yields no environment key at all');
+});
+test('build: an entry carrying some mapped fields yields those keys and no others', () => {
+  // The two legs above pin the extremes, all six fields and none. The docstring's
+  // and the README's claim is about the middle, "each set only where the entry
+  // carries the field", which is the shape the shipped roster's worker entries have.
+  const r = build('partial');
+  assert.deepEqual(r.Environment, { COORDINATOR_PERSONA: 'steward' });
 });
 test('build: --prompt in args throws naming the roster path', () => {
   const r = build('prompted');

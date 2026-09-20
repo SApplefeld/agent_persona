@@ -1,0 +1,9 @@
+{
+  "persona": "alpha",
+  "launchCount": 4,
+  "lastStart": "2026-09-15T02:10:00.0000000Z",
+  "lastEnd": "2026-09-15T05:41:07.0000000Z",
+  "lastExitCode": 2,
+  "currentDelay": 300,
+  "holdReason": null
+}

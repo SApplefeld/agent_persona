@@ -28,4 +28,5 @@
 !/persona-live-refuse-test.sh
 !/keeper-unit-test.mjs
 !/keeper-register-test.mjs
+!/fleet-status-unit-test.mjs
 !/fixtures/*

@@ -24,13 +24,13 @@ Provenance: the coordinator persona's inventory of 2026-09-18, measured from the
 
 **The rule each edit applies.** For every sentence in an injected string, name the surface that already carries its content. Where one exists, the sentence goes, and the string keeps at most one pointer to that surface. Where none exists and the content is a standing rule rather than this prompt's own instruction, the sentence moves to the owner, which is `CLAUDE.md` for writing and channel conduct, the kit's role skill for a seat's duties, and the tool's description for a tool's contract. Where none exists and the content is what to do with this prompt, the sentence stays. The lean-kit program's "one owner per moment" is the rule; this paragraph is how it is applied to a prompt.
 
-**The base.** This plan's base is the trunk after `docs/plans/agent_persona_steward-architect_v1.md` merges. The strings the sections name are the ones on that plan's branch at `3c03886` and in its Section 6 worked tree, which is where the architect instruction, the `fleet_status` tool and the `[FLEET]` and `[RECONCILE]` frames live; the trunk at `8e177ce` has four instruction strings and none of those. A string a section names that does not exist at the executing base makes that clause void, and the Chapter says so.
+**The base.** This plan's base is the trunk after `docs/archive/agent_persona_steward-architect_v1.md` merges. The strings the sections name are the ones on that plan's branch at `3c03886` and in its Section 6 worked tree, which is where the architect instruction, the `fleet_status` tool and the `[FLEET]` and `[RECONCILE]` frames live; the trunk at `8e177ce` has four instruction strings and none of those. A string a section names that does not exist at the executing base makes that clause void, and the Chapter says so.
 
 **What the inventory found.** Measured 2026-09-18 from `bin/supervise.sh` and `hooks/index.ts` on the steward-architect branch at `3c03886` and its worked tree. The startup message is assembled at the `printf` that writes `$SKILL_LOAD_INSTRUCTION$COORDINATOR_STEER_INSTRUCTION$COORDINATOR_ROLE_INSTRUCTION$ARCHITECT_ROLE_INSTRUCTION$CHANNEL_REPLY_INSTRUCTION` and the priming body to the child. Its parts: the skill-load instruction at 518 characters, the coordinator steer instruction at 1,389, the channel instruction at 1,564, the coordinator role instruction at 3,711 with its fleet, seat and architect clauses at 1,408, 614 and 1,761, and the architect role instruction at 5,574. The channel instruction is byte-identical to `REPLY_INSTRUCTION` in `hooks/index.ts`, and 19 of its 21 sentences are verbatim in `CLAUDE.md`, the other two restating the relay server's own instructions. `REPLY_INSTRUCTION` is prepended to the still-waiting re-raise, the fleet reading, the kaizen announcement and the reply backstop. The coordinator role instruction restates the `agentic_say`, `agentic_inbox` and `agentic_resolve` descriptions; its fleet clause and the `fleet_status` description each define the same health classes; the architect instruction overrides two instructions the same message injected and states its clone rule three times. The tool descriptions total about 10,700 characters, `fleet_status` at 3,547, and are registered into every session. The per-prompt context blocks (`[GOAL TREE]`, `[NO GOAL]`, the idle nudges) repeat the `goal_done` clause among themselves.
 
 **The guard.** `.kit/injection-ledger.mjs` extracts every injected string and tool description from the two source files by the anchors the sections name, and prints each with its size. `.kit/injection-duplicate-test.mjs` runs it and fails on any sentence of eight words or more that appears in `CLAUDE.md` or in another injected string, and on any string whose size exceeds the number recorded for it in `.kit/injection-ledger.json`. The check exempts nothing, so a sentence two prompts both need is a sentence with one owner and a pointer, never two copies. The reply-tool sentence's owner is the startup message, which every channel-attached child reads once; each recurring prompt names the reply tool inside its own instruction in its own words, and the `REPLY_INSTRUCTION` prefix goes. A string that grows raises its own number in the same commit, which is the lean-kit program's "growth is declared" decision at this repository's scale. The test is offline, so it runs beside a live fleet.
 
-**Order.** This plan runs after `docs/plans/agent_persona_steward-architect_v1.md`, because that plan's worked copy already rewrites the coordinator and architect instructions on its branch and a trim landed first would be overwritten. It runs after `docs/plans/agent_persona_context-budget-removal_v1.md`, because that plan deletes the `[BUDGET]` prompt this one would otherwise trim. It runs before `docs/plans/agent_persona_supervisor-peer_v1.md`, so that plan's one new priming sentence is written under the guard. The order is the operator's at arming, except that this plan cannot run before steward-architect.
+**Order.** This plan runs after `docs/archive/agent_persona_steward-architect_v1.md`, because that plan's worked copy already rewrites the coordinator and architect instructions on its branch and a trim landed first would be overwritten. It runs after `docs/plans/agent_persona_context-budget-removal_v1.md`, because that plan deletes the `[BUDGET]` prompt this one would otherwise trim. It runs before `docs/plans/agent_persona_supervisor-peer_v1.md`, so that plan's one new priming sentence is written under the guard. The order is the operator's at arming, except that this plan cannot run before steward-architect.
 
 ## Sections of Work
 
@@ -115,8 +115,92 @@ Files in scope: `README.md`, `docs/README.md`, this plan document.
 
 - `docs/plans/claude-kit_lean-kit_program_v1.md` in the claude-kit repository: the decisions this plan applies, growth declared and one owner per moment.
 - `docs/plans/claude-kit_goal-fit_spec_v1.md` in the claude-kit repository: the intent record this plan's Intent section follows.
-- `docs/plans/agent_persona_steward-architect_v1.md`: runs before this plan and rewrites two of the strings it trims.
+- `docs/archive/agent_persona_steward-architect_v1.md`: runs before this plan and rewrites two of the strings it trims.
 - `docs/plans/agent_persona_context-budget-removal_v1.md`: runs before this plan and deletes the `[BUDGET]` prompt.
 - `docs/plans/agent_persona_supervisor-peer_v1.md`: runs after this plan and adds one priming sentence under the guard.
 
 ## Chapters
+
+### Interim board 1 - 2026-09-18
+
+Not a Chapter. Section 1 is unstarted and no repository file changed beyond this document.
+
+**Stage.** The armed queue's leash advanced to this plan after `docs/plans/agent_persona_context-budget-removal_v1.md` was recorded blocked. Nothing of this plan ran. The `Status:` header stays at `Ready`, because the run is not starting.
+
+**The preceding plan's blocker was tested and does not carry, but this plan's own gate is unmet.** That blocker is the context-budget plan's ordering bar, which is specific to that plan. It stops nothing here. What stops this plan is its own text, read this session from this file. Line 33 states "this plan cannot run before steward-architect". Line 27 sets this plan's base as the trunk after that plan merges, and states that the strings Sections 2 to 4 rewrite exist only on that plan's branch until then. Line 101 records the reversal as unavailable for the same reason. So the bar here is not a preference about ordering. Sections 2 to 4 have nothing to edit at `origin/main`.
+
+**The queue is one chain.** `docs/plans/agent_persona_context-budget-removal_v1.md`'s interim board 3 carries the full analysis, including the operator's recorded word on the order and the corrections to three readings this run had wrong. It is not repeated here.
+
+**Gate baseline.** None taken. No repository code changed, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** One to the repository's Expert seat, recorded in the context-budget plan's board 3, covering this whole set of ordering blocks. It does not gate and was unanswered at the time of writing.
+
+**Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes and merges. Section 1 then starts by building the injection ledger against the merged trunk and recording the duplicate test's red baseline.
+
+### Interim board 2 - 2026-09-19
+
+Not a Chapter. Section 1 is still unstarted and no repository code changed. The `Status:` header stays at `Ready`, for the reason board 1 gives.
+
+**Stage.** The armed queue's leash advanced to this plan a second time, after `docs/plans/agent_persona_context-budget-removal_v1.md` was recorded blocked for the fourth time. Nothing of this plan ran.
+
+**The preceding plan's blocker was tested and does not carry.** That blocker is the context-budget plan's own ordering bar: its Assumptions forbid it running beside a plan that edits three named files, and the steward plan edits two of them and is blocked rather than closed. That is a statement about the context-budget plan's files and says nothing about the injection ledger or the strings this plan trims. It stops nothing here.
+
+**This plan's own gate is unmet, re-read from this file this session rather than carried from board 1.** Line 33 states "this plan cannot run before steward-architect". Line 27 sets the base as the trunk after that plan merges, and states that the strings Sections 2 to 4 rewrite live on that plan's branch and in its Section 6 worked tree, with the trunk carrying four instruction strings and none of them. Line 101 records the reversal as unavailable for the same reason. Sections 2 to 4 have nothing to edit at `origin/main`.
+
+**The ground below the chain is confirmed and has moved since board 1.** `docs/plans/agent_persona_steward-architect_v1.md:3` reads `Status: In Progress`, so it has neither closed nor merged. Its blocker is now the ownership fork its interim board 25 records: whether the steward persona gets its own working directory. That is a different question from the one standing at board 1, and it is the operator's to answer. It does not change this plan's bar, which turns on the merge rather than on the reason the merge is waiting.
+
+**Gate baseline.** None taken. No repository code changed, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** One to the repository's Expert seat, recorded in the context-budget plan's board 3, covering this whole set of ordering blocks. It does not gate and is still unanswered.
+
+**Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes and merges. Section 1 then starts by building the injection ledger against the merged trunk and recording the duplicate test's red baseline.
+
+### Interim board 3 - 2026-09-19
+
+Not a Chapter. Section 1 is still unstarted and no repository code changed. The `Status:` header stays at `Ready`.
+
+**Stage.** The armed queue's leash advanced to this plan a third time, after `docs/plans/agent_persona_context-budget-removal_v1.md` was recorded blocked for the fifth time. Nothing of this plan ran.
+
+**The preceding plan's blocker was tested and does not carry.** It is the context-budget plan's own bar against running beside a plan that edits three named files. That says nothing about the injection ledger or the strings this plan trims.
+
+**This plan's gate is confirmed unmet from the trunk's content, which is a different reading from boards 1 and 2.** Those argued from this document's own sentences. This one opened the files at `origin/main`, now `266b396`. `bin/supervise.sh` there carries no `ARCHITECT_ROLE_INSTRUCTION`, and `hooks/index.ts` there carries no `[FLEET]` frame, no `[RECONCILE]` frame and no `fleet_status` tool. So Section 2 has no architect string to rewrite, Section 3 has no fleet frames to trim, and Section 4 has no `fleet_status` description to reduce. `REPLY_INSTRUCTION` is the one named string that does exist at the trunk, at five occurrences.
+
+Section 1 is gated by the same fact rather than merely by the order. Its acceptance requires the ledger's names to cover every string the Approach's inventory lists, and four of those strings are absent at the trunk. A ledger built there would record a baseline that every later section reports against, and it would be the wrong baseline.
+
+**The ground below the chain has moved again since board 2.** `docs/plans/agent_persona_steward-architect_v1.md:3` still reads `Status: In Progress`. Its blocker is no longer the working-directory ownership fork board 2 names. It is now the review-round backstop question its Section 6 records, which is the operator's to answer. No pull request exists for the `steward-architect` branch in any state, so the merge this plan's base waits on has not been opened, let alone landed.
+
+**Gate baseline.** None taken. No repository code changed, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** One to the repository's Expert seat, recorded in the context-budget plan's board 3, covering this whole set of ordering blocks. It does not gate and is still unanswered.
+
+**Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes and merges. Section 1 then starts by building the injection ledger against the merged trunk and recording the duplicate test's red baseline.
+
+### Interim board 4 - 2026-09-19
+
+Not a Chapter. Section 1 is still unstarted and no repository code changed. The `Status:` header stays at `Ready`, for the reason board 1 gives.
+
+**Stage.** The armed queue's leash advanced to this plan a fourth time, after `docs/plans/agent_persona_context-budget-removal_v1.md` was recorded blocked for the sixth time. Nothing of this plan ran.
+
+**The preceding plan's blocker was tested and does not carry.** It is the context-budget plan's own bar against running beside a plan that edits `bin/supervise.sh`, `bin/supervise-decide.mjs` or `hooks/index.ts`, together with the operator's recorded word on the order. That is a statement about that plan's files and about its place in the queue. It says nothing about the injection ledger or the strings this plan trims, and it is not the ground below.
+
+**This plan's gate is confirmed unmet from the trunk's own content, measured this session and sharper than board 3's reading.** `origin/main` is at `266b396`, unmoved since board 3. Predicate `git grep -c` over `bin/supervise.sh` and `hooks/index.ts` at that ref, for each string Sections 2 to 4 name: `ARCHITECT_ROLE_INSTRUCTION`, `[FLEET]`, `[RECONCILE]` and `fleet_status` all returned no match. The control was `REPLY_INSTRUCTION` over the same two files at the same ref, which returned 4 and 5, so the predicate and the scope both speak.
+
+The count settles Section 1 on its own terms rather than by order alone. `git grep -o -E "[A-Z_]+_INSTRUCTION=" ` over `bin/supervise.sh` at that ref returns exactly four names: `CHANNEL_REPLY_INSTRUCTION`, `COORDINATOR_ROLE_INSTRUCTION`, `COORDINATOR_STEER_INSTRUCTION` and `SKILL_LOAD_INSTRUCTION`. Section 1's own text names "the five `*_INSTRUCTION` variables", and its acceptance requires the ledger's names to cover every string the Approach's inventory lists. A ledger built at this base would be short by one instruction string, one tool description and two prompt frames, and it would be the baseline every later section reports against.
+
+**One route was considered and rejected, recorded so it is not re-litigated.** Two of Section 1's three new files, the ledger script and the duplicate test, extract by anchor and would run against either base, so only `.kit/injection-ledger.json` is base-dependent. Writing the two now was rejected on two grounds. The checkout sits on `steward-architect`, so a commit would land this plan's work on another plan's branch and into that plan's pull request, against the doctrine's stay-in-scope rule. And the Approach's base paragraph sets the base as the trunk after that plan merges, which is a statement about where the work lands rather than about the order it runs in.
+
+**The ground below the chain, re-read rather than carried.** `docs/plans/agent_persona_steward-architect_v1.md:3` still reads `Status: In Progress`. `gh pr list --head steward-architect --state all` returns an empty list, so no pull request has been opened in any state and the merge this plan's base waits on has not happened. That plan's current blocker is the review-round backstop its Section 5 records, which is the operator's to answer.
+
+**Gate baseline.** None taken. No repository code changed beyond this document, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** None of this plan's own. An ask to the repository's Expert seat covering this set of ordering blocks went out again this session under the context-budget plan's declaration, and remains unanswered, as do the two before it.
+
+**Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes and merges. Section 1 then starts by building the injection ledger against the merged trunk and recording the duplicate test's red baseline.

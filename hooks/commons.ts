@@ -197,6 +197,29 @@ export async function gcStaleClaims(
 }
 
 /**
+ * Every commons entry in the store, with no staleness filter and no
+ * collection. Readers that want only live claims filter what comes back;
+ * readers that exist to show a session whose heartbeat has stopped, the fleet
+ * report among them, want the whole set. An entry whose shape does not hold is
+ * skipped rather than returned, so no caller has to guard the fields again.
+ */
+export async function readAllEntries(store: CommonsStore): Promise<CommonsEntry[]> {
+  const allKeys = await store.keys();
+  const keys = allKeys.filter((k) => k.startsWith(COMMONS_PREFIX));
+  const entries: CommonsEntry[] = [];
+  for (const key of keys) {
+    const raw = await store.get(key);
+    if (!raw) continue;
+    const entry = raw as CommonsEntry;
+    if (typeof entry.sessionId !== "string") continue;
+    if (!Array.isArray(entry.claims)) continue;
+    if (typeof entry.lastSeen !== "number") continue;
+    entries.push(entry);
+  }
+  return entries;
+}
+
+/**
  * Read all claims from all sessions (union).
  * Filters out stale sessions (lastSeen older than stalenessThreshold).
  * F14: also garbage-collects stale entries on read.
@@ -211,16 +234,9 @@ export async function readAllClaims(
     await gcStaleClaims(store, stalenessThresholdMs, now);
   } catch { /* non-fatal */ }
 
-  const allKeys = await store.keys();
-  const keys = allKeys.filter((k) => k.startsWith(COMMONS_PREFIX));
   const claims: UnionedClaim[] = [];
 
-  for (const key of keys) {
-    const raw = await store.get(key);
-    if (!raw) continue;
-
-    const entry: CommonsEntry = raw as CommonsEntry;
-
+  for (const entry of await readAllEntries(store)) {
     // Check liveness
     const lastSeen = entry.lastSeen;
     if (now - lastSeen > stalenessThresholdMs) {
