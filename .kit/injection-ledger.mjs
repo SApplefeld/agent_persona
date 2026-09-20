@@ -61,10 +61,14 @@
 // rule, and the authored prose of a [FLEET] note's `composed` half is
 // another. The "- " prefix on each [KAIZEN] line and the "Pending siblings: ",
 // "Last note: " and "root > " fragments of the [GOAL TREE] block are not
-// sized by any rule here. Neither are the six short phrases a fleet note
-// splices in by name, the three state keys and the three well-state
-// readings beside them, which the composed-prose rule meets as
-// interpolation rather than as literal text.
+// sized by any rule here. Neither is anything a fleet note splices into
+// its own template through an interpolation, however that interpolation is
+// spelled: a state key or well-state reading named as a constant, a
+// helper's return, a value taken from another note, or a literal written
+// inside a ternary. The composed-prose rule below reads a site's own
+// literal text and meets every `${}` as interpolation, so the bound is the
+// shape rather than a count of today's sites, and a new interpolation is
+// unsized the moment it is written rather than falsifying a number here.
 
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";

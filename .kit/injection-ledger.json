@@ -76,8 +76,8 @@
     {
       "name": "FLEET_PROMPT_FRAME",
       "file": "hooks/index.ts",
-      "chars": 337,
-      "words": 65
+      "chars": 520,
+      "words": 96
     },
     {
       "name": "FLEET_PROMPT_LINE_LITERALS",
