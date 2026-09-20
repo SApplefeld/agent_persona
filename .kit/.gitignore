@@ -32,3 +32,6 @@
 !/fixtures/*
 !/question-catalog-unit-test.mjs
 !/decision-journal-unit-test.mjs
+!/injection-ledger.mjs
+!/injection-ledger.json
+!/injection-duplicate-test.mjs
