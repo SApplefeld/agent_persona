@@ -4,32 +4,32 @@
     {
       "name": "SKILL_LOAD_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 518,
-      "words": 76
+      "chars": 278,
+      "words": 39
     },
     {
       "name": "COORDINATOR_STEER_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 1710,
-      "words": 285
+      "chars": 1359,
+      "words": 225
     },
     {
       "name": "CHANNEL_REPLY_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 1564,
-      "words": 272
+      "chars": 274,
+      "words": 43
     },
     {
       "name": "COORDINATOR_ROLE_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 8782,
-      "words": 1578
+      "chars": 4719,
+      "words": 826
     },
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 5552,
-      "words": 1001
+      "chars": 4714,
+      "words": 846
     },
     {
       "name": "PRIMING_BODY_prompt_pending",
@@ -46,8 +46,8 @@
     {
       "name": "PRIMING_BODY_no_channel_wait",
       "file": "bin/supervise.sh",
-      "chars": 260,
-      "words": 45
+      "chars": 253,
+      "words": 44
     },
     {
       "name": "GOAL_PROMPT_FRAMING",

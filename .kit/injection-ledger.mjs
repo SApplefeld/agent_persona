@@ -343,8 +343,8 @@ function literalOfTemplateChain(chainSrc, owner, allowedIdentifiers = []) {
 // count sets the number here in the same commit, which is the declared-
 // growth rule applied to the shape as well as to the size.
 const INSTRUCTION_ASSIGNMENT_COUNTS = {
-  SKILL_LOAD_INSTRUCTION: 1,
-  COORDINATOR_STEER_INSTRUCTION: 2,
+  SKILL_LOAD_INSTRUCTION: 2,
+  COORDINATOR_STEER_INSTRUCTION: 3,
   CHANNEL_REPLY_INSTRUCTION: 2,
   COORDINATOR_ROLE_INSTRUCTION: 5,
   ARCHITECT_ROLE_INSTRUCTION: 2,
@@ -408,7 +408,10 @@ function extractShellInstructions(src) {
     // value yields the real value; a base assignment followed by
     // conditional += clauses (COORDINATOR_ROLE_INSTRUCTION's fleet, seat and
     // architect-routing clauses) yields their sum, which is this variable's
-    // worst-case content across every launch shape.
+    // worst-case content across every launch shape. A later `NAME=""` that
+    // clears a variable for one launch shape (the architect's, which takes
+    // neither the skill-load nor the steer sentence) adds nothing to that sum,
+    // so the worst case still reads the shape that carries the text.
     const assignments = collected.get(name);
     const expected = INSTRUCTION_ASSIGNMENT_COUNTS[name];
     if (assignments.length !== expected) {
