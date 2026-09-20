@@ -1905,10 +1905,14 @@ export const register: Register = async (on, options) => {
   const costBackoffAfterTicks = typeof cfg.costBackoffAfterTicks === "number" ? (cfg.costBackoffAfterTicks as number) : 10;
   const costBackoffMaxMs = typeof cfg.costBackoffMaxMs === "number" ? (cfg.costBackoffMaxMs as number) : 300_000;
 
-  // The decision seam's kill switch, read here and passed through untouched.
-  // No call site in this section reads it; the seam itself folds any value
-  // outside "off" and "shadow" to "off".
-  const jevMode = typeof cfg.jevMode === "string" ? cfg.jevMode : undefined;
+  // The decision seam's kill switch. The fallback is the literal "shadow"
+  // rather than undefined because whether the engine fills a manifest
+  // userConfig default into this object is not established here, as the
+  // askOperatorWaitMs comment above records, and the supervisor omits the
+  // key entirely when the environment does not set it. Without a code
+  // fallback the declared default and the effective one disagree. The seam
+  // folds any value outside "off" and "shadow" to "off" on its own.
+  const jevMode = typeof cfg.jevMode === "string" ? cfg.jevMode : "shadow";
 
   // --- session.start: register tools, claim or join the persona ---
   // The one session.start registration in this file. An "off" session logs

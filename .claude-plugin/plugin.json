@@ -102,7 +102,7 @@
       "type": "string",
       "default": "shadow",
       "title": "Jev shadow mode",
-      "description": "off or shadow. shadow puts every closed question the plugin already asks Haiku to Jev as well, in shadow, writing the answer to the decision journal without acting on it. off makes no shadow call and writes no journal line. Any other value is treated as off."
+      "description": "off or shadow, and shadow is the default. shadow has the decision seam put each closed question the plugin already asks Haiku to Jev as well, beside it, and write the answer to the decision journal, acting on nothing it gets back. off makes no such call and writes no journal line. The supervisor refuses any other value rather than writing it, so a typo stops that launch instead of quietly disabling the seam."
     },
     "reconcileEveryMs": {
       "type": "number",

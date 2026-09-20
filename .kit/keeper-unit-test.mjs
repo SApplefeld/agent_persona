@@ -327,7 +327,7 @@ test('build: a minimal entry yields the three positional arguments and an empty 
   assert.deepEqual(r.Environment, {}, 'an entry carrying none of the mapped fields yields no environment key at all');
 });
 test('build: an entry carrying some mapped fields yields those keys and no others', () => {
-  // The two legs above pin the extremes, all six fields and none. The docstring's
+  // The two legs above pin the extremes, all seven fields and none. The docstring's
   // and the README's claim is about the middle, "each set only where the entry
   // carries the field", which is the shape the shipped roster's worker entries have.
   const r = build('partial');
