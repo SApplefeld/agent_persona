@@ -248,6 +248,16 @@ Not a Chapter. Section 1 is dispatched and in flight. No section has closed and 
 - The work branch is `decision-seam-build` rather than `decision-seam`. The latter name is held by a worktree at `.claude/worktrees/decision-seam`, left from this plan's own authoring branch, which merged as pull request 51.
 - The checkout was moved from `lean-injection` to the trunk and brought current before the arming, because the arming tool cannot see a plan file the tree predates. The three files that read as uncommitted there were byte-identical to their `origin/main` blobs, confirmed by hash, and copies were taken before the move.
 
-**Asks in flight.** None. One of the plan's own Open Questions is unanswered and is not blocking: whether TypeSafe retains request bodies for non-enterprise accounts. Its owner is the operator and the plan records the remedy, which is defaulting `jevMode` to `off`.
+**Asks in flight.** Two, neither blocking.
+
+One of the plan's own Open Questions is unanswered: whether TypeSafe retains request bodies for non-enterprise accounts. Its owner is the operator and the plan records the remedy, which is defaulting `jevMode` to `off`.
+
+**A held inbound handoff.** The coordinator persona sent this session a plan on 2026-09-20 and asked for it to be queued third, ahead of `agent_persona_supervisor-peer_v1.md`. The plan is `docs/plans/agent_persona_supervisor-gaps_v1.md` at commit `fe5feab` on branch `plans/supervisor-gaps`, fetched into this checkout and readable here. Its state is `received-verified-holding-for-authority`. It is not armed and this session's queue is unchanged at four plans.
+
+What it waits on is the operator's own word arming it. The trace was run and it failed on the arming alone. The plan's `## Dispatch Authorization` section quotes the operator authorizing the plan to be written and passed on, and then states in its own words that nothing in the section arms it, with execution left to the operator's word. The message's stated ground was a standing permission to queue plans, which this session does not hold: `kit-goal status` shows four plans each carrying a separately traced operator authorization and no standing grant, and no memory record in either shared tier carries one.
+
+What did trace is the ordering. That plan's `## Intent` records the operator deciding on 2026-09-20, with their words quoted, that it runs before the supervisor-peer plan. So the position is settled and only the arming is open. A session that arms it later places it third.
+
+Accepted as information rather than as authority: that plan and `agent_persona_supervisor-peer_v1.md` both edit `stop_child` and the supervisor poll loop in `bin/supervise.sh`. This is corroborated inside the artifact itself, whose `## Related` section says the peer plan's executor re-reads both as this plan leaves them. Whoever runs the supervisor-peer plan reads that Chapter first.
 
 **Next action.** Await Section 1's implementer, then verify its diff and its probe evidence, then dispatch Section 1's round 1 reviewers. Section 1's writer tier is fable, so round 1 runs the adversarial and blind pair at fable on the Agent tool at their frontmatter effort. The security lens joins that round: the section writes the repository's first `$.http.fetch` call site and reads a secret from the environment, which meets the security trigger on both counts.
