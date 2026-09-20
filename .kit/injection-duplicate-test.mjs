@@ -52,7 +52,8 @@
 //   - one control per fail-closed ledger guard, each handing
 //     buildLedgerFrom() a copy of the real source mutated into a shape the
 //     guard's own patterns do not name (a clause wrapped with a line
-//     continuation, a new instruction variable, a new context block, a new
+//     continuation, a += clause rewritten as a plain assignment, a new
+//     instruction variable, a new context block, a new
 //     prompt call site, a literal at a delivery site) and requiring the
 //     throw to come from that guard by its tag, so one guard cannot mask
 //     another's silence; plus one proving the fleet line-literal collector
@@ -374,6 +375,24 @@ function fail(name) {
       lines[idx] = lines[idx].slice(0, cut) + "\\\n" + lines[idx].slice(cut);
       const wrapped = lines.join("\n");
       expectRefusal("a += clause wrapped onto two lines", "[instruction-count]", ["COORDINATOR_ROLE_INSTRUCTION", "expected 5", "found 4"], () => buildLedgerFrom(wrapped, tsSrc));
+    }
+  }
+  // A += clause rewritten as the bare shape NAME="...", which bash reads as
+  // replacing the variable rather than adding to it. The assignment count is
+  // unchanged and the concatenated sum is identical, so neither the per-name
+  // count nor the growth-only size check can see it, while every launch shape
+  // reaching the earlier assignment loses whatever text a later edit carries
+  // across. The clause is picked by position (the second += line of the name),
+  // never by text, and only its operator is removed.
+  {
+    const lines = shSrc.split("\n");
+    const plusLines = lines.map((l, i) => (/^\s*COORDINATOR_ROLE_INSTRUCTION\+="/.test(l) ? i : -1)).filter((i) => i !== -1);
+    if (plusLines.length < 2) {
+      fail("guard control: a += clause rewritten as a plain assignment - fewer than two COORDINATOR_ROLE_INSTRUCTION+= lines to pick the second from");
+    } else {
+      const idx = plusLines[1];
+      lines[idx] = lines[idx].replace('COORDINATOR_ROLE_INSTRUCTION+="', 'COORDINATOR_ROLE_INSTRUCTION="');
+      expectRefusal("a += clause rewritten as a plain assignment", "[instruction-reassign]", ["COORDINATOR_ROLE_INSTRUCTION", "bin/supervise.sh line"], () => buildLedgerFrom(lines.join("\n"), tsSrc));
     }
   }
   // A PRIMING_BODY clause appended with +=. bash reads it as part of the same

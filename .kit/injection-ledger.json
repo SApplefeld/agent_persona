@@ -16,8 +16,8 @@
     {
       "name": "CHANNEL_REPLY_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 917,
-      "words": 155
+      "chars": 776,
+      "words": 130
     },
     {
       "name": "COORDINATOR_ROLE_INSTRUCTION",
@@ -28,8 +28,8 @@
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 4868,
-      "words": 874
+      "chars": 5132,
+      "words": 921
     },
     {
       "name": "PRIMING_BODY_prompt_pending",

@@ -3,8 +3,9 @@
 # per launch shape, read out of bin/supervise.sh's own text.
 #
 # Five instruction variables ride one priming write. CHANNEL_REPLY_INSTRUCTION
-# is built only with a channel attached, names the reply tool, and points at
-# CLAUDE.md for how a reply is written. SKILL_LOAD_INSTRUCTION and
+# is built only with a channel attached, names the reply tool, carries the
+# reply rules that only CLAUDE.md states, and points at CLAUDE.md for the rest
+# where the child's own working directory holds it. SKILL_LOAD_INSTRUCTION and
 # COORDINATOR_STEER_INSTRUCTION are built under both values of NO_CHANNEL and
 # cleared for the architect's own launch, which takes neither.
 # COORDINATOR_ROLE_INSTRUCTION is built when the launch persona equals
@@ -312,9 +313,10 @@ priming_concat() {
   printf '%s' "${SKILL_LOAD_INSTRUCTION:-}${COORDINATOR_STEER_INSTRUCTION:-}${COORDINATOR_ROLE_INSTRUCTION:-}${ARCHITECT_ROLE_INSTRUCTION:-}${CHANNEL_REPLY_INSTRUCTION:-}"
 }
 
-# The reply-tool sentence the channel instruction keeps, and the pointer that
-# replaces the fourteen prose rules it used to carry. Read as an ordered pair,
-# so an instruction that names the tool and drops the owner reds on its own.
+# The reply-tool sentence the channel instruction keeps, and the pointer it
+# carries to the surface that owns how a reply is written. Read as an ordered
+# pair, so an instruction that names the tool and drops the owner reds on its
+# own.
 REPLY_TOOL_CONTROL="the reply tool from the channel-relay MCP server"
 REPLY_OWNER_CONTROL="CLAUDE.md's 'Writing to the operator' section governs"
 # Four of the five persona launch directories hold no CLAUDE.md, so the rules
@@ -371,7 +373,10 @@ tool_contract_sentences() {
 }
 
 CLAUDE_MD_SENTENCES=$(claude_md_sentences)
-CLAUDE_MD_SENTENCE_FLOOR=10
+# The class's current size, declared rather than guessed: a read that comes
+# back short speaks instead of passing every sweep over it. A rule added to or
+# removed from CLAUDE.md moves this number in the same commit.
+CLAUDE_MD_SENTENCE_FLOOR=14
 TOOL_CONTRACT_SENTENCES=$(tool_contract_sentences)
 TOOL_CONTRACT_SENTENCE_FLOOR=40
 
@@ -419,6 +424,63 @@ check "CLAUDE.md sweep control: and is silent on a string carrying none of them"
 check "tool contract sweep control: the sweep speaks on a string carrying one tool description's own sentence" "$?"
 [ -z "$(sentences_present_in "$CLEAN_FIXTURE" "$TOOL_CONTRACT_SENTENCES" "$TOOL_CONTRACT_SENTENCE_FLOOR")" ]
 check "tool contract sweep control: and is silent on a string carrying no tool contract" "$?"
+
+# The rule against putting an internal number in front of the operator has two
+# carriers in this repository. CLAUDE.md's "Writing to the operator" section is
+# one, and only the persona whose launch directory holds that file reads it. The
+# channel instruction is the other, and it is where the remaining four personas
+# meet the rule. Pinning each carrier against its own literal is how one of them
+# drops a number with nothing red, so the numbers are read out of CLAUDE.md's
+# own sentence and asserted on the instruction. They are read as fragments
+# rather than as a sentence because the sweep above refuses a sentence of eight
+# words or more that both surfaces carry: the two state one rule and must not
+# state it in one wording.
+claude_md_withheld_numbers() {
+  node -e '
+    const fs = require("node:fs");
+    const m = /Never include ([^.]*)\./.exec(fs.readFileSync(process.argv[1], "utf8"));
+    if (!m) process.exit(3);
+    for (const part of m[1].split(/,\s*(?:or\s+)?|\s+or\s+/)) {
+      const p = part.trim();
+      if (p) console.log(p);
+    }
+  ' "$REPO_ROOT/CLAUDE.md"
+}
+
+# Prints the numbers CLAUDE.md names that <text> does not carry, and returns 1
+# when CLAUDE.md's own sentence could not be read, so a reworded or deleted
+# sentence there reds instead of passing every text as complete.
+withheld_numbers_missing_from() {  # <text>
+  local nums n missing=""
+  nums=$(claude_md_withheld_numbers) || { printf '%s' "CLAUDE.md's own sentence did not read"; return 1; }
+  [ -n "$nums" ] || { printf '%s' "CLAUDE.md's own sentence read empty"; return 1; }
+  while IFS= read -r n; do
+    [ -z "$n" ] && continue
+    case "$1" in *"$n"*) ;; *) missing="$missing $n" ;; esac
+  done <<EOF
+$nums
+EOF
+  printf '%s' "$missing"
+}
+
+check_withheld_numbers() {  # <label> <text>
+  local missing rc=0
+  missing=$(withheld_numbers_missing_from "$2") || rc=1
+  [ "$rc" -eq 0 ] && [ -z "$missing" ]
+  check "$1 (missing:${missing:- none})" "$?"
+}
+
+# The instrument, run before anything leans on it. The speaking direction is the
+# load-bearing one and its fixture is withheld from the numbers the pin reads: a
+# string naming no internal number at all must name every one of them as
+# missing. The silent direction is built from CLAUDE.md's own output, so it
+# proves the instrument functions rather than proving the pin's reach.
+[ -n "$(claude_md_withheld_numbers)" ]
+check "withheld numbers control: CLAUDE.md's own sentence yields at least one number" "$?"
+[ -n "$(withheld_numbers_missing_from "$CLEAN_FIXTURE")" ]
+check "withheld numbers control: the pin speaks on a string carrying none of them" "$?"
+[ -z "$(withheld_numbers_missing_from "leave out $(claude_md_withheld_numbers | tr '\n' ' ')")" ]
+check "withheld numbers control: and is silent on a string carrying all of them" "$?"
 
 # Every persona name the priming write splices in. Three shapes carry one: the
 # agentic_say target the design duty and the architect's answer clause name, the
@@ -738,6 +800,7 @@ case "${CHANNEL_REPLY_INSTRUCTION:-}" in
   *"$REPLY_NO_IDS_CONTROL"*) check "channel attached: the instruction carries the rule against putting session ids in front of the operator" 0 ;;
   *) check "channel attached: the instruction carries the rule against putting session ids in front of the operator" 1 ;;
 esac
+check_withheld_numbers "channel attached: every internal number CLAUDE.md withholds from an operator message is withheld by the instruction too" "${CHANNEL_REPLY_INSTRUCTION:-}"
 check_no_claude_md_sentence "channel attached: no CLAUDE.md rule is copied into the priming write" "$(priming_concat)"
 check_no_tool_contract "persona matches COORDINATOR_PERSONA: no tool's own contract sentence is copied into the priming write" "$(priming_concat)"
 case "${SKILL_LOAD_INSTRUCTION:-}" in
@@ -936,6 +999,12 @@ case "$(priming_concat)" in
   *) check "persona differs from COORDINATOR_PERSONA: none of the named fleet-keeper duty literals reaches a worker through any part of the priming write" 0 ;;
 esac
 check_no_design_clause_fragment "persona differs from COORDINATOR_PERSONA: no design-escalation fragment reaches a worker through any part of the priming write" "$(priming_concat)"
+# The worker launch is the only one carrying the steer string's escalation
+# clause, so the two class sweeps run here as well as on the coordinator and
+# architect evals: a copied sentence reaching the child through that clause
+# alone is swept by neither of those.
+check_no_claude_md_sentence "persona differs from COORDINATOR_PERSONA: no CLAUDE.md rule is copied into the priming write" "$(priming_concat)"
+check_no_tool_contract "persona differs from COORDINATOR_PERSONA: no tool's own contract sentence is copied into the priming write" "$(priming_concat)"
 
 # The two evals above move NO_CHANNEL and the persona match together, so a
 # role assignment nested inside the NO_CHANNEL guard would pass both. These
