@@ -1,6 +1,6 @@
 # Decision seam
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-19
 
@@ -12,7 +12,9 @@ When this is done, the persona plugin has one module, the decision seam, through
 
 The authorization to author this plan is the operator's word of 2026-09-19 in the design session, "Let's proceed with everything you've recommended on the sketch", followed the same day by "Yes, I approve of the spec above, let's proceed!" after the sketch and its Assumptions block were shown.
 
-No execution grant is recorded here. Execution waits on the operator arming this plan by name.
+The operator armed execution of this plan on 2026-09-20, naming it first in a `/kit-goal` invocation relayed to the executing session on the operator's own channel, and repeating that invocation verbatim after the session reported what the arming required. Under the kit-goal skill's arming-is-approval rule that invocation carries the authority of a typed "proceed", so this plan is approved as written and no separate approval is waited on.
+
+The record is kept here because the arming state does not keep it. A run that arms a queue for itself on a relayed instruction records its own invocation and not the operator's, so a session reading only that state would find this plan unarmed. The project memory record `self-armed-arming-does-not-satisfy-an-operator-only-execution-grant` holds the general shape.
 
 ## Intent
 
@@ -225,3 +227,27 @@ Files in scope: `README.md`, `docs/architecture.md`, `docs/backlog.md`, `docs/RE
 - `docs/plans/agent_persona_lean-injection_v1.md` and `docs/plans/agent_persona_supervisor-peer_v1.md` edit `hooks/index.ts` ahead of this plan.
 
 ## Chapters
+
+### Interim board 1 - 2026-09-20
+
+Not a Chapter. Section 1 is dispatched and in flight. No section has closed and none carries a `Completed:` line.
+
+**Stage.** Section 1, the live probe and the Jev client, is the only section started. Its implementer is running. No review round has been dispatched and no gate has been run against this plan's work.
+
+**Run start, and the normalization it carried.** This session took the leash on 2026-09-20 under the operator's relayed `/kit-goal`, which named this plan first in a queue of four. The `Status:` header read `Ready` at the start and now reads `In Progress`. The `## Dispatch Authorization` section recorded no execution grant at the start and now records the operator's arming, under the memory record `self-armed-arming-does-not-satisfy-an-operator-only-execution-grant`: the arming state records this run's own invocation rather than the operator's, so a session reading only that state would find the plan unarmed.
+
+**Base and anchor drift.** The branch is `decision-seam-build`, cut from `main` at `2da6543`. The plan's line numbers are against `d6be1f3`, two merges earlier, and `hooks/index.ts` has shifted by roughly 45 to 63 lines. Confirmed this session at three of the plan's own anchors: `appendToChannelLog` at `hooks/index.ts:574` against the plan's 529-533, `classifyLabels` at 4335 against 4273-4275, and `askMarkerMatch` at 5188 against 5125. Every site is re-located by its symbol rather than its number.
+
+**Live dispatches.** One. `implementer-fable` at the `fable` model override, asked for Section 1 whole: the throwaway live probe under a supervised `seam-probe` persona, then `hooks/decision-seam.ts` and its unit suite, with the temporary probe file and its one call line in `hooks/index.ts` reverted before it finishes. Its first-turn reading at 02:00 read 13 non-synthetic assistant lines and zero `<synthetic>` lines, every line resolving at `claude-fable-5-1`, so the override was served rather than substituted.
+
+**Gate baseline.** None taken by this session against this plan. Two reasons, both recorded rather than worked around. Another session, `DEV-DISCORD`, holds this machine's heavy-process claim, written 2026-09-20T05:44:06Z with `Expected-seconds` 1500 and read from the claim file's own modification time. And this session's own implementer holds the tree, so a suite run now would contend with it. The section's close gate is the targeted lane and runs when the implementer returns.
+
+**Rulings adopted since the last boundary.**
+
+- Section 1's live probe runs beside the live fleet rather than waiting for a quiet box. `bin/supervise.sh:2491` gates on `wait_persona_free_both "$WORKDIR" "$PERSONA"`, which reads the named persona only, so a fresh `seam-probe` name and a fresh working directory pass it with five personas live. `.kit/live-all.sh` is the one that refuses outright beside any live persona claim, and this section does not use it.
+- The work branch is `decision-seam-build` rather than `decision-seam`. The latter name is held by a worktree at `.claude/worktrees/decision-seam`, left from this plan's own authoring branch, which merged as pull request 51.
+- The checkout was moved from `lean-injection` to the trunk and brought current before the arming, because the arming tool cannot see a plan file the tree predates. The three files that read as uncommitted there were byte-identical to their `origin/main` blobs, confirmed by hash, and copies were taken before the move.
+
+**Asks in flight.** None. One of the plan's own Open Questions is unanswered and is not blocking: whether TypeSafe retains request bodies for non-enterprise accounts. Its owner is the operator and the plan records the remedy, which is defaulting `jevMode` to `off`.
+
+**Next action.** Await Section 1's implementer, then verify its diff and its probe evidence, then dispatch Section 1's round 1 reviewers. Section 1's writer tier is fable, so round 1 runs the adversarial and blind pair at fable on the Agent tool at their frontmatter effort. The security lens joins that round: the section writes the repository's first `$.http.fetch` call site and reads a secret from the environment, which meets the security trigger on both counts.
