@@ -30,3 +30,4 @@
 !/fleet-status-unit-test.mjs
 !/decision-seam-unit-test.mjs
 !/fixtures/*
+!/question-catalog-unit-test.mjs

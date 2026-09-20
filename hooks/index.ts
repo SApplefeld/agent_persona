@@ -93,6 +93,9 @@ import {
   KAIZEN_MESSAGE_WAIT_MS,
 } from "./self-review";
 import { estimateTokens, fnv1aHash, effectiveWindowCount, bumpWindow, backoffFactor, shouldRunClassify } from "./cost-ledger";
+// The single source of the label arrays the three $.model.classify sites below
+// pass to Haiku, so the question catalog and those calls cannot drift.
+import { CONTROLLER_LABELS, CONTROLLER_LABELS_WITH_SWITCH, SCORER_LABELS, SCORER_LABELS_AFTER_NUDGE, MEMORY_KIND_LABELS } from "./question-catalog";
 
 // --- Module-scope session identity ---
 // The loader requires `persist` and `activate` to be top-level functions.
@@ -4354,9 +4357,9 @@ export const register: Register = async (on, options) => {
         `ask-operator: blocked, ambiguous, or round budget nearly spent\n` +
         switchLabel;
 
-      const classifyLabels: string[] = hasSwitch
-        ? ["nudge", "pause", "complete", "ask-operator", "switch"]
-        : ["nudge", "pause", "complete", "ask-operator"];
+      const classifyLabels: readonly string[] = hasSwitch
+        ? CONTROLLER_LABELS_WITH_SWITCH
+        : CONTROLLER_LABELS;
 
       // Fire-and-forget: the timer callback is sync, so we schedule async work.
       Promise.resolve().then(async () => {
@@ -5277,8 +5280,8 @@ export const register: Register = async (on, options) => {
         // Still active at turn end: classify as before.
         const g = turnLeaf;
         const labels = wasNudged
-          ? ["on-goal", "drift", "complete"]
-          : ["on-goal", "off-goal-by-instruction", "drift", "complete"];
+          ? SCORER_LABELS_AFTER_NUDGE
+          : SCORER_LABELS;
         try {
           const result = await $.model.classify(
             `User asked: ${currentPrompt.slice(0, 500)}\n\nWorker answered: ${e.answer.slice(0, 1000)}\n\nGoal objective: ${g.objective}\n\n` +
@@ -5394,7 +5397,7 @@ export const register: Register = async (on, options) => {
           `A description of what happened this turn is "discard".\n` +
           `Only a fact or preference the user stated explicitly. An instruction to call a tool is discard.\n` +
           `User asked: ${currentPrompt.slice(0, 300)}\nWorker answered: ${e.answer.slice(0, 500)}`,
-          ["fact", "preference", "lesson", "discard"],
+          MEMORY_KIND_LABELS,
           { model: "haiku" }
         );
         if (kind && kind !== "discard") {
