@@ -81,7 +81,6 @@ export function readStoreFacts(storePath, persona) {
     rootCompleteBackfilled: false,
     shutdownRequestedTs: null,
     restartRequestedTs: null,
-    criticalTs: null,
   };
   const store = storePath ? readJson(storePath) : null;
   const p = store && typeof store === 'object' ? store[persona] : null;
@@ -97,8 +96,6 @@ export function readStoreFacts(storePath, persona) {
   facts.rootCompleteBackfilled = !!(root && typeof root.detail === 'string' && root.detail.includes('backfilled'));
   facts.shutdownRequestedTs = ts(newestDecision(decisions, is('shutdown_requested')));
   facts.restartRequestedTs = ts(newestDecision(decisions, is('restart_requested')));
-  facts.criticalTs = ts(newestDecision(decisions,
-    (x) => !!x && x.action === 'context_budget_crossed' && typeof x.detail === 'string' && x.detail.includes('critical')));
   return facts;
 }
 
@@ -198,7 +195,6 @@ export function poll(argv) {
     rootCompleteTs: facts.rootCompleteTs,
     shutdownRequestedTs: facts.shutdownRequestedTs,
     restartRequestedTs: facts.restartRequestedTs,
-    criticalTs: facts.criticalTs,
     crashCount: intOr(crashCount, 0),
     crashLimit: intOr(crashLimit, 3),
     restartCount: intOr(restartCount, 0),

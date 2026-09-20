@@ -28,7 +28,6 @@ const cases = [
       childExitCode: null,
       rootCompleteTs: null,
       shutdownRequestedTs: 2000,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
@@ -48,7 +47,6 @@ const cases = [
       childExitCode: null,
       rootCompleteTs: 1500,
       shutdownRequestedTs: 2000,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
@@ -69,7 +67,6 @@ const cases = [
       childExitCode: null,
       rootCompleteTs: 500,
       shutdownRequestedTs: null,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
@@ -91,7 +88,6 @@ const cases = [
       rootCompleteTs: null,
       shutdownRequestedTs: null,
       restartRequestedTs: 2000,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
@@ -112,7 +108,6 @@ const cases = [
       rootCompleteTs: null,
       shutdownRequestedTs: 2000,
       restartRequestedTs: 2500,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
@@ -133,7 +128,6 @@ const cases = [
       rootCompleteTs: null,
       shutdownRequestedTs: null,
       restartRequestedTs: 500,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
@@ -145,31 +139,12 @@ const cases = [
     },
     expected: 'continue',
   },
-  // context_budget_crossed critical newer than start: restart.
-  {
-    name: 'critical newer than start: restart',
-    input: {
-      childExitCode: null,
-      rootCompleteTs: null,
-      criticalTs: 2000,
-      crashCount: 0,
-      restartCount: 0,
-      childStartTs: 1000,
-      childSessionId: 'sess-1',
-      heartbeatSessionId: 'sess-1',
-      heartbeatLastSeen: null,
-      launchedAt: 900,
-      staleAfterMs: 90000,
-    },
-    expected: 'restart',
-  },
   // Heartbeat lastSeen older than staleAfterMs, heartbeatSessionId = childSessionId, past grace: restart.
   {
     name: 'stale heartbeat, own session, past grace: restart',
     input: {
       childExitCode: null,
       rootCompleteTs: null,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
@@ -188,7 +163,6 @@ const cases = [
     input: {
       childExitCode: null,
       rootCompleteTs: null,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
@@ -207,7 +181,6 @@ const cases = [
     input: {
       childExitCode: null,
       rootCompleteTs: null,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
@@ -226,7 +199,6 @@ const cases = [
     input: {
       childExitCode: 1,
       rootCompleteTs: null,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 6,
       childStartTs: 1000,
@@ -247,7 +219,6 @@ const cases = [
       childExitCode: null,
       rootCompleteTs: 2000,
       shutdownRequestedTs: null,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
@@ -268,7 +239,6 @@ const cases = [
       childExitCode: null,
       rootCompleteTs: 2000,
       shutdownRequestedTs: null,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
@@ -290,7 +260,6 @@ const cases = [
       childExitCode: null,
       rootCompleteTs: 2000,
       shutdownRequestedTs: null,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
@@ -304,27 +273,6 @@ const cases = [
     },
     expected: 'restart',
   },
-  // A backfilled root must not pre-empt the critical context-budget check
-  // either.
-  {
-    name: 'backfilled root_complete + critical crossing: still restart',
-    input: {
-      childExitCode: null,
-      rootCompleteTs: 2000,
-      shutdownRequestedTs: null,
-      criticalTs: 2500,
-      crashCount: 0,
-      restartCount: 0,
-      childStartTs: 1000,
-      childSessionId: 'sess-1',
-      heartbeatSessionId: 'sess-1',
-      heartbeatLastSeen: null,
-      launchedAt: 900,
-      staleAfterMs: 90000,
-      rootCompleteBackfilled: true,
-    },
-    expected: 'restart',
-  },
   // The crash-loop stop counts against the supervisor's own limit, not a
   // fixed 3: three crashes under a limit of five is still a restart.
   {
@@ -332,7 +280,6 @@ const cases = [
     input: {
       childExitCode: 1,
       rootCompleteTs: null,
-      criticalTs: null,
       crashCount: 3,
       crashLimit: 5,
       restartCount: 0,
@@ -351,7 +298,6 @@ const cases = [
     input: {
       childExitCode: 1,
       rootCompleteTs: null,
-      criticalTs: null,
       crashCount: 5,
       crashLimit: 5,
       restartCount: 0,
@@ -374,7 +320,6 @@ const cases = [
     input: {
       childExitCode: null,
       rootCompleteTs: null,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
@@ -397,7 +342,6 @@ const cases = [
     input: {
       childExitCode: null,
       rootCompleteTs: null,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
@@ -422,7 +366,6 @@ const cases = [
     input: {
       childExitCode: null,
       rootCompleteTs: null,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
@@ -445,7 +388,6 @@ const cases = [
     input: {
       childExitCode: null,
       rootCompleteTs: null,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
@@ -467,7 +409,6 @@ const cases = [
     input: {
       childExitCode: null,
       rootCompleteTs: null,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
@@ -490,7 +431,6 @@ const cases = [
     input: {
       childExitCode: null,
       rootCompleteTs: null,
-      criticalTs: null,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
@@ -505,28 +445,30 @@ const cases = [
     expected: 'restart',
     expectedReasonIncludes: 'hung: heartbeat lastSeen 1000 older than 90000ms',
   },
-  // The corroboration belongs to the hung branch alone. A live transcript says
-  // the child is running, which is exactly what a child over its context
-  // budget is doing, so it must not suppress any other restart trigger.
+  // The decide unit has no context-budget input. A snapshot that still carries
+  // one, from a caller that kept the field, is a snapshot with no restart
+  // trigger in it: the field is read by nothing and the healthy child stays
+  // up. The other reachable shape, a crossing an older plugin already wrote
+  // into a store on disk, is pinned in .kit/supervisor-poll-unit-test.mjs,
+  // where the store read itself lives.
   {
-    name: 'critical crossing with a fresh transcript: still restart',
+    name: 'a criticalTs newer than the child start is not a restart trigger',
     input: {
       childExitCode: null,
       rootCompleteTs: null,
+      shutdownRequestedTs: null,
       criticalTs: 2000,
       crashCount: 0,
       restartCount: 0,
       childStartTs: 1000,
       childSessionId: 'sess-1',
       heartbeatSessionId: 'sess-1',
-      heartbeatLastSeen: 1000,
-      transcriptLastWriteTs: 99000,
-      now: 100000,
+      heartbeatLastSeen: null,
       launchedAt: 900,
       staleAfterMs: 90000,
     },
-    expected: 'restart',
-    expectedReasonIncludes: 'context_budget_crossed critical:',
+    expected: 'continue',
+    expectedReasonIncludes: 'no restart trigger',
   },
 ];
 

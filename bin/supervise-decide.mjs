@@ -6,10 +6,9 @@
  * @typedef {Object} DecideInput
  * @property {number|null} [childExitCode] - Exit code of the current child, or null if still running.
  * @property {number|null} [rootCompleteTs] - Timestamp of the newest root_complete decision, or null.
- * @property {boolean} [rootCompleteBackfilled] - True when that root_complete's own detail text names it a backfilled root (the worker did real work with no active goal tree; item 2 of the v1 plan). A backfilled root_complete is not a real completion signal and must never trigger restart_passive (it does not suppress a genuine restart trigger below it, e.g. a critical budget crossing or a hung child).
+ * @property {boolean} [rootCompleteBackfilled] - True when that root_complete's own detail text names it a backfilled root (the worker did real work with no active goal tree; item 2 of the v1 plan). A backfilled root_complete is not a real completion signal and must never trigger restart_passive (it does not suppress a genuine restart trigger below it, e.g. a hung child).
  * @property {number|null} [shutdownRequestedTs] - Timestamp of the newest shutdown_requested decision, or null.
  * @property {number|null} [restartRequestedTs] - Timestamp of the newest restart_requested decision, or null.
- * @property {number|null} [criticalTs] - Timestamp of the newest context_budget_crossed critical: decision, or null.
  * @property {number} [crashCount] - Number of consecutive non-zero exits within minRunMs.
  * @property {number} [crashLimit] - The supervisor's crash-loop limit (supervisorCrashLimit); crashCount at or past it stops the run.
  * @property {number} [restartCount] - Number of restarts in the current hour window.
@@ -54,9 +53,9 @@
  *    backfilled root_complete means the worker did real work with no active
  *    goal tree, not that a real goal actually finished, and restarting on it
  *    kills a child that was never done with anything.
- * 6. restart - child exited non-zero, or critical crossing, or hung (stale +
- *    own session + past grace, and no transcript write inside the staleness
- *    bound to corroborate the heartbeat)
+ * 6. restart - child exited non-zero, or hung (stale + own session + past
+ *    grace, and no transcript write inside the staleness bound to corroborate
+ *    the heartbeat)
  * 7. continue - none of the above
  *
  * @param {DecideInput} input
@@ -68,7 +67,6 @@ export function decide(input) {
     rootCompleteTs,
     shutdownRequestedTs,
     restartRequestedTs,
-    criticalTs,
     crashCount = 0,
     crashLimit = 3,
     restartCount = 0,
@@ -118,9 +116,8 @@ export function decide(input) {
   // the root was backfilled (v2 Section 0 item 1): that is real tool work
   // with no goal tree, not a real completion, and restarting on it kills a
   // child mid-work. A backfilled root ignores only this one completion
-  // signal; it never pre-empts 4a (child exit), 4b (critical budget), or
-  // 4c (hung check) below - a goal-less child stays restartable for any
-  // of those other reasons.
+  // signal; it never pre-empts 4a (child exit) or 4b (hung check) below -
+  // a goal-less child stays restartable for either of those other reasons.
   if (rootCompleteTs !== null && rootCompleteTs > childStartTs && !rootCompleteBackfilled) {
     return { action: 'restart_passive', reason: `root_complete at ${rootCompleteTs} > child start ${childStartTs}` };
   }
@@ -130,12 +127,7 @@ export function decide(input) {
     return { action: 'restart', reason: `child exited with code ${childExitCode}` };
   }
 
-  // 4b. context_budget_crossed critical: newer than child start: restart.
-  if (criticalTs !== null && criticalTs > childStartTs) {
-    return { action: 'restart', reason: `context_budget_crossed critical: at ${criticalTs} > child start ${childStartTs}` };
-  }
-
-  // 4c. Hung check: stale + own session + past grace: restart.
+  // 4b. Hung check: stale + own session + past grace: restart.
   // Identity key: the heartbeat sidecar's sessionId must equal the child's session id.
   // Startup grace: the hung check does not run within staleAfterMs of launch.
   if (

@@ -111,14 +111,6 @@ const cases = [
     assert.equal(r.action, 'restart_passive');
     assert.match(r.reason, /^restart_requested/);
   }],
-  ['a critical context crossing newer than the child start: restart', () => {
-    const r = run('critical', { store: store(decision('context_budget_crossed', START + 5, 'critical: 95%')) });
-    assert.equal(r.action, 'restart');
-  }],
-  ['a context crossing that is not critical: continue', () => {
-    const r = run('warn', { store: store(decision('context_budget_crossed', START + 5, 'warning: 70%')) });
-    assert.equal(r.action, 'continue');
-  }],
   ['a stale heartbeat for the child\'s own session, no transcript: restart', () => {
     const r = run('hung', { heartbeat: staleHeartbeat('sess-1'), stream: initLine('sess-1') });
     assert.equal(r.action, 'restart');
@@ -141,9 +133,17 @@ const cases = [
   ['a malformed store entry costs no other fact: shutdown_requested still stops', () => {
     const r = run('store-bad-entry', { store: store(
       null,
-      decision('context_budget_crossed', START + 1, 42),
+      decision('nudge_sent', START + 1, 42),
       decision('shutdown_requested', START + 5)) });
     assert.equal(r.action, 'stop_complete');
+  }],
+  // A store an older plugin wrote can still hold a critical context crossing,
+  // and that store outlives the supervisor that reads it. The poll reader
+  // selects no such fact, so the newest crossing in the store leaves a healthy
+  // child up.
+  ['a context_budget_crossed decision in the store is no fact the reader selects: continue', () => {
+    const r = run('store-crossing', { store: store(decision('context_budget_crossed', START + 5, 'critical: 95%')) });
+    assert.equal(r.action, 'continue');
   }],
   ['a live heartbeat: continue', () => {
     const r = run('live', { heartbeat: liveHeartbeat('sess-1'), stream: initLine('sess-1') });
