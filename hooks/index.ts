@@ -18,7 +18,8 @@
 // never that it exited. A claim is non-destructive: the epoch bump makes
 // the old holder yield on its next write.
 
-import type { PromptSubmitResult, Register } from "claude-code";
+import type { HttpInit, PromptSubmitResult, Register } from "claude-code";
+import type { PluginHost } from "./host";
 import {
   createDefaultState,
   parseState,
@@ -113,6 +114,27 @@ function commonsStoreOf(dp: any): CommonsStore {
     set: (k: string, v: unknown) => dp.store.set(k, v),
     delete: (k: string) => dp.store.delete(k),
     keys: () => dp.store.keys(),
+  };
+}
+
+/**
+ * Adapter: wrap a hook- or persist-bound `$` into the `PluginHost` interface
+ * that `hooks/host.ts` declares and every module outside this file takes as
+ * a Pick, since `$` itself is refused across an import. Each arrow is a full
+ * `dp.noun.verb(...)` call at its site, and each `dp.env.get` spells its
+ * variable name as a literal, which is what the validator reads off the
+ * source. Built at each call site, never cached: `$` is rebuilt on a plugin
+ * reload and a cached closure set would hold the old one.
+ */
+function hostOf(dp: any): PluginHost {
+  return {
+    getApiKey: () => dp.env.get("TYPESAFE_API_KEY"),
+    getHome: () => dp.env.get("USERPROFILE").then((profile: string | undefined) => profile || dp.env.get("HOME")),
+    readFile: (path: string) => dp.fs.read(path),
+    writeFile: (path: string, text: string) => dp.fs.write(path, text),
+    fileExists: (path: string) => dp.fs.exists(path),
+    fetch: (url: string, init?: HttpInit) => dp.http.fetch(url, init),
+    sleep: (ms: number) => dp.clock.sleep(ms),
   };
 }
 

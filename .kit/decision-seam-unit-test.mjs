@@ -1,19 +1,25 @@
 #!/usr/bin/env node
 // Decision seam unit tests: every closed failure reason resolves without a
-// throw, the kill switch sends nothing, the timeout race settles cleanly, and
-// the one request the seam sends carries the live contract's shape.
+// throw, the kill switch sends nothing, the timeout race settles cleanly, the
+// one request the seam sends carries the live contract's shape, the answer
+// that rides the result is validated rather than forwarded, and no failure
+// detail can carry the key.
 //
-// Drives hooks/decision-seam.ts through a SeamHost built over the
-// tick-harness fake $ (its http, env and clock.sleep fakes), the way
-// hooks/index.ts builds one over the real $ in a top-level adapter, with
-// Date.now stubbed so latency is a number the case chose rather than a
-// wall-clock reading. The catalog resolver is a stub here, typed against the
-// interface hooks/question-catalog.ts exports.
+// Drives hooks/decision-seam.ts through the fake PluginHost tick-harness
+// builds over its fake $ (fakeHostOf), the way hooks/index.ts builds one over
+// the real $ in its top-level hostOf, with Date.now stubbed so latency is a
+// number the case chose rather than a wall-clock reading. The catalog
+// resolver is a stub here, typed against the interface
+// hooks/question-catalog.ts exports.
+//
+// A failure detail printed by this runner never carries a header object or a
+// request list: a red run prints header names and call counts, so the bearer
+// value cannot reach a log even from a test that failed.
 //
 // Usage: node decision-seam-unit-test.mjs
 // Exits 0 on success, 1 on failure.
 
-import { createFake$, stubDateNow } from "./tick-harness.mjs";
+import { createFake$, fakeHostOf, stubDateNow } from "./tick-harness.mjs";
 
 const {
   ask,
@@ -31,6 +37,11 @@ function fail(name, detail) {
   failed++;
 }
 function check(name, cond, detail) { if (cond) ok(name); else fail(name, detail); }
+function sameSet(a, b) {
+  const sa = new Set(a);
+  const sb = new Set(b);
+  return sa.size === sb.size && [...sa].every((x) => sb.has(x));
+}
 
 // An unhandled rejection anywhere in this process is a failure of the
 // "never throws, and the race's loser is handled" contract, so it is
@@ -69,18 +80,6 @@ const resolveStub = async (questionSetId) => {
   return CATALOG[questionSetId];
 };
 
-// The host hooks/index.ts builds over $ in its adapter, built here over the
-// fake $. Each closure reads the fake at call time, so a case that replaces
-// h.fake.http.fetch or h.fake.clock.sleep after this is still what the seam
-// reaches.
-function hostOf(h) {
-  return {
-    getApiKey: () => h.fake.env.get("TYPESAFE_API_KEY"),
-    fetch: (url, init) => h.fake.http.fetch(url, init),
-    sleep: (ms) => h.fake.clock.sleep(ms),
-  };
-}
-
 function okBody(questionId, choice = "nudge") {
   return JSON.stringify({
     model: "jev-1.13.0",
@@ -110,9 +109,10 @@ function askDefault(h, overrides = {}) {
     state: STATE,
     mode: "shadow",
     haikuValue: "nudge",
+    resolve: resolveStub,
     ...overrides,
   };
-  return ask(hostOf(h), a.questionSetId, a.optionIds, a.state, a.mode, a.haikuValue, resolveStub);
+  return ask(fakeHostOf(h), a.questionSetId, a.optionIds, a.state, a.mode, a.haikuValue, a.resolve);
 }
 
 // Resolves a value or the error it threw, so a case can assert that the
@@ -129,10 +129,10 @@ const clock = stubDateNow();
 const T0 = 1_700_000_000_000;
 
 try {
-  // --- Test 1: the closed reason set is exactly the spec's ten ---
+  // --- Test 1: the closed reason set is exactly the spec's eleven ---
   {
-    const expected = ["off", "no_key", "timeout", "network", "http_401", "http_422", "http_429", "http_529", "http_other", "parse"];
-    check("Test 1: SEAM_FAILURE_REASONS is the closed set of ten, in the spec's order",
+    const expected = ["off", "no_key", "no_question", "timeout", "network", "http_401", "http_422", "http_429", "http_529", "http_other", "parse"];
+    check("Test 1: SEAM_FAILURE_REASONS is the closed set of eleven, in the spec's order",
       JSON.stringify(SEAM_FAILURE_REASONS) === JSON.stringify(expected), SEAM_FAILURE_REASONS);
   }
 
@@ -142,7 +142,7 @@ try {
     const r = await settle(askDefault(h, { mode: "off" }));
     check("Test 2a: mode off resolves (no throw) with reason off",
       r.resolved && r.value.ok === false && r.value.reason === "off", r);
-    check("Test 2b: mode off makes no request", h.httpCalls.length === 0, h.httpCalls);
+    check("Test 2b: mode off makes no request", h.httpCalls.length === 0, h.httpCalls.length);
     check("Test 2c: mode off reads no environment variable", h.envGets.length === 0, h.envGets);
     check("Test 2d: mode off resolves no question", resolveCalls.length === 0, resolveCalls);
     check("Test 2e: mode off carries no latency and no question", r.value.latencyMs === null && r.value.questionId === null, r.value);
@@ -165,7 +165,7 @@ try {
 
   // --- Test 4: no key sends nothing ---
   {
-    for (const [label, key] of [["absent", null], ["empty string", ""]]) {
+    for (const [label, key] of [["absent", null], ["empty string", ""], ["whitespace only", " \t\n "]]) {
       const h = harness({ key });
       const r = await settle(askDefault(h));
       check(`Test 4: key ${label} resolves with reason no_key and makes no request`,
@@ -199,7 +199,7 @@ try {
     check("Test 5c: the request goes to the evaluation endpoint", call.url === JEV_ENDPOINT && JEV_ENDPOINT === "https://api.typesafe.ai/v1/systemone", call.url);
     check("Test 5d: the request is a POST", call.init.method === "POST", call.init.method);
     check("Test 5e: the bearer header carries the key and the body is JSON",
-      call.init.headers.Authorization === `Bearer ${KEY}` && call.init.headers["Content-Type"] === "application/json", call.init.headers);
+      call.init.headers.Authorization === `Bearer ${KEY}` && call.init.headers["Content-Type"] === "application/json", Object.keys(call.init.headers));
     const body = JSON.parse(call.init.body);
     check("Test 5f: the body carries the state text unchanged", body.state === STATE, body.state);
     check("Test 5g: the body names the model alias", body.model === JEV_MODEL && JEV_MODEL === "jev-latest", body.model);
@@ -214,7 +214,7 @@ try {
     check("Test 5l: the key appears nowhere in the body", !call.init.body.includes(KEY));
     check("Test 5m: latencyMs is the seam's own measurement", r.value.latencyMs === 37, r.value.latencyMs);
     check("Test 5n: the answer, usage, model and version ride the result",
-      r.value.answers.controller_decision.choice === "nudge"
+      r.value.answer?.choice === "nudge"
         && r.value.usage.input_tokens === 296 && r.value.usage.output_tokens === 20
         && r.value.model === "jev-1.13.0" && r.value.questionVersion === "v1" && r.value.overrideRefused === null
         && r.value.questionId === "controller_decision" && r.value.haikuValue === "nudge", r.value);
@@ -258,10 +258,19 @@ try {
     const r = await settle(askDefault(h));
     check("Test 7: a response with no numeric status resolves with reason http_other",
       r.resolved && r.value.ok === false && r.value.reason === "http_other", r);
-    const h2 = harness();
-    h2.setHttpResponse(response(204, okBody("controller_decision")));
-    const r2 = await settle(askDefault(h2));
-    check("Test 7 control: any 2xx is read as success", r2.resolved && r2.value.ok === true, r2);
+    // A status that is a number but not an integer in 200..299 is not success:
+    // NaN passes a typeof test and fails both range comparisons.
+    for (const [label, status] of [["NaN", NaN], ["a fraction", 200.5], ["a numeric string", "200"], ["Infinity", Infinity]]) {
+      const h2 = harness();
+      h2.setHttpResponse({ status, ok: true, headers: {}, text: okBody("controller_decision") });
+      const r2 = await settle(askDefault(h2));
+      check(`Test 7: status ${label} with a well-formed body resolves with reason http_other, not success`,
+        r2.resolved && r2.value.ok === false && r2.value.reason === "http_other", r2);
+    }
+    const h3 = harness();
+    h3.setHttpResponse(response(204, okBody("controller_decision")));
+    const r3 = await settle(askDefault(h3));
+    check("Test 7 control: any 2xx integer is read as success", r3.resolved && r3.value.ok === true, r3);
   }
 
   // --- Test 8: a rejected fetch is network; a fetch that throws synchronously is network too ---
@@ -280,6 +289,27 @@ try {
     h3.setHttpResponse(() => Promise.reject("string reason"));
     const r3 = await settle(askDefault(h3));
     check("Test 8c: a non-Error rejection is network with its string form", r3.resolved && r3.value.reason === "network" && r3.value.detail === "string reason", r3);
+    // A host fetch that resolves with no response object at all. Every host
+    // call is an op event a co-loaded hook may answer with a value of its
+    // own, so this is a shape the seam meets, not only a fake's.
+    for (const [label, value] of [["null", null], ["undefined", undefined], ["a string", "ok"], ["a number", 200]]) {
+      const h4 = harness();
+      h4.setHttpResponse(() => Promise.resolve(value));
+      const r4 = await settle(askDefault(h4));
+      check(`Test 8d: a fetch that resolves with ${label} resolves with reason network and detail "no response"`,
+        r4.resolved && r4.value.ok === false && r4.value.reason === "network" && r4.value.detail === "no response", r4);
+    }
+    // The network detail is bound for the journal, so a host error that
+    // echoes the request must not carry the bearer value into it.
+    const h5 = harness();
+    const echoed = new Error(`upstream refused Bearer ${KEY} at ${JEV_ENDPOINT}`);
+    h5.setHttpResponse(() => Promise.reject(echoed));
+    const r5 = await settle(askDefault(h5));
+    check("Test 8e control: the fake's rejection message does contain the key", echoed.message.includes(KEY));
+    check("Test 8e: a network detail never contains the key",
+      r5.resolved && r5.value.reason === "network" && typeof r5.value.detail === "string" && !r5.value.detail.includes(KEY), r5.value.reason);
+    check("Test 8e: the scrubbed detail keeps the rest of the message",
+      r5.resolved && r5.value.detail.includes("upstream refused") && r5.value.detail.includes(JEV_ENDPOINT), r5.value.reason);
   }
 
   // --- Test 9: parse failures ---
@@ -305,6 +335,10 @@ try {
     const r = await settle(askDefault(h));
     check("Test 9: a body with no usage block resolves ok with null counts",
       r.resolved && r.value.ok === true && r.value.usage.input_tokens === null && r.value.usage.output_tokens === null && r.value.model === null, r.value);
+    const h2 = harness();
+    h2.setHttpResponse({ status: 200, ok: true, headers: {}, text: { answers: {} } });
+    const r2 = await settle(askDefault(h2));
+    check("Test 9: a body that is not text resolves with reason parse", r2.resolved && r2.value.ok === false && r2.value.reason === "parse", r2);
   }
 
   // --- Test 10: the timeout race ---
@@ -359,6 +393,7 @@ try {
     const drivers = {
       off: (h) => askDefault(h, { mode: "off" }),
       no_key: (h) => { h.setEnv("TYPESAFE_API_KEY", ""); return askDefault(h); },
+      no_question: (h) => askDefault(h, { resolve: () => Promise.reject(new Error("catalog unreadable")) }),
       timeout: (h) => { h.setHttpResponse(() => new Promise(() => {})); const p = askDefault(h); setImmediate(() => h.fireSleep()); return p; },
       network: (h) => { h.setHttpResponse(() => Promise.reject(new Error("down"))); return askDefault(h); },
       http_401: (h) => { h.setHttpResponse(response(401, "")); return askDefault(h); },
@@ -368,15 +403,122 @@ try {
       http_other: (h) => { h.setHttpResponse(response(500, "")); return askDefault(h); },
       parse: (h) => { h.setHttpResponse(response(200, "nope")); return askDefault(h); },
     };
+    check("Test 11: a driver exists for every reason in the closed set", sameSet(Object.keys(drivers), SEAM_FAILURE_REASONS), Object.keys(drivers));
     for (const reason of SEAM_FAILURE_REASONS) {
       const h = harness();
       const r = await settle(drivers[reason](h));
       seen.add(r.resolved ? r.value.reason : "THREW");
       check(`Test 11: reason ${reason} resolves without a throw with every failure field present`,
-        r.resolved && r.value.ok === false && r.value.reason === reason
-          && JSON.stringify(Object.keys(r.value)) === JSON.stringify(fields), r);
+        r.resolved && r.value.ok === false && r.value.reason === reason && sameSet(Object.keys(r.value), fields), r);
     }
     check("Test 11: every reason in the closed set was driven", SEAM_FAILURE_REASONS.every((x) => seen.has(x)), [...seen]);
+  }
+
+  // --- Test 12: a question the catalog cannot resolve is no_question, local and before any request ---
+  {
+    // A resolver that rejects. Its message carries the key, the way a
+    // catalog error that echoed the environment might, and the detail must
+    // not.
+    const h = harness();
+    const r = await settle(askDefault(h, { resolve: () => Promise.reject(new Error(`override unreadable, env ${KEY}`)) }));
+    check("Test 12a: a rejecting resolver resolves with reason no_question, no request, no question and no latency",
+      r.resolved && r.value.ok === false && r.value.reason === "no_question" && h.httpCalls.length === 0
+        && r.value.questionId === null && r.value.questionVersion === null && r.value.latencyMs === null && r.value.haikuValue === "nudge", r);
+    check("Test 12a: the no_question detail carries the resolver's message without the key",
+      r.resolved && typeof r.value?.detail === "string" && r.value.detail.includes("override unreadable") && !r.value.detail.includes(KEY), r.value?.reason);
+    const h2 = harness();
+    const r2 = await settle(askDefault(h2, { resolve: () => { throw new Error("sync"); } }));
+    check("Test 12b: a resolver that throws synchronously resolves with reason no_question and no request",
+      r2.resolved && r2.value.ok === false && r2.value.reason === "no_question" && h2.httpCalls.length === 0, r2);
+    // A resolver that resolves with a shape carrying no options.
+    const shapes = [
+      ["undefined", undefined],
+      ["null", null],
+      ["a string", "controller_decision"],
+      ["an object with no options", { id: "controller_decision", version: "v1", overrideRefused: null, primitive: "choice", instructions: "x" }],
+      ["options that is an array", { ...CATALOG.controller_decision, options: ["nudge", "wait"] }],
+      ["an option whose description is a number", { ...CATALOG.controller_decision, options: { nudge: 1 } }],
+      ["no id", { ...CATALOG.controller_decision, id: undefined }],
+      ["a primitive that is not choice", { ...CATALOG.controller_decision, primitive: "noul" }],
+    ];
+    for (const [label, shape] of shapes) {
+      const h3 = harness();
+      const r3 = await settle(askDefault(h3, { resolve: async () => shape }));
+      check(`Test 12c: a resolver returning ${label} resolves with reason no_question and makes no request`,
+        r3.resolved && r3.value.ok === false && r3.value.reason === "no_question" && typeof r3.value.detail === "string" && h3.httpCalls.length === 0, r3);
+    }
+    const h4 = harness();
+    h4.setHttpResponse(response(200, okBody("controller_decision")));
+    const r4 = await settle(askDefault(h4));
+    check("Test 12 control: the stub catalog's own shape resolves and the request is sent", r4.resolved && r4.value.ok === true && h4.httpCalls.length === 1, r4);
+  }
+
+  // --- Test 13: the answer that rides the result is validated for the asked id alone ---
+  {
+    function bodyWith(answer, extra = {}) {
+      return JSON.stringify({ model: "jev-1.13.0", answers: { controller_decision: answer }, usage: { input_tokens: 10, output_tokens: 2 }, ...extra });
+    }
+    const valid = { type: "choice", choice: "wait", probabilities: { nudge: 0.3, wait: 0.7 }, confidence: 0.8 };
+    // 13a: unrequested answer keys and unknown answer fields are dropped.
+    const h = harness();
+    h.setHttpResponse(response(200, JSON.stringify({
+      model: "jev-1.13.0",
+      answers: { controller_decision: { ...valid, reasoning: "because", raw: { x: 1 } }, unrequested: { type: "noul", noul: 0.1 } },
+      usage: { input_tokens: 10, output_tokens: 2 },
+    })));
+    const r = await settle(askDefault(h));
+    check("Test 13a: a valid answer resolves ok with exactly the four choice fields",
+      r.resolved && r.value.ok === true && sameSet(Object.keys(r.value.answer ?? {}), ["type", "choice", "probabilities", "confidence"]), r.value);
+    check("Test 13a: the validated answer carries the vendor's values",
+      r.resolved && r.value.ok === true && r.value.answer?.type === "choice" && r.value.answer?.choice === "wait"
+        && r.value.answer.confidence === 0.8 && JSON.stringify(r.value.answer.probabilities) === JSON.stringify({ nudge: 0.3, wait: 0.7 }), r.value);
+    check("Test 13a: no answers map and no unrequested key ride the result",
+      r.resolved && !("answers" in r.value) && !("unrequested" in r.value) && !("reasoning" in (r.value.answer ?? {})), Object.keys(r.value));
+    // 13b: each validation failure is parse, with a fixed detail naming the field.
+    const bad = [
+      ["a type other than choice", { ...valid, type: "noul" }, "answer type is not choice"],
+      ["no type", { choice: "wait", probabilities: {}, confidence: 1 }, "answer type is not choice"],
+      ["a choice outside the ids in force", { ...valid, choice: "switch" }, "answer choice is not an offered option"],
+      ["a choice that is not a string", { ...valid, choice: 1 }, "answer choice is not an offered option"],
+      ["no probabilities", { type: "choice", choice: "wait", confidence: 1 }, "answer probabilities is not an object"],
+      ["probabilities that is an array", { ...valid, probabilities: [0.3, 0.7] }, "answer probabilities is not an object"],
+      ["a probability that is a string", { ...valid, probabilities: { nudge: "0.3", wait: 0.7 } }, "answer probabilities carry a value that is not a finite number"],
+      ["a probability that is null", { ...valid, probabilities: { nudge: null } }, "answer probabilities carry a value that is not a finite number"],
+      ["no confidence", { type: "choice", choice: "wait", probabilities: {} }, "answer confidence is not a finite number"],
+      ["a confidence that is a string", { ...valid, confidence: "high" }, "answer confidence is not a finite number"],
+    ];
+    for (const [label, answer, detail] of bad) {
+      const h2 = harness();
+      h2.setHttpResponse(response(200, bodyWith(answer)));
+      const r2 = await settle(askDefault(h2));
+      check(`Test 13b: an answer with ${label} resolves with reason parse (${detail})`,
+        r2.resolved && r2.value.ok === false && r2.value.reason === "parse" && r2.value.detail === detail, r2);
+    }
+    // 13c: the model string is bounded and a non-string model is null.
+    const h3 = harness();
+    h3.setHttpResponse(response(200, bodyWith(valid, { model: "m".repeat(500) })));
+    const r3 = await settle(askDefault(h3));
+    check("Test 13c: a long model string is cut to 64 characters",
+      r3.resolved && r3.value.ok === true && r3.value.model === "m".repeat(64), r3.value.model && r3.value.model.length);
+    const h4 = harness();
+    h4.setHttpResponse(response(200, bodyWith(valid, { model: { name: "x" } })));
+    const r4 = await settle(askDefault(h4));
+    check("Test 13c: a model that is not a string rides as null", r4.resolved && r4.value.ok === true && r4.value.model === null, r4.value);
+    // 13d: token counts are non-negative integers or null.
+    const counts = [
+      ["a negative count", -1, null],
+      ["a fractional count", 1.5, null],
+      ["a string count", "5", null],
+      ["zero", 0, 0],
+      ["a positive integer", 296, 296],
+    ];
+    for (const [label, input, expected] of counts) {
+      const h5 = harness();
+      h5.setHttpResponse(response(200, bodyWith(valid, { usage: { input_tokens: input, output_tokens: input } })));
+      const r5 = await settle(askDefault(h5));
+      check(`Test 13d: usage with ${label} rides as ${expected}`,
+        r5.resolved && r5.value.ok === true && r5.value.usage.input_tokens === expected && r5.value.usage.output_tokens === expected, r5.value && r5.value.usage);
+    }
   }
 } finally {
   clock.restore();

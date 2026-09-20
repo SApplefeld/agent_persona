@@ -344,6 +344,26 @@ function createFake$(opts = {}) {
   };
 }
 
+// --- Fake PluginHost ---
+
+// The PluginHost hooks/index.ts builds over $ in its top-level hostOf,
+// built here over the fake $, member for member (hooks/host.ts declares the
+// members). Each closure reads the fake at call time, so a case that
+// replaces h.fake.http.fetch or h.fake.clock.sleep after this is still what
+// the module under test reaches. A module that takes a Pick of PluginHost
+// takes this whole object; the extra members are simply unread.
+function fakeHostOf(h) {
+  return {
+    getApiKey: () => h.fake.env.get("TYPESAFE_API_KEY"),
+    getHome: () => h.fake.env.get("USERPROFILE").then((v) => v || h.fake.env.get("HOME")),
+    readFile: (p) => h.fake.fs.read(p),
+    writeFile: (p, text) => h.fake.fs.write(p, text),
+    fileExists: (p) => h.fake.fs.exists(p),
+    fetch: (url, init) => h.fake.http.fetch(url, init),
+    sleep: (ms) => h.fake.clock.sleep(ms),
+  };
+}
+
 // --- Date.now stub ---
 
 function stubDateNow() {
@@ -546,6 +566,7 @@ async function createTickHarness(options = {}) {
 export {
   createTickHarness,
   createFake$,
+  fakeHostOf,
   stubDateNow,
   makeState,
   makeGoalNode,
