@@ -14,8 +14,12 @@
 //
 // The API key is read here and reaches exactly one place: the request's
 // Authorization header. No part of its value is journaled, logged, put in a
-// result detail or written to a file. Every detail built from a message the
-// host or the resolver produced is scrubbed of the key before it is returned.
+// result detail or written to a file. Two kinds of text are scrubbed of it
+// before they leave: every detail built from a message the host or the
+// resolver produced, and the state itself, which is scrubbed once before the
+// request body is built and rides the result from there. The state scrub is
+// this module's principal guard, and it is here because a guard needing the
+// key cannot sit on a boundary that must not hold one.
 //
 // Every call on the host is an op event a co-loaded plugin's hook may answer
 // with a value of its own, so the party that supplies a response body is not
@@ -31,6 +35,20 @@ export const JEV_MODEL = "jev-latest";
 export const SHADOW_TIMEOUT_MS = 10_000;
 // The longest model name the result carries; the vendor's is under 16.
 export const MODEL_MAX_CHARS = 64;
+
+// The shortest a key may be and still be sent. A shorter value is treated as an
+// absent key: nothing is sent and no state is carried. The floor is the adopted
+// ruling's rather than a length the vendor publishes, which is not established
+// here, so a real key below it would read as no_key with nothing on the line
+// telling that apart from an absent one.
+//
+// What the floor buys is bounded, and it is worth stating exactly. The scrub
+// below uses the key as a search pattern over the state, so a very short key
+// would rewrite the text rather than redact it. The floor closes that case and
+// no other: a value at or above the floor that happens to occur in the state
+// is still replaced wherever it occurs, which is the scrub working as intended
+// and not a case this constant guards.
+export const KEY_MIN_CHARS = 16;
 
 // What the seam needs from the host: the key, the network and a timer.
 export type SeamHost = Pick<PluginHost, "getApiKey" | "fetch" | "sleep">;
@@ -58,7 +76,8 @@ export type QuestionResolver = (questionSetId: string) => Promise<ResolvedQuesti
 
 // The closed set of ways a shadow call ends short of an answer.
 //   off         any mode other than the exact string "shadow"; nothing is read or sent
-//   no_key      TYPESAFE_API_KEY absent, empty once trimmed, or unreadable; nothing is sent
+//   no_key      TYPESAFE_API_KEY absent, unreadable, or shorter than KEY_MIN_CHARS
+//               once trimmed; nothing is sent and no state is carried
 //   no_question the resolver rejected or returned a shape carrying no options; local,
 //               before any request, and so distinct from parse
 //   timeout     the timer won the race against the request
@@ -116,6 +135,12 @@ export type SeamOk = {
   // The model name the body named, cut to MODEL_MAX_CHARS; null where absent.
   model: string | null;
   haikuValue: string | null;
+  // The state as it was sent, scrubbed of the key by this module, which holds
+  // the only copy of it. The journal reads the state from here rather than
+  // taking a field of its own, so the same bytes go to the vendor and to the
+  // line. Typed nullable with the failure shape's, which a caller reading the
+  // union reads as one field.
+  state: string | null;
 };
 
 export type SeamFailure = {
@@ -133,6 +158,10 @@ export type SeamFailure = {
   // Null where no request was made.
   latencyMs: number | null;
   haikuValue: string | null;
+  // The scrubbed state where the call got past the key check. Null on off and
+  // on no_key, where no key was read and so nothing could be scrubbed, which
+  // is also what a null here tells a reader: the reason field names which.
+  state: string | null;
 };
 
 export type SeamResult = SeamOk | SeamFailure;
@@ -153,9 +182,11 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// Removes every occurrence of the key from text bound for a detail field.
-// Both the key as read and its trimmed form are removed, since the header
-// carries the key as read and a host error may echo either.
+// Removes every occurrence of the key from text leaving this module: a detail
+// field, and the state itself. Both the key as read and its trimmed form are
+// removed, since the header carries the trimmed form and a host error may echo
+// the value as the environment holds it. The floor above is what makes this a redaction rather than a
+// rewrite: a degenerate key never reaches it.
 function withoutKey(text: string, key: string): string {
   let out = text;
   for (const form of new Set([key, key.trim()])) {
@@ -211,6 +242,12 @@ function choiceAnswerOf(v: unknown, optionIds: readonly string[]): { answer: Cho
   // probability from the answer the journal records.
   const probabilities: Record<string, number> = Object.create(null);
   for (const [id, p] of Object.entries(v.probabilities)) {
+    // A key outside the ids in force is a malformed body, refused on the same
+    // ground the choice is. It also bounds the map: the request carries the
+    // caller's ids and nothing else, so a body answering with a hundred
+    // thousand keys cannot reach a journal line, where one append rewrites the
+    // whole day's file and would carry that cost for every later line.
+    if (!optionIds.includes(id)) return { problem: "answer probabilities carry an option that was not offered" };
     if (typeof p !== "number" || !Number.isFinite(p)) return { problem: "answer probabilities carry a value that is not a finite number" };
     probabilities[id] = p;
   }
@@ -225,6 +262,7 @@ function failure(
   question: ResolvedQuestion | null,
   latencyMs: number | null,
   haikuValue: string | null,
+  state: string | null,
 ): SeamFailure {
   return {
     ok: false,
@@ -236,6 +274,7 @@ function failure(
     overrideRefused: question ? question.overrideRefused : null,
     latencyMs,
     haikuValue,
+    state,
   };
 }
 
@@ -245,8 +284,11 @@ function failure(
 //
 // The mode check comes first, so anything but "shadow" reads no key, resolves
 // no question and sends nothing. The key check comes second, so a VM with no
-// key sends nothing either. The resolver runs third, guarded, so a catalog
-// that cannot answer sends nothing. The request is raced against the timer;
+// key, or one holding a value too short to be a bearer token, sends nothing
+// either. The state is scrubbed third, immediately after that check, so every
+// path past it carries the scrubbed text and no caller can reach the vendor or
+// the journal with the raw string. The resolver runs fourth, guarded, so a
+// catalog that cannot answer sends nothing. The request is raced against the timer;
 // both promises are built so they resolve rather than reject, which is what
 // keeps the loser of the race from becoming an unhandled rejection when it
 // settles later. Latency is measured here, from just before the fetch to the
@@ -260,7 +302,7 @@ export async function ask(
   haikuValue: string | null,
   resolve: QuestionResolver,
 ): Promise<SeamResult> {
-  if (mode !== "shadow") return failure("off", null, questionSetId, null, null, haikuValue);
+  if (mode !== "shadow") return failure("off", null, questionSetId, null, null, haikuValue, null);
 
   let key: unknown;
   try {
@@ -268,9 +310,28 @@ export async function ask(
   } catch {
     key = undefined;
   }
-  if (typeof key !== "string" || key.trim().length === 0) {
-    return failure("no_key", null, questionSetId, null, null, haikuValue);
+  if (typeof key !== "string" || key.trim().length < KEY_MIN_CHARS) {
+    return failure("no_key", null, questionSetId, null, null, haikuValue, null);
   }
+
+  // The scrub runs here, once, at the last point holding both the text and the
+  // key. Everything past this line carries `sent` rather than the caller's own
+  // string: the request body, and every result the call can return. So the
+  // bytes the vendor receives are the bytes the journal records, and no later
+  // module needs a guard it would have to remember to run.
+  // `state` is typed a string and every call site is typed, but this is the
+  // first call that would reach into it, and a throw here would break the
+  // never-rejects contract this module states above. The conversion itself is
+  // guarded because it can throw: String() raises a TypeError on an object
+  // with a null prototype, and on any object whose toString throws. This file
+  // builds null-prototype objects deliberately, so the shape is native here.
+  let raw = "";
+  try {
+    raw = typeof state === "string" ? state : String(state);
+  } catch {
+    raw = "";
+  }
+  const sent = withoutKey(raw, key);
 
   // The resolver is local and runs before any request, so its failure is
   // no_question rather than parse, and nothing has been sent when it fails.
@@ -278,10 +339,10 @@ export async function ask(
   try {
     resolved = await resolve(questionSetId);
   } catch (err) {
-    return failure("no_question", withoutKey(messageOf(err), key), questionSetId, null, null, haikuValue);
+    return failure("no_question", withoutKey(messageOf(err), key), questionSetId, null, null, haikuValue, sent);
   }
   const problem = questionProblem(resolved);
-  if (problem !== null) return failure("no_question", problem, questionSetId, null, null, haikuValue);
+  if (problem !== null) return failure("no_question", problem, questionSetId, null, null, haikuValue, sent);
   const question = resolved as ResolvedQuestion;
 
   // Exactly the ids in force, each with the catalog's description where the
@@ -297,7 +358,7 @@ export async function ask(
     criteria[id] = Object.hasOwn(question.options, id) ? question.options[id] : null;
   }
   const body = JSON.stringify({
-    state,
+    state: sent,
     model: JEV_MODEL,
     questions: {
       [question.id]: { type: "choice", instructions: question.instructions, criteria },
@@ -308,7 +369,13 @@ export async function ask(
   const request: Promise<Settled> = Promise.resolve()
     .then(() => host.fetch(JEV_ENDPOINT, {
       method: "POST",
-      headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
+      // The trimmed form, because the floor above is measured on it. A value
+      // padded by a shell export or a copy-paste would otherwise pass the
+      // floor on its trimmed length and go out as a header no server accepts,
+      // landing every call as http_401 or network with nothing naming why.
+      // withoutKey still removes both forms: this is the form that is sent,
+      // and the form as read is the one a host error may echo.
+      headers: { "Authorization": `Bearer ${key.trim()}`, "Content-Type": "application/json" },
       body,
     }))
     .then(
@@ -332,35 +399,35 @@ export async function ask(
   const settled = await Promise.race([request, timer]);
   const latencyMs = Date.now() - startedAt;
 
-  if (settled.kind === "timeout") return failure("timeout", null, questionSetId, question, latencyMs, haikuValue);
+  if (settled.kind === "timeout") return failure("timeout", null, questionSetId, question, latencyMs, haikuValue, sent);
   if (settled.kind === "network") {
-    return failure("network", withoutKey(messageOf(settled.err), key), questionSetId, question, latencyMs, haikuValue);
+    return failure("network", withoutKey(messageOf(settled.err), key), questionSetId, question, latencyMs, haikuValue, sent);
   }
 
   // A fetch that resolved with no response object is a fetch that returned
   // nothing usable, which is a network failure rather than a status.
   const res = settled.res;
-  if (!isRecord(res)) return failure("network", "no response", questionSetId, question, latencyMs, haikuValue);
+  if (!isRecord(res)) return failure("network", "no response", questionSetId, question, latencyMs, haikuValue, sent);
   const { status, text } = res;
   // An integer in 200 to 299 and nothing else: NaN is a number that fails
   // both range comparisons, and a fraction or a numeric string is no status.
   if (typeof status !== "number" || !Number.isInteger(status) || status < 200 || status > 299) {
-    return failure(httpReason(status), String(status), questionSetId, question, latencyMs, haikuValue);
+    return failure(httpReason(status), String(status), questionSetId, question, latencyMs, haikuValue, sent);
   }
 
-  if (typeof text !== "string") return failure("parse", "body is not text", questionSetId, question, latencyMs, haikuValue);
+  if (typeof text !== "string") return failure("parse", "body is not text", questionSetId, question, latencyMs, haikuValue, sent);
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    return failure("parse", "body is not JSON", questionSetId, question, latencyMs, haikuValue);
+    return failure("parse", "body is not JSON", questionSetId, question, latencyMs, haikuValue, sent);
   }
   const answers = isRecord(parsed) ? parsed.answers : undefined;
   if (!isRecord(parsed) || !isRecord(answers) || !isRecord(answers[question.id])) {
-    return failure("parse", `no answer for ${question.id}`, questionSetId, question, latencyMs, haikuValue);
+    return failure("parse", `no answer for ${question.id}`, questionSetId, question, latencyMs, haikuValue, sent);
   }
   const validated = choiceAnswerOf(answers[question.id], optionIds);
-  if ("problem" in validated) return failure("parse", validated.problem, questionSetId, question, latencyMs, haikuValue);
+  if ("problem" in validated) return failure("parse", validated.problem, questionSetId, question, latencyMs, haikuValue, sent);
   const usage = isRecord(parsed.usage) ? parsed.usage : {};
   return {
     ok: true,
@@ -374,5 +441,6 @@ export async function ask(
     latencyMs,
     model: typeof parsed.model === "string" ? parsed.model.slice(0, MODEL_MAX_CHARS) : null,
     haikuValue,
+    state: sent,
   };
 }

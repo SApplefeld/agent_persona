@@ -22,21 +22,43 @@
 // and the first failure of a UTC day is flagged so the caller can log it once.
 // A tick that cannot write its journal line is still a tick that must finish.
 //
-// This module is the journal's output channel, so the guard every line crosses
-// lives here and is exported rather than kept private: the clamp that bounds a
-// field nobody else bounds. A later module that writes a journal line calls it
-// rather than writing its own, which is what stops the next boundary from
-// being unguarded.
+// This module is the journal's output channel, so a guard that needs only the
+// text it is handed lives here and is exported rather than kept private: the
+// clamp that bounds a field nobody else bounds, and the prototype-free map. A
+// later module that writes a journal line calls them rather than writing its
+// own, which is what stops the next boundary from being unguarded.
 //
-// The scrub beside it is exported and is not applied by any writer here. What
-// keeps the API key out of a line today is the seam, which holds the only copy
-// and scrubs the one field it builds from a message it did not author. The
-// journal does not read the key, because reading it would mean one more op
-// event per line, observable by any co-loaded hook, and because the value that
-// came back would then be used as a substitution pattern over the payload: a
-// short or hostile answer would rewrite the measured state rather than leak
-// it, in a file nothing rewrites. Which boundary should own the scrub, and
-// what a line should record when it did not run, is open.
+// The guard that keeps the vendor API key out of a line is not one of those,
+// and it is not here. It needs the key, and this boundary must not hold one.
+// It lives in the seam, which already holds the only copy in order to build
+// the request header, and which scrubs the state once before the request body
+// is built. So the bytes the vendor receives are the bytes a line records. A
+// call line reads its state from the seam's result rather than from a field of
+// its own, which is what makes that structural for a call line: no field on it
+// carries the worker's own text unscrubbed, and that scrub covers the vendor
+// API key alone and no other secret a worker may have printed. Six further
+// fields on it are caller-supplied (the
+// stamp id, the persona, the session, the site, the question set and the
+// mode), and those are the plugin's own identifiers rather than anything a
+// worker wrote. A result that read no key carries a null
+// state and a reason naming which of the two reasons it was, so nothing on the
+// line records whether the scrub ran.
+//
+// The outcome line is the other place worker-authored free text could reach a
+// line, and it is guarded here by kind rather than by the seam: an ask marker's
+// value is a fixed token, because the text that matched is the worker's own.
+// That guard needs only the kind it is handed, so it belongs on this channel
+// rather than on the joiner that will call it.
+//
+// The answer line is the one place a caller's own strings are written as they
+// were given, and it is deliberate. Its option ids and its `haikuValue` are the
+// vocabulary agreement is measured in: the seam validates the vendor's answer
+// against the same ids it sent, and agreement is exact equality of option id
+// between that answer and Haiku's. Rewriting them would corrupt the instrument
+// rather than protect it. Three of the four question sets draw those ids from
+// the catalog's own constants; the fourth is the plan switch, whose ids are
+// pending plan ids the caller supplies. They are bounded by the clamp and
+// carried on a prototype-free map, and they are not scrubbed.
 
 import type { PluginHost } from "./host";
 import type { SeamResult } from "./decision-seam";
@@ -72,6 +94,12 @@ export const SEGMENT_MAX = 64;
 export type OutcomeKind = "next_score" | "ask_marker";
 export const OUTCOME_KINDS: readonly OutcomeKind[] = ["next_score", "ask_marker"];
 
+// The value every `ask_marker` outcome line carries, whatever the caller passes.
+// What matched is a line the worker wrote, and a journal line records that the
+// marker fired rather than what it said. A `next_score` value is the plugin's
+// own label from a closed set, so it rides as it was given.
+export const ASK_MARKER_VALUE = "matched";
+
 export type JournalSplit = "holdout" | "dev";
 
 // What a writer resolves to. `ok` is whether the line landed. `firstFailureToday`
@@ -81,28 +109,14 @@ export type JournalSplit = "holdout" | "dev";
 // reported again.
 export type JournalWrite = { ok: boolean; firstFailureToday: boolean };
 
-// --- The two guards on this boundary ---
+// --- The clamp on this boundary ---
 
-// Removes every occurrence of a secret from text bound for a journal line.
-// Both the secret as held and its trimmed form are removed, since a producer
-// may carry either into a message. Exported because this is the channel's
-// guard rather than one producer's: the journal itself holds no secret and
-// passes none, and a producer that does holds the only copy that could leak.
-export function withoutSecret(text: string, secret: string | null | undefined): string {
-  if (typeof secret !== "string") return text;
-  let out = text;
-  for (const form of new Set([secret, secret.trim()])) {
-    if (form.length > 0) out = out.split(form).join("[secret]");
-  }
-  return out;
-}
-
-// The one call every free text field the journal did not author goes through:
-// scrub, then bound. `state` is the exception and goes through neither, being
-// the measured payload the call line stores once and the one field whose exact
-// bytes a later reader needs.
-export function journalText(value: unknown, secret?: string | null): string {
-  const text = withoutSecret(typeof value === "string" ? value : String(value), secret);
+// The one call every free text field the journal did not author goes through.
+// `state` is the exception and goes through neither this nor anything else
+// here: it arrives already scrubbed from the seam, and it is the one field
+// whose exact bytes a later reader needs.
+export function journalText(value: unknown): string {
+  const text = typeof value === "string" ? value : String(value);
   return text.length <= FREE_TEXT_MAX ? text : text.slice(0, FREE_TEXT_MAX - TEXT_CUT_MARK.length) + TEXT_CUT_MARK;
 }
 
@@ -259,8 +273,8 @@ function finiteOf(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
-function textOrNull(v: unknown, secret?: string | null): string | null {
-  return typeof v === "string" ? journalText(v, secret) : null;
+function textOrNull(v: unknown): string | null {
+  return typeof v === "string" ? journalText(v) : null;
 }
 
 // The probabilities map as a line carries it: prototype-free, since its keys
@@ -282,8 +296,9 @@ function probabilitiesOf(from: unknown): Record<string, number | null> {
 
 // --- The three writers ---
 
-// What a call line needs beyond the result the seam returned. `state` is the
-// text the question was asked about, which the line stores once per site.
+// What a call line needs beyond the result the seam returned. There is no
+// state field here: the state comes off the result, already scrubbed by the
+// seam, so no caller can hand this boundary raw text.
 export type CallRecord = {
   stampId: string;
   persona: string;
@@ -291,7 +306,6 @@ export type CallRecord = {
   site: string;
   questionSet: string;
   mode: string;
-  state: string;
   result: SeamResult;
 };
 
@@ -305,8 +319,12 @@ const lastState = new Map<string, { stateHash: number; stampId: string }>();
 export async function writeCall(host: JournalHost, record: CallRecord): Promise<JournalWrite> {
   const at = Date.now();
   const result = record.result;
-  const state = typeof record.state === "string" ? record.state : "";
-  const stateHash = fnv1aHash(state);
+  // The state the seam scrubbed with the key it sent. Null where the call read
+  // no key, which is the `off` and `no_key` reasons: the mode check precedes
+  // the key read, so neither carries a state and neither has anything to dedup
+  // on. The `result` column is what tells the two apart.
+  const state = typeof result.state === "string" ? result.state : null;
+  const stateHash = state === null ? null : fnv1aHash(state);
 
   let path: string | null;
   try {
@@ -318,22 +336,28 @@ export async function writeCall(host: JournalHost, record: CallRecord): Promise<
 
   // The state rides the line only where this site's last state on this file
   // differed. Otherwise the line points at the stamp id that carries it.
+  const stampId = journalText(record.stampId);
   const siteKey = `${path}\u0000${record.site}`;
   const prior = lastState.get(siteKey);
-  const repeat = prior !== undefined && prior.stateHash === stateHash;
+  // A null state is never a repeat: there is no measured text for a later line
+  // to point back at, so such a line carries a null reference like the first.
+  const repeat = stateHash !== null && prior !== undefined && prior.stateHash === stateHash;
 
   const line = {
     // The closed set of line kinds, which an outcome line's own `kind` field
     // does not name: that one is the closed set of outcome kinds.
     lineKind: "call",
-    stampId: journalText(record.stampId),
+    stampId: stampId,
     at: new Date(at).toISOString(),
     persona: journalText(record.persona),
     session: journalText(record.session),
     site: journalText(record.site),
     questionSet: journalText(record.questionSet),
     mode: journalText(record.mode),
-    split: splitOf(record.stampId),
+    // Computed from the clamped id the line stores, not the raw one, so the
+    // split a reader derives from the stored id is the split recorded beside
+    // it. Unreachable through newStampId, which two segment cuts already bound.
+    split: splitOf(stampId),
     stateHash,
     state: repeat ? null : state,
     stateRef: repeat && prior !== undefined ? prior.stampId : null,
@@ -351,7 +375,7 @@ export async function writeCall(host: JournalHost, record: CallRecord): Promise<
   // file. A line that never landed is one no later stateRef may name, or a
   // repeat would point at a stamp id no load can find and the state would be
   // lost for the rest of the day.
-  if (written.ok && !repeat) lastState.set(siteKey, { stateHash, stampId: record.stampId });
+  if (written.ok && !repeat && stateHash !== null) lastState.set(siteKey, { stateHash, stampId });
   return written;
 }
 
@@ -424,6 +448,8 @@ export type OutcomeRecord = {
   session: string;
   callStampId: string;
   kind: OutcomeKind;
+  // Read for a `next_score` and ignored for an `ask_marker`, which always
+  // writes ASK_MARKER_VALUE.
   value: string;
 };
 
@@ -448,7 +474,9 @@ export async function writeOutcome(host: JournalHost, record: OutcomeRecord): Pr
     stampId: newStampId(record.persona, record.session),
     callStampId: journalText(record.callStampId),
     kind: record.kind,
-    value: textOrNull(record.value),
+    // The one field on this line a caller could fill with worker text, so an
+    // ask marker's is substituted rather than clamped.
+    value: record.kind === "ask_marker" ? ASK_MARKER_VALUE : textOrNull(record.value),
     at: new Date(at).toISOString(),
   };
   return writeLines(host, path, at, [JSON.stringify(line) + "\n"]);

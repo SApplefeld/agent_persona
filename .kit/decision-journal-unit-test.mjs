@@ -96,6 +96,10 @@ function okResult(extra = {}) {
     latencyMs: 412,
     model: "jev-latest",
     haikuValue: "nudge",
+    // The state as the seam scrubbed and sent it. The journal reads it here
+    // rather than from a field of its own, so a case that drives a different
+    // state drives it through the result.
+    state: "worker idle 3 ticks",
     ...extra,
   };
 }
@@ -111,6 +115,9 @@ function failureResult(extra = {}) {
     overrideRefused: null,
     latencyMs: null,
     haikuValue: "nudge",
+    // A no_key failure, which is one of the two that read no key and so carry
+    // no state at all.
+    state: null,
     ...extra,
   };
 }
@@ -123,7 +130,6 @@ function callRecord(J, extra = {}) {
     site: "controller",
     questionSet: "controller-decision",
     mode: "shadow",
-    state: "worker idle 3 ticks",
     result: okResult(),
     ...extra,
   };
@@ -151,11 +157,11 @@ try {
     // The UTC day rather than the local one: 23:30 UTC on the 14th is the 15th
     // in some zones and this file must still be the 14th's.
     clock.set(Date.UTC(2023, 10, 14, 23, 30, 0));
-    await J.writeCall(host, callRecord(J, { state: "later that day" }));
+    await J.writeCall(host, callRecord(J, { result: okResult({ state: "later that day" }) }));
     check("path: a write at 23:30 UTC lands on the same UTC day's file",
       [...files.keys()].length === 1 && files.has(PATH), [...files.keys()]);
     clock.set(Date.UTC(2023, 10, 15, 0, 30, 0));
-    await J.writeCall(host, callRecord(J, { state: "just past midnight" }));
+    await J.writeCall(host, callRecord(J, { result: okResult({ state: "just past midnight" }) }));
     check("path: a write past UTC midnight lands on the next day's file",
       files.has(`${HOME}/.claude/agentic-decisions/${PERSONA}/2023-11-15-${SESSION}.jsonl`), [...files.keys()]);
   }
@@ -232,7 +238,7 @@ try {
     const { host, files } = makeHost();
     await J.writeCall(host, callRecord(J, { stampId: "a.b.1.1" }));
     await J.writeCall(host, callRecord(J, { stampId: "a.b.1.2" }));
-    await J.writeCall(host, callRecord(J, { stampId: "a.b.1.3", state: "worker idle 4 ticks" }));
+    await J.writeCall(host, callRecord(J, { stampId: "a.b.1.3", result: okResult({ state: "worker idle 4 ticks" }) }));
     await J.writeCall(host, callRecord(J, { stampId: "a.b.1.4", site: "scorer" }));
     const lines = linesOf(files);
     check("state dedup: the first call carries the state", lines[0].state === "worker idle 3 ticks" && lines[0].stateRef === null, lines[0]);
@@ -513,21 +519,31 @@ try {
       J.splitOf("holdout-probe") === "holdout" || J.splitOf("holdout-probe") === "dev", J.splitOf("holdout-probe"));
   }
 
-  // --- The scrub and the clamp ---
+  // --- The clamp ---
+  //
+  // There is no scrub on this boundary. The guard that keeps the vendor API
+  // key out of a line needs the key, so it lives in the seam, and this module
+  // exports nothing that takes a secret. The seam suite drives it.
   {
-    console.log("\n=== The scrub and the clamp on this boundary ===");
+    console.log("\n=== The clamp on this boundary ===");
     const J = await freshModule();
     clock.set(T0);
-    check("scrub: a secret in the text is replaced", J.withoutSecret("failed for sk-abc123", "sk-abc123") === "failed for [secret]", J.withoutSecret("failed for sk-abc123", "sk-abc123"));
-    check("scrub: every occurrence goes, not just the first",
-      J.withoutSecret("sk-abc123 then sk-abc123", "sk-abc123") === "[secret] then [secret]", J.withoutSecret("sk-abc123 then sk-abc123", "sk-abc123"));
-    // Both the secret as held and its trimmed form go, so a secret carrying
-    // whitespace cannot leave its trimmed self behind in the text.
-    check("scrub: a secret held with whitespace goes in both its forms",
-      J.withoutSecret("saw sk-abc123 here", " sk-abc123 ") === "saw[secret]here"
-      && J.withoutSecret("saw sk-abc123 here", "  sk-abc123  ") === "saw [secret] here",
-      [J.withoutSecret("saw sk-abc123 here", " sk-abc123 "), J.withoutSecret("saw sk-abc123 here", "  sk-abc123  ")]);
-    check("scrub: no secret leaves the text alone", J.withoutSecret("plain text", null) === "plain text", J.withoutSecret("plain text", null));
+    // The subject is a class, so the predicate is over the class rather than
+    // over one name a later author is free not to reuse. What the check cannot
+    // do is prove intent: an export named for something other than a secret
+    // would pass it. The structural half is enforced by the compiler instead,
+    // CallRecord carrying no state field, and the cross-pin below drives it.
+    const secretish = Object.keys(J).filter((k) => /secret|scrub|redact|sanitiz|key/i.test(k));
+    check("no scrub here: the module exports nothing named for a secret or a scrub",
+      secretish.length === 0, secretish);
+    // The control is a withheld sibling rather than a string this file handed
+    // the pattern: the seam module really does export a name the predicate
+    // matches, and nothing in this suite chose that name. A control drawn from
+    // the pattern's own literals would prove only that the regex compiles.
+    const siblingNames = Object.keys(await import("../hooks/decision-seam.ts"));
+    const siblingHits = siblingNames.filter((k) => /secret|scrub|redact|sanitiz|key/i.test(k));
+    check("no scrub here control: the same predicate fires on a withheld sibling module",
+      siblingHits.length > 0, siblingHits);
 
     const long = "x".repeat(2000);
     const clamped = J.journalText(long);
@@ -544,7 +560,7 @@ try {
     // The state is the one free text field the clamp does not touch: it is the
     // measured payload the line stores once and a reader needs it whole.
     const { host: h2, files: f2 } = makeHost();
-    await J.writeCall(h2, callRecord(J, { state: long }));
+    await J.writeCall(h2, callRecord(J, { result: okResult({ state: long }) }));
     check("clamp: the state is stored whole", linesOf(f2)[0].state === long, linesOf(f2)[0].state.length);
   }
 
@@ -659,6 +675,194 @@ try {
     check("probability keys: no key on the line runs past the clamp",
       keys.every((k) => k.length <= 512), keys.map((k) => k.length));
     check("probability keys: and the ordinary key is untouched", keys.includes("nudge"), keys.map((k) => k.slice(0, 12)));
+  }
+
+  // --- A call that read no key carries no state ---
+  //
+  // Both reasons that precede the key check carry a null state, because
+  // nothing was scrubbed and nothing was sent. The line records that as a null
+  // rather than as a flag of its own: the result column already names which
+  // reason it was, and a second column could drift from it.
+  {
+    console.log("\n=== A call that read no key writes a null state and no reference ===");
+    const J = await freshModule();
+    clock.set(T0);
+    const { host, files } = makeHost();
+    await J.writeCall(host, callRecord(J, {
+      stampId: "steward.harness-session.1700000000000.1",
+      result: failureResult({ reason: "off" }),
+    }));
+    const [line] = linesOf(files);
+    check("no state: the line carries a null state", line.state === null, line);
+    check("no state: and a null hash rather than the hash of an empty string",
+      line.stateHash === null, line.stateHash);
+    check("no state: and it names no earlier line", line.stateRef === null, line);
+    check("no state: the reason column is what says why", line.result === "off", line.result);
+
+    // A null state must not be recorded as this site's last state, or the next
+    // real call on this site would read as a repeat of nothing.
+    await J.writeCall(host, callRecord(J, { stampId: "steward.harness-session.1700000000000.2" }));
+    const second = linesOf(files)[1];
+    check("no state: the next real call still carries its state whole",
+      second.state === "worker idle 3 ticks" && second.stateRef === null, second);
+
+    // And a null state after a real one is not a repeat of it either.
+    await J.writeCall(host, callRecord(J, {
+      stampId: "steward.harness-session.1700000000000.3",
+      result: failureResult({ reason: "no_key" }),
+    }));
+    const third = linesOf(files)[2];
+    check("no state: a null state after a real one points at nothing",
+      third.state === null && third.stateRef === null && third.stateHash === null, third);
+
+    // The real state is still the one a later repeat points back at, so the
+    // null line did not disturb the dedup.
+    await J.writeCall(host, callRecord(J, { stampId: "steward.harness-session.1700000000000.4" }));
+    const fourth = linesOf(files)[3];
+    check("no state: a repeat after the null line still points at the real one",
+      fourth.state === null && fourth.stateRef === "steward.harness-session.1700000000000.2", fourth);
+  }
+
+  // --- The state a line carries is the seam's, byte for byte ---
+  {
+    console.log("\n=== The line stores the seam's scrubbed bytes unchanged ===");
+    const J = await freshModule();
+    clock.set(T0);
+    const { host, files } = makeHost();
+    // What the seam hands over is already scrubbed. The journal neither
+    // scrubs nor clamps it, so what a reader gets is what the vendor got.
+    const scrubbed = "worker printed [key] to its log this tick";
+    await J.writeCall(host, callRecord(J, { result: okResult({ state: scrubbed }) }));
+    check("seam bytes: the line carries the result's state unchanged",
+      linesOf(files)[0].state === scrubbed, linesOf(files)[0].state);
+  }
+
+  // --- The ask marker's value is the journal's, not the worker's ---
+  //
+  // What matched an ASK: marker is a line the worker wrote. A journal line
+  // records that the marker fired and never what it said, so the value is
+  // substituted rather than clamped. The guard needs only the kind, so it sits
+  // on this channel rather than on the joiner that will call it.
+  {
+    console.log("\n=== An ask marker's value is a fixed token ===");
+    const J = await freshModule();
+    clock.set(T0);
+    const { host, files } = makeHost();
+    const workerText = "ASK: should I use the staging credentials for this run?";
+    await J.writeOutcome(host, {
+      persona: PERSONA, session: SESSION, callStampId: "steward.harness-session.1700000000000.1",
+      kind: "ask_marker", value: workerText,
+    });
+    const line = linesOf(files)[0];
+    check("ask marker: the line carries the fixed token", line.value === J.ASK_MARKER_VALUE, line.value);
+    check("ask marker: and the token is not the empty string or null",
+      typeof J.ASK_MARKER_VALUE === "string" && J.ASK_MARKER_VALUE.length > 0, J.ASK_MARKER_VALUE);
+    check("ask marker: no part of the worker's line reaches the file",
+      !files.get(PATH).includes("staging credentials"), files.get(PATH));
+
+    // A long worker line would otherwise be clamped and still carry 512 of
+    // the worker's own characters, which is the failure this substitution
+    // closes rather than bounds.
+    const { host: h2, files: f2 } = makeHost();
+    await J.writeOutcome(h2, {
+      persona: PERSONA, session: SESSION, callStampId: "steward.harness-session.1700000000000.2",
+      kind: "ask_marker", value: "q".repeat(2000),
+    });
+    check("ask marker: a long worker line is substituted rather than cut",
+      linesOf(f2)[0].value === J.ASK_MARKER_VALUE && !f2.get(PATH).includes("qqqq"), linesOf(f2)[0].value);
+
+    // The other kind is the plugin's own label from a closed set, so it rides
+    // as it was given. This is the withheld half: the substitution is keyed on
+    // the kind, and a guard that replaced every value would pass the three
+    // checks above just as well.
+    const { host: h3, files: f3 } = makeHost();
+    await J.writeOutcome(h3, {
+      persona: PERSONA, session: SESSION, callStampId: "steward.harness-session.1700000000000.3",
+      kind: "next_score", value: "on-goal",
+    });
+    check("ask marker: a next_score value is untouched", linesOf(f3)[0].value === "on-goal", linesOf(f3)[0].value);
+  }
+
+  // --- The seam's own result, driven through this writer ---
+  //
+  // Every other case here builds the seam's result by hand. Each side tested
+  // against its own literal is how a writer and a reader drift apart, so this
+  // one runs the real ask and hands what it returns straight to writeCall.
+  {
+    console.log("\n=== A real seam result is what the call line records ===");
+    const J = await freshModule();
+    const { ask } = await import("../hooks/decision-seam.ts");
+    const { createFake$, fakeHostOf } = await import("./tick-harness.mjs");
+    clock.set(T0);
+
+    const KEY = "sk-journal-crosspin-key";
+    const QUESTION = {
+      id: "controller-decision", version: "v1", overrideRefused: null, primitive: "choice",
+      instructions: "Pick one.", options: { nudge: "Send a nudge", wait: "Do nothing" },
+    };
+    const body = JSON.stringify({
+      answers: { "controller-decision": { type: "choice", choice: "nudge", probabilities: { nudge: 0.8, wait: 0.2 }, confidence: 0.7 } },
+      usage: { input_tokens: 296, output_tokens: 4 },
+      model: "jev-latest",
+    });
+
+    // An ok call: the seam scrubs the state and the line records those bytes.
+    const fake = createFake$();
+    fake.setEnv("TYPESAFE_API_KEY", KEY);
+    fake.setHttpResponse(() => Promise.resolve({ status: 200, ok: true, headers: {}, text: body }));
+    const leaky = `worker printed ${KEY} this tick`;
+    const okReal = await ask(fakeHostOf(fake), "controller-decision", ["nudge", "wait"], leaky, "shadow", "nudge", async () => QUESTION);
+    check("cross-pin: the real call succeeded (precondition)", okReal.ok === true, okReal);
+    const { host, files } = makeHost();
+    await J.writeCall(host, {
+      stampId: "steward.harness-session.1700000000000.1", persona: PERSONA, session: SESSION,
+      site: "controller", questionSet: "controller-decision", mode: "shadow", result: okReal,
+    });
+    const okLine = linesOf(files)[0];
+    check("cross-pin: the line carries the seam's scrubbed state byte for byte",
+      okLine.state === okReal.state && okLine.state === "worker printed [key] this tick", okLine.state);
+    check("cross-pin: the key is nowhere in the file", !files.get(PATH).includes(KEY), okLine.state);
+    check("cross-pin: the line's hash is a number for a state that exists", typeof okLine.stateHash === "number", okLine.stateHash);
+
+    // A call the kill switch stopped: the seam read no key, so the line's
+    // state and hash are both null. This is the half that would drift if the
+    // two modules disagreed on which reasons carry a state.
+    const offReal = await ask(fakeHostOf(fake), "controller-decision", ["nudge", "wait"], leaky, "off", "nudge", async () => QUESTION);
+    check("cross-pin: the off call failed off (precondition)", offReal.ok === false && offReal.reason === "off", offReal);
+    const { host: h2, files: f2 } = makeHost();
+    await J.writeCall(h2, {
+      stampId: "steward.harness-session.1700000000000.2", persona: PERSONA, session: SESSION,
+      site: "controller", questionSet: "controller-decision", mode: "off", result: offReal,
+    });
+    const offLine = linesOf(f2)[0];
+    check("cross-pin: a real off result writes a null state and a null hash",
+      offLine.state === null && offLine.stateHash === null && offLine.stateRef === null, offLine);
+    check("cross-pin: and the worker's text is nowhere in that file either",
+      !f2.get(PATH).includes("worker printed"), f2.get(PATH));
+
+    // The branch the floor added, driven end to end. The off leg above returns
+    // before the key is read at all, so it exercises the mode check rather than
+    // the floor. This one hands the seam a key one character under the floor.
+    const underFloor = "k".repeat(15);
+    const fakeShort = createFake$();
+    fakeShort.setEnv("TYPESAFE_API_KEY", underFloor);
+    fakeShort.setHttpResponse(() => Promise.resolve({ status: 200, ok: true, headers: {}, text: body }));
+    const shortReal = await ask(fakeHostOf(fakeShort), "controller-decision", ["nudge", "wait"], leaky, "shadow", "nudge", async () => QUESTION);
+    check("cross-pin: the under-floor key failed no_key (precondition)",
+      shortReal.ok === false && shortReal.reason === "no_key", shortReal);
+    check("cross-pin: and nothing was sent", fakeShort.httpCalls.length === 0, fakeShort.httpCalls.length);
+    const { host: h3, files: f3 } = makeHost();
+    await J.writeCall(h3, {
+      stampId: "steward.harness-session.1700000000000.3", persona: PERSONA, session: SESSION,
+      site: "controller", questionSet: "controller-decision", mode: "shadow", result: shortReal,
+    });
+    const shortLine = linesOf(f3)[0];
+    check("cross-pin: a real under-floor result writes a null state and a null hash",
+      shortLine.state === null && shortLine.stateHash === null && shortLine.stateRef === null, shortLine);
+    check("cross-pin: the result column tells it apart from an off call",
+      shortLine.result === "no_key", shortLine.result);
+    check("cross-pin: and the worker's text is nowhere in that file",
+      !f3.get(PATH).includes("worker printed"), f3.get(PATH));
   }
 } finally {
   clock.restore();

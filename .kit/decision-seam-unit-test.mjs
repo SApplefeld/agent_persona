@@ -27,6 +27,7 @@ const {
   JEV_MODEL,
   SHADOW_TIMEOUT_MS,
   SEAM_FAILURE_REASONS,
+  KEY_MIN_CHARS,
 } = await import("../hooks/decision-seam.ts");
 
 let failed = 0;
@@ -51,6 +52,10 @@ const unhandled = [];
 process.on("unhandledRejection", (reason) => { unhandled.push(reason); });
 
 const KEY = "sk-test-not-a-real-key";
+// Exactly at the floor and one character under it, so the boundary is driven
+// from both sides rather than from one.
+const KEY_AT_FLOOR = "k".repeat(16);
+const KEY_UNDER_FLOOR = "k".repeat(15);
 const STATE = "worker idle 3 ticks; last turn scored on-goal; no pending ask";
 
 // The stub catalog: one Choice set with a superset of three options, and a
@@ -84,7 +89,11 @@ function okBody(questionId, choice = "nudge") {
   return JSON.stringify({
     model: "jev-1.13.0",
     answers: {
-      [questionId]: { type: "choice", choice, probabilities: { nudge: 0.7, wait: 0.2, switch: 0.1 }, confidence: 0.55 },
+      // Only ids the default call offers. A body scoring an id the request
+      // never carried is a malformed body, refused at validation, and Test 17
+      // drives that case deliberately rather than leaving it in the fixture
+      // every other case shares.
+      [questionId]: { type: "choice", choice, probabilities: { nudge: 0.7, wait: 0.3 }, confidence: 0.55 },
     },
     usage: { input_tokens: 296, output_tokens: 20 },
   });
@@ -388,7 +397,7 @@ try {
 
   // --- Test 11: every failure result carries the same field set, and no failure throws ---
   {
-    const fields = ["ok", "reason", "detail", "questionSetId", "questionId", "questionVersion", "overrideRefused", "latencyMs", "haikuValue"];
+    const fields = ["ok", "reason", "detail", "questionSetId", "questionId", "questionVersion", "overrideRefused", "latencyMs", "haikuValue", "state"];
     const seen = new Set();
     const drivers = {
       off: (h) => askDefault(h, { mode: "off" }),
@@ -519,6 +528,181 @@ try {
       check(`Test 13d: usage with ${label} rides as ${expected}`,
         r5.resolved && r5.value.ok === true && r5.value.usage.input_tokens === expected && r5.value.usage.output_tokens === expected, r5.value && r5.value.usage);
     }
+  }
+
+  // --- Test 14: the folded guard, the key floor and the state scrub ---
+  //
+  // The scrub lives here rather than on the journal's boundary because it
+  // needs the key, and the journal must not hold one. The seam is the last
+  // point holding both the text and the key, so it scrubs once and the same
+  // bytes go to the vendor and to the journal line.
+  {
+    check("Test 14a: the floor is 16 characters", KEY_MIN_CHARS === 16, KEY_MIN_CHARS);
+
+    // A value too short to be a bearer token is an absent key: nothing is
+    // sent, and no state is carried past the check.
+    const hShort = harness({ key: KEY_UNDER_FLOOR });
+    const rShort = await settle(askDefault(hShort));
+    check("Test 14b: a key one character under the floor reads as no_key",
+      rShort.resolved && rShort.value.ok === false && rShort.value.reason === "no_key", rShort.value);
+    check("Test 14c: and nothing was sent", hShort.httpCalls.length === 0, hShort.httpCalls.length);
+    check("Test 14d: and the result carries no state", rShort.value.state === null, rShort.value.state);
+
+    // The control on the floor: the same driver one character longer gets
+    // through, so 14b reports the floor rather than some other refusal.
+    const hFloor = harness({ key: KEY_AT_FLOOR });
+    hFloor.setHttpResponse(response(200, okBody("controller_decision")));
+    const rFloor = await settle(askDefault(hFloor));
+    check("Test 14e control: a key exactly at the floor is sent",
+      rFloor.resolved && rFloor.value.ok === true && hFloor.httpCalls.length === 1, rFloor.value && rFloor.value.reason);
+
+    // The scrub, driven on a state that actually holds the key. The suite's
+    // ordinary state does not, so Test 5l's silence is the instrument working
+    // rather than evidence of reach; this case is what gives it reach.
+    const leaky = `worker printed ${KEY} to its log this tick`;
+    check("Test 14f control: the driving state does contain the key", leaky.includes(KEY), leaky.length);
+    const hLeak = harness();
+    hLeak.setHttpResponse(response(200, okBody("controller_decision")));
+    const rLeak = await settle(askDefault(hLeak, { state: leaky }));
+    const sentBody = JSON.parse(hLeak.httpCalls[0].init.body);
+    check("Test 14g: the key is gone from the state the vendor receives",
+      !sentBody.state.includes(KEY), sentBody.state);
+    check("Test 14h: and it was redacted rather than dropped, the rest of the text standing",
+      sentBody.state === "worker printed [key] to its log this tick", sentBody.state);
+    check("Test 14i: the result carries the same bytes the vendor received",
+      rLeak.resolved && rLeak.value.state === sentBody.state, rLeak.value && rLeak.value.state);
+
+    // Every result past the key check carries the scrubbed state, not just the
+    // ok one: a failure line is a journal line too.
+    const hFail = harness();
+    hFail.setHttpResponse(response(500, ""));
+    const rFail = await settle(askDefault(hFail, { state: leaky }));
+    check("Test 14j: a failure past the key check carries the scrubbed state",
+      rFail.resolved && rFail.value.ok === false && rFail.value.state === "worker printed [key] to its log this tick",
+      rFail.value && rFail.value.state);
+
+    // A call that read no key has nothing to scrub with, so it carries no
+    // state at all and its reason is what names why.
+    const hOff = harness();
+    const rOff = await settle(askDefault(hOff, { mode: "off", state: leaky }));
+    check("Test 14k: an off call carries no state and made no request",
+      rOff.resolved && rOff.value.state === null && rOff.value.reason === "off" && hOff.httpCalls.length === 0, rOff.value);
+
+    // The failure that precedes the request but follows the key check still
+    // carries the state, which is what lets its line be joined like any other.
+    const hNoQ = harness();
+    const rNoQ = await settle(askDefault(hNoQ, { state: leaky, resolve: () => Promise.reject(new Error("catalog unreadable")) }));
+    check("Test 14l: a no_question failure carries the scrubbed state",
+      rNoQ.resolved && rNoQ.value.reason === "no_question" && rNoQ.value.state === "worker printed [key] to its log this tick",
+      rNoQ.value && rNoQ.value.state);
+  }
+
+  // --- Test 15: the scrub removes both forms of the key ---
+  //
+  // The key reaches the header exactly as the environment holds it, so a
+  // padded value is sent padded. A worker that read the same variable and
+  // trimmed it prints the trimmed form, which is the form the state would
+  // carry. Both forms therefore have to go, and this is the only case that
+  // drives a key whose two forms differ.
+  {
+    const padded = `  ${"z".repeat(20)}  `;
+    const trimmed = padded.trim();
+    check("Test 15a control: the two forms differ and the trimmed form clears the floor",
+      padded !== trimmed && trimmed.length >= KEY_MIN_CHARS, [padded.length, trimmed.length]);
+
+    const h = harness({ key: padded });
+    h.setHttpResponse(response(200, okBody("controller_decision")));
+    const state = `worker echoed ${trimmed} into its log`;
+    check("Test 15b control: the driving state holds the trimmed form", state.includes(trimmed), state.length);
+    const r = await settle(askDefault(h, { state }));
+    const body = JSON.parse(h.httpCalls[0].init.body);
+    // The floor is measured on the trimmed length, so the trimmed form is what
+    // is sent. A padded value would otherwise clear the floor and go out as a
+    // header no server accepts, landing every call as http_401 with nothing on
+    // the line naming the real cause.
+    const authSent = h.httpCalls[0].init.headers.Authorization;
+    check("Test 15c: the header carries the trimmed key",
+      authSent === `Bearer ${trimmed}`, authSent);
+    check("Test 15c control: the padded form would have been a different header",
+      `Bearer ${padded}` !== `Bearer ${trimmed}`, [padded.length, trimmed.length]);
+    check("Test 15c-ii: and no whitespace rides between the scheme and the token",
+      authSent === authSent.trimEnd() && authSent.split(" ").length === 2, JSON.stringify(authSent.slice(0, 12)));
+    check("Test 15d: the trimmed form is gone from the state the vendor receives",
+      !body.state.includes(trimmed), body.state);
+    check("Test 15e: and gone from the result the journal will read",
+      r.resolved && r.value.ok === true && !r.value.state.includes(trimmed), r.value && r.value.state);
+    check("Test 15f: the rest of the text stands", body.state === "worker echoed [key] into its log", body.state);
+  }
+
+  // --- Test 16: a state that is not a string cannot break the contract ---
+  //
+  // Every call site is typed, so this is unreachable from the plugin. It is
+  // driven because the scrub is the first thing to reach into the state, and
+  // this module's stated contract is that it never rejects.
+  {
+    const h = harness();
+    h.setHttpResponse(response(200, okBody("controller_decision")));
+    const r = await settle(askDefault(h, { state: { not: "a string" } }));
+    check("Test 16a: an ordinary object state resolves rather than rejecting", r.resolved === true, r);
+
+    // The half that matters. String() raises a TypeError on an object with a
+    // null prototype, so a conversion written to survive a non-string would
+    // throw on exactly the class it was for. This file builds null-prototype
+    // objects deliberately, so the shape is native here rather than exotic.
+    const hostile = Object.create(null);
+    hostile.summary = "worker idle";
+    let controlThrew = false;
+    try { String(hostile); } catch { controlThrew = true; }
+    check("Test 16b control: converting this value does throw outside the seam", controlThrew === true, controlThrew);
+    const h2 = harness();
+    h2.setHttpResponse(response(200, okBody("controller_decision")));
+    const r2 = await settle(askDefault(h2, { state: hostile }));
+    check("Test 16b: a null-prototype state resolves rather than rejecting", r2.resolved === true, r2);
+
+    // An object whose toString throws is the same class by another route.
+    const h3 = harness();
+    h3.setHttpResponse(response(200, okBody("controller_decision")));
+    const r3 = await settle(askDefault(h3, { state: { toString() { throw new Error("nope"); } } }));
+    check("Test 16c: a state whose toString throws resolves rather than rejecting", r3.resolved === true, r3);
+  }
+
+  // --- Test 17: a probability key the request never offered is refused ---
+  //
+  // The response body is supplied by whoever answers the fetch op event, not
+  // by the vendor alone. The map's keys were bounded per key and unbounded in
+  // count, and an append rewrites the whole day's file, so one body carrying
+  // a hundred thousand keys would grow that cost for every later line.
+  {
+    const offered = ["nudge", "wait"];
+    const bodyWithKeys = (probabilities) => JSON.stringify({
+      answers: { controller_decision: { type: "choice", choice: "nudge", probabilities, confidence: 0.7 } },
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+
+    const h = harness();
+    h.setHttpResponse(response(200, bodyWithKeys({ nudge: 0.8, wait: 0.2 })));
+    const good = await settle(askDefault(h, { optionIds: offered }));
+    check("Test 17a control: a body answering only the offered ids is accepted",
+      good.resolved && good.value.ok === true, good.value && good.value.reason);
+
+    const h2 = harness();
+    h2.setHttpResponse(response(200, bodyWithKeys({ nudge: 0.8, wait: 0.1, switch: 0.1 })));
+    const extra = await settle(askDefault(h2, { optionIds: offered }));
+    check("Test 17b: an id that was never offered is refused as a parse failure",
+      extra.resolved && extra.value.ok === false && extra.value.reason === "parse", extra.value);
+    check("Test 17c: and the detail names what failed rather than quoting the body",
+      typeof extra.value.detail === "string" && extra.value.detail.includes("not offered")
+        && !extra.value.detail.includes("switch"), extra.value.detail);
+
+    // The bound this buys, driven rather than argued: a body cannot make the
+    // map larger than the set of ids the request carried.
+    const flood = Object.create(null);
+    for (let i = 0; i < 5000; i += 1) flood[`k${i}`] = 0.0001;
+    const h3 = harness();
+    h3.setHttpResponse(response(200, bodyWithKeys(flood)));
+    const flooded = await settle(askDefault(h3, { optionIds: offered }));
+    check("Test 17d: a flood of unoffered ids cannot reach a result",
+      flooded.resolved && flooded.value.ok === false && flooded.value.reason === "parse", flooded.value && flooded.value.reason);
   }
 } finally {
   clock.restore();
