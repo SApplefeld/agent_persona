@@ -656,9 +656,10 @@ try {
     const J = await freshModule();
     clock.set(T0);
     const { host, files } = makeHost();
-    // The seam validates each probability as a finite number and never checks
-    // the key set against the option ids it offered, so an unbounded key
-    // reaches this boundary and an append rewrites the whole file.
+    // The bound is this boundary's own: the module writes whatever it is
+    // handed and an append rewrites the whole file. The seam refuses a key
+    // outside the ids it offered, which is a guard on a different channel and
+    // not this one, so this case drives the boundary directly.
     const huge = "k".repeat(900);
     await J.writeAnswers(host, { persona: PERSONA, session: SESSION, answers: [{
       callStampId: "steward.harness-session.1700000000000.1",

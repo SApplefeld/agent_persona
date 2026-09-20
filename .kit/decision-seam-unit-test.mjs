@@ -704,6 +704,47 @@ try {
     check("Test 17d: a flood of unoffered ids cannot reach a result",
       flooded.resolved && flooded.value.ok === false && flooded.value.reason === "parse", flooded.value && flooded.value.reason);
   }
+
+  // Test 18: a host-supplied response is a hostile value, and every conversion
+  // of one is guarded. Round 6 found the module guarding String(state), which
+  // its own comment calls unreachable from a typed call site, while leaving
+  // three reachable conversions of host-chosen values unguarded. A rejection
+  // here is not a caught failure: Section 5 does not await the ask, so it
+  // becomes an unhandled rejection and the call's journal line is never
+  // written at all.
+  {
+    // A response object whose accessor throws. A lazily-read body is an
+    // ordinary shape for a response wrapper, so this is not an exotic value.
+    const h = harness();
+    h.setHttpResponse(() => Promise.resolve({
+      get status() { throw new Error("accessor exploded"); },
+      get text() { throw new Error("accessor exploded"); },
+      ok: true,
+      headers: {},
+    }));
+    const thrown = await settle(askDefault(h));
+    check("Test 18a: a response whose accessor throws resolves a closed failure rather than rejecting",
+      thrown.resolved && thrown.value.ok === false && thrown.value.reason === "network",
+      thrown.resolved ? thrown.value.reason : "REJECTED: " + String(thrown.err && thrown.err.message));
+
+    // A status that is not a number takes the String(status) path, and a
+    // null-prototype object is exactly what JSON.parse and this module's own
+    // prototype-free maps produce. String() raises a TypeError on one.
+    const h2 = harness();
+    h2.setHttpResponse({ status: Object.create(null), ok: false, headers: {}, text: "" });
+    const badStatus = await settle(askDefault(h2));
+    check("Test 18b: a null-prototype status resolves http_other rather than rejecting",
+      badStatus.resolved && badStatus.value.ok === false && badStatus.value.reason === "http_other",
+      badStatus.resolved ? badStatus.value.reason : "REJECTED: " + String(badStatus.err && badStatus.err.message));
+
+    // The same shape as a rejection value, which messageOf converts with String().
+    const h3 = harness();
+    h3.setHttpResponse(() => Promise.reject(Object.create(null)));
+    const badErr = await settle(askDefault(h3));
+    check("Test 18c: a null-prototype rejection value resolves network rather than rejecting",
+      badErr.resolved && badErr.value.ok === false && badErr.value.reason === "network",
+      badErr.resolved ? badErr.value.reason : "REJECTED: " + String(badErr.err && badErr.err.message));
+  }
 } finally {
   clock.restore();
 }

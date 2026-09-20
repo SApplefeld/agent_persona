@@ -335,3 +335,27 @@ The defect predates the decision-seam plan, whose Section 3 generalized the help
 Remedy: key a promise chain per path inside the helper, as `hooks/decision-journal.ts` does at its own `chained` function, which exists for exactly this reason and is pinned by a control that turns three assertions red when the chain is removed.
 
 Raised by the round 1 blind lens over the decision-seam plan's Section 3 and confirmed here by reading the helper, which holds no chain, no lock and no queue.
+
+## The decision seam discards a whole shadow measurement over one unoffered probability key (found 2026-09-20)
+
+`hooks/decision-seam.ts:250` refuses the vendor's answer outright when its probability map carries any key outside the option ids the request offered. The refusal lands as the `parse` failure reason, so the call records no choice, no distribution and no confidence, and the shadow measurement for that tick is lost rather than degraded.
+
+The strictness has a real ground, stated in the code's own comment: the request carries the caller's ids and nothing else, so refusing an unoffered key bounds the map and stops a body answering with a hundred thousand keys from reaching a journal line, where one append rewrites the whole day's file. That bound is worth keeping.
+
+What is questionable is the disposition rather than the check. The plan defines `parse` as a body that is not JSON, or JSON missing the answer for a question that was asked, and an unoffered probability key is neither, so the refusal widens a reason the plan closed at eleven members. The validation is also asymmetric: a body carrying `probabilities: {}` resolves as a good measurement, pinned at `.kit/decision-seam-unit-test.mjs:343`, so an answer with no distribution at all is recorded while one with an extra bucket is thrown away.
+
+Whether the vendor can emit an unoffered key is unverified. `https://docs.typesafe.ai/api.md` was not read when this was raised, and reading it is the first step of any remedy.
+
+Remedy: drop the unoffered keys, keep the count bound the comment wants, and record the drop in the call line's `detail` field, rather than failing the whole call. That keeps both the bound and the measurement.
+
+Raised by the round 6 adversarial lens over the decision-seam plan's Section 3 and confirmed here against the cited line. It was not fixed in that section on the operator's decision of 2026-09-20 to close the section rather than take a further review round, the finding naming a tradeoff rather than a break.
+
+## A state that cannot be converted is journaled as a measurement of the empty string (found 2026-09-20)
+
+`hooks/decision-seam.ts` converts the caller's state with the guarded `safeString` helper and falls back to the empty string where the conversion throws. The call then proceeds: an empty state goes to the vendor, tokens are spent on it, and the journal records a `call` line whose `state` is `""` with the hash of `""`. A reader cannot tell that line from a real measurement of a genuinely empty state.
+
+The path is unreachable from the four typed call sites this plan wires, all of which pass a string. It becomes reachable if a later plan passes a host-supplied value as state.
+
+Remedy: return a failure on the conversion's fallback path, or carry a null state so the line reads as a call that measured nothing, which is the shape the plan already gives a call that read no key.
+
+Raised by the round 6 adversarial lens over the decision-seam plan's Section 3 and confirmed here by reading the fallback. Not fixed in that section under the same operator decision as the entry above.

@@ -285,11 +285,13 @@ function probabilitiesOf(from: unknown): Record<string, number | null> {
   const out: Record<string, number | null> = Object.create(null);
   if (typeof from !== "object" || from === null) return out;
   // The key is bounded like every other text this module did not author. It is
-  // the one that arrives as a key rather than a value, and the seam validates
-  // each probability as a finite number without checking the key set against
-  // the option ids it offered, so an unrequested or unbounded key reaches here.
-  // An append rewrites the whole file, so one unbounded key would grow that
-  // cost for every later line of the day.
+  // the one that arrives as a key rather than a value. The bound is stated on
+  // this boundary rather than on any producer: this module writes whatever it
+  // is handed, and an append rewrites the whole file, so one unbounded key
+  // would grow that cost for every later line of the day. The seam does
+  // refuse a key outside the ids it offered, and that is a second guard on a
+  // second channel rather than a reason to drop this one. The next module to
+  // write a journal line will not reimplement a guard it cannot see.
   for (const [id, p] of Object.entries(from as Record<string, unknown>)) out[journalText(id)] = finiteOf(p);
   return out;
 }

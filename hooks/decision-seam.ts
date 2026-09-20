@@ -178,8 +178,26 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+// Converts a value this module did not author into a string, or to the given
+// fallback where it cannot be converted. String() raises a TypeError on an
+// object with a null prototype and on any object whose toString throws, and
+// every value below reaches here from the injected host: a rejection reason,
+// a status, and the state a caller passed. Each call on that host is an op
+// event a co-loaded hook may answer with a value of its own, so a hostile
+// shape here is reachable rather than exotic. The guard is exported-shaped
+// (one helper, every site) rather than repeated inline, because it is a
+// property of the channel and not of the site that first needed it: three of
+// the four sites were written by hand without it and the fourth with it.
+function safeString(v: unknown, fallback: string): string {
+  try {
+    return String(v);
+  } catch {
+    return fallback;
+  }
+}
+
 function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  return err instanceof Error ? err.message : safeString(err, "unconvertible rejection value");
 }
 
 // Removes every occurrence of the key from text leaving this module: a detail
@@ -325,12 +343,7 @@ export async function ask(
   // guarded because it can throw: String() raises a TypeError on an object
   // with a null prototype, and on any object whose toString throws. This file
   // builds null-prototype objects deliberately, so the shape is native here.
-  let raw = "";
-  try {
-    raw = typeof state === "string" ? state : String(state);
-  } catch {
-    raw = "";
-  }
+  const raw = typeof state === "string" ? state : safeString(state, "");
   const sent = withoutKey(raw, key);
 
   // The resolver is local and runs before any request, so its failure is
@@ -408,11 +421,22 @@ export async function ask(
   // nothing usable, which is a network failure rather than a status.
   const res = settled.res;
   if (!isRecord(res)) return failure("network", "no response", questionSetId, question, latencyMs, haikuValue, sent);
-  const { status, text } = res;
+  // Reading these two members runs whatever accessors the host put on the
+  // object, and a lazily-read body is an ordinary shape for a response
+  // wrapper. A throwing accessor here would reject out of ask, and Section 5
+  // does not await the ask, so that reject becomes an unhandled rejection and
+  // the call's journal line is never written.
+  let status: unknown;
+  let text: unknown;
+  try {
+    ({ status, text } = res as { status: unknown; text: unknown });
+  } catch {
+    return failure("network", "response members could not be read", questionSetId, question, latencyMs, haikuValue, sent);
+  }
   // An integer in 200 to 299 and nothing else: NaN is a number that fails
   // both range comparisons, and a fraction or a numeric string is no status.
   if (typeof status !== "number" || !Number.isInteger(status) || status < 200 || status > 299) {
-    return failure(httpReason(status), String(status), questionSetId, question, latencyMs, haikuValue, sent);
+    return failure(httpReason(status), safeString(status, "unconvertible status"), questionSetId, question, latencyMs, haikuValue, sent);
   }
 
   if (typeof text !== "string") return failure("parse", "body is not text", questionSetId, question, latencyMs, haikuValue, sent);
