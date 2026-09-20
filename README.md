@@ -227,7 +227,7 @@ Declared in `plugin.json` with defaults. Read as `options.<name>` in `register(o
 | `coordinatorPersona` | `coordinator` | The one persona name the inbox gates treat as the coordinator. A configured name of `default` is refused and falls back. |
 | `fleetRoster` | (none) | The roster file the fleet reading uses, which `fleet_status` reads on demand and the coordinator persona's controller tick reads every tick. Unset, the tool reports it has no roster and the tick's watcher stays silent. |
 | `reconcileEveryMs` | 14400000 | How long between the `[RECONCILE]` prompts the coordinator persona's tick submits. Four hours, the kit Coordinator seat's own cadence. |
-| `jevMode` | `shadow` | `off` or `shadow`, the decision seam's kill switch. `shadow` puts each closed question the plugin already asks Haiku to Jev as well, in shadow, and journals the answer. `off` makes no such call and journals nothing. Any other value reads as `off`. See "Decision seam" below. |
+| `jevMode` | `shadow` | `off` or `shadow`, the decision seam's kill switch. `shadow` puts each closed question the plugin already asks Haiku to Jev as well, in shadow, and journals the answer. `off` makes no such call and journals nothing. Any other value reads as `off` at the plugin's own read, and the supervisor refuses such a value outright rather than writing it, so a typo in a roster entry stops that launch instead of reaching this read. See "Decision seam" below. |
 
 ## Loops
 
@@ -243,6 +243,254 @@ Declared in `plugin.json` with defaults. Read as `options.<name>` in `register(o
 |---|---|
 | `hooks/index.ts` | The plugin module (one file, all logic) |
 | `hooks/agent-state.ts` | `AgentState` interface + defaults + `shouldYield`/`yieldRecord` pure helpers |
+| `hooks/host.ts` | The `PluginHost` interface every module outside `hooks/index.ts` takes a slice of, since the engine refuses the module when the injected `# Agentic Plugin
+
+PIANO-esque cognitive layer on Claude Code's Function Hooks API. One plugin module, one `register(on, options)` export, no Agent SDK. The plugin needs no supervisor to run one session; `bin/supervise.sh` is the optional outer loop for runs longer than one session. Modules observe at hook boundaries and write to shared `AgentState`; the Controller : the sole actuator : runs on a clock, classifies the situation, and then (and only then) actuates through exactly three channels.
+
+## Quickstart
+
+A fresh clone, one command, a waiting supervisor.
+
+**Install the plugin** (once per machine):
+
+```
+claude plugin marketplace add SApplefeld/agent_persona
+claude plugin install agentic-plugin@agent-persona --scope user
+```
+
+`claude plugin update` re-fetches from GitHub, so the installed runtime always tracks merged `main` rather than whatever happens to be checked out in any one clone. The manifest at `.claude-plugin/plugin.json` carries no version field on purpose. Claude Code installs each plugin under `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`. A manifest that names a version installs under that name and is rebuilt only when the name changes, so every persona keeps running the commit of the last bump however many commits merge behind it. A manifest that names none installs under the fetched commit's hash instead, one folder per update, which is the shape the kit plugin already uses. Registering the marketplace from a local directory (`claude plugin marketplace add /path/to/this/clone`) instead makes `claude plugin update` copy that directory's working tree verbatim, uncommitted edits included - useful only for developing the plugin itself, alongside `--dev` below, never for running it.
+
+**Start the supervisor** (passive, no goal yet):
+
+```
+bin/supervise.sh /path/to/a/workdir dev bypassPermissions
+```
+
+The workdir is where the persona store, heartbeat sidecar, and `run/` logs live; it can be this clone or any other directory. The supervisor changes into it itself, so the command above works from anywhere. It idles, holding its persona and heartbeating, until a goal arrives.
+
+By default the child is also directly reachable from Discord: it attaches to the relay in `D:\discord-channels` under a thread named `supervisor-<persona>` (stable across restarts; override with `--channel-name NAME`). Pass `--no-channel` for a scratch run with no Discord side effects.
+
+**Give it a goal**, by talking to it in plain language, no tool names needed - either as the child's first `--prompt`:
+
+```
+bin/supervise.sh /path/to/a/workdir dev bypassPermissions --prompt "write three short essays about the sea, the mountain, and the sky"
+```
+
+or, once it's already running passively, by talking to its Discord thread (attached by default at launch; pass `--no-channel` to skip it). The worker opens a goal tree, plans it, and replies with the one-line goal it took.
+
+**Steer it mid-goal** by talking to it: "drop the second plan," "pause that for now," "add a task to also write a title." The worker answers each with what it changed, in the goal tree and the decision log both.
+
+**Stop it.** Two ways to end a run, and only one of them ends the supervisor: an explicit "please shut down" (which the worker turns into a `supervisor_shutdown` call) exits the whole supervisor loop cleanly. Just finishing a goal does not - the supervisor returns to passive and waits for the next one. To kill it from outside, `Ctrl-C` or `kill` the `supervise.sh` process; it stops the child via the graceful EOF path first, then TERM, then KILL if it doesn't respond.
+
+**Restart it without stopping it.** "Please restart" (which the worker turns into a `supervisor_restart` call) relaunches the child by the same graceful EOF path and keeps the goal tree, so the fresh child resumes the active plan. This is how a pulled runtime update (`claude plugin update`) is picked up mid-run: one message from a reader, no supervisor restart.
+
+**Reach it while it is busy.** A message sent while the worker is inside a long turn waits for that turn to end; the sender's next `agentic_inbox` shows the record as `deferred` with `turnRunningMs`, how long the turn has run. A message still undelivered past the wait bound breaks into the running turn on its own, as context on the worker's next tool result, unless it is labelled a coordinator record at delivery, which the plugin decides from the sender's live claims at that moment; an unflagged coordinator record waits for the tick. `urgent: true` breaks in immediately, without the wait, from any sender. A message delivered on its wait alone is not replied to: the worker closes it with `agentic_resolve`, and the sender reads that outcome on `agentic_inbox`.
+
+**Where the logs are.** `<workdir>/run/supervisor.log` is the supervisor's own narrative (gate checks, launches, restarts, stops). `<workdir>/run/child-N/stdout.jsonl` is child N's full stream-json transcript; `stderr.log` and `claude-debug.log` sit beside it. `<workdir>/.agentic-personas.json` and `.agentic-heartbeat.json` are the persona store and liveness sidecar.
+
+**Working on the plugin's own code** instead of just running it: pass `--dev` to `supervise.sh`, which loads this checkout directly (`--plugin-dir`) instead of the installed copy, so edits here take effect on the next launch with no reinstall.
+
+**Launch the steward**, a second supervised session whose owner may address every persona's inbox:
+
+```
+MODEL=sonnet controllerTickMs=300000 COORDINATOR_PERSONA=steward ARCHITECT_PERSONA=architect FLEET_ROSTER=D:/path/to/fleet.json bin/supervise.sh /path/to/a/workdir steward bypassPermissions --rundir /path/to/a/rundir --channel-name steward
+```
+
+The persona argument and `COORDINATOR_PERSONA` name the same persona, so the steward is the coordinator persona the plugin's reach rule names. `ARCHITECT_PERSONA` names the design seat the steward routes design asks to, and the steward's launch carries it because that clause of its instruction is built from the name: a steward launched without it is told to route nothing, which is right for a fleet with no architect and wrong for one that has it under another name. The two names must differ, and a launch naming one persona for both seats is refused. `FLEET_ROSTER` names the roster the fleet reading uses, and the steward's launch carries it because the controller tick's fleet watcher runs only where that option is set: a steward launched without it reports no fleet health at all, and `fleet_status` answers that it has no roster. That path keeps the Windows spelling while the workdir and rundir beside it take the bash spelling, and the reason is who reads each one: bash consumes those two, while the plugin reads this one from inside the child. Node resolves `/d/personas/fleet.json` against the current drive root rather than against `D:/personas`, so a roster named that way is never found and every tick's fleet reading fails. The thread name defaults to `supervisor-<persona>`; `--channel-name` replaces it with a name of the operator's choosing, here `steward`, separate from any worker's. `controllerTickMs` is five minutes, thirty times the supervisor default. The steward's work is clerical, a delivered record still lands on its next quiet tick, and an urgent record breaks into a running turn, so a slower tick costs response time only while it is idle. The model is Sonnet for the same reason. The launch omits `--dev`, since the steward loads the same installed copy every worker does.
+
+Every worker and the architect launch with the same `COORDINATOR_PERSONA` value the steward carries. The name is what the reach rule matches on, so a worker left on the default sends its escalations to a persona nothing holds, and the steward's own steers reach that worker with no delivery ground and are skipped. The roster's per-entry `coordinatorPersona` field is where the fleet sets it. The roster is the only producer that sets it for every persona at once. A worker's own manual launcher under `D:/personas` is a separate producer that predates the field, and one carrying no `COORDINATOR_PERSONA` of its own launches that worker on the default, but only where the run directory holds no settings file yet. Where one exists the name comes from that file whatever the launcher carries, which is the case the cutover steps under Process keeper below are about.
+
+The steward's standing instruction carries three duties beyond directing workers. It answers a prompt labelled `[FLEET]`, which carries the personas whose health class changed, and reports each of them on its own channel; the prompt names each changed persona's health class on its own line, those five classes are the controller tick's own reduction of a roster row and the `fleet_status` description states what each of them means, and `fleet_status` stays available as an on-demand read of a row's own fields. It holds the kit's Coordinator seat, takes that seat at priming, and runs the seat's reconciliation pass on a prompt labelled `[RECONCILE]` and at no other time. And it sends a record that turns on a design decision to the persona `ARCHITECT_PERSONA` names, confirming an architect is live before it calls the ask routed and raising an undelivered ask to the operator instead; the architect answers the steward, which relays the answer onward, so the architect never addresses a worker directly.
+
+**Launch the architect**, the design seat the steward wakes:
+
+```
+MODEL=fable EFFORT=high controllerTickMs=60000 COORDINATOR_PERSONA=steward ARCHITECT_PERSONA=architect bin/supervise.sh /path/to/the/architects/own/directory architect bypassPermissions --rundir /path/to/a/rundir --channel-name architect
+```
+
+The persona argument and `ARCHITECT_PERSONA` name the same persona, which is what gives this launch the architect's standing instruction. `ARCHITECT_PERSONA` has no default, unlike `COORDINATOR_PERSONA`: a launch whose settings carry no architect name builds that instruction for no persona at all. The setting travels the same two paths the coordinator's name does, written into the settings file the supervisor emits and read back from one the operator provides. The file governs it, exactly as it governs `coordinatorPersona`: a name set once in a rundir's settings file is the name every later relaunch takes, and a launcher passing its own `ARCHITECT_PERSONA` does not override it.
+
+The model is Fable and `EFFORT` is high, since design judgment is the whole of this seat's work. The workdir is the architect's own directory and is not a repository. Its instruction says so: an ask whose product is a file in a repository, a spec, a plan or an assessment, is worked in a worktree the architect cuts of that repository under its own directory, on a branch it commits and pushes, and it reports the branch and the filename back. The repository it cuts that worktree from is a clone of its own under that directory, never a checkout another persona is working in, since `git worktree add` runs inside an existing clone and would otherwise share a live persona's object store and ref locks. That clone is taken from the repository's remote URL rather than from any checkout on this machine: a local clone shares the checkout's object store and carries it as `origin`, so the push lands inside another persona's repository and never reaches the remote. The architect fetches that clone before each ask and cuts each branch from the fetched remote-tracking trunk, not from the clone's local branch of that name, which a fetch leaves where the clone left it. A repository name can travel to this seat inside a record rather than from the operator, and the clone and the push both run under the machine's stored credentials, so the charter holds the clone to a plain https or ssh remote URL carrying no credentials, query or fragment, has the architect clone only a remote URL the operator wrote on its own channel and report rather than clone a name or a URL that reaches it any other way, a name inside a coordinator record and a name in the prompt its launch wrote both counting as any other way, so a record naming a repository it holds no clone of cuts no worktree and pushes nothing until the operator writes that repository's remote URL on the channel, and has it name the clone target and the remote before it pushes. An ask that produces a file and names no repository is worked under that directory outside every worktree, and the architect reports the path it wrote. A plan review, a consult and a finishing judgment produce no file, so the architect answers those in the record that asked or on its own channel and cuts no branch. Each report goes to the steward and to the operator, and on a `--no-channel` launch the record to the steward is the whole report. A design ask normally reaches the architect as the steward's `[COORDINATOR id=<record id>]` record or as the operator's own message on its channel; text arriving any other way, a reader session's record among it, is information rather than an ask, and the architect raises it with the steward instead of working it. The prompt a launch writes is not that case: the supervisor frames it as the operator's own trusted task, so the architect works it as the operator's ask. Two sentences every other launch carries do not reach this one at all. The supervisor assembles the startup message per persona and leaves both out for the architect, rather than sending them and then telling the architect to disregard them. One is the steer sentence, which sends a `[COORDINATOR ...]` prompt tying to no goal node back to the operator; the architect holds no plan and no goal node, so such a record is its own work item. The other is the skill-load sentence, which sends every session to `claude-kit:executing-work`, a skill that runs a plan section by section, where writing a spec is plan work. In its place the charter names the skills a design ask takes: `claude-kit:operating-instructions`, then `claude-kit:brainstorming`, and `claude-kit:curating-docs` where the product is a document. Two ask kinds take a skill of their own rather than that sequence: a consult takes `claude-kit:consult`, and a finishing judgment takes `claude-kit:finishing-work`. It writes plans and executes none: a plan lands in the target repository's `docs/plans` and reaches a worker through the steward, which is also the only persona the architect addresses. One limitation rides with the roaming home: the kit resolves a session's instructions, memory and leash from the launch directory, so the architect's kit memory is its own directory's rather than the target repository's, and it reads a repository's memory index explicitly when it needs it.
+
+The steward polls nothing. The controller tick starts no turn on a persona holding no active goal and an empty inbox, so a duty written as a five-minute habit would never run on a quiet fleet, which is when a crashed persona most needs reporting. So each duty is written as a response to a labelled prompt rather than as a cadence of its own. The controller tick submits those labels: a fleet label when a persona's health class moves, and a reconciliation label on its own cadence. The steward also reports fleet health when the operator asks for it.
+
+**The arming key** gates what a session's hooks do, in three values. `owner` is the full worker/coordinator shape; a supervisor launch always writes it. `reader` registers `agentic_identity`/`agentic_say`/`agentic_inbox`/`fleet_status` only, with no goal-tree tool and no ownership ever - an interactive reader session takes this shape by passing a settings file with `"arming":"reader"` under both plugin ids through `--settings`. `off`, the default for a session that omits the key, registers no tool, timer, or claim at all: a peer message still reaches an `off` session as the harness delivers it, since no hook consumes it, and nothing is written to `.agentic-personas.json` or the commons store.
+
+**Status: Stage 3 (supervisor).** `tsc --noEmit` clean. Supervisor (`bin/supervise.sh`) drives outer-loop runs: pre-gate (commons + heartbeat), coproc stdin with EOF stop, real exit codes, `PROMPT=""` cleared after first send, `writeClaimDirect` shared across all three claim sites. The suites are catalogued under Test Coverage in the Supervisor section.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Claude Code Engine (one process, one session)                      │
+│                                                                     │
+│  OBSERVE (modules : never actuate):                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐             │
+│  │    Memory    │  │   Monitor    │  │    Goal      │             │
+│  │ (distill +   │  │ (turn track, │  │ (score,      │             │
+│  │  inject)     │  │  tool count) │  │  constraint) │             │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘             │
+│         │                 │                 │                       │
+│         ▼                 ▼                 ▼                       │
+│  ┌──────────────────────────────────────────────────┐              │
+│  │         AgentState (on disk, keyed by persona)   │              │
+│  │         + heartbeat sidecar (.agentic-heartbeat) │              │
+│  └──────────────────────┬───────────────────────────┘              │
+│                         │                                           │
+│  ACTUATE (Controller : sole actor):                                 │
+│  ┌──────────────────────▼───────────────────────────┐              │
+│  │  $.clock.every(tick) → idle gate (nudgeIdleMs)   │              │
+│  │  → compressed summary                            │              │
+│  │  → $.model.classify (decision)                   │              │
+│  │  → $.model.complete (reason, only if ≠ nudge)    │              │
+│  │  → log to state.decisions[]                      │              │
+│  │  → THEN actuate:                                 │              │
+│  │     1. context injection (prompt.submit, always) │              │
+│  │     2. $.prompt.submit nudge (floor + cap)       │              │
+│  │     3. $.ui.toast ask-operator                   │              │
+│  └──────────────────────────────────────────────────┘              │
+│                                                                     │
+│  Identity: agentic_identity tool → persona (durable key)           │
+│  Liveness: heartbeat sidecar, NOT store lastSeen                   │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### The PIANO principle
+
+**P**assive observation, **I**mplicit state, **A**ctuation is explicit, **N**on-destructive hand-off, **O**perator-visible.
+
+- **Modules** (Memory, Monitor, Goal scorer) observe at hook boundaries and write to `AgentState`. They **never** steer, redirect, or actuate.
+- **Controller** is the sole actor. It runs on `$.clock.every`, applies the idle gate, builds a compressed summary of shared state, sends it to `$.model.classify` for the decision (classify *cannot* return anything else : this is the architectural enforcement), optionally calls `$.model.complete` for a reason (only when the decision is not `nudge`), logs it, **then** actuates.
+- **Exactly three actuators**, controller-only: context injection (always on, free), `$.prompt.submit` nudge (floor + cap gated), `$.ui.toast` ask-operator.
+
+### Controller decision
+
+The controller tick builds a summary from the active goal and the session's own state, line by line:
+
+| Line | Content |
+|---|---|
+| `Objective` | The active goal's objective text |
+| `Node` | The node's id and kind, its status, and its round count against its cap |
+| `Last 5 scores` | The node's five most recent turn scores, oldest first, or `none` |
+| `On-goal count` | How many of the node's scores read `on-goal`, against the total |
+| `Idle time` | How long the session has been idle, in seconds under a minute and in minutes otherwise |
+| `Consecutive nudges sent` | Nudges sent since the last on-goal score |
+| `Decisions tail` | The five most recent entries in `state.decisions[]`, each as `loop:action` |
+| `Memory` | The number of memory entries, and how many of them are self-review lessons |
+| `LESSON` | The newest self-review lesson's text, cut to 120 characters. Present only where one exists |
+| `Environment` | The git branch with its dirty, ahead and behind counts, and the last health check's exit code. Present only where either is known |
+
+The summary ends with the four standing choices, and with `switch` as a fifth only where a plan is pending. So `$.model.classify` returns one of `nudge`, `pause`, `complete` or `ask-operator`, and `switch` where a pending plan exists to switch to.
+
+**L1**: The idle gate is enforced **in code**, not in the prompt. The tick computes `idleMs = now - lastTurnComplete` and only proceeds to a model call if `idleMs >= nudgeIdleMs`. The model decides **what** (nudge/pause/complete/ask-operator), never **whether** : the threshold is a hard gate.
+
+**C2**: `$.model.classify` returns the decision (one of the labels, nothing else). `$.model.complete` is called **only** when the decision ≠ `nudge`, to get a one-line plain-text reason (no Markdown). Never one call doing both.
+
+**M13**: The nudge cap is checked **before** the classify call : if the cap is already reached, the tick escalates to `ask-operator` immediately without spending a model call.
+
+### Nudge discipline (H2, L1)
+
+- **Floor**: at most one nudge per `nudgeFloorMs` (default 5 min).
+- **Cap**: 3 consecutive **sent** nudges without an on-goal turn → escalate to `ask-operator` + pause the goal. The counter increments only when `$.prompt.submit` actually fires (not on floored skips). Resets only on an on-goal score or `complete`.
+- **Idle gate**: session must be idle for `nudgeIdleMs` (default 2 min) before any model call. Ticks inside the gate are skipped entirely.
+- **Skip**: no active goal or a turn in flight → skip the tick entirely.
+- **Visible**: `$.ui.status` shows the goal line while a goal is active; cleared on pause/complete/blocked.
+- **H8: Nudged-turn scoring.** When the controller nudges, `$.prompt.submit` bypasses the plugin's own `prompt.submit` hook, so `currentPrompt` is set to the nudge text manually. The `turn.complete` scorer uses a reduced label set (`on-goal`, `drift`, `complete`) for nudged turns : `off-goal-by-instruction` is impossible because the nudge *is* the instruction.
+
+### C4: Clock is enough
+
+The K-turn trigger (every Nth turn triggers a controller evaluation) is **removed**. The clock tick is the sole trigger. Simpler, fewer race conditions.
+
+### Liveness: heartbeat sidecar (C5, M3, L3)
+
+`.agentic-heartbeat.json` in the project root: `{ "<persona>": { sessionId, epoch, lastSeen }, ... }`.
+
+- **Heartbeat** refreshes the sidecar every `heartbeatMs` (default 30s). Never touches the persona store.
+- **L3: Owner-only heartbeat.** Only the owner stamps its own heartbeat. A passive reader must **not** overwrite the holder's heartbeat, or it will (a) mask the real holder's staleness and (b) make its own promotion check compare the holder id to itself and never fire.
+- **Claim is non-destructive**: the epoch bump makes the old holder **yield on its next write** (guarded write checks the store). No store read-modify-write at claim time.
+- **H6: Pre-stamp yield.** Before stamping, the owner verifies ownership by reading the store. If the store's `(sessionId, epoch)` no longer matches, the session yields here (not on its next write) and does **not** stamp. This prevents a demoted owner from overwriting the new owner's heartbeat.
+- **Passive reader** re-checks the sidecar on every heartbeat tick and **promotes itself** if the holder is stale (beyond `staleAfterMs`, default 90s) and is not self. With the H6 pre-stamp check, the sidecar is only ever written by the store's current owner, so a stale sidecar means no live owner : no store-owner comparison needed.
+- **`lastSeen` is NOT a liveness proof.** It proves the holder stopped stamping, never that it exited. A claim is an *intent*, not a *fact*.
+- `lastSeen` is **removed** from `AgentState` (M8, M9). It lives only in the sidecar.
+
+### H4: No session-end event
+
+This build has no `session.end` hook. A session that exits without a clean shutdown leaves its heartbeat entry in the sidecar. The **stale window** (`staleAfterMs`, default 90s) is the only release mechanism: after the holder stops stamping, the entry goes stale and a passive reader can promote. There is no immediate cleanup on exit.
+
+### Yield (non-destructive hand-off)
+
+The **only** store write path is the guarded write : owner-only, epoch-checked. If the store on disk shows a different session or higher epoch, this session:
+1. Logs `persona_yield` to `state.decisions[]` (in memory, not persisted to the winner's doc).
+2. Appends a JSON line to `.agentic-yields.log` (the sidecar).
+3. Sets `isOwner = false`. All subsequent writes are no-ops.
+4. Emits `$.ui.log` so the yield is visible in the TTY.
+
+The yield logic is extracted into pure helpers `shouldYield(onDisk, mySessionId, myEpoch)` and `yieldRecord(persona, mySessionId, onDiskSessionId, myEpoch, onDiskEpoch)` in `agent-state.ts`. All six call sites in `index.ts` (controller tick, turn.complete save, goal_create, memory_add, Bash deny, **heartbeat pre-stamp**) use them. Only `$.fs` I/O remains inline.
+
+**Yield log format (H7):** JSONL : one JSON object per line:
+```json
+{"ts":"2026-09-06T12:00:00.000Z","persona":"default","yielded":"abc123","yieldedEpoch":3,"winner":"def456","winnerEpoch":4}
+```
+
+### Memory (M1, M2)
+
+- **Curation prompt** (M1): "description of what happened = discard" and "durable fact, reply NONE if none".
+- **Classify every turn** (M2): the kind-classify runs on every `turn.complete`. The `complete` call for the distilled statement runs **only** when the kind is not `discard`.
+- **MEMQ seam**: `$.mcp.call("MEMQ", "rank", ...)` is wired in `prompt.submit`. Falls through to local confidence ranking if no MEMQ server responds.
+
+### Identity: persona, not session
+
+The durable key is a **persona** (e.g. `default`, `refactorer`), not the session id.
+
+- **Store**: `.agentic-personas.json` in the project root.
+- **Heartbeat sidecar**: `.agentic-heartbeat.json` (separate file, separate concern).
+- **Yield sidecar**: `.agentic-yields.log` (append-only JSONL).
+- **Concurrency**: `activeSessionId` + monotonic `epoch` in the store. Heartbeat sidecar for liveness. Guarded write for safety.
+- **Default**: persona is `default` when no assignment is made.
+
+### L2: Deny policy
+
+When a session attempts to claim a persona held by a live session, the deny text is:
+
+> `Persona '<p>' is held by a live session; this write was not saved.`
+
+**No instruction** to claim back, reclaim, or retry. The reader stays denied until the operator explicitly says otherwise (via `agentic_identity` with a new persona, or by waiting for the stale window). This is **not** last-claimer-wins.
+
+### `userConfig` overrides (H3)
+
+Declared in `plugin.json` with defaults. Read as `options.<name>` in `register(on, options)`.
+
+| Key | Default | Description |
+|---|---|---|
+| `persona` | `default` | Which persona this session claims at start. `bin/supervise.sh`'s second positional argument is threaded into this option; without it, every session claims `default` regardless of what's passed on the command line. |
+| `heartbeatMs` | 30000 | Heartbeat interval (ms) |
+| `staleAfterMs` | 90000 | How stale before a passive reader can claim (ms) |
+| `controllerTickMs` | 30000 | Controller tick interval (ms) |
+| `nudgeFloorMs` | 300000 | Minimum gap between nudges (ms) |
+| `nudgeIdleMs` | 120000 | Session must be idle this long before a nudge is eligible (ms) |
+| `arming` | `off` | `off`, `reader` or `owner`; gates which tools, timers and claims this session registers. See "The arming key" above. |
+| `coordinatorPersona` | `coordinator` | The one persona name the inbox gates treat as the coordinator. A configured name of `default` is refused and falls back. |
+| `fleetRoster` | (none) | The roster file the fleet reading uses, which `fleet_status` reads on demand and the coordinator persona's controller tick reads every tick. Unset, the tool reports it has no roster and the tick's watcher stays silent. |
+| `reconcileEveryMs` | 14400000 | How long between the `[RECONCILE]` prompts the coordinator persona's tick submits. Four hours, the kit Coordinator seat's own cadence. |
+| `jevMode` | `shadow` | `off` or `shadow`, the decision seam's kill switch. `shadow` puts each closed question the plugin already asks Haiku to Jev as well, in shadow, and journals the answer. `off` makes no such call and journals nothing. Any other value reads as `off`. See "Decision seam" below. |
+
+## Loops
+
+1. **Memory** : distills on `turn.complete` (classify kind, conditional complete for statement), persists to `AgentState`, injects on `prompt.submit` as hidden context. Owns `state.memory[]`.
+2. **Monitor** : hooks `session.start` (claim persona), `turn.start`/`turn.complete` (track progress), `tool.call` (count calls). Owns `state.monitor` and `state.decisions[]` (capped at 200).
+3. **Goal** : hooks `turn.complete` (score against goal), `tool.call` (serve `goal_create`, enforce constraints). Owns `state.goal`. Steering is **exclusively** the Controller's job.
+4. **Controller** : `$.clock.every`, idle gate, classifies, optionally reasons, logs, actuates. The only thing that calls `$.prompt.submit`, `$.ui.toast`, or sets the status line.
+5. **Worker** : the main agent, unmodified. Sees injected goal + memory via `prompt.submit`'s `context` array.
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `hooks/index.ts` | The plugin module (one file, all logic) |
+ crosses an import |
+| `hooks/decision-seam.ts` | The one path a closed question takes to Jev, and the only place the vendor key is held |
+| `hooks/question-catalog.ts` | The four shipped questions, the label arrays the classify sites pass, and the override resolver |
+| `hooks/decision-journal.ts` | The append-only record of every shadow call, its answer and its outcome |
 | `.agentic-personas.json` | Persona store (project root) |
 | `.agentic-heartbeat.json` | Heartbeat sidecar (project root) |
 | `.agentic-yields.log` | Yield sidecar, JSONL (project root) |
@@ -596,47 +844,270 @@ The supervisor's own suites are listed under the Supervisor section's Test Cover
 
 ## Decision seam
 
-The decision seam puts each of the plugin's four closed questions to Jev, TypeSafe's classifier service, in shadow beside the Haiku call the plugin already makes for it. Haiku still decides everything; Jev's answer is written to a journal file and acted on by nothing. The four questions are the controller's nudge, pause, complete, ask-operator and switch decision, which pending plan to switch to when the controller decides to switch, whether a turn advanced its goal, and what kind of memorable content a turn holds. Each is asked over the same option ids and the same state text Haiku already received.
+The decision seam puts each closed question this plugin already asks Haiku to a second classifier, Jev, and records both answers side by side. Haiku is the Claude model alias the plugin names at every `$.model.classify` and `$.model.complete` call it makes. Jev is the classifier TypeSafe serves at `https://api.typesafe.ai/v1/systemone`. The seam runs in shadow: Jev's answer is written to a journal file on this machine and read by no branch, no state field, no score and no nudge. Haiku still decides everything.
+
+Four questions go through it, one per site that already asks Haiku a closed question.
+
+| Site | Question set | The decision | Option ids in force |
+|---|---|---|---|
+| `controller` | `controller-decision` | what the controller does with an idle worker | `nudge`, `pause`, `complete`, `ask-operator`, and `switch` as a fifth only where at least one plan is pending |
+| `plan-switch` | `plan-switch` | which pending plan to take up, once the controller has decided to switch | one id per pending plan, plus `no_match` |
+| `turn-score` | `turn-score` | what the worker's answer did about the goal | `on-goal`, `drift`, `complete`, and `off-goal-by-instruction` as a fourth only on a turn the plugin did not nudge |
+| `memory-kind` | `memory-kind` | what kind of memorable content the turn holds | `fact`, `preference`, `lesson`, `discard` |
+
+Each call sends Jev the same state text and the same option ids Haiku received for that same question. The state is the prompt text the site built. The option ids are the labels the answer has to be one of, single-sourced in `hooks/question-catalog.ts` so the set Haiku is offered and the set Jev is offered cannot drift.
+
+### What Jev is
+
+Jev is a System One classifier. It takes one block of state and a set of questions, and answers each with one option id, a probability for every offered option, and a confidence. It returns no prose and holds no conversation.
+
+The seam exists to measure. Every shadow call writes Jev's option id beside Haiku's for the same input, so the agreement rate between the two can be counted from real traffic before anything is asked to depend on it. Nothing in this repository acts on a Jev answer, and nothing in this repository reads the journal back.
+
+A question asks for one answer shape, which the vendor calls a primitive. Every question this plugin sends uses the `choice` primitive: one option id out of a named set, with a probability per option. The seam validates each answer against that shape and refuses any other.
+
+### Reaching the seam
+
+Three modules carry the feature, and none of them imports `$`. The engine's loader follows `$` only into functions declared at the top level of `hooks/index.ts`, so each module takes a narrow slice of the `PluginHost` interface in `hooks/host.ts` instead. That interface is the injected host: one object built over `$` by `hostOf($)` in `hooks/index.ts`, each member making a single `$.noun.verb(...)` call.
+
+| Module | What it owns |
+|---|---|
+| `hooks/decision-seam.ts` | `ask`, the one path a question takes to Jev: the key, the request, the timeout race, the response validation and the closed failure set |
+| `hooks/question-catalog.ts` | the four shipped questions, the label arrays the Haiku sites pass, and `resolverOf`, which reads the override layer |
+| `hooks/decision-journal.ts` | `writeCall`, `writeAnswers` and `writeOutcome`, the three line kinds, the stamp id and the split |
+
+`ask` has this shape and never rejects:
+
+```ts
+ask(host, questionSetId, optionIds, state, mode, haikuValue, resolve): Promise<SeamResult>
+```
+
+A call site does not call it directly. `hooks/index.ts` wraps it in a local `shadowAsk`, which mints the stamp id, fires the call without awaiting it, and writes the journal lines once it settles. A site calls that wrapper right after its own Haiku call:
+
+```ts
+const stampId = shadowAsk(
+  hostOf($),        // the injected host
+  "turn-score",     // the site label the journal records
+  TURN_SCORE,       // the question set id, from hooks/question-catalog.ts
+  labels,           // the option ids in force for this call
+  scoreState,       // the same string that was passed to $.model.classify
+  jevMode,          // the kill switch, read once at register time
+  typeof result === "string" ? result : null,   // Haiku's own answer
+);
+```
+
+Four rules bind a call site. Bind the state to a name and pass that one name to both classifiers, so the bytes that reach Jev are the bytes that reached Haiku. Pass Haiku's raw answer rather than any value the plugin derived from it, because agreement is measured against what Haiku said. Never await the return, since the seam's whole contract is that it cannot delay the tick or the turn it sits in. Read the return as the call's stamp id, or as `null` where the mode is not `shadow`.
+
+`shadowOutcome(host, callStampId, kind, value)` is the other wrapper. It joins a signal the plugin produced later onto a call already made, by that call's stamp id.
+
+Adding a fifth question takes three edits, and none of them is in the journal, which is question-agnostic.
+
+1. `hooks/question-catalog.ts`: an id constant, that constant added to `QUESTION_SET_IDS`, an entry in `SHIPPED_QUESTIONS` carrying `instructions` and an `options` map with one description per option id, and the id added to `FIXED_OPTION_SETS` where the catalog owns every option the question offers.
+2. The same file's label array for the Haiku site, exported as a frozen constant, so one array feeds `$.model.classify` and the seam's `optionIds`.
+3. The call site in `hooks/index.ts`: bind the state to a name, pass that name to `$.model.classify` and to `shadowAsk`, and place the `shadowAsk` call after the Haiku call so Haiku's answer is available to pass.
+
+A question's instructions and its option descriptions travel in an HTTP request body and are never injected into a session, so `.kit/injection-ledger.mjs` does not count them and the duplicate-sentence test does not read them.
 
 ### Question wording
 
-A question's wording lives in two layers. The shipped defaults are constants in `hooks/question-catalog.ts`, one question set per id (`controller-decision`, `plan-switch`, `turn-score`, `memory-kind`), each carrying its instructions, a description per option, and a version label. An override layer sits outside the repository, at `<home>/.claude/agentic-questions/<questionId>/`: each version is an immutable `v<N>.json` file, and `active.json` names which version is active by writing `{"version": "v<N>"}`. Editing `active.json` to name a different version takes effect on the next question asked, with no restart. Writing a new `v<N>.json` and then repointing `active.json` at it is how a wording changes without touching the ones already asked. An override that fails validation falls back to the shipped default, and the fallback reason is recorded in the journal. The refusals are an option count outside the set's own floor and ceiling, an empty instruction, a primitive other than a choice, and, for the three sets whose options are the catalog's own, a set of option ids that differs from what the shipped default offers.
+A question's wording lives in two layers. The shipped defaults are constants in `hooks/question-catalog.ts`, one question set per id, each carrying its instructions, a description per option, and the version label `v1`.
+
+An override layer sits outside the repository, under the home directory the plugin resolves (see "Which home" below):
+
+```
+<home>/.claude/agentic-questions/<questionSetId>/active.json
+<home>/.claude/agentic-questions/<questionSetId>/v<N>.json
+```
+
+`active.json` is the one mutable file and names the active version:
+
+```json
+{"version": "v3"}
+```
+
+A version file holds the question itself. All three fields are required, and `options` maps each option id to a one-line description or to `null`:
+
+```json
+{
+  "primitive": "choice",
+  "instructions": "An autonomous worker session has gone idle. Which action should the controller take now?",
+  "options": {
+    "nudge": "Prompt the worker to take the next concrete step toward the goal.",
+    "pause": "Repeated drift suggests the operator changed direction, so stop nudging.",
+    "complete": "The objective is evidently met.",
+    "ask-operator": "The worker is blocked, or the round budget is nearly spent.",
+    "switch": "A different pending plan is the one to work on now."
+  }
+}
+```
+
+Nothing else the file carries is read. The resolver copies out those three fields and drops the rest.
+
+The resolver holds nothing between calls and reads at most two files per call, so editing `active.json` takes effect on the next question asked, with no restart. Writing a new `v<N>.json` and then repointing `active.json` at it is how a wording changes without touching the answers already recorded under the old label. A version file is meant to be immutable once written, because the journal records only the version label beside each answer, so a label whose wording changed underneath it makes two different questions read as one. That rule is the operator's to keep. No code enforces it.
+
+Three of the four sets have option ids the catalog owns outright: `controller-decision`, `turn-score` and `memory-kind`, named in `FIXED_OPTION_SETS`. An override of one of those may reword anything and reorder anything, and may not change the set of option ids, because Haiku's ids come from the label arrays in the same file and an agreement figure compares the two. The fourth set, `plan-switch`, is absent from that list: its option ids are the pending plan ids the caller supplies per request, and the only one the catalog owns is `no_match`.
+
+An override that fails validation is not used. The shipped default is served instead, and the reason rides the answer line for that call. The reasons are these, and this list is complete.
+
+- Reaching the layer: no home directory, so no override was read; `active.json` could not be checked.
+- Reading `active.json`: it could not be read; it is not text; it is not JSON; it names no version; it names no `v<N>` version label, which is the letter `v` followed by one to nine digits.
+- Reading the version file: the named version file could not be checked; the named version file is missing; the version file could not be read; the version file is not text; the version file is not JSON.
+- Validating its content: the version file is not an object; the override is not a choice; the override has an empty instruction; the override has no options map; the override has an option description that is not a string or null; the override has fewer options than the floor, which is two for the three fixed sets and one for the plan switch; the override has more than 255 options; the override's option ids differ from the shipped set, which is checked for the three fixed sets only.
+
+A question set id the catalog does not know resolves to a question with an empty id, which the seam refuses before any request as the `no_question` failure.
 
 ### The journal
 
-Every shadow call and its outcome are recorded to `<home>/.claude/agentic-decisions/<persona>/<YYYY-MM-DD>-<session>.jsonl`, one file per persona per UTC day per session, so no two processes ever write the same file. Three kinds of line appear, and no others.
+Every shadow call and its outcome are recorded to
 
-- `call`: one line per question asked. It carries the state text that was sent, scrubbed of the API key as described under "At rest" below, the mode the call ran under, the result, which is either `ok` or one of a closed set of failure reasons, the input token count, and the latency.
-- `answer`: one line per answer Jev returned. It carries the option id Jev chose, its probability distribution and confidence, the option id Haiku chose for the same question, and whether the two agree.
-- `outcome`: one line per signal the plugin later produced about a call already made, joined to it by that call's stamp id. A `next_score` outcome is the first turn scored after a controller call. An `ask_marker` outcome is the first worker `ASK:` line matched after one, and its value is a fixed token rather than the matched text, because that text is the worker's own.
-
-Every field on every line is present, and a value that does not apply is `null` rather than omitted, so a line can be read column by column with no per-line shape test. A sample `call` line, with invented state:
-
-```json
-{"lineKind":"call","stampId":"default.abc123.1732000000000.4","at":"2026-09-20T12:00:00.000Z","persona":"default","session":"abc123","site":"controller","questionSet":"controller-decision","mode":"shadow","split":"dev","stateHash":123456789,"state":"Objective: write three essays\nNode: plan-1 (plan), status active, round 2/10","stateRef":null,"inputTokens":312,"latencyMs":420,"result":"ok","detail":null}
+```
+<home>/.claude/agentic-decisions/<persona>/<YYYY-MM-DD>-<session>.jsonl
 ```
 
-One line in five is `holdout`, decided from the stamp id alone rather than at random, so an id's split never changes. The rest are `dev`. Nothing in this plugin reads the journal back: it is written and left, for a later process to load.
+one file per persona per UTC day per session, so no two processes ever write the same file. The persona name and the session id are each sanitized into the path: everything outside letters, digits, underscore and hyphen becomes an underscore, and the result is cut to 64 characters.
+
+**Which home.** The plugin reads `USERPROFILE` first and falls back to `HOME` where `USERPROFILE` is unset or empty. Both are read from the process environment of the `claude` child. Under a keeper launch both are also in the env file's allowlist and can name different paths, in which case the journal follows `USERPROFILE`. The same resolution serves the override layer above.
+
+Three kinds of line appear, and no others. Every field of a line's kind is present on it, and a value that does not apply is `null` rather than omitted, so a bulk load can read a column per field with no per-line shape test.
+
+**A `call` line**, one per question asked.
+
+| Field | What it holds |
+|---|---|
+| `lineKind` | `call` |
+| `stampId` | this call's id, minted when the call starts. Four dot-separated parts: the sanitized persona, the sanitized session id, the milliseconds since the Unix epoch at which the call started, and a per-session counter. No part can carry a dot, so a reader splits an id into exactly four |
+| `at` | the ISO timestamp at which the line was written, which is after the call settled |
+| `persona`, `session`, `site` | the persona, the session id, and one of the four site labels in the table above |
+| `questionSet` | the question set id asked |
+| `mode` | always `shadow`, because `off` writes no line at all |
+| `split` | `holdout` or `dev`, a function of the stamp id alone so an id's split never changes. Present on this line kind only |
+| `stateHash` | a 32-bit FNV-1a hash of the state as sent, or `null` where the call carried no state |
+| `state` | the state text as it went to Jev, or `null` where this site's previous line in this file carried the same state |
+| `stateRef` | the stamp id of the earlier line carrying that same state, where `state` is `null` for that reason, and `null` otherwise |
+| `inputTokens` | the input token count the vendor reported, or `null` on any call that did not get an answer |
+| `latencyMs` | milliseconds from just before the request to the moment the race settled, or `null` where no request was made |
+| `result` | `ok`, or one of the failure reasons below |
+| `detail` | a short string naming what failed, or `null` on a successful call. Cut to 512 characters, ending `...[cut]` where it was cut |
+
+One call line in five is `holdout` and the rest are `dev`. The split is a hash of the stamp id, so it is decided once and never changes, and a line's split is the same answer whoever computes it. It is there so a measurement taken over the `dev` lines can be checked against lines that measurement never saw.
+
+A line's `state` is written once per site per file. A run of calls on an unchanged state stores the text on the first line and points the rest at it through `stateRef`, so the day's file does not repeat one summary thirty times.
+
+The values `result` can take besides `ok` are these eleven, and no others:
+
+| Reason | What happened |
+|---|---|
+| `off` | the mode was not `shadow`. Never seen on a written line, since nothing is written in that case |
+| `no_key` | `TYPESAFE_API_KEY` was absent, unreadable, or shorter than 16 characters once trimmed. Nothing was sent and no state was carried |
+| `no_question` | the catalog resolver rejected, or answered with something that is not a usable question. Local, before any request |
+| `timeout` | the ten-second timer beat the request |
+| `network` | the request rejected with no HTTP status, or resolved with nothing usable |
+| `http_401` | the key was missing or invalid |
+| `http_422` | the vendor refused the request body |
+| `http_429` | rate limited |
+| `http_529` | the vendor is overloaded |
+| `http_other` | any status outside 200 to 299 that the four above do not name |
+| `parse` | the body was not JSON, or its answer for the question asked was missing or failed validation |
+
+A sample `call` line, with invented state:
+
+```json
+{"lineKind":"call","stampId":"default.abc123.1789905600000.4","at":"2026-09-20T12:00:00.412Z","persona":"default","session":"abc123","site":"controller","questionSet":"controller-decision","mode":"shadow","split":"dev","stateHash":906887610,"state":"Objective: turn the survey notes into three short essays\nNode: plan-2 (plan), status active, round 3/10\nLast 5 scores: on-goal, on-goal, drift, on-goal, on-goal\nOn-goal count: 4 of 5\nIdle time: 4min\nConsecutive nudges sent: 1\nDecisions tail: monitor:nudge_sent, goal:score_recorded\nMemory: 12 entries (self-review lessons: 2)\nLESSON: Read the whole brief before proposing a structure.\nEnvironment: git: essays dirty 2 ahead 0 behind 0\n","stateRef":null,"inputTokens":312,"latencyMs":412,"result":"ok","detail":null}
+```
+
+**An `answer` line**, one per answer Jev returned. A failed call has no answer, so no answer line is written for one.
+
+| Field | What it holds |
+|---|---|
+| `lineKind` | `answer` |
+| `stampId` | this line's own id, minted at write time in the same four-part shape |
+| `callStampId` | the `stampId` of the call line this answers. The join key |
+| `questionId` | the question set id answered |
+| `questionVersion` | the version label the wording came from: `v1` for a shipped default, or the override's own label |
+| `overrideRefused` | the reason an override was refused for this call, or `null` where none was refused or none exists |
+| `primitive` | `choice` |
+| `value` | the option id Jev chose |
+| `probabilities` | one number per option id the request offered. The seam refuses a body naming any other id |
+| `confidence` | Jev's confidence, a finite number |
+| `haikuValue` | the option id Haiku chose for the same question, or `null` where Haiku answered with nothing usable |
+| `agrees` | whether `value` and `haikuValue` are the same option id, or `null` where either is absent |
+
+This line carries no `at` field. Its timestamp is the call line's, reached through `callStampId`.
+
+`overrideRefused` sits here and nowhere else. So a refused override on a call that timed out, returned an error status, or ran with no key is recorded nowhere, because such a call writes a call line and no answer line.
+
+```json
+{"lineKind":"answer","stampId":"default.abc123.1789905600412.5","callStampId":"default.abc123.1789905600000.4","questionId":"controller-decision","questionVersion":"v1","overrideRefused":null,"primitive":"choice","value":"nudge","probabilities":{"nudge":0.71,"pause":0.08,"complete":0.04,"ask-operator":0.09,"switch":0.08},"confidence":0.71,"haikuValue":"nudge","agrees":true}
+```
+
+**An `outcome` line**, one per signal the plugin produced later about a call already made.
+
+| Field | What it holds |
+|---|---|
+| `lineKind` | `outcome` |
+| `stampId` | this line's own id |
+| `callStampId` | the call this outcome is joined to |
+| `kind` | `next_score` or `ask_marker`, and nothing else. A kind outside that pair is refused rather than written |
+| `value` | for `next_score`, the label the turn scorer produced. For `ask_marker`, always the fixed token `matched` |
+| `at` | the ISO timestamp at which the line was written |
+
+A `next_score` outcome is the first turn scored after a controller call. An `ask_marker` outcome is the first worker `ASK:` line matched after one. Each fires once per controller call and then releases its hold, so a second scored turn or a second marker writes nothing. The ask marker's value is a fixed token because what matched is a line the worker wrote, and a journal line records that the marker fired rather than what it said.
+
+```json
+{"lineKind":"outcome","stampId":"default.abc123.1789905730000.6","callStampId":"default.abc123.1789905600000.4","kind":"next_score","value":"on-goal","at":"2026-09-20T12:02:10.000Z"}
+```
+
+Nothing in this plugin reads the journal back, deletes a line or uploads a file, and no other process in this repository loads one. The files are written and left.
+
+A write that fails is recorded once a UTC day, as a single entry in the decision log, so an unwritable journal costs one decision line a day rather than one a tick. That latch is in memory, so a restart lets the day's first failure be reported again.
 
 ### Turning Jev off
 
-`jevMode` is the kill switch, a `userConfig` option with two values, `shadow` and `off`. `shadow` is the default and any other value the seam reads as `off`. Under `off` the seam makes no call to Jev and writes no journal line at all, so a persona with Jev turned off produces no journal file for that session.
+`jevMode` is the kill switch. It takes two values, `shadow` and `off`, and `shadow` is the default. Under `off` the `shadowAsk` wrapper in `hooks/index.ts` returns before calling the seam, so no key is read, no request is sent and no journal line is written. A persona running with Jev off produces no journal file for that session. `ask` itself, called directly with any other mode, answers with an `off` failure rather than sending. It is the wrapper that does the skipping.
 
-Set it in `plugin.json`'s defaults, in a roster entry's `jevMode` field, which the keeper carries through as `JEV_MODE`, or directly as `JEV_MODE` in the supervisor's own environment. A value outside the two is refused rather than written: the supervisor exits and names the bad value, so a typo stops that launch instead of quietly disabling the seam.
+The value travels five surfaces, so that an operator setting it in one place finds it reaching the child.
 
-`ensure_settings_jev_mode` in `bin/agentic-common.sh` carries the mode onto a run directory that already holds a settings file, overwriting whatever mode an earlier launch wrote there. This is unlike `coordinatorPersona` and `architectPersona`, which a settings file keeps at whatever an earlier launch set. A kill switch that could not change a value an earlier launch wrote could never turn anything off on a machine that has ever run.
+1. `plugin.json`, which declares the option and its default of `shadow`. That file sits at `.claude-plugin/plugin.json` in this repository, and the installed copy of the plugin carries its own under the plugins cache. A launched persona reads neither. It reads whatever `<rundir>/settings.json` carries under the plugin id for its load mode, and the manifest's default applies only where nothing wrote the key.
+2. A roster entry's `jevMode` field, in the fleet roster the keeper reads.
+3. The keeper's environment map, which turns that field into `JEV_MODE` for the supervisor it launches.
+4. `emit_settings_json` in `bin/agentic-common.sh`, which writes `jevMode` from `JEV_MODE` under both plugin ids when it creates a settings file.
+5. `ensure_settings_jev_mode` in the same file, which writes it onto a settings file the run directory already holds, overwriting whatever mode an earlier launch wrote there. That overwrite is what lets the switch work on a machine that has run before. `coordinatorPersona` and `architectPersona` behave the opposite way, each kept at whatever an earlier launch set.
+
+A value outside the two is refused rather than folded. Both shell helpers reject it, `bin/supervise.sh` exits and names it in `supervisor.log`, and nothing launches. So a typo stops that launch instead of quietly disabling the seam. The plugin's own read is the last line of defence and the only layer that folds: a settings file hand-edited to some third value reads there as `off`.
+
+The boundary a change takes effect at is the child process, not the next question. The plugin reads `jevMode` once, at registration, and the supervisor writes the settings file once, at its own start. So a roster edit reaches a persona when its keeper next launches the supervisor, and a hand edit of `<rundir>/settings.json` reaches it when the supervisor next launches a child. The question override layer is the opposite case, read fresh per question.
 
 ### What leaves the machine
 
-Each shadow call sends TypeSafe the same state text the plugin already sends Haiku for that same question, with the API key removed, plus the question's instructions and the option ids in force with their descriptions. For the plan switch those option ids are the operator's own pending plan ids, so a call over that question sends TypeSafe the ids of whatever plans are currently pending, not only the summary text. The state text for two of the four questions, the turn scorer and the memory kind gate, includes the worker's own free-text answer for the turn. The controller's state and the plan switch's are the plugin's own structured summary and plan titles.
+Each shadow call sends TypeSafe one HTTP POST carrying the state text for that question, the question's instructions, the option ids in force each with its catalog description, and the model alias `jev-latest`. The bearer key rides the `Authorization` header. The state is the text the site had just sent Haiku, with one change: every occurrence of the API key's value is replaced with `[key]`. That scrub covers the key and nothing else.
 
-One property of the plugin host is true regardless of anything this seam does. Every call the plugin makes through the injected host is an op event, and a plugin loaded above this one in the same session can rewrite the call's arguments, refuse it, or answer it with a response of its own. So the API key is visible in memory to any plugin loaded in the same session, not only to TypeSafe, and a network response this plugin reads could have been supplied by another plugin rather than by the vendor. Nothing in this seam defends against a co-loaded plugin. The mitigation is controlling which plugins are installed on a machine that holds the key.
+What is in that state differs by site, and three of the four carry free text a person wrote.
+
+**`turn-score`** sends the first 500 characters of the text that opened the turn, labelled `User asked`, then the first 1000 characters of the worker's own answer, then the goal's objective in full. On an ordinary turn the first of those is the operator's own prompt as typed. On a turn the controller nudged it is the plugin's nudge text, and on a turn opened by a delivered inbox record it is that record's text.
+
+**`memory-kind`** sends the first 300 characters of the text that opened the turn and the first 500 characters of the worker's answer. This site is skipped on nudged turns, so its first line is the operator's own prompt or a delivered record's text.
+
+**`controller`** sends the controller summary. Most of it is counters and closed vocabularies, and it carries three pieces of free text besides. The goal's objective goes in full. The newest self-review lesson goes in cut to 120 characters, on any tick where one exists. The environment line carries the current git branch name with the dirty, ahead and behind counts, and where a health probe has run it also carries that probe's exit code and the goal node id it ran for. Where at least one plan is pending, the summary lists each pending plan's title cut to 30 characters. The rest is the node id, kind, status and round counts, the last five score labels, the on-goal count, the idle time, the nudge count, the last five decisions as `loop:action` pairs with no detail text, and two memory counts. The second of those counts every memory whose source is self-review, whatever its kind, while the lesson line below it is drawn only from those whose kind is also `lesson`, so the two numbers answer different questions.
+
+**`plan-switch`** sends every pending plan's id and its full title, uncut. The option ids sent with it are those same plan ids plus `no_match`, so a call on this question tells TypeSafe what work is queued as well as what the prompt says.
+
+Nothing else is sent. The persona name, the session id, the site label and the stamp id stay on this machine: they ride journal lines and never the request.
+
+One property of the plugin host holds regardless of anything the seam does. Every call the plugin makes through the injected host is an op event, meaning a plugin loaded above this one in the same session can rewrite the call's arguments, refuse it, or answer it with a value of its own. So the API key is readable in memory by any plugin loaded in the same session, not only by TypeSafe, and a response this plugin validates could have been supplied by another plugin rather than by the vendor. The seam validates every field it reads out of a response for that reason, and it defends against nothing else here. The mitigation is controlling which plugins are installed on a machine that holds the key.
+
+**The key itself.** The plugin reads `TYPESAFE_API_KEY` from the `claude` child's own environment. It is not a settings option, it is not a roster field, and it is not in the keeper env file's allowlist, so nothing in this repository sets it or carries it anywhere. It has to be present in the environment the supervisor's child inherits, which under a keeper launch means the operator's own user or machine environment. A value shorter than 16 characters once trimmed is treated as no key at all. With no key the call ends as `no_key` before anything is sent, the journal records that reason, and the line carries no state, because the scrub that would protect the text needs the key it did not get.
 
 ### At rest
 
-The journal is a plain-text copy of worker-derived text, written under `<home>/.claude/agentic-decisions/`. A `call` line's `state` field holds the same text the four sites already send to Haiku, with the API key removed by the same scrub that keeps it off the wire to TypeSafe. An `answer` line also carries the option id Jev chose and the option id Haiku chose, both drawn from the option ids the question was asked over, and for the plan switch those ids are the operator's own pending plan ids.
+The journal is a plain-text copy of worker-derived and operator-derived text, written under `<home>/.claude/agentic-decisions/`. A `call` line's `state` field holds the same bytes that went to the vendor, so everything named under "What leaves the machine" above is also what sits in the file. An `answer` line adds the option id Jev chose and the one Haiku chose, and for the plan switch those are the operator's own pending plan ids.
 
-These files stay on disk until something deletes them. Nothing in the plugin removes them, and their permissions are whatever the home directory's own permissions already give them. The scrub removes the TypeSafe API key and nothing else: a worker that printed some other secret during the turn, where that secret reached the state text, is not caught by it.
+These files stay on disk until something deletes them. Nothing in the plugin removes them, nothing rotates them, and their permissions are whatever the home directory already gives them. The scrub removes the TypeSafe API key and nothing else, so a worker that printed some other secret during a turn, where that secret reached the state text, is not caught by it. Turning `jevMode` off stops new lines and deletes none.
+
+### Test coverage
+
+- `.kit/decision-seam-unit-test.mjs`: every closed failure reason resolving without a throw, the kill switch sending nothing, the timeout race settling cleanly, the request body's shape against the live contract, the answer validated rather than forwarded, and no failure detail carrying the key. Offline.
+- `.kit/question-catalog-unit-test.mjs`: the label arrays the three classify sites pass being the arrays this catalog ships, each fixed set's option ids being exactly its label constant's superset, a valid override resolving under its own version label, every refusal falling back to the shipped default while naming the rule that refused it, and a refused override's wording never reaching a request. Offline.
+- `.kit/decision-journal-unit-test.mjs`: the three line shapes, the path and its sanitizing, the write chain that keeps two concurrent appends from losing one, the never-throws rule, the once-a-day failure latch, and the stamp ids and their split. Offline.
+- `.kit/controller-tick-test.mjs` carries the wiring cases: a Jev answering the opposite of Haiku changing no decision and no ledger count, a Jev that never answers delaying nothing and deciding nothing, a failing Jev changing no decision and still writing its call line, each of the four sites writing a call line and an answer line, each joiner writing one outcome per controller call, an unwritable journal pushing exactly one decision a day, and a skipped tick and an `off` run sending no request, writing no line and reading no key.
 
 ## License
 

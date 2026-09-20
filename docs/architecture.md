@@ -6,7 +6,7 @@ This repository ships one Claude Code plugin and two outer loops around it. The 
 
 | Layer | Process | Owns | Reads | Writes |
 |---|---|---|---|---|
-| Plugin | `claude` (the child) | goal tree, memory, decision log, heartbeat, commons inbox, the fleet reading on the coordinator persona | its own store, the commons store, and on the coordinator persona the roster and every roster persona's `keeper.json` and `keeper.hold` | `<workdir>/.agentic-personas.json`, `.agentic-heartbeat.json`, the machine-global commons store |
+| Plugin | `claude` (the child) | goal tree, memory, decision log, heartbeat, commons inbox, the decision journal, the fleet reading on the coordinator persona | its own store, the commons store, the question override directory `<home>/.claude/agentic-questions/`, and on the coordinator persona the roster and every roster persona's `keeper.json` and `keeper.hold` | `<workdir>/.agentic-personas.json`, `.agentic-heartbeat.json`, the machine-global commons store, `<home>/.claude/agentic-decisions/<persona>/<YYYY-MM-DD>-<session>.jsonl` |
 | Supervisor | `bash bin/supervise.sh` | launch, poll, stop, relaunch of one child | the persona store, the heartbeat, the child's `stdout.jsonl`, the harness transcript's write time | `<rundir>/supervisor.log`, `supervisor.err`, `settings.json`, `child-N/` |
 | Keeper | `powershell.exe -File bin/Start-Persona.ps1` | relaunch, hold or exit on the supervisor's exit code | the roster, the env file, the supervisor's exit code and stderr | `<rundir>/keeper.log`, `keeper.json`, `keeper.hold`, `supervisor.out` |
 | Task Scheduler | `AgentPersona-<name>` | starting the keeper at boot, restarting it when the keeper itself fails | the task definition | the task's last-run result |
@@ -174,6 +174,7 @@ The hung check corroborates a stale heartbeat against the harness transcript's o
 - **`claude` CLI**: the supervisor's child, launched with stream-json on both ends. `KEEPER_PATH_PREPEND` is what makes it and `node` resolvable under a task with no user `PATH`.
 - **Discord relay** (`D:/discord-channels`): the child attaches to a thread named `supervisor-<persona>`, or the roster's `channelName`, unless `args` carries `--no-channel`.
 - **The commons store**: machine-global, one per installed plugin; the supervisor's pre-launch gate reads it for a live claim on the persona, and the plugin's inbox path runs through it.
+- **TypeSafe** (`https://api.typesafe.ai/v1/systemone`): the plugin's one outbound network call. The decision seam puts each of the four closed questions the plugin asks Haiku to Jev, TypeSafe's classifier, in shadow, and journals the answer. Authenticated with `TYPESAFE_API_KEY` from the child's own environment, which no file in this repository sets. `jevMode` `off` makes no call at all. `README.md` under Decision seam states what each call sends.
 
 ## Failure modes by layer
 
@@ -190,5 +191,7 @@ The hung check corroborates a stale heartbeat against the harness transcript's o
 | The steward reports no fleet, and `fleet_status` says it has no roster | `<rundir>/settings.json` for `fleetRoster` under the id this load mode uses | the roster entry carries no `fleetRoster`, or an existing settings file predates it and the supervisor kept that file |
 | A worker's escalation reaches a persona nobody holds | `<rundir>/settings.json` for `coordinatorPersona`, and the worker's own launcher | the worker was launched on the default `coordinator` name, from a hand launcher carrying no `COORDINATOR_PERSONA` or from a settings file written before the cutover |
 | No design ask is ever routed, and the architect launches with a worker's shape | `<rundir>/settings.json` for `architectPersona` | the key is absent, which is a launch with no architect; the setting has no default and a misspelled roster key is silent |
+| No decision journal appears under `<home>/.claude/agentic-decisions/<persona>/` | `<rundir>/settings.json` for `jevMode` under the id this load mode uses, then `USERPROFILE` and `HOME` in the child's environment | the mode is `off`, which sends nothing and writes nothing; or the home the plugin resolved is not the one being looked in, `USERPROFILE` winning over `HOME` where both are set |
+| Every `call` line reads `result` `no_key` | the `result` and `detail` columns of the day's journal file | `TYPESAFE_API_KEY` is absent from the child's environment, or is shorter than 16 characters once trimmed. It is not a settings option, not a roster field, and not in the keeper env file's allowlist, so only the environment the supervisor's child inherits can carry it |
 
 Whether `Stop-ScheduledTask` ends the whole process tree under an S4U task is not measured on this machine, and the wrapper has no stop path of its own. `README.md` under Process keeper states the stop options that are known to work.

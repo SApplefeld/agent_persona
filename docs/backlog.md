@@ -368,4 +368,4 @@ Raised by the round 6 adversarial lens over the decision-seam plan's Section 3 a
 
 Remedy: add a `COST_ENABLED` branch to `emit_settings_json` beside the other `COST_*` options, and a roster field with a keeper map entry if the roster is meant to set it.
 
-Raised while documenting the decision seam, whose own `jevMode` option travels all five option surfaces precisely so it cannot fall into this gap. Confirmed here against the cited line and against the emitter, which carries no such branch.
+Raised while documenting the decision seam, whose own `jevMode` option travels all five surfaces an option needs to reach a launched child and so cannot fall into this gap: the manifest declaration, the roster field, the keeper environment map onto `JEV_MODE`, the `emit_settings_json` branch that writes a new settings file, and `ensure_settings_jev_mode` for a run directory that already holds one. `costEnabled` travels none of them, not even the manifest, where it is not declared at all. Confirmed here against the cited line, against the emitter, which carries no such branch, and against the manifest, which holds no such key.
