@@ -61,14 +61,16 @@
 // rule, and the authored prose of a [FLEET] note's `composed` half is
 // another. The "- " prefix on each [KAIZEN] line and the "Pending siblings: ",
 // "Last note: " and "root > " fragments of the [GOAL TREE] block are not
-// sized by any rule here. Neither is anything a fleet note splices into
-// its own template through an interpolation, however that interpolation is
-// spelled: a state key or well-state reading named as a constant, a
-// helper's return, a value taken from another note, or a literal written
-// inside a ternary. The composed-prose rule below reads a site's own
-// literal text and meets every `${}` as interpolation, so the bound is the
-// shape rather than a count of today's sites, and a new interpolation is
-// unsized the moment it is written rather than falsifying a number here.
+// sized by any rule here. Neither is prose a fleet note splices into its
+// own template through an interpolation whose value is not itself a
+// literal: a state key or well-state reading named as a constant, a
+// helper's return, or a value read off another note. A literal inside an
+// interpolation is sized, both arms of a ternary included, because the
+// collector recurses into an interpolation and reads the literals it
+// carries. What the composed-prose rule below cannot size is what it
+// cannot resolve, so the bound is the shape rather than a count of
+// today's sites, and a new unresolvable splice is unsized the moment it
+// is written rather than falsifying a number here.
 
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -546,6 +548,20 @@ function extractReconcileText(src) {
 function extractStillWaitingReraise(src) {
   const m = /const reraiseText =\s*([\s\S]*?);\n/.exec(src);
   if (!m) throw new Error("still-waiting reraise frame not found in hooks/index.ts");
+  // Everything outside a literal in this region must be the join, the one
+  // call the frame wraps its label line in, or whitespace. A sentence
+  // hoisted into a constant and spliced back by name would otherwise leave
+  // the other operand's literal behind and record a short value in silence,
+  // which findSizeViolations cannot see because it reports growth only.
+  const spans = collectLiteralSpans(m[1]);
+  let residue = m[1];
+  for (const s of spans.filter((x) => x.start >= 0).reverse()) {
+    residue = residue.slice(0, s.start) + residue.slice(s.end);
+  }
+  residue = residue.replace(/quoteContinuationLines\(/g, "").replace(/[+()\s;]/g, "");
+  if (residue !== "") {
+    throw new Error(`[chain-shape] STILL_WAITING_RERAISE_TEXT: the re-raise region carries ${JSON.stringify(residue.slice(0, 48))} outside any string literal. Prose reaching the re-raise through a name, a call's return or a property read is text this rule cannot size, because it resolves no identifier. Write the sentence as a literal at the site, or give it a rule of its own in the same commit.`);
+  }
   const literals = collectStringLiterals(m[1]).filter((s) => s.length > 0);
   if (literals.length === 0) throw new Error("[chain-shape] STILL_WAITING_RERAISE_TEXT: the re-raise text carries no string literal at all");
   return record("STILL_WAITING_RERAISE_TEXT", "hooks/index.ts", literals.join(""));
@@ -705,14 +721,20 @@ function extractFleetPromptLineLiterals(src) {
 // the pair, which is the anchor proving the capture reached the end of the
 // value. Inside that region, everything outside a string literal must be
 // whitespace or the comma that closes the pair. An identifier, a call or a
-// condition refuses, because a sentence hoisted into a constant and spliced
-// back by name is exactly the shape that reaches the child unsized, and this
-// file resolves no identifier, so there is no correct reading of one here. A
+// condition standing as the whole value refuses, because a sentence hoisted
+// into a constant and spliced back by name is exactly the shape that reaches
+// the child unsized, and this file resolves no identifier, so there is no
+// correct reading of one here. That check does not reach inside a top-level
+// template's own interpolation: the span it strips covers the interpolation
+// with it, so a name or a call spliced there passes unsized, which the
+// header above declares as an open bound rather than closing it here. A
 // `+` joining two literals refuses for a reason of its own: each literal is
 // its own line of the entry, so that two sentences cannot glue into one at
 // the seam, and a value split into two pieces would therefore record one
-// character more than the same value whole. One literal per site is the
-// shape that makes the recorded size mean what it says.
+// character more than the same value whole. One top-level literal per site
+// is the shape that makes the recorded size mean what it says; a template
+// contributes its own literal text and the literals its interpolations
+// carry, each as its own line of the entry.
 function extractFleetNoteComposedProse(src) {
   const typeIdx = src.indexOf("type FleetLine = {");
   if (typeIdx === -1) {

@@ -19,7 +19,10 @@
 //       its tables do not name, or a delivery site that gained literal
 //       text, throws out of buildLedger() rather than recording a short
 //       value, and that throw ends this run non-zero before any check
-//       below reads a partial ledger.
+//       below reads a partial ledger. That holds for what each rule's own
+//       region reads. It does not reach inside a top-level template's
+//       interpolation, where a name or a call passes unsized rather than
+//       throwing; the ledger's header declares that bound.
 // This check reads two files (bin/supervise.sh, hooks/index.ts). One
 // coverage bound inside them is declared and pinned below: the three
 // record-delivery prompts whose whole text hooks/operator.ts's deliveryText
@@ -509,7 +512,7 @@ function fail(name) {
     ok(`guard control: ${label} - ${entryName} held at ${before.chars} chars across the split`);
   }
   expectSizeHeld("a still-waiting frame split into two pieces", "STILL_WAITING_RERAISE_TEXT",
-    "`[STILL WAITING] ${askRecord.question}`", "`[STILL WAITING]` + ` ${askRecord.question}`");
+    "`[STILL WAITING] Send the question", "`[STILL WAITING]` + ` Send the question");
   expectSizeHeld("a kaizen frame split into two pieces", "KAIZEN_FRAME",
     "[KAIZEN] Send each line below to the operator", "[KAIZEN] Send each line below` + ` to the operator");
   expectSizeHeld("a reply-backstop frame split into two pieces", "REPLY_BACKSTOP_FRAME",
@@ -598,6 +601,45 @@ function fail(name) {
     else fail(`guard control: fleet note prose - a note's own sentence is not sized (${before.chars} -> ${grown.chars})`);
   } catch (e) {
     fail(`guard control: fleet note prose - ${e.message}`);
+  }
+  // The still-waiting re-raise region, against the residue check that rule
+  // gained. That rule's own literals are the `const reraiseText =` anchor,
+  // `quoteContinuationLines(` and the operators it allows, so the instruction
+  // sentence below is text it was never handed: this is the coverage case
+  // rather than the instrument case. Before the residue check existed the
+  // ledger built with no throw and recorded 16 characters in place of 116,
+  // and a shrink is exactly what findSizeViolations cannot see, because it
+  // reports growth only.
+  // The whole re-raise value is one template now, so the hoist replaces it
+  // between its own backticks rather than between a pair of quotes. The
+  // marker is the frame's own first words, and the template carries no
+  // backtick of its own, so the next backtick after the marker closes it.
+  const reraiseMarker = "[STILL WAITING] Send the question below to the operator";
+  {
+    const at = tsSrc.indexOf(reraiseMarker);
+    const open = at === -1 ? -1 : tsSrc.lastIndexOf("`", at);
+    const close = at === -1 ? -1 : tsSrc.indexOf("`", at);
+    if (at === -1 || open === -1 || close === -1 || close <= open) {
+      fail("guard control: the re-raise instruction hoisted into a name - the frame or its delimiters are not in hooks/index.ts");
+    } else {
+      const hoisted = tsSrc.slice(0, open) + "RERAISE_INSTRUCTION" + tsSrc.slice(close + 1);
+      expectRefusal("the re-raise instruction hoisted into a name", "[chain-shape]", ["RERAISE_INSTRUCTION"], () => buildLedgerFrom(shSrc, hoisted));
+    }
+  }
+  // Coverage: lengthen the re-raise sentence and require the entry to grow by
+  // exactly the characters added, which is what says the rule reads this
+  // region rather than merely refusing a bad one. The phrase is taken from
+  // the middle of the sentence so the anchor does not sit against the
+  // template's own escape, which this file would have to spell twice over.
+  const reraisePhrase = "since it is still unanswered.";
+  try {
+    const before = buildLedgerFrom(shSrc, tsSrc).find((e) => e.name === "STILL_WAITING_RERAISE_TEXT");
+    const added = " The operator has not replied.";
+    const grown = buildLedgerFrom(shSrc, mutated(tsSrc, reraisePhrase, reraisePhrase + added, "re-raise lengthened")).find((e) => e.name === "STILL_WAITING_RERAISE_TEXT");
+    if (grown.chars === before.chars + added.length) ok(`guard control: still-waiting re-raise - the instruction sentence is sized (${before.chars} -> ${grown.chars})`);
+    else fail(`guard control: still-waiting re-raise - the instruction sentence is not sized (${before.chars} -> ${grown.chars})`);
+  } catch (e) {
+    fail(`guard control: still-waiting re-raise - ${e.message}`);
   }
 }
 
