@@ -1895,118 +1895,29 @@ async function caseItem5_memoryCappedAtPush(clock) {
   check("item5 memory cap: overflow rolled to the log", memoryLines.length >= 1);
 }
 
-// S4: D6 doorbell - peer consumed
-async function caseS4_peer_consumed(clock) {
-  console.log("\n=== S4: peer consumed ===");
+// S4: no session.receive hook registers under either tier that installs
+// hooks, so a peer message reaches the model as the harness delivers it.
+// The tool.call control on each harness rules out an empty handler map from
+// a failed register() reading as an absence.
+async function caseS4_no_receive_hook(clock) {
+  console.log("\n=== S4: no session.receive hook ===");
   clock.set(T0);
 
-  const h = await createTickHarness({
+  const owner = await createTickHarness({
     ...OPTS,
-    caseName: "s4_peer_consumed",
+    arming: "owner",
+    caseName: "s4_no_receive_hook_owner",
   });
+  check("S4 owner: no session.receive handler registered", owner.handlers["session.receive"] === undefined);
+  check("S4 owner: tool.call handler registered", typeof owner.handlers["tool.call"] === "function");
 
-  const hnd = h.handlers["session.receive"];
-
-  let nextCalled = false;
-  let nextArg = null;
-  const next = (e) => {
-    nextCalled = true;
-    nextArg = e;
-    return { passed: true };
-  };
-
-  // BH1: engine passes origin as an object with .kind
-  const e = { origin: { kind: "peer" }, text: "do this now" };
-  const result = await hnd(h.fake, e, next);
-
-  check("S4 peer consumed: next was NOT called", !nextCalled);
-  check("S4 peer consumed: result has consumed", result && result.consumed !== undefined);
-
-  const state = getState(h);
-  const peerDecisions = (state.decisions || []).filter(d => d.action === "peer_consumed");
-  check("S4 peer consumed: peer_consumed pushed once", peerDecisions.length === 1);
-  check("S4 peer consumed: detail contains text", peerDecisions.length === 1 && peerDecisions[0].detail.includes("do this now"));
-}
-
-// S4: D6 doorbell - peer-send-message consumed
-async function caseS4_peer_send_message_consumed(clock) {
-  console.log("\n=== S4: peer-send-message consumed ===");
-  clock.set(T0);
-
-  const h = await createTickHarness({
+  const reader = await createTickHarness({
     ...OPTS,
-    caseName: "s4_peer_send_message",
+    arming: "reader",
+    caseName: "s4_no_receive_hook_reader",
   });
-
-  const hnd = h.handlers["session.receive"];
-
-  let nextCalled = false;
-  const next = () => {
-    nextCalled = true;
-    return { passed: true };
-  };
-
-  // BH1: engine passes origin as an object with .kind
-  const e = { origin: { kind: "peer-send-message" }, text: "stop working" };
-  const result = await hnd(h.fake, e, next);
-
-  check("S4 ps-m consumed: next was NOT called", !nextCalled);
-  check("S4 ps-m consumed: result has consumed", result && result.consumed !== undefined);
-}
-
-// S4: D6 doorbell - other origin passes through (control)
-async function caseS4_other_origin_passes(clock) {
-  console.log("\n=== S4: other origin passes (control) ===");
-  clock.set(T0);
-
-  const h = await createTickHarness({
-    ...OPTS,
-    caseName: "s4_other_origin",
-  });
-
-  const hnd = h.handlers["session.receive"];
-
-  // BH1: engine passes origin as an object with .kind
-  // Test origin: { kind: "bridge" }
-  let nextCalled1 = false;
-  let nextArg1 = null;
-  const e1 = { origin: { kind: "bridge" }, text: "bridge message" };
-  const result1 = await hnd(h.fake, e1, (e) => {
-    nextCalled1 = true;
-    nextArg1 = e;
-    return { bridge: true };
-  });
-
-  check("S4 other origin: bridge - next was called", nextCalled1);
-  check("S4 other origin: bridge - next received e unchanged", nextArg1 === e1);
-  check("S4 other origin: bridge - result has NO consumed", !result1 || result1.consumed === undefined);
-
-  // Test origin: { kind: "task-notification" }
-  let nextCalled2 = false;
-  let nextArg2 = null;
-  const e2 = { origin: { kind: "task-notification" }, text: "task done" };
-  const result2 = await hnd(h.fake, e2, (e) => {
-    nextCalled2 = true;
-    nextArg2 = e;
-    return { task: true };
-  });
-
-  check("S4 other origin: task-notification - next was called", nextCalled2);
-  check("S4 other origin: task-notification - next received e unchanged", nextArg2 === e2);
-  check("S4 other origin: task-notification - result has NO consumed", !result2 || result2.consumed === undefined);
-
-  // BH1: extra control with bare string (should be consumed as peer)
-  let nextCalled3 = false;
-  let nextArg3 = null;
-  const e3 = { origin: "peer", text: "bare string peer" };
-  const result3 = await hnd(h.fake, e3, (e) => {
-    nextCalled3 = true;
-    nextArg3 = e;
-    return { bare: true };
-  });
-
-  check("S4 other origin: bare string peer - next was NOT called", !nextCalled3);
-  check("S4 other origin: bare string peer - result has consumed", result3 && result3.consumed !== undefined);
+  check("S4 reader: no session.receive handler registered", reader.handlers["session.receive"] === undefined);
+  check("S4 reader: tool.call handler registered", typeof reader.handlers["tool.call"] === "function");
 }
 
 // S5: BC3 - reader claims reader not persona at start (control)
@@ -3231,9 +3142,7 @@ async function main() {
     await caseSection9_longTurnRecordMeasuresItsOwnTurn(clock);
     await caseSection9_turnStartDerivesTheStampToo(clock);
     await caseSection9_durationMsCountsAnUnmatchedLongTurn(clock);
-    await caseS4_peer_consumed(clock);
-    await caseS4_peer_send_message_consumed(clock);
-    await caseS4_other_origin_passes(clock);
+    await caseS4_no_receive_hook(clock);
     await caseS5_reader_claims_reader_not_persona(clock);
     await caseS5_identity_joins_live_owner(clock);
     await caseS5_identity_reader_releases_speculative_claim(clock);

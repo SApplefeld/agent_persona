@@ -1,6 +1,6 @@
 # Drop the doorbell: peer messages reach the model as the harness delivers them
 
-Status: Ready
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-09-20
 
@@ -115,3 +115,32 @@ The running personas keep the plugin they loaded at launch, so none of this take
 None.
 
 ## Chapters
+
+### Chapter 1: Section 1, delivered in one changeset (2026-09-20)
+
+Arming word: the operator, 2026-09-20, on the Expert seat's relay thread, handing over the architect's list that named this plan: "I would like you to run each of these plans in the same way... run the sections of edits with your own judgment around what review is required, PR them immediately, and archive the plans." Run by the Expert seat on the personas solution rather than the dev persona, on that word. The work was done in a fresh clone, so the runtime checkout at `D:/agent_persona` was not edited.
+
+What shipped:
+- `hooks/index.ts`: the doorbell block is gone whole, from its `// --- D6: doorbell ---` comment through the closing `});` of `on("session.receive", ...)`. The comment above `if (arming === "off") return;` lists the turn hooks, the tool.call guard and the prompt hook.
+- `.kit/controller-tick-test.mjs`: the three S4 cases and their invocations are replaced by `caseS4_no_receive_hook`. It asserts, under `owner` and under `reader`, that `h.handlers["session.receive"]` is undefined and that `h.handlers["tool.call"]` is a function on the same harness.
+- `README.md`: the Trust boundary paragraph's first and closing sentences, option 2 and the not-ruled sentence under Section 6 options, and the S4 line of the test coverage list.
+
+Decisions and surprises:
+- The assumption that `createTickHarness` honours an `arming` passed over `OPTS` held: `.kit/tick-harness.mjs` passes its options to `register`, and `hooks/index.ts` reads `cfg.arming` from them. No reversal was needed.
+- Nothing else in `hooks/index.ts` referenced a name only the deleted block used.
+
+Review Findings: no reviewer pair ran, on the operator's word to size review to the change. The Expert seat read the whole diff against the plan's Intent and refused list and found nothing to change.
+
+Gate, each read from its own exit code:
+- Baseline at a2b0ad9: `.kit/controller-tick-test.mjs` 1381 OK, 0 FAIL, exit 0, 37.6 seconds. `.kit/check-loader-rule.mjs` exit 0.
+- Red: the new case against the untouched hook, exit 2, two failures, `S4 owner: no session.receive handler registered` and `S4 reader: no session.receive handler registered`, 1369 OK.
+- Green after the deletion: 1371 OK, 0 FAIL, exit 0. The delta against the baseline is 14 checks on the three retired cases replaced by 4 on the new one. `.kit/check-loader-rule.mjs` exit 0. The Expert seat re-ran both after the implementer and read exit 0 on each.
+- The seven `.kit/*-unit-test.mjs` suites: exit 0 each.
+- Acceptance search 1 over `hooks/`, `bin/`, `README.md` and `docs/architecture.md` for `peer_consumed`, `receive_passthrough`, `session.receive` and `doorbell`: at the base it returned five hits in `hooks/index.ts` and three `README.md` sentences describing the hook as active. After the change it returns three `README.md` lines, each saying no `session.receive` hook is registered.
+- Acceptance search 2, `README.md` sentences saying peer text is consumed or never reaches the model: two at the base, none after.
+- Not run: `.kit/live-operator-test.sh`, on the operator's word to skip the runs that hold the box. The fleet relaunch under Operator Verification is the first run of this change in a real harness process.
+- Tests added: one, `caseS4_no_receive_hook`, pinning that no arming that installs hooks registers a `session.receive` handler. Tests retired: three, orphaned by the deletion.
+
+The operator-tier memory record `peer-sendmessage-is-consumed-unread-by-an-armed-persona-session` stays true of the running fleet until the personas relaunch on the merged code, so this changeset does not supersede it. The pull request lists that supersede as the step after the relaunch. The architect's own project record stays the architect's.
+
+Commit model in effect: Branch-and-PR, branch `drop-doorbell`. Next: none, the plan is complete. Operator Verification above is the operator's to run after the merge.
