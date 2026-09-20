@@ -3,7 +3,7 @@
 // docs/plans/agent_persona_lean-injection_v1.md Section 1.
 //
 // Runs the injection ledger (.kit/injection-ledger.mjs), which reads only
-// bin/supervise.sh and hooks/index.ts, and fails on either:
+// bin/supervise.sh and hooks/index.ts, and fails on any of:
 //   (a) a sentence of eight or more words that appears both in an injected
 //       string and in CLAUDE.md, or in two different injected strings;
 //   (b) a string whose live chars exceed the number recorded for it in
@@ -12,19 +12,29 @@
 //       live run, or a live string with no baseline entry to compare
 //       against - either shape means the baseline is stale, and the fix is
 //       to refresh .kit/injection-ledger.json, not to leave the mismatch
-//       unreported.
-// This check reads two files (bin/supervise.sh, hooks/index.ts); a third
-// injection site outside those two files carries no rule here and is not
-// covered. Among the two files it does read, a sentence two prompts both
-// need is a sentence with one owner and a pointer, never two copies.
+//       unreported;
+//   (d) a ledger throw. The ledger fails closed: an extraction whose anchor
+//       stopped matching, an instruction clause that left its single-line
+//       shape, an instruction variable, context block or prompt call site
+//       its tables do not name, or a delivery site that gained literal
+//       text, throws out of buildLedger() rather than recording a short
+//       value, and that throw ends this run non-zero before any check
+//       below reads a partial ledger.
+// This check reads two files (bin/supervise.sh, hooks/index.ts). One
+// coverage bound inside them is declared and pinned below: the two
+// record-delivery prompts whose whole text hooks/operator.ts's deliveryText
+// builds are excluded by name, and the ledger asserts hooks/index.ts adds
+// no literal text at either site. A third injection site outside the two
+// files carries no rule here and is not covered. Among the strings it does
+// read, a sentence two prompts both need is a sentence with one owner and
+// a pointer, never two copies.
 //
 // Usage: node .kit/injection-duplicate-test.mjs
-// Exits 0 when neither condition fires, 1 when either does.
+// Exits 0 when no condition fires, 1 when any does.
 //
 // This file also carries its own fixture-based controls (run first, always,
 // regardless of the real result below them), each exercising the
-// production findDuplicates()/findSizeViolations() functions rather than a
-// hand-rolled reimplementation:
+// production functions rather than a hand-rolled reimplementation:
 //   - a positive/negative pair on the CLAUDE.md-vs-injected path, built
 //     from a raw, marker-prefixed CLAUDE.md line read fresh off disk (not
 //     copied from the matcher's own normalized output), so the control
@@ -34,12 +44,20 @@
 //     fixture sources sharing a sentence neither CLAUDE.md nor any real
 //     injected string carries);
 //   - a positive/negative pair on the size guard, with a deliberately
-//     undersized and a sufficient baseline entry.
+//     undersized and a sufficient baseline entry;
+//   - one control per fail-closed ledger guard, each handing
+//     buildLedgerFrom() a copy of the real source mutated into a shape the
+//     guard's own patterns do not name (a clause wrapped with a line
+//     continuation, a new instruction variable, a new context block, a new
+//     prompt call site, a literal at a delivery site) and requiring the
+//     throw to come from that guard by its tag, so one guard cannot mask
+//     another's silence; plus one proving the fleet line-literal collector
+//     reads a label nested inside a ternary inside an interpolation.
 
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildLedger } from "./injection-ledger.mjs";
+import { buildLedger, buildLedgerFrom, EXCLUDED_PROMPT_SITES } from "./injection-ledger.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolve(__dirname, "..");
@@ -256,6 +274,111 @@ function fail(name) { console.error(`  FAIL: ${name}`); failed++; }
   else fail("fixture control: did not flag a live entry exceeding its undersized baseline (" + JSON.stringify(sizeResult) + ")");
   if (silentOnEqual) ok("fixture control: silent on a live entry matching its baseline");
   else fail("fixture control: flagged a live entry that matches its baseline (" + JSON.stringify(sizeResult) + ")");
+}
+
+// Fixture control 4: the ledger's fail-closed guards. Each case mutates a
+// fresh in-memory copy of the real source into a shape the guard under test
+// does not name in its own patterns, builds the ledger from it, and requires
+// a throw tagged by that guard, naming what the message must carry. A throw
+// from any other guard is a failure here, because a refusal by the wrong
+// rule reads the same green as a refusal by the right one. A mutation whose
+// target is absent throws its own error, so no case passes by mutating
+// nothing.
+{
+  const shSrc = readNormalized(join(repoRoot, "bin", "supervise.sh"));
+  const tsSrc = readNormalized(join(repoRoot, "hooks", "index.ts"));
+
+  function mutated(src, find, replacement, label) {
+    const idx = src.indexOf(find);
+    if (idx === -1) throw new Error(`guard control "${label}": mutation target not found in source: ${find}`);
+    return src.slice(0, idx) + replacement + src.slice(idx + find.length);
+  }
+  function expectRefusal(label, tag, mustName, build) {
+    let err = null;
+    try { build(); } catch (e) { err = e; }
+    if (err === null) { fail(`guard control: ${label} - the ledger built with no throw`); return; }
+    const msg = String(err.message);
+    if (!msg.startsWith(tag)) { fail(`guard control: ${label} - refused by ${msg.split("]")[0]}] rather than ${tag}: ${msg}`); return; }
+    const missing = mustName.filter((s) => !msg.includes(s));
+    if (missing.length > 0) { fail(`guard control: ${label} - ${tag} fired but its message lacks ${missing.join(", ")}: ${msg}`); return; }
+    ok(`guard control: ${label} - refused by ${tag}, naming ${mustName.join(", ")}`);
+  }
+
+  // A += clause wrapped onto two lines with a backslash continuation, which
+  // bash reads as the same one string: the name still resolves, the sum is
+  // short by that clause, and only the per-name count sees it. The clause
+  // is picked by position (the second += line of the name), never by text.
+  {
+    const lines = shSrc.split("\n");
+    const plusLines = lines.map((l, i) => (/^\s*COORDINATOR_ROLE_INSTRUCTION\+="/.test(l) ? i : -1)).filter((i) => i !== -1);
+    if (plusLines.length < 2) {
+      fail("guard control: a += clause wrapped onto two lines - fewer than two COORDINATOR_ROLE_INSTRUCTION+= lines to pick the second from");
+    } else {
+      const idx = plusLines[1];
+      const cut = lines[idx].indexOf(" ", 80);
+      lines[idx] = lines[idx].slice(0, cut) + "\\\n" + lines[idx].slice(cut);
+      const wrapped = lines.join("\n");
+      expectRefusal("a += clause wrapped onto two lines", "[instruction-count]", ["COORDINATOR_ROLE_INSTRUCTION", "expected 5", "found 4"], () => buildLedgerFrom(wrapped, tsSrc));
+    }
+  }
+  // A sixth instruction variable, assigned but named in no table.
+  expectRefusal("a new *_INSTRUCTION variable", "[instruction-set]", ["STEWARD_ROLE_INSTRUCTION"], () =>
+    buildLedgerFrom(mutated(shSrc, '\n  ARCHITECT_ROLE_INSTRUCTION=""\n', '\n  ARCHITECT_ROLE_INSTRUCTION=""\n  STEWARD_ROLE_INSTRUCTION="You hold the steward seat for this machine."\n', "new variable"), tsSrc));
+  // A renamed instruction variable, at every assignment and in the write.
+  expectRefusal("a renamed *_INSTRUCTION variable", "[instruction-set]", ["LEAD_INSTRUCTION", "COORDINATOR_STEER_INSTRUCTION"], () =>
+    buildLedgerFrom(shSrc.split("COORDINATOR_STEER_INSTRUCTION").join("LEAD_INSTRUCTION"), tsSrc));
+  // A variable spliced into the priming write that no table names and no
+  // *_INSTRUCTION assignment declares, which only the write leg can see.
+  expectRefusal("a variable added to the priming write", "[priming-write]", ["STEWARD_CHARTER"], () =>
+    buildLedgerFrom(mutated(shSrc, '$CHANNEL_REPLY_INSTRUCTION" "$PRIMING_BODY"', '$CHANNEL_REPLY_INSTRUCTION$STEWARD_CHARTER" "$PRIMING_BODY"', "priming write"), tsSrc));
+  // A seventh context block pushed under a name no rule sizes.
+  expectRefusal("a new context block", "[context-blocks]", ["fleetBlock"], () =>
+    buildLedgerFrom(shSrc, mutated(tsSrc, "contextBlocks.push(memoryBlock);", "contextBlocks.push(memoryBlock);\n      contextBlocks.push(fleetBlock);", "context block")));
+  // A context block pushed under a new name while its rule still reads the
+  // old one: one name unknown to the table and one table name unpushed.
+  expectRefusal("a renamed context block push", "[context-blocks]", ["memoriesBlock", "memoryBlock"], () =>
+    buildLedgerFrom(shSrc, mutated(tsSrc, "contextBlocks.push(memoryBlock);", "contextBlocks.push(memoriesBlock);", "renamed push")));
+  // A ninth submitExpectedTurn call site whose entry no row anchors.
+  expectRefusal("a new prompt call site", "[prompt-call-sites]", ["stewardText", "matching 0"], () =>
+    buildLedgerFrom(shSrc, mutated(tsSrc, "text: RECONCILE_TEXT }));", 'text: RECONCILE_TEXT }));\n            await submitExpectedTurn($, expectedTurns, expectTurn({ kind: "plugin", text: stewardText }));', "call site")));
+  // A call site removed while its row and rule remain: the row matches no
+  // site, so the table is stale rather than the source unsized.
+  expectRefusal("a removed prompt call site", "[prompt-call-sites]", ["expectedNudgeTurn", "no submitExpectedTurn call site"], () =>
+    buildLedgerFrom(shSrc, mutated(tsSrc, "const nudgeOutcome = await submitExpectedTurn($, expectedTurns, expectedNudgeTurn);", "const nudgeOutcome = { ok: true };", "removed call site")));
+  // A .prompt.submit call outside submitExpectedTurn.
+  expectRefusal("a direct .prompt.submit call", "[prompt-submit]", ["found 2"], () =>
+    buildLedgerFrom(shSrc, mutated(tsSrc, "result = await dp.prompt.submit({ text: entry.text });", 'result = await dp.prompt.submit({ text: entry.text });\n    await dp.prompt.submit({ text: "again" });', "direct submit")));
+  // Literal text slipped into an excluded delivery site's arguments.
+  expectRefusal("a literal inside an excluded delivery site", "[delivery-exclusion]", ["answerText", "Note: "], () =>
+    buildLedgerFrom(shSrc, mutated(tsSrc, "deliveryText(answerLabel, answer.id, answer.text,", 'deliveryText(answerLabel, answer.id, "Note: " + answer.text,', "delivery literal")));
+  // The excluded site rebuilt around deliveryText rather than from it alone.
+  expectRefusal("an excluded delivery site prefixed outside deliveryText", "[delivery-exclusion]", ["submittedText"], () =>
+    buildLedgerFrom(shSrc, mutated(tsSrc, "const submittedText = deliveryText(", 'const submittedText = "[INBOX] " + deliveryText(', "delivery prefix")));
+
+  // The fleet line-literal collector reaching a label that sits inside a
+  // ternary inside an interpolation: lengthen that label and require the
+  // entry to grow by exactly the added characters and to carry the phrase.
+  try {
+    const before = buildLedgerFrom(shSrc, tsSrc).find((e) => e.name === "FLEET_PROMPT_LINE_LITERALS");
+    const added = " recorded for this persona";
+    const grown = buildLedgerFrom(shSrc, mutated(tsSrc, '"no commons entry"', `"no commons entry${added}"`, "nested label")).find((e) => e.name === "FLEET_PROMPT_LINE_LITERALS");
+    if (grown.chars === before.chars + added.length && grown.text.includes(`no commons entry${added}`)) ok(`guard control: fleet line literals - a label nested in a ternary inside an interpolation is sized (${before.chars} -> ${grown.chars})`);
+    else fail(`guard control: fleet line literals - a label nested in a ternary inside an interpolation is not sized (${before.chars} -> ${grown.chars})`);
+  } catch (e) {
+    fail(`guard control: fleet line literals - ${e.message}`);
+  }
+}
+
+// The ledger's declared coverage bound, pinned: exactly the two record-
+// delivery sites, each excluded because hooks/operator.ts's deliveryText
+// builds its whole text. A third exclusion, or one rehomed to another
+// builder or file, changes what this suite covers and is declared here.
+{
+  const expected = ["expectedAnswerTurn", "expectedDeliveryTurn"];
+  const anchors = EXCLUDED_PROMPT_SITES.map((s) => s.anchor);
+  const shapeHolds = EXCLUDED_PROMPT_SITES.every((s) => s.builder === "deliveryText" && s.file === "hooks/operator.ts");
+  if (JSON.stringify(anchors) === JSON.stringify(expected) && shapeHolds) ok(`exclusion pin: the ledger excludes exactly ${expected.join(" and ")}, both built whole by hooks/operator.ts deliveryText`);
+  else fail(`exclusion pin: the ledger's excluded prompt sites are ${JSON.stringify(EXCLUDED_PROMPT_SITES)}, expected ${JSON.stringify(expected)} built by hooks/operator.ts deliveryText`);
 }
 
 // The real check: every injected string the ledger extracts, against

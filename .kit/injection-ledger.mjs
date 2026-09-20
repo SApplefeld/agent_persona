@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The injection ledger: reads bin/supervise.sh and hooks/index.ts and prints,
-// as a JSON array on stdout, one { name, file, chars, words } record per
+// as a JSON envelope on stdout, one { name, file, chars, words } record per
 // injected string those two files write into a child session's context.
 //
 // Usage: node .kit/injection-ledger.mjs
@@ -19,6 +19,31 @@
 // variable, a template literal with interpolation, a tool registration
 // object) that one rule per shape reads plainly, where a single generic
 // parser covering all three shapes would not.
+//
+// Every rule fails closed. An extraction that cannot match its anchor, or
+// that matches fewer or more pieces than its table expects, throws with the
+// name and both counts; it never records a zero, a partial value or a
+// default, because a string that silently shrank in the ledger reads to the
+// size check as a trim. Beside the per-string rules, four structural checks
+// read each family's shape off the source rather than off this file's list,
+// so a member the list does not name fails the build: every *_INSTRUCTION
+// variable the supervisor assigns and every variable its priming write
+// splices in, every contextBlocks.push in the plugin, every
+// submitExpectedTurn call site and every direct .prompt.submit call, and
+// every $.tool.register block.
+//
+// One coverage bound is declared rather than closed. Two submitExpectedTurn
+// call sites deliver an inbox record, and their whole text is built by
+// deliveryText in hooks/operator.ts, a file this ledger does not read. Those
+// two sites are named in PROMPT_CALL_SITES as exclusions, the ledger asserts
+// that hooks/index.ts contributes no literal text at either, and the
+// duplicate test pins the exclusion list, so a third exclusion or a literal
+// added at one of those sites fails rather than slipping past. Fixed
+// literals inside interpolated expressions are sized only where a rule
+// names them: the [FLEET] prompt's per-row line literals are one such rule;
+// the "- " prefix on each [KAIZEN] line and the "Pending siblings: ",
+// "Last note: " and "root > " fragments of the [GOAL TREE] block are not
+// sized by any rule here.
 
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -72,6 +97,10 @@ function toPublicShape(entries) {
   return entries.map(({ name, file, chars, words }) => ({ name, file, chars, words }));
 }
 
+function setDifference(a, b) {
+  return [...a].filter((x) => !b.has(x));
+}
+
 // --- Shared: a chain of one or more JS/TS string literals joined by `+`,
 // starting at `startIdx` in `src`. Handles both quote characters; does not
 // handle template literals (those are parsed separately, per site, where
@@ -114,28 +143,77 @@ function parseStringLiteralChain(src, startIdx) {
 }
 
 // ---------------------------------------------------------------------------
-// bin/supervise.sh: the five *_INSTRUCTION variables and the three priming
+// bin/supervise.sh: the *_INSTRUCTION variables and the three priming
 // bodies. Every assignment is a single physical line of the shape
-// NAME="..." or NAME+="..." with no internal unescaped double quote (checked
-// by hand against the base commit this ledger was built at - see the
-// Chapter), so a whole-line regex is sufficient and safe; a change that
-// wraps one of these onto multiple lines, renames the variable, or
-// introduces an internal quote will make this regex miss it. That miss is
-// not silent: extractShellInstructions throws below when a named variable
-// collects no assignment at all, so a shape change fails the build rather
-// than shipping a ledger entry of 0 chars.
+// NAME="..." or NAME+="..." with no internal unescaped double quote, so a
+// whole-line regex is what reads it. A change that wraps one of these onto
+// multiple lines, renames the variable, or introduces an internal quote
+// makes the regex miss that line, and the miss fails closed: the table
+// below fixes how many assignment lines each name carries, and a count that
+// differs throws rather than summing the lines that still matched.
 // ---------------------------------------------------------------------------
+
+// Every *_INSTRUCTION variable this ledger sizes, with the number of
+// assignment lines (NAME="..." and NAME+="...", an empty init included) each
+// carries in bin/supervise.sh. The count is asserted exactly, the way the
+// PRIMING_BODY count below is, because a name whose clauses fell to fewer
+// matching lines would otherwise still resolve, still size above zero, and
+// read to the size check as a trim. A rewrite that changes a name's clause
+// count sets the number here in the same commit, which is the declared-
+// growth rule applied to the shape as well as to the size.
+const INSTRUCTION_ASSIGNMENT_COUNTS = {
+  SKILL_LOAD_INSTRUCTION: 1,
+  COORDINATOR_STEER_INSTRUCTION: 2,
+  CHANNEL_REPLY_INSTRUCTION: 2,
+  COORDINATOR_ROLE_INSTRUCTION: 5,
+  ARCHITECT_ROLE_INSTRUCTION: 2,
+};
+const INSTRUCTION_NAMES = Object.keys(INSTRUCTION_ASSIGNMENT_COUNTS);
+
 function extractShellInstructions(src) {
   const results = [];
   const lines = src.split("\n");
-  const instructionNames = [
-    "SKILL_LOAD_INSTRUCTION",
-    "COORDINATOR_STEER_INSTRUCTION",
-    "CHANNEL_REPLY_INSTRUCTION",
-    "COORDINATOR_ROLE_INSTRUCTION",
-    "ARCHITECT_ROLE_INSTRUCTION",
-  ];
-  const collected = new Map(instructionNames.map((n) => [n, []]));
+  const tableNames = new Set(INSTRUCTION_NAMES);
+
+  // Structural leg one: every variable named *_INSTRUCTION the script
+  // assigns, discovered from the assignment's left-hand side alone, so a
+  // sixth instruction variable fails here whatever shape its right-hand
+  // side takes, and a renamed one fails as one name gone and one unknown.
+  const declaredRe = /^\s*([A-Z][A-Z0-9_]*_INSTRUCTION)\+?=/;
+  const declared = new Set();
+  for (const line of lines) {
+    const m = declaredRe.exec(line);
+    if (m) declared.add(m[1]);
+  }
+  const declaredNotInTable = setDifference(declared, tableNames);
+  const tableNotDeclared = setDifference(tableNames, declared);
+  if (declaredNotInTable.length > 0 || tableNotDeclared.length > 0) {
+    throw new Error(
+      `[instruction-set] bin/supervise.sh assigns *_INSTRUCTION variables INSTRUCTION_ASSIGNMENT_COUNTS does not name (${declaredNotInTable.join(", ") || "none"}) or no longer assigns ones it does (${tableNotDeclared.join(", ") || "none"}); add each new variable to that table with its assignment-line count, or retire the missing one from it, in the same commit`,
+    );
+  }
+
+  // Structural leg two: the variables the priming write itself splices into
+  // the child's first turn, read off the write's own argument. A variable
+  // written to the child under a name that does not end in _INSTRUCTION
+  // fails here, where leg one cannot see it.
+  const writeRe = /"\s+"((?:\$[A-Za-z_][A-Za-z0-9_]*)+)"\s+"\$PRIMING_BODY"\s+>&"\$CHILD_IN"/;
+  const writeMatch = writeRe.exec(src);
+  if (!writeMatch) {
+    throw new Error(
+      `[priming-write] the priming write ("$A$B..." "$PRIMING_BODY" >&"$CHILD_IN") was not found in bin/supervise.sh; the write's shape changed and this rule must follow it in the same commit`,
+    );
+  }
+  const written = new Set(writeMatch[1].split("$").filter(Boolean));
+  const writtenNotInTable = setDifference(written, tableNames);
+  const tableNotWritten = setDifference(tableNames, written);
+  if (writtenNotInTable.length > 0 || tableNotWritten.length > 0) {
+    throw new Error(
+      `[priming-write] the priming write in bin/supervise.sh splices variables the ledger does not size (${writtenNotInTable.join(", ") || "none"}) or omits ones it does (${tableNotWritten.join(", ") || "none"}); every variable written to the child's first turn is sized here, so add a rule and a table row for the new one, or retire the row for the dropped one, in the same commit`,
+    );
+  }
+
+  const collected = new Map(INSTRUCTION_NAMES.map((n) => [n, []]));
   const assignRe = /^\s*([A-Za-z_][A-Za-z0-9_]*)(\+?)=\s*"([^\n]*)"\s*$/;
   for (const line of lines) {
     const m = assignRe.exec(line);
@@ -143,7 +221,7 @@ function extractShellInstructions(src) {
     const [, name, , content] = m;
     if (collected.has(name)) collected.get(name).push(content);
   }
-  for (const name of instructionNames) {
+  for (const name of INSTRUCTION_NAMES) {
     // Every assignment and += continuation found for this name, in source
     // order, concatenated: an empty init followed by one conditional real
     // value yields the real value; a base assignment followed by
@@ -151,9 +229,10 @@ function extractShellInstructions(src) {
     // architect-routing clauses) yields their sum, which is this variable's
     // worst-case content across every launch shape.
     const assignments = collected.get(name);
-    if (assignments.length === 0) {
+    const expected = INSTRUCTION_ASSIGNMENT_COUNTS[name];
+    if (assignments.length !== expected) {
       throw new Error(
-        `no assignment found for ${name} in bin/supervise.sh (renamed, or no longer a single-line NAME="..." assignment?)`,
+        `[instruction-count] ${name} in bin/supervise.sh: expected ${expected} single-line assignment(s) of the shape NAME="..." or NAME+="...", found ${assignments.length}; a clause was wrapped onto more than one line, gained an internal quote, or was added or removed, and the ledger cannot sum what it did not match; restore the single-line shape or set the count in INSTRUCTION_ASSIGNMENT_COUNTS in the same commit`,
       );
     }
     const text = assignments.join("");
@@ -223,14 +302,14 @@ function extractReconcileText(src) {
   return record("RECONCILE_TEXT", "hooks/index.ts", m[1]);
 }
 
-// The still-waiting re-raise (line 232 at this ledger's base): a nested
-// template literal, `${REPLY_INSTRUCTION}${quoteContinuationLines(`[STILL
-// WAITING] ${askRecord.question}`)}`. REPLY_INSTRUCTION is counted on its
-// own above; askRecord.question is per-ask data excluded as interpolation;
-// the one literal fragment this site contributes on top of those is
-// whatever text precedes `${askRecord.question}` inside that inner
-// backtick, captured from the source rather than hardcoded, so a reword of
-// the label is picked up automatically.
+// The still-waiting re-raise: a nested template literal,
+// `${REPLY_INSTRUCTION}${quoteContinuationLines(`[STILL WAITING]
+// ${askRecord.question}`)}`. REPLY_INSTRUCTION is counted on its own above;
+// askRecord.question is per-ask data excluded as interpolation; the one
+// literal fragment this site contributes on top of those is whatever text
+// precedes `${askRecord.question}` inside that inner backtick, captured from
+// the source rather than hardcoded, so a reword of the label is picked up
+// automatically.
 function extractStillWaitingReraise(src) {
   const m = /`([^`]*)\$\{askRecord\.question\}`/.exec(src);
   if (!m) throw new Error("still-waiting reraise frame not found in hooks/index.ts");
@@ -238,19 +317,133 @@ function extractStillWaitingReraise(src) {
 }
 
 // fleetPromptText's returned frame: `${REPLY_INSTRUCTION}[FLEET] ${count}
-// reading...continue your work:` + "\n" + lines.join("\n"). The trailing
-// `+ "\n" + lines.join(...)` is entirely per-reading data and excluded; the
-// backtick template before it is this frame's literal text once
-// REPLY_INSTRUCTION and ${count} are stripped.
+// reading...continue your work:` + "\n" + lines.join("\n"). The backtick
+// template is this frame's literal text once REPLY_INSTRUCTION and ${count}
+// are stripped. The `lines` joined after it are composed one per fleet row
+// from fixed field labels and per-row data, and those fixed labels are
+// sized separately by extractFleetPromptLineLiterals below.
 function extractFleetPromptFrame(src) {
   const m = /return `(\$\{REPLY_INSTRUCTION\}\[FLEET\][^`]*)`\s*\+\s*"\\n"\s*\+\s*lines\.join/.exec(src);
   if (!m) throw new Error("fleetPromptText frame not found in hooks/index.ts");
   return record("FLEET_PROMPT_FRAME", "hooks/index.ts", m[1]);
 }
 
+// Every string literal in a region of TS source, in the order the scan
+// meets its closing delimiter: the content of each single- or double-quoted
+// string, and of each template literal with its ${...} interpolations
+// removed, recursing into the strings and templates an interpolation itself
+// carries, so a label inside a ternary inside an interpolation is read.
+// Comments are skipped so an apostrophe in one cannot open a phantom
+// string. Escapes ride through raw and are decoded once in record().
+function collectStringLiterals(region) {
+  const out = [];
+  let i = 0;
+  function readQuoted(quote) {
+    let j = i + 1;
+    let piece = "";
+    while (j < region.length && region[j] !== quote) {
+      if (region[j] === "\\") {
+        piece += region[j] + region[j + 1];
+        j += 2;
+      } else {
+        piece += region[j];
+        j++;
+      }
+    }
+    if (j >= region.length) throw new Error("unterminated string literal while collecting literals");
+    i = j + 1;
+    return piece;
+  }
+  function readTemplate() {
+    let j = i + 1;
+    let literal = "";
+    while (j < region.length && region[j] !== "`") {
+      if (region[j] === "\\") {
+        literal += region[j] + region[j + 1];
+        j += 2;
+        continue;
+      }
+      if (region[j] === "$" && region[j + 1] === "{") {
+        i = j + 2;
+        let depth = 1;
+        while (i < region.length && depth > 0) {
+          const c = region[i];
+          if (c === '"' || c === "'") { out.push(readQuoted(c)); continue; }
+          if (c === "`") { out.push(readTemplate()); continue; }
+          if (c === "{") depth++;
+          else if (c === "}") depth--;
+          i++;
+        }
+        if (depth !== 0) throw new Error("unterminated ${...} while collecting literals");
+        j = i;
+        continue;
+      }
+      literal += region[j];
+      j++;
+    }
+    if (j >= region.length) throw new Error("unterminated template literal while collecting literals");
+    i = j + 1;
+    return literal;
+  }
+  while (i < region.length) {
+    const c = region[i];
+    if (c === "/" && region[i + 1] === "/") {
+      const nl = region.indexOf("\n", i);
+      i = nl === -1 ? region.length : nl + 1;
+      continue;
+    }
+    if (c === "/" && region[i + 1] === "*") {
+      const end = region.indexOf("*/", i + 2);
+      i = end === -1 ? region.length : end + 2;
+      continue;
+    }
+    if (c === '"' || c === "'") { out.push(readQuoted(c)); continue; }
+    if (c === "`") { out.push(readTemplate()); continue; }
+    i++;
+  }
+  return out;
+}
+
+// The body of `function NAME(...) {...}`: the text strictly between its
+// braces. The parameter list of every function this is applied to carries
+// no brace, so the first `{` after the name opens the body.
+function functionBody(src, name) {
+  const idx = src.indexOf(`function ${name}(`);
+  if (idx === -1) throw new Error(`function ${name} not found in hooks/index.ts`);
+  const open = src.indexOf("{", idx);
+  if (open === -1) throw new Error(`function ${name} has no body`);
+  const close = findMatchingBrace(src, open);
+  return src.slice(open + 1, close);
+}
+
+// The fixed text of the [FLEET] prompt's per-row lines: the field labels
+// (`action `, `enabled `, `claim `, ...), the fixed values a field can take
+// (`yes`, `no`, `held`, `no commons entry`, `unreadable`, ...), the
+// suppressed-changes tail and the hold-reason and note line openers, all
+// composed into `lines` before the frame's `return`. Read from the bodies of
+// fleetSuppressedTail and fleetPromptText, the latter cut at its return
+// statement, which extractFleetPromptFrame sizes. Each literal is its own
+// line of the entry, so two fragments cannot glue into one sentence.
+function extractFleetPromptLineLiterals(src) {
+  const tailBody = functionBody(src, "fleetSuppressedTail");
+  const promptBody = functionBody(src, "fleetPromptText");
+  const returnIdx = promptBody.indexOf("return `${REPLY_INSTRUCTION}[FLEET]");
+  if (returnIdx === -1) throw new Error("fleetPromptText's return statement was not found inside its body; the body was cut short or the frame moved");
+  if (!/^return `[^`]*` \+ "\\n" \+ lines\.join\("\\n"\);\s*$/.test(promptBody.slice(returnIdx))) {
+    throw new Error("fleetPromptText's body does not end at its return statement; a statement after the return, or a truncated body, would leave line literals unsized");
+  }
+  const literals = [
+    ...collectStringLiterals(tailBody),
+    ...collectStringLiterals(promptBody.slice(0, returnIdx)),
+  ].filter((s) => s.length > 0);
+  if (literals.length === 0) throw new Error("fleetPromptText composes no line literal before its return; the rule no longer reads the function it was written for");
+  return record("FLEET_PROMPT_LINE_LITERALS", "hooks/index.ts", literals.join("\n"));
+}
+
 // The [KAIZEN] frame: `${REPLY_INSTRUCTION}[KAIZEN] Post each line below...`
-// followed by `+ announced.map(...).join("\n")`, which is per-announcement
-// data and excluded.
+// followed by `+ announced.map((line) => `- ${line}`).join("\n")`. Each
+// announced line is per-announcement data and excluded; the two-character
+// `- ` prefix the map puts on each is fixed text this rule does not size.
 function extractKaizenFrame(src) {
   const m = /`(\$\{REPLY_INSTRUCTION\}\[KAIZEN\][^`]*)`/.exec(src);
   if (!m) throw new Error("kaizen frame not found in hooks/index.ts");
@@ -286,7 +479,9 @@ function extractNudgeFrames(src) {
 // The [GOAL TREE] block. `siblingLine` and `lastNote` are whole-variable
 // insertions (not `${}` interpolations inside one template literal), so they
 // are excluded by only reading the backtick-delimited pieces of the chain,
-// never the bare identifiers between `+`.
+// never the bare identifiers between `+`. Their own fixed openers
+// (`Pending siblings: `, `Last note: `) and the `root > ` of `path` are
+// therefore not sized by this rule.
 function extractGoalTreeBlock(src) {
   const m = /const goalBlock =\s*\n([\s\S]*?);\n/.exec(src);
   if (!m) throw new Error("goalBlock not found in hooks/index.ts");
@@ -331,6 +526,146 @@ function extractMemoryBlock(src) {
   const m = /const memoryBlock =\s*\n\s*"([^"]*)"/.exec(src);
   if (!m) throw new Error("memoryBlock not found in hooks/index.ts");
   return record("MEMORY_BLOCK", "hooks/index.ts", m[1]);
+}
+
+// --- Structural check: every context block the prompt.submit hook pushes.
+// The identifier each `contextBlocks.push(<identifier>)` names, mapped to
+// the ledger entry whose rule sizes that identifier's literal text. A push
+// of an identifier this table does not name, a table identifier no push
+// names, or one identifier pushed twice, throws, so a seventh block fails
+// the build until a rule sizes it.
+const CONTEXT_BLOCKS = {
+  goalBlock: "GOAL_TREE_BLOCK",
+  pausedBlock: "GOAL_TREE_PAUSED_BLOCK",
+  idleBlock: "NO_GOAL_BLOCK",
+  envBlock: "ENV_BLOCK",
+  lessonBlock: "LESSON_BLOCK",
+  memoryBlock: "MEMORY_BLOCK",
+};
+
+function checkContextBlocks(src, entryNames) {
+  const pushRe = /contextBlocks\.push\(([^)]*)\)/g;
+  const pushed = [];
+  let m;
+  while ((m = pushRe.exec(src)) !== null) pushed.push(m[1].trim());
+  const known = new Set(Object.keys(CONTEXT_BLOCKS));
+  const unknown = pushed.filter((p) => !known.has(p));
+  const missing = setDifference(known, new Set(pushed));
+  if (unknown.length > 0 || missing.length > 0) {
+    throw new Error(
+      `[context-blocks] hooks/index.ts pushes context blocks CONTEXT_BLOCKS does not name (${unknown.join(", ") || "none"}) or no longer pushes ones it does (${missing.join(", ") || "none"}); every contextBlocks.push is sized by a named rule, so add a rule and a CONTEXT_BLOCKS row for the new block, or retire the row for the dropped one, in the same commit`,
+    );
+  }
+  if (pushed.length !== known.size) {
+    throw new Error(
+      `[context-blocks] hooks/index.ts pushes ${pushed.length} context blocks where CONTEXT_BLOCKS names ${known.size}; one identifier is pushed more than once, and the ledger sizes each block once`,
+    );
+  }
+  for (const [ident, entry] of Object.entries(CONTEXT_BLOCKS)) {
+    if (!entryNames.has(entry)) throw new Error(`[context-blocks] CONTEXT_BLOCKS maps ${ident} to ledger entry ${entry}, which no rule produced`);
+  }
+}
+
+// --- Structural check: every prompt the plugin submits to the child.
+// One row per submitExpectedTurn call site in hooks/index.ts, keyed by a
+// token of the call's entry argument, naming the ledger entries whose rules
+// size that prompt's literal text. A call site matching no row, or two rows,
+// throws, as does a row matching no call site, so a new prompt fails the
+// build until a rule sizes it and a row names it. Two rows are exclusions
+// rather than entries: the two record-delivery sites, whose whole text is
+// built by deliveryText in hooks/operator.ts, a file this ledger does not
+// read. For each, the check asserts that hooks/index.ts contributes no
+// literal text of its own at the site, so the exclusion holds exactly as
+// long as the text stays entirely operator.ts's.
+const PROMPT_CALL_SITES = [
+  { anchor: "reraiseEntry", entries: ["STILL_WAITING_RERAISE_TEXT"] },
+  { anchor: "fleetPromptText(", entries: ["FLEET_PROMPT_FRAME", "FLEET_PROMPT_LINE_LITERALS"] },
+  { anchor: "RECONCILE_TEXT", entries: ["RECONCILE_TEXT"] },
+  { anchor: "expectedAnswerTurn", excludedTextVar: "answerText" },
+  { anchor: "expectedDeliveryTurn", excludedTextVar: "submittedText" },
+  { anchor: "kaizenText", entries: ["KAIZEN_FRAME"] },
+  { anchor: "expectedNudgeTurn", entries: ["NUDGE_TEXT_idle_gap_converted", "NUDGE_TEXT_idle_timeout"] },
+  { anchor: "backstopText", entries: ["REPLY_BACKSTOP_FRAME"] },
+];
+
+// The exclusions above in a public shape, so the duplicate test can pin the
+// list: a third exclusion is a coverage change declared there, not here alone.
+const EXCLUDED_PROMPT_SITES = PROMPT_CALL_SITES
+  .filter((s) => s.excludedTextVar)
+  .map((s) => ({ anchor: s.anchor, textVar: s.excludedTextVar, builder: "deliveryText", file: "hooks/operator.ts" }));
+
+function checkPromptCallSites(src, entryNames) {
+  const lines = src.split("\n");
+  const argRe = /submitExpectedTurn\(\s*[\w$]+\s*,\s*expectedTurns\s*,\s*(.*)\)\s*;\s*$/;
+  const matched = new Map();
+  lines.forEach((line, idx) => {
+    if (!/submitExpectedTurn\(/.test(line)) return;
+    if (/function submitExpectedTurn\(/.test(line)) return;
+    const lineNo = idx + 1;
+    const am = argRe.exec(line);
+    if (!am) {
+      throw new Error(
+        `[prompt-call-sites] hooks/index.ts:${lineNo} calls submitExpectedTurn in a shape this rule cannot read (one line ending in \`, expectedTurns, <entry>);\`): ${line.trim()}`,
+      );
+    }
+    const arg = am[1];
+    const hits = PROMPT_CALL_SITES.filter((s) => arg.includes(s.anchor));
+    if (hits.length !== 1) {
+      throw new Error(
+        `[prompt-call-sites] hooks/index.ts:${lineNo} submits a prompt entry (${arg}) matching ${hits.length} PROMPT_CALL_SITES rows; every submitExpectedTurn call site is sized by a named rule or named as an exclusion there, so add a row for this site with the rule that sizes its text in the same commit`,
+      );
+    }
+    const { anchor } = hits[0];
+    if (matched.has(anchor)) {
+      throw new Error(
+        `[prompt-call-sites] hooks/index.ts:${lineNo} and :${matched.get(anchor)} both match the PROMPT_CALL_SITES row ${anchor}; one row sizes one site`,
+      );
+    }
+    matched.set(anchor, lineNo);
+  });
+  const unmatched = PROMPT_CALL_SITES.filter((s) => !matched.has(s.anchor));
+  if (unmatched.length > 0) {
+    throw new Error(
+      `[prompt-call-sites] no submitExpectedTurn call site in hooks/index.ts matches the PROMPT_CALL_SITES row(s) ${unmatched.map((s) => s.anchor).join(", ")}; the site moved or was removed, so re-anchor or retire its row and its ledger rule in the same commit`,
+    );
+  }
+  for (const site of PROMPT_CALL_SITES) {
+    for (const entry of site.entries ?? []) {
+      if (!entryNames.has(entry)) throw new Error(`[prompt-call-sites] PROMPT_CALL_SITES names ledger entry ${entry} for ${site.anchor}, which no rule produced`);
+    }
+  }
+
+  // The one direct .prompt.submit call is the one inside submitExpectedTurn;
+  // a second is a prompt that reaches the child past every row above.
+  const submitCalls = src.match(/\.prompt\.submit\(/g) || [];
+  if (submitCalls.length !== 1) {
+    throw new Error(
+      `[prompt-submit] expected exactly 1 .prompt.submit( call in hooks/index.ts, the one inside submitExpectedTurn, found ${submitCalls.length}; a prompt submitted outside submitExpectedTurn is a frame no rule here sizes`,
+    );
+  }
+
+  for (const site of PROMPT_CALL_SITES) {
+    if (!site.excludedTextVar) continue;
+    const v = site.excludedTextVar;
+    const assignRe = new RegExp(`^\\s*const ${v} = deliveryText\\((.*)\\);\\s*$`, "m");
+    const am = assignRe.exec(src);
+    if (!am) {
+      throw new Error(
+        `[delivery-exclusion] hooks/index.ts no longer builds ${v} as \`const ${v} = deliveryText(...);\`; the ${site.anchor} site is excluded from the ledger only while hooks/operator.ts's deliveryText builds its whole text, so ledger the text here or restore that shape`,
+      );
+    }
+    if (/["'`]/.test(am[1])) {
+      throw new Error(
+        `[delivery-exclusion] ${v} carries literal text at its call site in hooks/index.ts (deliveryText(${am[1]})); the ${site.anchor} exclusion holds only while every argument is data, so ledger the literal here or move it into deliveryText`,
+      );
+    }
+    const useRe = new RegExp(`expectTurn\\(\\{[^}]*\\btext: ${v} \\}\\)`);
+    if (!useRe.test(src)) {
+      throw new Error(
+        `[delivery-exclusion] no expectTurn({ ..., text: ${v} }) entry is built from ${v} in hooks/index.ts; the ${site.anchor} site submits text this rule did not trace`,
+      );
+    }
+  }
 }
 
 // --- Tool registrations: $.tool.register({ ... }), one entry per tool,
@@ -477,16 +812,17 @@ function extractToolDescriptions(src) {
   return results;
 }
 
-function buildLedger() {
-  const shSrc = readNormalized(shPath);
-  const tsSrc = readNormalized(tsPath);
-
+// The ledger over two source texts, already LF-normalized. Separated from
+// the file reads so the duplicate test's controls can hand it a mutated
+// copy of the real source and watch a guard fire without touching the tree.
+function buildLedgerFrom(shSrc, tsSrc) {
   const entries = [
     ...extractShellInstructions(shSrc),
     extractReplyInstruction(tsSrc),
     extractReconcileText(tsSrc),
     extractStillWaitingReraise(tsSrc),
     extractFleetPromptFrame(tsSrc),
+    extractFleetPromptLineLiterals(tsSrc),
     extractKaizenFrame(tsSrc),
     extractBackstopFrame(tsSrc),
     ...extractNudgeFrames(tsSrc),
@@ -498,7 +834,15 @@ function buildLedger() {
     extractMemoryBlock(tsSrc),
     ...extractToolDescriptions(tsSrc),
   ];
+  const entryNames = new Set(entries.map((e) => e.name));
+  if (entryNames.size !== entries.length) throw new Error("two ledger rules produced the same entry name");
+  checkContextBlocks(tsSrc, entryNames);
+  checkPromptCallSites(tsSrc, entryNames);
   return entries;
+}
+
+function buildLedger() {
+  return buildLedgerFrom(readNormalized(shPath), readNormalized(tsPath));
 }
 
 // The basis every recorded size and every duplicate-check comparison rests
@@ -522,4 +866,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   console.log(JSON.stringify({ basis: LEDGER_BASIS, entries: toPublicShape(buildLedger()) }, null, 2));
 }
 
-export { buildLedger, toPublicShape };
+export { buildLedger, buildLedgerFrom, toPublicShape, EXCLUDED_PROMPT_SITES };

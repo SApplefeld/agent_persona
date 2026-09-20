@@ -86,6 +86,12 @@
       "words": 62
     },
     {
+      "name": "FLEET_PROMPT_LINE_LITERALS",
+      "file": "hooks/index.ts",
+      "chars": 288,
+      "words": 56
+    },
+    {
       "name": "KAIZEN_FRAME",
       "file": "hooks/index.ts",
       "chars": 92,
