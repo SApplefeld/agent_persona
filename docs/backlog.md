@@ -119,6 +119,13 @@ exit non-zero after passing will also read as failing to any gate that trusts th
 every gate here. The likely cause is a handle closed twice during teardown. Worth catching the next
 occurrence with `--trace-uncaught` rather than hunting it cold.
 
+Recurred 2026-09-19 during the context-budget plan's finishing pass, on a tree that does not touch
+that file, with the same assertion at the same source line and the same disagreement between the
+printed result and the exit code. Three immediate reruns in isolation came back clean at exit 0, 23
+passed. Two occurrences six days apart on unrelated trees rules out the change in flight as the
+cause, which strengthens the teardown-handle reading. The recurrence was seen through a chained
+command, so the next hunt should keep the suite's own unpiped exit code beside the assertion text.
+
 ## Suite hardening
 
 _No open items. Resolved items are archived in `docs/archive/backlog-2026-09-11.md`._
@@ -151,7 +158,7 @@ Nothing to fix in the tree. The remedy is relaunching each supervisor, then drop
 
 ## The context-budget plan's status header is none of the kit's values (found 2026-09-13)
 
-`docs/plans/agentic-plugin_context-budget_v1.md` reads `Status: Independent part Complete; checkpoint section BLOCKED-on-operator (Path C open question resolved).`, which the kit's tooling cannot read as any of its status values. The curating-docs skill rules whether the plan splits into a complete part and an open part, archives, or takes one of the three headers.
+`docs/archive/agentic-plugin_context-budget_v1.md` reads `Status: Independent part Complete; checkpoint section BLOCKED-on-operator (Path C open question resolved).`, which the kit's tooling cannot read as any of its status values. The curating-docs skill rules whether the plan splits into a complete part and an open part, archives, or takes one of the three headers.
 
 ## Design direction: let the outer loops recover a session that stopped, rather than only preventing the stop (operator dialog, 2026-09-13)
 

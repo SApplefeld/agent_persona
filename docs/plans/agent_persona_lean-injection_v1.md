@@ -122,7 +122,7 @@ Files in scope: `README.md`, `docs/README.md`, this plan document.
 - `docs/plans/claude-kit_lean-kit_program_v1.md` in the claude-kit repository: the decisions this plan applies, growth declared and one owner per moment.
 - `docs/plans/claude-kit_goal-fit_spec_v1.md` in the claude-kit repository: the intent record this plan's Intent section follows.
 - `docs/archive/agent_persona_steward-architect_v1.md`: runs before this plan and rewrites two of the strings it trims.
-- `docs/plans/agent_persona_context-budget-removal_v1.md`: runs before this plan and deletes the `[BUDGET]` prompt.
+- `docs/archive/agent_persona_context-budget-removal_v1.md`: ran before this plan and deleted the `[BUDGET]` prompt.
 - `docs/plans/agent_persona_supervisor-peer_v1.md`: runs after this plan and adds one priming sentence under the guard.
 
 ## Chapters

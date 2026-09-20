@@ -13,6 +13,8 @@ This repository ships one Claude Code plugin and two outer loops around it. The 
 
 Each layer's whole input from the layer below is one channel. The supervisor reads the child through files the child writes. The keeper reads the supervisor through its exit code, plus the last stderr line for the hold marker's text. The scheduler reads the keeper through the keeper's exit code alone. The supervisor never writes the persona store, and the keeper never reads it.
 
+No layer reads how full the child's context window is. The plugin keeps no estimate of it and the supervisor restarts no child on context grounds, so the signals in the table above are the whole set. Compaction is the harness's own, landed at the boundary the coordinator instruction has the child bank through the kit's checkpoint CLI at the end of each turn whose state is on disk.
+
 The fleet reading is the one channel that runs the other way. The coordinator persona's plugin reads the keeper's own state files for every persona in the roster, so one child sees the layer above it, and it sees that layer for the whole fleet rather than for its own supervisor. It only reads: no plugin path writes a roster, a `keeper.json` or a `keeper.hold`.
 
 ## Data flow at boot
