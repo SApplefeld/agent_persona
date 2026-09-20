@@ -1,0 +1,233 @@
+{
+  "basis": "LF-normalized (CRLF line endings collapsed to LF before counting); ${...} interpolation stripped uniformly from every source shape (shell and TS alike); standard backslash escapes (\\n, \\t, etc.) decoded to the one character they represent before counting.",
+  "entries": [
+    {
+      "name": "SKILL_LOAD_INSTRUCTION",
+      "file": "bin/supervise.sh",
+      "chars": 518,
+      "words": 76
+    },
+    {
+      "name": "COORDINATOR_STEER_INSTRUCTION",
+      "file": "bin/supervise.sh",
+      "chars": 1710,
+      "words": 285
+    },
+    {
+      "name": "CHANNEL_REPLY_INSTRUCTION",
+      "file": "bin/supervise.sh",
+      "chars": 1564,
+      "words": 272
+    },
+    {
+      "name": "COORDINATOR_ROLE_INSTRUCTION",
+      "file": "bin/supervise.sh",
+      "chars": 8782,
+      "words": 1578
+    },
+    {
+      "name": "ARCHITECT_ROLE_INSTRUCTION",
+      "file": "bin/supervise.sh",
+      "chars": 5552,
+      "words": 1001
+    },
+    {
+      "name": "PRIMING_BODY_prompt_pending",
+      "file": "bin/supervise.sh",
+      "chars": 147,
+      "words": 27
+    },
+    {
+      "name": "PRIMING_BODY_channel_wait",
+      "file": "bin/supervise.sh",
+      "chars": 226,
+      "words": 40
+    },
+    {
+      "name": "PRIMING_BODY_no_channel_wait",
+      "file": "bin/supervise.sh",
+      "chars": 260,
+      "words": 45
+    },
+    {
+      "name": "GOAL_PROMPT_FRAMING",
+      "file": "bin/supervise.sh",
+      "chars": 74,
+      "words": 15
+    },
+    {
+      "name": "SUPERVISOR_PRIMING_MARKER",
+      "file": "bin/supervise.sh",
+      "chars": 21,
+      "words": 1
+    },
+    {
+      "name": "REPLY_INSTRUCTION",
+      "file": "hooks/index.ts",
+      "chars": 1564,
+      "words": 272
+    },
+    {
+      "name": "RECONCILE_TEXT",
+      "file": "hooks/index.ts",
+      "chars": 238,
+      "words": 39
+    },
+    {
+      "name": "STILL_WAITING_RERAISE_TEXT",
+      "file": "hooks/index.ts",
+      "chars": 16,
+      "words": 2
+    },
+    {
+      "name": "FLEET_PROMPT_FRAME",
+      "file": "hooks/index.ts",
+      "chars": 318,
+      "words": 62
+    },
+    {
+      "name": "KAIZEN_FRAME",
+      "file": "hooks/index.ts",
+      "chars": 92,
+      "words": 15
+    },
+    {
+      "name": "REPLY_BACKSTOP_FRAME",
+      "file": "hooks/index.ts",
+      "chars": 93,
+      "words": 15
+    },
+    {
+      "name": "NUDGE_TEXT_idle_gap_converted",
+      "file": "hooks/index.ts",
+      "chars": 499,
+      "words": 87
+    },
+    {
+      "name": "NUDGE_TEXT_idle_timeout",
+      "file": "hooks/index.ts",
+      "chars": 243,
+      "words": 43
+    },
+    {
+      "name": "GOAL_TREE_BLOCK",
+      "file": "hooks/index.ts",
+      "chars": 255,
+      "words": 45
+    },
+    {
+      "name": "GOAL_TREE_PAUSED_BLOCK",
+      "file": "hooks/index.ts",
+      "chars": 75,
+      "words": 12
+    },
+    {
+      "name": "NO_GOAL_BLOCK",
+      "file": "hooks/index.ts",
+      "chars": 456,
+      "words": 80
+    },
+    {
+      "name": "ENV_BLOCK",
+      "file": "hooks/index.ts",
+      "chars": 79,
+      "words": 14
+    },
+    {
+      "name": "LESSON_BLOCK",
+      "file": "hooks/index.ts",
+      "chars": 86,
+      "words": 12
+    },
+    {
+      "name": "MEMORY_BLOCK",
+      "file": "hooks/index.ts",
+      "chars": 114,
+      "words": 15
+    },
+    {
+      "name": "agentic_identity_description",
+      "file": "hooks/index.ts",
+      "chars": 568,
+      "words": 85
+    },
+    {
+      "name": "goal_create_description",
+      "file": "hooks/index.ts",
+      "chars": 477,
+      "words": 75
+    },
+    {
+      "name": "goal_add_description",
+      "file": "hooks/index.ts",
+      "chars": 385,
+      "words": 72
+    },
+    {
+      "name": "goal_done_description",
+      "file": "hooks/index.ts",
+      "chars": 185,
+      "words": 32
+    },
+    {
+      "name": "goal_status_description",
+      "file": "hooks/index.ts",
+      "chars": 83,
+      "words": 13
+    },
+    {
+      "name": "goal_resume_description",
+      "file": "hooks/index.ts",
+      "chars": 214,
+      "words": 38
+    },
+    {
+      "name": "supervisor_shutdown_description",
+      "file": "hooks/index.ts",
+      "chars": 380,
+      "words": 66
+    },
+    {
+      "name": "supervisor_restart_description",
+      "file": "hooks/index.ts",
+      "chars": 459,
+      "words": 78
+    },
+    {
+      "name": "goal_edit_description",
+      "file": "hooks/index.ts",
+      "chars": 435,
+      "words": 73
+    },
+    {
+      "name": "memory_add_description",
+      "file": "hooks/index.ts",
+      "chars": 328,
+      "words": 46
+    },
+    {
+      "name": "agentic_say_description",
+      "file": "hooks/index.ts",
+      "chars": 1537,
+      "words": 256
+    },
+    {
+      "name": "agentic_inbox_description",
+      "file": "hooks/index.ts",
+      "chars": 1436,
+      "words": 233
+    },
+    {
+      "name": "fleet_status_description",
+      "file": "hooks/index.ts",
+      "chars": 4014,
+      "words": 695
+    },
+    {
+      "name": "agentic_resolve_description",
+      "file": "hooks/index.ts",
+      "chars": 673,
+      "words": 114
+    }
+  ]
+}

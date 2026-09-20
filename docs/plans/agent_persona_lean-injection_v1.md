@@ -1,6 +1,6 @@
 # Lean injection: every injected prompt says only what its reader cannot already know
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-18
 
@@ -47,7 +47,7 @@ Model: sonnet
 
 Acceptance: the ledger's names cover every string the Approach's inventory lists, and the Chapter shows the ledger's output at the base; the test is red at the base with its duplicate count named; `README.md`'s Test Coverage list names the new test among the offline suites, since the repository has no offline runner and that list is how a suite is found.
 
-Files in scope: `.kit/injection-ledger.mjs` (new), `.kit/injection-ledger.json` (new), `.kit/injection-duplicate-test.mjs` (new), `README.md` (the Test Coverage list).
+Files in scope: `.kit/injection-ledger.mjs` (new), `.kit/injection-ledger.json` (new), `.kit/injection-duplicate-test.mjs` (new), `README.md` (the Test Coverage list), `.kit/.gitignore` (folded in: the directory is ignored by a blanket rule with a per-file allowlist, so the three new files are uncommittable without an allowlist entry).
 
 Tests: at minimum, lock that the duplicate check speaks on a fixture string carrying one `CLAUDE.md` sentence and stays silent on one carrying none, because a guard that is silent for the wrong reason is the failure this plan exists to catch.
 
@@ -236,3 +236,36 @@ Not a Chapter. Section 1 is still unstarted and no repository code changed. The 
 **Commit note.** This entry is committed on `context-budget-removal` rather than on a branch of its own. That branch is this run's holding place for queue bookkeeping while pull request 49 is frozen, and it already carries the context-budget plan's board 7. A branch per board entry would leave the operator a sprawl to clean up for no gain.
 
 **Next action.** Nothing, until pull request 49 merges and the operator arms execution. Section 1 then starts by building the injection ledger against the merged trunk and recording the duplicate test's red baseline.
+
+### Interim board 6 - 2026-09-19
+
+Not a Chapter. Section 1 is built, reviewed once, fixed and re-verified, and is awaiting its round 2 review. It is not closed and carries no `Completed:` line.
+
+**Both bars boards 1 to 5 recorded are discharged, and this is the first board of this plan that says so.** The base bar: `gh pr view 49` reports state MERGED at 2026-09-20T00:12:40Z, `origin/main` is `952e940`, and a `git grep -c` at that ref over `bin/supervise.sh` and `hooks/index.ts` returns matches for all four strings boards 3 to 5 found absent, `ARCHITECT_ROLE_INSTRUCTION` 3, `[FLEET]` 2 and 14, `[RECONCILE]` 2 and 12, `fleet_status` 2 and 12. The control was `REPLY_INSTRUCTION` over the same two files at the same ref, returning 4 and 6, so the predicate and the scope both speak. `git grep -o -E "[A-Z_]+_INSTRUCTION=" ` at that ref over `bin/supervise.sh` returns exactly the five names Section 1 expects. The authorization bar: this document now carries a `## Dispatch Authorization` section recording the operator's `/kit-goal` arming of 2026-09-19, committed in `87b082d`, which is what board 5 found missing.
+
+**Status normalization.** The header read `Status: Ready` at this run's start and now reads `Status: In Progress`, set as part of starting the run per the executing-work skill. That is an edit inside the approval-scoped fingerprint and is recorded here deliberately.
+
+**The base this plan executes from is the branch, not the trunk, and that is a decision rather than a drift.** The Approach fixes the base as the trunk after the steward plan merges, and the Order paragraph separately requires the context-budget removal to have happened, because that removal deletes the `[BUDGET]` prompt this plan would otherwise trim. The first holds at the trunk. The second does not: `git grep -c -E '\[BUDGET\]|contextBudget'` at `origin/main` returns 32 matches in `hooks/index.ts`, because pull request 50 is open and unmerged. The branch `lean-injection` is cut from `f43eee7`, the context-budget branch tip, where the same predicate returns no match and all four steward strings are present. That is the only base where both of this plan's stated preconditions hold at once. `origin/main` is not an ancestor of that tip, the branch having been cut from the steward branch tip whose tree pull request 49's merge commit reproduces, so this plan's pull request will target `context-budget-removal` and retarget itself to `main` when 50 merges.
+
+**Section 1 stage.** Built by `implementer-sonnet`, reviewed at round 1 by `adversarial-reviewer`, `blind-reviewer` and `security-reviewer`, all three at opus and effort high through Workflow run `wf_7cbbed24-0a0`. Round 1 returned one Critical, eight Majors and ten Minors across the three lenses. All of them are fixed in one fix round at the same tier, and the fix is verified. Round 2 is owed and not yet dispatched.
+
+**What round 1 found, in one sentence.** The guard failed open: a string the ledger could not match was recorded as zero characters rather than raising, and the size check only ever reported growth, so a renamed or reformatted instruction string dropped out of both checks while the suite read green. Section 2 rewrites all five of those strings, so the failure would have fired on the very next section. All three lenses reached it independently.
+
+**Rulings adopted since the last boundary.**
+
+- `.kit/.gitignore` is folded into Section 1 and its `Files in scope` line is widened to name it. That directory is ignored by a blanket rule with a per-file allowlist, so the section's three deliverables cannot be staged without an allowlist entry. The fold test is met: the file sits in the same directory as files the section changed, it needs no acceptance criterion the section does not carry, and the close gate covers it.
+- Two injected strings in `bin/supervise.sh` that the Approach's inventory never listed, `GOAL_PROMPT_FRAMING` at line 2657 and the `[SUPERVISOR-PRIMING]` marker at line 2841, are added to the ledger. They trace to the Goal sentence "every prompt the plugin or the supervisor writes into a session", so they are spec-traceable rather than a new requirement, and they sit in a file the ledger already reads.
+- A third unledgered site, `hooks/operator.ts`, is deliberately left out. Adding it would widen the ledger to a third file the section never names. It is recorded here for Sections 3 and 4, which already work in `hooks/`.
+- Two shipped sentences claimed the check exempts nothing and that it covers every string the plugin and the supervisor inject. Both were false while `hooks/operator.ts` stands outside the ledger. Both are corrected to name the two files actually read.
+
+**Gate baseline, measured on this worktree at branch `lean-injection` with the section's work unstaged and three foreign untracked paths present.** `npx tsc -p tsconfig.json` exit 0 with zero bytes of output. `.kit/injection-duplicate-test.mjs` exit 1 with 19 duplicate sentences, which is this section's intended red baseline and is up from the 18 the pre-fix ledger found; the gain is the sentence "When this step is done, call goal_done with a one-line note.", carried by three plugin strings and missed before because an escaped newline was never decoded and so never read as a sentence boundary. All eight of the test's own fixture controls report both directions. `.kit/controller-tick-test.mjs` exit 0. `.kit/self-review-unit-test.mjs` exit 0. Every exit code read from its own unpiped run.
+
+**Controls run against the guard itself, both withheld from the patterns they test.** Lowering one recorded size made the size check name the string and the two numbers. Adding a baseline row with no live counterpart made the reconciliation check name it and say the extraction is gone or renamed. Both probes restored from a pre-probe copy and verified byte-identical against it.
+
+**Deferred and named deferred, never passed**, under the operator's gate policy of 2026-09-18 recorded in this plan's Assumptions: `.kit/live-all.sh`, every `.kit/live-*-test.sh`, `.kit/supervisor-natural-exit-test.sh`, and any check launching a `claude` child.
+
+**Live dispatches.** None. Both implementer dispatches and all three round 1 reviewers have completed and returned.
+
+**Asks in flight.** None.
+
+**Next action.** Dispatch Section 1's round 2 review. Round 1 returned a Critical that survived adjudication, so round 2 runs at round 1's roster and tier rather than decaying to one lens. The security lens is dropped from that roster because its trigger does not hold: it reported that neither new file references `child_process`, `spawn`, `exec`, `eval` or `new Function`, so the process-execution trigger the round 1 brief asserted was the brief's error rather than the code's. Round 2 is therefore the adversarial and blind pair at opus and effort high.
