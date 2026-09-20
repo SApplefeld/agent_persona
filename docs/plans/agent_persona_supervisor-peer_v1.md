@@ -296,3 +296,31 @@ Not a Chapter. Section 1 stays part-run where board 1 left it, two measurements 
 **No second kaizen note was filed.** Board 5 filed one against the kit for exactly this cost, an armed queue of chained plans paying a plan read and a board commit per plan on every lap. A second note on the same friction would be the duplicate the kaizen bar refuses.
 
 **Next action.** Nothing, until `docs/plans/agent_persona_steward-architect_v1.md` closes. Section 1 then resumes at its three held measurements, with measurement 5 taking its own yes and a quiet fleet.
+
+### Interim board 7 - 2026-09-19
+
+Not a Chapter. Section 1 stays part-run where board 1 left it, two measurements taken and three held, and no repository code changed. The `Status:` header stays at `Ready`.
+
+**Stage.** The armed queue's leash advanced to this plan a seventh time, after `docs/plans/agent_persona_lean-injection_v1.md` was recorded blocked a fifth time. Nothing of this plan ran.
+
+**The preceding plan's blocker was tested and one half of it carries in a different form.** That blocker was the lean-injection plan's missing base plus its absent authorization grant. The base half says nothing about this plan, whose sections touch the supervisor's liveness signals, its mailbox and its holder rather than injected prompt text. The authorization half is a different defect there than here: that plan has no `## Dispatch Authorization` section at all, while this plan has one and it is explicit. So neither half carries as written, and this plan's bar is reached from its own line 13.
+
+**The ordering conjunct is met for the first time, which is new at this board and was unmet at every board before it.** Line 13 arms execution "only after both `docs/archive/agent_persona_process-keeper_v1.md` and `docs/archive/agent_persona_steward-architect_v1.md` close". Both were read from their own files this session. Each exists at its archive path and each line 3 reads `Status: Complete`. Each file carries exactly one line-anchored `Status:` line, checked with a full-file match rather than a first-match read, because an append-only document can restate a header inside a later board and invert a first-match reading. Boards 1 through 6 each found this conjunct unmet. It is now met.
+
+**Board 6's reading of the second conjunct does not survive this session's evidence, and this board corrects it.** Board 6 held that the operator's own word was already given, on the ground that "they typed the five-plan queue that names this plan", and concluded that exactly one requirement was outstanding. The goal state read this session reports this plan as "(armed: recorded as this run's own arming)". Under the kit-goal skill a self-armed arming records who ran the invocation and carries no authorization of its own, and the committed `## Dispatch Authorization` grant the run traced is what stands in the typed invocation's place. The grant here says in its own words "That is authorization to author. Execution is armed only on the operator's own word, typed into the executing session's thread or relayed through the coordinator." So what stands in the keystroke's place excludes execution, and the arming in force approves authoring only. A later session should read the second conjunct as outstanding rather than met.
+
+**So the bar is now exactly one thing, and it is the operator's word.** The ordering conjunct that held this plan through six boards is discharged. What remains is the execution arming the grant reserves to the operator, on a channel the grant names: typed into this session's thread, or relayed through the coordinator.
+
+**No unblocked work exists here, re-checked against Section 1's own text.** Measurements 1 and 3 are recorded taken at board 1, and neither launches a child; measurement 1 uses a stub child reading standard input and measurement 3 reads transcripts already on disk. Measurements 2, 4 and 5 each open with a real `claude -p` child in the operator's own profile. This plan's first `## Assumptions` entry defers any check that launches a `claude` child to `docs/plans/agent_persona_deferred-gate-run_v1.md` and states that such a clause is met by the end-run. Measurement 5 needs its own separate yes besides. So Section 1 cannot reach its acceptance at this base whatever the authorization says, and every later section waits on arming.
+
+**One structural consequence is recorded here rather than left to be rediscovered.** Section 2 writes the final ask in "the form that is answered", which measurement 4 is what determines, and measurement 4 is deferred. So Section 2 inherits a deferred input. The plan's own deferral clause routes it to the end-run, which leaves Section 2 either waiting on that run or building the ask against an unmeasured line form. That is a question for the executing session at arming rather than a defect to fix here, and it is named so the arming can decide it knowingly.
+
+**Gate baseline.** None taken. No repository code changed beyond this plan document, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** One to the repository's Expert seat, sent this session under the lean-injection plan's declaration, asking about that plan's authorization gap. It does not cover this plan's question and does not gate. A notice went to the `coordinator` seat naming the chain.
+
+**No new kaizen note.** Board 5 filed one against the kit for the cost this lap repeats, an armed queue of chained plans paying a plan read and a board commit per plan on every pass. A second note on the same friction is the duplicate the kaizen bar refuses.
+
+**Next action.** Nothing, until the operator arms execution on their own word. Section 1 then resumes at its three held measurements, with measurement 5 taking its own yes and a quiet fleet, and with the deferral question above settled at arming.
