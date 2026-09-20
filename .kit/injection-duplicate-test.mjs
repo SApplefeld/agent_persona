@@ -185,11 +185,20 @@ let failed = 0;
 // only thing that failed. A reader of the exit code alone can then tell
 // the designed red from a broken instrument.
 let instrumentFailed = 0;
+// One predicate, read by the classifier below and driven by the self-test
+// further down. Two copies of it would let the self-test pass while the
+// classifier drifted, since each would be testing its own literal: the
+// self-test would then prove only that a regex sorts the labels it was
+// handed, which is not the question. `exit-code split` is a member because
+// that self-test's own failure is itself a broken instrument, and a
+// predicate that did not name it would report the one failure that means
+// the split has stopped working as though it were the designed red.
+const INSTRUMENT_LABEL_RE = /^(fixture control|guard control|exclusion pin|exit-code split)/;
 function ok(name) { console.log(`  OK: ${name}`); }
 function fail(name) {
   console.error(`  FAIL: ${name}`);
   failed++;
-  if (/^(fixture control|guard control|exclusion pin)/.test(name)) instrumentFailed++;
+  if (INSTRUMENT_LABEL_RE.test(name)) instrumentFailed++;
 }
 
 // The exit-code split rests on one predicate over a label, so it is driven
@@ -199,11 +208,12 @@ function fail(name) {
 // drifted from the labels would otherwise send every failure down one
 // branch and the split would read correct while doing nothing.
 {
-  const isInstrument = (name) => /^(fixture control|guard control|exclusion pin)/.test(name);
+  const isInstrument = (name) => INSTRUMENT_LABEL_RE.test(name);
   const instrumentLabels = [
     "guard control: a fourth deliveryText call site - refused by [delivery-exclusion]",
     "fixture control: silent on a fixture string carrying no CLAUDE.md sentence",
     "exclusion pin: the ledger declares 3 deliveryText call sites and hooks/index.ts holds that many",
+    "exit-code split: instrument label read as real check: guard control: something",
   ];
   const realCheckLabels = [
     'duplicate sentence across [CHANNEL_REPLY_INSTRUCTION, REPLY_INSTRUCTION]: "a sentence"',
@@ -408,10 +418,13 @@ function fail(name) {
     buildLedgerFrom(shSrc, mutated(tsSrc, "lines.push(deliveryText(ground, rec.id, rec.text,", "lines.push(deliveryText(ground, rec.id, rec.text));\n          lines.push(deliveryText(ground, rec.id, rec.text,", "fourth delivery site")));
 
   // A chain piece rewritten out of the shape its rule's pattern names. The
-  // three plugin-side chain rules read backtick pieces alone, so a piece
-  // written any other way leaves the entry silently short, and the size
-  // check below reports growth and never a shrink. Each mutation rewrites a
-  // real piece by its shape rather than adding text a rule was told about.
+  // rules that read a chain refuse an operand they were not told to expect,
+  // and the rules that read a single template anchor on what must follow the
+  // closing quote, so neither can record a prefix and drop the rest. The
+  // controls below drive both halves. Each mutation rewrites a real piece by
+  // its shape rather than adding text a rule was told about, because a
+  // mutation built from a rule's own literals proves only that the
+  // instrument runs.
   expectRefusal("a nudge-frame piece rewritten to a quoted literal", "[chain-shape]", ["NUDGE_TEXT_idle_gap_converted"], () =>
     buildLedgerFrom(shSrc, mutated(tsSrc, "`The controller read this as an idle gap, not a real fork: no concrete blocking question. `", '"The controller read this as an idle gap, not a real fork: no concrete blocking question. "', "nudge piece requoted")));
   // A chain piece factored out into a constant and spliced back in by name,
@@ -423,6 +436,72 @@ function fail(name) {
   // literal, so a hoisted sentence truncates the entry with no throw.
   expectRefusal("a tool description with a hoisted sentence", "[chain-truncated]", ["agentic_resolve"], () =>
     buildLedgerFrom(shSrc, mutated(tsSrc, '        "A reply says a turn answered;', '        SHARED_NOTE +\n        "A reply says a turn answered;', "tool description hoisted")));
+
+  // The same class on the four rules that read one template or one quoted
+  // string rather than a chain. Each is split into a two-piece chain, which
+  // is the shape Section 3's rewrite produces when a frame gains a pointer
+  // sentence. An unanchored pattern matches the piece it recognises and
+  // records it alone, so the entry shrinks and the size check, which reports
+  // growth only, stays silent. The frames are the ones Section 3 rewrites.
+  // What these three assert is that the recorded size does not move, which
+  // is the invariant the class actually turns on. Refusing a split would be
+  // the weaker guard: the shared reader can size a multi-piece template
+  // chain correctly, and a rule that threw on one would fail a shape it
+  // reads right. What must never happen is the entry silently shrinking.
+  function expectSizeHeld(label, entryName, find, replacement) {
+    let before;
+    let after;
+    try {
+      before = buildLedgerFrom(shSrc, tsSrc).find((e) => e.name === entryName);
+      after = buildLedgerFrom(shSrc, mutated(tsSrc, find, replacement, label)).find((e) => e.name === entryName);
+    } catch (e) {
+      fail(`guard control: ${label} - the ledger threw rather than reading the split: ${e.message}`);
+      return;
+    }
+    if (!before || !after) { fail(`guard control: ${label} - ${entryName} is missing from one of the two builds`); return; }
+    if (before.chars !== after.chars) {
+      fail(`guard control: ${label} - ${entryName} moved from ${before.chars} to ${after.chars} chars across a split that changes no text`);
+      return;
+    }
+    ok(`guard control: ${label} - ${entryName} held at ${before.chars} chars across the split`);
+  }
+  expectSizeHeld("a still-waiting frame split into two pieces", "STILL_WAITING_RERAISE_TEXT",
+    "`[STILL WAITING] ${askRecord.question}`", "`[STILL WAITING]` + ` ${askRecord.question}`");
+  expectSizeHeld("a kaizen frame split into two pieces", "KAIZEN_FRAME",
+    "[KAIZEN] Post each line below to the operator's thread", "[KAIZEN] Post each line below` + ` to the operator's thread");
+  expectSizeHeld("a reply-backstop frame split into two pieces", "REPLY_BACKSTOP_FRAME",
+    "[REPLY BACKSTOP] Send this exact text to the operator", "[REPLY BACKSTOP] Send this exact text` + ` to the operator");
+  // A nested interpolation, which is what a frame gains when a value starts
+  // depending on a condition. The literal text is unchanged by the mutation,
+  // so the entry must not move. It moves if the stripper that removes
+  // interpolated content stops at the first closing brace while the reader
+  // that captured the piece counted brace depth, because the two then
+  // disagree about where the interpolation ended and the residue lands in
+  // the entry as prose the sentence matcher goes on to index.
+  expectSizeHeld("a goal-tree interpolation nested inside a ternary", "GOAL_TREE_BLOCK",
+    "`Path: ${path}\\n` +", "`Path: ${path ? `${path}` : `none`}\\n` +");
+  // The memory block refuses instead, for the reason its rule states: its
+  // operands are quoted strings and its real second operand is a call no
+  // chain reader can size, so there is no correct reading of a split here.
+  expectRefusal("a memory block split into two pieces", "[chain-shape]", ["MEMORY_BLOCK"], () =>
+    buildLedgerFrom(shSrc, mutated(tsSrc, '"Relevant user memories (persisted', '"Relevant user memories" + " (persisted', "memory split")));
+
+  // The delivery-site exclusion, driven on the two shapes a quote-character
+  // test cannot see. A hoisted constant spliced into a positional argument
+  // carries no quote; and the options object is excluded on the ground that
+  // its values select a prefix deliveryText composes, which is true of
+  // `mark` and false of `answerTo`, whose value hooks/operator.ts splices
+  // into the delivered text verbatim.
+  expectRefusal("a delivery text argument spliced from a constant", "[delivery-exclusion]", ["NOTE_PREFIX"], () =>
+    buildLedgerFrom(shSrc, mutated(tsSrc, "lines.push(deliveryText(ground, rec.id, rec.text,", "lines.push(deliveryText(ground, rec.id, NOTE_PREFIX + rec.text,", "delivery identifier splice")));
+  // This one is aimed at the third site deliberately. The first two sites
+  // are named by an excludedTextVar row whose check reads the whole argument
+  // string, options object included, so a literal there is already refused
+  // and a control placed at one of them would prove only that the check
+  // runs. The third site has no such row, so the structural check is all
+  // that reads it, and that check slices the options off at the first brace.
+  expectRefusal("a literal answerTo at the site no named row reaches", "[delivery-exclusion]", ["answerTo"], () =>
+    buildLedgerFrom(shSrc, mutated(tsSrc, '{ mark: waited ? "waited" : "urgent" }', '{ mark: waited ? "waited" : "urgent", answerTo: "the standing question" }', "literal answerTo")));
 
   // The fleet line-literal collector reaching a label that sits inside a
   // ternary inside an interpolation: lengthen that label and require the
@@ -467,7 +546,21 @@ function fail(name) {
 // name-reconciliation guard against the committed baseline.
 {
   const claudeMdText = readNormalized(claudeMdPath);
-  const liveEntries = buildLedger(); // [{ name, file, chars, words, text }]
+  // A refusal out of the real run is a guard speaking, not the designed red.
+  // Left uncaught it would end the process on Node's own uncaught-exception
+  // code, which is 1, and 1 is exactly the code that means "the duplicates
+  // this suite is red for are still there". So a reader of the exit code
+  // would see the expected state at the moment a rule started refusing the
+  // real source. Catching it routes the refusal through the instrument
+  // branch and exits 2 with the tag named.
+  let liveEntries;
+  try {
+    liveEntries = buildLedger(); // [{ name, file, chars, words, text }]
+  } catch (e) {
+    fail(`guard control: the ledger refused the real source - ${e.message}`);
+    console.error(`\nFAILED: ${failed} check(s), ${instrumentFailed} of them a control or guard.`);
+    process.exit(2);
+  }
   const injectedSources = liveEntries.map(({ name, text }) => ({ name, text }));
 
   const zeroChar = liveEntries.filter((e) => e.chars === 0);

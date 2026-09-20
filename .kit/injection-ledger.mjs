@@ -83,8 +83,47 @@ function decodeEscapes(text) {
 // data the ledger cannot size ahead of time, so both are excluded by the
 // same rule rather than two (see the plan's Section 1: interpolated
 // content is excluded).
+// Brace depth is counted, and a template literal nested inside the
+// interpolation is consumed whole, so `${a ? `${b}` : "c"}` is removed as
+// one unit. A pattern that stopped at the first closing brace would remove
+// the inner interpolation and leave the rest of the expression behind as
+// prose, which then rides in the entry, inflates its size and is indexed by
+// the duplicate check as injected text no prompt actually carries. This is
+// the same scan literalOfTemplateChain uses to skip an interpolation while
+// tokenizing, and it is shared rather than written twice so the reader that
+// captures a piece and the stripper that cleans it cannot disagree about
+// where an interpolation ends.
 function stripInterpolations(text) {
-  return text.replace(/\$\{[^}]*\}/g, "");
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === "$" && text[i + 1] === "{") {
+      let depth = 1;
+      let k = i + 2;
+      while (k < text.length && depth > 0) {
+        const c = text[k];
+        if (c === "{") depth += 1;
+        else if (c === "}") depth -= 1;
+        else if (c === "`") {
+          let t = k + 1;
+          while (t < text.length && text[t] !== "`") {
+            if (text[t] === "\\") t += 1;
+            t += 1;
+          }
+          k = t;
+        }
+        k += 1;
+      }
+      // An unterminated interpolation drops the remainder rather than
+      // emitting it as prose: the alternative is the residue this scan
+      // exists to prevent, and the shape cannot occur in source that parses.
+      i = k;
+      continue;
+    }
+    out += text[i];
+    i += 1;
+  }
+  return out;
 }
 
 // `text` rides on the returned record so a consumer that needs the literal
@@ -421,15 +460,23 @@ function extractReconcileText(src) {
 // The still-waiting re-raise: a nested template literal,
 // `${REPLY_INSTRUCTION}${quoteContinuationLines(`[STILL WAITING]
 // ${askRecord.question}`)}`. REPLY_INSTRUCTION is counted on its own above;
-// askRecord.question is per-ask data excluded as interpolation; the one
-// literal fragment this site contributes on top of those is whatever text
-// precedes `${askRecord.question}` inside that inner backtick, captured from
-// the source rather than hardcoded, so a reword of the label is picked up
-// automatically.
+// askRecord.question is per-ask data excluded as interpolation.
+//
+// The region between `quoteContinuationLines(` and the `)}` that closes the
+// call is captured whole and read by the shared chain reader, rather than
+// one backtick pair being matched inside it. Both halves of that matter. The
+// closing anchor is what proves the capture reached the end of the
+// expression, so a piece added after the one this rule recognises cannot sit
+// outside the capture unseen. The shared reader is what sizes the region
+// correctly once it is captured, joining every template piece and refusing
+// only an operand it cannot size. A rule that matched one backtick pair with
+// no closing anchor would record that pair and drop the rest with no throw,
+// which the size check cannot see because it reports growth and never a
+// shrink.
 function extractStillWaitingReraise(src) {
-  const m = /`([^`]*)\$\{askRecord\.question\}`/.exec(src);
+  const m = /quoteContinuationLines\(([\s\S]*?)\)\}`/.exec(src);
   if (!m) throw new Error("still-waiting reraise frame not found in hooks/index.ts");
-  return record("STILL_WAITING_RERAISE_TEXT", "hooks/index.ts", m[1]);
+  return record("STILL_WAITING_RERAISE_TEXT", "hooks/index.ts", literalOfTemplateChain(m[1], "STILL_WAITING_RERAISE_TEXT"));
 }
 
 // fleetPromptText's returned frame: `${REPLY_INSTRUCTION}[FLEET] ${count}
@@ -565,19 +612,25 @@ function extractFleetPromptLineLiterals(src) {
 // followed by `+ announced.map((line) => `- ${line}`).join("\n")`. Each
 // announced line is per-announcement data and excluded; the two-character
 // `- ` prefix the map puts on each is fixed text this rule does not size.
+//
+// The capture runs from the assignment to the `+ announced.map(` that ends
+// the literal half, which is the anchor proving it reached the end of that
+// half, and the shared chain reader sizes whatever sits between. See
+// extractStillWaitingReraise for why both halves are needed.
 function extractKaizenFrame(src) {
-  const m = /`(\$\{REPLY_INSTRUCTION\}\[KAIZEN\][^`]*)`/.exec(src);
+  const m = /const kaizenText =\s*([\s\S]*?)\s*\+\s*announced\.map\(/.exec(src);
   if (!m) throw new Error("kaizen frame not found in hooks/index.ts");
-  return record("KAIZEN_FRAME", "hooks/index.ts", m[1]);
+  return record("KAIZEN_FRAME", "hooks/index.ts", literalOfTemplateChain(m[1], "KAIZEN_FRAME"));
 }
 
 // The reply backstop: `${REPLY_INSTRUCTION}[REPLY BACKSTOP] Send this exact
 // text...unchanged:\n${e.answer}`. e.answer is the operator-facing text
-// already composed elsewhere and is excluded as interpolation.
+// already composed elsewhere and is excluded as interpolation. The capture
+// is bounded by the statement's own semicolon for the reason above.
 function extractBackstopFrame(src) {
-  const m = /`(\$\{REPLY_INSTRUCTION\}\[REPLY BACKSTOP\][^`]*)`/.exec(src);
+  const m = /const backstopText = ([\s\S]*?);\n/.exec(src);
   if (!m) throw new Error("reply backstop frame not found in hooks/index.ts");
-  return record("REPLY_BACKSTOP_FRAME", "hooks/index.ts", m[1]);
+  return record("REPLY_BACKSTOP_FRAME", "hooks/index.ts", literalOfTemplateChain(m[1], "REPLY_BACKSTOP_FRAME"));
 }
 
 // The two idle-nudge frames (nudgeText's ternary): each is a chain of plain
@@ -638,9 +691,22 @@ function extractLessonBlock(src) {
 // The memory block's first line is a plain, fully literal string; its
 // second line (`entries.map(...).join("\n")`) is per-memory data and
 // excluded.
+//
+// This one refuses a split where the three frames above read one, because
+// its operands are double-quoted strings and its real second operand is a
+// `.map(...).join(...)` call that no chain reader can size. So the anchor is
+// the `+ entries.map(` that must follow the one string, and a second string
+// spliced in front of it fails the match rather than being dropped from the
+// entry. The refusal is tagged so a caller can tell it from a rule whose
+// source moved.
 function extractMemoryBlock(src) {
-  const m = /const memoryBlock =\s*\n\s*"([^"]*)"/.exec(src);
-  if (!m) throw new Error("memoryBlock not found in hooks/index.ts");
+  const m = /const memoryBlock =\s*\n\s*"((?:[^"\\]|\\.)*)"\s*\+\s*\n\s*entries\.map\(/.exec(src);
+  if (!m) {
+    if (/const memoryBlock =/.test(src)) {
+      throw new Error("[chain-shape] MEMORY_BLOCK: the memory block is no longer one quoted string followed by `+ entries.map(`; a second literal operand here would be dropped from the entry, so size it explicitly or restore that shape");
+    }
+    throw new Error("memoryBlock not found in hooks/index.ts");
+  }
   return record("MEMORY_BLOCK", "hooks/index.ts", m[1]);
 }
 
@@ -822,9 +888,30 @@ function checkPromptCallSites(src, entryNames) {
     const args = src.slice(open + 1, close);
     const optsIdx = args.indexOf("{");
     const textArgs = optsIdx === -1 ? args : args.slice(0, optsIdx);
-    if (/["'`]/.test(textArgs)) {
+    // Each of the three positional arguments must be a bare reference. A
+    // test for a quote character is not enough, because the text a quote
+    // would have carried can be hoisted into a constant and spliced back by
+    // name, which is the same operand-splice the chain rules above refuse.
+    // So the shape is asserted positively rather than one bad character
+    // being screened out.
+    const positional = textArgs.split(",").map((a) => a.trim()).filter((a) => a.length > 0);
+    for (const arg of positional) {
+      if (!/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(arg)) {
+        throw new Error(
+          `[delivery-exclusion] a deliveryText call in hooks/index.ts passes \`${arg}\` as one of its ground, id or text arguments (deliveryText(${args.trim()})); the exclusion holds only while those three are a bare identifier or member path carrying data, so ledger the literal here or move it into deliveryText`,
+        );
+      }
+    }
+    // The options object is excluded on the ground that its values select a
+    // prefix deliveryText composes. That is true of `mark`, whose value
+    // picks among prefixes written in hooks/operator.ts, and false of
+    // `answerTo`, whose value that file splices into the delivered text
+    // verbatim. So a literal answerTo is injected text and is refused here.
+    const opts = optsIdx === -1 ? "" : args.slice(optsIdx);
+    const answerTo = /answerTo\s*:\s*([^,}]+)/.exec(opts);
+    if (answerTo && /["'`]/.test(answerTo[1])) {
       throw new Error(
-        `[delivery-exclusion] a deliveryText call in hooks/index.ts carries literal text in its ground, id or text argument (deliveryText(${args.trim()})); the exclusion holds only while those three are data, so ledger the literal here or move it into deliveryText`,
+        `[delivery-exclusion] a deliveryText call in hooks/index.ts passes a literal answerTo (${answerTo[1].trim()}); hooks/operator.ts splices that value into the delivered text verbatim, so it is injected text this ledger must size rather than an option selecting a composed prefix`,
       );
     }
   }
