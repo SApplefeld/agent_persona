@@ -34,16 +34,21 @@
 //
 // One coverage bound is declared rather than closed. Two submitExpectedTurn
 // call sites deliver an inbox record, and their whole text is built by
-// deliveryText in hooks/operator.ts, a file this ledger does not read. Those
-// two sites are named in PROMPT_CALL_SITES as exclusions, the ledger asserts
-// that hooks/index.ts contributes no literal text at either, and the
-// duplicate test pins the exclusion list, so a third exclusion or a literal
-// added at one of those sites fails rather than slipping past. Fixed
-// literals inside interpolated expressions are sized only where a rule
-// names them: the [FLEET] prompt's per-row line literals are one such rule;
-// the "- " prefix on each [KAIZEN] line and the "Pending siblings: ",
+// deliveryText in hooks/operator.ts, a file this ledger does not read. Two
+// of those sites reach the child through submitExpectedTurn and are named in
+// PROMPT_CALL_SITES as exclusions; a third hands its record to the running
+// turn as tool-result context instead and is reached by no row there. All
+// three are counted and asserted by shape, the ledger requiring that none
+// contributes literal text in its ground, id or text argument, and the
+// duplicate test pins both the named exclusion list and the site count, so a
+// fourth site or a literal added at any of them fails rather than slipping
+// past. Fixed literals inside interpolated expressions are sized only where
+// a rule names them: the [FLEET] prompt's per-row line literals are one such
+// rule; the "- " prefix on each [KAIZEN] line and the "Pending siblings: ",
 // "Last note: " and "root > " fragments of the [GOAL TREE] block are not
-// sized by any rule here.
+// sized by any rule here, and neither is the authored prose of a [FLEET]
+// note's `composed` half, which reaches the prompt through an interpolation
+// and is this ledger's largest declared gap.
 
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -106,14 +111,30 @@ function setDifference(a, b) {
 // handle template literals (those are parsed separately, per site, where
 // interpolation must be stripped rather than rejected). Returns null if
 // `startIdx` is not the start of a quoted literal.
-function parseStringLiteralChain(src, startIdx) {
+//
+// A `+` followed by anything but another quoted literal throws rather than
+// ending the chain. Ending there would record the pieces read so far and
+// drop the rest with no signal: the name still resolves, the entry is just
+// short, and the size check reports growth alone. `owner` names what the
+// chain belongs to so the refusal says which entry would have shrunk.
+function parseStringLiteralChain(src, startIdx, owner) {
   let i = startIdx;
   let value = "";
   let any = false;
+  let afterPlus = false;
   while (true) {
     while (/\s/.test(src[i])) i++;
     const quote = src[i];
-    if (quote !== '"' && quote !== "'") break;
+    if (quote !== '"' && quote !== "'") {
+      if (afterPlus) {
+        const ident = /^[A-Za-z_$][\w$]*/.exec(src.slice(i));
+        const operand = ident ? ident[0] : JSON.stringify(src.slice(i, i + 16));
+        throw new Error(
+          `[chain-truncated] ${owner || "string literal chain"}: a \`+\` is followed by ${operand}, which is not a quoted literal, so every piece after it would be dropped from the entry`,
+        );
+      }
+      break;
+    }
     let j = i + 1;
     let piece = "";
     while (j < src.length && src[j] !== quote) {
@@ -129,17 +150,112 @@ function parseStringLiteralChain(src, startIdx) {
     // so a chain's raw backslash sequences ride through unchanged.
     value += piece;
     any = true;
+    afterPlus = false;
     i = j + 1;
     let k = i;
     while (/\s/.test(src[k])) k++;
     if (src[k] === "+") {
       i = k + 1;
+      afterPlus = true;
       continue;
     }
     break;
   }
   if (!any) return null;
   return { value, endIdx: i };
+}
+
+// --- Shared: a chain of template literals joined by `+`, where a rule may
+// declare bare identifiers the chain splices in whole.
+//
+// Reading the backtick pieces alone and ignoring whatever sits between them
+// is what let three of these rules fail open. A piece rewritten to a quoted
+// literal, or factored into a constant and spliced back by name, left the
+// entry short with nothing raised: the name still resolved, and the size
+// check reports growth and never a shrink, so the loss read as a trim. This
+// tokenizes the chain instead and refuses any operand it was not told to
+// expect. `owner` is the entry name, so a refusal says which string would
+// have shrunk. Interpolations ride through inside their piece and are
+// stripped centrally by record() below.
+function literalOfTemplateChain(chainSrc, owner, allowedIdentifiers = []) {
+  const allowed = new Set(allowedIdentifiers);
+  const declared = allowedIdentifiers.length > 0 ? allowedIdentifiers.join(", ") : "none";
+  const pieces = [];
+  let i = 0;
+  let expectOperand = true;
+  while (i < chainSrc.length) {
+    while (i < chainSrc.length && /\s/.test(chainSrc[i])) i++;
+    if (i >= chainSrc.length) break;
+    if (!expectOperand) {
+      if (chainSrc[i] !== "+") {
+        throw new Error(`[chain-shape] ${owner}: expected \`+\` between operands but found ${JSON.stringify(chainSrc.slice(i, i + 16))}`);
+      }
+      i += 1;
+      expectOperand = true;
+      continue;
+    }
+    if (chainSrc[i] === "`") {
+      let j = i + 1;
+      let piece = "";
+      let closed = false;
+      while (j < chainSrc.length) {
+        const c = chainSrc[j];
+        if (c === "\\") {
+          piece += c + chainSrc[j + 1];
+          j += 2;
+          continue;
+        }
+        if (c === "`") {
+          closed = true;
+          break;
+        }
+        // An interpolation is skipped whole, its braces counted and any
+        // template nested inside it consumed, so a backtick within `${...}`
+        // cannot close this piece early.
+        if (c === "$" && chainSrc[j + 1] === "{") {
+          let depth = 1;
+          let k = j + 2;
+          while (k < chainSrc.length && depth > 0) {
+            const d = chainSrc[k];
+            if (d === "{") depth += 1;
+            else if (d === "}") depth -= 1;
+            else if (d === "`") {
+              let t = k + 1;
+              while (t < chainSrc.length && chainSrc[t] !== "`") {
+                if (chainSrc[t] === "\\") t += 1;
+                t += 1;
+              }
+              k = t;
+            }
+            k += 1;
+          }
+          if (depth !== 0) throw new Error(`[chain-shape] ${owner}: an interpolation opened at offset ${j} never closed`);
+          piece += chainSrc.slice(j, k);
+          j = k;
+          continue;
+        }
+        piece += c;
+        j += 1;
+      }
+      if (!closed) throw new Error(`[chain-shape] ${owner}: a template literal opened at offset ${i} never closed`);
+      pieces.push(piece);
+      i = j + 1;
+      expectOperand = false;
+      continue;
+    }
+    const ident = /^[A-Za-z_$][\w$]*/.exec(chainSrc.slice(i));
+    if (!ident) {
+      throw new Error(`[chain-shape] ${owner}: the operand at offset ${i} is neither a template literal nor an identifier (${JSON.stringify(chainSrc.slice(i, i + 16))})`);
+    }
+    if (!allowed.has(ident[0])) {
+      throw new Error(`[chain-shape] ${owner}: the chain carries the operand \`${ident[0]}\`, which is not a template literal and is not one of this rule's declared whole-variable insertions (${declared})`);
+    }
+    i += ident[0].length;
+    expectOperand = false;
+  }
+  if (expectOperand) throw new Error(`[chain-shape] ${owner}: the chain ends on a \`+\` with no operand after it`);
+  if (pieces.length === 0) throw new Error(`[chain-shape] ${owner}: the chain carries no template literal at all`);
+  return pieces.join("");
 }
 
 // ---------------------------------------------------------------------------
@@ -320,8 +436,13 @@ function extractStillWaitingReraise(src) {
 // reading...continue your work:` + "\n" + lines.join("\n"). The backtick
 // template is this frame's literal text once REPLY_INSTRUCTION and ${count}
 // are stripped. The `lines` joined after it are composed one per fleet row
-// from fixed field labels and per-row data, and those fixed labels are
-// sized separately by extractFleetPromptLineLiterals below.
+// from three things rather than two: fixed field labels, per-row data, and
+// the authored prose of a note's `composed` half, several of which run to a
+// sentence or more. The labels are sized separately by
+// extractFleetPromptLineLiterals below. The `composed` prose is not sized by
+// any rule here, because it reaches the line through an interpolation and
+// this section's extraction excludes interpolated content. It is the
+// ledger's largest declared gap and the header above names it as one.
 function extractFleetPromptFrame(src) {
   const m = /return `(\$\{REPLY_INSTRUCTION\}\[FLEET\][^`]*)`\s*\+\s*"\\n"\s*\+\s*lines\.join/.exec(src);
   if (!m) throw new Error("fleetPromptText frame not found in hooks/index.ts");
@@ -466,27 +587,24 @@ function extractBackstopFrame(src) {
 function extractNudgeFrames(src) {
   const m = /const nudgeText = idleGapConverted\s*\n\s*\?\s*([\s\S]*?)\n\s*:\s*([\s\S]*?);\n/.exec(src);
   if (!m) throw new Error("nudgeText ternary not found in hooks/index.ts");
-  function literalOfChain(chainSrc) {
-    const pieces = chainSrc.match(/`(?:[^`\\]|\\.)*`/g) || [];
-    return pieces.map((p) => p.slice(1, -1)).join("");
-  }
+  // Neither arm splices a whole variable, so no identifier is declared and
+  // any operand that is not a template literal refuses.
   return [
-    record("NUDGE_TEXT_idle_gap_converted", "hooks/index.ts", literalOfChain(m[1])),
-    record("NUDGE_TEXT_idle_timeout", "hooks/index.ts", literalOfChain(m[2])),
+    record("NUDGE_TEXT_idle_gap_converted", "hooks/index.ts", literalOfTemplateChain(m[1], "NUDGE_TEXT_idle_gap_converted")),
+    record("NUDGE_TEXT_idle_timeout", "hooks/index.ts", literalOfTemplateChain(m[2], "NUDGE_TEXT_idle_timeout")),
   ];
 }
 
 // The [GOAL TREE] block. `siblingLine` and `lastNote` are whole-variable
 // insertions (not `${}` interpolations inside one template literal), so they
-// are excluded by only reading the backtick-delimited pieces of the chain,
-// never the bare identifiers between `+`. Their own fixed openers
-// (`Pending siblings: `, `Last note: `) and the `root > ` of `path` are
-// therefore not sized by this rule.
+// are declared to the chain reader by name and their content is not sized
+// here. Their own fixed openers (`Pending siblings: `, `Last note: `) and the
+// `root > ` of `path` are therefore not sized by this rule. Declaring them is
+// what lets any other bare identifier refuse rather than vanish.
 function extractGoalTreeBlock(src) {
   const m = /const goalBlock =\s*\n([\s\S]*?);\n/.exec(src);
   if (!m) throw new Error("goalBlock not found in hooks/index.ts");
-  const pieces = m[1].match(/`(?:[^`\\]|\\.)*`/g) || [];
-  const literal = pieces.map((p) => p.slice(1, -1)).join("");
+  const literal = literalOfTemplateChain(m[1], "GOAL_TREE_BLOCK", ["siblingLine", "lastNote"]);
   return record("GOAL_TREE_BLOCK", "hooks/index.ts", literal);
 }
 
@@ -501,9 +619,7 @@ function extractGoalTreePausedBlock(src) {
 function extractNoGoalBlock(src) {
   const m = /const idleBlock =\s*\n([\s\S]*?);\n/.exec(src);
   if (!m) throw new Error("idleBlock not found in hooks/index.ts");
-  const pieces = m[1].match(/`(?:[^`\\]|\\.)*`/g) || [];
-  if (pieces.length === 0) throw new Error("idleBlock literal chain did not parse");
-  const literal = pieces.map((p) => p.slice(1, -1)).join("");
+  const literal = literalOfTemplateChain(m[1], "NO_GOAL_BLOCK");
   return record("NO_GOAL_BLOCK", "hooks/index.ts", literal);
 }
 
@@ -577,6 +693,14 @@ function checkContextBlocks(src, entryNames) {
 // read. For each, the check asserts that hooks/index.ts contributes no
 // literal text of its own at the site, so the exclusion holds exactly as
 // long as the text stays entirely operator.ts's.
+// Every call site in hooks/index.ts that hands its text to deliveryText.
+// Two reach the child through submitExpectedTurn and carry a row below; the
+// third delivers inside a running turn as tool-result context and carries
+// none, which is why this class is counted by shape rather than by that
+// table. Raising this number declares a new excluded site and owes the same
+// change to README.md's coverage sentence.
+const DELIVERY_SITE_COUNT = 3;
+
 const PROMPT_CALL_SITES = [
   { anchor: "reraiseEntry", entries: ["STILL_WAITING_RERAISE_TEXT"] },
   { anchor: "fleetPromptText(", entries: ["FLEET_PROMPT_FRAME", "FLEET_PROMPT_LINE_LITERALS"] },
@@ -663,6 +787,44 @@ function checkPromptCallSites(src, entryNames) {
     if (!useRe.test(src)) {
       throw new Error(
         `[delivery-exclusion] no expectTurn({ ..., text: ${v} }) entry is built from ${v} in hooks/index.ts; the ${site.anchor} site submits text this rule did not trace`,
+      );
+    }
+  }
+
+  // Every deliveryText( call site in this file, found by its shape rather
+  // than by a name list. The two rows above are the sites that reach the
+  // child through submitExpectedTurn. The third hands a record to the
+  // running turn as tool-result context instead, so no prompt-call-site row
+  // reaches it and the two rows above cannot be what bounds this class.
+  // All three are excluded on one ground, that hooks/operator.ts's
+  // deliveryText composes the whole text, so all three owe the same
+  // assertion. The ground, id and text arguments must carry no literal. A
+  // trailing options object may, because its `mark` and `answerTo` values
+  // select a prefix deliveryText composes rather than adding text here.
+  const deliveryCalls = [...src.matchAll(/deliveryText\(/g)];
+  if (deliveryCalls.length !== DELIVERY_SITE_COUNT) {
+    throw new Error(
+      `[delivery-exclusion] expected ${DELIVERY_SITE_COUNT} deliveryText( call site(s) in hooks/index.ts, found ${deliveryCalls.length}; every one is excluded from this ledger on the same ground and each owes its own no-literal assertion, so declare the new site here and in README.md's coverage sentence in the same commit`,
+    );
+  }
+  for (const call of deliveryCalls) {
+    const open = call.index + call[0].length - 1;
+    let depth = 0;
+    let close = -1;
+    for (let k = open; k < src.length; k += 1) {
+      if (src[k] === "(") depth += 1;
+      else if (src[k] === ")") {
+        depth -= 1;
+        if (depth === 0) { close = k; break; }
+      }
+    }
+    if (close === -1) throw new Error(`[delivery-exclusion] a deliveryText( call in hooks/index.ts has no closing parenthesis this rule can find`);
+    const args = src.slice(open + 1, close);
+    const optsIdx = args.indexOf("{");
+    const textArgs = optsIdx === -1 ? args : args.slice(0, optsIdx);
+    if (/["'`]/.test(textArgs)) {
+      throw new Error(
+        `[delivery-exclusion] a deliveryText call in hooks/index.ts carries literal text in its ground, id or text argument (deliveryText(${args.trim()})); the exclusion holds only while those three are data, so ledger the literal here or move it into deliveryText`,
       );
     }
   }
@@ -772,7 +934,7 @@ function extractToolDescriptions(src) {
     const descKeyIdx = head.indexOf("description:");
     if (descKeyIdx === -1) throw new Error(`tool ${toolName} has no top-level description`);
     const afterKey = descKeyIdx + "description:".length;
-    const chain = parseStringLiteralChain(head, head.slice(afterKey).search(/\S/) + afterKey);
+    const chain = parseStringLiteralChain(head, head.slice(afterKey).search(/\S/) + afterKey, `tool ${toolName}'s top-level description`);
     if (!chain) throw new Error(`tool ${toolName}'s top-level description did not parse as a string literal chain`);
     const topDescription = chain.value;
 
@@ -783,7 +945,7 @@ function extractToolDescriptions(src) {
     const paramDescriptions = [];
     let pm;
     while ((pm = paramRe.exec(tail)) !== null) {
-      const pChain = parseStringLiteralChain(tail, pm.index + pm[0].length);
+      const pChain = parseStringLiteralChain(tail, pm.index + pm[0].length, `tool ${toolName}'s \`${pm[1]}\` parameter description`);
       if (pChain) paramDescriptions.push(pChain.value);
     }
 
@@ -866,4 +1028,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   console.log(JSON.stringify({ basis: LEDGER_BASIS, entries: toPublicShape(buildLedger()) }, null, 2));
 }
 
-export { buildLedger, buildLedgerFrom, toPublicShape, EXCLUDED_PROMPT_SITES };
+export { buildLedger, buildLedgerFrom, toPublicShape, EXCLUDED_PROMPT_SITES, DELIVERY_SITE_COUNT };

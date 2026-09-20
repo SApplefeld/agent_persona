@@ -57,7 +57,7 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildLedger, buildLedgerFrom, EXCLUDED_PROMPT_SITES } from "./injection-ledger.mjs";
+import { buildLedger, buildLedgerFrom, EXCLUDED_PROMPT_SITES, DELIVERY_SITE_COUNT } from "./injection-ledger.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolve(__dirname, "..");
@@ -176,8 +176,49 @@ function findNameMismatches(liveEntries, baselineEntries) {
 // --- Run ---
 
 let failed = 0;
+// This suite is red by design until Sections 2 to 4 land, so exit 1 alone
+// cannot tell "the real duplicates are still there" from "a control or a
+// guard broke". Those are opposite readings: the first is the expected
+// state and the second means this suite has stopped checking what it
+// claims to. A control or guard failure therefore exits 2, and exit 1 is
+// reserved for a run where every control passed and the real check is the
+// only thing that failed. A reader of the exit code alone can then tell
+// the designed red from a broken instrument.
+let instrumentFailed = 0;
 function ok(name) { console.log(`  OK: ${name}`); }
-function fail(name) { console.error(`  FAIL: ${name}`); failed++; }
+function fail(name) {
+  console.error(`  FAIL: ${name}`);
+  failed++;
+  if (/^(fixture control|guard control|exclusion pin)/.test(name)) instrumentFailed++;
+}
+
+// The exit-code split rests on one predicate over a label, so it is driven
+// rather than asserted. The labels below are the ones this file actually
+// prints, taken from both classes: three that must raise the instrument
+// flag and three from the real check that must not. A predicate that
+// drifted from the labels would otherwise send every failure down one
+// branch and the split would read correct while doing nothing.
+{
+  const isInstrument = (name) => /^(fixture control|guard control|exclusion pin)/.test(name);
+  const instrumentLabels = [
+    "guard control: a fourth deliveryText call site - refused by [delivery-exclusion]",
+    "fixture control: silent on a fixture string carrying no CLAUDE.md sentence",
+    "exclusion pin: the ledger declares 3 deliveryText call sites and hooks/index.ts holds that many",
+  ];
+  const realCheckLabels = [
+    'duplicate sentence across [CHANNEL_REPLY_INSTRUCTION, REPLY_INSTRUCTION]: "a sentence"',
+    "live entry with 0 chars: SOME_INSTRUCTION - extraction found nothing to size or match",
+    "size grew without a ledger update: SOME_INSTRUCTION is 40 chars, ledger recorded 30",
+    "live entry not in the baseline: SOME_INSTRUCTION - refresh .kit/injection-ledger.json",
+    "baseline entry no live run produces: SOME_INSTRUCTION - the extraction that produced it is gone or renamed",
+  ];
+  const misread = [
+    ...instrumentLabels.filter((l) => !isInstrument(l)).map((l) => `instrument label read as real check: ${l}`),
+    ...realCheckLabels.filter((l) => isInstrument(l)).map((l) => `real-check label read as instrument: ${l}`),
+  ];
+  if (misread.length === 0) ok(`exit-code split: the predicate sorts all ${instrumentLabels.length} instrument labels one way and all ${realCheckLabels.length} real-check labels the other`);
+  else fail(`exit-code split: ${misread.join("; ")}`);
+}
 
 // Fixture control 1: CLAUDE.md-vs-injected, on a marker-prefixed line. The
 // shared sentence is chosen by shape - a raw line off disk that still
@@ -355,6 +396,34 @@ function fail(name) { console.error(`  FAIL: ${name}`); failed++; }
   expectRefusal("an excluded delivery site prefixed outside deliveryText", "[delivery-exclusion]", ["submittedText"], () =>
     buildLedgerFrom(shSrc, mutated(tsSrc, "const submittedText = deliveryText(", 'const submittedText = "[INBOX] " + deliveryText(', "delivery prefix")));
 
+  // A literal added at the delivery site that reaches the child as
+  // tool-result context. This is the coverage case rather than the
+  // instrument case: no PROMPT_CALL_SITES row names this site, so before
+  // the shape rule existed the two named rows passed and this literal rode
+  // in unsized. The mutation targets it by its own shape.
+  expectRefusal("a literal at the delivery site no prompt-call-site row names", "[delivery-exclusion]", ["Note: "], () =>
+    buildLedgerFrom(shSrc, mutated(tsSrc, "lines.push(deliveryText(ground, rec.id, rec.text,", 'lines.push(deliveryText(ground, rec.id, "Note: " + rec.text,', "context delivery literal")));
+  // A fourth delivery site, which the count is what catches.
+  expectRefusal("a fourth deliveryText call site", "[delivery-exclusion]", ["found 4"], () =>
+    buildLedgerFrom(shSrc, mutated(tsSrc, "lines.push(deliveryText(ground, rec.id, rec.text,", "lines.push(deliveryText(ground, rec.id, rec.text));\n          lines.push(deliveryText(ground, rec.id, rec.text,", "fourth delivery site")));
+
+  // A chain piece rewritten out of the shape its rule's pattern names. The
+  // three plugin-side chain rules read backtick pieces alone, so a piece
+  // written any other way leaves the entry silently short, and the size
+  // check below reports growth and never a shrink. Each mutation rewrites a
+  // real piece by its shape rather than adding text a rule was told about.
+  expectRefusal("a nudge-frame piece rewritten to a quoted literal", "[chain-shape]", ["NUDGE_TEXT_idle_gap_converted"], () =>
+    buildLedgerFrom(shSrc, mutated(tsSrc, "`The controller read this as an idle gap, not a real fork: no concrete blocking question. `", '"The controller read this as an idle gap, not a real fork: no concrete blocking question. "', "nudge piece requoted")));
+  // A chain piece factored out into a constant and spliced back in by name,
+  // which is what Section 3's one-owner-and-a-pointer rewrite tempts.
+  expectRefusal("a goal-tree piece replaced by a bare identifier", "[chain-shape]", ["GOAL_TREE_BLOCK", "pathLine"], () =>
+    buildLedgerFrom(shSrc, mutated(tsSrc, "`Path: ${path}\\n` +", "pathLine +", "goal tree piece hoisted")));
+  // The same class on the tool-description chain Section 4 rewrites:
+  // parseStringLiteralChain stops at the first operand that is not a quoted
+  // literal, so a hoisted sentence truncates the entry with no throw.
+  expectRefusal("a tool description with a hoisted sentence", "[chain-truncated]", ["agentic_resolve"], () =>
+    buildLedgerFrom(shSrc, mutated(tsSrc, '        "A reply says a turn answered;', '        SHARED_NOTE +\n        "A reply says a turn answered;', "tool description hoisted")));
+
   // The fleet line-literal collector reaching a label that sits inside a
   // ternary inside an interpolation: lengthen that label and require the
   // entry to grow by exactly the added characters and to carry the phrase.
@@ -379,6 +448,18 @@ function fail(name) { console.error(`  FAIL: ${name}`); failed++; }
   const shapeHolds = EXCLUDED_PROMPT_SITES.every((s) => s.builder === "deliveryText" && s.file === "hooks/operator.ts");
   if (JSON.stringify(anchors) === JSON.stringify(expected) && shapeHolds) ok(`exclusion pin: the ledger excludes exactly ${expected.join(" and ")}, both built whole by hooks/operator.ts deliveryText`);
   else fail(`exclusion pin: the ledger's excluded prompt sites are ${JSON.stringify(EXCLUDED_PROMPT_SITES)}, expected ${JSON.stringify(expected)} built by hooks/operator.ts deliveryText`);
+
+  // The two rows above are the sites that reach the child through
+  // submitExpectedTurn. They are not the whole class: a third call site
+  // delivers inside a running turn as tool-result context, so the count the
+  // ledger asserts by shape is what bounds this class, and it is pinned
+  // here beside the name list rather than left to the rule alone.
+  const liveDeliverySites = readNormalized(join(repoRoot, "hooks", "index.ts")).match(/deliveryText\(/g) || [];
+  if (DELIVERY_SITE_COUNT === 3 && liveDeliverySites.length === DELIVERY_SITE_COUNT) {
+    ok(`exclusion pin: the ledger declares ${DELIVERY_SITE_COUNT} deliveryText call sites and hooks/index.ts holds that many, two of them named above and one reached by no prompt-call-site row`);
+  } else {
+    fail(`exclusion pin: the ledger declares ${DELIVERY_SITE_COUNT} deliveryText call sites and hooks/index.ts holds ${liveDeliverySites.length}`);
+  }
 }
 
 // The real check: every injected string the ledger extracts, against
@@ -434,4 +515,7 @@ function fail(name) { console.error(`  FAIL: ${name}`); failed++; }
 
 const summary = `\n${failed === 0 ? "All tests passed" : failed + " test(s) FAILED"}`;
 console.log(summary);
-process.exit(failed === 0 ? 0 : 1);
+if (instrumentFailed > 0) {
+  console.error(`${instrumentFailed} of those are a control or a guard rather than the real check, so this run says nothing about the duplicates: the instrument is what broke. Exiting 2.`);
+}
+process.exit(failed === 0 ? 0 : instrumentFailed > 0 ? 2 : 1);
