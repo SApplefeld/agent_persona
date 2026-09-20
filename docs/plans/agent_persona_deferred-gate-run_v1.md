@@ -12,6 +12,8 @@ When this is done, every test run the gate policy below deferred has run once ag
 
 The operator asked for this on 2026-09-18 on the coordinator's own Discord thread. Their words: "The 40+ minute gates whenever we need to run a test are blocking other development." and "when all the plans are done, we can do a test run and evaluate any that fail as a wholly separate circle back to fix things." Offered the choice between suspending every check and suspending only the runs that hold the box, they answered "I'm good with Option 2." That is authorization to author and to apply the policy to the queued plans. Execution of this plan is armed only on the operator's own word, typed into the executing session's thread or relayed through the coordinator. The executor is the dev persona.
 
+The operator armed execution on 2026-09-19, naming this plan in a `/kit-goal` invocation relayed to the executing session on the operator's own channel, which is the channel this section reserves the arming to. That is the execution arming, given separately from the authorization to author above, and it approves this plan as written. It is recorded here because the arming state itself does not keep it: a run that re-arms a queue for itself after a session ends records its own invocation and no longer reads the operator's, so a later session reading only that state would find this plan unarmed. The project memory record `self-armed-arming-does-not-satisfy-an-operator-only-execution-grant` holds the general shape.
+
 ## The gate policy
 
 This section owns the policy. The queued plans point here, and a Chapter that cites it cites this file.
