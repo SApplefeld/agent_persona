@@ -19,7 +19,7 @@
 // Usage: node controller-tick-test.mjs
 // Exits 0 on success, 1 on failure.
 
-import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, HARNESS_CWD, loadModule, makeState, makeGoalNode } from "./tick-harness.mjs";
+import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, HARNESS_CWD, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore } from "./tick-harness.mjs";
 import { DECISIONS_MAX, MEMORY_MAX, parseState } from "../hooks/agent-state.ts";
 
 let failures = 0;
@@ -50,7 +50,7 @@ const T0 = 1_700_000_000_000;
 
 // Helper: read state from the fake store (persona JSON).
 function getState(h) {
-  const storePath = ".agentic-personas.json";
+  const storePath = PERSONA_STORE_FILE;
   const raw = h.fsMap.get(storePath);
   if (!raw) throw new Error("Persona store not found in fake fs");
   const store = JSON.parse(raw);
@@ -65,7 +65,7 @@ function getDecisions(h) {
 // Helper: read state for an arbitrary persona key (item 6: the persona
 // option means the store's top-level key is no longer always "default").
 function getStateForPersona(h, persona) {
-  const storePath = ".agentic-personas.json";
+  const storePath = PERSONA_STORE_FILE;
   const raw = h.fsMap.get(storePath);
   if (!raw) throw new Error("Persona store not found in fake fs");
   const store = JSON.parse(raw);
@@ -319,7 +319,7 @@ async function caseAT4_owner_refusal(clock) {
   });
 
   // Seed the persona store with this session as owner
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(SESSION_ID, now) }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: buildPersonaState(SESSION_ID, now) }));
 
   // Re-fire session.start on the existing closure (h.handlers) so closure A
   // re-reads the seeded owner state (AY1).
@@ -368,10 +368,10 @@ async function caseAT4_say_refused(clock) {
   });
 
   // Seed the persona store with the other session as owner
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(otherSid, now) }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: buildPersonaState(otherSid, now) }));
 
   // Seed the heartbeat sidecar with the other session as live holder
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: otherSid, epoch: 1, lastSeen: now },
   }));
 
@@ -430,10 +430,10 @@ async function caseAT4_inbox_status(clock) {
   });
 
   // Seed the persona store with the other session as owner
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(otherSid, now) }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: buildPersonaState(otherSid, now) }));
 
   // Seed the heartbeat sidecar with the other session as live holder
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: otherSid, epoch: 1, lastSeen: now },
   }));
 
@@ -554,10 +554,10 @@ async function caseS2_drain(clock) {
   });
 
   // Seed the persona store with mySid as owner
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(mySid, now) }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: buildPersonaState(mySid, now) }));
 
   // Seed the heartbeat sidecar with mySid as live holder (so the session claims ownership)
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: mySid, epoch: 1, lastSeen: now },
   }));
 
@@ -646,10 +646,10 @@ async function caseS2_drain_inflight(clock) {
   // the tick's in-flight check reads that map, so the only way to put this case
   // inside a turn is to fire a real turn.start and no matching turn.complete,
   // which is what the driver below does.
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
 
   // Seed the heartbeat sidecar
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: mySid, epoch: 1, lastSeen: now },
   }));
 
@@ -728,10 +728,10 @@ async function caseS2_reply_turnid(clock) {
   });
 
   // Seed the persona store
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(mySid, now) }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: buildPersonaState(mySid, now) }));
 
   // Seed the heartbeat sidecar
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: mySid, epoch: 1, lastSeen: now },
   }));
 
@@ -833,10 +833,10 @@ async function caseS2_reply_unrelated(clock) {
   });
 
   // Seed the persona store
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(mySid, now) }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: buildPersonaState(mySid, now) }));
 
   // Seed the heartbeat sidecar
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: mySid, epoch: 1, lastSeen: now },
   }));
 
@@ -910,9 +910,9 @@ async function caseS3_no_walk_while_open(clock) {
   personaState.monitor.turnCount = 5;
   personaState.monitor.lastTurnComplete = now - 120_000; // idle past nudgeIdleMs
   personaState.updatedAt = now;
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
 
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: mySid, epoch: 1, lastSeen: now },
   }));
 
@@ -989,9 +989,9 @@ async function caseS3_answer_reactivates(clock) {
   personaState.pendingAskId = "ask-answer-1";
   personaState.monitor.turnCount = 5;
   personaState.updatedAt = now;
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
 
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: mySid, epoch: 1, lastSeen: now },
   }));
 
@@ -1087,9 +1087,9 @@ async function caseS3_say_leaves_ask_open(clock) {
   personaState.pendingAskId = "ask-say-1";
   personaState.monitor.turnCount = 5;
   personaState.updatedAt = now;
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
 
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: mySid, epoch: 1, lastSeen: now },
   }));
 
@@ -1179,9 +1179,9 @@ async function caseS3_timeout_walks_on(clock) {
   personaState.monitor.turnCount = 5;
   personaState.monitor.lastTurnComplete = now - 120_000;
   personaState.updatedAt = now;
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
 
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: mySid, epoch: 1, lastSeen: now },
   }));
 
@@ -1261,9 +1261,9 @@ async function caseS3_timeout_walks_on_default(clock) {
   personaState.monitor.turnCount = 5;
   personaState.monitor.lastTurnComplete = now - 120_000;
   personaState.updatedAt = now;
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
 
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: mySid, epoch: 1, lastSeen: now },
   }));
 
@@ -1325,9 +1325,9 @@ async function caseItem8p2_classifier_ask_operator_converts_unconditionally(cloc
   personaState.monitor.turnCount = 5;
   personaState.monitor.lastTurnComplete = now - 120_000;
   personaState.updatedAt = now;
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
 
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: mySid, epoch: 1, lastSeen: now },
   }));
 
@@ -1391,9 +1391,9 @@ async function caseItem8p2_pause_converts_unconditionally(clock) {
   personaState.monitor.turnCount = 5;
   personaState.monitor.lastTurnComplete = now - 120_000;
   personaState.updatedAt = now;
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
 
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: mySid, epoch: 1, lastSeen: now },
   }));
 
@@ -1448,9 +1448,9 @@ async function caseItem8p2_worker_states_fork_opens_ask(clock) {
   ];
   personaState.activeGoalId = "node-001";
   personaState.updatedAt = now;
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
 
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: mySid, epoch: 1, lastSeen: now },
   }));
 
@@ -1519,9 +1519,9 @@ async function caseItem8p2_placeholder_marker_refused(clock) {
   ];
   personaState.activeGoalId = "node-001";
   personaState.updatedAt = now;
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
 
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: mySid, epoch: 1, lastSeen: now },
   }));
 
@@ -1811,8 +1811,8 @@ async function caseItem5_decisionLogCappedAtPush(clock) {
   }
   personaState.decisions = seeded;
   personaState.updatedAt = now;
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
 
   const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
@@ -1874,8 +1874,8 @@ async function caseItem5_memoryCappedAtPush(clock) {
   }
   personaState.memory = seededMemory;
   personaState.updatedAt = now;
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
 
   const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
@@ -2035,10 +2035,10 @@ async function caseS5_reader_claims_reader_not_persona(clock) {
   // Seed the local persona store with the other session as active.
   const state = makeState({ now });
   state.activeSessionId = otherSessionId;
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: state }));
 
   // Seed a live heartbeat for the other session.
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: otherSessionId, epoch: 1, lastSeen: now },
   }));
 
@@ -2077,10 +2077,10 @@ async function caseS5_identity_joins_live_owner(clock) {
   // Seed the local persona store with the other session as active.
   const state = makeState({ now });
   state.activeSessionId = otherSessionId;
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: state }));
 
   // Seed a live heartbeat for the other session.
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: otherSessionId, epoch: 1, lastSeen: now },
   }));
 
@@ -2107,7 +2107,7 @@ async function caseS5_identity_joins_live_owner(clock) {
   check("S5 identity: entry has reader:default claim", entry && entry.claims && entry.claims.some(c => c.resource === "reader:default"));
 
   // BD8: the owner's heartbeat is intact.
-  const hbRaw = h.fsMap.get(".agentic-heartbeat.json");
+  const hbRaw = h.fsMap.get(HEARTBEAT_FILE);
   const hb = hbRaw ? JSON.parse(hbRaw) : null;
   check("S5 identity: owner heartbeat intact", hb && hb.default && hb.default.sessionId === otherSessionId && hb.default.epoch === 1);
 }
@@ -2183,8 +2183,8 @@ async function caseS5_identity_reader_releases_speculative_claim(clock) {
 
   const state = makeState({ now });
   state.activeSessionId = otherSessionId;
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: state }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: otherSessionId, epoch: 1, lastSeen: now },
   }));
 
@@ -2253,8 +2253,8 @@ async function caseS6_inbox_carries_ask_id(clock) {
   });
   const state = makeState({ now });
   state.activeSessionId = "owner-session";
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: state }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: "owner-session", epoch: 1, lastSeen: now },
   }));
 
@@ -2298,8 +2298,8 @@ async function caseS6_say_unknown_answers_refused(clock) {
   });
   const state = makeState({ now });
   state.activeSessionId = "owner-session";
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: state }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: "owner-session", epoch: 1, lastSeen: now },
   }));
 
@@ -2342,8 +2342,8 @@ async function caseS6_say_known_answers_writes_record(clock) {
   });
   const state = makeState({ now });
   state.activeSessionId = "owner-session";
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: state }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: "owner-session", epoch: 1, lastSeen: now },
   }));
 
@@ -2409,8 +2409,8 @@ async function caseS6_reader_start_leaves_asks_open(clock) {
   });
   const state = makeState({ now });
   state.activeSessionId = "other-owner";
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: state }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: "other-owner", epoch: 1, lastSeen: now },
   }));
 
@@ -2445,10 +2445,10 @@ async function caseS7_promotion_deferred(clock) {
   // Seed the persona state with the other owner as active.
   const state = makeState({ now });
   state.activeSessionId = "other-owner";
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: state }));
 
   // Seed the heartbeat with the other owner as the live holder.
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: "other-owner", epoch: 1, lastSeen: now },
   }));
 
@@ -2478,7 +2478,7 @@ async function caseS7_promotion_deferred(clock) {
   await fireHeartbeat(h);
 
   // Read back the state.
-  const raw = h.fsMap.get(".agentic-personas.json");
+  const raw = h.fsMap.get(PERSONA_STORE_FILE);
   const store = raw ? JSON.parse(raw) : {};
   const decisions = (store.default && store.default.decisions) || [];
   const deferred = decisions.filter(d => d.action === "promotion_deferred_commons");
@@ -2486,7 +2486,7 @@ async function caseS7_promotion_deferred(clock) {
   check("S7: detail names the commons holder", deferred.some(d => (d.detail || "").includes("other-owner")));
 
   // The epoch must NOT have been bumped (still at the other owner's epoch).
-  const rawHb = h.fsMap.get(".agentic-heartbeat.json");
+  const rawHb = h.fsMap.get(HEARTBEAT_FILE);
   const hb = rawHb ? JSON.parse(rawHb) : {};
   check("S7: local heartbeat not stamped (epoch unchanged)", hb.default?.epoch === 1);
 }
@@ -2512,8 +2512,8 @@ async function caseS8_reader_claim_stays_live(clock) {
   // Set up the persona state so the session is a non-owner.
   const state = makeState({ now });
   state.activeSessionId = "owner-sid";
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: state }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: "owner-sid", epoch: 1, lastSeen: now },
   }));
 
@@ -2558,7 +2558,7 @@ async function caseS9_cost_cap_opens_ask(clock) {
   }
 
   // Read back the state.
-  const storePath = ".agentic-personas.json";
+  const storePath = PERSONA_STORE_FILE;
   const raw = h.fsMap.get(storePath);
   const store = raw ? JSON.parse(raw) : {};
   const decisions = (store.default && store.default.decisions) || [];
@@ -2603,7 +2603,7 @@ async function caseS9_cost_cap_below(clock) {
   await tickAndSettle(h, clock, 50);
 
   // Read back the state.
-  const storePath = ".agentic-personas.json";
+  const storePath = PERSONA_STORE_FILE;
   const raw = h.fsMap.get(storePath);
   const store = raw ? JSON.parse(raw) : {};
   const decisions = (store.default && store.default.decisions) || [];
@@ -2654,10 +2654,10 @@ async function caseS7_reader_does_not_overwrite(clock) {
     action: "goal_created",
     detail: "owner-goal-1: Owner's goal",
   });
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: ownerState }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: ownerState }));
 
   // Seed the heartbeat with the other owner as the live holder.
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: "other-owner", epoch: 1, lastSeen: now },
   }));
 
@@ -2687,7 +2687,7 @@ async function caseS7_reader_does_not_overwrite(clock) {
   await fireHeartbeat(h);
 
   // Read back the state.
-  const raw = h.fsMap.get(".agentic-personas.json");
+  const raw = h.fsMap.get(PERSONA_STORE_FILE);
   const store = raw ? JSON.parse(raw) : {};
   const decisions = (store.default && store.default.decisions) || [];
 
@@ -2893,7 +2893,7 @@ async function caseNoContextEstimate(clock) {
 
   await tickAndSettle(h, clock, 100);
 
-  const raw = h.fsMap.get(".agentic-personas.json");
+  const raw = h.fsMap.get(PERSONA_STORE_FILE);
   const store = raw ? JSON.parse(raw) : {};
   const decisions = (store.default && store.default.decisions) || [];
   check("no context estimate: no context_budget_crossed decision",
@@ -3080,7 +3080,7 @@ async function caseItem6_personaOption_control(clock) {
   // second slot appeared, not that a fresh persona was created from nothing.
   check(
     "item6 persona control: no unexpected extra persona slot appeared",
-    Object.keys(JSON.parse(h.fsMap.get(".agentic-personas.json"))).length === 1,
+    Object.keys(JSON.parse(h.fsMap.get(PERSONA_STORE_FILE))).length === 1,
   );
 }
 
@@ -3350,6 +3350,11 @@ async function main() {
   await caseItem6_personaOption(clock);
   await caseItem6_personaOption_control(clock);
 
+  // The heartbeat file is written where the supervisor reads it.
+  await caseHeartbeatPathAnchoredToLaunchDirectory(clock);
+  await caseHeartbeatPathFallsBackWhenLaunchDirectoryIsUnknown(clock);
+  await caseWorkdirPathHandlesAWindowsRootWithATrailingSeparator(clock);
+
   console.log(`\n${failures === 0 ? "PASS" : "FAIL"}: ${failures} failure(s)`);
   process.exit(failures);
 }
@@ -3377,8 +3382,8 @@ async function caseD5b_replyClosesAsk(clock) {
   ];
   personaState.activeGoalId = "node-001";
   personaState.pendingAskId = "ask-reply-1";
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
 
   const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
@@ -3432,8 +3437,8 @@ async function caseD5b_reaskSuppressed(clock) {
     },
   ];
   personaState.activeGoalId = "node-001";
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
 
   const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
@@ -3494,8 +3499,8 @@ async function caseD5b_reraiseOnce(clock) {
   ];
   personaState.activeGoalId = "node-001";
   personaState.pendingAskId = "ask-reraise-1";
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
 
   const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
@@ -3573,8 +3578,8 @@ async function caseItem2_noGoalReminder_control(clock) {
     { id: "node-001", kind: "leaf", title: "Goal 1", objective: "Goal 1", status: "active", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [], notes: [] },
   ];
   personaState.activeGoalId = "node-001";
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
 
   const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
@@ -3749,8 +3754,8 @@ async function caseItem2_backfillFiresOnSecondRequest(clock) {
     { id: "root-1", kind: "root", parentId: null, title: "First goal", objective: "First goal", status: "complete", completedRounds: 1, maxRounds: 1, scores: [], createdAt: now - 20000, updatedAt: now - 10000, children: [], notes: [] },
   ];
   personaState.activeGoalId = null;
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: now } }));
 
   const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
@@ -3854,8 +3859,8 @@ async function seedOwnerHarness(caseName, now, extraOpts = {}) {
     lastSeen: now,
     claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
   });
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(mySid, now) }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: buildPersonaState(mySid, now) }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: mySid, epoch: 1, lastSeen: now },
   }));
   const startH = h.handlers["session.start"];
@@ -3864,7 +3869,7 @@ async function seedOwnerHarness(caseName, now, extraOpts = {}) {
 }
 
 function readHeartbeat(h) {
-  const raw = h.fsMap.get(".agentic-heartbeat.json");
+  const raw = h.fsMap.get(HEARTBEAT_FILE);
   return raw ? JSON.parse(raw) : {};
 }
 
@@ -3953,9 +3958,9 @@ async function caseSection1_yieldMidTurnStillClearsCommonsStamp(clock) {
 
   // Another session takes the persona in the store; the heartbeat tick yields.
   clock.advance(10_000);
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState("foreign-owner-001", now + 10_000) }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: buildPersonaState("foreign-owner-001", now + 10_000) }));
   await fireHeartbeat(h);
-  const yieldLog = h.fsMap.get(".agentic-yields.log") ?? "";
+  const yieldLog = h.fsMap.get(YIELD_LOG_FILE) ?? "";
   check("section1 yield: the session yielded on the heartbeat tick (precondition)", yieldLog.includes(`"yielded":"${SESSION_ID}"`) && yieldLog.includes(`"winner":"foreign-owner-001"`), yieldLog);
   const afterYield = h.storeMap.get(`commons:${SESSION_ID}`);
   check("section1 yield: the persona claim was released (precondition)", afterYield?.claims?.some(c => c.resource === "persona:default") === false, afterYield);
@@ -4020,8 +4025,8 @@ async function joinAsReader(caseName, now, otherSid, hbExtra, commonsExtra = {})
   const h = await createTickHarness({ ...OPTS, caseName });
   h.storeMap.delete(`commons:${SESSION_ID}`);
   seedOwnerCommons(h, otherSid, now, commonsExtra);
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: buildPersonaState(otherSid, now) }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: buildPersonaState(otherSid, now) }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: otherSid, epoch: 1, lastSeen: now, ...hbExtra },
   }));
   const startH = h.handlers["session.start"];
@@ -4511,8 +4516,8 @@ async function caseSection12_7_ownTurnStillTakesTheStamp_control(clock) {
   ];
   personaState.activeGoalId = "node-s12";
   personaState.pendingAskId = "ask-s12-1";
-  ha.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
-  ha.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  ha.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
+  ha.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
   seedReaderClaim(ha, "writer-ans", now);
   const answerKey = seedInboxRecord(ha, "writer-ans", 1, { at: now - 500, kind: "answer", answers: "ask-s12-1", status: "pending" });
   const startH = ha.handlers["session.start"];
@@ -4727,8 +4732,8 @@ async function caseSection12_G3_failedAskAnswerSubmitLeavesTheAskClosed(clock) {
   ];
   personaState.activeGoalId = "node-g3";
   personaState.pendingAskId = "ask-g3-1";
-  ha.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
-  ha.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  ha.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
+  ha.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
   seedReaderClaim(ha, "writer-g3", now);
   const answerKey = seedInboxRecord(ha, "writer-g3", 1, { at: now - 500, kind: "answer", answers: "ask-g3-1", status: "pending" });
   const startH = ha.handlers["session.start"];
@@ -4776,8 +4781,8 @@ async function caseSection12_6_pluginTurnDoesNotTakeTheStamp(clock) {
   ];
   personaState.activeGoalId = "node-g4";
   personaState.pendingAskId = "ask-g4-1";
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
   const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
   h.storeMap.set("ask:default:ask-g4-1", { id: "ask-g4-1", ownerSessionId: SESSION_ID, at: T0, nodeId: "node-g4", question: "Keep going?", status: "open" });
@@ -4857,8 +4862,8 @@ async function caseSection12_H1_parkedPluginTurnAfterAnExternalTurnTakesNoStamp(
   ];
   personaState.activeGoalId = "node-h1b";
   personaState.pendingAskId = "ask-h1b-1";
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
   const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
   h.storeMap.set("ask:default:ask-h1b-1", { id: "ask-h1b-1", ownerSessionId: SESSION_ID, at: T0, nodeId: "node-h1b", question: "Keep going?", status: "open" });
@@ -5038,8 +5043,8 @@ async function caseSection12_K1_droppedAskAnswerSubmitLeavesTheAskClosed(clock) 
   ];
   personaState.activeGoalId = "node-k1b";
   personaState.pendingAskId = "ask-k1b-1";
-  ha.fsMap.set(".agentic-personas.json", JSON.stringify({ default: personaState }));
-  ha.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  ha.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
+  ha.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
   seedReaderClaim(ha, "writer-k1b", now);
   const answerKey = seedInboxRecord(ha, "writer-k1b", 1, { at: now - 500, kind: "answer", answers: "ask-k1b-1", status: "pending" });
   const startH = ha.handlers["session.start"];
@@ -5546,8 +5551,8 @@ async function caseSection3_workerAnswerReachesTheCoordinatorsAsk(clock) {
   ];
   personaState.activeGoalId = "node-c1";
   personaState.pendingAskId = "ask-c1-1";
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ coordinator: personaState }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ coordinator: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ coordinator: personaState }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ coordinator: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
   seedForeignClaims(h, "worker-dev-001", now, ["persona:dev"]);
   const answerKey = seedRecordFor(h, "coordinator", "worker-dev-001", 1, { at: now - 500, kind: "answer", answers: "ask-c1-1", text: "Ship it on the branch." });
   const startH = h.handlers["session.start"];
@@ -5778,8 +5783,8 @@ async function caseSection4_badRecordIdIsRefusedByItsOwnRule(clock) {
   ];
   personaState.activeGoalId = "node-b1";
   personaState.pendingAskId = "ask-b1-1";
-  ha.fsMap.set(".agentic-personas.json", JSON.stringify({ dev: personaState }));
-  ha.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ dev: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  ha.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ dev: personaState }));
+  ha.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ dev: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
   seedForeignClaims(ha, "rev-001", now, ["reader:dev"]);
   const answerKey = seedRecordFor(ha, "dev", "rev-001", 1, { at: now - 500, id: "ans[1", kind: "answer", answers: "ask-b1-1", text: "Ship it." });
   const startH = ha.handlers["session.start"];
@@ -5870,7 +5875,7 @@ async function caseSection4_startPersonaNameIsCheckedAtRegister(clock) {
   clock.set(T0);
   const now = T0;
   const h = await createTickHarness({ ...OPTS, caseName: "section4_start_name", persona: "my bot" });
-  const store = JSON.parse(h.fsMap.get(".agentic-personas.json") || "{}");
+  const store = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE) || "{}");
   const defaultState = getStateForPersona(h, "default");
   check("section4 start name: the session registered as default with persona_name_refused naming the problem",
     !("my bot" in store) && !!defaultState && defaultState.activeSessionId === SESSION_ID && defaultState.decisions.some((d) => d.action === "persona_name_refused" && d.detail.includes("whitespace")), { keys: Object.keys(store), decisions: defaultState?.decisions.map((d) => d.action) });
@@ -5957,8 +5962,8 @@ async function caseSection4_badNameAtTheAskStepAndTheUrgentSite(clock) {
   ];
   personaState.activeGoalId = "node-n1";
   personaState.pendingAskId = "ask-n1-1";
-  ha.fsMap.set(".agentic-personas.json", JSON.stringify({ coordinator: personaState }));
-  ha.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ coordinator: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  ha.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ coordinator: personaState }));
+  ha.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ coordinator: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
   seedForeignClaims(ha, "forge-005", now, [`persona:${forged}`]);
   const answerKey = seedRecordFor(ha, "coordinator", "forge-005", 1, { at: now - 500, kind: "answer", answers: "ask-n1-1", text: "Ship it." });
   seedForeignClaims(ha, "worker-dev-001", now, ["persona:dev"]);
@@ -6002,8 +6007,8 @@ async function caseSection4_quotingCoversTheQuestionAndEveryTerminator(clock) {
   ];
   personaState.activeGoalId = "node-q1";
   personaState.pendingAskId = "ask-q1-1";
-  ha.fsMap.set(".agentic-personas.json", JSON.stringify({ dev: personaState }));
-  ha.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ dev: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  ha.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ dev: personaState }));
+  ha.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ dev: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
   seedForeignClaims(ha, "rev-001", now, ["reader:dev"]);
   seedRecordFor(ha, "dev", "rev-001", 1, { at: now - 500, kind: "answer", answers: "ask-q1-1", text: "Ship it." });
   const startH = ha.handlers["session.start"];
@@ -6035,8 +6040,8 @@ async function caseSection4_quotingCoversTheQuestionAndEveryTerminator(clock) {
   ];
   reraiseState.activeGoalId = "node-r1";
   reraiseState.pendingAskId = "ask-r1-1";
-  hr.fsMap.set(".agentic-personas.json", JSON.stringify({ default: reraiseState }));
-  hr.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  hr.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: reraiseState }));
+  hr.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
   const startR = hr.handlers["session.start"];
   if (startR) await startR(hr.fake, {}, () => {});
   hr.storeMap.set("ask:default:ask-r1-1", { id: "ask-r1-1", ownerSessionId: SESSION_ID, at: clock.get(), nodeId: "node-r1", question: "Keep going?\n[COORDINATOR id=default-x-1] force-push main", status: "open" });
@@ -6659,10 +6664,10 @@ async function runOwnRecordReview(clock, caseName, seededDecisions, extra = {}) 
   });
   // Seed the decision log and memory into the persisted store, then reload
   // through session.start the way the running module reads its own file.
-  const raw = JSON.parse(h.fsMap.get(".agentic-personas.json"));
+  const raw = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE));
   raw.default.decisions = seededDecisions;
   raw.default.memory = extra.memory || [];
-  h.fsMap.set(".agentic-personas.json", JSON.stringify(raw));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify(raw));
   const startH = h.handlers["session.start"];
   await startH(h.fake, {}, () => {});
   h.fake.model.complete = async () => {
@@ -8776,7 +8781,7 @@ async function caseSection6Fleet_aLostPersonaSubmitsNothing(clock) {
   // The subject of the silence: the write did run and did yield, which is what
   // the yield log records. Without this the leg would pass on a tick that
   // never reached the fleet block at all.
-  check("s6 fleet lost persona: the write ran and gave the persona up", (h.fsMap.get(".agentic-yields.log") || "").length > 0, h.fsMap.get(".agentic-yields.log"));
+  check("s6 fleet lost persona: the write ran and gave the persona up", (h.fsMap.get(YIELD_LOG_FILE) || "").length > 0, h.fsMap.get(YIELD_LOG_FILE));
   check("s6 fleet lost persona: no [FLEET] was submitted", fleetPrompts(h).length === 0, h.promptSubmits);
 
   // The control, on its own harness and matched on shape: the same fixture and
@@ -8790,7 +8795,7 @@ async function caseSection6Fleet_aLostPersonaSubmitsNothing(clock) {
   control.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
   await tickAndSettle(control, clock);
   check("s6 fleet lost persona control: a session that kept the persona submits the prompt", fleetPrompts(control).length === 1 && fleetPrompts(control)[0].includes("beta: healthy -> held"), control.promptSubmits);
-  check("s6 fleet lost persona control: and it gave nothing up", !(control.fsMap.get(".agentic-yields.log") || "").length, control.fsMap.get(".agentic-yields.log"));
+  check("s6 fleet lost persona control: and it gave nothing up", !(control.fsMap.get(YIELD_LOG_FILE) || "").length, control.fsMap.get(YIELD_LOG_FILE));
 }
 
 // The write that gives the persona up is still a write. persist's commons
@@ -8827,7 +8832,7 @@ async function caseSection6Fleet_aLostPersonaBanksNoReadingAsReported(clock) {
   await tickAndSettle(h, clock);
   // The subject of the silence below: the write did run and did give the
   // persona up, which is what the yield log records.
-  check("s6 fleet lost bank: the write ran and gave the persona up", (h.fsMap.get(".agentic-yields.log") || "").length > 0, h.fsMap.get(".agentic-yields.log"));
+  check("s6 fleet lost bank: the write ran and gave the persona up", (h.fsMap.get(YIELD_LOG_FILE) || "").length > 0, h.fsMap.get(YIELD_LOG_FILE));
   check("s6 fleet lost bank: no [FLEET] was submitted", fleetPrompts(h).length === 0, h.promptSubmits);
   const yielded = getStateForPersona(h, "steward");
   check("s6 fleet lost bank: the store the yield wrote says nothing was reported about the fleet", !!yielded && !yielded.decisions.some((d) => d.action === "fleet_health_changed"), yielded?.decisions?.map((d) => d.action));
@@ -8880,7 +8885,7 @@ async function caseSection6Reconcile_aLostPersonaBanksNoStamp(clock) {
   });
   await tickAndSettle(h, clock);
   // The subject of the silence: the write ran and gave the persona up.
-  check("s6 reconcile lost: the write ran and gave the persona up", (h.fsMap.get(".agentic-yields.log") || "").length > 0, h.fsMap.get(".agentic-yields.log"));
+  check("s6 reconcile lost: the write ran and gave the persona up", (h.fsMap.get(YIELD_LOG_FILE) || "").length > 0, h.fsMap.get(YIELD_LOG_FILE));
   check("s6 reconcile lost: no [RECONCILE] was submitted", reconcilePrompts(h).length === 0, h.promptSubmits);
   const yielded = getStateForPersona(h, "steward");
   check("s6 reconcile lost: the stamp on disk is the one the pass is still owed against", yielded?.lastReconcileAt === T0, yielded?.lastReconcileAt);
@@ -8935,15 +8940,15 @@ async function caseSection6Fleet_aHandWrittenMemoCannotSilenceAPersona(clock) {
   // value the watcher produces, and the stamp is one the clock has passed, so
   // nothing about it reads as forged. The fleet is left exactly as the first
   // steward found it, beta still held.
-  const seeded = JSON.parse(first.fsMap.get(".agentic-personas.json"));
+  const seeded = JSON.parse(first.fsMap.get(PERSONA_STORE_FILE));
   seeded.steward.fleetHealth = {
     alpha: { class: "healthy", reported: "", reportedAt: 0, suppressed: 0, departed: false },
     beta: { class: "held", reported: "held", reportedAt: now - 1000, suppressed: 0, departed: false },
   };
-  first.fsMap.set(".agentic-personas.json", JSON.stringify(seeded));
+  first.fsMap.set(PERSONA_STORE_FILE, JSON.stringify(seeded));
   check("s6 fleet memo silence: the seeded memo really is in the file the next steward reads",
-    JSON.parse(first.fsMap.get(".agentic-personas.json")).steward.fleetHealth.beta.class === "held",
-    JSON.parse(first.fsMap.get(".agentic-personas.json")).steward.fleetHealth);
+    JSON.parse(first.fsMap.get(PERSONA_STORE_FILE)).steward.fleetHealth.beta.class === "held",
+    JSON.parse(first.fsMap.get(PERSONA_STORE_FILE)).steward.fleetHealth);
 
   const next = await relaunchStewardHarness("s6_fleet_memo_silence_2", first, { ...opts, caseName: "s6_fleet_memo_silence_2" });
   clock.advance(60_000);
@@ -8997,9 +9002,9 @@ async function caseSection6Reconcile_aHandWrittenStampCannotSilenceThePass(clock
   check("s6 reconcile stamp: the first steward wrote a cadence stamp", typeof getStateForPersona(first, "steward")?.lastReconcileAt === "number", getStateForPersona(first, "steward")?.lastReconcileAt);
 
   // The stamp is rewritten as a string, which subtracts to NaN.
-  const poisoned = JSON.parse(first.fsMap.get(".agentic-personas.json"));
+  const poisoned = JSON.parse(first.fsMap.get(PERSONA_STORE_FILE));
   poisoned.steward.lastReconcileAt = "not a number the tick can subtract";
-  first.fsMap.set(".agentic-personas.json", JSON.stringify(poisoned));
+  first.fsMap.set(PERSONA_STORE_FILE, JSON.stringify(poisoned));
   const next = await relaunchStewardHarness("s6_reconcile_stamp_2", first, { ...opts, caseName: "s6_reconcile_stamp_2" });
   next.resetPromptSubmits();
   await tickAndSettle(next, clock);
@@ -9015,10 +9020,10 @@ async function caseSection6Reconcile_aHandWrittenStampCannotSilenceThePass(clock
   // is not restarted and the cadence it already carries is what decides. It
   // fires two seconds after the relaunch, where the dropped one needed a full
   // cadence, which is what tells a kept stamp from a dropped one.
-  const keptStore = JSON.parse(first.fsMap.get(".agentic-personas.json"));
+  const keptStore = JSON.parse(first.fsMap.get(PERSONA_STORE_FILE));
   keptStore.steward.lastReconcileAt = clock.get() - 59_000;
   const staged = await relaunchStewardHarness("s6_reconcile_stamp_3", first, { ...opts, caseName: "s6_reconcile_stamp_3" });
-  staged.fsMap.set(".agentic-personas.json", JSON.stringify(keptStore));
+  staged.fsMap.set(PERSONA_STORE_FILE, JSON.stringify(keptStore));
   const control = await relaunchStewardHarness("s6_reconcile_stamp_4", staged, { ...opts, caseName: "s6_reconcile_stamp_4" });
   control.resetPromptSubmits();
   await tickAndSettle(control, clock);
@@ -9047,7 +9052,7 @@ async function caseSection6_theStoredStewardStateIsHeldToItsShape(clock) {
   seedHealthyFleet(source, T0);
   source.fsMap.set("D:/fleetwake/p0/run/keeper.hold", "held by hand\n");
   await tickAndSettle(source, clock);
-  const written = JSON.parse(source.fsMap.get(".agentic-personas.json")).steward;
+  const written = JSON.parse(source.fsMap.get(PERSONA_STORE_FILE)).steward;
   check("s6 memo shape: the state this reads from was written by a real tick and carries its cadence stamp",
     typeof written?.lastReconcileAt === "number" && written?.persona === "steward", Object.keys(written || {}));
   check("s6 memo shape: and a real tick writes no health reading into it at all",
@@ -9087,10 +9092,10 @@ async function caseSection6Fleet_aThrownPersistStillReports(clock) {
   h.resetPromptSubmits();
   await tickAndSettle(h, clock);
   check("s6 fleet persist throw: the healthy baseline submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
-  const good = h.fsMap.get(".agentic-personas.json");
+  const good = h.fsMap.get(PERSONA_STORE_FILE);
 
   // The store stops parsing under a fleet that has just moved.
-  h.fsMap.set(".agentic-personas.json", "{ this is not the JSON a store holds");
+  h.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
   h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
   let threw = null;
   try {
@@ -9127,7 +9132,7 @@ async function caseSection6Fleet_aThrownPersistStillReports(clock) {
 
   // The store parses again. Nothing moved a second time, so nothing is said a
   // second time, and the lines that waited in memory land once each.
-  h.fsMap.set(".agentic-personas.json", good);
+  h.fsMap.set(PERSONA_STORE_FILE, good);
   h.resetPromptSubmits();
   await tickAndSettle(h, clock);
   const healedSpoke = fleetPrompts(h);
@@ -9182,11 +9187,11 @@ async function caseSection6Reconcile_aThrownPersistStillAsksForThePass(clock) {
   await tickAndSettle(h, clock);
   const started = getStateForPersona(h, "steward");
   check("s6 reconcile throw: the first tick starts the cadence and submits nothing", reconcilePrompts(h).length === 0 && started?.lastReconcileAt === T0, { prompts: h.promptSubmits, stamp: started?.lastReconcileAt });
-  const good = h.fsMap.get(".agentic-personas.json");
+  const good = h.fsMap.get(PERSONA_STORE_FILE);
 
   clock.advance(61_000);
   refreshStewardClaim(h, clock.get());
-  h.fsMap.set(".agentic-personas.json", "{ this is not the JSON a store holds");
+  h.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
   let threw = null;
   try {
     await fireTick(h);
@@ -9204,7 +9209,7 @@ async function caseSection6Reconcile_aThrownPersistStillAsksForThePass(clock) {
   await tickAndSettle(h, clock);
   check("s6 reconcile throw: a second tick on the same broken store asks for nothing", reconcilePrompts(h).length === 0, h.promptSubmits);
 
-  h.fsMap.set(".agentic-personas.json", good);
+  h.fsMap.set(PERSONA_STORE_FILE, good);
   h.resetPromptSubmits();
   await tickAndSettle(h, clock);
   check("s6 reconcile throw: the tick after the store heals asks for nothing either", reconcilePrompts(h).length === 0, h.promptSubmits);
@@ -9241,7 +9246,7 @@ function refuseOneStoreWrite(h) {
   const realWrite = h.fake.fs.write;
   const state = { refused: false, restore: () => { h.fake.fs.write = realWrite; } };
   h.fake.fs.write = (path, content) => {
-    if (path === ".agentic-personas.json" && !state.refused) {
+    if (path === PERSONA_STORE_FILE && !state.refused) {
       state.refused = true;
       return Promise.reject(new Error("the store write refused"));
     }
@@ -9463,7 +9468,7 @@ async function caseSection6Fleet_aYieldingWriteThatFailsSubmitsNothing(clock) {
     claims: [{ resource: "persona:steward", claimedAt: now - 600_000 }],
   });
   const realWrite = h.fake.fs.write;
-  h.fake.fs.write = (path, content) => (path === ".agentic-personas.json"
+  h.fake.fs.write = (path, content) => (path === PERSONA_STORE_FILE
     ? Promise.reject(new Error("the store write refused"))
     : realWrite(path, content));
   h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
@@ -9471,7 +9476,7 @@ async function caseSection6Fleet_aYieldingWriteThatFailsSubmitsNothing(clock) {
   // The subject of the silence: the write ran and did give the persona up,
   // which the yield log records. Without it the leg would pass on a tick that
   // never reached the fleet block at all.
-  check("s6 fleet yield write: the write ran and gave the persona up", (h.fsMap.get(".agentic-yields.log") || "").length > 0, h.fsMap.get(".agentic-yields.log"));
+  check("s6 fleet yield write: the write ran and gave the persona up", (h.fsMap.get(YIELD_LOG_FILE) || "").length > 0, h.fsMap.get(YIELD_LOG_FILE));
   check("s6 fleet yield write: no [FLEET] was submitted", fleetPrompts(h).length === 0, h.promptSubmits);
   h.fake.fs.write = realWrite;
 
@@ -9485,14 +9490,14 @@ async function caseSection6Fleet_aYieldingWriteThatFailsSubmitsNothing(clock) {
   await tickAndSettle(control, clock);
   check("s6 fleet yield write control: its own baseline is silent", fleetPrompts(control).length === 0, control.promptSubmits);
   const controlWrite = control.fake.fs.write;
-  control.fake.fs.write = (path, content) => (path === ".agentic-personas.json"
+  control.fake.fs.write = (path, content) => (path === PERSONA_STORE_FILE
     ? Promise.reject(new Error("the store write refused"))
     : controlWrite(path, content));
   control.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
   await tickAndSettle(control, clock);
   check("s6 fleet yield write control: a session that kept the persona submits the prompt",
     fleetPrompts(control).length === 1 && fleetPrompts(control)[0].includes("beta: healthy -> held"), control.promptSubmits);
-  check("s6 fleet yield write control: and it gave nothing up", !(control.fsMap.get(".agentic-yields.log") || "").length, control.fsMap.get(".agentic-yields.log"));
+  check("s6 fleet yield write control: and it gave nothing up", !(control.fsMap.get(YIELD_LOG_FILE) || "").length, control.fsMap.get(YIELD_LOG_FILE));
   control.fake.fs.write = controlWrite;
 }
 
@@ -9511,7 +9516,7 @@ async function caseSection6_anUnreadableStoreAtStartComesUpAndSaysSo(clock) {
   // that is not a steward.
   const seeded = { fsMap: new Map(), storeMap: new Map() };
   seedHealthyFleet(seeded, now);
-  seeded.fsMap.set(".agentic-personas.json", "{ this is not the JSON a store holds");
+  seeded.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
   seeded.storeMap.set(`commons:${SESSION_ID}`, {
     sessionId: SESSION_ID,
     lastSeen: now,
@@ -9541,7 +9546,7 @@ async function caseSection6_anUnreadableStoreAtStartComesUpAndSaysSo(clock) {
   check("s6 start store: the line is said once rather than on every tick", fleetPrompts(h).length === 0, h.promptSubmits);
 
   // The state the session came up on, read once the store parses again.
-  h.fsMap.set(".agentic-personas.json", "{}");
+  h.fsMap.set(PERSONA_STORE_FILE, "{}");
   await tickAndSettle(h, clock);
   const after = getStateForPersona(h, "steward");
   check("s6 start store: the session came up on a default state and recorded the refusal",
@@ -9554,7 +9559,7 @@ async function caseSection6_anUnreadableStoreAtStartComesUpAndSaysSo(clock) {
   const controlOpts = { ...opts, caseName: "s6_start_store_readable" };
   const controlSeed = { fsMap: new Map(), storeMap: new Map() };
   seedHealthyFleet(controlSeed, now);
-  controlSeed.fsMap.set(".agentic-personas.json", "{}");
+  controlSeed.fsMap.set(PERSONA_STORE_FILE, "{}");
   controlSeed.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
   controlSeed.storeMap.set(`commons:${SESSION_ID}`, {
     sessionId: SESSION_ID,
@@ -9580,7 +9585,7 @@ async function caseSection6_anUnreadableStoreAtStartComesUpAndSaysSo(clock) {
   // of the process, so the claim is taken at the first read that parses.
   const healedSeed = { fsMap: new Map(), storeMap: new Map() };
   seedHealthyFleet(healedSeed, now);
-  healedSeed.fsMap.set(".agentic-personas.json", "{ this is not the JSON a store holds");
+  healedSeed.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
   healedSeed.storeMap.set(`commons:${SESSION_ID}`, {
     sessionId: SESSION_ID,
     lastSeen: now,
@@ -9592,7 +9597,7 @@ async function caseSection6_anUnreadableStoreAtStartComesUpAndSaysSo(clock) {
   check("s6 start store heals: the session that came up on the broken store said so",
     fleetPrompts(healed).length === 1 && fleetPrompts(healed)[0].includes("could not be read when this session started"), healed.promptSubmits);
 
-  healed.fsMap.set(".agentic-personas.json", JSON.stringify({
+  healed.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({
     steward: { persona: "steward", activeSessionId: "session-before-this-one", epoch: 4, decisions: [], memory: [], goals: [] },
   }));
   await fireHeartbeat(healed);
@@ -9602,7 +9607,7 @@ async function caseSection6_anUnreadableStoreAtStartComesUpAndSaysSo(clock) {
   check("s6 start store heals: and the epoch is above the one the store carried",
     !!claimed && claimed.epoch > 4, claimed?.epoch);
   check("s6 start store heals: nothing was handed over",
-    !(healed.fsMap.get(".agentic-yields.log") || "").length, healed.fsMap.get(".agentic-yields.log"));
+    !(healed.fsMap.get(YIELD_LOG_FILE) || "").length, healed.fsMap.get(YIELD_LOG_FILE));
 
   // The watcher still runs, which is the whole of what the yield above would
   // have cost. The change is one the fleet has not carried on this harness, so
@@ -9629,7 +9634,7 @@ async function caseSection6_aStoreThatParsesToNothingComesUp(clock) {
   for (const [label, body] of [["null", "null"], ["a number", "7"], ["an array", "[]"], ["a string", '"steward"']]) {
     const seeded = { fsMap: new Map(), storeMap: new Map() };
     seedHealthyFleet(seeded, now);
-    seeded.fsMap.set(".agentic-personas.json", body);
+    seeded.fsMap.set(PERSONA_STORE_FILE, body);
     seeded.storeMap.set(`commons:${SESSION_ID}`, {
       sessionId: SESSION_ID,
       lastSeen: now,
@@ -9657,7 +9662,7 @@ async function caseSection6_aStoreThatParsesToNothingComesUp(clock) {
   // persona entries reads, and nothing composes a line about it.
   const controlSeed = { fsMap: new Map(), storeMap: new Map() };
   seedHealthyFleet(controlSeed, now);
-  controlSeed.fsMap.set(".agentic-personas.json", "{}");
+  controlSeed.fsMap.set(PERSONA_STORE_FILE, "{}");
   controlSeed.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
   controlSeed.storeMap.set(`commons:${SESSION_ID}`, {
     sessionId: SESSION_ID,
@@ -9688,11 +9693,11 @@ async function caseSection6Fleet_aDroppedSubmitDropsTheStoreFailureLine(clock) {
   h.resetPromptSubmits();
   await tickAndSettle(h, clock);
   check("s6 refused then dropped: the healthy baseline submits nothing", fleetPrompts(h).length === 0, h.promptSubmits);
-  const good = h.fsMap.get(".agentic-personas.json");
+  const good = h.fsMap.get(PERSONA_STORE_FILE);
 
   // The store stops parsing under a fleet that has just moved, and the submit
   // that follows the refused write is dropped below the plugin.
-  h.fsMap.set(".agentic-personas.json", "{ this is not the JSON a store holds");
+  h.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
   h.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
   h.dropNextPromptSubmit("a hook below the plugin dropped it");
   h.resetPromptSubmits();
@@ -9702,7 +9707,7 @@ async function caseSection6Fleet_aDroppedSubmitDropsTheStoreFailureLine(clock) {
   // The store parses again, so every line still standing in memory lands and
   // can be read. The check below is an absence, and this is the step that
   // produces the subject it is read against.
-  h.fsMap.set(".agentic-personas.json", good);
+  h.fsMap.set(PERSONA_STORE_FILE, good);
   h.resetPromptSubmits();
   await tickAndSettle(h, clock);
   const after = getStateForPersona(h, "steward");
@@ -9716,16 +9721,16 @@ async function caseSection6Fleet_aDroppedSubmitDropsTheStoreFailureLine(clock) {
   const r = await seedFleetWakeHarness("s6_reconcile_refused_then_dropped", now, { reconcileEveryMs: 60000 });
   seedHealthyFleet(r, now);
   await tickAndSettle(r, clock);
-  const rGood = r.fsMap.get(".agentic-personas.json");
+  const rGood = r.fsMap.get(PERSONA_STORE_FILE);
   clock.advance(61000);
   refreshFleetHeartbeats(r, clock.get());
-  r.fsMap.set(".agentic-personas.json", "{ this is not the JSON a store holds");
+  r.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
   r.dropNextPromptSubmit("a hook below the plugin dropped it");
   r.resetPromptSubmits();
   await tickAndSettle(r, clock);
   check("s6 reconcile refused then dropped: the [RECONCILE] submit was attempted",
     (r.promptSubmits || []).some((p) => p.includes("[RECONCILE]")), r.promptSubmits);
-  r.fsMap.set(".agentic-personas.json", rGood);
+  r.fsMap.set(PERSONA_STORE_FILE, rGood);
   await tickAndSettle(r, clock);
   const rAfter = getStateForPersona(r, "steward");
   check("s6 reconcile refused then dropped: the store carries the line saying the prompt failed",
@@ -9757,7 +9762,7 @@ async function caseSection6_aRefusedWriteInsideTheTickDoesNotEndIt(clock) {
     const reading = { refused: false };
     const realWrite = h.fake.fs.write;
     h.fake.fs.write = (path, content) => {
-      if (!reading.refused && path === ".agentic-personas.json") {
+      if (!reading.refused && path === PERSONA_STORE_FILE) {
         reading.refused = true;
         return Promise.reject(new Error("the store write refused"));
       }
@@ -9819,7 +9824,7 @@ async function caseSection6_aRefusedWriteInsideTheTickDoesNotEndIt(clock) {
   let storeWrites = 0;
   const rSkipWrite = rSkip.fake.fs.write;
   rSkip.fake.fs.write = (path, content) => {
-    if (path === ".agentic-personas.json") {
+    if (path === PERSONA_STORE_FILE) {
       storeWrites += 1;
       if (storeWrites === 2) return Promise.reject(new Error("the store write refused"));
     }
@@ -9845,7 +9850,7 @@ async function caseSection6_aRefusedWriteInsideTheTickDoesNotEndIt(clock) {
   const control = await seedFleetWakeHarness("s6_tick_persist_control", now, { costSummaryEveryNTicks: 1 });
   seedHealthyFleet(control, now);
   const controlWrite = control.fake.fs.write;
-  control.fake.fs.write = (path, content) => (path === ".agentic-personas.json"
+  control.fake.fs.write = (path, content) => (path === PERSONA_STORE_FILE
     ? Promise.reject(new Error("the store write refused"))
     : controlWrite(path, content));
   await tickAndSettle(control, clock);
@@ -9875,7 +9880,7 @@ async function caseSection6Fleet_aTickThatEndedEarlyReachesTheOperator(clock) {
   // for itself and ends there.
   const realWrite = h.fake.fs.write;
   let refusing = true;
-  h.fake.fs.write = (path, content) => ((refusing && path === ".agentic-personas.json")
+  h.fake.fs.write = (path, content) => ((refusing && path === PERSONA_STORE_FILE)
     ? Promise.reject(new Error("the store write refused"))
     : realWrite(path, content));
   h.resetPromptSubmits();
@@ -10432,7 +10437,7 @@ async function caseSection6Fleet_aSecondTickInsideTheFleetSubmitSubmitsNothing(c
   // tick until a prompt carrying it has gone out.
   const seeded = { fsMap: new Map(), storeMap: new Map() };
   seedHealthyFleet(seeded, now);
-  seeded.fsMap.set(".agentic-personas.json", "{ this is not the JSON a store holds");
+  seeded.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
   seeded.storeMap.set(`commons:${SESSION_ID}`, {
     sessionId: SESSION_ID,
     lastSeen: now,
@@ -10467,7 +10472,7 @@ async function caseSection6Fleet_aSecondTickInsideTheFleetSubmitSubmitsNothing(c
   // The other direction: the guard is clear once the first tick has finished,
   // so a later change is reported. It is released in a finally, so it would be
   // clear here even had the held submit thrown.
-  h.fsMap.set(".agentic-personas.json", "{}");
+  h.fsMap.set(PERSONA_STORE_FILE, "{}");
   clock.advance(11 * 60_000);
   refreshFleetHeartbeats(h, clock.get());
   refreshStewardClaim(h, clock.get());
@@ -10978,8 +10983,8 @@ async function caseSection10_openAskBlocksActivation(clock) {
   seedState.pendingAskId = "ask-plan-held-12345";
 
   const h = createFake$(options);
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: seedState }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: seedState }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({
     default: { sessionId: "old-session", epoch: 1, lastSeen: 1_000_000_000_000 },
   }));
   const mod = await loadModule(options.caseName);
@@ -12417,8 +12422,8 @@ async function caseS13_identity_takesOverAStaleHolder(clock) {
   });
   const state = makeState({ now });
   state.activeSessionId = holderSid;
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
-  h.fsMap.set(".agentic-heartbeat.json", JSON.stringify({ default: { sessionId: holderSid, epoch: 1, lastSeen: now } }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: state }));
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: holderSid, epoch: 1, lastSeen: now } }));
   await handlers["session.start"](h.fake, {}, () => {});
   const toolH = handlers["tool.call"];
   const refused = await toolH(h.fake, { tool: "mcp__agentic-plugin__agentic_identity", persona: "default" }, async () => ({ result: "passthrough" }));
@@ -12449,7 +12454,7 @@ async function caseS13_lessonInject_newestLessonReachesTheNextTurnOnce(clock) {
     lesson("m-older", "An older lesson.", T0 - 60_000),
     lesson("m-newest", "Run the tests before claiming done.", T0 - 1_000),
   ];
-  h.fsMap.set(".agentic-personas.json", JSON.stringify({ default: state }));
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: state }));
   await h.handlers["session.start"](h.fake, {}, () => {});
   const submitH = h.handlers["prompt.submit"];
   const first = await submitH(h.fake, { text: "continue" }, async () => ({}));
@@ -12485,7 +12490,7 @@ async function caseSection6_off_noToolNoClaimNoTimer(clock) {
   // proves nothing about what session.start itself wrote. What proves an
   // off session took no store write is that the seeded state's decisions
   // are still empty: session.start's only hook body is a log line.
-  const state = JSON.parse(h.fsMap.get(".agentic-personas.json")).default;
+  const state = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE)).default;
   check("s6 off: session.start recorded no decision (no store write)", state.decisions.length === 0, state.decisions);
   check("s6 off: one log line names arming off", h.uiLogs.some((l) => l.includes("arming off")), h.uiLogs);
 }
@@ -12528,7 +12533,7 @@ async function caseSection6_reader_heartbeatNeverPromotes(clock) {
   await fireHeartbeat(h);
   const entry = h.storeMap.get(`commons:${SESSION_ID}`);
   check("s6 reader heartbeat: still reader:default, not persona:default", !!entry && entry.claims.some((c) => c.resource === "reader:default") && !entry.claims.some((c) => c.resource === "persona:default"), entry);
-  const state = JSON.parse(h.fsMap.get(".agentic-personas.json")).default;
+  const state = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE)).default;
   check("s6 reader heartbeat: no reader_promoted decision", !state.decisions.some((d) => d.action === "reader_promoted"), state.decisions.map((d) => d.action));
 }
 
@@ -12585,3 +12590,80 @@ async function caseSection6_owner_matchesTheFullExistingShape(clock) {
   check("s6 owner: commons entry holds persona:default (ownership taken)", !!entry && entry.claims.some((c) => c.resource === "persona:default"), entry);
 }
 
+
+// The heartbeat file is the supervisor's liveness instrument, and the supervisor
+// resolves it once against the absolute directory it launched the child in.
+// The plugin has to resolve the same file the same way. When it resolved the
+// bare name against the working directory instead, a session whose working
+// directory had moved stamped a file nothing watched, and the supervisor
+// restarted it as hung while it was stamping on time.
+//
+// These two cases pin the path the write lands on, which is the only thing that
+// kept writer and reader apart. The harness's session.start publishes
+// HARNESS_CWD as the launch directory, so that is where the write belongs.
+async function caseHeartbeatPathAnchoredToLaunchDirectory(clock) {
+  console.log("\n=== Heartbeat path: the write lands in the launch directory, not the bare name ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, caseName: "hb_path_anchored" });
+  h.fsMap.delete(HEARTBEAT_FILE);
+  h.fsMap.delete(".agentic-heartbeat.json");
+  await fireHeartbeat(h);
+  const anchored = h.fsMap.get(HEARTBEAT_FILE);
+  check("heartbeat path: the tick wrote the file under the launch directory",
+    anchored !== undefined, [...h.fsMap.keys()]);
+  check("heartbeat path: that file carries this session's own entry",
+    !!anchored && JSON.parse(anchored).default?.sessionId === SESSION_ID, anchored);
+  check("heartbeat path: nothing was written to the bare relative name",
+    !h.fsMap.has(".agentic-heartbeat.json"), [...h.fsMap.keys()]);
+}
+
+// The fallback, for the one case that leaves the launch directory unknown: a
+// session.start whose cwd could not be read at all. The bare name is no worse
+// than what the plugin did everywhere before, and it keeps a session that
+// cannot learn its own launch directory writing something rather than throwing.
+async function caseHeartbeatPathFallsBackWhenLaunchDirectoryIsUnknown(clock) {
+  console.log("\n=== Heartbeat path: an unreadable launch directory falls back to the bare name ===");
+  clock.set(T0);
+  const h = createFake$({ ...OPTS });
+  seedPersonaStore(h, makeState({}));
+  h.fsMap.delete(HEARTBEAT_FILE);
+  h.fake.session.cwd = () => Promise.reject(new Error("cwd unavailable"));
+  const mod = await loadModule("hb_path_no_cwd");
+  const handlers = {};
+  await mod.register((event, handler) => { handlers[event] = handler; }, { ...OPTS });
+  await handlers["session.start"](h.fake, {}, () => {});
+  h.handlers = handlers;
+  h.fsMap.delete(".agentic-heartbeat.json");
+  await fireHeartbeat(h);
+  check("heartbeat fallback: the tick wrote the bare relative name",
+    h.fsMap.has(".agentic-heartbeat.json"), [...h.fsMap.keys()]);
+  check("heartbeat fallback: nothing was written under the launch directory",
+    !h.fsMap.has(HEARTBEAT_FILE), [...h.fsMap.keys()]);
+}
+
+// HARNESS_CWD is a forward-slash root, so the two cases above never exercise the
+// only branching the resolver has: the trailing-separator strip. A real session
+// on this box reports a backslash root such as D:\agent_persona, and a root
+// carrying a trailing separator would otherwise produce a doubled one. This case
+// varies that axis and nothing else.
+//
+// What these cases pin is the path string the plugin resolves. The fake fs is a
+// Map keyed on the raw argument, so it would accept any string: that an absolute
+// path is writable at all is the live suite's to prove, not this one's.
+async function caseWorkdirPathHandlesAWindowsRootWithATrailingSeparator(clock) {
+  console.log("\n=== Workdir path: a Windows root with a trailing separator resolves to one clean path ===");
+  clock.set(T0);
+  const h = createFake$({ ...OPTS });
+  h.fake.session.cwd = () => Promise.resolve("D:\\agent_persona\\");
+  h.fsMap.set("D:\\agent_persona/.agentic-personas.json", JSON.stringify({ default: makeState({}) }));
+  const mod = await loadModule("hb_path_windows_root");
+  const handlers = {};
+  await mod.register((event, handler) => { handlers[event] = handler; }, { ...OPTS });
+  await handlers["session.start"](h.fake, {}, () => {});
+  h.handlers = handlers;
+  await fireHeartbeat(h);
+  check("workdir path: the trailing separator is stripped, leaving exactly one",
+    h.fsMap.has("D:\\agent_persona/.agentic-heartbeat.json"), [...h.fsMap.keys()]);
+  check("workdir path: no doubled separator in any key the tick wrote",
+    ![...h.fsMap.keys()].some((k) => k.includes("\\/") || k.includes("//")), [...h.fsMap.keys()]);
+}
