@@ -19,7 +19,7 @@
 // Usage: node controller-tick-test.mjs
 // Exits 0 on success, 1 on failure.
 
-import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, HARNESS_CWD, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore } from "./tick-harness.mjs";
+import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, HARNESS_CWD, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, JEV_FAKE_KEY } from "./tick-harness.mjs";
 import { DECISIONS_MAX, MEMORY_MAX, parseState } from "../hooks/agent-state.ts";
 
 let failures = 0;
@@ -3245,6 +3245,16 @@ async function main() {
     await caseSection6Fleet_aReturnInTheClassLastToldCountsNothing(clock);
     await caseSection6Fleet_theDepartureLineNamesWhatWasObserved(clock);
     await caseSection6Reconcile_noRosterComposesNoRefusedStampLine(clock);
+
+    // Section 5: the decision seam's shadow wiring and the outcome joiners.
+    // Inside this block, because every one of these cases drives an idle tick
+    // and the stubbed clock is restored in the finally below.
+    await caseSeamDecisionsSurviveAnOppositeAnsweringJev(clock);
+    await caseSeamHungJevCannotDelayATick(clock);
+    await caseSeamFailingJevChangesNothingAndStillJournals(clock);
+    await caseSeamEachSiteWritesItsCallAndAnswerLines(clock);
+    await caseSeamJoinersFireOncePerControllerCall(clock);
+    await caseSeamSkippedTickAndOffModeWriteNothing(clock);
   } finally {
     clock.restore();
   }
@@ -12766,4 +12776,348 @@ async function caseWorkdirPathHandlesAWindowsRootWithATrailingSeparator(clock) {
     h.fsMap.has("D:\\agent_persona/.agentic-heartbeat.json"), [...h.fsMap.keys()]);
   check("workdir path: no doubled separator in any key the tick wrote",
     ![...h.fsMap.keys()].some((k) => k.includes("\\/") || k.includes("//")), [...h.fsMap.keys()]);
+}
+
+// ============================================================
+// Section 5: the decision seam's shadow wiring and the outcome joiners.
+//
+// The plan's central constraint is that no value read from a seam result
+// reaches a branch, a state field, a decision action or a nudge text. The
+// first three cases read that as an invariance: a run under the kill switch
+// and a run against a Jev answering the opposite of Haiku, failing, or never
+// answering at all, produce the same decisions, the same ledger, the same goal
+// tree and the same nudge text. The rest pin that each site writes its two
+// lines, that each joiner fires once per controller call, and that a skipped
+// tick and an off run write nothing at all.
+// ============================================================
+
+// Answer whatever question the request actually asked, with the option `pick`
+// chooses from the ids that request carried. It reads the request body rather
+// than a literal the case wrote, so a case cannot pass by naming a question
+// the seam never sent or an option it was never offered.
+function jevAnswering(pick) {
+  return (url, init) => {
+    const body = JSON.parse(init.body);
+    const questionId = Object.keys(body.questions)[0];
+    const optionIds = Object.keys(body.questions[questionId].criteria);
+    return jevChoiceResponse(questionId, pick(questionId, optionIds), optionIds);
+  };
+}
+
+// The first option in force, which at every set these cases drive is the one
+// the classify stub hands Haiku.
+const jevAgreeing = jevAnswering((questionId, optionIds) => optionIds[0]);
+
+// The last option in force, which at every set these cases drive is not the
+// one the classify stub hands Haiku. That is what makes it the opposite
+// answer: on the controller's own set the last id is "ask-operator" or
+// "switch", each of which would change the tick's outcome if it leaked.
+const jevOpposite = jevAnswering((questionId, optionIds) => optionIds[optionIds.length - 1]);
+
+// A worker answer that matches the ASK marker and is then refused for still
+// carrying the template's placeholder. The marker is what the ask-marker
+// joiner reads, and the refusal is what leaves the node active, so one turn
+// drives that joiner, the scorer and the memory gate together. An answer whose
+// marker is accepted opens an ask and pauses the node, which makes the same
+// turn unscorable.
+const ASK_MARKER_ANSWER = "Did the thing.\nASK: Which way <fill this in>? Recommend: <choice>";
+
+// One run of three of the four sites and both joiners: a controller tick that
+// nudges, then a worker turn that was not that nudge. The tick drives the
+// controller site and mints the id both joiners cite; the turn drives the
+// scorer, the memory gate and both joiners. The plan switch is not here,
+// because reaching it demotes the active plan and leaves nothing to score.
+async function driveSeamSites(h, clock, turnId = "t-seam") {
+  await fireTurn(h);
+  await new Promise((r) => setTimeout(r, 20));
+  clock.advance(65000);
+  await tickAndSettle(h, clock);
+  clock.advance(1000);
+  await driveSeamTurn(h, clock, turnId, ASK_MARKER_ANSWER);
+}
+
+// One worker turn with its own text, so the turn is not the nudge the tick
+// queued and the memory gate is not skipped for a nudged turn.
+async function driveSeamTurn(h, clock, turnId, answer) {
+  const turnStartH = h.handlers["turn.start"];
+  await turnStartH(h.fake, { turnId, text: "the operator asked for something" }, async () => ({ result: "ok" }));
+  const turnCompleteH = h.handlers["turn.complete"];
+  await turnCompleteH(h.fake, { turnId, answer, reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+}
+
+// A harness with the seam's key present, so a shadow call reaches a request
+// rather than stopping at the absent-key guard. A case passing jevMode "off"
+// gets no key, which is the shape of a machine with the switch turned off.
+// A root and one active plan with rounds left to burn. The harness's own
+// default node carries maxRounds 0, so the first score blocks the plan and
+// every later turn skips scoring, which is not what these cases are about.
+function seamGoals() {
+  return {
+    goals: [
+      makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 5 }),
+      makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "plan", status: "active", maxRounds: 5 }),
+    ],
+    activeGoalId: "g-plan",
+  };
+}
+
+async function seedSeamHarness(caseName, clock, options = {}) {
+  clock.set(T0);
+  const h = await createTickHarness({ stateOpts: seamGoals(), ...OPTS, caseName, ...options });
+  if (options.jevMode !== "off") h.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+  h.setClassifyValue("nudge");
+  return h;
+}
+
+// The three reads every invariance case makes, against a run of the same drive
+// under the kill switch. The decisions, the ledger, the goal tree and the
+// nudge text are the four surfaces the plan says a seam result may not reach.
+function checkInvariantAgainstOff(label, shadow, off) {
+  const shadowState = getState(shadow);
+  const offState = getState(off);
+  check(`${label}: the decisions are identical to the off run's`,
+    JSON.stringify(shadowState.decisions) === JSON.stringify(offState.decisions),
+    { off: offState.decisions.map((d) => d.action), shadow: shadowState.decisions.map((d) => d.action) });
+  check(`${label}: the cost ledger is identical to the off run's`,
+    JSON.stringify(shadowState.monitor.cost) === JSON.stringify(offState.monitor.cost),
+    { off: offState.monitor.cost, shadow: shadowState.monitor.cost });
+  check(`${label}: the goal tree is identical to the off run's`,
+    JSON.stringify(shadowState.goals) === JSON.stringify(offState.goals));
+  check(`${label}: the nudge text is identical to the off run's`,
+    JSON.stringify(goalPrompts(shadow)) === JSON.stringify(goalPrompts(off)),
+    { off: goalPrompts(off), shadow: goalPrompts(shadow) });
+}
+
+async function caseSeamDecisionsSurviveAnOppositeAnsweringJev(clock) {
+  console.log("\n=== Section 5 seam: an opposite-answering Jev changes no decision and no ledger count ===");
+
+  const off = await seedSeamHarness("seam_invariance_off", clock, { jevMode: "off" });
+  await driveSeamSites(off, clock, "t-inv");
+
+  const shadow = await seedSeamHarness("seam_invariance_shadow", clock);
+  shadow.setHttpResponse(jevOpposite);
+  await driveSeamSites(shadow, clock, "t-inv");
+
+  // The control for the reads below: the shadow run really did ask, and really
+  // was answered something other than Haiku's value. Without it, an identical
+  // pair of decision lists is also what two runs that both asked nothing look
+  // like.
+  const answers = journalLinesOfKind(shadow, "answer");
+  check("seam invariance control: the shadow run asked and was answered",
+    shadow.httpCalls.length === 3 && answers.length === 3,
+    { calls: shadow.httpCalls.length, answers: answers.length });
+  check("seam invariance control: and every answer disagreed with Haiku",
+    answers.length > 0 && answers.every((a) => a.agrees === false), answers.map((a) => [a.value, a.haikuValue]));
+
+  checkInvariantAgainstOff("seam invariance", shadow, off);
+  check("seam invariance: no journal_write_failed decision was pushed",
+    !getState(shadow).decisions.some((d) => d.action === "journal_write_failed"),
+    getState(shadow).decisions.map((d) => d.action));
+}
+
+async function caseSeamHungJevCannotDelayATick(clock) {
+  console.log("\n=== Section 5 seam: a Jev that never answers delays nothing and decides nothing ===");
+
+  const off = await seedSeamHarness("seam_hung_off", clock, { jevMode: "off" });
+  await driveSeamSites(off, clock, "t-hung");
+
+  const hung = await seedSeamHarness("seam_hung_shadow", clock);
+  hung.setHttpResponse(() => new Promise(() => {}));
+  const clockBefore = clock.get();
+  await driveSeamSites(hung, clock, "t-hung");
+
+  // The control: the requests were really issued and their timers really
+  // started, so the silence below is a call in flight rather than one that
+  // never left. Nothing fires a harness sleep on its own, which is what holds
+  // every race open for the whole case.
+  check("seam hung control: the shadow run issued requests that are still in flight",
+    hung.httpCalls.length === 3 && hung.pendingSleepCount === 3,
+    { calls: hung.httpCalls.length, sleeps: hung.pendingSleepCount });
+
+  checkInvariantAgainstOff("seam hung", hung, off);
+  check("seam hung: no call and no answer line was written, the calls not having settled",
+    journalLinesOfKind(hung, "call").length === 0 && journalLinesOfKind(hung, "answer").length === 0,
+    journalLines(hung).map((l) => l.lineKind));
+  // The two joiners still write, which is what minting the stamp id when the
+  // call starts rather than when it settles buys: an outcome can reach the
+  // file before the call it cites, and a later load joins them on that id.
+  check("seam hung: the joiners still wrote their outcomes against the held id",
+    journalLinesOfKind(hung, "outcome").length === 2, journalLinesOfKind(hung, "outcome"));
+  check("seam hung: the fake clock advanced by the case's own steps and nothing else",
+    clock.get() === clockBefore + 66000, { before: clockBefore, after: clock.get() });
+}
+
+async function caseSeamFailingJevChangesNothingAndStillJournals(clock) {
+  console.log("\n=== Section 5 seam: a failing Jev changes no decision and still writes its call line ===");
+
+  const off = await seedSeamHarness("seam_fail_off", clock, { jevMode: "off" });
+  await driveSeamSites(off, clock, "t-fail");
+
+  const failing = await seedSeamHarness("seam_fail_shadow", clock);
+  failing.setHttpResponse({ status: 429, ok: false, headers: {}, text: "rate limited" });
+  await driveSeamSites(failing, clock, "t-fail");
+
+  const calls = journalLinesOfKind(failing, "call");
+  check("seam failing control: the failure really was the rate-limit one",
+    calls.length === 3 && calls.every((c) => c.result === "http_429"), calls.map((c) => c.result));
+  check("seam failing: a failed call writes its call line and no answer line",
+    journalLinesOfKind(failing, "answer").length === 0, journalLinesOfKind(failing, "answer"));
+  checkInvariantAgainstOff("seam failing", failing, off);
+}
+
+async function caseSeamEachSiteWritesItsCallAndAnswerLines(clock) {
+  console.log("\n=== Section 5 seam: each of the four sites writes a call line and an answer line ===");
+
+  // A pending plan beside the active one, so the controller is offered the
+  // switch label and the plan switch site can run at all.
+  const root = makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" });
+  const active = makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "plan", status: "active" });
+  const waiting = makeGoalNode({ id: "g-plan-2", parentId: "g-root", kind: "plan", status: "pending", title: "The other plan" });
+  const h = await seedSeamHarness("seam_four_sites", clock, {
+    stateOpts: { goals: [root, active, waiting], activeGoalId: "g-plan" },
+  });
+  h.setHttpResponse(jevAgreeing);
+
+  // One tick that switches, which is the only way to reach the plan switch,
+  // and which leaves the plan it switched to active for the turn below.
+  h.setClassifyValue("switch");
+  h.setCompleteValue("g-plan-2");
+  await fireTurn(h);
+  await new Promise((r) => setTimeout(r, 20));
+  clock.advance(65000);
+  await tickAndSettle(h, clock);
+
+  // Then one worker turn, which drives the scorer and the memory gate.
+  h.setClassifyValue("on-goal");
+  clock.advance(1000);
+  await driveSeamTurn(h, clock, "t-sites", "Did the thing, and it advanced the objective.");
+
+  const calls = journalLinesOfKind(h, "call");
+  const answers = journalLinesOfKind(h, "answer");
+  const sites = calls.map((c) => c.site);
+  for (const site of ["controller", "plan-switch", "turn-score", "memory-kind"]) {
+    check(`seam sites: ${site} wrote one call line`, sites.filter((s) => s === site).length === 1, sites);
+  }
+  check("seam sites: every call line landed ok",
+    calls.length === 4 && calls.every((c) => c.result === "ok"), calls.map((c) => [c.site, c.result]));
+  check("seam sites: every call line carries the mode and a stamp id",
+    calls.every((c) => c.mode === "shadow" && typeof c.stampId === "string" && c.stampId.length > 0), calls);
+  check("seam sites: every call line carries the state that site sent",
+    calls.every((c) => typeof c.state === "string" && c.state.length > 0 && typeof c.stateHash === "number"),
+    calls.map((c) => [c.site, c.state && c.state.slice(0, 30)]));
+  check("seam sites: four answer lines, each joined to a call line",
+    answers.length === 4 && answers.every((a) => calls.some((c) => c.stampId === a.callStampId)), answers.map((a) => a.callStampId));
+  check("seam sites: every answer line carries a version and a probability map",
+    answers.every((a) => typeof a.questionVersion === "string" && a.questionVersion.length > 0
+      && a.probabilities && Object.keys(a.probabilities).length > 0), answers);
+
+  // The plan switch is the one site whose options are not a label array, so it
+  // is the one worth reading directly: the ids offered are the pending plan
+  // ids plus the catalog's own no_match, and Haiku's value is the id it named.
+  const switchCall = calls.find((c) => c.site === "plan-switch");
+  const switchAnswer = switchCall && answers.find((a) => a.callStampId === switchCall.stampId);
+  check("seam sites: the plan switch recorded Haiku's own plan id",
+    switchAnswer !== undefined && switchAnswer.haikuValue === "g-plan-2", switchAnswer);
+  check("seam sites: and it was asked over the pending plan ids plus no_match",
+    switchAnswer !== undefined && Object.keys(switchAnswer.probabilities).sort().join(",") === "g-plan-2,no_match",
+    switchAnswer && switchAnswer.probabilities);
+
+  // The state on the controller's line is the summary Haiku was handed, read
+  // off the classify stub's own recorded argument, so the two cannot drift
+  // without this read going red.
+  const controllerCall = calls.find((c) => c.site === "controller");
+  const controllerSummary = h.classifyCalls.length > 0 ? h.classifyCalls[0][0] : null;
+  check("seam sites: the controller sent Jev the summary Haiku received",
+    controllerCall !== undefined && controllerCall.state === controllerSummary,
+    { sent: controllerCall && controllerCall.state && controllerCall.state.slice(0, 60) });
+
+  // And the option ids the request carried are the ids Haiku was offered,
+  // read off the same recorded call.
+  const controllerRequest = h.httpCalls.length > 0 ? JSON.parse(h.httpCalls[0].init.body) : null;
+  const controllerLabels = h.classifyCalls.length > 0 ? h.classifyCalls[0][1] : [];
+  check("seam sites: the controller offered Jev the labels Haiku was offered",
+    controllerRequest !== null
+    && Object.keys(controllerRequest.questions["controller-decision"].criteria).join(",") === [...controllerLabels].join(","),
+    { offered: controllerRequest && Object.keys(controllerRequest.questions["controller-decision"].criteria), labels: [...controllerLabels] });
+}
+
+async function caseSeamJoinersFireOncePerControllerCall(clock) {
+  console.log("\n=== Section 5 seam: each joiner writes one outcome per controller call ===");
+
+  const h = await seedSeamHarness("seam_joiners", clock);
+  h.setHttpResponse(jevAgreeing);
+  await driveSeamSites(h, clock, "t-join");
+
+  const controllerCall = journalLinesOfKind(h, "call").find((c) => c.site === "controller");
+  const outcomes = journalLinesOfKind(h, "outcome");
+  check("seam joiners control: the controller call line is there to join onto",
+    controllerCall !== undefined, journalLinesOfKind(h, "call").map((c) => c.site));
+  check("seam joiners: one next_score outcome, on the held call",
+    outcomes.filter((o) => o.kind === "next_score").length === 1
+    && outcomes.filter((o) => o.kind === "next_score").every((o) => o.callStampId === controllerCall.stampId),
+    outcomes);
+  check("seam joiners: one ask_marker outcome, on the held call",
+    outcomes.filter((o) => o.kind === "ask_marker").length === 1
+    && outcomes.filter((o) => o.kind === "ask_marker").every((o) => o.callStampId === controllerCall.stampId),
+    outcomes);
+  check("seam joiners: the ask_marker value is the journal's fixed token, not the worker's line",
+    outcomes.filter((o) => o.kind === "ask_marker").every((o) => o.value === "matched"),
+    outcomes.filter((o) => o.kind === "ask_marker"));
+
+  // A second turn with no controller call between the two writes no second
+  // outcome of either kind: each joiner cleared its half of the hold.
+  clock.advance(1000);
+  await driveSeamTurn(h, clock, "t-join-2", ASK_MARKER_ANSWER);
+
+  const after = journalLinesOfKind(h, "outcome");
+  // The control: the second turn really did reach both joiner sites, so the
+  // absences below are cleared holds rather than a turn that took neither
+  // path at all.
+  const afterCalls = journalLinesOfKind(h, "call");
+  check("seam joiners control: the second turn was scored and matched its marker",
+    afterCalls.filter((c) => c.site === "turn-score").length === 2
+    && getDecisions(h).filter((d) => d.action === "ask_marker_placeholder_refused").length === 2,
+    afterCalls.map((c) => c.site));
+  check("seam joiners: the second scored turn writes no second next_score",
+    after.filter((o) => o.kind === "next_score").length === 1, after);
+  check("seam joiners: the second matched marker writes no second ask_marker",
+    after.filter((o) => o.kind === "ask_marker").length === 1, after);
+}
+
+async function caseSeamSkippedTickAndOffModeWriteNothing(clock) {
+  console.log("\n=== Section 5 seam: a skipped tick and an off run write nothing ===");
+
+  const h = await seedSeamHarness("seam_skipped_tick", clock);
+  h.setHttpResponse(jevAgreeing);
+  await fireTurn(h);
+  await new Promise((r) => setTimeout(r, 20));
+  clock.advance(65000);
+  await tickAndSettle(h, clock);
+
+  const afterFirstTick = journalLines(h).length;
+  // The control: the tick that was not skipped did write, so the absence below
+  // is the skip rather than a journal that never works under this case.
+  check("seam skip control: the first tick wrote its call and answer lines", afterFirstTick === 2, afterFirstTick);
+
+  const classifyBefore = h.classifyCalls.length;
+  for (let i = 0; i < 3; i++) {
+    clock.advance(10000);
+    await tickAndSettle(h, clock, 20);
+  }
+  check("seam skip control: the unchanged-summary skip really fired",
+    h.classifyCalls.length === classifyBefore
+    && getDecisions(h).filter((d) => d.detail && d.detail.includes("unchanged, skipped")).length >= 2,
+    { newClassifyCalls: h.classifyCalls.length - classifyBefore });
+  check("seam skip: a skipped tick writes no journal line",
+    journalLines(h).length === afterFirstTick, journalLines(h).length - afterFirstTick);
+
+  const off = await seedSeamHarness("seam_off_writes_nothing", clock, { jevMode: "off" });
+  off.setHttpResponse(jevAgreeing);
+  await driveSeamSites(off, clock, "t-off-nothing");
+  // The control for all three absences is the shadow run of the same drive in
+  // the joiners case above, which asks three times and writes eight lines.
+  check("seam off: no request left the machine", off.httpCalls.length === 0, off.httpCalls);
+  check("seam off: no journal line was written", journalLines(off).length === 0, journalLines(off));
+  check("seam off: no key was even read", !off.envGets.includes("TYPESAFE_API_KEY"), off.envGets);
 }

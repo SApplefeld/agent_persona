@@ -25,6 +25,34 @@ const HEARTBEAT_FILE = `${HARNESS_CWD}/.agentic-heartbeat.json`;
 const PERSONA_STORE_FILE = `${HARNESS_CWD}/.agentic-personas.json`;
 const YIELD_LOG_FILE = `${HARNESS_CWD}/.agentic-yields.log`;
 
+// The home the decision journal and the question overrides resolve under.
+// Seeded into every fake's environment, because the plugin runs with the
+// seam's default mode and a host that can name no home turns every shadow
+// call into a failed journal write, which is a state no supervised persona is
+// in and which would hide the writes these cases read.
+const HARNESS_HOME = "D:/harness-home";
+
+// The path fragment every decision journal file sits under, whatever home it
+// was resolved against.
+const JOURNAL_MARK = "/.claude/agentic-decisions/";
+
+// The home one case resolves its journal and overrides under. It is per case
+// because only hooks/index.ts is reloaded per case: the query string that
+// makes it fresh does not reach its own imports, so hooks/decision-journal.ts
+// is one shared module instance for the whole run, and its per-path write
+// chain and its per-path state dedup are shared with it. Two cases resolving
+// one path would queue their writes behind each other and would read each
+// other's last state, which is a property of this suite's module loading and
+// of nothing a supervised persona does.
+function homeFor(caseName) {
+  return `${HARNESS_HOME}/${caseName || "default"}`;
+}
+
+// A value long enough to clear the seam's 16-character key floor, so a case
+// setting it drives the request path rather than the absent-key one. No part
+// of it is a real key.
+const JEV_FAKE_KEY = "harness-fake-key-0000000000";
+
 // AO1: Resolve hook - when specifier starts with "./", has no extension, and
 // parent URL is under hooks/, append ".ts" and defer to next resolver.
 const resolveHook = (specifier, context, nextResolve) => {
@@ -84,10 +112,12 @@ function createFake$(opts = {}) {
     headers: {},
     text: '{"model":"jev-fake","answers":{},"usage":{"input_tokens":0,"output_tokens":0}}',
   };
-  // The environment $.env.get reads, and every name read, in order. Empty by
-  // default: a fake with no TYPESAFE_API_KEY is a VM with no key, so the
-  // seam's shadow path is opt-in per case through setEnv.
-  const envMap = new Map();
+  // The environment $.env.get reads, and every name read, in order. It holds
+  // a home by default and no TYPESAFE_API_KEY, which is the shape of a VM the
+  // operator has not given a key: the seam reads no key and sends nothing,
+  // while the journal can still name a file to write its line to. A case
+  // driving a real request sets the key itself through setEnv.
+  const envMap = new Map([["USERPROFILE", homeFor(opts.caseName)]]);
   const envGets = [];
   // Every $.clock.sleep call, in order, each holding its own resolve and
   // reject so a case decides when a timer fires. Nothing fires on its own,
@@ -364,6 +394,53 @@ function fakeHostOf(h) {
   };
 }
 
+// --- Decision journal reads ---
+
+// Every journal line the plugin has written under the harness home, parsed, in
+// file order. It reads the fake fs rather than a path a case names itself,
+// because a path that was never written and a path a case guessed wrong read
+// the same way. A line that is not JSON is returned as { unparsed }, so a
+// malformed write is visible rather than thrown over.
+function journalLines(h) {
+  const out = [];
+  for (const [path, content] of h.fsMap) {
+    if (!path.includes(JOURNAL_MARK)) continue;
+    for (const line of content.split("\n")) {
+      if (line.trim().length === 0) continue;
+      try {
+        out.push(JSON.parse(line));
+      } catch {
+        out.push({ unparsed: line });
+      }
+    }
+  }
+  return out;
+}
+
+// The journal lines of one kind, in file order.
+function journalLinesOfKind(h, lineKind) {
+  return journalLines(h).filter((line) => line.lineKind === lineKind);
+}
+
+// An HttpResponse-shaped answer to one Choice question, the shape the seam
+// validates. `choice` is the option id Jev picked; the distribution puts the
+// whole mass on it, which is a well-formed answer and not a claim about what
+// Jev would really return.
+function jevChoiceResponse(questionId, choice, optionIds) {
+  const probabilities = {};
+  for (const id of optionIds) probabilities[id] = id === choice ? 1 : 0;
+  return {
+    status: 200,
+    ok: true,
+    headers: {},
+    text: JSON.stringify({
+      model: "jev-fake",
+      answers: { [questionId]: { type: "choice", choice, probabilities, confidence: 0.9 } },
+      usage: { input_tokens: 11, output_tokens: 2 },
+    }),
+  };
+}
+
 // --- Date.now stub ---
 
 function stubDateNow() {
@@ -575,8 +652,14 @@ export {
   fireHeartbeat,
   seedPersonaStore,
   loadModule,
+  journalLines,
+  journalLinesOfKind,
+  jevChoiceResponse,
   SESSION_ID,
   HARNESS_CWD,
+  HARNESS_HOME,
+  JOURNAL_MARK,
+  JEV_FAKE_KEY,
   HEARTBEAT_FILE,
   PERSONA_STORE_FILE,
   YIELD_LOG_FILE,

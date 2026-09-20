@@ -74,6 +74,13 @@ export const PLAN_SWITCH = "plan-switch";
 export const TURN_SCORE = "turn-score";
 export const MEMORY_KIND = "memory-kind";
 
+// The plan switch is the one set whose options are not all the catalog own:
+// the rest are the pending plan ids the caller supplies per request. This is
+// the option that covers none of them, and the wiring in hooks/index.ts sends
+// it as an offered id and records it as Haiku value where no plan matched, so
+// the two files are pinned to one spelling rather than two literals.
+export const PLAN_SWITCH_NO_MATCH = "no_match";
+
 export const QUESTION_SET_IDS: readonly string[] = Object.freeze([CONTROLLER_DECISION, PLAN_SWITCH, TURN_SCORE, MEMORY_KIND]);
 
 // The version label a shipped default carries into the journal. An override
@@ -125,7 +132,7 @@ export const SHIPPED_QUESTIONS: Readonly<Record<string, ResolvedQuestion>> = {
     // this set is floored at one for the same reason rather than at
     // MIN_OPTIONS, which bounds the sets whose options are all the catalog's.
     options: {
-      "no_match": "None of the pending plans fits.",
+      [PLAN_SWITCH_NO_MATCH]: "None of the pending plans fits.",
     },
   },
   [TURN_SCORE]: {
