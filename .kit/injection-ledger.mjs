@@ -717,7 +717,12 @@ function extractFleetPromptLineLiterals(src) {
 // The sites are read by shape rather than from a list: every `composed:`
 // key in hooks/index.ts outside the FleetLine type's own declaration is a
 // site, so one added anywhere in the file is sized the moment it is
-// written. Each site's value region runs to the `carried:` key that closes
+// written in that shape. One written in shorthand (`{ composed, carried }`)
+// is not sized, and is refused by name below rather than passed over: the
+// shorthand's value is an identifier by definition, and this file resolves
+// no identifier, so there is no more correct reading of one here than of a
+// sentence hoisted into a constant. Each site's value region runs to the
+// `carried:` key that closes
 // the pair, which is the anchor proving the capture reached the end of the
 // value. Inside that region, everything outside a string literal must be
 // whitespace or the comma that closes the pair. An identifier, a call or a
@@ -741,6 +746,18 @@ function extractFleetNoteComposedProse(src) {
     throw new Error("[fleet-note-prose] the FleetLine type declaration was not found in hooks/index.ts; this rule tells the type's own `composed` key from a note's by that declaration's own region and cannot run without it");
   }
   const typeEnd = findMatchingBrace(src, src.indexOf("{", typeIdx));
+  // A note written in shorthand carries no colon, so the key scan below
+  // never sees it and the entry would shrink by that site's whole sentence
+  // with nothing said. The shape is the `composed` name standing alone in
+  // object-literal key position, which is a `{` or a `,` before it and a
+  // `,` or a `}` after it. A member read (`line.composed`) is excluded by
+  // the opening delimiter, and a `composed:` key by the closing one.
+  const shorthandRe = /[{,]\s*composed\s*(?=[,}])/g;
+  let sh;
+  while ((sh = shorthandRe.exec(src)) !== null) {
+    if (sh.index > typeIdx && sh.index < typeEnd) continue;
+    throw new Error(`[fleet-note-prose] the fleet note at hooks/index.ts offset ${sh.index} writes its composed half in shorthand property form; that form carries no sentence at the site, only the name of one, and this file resolves no identifier, so the note's prose would leave this ledger unsized and the [FLEET] prompt would grow with nothing declaring it. Write the key and its literal out in full (\`composed: "..."\`), or give the shape a rule of its own in the same commit.`);
+  }
   const literals = [];
   let sites = 0;
   const keyRe = /\bcomposed:[ \t]*/g;

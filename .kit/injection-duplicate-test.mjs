@@ -590,6 +590,25 @@ function fail(name) {
   // on an edit that changes no text.
   expectRefusal("a fleet note's composed half split across a +", "[fleet-note-prose]", ["composed half"], () =>
     buildLedgerFrom(shSrc, mutated(tsSrc, noteSentence, "a roster entry repeats a name\" + \" an earlier entry already holds, so it has no row of its own. The name it wrote:", "note split")));
+  // The same site rewritten into shorthand property form, which is the one
+  // way a note can carry prose with no colon after its key. The key scan
+  // reads a colon, so before the shorthand check existed this built with no
+  // throw and the entry simply lost this site's whole sentence: a coverage
+  // case, not an instrument one. The instance is made by editing the real
+  // source rather than by handing the pattern a string it already names,
+  // and the pattern matches it on the delimiters around the bare key.
+  {
+    const at = tsSrc.indexOf(noteSentence);
+    const open = at === -1 ? -1 : tsSrc.lastIndexOf('"', at);
+    const close = at === -1 ? -1 : tsSrc.indexOf('"', at + noteSentence.length);
+    const keyAt = open === -1 ? -1 : tsSrc.lastIndexOf("composed:", open);
+    if (at === -1 || open === -1 || close === -1 || keyAt === -1) {
+      fail("guard control: a fleet note's composed half in shorthand property form - the note sentence, its delimiters or its own key are not in hooks/index.ts");
+    } else {
+      const shorthand = tsSrc.slice(0, keyAt) + "composed" + tsSrc.slice(close + 1);
+      expectRefusal("a fleet note's composed half in shorthand property form", "[fleet-note-prose]", ["shorthand"], () => buildLedgerFrom(shSrc, shorthand));
+    }
+  }
   // Coverage: lengthen a site's own sentence and require the entry to grow by
   // exactly the characters added and to carry the longer phrase, which is what
   // says the rule reads this site rather than merely refusing a bad one.
