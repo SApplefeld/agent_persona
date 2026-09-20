@@ -13,18 +13,32 @@
 // one character higher per line than a blob count.
 //
 // The extraction below is a fixed table of named rules, one per injected
-// string the plan's Approach inventory names, mirroring
+// string, covering the plan's Approach inventory plus the per-prompt context
+// blocks and tool descriptions Section 1 names beyond it, mirroring
 // .kit/check-loader-rule.mjs's per-rule regexes rather than a general parser:
 // the set of strings is small, named, and shaped differently enough (a shell
 // variable, a template literal with interpolation, a tool registration
 // object) that one rule per shape reads plainly, where a single generic
 // parser covering all three shapes would not.
 //
-// Every rule fails closed. An extraction that cannot match its anchor, or
-// that matches fewer or more pieces than its table expects, throws with the
-// name and both counts; it never records a zero, a partial value or a
-// default, because a string that silently shrank in the ledger reads to the
-// size check as a trim. Beside the per-string rules, four structural checks
+// Each rule reads the source shape its own comment names, and refuses the
+// shape changes that comment names. An extraction that cannot match its
+// anchor, or that matches fewer or more pieces than its table expects, throws
+// with the name and both counts; it never records a zero, a partial value or
+// a default, because a string that silently shrank in the ledger reads to the
+// size check as a trim.
+//
+// What no rule here reaches is a rewrite into a shape no rule names, and the
+// largest case of that is a name. This tool reads text with patterns and
+// resolves no identifier, so it cannot tell a variable carrying data from one
+// carrying prose hoisted out of a literal. Every exclusion below that accepts
+// a bare reference accepts a hoisted string on the same terms. That bound is
+// declared rather than closed, because closing it needs a parser rather than
+// a further pattern. What stands in its place is the plan's own design: each
+// section that rewrites these sources carries this file in its own files in
+// scope and re-anchors the rules it moves, under that section's reviewers,
+// and each such section's acceptance is its sentence accounting rather than a
+// size. Beside the per-string rules, four structural checks
 // read each family's shape off the source rather than off this file's list,
 // so a member the list does not name fails the build: every *_INSTRUCTION
 // variable the supervisor assigns and every variable its priming write
@@ -32,11 +46,11 @@
 // submitExpectedTurn call site and every direct .prompt.submit call, and
 // every $.tool.register block.
 //
-// One coverage bound is declared rather than closed. Two submitExpectedTurn
-// call sites deliver an inbox record, and their whole text is built by
+// A second coverage bound is declared rather than closed. Three call sites
+// deliver an inbox record, and their whole text is built by
 // deliveryText in hooks/operator.ts, a file this ledger does not read. Two
 // of those sites reach the child through submitExpectedTurn and are named in
-// PROMPT_CALL_SITES as exclusions; a third hands its record to the running
+// PROMPT_CALL_SITES as exclusions; the third hands its record to the running
 // turn as tool-result context instead and is reached by no row there. All
 // three are counted and asserted by shape, the ledger requiring that none
 // contributes literal text in its ground, id or text argument, and the
@@ -66,9 +80,17 @@ function readNormalized(path) {
 // Standard backslash escapes, decoded to the real character they represent.
 // Applied uniformly below to every extracted string regardless of source
 // shape (a bash double-quoted assignment, a TS string literal, a TS
-// template literal): a shell string and a TS string that both write `\n`
-// mean the same one-character newline in the child's context, so both are
-// decoded by the same rule rather than two.
+// template literal). One rule rather than two is a simplification, not an
+// equivalence, and the difference runs the undercounting way. A TS `\n` is
+// one newline in the child. A bash double-quoted `\n` is two characters
+// there, since bash performs no such decoding and the priming write hands
+// the string to node argv and through JSON.stringify unchanged. So a shell
+// clause carrying a backslash escape is sized one character short per
+// escape. No assignment line carries one at this base, which is what keeps
+// the simplification harmless today rather than correct. Deciding by source
+// shape is the fix, and it changes what the rule reads rather than what a
+// comment claims, so it belongs to a section that carries this file in its
+// own files in scope and re-anchors under that section's reviewers.
 const ESCAPE_MAP = {
   "\\": "\\", "'": "'", '"': '"',
   n: "\n", r: "\r", t: "\t", b: "\b", f: "\f", v: "\v", "0": "\0",
@@ -88,11 +110,15 @@ function decodeEscapes(text) {
 // one unit. A pattern that stopped at the first closing brace would remove
 // the inner interpolation and leave the rest of the expression behind as
 // prose, which then rides in the entry, inflates its size and is indexed by
-// the duplicate check as injected text no prompt actually carries. This is
-// the same scan literalOfTemplateChain uses to skip an interpolation while
-// tokenizing, and it is shared rather than written twice so the reader that
-// captures a piece and the stripper that cleans it cannot disagree about
-// where an interpolation ends.
+// the duplicate check as injected text no prompt actually carries. The scan
+// below and the one literalOfTemplateChain uses to skip an interpolation
+// while tokenizing are two copies of one algorithm rather than one shared
+// function, and they differ deliberately at exactly one case: an
+// interpolation that never closes throws there, where the source is a chain
+// this ledger must size, and drops the remainder here, where emitting it
+// would be the residue this scan exists to prevent. Neither shape occurs in
+// source that parses. Two copies can drift where one cannot, so a change to
+// either is made to both.
 function stripInterpolations(text) {
   let out = "";
   let i = 0;
@@ -169,7 +195,7 @@ function parseStringLiteralChain(src, startIdx, owner) {
         const ident = /^[A-Za-z_$][\w$]*/.exec(src.slice(i));
         const operand = ident ? ident[0] : JSON.stringify(src.slice(i, i + 16));
         throw new Error(
-          `[chain-truncated] ${owner || "string literal chain"}: a \`+\` is followed by ${operand}, which is not a quoted literal, so every piece after it would be dropped from the entry`,
+          `[chain-truncated] ${owner || "string literal chain"}: a \`+\` is followed by ${operand}, which is not a quoted literal, so every piece after it would be dropped from the entry. A line comment sitting between two pieces reads this way too, and is a legitimate shape rather than a malformed chain; move it above the statement.`,
         );
       }
       break;
@@ -399,7 +425,16 @@ function extractShellInstructions(src) {
   // none is; no channel at all), so the three assignments are mutually
   // exclusive at runtime and each is its own ledger entry rather than a
   // concatenation.
-  const primingRe = /^\s*PRIMING_BODY="([^\n]*)"\s*$/;
+  // The append form is read here rather than passed over. A
+  // `PRIMING_BODY+="..."` clause is part of the same body bash writes to the
+  // child, so its text reaches the session exactly as a plain assignment's
+  // does. A rule matching `=` alone would leave the three plain assignments
+  // matching and the count still three, and nothing else in this file would
+  // see the clause. The three entries are one per branch of a mutually
+  // exclusive if/elif/else, so an appended clause belongs to no single branch
+  // and is refused rather than guessed at. The instruction table above reads
+  // `(\+?)=` for the same reason, where a concatenation does have one owner.
+  const primingRe = /^\s*PRIMING_BODY(\+?)="([^\n]*)"\s*$/;
   const primingLabels = [
     "PRIMING_BODY_prompt_pending",
     "PRIMING_BODY_channel_wait",
@@ -408,7 +443,13 @@ function extractShellInstructions(src) {
   const primingMatches = [];
   for (const line of lines) {
     const m = primingRe.exec(line);
-    if (m) primingMatches.push(m[1]);
+    if (!m) continue;
+    if (m[1] === "+") {
+      throw new Error(
+        "[priming-shape] PRIMING_BODY: a clause is appended with `+=`, which bash writes to the child as part of the same body, so its text is injected text. The three entries here are one per branch of a mutually exclusive if/elif/else, so an appended clause belongs to no single branch and no rule sizes it. Size it explicitly or restore one plain assignment per branch.",
+      );
+    }
+    primingMatches.push(m[2]);
   }
   if (primingMatches.length !== primingLabels.length) {
     throw new Error(
@@ -465,9 +506,14 @@ function extractReconcileText(src) {
 // The region between `quoteContinuationLines(` and the `)}` that closes the
 // call is captured whole and read by the shared chain reader, rather than
 // one backtick pair being matched inside it. Both halves of that matter. The
-// closing anchor is what proves the capture reached the end of the
-// expression, so a piece added after the one this rule recognises cannot sit
-// outside the capture unseen. The shared reader is what sizes the region
+// closing anchor proves the capture reached the end of the call, so a piece
+// added after the one this rule recognises cannot sit outside the capture
+// unseen. It proves nothing about the template around the call: text placed
+// before `quoteContinuationLines(` in that outer template is outside the
+// capture. Today the only thing there is `${REPLY_INSTRUCTION}`, counted as
+// its own entry above, so nothing is lost. Section 3 deletes that prefix and
+// carries this file in its own files in scope, which is where the rule is
+// re-anchored to whatever replaces it. The shared reader is what sizes the region
 // correctly once it is captured, joining every template piece and refusing
 // only an operand it cannot size. A rule that matched one backtick pair with
 // no closing anchor would record that pair and drop the rest with no throw,
@@ -888,12 +934,16 @@ function checkPromptCallSites(src, entryNames) {
     const args = src.slice(open + 1, close);
     const optsIdx = args.indexOf("{");
     const textArgs = optsIdx === -1 ? args : args.slice(0, optsIdx);
-    // Each of the three positional arguments must be a bare reference. A
-    // test for a quote character is not enough, because the text a quote
-    // would have carried can be hoisted into a constant and spliced back by
-    // name, which is the same operand-splice the chain rules above refuse.
-    // So the shape is asserted positively rather than one bad character
-    // being screened out.
+    // Each of the three positional arguments must be a bare reference. The
+    // shape is asserted positively rather than one bad character being
+    // screened out, which refuses a literal and every expression form that is
+    // not a plain name or member path. It does not refuse a hoisted constant.
+    // A name carrying prose and a name carrying data are the same shape, and
+    // telling them apart needs the name resolved rather than matched, which
+    // is the header's declared bound and not something a further pattern
+    // here closes. So the exclusion these three arguments rest on is an
+    // assertion this file cannot verify. The answerTo check below refuses a
+    // literal on exactly the same terms and with exactly the same reach.
     const positional = textArgs.split(",").map((a) => a.trim()).filter((a) => a.length > 0);
     for (const arg of positional) {
       if (!/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(arg)) {

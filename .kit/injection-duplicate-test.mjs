@@ -21,11 +21,15 @@
 //       value, and that throw ends this run non-zero before any check
 //       below reads a partial ledger.
 // This check reads two files (bin/supervise.sh, hooks/index.ts). One
-// coverage bound inside them is declared and pinned below: the two
+// coverage bound inside them is declared and pinned below: the three
 // record-delivery prompts whose whole text hooks/operator.ts's deliveryText
-// builds are excluded by name, and the ledger asserts hooks/index.ts adds
-// no literal text at either site. A third injection site outside the two
-// files carries no rule here and is not covered. Among the strings it does
+// builds are excluded, two of them named in the ledger's call-site list and
+// the third reached only by the count the ledger asserts over every
+// deliveryText site, since it delivers inside a running turn as tool-result
+// context rather than through a prompt call. The ledger asserts that
+// hooks/index.ts adds no literal text at any of the three, an assertion
+// bounded by the ledger header's own note that a bare reference and a
+// hoisted literal are the same shape to a pattern. Among the strings it does
 // read, a sentence two prompts both need is a sentence with one owner and
 // a pointer, never two copies.
 //
@@ -370,6 +374,23 @@ function fail(name) {
       lines[idx] = lines[idx].slice(0, cut) + "\\\n" + lines[idx].slice(cut);
       const wrapped = lines.join("\n");
       expectRefusal("a += clause wrapped onto two lines", "[instruction-count]", ["COORDINATOR_ROLE_INSTRUCTION", "expected 5", "found 4"], () => buildLedgerFrom(wrapped, tsSrc));
+    }
+  }
+  // A PRIMING_BODY clause appended with +=. bash reads it as part of the same
+  // body, and bin/supervise.sh writes that body to the child, so the appended
+  // sentence is injected text. The three plain assignments still match and
+  // still count three, so only a rule that reads the append form sees the
+  // clause at all. The line is placed after the last plain assignment by
+  // position, never by matching text the rule under test was handed.
+  {
+    const lines = shSrc.split("\n");
+    const plain = lines.map((l, i) => (/^\s*PRIMING_BODY="/.test(l) ? i : -1)).filter((i) => i !== -1);
+    if (plain.length < 1) {
+      fail("guard control: a PRIMING_BODY clause appended with += - no plain PRIMING_BODY assignment to place it after");
+    } else {
+      const idx = plain[plain.length - 1];
+      lines.splice(idx + 1, 0, '    PRIMING_BODY+="Escalate anything you cannot resolve to the operator without delay."');
+      expectRefusal("a PRIMING_BODY clause appended with +=", "[priming-shape]", ["PRIMING_BODY"], () => buildLedgerFrom(lines.join("\n"), tsSrc));
     }
   }
   // A sixth instruction variable, assigned but named in no table.
