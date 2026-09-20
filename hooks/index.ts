@@ -596,12 +596,23 @@ function stripBom(text: string): string {
 // that only ever mutate in-memory state after a successful roll (the
 // decision/memory caps in persist()) let it propagate too, since a decision
 // or memory entry silently dropped is the same defect either way.
-const appendToChannelLog = async (dp: any, lines: string[]): Promise<void> => {
+//
+// One JSONL append rule for every log this plugin keeps, the channel log and
+// the yield log alike: one object per line, exactly one newline terminating
+// each, and a separator newline inserted only where the file being appended to
+// does not already end in one. A line arrives either way, the channel log's
+// built without a terminator and the yield log's with one, so the terminator is
+// added only where the caller's line lacks it.
+const appendLines = async (dp: any, path: string, lines: string[]): Promise<void> => {
   if (lines.length === 0) return;
-  const existing = await dp.fs.exists(CHANNEL_LOG_PATH) ? await dp.fs.read(CHANNEL_LOG_PATH) : "";
+  const existing = await dp.fs.exists(path) ? await dp.fs.read(path) : "";
   const sep = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-  await dp.fs.write(CHANNEL_LOG_PATH, existing + sep + lines.join("\n") + "\n");
+  const body = lines.map((line) => (line.endsWith("\n") ? line : line + "\n")).join("");
+  await dp.fs.write(path, existing + sep + body);
 };
+
+// The channel log's own path, bound once for the callers that roll records into it.
+const appendToChannelLog = async (dp: any, lines: string[]): Promise<void> => appendLines(dp, CHANNEL_LOG_PATH, lines);
 
 // L26: the yield action (log the decision, drop ownership, append a single
 // well-formed line to the yield log) is one code path shared by every site
@@ -615,8 +626,7 @@ export const yieldNow = async (dp: any, onDisk: { activeSessionId: string; epoch
   sess.isOwner = false;
   try { dp.ui.log(`Agentic: yielded '${sess.persona}' to ${onDisk.activeSessionId} (epoch ${onDisk.epoch})`); } catch { /* non-fatal */ }
   try {
-    const el = await dp.fs.exists(sess.yieldLogPath) ? await dp.fs.read(sess.yieldLogPath) : "";
-    await dp.fs.write(sess.yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
+    await appendLines(dp, sess.yieldLogPath, [rec.logLine]);
   } catch { /* non-fatal */ }
   // F13: release the commons claim so an exited session does not lock the
   // persona for the full 90s staleness window.
@@ -1488,8 +1498,7 @@ export const persist = async (dp: any, rollBackOnYield?: () => void): Promise<bo
         0, // No epoch in commons; use 0 as a sentinel
       );
       try {
-        const el = await dp.fs.exists(sess.yieldLogPath) ? await dp.fs.read(sess.yieldLogPath) : "";
-        await dp.fs.write(sess.yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
+        await appendLines(dp, sess.yieldLogPath, [rec.logLine]);
       } catch { /* non-fatal */ }
       sess.state.decisions.push({
         timestamp: Date.now(),

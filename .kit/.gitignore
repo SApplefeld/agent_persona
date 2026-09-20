@@ -31,3 +31,4 @@
 !/decision-seam-unit-test.mjs
 !/fixtures/*
 !/question-catalog-unit-test.mjs
+!/decision-journal-unit-test.mjs

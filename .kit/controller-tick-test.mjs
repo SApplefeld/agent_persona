@@ -3153,6 +3153,8 @@ async function main() {
     await caseSection1_turnStartStampsCommonsEntry(clock);
     await caseSection1_turnCompleteClearsCommonsStamp_control(clock);
     await caseSection1_yieldMidTurnStillClearsCommonsStamp(clock);
+    await caseYieldLogBytes_yieldNowPathSeparatesAnUnterminatedFile(clock);
+    await caseYieldLogBytes_commonsPathAddsNoSeparatorToATerminatedFile(clock);
     await caseSection1_readerEntryCarriesWorkdirAtSessionStart(clock);
     await caseItem8p3_inboxReportsDeferredWhileTurnRuns(clock);
     await caseItem8p3_deferredNotReportedForStaleOwner(clock);
@@ -3969,6 +3971,105 @@ async function caseSection1_yieldMidTurnStillClearsCommonsStamp(clock) {
   await turnCompleteH(h.fake, { turnId: "t-yield", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
   const entry = h.storeMap.get(`commons:${SESSION_ID}`);
   check("section1 yield: commons turnStartedAt is null after turn.complete as a reader", entry?.turnStartedAt === null, entry);
+}
+
+// The yield log's byte layout, pinned on both paths that write it.
+//
+// The log is JSONL read by an operator and by any later tool that splits it on
+// newlines, so its layout is a contract: one JSON object per line, exactly one
+// terminating newline, and a separator newline inserted only where the file it
+// appends to does not already end in one. Two code paths write it, and every
+// existing assertion over it reads substrings or a length, so a path that
+// doubled a newline or dropped a separator would pass all of them.
+//
+// The two cases below vary the one axis that matters between them: the first
+// appends to a file that does not end in a newline, the second to a file that
+// does. Each compares the whole file to bytes built here rather than read back,
+// key order included, since JSON.stringify emits keys in the order the producer
+// wrote them.
+const YIELD_LOG_PRIOR = '{"ts":"2023-11-14T22:13:20.000Z","persona":"default","yielded":"older-session","yieldedEpoch":1,"winner":"someone-else","winnerEpoch":1}';
+
+function yieldLogLine(at, yielded, yieldedEpoch, winner, winnerEpoch) {
+  return JSON.stringify({
+    ts: new Date(at).toISOString(),
+    persona: "default",
+    yielded,
+    yieldedEpoch,
+    winner,
+    winnerEpoch,
+  }) + "\n";
+}
+
+// yieldNow's own write: the heartbeat tick finds the persona store naming
+// another session and gives the persona up. The log it appends to ends without
+// a newline, so exactly one separator belongs between the two lines.
+async function caseYieldLogBytes_yieldNowPathSeparatesAnUnterminatedFile(clock) {
+  console.log("\n=== Yield log bytes: yieldNow appends one line and one separator to an unterminated file ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedOwnerHarness("yield_log_bytes_yieldnow", now);
+  h.fsMap.set(YIELD_LOG_FILE, YIELD_LOG_PRIOR);
+
+  clock.advance(10_000);
+  const at = now + 10_000;
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: buildPersonaState("foreign-owner-001", at) }));
+  await fireHeartbeat(h);
+
+  // Attribution runs on the session's own log lines rather than on its
+  // decisions: the yieldNow path pushes its decision to in-memory state without
+  // persisting, and the store on disk belongs to the foreign owner by then. The
+  // two paths word their line differently, one naming the winner's epoch and
+  // the other naming commons.
+  check("yield log bytes yieldNow: the yieldNow path ran (attribution)",
+    h.uiLogs.some(l => l.includes("yielded 'default' to foreign-owner-001 (epoch 1)")), h.uiLogs);
+  check("yield log bytes yieldNow: and the commons path did not (attribution)",
+    !h.uiLogs.some(l => l.includes("(commons)")), h.uiLogs);
+
+  // The session's own epoch is 2: session.start claimed the persona from the
+  // seeded epoch-1 state and raised it.
+  const expected = YIELD_LOG_PRIOR + "\n" + yieldLogLine(at, SESSION_ID, 2, "foreign-owner-001", 1);
+  const actual = h.fsMap.get(YIELD_LOG_FILE);
+  check("yield log bytes yieldNow: the file is the prior line, one separator and the new line", actual === expected, { actual, expected });
+  check("yield log bytes yieldNow: no blank line anywhere in it", !String(actual).includes("\n\n"), actual);
+  check("yield log bytes yieldNow: exactly one terminating newline", String(actual).endsWith("\n") && !String(actual).endsWith("\n\n"), actual);
+  check("yield log bytes yieldNow: every line is one parseable JSON object",
+    String(actual).split("\n").slice(0, -1).every(l => { try { return JSON.parse(l) !== null; } catch { return false; } }), actual);
+}
+
+// persist's commons-arbitration write, the second copy of the same rule: a live
+// rival holds an older claim on this persona, so the write gives the persona up
+// and logs it. The log it appends to already ends in a newline, so no separator
+// belongs.
+async function caseYieldLogBytes_commonsPathAddsNoSeparatorToATerminatedFile(clock) {
+  console.log("\n=== Yield log bytes: the commons yield appends no separator to a terminated file ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedOwnerHarness("yield_log_bytes_commons", now);
+  h.fsMap.set(YIELD_LOG_FILE, YIELD_LOG_PRIOR + "\n");
+
+  // A live rival whose claim on this persona is older than this session's, so
+  // commons arbitration hands it the persona at the next persisted write.
+  clock.advance(10_000);
+  const at = now + 10_000;
+  h.storeMap.set("commons:rival-steward", {
+    sessionId: "rival-steward",
+    lastSeen: at,
+    claims: [{ resource: "persona:default", claimedAt: now - 600_000 }],
+  });
+  // A turn's own persisted write is the one that reaches the commons branch.
+  await fireTurn(h);
+
+  check("yield log bytes commons: the commons path ran (attribution)",
+    h.uiLogs.some(l => l.includes("yielded 'default' to rival-steward (commons)")), h.uiLogs);
+  check("yield log bytes commons: and the yieldNow path did not (attribution)",
+    !h.uiLogs.some(l => l.includes("(epoch ")), h.uiLogs);
+
+  // The commons branch has no epoch for the winner and writes 0 as its sentinel.
+  const expected = YIELD_LOG_PRIOR + "\n" + yieldLogLine(at, SESSION_ID, 2, "rival-steward", 0);
+  const actual = h.fsMap.get(YIELD_LOG_FILE);
+  check("yield log bytes commons: the file is the prior line and the new line, with nothing between", actual === expected, { actual, expected });
+  check("yield log bytes commons: no blank line anywhere in it", !String(actual).includes("\n\n"), actual);
+  check("yield log bytes commons: exactly one terminating newline", String(actual).endsWith("\n") && !String(actual).endsWith("\n\n"), actual);
 }
 
 // A reader session's commons entry carries its workdir from session.start and
