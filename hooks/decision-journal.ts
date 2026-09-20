@@ -22,11 +22,21 @@
 // and the first failure of a UTC day is flagged so the caller can log it once.
 // A tick that cannot write its journal line is still a tick that must finish.
 //
-// This module is the journal's output channel, so the two guards every line
-// crosses live here and are exported rather than kept private: the scrub that
-// keeps a secret out of a line, and the clamp that bounds a field nobody else
-// bounds. A later module that writes a journal line calls these rather than
-// writing its own, which is what stops the next boundary from being unguarded.
+// This module is the journal's output channel, so the guard every line crosses
+// lives here and is exported rather than kept private: the clamp that bounds a
+// field nobody else bounds. A later module that writes a journal line calls it
+// rather than writing its own, which is what stops the next boundary from
+// being unguarded.
+//
+// The scrub beside it is exported and is not applied by any writer here. What
+// keeps the API key out of a line today is the seam, which holds the only copy
+// and scrubs the one field it builds from a message it did not author. The
+// journal does not read the key, because reading it would mean one more op
+// event per line, observable by any co-loaded hook, and because the value that
+// came back would then be used as a substitution pattern over the payload: a
+// short or hostile answer would rewrite the measured state rather than leak
+// it, in a file nothing rewrites. Which boundary should own the scrub, and
+// what a line should record when it did not run, is open.
 
 import type { PluginHost } from "./host";
 import type { SeamResult } from "./decision-seam";
@@ -194,7 +204,13 @@ const LANDED: JournalWrite = { ok: true, firstFailureToday: false };
 // terminator keeps the one it has.
 async function appendLine(host: JournalHost, path: string, line: string): Promise<boolean> {
   try {
-    const exists = await host.fileExists(path);
+    // Read as unknown for the same reason the body below is: a hook above the
+    // caller may answer this op event with a value of its own. An answer that
+    // is neither true nor false says nothing about the file, and falling
+    // through on one would rewrite the day's lines as a single line. The
+    // stronger failure is guarded here and the weaker one below.
+    const exists: unknown = await host.fileExists(path);
+    if (exists !== true && exists !== false) return false;
     let existing = "";
     if (exists === true) {
       const read: unknown = await host.readFile(path);
@@ -254,7 +270,13 @@ function textOrNull(v: unknown, secret?: string | null): string | null {
 function probabilitiesOf(from: unknown): Record<string, number | null> {
   const out: Record<string, number | null> = Object.create(null);
   if (typeof from !== "object" || from === null) return out;
-  for (const [id, p] of Object.entries(from as Record<string, unknown>)) out[id] = finiteOf(p);
+  // The key is bounded like every other text this module did not author. It is
+  // the one that arrives as a key rather than a value, and the seam validates
+  // each probability as a finite number without checking the key set against
+  // the option ids it offered, so an unrequested or unbounded key reaches here.
+  // An append rewrites the whole file, so one unbounded key would grow that
+  // cost for every later line of the day.
+  for (const [id, p] of Object.entries(from as Record<string, unknown>)) out[journalText(id)] = finiteOf(p);
   return out;
 }
 
@@ -299,16 +321,15 @@ export async function writeCall(host: JournalHost, record: CallRecord): Promise<
   const siteKey = `${path}\u0000${record.site}`;
   const prior = lastState.get(siteKey);
   const repeat = prior !== undefined && prior.stateHash === stateHash;
-  if (!repeat) lastState.set(siteKey, { stateHash, stampId: record.stampId });
 
   const line = {
     // The closed set of line kinds, which an outcome line's own `kind` field
     // does not name: that one is the closed set of outcome kinds.
     lineKind: "call",
-    stampId: record.stampId,
+    stampId: journalText(record.stampId),
     at: new Date(at).toISOString(),
-    persona: record.persona,
-    session: record.session,
+    persona: journalText(record.persona),
+    session: journalText(record.session),
     site: journalText(record.site),
     questionSet: journalText(record.questionSet),
     mode: journalText(record.mode),
@@ -325,7 +346,13 @@ export async function writeCall(host: JournalHost, record: CallRecord): Promise<
     // neither until it crosses this boundary.
     detail: result.ok ? null : textOrNull(result.detail),
   };
-  return writeLines(host, path, at, [JSON.stringify(line) + "\n"]);
+  const written = await writeLines(host, path, at, [JSON.stringify(line) + "\n"]);
+  // The reference is recorded only once the line carrying the state is in the
+  // file. A line that never landed is one no later stateRef may name, or a
+  // repeat would point at a stamp id no load can find and the state would be
+  // lost for the rest of the day.
+  if (written.ok && !repeat) lastState.set(siteKey, { stateHash, stampId: record.stampId });
+  return written;
 }
 
 // One answer as it came back, beside the value Haiku gave for the same
@@ -363,12 +390,19 @@ export async function writeAnswers(host: JournalHost, record: AnswersRecord): Pr
   }
   if (path === null) return failed(at);
   const lines = answers.map((answer) => {
+    // Agreement is decided on the values as they arrived, before the clamp,
+    // so two option ids that differ only past the cut are not recorded as
+    // agreeing. Where such a pair is cut, the two stored columns are byte
+    // identical while `agrees` is false, and `agrees` is the authoritative
+    // one: the stored pair is lossy and the `...[cut]` suffix is the tell.
+    const rawValue = typeof answer.value === "string" ? answer.value : null;
+    const rawHaiku = typeof answer.haikuValue === "string" ? answer.haikuValue : null;
     const value = textOrNull(answer.value);
     const haikuValue = textOrNull(answer.haikuValue);
     return JSON.stringify({
       lineKind: "answer",
       stampId: newStampId(record.persona, record.session),
-      callStampId: answer.callStampId,
+      callStampId: journalText(answer.callStampId),
       questionId: journalText(answer.questionId),
       questionVersion: journalText(answer.questionVersion),
       overrideRefused: textOrNull(answer.overrideRefused),
@@ -377,7 +411,7 @@ export async function writeAnswers(host: JournalHost, record: AnswersRecord): Pr
       probabilities: probabilitiesOf(answer.probabilities),
       confidence: finiteOf(answer.confidence),
       haikuValue,
-      agrees: value !== null && haikuValue !== null ? value === haikuValue : null,
+      agrees: rawValue !== null && rawHaiku !== null ? rawValue === rawHaiku : null,
     }) + "\n";
   });
   return writeLines(host, path, at, lines);
@@ -397,7 +431,11 @@ export type OutcomeRecord = {
 // written, because a load reads this column as a closed vocabulary.
 export async function writeOutcome(host: JournalHost, record: OutcomeRecord): Promise<JournalWrite> {
   const at = Date.now();
-  if (!OUTCOME_KINDS.includes(record.kind)) return failed(at);
+  // Refused without touching the latch. The latch reports the channel
+  // failing, and a kind outside the closed set is the caller being wrong
+  // rather than the file being unwritable. Arming it here would silence the
+  // day's first real write failure.
+  if (!OUTCOME_KINDS.includes(record.kind)) return { ok: false, firstFailureToday: false };
   let path: string | null;
   try {
     path = await journalPath(host, record.persona, record.session, at);
@@ -408,7 +446,7 @@ export async function writeOutcome(host: JournalHost, record: OutcomeRecord): Pr
   const line = {
     lineKind: "outcome",
     stampId: newStampId(record.persona, record.session),
-    callStampId: record.callStampId,
+    callStampId: journalText(record.callStampId),
     kind: record.kind,
     value: textOrNull(record.value),
     at: new Date(at).toISOString(),

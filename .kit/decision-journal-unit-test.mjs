@@ -60,6 +60,9 @@ function makeHost(overrides = {}) {
       calls.push(["fileExists", path]);
       await null;
       if (overrides.existsThrows) throw new Error("exists refused");
+      // A hook above the caller may answer this op event with a value of its
+      // own, so the suite can hand back something that is not a boolean.
+      if ("existsReturns" in overrides) return overrides.existsReturns;
       return files.has(path);
     },
     async readFile(path) {
@@ -556,6 +559,106 @@ try {
     check("no home: and nothing was written anywhere", files.size === 0, [...files.keys()]);
     check("no home: and no write was even attempted",
       !calls.some((c) => c[0] === "writeFile"), calls.map((c) => c[0]));
+  }
+
+  // --- A reference is never recorded for a line that never landed ---
+  {
+    console.log("\n=== A call line that never landed is never named by a later stateRef ===");
+    const J = await freshModule();
+    clock.set(T0);
+    const ov = { writeThrows: true };
+    const { host, files } = makeHost(ov);
+    const first = await J.writeCall(host, callRecord(J, { stampId: "steward.harness-session.1700000000000.1" }));
+    check("dangling: the first write failed (precondition)", first.ok === false, first);
+    ov.writeThrows = false;
+    const second = await J.writeCall(host, callRecord(J, { stampId: "steward.harness-session.1700000000000.2" }));
+    check("dangling: the second write landed (precondition)", second.ok === true, second);
+    const line = linesOf(files)[0];
+    // The state is the same on both calls, so a dedup that trusted the failed
+    // write would point this line at a stamp id no load can find.
+    check("dangling: the landed line carries the state rather than a reference",
+      line.state === "worker idle 3 ticks", line);
+    check("dangling: and it names no earlier line", line.stateRef === null, line);
+  }
+
+  // --- An existence answer that is neither true nor false ---
+  {
+    console.log("\n=== An existence answer that is neither true nor false destroys nothing ===");
+    const J = await freshModule();
+    clock.set(T0);
+    const PRIOR = '{"lineKind":"call","stampId":"an-earlier-line"}\n';
+    const { host, files } = makeHost({ existsReturns: 1 });
+    files.set(PATH, PRIOR);
+    const r = await J.writeCall(host, callRecord(J));
+    check("hostile exists: the write resolves false", r.ok === false, r);
+    check("hostile exists: and the day's lines are exactly as they were",
+      files.get(PATH) === PRIOR, files.get(PATH));
+  }
+
+  // --- The once-a-day latch reports the channel, not the caller ---
+  {
+    console.log("\n=== A refused outcome kind does not spend the day's failure latch ===");
+    const J = await freshModule();
+    clock.set(T0);
+    const { host } = makeHost({ writeThrows: true });
+    const base = { persona: PERSONA, session: SESSION, callStampId: "steward.harness-session.1700000000000.1" };
+    const refused = await J.writeOutcome(host, { ...base, kind: "not_a_kind", value: "x" });
+    check("latch: the refused kind resolves false", refused.ok === false, refused);
+    check("latch: and is not reported as the day's first failure",
+      refused.firstFailureToday === false, refused);
+    const real = await J.writeOutcome(host, { ...base, kind: "next_score", value: "on-goal" });
+    check("latch: so the day's first real write failure is still reported",
+      real.ok === false && real.firstFailureToday === true, real);
+  }
+
+  // --- Agreement is decided before the clamp, not after ---
+  {
+    console.log("\n=== Two values differing only past the clamp do not read as agreeing ===");
+    const J = await freshModule();
+    clock.set(T0);
+    const { host, files } = makeHost();
+    const stem = "o".repeat(600);
+    await J.writeAnswers(host, { persona: PERSONA, session: SESSION, answers: [{
+      callStampId: "steward.harness-session.1700000000000.1",
+      questionId: "controller-decision",
+      questionVersion: "v1",
+      overrideRefused: null,
+      value: stem + "A",
+      probabilities: { a: 1 },
+      confidence: 0.5,
+      haikuValue: stem + "B",
+    }] });
+    const line = linesOf(files)[0];
+    check("agreement: both values are bounded on the line (precondition)",
+      line.value.endsWith("...[cut]") && line.haikuValue.endsWith("...[cut]"), line.value.length);
+    check("agreement: and the pair does not read as agreeing", line.agrees === false, line.agrees);
+  }
+
+  // --- Every text the journal did not author is bounded, keys included ---
+  {
+    console.log("\n=== A probability key is bounded like every other unauthored text ===");
+    const J = await freshModule();
+    clock.set(T0);
+    const { host, files } = makeHost();
+    // The seam validates each probability as a finite number and never checks
+    // the key set against the option ids it offered, so an unbounded key
+    // reaches this boundary and an append rewrites the whole file.
+    const huge = "k".repeat(900);
+    await J.writeAnswers(host, { persona: PERSONA, session: SESSION, answers: [{
+      callStampId: "steward.harness-session.1700000000000.1",
+      questionId: "controller-decision",
+      questionVersion: "v1",
+      overrideRefused: null,
+      value: "nudge",
+      probabilities: { [huge]: 0.5, nudge: 0.5 },
+      confidence: 0.5,
+      haikuValue: "nudge",
+    }] });
+    const keys = Object.keys(linesOf(files)[0].probabilities);
+    check("probability keys: the unbounded key was cut", keys.some((k) => k.endsWith("...[cut]")), keys.map((k) => k.length));
+    check("probability keys: no key on the line runs past the clamp",
+      keys.every((k) => k.length <= 512), keys.map((k) => k.length));
+    check("probability keys: and the ordinary key is untouched", keys.includes("nudge"), keys.map((k) => k.slice(0, 12)));
   }
 } finally {
   clock.restore();

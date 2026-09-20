@@ -323,3 +323,15 @@ The session then takes the `existingPersona` branch and calls `parseState(JSON.s
 Reaching it needs a persona named after a prototype member, which no fleet entry uses today, so this is a latent defect rather than a live one. Remedy: guard both reads with `Object.hasOwn(existing, sess.persona)`, or reject the reserved names where the persona is validated.
 
 Raised by the round 4 adversarial lens over the decision-seam plan's Section 2 and confirmed here against the cited lines. It is out of that section's scope, whose `hooks/index.ts` allowance is one import and three label literals, and it predates that plan.
+
+## The shared log append helper serializes nothing, so two overlapping appends drop a line (found 2026-09-20)
+
+`appendLines` at `hooks/index.ts:605-612` appends by reading the whole file and rewriting it, with nothing serializing two calls on one path. Two appends started before either write lands both read the same prior content, and the second write replaces the first, so one line is lost with no error on either path.
+
+Three sites reach it. The channel log's four callers go through the `appendToChannelLog` wrapper at `hooks/index.ts:615`, and both yield-log writers call the helper directly at `:626` and `:1498`. The yield-log pair is the reachable one: `yieldNow` runs on the heartbeat tick and the commons-arbitration branch runs inside a persisted write, and nothing orders those two against each other.
+
+The defect predates the decision-seam plan, whose Section 3 generalized the helper to take a path without changing how it writes. That section's allowance for `hooks/index.ts` is three regions, and a chain would change shipped behaviour for four call sites outside them, so it was routed here rather than folded.
+
+Remedy: key a promise chain per path inside the helper, as `hooks/decision-journal.ts` does at its own `chained` function, which exists for exactly this reason and is pinned by a control that turns three assertions red when the chain is removed.
+
+Raised by the round 1 blind lens over the decision-seam plan's Section 3 and confirmed here by reading the helper, which holds no chain, no lock and no queue.
