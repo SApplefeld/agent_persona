@@ -68,6 +68,31 @@ function createFake$(opts = {}) {
   const completeCalls = [];
   let completeValue = opts.completeValue ?? "[]";
   const uiLogs = [];
+  // Every $.http.fetch call, in order, as { url, init }. The decision seam's
+  // kill switch is pinned by this list staying empty, which is a stronger
+  // reading than any assertion on what a request would have carried.
+  const httpCalls = [];
+  // What the next fetches resolve with: an HttpResponse-shaped object
+  // ({ status, ok, headers, text }), or a function of (url, init) returning
+  // a promise, so a case can hang, reject, or answer from the request it was
+  // handed. The default answers 200 with an empty answers map, which the
+  // seam reads as a parse failure: a case that forgot to set a response sees
+  // a settled, visible result rather than a hang.
+  let httpResponse = {
+    status: 200,
+    ok: true,
+    headers: {},
+    text: '{"model":"jev-fake","answers":{},"usage":{"input_tokens":0,"output_tokens":0}}',
+  };
+  // The environment $.env.get reads, and every name read, in order. Empty by
+  // default: a fake with no TYPESAFE_API_KEY is a VM with no key, so the
+  // seam's shadow path is opt-in per case through setEnv.
+  const envMap = new Map();
+  const envGets = [];
+  // Every $.clock.sleep call, in order, each holding its own resolve and
+  // reject so a case decides when a timer fires. Nothing fires on its own,
+  // which is what lets a case pin the race between a request and its timer.
+  const sleeps = [];
   // Non-null while prompt submissions are held open; every submit issued in
   // that window returns this same promise and parks on it.
   let submitHold = null;
@@ -95,6 +120,12 @@ function createFake$(opts = {}) {
       status() {},
       toast() {},
     },
+    // A Map keyed on the raw path string, relative or absolute, with no
+    // directory model: a write to an absolute path under a directory nothing
+    // has created lands like any other. That is the real $.fs.write's
+    // behavior too (it creates the file and its directories as needed), so
+    // a module writing journal or catalog files under an absolute <home>
+    // path reads the same here as on the engine.
     fs: {
       exists(p) { return Promise.resolve(fsMap.has(p)); },
       read(p) {
@@ -181,6 +212,23 @@ function createFake$(opts = {}) {
         clockEveryCallbacks.push({ intervalMs, fn });
         return 0;
       },
+      now() { return Date.now(); },
+      sleep(ms) {
+        return new Promise((resolve, reject) => { sleeps.push({ ms, resolve, reject }); });
+      },
+    },
+    http: {
+      fetch(url, init) {
+        httpCalls.push({ url, init });
+        const r = httpResponse;
+        return typeof r === "function" ? Promise.resolve().then(() => r(url, init)) : Promise.resolve(r);
+      },
+    },
+    env: {
+      get(name) {
+        envGets.push(name);
+        return Promise.resolve(envMap.get(name));
+      },
     },
     store: {
       // A copy, as the real store hands back a parsed JSON value: a plugin
@@ -211,6 +259,8 @@ function createFake$(opts = {}) {
   fake.promptSubmits = promptSubmits;
   fake.toolCalls = toolCalls;
   fake.uiLogs = uiLogs;
+  fake.httpCalls = httpCalls;
+  fake.envGets = envGets;
 
   return {
     fake,
@@ -225,7 +275,24 @@ function createFake$(opts = {}) {
     classifyCalls,
     completeCalls,
     uiLogs,
+    httpCalls,
+    envGets,
+    sleeps,
     setClassifyValue(v) { classifyValue = v; },
+    // What every subsequent $.http.fetch resolves with: a response object,
+    // or a function of (url, init) returning a promise.
+    setHttpResponse(v) { httpResponse = v; },
+    // Set (or, with undefined, unset) a variable $.env.get reads.
+    setEnv(name, value) {
+      if (value === undefined) envMap.delete(name); else envMap.set(name, value);
+    },
+    get pendingSleepCount() { return sleeps.length; },
+    // Resolve the oldest pending $.clock.sleep, the way the host's timer
+    // would fire it. Called once per timer, so a case chooses the order.
+    fireSleep() {
+      const s = sleeps.shift();
+      if (s) s.resolve();
+    },
     setCompleteValue(v) { completeValue = v; },
     resetClassifyCalls() { classifyCalls.length = 0; },
     resetCompleteCalls() { completeCalls.length = 0; },

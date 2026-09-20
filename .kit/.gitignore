@@ -28,4 +28,5 @@
 !/keeper-unit-test.mjs
 !/keeper-register-test.mjs
 !/fleet-status-unit-test.mjs
+!/decision-seam-unit-test.mjs
 !/fixtures/*
