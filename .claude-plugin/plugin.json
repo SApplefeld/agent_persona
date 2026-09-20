@@ -98,6 +98,12 @@
       "title": "Fleet roster path",
       "description": "The roster file the fleet reading uses: a JSON array of persona entries, each naming a persona, its working directory, optionally its run directory, and whether the fleet runs it. The fleet_status tool reads it on demand, and the coordinator persona's controller tick reads it every tick to watch each roster persona's health class. Left unset, fleet_status reports that it has no roster to read and the tick's watcher stays silent."
     },
+    "jevMode": {
+      "type": "string",
+      "default": "shadow",
+      "title": "Jev shadow mode",
+      "description": "off or shadow. shadow puts every closed question the plugin already asks Haiku to Jev as well, in shadow, writing the answer to the decision journal without acting on it. off makes no shadow call and writes no journal line. Any other value is treated as off."
+    },
     "reconcileEveryMs": {
       "type": "number",
       "default": 14400000,

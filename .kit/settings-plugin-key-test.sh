@@ -56,6 +56,8 @@ console.log("ROSTER_INSTALLED_PRESENT=" + (!inst ? "noid" : inst.fleetRoster !==
 console.log("ROSTER_DEV=" + (dev && dev.fleetRoster !== undefined ? dev.fleetRoster : "") + ";");
 console.log("ROSTER_INSTALLED=" + (inst && inst.fleetRoster !== undefined ? inst.fleetRoster : "") + ";");
 console.log("TICK_DEV=" + (dev ? dev.controllerTickMs : "") + ";");
+console.log("JEV_DEV=" + (dev && dev.jevMode !== undefined ? dev.jevMode : "") + ";");
+console.log("JEV_INSTALLED=" + (inst && inst.jevMode !== undefined ? inst.jevMode : "") + ";");
 ' "$ROOT" "$1"
 }
 
@@ -77,6 +79,18 @@ case "$R" in *"COORD_DEV=coordinator;"*"COORD_INSTALLED=coordinator;"*) check "e
 # ARCHITECT_PERSONA, which is a fleet with no architect, and the key is left
 # out of both ids rather than written empty.
 case "$R" in *"ARCH_DEV_PRESENT=0;"*"ARCH_INSTALLED_PRESENT=0;"*) check "emitted: ARCHITECT_PERSONA unset leaves architectPersona out of both ids" 0 ;; *) check "emitted: ARCHITECT_PERSONA unset leaves architectPersona out of both ids (out=$R)" 1 ;; esac
+
+# --- Section 4: emit_settings_json writes JEV_MODE=off under both ids ---
+run_lib PERSONA="keyprobe" JEV_MODE="off" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevoff.json"
+check "emit_settings_json exits 0 with JEV_MODE=off" "$?"
+R=$(inspect "$TMP/jevoff.json")
+case "$R" in *"JEV_DEV=off;"*"JEV_INSTALLED=off;"*) check "emitted: JEV_MODE=off reaches jevMode under both ids" 0 ;; *) check "emitted: JEV_MODE=off reaches jevMode under both ids (out=$R)" 1 ;; esac
+
+# --- Section 4: emit_settings_json refuses a JEV_MODE outside off/shadow ---
+ERR=$(run_lib JEV_MODE="bogus" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevbogus.json" 2>&1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "emit_settings_json refuses JEV_MODE=bogus" 1 ;; *"JEV_MODE 'bogus' must be 'off' or 'shadow'"*) check "emit_settings_json refuses JEV_MODE=bogus" 0 ;; *) check "emit_settings_json refuses JEV_MODE=bogus (rc=$RC, err=$ERR)" 1 ;; esac
+[ ! -e "$TMP/jevbogus.json" ]; check "a refused JEV_MODE leaves no settings file" "$?"
 
 # --- emit_settings_json writes architectPersona under both ids ---
 # The name vellum is withheld from every literal the emitter carries, so the

@@ -1905,6 +1905,11 @@ export const register: Register = async (on, options) => {
   const costBackoffAfterTicks = typeof cfg.costBackoffAfterTicks === "number" ? (cfg.costBackoffAfterTicks as number) : 10;
   const costBackoffMaxMs = typeof cfg.costBackoffMaxMs === "number" ? (cfg.costBackoffMaxMs as number) : 300_000;
 
+  // The decision seam's kill switch, read here and passed through untouched.
+  // No call site in this section reads it; the seam itself folds any value
+  // outside "off" and "shadow" to "off".
+  const jevMode = typeof cfg.jevMode === "string" ? cfg.jevMode : undefined;
+
   // --- session.start: register tools, claim or join the persona ---
   // The one session.start registration in this file. An "off" session logs
   // its tier here and does nothing else; every other tier runs the body.

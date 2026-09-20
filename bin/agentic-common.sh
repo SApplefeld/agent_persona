@@ -90,6 +90,21 @@ emit_settings_json() {
   if [ -n "${COST_BACKOFF_MAX_MS:-}" ]; then
     cost_opts="$cost_opts,\"costBackoffMaxMs\":$COST_BACKOFF_MAX_MS"
   fi
+  # jevMode is the decision seam's kill switch: off makes no shadow call and
+  # writes no journal line, shadow is the working default. A set JEV_MODE
+  # outside that pair is refused the way an invalid COST_* value is, rather
+  # than reaching the child where the seam would otherwise fold it to off.
+  local jev_opts=""
+  if [ -n "${JEV_MODE:-}" ]; then
+    case "$JEV_MODE" in
+      off|shadow) ;;
+      *)
+        echo "ERROR: emit_settings_json: JEV_MODE '$JEV_MODE' must be 'off' or 'shadow'" >&2
+        return 1
+        ;;
+    esac
+    jev_opts=",\"jevMode\":\"$JEV_MODE\""
+  fi
   # Plan item 6: pass the persona the supervisor was given through to the
   # child, so it claims that persona at session.start instead of always
   # falling back to the plugin's hardcoded "default". $PERSONA is supervise.sh's
@@ -202,7 +217,7 @@ emit_settings_json() {
   # absent from the engine's type file, and options under the other id are
   # ignored without an error, so the same options are written under both.
   # .kit/settings-plugin-key-test.sh pins both ids against the two manifests.
-  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$self_review_opts$cost_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"$architect_opt$roster_opt}"
+  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$self_review_opts$cost_opts$jev_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"$architect_opt$roster_opt}"
   cat > "$out" <<EOF
 {"pluginConfigs":{"$AGENTIC_PLUGIN_DEV_ID":{"options":$options},"$AGENTIC_PLUGIN_INSTALLED_ID":{"options":$options}}}
 EOF

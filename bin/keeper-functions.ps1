@@ -248,6 +248,7 @@ function Build-SupervisorInvocation {
         coordinatorPersona = 'COORDINATOR_PERSONA'
         architectPersona = 'ARCHITECT_PERSONA'
         fleetRoster = 'FLEET_ROSTER'
+        jevMode = 'JEV_MODE'
     }
     foreach ($field in $map.Keys) {
         $value = $Entry.$field
