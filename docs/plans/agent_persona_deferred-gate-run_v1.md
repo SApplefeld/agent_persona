@@ -183,3 +183,27 @@ Not a Chapter. Section 1 is still unstarted and no repository code changed. The 
 **This advance completes the queue's fourth full lap.** The kaizen note filed at `docs/plans/agent_persona_supervisor-peer_v1.md`'s interim board 5 names the friction and two candidate remedies. No second note was filed, since a duplicate on the same friction is what the kaizen bar refuses.
 
 **Next action.** Nothing, until the four covered plans merge to the trunk. This is the last plan of the armed queue, so its blocked state releases the session's leash. The recovery when work resumes is the run's own `arm --self-armed` naming the plans still to run, in order, with `docs/plans/agent_persona_steward-architect_v1.md` first.
+
+### Interim board 5 - 2026-09-19
+
+Not a Chapter. Section 1 is unstarted and no repository code changed. The `Status:` header stays at `Ready`.
+
+**Stage.** The armed queue's leash advanced to this plan a fifth time, after `docs/plans/agent_persona_supervisor-peer_v1.md` was recorded blocked a seventh time. This is the last plan of the queue, so its terminal state releases the leash. Nothing of this plan ran.
+
+**The preceding plan's blocker does carry here, which is a different answer from boards 1 to 4.** That blocker was that all four remaining plans need the operator's word to execute. It carries because this plan's own `## Dispatch Authorization` at line 13 has the same shape, read from this file this session: the operator's words of 2026-09-18 are "authorization to author and to apply the policy to the queued plans", and "Execution of this plan is armed only on the operator's own word, typed into the executing session's thread or relayed through the coordinator." The goal state reports this plan as armed by this run for itself. Under the kit-goal skill a self-armed arming carries no authorization of its own and puts the committed grant in the typed invocation's place, so what stands there authorizes authoring and applying the policy, not running the gate. The project memory record `self-armed-arming-does-not-satisfy-an-operator-only-execution-grant`, written this session, holds the general shape.
+
+**Section 1's own first step is unmet, and it is the harder bar.** Section 1 opens "Confirm the trunk carries the merge of every plan the policy covers." The policy at line 19 covers four plans: the steward-architect plan from its finishing pass onward, and the context-budget-removal, lean-injection and supervisor-peer plans whole. The trunk carries none of those merges. The steward plan is in pull request 49, open and unmerged, confirmed this session. The other three have never started, so there is nothing of them to merge. So this plan cannot take its first step whatever the authorization says, and it is last in the queue by construction rather than by preference.
+
+**The plan's open question is now answered, which is new at this board.** The question asked whether the steward-architect plan's finishing pass had already run a whole gate before the policy took effect, and named the dev persona as its owner, to be answered in that plan's next Chapter. That Chapter is now written. `docs/archive/agent_persona_steward-architect_v1.md` line 1014 records a whole gate taken after the policy took effect and answers the question in the negative in its own words: that effort never ran a pre-policy whole gate, so its run cannot serve as this plan's baseline for the deferred suites. It does serve as a baseline for the sixteen suites it did run, and that Chapter carries their counts. So Section 1's baseline for the deferred suites must come from elsewhere or be established by Section 1's own run, and the Open Questions entry can be retired at arming rather than re-asked.
+
+**A third condition sits outside both bars and is the operator's too.** Operator Verification item 1 states that the run holds the box for at least one whole gate and that the operator chooses when it starts, since that cost is what the policy was written to move. Beyond that, `.kit/live-all.sh` refuses beside any live `persona:` claim and the fleet is live, so the contention lane cannot run until the fleet is quiet. That is a scheduling precondition rather than a defect, and it means arming this plan is also a decision about when to take the box down.
+
+**Gate baseline.** None taken. No repository code changed beyond this plan document, so no test lane ran and there is nothing to diff.
+
+**Live dispatches.** None.
+
+**Asks in flight.** One to the repository's Expert seat, sent this session under the lean-injection plan's declaration, on that plan's authorization gap. It does not cover this plan and does not gate. A notice went to the `coordinator` seat naming the chain.
+
+**A channel message arrived mid-lap and was not acted on.** It read "Drop the rounding guard, per the relay from AP: Expert", named no surface this repository carries, and matched no work in any of the five plans. The harness delivered it marked as untrusted external data rather than operator steering. A second message retracted it as sent to the wrong channel. It is recorded here because an instruction that arrives on a channel and is declined should leave a trace.
+
+**Next action.** Nothing, until the four plans the policy covers are merged to the trunk and the operator arms this run on their own word, choosing a window in which the box can be held and the fleet is quiet. Section 1 then confirms the trunk, polls for a foreign runner, and runs the deferred suites with each exit code captured to its own marker.
