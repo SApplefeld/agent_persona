@@ -77,6 +77,16 @@ The record is kept here because the arming state does not keep it. A run that ar
 
 **Gates.** The gate policy of 2026-09-18, stated in `docs/plans/agent_persona_deferred-gate-run_v1.md`, names the plans it covers and this plan is not one, so this plan gates as the executing-work skill states. The two live checks launch a `claude` child. Each takes the machine's heavy-process claim first, per the claim protocol in the kit's role skill, and runs one at a time.
 
+## Standing Brief Amendments
+
+Every entry here is binding on every section opened after it, and rides verbatim on the `Amendments in effect:` line of every sighted dispatch.
+
+- The scrub that keeps the vendor API key out of what this plan emits belongs to the seam, not to the journal. The seam is the last point that holds both a string and the key, which is what a secret-dependent guard needs. It scrubs the state text once, after the key check and before the request body is built, so the same scrubbed bytes go to the vendor and to the journal line. The seam's result carries that scrubbed state, and the journal reads it from there rather than taking a state field of its own. A section that writes a journal line therefore has no field through which raw worker text can reach one.
+- A key shorter than the floor is treated as an absent key. It is not a usable bearer token, so nothing is sent and no state is carried. The floor is 16 characters.
+- The channel-guard principle still holds for a guard that needs only the text it is given. The clamp on an unauthored field and the prototype-free option map stay on the journal's own boundary and on the seam's, as they are. It is the secret-dependent guard alone that moves, because a boundary cannot run a guard whose input it must not hold.
+- A journal line records nothing about whether the scrub ran. A non-null state means the seam scrubbed it with the key it sent, and a call that read no key carries a null state, a null state hash and a result naming which of the two reasons it was. A separate flag would be a function of the result column and a second column that can drift from it.
+- The outcome line's value for an ask marker is a fixed token and never the matched text from the worker's own line. That text is the one other route by which worker-authored bytes could reach a journal line.
+
 ## Sections of Work
 
 ### 1. The live probe, then the seam and its Jev client
@@ -141,7 +151,9 @@ Acceptance:
 - A failed write resolves `false`, and `firstFailureToday` is true once per UTC day.
 - Two ids minted in one millisecond differ. Across 10,000 minted ids the holdout share is between 15 and 25 percent, and an id's split never changes.
 
-Files in scope: `hooks/decision-journal.ts` (new), `hooks/index.ts` (the append helper at 529-533 and the two inline copies only), `.kit/decision-journal-unit-test.mjs` (new), `.kit/controller-tick-test.mjs` (the two byte cases).
+One guard is folded in from outside this section's own files, on the same ground Section 2 folded one into the seam. The scrub that keeps the API key out of what this plan emits cannot live on the journal's boundary, because a boundary that must not hold the key cannot run a guard that needs it. It lives in the seam, which already holds the key in order to build the request header. The seam scrubs the state once, after the key check and before the body is built, so the same bytes reach the vendor and the journal. Its result carries that scrubbed state and the journal reads it from there. A key too short to be a bearer token is treated as absent, which is what closes the degenerate-secret path without a shape test on the scrub itself.
+
+Files in scope: `hooks/decision-journal.ts` (new), `hooks/index.ts` (the append helper at 529-533 and the two inline copies only), `.kit/decision-journal-unit-test.mjs` (new), `.kit/controller-tick-test.mjs` (the two byte cases), `.kit/.gitignore` (one allowlist line, since a new `.kit/` suite is invisible to git without it), `hooks/decision-seam.ts` (the folded scrub above: the key floor, the state scrub, and the state field on both result shapes), `.kit/decision-seam-unit-test.mjs` (that guard's own cases).
 Tests: lock the yield log's bytes across the helper move, since that refactor is the one place this section can break shipped behavior. Lock the concurrent-write case, since a lost line fails the Goal while every other check passes. Lock the never-throws rule, the id uniqueness and the split stability.
 
 ### 4. The `jevMode` option
@@ -359,3 +371,33 @@ Not a Chapter. Section 3 is built, committed at first green and under review rou
 **Two out-of-scope surfaces the implementer named, both unadjudicated.** A stale comment at `.kit/controller-tick-test.mjs:17` describes an assertion that does not exist in that file. The `Round 47 finding 1` comment above the append helper in `hooks/index.ts` is change-narrative rather than current state, against house style, and is pre-existing.
 
 **Next action.** Await the three lenses, bracket the round with a second tree-state capture, adjudicate each finding against the cited code rather than on report, fix what holds, re-run the targeted lane, then close Section 3 with a Chapter.
+
+### Interim board 4 - 2026-09-20
+
+Not a Chapter. Section 3 has taken two review rounds and a consult. Its fixes are committed and pushed. One finding is open with its ruling adopted and not yet built, so no `Completed:` line is written.
+
+**Stage.** Section 3, the journal, is the only section in flight. Round 1 ran three lenses at fable and round 2 one adversarial lens at opus through `Workflow`, each owed by the fix-delta bar. A consult ruled on the one finding neither round could close. Sections 1 and 2 are closed with Chapters. Sections 4, 5 and 6 are not started.
+
+**Commits, all pushed to `decision-seam-build`.** `f591add` is the section at first green. `690f7a9` is interim board 3. `dc33f0b` carries both fix rounds. The worktree is clean apart from untracked `.claude/worktrees/`, which is another session's.
+
+**Gate, run by this session at 2026-09-20T09:26Z to 09:31Z on SCOTT-CLAUDE under this session's own heavy-process claim, uncontended.** `npx tsc --noEmit` exit 0; `node .kit/check-loader-rule.mjs` exit 0; `node .kit/decision-journal-unit-test.mjs` exit 0 at 100 OK / 0 FAIL; `node .kit/decision-seam-unit-test.mjs` exit 0 at 132 OK / 0 FAIL; `node .kit/question-catalog-unit-test.mjs` exit 0 at 102 OK / 0 FAIL; `node .kit/controller-tick-test.mjs` exit 0 at 1392 OK / 0 FAIL. Against Chapter 2's close on the same lane: seam 132 and catalog 102 unchanged, tick 1381 grown to 1392 by this section's byte cases. Zero failing to zero failing on every lane. The claim was released at the operation's end.
+
+**What the two rounds settled, and the one thing they could not.** Round 1 returned two Majors from the blind lens, one from the security lens and four from the adversarial lens, deduplicating to four subjects, each confirmed here against the cited code rather than taken on report. The state dedup recorded its reference before the write landed, so one failed line left every later repeat naming a stamp id no load can find. The existence read admitted any non-`true` answer as meaning the file was absent and then rewrote the day's file as one line, while the read one line below it already refused a non-string on exactly the premise that makes the first reachable. A refused outcome kind armed the once-a-day write-failure latch, which would have silenced the day's first real disk failure. And the exported key scrub was applied by no writer, the host type carrying no way to obtain a secret at all.
+
+The first three are fixed and pinned. The fourth is the one that took a second round and a consult.
+
+**A fix of mine that was worse than what it closed, and the reversal.** I fixed the scrub by giving the journal its own way to read the key, widening its host type, caching the read on a `WeakMap` keyed on the host object, and routing every unauthored field through the scrub including the state. Round 2 returned six Majors against it and two were decisive, both confirmed here. The scrub replaces every occurrence of the secret with no bar on the secret's length or shape, so a one-character answer to that op event rewrites the measured state and the hash is then computed over the corrupted text, in a file nothing rewrites. And the cache claimed a reuse the architecture refuses: `hostOf` at `hooks/index.ts:132` returns a fresh object literal on every call and says so in its own comment two lines above itself, so the comment I wrote was false against the code it cited. Round 2 added that the scrub degraded silently to a no-op with nothing on the line recording it, that the key was read even on a run where the kill switch is off against the seam's own stated ordering, and that the probability map's keys were the one unauthored text crossing neither guard.
+
+The mechanism is reverted whole rather than patched, on the rule about not stacking a fix on a broken base. The probability-key finding and three Minors from the same round are fixed. Every fix is driven by a case watched to fail first: reverting the module to its first-green state turns exactly nine assertions red, each one a new assertion driving a fix, with no pre-existing assertion broken.
+
+**The consult's ruling, adopted.** The consultant tested the framing and found it half wrong, which is the part worth keeping. The journal is the weaker of two exits. The same state bytes go to the vendor in the request body unscrubbed at `hooks/decision-seam.ts:299-305`, so the plan's own invariant was being defended at the weaker exit while the stronger one stood open. It also narrowed where the risk actually lives: worker text reaches the state at two of the four sites, the turn scorer at `hooks/index.ts:5296` and the memory gate at `:5408`, while the controller summary carries structured fields and the plan switch carries plan ids.
+
+The ruling is that the seam owns the guard, because a secret-dependent guard belongs at the last point holding both the text and the secret, and the seam already holds the key to build the request header. It scrubs the state once after the key check and before the body is built, its result carries that scrubbed state, and the journal reads it from there rather than taking a state field of its own, which makes the guarantee structural rather than remembered. A key too short to be a bearer token is treated as absent, which closes the degenerate-secret path without a shape test on the scrub. A line records nothing new about whether the guard ran, because a non-null state already means it did and a null one carries a result naming why. The work folds into Section 3 under the precedent Section 2 set when it folded a guard into the seam, rather than becoming a new section, because a security Major may not be parked past a section close. The consultant found no operator fork.
+
+Those entries are now in the plan's `## Standing Brief Amendments` block, which this boundary created, and Section 3's files in scope are folded to name `hooks/decision-seam.ts` and its suite with the bounded delta.
+
+**Live dispatches.** None. Round 2's reviewer and the consultant have both returned.
+
+**Two surfaces routed out of the section.** The shared log append helper at `hooks/index.ts:605-612` serializes nothing, so two overlapping appends drop a line and the two yield-log writers can overlap. It predates this plan and a fix would change behaviour for four call sites outside this section's three-region allowance, so it is in `docs/backlog.md` with its remedy. The journal's at-rest properties are described in no document, so a requirement naming them was appended to Section 6.
+
+**Next action.** Build the adopted ruling: the key floor and the state scrub in the seam, the state field on both its result shapes, the journal reading `result.state` with a nullable state hash, and the journal's own scrub deleted. Then the three plan text amendments the ruling names, the targeted lane with its controls, and round 3, which the fix delta owes because it reaches the secret-handling surface. Then close Section 3 with a Chapter.
