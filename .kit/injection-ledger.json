@@ -76,8 +76,8 @@
     {
       "name": "FLEET_PROMPT_FRAME",
       "file": "hooks/index.ts",
-      "chars": 416,
-      "words": 77
+      "chars": 446,
+      "words": 83
     },
     {
       "name": "FLEET_PROMPT_LINE_LITERALS",
@@ -154,26 +154,26 @@
     {
       "name": "agentic_identity_description",
       "file": "hooks/index.ts",
-      "chars": 568,
-      "words": 85
+      "chars": 427,
+      "words": 67
     },
     {
       "name": "goal_create_description",
       "file": "hooks/index.ts",
-      "chars": 477,
-      "words": 75
+      "chars": 376,
+      "words": 60
     },
     {
       "name": "goal_add_description",
       "file": "hooks/index.ts",
-      "chars": 385,
-      "words": 72
+      "chars": 381,
+      "words": 68
     },
     {
       "name": "goal_done_description",
       "file": "hooks/index.ts",
-      "chars": 341,
-      "words": 64
+      "chars": 290,
+      "words": 53
     },
     {
       "name": "goal_status_description",
@@ -184,56 +184,56 @@
     {
       "name": "goal_resume_description",
       "file": "hooks/index.ts",
-      "chars": 214,
-      "words": 38
+      "chars": 233,
+      "words": 40
     },
     {
       "name": "supervisor_shutdown_description",
       "file": "hooks/index.ts",
-      "chars": 380,
-      "words": 66
+      "chars": 354,
+      "words": 62
     },
     {
       "name": "supervisor_restart_description",
       "file": "hooks/index.ts",
-      "chars": 459,
-      "words": 78
+      "chars": 421,
+      "words": 76
     },
     {
       "name": "goal_edit_description",
       "file": "hooks/index.ts",
-      "chars": 435,
-      "words": 73
+      "chars": 456,
+      "words": 75
     },
     {
       "name": "memory_add_description",
       "file": "hooks/index.ts",
-      "chars": 328,
-      "words": 46
+      "chars": 243,
+      "words": 37
     },
     {
       "name": "agentic_say_description",
       "file": "hooks/index.ts",
-      "chars": 1537,
-      "words": 256
+      "chars": 1183,
+      "words": 196
     },
     {
       "name": "agentic_inbox_description",
       "file": "hooks/index.ts",
-      "chars": 1436,
-      "words": 233
+      "chars": 1267,
+      "words": 203
     },
     {
       "name": "fleet_status_description",
       "file": "hooks/index.ts",
-      "chars": 4014,
-      "words": 695
+      "chars": 4926,
+      "words": 841
     },
     {
       "name": "agentic_resolve_description",
       "file": "hooks/index.ts",
-      "chars": 673,
-      "words": 114
+      "chars": 667,
+      "words": 113
     }
   ]
 }
