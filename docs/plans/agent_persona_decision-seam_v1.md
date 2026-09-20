@@ -243,7 +243,7 @@ Files in scope: `README.md`, `docs/architecture.md`, `docs/backlog.md`, `docs/RE
 
 ## Open Questions
 
-- Does TypeSafe retain request bodies for non-enterprise accounts? The legal page commits to no training on user data and names zero retention for enterprise only. Owner: the operator. An answer the operator dislikes is acted on by defaulting `jevMode` to `off`.
+- None. The one this plan carried, whether TypeSafe retains request bodies for non-enterprise accounts, is answered. It does retain them for a limited period on those accounts and says so in its privacy policy, and the operator accepts that risk. The remedy this section named, defaulting `jevMode` to `off`, is therefore not taken and `shadow` stands as the default. The operator-tier memory record `typesafe-request-body-retention-risk-accepted` holds the decision and its date. The plan's separate rule that no part of the API key's value is ever journaled, logged or put in a decision detail is untouched by it.
 
 ## Related
 
@@ -435,3 +435,31 @@ Not a Chapter. Section 3 has taken five review rounds. The fifth left the termin
 **Live dispatches.** None. Rounds 3, 4 and 5 have all returned.
 
 **Next action.** The operator's answer to the backstop declaration. On a continue, run the owed round 6 first, then close Section 3 with a Chapter, then Sections 4, 5 and 6.
+
+### Interim board 6 - 2026-09-20
+
+Not a Chapter. The operator answered the backstop declaration and then narrowed how this section closes. Round 6 is dispatched and running. No `Completed:` line is written.
+
+**Stage.** Section 3, the journal, is the only section in flight. Sections 1 and 2 are closed with Chapters. Sections 4, 5 and 6 are not started.
+
+**The operator's answer to the backstop, and what it restarts.** Continue. Given on the operator's own Discord channel on 2026-09-20, in answer to the declaration this plan's Interim board 5 records, as the single word "Yes" against a message whose recommendation was to continue and to run the owed round first. The count restarts at that answer. Under the ladder the backstop states, the continue buys three further rounds, and from the third of those onward each adjudication that still leaves the terminal condition unmet declares again. Round 6 is the first of the three.
+
+**A second operator decision, narrowing how the section closes.** Given on the same channel the same day, after the continue and while round 6 was already running. Its two operative parts, in the operator's own framing: drop what the security reviewer recommends on this plan, because that lens has been rating obscure edge cases as Majors and generating review work out of proportion to the risk; and close this section and move on. The operator also stated that a plan in another worker will reduce that lens to an advisory role, rating findings as advisory by default and escalating only what it judges Critical.
+
+What that decision reaches, stated because the plain reading over-reaches. The security lens has not run on this section since round 1. Rounds 2 through 5 were decayed rounds carrying one adversarial lens each, the security lens joining no decayed round. So every finding that halted this section came from the adversarial lens, and the instruction about the security reviewer clears none of them. What closes the section is the instruction's other half. The record says so plainly rather than letting a later reader infer that a security lens was overruled here.
+
+How round 6 is adjudicated under it. Only a finding naming something that actually breaks is fixed. Everything else is recorded in the Chapter with the finding's own words and not acted on. This is an operator decision taken at the seat that owns it, and it is recorded rather than smoothed: it closes the section without a review pass over round 5's fix delta reaching a clean terminal condition on the kit's own rule.
+
+**Round 5's fixes are in the tree and green.** They are not being closed over as unfixed. All eight were built before the declaration went out, which Interim board 5 records as a declared deviation from the stop's freeze. They are committed in `d3d7bc2` together with rounds 3 and 4's fixes. The gate this session re-ran against that state is below.
+
+**Live dispatches.** One. The owed round 6, one adversarial lens at the `opus` model override and `high` effort through `Workflow`, which is the writer tier for this section and the route an effort above the agent's frontmatter default requires. It carries the spec path, the section name, the trace target, the `Standing Brief Amendments` block quoted whole, and the delta `8f278b8..d3d7bc2` over the section's four code and test files. The security lens does not join it.
+
+The delta it reads is wider than round 5's fixes alone, and the brief says so. Rounds 3, 4 and 5 all landed their fixes in the one commit `d3d7bc2`, and no per-round capture for rounds 4 and 5 survives in the scratch path, so the round-5 delta cannot be isolated from the two adjudicated before it. The capture taken for this round is therefore the whole commit, written to `.kit/scratch/decision-seam/section-3/fix-round-5.diff`. The tree-state bracket was taken before dispatch and read zero lines.
+
+**Gate, re-run by this session at 2026-09-20 on SCOTT-CLAUDE in the `ds-verify` worktree at `2e9cc56`, uncontended, the process list polled clear before the run.** `node .kit/decision-seam-unit-test.mjs` exit 0 at 160 OK / 0 FAIL; `node .kit/decision-journal-unit-test.mjs` exit 0 at 123 OK / 0 FAIL; `node .kit/question-catalog-unit-test.mjs` exit 0 at 102 OK / 0 FAIL; `node .kit/controller-tick-test.mjs` exit 0 at 1392 OK / 0 FAIL; `node .kit/check-loader-rule.mjs` exit 0. Every count matches Interim board 5's on the same lane exactly. `npx tsc --noEmit` did not run here: the worktree carries no `node_modules`, so that one lane still stands on Interim board 5's own run rather than on this session's, and it is re-run before the section closes.
+
+**A stale claim in this plan's own text, corrected.** The `## Open Questions` section listed the TypeSafe request-body retention question as unanswered with the operator as its owner. It is answered. The operator decided on 2026-09-20 that TypeSafe does retain request bodies for a limited period on non-enterprise accounts, that its privacy policy says so, and that they accept the risk. The remedy the section named, defaulting `jevMode` to `off`, is therefore not taken and `shadow` stands. The operator-tier memory record `typesafe-request-body-retention-risk-accepted` holds the decision. The section now records it rather than carrying the question open.
+
+**Two plans queued behind this one on the operator's word.** The operator stated on 2026-09-20 that the steward and architect sessions carry their authority, that plans those seats pass forward are to be queued, and that a recommended order from them is to be weighed rather than followed blindly. That settles the standing question Interim board 1 recorded as held, where `docs/plans/agent_persona_supervisor-gaps_v1.md` was traced as `received-verified-holding-for-authority` because no standing grant to queue a peer's plan could be found. The grant now exists and is the operator's own. That plan and `docs/plans/agent_persona_dead-claim-release_v1.md` are both on the trunk and are queued.
+
+**Next action.** Read round 6's return. Adjudicate it under the operator's narrowing: fix only what breaks, record the rest. Re-run `tsc` in a tree that can run it. Then close Section 3 with a Chapter, and run Sections 4, 5 and 6.
