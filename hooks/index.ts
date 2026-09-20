@@ -378,6 +378,51 @@ const sess: {
 // tracks the turn the way the heartbeat file's own stamp does.
 const commonsMeta = () => ({ turnStartedAt: sess.turnStartedAt, workdir: sess.workdir });
 
+// The three files a supervised session keeps beside its working directory, and
+// the resolver that anchors them to the directory the session was launched in
+// rather than to wherever the working directory has since moved.
+//
+// bin/supervise.sh resolves all three once, against the absolute WORKDIR it was
+// launched with, and never resolves them again: the heartbeat and the persona
+// store at :2881-2882, the latter handed to bin/supervise-poll.mjs, whose
+// readStoreFacts harvests root_complete, shutdown_requested and
+// restart_requested out of it. A session that resolved the bare names against a
+// working directory a tool call had moved would write all three where nothing
+// reads them.
+//
+// For the heartbeat that showed up as a session restarted while it was stamping
+// on time: the watched file went still, and ninety seconds later the supervisor
+// called it hung. The transcript corroboration in bin/supervise-decide.mjs
+// withholds that restart only while the session is taking turns, so an idle
+// session in a subdirectory or a worktree was killed outright.
+//
+// The store is the reason all three move together rather than the heartbeat
+// alone. Anchoring the heartbeat by itself would leave a displaced session
+// looking healthy to the supervisor while its shutdown request, its restart
+// request and its goal completion were written somewhere the supervisor never
+// reads, turning a loud ninety-second kill into a session that runs on with its
+// signals invisible.
+//
+// sess.workdir is captured at session.start from the launch cwd, before any
+// tool call can move it. For a supervisor-launched child that is the same
+// directory the supervisor holds, because supervise.sh:116 cds to the absolute
+// WORKDIR it resolved at :104 before launching. For a session started by hand
+// it is whatever cwd that launcher had, which anchoring still improves on. The
+// bare names are the fallback for the one case that leaves sess.workdir empty,
+// a session.start whose cwd could not be read at all.
+//
+// The join is unconditional "/", as rosterRunDir's own join below is: Windows
+// resolves a forward slash, and every path this can see is either a Windows
+// path or a POSIX one.
+const HEARTBEAT_FILENAME = ".agentic-heartbeat.json";
+const PERSONA_STORE_FILENAME = ".agentic-personas.json";
+const YIELD_LOG_FILENAME = ".agentic-yields.log";
+const workdirPathOf = (filename: string): string => {
+  const root = sess.workdir;
+  if (!root) return filename;
+  return `${root.replace(/[/\\]+$/, "")}/${filename}`;
+};
+const heartbeatPathOf = (): string => workdirPathOf(HEARTBEAT_FILENAME);
 // Reentrancy flag for the git probe (E4).
 let gitProbeInFlight = false;
 
@@ -570,7 +615,7 @@ const writeClaimDirect = async (dp: any): Promise<void> => {
   await dp.fs.write(storePath, JSON.stringify(store, null, 2));
   // Write the heartbeat for the new claim.
   try {
-    const heartbeatPath = ".agentic-heartbeat.json";
+    const heartbeatPath = heartbeatPathOf();
     const hb: Record<string, HeartbeatEntry> =
       await dp.fs.exists(heartbeatPath)
         ? (JSON.parse(await dp.fs.read(heartbeatPath)) as Record<string, HeartbeatEntry>)
@@ -589,7 +634,7 @@ const writeClaimDirect = async (dp: any): Promise<void> => {
 // writeClaimDirect and persist are, because the hooks loader only lets $
 // be passed to a function declared here.
 const writeOwnerHeartbeat = async (dp: any): Promise<void> => {
-  const heartbeatPath = ".agentic-heartbeat.json";
+  const heartbeatPath = heartbeatPathOf();
   const hb: Record<string, HeartbeatEntry> =
     await dp.fs.exists(heartbeatPath)
       ? (JSON.parse(await dp.fs.read(heartbeatPath)) as Record<string, HeartbeatEntry>)
@@ -1527,9 +1572,15 @@ export const register: Register = async (on, options) => {
   // --- Identity: a durable persona is the key, not the session. ---
   // Session vars live in the module-scope `sess` object so persist() and
   // activate() can see them. These local aliases keep existing code readable.
-  const storePath = sess.storePath;
-  const yieldLogPath = sess.yieldLogPath;
-  const heartbeatPath = ".agentic-heartbeat.json";
+  // No constant aliases for the two workdir paths here. register() runs before
+  // session.start, where both are anchored to the launch directory, so an alias
+  // captured at this point would pin the unanchored name for the session's whole
+  // life. The sites below read sess.storePath and sess.yieldLogPath directly,
+  // which resolve at the moment of use.
+  // No alias for the heartbeat path here. register() runs before session.start,
+  // so sess.workdir is still empty at this point and a constant captured here
+  // would pin the fallback for the session's whole life. The reads below call
+  // heartbeatPathOf() instead, which resolves at the moment of use.
 
   // Local aliases: read/write go through sess so persist() and activate()
   // see the same values.
@@ -1845,6 +1896,17 @@ export const register: Register = async (on, options) => {
     } catch {
       // cwd unavailable; the commons entry publishes "" for it
     }
+    // Anchor the two remaining workdir files now that the launch directory is
+    // known, so every later sess.storePath and sess.yieldLogPath read resolves
+    // where the supervisor looks. This is the same move heartbeatPathOf makes,
+    // and it has to happen for the store as well as the heartbeat: anchoring
+    // one and not the other would leave a displaced session stamping a live
+    // heartbeat the supervisor trusts while writing its shutdown, restart and
+    // completion decisions to a store the supervisor never reads. Both fields
+    // are assigned once, here, and never again, so a reader anywhere below
+    // sees the anchored value.
+    sess.storePath = workdirPathOf(PERSONA_STORE_FILENAME);
+    sess.yieldLogPath = workdirPathOf(YIELD_LOG_FILENAME);
     $.ui.log(`Agentic: session.start (${sess.mySessionId})`);
 
     // Register tools.
@@ -2220,8 +2282,8 @@ export const register: Register = async (on, options) => {
     // quietly starts fresh being the same silence in another shape.
     let existing: Record<string, unknown> = {};
     try {
-      const parsed = await $.fs.exists(storePath)
-        ? JSON.parse(await $.fs.read(storePath))
+      const parsed = await $.fs.exists(sess.storePath)
+        ? JSON.parse(await $.fs.read(sess.storePath))
         : {};
       // A parse that returned is not a store that read. JSON.parse("null")
       // returns null, and an array, a number and a string all parse as
@@ -2241,7 +2303,7 @@ export const register: Register = async (on, options) => {
       // read that parses rather than yielding to whatever that store names.
       claimUnpublished = true;
       startStoreProblem = {
-        composed: `the steward's own state store '${storePath}' could not be read when this session started, so it came up on a default state and carries none of what the last session recorded. The error the read returned is on the line under this one.`,
+        composed: `the steward's own state store '${sess.storePath}' could not be read when this session started, so it came up on a default state and carries none of what the last session recorded. The error the read returned is on the line under this one.`,
         carried: boundedText(safeErrorText(err)),
       };
       try { $.ui.log(`Agentic: the persona store could not be read at session start; '${sess.persona}' is coming up on a default state`); } catch { /* non-fatal */ }
@@ -2275,8 +2337,8 @@ export const register: Register = async (on, options) => {
       // Check the heartbeat sidecar for liveness (not the store).
       let holderHb: HeartbeatEntry | null = null;
       try {
-        if (await $.fs.exists(heartbeatPath)) {
-          const hb = JSON.parse(await $.fs.read(heartbeatPath)) as Record<string, HeartbeatEntry>;
+        if (await $.fs.exists(heartbeatPathOf())) {
+          const hb = JSON.parse(await $.fs.read(heartbeatPathOf())) as Record<string, HeartbeatEntry>;
           holderHb = hb[sess.persona] ?? null;
         }
       } catch { /* heartbeat read failed */ }
@@ -2412,8 +2474,8 @@ export const register: Register = async (on, options) => {
         if (sess.isOwner) {
           let onDisk: { activeSessionId: string; epoch: number } | null = null;
           try {
-            if (await $.fs.exists(storePath)) {
-              const store = JSON.parse(await $.fs.read(storePath)) as Record<string, unknown>;
+            if (await $.fs.exists(sess.storePath)) {
+              const store = JSON.parse(await $.fs.read(sess.storePath)) as Record<string, unknown>;
               const existing = store[sess.persona] as AgentState | undefined;
               if (existing) onDisk = existing;
             }
@@ -2494,8 +2556,8 @@ export const register: Register = async (on, options) => {
         if (!sess.isOwner && arming !== "reader") {
           let holderHb: HeartbeatEntry | null = null;
           try {
-            if (await $.fs.exists(heartbeatPath)) {
-              const hb = JSON.parse(await $.fs.read(heartbeatPath)) as Record<string, HeartbeatEntry>;
+            if (await $.fs.exists(heartbeatPathOf())) {
+              const hb = JSON.parse(await $.fs.read(heartbeatPathOf())) as Record<string, HeartbeatEntry>;
               holderHb = hb[sess.persona] ?? null;
             }
           } catch { /* heartbeat read failed */ }
@@ -2526,8 +2588,8 @@ export const register: Register = async (on, options) => {
                   // Persist the decision to disk (reader path, so persist() won't work).
                   // Merge, never replace: read existing slot, push decision onto it, write back.
                   try {
-                    const store: Record<string, unknown> = await $.fs.exists(storePath)
-                      ? (JSON.parse(await $.fs.read(storePath)) as Record<string, unknown>)
+                    const store: Record<string, unknown> = await $.fs.exists(sess.storePath)
+                      ? (JSON.parse(await $.fs.read(sess.storePath)) as Record<string, unknown>)
                       : {};
                     const existing = store[sess.persona] as AgentState | undefined;
                     if (existing) {
@@ -2548,14 +2610,14 @@ export const register: Register = async (on, options) => {
                       store[sess.persona] = sess.state;
                     }
                     const jsonStr = JSON.stringify(store, null, 2);
-                    await $.fs.write(storePath, jsonStr);
+                    await $.fs.write(sess.storePath, jsonStr);
                   } catch { /* non-fatal */ }
                 }
                 return;
               }
             } catch { /* commons check failed; proceed with local-only promotion */ }
-            const store: Record<string, unknown> = await $.fs.exists(storePath)
-              ? (JSON.parse(await $.fs.read(storePath)) as Record<string, unknown>)
+            const store: Record<string, unknown> = await $.fs.exists(sess.storePath)
+              ? (JSON.parse(await $.fs.read(sess.storePath)) as Record<string, unknown>)
               : {};
             const existing = store[sess.persona] as AgentState | undefined;
             if (existing) {
@@ -4812,8 +4874,9 @@ export const register: Register = async (on, options) => {
       try { await writeOwnerHeartbeat($); } catch { /* heartbeat write failed; non-fatal */ }
     }
     // The commons copy of the stamp exists so a session in another working
-    // directory can read this turn's state, which the cwd-relative heartbeat
-    // file cannot give it. Owner or reader, the session's own entry carries
+    // directory can read this turn's state. The heartbeat file cannot give it
+    // that: the commons store is machine-global, while the heartbeat sits in
+    // one session's own launch directory. Owner or reader, the session's own entry carries
     // its turn state: a session that yields mid-turn writes the stamp through
     // releaseResource, and only this handler pair clears it.
     try { await stampCommonsMeta(commonsStoreOf($), sess.mySessionId, commonsMeta()); } catch { /* commons stamp failed; non-fatal */ }
@@ -5470,8 +5533,8 @@ export const register: Register = async (on, options) => {
         // joins as a reader. It keeps every reader:<target> claim it has
         // made, because delivery grounds each pending record on a live
         // reader:<target> claim at delivery time.
-        const store: Record<string, unknown> = await $.fs.exists(storePath)
-          ? (JSON.parse(await $.fs.read(storePath)) as Record<string, unknown>)
+        const store: Record<string, unknown> = await $.fs.exists(sess.storePath)
+          ? (JSON.parse(await $.fs.read(sess.storePath)) as Record<string, unknown>)
           : {};
         const existing = store[name] as AgentState | undefined;
         if (existing) {
@@ -5504,8 +5567,8 @@ export const register: Register = async (on, options) => {
           await releaseResource(commonsStoreOf($), `persona:${previousPersona}`, sess.mySessionId, Date.now(), commonsMeta());
         } catch { /* non-fatal: commons is a coordination layer */ }
       }
-      const store: Record<string, unknown> = await $.fs.exists(storePath)
-        ? (JSON.parse(await $.fs.read(storePath)) as Record<string, unknown>)
+      const store: Record<string, unknown> = await $.fs.exists(sess.storePath)
+        ? (JSON.parse(await $.fs.read(sess.storePath)) as Record<string, unknown>)
         : {};
       const existing = store[name] as AgentState | undefined;
       if (existing) {
@@ -6237,8 +6300,8 @@ export const register: Register = async (on, options) => {
       // owner killed mid-turn never clears it, so the report also requires
       // the entry's lastSeen within staleAfterMs of now, since a stale owner
       // is dead rather than busy. The commons store is machine-global, so a
-      // reader in another working directory sees the same entry, which the
-      // cwd-relative heartbeat file cannot give it.
+      // reader in another working directory sees the same entry. The heartbeat
+      // file cannot give it that: it sits in one session's own launch directory.
       let ownerTurnStartedAt: number | null = null;
       // The owner's working directory rides on the result too, so a
       // coordinator in another repository knows where the worker's own

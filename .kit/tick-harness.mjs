@@ -16,6 +16,15 @@ import path from "node:path";
 const SESSION_ID = "harness-session";
 const HARNESS_CWD = "D:/harness-root";
 
+// The one path the plugin resolves the heartbeat file to under this harness.
+// The plugin anchors it to the launch directory it captured at session.start,
+// which here is HARNESS_CWD. Cases seed and assert through this constant so a
+// fixture cannot go on naming a path the plugin stopped writing, which is the
+// shape of the production defect the anchoring fixes.
+const HEARTBEAT_FILE = `${HARNESS_CWD}/.agentic-heartbeat.json`;
+const PERSONA_STORE_FILE = `${HARNESS_CWD}/.agentic-personas.json`;
+const YIELD_LOG_FILE = `${HARNESS_CWD}/.agentic-yields.log`;
+
 // AO1: Resolve hook - when specifier starts with "./", has no extension, and
 // parent URL is under hooks/, append ".ts" and defer to next resolver.
 const resolveHook = (specifier, context, nextResolve) => {
@@ -407,10 +416,15 @@ async function fireHeartbeat(harness) {
 // --- Seed the fake fs with persona store + stale heartbeat ---
 
 function seedPersonaStore(harness, state) {
-  const storePath = ".agentic-personas.json";
+  const storePath = PERSONA_STORE_FILE;
   const store = { default: state };
   harness.fsMap.set(storePath, JSON.stringify(store));
-  const hbPath = ".agentic-heartbeat.json";
+  // The plugin anchors the heartbeat file to the launch directory it captured
+  // at session.start, which for the harness is HARNESS_CWD. Seeding the bare
+  // name instead would leave the plugin reading a file this seed never wrote,
+  // which is the production defect the anchoring fixes rather than a property
+  // the harness should reproduce.
+  const hbPath = HEARTBEAT_FILE;
   // Stale heartbeat: lastSeen far in the past so session.start claims.
   harness.fsMap.set(hbPath, JSON.stringify({
     default: { sessionId: "old-session", epoch: 1, lastSeen: 1_000_000_000_000 },
@@ -475,4 +489,7 @@ export {
   loadModule,
   SESSION_ID,
   HARNESS_CWD,
+  HEARTBEAT_FILE,
+  PERSONA_STORE_FILE,
+  YIELD_LOG_FILE,
 };
