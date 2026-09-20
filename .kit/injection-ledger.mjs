@@ -394,13 +394,35 @@ function extractShellInstructions(src) {
     );
   }
 
+  // The sum below models `+=` and nothing else, so the collector reads the
+  // `+` and refuses the one assignment shape the sum would misread: a bare
+  // `NAME="..."` carrying text where some earlier assignment of that name
+  // already carried text. Such a line replaces the variable at runtime and is
+  // summed here as though it appended, so text moved out of the earlier
+  // assignment into it leaves the total unchanged while every launch shape
+  // taking the earlier one loses that text, and a size check that refuses
+  // only growth stays silent through the whole move.
+  //
+  // Two bare shapes stay legal because neither bends the sum. An empty init
+  // followed by one conditional value is how most of these variables are
+  // built, and replacing an empty string is the same operation as appending
+  // to it. An empty clear (`NAME=""` in the architect's block, which takes
+  // neither the skill-load nor the steer sentence) contributes nothing to the
+  // sum either way.
   const collected = new Map(INSTRUCTION_NAMES.map((n) => [n, []]));
   const assignRe = /^\s*([A-Za-z_][A-Za-z0-9_]*)(\+?)=\s*"([^\n]*)"\s*$/;
-  for (const line of lines) {
-    const m = assignRe.exec(line);
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = assignRe.exec(lines[i]);
     if (!m) continue;
-    const [, name, , content] = m;
-    if (collected.has(name)) collected.get(name).push(content);
+    const [, name, plus, content] = m;
+    if (!collected.has(name)) continue;
+    const priorText = collected.get(name).filter((c) => c !== "").length;
+    if (plus !== "+" && content !== "" && priorText > 0) {
+      throw new Error(
+        `[instruction-reassign] ${name} in bin/supervise.sh line ${i + 1}: this line carries text under the bare shape NAME="..." and ${priorText} earlier assignment(s) of that name already carry text, so it replaces the variable where the ledger's sum reads it as appending and the recorded size would not move if a clause were carried across; expected NAME+="..." for a clause that adds to the shapes before it, or the empty NAME="" for an init or for a launch shape that withholds the variable. Write the line as NAME+="..." where it appends, and where the variable really is replaced for one launch shape, give this name its own extraction rule that sizes each shape rather than their sum, in the same commit.`,
+      );
+    }
+    collected.get(name).push(content);
   }
   for (const name of INSTRUCTION_NAMES) {
     // Every assignment and += continuation found for this name, in source
@@ -411,7 +433,9 @@ function extractShellInstructions(src) {
     // worst-case content across every launch shape. A later `NAME=""` that
     // clears a variable for one launch shape (the architect's, which takes
     // neither the skill-load nor the steer sentence) adds nothing to that sum,
-    // so the worst case still reads the shape that carries the text.
+    // so the worst case still reads the shape that carries the text. The only
+    // other reassignment shape, a later bare assignment carrying text, would
+    // break that reading and the collector above refuses it.
     const assignments = collected.get(name);
     const expected = INSTRUCTION_ASSIGNMENT_COUNTS[name];
     if (assignments.length !== expected) {
