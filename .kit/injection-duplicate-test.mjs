@@ -54,10 +54,13 @@
 //     guard's own patterns do not name (a clause wrapped with a line
 //     continuation, a += clause rewritten as a plain assignment, a new
 //     instruction variable, a new context block, a new
-//     prompt call site, a literal at a delivery site) and requiring the
+//     prompt call site, a literal at a delivery site, a fleet note's own
+//     sentence hoisted into a name or split across a `+`) and requiring the
 //     throw to come from that guard by its tag, so one guard cannot mask
 //     another's silence; plus one proving the fleet line-literal collector
-//     reads a label nested inside a ternary inside an interpolation.
+//     reads a label nested inside a ternary inside an interpolation, and one
+//     proving the fleet-note collector reads a site's own prose, each of
+//     those two mutating text the rule under it was never handed.
 
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -221,7 +224,7 @@ function fail(name) {
     "exit-code split: instrument label read as real check: guard control: something",
   ];
   const realCheckLabels = [
-    'duplicate sentence across [CHANNEL_REPLY_INSTRUCTION, REPLY_INSTRUCTION]: "a sentence"',
+    'duplicate sentence across [CHANNEL_REPLY_INSTRUCTION, KAIZEN_FRAME]: "a sentence"',
     "live entry with 0 chars: SOME_INSTRUCTION - extraction found nothing to size or match",
     "size grew without a ledger update: SOME_INSTRUCTION is 40 chars, ledger recorded 30",
     "live entry not in the baseline: SOME_INSTRUCTION - refresh .kit/injection-ledger.json",
@@ -508,7 +511,7 @@ function fail(name) {
   expectSizeHeld("a still-waiting frame split into two pieces", "STILL_WAITING_RERAISE_TEXT",
     "`[STILL WAITING] ${askRecord.question}`", "`[STILL WAITING]` + ` ${askRecord.question}`");
   expectSizeHeld("a kaizen frame split into two pieces", "KAIZEN_FRAME",
-    "[KAIZEN] Post each line below to the operator's thread", "[KAIZEN] Post each line below` + ` to the operator's thread");
+    "[KAIZEN] Send each line below to the operator", "[KAIZEN] Send each line below` + ` to the operator");
   expectSizeHeld("a reply-backstop frame split into two pieces", "REPLY_BACKSTOP_FRAME",
     "[REPLY BACKSTOP] Send this exact text to the operator", "[REPLY BACKSTOP] Send this exact text` + ` to the operator");
   // A nested interpolation, which is what a frame gains when a value starts
@@ -555,6 +558,47 @@ function fail(name) {
   } catch (e) {
     fail(`guard control: fleet line literals - ${e.message}`);
   }
+
+  // The fleet notes' authored prose. Every mutation below rewrites a note's
+  // own sentence, which is text the rule under test was never handed: that
+  // rule's own literals are `composed:`, `carried:` and the FleetLine type's
+  // declaration. A control built from those would prove the instrument runs
+  // and say nothing about what the rule reaches.
+  const noteSentence = "a roster entry repeats a name an earlier entry already holds, so it has no row of its own. The name it wrote:";
+  // The whole literal replaced by a bare name, which is the shape a sentence
+  // takes when it is hoisted into a constant and spliced back in. Before this
+  // rule existed the ledger built with no throw and no entry carried the
+  // sentence at all, so this is the coverage case rather than the instrument
+  // case. The delimiters are found from the sentence's own position.
+  {
+    const at = tsSrc.indexOf(noteSentence);
+    const open = at === -1 ? -1 : tsSrc.lastIndexOf('"', at);
+    const close = at === -1 ? -1 : tsSrc.indexOf('"', at + noteSentence.length);
+    if (at === -1 || open === -1 || close === -1) {
+      fail("guard control: a fleet note's composed half hoisted into a name - the note sentence or its delimiters are not in hooks/index.ts");
+    } else {
+      const hoisted = tsSrc.slice(0, open) + "REPEATED_NAME_NOTE" + tsSrc.slice(close + 1);
+      expectRefusal("a fleet note's composed half hoisted into a name", "[fleet-note-prose]", ["REPEATED_NAME_NOTE"], () => buildLedgerFrom(shSrc, hoisted));
+    }
+  }
+  // The same literal split into a two-piece chain. Each site is its own line
+  // of the entry, so a split would record one character more than the same
+  // value whole; the rule refuses rather than letting the recorded size move
+  // on an edit that changes no text.
+  expectRefusal("a fleet note's composed half split across a +", "[fleet-note-prose]", ["composed half"], () =>
+    buildLedgerFrom(shSrc, mutated(tsSrc, noteSentence, "a roster entry repeats a name\" + \" an earlier entry already holds, so it has no row of its own. The name it wrote:", "note split")));
+  // Coverage: lengthen a site's own sentence and require the entry to grow by
+  // exactly the characters added and to carry the longer phrase, which is what
+  // says the rule reads this site rather than merely refusing a bad one.
+  try {
+    const before = buildLedgerFrom(shSrc, tsSrc).find((e) => e.name === "FLEET_NOTE_COMPOSED_PROSE");
+    const added = " under the name it repeated";
+    const grown = buildLedgerFrom(shSrc, mutated(tsSrc, noteSentence, noteSentence + added, "note lengthened")).find((e) => e.name === "FLEET_NOTE_COMPOSED_PROSE");
+    if (grown.chars === before.chars + added.length && grown.text.includes(noteSentence + added)) ok(`guard control: fleet note prose - a note's own sentence is sized (${before.chars} -> ${grown.chars})`);
+    else fail(`guard control: fleet note prose - a note's own sentence is not sized (${before.chars} -> ${grown.chars})`);
+  } catch (e) {
+    fail(`guard control: fleet note prose - ${e.message}`);
+  }
 }
 
 // The ledger's declared coverage bound, pinned: exactly the two record-
@@ -578,6 +622,23 @@ function fail(name) {
     ok(`exclusion pin: the ledger declares ${DELIVERY_SITE_COUNT} deliveryText call sites and hooks/index.ts holds that many, two of them named above and one reached by no prompt-call-site row`);
   } else {
     fail(`exclusion pin: the ledger declares ${DELIVERY_SITE_COUNT} deliveryText call sites and hooks/index.ts holds ${liveDeliverySites.length}`);
+  }
+}
+
+// The [BUDGET] prompt is gone from this plugin, deleted by the context-budget
+// removal, and that absence is asserted here rather than assumed: a retired
+// prompt produces no ledger entry, so nothing above would speak if it came
+// back. The read carries its own control, the [FLEET] label read out of the
+// same file by the same shape, because a silent check over a file it failed
+// to read reads exactly like a clean one.
+{
+  const ts = readNormalized(join(repoRoot, "hooks", "index.ts"));
+  const budget = ts.match(/\[BUDGET\]/g) || [];
+  const control = ts.match(/\[FLEET\]/g) || [];
+  if (budget.length === 0 && control.length > 0) {
+    ok(`exclusion pin: hooks/index.ts carries no [BUDGET] prompt, the same read finding [FLEET] at ${control.length} occurrence(s) as the control that says it spoke`);
+  } else {
+    fail(`exclusion pin: hooks/index.ts carries ${budget.length} [BUDGET] occurrence(s) and the [FLEET] control read ${control.length}`);
   }
 }
 

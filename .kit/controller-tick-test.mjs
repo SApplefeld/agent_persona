@@ -4825,6 +4825,14 @@ async function caseSection12_H1_deliveryTurnOpensAheadOfAQueuedBackstop(clock) {
   const completeChannel = h.handlers["turn.complete"](h.fake, { turnId: "t-channel-h1a", answer: "All green.", reason: "completed" }, async () => ({ result: "ok" }));
   const backstopQueued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.includes("[REPLY BACKSTOP]")));
   check("section12.H1a: the backstop submit is parked behind the delivery (setup sanity)", backstopQueued);
+  // The backstop carries the operator's own answer back to them, so its two
+  // ends are what it is: the label that tells the model where the turn came
+  // from, and the exact answer it is resending. A frame that gained a prefix
+  // in front of the label, or lost the answer off its tail, resends nothing
+  // the operator would recognise.
+  const backstopText = (h.promptSubmits || []).find((p) => p.includes("[REPLY BACKSTOP]")) || "";
+  check("section12.H1a: the backstop opens with its label", backstopText.startsWith("[REPLY BACKSTOP] "), backstopText);
+  check("section12.H1a: the backstop ends with the answer it is resending", backstopText.endsWith("\nAll green."), backstopText);
   check("section12.H1a: the channel turn did not take the stamp", readStoreRecord(h, key)?.turnId === undefined);
 
   // The delivery's own turn opens first.

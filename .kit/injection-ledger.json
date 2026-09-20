@@ -62,28 +62,22 @@
       "words": 1
     },
     {
-      "name": "REPLY_INSTRUCTION",
-      "file": "hooks/index.ts",
-      "chars": 1564,
-      "words": 272
-    },
-    {
       "name": "RECONCILE_TEXT",
       "file": "hooks/index.ts",
-      "chars": 238,
-      "words": 39
+      "chars": 167,
+      "words": 26
     },
     {
       "name": "STILL_WAITING_RERAISE_TEXT",
       "file": "hooks/index.ts",
-      "chars": 16,
-      "words": 2
+      "chars": 116,
+      "words": 19
     },
     {
       "name": "FLEET_PROMPT_FRAME",
       "file": "hooks/index.ts",
-      "chars": 318,
-      "words": 62
+      "chars": 337,
+      "words": 65
     },
     {
       "name": "FLEET_PROMPT_LINE_LITERALS",
@@ -92,10 +86,16 @@
       "words": 56
     },
     {
+      "name": "FLEET_NOTE_COMPOSED_PROSE",
+      "file": "hooks/index.ts",
+      "chars": 1464,
+      "words": 281
+    },
+    {
       "name": "KAIZEN_FRAME",
       "file": "hooks/index.ts",
-      "chars": 92,
-      "words": 15
+      "chars": 106,
+      "words": 18
     },
     {
       "name": "REPLY_BACKSTOP_FRAME",
@@ -106,20 +106,20 @@
     {
       "name": "NUDGE_TEXT_idle_gap_converted",
       "file": "hooks/index.ts",
-      "chars": 499,
-      "words": 87
+      "chars": 423,
+      "words": 72
     },
     {
       "name": "NUDGE_TEXT_idle_timeout",
       "file": "hooks/index.ts",
-      "chars": 243,
-      "words": 43
+      "chars": 174,
+      "words": 29
     },
     {
       "name": "GOAL_TREE_BLOCK",
       "file": "hooks/index.ts",
-      "chars": 255,
-      "words": 45
+      "chars": 223,
+      "words": 37
     },
     {
       "name": "GOAL_TREE_PAUSED_BLOCK",
@@ -172,8 +172,8 @@
     {
       "name": "goal_done_description",
       "file": "hooks/index.ts",
-      "chars": 185,
-      "words": 32
+      "chars": 331,
+      "words": 63
     },
     {
       "name": "goal_status_description",

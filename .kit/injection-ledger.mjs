@@ -58,11 +58,13 @@
 // fourth site or a literal added at any of them fails rather than slipping
 // past. Fixed literals inside interpolated expressions are sized only where
 // a rule names them: the [FLEET] prompt's per-row line literals are one such
-// rule; the "- " prefix on each [KAIZEN] line and the "Pending siblings: ",
+// rule, and the authored prose of a [FLEET] note's `composed` half is
+// another. The "- " prefix on each [KAIZEN] line and the "Pending siblings: ",
 // "Last note: " and "root > " fragments of the [GOAL TREE] block are not
-// sized by any rule here, and neither is the authored prose of a [FLEET]
-// note's `composed` half, which reaches the prompt through an interpolation
-// and is this ledger's largest declared gap.
+// sized by any rule here. Neither are the six short phrases a fleet note
+// splices in by name, the three state keys and the three well-state
+// readings beside them, which the composed-prose rule meets as
+// interpolation rather than as literal text.
 
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -507,17 +509,11 @@ function extractShellInstructions(src) {
 }
 
 // ---------------------------------------------------------------------------
-// hooks/index.ts: REPLY_INSTRUCTION, each prompt frame's literal text at its
-// call site (interpolation excluded), each prompt.submit context block's
-// literal text, and every registered tool's description plus its parameter
-// descriptions.
+// hooks/index.ts: each prompt frame's literal text at its call site
+// (interpolation excluded), the authored prose of a fleet note, each
+// prompt.submit context block's literal text, and every registered tool's
+// description plus its parameter descriptions.
 // ---------------------------------------------------------------------------
-
-function extractReplyInstruction(src) {
-  const m = /const REPLY_INSTRUCTION = "([^\n]*)";/.exec(src);
-  if (!m) throw new Error("REPLY_INSTRUCTION not found in hooks/index.ts");
-  return record("REPLY_INSTRUCTION", "hooks/index.ts", m[1]);
-}
 
 function extractReconcileText(src) {
   const m = /const RECONCILE_TEXT = "([^\n]*)";/.exec(src);
@@ -525,46 +521,43 @@ function extractReconcileText(src) {
   return record("RECONCILE_TEXT", "hooks/index.ts", m[1]);
 }
 
-// The still-waiting re-raise: a nested template literal,
-// `${REPLY_INSTRUCTION}${quoteContinuationLines(`[STILL WAITING]
-// ${askRecord.question}`)}`. REPLY_INSTRUCTION is counted on its own above;
-// askRecord.question is per-ask data excluded as interpolation.
+// The still-waiting re-raise: one quoted instruction joined by `+` to
+// quoteContinuationLines(`[STILL WAITING] ${askRecord.question}`). The
+// question is per-ask data excluded as interpolation. The instruction and
+// the label are both authored prose and both are sized.
 //
-// The region between `quoteContinuationLines(` and the `)}` that closes the
-// call is captured whole and read by the shared chain reader, rather than
-// one backtick pair being matched inside it. Both halves of that matter. The
-// closing anchor proves the capture reached the end of the call, so a piece
-// added after the one this rule recognises cannot sit outside the capture
-// unseen. It proves nothing about the template around the call: text placed
-// before `quoteContinuationLines(` in that outer template is outside the
-// capture. Today the only thing there is `${REPLY_INSTRUCTION}`, counted as
-// its own entry above, so nothing is lost. Section 3 deletes that prefix and
-// carries this file in its own files in scope, which is where the rule is
-// re-anchored to whatever replaces it. The shared reader is what sizes the region
-// correctly once it is captured, joining every template piece and refusing
-// only an operand it cannot size. A rule that matched one backtick pair with
-// no closing anchor would record that pair and drop the rest with no throw,
-// which the size check cannot see because it reports growth and never a
-// shrink.
+// The capture runs from the assignment to the `;` that closes the statement,
+// which is the anchor proving it reached the end of the expression: a piece
+// added in front of the call, between the operands, or after it, is inside
+// the capture rather than sitting outside it unseen. Every string literal in
+// that region is then collected, in the order the scan meets each closing
+// delimiter, which for a chain of this shape is source order. They are joined
+// with nothing between them, as they concatenate in the child, so a piece
+// split in two records the size it recorded whole. The collector
+// is used here rather than the shared chain reader because the region mixes a
+// quoted literal with a call whose argument is a template, and a reader that
+// refused the call would refuse a shape this frame reads correctly. What that
+// costs is that a data literal passed to a call in this region would be
+// counted as prose, which overcounts rather than under.
 function extractStillWaitingReraise(src) {
-  const m = /quoteContinuationLines\(([\s\S]*?)\)\}`/.exec(src);
+  const m = /const reraiseText =\s*([\s\S]*?);\n/.exec(src);
   if (!m) throw new Error("still-waiting reraise frame not found in hooks/index.ts");
-  return record("STILL_WAITING_RERAISE_TEXT", "hooks/index.ts", literalOfTemplateChain(m[1], "STILL_WAITING_RERAISE_TEXT"));
+  const literals = collectStringLiterals(m[1]).filter((s) => s.length > 0);
+  if (literals.length === 0) throw new Error("[chain-shape] STILL_WAITING_RERAISE_TEXT: the re-raise text carries no string literal at all");
+  return record("STILL_WAITING_RERAISE_TEXT", "hooks/index.ts", literals.join(""));
 }
 
-// fleetPromptText's returned frame: `${REPLY_INSTRUCTION}[FLEET] ${count}
-// reading...continue your work:` + "\n" + lines.join("\n"). The backtick
-// template is this frame's literal text once REPLY_INSTRUCTION and ${count}
-// are stripped. The `lines` joined after it are composed one per fleet row
-// from three things rather than two: fixed field labels, per-row data, and
-// the authored prose of a note's `composed` half, several of which run to a
-// sentence or more. The labels are sized separately by
-// extractFleetPromptLineLiterals below. The `composed` prose is not sized by
-// any rule here, because it reaches the line through an interpolation and
-// this section's extraction excludes interpolated content. It is the
-// ledger's largest declared gap and the header above names it as one.
+// fleetPromptText's returned frame: `[FLEET] ${count} reading...continue your
+// work:` + "\n" + lines.join("\n"). The backtick template is this frame's
+// literal text once ${count} is stripped. The `lines` joined after it are
+// composed one per fleet row from three things rather than two: fixed field
+// labels, per-row data, and the authored prose of a note's `composed` half,
+// several of which run to a sentence or more. The labels are sized by
+// extractFleetPromptLineLiterals below and the prose by
+// extractFleetNoteComposedProse, so all three of the frame's own sources are
+// sized by a rule here.
 function extractFleetPromptFrame(src) {
-  const m = /return `(\$\{REPLY_INSTRUCTION\}\[FLEET\][^`]*)`\s*\+\s*"\\n"\s*\+\s*lines\.join/.exec(src);
+  const m = /return `(\[FLEET\][^`]*)`\s*\+\s*"\\n"\s*\+\s*lines\.join/.exec(src);
   if (!m) throw new Error("fleetPromptText frame not found in hooks/index.ts");
   return record("FLEET_PROMPT_FRAME", "hooks/index.ts", m[1]);
 }
@@ -577,6 +570,16 @@ function extractFleetPromptFrame(src) {
 // Comments are skipped so an apostrophe in one cannot open a phantom
 // string. Escapes ride through raw and are decoded once in record().
 function collectStringLiterals(region) {
+  return collectLiteralSpans(region).map((s) => s.text);
+}
+
+// The same scan, each literal carrying the span it occupied. A caller that
+// needs to know what in a region was not a literal reads these spans and
+// blanks them; extractFleetNoteComposedProse below is the one that does. A
+// literal met inside an interpolation carries no span, since the template
+// enclosing it already spans it, and blanking both would blank the same
+// bytes twice.
+function collectLiteralSpans(region) {
   const out = [];
   let i = 0;
   function readQuoted(quote) {
@@ -609,8 +612,8 @@ function collectStringLiterals(region) {
         let depth = 1;
         while (i < region.length && depth > 0) {
           const c = region[i];
-          if (c === '"' || c === "'") { out.push(readQuoted(c)); continue; }
-          if (c === "`") { out.push(readTemplate()); continue; }
+          if (c === '"' || c === "'") { out.push({ text: readQuoted(c), start: -1, end: -1 }); continue; }
+          if (c === "`") { out.push({ text: readTemplate(), start: -1, end: -1 }); continue; }
           if (c === "{") depth++;
           else if (c === "}") depth--;
           i++;
@@ -638,8 +641,12 @@ function collectStringLiterals(region) {
       i = end === -1 ? region.length : end + 2;
       continue;
     }
-    if (c === '"' || c === "'") { out.push(readQuoted(c)); continue; }
-    if (c === "`") { out.push(readTemplate()); continue; }
+    if (c === '"' || c === "'" || c === "`") {
+      const start = i;
+      const text = c === "`" ? readTemplate() : readQuoted(c);
+      out.push({ text, start, end: i });
+      continue;
+    }
     i++;
   }
   return out;
@@ -668,7 +675,7 @@ function functionBody(src, name) {
 function extractFleetPromptLineLiterals(src) {
   const tailBody = functionBody(src, "fleetSuppressedTail");
   const promptBody = functionBody(src, "fleetPromptText");
-  const returnIdx = promptBody.indexOf("return `${REPLY_INSTRUCTION}[FLEET]");
+  const returnIdx = promptBody.indexOf("return `[FLEET]");
   if (returnIdx === -1) throw new Error("fleetPromptText's return statement was not found inside its body; the body was cut short or the frame moved");
   if (!/^return `[^`]*` \+ "\\n" \+ lines\.join\("\\n"\);\s*$/.test(promptBody.slice(returnIdx))) {
     throw new Error("fleetPromptText's body does not end at its return statement; a statement after the return, or a truncated body, would leave line literals unsized");
@@ -681,7 +688,67 @@ function extractFleetPromptLineLiterals(src) {
   return record("FLEET_PROMPT_LINE_LITERALS", "hooks/index.ts", literals.join("\n"));
 }
 
-// The [KAIZEN] frame: `${REPLY_INSTRUCTION}[KAIZEN] Post each line below...`
+// Every fleet note's `composed` half: the plugin's own sentence, spliced
+// into a '- ' line of the [FLEET] prompt through an interpolation. A note's
+// `carried` half is text quoted out of a file and is per-reading data; the
+// composed half is authored prose, several sites running to a sentence or
+// more, and this is the rule that sizes it.
+//
+// The sites are read by shape rather than from a list: every `composed:`
+// key in hooks/index.ts outside the FleetLine type's own declaration is a
+// site, so one added anywhere in the file is sized the moment it is
+// written. Each site's value region runs to the `carried:` key that closes
+// the pair, which is the anchor proving the capture reached the end of the
+// value. Inside that region, everything outside a string literal must be
+// whitespace or the comma that closes the pair. An identifier, a call or a
+// condition refuses, because a sentence hoisted into a constant and spliced
+// back by name is exactly the shape that reaches the child unsized, and this
+// file resolves no identifier, so there is no correct reading of one here. A
+// `+` joining two literals refuses for a reason of its own: each literal is
+// its own line of the entry, so that two sentences cannot glue into one at
+// the seam, and a value split into two pieces would therefore record one
+// character more than the same value whole. One literal per site is the
+// shape that makes the recorded size mean what it says.
+function extractFleetNoteComposedProse(src) {
+  const typeIdx = src.indexOf("type FleetLine = {");
+  if (typeIdx === -1) {
+    throw new Error("[fleet-note-prose] the FleetLine type declaration was not found in hooks/index.ts; this rule tells the type's own `composed` key from a note's by that declaration's own region and cannot run without it");
+  }
+  const typeEnd = findMatchingBrace(src, src.indexOf("{", typeIdx));
+  const literals = [];
+  let sites = 0;
+  const keyRe = /\bcomposed:[ \t]*/g;
+  let m;
+  while ((m = keyRe.exec(src)) !== null) {
+    if (m.index > typeIdx && m.index < typeEnd) continue;
+    const at = m.index + m[0].length;
+    const carriedIdx = src.indexOf("carried:", at);
+    if (carriedIdx === -1) {
+      throw new Error(`[fleet-note-prose] the fleet note at hooks/index.ts offset ${at} has no \`carried:\` key after its \`composed:\` key; that key is what bounds the value this rule sizes, so restore the pair's shape or re-anchor this rule in the same commit`);
+    }
+    const region = src.slice(at, carriedIdx);
+    const spans = collectLiteralSpans(region);
+    let residue = region;
+    for (const s of spans.filter((x) => x.start >= 0).reverse()) {
+      residue = residue.slice(0, s.start) + residue.slice(s.end);
+    }
+    if (!/^[\s,]*$/.test(residue)) {
+      throw new Error(`[fleet-note-prose] the fleet note composed half at hooks/index.ts offset ${at} carries ${JSON.stringify(residue.trim().slice(0, 48))} outside any string literal; a fleet note's composed half is one string or template literal and nothing else. Prose reaching the [FLEET] prompt through a name, a call or a condition is text this rule cannot size, because it resolves no identifier; a value split across a `+` would record one character more than the same value whole, because each literal is its own line of the entry. Write the sentence as one literal at the site, or give it a rule of its own in the same commit.`);
+    }
+    const texts = spans.map((s) => s.text).filter((t) => t.length > 0);
+    if (texts.length === 0) {
+      throw new Error(`[fleet-note-prose] the fleet note composed half at hooks/index.ts offset ${at} carries no string literal at all`);
+    }
+    literals.push(...texts);
+    sites += 1;
+  }
+  if (sites === 0) {
+    throw new Error("[fleet-note-prose] hooks/index.ts carries no fleet note `composed:` site outside the FleetLine type declaration; the rule no longer reads what it was written for");
+  }
+  return record("FLEET_NOTE_COMPOSED_PROSE", "hooks/index.ts", literals.join("\n"));
+}
+
+// The [KAIZEN] frame: `[KAIZEN] Send each line below...`
 // followed by `+ announced.map((line) => `- ${line}`).join("\n")`. Each
 // announced line is per-announcement data and excluded; the two-character
 // `- ` prefix the map puts on each is fixed text this rule does not size.
@@ -696,8 +763,8 @@ function extractKaizenFrame(src) {
   return record("KAIZEN_FRAME", "hooks/index.ts", literalOfTemplateChain(m[1], "KAIZEN_FRAME"));
 }
 
-// The reply backstop: `${REPLY_INSTRUCTION}[REPLY BACKSTOP] Send this exact
-// text...unchanged:\n${e.answer}`. e.answer is the operator-facing text
+// The reply backstop: `[REPLY BACKSTOP] Send this exact text...unchanged:
+// \n${e.answer}`. e.answer is the operator-facing text
 // already composed elsewhere and is excluded as interpolation. The capture
 // is bounded by the statement's own semicolon for the reason above.
 function extractBackstopFrame(src) {
@@ -842,7 +909,7 @@ const DELIVERY_SITE_COUNT = 3;
 
 const PROMPT_CALL_SITES = [
   { anchor: "reraiseEntry", entries: ["STILL_WAITING_RERAISE_TEXT"] },
-  { anchor: "fleetPromptText(", entries: ["FLEET_PROMPT_FRAME", "FLEET_PROMPT_LINE_LITERALS"] },
+  { anchor: "fleetPromptText(", entries: ["FLEET_PROMPT_FRAME", "FLEET_PROMPT_LINE_LITERALS", "FLEET_NOTE_COMPOSED_PROSE"] },
   { anchor: "RECONCILE_TEXT", entries: ["RECONCILE_TEXT"] },
   { anchor: "expectedAnswerTurn", excludedTextVar: "answerText" },
   { anchor: "expectedDeliveryTurn", excludedTextVar: "submittedText" },
@@ -1144,11 +1211,11 @@ function extractToolDescriptions(src) {
 function buildLedgerFrom(shSrc, tsSrc) {
   const entries = [
     ...extractShellInstructions(shSrc),
-    extractReplyInstruction(tsSrc),
     extractReconcileText(tsSrc),
     extractStillWaitingReraise(tsSrc),
     extractFleetPromptFrame(tsSrc),
     extractFleetPromptLineLiterals(tsSrc),
+    extractFleetNoteComposedProse(tsSrc),
     extractKaizenFrame(tsSrc),
     extractBackstopFrame(tsSrc),
     ...extractNudgeFrames(tsSrc),
