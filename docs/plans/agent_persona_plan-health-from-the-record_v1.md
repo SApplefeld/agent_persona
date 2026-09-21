@@ -165,6 +165,7 @@ References: `https://docs.typesafe.ai/api.md`, `https://docs.typesafe.ai/primiti
 
 ### 6. The documents and the coordinator's instruction
 Model: sonnet
+Locus: inline
 
 `README.md` states the queue entry's three new fields, the `goal_add` parameter, what a plan entry is, how one is judged, which turns are scored, the two leads, and that a plan entry has no round budget. Its passages on rounds, at `README.md:127` and `README.md:566` on `c22d0fc`, are scoped to task entries. `docs/architecture.md` names the plan document as the record the controller reads, lists `hooks/plan-record.ts`, and restates the injection ledger's totals at `:121` as the regenerated ledger gives them. The coordinator instruction in `bin/supervise.sh` gains one sentence: pass `planPath` when queuing a plan, and read an entry's `lead` and its plan document when judging a worker, never `completedRounds`. The ledger is regenerated for that sentence. The README's decision seam section lists the three shadow questions and their outcome kinds.
 

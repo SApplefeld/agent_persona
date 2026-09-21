@@ -15,6 +15,8 @@ Each layer's whole input from the layer below is one channel. The supervisor rea
 
 No layer reads how full the child's context window is. The plugin keeps no estimate of it and the supervisor restarts no child on context grounds, so the signals in the table above are the whole set. Compaction is the harness's own, landed at the boundary the coordinator instruction has the child bank through the kit's checkpoint CLI at the end of each turn whose state is on disk.
 
+A queue entry that carries a plan document is judged from that document rather than from a count of turns. `hooks/plan-record.ts` parses it for a `Status: Complete` header and its Chapter count, and the controller reads it at the end of each turn on the entry, under the working directory or at one of three archive places. The entry's other record is the worker's own closing text, whose first line the controller reads for a `BLOCKED:` or `WAITING:` lead. `README.md` states the rules under "Plan entries: judged from the record". The supervisor reads none of this: its own checks read the `restart_requested`, `shutdown_requested` and `root_complete` decisions and never the round counter or the document.
+
 The fleet reading is the one channel that runs the other way. The coordinator persona's plugin reads the keeper's own state files for every persona in the roster, so one child sees the layer above it, and it sees that layer for the whole fleet rather than for its own supervisor. It only reads: no plugin path writes a roster, a `keeper.json` or a `keeper.hold`.
 
 ## Data flow at boot
@@ -138,14 +140,14 @@ Two files write text into a child session that nobody typed: `bin/supervise.sh` 
 
 ### What is injected, and how large
 
-`.kit/injection-ledger.json` is the committed size baseline, 39 entries totalling 27,532 characters. Ten entries come from `bin/supervise.sh` and total 13,046; twenty-nine come from `hooks/index.ts` and total 14,486, of which the fourteen registered tool descriptions are 10,176.
+`.kit/injection-ledger.json` is the committed size baseline, 39 entries totalling 27,964 characters. Ten entries come from `bin/supervise.sh` and total 13,252; twenty-nine come from `hooks/index.ts` and total 14,712, of which the fourteen registered tool descriptions are 10,304.
 
 | What a launch reads | Characters |
 |---|---|
 | A worker with a channel: skill-load, coordinator steer, reply-tool | 2,474 |
-| The coordinator: those three plus the coordinator role instruction | 7,193 |
+| The coordinator: those three plus the coordinator role instruction | 7,399 |
 | The architect: reply-tool plus its charter, the other two cleared | 5,908 |
-| The fourteen tool descriptions, registered into every session | 10,176 |
+| The fourteen tool descriptions, registered into every session | 10,304 |
 
 `fleet_status` alone is 3,795 of that last row, because the five health-class definitions live in it and every other surface points there. It registers into every session whatever the persona, including a worker that cannot call it.
 
