@@ -40,7 +40,9 @@ import {
   fleetClassValue,
   PLAN_PATH_PATTERN,
   PLAN_PATH_REQUIRED_FORM,
+  resolvePlanPath,
 } from "./agent-state";
+import { readPlanRecord } from "./plan-record";
 import type { AgentState, FleetHealth, FleetHealthMemo, GoalNode, NudgeBudget, EnvGit, EnvState } from "./agent-state";
 import {
   claimResource,
@@ -1570,6 +1572,36 @@ export const activate = (dp: any, nextId: string | null, reason: string): void =
   }
 };
 
+// Section 2 (plan-health-from-the-record): a plan entry is an entry that has
+// a plan by resolvePlanPath's ancestor rule, whatever its kind, so a task a
+// worker adds under its plan node is one too. A plan entry is judged from its
+// plan document rather than from a count of turns: its completedRounds is
+// never incremented, the round-budget block never applies to it, and its
+// maxRounds is neither read nor changed.
+const isPlanEntry = (state: AgentState, g: GoalNode): boolean =>
+  resolvePlanPath(state, g) !== undefined;
+
+// The entry that holds the planPath a node is judged against: the node
+// itself, or else its nearest ancestor with one. This is the entry the plan
+// document's completion completes, which for a task under a plan node is its
+// parent. The walk is resolvePlanPath's, bounded the same way, and returns
+// undefined for a task entry.
+function planHolderOf(state: AgentState, node: GoalNode): GoalNode | undefined {
+  let current: GoalNode | undefined = node;
+  let steps = state.goals.length;
+  while (current) {
+    if (current.planPath) return current;
+    if (!current.parentId || steps-- <= 0) return undefined;
+    current = state.goals.find((g) => g.id === current!.parentId);
+  }
+  return undefined;
+}
+
+// The round text the controller's idle summary and its skip-hash subset
+// carry for an entry. A task entry reads its budget; a plan entry has none.
+const roundSummaryText = (state: AgentState, g: GoalNode): string =>
+  isPlanEntry(state, g) ? "plan entry, no round budget" : `round ${g.completedRounds}/${g.maxRounds}`;
+
 export const register: Register = async (on, options) => {
   // --- Identity: a durable persona is the key, not the session. ---
   // Session vars live in the module-scope `sess` object so persist() and
@@ -1715,6 +1747,11 @@ export const register: Register = async (on, options) => {
   // end (not whichever node is active then, which may have been activated
   // mid-turn by goal_done / scorer complete).
   let turnLeafId: string | null = null;
+
+  // Section 2 (plan-health-from-the-record): the plan holders whose document
+  // has already logged plan_record_unreadable this session, so an unreadable
+  // document logs once per entry rather than once per turn.
+  const planRecordUnreadableLogged = new Set<string>();
 
   // M8: planning reentrancy guard.
   let planningInFlight = false;
@@ -4321,7 +4358,7 @@ export const register: Register = async (on, options) => {
 
       const summary =
         `Objective: ${g.objective}\n` +
-        `Node: ${g.id} (${g.kind}), status ${g.status}, round ${g.completedRounds}/${g.maxRounds}\n` +
+        `Node: ${g.id} (${g.kind}), status ${g.status}, ${roundSummaryText(sess.state, g)}\n` +
         `Last 5 scores: ${last5}\n` +
         `On-goal count: ${onGoalCount} of ${g.scores.length}\n` +
         `Idle time: ${idleDisplay}\n` +
@@ -4483,7 +4520,7 @@ export const register: Register = async (on, options) => {
             // Build the stable subset string (exclude idle time, nudge count, decisions tail).
             const stableSubset =
               `Objective: ${g.objective}\n` +
-              `Node: ${g.id} (${g.kind}), status ${g.status}, round ${g.completedRounds}/${g.maxRounds}\n` +
+              `Node: ${g.id} (${g.kind}), status ${g.status}, ${roundSummaryText(sess.state, g)}\n` +
               `Last 5 scores: ${last5}\n` +
               `On-goal count: ${onGoalCount} of ${g.scores.length}\n` +
               `Memory: ${sess.state.memory.length} entries\n` +
@@ -4787,8 +4824,13 @@ export const register: Register = async (on, options) => {
             ? sess.state.goals.find((x) => x.id === sess.state.activeGoalId)
             : null;
           if (currentActive && currentActive.status === "active") {
+            // A plan entry has no round budget, so its status line carries
+            // no round text.
+            const roundText = isPlanEntry(sess.state, currentActive)
+              ? ""
+              : ` | round ${currentActive.completedRounds}/${currentActive.maxRounds}`;
             try {
-              $.ui.status(`Goal: ${currentActive.title.slice(0, 50)} | ${currentActive.kind} | ${currentActive.id} | round ${currentActive.completedRounds}/${currentActive.maxRounds}`);
+              $.ui.status(`Goal: ${currentActive.title.slice(0, 50)} | ${currentActive.kind} | ${currentActive.id}${roundText}`);
             } catch { /* non-fatal */ }
           }
 
@@ -5245,8 +5287,10 @@ export const register: Register = async (on, options) => {
           result: label,
         });
 
-        // Only on-goal, drift, and complete burn rounds.
-        if (label === "on-goal" || label === "drift" || label === "complete") {
+        // Only on-goal, drift, and complete burn rounds, and only on a task
+        // entry: a plan entry has no round budget, so no label spends one.
+        const planEntry = isPlanEntry(sess.state, g);
+        if (!planEntry && (label === "on-goal" || label === "drift" || label === "complete")) {
           g.completedRounds += 1;
         }
 
@@ -5279,8 +5323,9 @@ export const register: Register = async (on, options) => {
           // L11: plan completion is a log line, not a speech.
           try { $.ui.log(`Agentic: ${completedId} plan complete`); } catch { /* non-fatal */ }
           try { $.ui.status(""); } catch { /* non-fatal */ }
-        } else if (g.completedRounds >= g.maxRounds) {
+        } else if (!planEntry && g.completedRounds >= g.maxRounds) {
           // R7: round budget → leaf blocked, toast once, then activateNext.
+          // Never for a plan entry, whose maxRounds is not read.
           g.status = "blocked";
           g.blockedReason = "Max rounds reached";
           g.updatedAt = Date.now();
@@ -5334,6 +5379,81 @@ export const register: Register = async (on, options) => {
           detail: `${turnLeaf.id}: status ${turnLeaf.status} at turn end`,
         });
         turnLeafId = null;
+      }
+    }
+
+    // Section 2 (plan-health-from-the-record): done and progress from the
+    // plan document. For the entry that was active at turn start, when it is
+    // a plan entry, read the document its plan holder names. Complete
+    // (a header Status: Complete, or the document moved to an archive place)
+    // completes the holder with the same steps the scorer's complete label
+    // runs: completeLeaf, runHealth, a complete decision naming the document,
+    // activateNext, activate. A Chapter count above the stored one stores the
+    // new count, resets the nudge counter and logs plan_progress; an
+    // unchanged count logs nothing. An unreadable document changes nothing
+    // and logs one plan_record_unreadable decision per holder per session.
+    // The reader never throws on a document it cannot read; the try/catch
+    // here covers the completion steps, as the scorer's does.
+    const planHolder = turnLeaf ? planHolderOf(sess.state, turnLeaf) : undefined;
+    const planPath = planHolder?.planPath;
+    if (planHolder && planPath) {
+      const holder = planHolder;
+      try {
+        const reading = await readPlanRecord(
+          { exists: (p: string) => $.fs.exists(p), read: (p: string) => $.fs.read(p) },
+          sess.workdir,
+          planPath,
+        );
+        if (reading.kind === "unreadable") {
+          if (!planRecordUnreadableLogged.has(holder.id)) {
+            planRecordUnreadableLogged.add(holder.id);
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "plan_record_unreadable",
+              detail: `${holder.id}: ${planPath}: ${reading.reason}`,
+            });
+          }
+        } else {
+          if (reading.kind === "read" && reading.chapters > (holder.chapterCount ?? 0)) {
+            const previous = holder.chapterCount ?? 0;
+            holder.chapterCount = reading.chapters;
+            holder.updatedAt = Date.now();
+            sess.consecutiveNudgesWithoutOnGoal = 0;
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "plan_progress",
+              detail: `${holder.id}: ${planPath} Chapters ${previous} -> ${reading.chapters}`,
+            });
+          }
+          const documentComplete = reading.kind === "archived" || reading.complete;
+          if (documentComplete && holder.status !== "complete" && holder.status !== "abandoned") {
+            const completedId = holder.id;
+            const cause = reading.kind === "archived"
+              ? `plan document ${planPath} is archived at ${reading.at}`
+              : `plan document ${planPath} reads Status: Complete`;
+            completeLeaf(sess.state, completedId, "plan document complete");
+            await runHealth($, completedId);
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "complete",
+              detail: `${completedId}: ${cause}`,
+            });
+            const nextId = activateNext(sess.state, completedId);
+            activate($, nextId, `${completedId} complete`);
+            try { $.ui.log(`Agentic: ${completedId} plan complete (${cause})`); } catch { /* non-fatal */ }
+            try { $.ui.status(""); } catch { /* non-fatal */ }
+          }
+        }
+      } catch (err) {
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "goal",
+          action: "plan_record_failed",
+          detail: `${holder.id}: ${String(err).slice(0, 150)}`,
+        });
       }
     }
 
@@ -5995,8 +6115,10 @@ export const register: Register = async (on, options) => {
       // E2: health run at completeLeaf site (goal_done).
       await runHealth($, completedId);
       // M11: credit the round and score in goal_done, not turn.complete.
+      // The score is recorded for every entry; the round is spent on a task
+      // entry only, since a plan entry has no round budget.
       active.scores.push({ round: active.scores.length + 1, result: "on-goal" });
-      active.completedRounds += 1;
+      if (!isPlanEntry(sess.state, active)) active.completedRounds += 1;
       sess.state.decisions.push({
         timestamp: Date.now(),
         loop: "goal",
@@ -6683,9 +6805,14 @@ export const register: Register = async (on, options) => {
       const lastNote = activeNode.notes.length > 0
         ? `Last note: ${activeNode.notes[activeNode.notes.length - 1]}\n`
         : "";
+      // A plan entry has no round budget, so its prompt carries no round
+      // text; a task entry reads the round it is entering over its budget.
+      const roundText = isPlanEntry(sess.state, activeNode)
+        ? ""
+        : ` | round ${activeNode.completedRounds + 1}/${activeNode.maxRounds}`;
       const goalBlock =
         `[GOAL TREE]\n` +
-        `Active: ${activeNode.kind} ${activeNode.id} | round ${activeNode.completedRounds + 1}/${activeNode.maxRounds} | ${activeNode.objective}\n` +
+        `Active: ${activeNode.kind} ${activeNode.id}${roundText} | ${activeNode.objective}\n` +
         `Path: ${path}\n` +
         siblingLine +
         lastNote +

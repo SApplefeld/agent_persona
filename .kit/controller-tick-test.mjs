@@ -3106,6 +3106,18 @@ async function main() {
     await casePlanPath1Ancestors_refusalHighInChainLeavesLowerAncestorUntouched(clock);
     await casePlanPath1Ancestors_fillPrecedesRecoveryWhateverTheArrayOrder(clock);
 
+    // Section 2 (plan-health-from-the-record): done and progress from the
+    // document, and no round budget on a plan entry.
+    await casePlanRecord2_statusCompleteCompletesTheHolder(clock);
+    await casePlanRecord2_nearMissesDoNotComplete(clock);
+    await casePlanRecord2_archivedInAnyOfThreePlacesCompletes(clock);
+    await casePlanRecord2_unreadableChangesNothingAndLogsOnce(clock);
+    await casePlanRecord2_chapterCountRiseLogsProgressAndResetsNudges(clock);
+    await casePlanRecord2_unchangedChapterCountLogsNothing(clock);
+    await casePlanRecord2_planEntryHasNoRoundBudget(clock);
+    await casePlanRecord2_taskEntryStillBlocksAtBudget_control(clock);
+    await casePlanRecord2_roundTextAtTheFourSites(clock);
+
     await caseItem81_goalEditDropAllowsBlocked(clock);
     await caseItem81_goalEditDropStillRefusesActive_control(clock);
     await caseNudgeGuard_sentBetweenTurns_control(clock);
@@ -12355,6 +12367,400 @@ async function casePlanPath1Ancestors_fillPrecedesRecoveryWhateverTheArrayOrder(
   checkFilledPlanPathWellFormed("ancestors order", planNode && planNode.planPath);
   check("ancestors order: the entry ahead of its parent is still recovered", node && node.status === "pending", node && node.status);
   check("ancestors order: its blockedReason is cleared", node && node.blockedReason === undefined, node && node.blockedReason);
+}
+
+// ============================================================
+// Section 2 (plan-health-from-the-record): done and progress from the plan
+// document, and no round budget on a plan entry.
+// ============================================================
+
+const PLAN2_PATH = "docs/plans/a_v1.md";
+const PLAN2_FILE = `${HARNESS_CWD}/${PLAN2_PATH}`;
+
+// A plan document in the repository's own template shape: an H1, a header of
+// key lines, H2 sections, and a Chapters section with the given headings.
+function plan2Doc(header, chapterHeadings = []) {
+  const chapters = chapterHeadings.map((h) => `${h}\n\nWhat shipped.\n`).join("\n");
+  return `# A plan\n\n${header}\nCommit Model: Branch-and-PR\n\n## Goal\n\nThe goal.\n\n## Chapters\n\n${chapters}`;
+}
+
+// The tree every Section 2 case starts from: a root, plan-1 carrying the
+// planPath, and plan-2 pending beside it so a completion has a next entry to
+// activate. With `taskUnderPlan` the active leaf is task-1 under plan-1, the
+// shape a worker's own goal_add produces, and plan-1 sits pending above it.
+function plan2Goals({ taskUnderPlan = false, chapterCount, maxRounds = 10 } = {}) {
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 });
+  const plan1 = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: taskUnderPlan ? "pending" : "active",
+    planPath: PLAN2_PATH, maxRounds, createdAt: T0 - 20000,
+    ...(chapterCount === undefined ? {} : { chapterCount }),
+  });
+  const plan2 = makeGoalNode({ id: "plan-2", parentId: "root-1", kind: "plan", status: "pending", createdAt: T0 - 10000 });
+  const goals = [root, plan1, plan2];
+  if (taskUnderPlan) {
+    goals.push(makeGoalNode({ id: "task-1", parentId: "plan-1", kind: "task", status: "active", maxRounds, createdAt: T0 - 5000 }));
+  }
+  return { goals, activeGoalId: taskUnderPlan ? "task-1" : "plan-1" };
+}
+
+async function plan2Harness(caseName, treeOpts = {}, extraOpts = {}) {
+  const tree = plan2Goals(treeOpts);
+  return createTickHarness({
+    ...OPTS,
+    ...extraOpts,
+    caseName,
+    stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId },
+  });
+}
+
+// One scored turn: the scorer's own classify answers `label` when that label
+// is on offer, and "discard" to the memory curator's question, so the score
+// is the only thing the stub decides.
+async function plan2ScoredTurn(h, turnId, label, answer = "Working on it.") {
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes(label)) ? label : "discard");
+  await h.handlers["turn.start"](h.fake, { turnId }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId, answer, reason: "completed" }, async () => ({ result: "ok" }));
+}
+
+// A header reading Complete, in either spelling the acceptance names,
+// completes the entry holding the planPath at the turn's end: completeLeaf,
+// runHealth for that node, a complete decision naming the document, and the
+// next entry activated.
+async function casePlanRecord2_statusCompleteCompletesTheHolder(clock) {
+  console.log("\n=== Section 2: a header Status: Complete completes the planPath holder at turn end ===");
+  const headers = ["Status: Complete", "status:   complete  "];
+  for (const header of headers) {
+    clock.set(T0);
+    const h = await plan2Harness(`plan2_complete_${headers.indexOf(header)}`);
+    h.fsMap.set(PLAN2_FILE, plan2Doc(header, ["### Chapter 1 - 2026-09-21"]));
+    h.fsMap.set(".agentic-health", "true");
+    await plan2ScoredTurn(h, "t-complete", "on-goal");
+
+    const state = getState(h);
+    const plan1 = state.goals.find(g => g.id === "plan-1");
+    const plan2 = state.goals.find(g => g.id === "plan-2");
+    const decisions = getDecisions(h);
+    const completeDecision = decisions.find(d => d.action === "complete" && d.detail.startsWith("plan-1:"));
+    check(`plan2 complete (${JSON.stringify(header)}): plan-1 is complete`, plan1 && plan1.status === "complete", plan1 && plan1.status);
+    check(`plan2 complete (${JSON.stringify(header)}): the complete decision names the document as the cause`,
+      completeDecision && completeDecision.detail.includes(PLAN2_PATH) && /status: complete/i.test(completeDecision.detail), completeDecision);
+    check(`plan2 complete (${JSON.stringify(header)}): runHealth ran for plan-1`,
+      state.monitor.env.health && state.monitor.env.health.forNodeId === "plan-1", state.monitor.env.health);
+    check(`plan2 complete (${JSON.stringify(header)}): the next entry is activated`,
+      plan2 && plan2.status === "active" && state.activeGoalId === "plan-2" && decisions.some(d => d.action === "activated" && d.detail.includes("plan-2")), plan2 && plan2.status);
+    check(`plan2 complete (${JSON.stringify(header)}): the round budget was not spent`, plan1 && plan1.completedRounds === 0, plan1 && plan1.completedRounds);
+  }
+}
+
+// Each near miss is refused, and the rule that refuses it is named in the
+// case: a wrong completion activates the next plan while the tree is mid-work.
+async function casePlanRecord2_nearMissesDoNotComplete(clock) {
+  console.log("\n=== Section 2: the Complete rule's near misses complete nothing ===");
+  const nearMisses = [
+    { header: "Status: Complete (archived)", rule: "whole-value rule" },
+    { header: "Status: Completed", rule: "whole-value rule" },
+    { header: "Status: In Progress", rule: "value rule" },
+    { header: "**Status:** Complete", rule: "marked-up key is not the line" },
+    { header: "Status: In Progress", rule: "header rule, Status: Complete below the first ## heading", below: "Status: Complete\n" },
+  ];
+  for (const miss of nearMisses) {
+    clock.set(T0);
+    const h = await plan2Harness(`plan2_nearmiss_${nearMisses.indexOf(miss)}`);
+    const text = plan2Doc(miss.header, ["### Chapter 1"]) + (miss.below ? `\n## Notes\n\n${miss.below}` : "");
+    h.fsMap.set(PLAN2_FILE, text);
+    await plan2ScoredTurn(h, "t-miss", "on-goal");
+
+    const state = getState(h);
+    const plan1 = state.goals.find(g => g.id === "plan-1");
+    const plan2 = state.goals.find(g => g.id === "plan-2");
+    const decisions = getDecisions(h);
+    check(`plan2 near miss ${JSON.stringify(miss.header)}${miss.below ? " + below-heading Complete" : ""} refused by the ${miss.rule}: plan-1 stays active`,
+      plan1 && plan1.status === "active" && state.activeGoalId === "plan-1", plan1 && plan1.status);
+    check(`plan2 near miss ${JSON.stringify(miss.header)}${miss.below ? " + below-heading Complete" : ""}: no complete decision, plan-2 still pending`,
+      !decisions.some(d => d.action === "complete") && plan2 && plan2.status === "pending", decisions.filter(d => d.action === "complete"));
+    check(`plan2 near miss ${JSON.stringify(miss.header)}${miss.below ? " + below-heading Complete" : ""}: the document was readable (no plan_record_unreadable)`,
+      !decisions.some(d => d.action === "plan_record_unreadable"));
+  }
+}
+
+// No file at planPath and a file of the same name in any one of the three
+// archive places completes the holder, whatever that file's Status says.
+async function casePlanRecord2_archivedInAnyOfThreePlacesCompletes(clock) {
+  console.log("\n=== Section 2: a document moved to any archive place completes the holder ===");
+  const places = ["docs/archive", "docs/archive/plans", "docs/plans/archive"];
+  for (const place of places) {
+    clock.set(T0);
+    const h = await plan2Harness(`plan2_archived_${places.indexOf(place)}`);
+    h.fsMap.set(`${HARNESS_CWD}/${place}/a_v1.md`, plan2Doc("Status: In Progress", ["### Chapter 1"]));
+    await plan2ScoredTurn(h, "t-archived", "on-goal");
+
+    const state = getState(h);
+    const plan1 = state.goals.find(g => g.id === "plan-1");
+    const decisions = getDecisions(h);
+    const completeDecision = decisions.find(d => d.action === "complete" && d.detail.startsWith("plan-1:"));
+    check(`plan2 archived at ${place}: plan-1 is complete though the archived file reads In Progress`, plan1 && plan1.status === "complete", plan1 && plan1.status);
+    check(`plan2 archived at ${place}: the complete decision names the archive place`, completeDecision && completeDecision.detail.includes(`${place}/a_v1.md`), completeDecision);
+    check(`plan2 archived at ${place}: the next entry is activated`, state.activeGoalId === "plan-2");
+  }
+}
+
+// Absent from all four places: nothing changes, and one
+// plan_record_unreadable decision is logged per entry per session, however
+// many turns end on it. The re-test failure takes the same path: a stored
+// planPath that fails the shape goal_add enforces is unreadable at the join,
+// and the host is never asked about it.
+async function casePlanRecord2_unreadableChangesNothingAndLogsOnce(clock) {
+  console.log("\n=== Section 2: an unreadable document changes nothing and logs once per entry per session ===");
+  const variants = [
+    { label: "absent from all four places", planPath: PLAN2_PATH, seed: () => {} },
+    { label: "over the 256 KiB cap", planPath: PLAN2_PATH, seed: (h) => h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete") + "x".repeat(256 * 1024)) },
+    { label: "stored planPath failing the re-test (docs/plans/../../x.md)", planPath: "docs/plans/../../x.md", seed: (h) => h.fsMap.set(`${HARNESS_CWD}/x.md`, plan2Doc("Status: Complete")) },
+  ];
+  for (const v of variants) {
+    clock.set(T0);
+    const tree = plan2Goals({ chapterCount: 2 });
+    tree.goals.find(g => g.id === "plan-1").planPath = v.planPath;
+    const h = await createTickHarness({ ...OPTS, caseName: `plan2_unreadable_${variants.indexOf(v)}`, stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId } });
+    v.seed(h);
+    const existsCalls = [];
+    const realExists = h.fake.fs.exists;
+    h.fake.fs.exists = (p) => { existsCalls.push(p); return realExists(p); };
+    await plan2ScoredTurn(h, "t-unread-1", "on-goal");
+    await plan2ScoredTurn(h, "t-unread-2", "on-goal");
+
+    const state = getState(h);
+    const plan1 = state.goals.find(g => g.id === "plan-1");
+    const decisions = getDecisions(h);
+    const unreadable = decisions.filter(d => d.action === "plan_record_unreadable");
+    check(`plan2 unreadable (${v.label}): plan-1 stays active with chapterCount unchanged`,
+      plan1 && plan1.status === "active" && plan1.chapterCount === 2 && state.activeGoalId === "plan-1", plan1);
+    check(`plan2 unreadable (${v.label}): exactly one plan_record_unreadable across two turns, naming plan-1`,
+      unreadable.length === 1 && unreadable[0].detail.startsWith("plan-1:"), unreadable);
+    check(`plan2 unreadable (${v.label}): no complete and no plan_progress decision`,
+      !decisions.some(d => d.action === "complete" || d.action === "plan_progress"));
+    if (v.planPath !== PLAN2_PATH) {
+      check(`plan2 unreadable (${v.label}): the host was asked about no path outside docs/plans (the join never happened)`,
+        !existsCalls.some(p => p.includes("x.md")), existsCalls);
+    }
+  }
+  // Control for the once-per-session rule: a second entry with its own
+  // unreadable document logs its own decision, so the dedupe is per entry.
+  clock.set(T0);
+  {
+    const tree = plan2Goals();
+    tree.goals.find(g => g.id === "plan-2").planPath = "docs/plans/b_v1.md";
+    const h = await createTickHarness({ ...OPTS, caseName: "plan2_unreadable_per_entry", stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId } });
+    await plan2ScoredTurn(h, "t-a", "on-goal");
+    // Complete plan-1 by hand through goal_done so plan-2 becomes the active entry.
+    await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__goal_done", note: "done" }, async () => ({ result: "passthrough" }));
+    await plan2ScoredTurn(h, "t-b", "on-goal");
+    const unreadable = getDecisions(h).filter(d => d.action === "plan_record_unreadable");
+    check("plan2 unreadable per-entry control: two entries log two decisions, one each",
+      unreadable.length === 2 && unreadable.some(d => d.detail.startsWith("plan-1:")) && unreadable.some(d => d.detail.startsWith("plan-2:")), unreadable);
+  }
+}
+
+// A Chapter count rising above the stored one stores the new count, resets
+// the nudge counter and logs plan_progress. The counter is read off the idle
+// summary the controller hands its classifier, "Consecutive nudges sent: N",
+// after one nudge has raised it to 1 and a drift-labelled turn has left it
+// there.
+async function casePlanRecord2_chapterCountRiseLogsProgressAndResetsNudges(clock) {
+  console.log("\n=== Section 2: a Chapter count rising from 2 to 3 logs plan_progress and resets the nudge counter ===");
+  clock.set(T0);
+  const h = await plan2Harness("plan2_progress", { chapterCount: 2 });
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2", "### Chapter 3"]));
+  h.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  check("plan2 progress setup: one nudge was sent", getDecisions(h).some(d => d.action === "nudge_sent" && d.detail.includes("nudge #1")));
+
+  await plan2ScoredTurn(h, "t-progress", "drift");
+  const state = getState(h);
+  const plan1 = state.goals.find(g => g.id === "plan-1");
+  const decisions = getDecisions(h);
+  const progress = decisions.filter(d => d.action === "plan_progress");
+  check("plan2 progress: chapterCount is now 3", plan1 && plan1.chapterCount === 3, plan1 && plan1.chapterCount);
+  check("plan2 progress: one plan_progress decision names the document and 2 -> 3", progress.length === 1 && progress[0].detail.includes(PLAN2_PATH) && progress[0].detail.includes("2 -> 3"), progress);
+  check("plan2 progress: plan-1 is still active (progress is not completion)", plan1 && plan1.status === "active");
+
+  h.resetClassifyCalls();
+  h.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  const summary = h.classifyCalls.length > 0 ? String(h.classifyCalls[0][0]) : "";
+  check("plan2 progress: the nudge counter was reset (idle summary reads Consecutive nudges sent: 0)", summary.includes("Consecutive nudges sent: 0"), summary.split("\n").find(l => l.startsWith("Consecutive")));
+}
+
+// Control and the absence half: an unchanged Chapter count logs nothing and
+// leaves the nudge counter where the drift turn left it. The predicate is
+// "no decision whose action starts with plan_" over the whole decision log
+// after the turn, and the counter reads 1 on the next idle summary.
+async function casePlanRecord2_unchangedChapterCountLogsNothing(clock) {
+  console.log("\n=== Section 2: an unchanged Chapter count logs nothing ===");
+  clock.set(T0);
+  const h = await plan2Harness("plan2_no_progress", { chapterCount: 2 });
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+  h.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  const before = getDecisions(h).length;
+  await plan2ScoredTurn(h, "t-same", "drift");
+  const state = getState(h);
+  const plan1 = state.goals.find(g => g.id === "plan-1");
+  const decisions = getDecisions(h);
+  const planDecisions = decisions.filter(d => typeof d.action === "string" && d.action.startsWith("plan_"));
+  check("plan2 unchanged: chapterCount stays 2", plan1 && plan1.chapterCount === 2, plan1 && plan1.chapterCount);
+  check("plan2 unchanged: no plan_* decision at all in the log (scope: every decision after the turn)", planDecisions.length === 0, planDecisions);
+  check("plan2 unchanged: the turn's own decisions were logged (the log was read, not empty)", decisions.length > before);
+
+  h.resetClassifyCalls();
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  const summary = h.classifyCalls.length > 0 ? String(h.classifyCalls[0][0]) : "";
+  check("plan2 unchanged control: the nudge counter was not reset (idle summary reads Consecutive nudges sent: 1)", summary.includes("Consecutive nudges sent: 1"), summary.split("\n").find(l => l.startsWith("Consecutive")));
+}
+
+// The round budget is gone for a plan entry: 25 scored turns never block it
+// and completedRounds stays 0, for the plan node itself and for a task under
+// it alike, and goal_done spends nothing either.
+async function casePlanRecord2_planEntryHasNoRoundBudget(clock) {
+  console.log("\n=== Section 2: a plan entry scored 25 times is never blocked and spends no round ===");
+  for (const taskUnderPlan of [false, true]) {
+    clock.set(T0);
+    const leafId = taskUnderPlan ? "task-1" : "plan-1";
+    const h = await plan2Harness(`plan2_no_budget_${taskUnderPlan ? "task" : "plan"}`, { taskUnderPlan, maxRounds: 10 });
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"]));
+    for (let i = 0; i < 25; i++) {
+      await plan2ScoredTurn(h, `t-${i}`, i % 2 === 0 ? "on-goal" : "drift");
+    }
+    const state = getState(h);
+    const leaf = state.goals.find(g => g.id === leafId);
+    const decisions = getDecisions(h);
+    const label = taskUnderPlan ? "task under a plan node" : "plan node";
+    check(`plan2 no budget (${label}): 25 scores were recorded`, leaf && leaf.scores.length === 25, leaf && leaf.scores.length);
+    check(`plan2 no budget (${label}): still active, never blocked`, leaf && leaf.status === "active" && state.activeGoalId === leafId, leaf && leaf.status);
+    check(`plan2 no budget (${label}): completedRounds stays 0`, leaf && leaf.completedRounds === 0, leaf && leaf.completedRounds);
+    check(`plan2 no budget (${label}): no block decision`, !decisions.some(d => d.action === "block"), decisions.filter(d => d.action === "block"));
+    check(`plan2 no budget (${label}): maxRounds is unchanged`, leaf && leaf.maxRounds === 10, leaf && leaf.maxRounds);
+
+    const done = await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__goal_done", note: "done" }, async () => ({ result: "passthrough" }));
+    const after = getState(h).goals.find(g => g.id === leafId);
+    check(`plan2 no budget (${label}): goal_done is served and completes the leaf`, done.deny === undefined && after && after.status === "complete", done);
+    check(`plan2 no budget (${label}): goal_done leaves completedRounds at 0`, after && after.completedRounds === 0, after && after.completedRounds);
+    check(`plan2 no budget (${label}): goal_done still records its score`, after && after.scores.length === 26, after && after.scores.length);
+  }
+}
+
+// Control: a task entry, one with no plan ancestor, still blocks at its budget
+// with today's reason, and goal_done still spends a round on it.
+async function casePlanRecord2_taskEntryStillBlocksAtBudget_control(clock) {
+  console.log("\n=== Section 2 control: a task entry still blocks at its budget with today's reason ===");
+  clock.set(T0);
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 });
+  const task = makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", maxRounds: 3, createdAt: T0 - 20000 });
+  const next = makeGoalNode({ id: "task-2", parentId: "root-1", kind: "task", status: "pending", maxRounds: 3, createdAt: T0 - 10000 });
+  const h = await createTickHarness({ ...OPTS, caseName: "plan2_task_budget_control", stateOpts: { now: T0, goals: [root, task, next], activeGoalId: "task-1" } });
+  for (let i = 0; i < 3; i++) {
+    await plan2ScoredTurn(h, `t-${i}`, "on-goal");
+  }
+  const state = getState(h);
+  const blocked = state.goals.find(g => g.id === "task-1");
+  const decisions = getDecisions(h);
+  check("plan2 task control: blocked with Max rounds reached after 3 rounds", blocked && blocked.status === "blocked" && blocked.blockedReason === "Max rounds reached", blocked);
+  check("plan2 task control: completedRounds reached the budget", blocked && blocked.completedRounds === 3, blocked && blocked.completedRounds);
+  check("plan2 task control: the block decision was logged and the next task activated", decisions.some(d => d.action === "block") && state.activeGoalId === "task-2");
+  check("plan2 task control: no plan record was read for a task entry (no plan_* decision)", !decisions.some(d => typeof d.action === "string" && d.action.startsWith("plan_")));
+
+  const done = await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__goal_done", note: "done" }, async () => ({ result: "passthrough" }));
+  const task2 = getState(h).goals.find(g => g.id === "task-2");
+  check("plan2 task control: goal_done spends a round on a task entry", done.deny === undefined && task2 && task2.completedRounds === 1, task2 && task2.completedRounds);
+}
+
+// The four round-text sites. For a plan entry the worker prompt and the
+// status line carry no "round" text at all, and the idle summary and its
+// skip-hash subset say "plan entry, no round budget" in its place. For a task
+// entry all four are unchanged, which is the control that the predicate
+// (/round/i over each text) can speak.
+async function casePlanRecord2_roundTextAtTheFourSites(clock) {
+  console.log("\n=== Section 2: the round text at the four sites ===");
+  const shapes = [
+    { label: "plan entry", tree: plan2Goals(), leafId: "plan-1", planEntry: true },
+    { label: "task under a plan node", tree: plan2Goals({ taskUnderPlan: true }), leafId: "task-1", planEntry: true },
+    {
+      label: "task entry (control)",
+      tree: {
+        goals: [
+          makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+          makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", maxRounds: 3, createdAt: T0 - 20000 }),
+        ],
+        activeGoalId: "task-1",
+      },
+      leafId: "task-1",
+      planEntry: false,
+    },
+  ];
+  for (const shape of shapes) {
+    clock.set(T0);
+    const h = await createTickHarness({ ...OPTS, caseName: `plan2_round_text_${shapes.indexOf(shape)}`, stateOpts: { now: T0, goals: shape.tree.goals, activeGoalId: shape.tree.activeGoalId } });
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"]));
+    const statuses = [];
+    h.fake.ui.status = (s) => { statuses.push(String(s)); };
+
+    // Site 1: the worker prompt's [GOAL TREE] block.
+    const r = await h.handlers["prompt.submit"](h.fake, { text: "keep going" }, async () => ({}));
+    const goalBlock = (r.context || []).find(b => b.includes("[GOAL TREE]")) || "";
+    // Sites 3 and 4: the idle summary handed to the classifier, and the
+    // skip-hash subset, whose text is read through the status-line-free
+    // summary and whose round line is the same expression.
+    h.setClassifyValue("nudge");
+    h.resetClassifyCalls();
+    clock.advance(130_000);
+    await tickAndSettle(h, clock, 50);
+    const summary = h.classifyCalls.length > 0 ? String(h.classifyCalls[0][0]) : "";
+    const nodeLine = summary.split("\n").find(l => l.startsWith("Node: ")) || "";
+    // Site 2: the status line the tick writes for the active entry.
+    const goalStatus = statuses.filter(s => s.startsWith("Goal: ")).pop() || "";
+
+    check(`plan2 round text (${shape.label}): the [GOAL TREE] block was injected`, goalBlock.includes(`Active: `), r.context);
+    check(`plan2 round text (${shape.label}): the idle summary was handed to the classifier`, nodeLine.startsWith(`Node: ${shape.leafId}`), summary);
+    check(`plan2 round text (${shape.label}): the status line was written for the active entry`, goalStatus.includes(shape.leafId), statuses);
+    if (shape.planEntry) {
+      check(`plan2 round text (${shape.label}): /round/i matches nothing in the worker prompt`, !/round/i.test(goalBlock), goalBlock);
+      check(`plan2 round text (${shape.label}): /round/i matches nothing in the status line`, !/round/i.test(goalStatus), goalStatus);
+      check(`plan2 round text (${shape.label}): the idle summary's Node line reads "plan entry, no round budget"`, nodeLine.endsWith("plan entry, no round budget"), nodeLine);
+    } else {
+      check(`plan2 round text (${shape.label}): the worker prompt reads round 1/3`, goalBlock.includes("| round 1/3 |"), goalBlock);
+      check(`plan2 round text (${shape.label}): the status line reads round 0/3`, goalStatus.endsWith("| round 0/3"), goalStatus);
+      check(`plan2 round text (${shape.label}): the idle summary's Node line reads round 0/3`, nodeLine.endsWith("round 0/3"), nodeLine);
+    }
+  }
+
+  // Site 4, the skip-hash subset, read through its own effect: the hash a
+  // tick stores for a plan entry does not move with completedRounds, since
+  // the subset no longer carries them, while a task entry's hash does.
+  for (const planEntry of [true, false]) {
+    const hashes = [];
+    const leafId = planEntry ? "plan-1" : "task-1";
+    for (const rounds of [0, 5]) {
+      clock.set(T0);
+      const goals = planEntry
+        ? plan2Goals().goals
+        : [
+            makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+            makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", maxRounds: 10, createdAt: T0 - 20000 }),
+          ];
+      goals.find(g => g.id === leafId).completedRounds = rounds;
+      const h = await createTickHarness({ ...OPTS, caseName: `plan2_hash_${planEntry ? "plan" : "task"}_${rounds}`, stateOpts: { now: T0, goals, activeGoalId: leafId } });
+      h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"]));
+      h.setClassifyValue("nudge");
+      clock.advance(130_000);
+      await tickAndSettle(h, clock, 50);
+      hashes.push(getState(h).monitor.cost.lastSummaryHash);
+    }
+    check(`plan2 skip-hash subset (${planEntry ? "plan entry" : "task entry (control)"}): the stored hash ${planEntry ? "ignores" : "moves with"} completedRounds`,
+      hashes.length === 2 && hashes[0] !== 0 && (planEntry ? hashes[0] === hashes[1] : hashes[0] !== hashes[1]), hashes);
+  }
 }
 
 // Item 8.1 / Round 58 finding 4: goal_edit's drop action refused a blocked node outright, which is

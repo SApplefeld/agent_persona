@@ -424,3 +424,17 @@ Delta: 2026-09-21 on SCOTT-CLAUDE, worktree at the closing tree of Section 1 bef
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 7 - 2026-09-21
+
+In-flight sections: Section 2 only, at its first build. Section 1 closed at `a39a538` with Chapter 1; this entry carries no `Completed:` line.
+
+Live dispatches: one `implementer-opus` on the brief at `.kit/scratch/plan-health/section-2-brief.txt`, building `hooks/plan-record.ts`, its unit suite, the turn-end reader call beside the scorer, the round-budget removal at both increments and the block, and the four round-text sites.
+
+Section 2 open: the add-decision line and the intake gap check are at `.kit/scratch/plan-health/add-decisions-section-2.md`. Two declared assumptions ride into the brief: the host's file API has no stat, so the 256 KiB cap is measured on the text read; and the scorer's `complete` label on a plan entry stays Section 3's to ignore. The reader is told to build no refusal beyond the amendment's pattern re-test, so the round-3 device-name Minor goes to the backlog at this section's close unless the reader's open finds more.
+
+Gate baseline: the targeted lane at `a39a538` on 2026-09-21 on SCOTT-CLAUDE reads `npx tsc --noEmit` exit 0 and `node .kit/controller-tick-test.mjs` 1550 OK, 0 FAIL, exit 0, wall clock 38 s, uncontended under this session's claim. The enumerated offline roster of nineteen lanes read exit 0 on every lane at `5f149bf`.
+
+Next action per section: read the implementer's report, verify it on this session's own run, commit at first green under Branch-and-PR, then dispatch review round 1 at round 1's roster one tier up from the writer (fable for the code pair, plus the security lens since the section reads a file at a path the store supplies).
+
+Commit Model: Branch-and-PR
