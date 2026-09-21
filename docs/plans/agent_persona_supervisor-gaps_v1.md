@@ -372,3 +372,21 @@ Handover, 2026-09-21. A plugin hotfix restarted the session holding this run whi
 Second handover, 2026-09-21. A fleet-wide restart ended the session that made the re-dispatch above before its implementer wrote anything: the tree was clean at `a787185` and the module still lacked the `init` and `thinking_tokens` rule. This session took the dev persona and found the goal tree intact with this plan active and no sibling session on it. The same brief, with a refreshed skill path, is dispatched a third time to a fresh `implementer-sonnet`. The review count stays at 3.
 
 Commit Model: Branch-and-PR
+
+### Interim board 5 - 2026-09-21
+
+In-flight sections: Section 1 only, at review round 4. No section has closed, so this entry carries no `Completed:` line.
+
+Third handover, 2026-09-21. The session that dispatched fix round 3 for the third time saw it return, verified it on its own run (36 passed, exit 0, on 2026-09-21 on SCOTT-CLAUDE), committed it at `b973d99`, and dispatched review round 4 through `Workflow`. A persona hotfix restarted that session before the round returned, so that run is lost with it. This session came up already holding the dev persona, which the hotfix was for. It found the goal tree with this plan paused behind a controller-written kaizen node about inbox wait times. That node is not in the operator's queue, so it is dropped with its reversal path named on the node, and its observation is in `docs/backlog.md`. This plan is active again.
+
+Live dispatches: review round 4, re-dispatched on the same brief as the lost run. The adversarial and blind lenses, both at `opus`, effort `high`, through `Workflow` run `wf_3dd592c4-7e2`, base ref `622c19b`, over the section's three files. Round 4 runs round 1's roster because round 3 returned a Critical. Review rounds adjudicated: 3, against an opening bound of 5.
+
+Gate baseline: the section's suite, `.kit/supervisor-turnstate-unit-test.mjs`, read 36 passed, 0 failed, exit 0 at `b973d99` on 2026-09-21 on SCOTT-CLAUDE, reported by the prior session and not yet re-run here.
+
+Rulings adopted since the last boundary. The operator confirmed on the dev thread, 2026-09-21, "please continue the plans as you've listed them", the listed order being supervisor gaps, dead claim release, plan health, supervisor peer, deferred gate run. A second message on the same thread the same day carries the operator's ruling on the plan-health backstop and changes that order: finish this section through its review and its Chapter, then carry `docs/plans/agent_persona_plan-health-from-the-record_v1.md` on branch `plan-health-build` through before returning to this plan. That ruling's plan-health content (three further review rounds, the owed work first, the text-pattern finding accepted and declared unless Critical) is to be recorded in that plan's `## Intent` section when this session switches to it, since that file lives on the other branch.
+
+Push state: `b973d99` and every commit after it sit local only. `gh auth status` reports the neo-claude token invalid and an HTTPS probe asks for a username. The operator was told on 2026-09-21. The push lands at the next boundary once the credential is restored.
+
+Next action: adjudicate review round 4, fix or close, and where the round leaves no Critical and no owed Major, close Section 1 with its Chapter and commit. Then switch to the plan-health plan per the ruling above. Sections 2 through 5 are unstarted.
+
+Commit Model: Branch-and-PR
