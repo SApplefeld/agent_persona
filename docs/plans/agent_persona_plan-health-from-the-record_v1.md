@@ -230,3 +230,25 @@ The Critical, confirmed at the code rather than taken on report: `applyPlanRecor
 Next action per section: read the fix round's report, verify it against the recorded baseline, then run review round 2. Round 1 returned a Critical, so round 2 runs round 1's full roster at its tier rather than a single lens. Sections 2 through 6 are unstarted. Section 5's precondition is met: pull request 57 merged at 2026-09-21T00:38Z as `622c19b`, and all three decision seam modules are confirmed present on `origin/main` by a direct read rather than inferred from the merge state.
 
 Commit Model: Branch-and-PR
+
+### Interim board 2 - 2026-09-21
+
+In-flight sections: Section 1 only, at its second fix round. No section has closed, so this entry carries no `Completed:` line.
+
+Live dispatches: one implementer at opus, given three fixes and an eight-item do-not-fix list. Review round 2 of three lenses has returned and is adjudicated, and the scope adjudicator has ruled.
+
+Gate baseline: the controller tick suite reads 1436 assertions and 0 failures on this tree, up from 1410 before fix round 1 and 1378 at base commit `8df99af`. Read from the run's own exit code of 0. Measured 2026-09-21T01:41Z on SCOTT-CLAUDE by this session, uncontended. A foreign heavy-process claim (DEV-PLUGIN, repo `D:/personas/dev-plugin/repo`, written 2026-09-21T01:44Z) went live after that reading, so the fix round's own gate runs under the claim protocol rather than uncontended. The rest of the targeted lane is green at exit 0: `npx tsc --noEmit`, `node .kit/check-loader-rule.mjs`, `node .kit/injection-duplicate-test.mjs`.
+
+Rulings adopted since the last boundary:
+
+- Review round 2 returned CHANGES_REQUIRED from the adversarial and blind lenses and CONCERNS from the security lens. All three independently found one Critical, the blind lens among them, which never held the spec.
+- The Critical: `applyPlanRecordOnLoad` frees a round-budget-blocked entry whose intermediate ancestor is blocked, and nothing can then activate it. `activateNext` filters each level on `pending` so it never descends past the blocked ancestor, `isActivationEligible` refuses on ancestor status, and `isPlanningDue` goes false once anything is pending. Confirmed at the code rather than taken on report. The change makes such a store strictly worse than before it: with nothing pending, the planner used to recover it.
+- This is the same finding class as round 1's Critical, which was the same guard reading the root alone. Round 1 covered the root and the leaf; the span between them stayed uncovered. A repeating class means the tier is the lever, so the fix round is escalated from sonnet to opus with both rounds' evidence in the brief.
+- A design stop fired on the Critical's fix, because clearing a blocked ancestor mutates a node no acceptance bullet names. The scope adjudicator ruled ACCEPT-AND-DECLARE: the plan parent's block exists only because its child was stopped at the round budget, so it is itself an entry a count of turns stopped, one hop removed, and the Goal sentence "No plan entry is stopped by a count of turns" already asks for it. The ruling's grounds were checked against the plan's own text on this side before adoption. The mechanism is one the bullets already asked for, so no acceptance bullet moved and the Standing Brief Amendments block is unchanged.
+- The blind lens's Major, that the round budget stops binding across restarts, is recorded and not fixed. Section 2's acceptance removes the round budget from plan entries outright, so after that section there is no count to re-free. Both sections land in the same pull request under Branch-and-PR, so no window exists where one ships without the other.
+- The security lens's Major, that a plan path is shape-checked but never existence-checked, is recorded and not fixed here. Section 2's acceptance already owns it: a path absent from all four places logs one `plan_record_unreadable` decision per entry per session.
+- The three lenses' shared Minor, that the fill and the recovery share one pass and so depend on array order, is not reachable in production. Every write to a goals array across all six files under `hooks/` is an empty literal, a single-element reset or an append, and the four files beyond `agent-state.ts` and `index.ts` only read it. The invariant is unstated even so, and 27 fixtures in the tick suite build the array directly, so the two-pass split rides with this fix round rather than the close pass.
+
+Next action per section: read the fix round's report, verify it against the 1436 baseline, then run review round 3. Round 2 returned a Critical, so round 3 runs the full roster again rather than a single lens. That will be the third round, and the operator backstop fires at the fifth. Sections 2 through 6 are unstarted.
+
+Commit Model: Branch-and-PR
