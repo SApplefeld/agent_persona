@@ -59,11 +59,13 @@ const systemRateLimit = () => JSON.stringify({
 // A rate_limit_event record as the child actually emits it: routine quota
 // info on almost every response, most of it not blocking at all. Passing no
 // status models a record whose rate_limit_info.status this reader cannot
-// read as a string.
-const rateLimitEvent = (status) => JSON.stringify({
+// read as a string. overage, when given, adds isUsingOverage and/or
+// overageStatus onto rate_limit_info, which models a child proceeding past
+// its included quota on overage rather than actually parked.
+const rateLimitEvent = (status, overage) => JSON.stringify({
   type: 'rate_limit_event',
   resets_at: CLOCK + 60000,
-  ...(status === undefined ? {} : { rate_limit_info: { status } }),
+  ...(status === undefined ? {} : { rate_limit_info: { status, ...(overage || {}) } }),
 });
 
 // Writes a stream from an array of line strings, joined with newlines. A
@@ -162,8 +164,29 @@ const cases = [
     assert.equal(run(p), 'busy');
   }],
 
-  ['newest record of any type is rate_limit_event with rate_limit_info.status rejected (the child is actually parked), behind user+tool_result, mtime five seconds old: idle', () => {
+  ['a single thinking_tokens record after a stale text reply, with no init anywhere in the tail, still reads busy: on a live stream a text-only reply can be followed straight into the next turn\'s thinking_tokens run with no init line before the next conversational record, so thinking_tokens has to mark a new turn on its own and not only alongside init', () => {
+    const oldTs = new Date(CLOCK - 360000).toISOString();
+    const p = writeStream('marker-thinking-tokens-alone', [assistantTextTs(oldTs), systemThinkingTokens()], { mtimeMs: CLOCK });
+    assert.equal(run(p), 'busy');
+  }],
+
+  ['newest record of any type is rate_limit_event with rate_limit_info.status rejected and no overage fields at all (the child is actually parked): idle. Hand-built and unobserved in the fleet: every rejected record measured there carried overage fields (see the live cases below); this pins the bare-rejected fallback rather than a shape seen live.', () => {
     const p = writeStream('rate-limit-event-rejected', [userToolResult(), rateLimitEvent('rejected')], { mtimeMs: CLOCK - 5000 });
+    assert.equal(run(p), 'idle');
+  }],
+
+  ['live shape: rejected with overageStatus allowed and isUsingOverage true, behind user+tool_result, mtime five seconds old: busy. Confirmed on the architect child-3 stream (16 rejected records, all carrying this overage shape): the child\'s included quota is exhausted and it is proceeding on overage, not parked.', () => {
+    const p = writeStream('rate-limit-event-rejected-overage-user', [userToolResult(), rateLimitEvent('rejected', { overageStatus: 'allowed', isUsingOverage: true })], { mtimeMs: CLOCK - 5000 });
+    assert.equal(run(p), 'busy');
+  }],
+
+  ['the same overage shape behind an assistant tool_use record, mtime five seconds old: busy. Confirmed on the architect child-3 stream: 15 of the 16 rejected-with-overage records sit between an assistant tool_use record and the user tool_result that follows it, so the rate-limit record is the newest of any type for the whole length of that tool call.', () => {
+    const p = writeStream('rate-limit-event-rejected-overage-tooluse', [assistantToolUse(), rateLimitEvent('rejected', { overageStatus: 'allowed', isUsingOverage: true })], { mtimeMs: CLOCK - 5000 });
+    assert.equal(run(p), 'busy');
+  }],
+
+  ['rejected with overageStatus rejected and isUsingOverage false, behind user+tool_result, mtime five seconds old: idle. Hand-built and unobserved in the fleet: this models a child that has exhausted overage too, so both overage fields read as "not proceeding".', () => {
+    const p = writeStream('rate-limit-event-rejected-overage-exhausted', [userToolResult(), rateLimitEvent('rejected', { overageStatus: 'rejected', isUsingOverage: false })], { mtimeMs: CLOCK - 5000 });
     assert.equal(run(p), 'idle');
   }],
 
@@ -187,8 +210,8 @@ const cases = [
     assert.equal(run(p), 'idle');
   }],
 
-  ['a rate-limit record present but not the newest record is not the override: verdict rests on the true newest', () => {
-    const p = writeStream('rate-limit-not-newest', [rateLimitEvent(), assistantToolUse()], { mtimeMs: CLOCK - 1000 });
+  ['a rate-limit record present but not the newest record is not the override: verdict rests on the true newest. The leading record is a bare rejected with no overage fields, which the predicate does classify as blocking, so this pins position rather than pinning nothing.', () => {
+    const p = writeStream('rate-limit-not-newest', [rateLimitEvent('rejected'), assistantToolUse()], { mtimeMs: CLOCK - 1000 });
     assert.equal(run(p), 'busy');
   }],
 
@@ -228,8 +251,13 @@ const cases = [
     fs.mkdirSync(dir, { recursive: true });
     const streamPath = join(dir, 'stdout.jsonl');
     // 300,000 bytes of padding, well past SCAN_BYTES (262144) on its own, so
-    // the base tail window lands entirely inside this one line and the
-    // reader must widen before it can find it.
+    // the base tail window lands entirely inside this one line. This pins
+    // that an oversized record never reads idle: the base window alone
+    // cannot tell whether busy comes from widening actually finding the
+    // user record behind it, or from the window simply failing to reach the
+    // start of the file and falling through the past-ceiling branch, since
+    // both give busy here. The idle-direction case below (a stale reply
+    // behind a wide run of trailing filler) is what pins widening itself.
     const bigUser = JSON.stringify({
       type: 'user',
       message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'x'.repeat(300000) }] },
@@ -312,6 +340,19 @@ const cases = [
     const elapsed = Date.now() - started;
     assert.equal(verdict, 'busy');
     assert.ok(elapsed < 2500, 'took ' + elapsed + 'ms');
+  }],
+
+  ['newest is a text-only assistant record whose own timestamp is six minutes old, followed by enough non-marker system records to push the base window past 256 KB: idle. This is what actually pins the widening loop: with it removed, the base window alone finds neither a conversational record nor a marker and reaches the past-ceiling branch, which returns busy; only widening back to the head finds the finished stale reply and lets the age rule answer idle.', () => {
+    const oldTs = new Date(CLOCK - 360000).toISOString();
+    const filler = systemOther() + '\n';
+    let trailerBytes = 0;
+    const trailer = [];
+    while (trailerBytes < 300000) {
+      trailer.push(systemOther());
+      trailerBytes += filler.length;
+    }
+    const p = writeStream('trailer-past-256kb-widen-to-idle', [assistantTextTs(oldTs), ...trailer], { mtimeMs: CLOCK });
+    assert.equal(run(p), 'idle');
   }],
 
   ['newest is a text-only assistant record whose own timestamp is six minutes old, followed by fifty non-marker system records, file mtime fresh: idle (age comes from the record, not the file write time)', () => {

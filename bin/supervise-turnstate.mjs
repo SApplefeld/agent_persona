@@ -55,16 +55,22 @@
 // Ahead of every other rule: the newest record of ANY type, not only the
 // newest conversational one, is checked for a rate-limit shape first, and if
 // it is one this reads idle regardless of what sits under it. A rate-limit
-// record is a rate_limit_event record whose rate_limit_info.status is a
-// blocking status (rejected), or a system record of subtype api_retry with
-// error_status 429. A rate_limit_event record is routine quota information
-// emitted on ordinary API responses and carries this shape on almost every
-// turn; most of them (status allowed or allowed_warning) describe a child
-// that is not parked at all, and only rejected means the child is actually
-// blocked on the limit. A record whose status cannot be read is not treated
-// as parked either, since erring that way reads busy and the other way can
+// record is a system record of subtype api_retry with error_status 429, or a
+// rate_limit_event record whose rate_limit_info.status is rejected AND whose
+// rate_limit_info does not show the child proceeding on overage. A
+// rate_limit_event record is routine quota information emitted on ordinary
+// API responses and carries this shape on almost every turn; most of them
+// (status allowed or allowed_warning) describe a child that is not parked at
+// all. A rejected status alone is not enough either: a child whose included
+// quota is exhausted keeps writing a rejected record for the whole length of
+// the tool call it is running while it proceeds on overage, and
+// rate_limit_info.isUsingOverage true or rate_limit_info.overageStatus
+// "allowed" is what that looks like on the wire. Either field reading as "the
+// child proceeds" makes the record routine, not blocking. A record whose
+// overage fields are missing, or whose status cannot be read at all, is not
+// treated as parked, since erring that way reads busy and the other way can
 // kill a working child. A child truly parked on a limit rewrites a rejected
-// record every thirty seconds, so its stream never goes quiet on its own,
+// record with no overage fields, so its stream never goes quiet on its own,
 // and it has nothing left to finish.
 //
 // It reads the file's tail and not the whole file: a real stream reaches
@@ -171,12 +177,23 @@ function parseTail(lines) {
 function isRateLimitRecord(record) {
   if (!record || typeof record !== 'object') return false;
   if (record.type === 'rate_limit_event') {
-    const status = record.rate_limit_info && record.rate_limit_info.status;
+    const info = record.rate_limit_info;
+    const status = info && info.status;
     // allowed and allowed_warning describe routine quota reporting, not a
     // parked child; a status this reader cannot read as a string is treated
     // the same way, since erring toward busy costs nothing and erring
     // toward idle can kill a working child.
-    return status === 'rejected';
+    if (status !== 'rejected') return false;
+    // A rejected status alone does not mean the child is parked: a child
+    // whose included quota is exhausted keeps writing a rejected record for
+    // the whole length of a tool call it runs on overage, and that record
+    // is the newest of any type for that entire span. Either overage field
+    // reading as "the child proceeds" makes the record routine; a record
+    // with neither field present is read as not proceeding, so a bare
+    // rejected still blocks.
+    const proceedingOnOverage = (info && info.isUsingOverage) === true
+      || (info && info.overageStatus) === 'allowed';
+    return !proceedingOnOverage;
   }
   return record.type === 'system'
     && record.subtype === 'api_retry'
