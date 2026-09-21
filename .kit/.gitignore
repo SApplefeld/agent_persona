@@ -9,6 +9,7 @@
 !/cost-migration-test.mjs
 !/supervisor-unit-test.mjs
 !/supervisor-poll-unit-test.mjs
+!/supervisor-turnstate-unit-test.mjs
 !/live-restartrequest-test.sh
 !/assert-decisions.js
 !/roadmap-test.md
