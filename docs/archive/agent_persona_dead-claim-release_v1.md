@@ -1,6 +1,6 @@
 # Dead claim release: the supervisor frees a heavy-process claim its dead child left behind
 
-Status: Ready
+Status: Abandoned
 Commit Model: Branch-and-PR
 Created: 2026-09-20
 
@@ -109,3 +109,9 @@ The running supervisors keep the scripts they started with, so none of this take
 None at the write.
 
 ## Chapters
+
+### Chapter 1 - 2026-09-21
+
+Completed: none. Abandoned before any section ran.
+Next: nothing. The claude-kit repository retired the heavy-process claim everywhere on the operator's ruling of 2026-09-21, after that day's overlap measurement, in `claude-kit_heavy-process-claim-retirement_spec_v1.md` there. There is no claim left for a supervisor to free, and the companion kit plan whose first section named the supervisor as a deleter was superseded the same day.
+Commit Model: Branch-and-PR. Archived in the change that records the retirement here.
