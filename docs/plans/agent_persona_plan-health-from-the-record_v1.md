@@ -591,6 +591,14 @@ Section 5's precondition. Its body says to rebase onto trunk first and check tha
 
 Live dispatches: the enumerated offline roster on the merged tree, under this session's claim, since a merge takes the whole gate.
 
-Next action: read the roster; commit the merge where every lane is green, or root-cause a red first; push; then build Section 5.
+The roster read every lane exit 0: twenty-four lanes on the merged tree, the tick suite at 1910 OK with 0 FAIL, the six live suites deferred per policy, logs under `.kit/scratch/plan-health/roster-20260921T125403Z`. The merge committed at `0e5dafa` and is pushed.
+
+Section 5 open: the add-decision line and the intake gap check are at `.kit/scratch/plan-health/add-decisions-section-5.md`. One declared default rides into the brief: one request carries one `state`, so that state is an object with `closingText` and `recentClosingTexts` fields the three questions refer to by name, on the vendor API page's own statement that a state may be structured. The five reference pages the section names are fetched under `.kit/scratch/plan-health/s5-refs/` for the implementer, which has no web tool.
+
+Live dispatches: one `implementer-opus` on the brief at `.kit/scratch/plan-health/section-5-brief.txt`.
+
+Queue change, 2026-09-21. The coordinator steered the dev persona to queue `docs/plans/agent_persona_goal-levels_v1.md` (PR 61), with the operator's confirmation reported; it is `plan-mubdglgm-7yq4`, paused fifth on its own Dispatch Authorization, after this plan, goal tree curation and keeper park. The running plugin's stall pause paused this plan's entry again during the build; resumed.
+
+Next action: read the implementer's report, verify it on this session's own run, commit at first green, then review round 1 at fable for the code pair plus the security lens, since the section sends worker text to an external service.
 
 Commit Model: Branch-and-PR
