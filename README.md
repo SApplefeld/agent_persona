@@ -125,7 +125,7 @@ The controller tick builds a summary from the active goal and the session's own 
 | Line | Content |
 |---|---|
 | `Objective` | The active goal's objective text |
-| `Node` | The node's id and kind, its status, and its round count against its cap |
+| `Node` | The node's id and kind, its status, and on a task entry its round count against its cap. A plan entry's line reads `plan entry, no round budget` instead |
 | `Last 5 scores` | The node's five most recent turn scores, oldest first, or `none` |
 | `On-goal count` | How many of the node's scores read `on-goal`, against the total |
 | `Idle time` | How long the session has been idle, in seconds under a minute and in minutes otherwise |
@@ -146,11 +146,33 @@ The summary ends with the four standing choices, and with `switch` as a fifth on
 ### Nudge discipline (H2, L1)
 
 - **Floor**: at most one nudge per `nudgeFloorMs` (default 5 min).
-- **Cap**: 3 consecutive **sent** nudges without an on-goal turn → escalate to `ask-operator` + pause the goal. The counter increments only when `$.prompt.submit` actually fires (not on floored skips). Resets only on an on-goal score or `complete`.
+- **Cap**: 3 consecutive **sent** nudges without an on-goal turn → escalate to `ask-operator` + pause the goal. The counter increments only when `$.prompt.submit` actually fires (not on floored skips). Resets only on an on-goal score or `complete`. On a plan entry it also resets on a Chapter count rise in the plan document, and a `complete` label there resets nothing, because a plan entry's done is read from the document (see below).
 - **Idle gate**: session must be idle for `nudgeIdleMs` (default 2 min) before any model call. Ticks inside the gate are skipped entirely.
 - **Skip**: no active goal or a turn in flight → skip the tick entirely.
 - **Visible**: `$.ui.status` shows the goal line while a goal is active; cleared on pause/complete/blocked.
 - **H8: Nudged-turn scoring.** When the controller nudges, `$.prompt.submit` bypasses the plugin's own `prompt.submit` hook, so `currentPrompt` is set to the nudge text manually. The `turn.complete` scorer uses a reduced label set (`on-goal`, `drift`, `complete`) for nudged turns : `off-goal-by-instruction` is impossible because the nudge *is* the instruction.
+
+### Plan entries: judged from the record
+
+A queue entry that carries a plan document is judged from that document and from the worker's own closing words, never from a count of turns. Three optional fields on a `GoalNode` carry that reading: `planPath`, the document's path; `lead`, the worker's own `BLOCKED:` or `WAITING:` state with its reason and the time it was read; and `chapterCount`, the number of Chapters the document held at the last read. The store migration writes none of them; the load-time fill below may fill `planPath`.
+
+**`planPath`.** `goal_add` takes it as an optional parameter on kind `plan` only, in the form `docs/plans/<name>.md`: project-relative, no subdirectories, no other extension. A value of any other shape, or a valid one on kind `task`, is refused with a message naming the required form, and no entry is added. On store load, a `plan` node with no `planPath` gains one from its own title or objective where that text names such a path. Then every entry blocked with the reason `Max rounds reached` that has a plan by the rule below returns to `pending`, with its reason cleared and its `completedRounds` reset to 0, so a task under a plan node is freed as well as the plan node itself. That happens only while the root is live, and only where the entry has no children or at least one child left pending, so a freed entry always has a leaf to activate. Every parent between the entry and the root must be pending or active, or blocked with `Child task blocked`, or blocked with `Max rounds reached` while it has a plan; a parent blocked that way is freed with the entry, and a parent in any other state leaves the entry blocked. The fill is a one-time recovery for entries queued before the field existed; the pattern that reads a path out of prose is not the validation, and a stored value is re-tested against `goal_add`'s own pattern before it is ever joined onto the working directory.
+
+**What a plan entry is.** An entry is a plan entry when it carries `planPath`, or when its nearest ancestor with one does, whatever its own kind. So a task the worker adds under its plan node is a plan entry, judged against the parent's document. An entry with no such ancestor is a task entry, an entry of kind `plan` with no `planPath` among them, and every rule in this section leaves a task entry exactly as it was.
+
+**How a plan entry is judged.** At the end of every turn on a plan entry, an aborted or errored one included, the session that owns the store reads the document at `planPath` under the persona's working directory (`hooks/plan-record.ts`), and three readings come out of it.
+
+- Done. A header line opening `Status:` above the first `##` heading whose whole value is `Complete`, in any case, completes the entry holding the `planPath`, its live descendants first, with a `complete` decision naming the document as the cause, a health run, and the next entry activated. So does the document being absent from `planPath` and present under its own file name in `docs/archive`, `docs/archive/plans` or `docs/plans/archive`, whatever that archived copy's own Status line says. `Status: Complete (archived)`, `Status: Completed`, `**Status:** Complete` and a `Status: Complete` line below the first `##` heading are not that value. Completion clears `lead` on the holder and on each descendant it completes, so a completed entry carries no lead. A descendant already blocked is left blocked, with its lead.
+- Progress. The Chapter count is the number of `### Chapter N` headings under `## Chapters`, counted to the next `##` heading; `### Interim board N` is not one. A count above the stored one stores the new count, resets the nudge counter and logs `plan_progress`. An unchanged count logs nothing.
+- Unreadable. A document absent from all four places, one above 256 KiB, or a stored `planPath` that fails the shape check changes nothing and logs one `plan_record_unreadable` decision. The log is kept once per plan holder per session, so a task and its plan node share it, and a readable read re-arms it, so a document that goes unreadable again logs again.
+
+A plan entry has no round budget. Its `completedRounds` is never incremented, by the scorer or by `goal_done`, and it is never blocked with `Max rounds reached`. Its status line and its worker prompt carry no round text, and the controller's idle summary line for it reads `plan entry, no round budget`.
+
+**Which turns are scored.** A turn the operator opened from the channel, and a turn a delivered inbox record opened, is not scored for any entry unless the controller nudged it: it logs `score_skipped` and leaves the scores, the round count and the nudge counter untouched, so an operator check-in costs a worker nothing. On a plan entry only a turn the controller nudged is scored. There an `on-goal` label resets the nudge counter, and a `complete` label moves nothing: the entry stays active, since done is read from the document. The idle classifier's own `complete` verdict on a plan entry is converted to a nudge and logged as `complete_ignored`, so a worker whose closing text reads finished while its document does not is woken rather than left idle. Three nudged turns with no `on-goal` and no Chapter rise trip the three-nudge stall pause as before, which is the one health signal a plan entry keeps.
+
+**The two leads.** The first non-blank line of a plan entry's closing text is read at every completed turn end on the session that owns the store, whatever opened the turn. An aborted, errored or refused turn, or one with no answer, reads nothing. A turn that left its own entry complete or abandoned, by `goal_done` for one, sets no lead on it. A line opening with the literal `BLOCKED:` or `WAITING:`, uppercase and at the start of the line, sets `lead` to that state with the rest of the line as the reason, cut to 300 characters, and the clock now. `Blocked:`, `BLOCKED x`, the marker on a later line and the word inside a sentence set nothing, and a task entry's closing text sets nothing. While a blocked lead stands, the controller's idle branch for that entry runs no classifier call and sends no nudge, until a later turn that called at least one work tool ends with no lead, which clears it. Two acts lift a blocked lead as well, each logging `lead_cleared`: `goal_resume` on the entry, and the controller's idle tick once an ask on the entry has closed after the lead was set. A timed-out ask leaves its entry paused until `goal_resume`. Neither act touches a waiting lead. A waiting lead holds the same way for 60 minutes from the read, and then the branch runs as usual with the lead left on the entry. A reply to the operator is not a work tool call, so a channel-origin turn whose only call is the reply tool clears nothing. `lead_set` and `lead_cleared` are logged once per change, and a turn carrying both a `BLOCKED:` first line and an `ASK:` line opens the ask as before and sets the lead. The worker-facing instruction text states the two markers beside the `ASK:` teaching.
+
+The coordinator persona judges a worker from these fields. Its instruction tells it to have a worker pass `planPath` when the worker queues a plan, relative to the worker's own repository, and to read an entry's `lead` and its plan document when it judges a worker, never `completedRounds`, which a plan entry never spends.
 
 ### C4: Clock is enough
 
@@ -243,9 +265,10 @@ Declared in `plugin.json` with defaults. Read as `options.<name>` in `register(o
 |---|---|
 | `hooks/index.ts` | The plugin module (one file, all logic) |
 | `hooks/agent-state.ts` | `AgentState` interface + defaults + `shouldYield`/`yieldRecord` pure helpers |
+| `hooks/plan-record.ts` | The plan document parser and reader: `Status: Complete`, the Chapter count, and the archive places, for a queue entry that carries a `planPath` |
 | `hooks/host.ts` | The `PluginHost` interface every module outside `hooks/index.ts` takes a slice of, since the engine refuses the module when the injected `$` crosses an import |
 | `hooks/decision-seam.ts` | The one path a closed question takes to Jev, and the only place the vendor key is held |
-| `hooks/question-catalog.ts` | The four shipped questions, the label arrays the classify sites pass, and the override resolver |
+| `hooks/question-catalog.ts` | The seven shipped questions, the label arrays the classify sites pass, and the override resolver |
 | `hooks/decision-journal.ts` | The append-only record of every shadow call, its answer and its outcome |
 | `.agentic-personas.json` | Persona store (project root) |
 | `.agentic-heartbeat.json` | Heartbeat sidecar (project root) |
@@ -570,7 +593,7 @@ The operator has not yet ruled on option 1; its default is in force.
 ### Test coverage
 
 - `.kit/live-operator-test.sh` : phase 1 across two real processes, a reader's `agentic_say` delivered to the owner and the reply read back through `agentic_inbox`
-- `.kit/controller-tick-test.mjs` : S3 (ask lifecycle), S4 (no `session.receive` hook is registered under any arming that installs hooks), S6 (answer linkage), S9 (cost cap ask opener), and the Section 13 cases: the scorer's round, the error streak opening an ask, the git probe's dirty-count cadence, health red then green reaching the turn, plan activation and the post-completion stall guard, the planner failure cap, stale-holder takeover, and lesson injection; plus one case pinning that the tick reads no context estimate: a session whose message history sits past 350,000 estimated tokens, with `contextBudgetEnabled` set in its options, logs no `context_budget_crossed` decision and submits no turn, on a tick shown to have run its body by activating a pending plan
+- `.kit/controller-tick-test.mjs` : S3 (ask lifecycle), S4 (no `session.receive` hook is registered under any arming that installs hooks), S6 (answer linkage), S9 (cost cap ask opener), and the Section 13 cases: the scorer's round on a task entry, the error streak opening an ask, the git probe's dirty-count cadence, health red then green reaching the turn, plan activation and the post-completion stall guard, the planner failure cap, stale-holder takeover, and lesson injection; plus one case pinning that the tick reads no context estimate: a session whose message history sits past 350,000 estimated tokens, with `contextBudgetEnabled` set in its options, logs no `context_budget_crossed` decision and submits no turn, on a tick shown to have run its body by activating a pending plan
 - `.kit/controller-tick-test.mjs`, the fleet wake cases : a tick over a fleet that has not moved submits no `[FLEET]`, one persona moving submits exactly one naming it and not the others, further ticks submit nothing more, a running row whose ladder has climbed or whose keeper state is unreadable is not reported healthy, an enabled persona with no commons entry at all is its own class, a roster name and a hold reason carrying square brackets reach the prompt with round ones, a launch with no `fleetRoster` stays silent where the same fixture with one speaks, a worker persona receives neither prompt on a tick shown to have reached the block, `[RECONCILE]` firing on its interval and not before, with four hours as the configured default, a forged row written after a line break in a hold reason arriving quoted and one written after a LINE SEPARATOR in a hold marker not arriving at all, a roster that stops reading being reported and so being its return, a dropped submit rolling the stored reading and the cadence stamp back and the next tick reporting them again, a dropped first reading being made again as a first reading rather than reporting the whole fleet as new, a persona changing class twice inside one quiet window costing one prompt at that window's end and carrying the latest class, a key that settles back into the class its last line named going unreported with its held-back count cleared, a relaunched steward repeating nothing and keeping the cadence it inherited, a persona the roster gained reported as new rather than as healthy, a persona named `__proto__` or `constructor` compared like any other, a repeated roster name getting one row and a problem line, a signalled exit under a live claim not reported healthy, a cadence at or below zero taking the default, a write that hands the persona over banking neither the advanced reading nor the cadence stamp and the successor reporting both, a health memo written into the store by hand silencing nothing, a persona a clean reading holds no row for reported once as a departure on a tick shown to have spoken about another persona and nowhere again, that line naming the reading rather than the roster on a tick whose roster carries a refused entry in the same prompt, twenty-one departures costing twenty named lines and a count of the rest with twenty and nineteen each named in full, a departed persona returning in the class last reported for it adding nothing to its held-back count, a second tick entering while the first tick's `[FLEET]` submit is still out queueing no second prompt and the guard clearing once that tick finishes, a header counting the keys that moved where one key wrote several lines, a roster that could not be read reporting no departure at all, a return in the class last reported costing nothing and a return in another class reported once, the reading reaching no file the tick wrote, a first clean reading over a well fleet saying nothing and remembering every persona in it, the line naming a refused cadence-stamp write riding the next `[FLEET]` and not the prompt after it, no such line composed at all on a steward with no roster where the same refusal under a roster does compose one, that line surviving a later tick whose own `[RECONCILE]` was dropped, and no such line going out where the tick that composed it had its own submit dropped, and a stored health reading dropped whole at the parse with the rest of that state kept
 - `.kit/fleet-status-unit-test.mjs` : the `fleet_status` tool over fixture roster, keeper state and hold-marker files: the five row shapes, the run directory a roster entry without `rundir` derives, both admitted standings and both refused ones, a roster that is missing or malformed, and the store and filesystem untouched by the call
 - `.kit/tool-description-length-test.mjs` : every tool `hooks/index.ts` registers, its top-level description measured as the string the engine receives and held to 4,000 characters, under the 4,096 past which the engine refuses the registration and the refusal skips the whole `session.start` hook. Offline, and a registration in a shape it cannot measure fails rather than passing unread
@@ -603,7 +626,7 @@ The supervisor's own suites are listed under the Supervisor section's Test Cover
 
 The decision seam puts each closed question this plugin already asks Haiku to a second classifier, Jev, and records both answers side by side. Haiku is the Claude model alias the plugin names at every `$.model.classify` and `$.model.complete` call it makes. Jev is the classifier TypeSafe serves at `https://api.typesafe.ai/v1/systemone`. The seam runs in shadow: Jev's answer is written to a journal file on this machine and read by no branch, no state field, no score and no nudge. Haiku still decides everything.
 
-Four questions go through it, one per site that already asks Haiku a closed question.
+Four questions go through it one at a time, one per site that already asks Haiku a closed question. Three more go through it together, in one request, at a fifth site that has no Haiku counterpart.
 
 | Site | Question set | The decision | Option ids in force |
 |---|---|---|---|
@@ -611,8 +634,9 @@ Four questions go through it, one per site that already asks Haiku a closed ques
 | `plan-switch` | `plan-switch` | which pending plan to take up, once the controller has decided to switch | one id per pending plan, plus `no_match` |
 | `turn-score` | `turn-score` | what the worker's answer did about the goal | `on-goal`, `drift`, `complete`, and `off-goal-by-instruction` as a fourth only on a turn the plugin did not nudge |
 | `memory-kind` | `memory-kind` | what kind of memorable content the turn holds | `fact`, `preference`, `lesson`, `discard` |
+| `plan-health` | `worker-blocked`, `rounds-converging` and `block-owner`, in one request | three readings of a plan entry's closing text: whether the worker says it cannot carry on until someone else acts, where the last few turns sit between closing out and reopening, and who has to act before it can carry on | `block-owner` offers `operator`, `coordinator`, `another-plan`, `self-resolving`, `none`; the other two are not choices and offer no ids |
 
-Each call sends Jev the same state text and the same option ids Haiku received for that same question. The state is the prompt text the site built. The option ids are the labels the answer has to be one of, single-sourced in `hooks/question-catalog.ts` so the set Haiku is offered and the set Jev is offered cannot drift.
+The plan-health site runs at the end of every completed turn on a plan entry (see "Plan entries: judged from the record" above), on the session that owns the store only, and asks nothing on a turn that left its entry complete or abandoned. Nothing there is asked of Haiku, so its answers are measured against outcomes the plugin observes afterwards rather than against a Haiku answer. At each of the other four sites, each call sends Jev the same state text and the same option ids Haiku received for that same question. The state is the prompt text the site built. The option ids are the labels the answer has to be one of, single-sourced in `hooks/question-catalog.ts` so the set Haiku is offered and the set Jev is offered cannot drift.
 
 ### What Jev is
 
@@ -620,7 +644,7 @@ Jev is a System One classifier. It takes one block of state and a set of questio
 
 The seam exists to measure. Every shadow call writes Jev's option id beside Haiku's for the same input, so the agreement rate between the two can be counted from real traffic before anything is asked to depend on it. Nothing in this repository acts on a Jev answer, and nothing in this repository reads the journal back.
 
-A question asks for one answer shape, which the vendor calls a primitive. Every question this plugin sends uses the `choice` primitive: one option id out of a named set, with a probability per option. The seam validates each answer against that shape and refuses any other.
+A question asks for one answer shape, which the vendor calls a primitive, and this plugin sends three. A `choice` answers with one option id out of a named set, a probability per option and a confidence. A `noul` answers with one number, the probability of yes, and nothing beside it: no distribution and no confidence, since a two-outcome distribution is described whole by that one value. A `score` answers with a position on an ordered list of two to ten levels, numbered from 0, with a probability per level and a confidence. The seam validates each answer against its question's shape and refuses any other, and a request carrying several questions is refused whole when any one answer fails, so a call records every answer it asked for or none.
 
 ### Reaching the seam
 
@@ -628,8 +652,8 @@ Three modules carry the feature, and none of them imports `$`. The engine's load
 
 | Module | What it owns |
 |---|---|
-| `hooks/decision-seam.ts` | `ask`, the one path a question takes to Jev: the key, the request, the timeout race, the response validation and the closed failure set |
-| `hooks/question-catalog.ts` | the four shipped questions, the label arrays the Haiku sites pass, and `resolverOf`, which reads the override layer |
+| `hooks/decision-seam.ts` | `ask` and `askAll`, the one path a question takes to Jev: the key, the request, the timeout race, the response validation and the closed failure set |
+| `hooks/question-catalog.ts` | the seven shipped questions, the label arrays the Haiku sites pass, and `resolverOf`, which reads the override layer |
 | `hooks/decision-journal.ts` | `writeCall`, `writeAnswers` and `writeOutcome`, the three line kinds, the stamp id and the split |
 
 `ask` has this shape and never rejects:
@@ -654,11 +678,13 @@ const stampId = shadowAsk(
 
 Four rules bind a call site. Bind the state to a name and pass that one name to both classifiers, so the bytes that reach Jev are the bytes that reached Haiku. Pass Haiku's raw answer rather than any value the plugin derived from it, because agreement is measured against what Haiku said. Never await the return, since the seam's whole contract is that it cannot delay the tick or the turn it sits in. Read the return as the call's stamp id, or as `null` where the mode is not `shadow`.
 
+`askAll(host, asks, state, mode, resolve): Promise<SeamSetResult>` is the same path for several questions over one state; `ask` and `askAll` share one private request path, so the key scrub, the timeout race and the validation are the same for both. The plan-health site calls it through its own wrapper, `shadowAskPlanHealth`, which names the three question sets, builds the one state, fires the call without awaiting it, and writes one call line and three answer lines once it settles. Its state is an object rather than a string, with two fields the questions name in their instructions: `closingText`, the first 1,000 characters of the turn's closing text, and `recentClosingTexts`, the entry's last five closing texts including this one, oldest first, each cut the same way.
+
 `shadowOutcome(host, callStampId, kind, value)` is the other wrapper. It joins a signal the plugin produced later onto a call already made, by that call's stamp id.
 
-Adding a fifth question takes three edits, and none of them is in the journal, which is question-agnostic.
+Adding a question takes the edits below, and none of them is in the journal, which is question-agnostic. Steps 2 and 3 are for a question paired with a Haiku site. A question measured against later outcomes, as the three plan-health questions are, takes step 1 and a call site on `askAll` in place of them, with the outcome joiners that give it something to be measured against.
 
-1. `hooks/question-catalog.ts`: an id constant, that constant added to `QUESTION_SET_IDS`, an entry in `SHIPPED_QUESTIONS` carrying `instructions` and an `options` map with one description per option id, and the id added to `FIXED_OPTION_SETS` where the catalog owns every option the question offers.
+1. `hooks/question-catalog.ts`: an id constant, that constant added to `QUESTION_SET_IDS`, and an entry in `SHIPPED_QUESTIONS` carrying `primitive` and `instructions`. A `choice` adds an `options` map with one description per option id, and the id goes into `FIXED_OPTION_SETS` where the catalog owns every option the question offers. A `score` adds a `levels` list, low end first, and the id goes into `FIXED_LEVEL_SETS`. A `noul` adds nothing further.
 2. The same file's label array for the Haiku site, exported as a frozen constant, so one array feeds `$.model.classify` and the seam's `optionIds`.
 3. The call site in `hooks/index.ts`: bind the state to a name, pass that name to `$.model.classify` and to `shadowAsk`, and place the `shadowAsk` call after the Haiku call so Haiku's answer is available to pass.
 
@@ -681,7 +707,7 @@ An override layer sits outside the repository, under the home directory the plug
 {"version": "v3"}
 ```
 
-A version file holds the question itself. All three fields are required, and `options` maps each option id to a one-line description or to `null`:
+A version file holds the question itself. For a `choice` all three fields are required, and `options` maps each option id to a one-line description or to `null`. A `score` carries `primitive`, `instructions` and `levels`, a list of strings from the low end up, and a `noul` carries `primitive` and `instructions` alone:
 
 ```json
 {
@@ -697,18 +723,18 @@ A version file holds the question itself. All three fields are required, and `op
 }
 ```
 
-Nothing else the file carries is read. The resolver copies out those three fields and drops the rest.
+Nothing else the file carries is read. The resolver copies out those fields and drops the rest. The round budget the shipped `ask-operator` description names is a task entry's: a plan entry has none, and the summary line the controller sends for one says so.
 
 The resolver holds nothing between calls and reads at most two files per call, so editing `active.json` takes effect on the next question asked, with no restart. Writing a new `v<N>.json` and then repointing `active.json` at it is how a wording changes without touching the answers already recorded under the old label. A version file is meant to be immutable once written, because the journal records only the version label beside each answer, so a label whose wording changed underneath it makes two different questions read as one. That rule is the operator's to keep. No code enforces it.
 
-Three of the four sets have option ids the catalog owns outright: `controller-decision`, `turn-score` and `memory-kind`, named in `FIXED_OPTION_SETS`. An override of one of those may reword anything and reorder anything, and may not change the set of option ids, because Haiku's ids come from the label arrays in the same file and an agreement figure compares the two. The fourth set, `plan-switch`, is absent from that list: its option ids are the pending plan ids the caller supplies per request, and the only one the catalog owns is `no_match`.
+Four of the five choice sets have option ids the catalog owns outright: `controller-decision`, `turn-score`, `memory-kind` and `block-owner`, named in `FIXED_OPTION_SETS`. An override of one of those may reword anything and reorder anything, and may not change the set of option ids, because Haiku's ids come from the label arrays in the same file and an agreement figure compares the two, and a load reads the block owner's column as a closed vocabulary. The fifth, `plan-switch`, is absent from that list: its option ids are the pending plan ids the caller supplies per request, and the only one the catalog owns is `no_match`. An override keeps its question's primitive: a file naming another one is a different question wearing this one's id, and is refused. `rounds-converging` is a `score` named in `FIXED_LEVEL_SETS`, so an override may reword its three levels and may not add or drop one, because the journal records a level as its position and a changed count would renumber every answer already recorded. `worker-blocked` is a `noul`, and an override of it is its instruction alone.
 
 An override that fails validation is not used. The shipped default is served instead, and the reason rides the answer line for that call. The reasons are these, and this list is complete.
 
 - Reaching the layer: no home directory, so no override was read; `active.json` could not be checked.
 - Reading `active.json`: it could not be read; it is not text; it is not JSON; it names no version; it names no `v<N>` version label, which is the letter `v` followed by one to nine digits.
 - Reading the version file: the named version file could not be checked; the named version file is missing; the version file could not be read; the version file is not text; the version file is not JSON.
-- Validating its content: the version file is not an object; the override is not a choice; the override has an empty instruction; the override has no options map; the override has an option description that is not a string or null; the override has fewer options than the floor, which is two for the three fixed sets and one for the plan switch; the override has more than 255 options; the override's option ids differ from the shipped set, which is checked for the three fixed sets only.
+- Validating its content: the version file is not an object; the override is not a `choice`, `noul` or `score`, whichever the shipped question is; the override has an empty instruction. For a `score`: the override has no levels array; the override has a level that is not a non-empty string; the override's level count differs from the shipped set, checked for `rounds-converging`; the override has fewer than 2 levels; the override has more than 10 levels. For a `choice`: the override has no options map; the override has an option description that is not a string or null; the override has fewer options than the floor, which is two for the four fixed sets and one for the plan switch; the override has more than 255 options; the override's option ids differ from the shipped set, which is checked for the four fixed sets only. A `noul` has nothing further to check.
 
 A question set id the catalog does not know resolves to a question with an empty id, which the seam refuses before any request as the `no_question` failure.
 
@@ -733,12 +759,12 @@ Three kinds of line appear, and no others. Every field of a line's kind is prese
 | `lineKind` | `call` |
 | `stampId` | this call's id, minted when the call starts. Four dot-separated parts: the sanitized persona, the sanitized session id, the milliseconds since the Unix epoch at which the call started, and a per-session counter. No part can carry a dot, so a reader splits an id into exactly four |
 | `at` | the ISO timestamp at which the line was written, which is after the call settled |
-| `persona`, `session`, `site` | the persona, the session id, and one of the four site labels in the table above |
-| `questionSet` | the question set id asked |
+| `persona`, `session`, `site` | the persona, the session id, and one of the five site labels in the table above |
+| `questionSet` | the question set id asked, or on the `plan-health` site the three ids joined by commas, `worker-blocked,rounds-converging,block-owner` |
 | `mode` | always `shadow`, because `off` writes no line at all |
 | `split` | `holdout` or `dev`, a function of the stamp id alone so an id's split never changes. Present on this line kind only |
 | `stateHash` | a 32-bit FNV-1a hash of the state as sent, or `null` where the call carried no state |
-| `state` | the state text as it went to Jev, or `null` where this site's previous line in this file carried the same state |
+| `state` | the state text as it went to Jev, or `null` where this site's previous line in this file carried the same state. On the `plan-health` site it is the JSON text of the object the request carried, with its `closingText` and `recentClosingTexts` fields, and the 1,000-character cut on each text is the one bound on this column, which is exempt from the 512-character cut the free-text fields take |
 | `stateRef` | the stamp id of the earlier line carrying that same state, where `state` is `null` for that reason, and `null` otherwise |
 | `inputTokens` | the input token count the vendor reported, or `null` on any call that did not get an answer |
 | `outputTokens` | the output token count the vendor reported, on the same terms. Both ride the line, so one line carries the whole cost of one call |
@@ -772,6 +798,8 @@ A sample `call` line, with invented state:
 {"lineKind":"call","stampId":"default.abc123.1789905600000.4","at":"2026-09-20T12:00:00.412Z","persona":"default","session":"abc123","site":"controller","questionSet":"controller-decision","mode":"shadow","split":"dev","stateHash":906887610,"state":"Objective: turn the survey notes into three short essays\nNode: plan-2 (plan), status active, round 3/10\nLast 5 scores: on-goal, on-goal, drift, on-goal, on-goal\nOn-goal count: 4 of 5\nIdle time: 4min\nConsecutive nudges sent: 1\nDecisions tail: monitor:nudge_sent, goal:score_recorded\nMemory: 12 entries (self-review lessons: 2)\nLESSON: Read the whole brief before proposing a structure.\nEnvironment: git: essays dirty 2 ahead 0 behind 0\n","stateRef":null,"inputTokens":312,"outputTokens":9,"latencyMs":412,"result":"ok","detail":null}
 ```
 
+The sample's `round 3/10` is a task entry's line. The node is of kind `plan` and carries no `planPath`, so it is a task entry by the plan-entry rule, and a plan entry's line reads `plan entry, no round budget` in its place.
+
 **An `answer` line**, one per answer Jev returned. A failed call has no answer, so no answer line is written for one.
 
 | Field | What it holds |
@@ -782,11 +810,11 @@ A sample `call` line, with invented state:
 | `questionId` | the question set id answered |
 | `questionVersion` | the version label the wording came from: `v1` for a shipped default, or the override's own label |
 | `overrideRefused` | the reason an override was refused for this call, or `null` where none was refused or none exists |
-| `primitive` | `choice` |
-| `value` | the option id Jev chose |
-| `probabilities` | one number per option id the request offered. The seam refuses a body naming any other id |
-| `confidence` | Jev's confidence, a finite number |
-| `haikuValue` | the option id Haiku chose for the same question, or `null` where Haiku answered with nothing usable |
+| `primitive` | `choice`, `noul` or `score`, which says how the three columns below read |
+| `value` | for a `choice`, the option id Jev chose; for a `score`, its level's position, counted from 0; for a `noul`, the probability of yes, as a decimal string |
+| `probabilities` | for a `choice`, one number per option id the request offered, and the seam refuses a body naming any other id; for a `score`, one number per level, keyed by the level's position as a string; for a `noul`, an empty map |
+| `confidence` | Jev's confidence, a finite number, or `null` for a `noul`, which carries none |
+| `haikuValue` | the option id Haiku chose for the same question, or `null` where Haiku answered with nothing usable, and always `null` on the `plan-health` site, which asks Haiku nothing |
 | `agrees` | whether `value` and `haikuValue` are the same option id, or `null` where either is absent |
 
 This line carries no `at` field. Its timestamp is the call line's, reached through `callStampId`.
@@ -804,11 +832,13 @@ This line carries no `at` field. Its timestamp is the call line's, reached throu
 | `lineKind` | `outcome` |
 | `stampId` | this line's own id |
 | `callStampId` | the call this outcome is joined to |
-| `kind` | `next_score` or `ask_marker`, and nothing else. A kind outside that pair is refused rather than written |
-| `value` | for `next_score`, the label the turn scorer produced. For `ask_marker`, always the fixed token `matched` |
+| `kind` | `next_score`, `ask_marker`, `lead_blocked`, `chapter_within` or `next_speaker`, and nothing else. A kind outside those five is refused rather than written |
+| `value` | for `next_score`, the label the turn scorer produced. For `ask_marker`, always the fixed token `matched`. For `lead_blocked` and `chapter_within`, `true` or `false`. For `next_speaker`, `channel`, `delivery` or `neither` |
 | `at` | the ISO timestamp at which the line was written |
 
 A `next_score` outcome is the first turn scored after a controller call. An `ask_marker` outcome is the first worker `ASK:` line matched after one. Each fires once per controller call and then releases its hold, so a second scored turn or a second marker writes nothing. The ask marker's value is a fixed token because what matched is a line the worker wrote, and a journal line records that the marker fired rather than what it said.
+
+The other three kinds belong to the `plan-health` call, and each records something the plugin observed for itself. `lead_blocked` is written at the same turn end, from the same first-line read that sets the lead: whether that turn's closing text opened with `BLOCKED:`. `chapter_within` is written `true` on the first later turn on that entry at which the plan holder's Chapter count stands above the count at the call, which a rise read on a sibling entry's turn also satisfies, and `false` at the fifth turn end on the entry without one, an aborted or errored turn counting toward the five. `next_speaker` is written at the next turn end, whatever entry that turn was on and even where that turn was skipped, from what opened it. The closing texts and the stamp ids still awaiting an outcome are held in session memory only. A restart drops all of them. The entry completing, being abandoned or leaving the tree drops its closing texts and its waiting `chapter_within` stamps, and those outcomes are never written. The one `next_speaker` stamp is held apart from the entry and is still written at the next turn end. A reader of the journal tolerates a call with no outcome.
 
 ```json
 {"lineKind":"outcome","stampId":"default.abc123.1789905730000.6","callStampId":"default.abc123.1789905600000.4","kind":"next_score","value":"on-goal","at":"2026-09-20T12:02:10.000Z"}
@@ -839,13 +869,15 @@ The boundary a change takes effect at is the child process, not the next questio
 
 Each shadow call sends TypeSafe one HTTP POST carrying the state text for that question, the question's instructions, the option ids in force each with its catalog description, and the model alias `jev-latest`. The bearer key rides the `Authorization` header. The state is the text the site had just sent Haiku, with one change: every occurrence of the API key's value is replaced with `[key]`. That scrub covers the key and nothing else.
 
-What is in that state differs by site, and three of the four carry free text a person wrote.
+What is in that state differs by site, and four of the five carry free text a person wrote.
 
 **`turn-score`** sends the first 500 characters of the text that opened the turn, labelled `User asked`, then the first 1000 characters of the worker's own answer, then the goal's objective in full. On an ordinary turn the first of those is the operator's own prompt as typed. On a turn the controller nudged it is the plugin's nudge text, and on a turn opened by a delivered inbox record it is that record's text.
 
 **`memory-kind`** sends the first 300 characters of the text that opened the turn and the first 500 characters of the worker's answer. This site is skipped on nudged turns, so its first line is the operator's own prompt or a delivered record's text.
 
-**`controller`** sends the controller summary. Most of it is counters and closed vocabularies, and it carries three pieces of free text besides. The goal's objective goes in full. The newest self-review lesson goes in cut to 120 characters, on any tick where one exists. The environment line carries the current git branch name with the dirty, ahead and behind counts, and where a health probe has run it also carries that probe's exit code and the goal node id it ran for. Where at least one plan is pending, the summary lists each pending plan's title cut to 30 characters. The rest is the node id, kind, status and round counts, the last five score labels, the on-goal count, the idle time, the nudge count, the last five decisions as `loop:action` pairs with no detail text, and two memory counts. The second of those counts every memory whose source is self-review, whatever its kind, while the lesson line below it is drawn only from those whose kind is also `lesson`, so the two numbers answer different questions.
+**`controller`** sends the controller summary. Most of it is counters and closed vocabularies, and it carries three pieces of free text besides. The goal's objective goes in full. The newest self-review lesson goes in cut to 120 characters, on any tick where one exists. The environment line carries the current git branch name with the dirty, ahead and behind counts, and where a health probe has run it also carries that probe's exit code and the goal node id it ran for. Where at least one plan is pending, the summary lists each pending plan's title cut to 30 characters. The rest is the node id, kind, status and round counts, or `plan entry, no round budget` in the round counts' place, the last five score labels, the on-goal count, the idle time, the nudge count, the last five decisions as `loop:action` pairs with no detail text, and two memory counts. The second of those counts every memory whose source is self-review, whatever its kind, while the lesson line below it is drawn only from those whose kind is also `lesson`, so the two numbers answer different questions.
+
+**`plan-health`** sends one JSON object with two fields. `closingText` is the first 1,000 characters of the worker's own answer for the turn. `recentClosingTexts` is that entry's last five closing texts, this one included, oldest first, each cut to 1,000 characters. With them go the three questions' instructions and the block owner's five option descriptions. The worker's answer is the same class of text the `turn-score` site already sends, cut at the same length, so this site opens no new class of text leaving the machine; what it adds is the same text sent once more, and up to five turns of it in one request.
 
 **`plan-switch`** sends every pending plan's id and its full title, uncut. The option ids sent with it are those same plan ids plus `no_match`, so a call on this question tells TypeSafe what work is queued as well as what the prompt says.
 
@@ -864,9 +896,9 @@ These files stay on disk until something deletes them. Nothing in the plugin rem
 ### Test coverage
 
 - `.kit/decision-seam-unit-test.mjs`: every closed failure reason resolving without a throw, the kill switch sending nothing, the timeout race settling cleanly, the request body's shape against the live contract, the answer validated rather than forwarded, and no failure detail carrying the key. Offline.
-- `.kit/question-catalog-unit-test.mjs`: the label arrays the three classify sites pass being the arrays this catalog ships, each fixed set's option ids being exactly its label constant's superset, a valid override resolving under its own version label, every refusal falling back to the shipped default while naming the rule that refused it, and a refused override's wording never reaching a request. Offline.
-- `.kit/decision-journal-unit-test.mjs`: the three line shapes, the path and its sanitizing, the write chain that keeps two concurrent appends from losing one, the never-throws rule, the once-a-day failure latch, and the stamp ids and their split. Offline.
-- `.kit/controller-tick-test.mjs` carries the wiring cases: a Jev answering the opposite of Haiku changing no decision and no ledger count, a Jev that never answers delaying nothing and deciding nothing, a failing Jev changing no decision and still writing its call line, each of the four sites writing a call line and an answer line, each joiner writing one outcome per controller call, an unwritable journal pushing exactly one decision a day, and a skipped tick and an `off` run sending no request, writing no line and reading no key.
+- `.kit/question-catalog-unit-test.mjs`: the label arrays the three classify sites pass being the arrays this catalog ships, each fixed set's option ids being exactly its label constant's superset, a valid override resolving under its own version label, every refusal falling back to the shipped default while naming the rule that refused it, a refused override's wording never reaching a request, the three plan-health sets' primitives and the block owner's options, a `score` override refused on a changed level count and admitted on reworded levels, and the level bounds read from the seam rather than restated. Offline.
+- `.kit/decision-journal-unit-test.mjs`: the three line shapes, the answer line's three primitives and the five outcome kinds as a closed set, the path and its sanitizing, the write chain that keeps two concurrent appends from losing one, the never-throws rule, the once-a-day failure latch, and the stamp ids and their split. Offline.
+- `.kit/controller-tick-test.mjs` carries the wiring cases: a Jev answering the opposite of Haiku changing no decision and no ledger count, a Jev that never answers delaying nothing and deciding nothing, a failing Jev changing no decision and still writing its call line, each of the four sites writing a call line and an answer line, each joiner writing one outcome per controller call, an unwritable journal pushing exactly one decision a day, and a skipped tick and an `off` run sending no request, writing no line and reading no key. The plan-health cases: one call line and three answer lines per completed turn on a plan entry and none on a task entry, the three primitives recorded by name, the `closingText` cut at 1,000 characters, each of the three outcome kinds landing once against the right stamp id, a Chapter rise read on a sibling entry's turn counting, a completed or abandoned entry dropping its held record with no outcome written, and every decision and every `GoalNode` field identical across a Jev that fails, hangs, or answers at each extreme: a Noul of 0 and of 1, a Score at its lowest and highest level, and each Choice option.
 
 ## License
 

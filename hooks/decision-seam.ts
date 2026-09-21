@@ -53,20 +53,53 @@ export const KEY_MIN_CHARS = 16;
 // What the seam needs from the host: the key, the network and a timer.
 export type SeamHost = Pick<PluginHost, "getApiKey" | "fetch" | "sleep">;
 
+// The three question types the vendor takes (https://docs.typesafe.ai/api.md).
+// A Choice picks one option of a set and returns a probability per option. A
+// Noul answers one yes/no condition and returns the probability of yes. A
+// Score rates the state against ordered levels and returns a position on
+// them with a probability per level.
+export type QuestionPrimitive = "choice" | "noul" | "score";
+
+export const QUESTION_PRIMITIVES: readonly QuestionPrimitive[] = ["choice", "noul", "score"];
+
+// A Score's levels, as the vendor bounds them: at least two, at most ten
+// (https://docs.typesafe.ai/primitives/score.md, the request structure).
+export const SCORE_MIN_LEVELS = 2;
+export const SCORE_MAX_LEVELS = 10;
+
 // A question as the catalog resolves it: the shipped default, or the active
 // override where one is present and valid, with the version label the journal
-// records and the refusal reason where an override fell back. `options` is
-// the set's superset of option ids with a description per id, null where an
-// option needs none. The caller names the ids in force and the request
-// carries exactly those, so Jev is never offered a label Haiku was not.
-export type ResolvedQuestion = {
+// records and the refusal reason where an override fell back. The primitive
+// decides which field carries the answer vocabulary. A Choice carries
+// `options`, the set's superset of option ids with a description per id and
+// null where an option needs none; the caller names the ids in force and the
+// request carries exactly those, so Jev is never offered a label Haiku was
+// not. A Score carries `levels`, its level descriptions in order, and a
+// level's number is its position in that array. A Noul carries neither: its
+// one condition is the instruction itself.
+type QuestionHead = {
   id: string;
   version: string;
   overrideRefused: string | null;
-  primitive: "choice";
   instructions: string;
-  options: Record<string, string | null>;
 };
+
+export type ChoiceQuestion = QuestionHead & { primitive: "choice"; options: Record<string, string | null> };
+export type NoulQuestion = QuestionHead & { primitive: "noul" };
+export type ScoreQuestion = QuestionHead & { primitive: "score"; levels: readonly string[] };
+
+export type ResolvedQuestion = ChoiceQuestion | NoulQuestion | ScoreQuestion;
+
+// One question the caller asks in a request, naming the set to resolve and
+// the primitive it expects back. A resolved question of any other primitive
+// is refused as no_question, so a catalog whose override layer answered with
+// a different shape never reaches a request. A Choice names the option ids in
+// force, which are the only ids the request carries and the only ids an
+// answer may score.
+export type QuestionAsk =
+  | { questionSetId: string; primitive: "choice"; optionIds: readonly string[] }
+  | { questionSetId: string; primitive: "noul" }
+  | { questionSetId: string; primitive: "score" };
 
 // The catalog's resolver, which hooks/question-catalog.ts exports, already
 // bound to whatever host access it needs. It is meant to fall back to the
@@ -106,15 +139,54 @@ export const SEAM_FAILURE_REASONS: readonly SeamFailureReason[] = [
   "off", "no_key", "no_question", "timeout", "network", "http_401", "http_422", "http_429", "http_529", "http_other", "parse",
 ];
 
-// The answer shape the request asks for and the only one the result carries.
-// Every shipped set is a Choice, and the request names `type: "choice"`, so
-// an answer of any other type fails validation.
+// The answer shapes the request asks for and the only ones a result carries.
+// Each answer's `type` must match its question's primitive, so an answer of
+// any other type fails validation.
+//
+// A Choice answers with the chosen option and a probability per option. A
+// Score answers with a position on the levels, which can fall between two of
+// them, and a probability per level keyed by level number as a string. Both
+// carry a confidence derived from that spread. A Noul carries no confidence
+// at all, which the vendor states outright: its distribution has two outcomes
+// and the one `noul` value describes it whole
+// (https://docs.typesafe.ai/primitives/noul.md, under reading a Noul).
 export type ChoiceAnswer = {
   type: "choice";
   choice: string;
   probabilities: Record<string, number>;
   confidence: number;
 };
+
+export type NoulAnswer = {
+  type: "noul";
+  noul: number;
+};
+
+export type ScoreAnswer = {
+  type: "score";
+  score: number;
+  probabilities: Record<string, number>;
+  confidence: number;
+};
+
+export type JevAnswer = ChoiceAnswer | NoulAnswer | ScoreAnswer;
+
+// One question's answer as a result carries it, with the identity a journal
+// line joins on.
+export type SeamAnswer = {
+  questionSetId: string;
+  questionId: string;
+  questionVersion: string;
+  overrideRefused: string | null;
+  primitive: QuestionPrimitive;
+  answer: JevAnswer;
+};
+
+// The state a request evaluates. A plain string, or an object whose fields a
+// question's instructions name in backticks, which is the structured form the
+// vendor's API takes (https://docs.typesafe.ai/api.md, the request body's
+// `state`). Each field is one text or a list of texts.
+export type SeamState = string | Readonly<Record<string, string | readonly string[]>>;
 
 // Token usage as the response carries it; null where the body omitted a
 // count or carried one that is not a non-negative integer.
@@ -166,6 +238,40 @@ export type SeamFailure = {
 
 export type SeamResult = SeamOk | SeamFailure;
 
+// The result of one request carrying several questions. One request means one
+// call line in the journal and one answer line per validated answer, so the
+// fields a call line reads (the reason, the detail, the usage, the latency and
+// the state) sit here in the same shape they sit on a single result.
+//
+// An answer that fails validation fails the whole call as `parse`, the way a
+// single request's malformed answer does, and the detail names the question
+// that failed. So a call either records every answer it asked for or none:
+// journaling two of three would leave a row set a load reads as a question
+// that was never asked.
+export type SeamSetOk = {
+  ok: true;
+  questionSetIds: readonly string[];
+  answers: readonly SeamAnswer[];
+  usage: JevUsage;
+  latencyMs: number;
+  model: string | null;
+  // The state as it was sent, scrubbed of the key by this module. A
+  // structured state rides as the JSON text the request body carried, so the
+  // bytes the vendor received are the bytes a journal line records.
+  state: string;
+};
+
+export type SeamSetFailure = {
+  ok: false;
+  reason: SeamFailureReason;
+  detail: string | null;
+  questionSetIds: readonly string[];
+  latencyMs: number | null;
+  state: string | null;
+};
+
+export type SeamSetResult = SeamSetOk | SeamSetFailure;
+
 // What the race between the request and the timer settles to. `res` is
 // whatever the host's fetch resolved with, read as unknown because a hook
 // beneath the caller may have answered the call with anything.
@@ -213,6 +319,33 @@ function withoutKey(text: string, key: string): string {
   return out;
 }
 
+// The same scrub over a structured state, field by field: every text the
+// object carries, and every text in a list it carries, leaves with the key
+// removed. It runs at the one point holding both the state and the key, as
+// the string scrub does, so no later module sees the raw text. The map is
+// prototype-free for the reason the criteria map is, and a field that is
+// neither a text nor a list of texts is converted through the guarded
+// conversion rather than dropped: every call site is typed, and this module's
+// contract is that it never rejects.
+function withoutKeyInFields(state: unknown, key: string): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = Object.create(null);
+  if (!isRecord(state)) return out;
+  // Entries are read from a value a caller built, and reading them runs
+  // whatever accessors sit on it.
+  let entries: [string, unknown][];
+  try {
+    entries = Object.entries(state);
+  } catch {
+    return out;
+  }
+  for (const [name, value] of entries) {
+    out[name] = Array.isArray(value)
+      ? value.map((item) => withoutKey(typeof item === "string" ? item : safeString(item, ""), key))
+      : withoutKey(typeof value === "string" ? value : safeString(value, ""), key);
+  }
+  return out;
+}
+
 function httpReason(status: unknown): SeamFailureReason {
   switch (status) {
     case 401: return "http_401";
@@ -227,18 +360,33 @@ function countOf(v: unknown): number | null {
   return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null;
 }
 
-// The first way a resolver's value fails to be a ResolvedQuestion, or null
-// where it is one. The detail names the field and never quotes the value.
-function questionProblem(v: unknown): string | null {
+// The first way a resolver's value fails to be a ResolvedQuestion of the
+// primitive the caller asked for, or null where it is one. The detail names
+// the field and never quotes the value. A primitive other than the one asked
+// for is refused here: the caller's ask decides which answer shape the
+// request names and which validator reads the answer, so a question of
+// another shape would be sent under the wrong type.
+function questionProblem(v: unknown, expected: QuestionPrimitive): string | null {
   if (!isRecord(v)) return "resolver returned no question";
   if (typeof v.id !== "string" || v.id.length === 0) return "resolved question has no id";
   if (typeof v.version !== "string") return "resolved question has no version";
   if (v.overrideRefused !== null && typeof v.overrideRefused !== "string") return "resolved question overrideRefused is not a string or null";
-  if (v.primitive !== "choice") return "resolved question is not a choice";
+  if (v.primitive !== expected) return `resolved question is not a ${expected}`;
   if (typeof v.instructions !== "string") return "resolved question has no instructions";
-  if (!isRecord(v.options)) return "resolved question has no options";
-  for (const description of Object.values(v.options)) {
-    if (description !== null && typeof description !== "string") return "resolved question has an option description that is not a string or null";
+  if (expected === "choice") {
+    if (!isRecord(v.options)) return "resolved question has no options";
+    for (const description of Object.values(v.options)) {
+      if (description !== null && typeof description !== "string") return "resolved question has an option description that is not a string or null";
+    }
+  }
+  if (expected === "score") {
+    if (!Array.isArray(v.levels)) return "resolved question has no levels";
+    for (const level of v.levels) {
+      if (typeof level !== "string" || level.trim().length === 0) return "resolved question has a level that is not a non-empty string";
+    }
+    if (v.levels.length < SCORE_MIN_LEVELS || v.levels.length > SCORE_MAX_LEVELS) {
+      return `resolved question has fewer than ${SCORE_MIN_LEVELS} or more than ${SCORE_MAX_LEVELS} levels`;
+    }
   }
   return null;
 }
@@ -273,6 +421,49 @@ function choiceAnswerOf(v: unknown, optionIds: readonly string[]): { answer: Cho
   return { answer: { type: "choice", choice: v.choice, probabilities, confidence: v.confidence } };
 }
 
+// The validated NoulAnswer, or the field that failed. One field is copied and
+// nothing else the body carried. The range is the vendor's own: a Noul runs
+// from 0 for no to 1 for yes (https://docs.typesafe.ai/api.md, the Noul
+// answer), so a value outside it is a malformed body on the same ground a
+// choice outside the offered ids is. There is no confidence to read.
+function noulAnswerOf(v: unknown): { answer: NoulAnswer } | { problem: string } {
+  if (!isRecord(v)) return { problem: "answer is not an object" };
+  if (v.type !== "noul") return { problem: "answer type is not noul" };
+  if (typeof v.noul !== "number" || !Number.isFinite(v.noul)) return { problem: "answer noul is not a finite number" };
+  if (v.noul < 0 || v.noul > 1) return { problem: "answer noul is outside 0 to 1" };
+  return { answer: { type: "noul", noul: v.noul } };
+}
+
+// The validated ScoreAnswer built from the body's answer, or the first field
+// that failed. A level's number is its position in the levels the request
+// carried, so the probability map may key only those numbers as strings, and
+// the score itself may only sit between the lowest and the highest of them
+// (https://docs.typesafe.ai/primitives/score.md, the response structure). The
+// legend the body also carries is the request's own level text echoed back
+// and is not copied. The map is prototype-free for the reason the choice
+// map's is: the body reaches here through JSON.parse.
+function scoreAnswerOf(v: unknown, levelCount: number): { answer: ScoreAnswer } | { problem: string } {
+  if (!isRecord(v)) return { problem: "answer is not an object" };
+  if (v.type !== "score") return { problem: "answer type is not score" };
+  if (typeof v.score !== "number" || !Number.isFinite(v.score)) return { problem: "answer score is not a finite number" };
+  if (v.score < 0 || v.score > levelCount - 1) return { problem: "answer score is outside the levels that were sent" };
+  if (!isRecord(v.probabilities)) return { problem: "answer probabilities is not an object" };
+  const levelKeys: string[] = [];
+  for (let level = 0; level < levelCount; level += 1) levelKeys.push(String(level));
+  const probabilities: Record<string, number> = Object.create(null);
+  for (const [level, p] of Object.entries(v.probabilities)) {
+    // A key outside the level numbers the request carried bounds this map the
+    // way the choice validator's id check bounds its own: one append rewrites
+    // the whole day's journal file, so a body answering with a hundred
+    // thousand keys cannot reach a line.
+    if (!levelKeys.includes(level)) return { problem: "answer probabilities carry a level that was not sent" };
+    if (typeof p !== "number" || !Number.isFinite(p)) return { problem: "answer probabilities carry a value that is not a finite number" };
+    probabilities[level] = p;
+  }
+  if (typeof v.confidence !== "number" || !Number.isFinite(v.confidence)) return { problem: "answer confidence is not a finite number" };
+  return { answer: { type: "score", score: v.score, probabilities, confidence: v.confidence } };
+}
+
 function failure(
   reason: SeamFailureReason,
   detail: string | null,
@@ -296,31 +487,65 @@ function failure(
   };
 }
 
-// Puts one question set to Jev and resolves to a typed result. It never
-// rejects: every way the call can end short of an answer is one of the
-// closed failure reasons above.
+// What the one request path settles to, before either public entry point
+// shapes it for its own caller. `questions` is null where the failure came
+// before the questions were resolved.
+type CoreOk = {
+  ok: true;
+  answers: readonly SeamAnswer[];
+  usage: JevUsage;
+  latencyMs: number;
+  model: string | null;
+  state: string;
+};
+
+type CoreFailure = {
+  ok: false;
+  reason: SeamFailureReason;
+  detail: string | null;
+  questions: readonly ResolvedQuestion[] | null;
+  latencyMs: number | null;
+  state: string | null;
+};
+
+type CoreResult = CoreOk | CoreFailure;
+
+function coreFailure(
+  reason: SeamFailureReason,
+  detail: string | null,
+  questions: readonly ResolvedQuestion[] | null,
+  latencyMs: number | null,
+  state: string | null,
+): CoreFailure {
+  return { ok: false, reason, detail, questions, latencyMs, state };
+}
+
+// The one request path, whatever the caller asks and however many questions
+// it asks at once. It never rejects: every way the call can end short of an
+// answer is one of the closed failure reasons above. Both public entry points
+// go through here, so the key read, the state scrub, the resolver guard, the
+// timeout race and the answer validation are written once and cover every
+// primitive.
 //
 // The mode check comes first, so anything but "shadow" reads no key, resolves
 // no question and sends nothing. The key check comes second, so a VM with no
 // key, or one holding a value too short to be a bearer token, sends nothing
 // either. The state is scrubbed third, immediately after that check, so every
 // path past it carries the scrubbed text and no caller can reach the vendor or
-// the journal with the raw string. The resolver runs fourth, guarded, so a
+// the journal with the raw string. The resolvers run fourth, guarded, so a
 // catalog that cannot answer sends nothing. The request is raced against the timer;
 // both promises are built so they resolve rather than reject, which is what
 // keeps the loser of the race from becoming an unhandled rejection when it
 // settles later. Latency is measured here, from just before the fetch to the
 // moment the race settles.
-export async function ask(
+async function send(
   host: SeamHost,
-  questionSetId: string,
-  optionIds: readonly string[],
-  state: string,
+  asks: readonly QuestionAsk[],
+  state: SeamState,
   mode: string,
-  haikuValue: string | null,
   resolve: QuestionResolver,
-): Promise<SeamResult> {
-  if (mode !== "shadow") return failure("off", null, questionSetId, null, null, haikuValue, null);
+): Promise<CoreResult> {
+  if (mode !== "shadow") return coreFailure("off", null, null, null, null);
 
   let key: unknown;
   try {
@@ -329,53 +554,74 @@ export async function ask(
     key = undefined;
   }
   if (typeof key !== "string" || key.trim().length < KEY_MIN_CHARS) {
-    return failure("no_key", null, questionSetId, null, null, haikuValue, null);
+    return coreFailure("no_key", null, null, null, null);
   }
 
   // The scrub runs here, once, at the last point holding both the text and the
   // key. Everything past this line carries `sent` rather than the caller's own
-  // string: the request body, and every result the call can return. So the
+  // state: the request body, and every result the call can return. So the
   // bytes the vendor receives are the bytes the journal records, and no later
-  // module needs a guard it would have to remember to run.
-  // `state` is typed a string and every call site is typed, but this is the
+  // module needs a guard it would have to remember to run. A structured state
+  // is scrubbed field by field and journaled as the JSON text the body
+  // carried, so the same rule holds for it.
+  // A string state is typed a string at every call site, but this is the
   // first call that would reach into it, and a throw here would break the
   // never-rejects contract this module states above. The conversion itself is
   // guarded because it can throw: String() raises a TypeError on an object
   // with a null prototype, and on any object whose toString throws. This file
   // builds null-prototype objects deliberately, so the shape is native here.
-  const raw = typeof state === "string" ? state : safeString(state, "");
-  const sent = withoutKey(raw, key);
+  const sent = typeof state === "string" ? withoutKey(state, key) : withoutKeyInFields(state, key);
+  const sentText = typeof sent === "string" ? sent : JSON.stringify(sent);
 
-  // The resolver is local and runs before any request, so its failure is
-  // no_question rather than parse, and nothing has been sent when it fails.
-  let resolved: unknown;
-  try {
-    resolved = await resolve(questionSetId);
-  } catch (err) {
-    return failure("no_question", withoutKey(messageOf(err), key), questionSetId, null, null, haikuValue, sent);
+  // The resolvers are local and run before any request, so their failure is
+  // no_question rather than parse, and nothing has been sent when one fails.
+  const questions: ResolvedQuestion[] = [];
+  for (const wanted of asks) {
+    let resolved: unknown;
+    try {
+      resolved = await resolve(wanted.questionSetId);
+    } catch (err) {
+      return coreFailure("no_question", withoutKey(messageOf(err), key), null, null, sentText);
+    }
+    const problem = questionProblem(resolved, wanted.primitive);
+    if (problem !== null) return coreFailure("no_question", problem, null, null, sentText);
+    questions.push(resolved as ResolvedQuestion);
   }
-  const problem = questionProblem(resolved);
-  if (problem !== null) return failure("no_question", problem, questionSetId, null, null, haikuValue, sent);
-  const question = resolved as ResolvedQuestion;
 
-  // Exactly the ids in force, each with the catalog's description where the
-  // set carries one and null where it does not (the plan switch's pending
-  // plan ids are the caller's own and have no catalog entry).
-  // Prototype-free for the reason the catalog builds its own maps that way: a
-  // literal's __proto__ setter would swallow an option of that id and null the
-  // map's prototype for a null description, so what is sent would differ from
-  // what was validated. No id in force carries that name today. The guard sits
-  // on the channel rather than on the producer that first needed it.
-  const criteria: Record<string, string | null> = Object.create(null);
-  for (const id of optionIds) {
-    criteria[id] = Object.hasOwn(question.options, id) ? question.options[id] : null;
+  // One entry per question, keyed by the id the vendor answers under. The map
+  // is prototype-free for the reason the criteria map below is.
+  const sentQuestions: Record<string, unknown> = Object.create(null);
+  for (let i = 0; i < questions.length; i += 1) {
+    const question = questions[i];
+    const wanted = asks[i];
+    if (question.primitive === "choice" && wanted.primitive === "choice") {
+      // Exactly the ids in force, each with the catalog's description where the
+      // set carries one and null where it does not (the plan switch's pending
+      // plan ids are the caller's own and have no catalog entry).
+      // Prototype-free for the reason the catalog builds its own maps that way: a
+      // literal's __proto__ setter would swallow an option of that id and null the
+      // map's prototype for a null description, so what is sent would differ from
+      // what was validated. No id in force carries that name today. The guard sits
+      // on the channel rather than on the producer that first needed it.
+      const criteria: Record<string, string | null> = Object.create(null);
+      for (const id of wanted.optionIds) {
+        criteria[id] = Object.hasOwn(question.options, id) ? question.options[id] : null;
+      }
+      sentQuestions[question.id] = { type: "choice", instructions: question.instructions, criteria };
+    } else if (question.primitive === "score") {
+      // The levels in their order, which is their numbering: a level's number
+      // is its position in this array, and the answer's probabilities are
+      // keyed by those numbers.
+      sentQuestions[question.id] = { type: "score", instructions: question.instructions, criteria: [...question.levels] };
+    } else {
+      // A Noul's one condition is its instruction, so it carries no criteria.
+      sentQuestions[question.id] = { type: "noul", instructions: question.instructions };
+    }
   }
   const body = JSON.stringify({
     state: sent,
     model: JEV_MODEL,
-    questions: {
-      [question.id]: { type: "choice", instructions: question.instructions, criteria },
-    },
+    questions: sentQuestions,
   });
 
   const startedAt = Date.now();
@@ -401,11 +647,11 @@ export async function ask(
   // When the request wins, the timer is not cancelled: SeamHost.sleep carries
   // no abort signal, so it runs to its end as an orphan. That is accepted.
   // It is bounded at SHADOW_TIMEOUT_MS and there is at most one per call.
-  // The per-tick bound this sentence used to give is no longer the real one:
-  // the wiring puts two shadow calls on a tick, the controller decision and
-  // the plan switch, and two more on a scored turn, the turn score and the
-  // memory kind gate, so up to four orphans can be live across a tick and a
-  // turn. Still bounded, still harmless, and worth stating truthfully.
+  // The wiring puts two shadow calls on a tick, the controller decision and
+  // the plan switch, and up to three on a turn, the turn score, the memory
+  // kind gate and the plan health request, so up to five orphans can be live
+  // across a tick and a turn. Still bounded, still harmless, and worth
+  // stating truthfully.
   // Its settling is handled here, so it can neither reject nor touch the
   // result.
   const timer: Promise<Settled> = Promise.resolve()
@@ -417,26 +663,26 @@ export async function ask(
   const settled = await Promise.race([request, timer]);
   const latencyMs = Date.now() - startedAt;
 
-  if (settled.kind === "timeout") return failure("timeout", null, questionSetId, question, latencyMs, haikuValue, sent);
+  if (settled.kind === "timeout") return coreFailure("timeout", null, questions, latencyMs, sentText);
   if (settled.kind === "network") {
-    return failure("network", withoutKey(messageOf(settled.err), key), questionSetId, question, latencyMs, haikuValue, sent);
+    return coreFailure("network", withoutKey(messageOf(settled.err), key), questions, latencyMs, sentText);
   }
 
   // A fetch that resolved with no response object is a fetch that returned
   // nothing usable, which is a network failure rather than a status.
   const res = settled.res;
-  if (!isRecord(res)) return failure("network", "no response", questionSetId, question, latencyMs, haikuValue, sent);
+  if (!isRecord(res)) return coreFailure("network", "no response", questions, latencyMs, sentText);
   // Reading these two members runs whatever accessors the host put on the
   // object, and a lazily-read body is an ordinary shape for a response
-  // wrapper. A throwing accessor here would reject out of ask, and Section 5
-  // does not await the ask, so that reject becomes an unhandled rejection and
-  // the call's journal line is never written.
+  // wrapper. A throwing accessor here would reject out of the request path,
+  // and no caller awaits a shadow call, so that reject becomes an unhandled
+  // rejection and the call's journal line is never written.
   let status: unknown;
   let text: unknown;
   try {
     ({ status, text } = res as { status: unknown; text: unknown });
   } catch {
-    return failure("network", "response members could not be read", questionSetId, question, latencyMs, haikuValue, sent);
+    return coreFailure("network", "response members could not be read", questions, latencyMs, sentText);
   }
   // An integer in 200 to 299 and nothing else: NaN is a number that fails
   // both range comparisons, and a fraction or a numeric string is no status.
@@ -446,35 +692,131 @@ export async function ask(
     // host-supplied detail on this path is scrubbed before it can reach a
     // journal line, and the journal clamps a detail at 512 characters, which
     // is wide enough to hold a whole key. So this one is scrubbed too.
-    return failure(httpReason(status), withoutKey(safeString(status, "unconvertible status"), key), questionSetId, question, latencyMs, haikuValue, sent);
+    return coreFailure(httpReason(status), withoutKey(safeString(status, "unconvertible status"), key), questions, latencyMs, sentText);
   }
 
-  if (typeof text !== "string") return failure("parse", "body is not text", questionSetId, question, latencyMs, haikuValue, sent);
+  if (typeof text !== "string") return coreFailure("parse", "body is not text", questions, latencyMs, sentText);
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    return failure("parse", "body is not JSON", questionSetId, question, latencyMs, haikuValue, sent);
+    return coreFailure("parse", "body is not JSON", questions, latencyMs, sentText);
   }
   const answers = isRecord(parsed) ? parsed.answers : undefined;
-  if (!isRecord(parsed) || !isRecord(answers) || !isRecord(answers[question.id])) {
-    return failure("parse", `no answer for ${question.id}`, questionSetId, question, latencyMs, haikuValue, sent);
+  // One answer per question asked, each validated against the primitive its
+  // question was sent as. A question the body did not answer, or an answer
+  // that fails validation, fails the whole call: the detail names which
+  // question it was.
+  const validatedAnswers: SeamAnswer[] = [];
+  for (let i = 0; i < questions.length; i += 1) {
+    const question = questions[i];
+    const wanted = asks[i];
+    if (!isRecord(parsed) || !isRecord(answers) || !isRecord(answers[question.id])) {
+      return coreFailure("parse", `no answer for ${question.id}`, questions, latencyMs, sentText);
+    }
+    const raw = answers[question.id];
+    const validated = wanted.primitive === "choice"
+      ? choiceAnswerOf(raw, wanted.optionIds)
+      : question.primitive === "score"
+        ? scoreAnswerOf(raw, question.levels.length)
+        : noulAnswerOf(raw);
+    if ("problem" in validated) return coreFailure("parse", validated.problem, questions, latencyMs, sentText);
+    validatedAnswers.push({
+      questionSetId: wanted.questionSetId,
+      questionId: question.id,
+      questionVersion: question.version,
+      overrideRefused: question.overrideRefused,
+      primitive: question.primitive,
+      answer: validated.answer,
+    });
   }
-  const validated = choiceAnswerOf(answers[question.id], optionIds);
-  if ("problem" in validated) return failure("parse", validated.problem, questionSetId, question, latencyMs, haikuValue, sent);
-  const usage = isRecord(parsed.usage) ? parsed.usage : {};
+  const usage = isRecord(parsed) && isRecord(parsed.usage) ? parsed.usage : {};
+  return {
+    ok: true,
+    answers: validatedAnswers,
+    usage: { input_tokens: countOf(usage.input_tokens), output_tokens: countOf(usage.output_tokens) },
+    latencyMs,
+    model: isRecord(parsed) && typeof parsed.model === "string" ? parsed.model.slice(0, MODEL_MAX_CHARS) : null,
+    state: sentText,
+  };
+}
+
+// Puts one Choice question set to Jev beside the value Haiku gave for the
+// same question, and resolves to a typed result. It never rejects: every way
+// the call can end short of an answer is one of the closed failure reasons
+// above. The request itself goes through the one path `send` owns, so the key
+// scrub, the timeout race and the answer validation are the same ones every
+// other primitive takes.
+export async function ask(
+  host: SeamHost,
+  questionSetId: string,
+  optionIds: readonly string[],
+  state: string,
+  mode: string,
+  haikuValue: string | null,
+  resolve: QuestionResolver,
+): Promise<SeamResult> {
+  // The conversion a non-string state takes, kept here because this entry
+  // point's state is typed a string: the shared path takes either a string or
+  // a structured state, and an object handed in through this one is the
+  // caller being wrong rather than a structured state.
+  const asked: string = typeof state === "string" ? state : safeString(state, "");
+  const core = await send(host, [{ questionSetId, primitive: "choice", optionIds }], asked, mode, resolve);
+  if (!core.ok) {
+    const question = core.questions !== null && core.questions.length > 0 ? core.questions[0] : null;
+    return failure(core.reason, core.detail, questionSetId, question, core.latencyMs, haikuValue, core.state);
+  }
+  const answered = core.answers[0];
   return {
     ok: true,
     questionSetId,
-    questionId: question.id,
-    questionVersion: question.version,
-    overrideRefused: question.overrideRefused,
+    questionId: answered.questionId,
+    questionVersion: answered.questionVersion,
+    overrideRefused: answered.overrideRefused,
     primitive: "choice",
-    answer: validated.answer,
-    usage: { input_tokens: countOf(usage.input_tokens), output_tokens: countOf(usage.output_tokens) },
-    latencyMs,
-    model: typeof parsed.model === "string" ? parsed.model.slice(0, MODEL_MAX_CHARS) : null,
+    answer: answered.answer as ChoiceAnswer,
+    usage: core.usage,
+    latencyMs: core.latencyMs,
+    model: core.model,
     haikuValue,
-    state: sent,
+    state: core.state,
+  };
+}
+
+// Puts several question sets to Jev in one request, over one state, and
+// resolves to a typed result carrying one validated answer per question. It
+// never rejects, for the reason `ask` does not: both go through the one
+// request path.
+//
+// There is no Haiku value here. These questions are measured against
+// outcomes the plugin observes later rather than against a classifier answer,
+// so nothing on the result claims agreement.
+export async function askAll(
+  host: SeamHost,
+  asks: readonly QuestionAsk[],
+  state: SeamState,
+  mode: string,
+  resolve: QuestionResolver,
+): Promise<SeamSetResult> {
+  const questionSetIds = asks.map((asked) => asked.questionSetId);
+  const core = await send(host, asks, state, mode, resolve);
+  if (!core.ok) {
+    return {
+      ok: false,
+      reason: core.reason,
+      detail: core.detail,
+      questionSetIds,
+      latencyMs: core.latencyMs,
+      state: core.state,
+    };
+  }
+  return {
+    ok: true,
+    questionSetIds,
+    answers: core.answers,
+    usage: core.usage,
+    latencyMs: core.latencyMs,
+    model: core.model,
+    state: core.state,
   };
 }

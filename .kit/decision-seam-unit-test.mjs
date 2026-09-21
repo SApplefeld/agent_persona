@@ -23,6 +23,7 @@ import { createFake$, fakeHostOf, stubDateNow } from "./tick-harness.mjs";
 
 const {
   ask,
+  askAll,
   JEV_ENDPOINT,
   JEV_MODEL,
   SHADOW_TIMEOUT_MS,
@@ -744,6 +745,275 @@ try {
     check("Test 18c: a null-prototype rejection value resolves network rather than rejecting",
       badErr.resolved && badErr.value.ok === false && badErr.value.reason === "network",
       badErr.resolved ? badErr.value.reason : "REJECTED: " + String(badErr.err && badErr.err.message));
+  }
+
+  // --- Test 19: one request carrying a Noul, a Score and a Choice over a structured state ---
+  //
+  // The three plan health questions ride one request. Each primitive's request
+  // shape is the live contract's (https://docs.typesafe.ai/api.md): a Noul is
+  // type and instructions with no criteria, a Score's criteria is the ordered
+  // level array, a Choice's criteria is the option map. The state is an object
+  // whose fields the instructions name, and it goes out as an object.
+  const PLAN_CATALOG = {
+    worker_blocked: { id: "worker_blocked", version: "v1", overrideRefused: null, primitive: "noul", instructions: "Is `closingText` a worker saying it is blocked?" },
+    rounds_converging: { id: "rounds_converging", version: "v1", overrideRefused: null, primitive: "score", instructions: "Across `recentClosingTexts`, converging or reopening?", levels: ["closing", "steady", "reopening"] },
+    block_owner: { id: "block_owner", version: "v2", overrideRefused: "reworded", primitive: "choice", instructions: "Who owns the block in `closingText`?", options: { operator: "the human", none: null } },
+  };
+  const planResolveCalls = [];
+  const planResolve = async (id) => { planResolveCalls.push(id); return PLAN_CATALOG[id]; };
+  const PLAN_ASKS = [
+    { questionSetId: "worker_blocked", primitive: "noul" },
+    { questionSetId: "rounds_converging", primitive: "score" },
+    { questionSetId: "block_owner", primitive: "choice", optionIds: ["operator", "none"] },
+  ];
+  const PLAN_STATE = { closingText: "BLOCKED: waiting on the operator", recentClosingTexts: ["Did a thing.", "BLOCKED: waiting on the operator"] };
+  function planAnswers(overrides = {}) {
+    return {
+      worker_blocked: { type: "noul", noul: 0.93 },
+      rounds_converging: { type: "score", score: 1.4, legend: { "0": "closing", "1": "steady", "2": "reopening" }, probabilities: { "0": 0.1, "1": 0.4, "2": 0.5 }, confidence: 0.4 },
+      block_owner: { type: "choice", choice: "operator", probabilities: { operator: 0.9, none: 0.1 }, confidence: 0.85 },
+      ...overrides,
+    };
+  }
+  function planBody(overrides = {}, extra = {}) {
+    return JSON.stringify({ model: "jev-1.13.0", answers: planAnswers(overrides), usage: { input_tokens: 400, output_tokens: 30 }, ...extra });
+  }
+  function askPlan(h, overrides = {}) {
+    const a = { asks: PLAN_ASKS, state: PLAN_STATE, mode: "shadow", resolve: planResolve, ...overrides };
+    return askAll(fakeHostOf(h), a.asks, a.state, a.mode, a.resolve);
+  }
+  {
+    const h = harness();
+    clock.set(T0);
+    planResolveCalls.length = 0;
+    h.setHttpResponse((url, init) => { clock.advance(41); return Promise.resolve(response(200, planBody())); });
+    const r = await settle(askPlan(h));
+    check("Test 19a: three questions in one request resolve ok", r.resolved && r.value.ok === true, r);
+    check("Test 19b: exactly one request was sent", h.httpCalls.length === 1, h.httpCalls.length);
+    const body = JSON.parse(h.httpCalls[0].init.body);
+    check("Test 19c: the state rides as an object with the two named fields",
+      typeof body.state === "object" && body.state !== null && !Array.isArray(body.state)
+        && JSON.stringify(Object.keys(body.state)) === JSON.stringify(["closingText", "recentClosingTexts"]), body.state);
+    check("Test 19d: the state's text and list fields ride unchanged",
+      body.state.closingText === PLAN_STATE.closingText && JSON.stringify(body.state.recentClosingTexts) === JSON.stringify(PLAN_STATE.recentClosingTexts), body.state);
+    check("Test 19e: the questions map holds the three ids in the asks' order",
+      JSON.stringify(Object.keys(body.questions)) === JSON.stringify(["worker_blocked", "rounds_converging", "block_owner"]), Object.keys(body.questions));
+    const noul = body.questions.worker_blocked;
+    check("Test 19f: the Noul is type noul with its instructions and no criteria",
+      JSON.stringify(Object.keys(noul).sort()) === JSON.stringify(["instructions", "type"]) && noul.type === "noul"
+        && noul.instructions === PLAN_CATALOG.worker_blocked.instructions, noul);
+    const score = body.questions.rounds_converging;
+    check("Test 19g: the Score is type score with its levels as an ordered criteria array",
+      score.type === "score" && Array.isArray(score.criteria) && JSON.stringify(score.criteria) === JSON.stringify(["closing", "steady", "reopening"])
+        && score.instructions === PLAN_CATALOG.rounds_converging.instructions, score);
+    const choice = body.questions.block_owner;
+    check("Test 19h: the Choice is type choice with the ids in force as its criteria map",
+      choice.type === "choice" && JSON.stringify(choice.criteria) === JSON.stringify({ operator: "the human", none: null }), choice);
+    check("Test 19i: the model alias and the endpoint are the same as a single call's",
+      body.model === JEV_MODEL && h.httpCalls[0].url === JEV_ENDPOINT, [body.model, h.httpCalls[0].url]);
+    check("Test 19j: the result carries one validated answer per question, in order, each naming its primitive and set",
+      r.value.answers.length === 3
+        && r.value.answers.map((a) => a.primitive).join(",") === "noul,score,choice"
+        && r.value.answers.map((a) => a.questionSetId).join(",") === "worker_blocked,rounds_converging,block_owner"
+        && r.value.answers.map((a) => a.questionId).join(",") === "worker_blocked,rounds_converging,block_owner", r.value.answers);
+    check("Test 19k: each answer carries its question's version and refusal reason",
+      r.value.answers[2].questionVersion === "v2" && r.value.answers[2].overrideRefused === "reworded" && r.value.answers[0].questionVersion === "v1", r.value.answers);
+    check("Test 19l: the Noul answer is the vendor's probability and nothing else",
+      JSON.stringify(r.value.answers[0].answer) === JSON.stringify({ type: "noul", noul: 0.93 }), r.value.answers[0].answer);
+    check("Test 19m: the Score answer carries score, probabilities by level number and confidence, and not the echoed legend",
+      sameSet(Object.keys(r.value.answers[1].answer), ["type", "score", "probabilities", "confidence"])
+        && r.value.answers[1].answer.score === 1.4 && r.value.answers[1].answer.probabilities["2"] === 0.5 && r.value.answers[1].answer.confidence === 0.4, r.value.answers[1].answer);
+    check("Test 19n: the Choice answer is the four choice fields",
+      sameSet(Object.keys(r.value.answers[2].answer), ["type", "choice", "probabilities", "confidence"]) && r.value.answers[2].answer.choice === "operator", r.value.answers[2].answer);
+    check("Test 19o: usage, latency, model and the set ids ride the result",
+      r.value.usage.input_tokens === 400 && r.value.usage.output_tokens === 30 && r.value.latencyMs === 41 && r.value.model === "jev-1.13.0"
+        && JSON.stringify(r.value.questionSetIds) === JSON.stringify(["worker_blocked", "rounds_converging", "block_owner"]), r.value);
+    check("Test 19p: the result's state is the JSON text of the object the vendor received",
+      r.value.state === JSON.stringify(body.state), r.value.state);
+    check("Test 19q: the resolver was asked once per set, in the asks' order",
+      JSON.stringify(planResolveCalls) === JSON.stringify(["worker_blocked", "rounds_converging", "block_owner"]), planResolveCalls);
+
+    // The key scrub over a structured state: every field, and every item of
+    // a list field, leaves with the key removed, and the bytes the journal
+    // reads are the bytes the vendor received.
+    const leakyState = { closingText: `printed ${KEY} here`, recentClosingTexts: [`earlier ${KEY}`, "clean"] };
+    check("Test 19r control: the driving state carries the key in a text field and in a list item",
+      leakyState.closingText.includes(KEY) && leakyState.recentClosingTexts[0].includes(KEY));
+    const h2 = harness();
+    h2.setHttpResponse(response(200, planBody()));
+    const r2 = await settle(askPlan(h2, { state: leakyState }));
+    const sent2 = JSON.parse(h2.httpCalls[0].init.body).state;
+    check("Test 19s: the key is gone from every field the vendor received",
+      !h2.httpCalls[0].init.body.includes(KEY) && sent2.closingText === "printed [key] here" && sent2.recentClosingTexts[0] === "earlier [key]" && sent2.recentClosingTexts[1] === "clean", sent2);
+    check("Test 19t: and the result's state is those same bytes",
+      r2.resolved && r2.value.ok === true && r2.value.state === JSON.stringify(sent2) && !r2.value.state.includes(KEY), r2.value && r2.value.state);
+    const h3 = harness();
+    h3.setHttpResponse(response(500, ""));
+    const r3 = await settle(askPlan(h3, { state: leakyState }));
+    check("Test 19u: a failure past the key check carries the scrubbed structured state",
+      r3.resolved && r3.value.ok === false && r3.value.reason === "http_other" && typeof r3.value.state === "string" && !r3.value.state.includes(KEY), r3.value);
+  }
+
+  // --- Test 20: the Noul answer is validated field by field ---
+  {
+    for (const [label, noul] of [["0, the no end", 0], ["1, the yes end", 1], ["a middle value", 0.5]]) {
+      const h = harness();
+      h.setHttpResponse(response(200, planBody({ worker_blocked: { type: "noul", noul } })));
+      const r = await settle(askPlan(h));
+      check(`Test 20a: a Noul of ${label} is accepted`, r.resolved && r.value.ok === true && r.value.answers[0].answer.noul === noul, r.value);
+    }
+    const bad = [
+      ["a type other than noul", { type: "choice", noul: 0.5 }, "answer type is not noul"],
+      ["no type", { noul: 0.5 }, "answer type is not noul"],
+      ["no noul value", { type: "noul" }, "answer noul is not a finite number"],
+      ["a string value", { type: "noul", noul: "0.5" }, "answer noul is not a finite number"],
+      ["a value above 1", { type: "noul", noul: 1.5 }, "answer noul is outside 0 to 1"],
+      ["a value below 0", { type: "noul", noul: -0.1 }, "answer noul is outside 0 to 1"],
+      ["null", null, "no answer for worker_blocked"],
+    ];
+    for (const [label, answer, detail] of bad) {
+      const h = harness();
+      h.setHttpResponse(response(200, planBody({ worker_blocked: answer })));
+      const r = await settle(askPlan(h));
+      check(`Test 20b: a Noul answer with ${label} fails the whole call as parse (${detail})`,
+        r.resolved && r.value.ok === false && r.value.reason === "parse" && r.value.detail === detail, r.value);
+    }
+    const h = harness();
+    h.setHttpResponse(response(200, planBody({ worker_blocked: { type: "noul", noul: 0.2, confidence: 0.9, reasoning: "x" } })));
+    const r = await settle(askPlan(h));
+    check("Test 20c: fields the Noul shape does not name are dropped, confidence among them",
+      r.resolved && r.value.ok === true && JSON.stringify(Object.keys(r.value.answers[0].answer)) === JSON.stringify(["type", "noul"]), r.value.answers[0].answer);
+  }
+
+  // --- Test 21: the Score answer is validated against the levels that were sent ---
+  {
+    for (const [label, score] of [["0, the lowest level", 0], ["2, the highest level", 2], ["1.43, between levels", 1.43]]) {
+      const h = harness();
+      h.setHttpResponse(response(200, planBody({ rounds_converging: { type: "score", score, probabilities: { "0": 0.3, "1": 0.3, "2": 0.4 }, confidence: 0.3 } })));
+      const r = await settle(askPlan(h));
+      check(`Test 21a: a Score of ${label} is accepted`, r.resolved && r.value.ok === true && r.value.answers[1].answer.score === score, r.value);
+    }
+    const valid = { type: "score", score: 1, probabilities: { "0": 0, "1": 1, "2": 0 }, confidence: 1 };
+    const bad = [
+      ["a type other than score", { ...valid, type: "choice" }, "answer type is not score"],
+      ["no score", { type: "score", probabilities: {}, confidence: 1 }, "answer score is not a finite number"],
+      ["a string score", { ...valid, score: "1" }, "answer score is not a finite number"],
+      ["a score above the top level", { ...valid, score: 2.5 }, "answer score is outside the levels that were sent"],
+      ["a negative score", { ...valid, score: -1 }, "answer score is outside the levels that were sent"],
+      ["no probabilities", { type: "score", score: 1, confidence: 1 }, "answer probabilities is not an object"],
+      ["probabilities that is an array", { ...valid, probabilities: [0, 1, 0] }, "answer probabilities is not an object"],
+      ["a level number that was not sent", { ...valid, probabilities: { "0": 0, "1": 0, "2": 0, "3": 1 } }, "answer probabilities carry a level that was not sent"],
+      ["a level keyed by its text rather than its number", { ...valid, probabilities: { steady: 1 } }, "answer probabilities carry a level that was not sent"],
+      ["a probability that is a string", { ...valid, probabilities: { "1": "1" } }, "answer probabilities carry a value that is not a finite number"],
+      ["no confidence", { type: "score", score: 1, probabilities: { "1": 1 } }, "answer confidence is not a finite number"],
+    ];
+    for (const [label, answer, detail] of bad) {
+      const h = harness();
+      h.setHttpResponse(response(200, planBody({ rounds_converging: answer })));
+      const r = await settle(askPlan(h));
+      check(`Test 21b: a Score answer with ${label} fails the whole call as parse (${detail})`,
+        r.resolved && r.value.ok === false && r.value.reason === "parse" && r.value.detail === detail, r.value);
+    }
+    // The bound a level check buys: a body cannot make the map larger than
+    // the levels the request carried.
+    const flood = Object.create(null);
+    for (let i = 0; i < 5000; i += 1) flood[String(i)] = 0.0002;
+    const h = harness();
+    h.setHttpResponse(response(200, planBody({ rounds_converging: { ...valid, probabilities: flood } })));
+    const r = await settle(askPlan(h));
+    check("Test 21c: a flood of level numbers beyond the sent levels cannot reach a result",
+      r.resolved && r.value.ok === false && r.value.reason === "parse", r.value && r.value.reason);
+    // Prototype-free, the inbound half of the channel as for a choice.
+    const h2 = harness();
+    const protoBody = planBody().replace('"probabilities":{"0":0.1,"1":0.4,"2":0.5}', '"probabilities":{"0":0.1,"1":0.4,"2":0.5,"__proto__":0}');
+    check("Test 21d control: the hand-built body does carry the prototype key", protoBody.includes('"__proto__":0'));
+    h2.setHttpResponse(response(200, protoBody));
+    const r2 = await settle(askPlan(h2));
+    check("Test 21d: a level key naming the prototype is refused as a level that was not sent rather than swallowed",
+      r2.resolved && r2.value.ok === false && r2.value.detail === "answer probabilities carry a level that was not sent", r2.value);
+  }
+
+  // --- Test 22: a whole call fails on any one question, and the resolver is checked per primitive ---
+  {
+    const h = harness();
+    const { block_owner, ...twoAnswers } = planAnswers();
+    h.setHttpResponse(response(200, JSON.stringify({ answers: twoAnswers, usage: {} })));
+    const r = await settle(askPlan(h));
+    check("Test 22a: a body answering two of three questions fails as parse naming the missing one, carrying no answers",
+      r.resolved && r.value.ok === false && r.value.reason === "parse" && r.value.detail === "no answer for block_owner" && !("answers" in r.value), r.value);
+    const h2 = harness();
+    h2.setHttpResponse(response(200, planBody({ block_owner: { type: "choice", choice: "coordinator", probabilities: {}, confidence: 1 } })));
+    const r2 = await settle(askPlan(h2));
+    check("Test 22b: a malformed third answer fails the whole call with the choice validator's own detail",
+      r2.resolved && r2.value.ok === false && r2.value.reason === "parse" && r2.value.detail === "answer choice is not an offered option", r2.value);
+
+    const shapes = [
+      ["a choice where a noul was asked", { worker_blocked: { ...PLAN_CATALOG.block_owner, id: "worker_blocked" } }, "resolved question is not a noul"],
+      ["a noul where a score was asked", { rounds_converging: { ...PLAN_CATALOG.worker_blocked, id: "rounds_converging" } }, "resolved question is not a score"],
+      ["a noul where a choice was asked", { block_owner: { ...PLAN_CATALOG.worker_blocked, id: "block_owner" } }, "resolved question is not a choice"],
+      ["a score with no levels", { rounds_converging: { ...PLAN_CATALOG.rounds_converging, levels: undefined } }, "resolved question has no levels"],
+      ["a score with one level", { rounds_converging: { ...PLAN_CATALOG.rounds_converging, levels: ["only"] } }, "resolved question has fewer than 2 or more than 10 levels"],
+      ["a score with eleven levels", { rounds_converging: { ...PLAN_CATALOG.rounds_converging, levels: Array.from({ length: 11 }, (_, i) => `level ${i}`) } }, "resolved question has fewer than 2 or more than 10 levels"],
+      ["a score with a level that is not a string", { rounds_converging: { ...PLAN_CATALOG.rounds_converging, levels: ["a", 2, "c"] } }, "resolved question has a level that is not a non-empty string"],
+      ["a score with an empty level", { rounds_converging: { ...PLAN_CATALOG.rounds_converging, levels: ["a", "  ", "c"] } }, "resolved question has a level that is not a non-empty string"],
+    ];
+    for (const [label, patch, detail] of shapes) {
+      const h3 = harness();
+      h3.setHttpResponse(response(200, planBody()));
+      const r3 = await settle(askPlan(h3, { resolve: async (id) => ({ ...PLAN_CATALOG, ...patch })[id] }));
+      check(`Test 22c: a resolver returning ${label} is no_question (${detail}) and no request is sent`,
+        r3.resolved && r3.value.ok === false && r3.value.reason === "no_question" && r3.value.detail === detail && h3.httpCalls.length === 0, r3.value);
+    }
+    const h4 = harness();
+    h4.setHttpResponse(response(200, planBody()));
+    const r4 = await settle(askPlan(h4, { resolve: async (id) => ({ ...PLAN_CATALOG, rounds_converging: { ...PLAN_CATALOG.rounds_converging, levels: ["low", "high"] } })[id] }));
+    check("Test 22c control: a score with exactly two levels is admitted and sent",
+      r4.resolved && h4.httpCalls.length === 1 && JSON.parse(h4.httpCalls[0].init.body).questions.rounds_converging.criteria.length === 2, r4.value && r4.value.reason);
+    // The single-question entry point refuses the same way, and still names
+    // its own primitive.
+    const h5 = harness();
+    const r5 = await settle(askDefault(h5, { resolve: async () => ({ ...CATALOG.controller_decision, primitive: "score", levels: ["a", "b"] }) }));
+    check("Test 22d: ask refuses a score where its choice was asked, with the same detail shape",
+      r5.resolved && r5.value.ok === false && r5.value.reason === "no_question" && r5.value.detail === "resolved question is not a choice", r5.value);
+  }
+
+  // --- Test 23: every way a set call ends short of an answer resolves with the set failure shape ---
+  {
+    const fields = ["ok", "reason", "detail", "questionSetIds", "latencyMs", "state"];
+    const drivers = {
+      off: (h) => askPlan(h, { mode: "off" }),
+      no_key: (h) => { h.setEnv("TYPESAFE_API_KEY", ""); return askPlan(h); },
+      no_question: (h) => askPlan(h, { resolve: () => Promise.reject(new Error("catalog unreadable")) }),
+      timeout: (h) => { h.setHttpResponse(() => new Promise(() => {})); const p = askPlan(h); setImmediate(() => h.fireSleep()); return p; },
+      network: (h) => { h.setHttpResponse(() => Promise.reject(new Error("down"))); return askPlan(h); },
+      http_401: (h) => { h.setHttpResponse(response(401, "")); return askPlan(h); },
+      http_422: (h) => { h.setHttpResponse(response(422, "")); return askPlan(h); },
+      http_429: (h) => { h.setHttpResponse(response(429, "")); return askPlan(h); },
+      http_529: (h) => { h.setHttpResponse(response(529, "")); return askPlan(h); },
+      http_other: (h) => { h.setHttpResponse(response(500, "")); return askPlan(h); },
+      parse: (h) => { h.setHttpResponse(response(200, "nope")); return askPlan(h); },
+    };
+    check("Test 23: a driver exists for every reason in the closed set", sameSet(Object.keys(drivers), SEAM_FAILURE_REASONS), Object.keys(drivers));
+    for (const reason of SEAM_FAILURE_REASONS) {
+      const h = harness();
+      const r = await settle(drivers[reason](h));
+      check(`Test 23: set reason ${reason} resolves without a throw with every set failure field present and the set ids`,
+        r.resolved && r.value.ok === false && r.value.reason === reason && sameSet(Object.keys(r.value), fields)
+          && JSON.stringify(r.value.questionSetIds) === JSON.stringify(["worker_blocked", "rounds_converging", "block_owner"]), r);
+      if (reason === "off" || reason === "no_key") {
+        check(`Test 23: set reason ${reason} carries no state and sent nothing`, r.value.state === null && h.httpCalls.length === 0, r.value);
+      } else {
+        check(`Test 23: set reason ${reason} carries the scrubbed state as text`, typeof r.value.state === "string" && r.value.state.includes("closingText"), r.value.state);
+      }
+    }
+    const h = harness();
+    h.setHttpResponse(() => new Promise(() => {}));
+    const p = askPlan(h);
+    await new Promise((res) => setImmediate(res));
+    check("Test 23: one timer of SHADOW_TIMEOUT_MS guards the whole set request", h.sleeps.length === 1 && h.sleeps[0].ms === SHADOW_TIMEOUT_MS, h.sleeps.map((s) => s.ms));
+    h.fireSleep();
+    const r = await settle(p);
+    check("Test 23: the timer winning resolves the set call as timeout", r.resolved && r.value.ok === false && r.value.reason === "timeout", r.value);
   }
 } finally {
   clock.restore();

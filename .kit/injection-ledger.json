@@ -22,8 +22,8 @@
     {
       "name": "COORDINATOR_ROLE_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 4719,
-      "words": 826
+      "chars": 4982,
+      "words": 872
     },
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
@@ -106,8 +106,8 @@
     {
       "name": "NUDGE_TEXT_idle_gap_converted",
       "file": "hooks/index.ts",
-      "chars": 423,
-      "words": 72
+      "chars": 521,
+      "words": 88
     },
     {
       "name": "NUDGE_TEXT_idle_timeout",
@@ -166,8 +166,8 @@
     {
       "name": "goal_add_description",
       "file": "hooks/index.ts",
-      "chars": 381,
-      "words": 68
+      "chars": 509,
+      "words": 83
     },
     {
       "name": "goal_done_description",

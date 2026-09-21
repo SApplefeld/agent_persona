@@ -19,8 +19,8 @@
 // Usage: node controller-tick-test.mjs
 // Exits 0 on success, 1 on failure.
 
-import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, HARNESS_CWD, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, JEV_FAKE_KEY, JOURNAL_MARK } from "./tick-harness.mjs";
-import { DECISIONS_MAX, MEMORY_MAX, parseState } from "../hooks/agent-state.ts";
+import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, HARNESS_CWD, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, jevResponseFor, JEV_FAKE_KEY, JOURNAL_MARK } from "./tick-harness.mjs";
+import { DECISIONS_MAX, MEMORY_MAX, PLAN_PATH_PATTERN, PLAN_PATH_TEXT_PATTERN, isActivationEligible, parseState, resolvePlanPath } from "../hooks/agent-state.ts";
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -47,6 +47,25 @@ const OPTS = {
 };
 
 const T0 = 1_700_000_000_000;
+
+// A stored planPath always satisfies the shape goal_add enforces, whichever
+// writer produced it. The load-time fill is a writer goal_add's validation
+// never sees: it takes its value from PLAN_PATH_TEXT_PATTERN's capture, whose
+// body is maintained separately from PLAN_PATH_PATTERN's. Nothing between the
+// two compares them, so every case below that expects a fill asserts the
+// filled value against PLAN_PATH_PATTERN as well as against its own literal.
+// Without that, a later relaxation of the text pattern's body writes a value
+// goal_add would refuse straight into the store, and every test still passes.
+function checkFilledPlanPathWellFormed(label, value) {
+  check(`${label}: the filled planPath satisfies the shape goal_add enforces`,
+    typeof value === "string" && PLAN_PATH_PATTERN.test(value), value);
+}
+
+// The token that tells goal_add's two planPath refusals apart. The kind rule's
+// message names the one kind the parameter is allowed on, and the form rule's
+// message (PLAN_PATH_REQUIRED_FORM) names no kind at all, so a refusal is
+// read as the kind rule's by this token rather than by its opening sentence.
+const PLANPATH_KIND_RULE_TOKEN = 'kind "plan"';
 
 // Helper: read state from the fake store (persona JSON).
 function getState(h) {
@@ -3048,6 +3067,94 @@ async function main() {
     await caseSection10FixRound_droppedPlanParentNotActivated(clock);
     await caseSection10FixRound_secondPlanAddLandsUnderRoot(clock);
     await caseSection10FixRound_taskUnderPendingPlanActivated(clock);
+
+    // Section 1 (plan-health-from-the-record): planPath on a queue entry.
+    await casePlanPath1_validPlanPathOnPlanStored(clock);
+    await casePlanPath1_patternRefusalCases(clock);
+    await casePlanPath1_validPathOnTaskRefusedByKindNotPattern(clock);
+    await casePlanPath1_emptyPlanPathIsRefusedNotIgnored(clock);
+    await casePlanPath1_fillFromObjectiveLeadingText(clock);
+    await casePlanPath1_fillFromObjectiveTrailingFullStop(clock);
+    await casePlanPath1_noMatchFillsNothing(clock);
+    await casePlanPath1_taskKindNeverFilled(clock);
+    await casePlanPath1_resolveHelperWalksToPlanAncestor(clock);
+    await casePlanPath1_resolveHelperNoneWithoutAncestor(clock);
+    await casePlanPath1_recoversMaxRoundsBlockWithPlanPath(clock);
+    await casePlanPath1_staysBlockedWithoutPlanPath_control(clock);
+
+    // Section 1: which entries applyPlanRecordOnLoad fills and frees.
+    await casePlanPath1Recovery_taskUnderPlanNodeRecovered(clock);
+    await casePlanPath1Recovery_taskWithNoPlanAncestorStaysBlocked_control(clock);
+    await casePlanPath1Recovery_rootStatusGatesRecovery(clock);
+    await casePlanPath1Text_leftBoundaryRefusesLongerToken(clock);
+    await casePlanPath1Fill_missingTitleOrObjectiveDoesNotThrow(clock);
+    await casePlanPath1Fill_nonStringTitleReadAsAbsent(clock);
+    await casePlanPath1Fill_titleTakesPrecedenceOverObjective(clock);
+    await casePlanPath1Text_rightBoundaryRefusesLongerPath(clock);
+    await casePlanPath1Text_captureBodyIsTheShapeGoalAddEnforces(clock);
+
+    // Section 1: which round-budget-blocked nodes a recovery can consume.
+    await casePlanPath1Children_pendingChildMakesTheParentRecoverable(clock);
+    await casePlanPath1Children_noPendingChildRefusesRecovery(clock);
+    await casePlanPath1Children_frozenParentAndChildFreedInEitherArrayOrder(clock);
+
+    // Section 1: the ancestor chain of a round-budget recovery.
+    await casePlanPath1Ancestors_derivedBlockedParentFreedWithTheEntry(clock);
+    await casePlanPath1Ancestors_missingParentRefusesRecovery(clock);
+    await casePlanPath1Ancestors_unexplainedParentStateRefusesRecovery(clock);
+    await casePlanPath1Ancestors_activeAncestorAcceptedAcrossTwoLevels(clock);
+    await casePlanPath1Ancestors_refusalHighInChainLeavesLowerAncestorUntouched(clock);
+    await casePlanPath1Ancestors_fillPrecedesRecoveryWhateverTheArrayOrder(clock);
+
+    // Section 2 (plan-health-from-the-record): done and progress from the
+    // document, and no round budget on a plan entry.
+    await casePlanRecord2_statusCompleteCompletesTheHolder(clock);
+    await casePlanRecord2_nearMissesDoNotComplete(clock);
+    await casePlanRecord2_archivedInAnyOfThreePlacesCompletes(clock);
+    await casePlanRecord2_unreadableChangesNothingAndLogsOnce(clock);
+    await casePlanRecord2_chapterCountRiseLogsProgressAndResetsNudges(clock);
+    await casePlanRecord2_unchangedChapterCountLogsNothing(clock);
+    await casePlanRecord2_planEntryHasNoRoundBudget(clock);
+    await casePlanRecord2_taskEntryStillBlocksAtBudget_control(clock);
+    await casePlanRecord2_roundTextAtTheFourSites(clock);
+    await casePlanRecord2_documentCompletionReachesLiveDescendants(clock);
+    await casePlanRecord2_descendantStatusesReached(clock);
+    await casePlanRecord2_blockedHolderCompletesWithNoReason(clock);
+    await casePlanRecord2_unreadableRearmsAfterARead(clock);
+
+    // Section 3 (plan-health-from-the-record): the worker's BLOCKED and
+    // WAITING leads, the hold they put on the idle branch, and the
+    // controller's complete verdict ignored on a plan entry.
+    await caseLead3_blockedFirstLineSetsTheLeadAndHoldsTheIdleBranch(clock);
+    await caseLead3_nearMissesSetNothing(clock);
+    await caseLead3_waitingHoldsForSixtyMinutesAndNoLonger(clock);
+    await caseLead3_aWorkingTurnClearsTheLeadAndAReplyDoesNot(clock);
+    await caseLead3_leadSurvivesARestart(clock);
+    await caseLead3_blockedWithAnAskOpensTheAskAndSetsTheLead(clock);
+    await caseLead3_controllerCompleteIsIgnoredOnAPlanEntry(clock);
+    await caseLead3_ignoredCompleteNudgesEachWindowUntilTheStallPause(clock);
+    await caseLead3_staleLeadOnATaskEntryIsNotHeld(clock);
+    await caseLead3_taskEntrySetsNoLead(clock);
+    await caseLead3_theOperatorsAnswerToTheAskLiftsABlockedLead(clock);
+    await caseLead3_goalResumeLiftsABlockedLead(clock);
+    await caseLead3_anInboxAnswerToTheAskLiftsABlockedLead(clock);
+    await caseLead3_aBlockedLeadSetAfterTheAskClosedStillHolds(clock);
+    await caseLead3_goalResumeOfAnotherEntryKeepsTheLead(clock);
+    await caseLead3_goalResumeKeepsAWaitingLead(clock);
+    await caseLead3_anAskClosedAfterAWaitingLeadKeepsTheHold(clock);
+    await caseLead3_aReaderSessionDoesNotReadThePlanDocument(clock);
+    await caseLead3_documentCompletionClearsTheLead(clock);
+    await caseLead3_goalDoneThenBlockedSetsNoLead(clock);
+
+    // Section 4 (plan-health-from-the-record): which turns are scored.
+    await caseSection4_channelAndDeliveryTurnsSkipTheScorer(clock);
+    await caseSection4_unaccountedTurnScoredOnTaskEntryNotOnPlanEntry(clock);
+    await caseSection4_nudgedOnGoalResetsButCompleteMovesNothingOnAPlanEntry(clock);
+    await caseSection4_threeNudgedDriftTurnsTripTheStallPause(clock);
+    await caseSection4_threeNudgedCompleteTurnsTripTheStallPause(clock);
+    await caseSection4_nudgedCompleteStillCompletesATaskEntry_control(clock);
+    await caseSection4_channelOriginNudgeIsStillScoredAsANudge(clock);
+
     await caseItem81_goalEditDropAllowsBlocked(clock);
     await caseItem81_goalEditDropStillRefusesActive_control(clock);
     await caseNudgeGuard_sentBetweenTurns_control(clock);
@@ -3256,6 +3363,17 @@ async function main() {
     await caseSeamJoinersFireOncePerControllerCall(clock);
     await caseSeamSkippedTickAndOffModeWriteNothing(clock);
     await caseSeamAnUnwritableJournalPushesOneDecisionADay(clock);
+
+    // Section 5 (plan-health-from-the-record): the three shadow questions.
+    await casePlanHealth_oneCallAndThreeAnswersPerPlanEntryTurn(clock);
+    await casePlanHealth_nextSpeakerRecordsChannelDeliveryOrNeither(clock);
+    await casePlanHealth_chapterWithinTrueOnARiseAndFalseAtTheFifthTurn(clock);
+    await casePlanHealth_chapterWithinSeesARiseReadOnASiblingsTurn(clock);
+    await casePlanHealth_abandonedEntryDropsItsRecordOnASiblingsTurn(clock);
+    await casePlanHealth_entryCompletingDropsThePendingOutcomes(clock);
+    await casePlanHealth_taskEntryAsksNone(clock);
+    await casePlanHealth_decisionsAreInvariantAcrossEveryJevExtreme(clock);
+    await casePlanHealth_hungRequestCannotDelayTheTurnEnd(clock);
   } finally {
     clock.restore();
   }
@@ -11297,6 +11415,2588 @@ async function caseSection10FixRound_taskUnderPendingPlanActivated(clock) {
     state.goals.find(g => g.id === "plan-pending").status === "pending");
 }
 
+// ============================================================
+// Section 1 (plan-health-from-the-record): the plan path on a queue entry.
+// ============================================================
+
+// A valid planPath on kind "plan" is accepted and stored on the new node.
+async function casePlanPath1_validPlanPathOnPlanStored(clock) {
+  console.log("\n=== Section 1: goal_add stores a valid planPath on kind plan ===");
+  clock.set(T0);
+
+  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "planpath1_valid_stored",
+    stateOpts: { now: T0, goals: [rootGoal], activeGoalId: null },
+  });
+
+  const toolCallH = h.handlers["tool.call"];
+  const result = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "plan",
+    title: "A plan",
+    objective: "Do the plan",
+    planPath: "docs/plans/a_v1.md",
+  }, async () => ({ result: "passthrough" }));
+
+  check("planpath1 valid: not denied", result.deny === undefined, result.deny);
+  const state = getState(h);
+  const plan = state.goals.find(g => g.kind === "plan");
+  check("planpath1 valid: the node carries the given planPath", plan && plan.planPath === "docs/plans/a_v1.md");
+}
+
+// Each of the pattern's near-misses is refused by the pattern rule
+// specifically (not the kind rule, which does not apply here since kind is
+// "plan" throughout), naming the required form, and adds no node. Named in
+// words per case rather than left to a bare pass/fail count, since a green
+// here could otherwise mean any rule fired, or none, and this is the one
+// acceptance criterion the plan calls out as becoming a read path.
+async function casePlanPath1_patternRefusalCases(clock) {
+  console.log("\n=== Section 1: goal_add refuses every planPath near-miss by the pattern rule ===");
+  clock.set(T0);
+
+  const nearMisses = [
+    "../x.md",
+    "docs/plans/sub/x.md",
+    "C:\\x.md",
+    "docs/plans/x.txt",
+    "Docs/plans/x.md",
+  ];
+
+  for (const bad of nearMisses) {
+    const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+    const h = await createTickHarness({
+      ...OPTS,
+      caseName: `planpath1_pattern_${nearMisses.indexOf(bad)}`,
+      stateOpts: { now: T0, goals: [rootGoal], activeGoalId: null },
+    });
+    const toolCallH = h.handlers["tool.call"];
+    const result = await toolCallH(h.fake, {
+      tool: "mcp__agentic-plugin__goal_add",
+      kind: "plan",
+      title: "A plan",
+      objective: "Do the plan",
+      planPath: bad,
+    }, async () => ({ result: "passthrough" }));
+
+    check(`planpath1 pattern-refusal (${bad}): denied`, typeof result.deny === "string", result);
+    check(`planpath1 pattern-refusal (${bad}): the pattern rule named the required form, not the kind rule`,
+      typeof result.deny === "string" && result.deny.includes('docs/plans/<name>.md') && !result.deny.includes(PLANPATH_KIND_RULE_TOKEN),
+      result.deny);
+    const state = getState(h);
+    check(`planpath1 pattern-refusal (${bad}): no node was added`, state.goals.filter(g => g.kind === "plan").length === 0);
+  }
+}
+
+// A syntactically valid planPath on kind "task" is refused by the kind rule,
+// distinct from the pattern rule above - the two rules cover different
+// cases, and this pins that the kind check fires first / names itself.
+async function casePlanPath1_validPathOnTaskRefusedByKindNotPattern(clock) {
+  console.log("\n=== Section 1: a valid planPath on kind task is refused by the kind rule ===");
+  clock.set(T0);
+
+  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const activePlan = makeGoalNode({ id: "plan-active", parentId: "root-1", kind: "plan", status: "active" });
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "planpath1_task_kind_refused",
+    stateOpts: { now: T0, goals: [rootGoal, activePlan], activeGoalId: "plan-active" },
+  });
+  const toolCallH = h.handlers["tool.call"];
+  const result = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "task",
+    parentId: "plan-active",
+    title: "A task",
+    objective: "Do the task",
+    planPath: "docs/plans/a_v1.md",
+  }, async () => ({ result: "passthrough" }));
+
+  check("planpath1 task-refused: denied", typeof result.deny === "string", result);
+  check("planpath1 task-refused: the kind rule named itself, not the pattern rule",
+    typeof result.deny === "string" && result.deny.includes(PLANPATH_KIND_RULE_TOKEN),
+    result.deny);
+  check("planpath1 task-refused: the kind refusal also names the required form",
+    typeof result.deny === "string" && result.deny.includes('docs/plans/<name>.md'),
+    result.deny);
+  const state = getState(h);
+  check("planpath1 task-refused: no task node was added", state.goals.filter(g => g.kind === "task").length === 0);
+}
+
+// A present but empty or whitespace-only planPath is a caller that meant to
+// pass a path and passed nothing, so it is refused rather than read as
+// absent. Each shape below is refused by the rule that owns it, told apart
+// by the kind token only the kind rule's message carries: the kind rule
+// fires first on a task whatever the value, and on a plan the empty value
+// falls through to the pattern rule.
+// Read as absent instead, the first would be accepted silently and the
+// second would store nothing and say nothing.
+async function casePlanPath1_emptyPlanPathIsRefusedNotIgnored(clock) {
+  console.log("\n=== Section 1: a present but empty planPath is refused, not read as absent ===");
+  clock.set(T0);
+
+  // Whitespace-only on kind "task": the kind rule owns it.
+  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const activePlan = makeGoalNode({ id: "plan-active", parentId: "root-1", kind: "plan", status: "active" });
+  const hTask = await createTickHarness({
+    ...OPTS,
+    caseName: "planpath1_empty_on_task",
+    stateOpts: { now: T0, goals: [rootGoal, activePlan], activeGoalId: "plan-active" },
+  });
+  const taskResult = await hTask.handlers["tool.call"](hTask.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "task",
+    parentId: "plan-active",
+    title: "A task",
+    objective: "Do the task",
+    planPath: "   ",
+  }, async () => ({ result: "passthrough" }));
+
+  check("planpath1 empty-on-task: denied rather than accepted silently",
+    typeof taskResult.deny === "string", taskResult);
+  check("planpath1 empty-on-task: the kind rule named itself, not the pattern rule",
+    typeof taskResult.deny === "string" && taskResult.deny.includes(PLANPATH_KIND_RULE_TOKEN),
+    taskResult.deny);
+  check("planpath1 empty-on-task: no task node was added",
+    getState(hTask).goals.filter(g => g.kind === "task").length === 0);
+
+  // Empty string on kind "plan": the kind rule does not apply, so the value
+  // reaches the pattern rule and fails it.
+  const rootGoal2 = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const hPlan = await createTickHarness({
+    ...OPTS,
+    caseName: "planpath1_empty_on_plan",
+    stateOpts: { now: T0, goals: [rootGoal2], activeGoalId: null },
+  });
+  const planResult = await hPlan.handlers["tool.call"](hPlan.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "plan",
+    title: "A plan",
+    objective: "Do the plan",
+    planPath: "",
+  }, async () => ({ result: "passthrough" }));
+
+  check("planpath1 empty-on-plan: denied rather than stored as absent",
+    typeof planResult.deny === "string", planResult);
+  check("planpath1 empty-on-plan: the pattern rule named the required form, not the kind rule",
+    typeof planResult.deny === "string" && planResult.deny.includes('docs/plans/<name>.md')
+      && !planResult.deny.includes(PLANPATH_KIND_RULE_TOKEN),
+    planResult.deny);
+  check("planpath1 empty-on-plan: no plan node was added",
+    getState(hPlan).goals.filter(g => g.kind === "plan").length === 0);
+
+  // Control: the same call with planPath omitted entirely is accepted and
+  // stores no planPath, so the two refusals above key on the value being
+  // present-and-empty rather than on anything else in the call.
+  const rootGoal3 = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const hAbsent = await createTickHarness({
+    ...OPTS,
+    caseName: "planpath1_absent_on_plan_control",
+    stateOpts: { now: T0, goals: [rootGoal3], activeGoalId: null },
+  });
+  const absentResult = await hAbsent.handlers["tool.call"](hAbsent.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "plan",
+    title: "A plan",
+    objective: "Do the plan",
+  }, async () => ({ result: "passthrough" }));
+
+  check("planpath1 absent control: an omitted planPath is still accepted",
+    absentResult.deny === undefined, absentResult.deny);
+  const addedPlan = getState(hAbsent).goals.find(g => g.kind === "plan");
+  check("planpath1 absent control: the node stores no planPath",
+    addedPlan && addedPlan.planPath === undefined, addedPlan && addedPlan.planPath);
+}
+
+// Store load fills planPath from a leading mention in the objective, cut at
+// the trailing comma the worker's own prose adds.
+async function casePlanPath1_fillFromObjectiveLeadingText() {
+  console.log("\n=== Section 1: load fills planPath from a leading mention in objective ===");
+  const raw = JSON.stringify({
+    version: 4,
+    persona: "default",
+    activeSessionId: "s1",
+    epoch: 1,
+    memory: [],
+    goals: [
+      { id: "root-1", parentId: null, kind: "root", title: "Root", objective: "Root", status: "pending",
+        source: "operator", maxRounds: 0, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+      { id: "plan-1", parentId: "root-1", kind: "plan", title: "A plan",
+        objective: "Finish docs/plans/a_v1.md, which closes the gap", status: "pending",
+        source: "worker", maxRounds: 10, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+    ],
+    activeGoalId: null,
+    monitor: { sessionStart: T0, turnCount: 0, totalToolCalls: 0, errors: 0 },
+    nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
+    decisions: [],
+    createdAt: T0, updatedAt: T0,
+  });
+  const state = parseState(raw);
+  const plan = state.goals.find(g => g.id === "plan-1");
+  check("planpath1 fill-leading: planPath filled from the objective, cut at the comma",
+    plan && plan.planPath === "docs/plans/a_v1.md", plan && plan.planPath);
+  checkFilledPlanPathWellFormed("planpath1 fill-leading", plan && plan.planPath);
+}
+
+// Store load fills planPath from a mention that ends the objective with a
+// full stop, which the text pattern's lookahead must also leave outside.
+async function casePlanPath1_fillFromObjectiveTrailingFullStop() {
+  console.log("\n=== Section 1: load fills planPath from a mention ending in a full stop ===");
+  const raw = JSON.stringify({
+    version: 4,
+    persona: "default",
+    activeSessionId: "s1",
+    epoch: 1,
+    memory: [],
+    goals: [
+      { id: "root-1", parentId: null, kind: "root", title: "Root", objective: "Root", status: "pending",
+        source: "operator", maxRounds: 0, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+      { id: "plan-1", parentId: "root-1", kind: "plan", title: "A plan",
+        objective: "See docs/plans/a_v1.md.", status: "pending",
+        source: "worker", maxRounds: 10, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+    ],
+    activeGoalId: null,
+    monitor: { sessionStart: T0, turnCount: 0, totalToolCalls: 0, errors: 0 },
+    nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
+    decisions: [],
+    createdAt: T0, updatedAt: T0,
+  });
+  const state = parseState(raw);
+  const plan = state.goals.find(g => g.id === "plan-1");
+  check("planpath1 fill-trailing: planPath filled, cut before the full stop",
+    plan && plan.planPath === "docs/plans/a_v1.md", plan && plan.planPath);
+  checkFilledPlanPathWellFormed("planpath1 fill-trailing", plan && plan.planPath);
+}
+
+// A plan entry naming no plan document in its title or objective gains no
+// planPath at load.
+async function casePlanPath1_noMatchFillsNothing() {
+  console.log("\n=== Section 1: load leaves planPath unset when the text names no plan ===");
+  const raw = JSON.stringify({
+    version: 4,
+    persona: "default",
+    activeSessionId: "s1",
+    epoch: 1,
+    memory: [],
+    goals: [
+      { id: "root-1", parentId: null, kind: "root", title: "Root", objective: "Root", status: "pending",
+        source: "operator", maxRounds: 0, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+      { id: "plan-1", parentId: "root-1", kind: "plan", title: "A plan",
+        objective: "Get one thing done, no document named", status: "pending",
+        source: "worker", maxRounds: 10, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+    ],
+    activeGoalId: null,
+    monitor: { sessionStart: T0, turnCount: 0, totalToolCalls: 0, errors: 0 },
+    nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
+    decisions: [],
+    createdAt: T0, updatedAt: T0,
+  });
+  const state = parseState(raw);
+  const plan = state.goals.find(g => g.id === "plan-1");
+  check("planpath1 no-match: planPath stays unset", plan && plan.planPath === undefined);
+}
+
+// A task entry whose text names a plan document gains no planPath at load -
+// the fill applies to kind "plan" only.
+async function casePlanPath1_taskKindNeverFilled() {
+  console.log("\n=== Section 1: load never fills planPath on a task entry ===");
+  const raw = JSON.stringify({
+    version: 4,
+    persona: "default",
+    activeSessionId: "s1",
+    epoch: 1,
+    memory: [],
+    goals: [
+      { id: "root-1", parentId: null, kind: "root", title: "Root", objective: "Root", status: "pending",
+        source: "operator", maxRounds: 0, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+      { id: "plan-1", parentId: "root-1", kind: "plan", title: "A plan", objective: "Do the plan", status: "active",
+        source: "worker", maxRounds: 10, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+      { id: "task-1", parentId: "plan-1", kind: "task",
+        title: "A task", objective: "Finish docs/plans/a_v1.md, which closes the gap", status: "pending",
+        source: "worker", maxRounds: 10, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+    ],
+    activeGoalId: "plan-1",
+    monitor: { sessionStart: T0, turnCount: 0, totalToolCalls: 0, errors: 0 },
+    nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
+    decisions: [],
+    createdAt: T0, updatedAt: T0,
+  });
+  const state = parseState(raw);
+  const task = state.goals.find(g => g.id === "task-1");
+  check("planpath1 task-never-filled: the task gains no planPath", task && task.planPath === undefined);
+}
+
+// resolvePlanPath walks up to a plan ancestor for a task node under it.
+async function casePlanPath1_resolveHelperWalksToPlanAncestor() {
+  console.log("\n=== Section 1: resolvePlanPath returns the parent plan's path for a task under it ===");
+  const state = {
+    goals: [
+      { id: "root-1", parentId: null, kind: "root" },
+      { id: "plan-1", parentId: "root-1", kind: "plan", planPath: "docs/plans/a_v1.md" },
+      { id: "task-1", parentId: "plan-1", kind: "task" },
+    ],
+  };
+  const task = state.goals.find(g => g.id === "task-1");
+  check("planpath1 resolve-walks: returns the ancestor plan's path",
+    resolvePlanPath(state, task) === "docs/plans/a_v1.md");
+}
+
+// resolvePlanPath returns none for an entry with no plan-carrying ancestor.
+async function casePlanPath1_resolveHelperNoneWithoutAncestor() {
+  console.log("\n=== Section 1: resolvePlanPath returns none for an entry with no plan ancestor ===");
+  const state = {
+    goals: [
+      { id: "root-1", parentId: null, kind: "root" },
+      { id: "plan-1", parentId: "root-1", kind: "plan" },
+      { id: "task-1", parentId: "plan-1", kind: "task" },
+    ],
+  };
+  const task = state.goals.find(g => g.id === "task-1");
+  check("planpath1 resolve-none: returns undefined when no ancestor carries planPath",
+    resolvePlanPath(state, task) === undefined);
+}
+
+// A plan entry frozen by the round budget, with a planPath filled at this
+// same load, returns to pending with the reason cleared - the recovery
+// direction that lets a real plan mid-work stop reading blocked.
+async function casePlanPath1_recoversMaxRoundsBlockWithPlanPath() {
+  console.log("\n=== Section 1: load frees a Max-rounds-blocked plan entry that now has a planPath ===");
+  const raw = JSON.stringify({
+    version: 4,
+    persona: "default",
+    activeSessionId: "s1",
+    epoch: 1,
+    memory: [],
+    goals: [
+      { id: "root-1", parentId: null, kind: "root", title: "Root", objective: "Root", status: "pending",
+        source: "operator", maxRounds: 0, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+      { id: "plan-1", parentId: "root-1", kind: "plan", title: "A plan",
+        objective: "Finish docs/plans/a_v1.md, which closes the gap", status: "blocked",
+        blockedReason: "Max rounds reached",
+        source: "worker", maxRounds: 10, completedRounds: 10, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+    ],
+    activeGoalId: null,
+    monitor: { sessionStart: T0, turnCount: 0, totalToolCalls: 0, errors: 0 },
+    nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
+    decisions: [],
+    createdAt: T0, updatedAt: T0,
+  });
+  const state = parseState(raw);
+  const plan = state.goals.find(g => g.id === "plan-1");
+  check("planpath1 recover: planPath was filled", plan && plan.planPath === "docs/plans/a_v1.md");
+  checkFilledPlanPathWellFormed("planpath1 recover", plan && plan.planPath);
+  check("planpath1 recover: status returns to pending", plan && plan.status === "pending", plan && plan.status);
+  check("planpath1 recover: blockedReason is cleared", plan && plan.blockedReason === undefined, plan && plan.blockedReason);
+  check("planpath1 recover: completedRounds reset to 0 ", plan && plan.completedRounds === 0, plan && plan.completedRounds);
+}
+
+// Control for the case above: the same frozen shape, but with no plan
+// document named anywhere in the entry's text, stays blocked - an entry
+// wrongly freed would run a task past its budget, so this direction is
+// locked exactly as hard as the recovery direction above.
+async function casePlanPath1_staysBlockedWithoutPlanPath_control() {
+  console.log("\n=== Section 1 control: a Max-rounds-blocked plan entry naming no plan stays blocked ===");
+  const raw = JSON.stringify({
+    version: 4,
+    persona: "default",
+    activeSessionId: "s1",
+    epoch: 1,
+    memory: [],
+    goals: [
+      { id: "root-1", parentId: null, kind: "root", title: "Root", objective: "Root", status: "pending",
+        source: "operator", maxRounds: 0, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+      { id: "plan-1", parentId: "root-1", kind: "plan", title: "A plan",
+        objective: "Get one thing done, no document named", status: "blocked",
+        blockedReason: "Max rounds reached",
+        source: "worker", maxRounds: 10, completedRounds: 10, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+    ],
+    activeGoalId: null,
+    monitor: { sessionStart: T0, turnCount: 0, totalToolCalls: 0, errors: 0 },
+    nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
+    decisions: [],
+    createdAt: T0, updatedAt: T0,
+  });
+  const state = parseState(raw);
+  const plan = state.goals.find(g => g.id === "plan-1");
+  check("planpath1 stays-blocked: planPath is still unset", plan && plan.planPath === undefined);
+  check("planpath1 stays-blocked: status stays blocked", plan && plan.status === "blocked", plan && plan.status);
+  check("planpath1 stays-blocked: blockedReason is unchanged", plan && plan.blockedReason === "Max rounds reached", plan && plan.blockedReason);
+}
+
+// ============================================================
+// Section 1: which entries applyPlanRecordOnLoad fills and frees.
+// ============================================================
+
+// Builds the JSON parseState takes from a goals array built with
+// makeGoalNode, so each case below states only the fields it varies rather
+// than repeating monitor/nudge/decisions boilerplate.
+function planPath1StateJson(goals, activeGoalId = null) {
+  return JSON.stringify({
+    version: 4,
+    persona: "default",
+    activeSessionId: "s1",
+    epoch: 1,
+    memory: [],
+    goals,
+    activeGoalId,
+    monitor: { sessionStart: T0, turnCount: 0, totalToolCalls: 0, errors: 0 },
+    nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
+    decisions: [],
+    createdAt: T0, updatedAt: T0,
+  });
+}
+
+// The recovery reaches any entry that HAS a plan by the ancestor rule, not
+// only one whose kind is "plan". The scorer blocks the active LEAF, and a
+// plan node with children is never the active leaf, so the entry actually
+// frozen with Max rounds reached is usually a task under a plan node.
+async function casePlanPath1Recovery_taskUnderPlanNodeRecovered() {
+  console.log("\n=== Section 1 recovery: load frees a Max-rounds-blocked task under a plan node ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const plan = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: "active",
+    planPath: "docs/plans/a_v1.md",
+  });
+  const task = makeGoalNode({
+    id: "task-1", parentId: "plan-1", kind: "task", status: "blocked",
+    blockedReason: "Max rounds reached", maxRounds: 10, completedRounds: 10,
+  });
+  const state = parseState(planPath1StateJson([root, plan, task]));
+  const recovered = state.goals.find(g => g.id === "task-1");
+  check("recovery task-under-plan: status returns to pending", recovered && recovered.status === "pending", recovered && recovered.status);
+  check("recovery task-under-plan: blockedReason is cleared", recovered && recovered.blockedReason === undefined, recovered && recovered.blockedReason);
+  check("recovery task-under-plan: completedRounds reset to 0", recovered && recovered.completedRounds === 0, recovered && recovered.completedRounds);
+}
+
+// Control for the case above: a task with no plan-carrying ancestor at all.
+// resolvePlanPath returns undefined for it, and its root is live and it is a
+// leaf, so the ancestor-rule guard is the only one that can be keeping it
+// blocked.
+async function casePlanPath1Recovery_taskWithNoPlanAncestorStaysBlocked_control() {
+  console.log("\n=== Section 1 recovery: a task with no plan ancestor stays blocked ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const task = makeGoalNode({
+    id: "task-1", parentId: "root-1", kind: "task", status: "blocked",
+    blockedReason: "Max rounds reached", maxRounds: 10, completedRounds: 10,
+  });
+  const state = parseState(planPath1StateJson([root, task]));
+  const node = state.goals.find(g => g.id === "task-1");
+  check("recovery no-plan-ancestor control: stays blocked with no plan ancestor", node && node.status === "blocked", node && node.status);
+  check("recovery no-plan-ancestor control: blockedReason unchanged", node && node.blockedReason === "Max rounds reached", node && node.blockedReason);
+  check("recovery no-plan-ancestor control: completedRounds unchanged (a refusing guard leaves the node exactly as found)", node && node.completedRounds === 10, node && node.completedRounds);
+}
+
+// The recovery fires only under a live root. Without
+// this, a recovered entry under a root already complete, abandoned or
+// blocked is activatable, since isActivationEligible deliberately exempts
+// the root from its own status test - resurrecting work under a goal
+// already announced done. The three dead statuses reuse exactly the set
+// isPlanningDue already names for "no work to do".
+async function casePlanPath1Recovery_rootStatusGatesRecovery() {
+  console.log("\n=== Section 1 recovery: recovery only fires under a live root ===");
+  const deadStatuses = ["complete", "abandoned", "blocked"];
+  for (const rootStatus of deadStatuses) {
+    const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: rootStatus });
+    const plan = makeGoalNode({
+      id: "plan-1", parentId: "root-1", kind: "plan", status: "blocked",
+      blockedReason: "Max rounds reached", planPath: "docs/plans/a_v1.md",
+      maxRounds: 10, completedRounds: 10,
+    });
+    const state = parseState(planPath1StateJson([root, plan]));
+    const node = state.goals.find(g => g.id === "plan-1");
+    check(`recovery root-status (root ${rootStatus}): stays blocked`, node && node.status === "blocked", node && node.status);
+    check(`recovery root-status (root ${rootStatus}): blockedReason unchanged`, node && node.blockedReason === "Max rounds reached", node && node.blockedReason);
+    check(`recovery root-status (root ${rootStatus}): completedRounds unchanged`, node && node.completedRounds === 10, node && node.completedRounds);
+  }
+
+  // Live-root control: the identical shape with root "pending" IS recovered -
+  // so the three refusals above are the root-status guard and not some other
+  // difference in the fixture.
+  const liveRoot = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const livePlan = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: "blocked",
+    blockedReason: "Max rounds reached", planPath: "docs/plans/a_v1.md",
+    maxRounds: 10, completedRounds: 10,
+  });
+  const liveState = parseState(planPath1StateJson([liveRoot, livePlan]));
+  const liveNode = liveState.goals.find(g => g.id === "plan-1");
+  check("recovery root-status control (live root): recovered", liveNode && liveNode.status === "pending", liveNode && liveNode.status);
+}
+
+// A round-budget-blocked node with children is reached through them, so it
+// is freed when a child will be pending after the pass: activateNext's DFS
+// descends into a pending parent and activates a pending leaf beneath it.
+// The activatable leaf is asserted directly rather than inferred from the
+// parent's status.
+async function casePlanPath1Children_pendingChildMakesTheParentRecoverable() {
+  console.log("\n=== Section 1 children: a node with a pending child is freed and its leaf is activatable ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const parentPlan = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: "blocked",
+    blockedReason: "Max rounds reached", planPath: "docs/plans/a_v1.md",
+    maxRounds: 10, completedRounds: 10,
+  });
+  const child = makeGoalNode({ id: "task-1", parentId: "plan-1", kind: "task", status: "pending" });
+
+  const state = parseState(planPath1StateJson([root, parentPlan, child]));
+  const parent = state.goals.find(g => g.id === "plan-1");
+  const leaf = state.goals.find(g => g.id === "task-1");
+  check("children pending-child: the parent returns to pending", parent && parent.status === "pending", parent && parent.status);
+  check("children pending-child: its blockedReason is cleared", parent && parent.blockedReason === undefined, parent && parent.blockedReason);
+  check("children pending-child: its completedRounds reset to 0", parent && parent.completedRounds === 0, parent && parent.completedRounds);
+  check("children pending-child: a leaf under it is activatable", leaf && isActivationEligible(state, leaf) === true);
+}
+
+// The other direction: a node whose children will all be complete,
+// abandoned or still blocked after the pass is left blocked, because
+// freeing it yields no activatable leaf while isPlanningDue reads the
+// pending node as work in hand and holds the planner back. Each refusing
+// fixture differs from the control below by the child statuses alone.
+async function casePlanPath1Children_noPendingChildRefusesRecovery() {
+  console.log("\n=== Section 1 children: a node whose children are all done or still blocked stays blocked ===");
+  const childSets = [
+    { label: "all complete", children: [{ status: "complete" }, { status: "complete" }] },
+    { label: "complete and abandoned", children: [{ status: "complete" }, { status: "abandoned" }] },
+    {
+      label: "blocked for a reason this pass cannot free",
+      children: [{ status: "complete" }, { status: "blocked", blockedReason: "Waiting on the operator" }],
+    },
+  ];
+
+  for (const variant of childSets) {
+    const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+    const parentPlan = makeGoalNode({
+      id: "plan-1", parentId: "root-1", kind: "plan", status: "blocked",
+      blockedReason: "Max rounds reached", planPath: "docs/plans/a_v1.md",
+      maxRounds: 10, completedRounds: 10,
+    });
+    const children = variant.children.map((c, i) => makeGoalNode({
+      id: `task-${i}`, parentId: "plan-1", kind: "task",
+      status: c.status, blockedReason: c.blockedReason,
+    }));
+
+    const state = parseState(planPath1StateJson([root, parentPlan, ...children]));
+    const parent = state.goals.find(g => g.id === "plan-1");
+    check(`children (${variant.label}): the parent stays blocked`, parent && parent.status === "blocked", parent && parent.status);
+    check(`children (${variant.label}): its blockedReason is unchanged`, parent && parent.blockedReason === "Max rounds reached", parent && parent.blockedReason);
+    check(`children (${variant.label}): its completedRounds is unchanged`, parent && parent.completedRounds === 10, parent && parent.completedRounds);
+  }
+
+  // Control: the identical parent, with the second child pending instead of
+  // done or blocked, IS freed - so the three refusals above are the child
+  // test and not some other difference in the fixture.
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const parentPlan = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: "blocked",
+    blockedReason: "Max rounds reached", planPath: "docs/plans/a_v1.md",
+    maxRounds: 10, completedRounds: 10,
+  });
+  const done = makeGoalNode({ id: "task-0", parentId: "plan-1", kind: "task", status: "complete" });
+  const pending = makeGoalNode({ id: "task-1", parentId: "plan-1", kind: "task", status: "pending" });
+  const state = parseState(planPath1StateJson([root, parentPlan, done, pending]));
+  const parent = state.goals.find(g => g.id === "plan-1");
+  check("children control (one child pending): the parent is freed", parent && parent.status === "pending", parent && parent.status);
+}
+
+// A parent and its only child both frozen by the round budget are freed
+// together: the child is freed as a leaf, which is what makes the parent's
+// child test pass, and the parent is freed as the child's own ancestor.
+// Running the identical tree in both array orders pins that neither half of
+// that pair depends on which node the sweep reaches first.
+async function casePlanPath1Children_frozenParentAndChildFreedInEitherArrayOrder() {
+  console.log("\n=== Section 1 children: a frozen parent and its frozen child are freed in either array order ===");
+  const buildGoals = () => {
+    const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+    const parentPlan = makeGoalNode({
+      id: "plan-1", parentId: "root-1", kind: "plan", status: "blocked",
+      blockedReason: "Max rounds reached", planPath: "docs/plans/a_v1.md",
+      maxRounds: 10, completedRounds: 10,
+    });
+    const child = makeGoalNode({
+      id: "task-1", parentId: "plan-1", kind: "task", status: "blocked",
+      blockedReason: "Max rounds reached", maxRounds: 10, completedRounds: 10,
+    });
+    return { root, parentPlan, child };
+  };
+
+  const orders = [
+    { label: "parent before child", pick: (g) => [g.root, g.parentPlan, g.child] },
+    { label: "child before parent", pick: (g) => [g.root, g.child, g.parentPlan] },
+  ];
+
+  for (const order of orders) {
+    const state = parseState(planPath1StateJson(order.pick(buildGoals())));
+    const parent = state.goals.find(g => g.id === "plan-1");
+    const child = state.goals.find(g => g.id === "task-1");
+    check(`children order (${order.label}): the parent returns to pending`, parent && parent.status === "pending", parent && parent.status);
+    check(`children order (${order.label}): the parent's blockedReason is cleared`, parent && parent.blockedReason === undefined, parent && parent.blockedReason);
+    check(`children order (${order.label}): the parent's completedRounds reset to 0`, parent && parent.completedRounds === 0, parent && parent.completedRounds);
+    check(`children order (${order.label}): the child returns to pending`, child && child.status === "pending", child && child.status);
+    check(`children order (${order.label}): the child's completedRounds reset to 0`, child && child.completedRounds === 0, child && child.completedRounds);
+    check(`children order (${order.label}): the child is activatable`, child && isActivationEligible(state, child) === true);
+  }
+}
+
+// The text pattern's left boundary refuses a match sitting inside a longer
+// token, while a plain-prose mention of the identical file name still fills.
+// Each refused form below names a DIFFERENT file from the one the capture
+// would hold, so without the lookbehind the fill writes a truncated, wrong
+// path and nothing signals the rewrite. The Windows form is the one this
+// host's own paths take: a drive-rooted prefix with backslash separators and
+// a forward-slash tail, which is what a repository path looks like here.
+async function casePlanPath1Text_leftBoundaryRefusesLongerToken() {
+  console.log("\n=== Section 1 text pattern: the left boundary refuses a longer token ===");
+  const refusing = [
+    { label: "a relative path", objective: "finish ../docs/plans/a_v1.md" },
+    { label: "a backslash-separated path", objective: "Finish D:\\other_repo\\docs/plans/a_v1.md" },
+    { label: "a drive-relative path", objective: "Finish D:docs/plans/a_v1.md" },
+  ];
+
+  for (const variant of refusing) {
+    const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+    const rewritten = makeGoalNode({
+      id: "plan-1", parentId: "root-1", kind: "plan",
+      title: "A plan", objective: variant.objective,
+    });
+    const state = parseState(planPath1StateJson([root, rewritten]));
+    const node = state.goals.find(g => g.id === "plan-1");
+    check(`text left-edge (${variant.label}): fills no planPath`, node && node.planPath === undefined, node && node.planPath);
+  }
+
+  // Control for the backslash case, differing from it in one character: a
+  // space where that case carries the backslash before "docs". It still
+  // fills, so the refusal above is the left-boundary guard reading that one
+  // character rather than anything else in the sentence.
+  const rootSep = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const spaced = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan",
+    title: "A plan", objective: "Finish D:\\other_repo docs/plans/a_v1.md",
+  });
+  const stateSep = parseState(planPath1StateJson([rootSep, spaced]));
+  const nodeSep = stateSep.goals.find(g => g.id === "plan-1");
+  check("text left-edge control: a space in place of the backslash still fills",
+    nodeSep && nodeSep.planPath === "docs/plans/a_v1.md", nodeSep && nodeSep.planPath);
+  checkFilledPlanPathWellFormed("text left-edge control", nodeSep && nodeSep.planPath);
+
+  // Control for the drive-relative case, differing from it in one character:
+  // a space where that case carries the colon before "docs". It still fills,
+  // so the refusal above is the left-boundary guard reading the colon rather
+  // than the "D" or anything else in the sentence. A shape guard on the
+  // capture cannot stand in for this: "D:docs/plans/a_v1.md" yields
+  // "docs/plans/a_v1.md", which is well formed and names the wrong tree.
+  const rootDrive = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const spacedDrive = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan",
+    title: "A plan", objective: "Finish D docs/plans/a_v1.md",
+  });
+  const stateDrive = parseState(planPath1StateJson([rootDrive, spacedDrive]));
+  const nodeDrive = stateDrive.goals.find(g => g.id === "plan-1");
+  check("text left-edge control: a space in place of the drive colon still fills",
+    nodeDrive && nodeDrive.planPath === "docs/plans/a_v1.md", nodeDrive && nodeDrive.planPath);
+  checkFilledPlanPathWellFormed("text left-edge drive control", nodeDrive && nodeDrive.planPath);
+
+  // Control: the same file name, named in ordinary prose, still fills - so
+  // the refusals above are the left-boundary guard and not some broader
+  // change that stopped the fill from working at all.
+  const root2 = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const plain = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan",
+    title: "A plan", objective: "finish docs/plans/a_v1.md, which closes the gap",
+  });
+  const state2 = parseState(planPath1StateJson([root2, plain]));
+  const node2 = state2.goals.find(g => g.id === "plan-1");
+  check("left-edge control: plain-prose mention still fills", node2 && node2.planPath === "docs/plans/a_v1.md", node2 && node2.planPath);
+  checkFilledPlanPathWellFormed("left-edge control", node2 && node2.planPath);
+}
+
+// The pattern's right boundary refuses a match that is a prefix of a longer
+// path: a further extension (".md.bak") and a directory segment (".md/") each
+// name a different file from the one the capture would hold. The control
+// below differs from both only in the character following ".md".
+async function casePlanPath1Text_rightBoundaryRefusesLongerPath() {
+  console.log("\n=== Section 1 text pattern: the right boundary refuses a longer path ===");
+  const refusing = [
+    { label: "a further extension", objective: "see docs/plans/a_v1.md.bak for the old copy" },
+    { label: "a directory segment", objective: "see docs/plans/a_v1.md/notes for the old copy" },
+  ];
+
+  for (const variant of refusing) {
+    const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+    const plan = makeGoalNode({
+      id: "plan-1", parentId: "root-1", kind: "plan",
+      title: "A plan", objective: variant.objective,
+    });
+    const state = parseState(planPath1StateJson([root, plan]));
+    const node = state.goals.find(g => g.id === "plan-1");
+    check(`text right-edge (${variant.label}): fills no planPath`, node && node.planPath === undefined, node && node.planPath);
+  }
+
+  // Control: the same sentence with a space where the refused cases carry
+  // "." or "/" still fills, so the two refusals are the right-boundary
+  // guard rather than some broader change that stopped the fill working.
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const plan = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan",
+    title: "A plan", objective: "see docs/plans/a_v1.md for the old copy",
+  });
+  const state = parseState(planPath1StateJson([root, plan]));
+  const node = state.goals.find(g => g.id === "plan-1");
+  check("text right-edge control: the same sentence with a space still fills",
+    node && node.planPath === "docs/plans/a_v1.md", node && node.planPath);
+  checkFilledPlanPathWellFormed("text right-edge control", node && node.planPath);
+}
+
+// A cross-component pin between the two producers on the planPath channel.
+// goal_add refuses a value PLAN_PATH_PATTERN refuses, and the load-time fill
+// writes whatever PLAN_PATH_TEXT_PATTERN captures, with no re-test between
+// the capture and the store. checkFilledPlanPathWellFormed asserts each fill
+// fixture's output, and every fixture names a path both patterns accept, so
+// relaxing the text pattern's body class to admit "/" leaves every fixture
+// green while "finish docs/plans/sub/x_v1.md now" fills a value goal_add
+// refuses. This case pins the relation between the patterns themselves,
+// because the fixtures cannot see it. Part 1 reads the two sources and reds
+// the moment either body drifts from the other. Part 2 runs a corpus the
+// anchored pattern refuses through the text pattern, so a rewrite of both
+// bodies together that passes Part 1 still reds if it admits a capture
+// goal_add would refuse.
+async function casePlanPath1Text_captureBodyIsTheShapeGoalAddEnforces() {
+  console.log("\n=== Section 1 text pattern: the capture body is PLAN_PATH_PATTERN's body, and every capture satisfies it ===");
+
+  // Part 1, structural. The capture group is the first "(" in the source
+  // that does not open a lookaround, and its body runs to the matching ")",
+  // counted outside character classes and past escaped characters.
+  const textSource = PLAN_PATH_TEXT_PATTERN.source;
+  const groupCount = new RegExp(textSource + "|").exec("").length - 1;
+  check("text pattern structure: the source carries exactly one capture group", groupCount === 1, groupCount);
+  let captureBody;
+  let depth = 0;
+  let inClass = false;
+  let start = -1;
+  for (let i = 0; i < textSource.length && captureBody === undefined; i++) {
+    const c = textSource[i];
+    if (c === "\\") { i++; continue; }
+    if (inClass) { if (c === "]") inClass = false; continue; }
+    if (c === "[") { inClass = true; continue; }
+    if (c === "(") {
+      if (start < 0 && textSource[i + 1] !== "?") start = i + 1;
+      if (start >= 0) depth++;
+      continue;
+    }
+    if (c === ")" && start >= 0 && --depth === 0) captureBody = textSource.slice(start, i);
+  }
+  check("text pattern structure: the capture group was found in the source", typeof captureBody === "string", textSource);
+  const lazyMarkers = (captureBody ?? "").match(/\}\?/g) ?? [];
+  check("text pattern structure: the capture body carries exactly one lazy marker after a bounded quantifier",
+    lazyMarkers.length === 1, captureBody);
+  const anchoredBody = PLAN_PATH_PATTERN.source.replace(/^\^/, "").replace(/\$$/, "");
+  check("text pattern structure: the capture body is the anchored pattern's body with the quantifier made lazy and nothing else",
+    (captureBody ?? "").replace("}?", "}") === anchoredBody, { captureBody, anchoredBody });
+
+  // Part 2, behavioural. Each token is one goal_add refuses. Embedded in
+  // prose, the text pattern either captures nothing from it or captures a
+  // value goal_add accepts. The corpus is checked against PLAN_PATH_PATTERN
+  // first, so a token the anchored pattern came to accept is reported as
+  // such rather than passing silently.
+  const refused = [
+    { label: "a subdirectory", token: "docs/plans/sub/x_v1.md" },
+    { label: "a non-.md suffix", token: "docs/plans/x.txt" },
+    { label: "a leading dot", token: "docs/plans/.hidden.md" },
+    { label: "a further extension", token: "docs/plans/x_v1.md.bak" },
+    { label: "a capitalised folder", token: "Docs/plans/x.md" },
+    { label: "a space in the name", token: "docs/plans/x v1.md" },
+    { label: "a 252-character name", token: `docs/plans/${"a".repeat(252)}.md` },
+  ];
+  for (const variant of refused) {
+    check(`text pattern corpus (${variant.label}): goal_add's pattern refuses the token`,
+      !PLAN_PATH_PATTERN.test(variant.token), variant.token);
+    const m = `finish ${variant.token} now, then archive.`.match(PLAN_PATH_TEXT_PATTERN);
+    check(`text pattern corpus (${variant.label}): no capture, or a capture goal_add accepts`,
+      m === null || PLAN_PATH_PATTERN.test(m[1]), m === null ? "(no capture)" : m[1]);
+  }
+
+  // The two acceptance shapes still capture, so the corpus above did not
+  // pass by capturing nothing everywhere.
+  const leading = "Finish docs/plans/a_v1.md, which".match(PLAN_PATH_TEXT_PATTERN);
+  check("text pattern corpus control: the leading acceptance shape captures exactly the path",
+    leading !== null && leading[1] === "docs/plans/a_v1.md", leading && leading[1]);
+  const trailing = "The next section is in docs/plans/a_v1.md.".match(PLAN_PATH_TEXT_PATTERN);
+  check("text pattern corpus control: the trailing full-stop acceptance shape captures exactly the path",
+    trailing !== null && trailing[1] === "docs/plans/a_v1.md", trailing && trailing[1]);
+}
+
+// A plan node loaded with no title, or with no objective, does not throw.
+// The fill reads a field only when it is a string, and its call sites sit
+// outside the try that produces the "store could not be read at session
+// start" fallback, so a throw here escapes into the session-start hook and
+// the session does not come up at all.
+async function casePlanPath1Fill_missingTitleOrObjectiveDoesNotThrow() {
+  console.log("\n=== Section 1 fill: a missing title or objective does not throw ===");
+  const root1 = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const noTitle = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan",
+    objective: "finish docs/plans/a_v1.md, which closes the gap",
+  });
+  delete noTitle.title;
+  let threw1 = false;
+  let state1;
+  try {
+    state1 = parseState(planPath1StateJson([root1, noTitle]));
+  } catch (e) {
+    threw1 = true;
+  }
+  check("fill no-title: parseState does not throw", !threw1);
+  const node1 = state1 && state1.goals.find(g => g.id === "plan-1");
+  check("fill no-title: falls back to the objective's mention", node1 && node1.planPath === "docs/plans/a_v1.md", node1 && node1.planPath);
+  checkFilledPlanPathWellFormed("fill no-title", node1 && node1.planPath);
+
+  const root2 = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const noObjective = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan",
+    title: "A plan naming no document",
+  });
+  delete noObjective.objective;
+  let threw2 = false;
+  let state2;
+  try {
+    state2 = parseState(planPath1StateJson([root2, noObjective]));
+  } catch (e) {
+    threw2 = true;
+  }
+  check("fill no-objective: parseState does not throw", !threw2);
+  const node2 = state2 && state2.goals.find(g => g.id === "plan-1");
+  check("fill no-objective: gains no planPath (neither field named one)", node2 && node2.planPath === undefined);
+}
+
+// A plan node whose stored title is not a string does not throw either: the
+// fill reads a field only when it is a string, so a number or an array there
+// is read as absent and the objective is consulted. A nullish guard alone
+// would pass the number through to .match and throw at the same unguarded
+// call site the case above describes.
+async function casePlanPath1Fill_nonStringTitleReadAsAbsent() {
+  console.log("\n=== Section 1 fill: a non-string title is read as absent and does not throw ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const numberTitle = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan",
+    title: 123, objective: "finish docs/plans/a_v1.md, which closes the gap",
+  });
+  let threw = false;
+  let state;
+  try {
+    state = parseState(planPath1StateJson([root, numberTitle]));
+  } catch (e) {
+    threw = true;
+  }
+  check("fill number-title: parseState does not throw", !threw);
+  const node = state && state.goals.find(g => g.id === "plan-1");
+  check("fill number-title: falls back to the objective's mention", node && node.planPath === "docs/plans/a_v1.md", node && node.planPath);
+  checkFilledPlanPathWellFormed("fill number-title", node && node.planPath);
+}
+
+// The fill reads the title first and consults the objective only when the
+// title names no plan document. A title and an objective naming two
+// different documents therefore fill from the title. Reading the fields the
+// other way round fills from the objective and this case reds.
+async function casePlanPath1Fill_titleTakesPrecedenceOverObjective() {
+  console.log("\n=== Section 1 fill: the title's mention wins over the objective's ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const twoMentions = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan",
+    title: "Finish docs/plans/from_title_v1.md",
+    objective: "See docs/plans/from_objective_v1.md for the record",
+  });
+  const state = parseState(planPath1StateJson([root, twoMentions]));
+  const node = state.goals.find(g => g.id === "plan-1");
+  check("fill precedence: planPath is the title's document", node && node.planPath === "docs/plans/from_title_v1.md", node && node.planPath);
+  checkFilledPlanPathWellFormed("fill precedence", node && node.planPath);
+}
+
+// ============================================================
+// Section 1: the ancestor chain of a round-budget recovery.
+// ============================================================
+
+// The ordinary shape after a plan entry hits its budget: the scorer blocks
+// the task, activateNext moves to its sibling, and when that sibling
+// finishes completeLeaf's upward walk marks the plan parent blocked with
+// "Child task blocked". Freeing the task alone leaves it reachable by
+// nothing - isActivationEligible refuses it on the parent's status,
+// activateNext's DFS filters each level on "pending" and never descends,
+// and isPlanningDue reads the pending task as work in hand - so the parent
+// is freed with it and the entry is activatable again.
+async function casePlanPath1Ancestors_derivedBlockedParentFreedWithTheEntry() {
+  console.log("\n=== Section 1 ancestors: a parent blocked by its own child is freed with the entry ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const plan = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: "blocked",
+    blockedReason: "Child task blocked", planPath: "docs/plans/a_v1.md",
+  });
+  const task1 = makeGoalNode({
+    id: "task-1", parentId: "plan-1", kind: "task", status: "blocked",
+    blockedReason: "Max rounds reached", maxRounds: 10, completedRounds: 10,
+  });
+  const task2 = makeGoalNode({ id: "task-2", parentId: "plan-1", kind: "task", status: "complete" });
+
+  const state = parseState(planPath1StateJson([root, plan, task1, task2]));
+  const node = state.goals.find(g => g.id === "task-1");
+  const parent = state.goals.find(g => g.id === "plan-1");
+  check("ancestors: the entry returns to pending", node && node.status === "pending", node && node.status);
+  check("ancestors: the entry's blockedReason is cleared", node && node.blockedReason === undefined, node && node.blockedReason);
+  check("ancestors: the entry's completedRounds reset to 0", node && node.completedRounds === 0, node && node.completedRounds);
+  check("ancestors: the derived-blocked parent returns to pending", parent && parent.status === "pending", parent && parent.status);
+  check("ancestors: the parent's blockedReason is cleared", parent && parent.blockedReason === undefined, parent && parent.blockedReason);
+  check("ancestors: the freed entry is activatable", node && isActivationEligible(state, node) === true);
+}
+
+// Every ancestor state the recovery cannot explain refuses it, and refuses
+// it whole: the entry stays blocked and the ancestor is left exactly as
+// found. Each fixture below differs from the recovered control by the one
+// parent field under test and nothing else.
+async function casePlanPath1Ancestors_unexplainedParentStateRefusesRecovery() {
+  console.log("\n=== Section 1 ancestors: an ancestor in any other state refuses the whole recovery ===");
+  const refusing = [
+    { label: "blocked for another reason", status: "blocked", blockedReason: "Waiting on the operator" },
+    { label: "paused", status: "paused", blockedReason: undefined },
+    { label: "abandoned", status: "abandoned", blockedReason: undefined },
+    { label: "complete", status: "complete", blockedReason: undefined },
+  ];
+
+  for (const variant of refusing) {
+    const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+    const plan = makeGoalNode({
+      id: "plan-1", parentId: "root-1", kind: "plan", status: variant.status,
+      blockedReason: variant.blockedReason, planPath: "docs/plans/a_v1.md",
+    });
+    const task1 = makeGoalNode({
+      id: "task-1", parentId: "plan-1", kind: "task", status: "blocked",
+      blockedReason: "Max rounds reached", maxRounds: 10, completedRounds: 10,
+    });
+    const task2 = makeGoalNode({ id: "task-2", parentId: "plan-1", kind: "task", status: "complete" });
+
+    const state = parseState(planPath1StateJson([root, plan, task1, task2]));
+    const node = state.goals.find(g => g.id === "task-1");
+    const parent = state.goals.find(g => g.id === "plan-1");
+    check(`ancestors (parent ${variant.label}): the entry stays blocked`, node && node.status === "blocked", node && node.status);
+    check(`ancestors (parent ${variant.label}): the entry's blockedReason is unchanged`, node && node.blockedReason === "Max rounds reached", node && node.blockedReason);
+    check(`ancestors (parent ${variant.label}): the entry's completedRounds is unchanged`, node && node.completedRounds === 10, node && node.completedRounds);
+    check(`ancestors (parent ${variant.label}): the parent's status is unchanged`, parent && parent.status === variant.status, parent && parent.status);
+    check(`ancestors (parent ${variant.label}): the parent's blockedReason is unchanged`, parent && parent.blockedReason === variant.blockedReason, parent && parent.blockedReason);
+  }
+}
+
+// A chain that does not reach the root refuses the recovery: activateNext's
+// DFS walks down from the root, so a node whose parentId names nothing in
+// the tree is unreachable freed. The control differs only in pointing that
+// parentId at the root that is there.
+async function casePlanPath1Ancestors_missingParentRefusesRecovery() {
+  console.log("\n=== Section 1 ancestors: a node whose parent is not in the tree stays blocked ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const orphan = makeGoalNode({
+    id: "plan-1", parentId: "plan-gone", kind: "plan", status: "blocked",
+    blockedReason: "Max rounds reached", planPath: "docs/plans/a_v1.md",
+    maxRounds: 10, completedRounds: 10,
+  });
+  const state = parseState(planPath1StateJson([root, orphan]));
+  const node = state.goals.find(g => g.id === "plan-1");
+  check("ancestors missing-parent: the orphan stays blocked", node && node.status === "blocked", node && node.status);
+  check("ancestors missing-parent: its blockedReason is unchanged", node && node.blockedReason === "Max rounds reached", node && node.blockedReason);
+  check("ancestors missing-parent: its completedRounds is unchanged", node && node.completedRounds === 10, node && node.completedRounds);
+
+  // Control: the identical node parented on the root that exists IS freed.
+  const controlRoot = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const attached = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: "blocked",
+    blockedReason: "Max rounds reached", planPath: "docs/plans/a_v1.md",
+    maxRounds: 10, completedRounds: 10,
+  });
+  const controlState = parseState(planPath1StateJson([controlRoot, attached]));
+  const controlNode = controlState.goals.find(g => g.id === "plan-1");
+  check("ancestors missing-parent control: the same node under the real root is freed",
+    controlNode && controlNode.status === "pending", controlNode && controlNode.status);
+}
+
+// An ancestor reading "active" is live, not a refusal: applyPlanRecordOnLoad
+// runs before enforceInvariants, which is what demotes an active node that
+// has children, so a parent can still read "active" at this moment. The
+// chain here is two deep, so the walk crosses a live ancestor and a
+// derived-blocked one in the same recovery. A plan under a plan is a shape
+// only a hand-edited store holds, since goal_add refuses kind "plan" under
+// any parent but the root, and parseState accepts it without checking. The
+// case pins the walk over such a store, not a shape the tools build.
+async function casePlanPath1Ancestors_activeAncestorAcceptedAcrossTwoLevels() {
+  console.log("\n=== Section 1 ancestors: an active ancestor does not refuse, across a two-level chain ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const outer = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: "active",
+    planPath: "docs/plans/a_v1.md",
+  });
+  const inner = makeGoalNode({
+    id: "plan-2", parentId: "plan-1", kind: "plan", status: "blocked",
+    blockedReason: "Child task blocked",
+  });
+  const task = makeGoalNode({
+    id: "task-1", parentId: "plan-2", kind: "task", status: "blocked",
+    blockedReason: "Max rounds reached", maxRounds: 10, completedRounds: 10,
+  });
+
+  const state = parseState(planPath1StateJson([root, outer, inner, task]));
+  const node = state.goals.find(g => g.id === "task-1");
+  const innerNode = state.goals.find(g => g.id === "plan-2");
+  check("ancestors active: the entry is recovered under an active ancestor", node && node.status === "pending", node && node.status);
+  check("ancestors active: the entry's blockedReason is cleared", node && node.blockedReason === undefined, node && node.blockedReason);
+  check("ancestors active: the derived-blocked middle ancestor is freed too", innerNode && innerNode.status === "pending", innerNode && innerNode.status);
+  check("ancestors active: the middle ancestor's blockedReason is cleared", innerNode && innerNode.blockedReason === undefined, innerNode && innerNode.blockedReason);
+}
+
+// A refusal high in the chain leaves the whole chain untouched, including
+// the derived-blocked ancestor nearer the entry that on its own would have
+// been freed. The chain is decided before any of it is mutated, so the
+// store never rests half-cleared.
+async function casePlanPath1Ancestors_refusalHighInChainLeavesLowerAncestorUntouched() {
+  console.log("\n=== Section 1 ancestors: a refusal high in the chain clears nothing below it ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const outer = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: "paused",
+    planPath: "docs/plans/a_v1.md",
+  });
+  const inner = makeGoalNode({
+    id: "plan-2", parentId: "plan-1", kind: "plan", status: "blocked",
+    blockedReason: "Child task blocked",
+  });
+  const task = makeGoalNode({
+    id: "task-1", parentId: "plan-2", kind: "task", status: "blocked",
+    blockedReason: "Max rounds reached", maxRounds: 10, completedRounds: 10,
+  });
+
+  const state = parseState(planPath1StateJson([root, outer, inner, task]));
+  const node = state.goals.find(g => g.id === "task-1");
+  const innerNode = state.goals.find(g => g.id === "plan-2");
+  const outerNode = state.goals.find(g => g.id === "plan-1");
+  check("ancestors half-clear: the entry stays blocked", node && node.status === "blocked", node && node.status);
+  check("ancestors half-clear: the nearer derived-blocked ancestor is untouched", innerNode && innerNode.status === "blocked", innerNode && innerNode.status);
+  check("ancestors half-clear: its blockedReason is untouched", innerNode && innerNode.blockedReason === "Child task blocked", innerNode && innerNode.blockedReason);
+  check("ancestors half-clear: the paused ancestor is untouched", outerNode && outerNode.status === "paused", outerNode && outerNode.status);
+}
+
+// The fill runs over every node before any recovery does, so an entry that
+// sits ahead of its plan parent in the goals array still resolves that
+// parent's filled planPath. Ordered the other way round, a single pass
+// would read the parent's planPath before the fill had written it and leave
+// the entry blocked.
+async function casePlanPath1Ancestors_fillPrecedesRecoveryWhateverTheArrayOrder() {
+  console.log("\n=== Section 1 ancestors: the fill pass precedes the recovery pass whatever the array order ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const task = makeGoalNode({
+    id: "task-1", parentId: "plan-1", kind: "task", status: "blocked",
+    blockedReason: "Max rounds reached", maxRounds: 10, completedRounds: 10,
+  });
+  const plan = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: "active",
+    title: "A plan", objective: "finish docs/plans/a_v1.md, which closes the gap",
+  });
+
+  const state = parseState(planPath1StateJson([root, task, plan]));
+  const planNode = state.goals.find(g => g.id === "plan-1");
+  const node = state.goals.find(g => g.id === "task-1");
+  check("ancestors order: the parent's planPath is filled", planNode && planNode.planPath === "docs/plans/a_v1.md", planNode && planNode.planPath);
+  checkFilledPlanPathWellFormed("ancestors order", planNode && planNode.planPath);
+  check("ancestors order: the entry ahead of its parent is still recovered", node && node.status === "pending", node && node.status);
+  check("ancestors order: its blockedReason is cleared", node && node.blockedReason === undefined, node && node.blockedReason);
+}
+
+// ============================================================
+// Section 2 (plan-health-from-the-record): done and progress from the plan
+// document, and no round budget on a plan entry.
+// ============================================================
+
+const PLAN2_PATH = "docs/plans/a_v1.md";
+const PLAN2_FILE = `${HARNESS_CWD}/${PLAN2_PATH}`;
+
+// A plan document in the repository's own template shape: an H1, a header of
+// key lines, H2 sections, and a Chapters section with the given headings.
+function plan2Doc(header, chapterHeadings = []) {
+  const chapters = chapterHeadings.map((h) => `${h}\n\nWhat shipped.\n`).join("\n");
+  return `# A plan\n\n${header}\nCommit Model: Branch-and-PR\n\n## Goal\n\nThe goal.\n\n## Chapters\n\n${chapters}`;
+}
+
+// The tree every Section 2 case starts from: a root, plan-1 carrying the
+// planPath, and plan-2 pending beside it so a completion has a next entry to
+// activate. With `taskUnderPlan` the active leaf is task-1 under plan-1, the
+// shape a worker's own goal_add produces, and plan-1 sits pending above it.
+function plan2Goals({ taskUnderPlan = false, chapterCount, maxRounds = 10 } = {}) {
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 });
+  const plan1 = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: taskUnderPlan ? "pending" : "active",
+    planPath: PLAN2_PATH, maxRounds, createdAt: T0 - 20000,
+    ...(chapterCount === undefined ? {} : { chapterCount }),
+  });
+  const plan2 = makeGoalNode({ id: "plan-2", parentId: "root-1", kind: "plan", status: "pending", createdAt: T0 - 10000 });
+  const goals = [root, plan1, plan2];
+  if (taskUnderPlan) {
+    goals.push(makeGoalNode({ id: "task-1", parentId: "plan-1", kind: "task", status: "active", maxRounds, createdAt: T0 - 5000 }));
+  }
+  return { goals, activeGoalId: taskUnderPlan ? "task-1" : "plan-1" };
+}
+
+async function plan2Harness(caseName, treeOpts = {}, extraOpts = {}) {
+  const tree = plan2Goals(treeOpts);
+  return createTickHarness({
+    ...OPTS,
+    ...extraOpts,
+    caseName,
+    stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId },
+  });
+}
+
+// One scored turn: the scorer's own classify answers `label` when that label
+// is on offer, and "discard" to the memory curator's question, so the score
+// is the only thing the stub decides.
+async function plan2ScoredTurn(h, turnId, label, answer = "Working on it.") {
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes(label)) ? label : "discard");
+  await h.handlers["turn.start"](h.fake, { turnId }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId, answer, reason: "completed" }, async () => ({ result: "ok" }));
+}
+
+// A header reading Complete, in either spelling the acceptance names,
+// completes the entry holding the planPath at the turn's end: completeLeaf,
+// runHealth for that node, a complete decision naming the document, and the
+// next entry activated.
+async function casePlanRecord2_statusCompleteCompletesTheHolder(clock) {
+  console.log("\n=== Section 2: a header Status: Complete completes the planPath holder at turn end ===");
+  const headers = ["Status: Complete", "status:   complete  "];
+  for (const header of headers) {
+    clock.set(T0);
+    const h = await plan2Harness(`plan2_complete_${headers.indexOf(header)}`);
+    h.fsMap.set(PLAN2_FILE, plan2Doc(header, ["### Chapter 1 - 2026-09-21"]));
+    h.fsMap.set(".agentic-health", "true");
+    await plan2ScoredTurn(h, "t-complete", "on-goal");
+
+    const state = getState(h);
+    const plan1 = state.goals.find(g => g.id === "plan-1");
+    const plan2 = state.goals.find(g => g.id === "plan-2");
+    const decisions = getDecisions(h);
+    const completeDecision = decisions.find(d => d.action === "complete" && d.detail.startsWith("plan-1:"));
+    check(`plan2 complete (${JSON.stringify(header)}): plan-1 is complete`, plan1 && plan1.status === "complete", plan1 && plan1.status);
+    check(`plan2 complete (${JSON.stringify(header)}): the complete decision names the document as the cause`,
+      completeDecision && completeDecision.detail.includes(PLAN2_PATH) && /status: complete/i.test(completeDecision.detail), completeDecision);
+    check(`plan2 complete (${JSON.stringify(header)}): runHealth ran for plan-1`,
+      state.monitor.env.health && state.monitor.env.health.forNodeId === "plan-1", state.monitor.env.health);
+    check(`plan2 complete (${JSON.stringify(header)}): the next entry is activated`,
+      plan2 && plan2.status === "active" && state.activeGoalId === "plan-2" && decisions.some(d => d.action === "activated" && d.detail.includes("plan-2")), plan2 && plan2.status);
+    check(`plan2 complete (${JSON.stringify(header)}): the round budget was not spent`, plan1 && plan1.completedRounds === 0, plan1 && plan1.completedRounds);
+  }
+}
+
+// Each near miss is refused, and the rule that refuses it is named in the
+// case: a wrong completion activates the next plan while the tree is mid-work.
+async function casePlanRecord2_nearMissesDoNotComplete(clock) {
+  console.log("\n=== Section 2: the Complete rule's near misses complete nothing ===");
+  const nearMisses = [
+    { header: "Status: Complete (archived)", rule: "whole-value rule" },
+    { header: "Status: Completed", rule: "whole-value rule" },
+    { header: "Status: In Progress", rule: "value rule" },
+    { header: "**Status:** Complete", rule: "marked-up key is not the line" },
+    { header: "Status: In Progress", rule: "header rule, Status: Complete below the first ## heading", below: "Status: Complete\n" },
+  ];
+  for (const miss of nearMisses) {
+    clock.set(T0);
+    const h = await plan2Harness(`plan2_nearmiss_${nearMisses.indexOf(miss)}`);
+    const text = plan2Doc(miss.header, ["### Chapter 1"]) + (miss.below ? `\n## Notes\n\n${miss.below}` : "");
+    h.fsMap.set(PLAN2_FILE, text);
+    await plan2ScoredTurn(h, "t-miss", "on-goal");
+
+    const state = getState(h);
+    const plan1 = state.goals.find(g => g.id === "plan-1");
+    const plan2 = state.goals.find(g => g.id === "plan-2");
+    const decisions = getDecisions(h);
+    check(`plan2 near miss ${JSON.stringify(miss.header)}${miss.below ? " + below-heading Complete" : ""} refused by the ${miss.rule}: plan-1 stays active`,
+      plan1 && plan1.status === "active" && state.activeGoalId === "plan-1", plan1 && plan1.status);
+    check(`plan2 near miss ${JSON.stringify(miss.header)}${miss.below ? " + below-heading Complete" : ""}: no complete decision, plan-2 still pending`,
+      !decisions.some(d => d.action === "complete") && plan2 && plan2.status === "pending", decisions.filter(d => d.action === "complete"));
+    check(`plan2 near miss ${JSON.stringify(miss.header)}${miss.below ? " + below-heading Complete" : ""}: the document was readable (no plan_record_unreadable)`,
+      !decisions.some(d => d.action === "plan_record_unreadable"));
+  }
+}
+
+// No file at planPath and a file of the same name in any one of the three
+// archive places completes the holder, whatever that file's Status says.
+async function casePlanRecord2_archivedInAnyOfThreePlacesCompletes(clock) {
+  console.log("\n=== Section 2: a document moved to any archive place completes the holder ===");
+  const places = ["docs/archive", "docs/archive/plans", "docs/plans/archive"];
+  for (const place of places) {
+    clock.set(T0);
+    const h = await plan2Harness(`plan2_archived_${places.indexOf(place)}`);
+    h.fsMap.set(`${HARNESS_CWD}/${place}/a_v1.md`, plan2Doc("Status: In Progress", ["### Chapter 1"]));
+    await plan2ScoredTurn(h, "t-archived", "on-goal");
+
+    const state = getState(h);
+    const plan1 = state.goals.find(g => g.id === "plan-1");
+    const decisions = getDecisions(h);
+    const completeDecision = decisions.find(d => d.action === "complete" && d.detail.startsWith("plan-1:"));
+    check(`plan2 archived at ${place}: plan-1 is complete though the archived file reads In Progress`, plan1 && plan1.status === "complete", plan1 && plan1.status);
+    check(`plan2 archived at ${place}: the complete decision names the archive place`, completeDecision && completeDecision.detail.includes(`${place}/a_v1.md`), completeDecision);
+    check(`plan2 archived at ${place}: the next entry is activated`, state.activeGoalId === "plan-2");
+  }
+}
+
+// Absent from all four places: nothing changes, and one
+// plan_record_unreadable decision is logged per entry per session, however
+// many turns end on it. The re-test failure takes the same path: a stored
+// planPath that fails the shape goal_add enforces is unreadable at the join,
+// and the host is never asked about it.
+async function casePlanRecord2_unreadableChangesNothingAndLogsOnce(clock) {
+  console.log("\n=== Section 2: an unreadable document changes nothing and logs once per entry per session ===");
+  const variants = [
+    { label: "absent from all four places", planPath: PLAN2_PATH, seed: () => {} },
+    { label: "over the 256 KiB cap", planPath: PLAN2_PATH, seed: (h) => h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete") + "x".repeat(256 * 1024)) },
+    { label: "stored planPath failing the re-test (docs/plans/../../x.md)", planPath: "docs/plans/../../x.md", seed: (h) => h.fsMap.set(`${HARNESS_CWD}/x.md`, plan2Doc("Status: Complete")) },
+  ];
+  for (const v of variants) {
+    clock.set(T0);
+    const tree = plan2Goals({ chapterCount: 2 });
+    tree.goals.find(g => g.id === "plan-1").planPath = v.planPath;
+    const h = await createTickHarness({ ...OPTS, caseName: `plan2_unreadable_${variants.indexOf(v)}`, stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId } });
+    v.seed(h);
+    const existsCalls = [];
+    const realExists = h.fake.fs.exists;
+    h.fake.fs.exists = (p) => { existsCalls.push(p); return realExists(p); };
+    await plan2ScoredTurn(h, "t-unread-1", "on-goal");
+    await plan2ScoredTurn(h, "t-unread-2", "on-goal");
+
+    const state = getState(h);
+    const plan1 = state.goals.find(g => g.id === "plan-1");
+    const decisions = getDecisions(h);
+    const unreadable = decisions.filter(d => d.action === "plan_record_unreadable");
+    check(`plan2 unreadable (${v.label}): plan-1 stays active with chapterCount unchanged`,
+      plan1 && plan1.status === "active" && plan1.chapterCount === 2 && state.activeGoalId === "plan-1", plan1);
+    check(`plan2 unreadable (${v.label}): exactly one plan_record_unreadable across two turns, naming plan-1`,
+      unreadable.length === 1 && unreadable[0].detail.startsWith("plan-1:"), unreadable);
+    check(`plan2 unreadable (${v.label}): no complete and no plan_progress decision`,
+      !decisions.some(d => d.action === "complete" || d.action === "plan_progress"));
+    if (v.planPath !== PLAN2_PATH) {
+      check(`plan2 unreadable (${v.label}): the host was asked about no path outside docs/plans (the join never happened)`,
+        !existsCalls.some(p => p.includes("x.md")), existsCalls);
+    }
+  }
+  // Control for the once-per-session rule: a second entry with its own
+  // unreadable document logs its own decision, so the dedupe is per entry.
+  clock.set(T0);
+  {
+    const tree = plan2Goals();
+    tree.goals.find(g => g.id === "plan-2").planPath = "docs/plans/b_v1.md";
+    const h = await createTickHarness({ ...OPTS, caseName: "plan2_unreadable_per_entry", stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId } });
+    await plan2ScoredTurn(h, "t-a", "on-goal");
+    // Complete plan-1 by hand through goal_done so plan-2 becomes the active entry.
+    await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__goal_done", note: "done" }, async () => ({ result: "passthrough" }));
+    await plan2ScoredTurn(h, "t-b", "on-goal");
+    const unreadable = getDecisions(h).filter(d => d.action === "plan_record_unreadable");
+    check("plan2 unreadable per-entry control: two entries log two decisions, one each",
+      unreadable.length === 2 && unreadable.some(d => d.detail.startsWith("plan-1:")) && unreadable.some(d => d.detail.startsWith("plan-2:")), unreadable);
+  }
+}
+
+// A Chapter count rising above the stored one stores the new count, resets
+// the nudge counter and logs plan_progress. The counter is read off the idle
+// summary the controller hands its classifier, "Consecutive nudges sent: N",
+// after one nudge has raised it to 1 and a drift-labelled turn has left it
+// there.
+async function casePlanRecord2_chapterCountRiseLogsProgressAndResetsNudges(clock) {
+  console.log("\n=== Section 2: a Chapter count rising from 2 to 3 logs plan_progress and resets the nudge counter ===");
+  clock.set(T0);
+  const h = await plan2Harness("plan2_progress", { chapterCount: 2 });
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2", "### Chapter 3"]));
+  h.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  check("plan2 progress setup: one nudge was sent", getDecisions(h).some(d => d.action === "nudge_sent" && d.detail.includes("nudge #1")));
+
+  await plan2ScoredTurn(h, "t-progress", "drift");
+  const state = getState(h);
+  const plan1 = state.goals.find(g => g.id === "plan-1");
+  const decisions = getDecisions(h);
+  const progress = decisions.filter(d => d.action === "plan_progress");
+  check("plan2 progress: chapterCount is now 3", plan1 && plan1.chapterCount === 3, plan1 && plan1.chapterCount);
+  check("plan2 progress: one plan_progress decision names the document and 2 -> 3", progress.length === 1 && progress[0].detail.includes(PLAN2_PATH) && progress[0].detail.includes("2 -> 3"), progress);
+  check("plan2 progress: plan-1 is still active (progress is not completion)", plan1 && plan1.status === "active");
+
+  h.resetClassifyCalls();
+  h.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  const summary = h.classifyCalls.length > 0 ? String(h.classifyCalls[0][0]) : "";
+  check("plan2 progress: the nudge counter was reset (idle summary reads Consecutive nudges sent: 0)", summary.includes("Consecutive nudges sent: 0"), summary.split("\n").find(l => l.startsWith("Consecutive")));
+}
+
+// Control and the absence half: an unchanged Chapter count logs nothing and
+// leaves the nudge counter where the drift turn left it. The predicate is
+// "no decision whose action starts with plan_" over the whole decision log
+// after the turn, and the counter reads 1 on the next idle summary.
+async function casePlanRecord2_unchangedChapterCountLogsNothing(clock) {
+  console.log("\n=== Section 2: an unchanged Chapter count logs nothing ===");
+  clock.set(T0);
+  const h = await plan2Harness("plan2_no_progress", { chapterCount: 2 });
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+  h.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  const before = getDecisions(h).length;
+  await plan2ScoredTurn(h, "t-same", "drift");
+  const state = getState(h);
+  const plan1 = state.goals.find(g => g.id === "plan-1");
+  const decisions = getDecisions(h);
+  const planDecisions = decisions.filter(d => typeof d.action === "string" && d.action.startsWith("plan_"));
+  check("plan2 unchanged: chapterCount stays 2", plan1 && plan1.chapterCount === 2, plan1 && plan1.chapterCount);
+  check("plan2 unchanged: no plan_* decision at all in the log (scope: every decision after the turn)", planDecisions.length === 0, planDecisions);
+  check("plan2 unchanged: the turn's own decisions were logged (the log was read, not empty)", decisions.length > before);
+
+  h.resetClassifyCalls();
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  const summary = h.classifyCalls.length > 0 ? String(h.classifyCalls[0][0]) : "";
+  check("plan2 unchanged control: the nudge counter was not reset (idle summary reads Consecutive nudges sent: 1)", summary.includes("Consecutive nudges sent: 1"), summary.split("\n").find(l => l.startsWith("Consecutive")));
+}
+
+// The round budget is gone for a plan entry: 25 nudged, scored turns never
+// block it and completedRounds stays 0, for the plan node itself and for a
+// task under it alike, and goal_done spends nothing either. Turns alternate
+// on-goal and drift so the on-goal label resets the nudge counter every
+// other turn and the three-nudge stall pause never trips - a separate
+// mechanism this case must not exercise. The hourly nudge cap is raised, as
+// Section 3's own repeat case raises it, since 25 nudges inside one
+// fake-clock hour would otherwise hit that cap before the round-budget
+// question is even reached.
+async function casePlanRecord2_planEntryHasNoRoundBudget(clock) {
+  console.log("\n=== Section 2: a plan entry scored 25 times is never blocked and spends no round ===");
+  for (const taskUnderPlan of [false, true]) {
+    clock.set(T0);
+    const leafId = taskUnderPlan ? "task-1" : "plan-1";
+    const h = await plan2Harness(`plan2_no_budget_${taskUnderPlan ? "task" : "plan"}`, { taskUnderPlan, maxRounds: 10 }, { costMaxNudgesPerHour: 30 });
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"]));
+    for (let i = 0; i < 25; i++) {
+      const scoredLabel = i % 2 === 0 ? "on-goal" : "drift";
+      h.setClassifyValue(section4Classify(scoredLabel));
+      clock.advance(130_000);
+      await tickAndSettle(h, clock, 50);
+      await h.handlers["turn.start"](h.fake, { turnId: `t-${i}` }, async () => ({ result: "ok" }));
+      await h.handlers["turn.complete"](h.fake, { turnId: `t-${i}`, answer: "Working on it.", reason: "completed" }, async () => ({ result: "ok" }));
+    }
+    const state = getState(h);
+    const leaf = state.goals.find(g => g.id === leafId);
+    const decisions = getDecisions(h);
+    const label = taskUnderPlan ? "task under a plan node" : "plan node";
+    check(`plan2 no budget (${label}): 25 scores were recorded`, leaf && leaf.scores.length === 25, leaf && leaf.scores.length);
+    check(`plan2 no budget (${label}): still active, never blocked`, leaf && leaf.status === "active" && state.activeGoalId === leafId, leaf && leaf.status);
+    check(`plan2 no budget (${label}): completedRounds stays 0`, leaf && leaf.completedRounds === 0, leaf && leaf.completedRounds);
+    check(`plan2 no budget (${label}): no block decision`, !decisions.some(d => d.action === "block"), decisions.filter(d => d.action === "block"));
+    check(`plan2 no budget (${label}): maxRounds is unchanged`, leaf && leaf.maxRounds === 10, leaf && leaf.maxRounds);
+
+    const done = await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__goal_done", note: "done" }, async () => ({ result: "passthrough" }));
+    const after = getState(h).goals.find(g => g.id === leafId);
+    check(`plan2 no budget (${label}): goal_done is served and completes the leaf`, done.deny === undefined && after && after.status === "complete", done);
+    check(`plan2 no budget (${label}): goal_done leaves completedRounds at 0`, after && after.completedRounds === 0, after && after.completedRounds);
+    check(`plan2 no budget (${label}): goal_done still records its score`, after && after.scores.length === 26, after && after.scores.length);
+  }
+}
+
+// Control: a task entry, one with no plan ancestor, still blocks at its budget
+// with today's reason, and goal_done still spends a round on it.
+async function casePlanRecord2_taskEntryStillBlocksAtBudget_control(clock) {
+  console.log("\n=== Section 2 control: a task entry still blocks at its budget with today's reason ===");
+  clock.set(T0);
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 });
+  const task = makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", maxRounds: 3, createdAt: T0 - 20000 });
+  const next = makeGoalNode({ id: "task-2", parentId: "root-1", kind: "task", status: "pending", maxRounds: 3, createdAt: T0 - 10000 });
+  const h = await createTickHarness({ ...OPTS, caseName: "plan2_task_budget_control", stateOpts: { now: T0, goals: [root, task, next], activeGoalId: "task-1" } });
+  for (let i = 0; i < 3; i++) {
+    await plan2ScoredTurn(h, `t-${i}`, "on-goal");
+  }
+  const state = getState(h);
+  const blocked = state.goals.find(g => g.id === "task-1");
+  const decisions = getDecisions(h);
+  check("plan2 task control: blocked with Max rounds reached after 3 rounds", blocked && blocked.status === "blocked" && blocked.blockedReason === "Max rounds reached", blocked);
+  check("plan2 task control: completedRounds reached the budget", blocked && blocked.completedRounds === 3, blocked && blocked.completedRounds);
+  check("plan2 task control: the block decision was logged and the next task activated", decisions.some(d => d.action === "block") && state.activeGoalId === "task-2");
+  check("plan2 task control: no plan record was read for a task entry (no plan_* decision)", !decisions.some(d => typeof d.action === "string" && d.action.startsWith("plan_")));
+
+  const done = await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__goal_done", note: "done" }, async () => ({ result: "passthrough" }));
+  const task2 = getState(h).goals.find(g => g.id === "task-2");
+  check("plan2 task control: goal_done spends a round on a task entry", done.deny === undefined && task2 && task2.completedRounds === 1, task2 && task2.completedRounds);
+}
+
+// The four round-text sites. For a plan entry the worker prompt and the
+// status line carry no "round" text at all, and the idle summary and its
+// skip-hash subset say "plan entry, no round budget" in its place. For a task
+// entry all four are unchanged, which is the control that the predicate
+// (/round/i over each text) can speak.
+async function casePlanRecord2_roundTextAtTheFourSites(clock) {
+  console.log("\n=== Section 2: the round text at the four sites ===");
+  const shapes = [
+    { label: "plan entry", tree: plan2Goals(), leafId: "plan-1", planEntry: true },
+    { label: "task under a plan node", tree: plan2Goals({ taskUnderPlan: true }), leafId: "task-1", planEntry: true },
+    {
+      label: "task entry (control)",
+      tree: {
+        goals: [
+          makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+          makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", maxRounds: 3, createdAt: T0 - 20000 }),
+        ],
+        activeGoalId: "task-1",
+      },
+      leafId: "task-1",
+      planEntry: false,
+    },
+  ];
+  for (const shape of shapes) {
+    clock.set(T0);
+    const h = await createTickHarness({ ...OPTS, caseName: `plan2_round_text_${shapes.indexOf(shape)}`, stateOpts: { now: T0, goals: shape.tree.goals, activeGoalId: shape.tree.activeGoalId } });
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"]));
+    const statuses = [];
+    h.fake.ui.status = (s) => { statuses.push(String(s)); };
+
+    // Site 1: the worker prompt's [GOAL TREE] block.
+    const r = await h.handlers["prompt.submit"](h.fake, { text: "keep going" }, async () => ({}));
+    const goalBlock = (r.context || []).find(b => b.includes("[GOAL TREE]")) || "";
+    // Sites 3 and 4: the idle summary handed to the classifier, and the
+    // skip-hash subset, whose text is read through the status-line-free
+    // summary and whose round line is the same expression.
+    h.setClassifyValue("nudge");
+    h.resetClassifyCalls();
+    clock.advance(130_000);
+    await tickAndSettle(h, clock, 50);
+    const summary = h.classifyCalls.length > 0 ? String(h.classifyCalls[0][0]) : "";
+    const nodeLine = summary.split("\n").find(l => l.startsWith("Node: ")) || "";
+    // Site 2: the status line the tick writes for the active entry.
+    const goalStatus = statuses.filter(s => s.startsWith("Goal: ")).pop() || "";
+
+    check(`plan2 round text (${shape.label}): the [GOAL TREE] block was injected`, goalBlock.includes(`Active: `), r.context);
+    check(`plan2 round text (${shape.label}): the idle summary was handed to the classifier`, nodeLine.startsWith(`Node: ${shape.leafId}`), summary);
+    check(`plan2 round text (${shape.label}): the status line was written for the active entry`, goalStatus.includes(shape.leafId), statuses);
+    if (shape.planEntry) {
+      check(`plan2 round text (${shape.label}): /round/i matches nothing in the worker prompt`, !/round/i.test(goalBlock), goalBlock);
+      check(`plan2 round text (${shape.label}): /round/i matches nothing in the status line`, !/round/i.test(goalStatus), goalStatus);
+      check(`plan2 round text (${shape.label}): the idle summary's Node line reads "plan entry, no round budget"`, nodeLine.endsWith("plan entry, no round budget"), nodeLine);
+    } else {
+      check(`plan2 round text (${shape.label}): the worker prompt reads round 1/3`, goalBlock.includes("| round 1/3 |"), goalBlock);
+      check(`plan2 round text (${shape.label}): the status line reads round 0/3`, goalStatus.endsWith("| round 0/3"), goalStatus);
+      check(`plan2 round text (${shape.label}): the idle summary's Node line reads round 0/3`, nodeLine.endsWith("round 0/3"), nodeLine);
+    }
+  }
+
+  // Site 4, the skip-hash subset, read through its own effect: the hash a
+  // tick stores for a plan entry does not move with completedRounds, since
+  // the subset no longer carries them, while a task entry's hash does.
+  for (const planEntry of [true, false]) {
+    const hashes = [];
+    const leafId = planEntry ? "plan-1" : "task-1";
+    for (const rounds of [0, 5]) {
+      clock.set(T0);
+      const goals = planEntry
+        ? plan2Goals().goals
+        : [
+            makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+            makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", maxRounds: 10, createdAt: T0 - 20000 }),
+          ];
+      goals.find(g => g.id === leafId).completedRounds = rounds;
+      const h = await createTickHarness({ ...OPTS, caseName: `plan2_hash_${planEntry ? "plan" : "task"}_${rounds}`, stateOpts: { now: T0, goals, activeGoalId: leafId } });
+      h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"]));
+      h.setClassifyValue("nudge");
+      clock.advance(130_000);
+      await tickAndSettle(h, clock, 50);
+      hashes.push(getState(h).monitor.cost.lastSummaryHash);
+    }
+    check(`plan2 skip-hash subset (${planEntry ? "plan entry" : "task entry (control)"}): the stored hash ${planEntry ? "ignores" : "moves with"} completedRounds`,
+      hashes.length === 2 && hashes[0] !== 0 && (planEntry ? hashes[0] === hashes[1] : hashes[0] !== hashes[1]), hashes);
+  }
+}
+
+// Completion by document reaches the holder's live descendants: with task-1
+// active under plan-1 and task-2 pending beside it, a document reading
+// Complete at the end of task-1's turn completes task-1, task-2 and plan-1,
+// each descendant carrying one note naming the document, activates plan-2,
+// and leaves exactly one active node. The control shape, In Progress,
+// completes nothing.
+async function casePlanRecord2_documentCompletionReachesLiveDescendants(clock) {
+  console.log("\n=== Section 2: completion by document completes the holder's live descendants ===");
+  for (const header of ["Status: Complete", "Status: In Progress"]) {
+    clock.set(T0);
+    const goals = [
+      makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+      makeGoalNode({ id: "plan-1", parentId: "root-1", kind: "plan", status: "pending", planPath: PLAN2_PATH, createdAt: T0 - 20000 }),
+      makeGoalNode({ id: "plan-2", parentId: "root-1", kind: "plan", status: "pending", createdAt: T0 - 10000 }),
+      makeGoalNode({ id: "task-1", parentId: "plan-1", kind: "task", status: "active", createdAt: T0 - 5000 }),
+      makeGoalNode({ id: "task-2", parentId: "plan-1", kind: "task", status: "pending", createdAt: T0 - 4000 }),
+    ];
+    const h = await createTickHarness({ ...OPTS, caseName: `plan2_descendants_${header === "Status: Complete" ? "complete" : "control"}`, stateOpts: { now: T0, goals, activeGoalId: "task-1" } });
+    h.fsMap.set(PLAN2_FILE, plan2Doc(header, ["### Chapter 1"]));
+    await plan2ScoredTurn(h, "t-desc", "on-goal");
+
+    const state = getState(h);
+    const byId = (id) => state.goals.find(g => g.id === id);
+    const actives = state.goals.filter(g => g.status === "active").map(g => g.id);
+    const label = `plan2 descendants (${header})`;
+    if (header === "Status: Complete") {
+      check(`${label}: plan-1 is complete`, byId("plan-1").status === "complete", byId("plan-1").status);
+      for (const id of ["task-1", "task-2"]) {
+        const node = byId(id);
+        check(`${label}: ${id} is complete with one note naming the document`,
+          node.status === "complete" && node.notes.length === 1 && node.notes[0].includes(PLAN2_PATH), node);
+        check(`${label}: a complete decision names ${id} under plan-1`,
+          getDecisions(h).some(d => d.action === "complete" && d.detail.startsWith(`${id}:`) && d.detail.includes("plan-1")));
+      }
+      check(`${label}: plan-2 is active and is the only active node`, actives.length === 1 && actives[0] === "plan-2" && state.activeGoalId === "plan-2", actives);
+      check(`${label}: nothing outside plan-1's subtree was completed (root pending)`, byId("root-1").status === "pending");
+    } else {
+      check(`${label} control: nothing completed`, state.goals.every(g => g.status !== "complete"), state.goals.map(g => `${g.id}:${g.status}`));
+      check(`${label} control: task-1 is still the only active node`, actives.length === 1 && actives[0] === "task-1", actives);
+      check(`${label} control: no notes were written`, state.goals.every(g => g.notes.length === 0));
+    }
+  }
+}
+
+// A paused descendant is completed too, and a descendant already complete or
+// abandoned is left exactly as it is: its status, its notes and its updatedAt.
+async function casePlanRecord2_descendantStatusesReached(clock) {
+  console.log("\n=== Section 2: paused descendants are completed, complete and abandoned ones are left alone ===");
+  clock.set(T0);
+  const goals = [
+    makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+    makeGoalNode({ id: "plan-1", parentId: "root-1", kind: "plan", status: "pending", planPath: PLAN2_PATH, createdAt: T0 - 20000 }),
+    makeGoalNode({ id: "task-1", parentId: "plan-1", kind: "task", status: "active", createdAt: T0 - 5000 }),
+    makeGoalNode({ id: "task-paused", parentId: "plan-1", kind: "task", status: "paused", blockedReason: "operator input needed", createdAt: T0 - 4000 }),
+    makeGoalNode({ id: "task-done", parentId: "plan-1", kind: "task", status: "complete", notes: ["done earlier"], createdAt: T0 - 3000, updatedAt: T0 - 3000 }),
+    makeGoalNode({ id: "task-dropped", parentId: "plan-1", kind: "task", status: "abandoned", notes: ["dropped earlier"], createdAt: T0 - 2000, updatedAt: T0 - 2000 }),
+  ];
+  const h = await createTickHarness({ ...OPTS, caseName: "plan2_descendant_statuses", stateOpts: { now: T0, goals, activeGoalId: "task-1" } });
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+  await plan2ScoredTurn(h, "t-desc-statuses", "on-goal");
+  const state = getState(h);
+  const byId = (id) => state.goals.find(g => g.id === id);
+  check("plan2 descendant statuses: the paused descendant is completed with the note", byId("task-paused").status === "complete" && byId("task-paused").notes.some(n => n.includes(PLAN2_PATH)), byId("task-paused"));
+  check("plan2 descendant statuses: the complete descendant is left as it is", byId("task-done").status === "complete" && byId("task-done").notes.length === 1 && byId("task-done").updatedAt === T0 - 3000, byId("task-done"));
+  check("plan2 descendant statuses: the abandoned descendant is left as it is", byId("task-dropped").status === "abandoned" && byId("task-dropped").notes.length === 1 && byId("task-dropped").updatedAt === T0 - 2000, byId("task-dropped"));
+  check("plan2 descendant statuses: plan-1 is complete", byId("plan-1").status === "complete");
+}
+
+// A holder blocked over a child ("Child task blocked") completed by document
+// ends complete with no live reason left on it. The blocked task itself stays
+// blocked: only live statuses are reached by the descendant completion. The
+// task's reason is not "Max rounds reached", which the load-time recovery
+// would free (and clear the parent's reason with) before the turn ran.
+async function casePlanRecord2_blockedHolderCompletesWithNoReason(clock) {
+  console.log("\n=== Section 2: a holder blocked over a child ends complete with no blockedReason ===");
+  clock.set(T0);
+  const goals = [
+    makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+    makeGoalNode({ id: "plan-1", parentId: "root-1", kind: "plan", status: "blocked", blockedReason: "Child task blocked", planPath: PLAN2_PATH, createdAt: T0 - 20000 }),
+    makeGoalNode({ id: "task-1", parentId: "plan-1", kind: "task", status: "blocked", blockedReason: "tests failing", createdAt: T0 - 5000 }),
+    makeGoalNode({ id: "task-2", parentId: "plan-1", kind: "task", status: "active", createdAt: T0 - 4000 }),
+  ];
+  const h = await createTickHarness({ ...OPTS, caseName: "plan2_blocked_holder", stateOpts: { now: T0, goals, activeGoalId: "task-2" } });
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+  await plan2ScoredTurn(h, "t-blocked-holder", "on-goal");
+  const state = getState(h);
+  const byId = (id) => state.goals.find(g => g.id === id);
+  check("plan2 blocked holder: plan-1 is complete with no blockedReason", byId("plan-1").status === "complete" && byId("plan-1").blockedReason === undefined, byId("plan-1"));
+  check("plan2 blocked holder: the blocked task stays blocked with its reason", byId("task-1").status === "blocked" && byId("task-1").blockedReason === "tests failing", byId("task-1"));
+  check("plan2 blocked holder: the active task was completed", byId("task-2").status === "complete");
+}
+
+// The once-per-session unreadable log re-arms on a successful read: absent
+// logs, present reads, absent again logs again, present, absent logs a third
+// time. Five turns, three decisions.
+async function casePlanRecord2_unreadableRearmsAfterARead(clock) {
+  console.log("\n=== Section 2: an unreadable document logs again after a successful read ===");
+  clock.set(T0);
+  const h = await plan2Harness("plan2_unreadable_rearm", { chapterCount: 1 });
+  const present = () => h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"]));
+  const absent = () => h.fsMap.delete(PLAN2_FILE);
+  const steps = [["absent", absent, 1], ["present", present, 1], ["absent", absent, 2], ["present", present, 2], ["absent", absent, 3]];
+  for (let i = 0; i < steps.length; i++) {
+    const [label, seed, expected] = steps[i];
+    seed();
+    await plan2ScoredTurn(h, `t-rearm-${i}`, "on-goal");
+    const count = getDecisions(h).filter(d => d.action === "plan_record_unreadable").length;
+    check(`plan2 unreadable re-arm: after "${label}" the plan_record_unreadable count is ${expected}`, count === expected, count);
+  }
+  check("plan2 unreadable re-arm: plan-1 is still active throughout", getState(h).goals.find(g => g.id === "plan-1").status === "active");
+}
+
+// --- Section 3 (plan-health-from-the-record): the worker's BLOCKED and WAITING leads ---
+
+// The hold on a waiting lead, in fake-clock milliseconds: the value
+// LEAD_WAITING_HOLD_MS in hooks/index.ts holds, pinned here through the
+// idle tick held one minute short of it and running one minute past it.
+const LEAD3_HOLD_MS = 60 * 60_000;
+
+// A plan document that is neither complete nor progressing, so the document
+// reader logs nothing and the lead is the only thing a turn changes.
+const LEAD3_DOC = plan2Doc("Status: In Progress", ["### Chapter 1"]);
+
+// A harness on the Section 2 tree with the plan document seeded, for the
+// plan node itself or for a task under it. The stored chapterCount matches
+// the document's one Chapter, so the first read logs no plan_progress and
+// resets no nudge counter: the lead is the only thing a turn changes.
+async function lead3Harness(caseName, treeOpts = {}, extraOpts = {}) {
+  const h = await plan2Harness(caseName, { chapterCount: 1, ...treeOpts }, extraOpts);
+  h.fsMap.set(PLAN2_FILE, LEAD3_DOC);
+  return h;
+}
+
+// One completed turn whose closing text is `answer`. `workTool` adds a Bash
+// call, `reply` a reply-tool call, and `channel` opens the turn from a
+// channel message. The scorer's classify answers drift, an ordinary scored
+// turn that leaves the nudge counter where it stands (on-goal would reset
+// it), and the idle labels answer nudge.
+async function lead3Turn(h, turnId, answer, { workTool = false, reply = false, channel = false } = {}) {
+  h.setClassifyValue((prompt, labels) => {
+    if (!Array.isArray(labels)) return "discard";
+    if (labels.includes("drift")) return "drift";
+    if (labels.includes("nudge")) return "nudge";
+    return "discard";
+  });
+  if (channel) await h.handlers["prompt.submit"](h.fake, { text: "How is it going?", origin: { kind: "channel" } }, async () => ({}));
+  await h.handlers["turn.start"](h.fake, { turnId }, async () => ({ result: "ok" }));
+  if (workTool) await h.handlers["tool.call"](h.fake, { tool: "Bash", turnId }, async () => ({ result: "ok" }));
+  if (reply) await h.handlers["tool.call"](h.fake, { tool: "mcp__plugin_relay_channel-relay__reply", turnId, message: answer }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId, answer, reason: "completed" }, async () => ({ result: "ok" }));
+}
+
+// One idle tick past the idle gate and the nudge floor, with the idle
+// classifier answering nudge. Returns what the tick did: whether the
+// classifier was called and whether a nudge went out.
+async function lead3IdleTick(h, clock) {
+  h.resetClassifyCalls();
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard");
+  const nudgesBefore = getDecisions(h).filter(d => d.action === "nudge_sent").length;
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  const idleCalls = h.classifyCalls.filter(c => Array.isArray(c[1]) && c[1].includes("nudge"));
+  const nudgesAfter = getDecisions(h).filter(d => d.action === "nudge_sent").length;
+  return { classified: idleCalls.length > 0, nudged: nudgesAfter > nudgesBefore, summary: idleCalls.length > 0 ? String(idleCalls[0][0]) : "" };
+}
+
+const lead3Of = (h, id) => getState(h).goals.find(g => g.id === id).lead;
+
+// A first-line BLOCKED: sets the lead on the turn-start entry, for the plan
+// node and for a task under it alike, and the idle tick after it makes no
+// classifier call and sends no nudge. The predicate for the absence is "no
+// classify call whose labels include nudge" over every classify call the
+// tick made, and "no nudge_sent decision" over the whole log; the control
+// that the instrument speaks is the priming tick at the top of the case, on
+// the same tree before any lead is set, where both fire. The entry stays
+// active, the nudge counter is unchanged (read off the idle summary once the
+// lead is cleared), and plan-2 stays pending.
+async function caseLead3_blockedFirstLineSetsTheLeadAndHoldsTheIdleBranch(clock) {
+  console.log("\n=== Section 3 lead: a first-line BLOCKED: sets the lead and holds the idle branch ===");
+  for (const taskUnderPlan of [false, true]) {
+    clock.set(T0);
+    const leafId = taskUnderPlan ? "task-1" : "plan-1";
+    const label = `lead3 blocked (${taskUnderPlan ? "task under a plan node" : "plan node"})`;
+    const h = await lead3Harness(`lead3_blocked_${taskUnderPlan ? "task" : "plan"}`, { taskUnderPlan });
+    // Raise the nudge counter to 1 first, so "unchanged" has a value to hold.
+    const primed = await lead3IdleTick(h, clock);
+    check(`${label} control: with no lead the idle tick classifies and nudges`, primed.classified && primed.nudged, primed);
+
+    await lead3Turn(h, "t-blocked", "BLOCKED: waiting on the operator's fork\nDetails below.", { workTool: true });
+    const lead = lead3Of(h, leafId);
+    const setDecisions = getDecisions(h).filter(d => d.action === "lead_set");
+    check(`${label}: lead is blocked with the rest of the first line as the reason`,
+      lead && lead.state === "blocked" && lead.reason === "waiting on the operator's fork" && lead.at === clock.get(), lead);
+    check(`${label}: one lead_set decision naming the entry`, setDecisions.length === 1 && setDecisions[0].detail.startsWith(`${leafId}:`), setDecisions);
+
+    const held = await lead3IdleTick(h, clock);
+    const state = getState(h);
+    const leaf = state.goals.find(g => g.id === leafId);
+    check(`${label}: the idle tick makes no classifier call while blocked`, !held.classified, h.classifyCalls);
+    check(`${label}: no nudge is sent while blocked`, !held.nudged, getDecisions(h).filter(d => d.action === "nudge_sent"));
+    check(`${label}: the entry stays active and no other entry is activated`,
+      leaf.status === "active" && state.activeGoalId === leafId && state.goals.find(g => g.id === "plan-2").status === "pending", state.goals.map(g => `${g.id}:${g.status}`));
+
+    // A second turn re-reading the same lead logs nothing more.
+    await lead3Turn(h, "t-blocked-again", "BLOCKED: waiting on the operator's fork", { workTool: true });
+    check(`${label}: a turn re-reading the same lead logs no second lead_set`, getDecisions(h).filter(d => d.action === "lead_set").length === 1);
+    check(`${label}: a second held tick still classifies nothing`, !(await lead3IdleTick(h, clock)).classified);
+
+    // Lift the lead with a working turn; the nudge counter reads 1, the value
+    // the priming nudge left, so the held ticks moved it by nothing.
+    await lead3Turn(h, "t-lifted", "Back on it.", { workTool: true });
+    const lifted = await lead3IdleTick(h, clock);
+    check(`${label}: once lifted the idle summary reads Consecutive nudges sent: 1 (unchanged by the hold)`,
+      lifted.summary.includes("Consecutive nudges sent: 1"), lifted.summary.split("\n").find(l => l.startsWith("Consecutive")));
+  }
+}
+
+// The first-line rule and the literal: each near miss sets nothing, and the
+// idle tick after it classifies and nudges as usual. Blank lines above the
+// marker are skipped, and a reason is cut at 300 characters.
+async function caseLead3_nearMissesSetNothing(clock) {
+  console.log("\n=== Section 3 lead: the first-line rule's near misses set nothing ===");
+  const misses = [
+    { answer: "Blocked: x", rule: "uppercase literal" },
+    { answer: "BLOCKED x", rule: "colon in the literal" },
+    { answer: "Working on it.\nBLOCKED: x", rule: "first non-blank line only" },
+    { answer: "I am BLOCKED: on x for now.", rule: "line must open with the literal" },
+    { answer: "Waiting: x", rule: "uppercase literal" },
+    { answer: "Still WAITING: on the suite.", rule: "line must open with the literal" },
+  ];
+  for (const miss of misses) {
+    clock.set(T0);
+    const h = await lead3Harness(`lead3_nearmiss_${misses.indexOf(miss)}`);
+    await lead3Turn(h, "t-miss", miss.answer, { workTool: true });
+    const decisions = getDecisions(h);
+    check(`lead3 near miss ${JSON.stringify(miss.answer)} refused by the ${miss.rule}: no lead`, !lead3Of(h, "plan-1"), lead3Of(h, "plan-1"));
+    check(`lead3 near miss ${JSON.stringify(miss.answer)}: no lead_set and no lead_cleared decision`,
+      !decisions.some(d => d.action === "lead_set" || d.action === "lead_cleared"), decisions.filter(d => d.action.startsWith("lead_")));
+    const tick = await lead3IdleTick(h, clock);
+    check(`lead3 near miss ${JSON.stringify(miss.answer)}: the idle tick classifies and nudges`, tick.classified && tick.nudged, tick);
+  }
+  clock.set(T0);
+  {
+    const h = await lead3Harness("lead3_blank_lines_and_cut");
+    const longReason = "r".repeat(400);
+    await lead3Turn(h, "t-blank", `\n   \nBLOCKED: ${longReason}\nmore`, { workTool: true });
+    const lead = lead3Of(h, "plan-1");
+    check("lead3 first non-blank line: blank lines above the marker are skipped", lead && lead.state === "blocked", lead);
+    check("lead3 reason cut: a 400-character reason is stored at 300", lead && lead.reason.length === 300 && lead.reason === "r".repeat(300), lead && lead.reason.length);
+  }
+  clock.set(T0);
+  {
+    // A \r\r\n line ending leaves one carriage return on the first line
+    // after the split; it is stripped before the match, not kept as reason.
+    const h = await lead3Harness("lead3_stray_cr");
+    await lead3Turn(h, "t-cr", "BLOCKED: waiting on the operator\r\r\nmore", { workTool: true });
+    const lead = lead3Of(h, "plan-1");
+    check("lead3 stray carriage return: a first line ending CR CR LF sets the lead with no carriage return in the reason",
+      lead && lead.state === "blocked" && lead.reason === "waiting on the operator", lead);
+  }
+}
+
+// WAITING: holds the idle branch for 60 minutes of fake clock and no longer:
+// held at 59 minutes after lead.at, running at 61. Lock in both directions,
+// so a hold that never lifts cannot ship under a new name.
+async function caseLead3_waitingHoldsForSixtyMinutesAndNoLonger(clock) {
+  console.log("\n=== Section 3 lead: WAITING: holds for 60 minutes of fake clock and no longer ===");
+  clock.set(T0);
+  const h = await lead3Harness("lead3_waiting");
+  await lead3Turn(h, "t-waiting", "WAITING: the suite is running in the background", { workTool: true });
+  const lead = lead3Of(h, "plan-1");
+  check("lead3 waiting: lead is waiting with the rest of the line as the reason", lead && lead.state === "waiting" && lead.reason === "the suite is running in the background" && lead.at === T0, lead);
+  check("lead3 waiting: one lead_set decision", getDecisions(h).filter(d => d.action === "lead_set").length === 1);
+
+  // lead3IdleTick advances the clock 130 s itself, so land at 59 minutes.
+  clock.set(T0 + LEAD3_HOLD_MS - 60_000 - 130_000);
+  const at59 = await lead3IdleTick(h, clock);
+  check("lead3 waiting: held at 59 minutes (no classifier call, no nudge)", !at59.classified && !at59.nudged, at59);
+  clock.set(T0 + LEAD3_HOLD_MS + 60_000 - 130_000);
+  const at61 = await lead3IdleTick(h, clock);
+  check("lead3 waiting: running at 61 minutes (classifier called, nudge sent)", at61.classified && at61.nudged, at61);
+  check("lead3 waiting: the lead itself is still on the entry after the hold lapses (the hold lifts, the record stays)", lead3Of(h, "plan-1") && lead3Of(h, "plan-1").state === "waiting");
+}
+
+// A later turn with a work tool call and no lead line clears the lead, once,
+// and the next idle tick nudges. A channel-origin turn whose only tool call
+// is the reply tool clears nothing, and neither does a turn with no tool
+// call at all.
+async function caseLead3_aWorkingTurnClearsTheLeadAndAReplyDoesNot(clock) {
+  console.log("\n=== Section 3 lead: a working turn clears the lead; a reply to the operator does not ===");
+  clock.set(T0);
+  const h = await lead3Harness("lead3_clear");
+  await lead3Turn(h, "t-set", "BLOCKED: waiting on the operator", { workTool: true });
+  check("lead3 clear setup: lead is blocked", lead3Of(h, "plan-1") && lead3Of(h, "plan-1").state === "blocked");
+
+  await lead3Turn(h, "t-reply", "Still waiting on you.", { reply: true, channel: true });
+  check("lead3 clear: a channel-origin turn whose only tool call is the reply tool leaves the lead blocked",
+    lead3Of(h, "plan-1") && lead3Of(h, "plan-1").state === "blocked", lead3Of(h, "plan-1"));
+  check("lead3 clear: the reply turn was a channel turn with the reply tool called (no backfill needed)",
+    !getDecisions(h).some(d => d.action === "channel_reply_backfilled") && h.toolCalls.length === 0);
+  await lead3Turn(h, "t-no-tools", "Thinking about it.");
+  check("lead3 clear: a turn with no tool call at all leaves the lead blocked", lead3Of(h, "plan-1") && lead3Of(h, "plan-1").state === "blocked");
+  check("lead3 clear: no lead_cleared so far", !getDecisions(h).some(d => d.action === "lead_cleared"));
+  const stillHeld = await lead3IdleTick(h, clock);
+  check("lead3 clear: the idle tick is still held after those turns", !stillHeld.classified && !stillHeld.nudged, stillHeld);
+
+  await lead3Turn(h, "t-work", "Fixed the fixture and moved on.", { workTool: true });
+  const cleared = getDecisions(h).filter(d => d.action === "lead_cleared");
+  check("lead3 clear: a work-tool turn with no lead line clears the lead", lead3Of(h, "plan-1") === null || lead3Of(h, "plan-1") === undefined, lead3Of(h, "plan-1"));
+  check("lead3 clear: one lead_cleared decision naming the entry", cleared.length === 1 && cleared[0].detail.startsWith("plan-1:"), cleared);
+  const running = await lead3IdleTick(h, clock);
+  check("lead3 clear: the next idle tick nudges", running.classified && running.nudged, running);
+  await lead3Turn(h, "t-work-again", "More work.", { workTool: true });
+  check("lead3 clear: a second working turn with no lead logs no second lead_cleared", getDecisions(h).filter(d => d.action === "lead_cleared").length === 1);
+}
+
+// A lead set before a simulated restart is still set after the store
+// reloads: session.start re-reads the persisted store, and the idle tick
+// after it is held. The control strips the lead from the stored file before
+// the reload, and that tick runs, so the hold read here comes from the
+// reloaded store and not from memory the reload never touched.
+async function caseLead3_leadSurvivesARestart(clock) {
+  console.log("\n=== Section 3 lead: a lead survives a simulated restart ===");
+  for (const stripBeforeReload of [false, true]) {
+    clock.set(T0);
+    const label = `lead3 restart (${stripBeforeReload ? "control, lead stripped from the file" : "lead in the file"})`;
+    const h = await lead3Harness(`lead3_restart_${stripBeforeReload ? "control" : "kept"}`);
+    await lead3Turn(h, "t-set", "BLOCKED: waiting on the operator", { workTool: true });
+    const raw = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE));
+    const stored = raw.default.goals.find(g => g.id === "plan-1").lead;
+    check(`${label}: the persisted store carries the lead`, stored && stored.state === "blocked", stored);
+    if (stripBeforeReload) {
+      delete raw.default.goals.find(g => g.id === "plan-1").lead;
+      h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify(raw));
+    }
+    await h.handlers["session.start"](h.fake, {}, () => {});
+    const tick = await lead3IdleTick(h, clock);
+    if (stripBeforeReload) {
+      check(`${label}: the tick classifies and nudges`, tick.classified && tick.nudged, tick);
+    } else {
+      check(`${label}: the tick is held after the reload`, !tick.classified && !tick.nudged, tick);
+      // A working turn after the reload clears it, which proves the reloaded
+      // state is the one the writer now edits.
+      await lead3Turn(h, "t-after", "Back.", { workTool: true });
+      check(`${label}: after the reload the lead is still the writer's own field (cleared by a working turn)`,
+        !lead3Of(h, "plan-1") && getDecisions(h).some(d => d.action === "lead_cleared"));
+    }
+  }
+}
+
+// A turn carrying both a BLOCKED: first line and a valid ASK: line opens the
+// ask as today (ask_opened, pendingAskId, the node paused with the question)
+// and sets the lead.
+async function caseLead3_blockedWithAnAskOpensTheAskAndSetsTheLead(clock) {
+  console.log("\n=== Section 3 lead: BLOCKED: first line plus an ASK: line opens the ask and sets the lead ===");
+  clock.set(T0);
+  const h = await lead3Harness("lead3_blocked_with_ask");
+  await lead3Turn(h, "t-both", "BLOCKED: the fork below\nASK: Which base branch? Recommend: main", { workTool: true });
+  const state = getState(h);
+  const plan1 = state.goals.find(g => g.id === "plan-1");
+  const decisions = getDecisions(h);
+  check("lead3 with ask: the ask opened as today", decisions.some(d => d.action === "ask_opened" && d.detail.includes("Which base branch?")) && typeof state.pendingAskId === "string", decisions.filter(d => d.action === "ask_opened"));
+  check("lead3 with ask: the node is paused with the question, as today", plan1.status === "paused" && plan1.blockedReason === "Which base branch? Recommend: main", plan1);
+  check("lead3 with ask: the lead is blocked with the first line's reason", plan1.lead && plan1.lead.state === "blocked" && plan1.lead.reason === "the fork below", plan1.lead);
+}
+
+// With no lead set, an idle classifier outcome of complete on a plan entry
+// completes nothing, logs complete_ignored and sends a nudge in its place,
+// for the plan node and for a task under it. On a task entry it completes
+// the entry as today, which is the control that the classifier's complete
+// verdict reached the branch.
+async function caseLead3_controllerCompleteIsIgnoredOnAPlanEntry(clock) {
+  console.log("\n=== Section 3 lead: a controller complete verdict is ignored on a plan entry and honoured on a task entry ===");
+  const shapes = [
+    { label: "plan node", tree: plan2Goals({ chapterCount: 1 }), leafId: "plan-1", planEntry: true },
+    { label: "task under a plan node", tree: plan2Goals({ taskUnderPlan: true, chapterCount: 1 }), leafId: "task-1", planEntry: true },
+    {
+      label: "task entry (control)",
+      tree: {
+        goals: [
+          makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+          makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", maxRounds: 10, createdAt: T0 - 20000 }),
+          makeGoalNode({ id: "task-2", parentId: "root-1", kind: "task", status: "pending", maxRounds: 10, createdAt: T0 - 10000 }),
+        ],
+        activeGoalId: "task-1",
+      },
+      leafId: "task-1",
+      planEntry: false,
+    },
+  ];
+  for (const shape of shapes) {
+    clock.set(T0);
+    const h = await createTickHarness({ ...OPTS, caseName: `lead3_complete_${shapes.indexOf(shape)}`, stateOpts: { now: T0, goals: shape.tree.goals, activeGoalId: shape.tree.activeGoalId } });
+    h.fsMap.set(PLAN2_FILE, LEAD3_DOC);
+    h.fsMap.set(".agentic-health", "true");
+    h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("complete")) ? "complete" : "discard");
+    clock.advance(130_000);
+    await tickAndSettle(h, clock, 50);
+    const state = getState(h);
+    const leaf = state.goals.find(g => g.id === shape.leafId);
+    const decisions = getDecisions(h);
+    const ignored = decisions.filter(d => d.action === "complete_ignored");
+    const completed = decisions.filter(d => d.action === "completed_by_controller");
+    check(`lead3 complete (${shape.label}): the idle classifier was called`, h.classifyCalls.some(c => Array.isArray(c[1]) && c[1].includes("complete")));
+    if (shape.planEntry) {
+      check(`lead3 complete (${shape.label}): the entry stays active`, leaf.status === "active" && state.activeGoalId === shape.leafId, leaf.status);
+      check(`lead3 complete (${shape.label}): one complete_ignored decision naming the entry, no completed_by_controller`,
+        ignored.length === 1 && ignored[0].detail.startsWith(`${shape.leafId}:`) && completed.length === 0, { ignored, completed });
+      check(`lead3 complete (${shape.label}): plan-2 stays pending`, state.goals.find(g => g.id === "plan-2").status === "pending");
+      check(`lead3 complete (${shape.label}): the ignored verdict is converted to a nudge that is sent`,
+        decisions.filter(d => d.action === "nudge_sent").length === 1, decisions.filter(d => d.action === "nudge_sent"));
+    } else {
+      check(`lead3 complete (${shape.label}): the entry is complete as today`, leaf.status === "complete" && completed.length === 1 && ignored.length === 0, { status: leaf.status, completed, ignored });
+      check(`lead3 complete (${shape.label}): the next task is activated`, state.activeGoalId === "task-2");
+    }
+  }
+}
+
+// A plan entry whose closing text reads finished while its document stays In
+// Progress is not left idle: every nudge window whose classifier answers
+// complete logs complete_ignored and sends a nudge, and the three-nudge
+// stall pause is what bounds the repeats. The nudge cost cap is raised so
+// the stall pause, not the hourly cap, is the bound read here.
+async function caseLead3_ignoredCompleteNudgesEachWindowUntilTheStallPause(clock) {
+  console.log("\n=== Section 3 lead: an ignored complete nudges each window until the stall pause ===");
+  clock.set(T0);
+  const h = await lead3Harness("lead3_complete_repeats", {}, { costMaxNudgesPerHour: 10 });
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("complete")) ? "complete" : "discard");
+  for (let window = 1; window <= 3; window++) {
+    clock.advance(130_000);
+    await tickAndSettle(h, clock, 50);
+    const decisions = getDecisions(h);
+    const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+    check(`lead3 complete repeats: window ${window} logs complete_ignored ${window} time(s) in all`,
+      decisions.filter(d => d.action === "complete_ignored").length === window, decisions.filter(d => d.action === "complete_ignored").length);
+    check(`lead3 complete repeats: window ${window} sends nudge #${window}`,
+      decisions.filter(d => d.action === "nudge_sent").length === window && decisions.some(d => d.action === "nudge_sent" && d.detail.includes(`nudge #${window}`)),
+      decisions.filter(d => d.action === "nudge_sent"));
+    check(`lead3 complete repeats: window ${window} leaves plan-1 active`, plan1.status === "active", plan1.status);
+  }
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  const decisions = getDecisions(h);
+  const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+  check("lead3 complete repeats: the fourth window reaches the stall pause, no fourth nudge",
+    decisions.some(d => d.action === "nudge_cap_reached") && decisions.filter(d => d.action === "nudge_sent").length === 3, decisions.slice(-4));
+  check("lead3 complete repeats: the stall pause pauses plan-1 and completes nothing",
+    plan1.status === "paused" && plan1.pausedByNudgeCap === true && !decisions.some(d => d.action === "completed_by_controller"), plan1);
+}
+
+// A task entry carrying a stale blocked lead is not held: the hold reads a
+// lead only on a plan entry, the one kind of entry whose turns clear it. The
+// lead is hand-set in the fixture, since no turn writes one on a task entry.
+async function caseLead3_staleLeadOnATaskEntryIsNotHeld(clock) {
+  console.log("\n=== Section 3 lead: a stale lead on a task entry does not hold the idle branch ===");
+  clock.set(T0);
+  const goals = [
+    makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+    makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", maxRounds: 10, createdAt: T0 - 20000,
+      lead: { state: "blocked", reason: "stale", at: T0 - 1000 } }),
+  ];
+  const h = await createTickHarness({ ...OPTS, caseName: "lead3_stale_task_lead", stateOpts: { now: T0, goals, activeGoalId: "task-1" } });
+  check("lead3 stale task lead setup: the store carries the blocked lead on the task", getState(h).goals.find(g => g.id === "task-1").lead?.state === "blocked");
+  const tick = await lead3IdleTick(h, clock);
+  check("lead3 stale task lead: the idle tick classifies and nudges", tick.classified && tick.nudged, tick);
+}
+
+// A task entry's closing text sets no lead, whatever its first line says:
+// the lead read is gated on the turn-start entry being a plan entry.
+async function caseLead3_taskEntrySetsNoLead(clock) {
+  console.log("\n=== Section 3 lead: a task entry's closing text sets no lead ===");
+  for (const answer of ["BLOCKED: waiting on the operator", "WAITING: the suite"]) {
+    clock.set(T0);
+    const goals = [
+      makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+      makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", maxRounds: 10, createdAt: T0 - 20000 }),
+    ];
+    const h = await createTickHarness({ ...OPTS, caseName: `lead3_task_${answer.slice(0, 7)}`, stateOpts: { now: T0, goals, activeGoalId: "task-1" } });
+    await lead3Turn(h, "t-task", answer, { workTool: true });
+    const task = getState(h).goals.find(g => g.id === "task-1");
+    check(`lead3 task entry ${JSON.stringify(answer)} refused by the plan-entry gate: no lead on the task`, task.lead === undefined || task.lead === null, task.lead);
+    check(`lead3 task entry ${JSON.stringify(answer)}: no lead_set decision`, !getDecisions(h).some(d => d.action === "lead_set"));
+    const tick = await lead3IdleTick(h, clock);
+    check(`lead3 task entry ${JSON.stringify(answer)}: the idle tick classifies and nudges`, tick.classified && tick.nudged, tick);
+  }
+}
+
+// Section 3 Tests line, "lock the hold in both directions, since a hold that
+// never lifts is the defect this plan removes wearing a new name": a blocked
+// lead that opened an ask is lifted once the operator's answer closes that
+// ask. The answer itself leaves the lead in place and the worker's answer
+// turn is reply-only, which clears nothing at turn end; the idle tick reads
+// the ask closed after the lead was set, clears the lead there and runs the
+// idle branch.
+async function caseLead3_theOperatorsAnswerToTheAskLiftsABlockedLead(clock) {
+  console.log("\n=== Section 3 lead: the operator's answer to the ask lifts a blocked lead (the hold lifts in both directions) ===");
+  clock.set(T0);
+  const h = await lead3Harness("lead3_ask_answer_lifts");
+  await lead3Turn(h, "t-ask", "BLOCKED: need the operator's fork\nASK: Which DB? Recommend: X", { workTool: true });
+  const askId = getState(h).pendingAskId;
+  check("lead3 ask answer lifts setup: the ask is open, plan-1 paused, the lead blocked",
+    typeof askId === "string" && getState(h).goals.find(g => g.id === "plan-1").status === "paused" && lead3Of(h, "plan-1")?.state === "blocked",
+    { askId, lead: lead3Of(h, "plan-1") });
+
+  clock.advance(1_000);
+  await h.handlers["prompt.submit"](h.fake, { text: "Use X.", origin: { kind: "channel" } }, async () => ({}));
+  await lead3Turn(h, "t-answer", "Going with X.", { reply: true });
+  const state = getState(h);
+  const plan1 = state.goals.find(g => g.id === "plan-1");
+  check("lead3 ask answer lifts: the answer closed the ask and reactivated plan-1", !state.pendingAskId && plan1.status === "active", { pendingAskId: state.pendingAskId, status: plan1.status });
+  check("lead3 ask answer lifts: the answer and the reply-only turn leave the lead in place for the tick",
+    plan1.lead?.state === "blocked" && !getDecisions(h).some(d => d.action === "lead_cleared"), plan1.lead);
+  const tick = await lead3IdleTick(h, clock);
+  const cleared = getDecisions(h).filter(d => d.action === "lead_cleared");
+  check("lead3 ask answer lifts: after the idle tick the lead is null", !lead3Of(h, "plan-1"), lead3Of(h, "plan-1"));
+  check("lead3 ask answer lifts: one lead_cleared decision naming the entry and the closed ask",
+    cleared.length === 1 && cleared[0].detail.startsWith("plan-1:") && cleared[0].detail.includes("ask closed"), cleared);
+  check("lead3 ask answer lifts: the idle tick past the nudge threshold runs the idle branch", tick.classified || tick.nudged, tick);
+}
+
+// Section 3 Tests line, "lock the hold in both directions, since a hold that
+// never lifts is the defect this plan removes wearing a new name": the same
+// lift through the coordinator's route, an inbox answer record against the
+// open ask, delivered on the tick. A reply-only turn follows, and the idle
+// tick after it clears the lead and runs the idle branch.
+async function caseLead3_anInboxAnswerToTheAskLiftsABlockedLead(clock) {
+  console.log("\n=== Section 3 lead: an inbox answer to the ask lifts a blocked lead (the hold lifts in both directions) ===");
+  clock.set(T0);
+  const h = await lead3Harness("lead3_inbox_answer_lifts");
+  await lead3Turn(h, "t-ask", "BLOCKED: need the coordinator's fork\nASK: Which DB? Recommend: X", { workTool: true });
+  const askId = getState(h).pendingAskId;
+  check("lead3 inbox answer lifts setup: the ask is open and the lead blocked",
+    typeof askId === "string" && lead3Of(h, "plan-1")?.state === "blocked", { askId, lead: lead3Of(h, "plan-1") });
+
+  seedForeignClaims(h, "answer-writer-session", T0, ["reader:default"]);
+  seedRecordFor(h, "default", "answer-writer-session", 1, { at: T0 - 500, kind: "answer", answers: askId, text: "Use X." });
+  clock.advance(65_000);
+  await tickAndSettle(h, clock, 50);
+  const state = getState(h);
+  check("lead3 inbox answer lifts: the inbox answer closed the ask and reactivated plan-1",
+    !state.pendingAskId && state.decisions.some(d => d.action === "ask_answered") && state.goals.find(g => g.id === "plan-1").status === "active",
+    state.decisions.slice(-4));
+
+  await lead3Turn(h, "t-answer", "Going with X.", { reply: true });
+  const tick = await lead3IdleTick(h, clock);
+  const cleared = getDecisions(h).filter(d => d.action === "lead_cleared");
+  check("lead3 inbox answer lifts: after the idle tick the lead is null", !lead3Of(h, "plan-1"), lead3Of(h, "plan-1"));
+  check("lead3 inbox answer lifts: one lead_cleared decision naming the entry and the closed ask",
+    cleared.length === 1 && cleared[0].detail.startsWith("plan-1:") && cleared[0].detail.includes("ask closed"), cleared);
+  check("lead3 inbox answer lifts: the idle tick past the nudge threshold runs the idle branch", tick.classified || tick.nudged, tick);
+}
+
+// Control for the ask lift: a blocked lead written after the entry's last
+// ask closed still holds, since that ask settled an earlier block and not
+// this one.
+async function caseLead3_aBlockedLeadSetAfterTheAskClosedStillHolds(clock) {
+  console.log("\n=== Section 3 lead: a blocked lead set after the ask closed still holds ===");
+  clock.set(T0);
+  const h = await lead3Harness("lead3_lead_after_ask_holds");
+  await lead3Turn(h, "t-ask", "BLOCKED: need the operator's fork\nASK: Which DB? Recommend: X", { workTool: true });
+  clock.advance(1_000);
+  await h.handlers["prompt.submit"](h.fake, { text: "Use X.", origin: { kind: "channel" } }, async () => ({}));
+  clock.advance(1_000);
+  await lead3Turn(h, "t-blocked-again", "BLOCKED: the migration needs a DBA", { workTool: true });
+  const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+  check("lead3 lead after ask setup: the ask closed before the new lead was set",
+    !getState(h).pendingAskId && typeof plan1.lastAskClosedAt === "number" && plan1.lead?.state === "blocked" && plan1.lead.at > plan1.lastAskClosedAt,
+    { lastAskClosedAt: plan1.lastAskClosedAt, lead: plan1.lead });
+  const tick = await lead3IdleTick(h, clock);
+  check("lead3 lead after ask: the idle tick is held (no classifier call, no nudge)", !tick.classified && !tick.nudged, tick);
+  check("lead3 lead after ask: the lead is still blocked and no lead_cleared is logged",
+    lead3Of(h, "plan-1")?.reason === "the migration needs a DBA" && !getDecisions(h).some(d => d.action === "lead_cleared"), lead3Of(h, "plan-1"));
+}
+
+// Control for the goal_resume lift: resuming a different entry leaves a
+// blocked lead on the entry it pauses in place, and logs no lead_cleared.
+async function caseLead3_goalResumeOfAnotherEntryKeepsTheLead(clock) {
+  console.log("\n=== Section 3 lead: goal_resume of another entry keeps this entry's blocked lead ===");
+  clock.set(T0);
+  const h = await lead3Harness("lead3_resume_other_keeps");
+  await lead3Turn(h, "t-set", "BLOCKED: waiting on the operator", { workTool: true });
+  const paused = await callTool(h, { tool: "mcp__agentic-plugin__goal_edit", nodeId: "plan-2", action: "pause", reason: "held back" });
+  const resumed = await callTool(h, { tool: "mcp__agentic-plugin__goal_resume", nodeId: "plan-2" });
+  const state = getState(h);
+  check("lead3 resume other setup: plan-2 paused then resumed, plan-1 paused by the resume",
+    !paused.deny && !resumed.deny && state.activeGoalId === "plan-2" && state.goals.find(g => g.id === "plan-1").status === "paused",
+    { paused, resumed, active: state.activeGoalId });
+  check("lead3 resume other: plan-1's blocked lead survives", lead3Of(h, "plan-1")?.state === "blocked", lead3Of(h, "plan-1"));
+  check("lead3 resume other: no lead_cleared decision", !getDecisions(h).some(d => d.action === "lead_cleared"));
+}
+
+// Control for the goal_resume lift: a waiting lead keeps its own hold window
+// through a resume of its entry, and no lead_cleared is logged.
+async function caseLead3_goalResumeKeepsAWaitingLead(clock) {
+  console.log("\n=== Section 3 lead: goal_resume keeps a waiting lead ===");
+  clock.set(T0);
+  const h = await lead3Harness("lead3_resume_keeps_waiting");
+  await lead3Turn(h, "t-set", "WAITING: the suite is running in the background", { workTool: true });
+  const paused = await callTool(h, { tool: "mcp__agentic-plugin__goal_edit", nodeId: "plan-1", action: "pause", reason: "operator away" });
+  const resumed = await callTool(h, { tool: "mcp__agentic-plugin__goal_resume", nodeId: "plan-1" });
+  check("lead3 resume waiting setup: plan-1 paused then resumed to active",
+    !paused.deny && !resumed.deny && getState(h).goals.find(g => g.id === "plan-1").status === "active", { paused, resumed });
+  check("lead3 resume waiting: the waiting lead stays, with its time unchanged",
+    lead3Of(h, "plan-1")?.state === "waiting" && lead3Of(h, "plan-1").at === T0, lead3Of(h, "plan-1"));
+  check("lead3 resume waiting: no lead_cleared decision", !getDecisions(h).some(d => d.action === "lead_cleared"));
+}
+
+// Control for the ask lift: it reads a blocked lead only. A waiting lead
+// whose entry's ask closes after the lead was set keeps its own hold, so an
+// idle tick past the nudge threshold but inside the hold window is held, the
+// lead is unchanged and no lead_cleared is logged.
+async function caseLead3_anAskClosedAfterAWaitingLeadKeepsTheHold(clock) {
+  console.log("\n=== Section 3 lead: an ask closed after a waiting lead keeps the waiting hold ===");
+  clock.set(T0);
+  const h = await lead3Harness("lead3_waiting_ask_closed_holds");
+  await lead3Turn(h, "t-ask", "WAITING: the suite is running in the background\nASK: Which DB? Recommend: X", { workTool: true });
+  const askId = getState(h).pendingAskId;
+  check("lead3 waiting ask closed setup: the ask is open and the lead waiting",
+    typeof askId === "string" && lead3Of(h, "plan-1")?.state === "waiting" && lead3Of(h, "plan-1").at === T0, { askId, lead: lead3Of(h, "plan-1") });
+
+  clock.advance(1_000);
+  await h.handlers["prompt.submit"](h.fake, { text: "Use X.", origin: { kind: "channel" } }, async () => ({}));
+  await lead3Turn(h, "t-answer", "Going with X.", { reply: true });
+  const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+  check("lead3 waiting ask closed setup: the ask closed after the lead was set and plan-1 is active",
+    !getState(h).pendingAskId && plan1.status === "active" && typeof plan1.lastAskClosedAt === "number" && plan1.lastAskClosedAt > plan1.lead.at,
+    { lastAskClosedAt: plan1.lastAskClosedAt, lead: plan1.lead, status: plan1.status });
+  const tick = await lead3IdleTick(h, clock);
+  check("lead3 waiting ask closed: the idle tick inside the hold window is held (no classifier call, no nudge)", !tick.classified && !tick.nudged, tick);
+  const lead = lead3Of(h, "plan-1");
+  check("lead3 waiting ask closed: the waiting lead is unchanged and no lead_cleared is logged",
+    lead?.state === "waiting" && lead.at === T0 && lead.reason === "the suite is running in the background" && !getDecisions(h).some(d => d.action === "lead_cleared"), lead);
+}
+
+// A reader session never reads the plan document: its state is never saved,
+// so a completion there would run completeLeaf, a health run and activateNext
+// in memory that persist refuses. The reader joins a persona another session
+// owns, on the Section 2 tree with a document reading Complete, and closes a
+// turn. Every $.fs.read of the document is counted, which is the instrument;
+// the owner-side control on the same document and tree completes plan-1.
+async function caseLead3_aReaderSessionDoesNotReadThePlanDocument(clock) {
+  console.log("\n=== Section 2 document read: a reader session does not read the plan document ===");
+  for (const asReader of [true, false]) {
+    clock.set(T0);
+    const label = asReader ? "plan doc reader" : "plan doc reader (control, owner)";
+    const tree = plan2Goals({ chapterCount: 1 });
+    let h;
+    if (asReader) {
+      h = await createTickHarness({ ...OPTS, caseName: "lead3_reader_doc" });
+      h.storeMap.delete(`commons:${SESSION_ID}`);
+      seedOwnerCommons(h, "doc-owner-001", T0, {});
+      const ownerState = buildPersonaState("doc-owner-001", T0);
+      ownerState.goals = tree.goals;
+      ownerState.activeGoalId = tree.activeGoalId;
+      h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: ownerState }));
+      h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: "doc-owner-001", epoch: 1, lastSeen: T0 } }));
+      await h.handlers["session.start"](h.fake, {}, () => {});
+      check(`${label} setup: joined as a reader`, h.storeMap.get(`commons:${SESSION_ID}`)?.claims?.some(c => c.resource === "reader:default") === true, h.storeMap.get(`commons:${SESSION_ID}`));
+    } else {
+      h = await lead3Harness("lead3_reader_doc_control");
+    }
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+    const docReads = [];
+    const read = h.fake.fs.read;
+    h.fake.fs.read = (p) => { if (p === PLAN2_FILE) docReads.push(p); return read(p); };
+    await h.handlers["turn.start"](h.fake, { turnId: "t-doc" }, async () => ({ result: "ok" }));
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-doc", answer: "Working on it.", reason: "completed" }, async () => ({ result: "ok" }));
+    const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+    const completeLogged = h.uiLogs.some(l => l.includes("plan complete"));
+    if (asReader) {
+      check(`${label}: the plan document is not read`, docReads.length === 0, docReads);
+      check(`${label}: nothing is completed (no plan complete log, plan-1 still active in the store)`, !completeLogged && plan1.status === "active", { completeLogged, status: plan1.status });
+      check(`${label}: no plan decision is logged`, !getDecisions(h).some(d => d.action === "complete" || d.action === "plan_progress" || d.action === "plan_record_unreadable"));
+    } else {
+      check(`${label}: the owner reads the document and completes plan-1`, docReads.length > 0 && completeLogged && plan1.status === "complete", { reads: docReads.length, completeLogged, status: plan1.status });
+    }
+  }
+}
+
+// Completion by the plan document leaves no lead on what it completes: a
+// blocked lead on the plan node, or on a task under it, is gone once a
+// document reading Complete completes the holder and its live subtree. The
+// turn that reads the document calls no work tool and carries no lead line,
+// so the document is the only thing that can clear the lead.
+async function caseLead3_documentCompletionClearsTheLead(clock) {
+  console.log("\n=== Section 3 lead: completion by the plan document clears the lead ===");
+  for (const taskUnderPlan of [false, true]) {
+    clock.set(T0);
+    const leafId = taskUnderPlan ? "task-1" : "plan-1";
+    const label = `lead3 doc complete (${taskUnderPlan ? "task under a plan node" : "plan node"})`;
+    const h = await lead3Harness(`lead3_doc_complete_${taskUnderPlan ? "task" : "plan"}`, { taskUnderPlan });
+    await lead3Turn(h, "t-set", "BLOCKED: waiting on the operator", { workTool: true });
+    check(`${label} setup: the lead is blocked`, lead3Of(h, leafId)?.state === "blocked", lead3Of(h, leafId));
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+    await lead3Turn(h, "t-done", "Wrapped up.");
+    const leaf = getState(h).goals.find(g => g.id === leafId);
+    check(`${label}: the entry is complete`, leaf.status === "complete", leaf.status);
+    check(`${label}: the completed entry carries no lead`, leaf.lead === null || leaf.lead === undefined, leaf.lead);
+  }
+}
+
+// A turn that calls goal_done and closes with BLOCKED: leaves the entry it
+// completed with no lead: goal_done completes the entry first, and the lead
+// read at turn end writes no lead on a finished entry.
+async function caseLead3_goalDoneThenBlockedSetsNoLead(clock) {
+  console.log("\n=== Section 3 lead: goal_done then a BLOCKED: closing line sets no lead ===");
+  clock.set(T0);
+  const h = await lead3Harness("lead3_goal_done_blocked");
+  await h.handlers["turn.start"](h.fake, { turnId: "t-done" }, async () => ({ result: "ok" }));
+  const done = await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__goal_done", note: "finished", turnId: "t-done" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-done", answer: "BLOCKED: waiting on the operator", reason: "completed" }, async () => ({ result: "ok" }));
+  const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+  check("lead3 goal_done blocked setup: goal_done accepted and plan-1 complete", !done?.deny && plan1.status === "complete", { done, status: plan1.status });
+  check("lead3 goal_done blocked: the completed entry carries no lead", plan1.lead === null || plan1.lead === undefined, plan1.lead);
+  check("lead3 goal_done blocked: no lead_set decision", !getDecisions(h).some(d => d.action === "lead_set"));
+}
+
+// Section 3 Tests line, "lock the hold in both directions, since a hold that
+// never lifts is the defect this plan removes wearing a new name": a blocked
+// lead on a plan entry that is paused and then resumed with goal_resume is
+// lifted by the resume, with no working turn in between.
+async function caseLead3_goalResumeLiftsABlockedLead(clock) {
+  console.log("\n=== Section 3 lead: goal_resume lifts a blocked lead (the hold lifts in both directions) ===");
+  clock.set(T0);
+  const h = await lead3Harness("lead3_resume_lifts");
+  await lead3Turn(h, "t-set", "BLOCKED: waiting on the operator", { workTool: true });
+  const paused = await callTool(h, { tool: "mcp__agentic-plugin__goal_edit", nodeId: "plan-1", action: "pause", reason: "operator away" });
+  check("lead3 resume lifts setup: goal_edit pause accepted, plan-1 paused, the lead blocked",
+    !paused.deny && getState(h).goals.find(g => g.id === "plan-1").status === "paused" && lead3Of(h, "plan-1")?.state === "blocked",
+    { paused, lead: lead3Of(h, "plan-1") });
+
+  const resumed = await callTool(h, { tool: "mcp__agentic-plugin__goal_resume", nodeId: "plan-1" });
+  const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+  const cleared = getDecisions(h).filter(d => d.action === "lead_cleared");
+  check("lead3 resume lifts: goal_resume accepted and plan-1 active", !resumed.deny && plan1.status === "active", { resumed, status: plan1.status });
+  check("lead3 resume lifts: the lead is null", plan1.lead === null || plan1.lead === undefined, plan1.lead);
+  check("lead3 resume lifts: one lead_cleared decision naming the entry and goal_resume",
+    cleared.length === 1 && cleared[0].detail.startsWith("plan-1:") && cleared[0].detail.includes("goal_resume"), cleared);
+  const tick = await lead3IdleTick(h, clock);
+  check("lead3 resume lifts: the idle tick past the nudge threshold runs the idle branch", tick.classified || tick.nudged, tick);
+}
+
+// --- Section 4 (plan-health-from-the-record): which turns are scored ---
+
+// The goal tree for a Section 4 shape: plan2Goals's plan/task-under-plan
+// tree when planEntry, or a bare task tree (no plan ancestor) otherwise.
+function section4Goals(shape) {
+  if (shape.planEntry) return plan2Goals({ taskUnderPlan: shape.taskUnderPlan, chapterCount: 1 });
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 });
+  const task = makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", maxRounds: 10, createdAt: T0 - 20000 });
+  const task2 = makeGoalNode({ id: "task-2", parentId: "root-1", kind: "task", status: "pending", maxRounds: 10, createdAt: T0 - 10000 });
+  return { goals: [root, task, task2], activeGoalId: "task-1" };
+}
+
+// A harness on a Section 4 shape's tree, claimed as owner so a delivery can
+// drain. The plan document, when seeded, reads In Progress with one Chapter
+// matching the stored count, so nothing but the scorer moves a plan entry.
+async function section4Harness(caseName, shape, extraOpts = {}) {
+  const tree = section4Goals(shape);
+  const h = await createTickHarness({ ...OPTS, ...extraOpts, caseName, stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId } });
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+  });
+  if (shape.planEntry) h.fsMap.set(PLAN2_FILE, LEAD3_DOC);
+  return h;
+}
+
+// `key` is the caseName token: two shapes share leafId "task-1" (a task
+// under a plan node and the bare control task), and a caseName built from
+// leafId alone would collide, silently reusing one shape's cached module
+// instance (and its residual turn state) for the other.
+const SECTION4_SHAPES = [
+  { label: "plan node", key: "plan", planEntry: true, taskUnderPlan: false, leafId: "plan-1" },
+  { label: "task under a plan node", key: "taskunderplan", planEntry: true, taskUnderPlan: true, leafId: "task-1" },
+  { label: "task entry (control)", key: "task", planEntry: false, taskUnderPlan: false, leafId: "task-1" },
+];
+
+// A classify stub that tells the scorer's own call (labels carrying on-goal
+// or drift) from the idle branch's call (labels carrying nudge but neither):
+// the scorer's label set and the idle branch's overlap on "complete", so a
+// stub keyed on "complete" alone answers the wrong call.
+function section4Classify(scorerLabel) {
+  return (prompt, labels) => {
+    if (!Array.isArray(labels)) return "discard";
+    if (labels.includes("on-goal") || labels.includes("drift")) return scorerLabel;
+    if (labels.includes("nudge")) return "nudge";
+    return "discard";
+  };
+}
+
+// Bullet 1: a channel-origin turn and a delivery turn each log score_skipped
+// and leave scores, completedRounds and the nudge counter untouched, for a
+// plan entry and for a task entry alike - a channel-origin operator
+// check-in spending nothing is the incident this plan exists to fix. The
+// nudge counter is primed to 1 first (one nudge absorbed by a
+// drift-labelled nudged turn, the same setup Section 2's own "unchanged"
+// cases use) so "untouched" has a value to hold.
+async function caseSection4_channelAndDeliveryTurnsSkipTheScorer(clock) {
+  console.log("\n=== Section 4: a channel-origin turn and a delivery turn each skip the scorer ===");
+  for (const shape of SECTION4_SHAPES) {
+    for (const origin of ["channel", "delivery"]) {
+      clock.set(T0);
+      const h = await section4Harness(`section4_skip_${shape.key}_${origin}`, shape);
+
+      h.setClassifyValue(section4Classify("drift"));
+      clock.advance(130_000);
+      await tickAndSettle(h, clock, 50);
+      await h.handlers["turn.start"](h.fake, { turnId: "t-prime" }, async () => ({ result: "ok" }));
+      await h.handlers["turn.complete"](h.fake, { turnId: "t-prime", answer: "Working.", reason: "completed" }, async () => ({ result: "ok" }));
+      const before = getState(h).goals.find(g => g.id === shape.leafId);
+      const scoresBefore = before.scores.length;
+      const roundsBefore = before.completedRounds;
+
+      const decisionsBefore = getDecisions(h).length;
+      // The origin turn's own classify stub answers on-goal, not drift: an
+      // on-goal answer resets the counter, so a skip that failed to fire
+      // (the turn scored instead) shows up as a moved counter below, where
+      // a drift stub would leave the counter looking untouched either way.
+      h.setClassifyValue(section4Classify("on-goal"));
+      if (origin === "channel") {
+        await h.handlers["prompt.submit"](h.fake, { text: "Status update?", origin: { kind: "channel" } }, async () => ({}));
+        await h.handlers["turn.start"](h.fake, { turnId: "t-origin", text: "Status update?" }, async () => ({ result: "ok" }));
+        await h.handlers["turn.complete"](h.fake, { turnId: "t-origin", answer: "All good.", reason: "completed" }, async () => ({ result: "ok" }));
+      } else {
+        // Seeded between priming and the drain, so the priming tick above
+        // never sees it: a pending record and a due nudge in the same tick
+        // would queue two texts, and this turn must open with only the
+        // delivery's. Timestamped off the clock's current value, not T0:
+        // the clock has already advanced past the priming tick, and a
+        // claimedAt this stale would read as a dead writer's, not a live one.
+        const seededAt = clock.get();
+        seedReaderClaim(h, "writer-s4", seededAt);
+        seedInboxRecord(h, "writer-s4", 1, { at: seededAt - 1000, status: "pending" });
+        await tickAndSettle(h, clock, 50);
+        await h.handlers["turn.start"](h.fake, { turnId: "t-origin" }, async () => ({ result: "ok" }));
+        await h.handlers["turn.complete"](h.fake, { turnId: "t-origin", answer: "Handled.", reason: "completed" }, async () => ({ result: "ok" }));
+      }
+
+      const state = getState(h);
+      const leaf = state.goals.find(g => g.id === shape.leafId);
+      const newDecisions = getDecisions(h).slice(decisionsBefore);
+      const skipped = newDecisions.filter(d => d.action === "score_skipped" && d.detail.startsWith(`${shape.leafId}:`));
+      const label = `section4 skip (${shape.label}, ${origin})`;
+      check(`${label}: exactly one score_skipped naming the fact`,
+        skipped.length === 1 && skipped[0].detail.includes(origin === "channel" ? "channel message" : "delivered record"), skipped);
+      check(`${label}: no score decision from the origin turn`, !newDecisions.some(d => d.action === "score"), newDecisions.filter(d => d.action === "score"));
+      check(`${label}: scores untouched`, leaf.scores.length === scoresBefore, { before: scoresBefore, after: leaf.scores.length });
+      check(`${label}: completedRounds untouched`, leaf.completedRounds === roundsBefore, { before: roundsBefore, after: leaf.completedRounds });
+
+      h.resetClassifyCalls();
+      h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard");
+      clock.advance(130_000);
+      await tickAndSettle(h, clock, 50);
+      const summary = h.classifyCalls.length > 0 ? String(h.classifyCalls[0][0]) : "";
+      check(`${label}: the nudge counter is untouched (idle summary still reads Consecutive nudges sent: 1)`,
+        summary.includes("Consecutive nudges sent: 1"), summary.split("\n").find(l => l.startsWith("Consecutive")));
+    }
+  }
+}
+
+// Bullet 4: an unaccounted turn (the controller did not open it, and it
+// carried no channel message) is scored on a task entry exactly as today,
+// and is not scored at all on a plan entry, a task under a plan node
+// included. The task entry is the control that shows the instrument
+// speaks: the same call, scored on one shape and skipped on the other.
+async function caseSection4_unaccountedTurnScoredOnTaskEntryNotOnPlanEntry(clock) {
+  console.log("\n=== Section 4: an unaccounted turn is scored on a task entry, not on a plan entry ===");
+  for (const shape of SECTION4_SHAPES) {
+    clock.set(T0);
+    const h = await section4Harness(`section4_unaccounted_${shape.key}`, shape);
+    await plan2ScoredTurn(h, "t-unaccounted", "drift");
+    const leaf = getState(h).goals.find(g => g.id === shape.leafId);
+    const decisions = getDecisions(h);
+    const label = `section4 unaccounted (${shape.label})`;
+    if (shape.planEntry) {
+      check(`${label}: no score decision, one score_skipped naming the entry and the reason`,
+        !decisions.some(d => d.action === "score") &&
+        decisions.filter(d => d.action === "score_skipped" && d.detail.startsWith(`${shape.leafId}:`) && d.detail.includes("not opened by a nudge")).length === 1,
+        decisions.filter(d => d.action.startsWith("score")));
+      check(`${label}: no score pushed onto the leaf`, leaf.scores.length === 0, leaf.scores.length);
+    } else {
+      check(`${label}: scored as today, one score decision`, decisions.filter(d => d.action === "score").length === 1, decisions.filter(d => d.action === "score"));
+      check(`${label}: one score pushed onto the leaf`, leaf.scores.length === 1, leaf.scores.length);
+      check(`${label}: the round was spent (a task entry's unaccounted turn still burns a round on drift)`, leaf.completedRounds === 1, leaf.completedRounds);
+    }
+  }
+}
+
+// Bullet 2: a nudged turn on a plan entry labelled on-goal resets the nudge
+// counter. One labelled complete moves nothing at the scorer - not the
+// counter, not a round, not the entry's status - so it neither completes
+// the entry nor clears what a run of nudges owes the stall pause. Done is
+// read from the plan document (Section 2), never from this classifier's
+// label.
+async function caseSection4_nudgedOnGoalResetsButCompleteMovesNothingOnAPlanEntry(clock) {
+  console.log("\n=== Section 4: a nudged on-goal resets the counter on a plan entry; a nudged complete moves nothing ===");
+  const shapes = SECTION4_SHAPES.filter((s) => s.planEntry);
+  for (const shape of shapes) {
+    for (const scoredLabel of ["on-goal", "complete"]) {
+      clock.set(T0);
+      // The default hourly nudge cap is 2: this case sends three nudges
+      // (prime, the labelled turn's own, and the confirming idle tick), so
+      // the cap is raised the way Section 3's own stall-pause case raises
+      // it, to isolate the label's effect from the unrelated hourly cost cap.
+      const h = await section4Harness(`section4_reset_${shape.key}_${scoredLabel.replace("-", "")}`, shape, { costMaxNudgesPerHour: 10 });
+
+      // Raise the counter to 1 with one nudge-and-drift cycle first, so a
+      // reset, or its absence, has a nonzero value to move or leave alone.
+      h.setClassifyValue(section4Classify("drift"));
+      clock.advance(130_000);
+      await tickAndSettle(h, clock, 50);
+      await h.handlers["turn.start"](h.fake, { turnId: "t-prime" }, async () => ({ result: "ok" }));
+      await h.handlers["turn.complete"](h.fake, { turnId: "t-prime", answer: "Working.", reason: "completed" }, async () => ({ result: "ok" }));
+
+      h.setClassifyValue(section4Classify(scoredLabel));
+      clock.advance(130_000);
+      await tickAndSettle(h, clock, 50);
+      await h.handlers["turn.start"](h.fake, { turnId: "t-labelled" }, async () => ({ result: "ok" }));
+      await h.handlers["turn.complete"](h.fake, { turnId: "t-labelled", answer: "Done for now.", reason: "completed" }, async () => ({ result: "ok" }));
+
+      const state = getState(h);
+      const leaf = state.goals.find(g => g.id === shape.leafId);
+      const decisions = getDecisions(h);
+      const desc = `section4 reset (${shape.label}, ${scoredLabel})`;
+      check(`${desc}: the entry stays active, not completed`, leaf.status === "active" && state.activeGoalId === shape.leafId, leaf.status);
+      check(`${desc}: no complete decision`, !decisions.some(d => d.action === "complete"), decisions.filter(d => d.action === "complete"));
+      check(`${desc}: the scored label is logged`, decisions.some(d => d.action === "score" && d.detail.includes(`: ${scoredLabel}`)), decisions.filter(d => d.action === "score"));
+
+      h.resetClassifyCalls();
+      h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard");
+      clock.advance(130_000);
+      await tickAndSettle(h, clock, 50);
+      const summary = h.classifyCalls.length > 0 ? String(h.classifyCalls[0][0]) : "";
+      // Two nudges have been sent by this point (the priming cycle's and
+      // the labelled turn's own), so on-goal resets the counter to 0;
+      // complete leaves it at 2, the value those two nudges left it at.
+      const expectedCount = scoredLabel === "on-goal" ? 0 : 2;
+      check(`${desc}: the counter reads ${expectedCount} after the ${scoredLabel} label`,
+        summary.includes(`Consecutive nudges sent: ${expectedCount}`), summary.split("\n").find(l => l.startsWith("Consecutive")));
+    }
+  }
+}
+
+// A plan entry's complete verdict at the scorer moves the counter not at all, so three nudged turns each scored complete,
+// with the plan document's Chapter count never rising, trip the same
+// three-nudge stall pause three drift-labelled turns do.
+async function caseSection4_threeNudgedCompleteTurnsTripTheStallPause(clock) {
+  console.log("\n=== Section 4: three nudged complete turns on a plan entry (no Chapter rise) trip the stall pause ===");
+  clock.set(T0);
+  const h = await plan2Harness("section4_stall_pause_complete", { chapterCount: 1 }, { costMaxNudgesPerHour: 10 });
+  h.fsMap.set(PLAN2_FILE, LEAD3_DOC);
+  h.setClassifyValue(section4Classify("complete"));
+  for (let window = 1; window <= 3; window++) {
+    clock.advance(130_000);
+    await tickAndSettle(h, clock, 50);
+    await h.handlers["turn.start"](h.fake, { turnId: `t-complete-${window}` }, async () => ({ result: "ok" }));
+    await h.handlers["turn.complete"](h.fake, { turnId: `t-complete-${window}`, answer: "Think it's done.", reason: "completed" }, async () => ({ result: "ok" }));
+    const decisions = getDecisions(h);
+    const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+    check(`section4 stall pause (complete): window ${window} scores complete ${window} time(s) in all`,
+      decisions.filter(d => d.action === "score" && d.detail.includes(": complete")).length === window, decisions.filter(d => d.action === "score"));
+    check(`section4 stall pause (complete): window ${window} sends nudge #${window}`,
+      decisions.filter(d => d.action === "nudge_sent").length === window, decisions.filter(d => d.action === "nudge_sent"));
+    check(`section4 stall pause (complete): window ${window} leaves plan-1 active, not completed`, plan1.status === "active", plan1.status);
+  }
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  const decisions = getDecisions(h);
+  const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+  check("section4 stall pause (complete): the fourth window reaches the stall pause, no fourth nudge",
+    decisions.some(d => d.action === "nudge_cap_reached") && decisions.filter(d => d.action === "nudge_sent").length === 3, decisions.slice(-4));
+  check("section4 stall pause (complete): the stall pause pauses plan-1 without completing it",
+    plan1.status === "paused" && plan1.pausedByNudgeCap === true && !decisions.some(d => d.action === "complete"), plan1);
+}
+
+// Bullet 2's control: a task entry's nudged complete verdict completes it
+// at the scorer - the plan entry above is the only shape whose complete
+// verdict moves nothing.
+async function caseSection4_nudgedCompleteStillCompletesATaskEntry_control(clock) {
+  console.log("\n=== Section 4 control: a nudged complete still completes a task entry ===");
+  clock.set(T0);
+  const shape = SECTION4_SHAPES.find((s) => !s.planEntry);
+  const h = await section4Harness("section4_reset_task_complete_control", shape);
+  h.setClassifyValue(section4Classify("complete"));
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  await h.handlers["turn.start"](h.fake, { turnId: "t-complete" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-complete", answer: "All done.", reason: "completed" }, async () => ({ result: "ok" }));
+
+  const state = getState(h);
+  const leaf = state.goals.find(g => g.id === shape.leafId);
+  const decisions = getDecisions(h);
+  check("section4 task complete control: the leaf is complete", leaf.status === "complete", leaf.status);
+  check("section4 task complete control: a complete decision was logged naming it",
+    decisions.some(d => d.action === "complete" && d.detail.startsWith(`${shape.leafId}:`)), decisions.filter(d => d.action === "complete"));
+  check("section4 task complete control: the next entry was activated",
+    state.activeGoalId === "task-2" && decisions.some(d => d.action === "activated" && d.detail.includes("task-2")), state.activeGoalId);
+}
+
+// wasNudged is checked before the channel/delivery skip, so a turn matched as a nudge is scored as a nudge
+// whatever else it also carries - here, a channel-origin flag that
+// coincides with the nudge's own queued text.
+async function caseSection4_channelOriginNudgeIsStillScoredAsANudge(clock) {
+  console.log("\n=== Section 4: a turn matched as a nudge is scored as a nudge even when it is also channel-origin ===");
+  clock.set(T0);
+  const shape = SECTION4_SHAPES.find((s) => s.key === "plan");
+  const h = await section4Harness("section4_nudge_and_channel", shape);
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  const nudgeText = h.queuedTurnTexts[h.queuedTurnTexts.length - 1];
+  check("section4 nudge+channel setup: a nudge text is queued", typeof nudgeText === "string" && nudgeText.length > 0, nudgeText);
+
+  h.setClassifyValue(section4Classify("on-goal"));
+  await h.handlers["prompt.submit"](h.fake, { text: nudgeText, origin: { kind: "channel" } }, async () => ({}));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-both", text: nudgeText }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-both", answer: "Working on it.", reason: "completed" }, async () => ({ result: "ok" }));
+
+  const decisions = getDecisions(h);
+  const leaf = getState(h).goals.find(g => g.id === shape.leafId);
+  check("section4 nudge+channel: scored as a nudge, not skipped",
+    decisions.some(d => d.action === "score" && d.detail.includes(": on-goal")), decisions.filter(d => d.action.startsWith("score")));
+  check("section4 nudge+channel: no score_skipped for this turn",
+    !decisions.some(d => d.action === "score_skipped" && d.detail.startsWith(`${shape.leafId}:`)), decisions.filter(d => d.action === "score_skipped"));
+  check("section4 nudge+channel: one score pushed onto the leaf", leaf.scores.length === 1, leaf.scores.length);
+}
+
+// Bullet 3: three nudged turns labelled drift on a plan entry trip the
+// stall pause - drift never resets the counter, so three real
+// nudge-and-score cycles raise it to the MAX_CONSECUTIVE_NUDGES bound. The
+// nudge cost cap is raised so the stall pause, not the hourly cap, is the
+// bound reached.
+async function caseSection4_threeNudgedDriftTurnsTripTheStallPause(clock) {
+  console.log("\n=== Section 4: three nudged drift turns on a plan entry trip the existing stall pause ===");
+  clock.set(T0);
+  const h = await plan2Harness("section4_stall_pause", { chapterCount: 1 }, { costMaxNudgesPerHour: 10 });
+  h.fsMap.set(PLAN2_FILE, LEAD3_DOC);
+  h.setClassifyValue(section4Classify("drift"));
+  for (let window = 1; window <= 3; window++) {
+    clock.advance(130_000);
+    await tickAndSettle(h, clock, 50);
+    await h.handlers["turn.start"](h.fake, { turnId: `t-drift-${window}` }, async () => ({ result: "ok" }));
+    await h.handlers["turn.complete"](h.fake, { turnId: `t-drift-${window}`, answer: "Still working.", reason: "completed" }, async () => ({ result: "ok" }));
+    const decisions = getDecisions(h);
+    const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+    check(`section4 stall pause: window ${window} scores drift ${window} time(s) in all`,
+      decisions.filter(d => d.action === "score" && d.detail.includes(": drift")).length === window, decisions.filter(d => d.action === "score"));
+    check(`section4 stall pause: window ${window} sends nudge #${window}`,
+      decisions.filter(d => d.action === "nudge_sent").length === window, decisions.filter(d => d.action === "nudge_sent"));
+    check(`section4 stall pause: window ${window} leaves plan-1 active`, plan1.status === "active", plan1.status);
+  }
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  const decisions = getDecisions(h);
+  const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+  check("section4 stall pause: the fourth window reaches the stall pause, no fourth nudge",
+    decisions.some(d => d.action === "nudge_cap_reached") && decisions.filter(d => d.action === "nudge_sent").length === 3, decisions.slice(-4));
+  check("section4 stall pause: the stall pause pauses plan-1 without completing it",
+    plan1.status === "paused" && plan1.pausedByNudgeCap === true && !decisions.some(d => d.action === "complete"), plan1);
+}
+
 // Item 8.1 / Round 58 finding 4: goal_edit's drop action refused a blocked node outright, which is
 // exactly why the stale duplicate plan-mtwxh5jx-acm9 could not be retired - blocked was not in its
 // allowed-status list alongside pending/paused. Allowed here, with the reason always recorded.
@@ -13182,4 +15882,557 @@ async function caseSeamSkippedTickAndOffModeWriteNothing(clock) {
   check("seam off: no request left the machine", off.httpCalls.length === 0, off.httpCalls);
   check("seam off: no journal line was written", journalLines(off).length === 0, journalLines(off));
   check("seam off: no key was even read", !off.envGets.includes("TYPESAFE_API_KEY"), off.envGets);
+}
+
+// ============================================================
+// Section 5 (plan-health-from-the-record): the three shadow questions asked
+// at the end of every turn on a plan entry, journaled with three outcomes,
+// and never read by a branch.
+//
+// The invariance cases read the plan's central constraint the way the
+// decision seam's own cases do: a run with the questions on, against a Jev
+// answering at each extreme, failing, or never answering, produces the same
+// decisions and the same goal tree as a run with the kill switch off. The
+// rest pin the lines: one call and three answers per plan-entry turn, the
+// three primitives by name, each outcome kind landing once against the right
+// stamp id, a completing entry dropping what it held, a task entry asking
+// none, and a hung request delaying no turn's end.
+// ============================================================
+
+const PLAN_HEALTH_SITE = "plan-health";
+const PLAN_HEALTH_KINDS = ["lead_blocked", "chapter_within", "next_speaker"];
+const PLAN_HEALTH_QUESTION_SET = "worker-blocked,rounds-converging,block-owner";
+
+// The lines the plan health request wrote: its call lines, the answer lines
+// joined to them, and the outcome lines of its three kinds.
+function planHealthLines(h) {
+  const calls = journalLinesOfKind(h, "call").filter((c) => c.site === PLAN_HEALTH_SITE);
+  const answers = journalLinesOfKind(h, "answer").filter((a) => calls.some((c) => c.stampId === a.callStampId));
+  const outcomes = journalLinesOfKind(h, "outcome").filter((o) => PLAN_HEALTH_KINDS.includes(o.kind));
+  return { calls, answers, outcomes };
+}
+
+// The request bodies that carried the three questions, read off the fake's
+// own record of every fetch rather than a path the case names.
+function planHealthRequests(h) {
+  return h.httpCalls
+    .map((c) => { try { return JSON.parse(c.init.body); } catch { return null; } })
+    .filter((b) => b && b.questions && Object.keys(b.questions).length === 3);
+}
+
+// A Jev answering every question from the request body it was handed, with
+// the pickers given: the first option, a Noul in the middle and the middle
+// level unless a case says otherwise.
+function jevPicking(pick = {}) {
+  const pickers = { choice: (questionId, optionIds) => optionIds[0], noul: () => 0.2, score: () => 1, ...pick };
+  return (url, init) => jevResponseFor(init, pickers);
+}
+
+// A harness on the Section 2 tree with the plan document seeded at one
+// Chapter matching the stored count, claimed as owner so a delivery can
+// drain, with the seam's key present so a shadow call reaches a request. A
+// case passing jevMode "off" gets no key, the shape of a machine with the
+// switch turned off.
+async function planHealthHarness(caseName, clock, { taskUnderPlan = false, jevMode = "shadow" } = {}) {
+  clock.set(T0);
+  const h = await lead3Harness(caseName, { taskUnderPlan }, { jevMode });
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+  });
+  if (jevMode !== "off") h.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+  return h;
+}
+
+// One completed turn on the entry with a work tool call, then a pause for the
+// non-awaited shadow chains to settle before the case reads the journal.
+async function planHealthTurn(h, turnId, answer, opts = {}) {
+  await lead3Turn(h, turnId, answer, { workTool: true, ...opts });
+  await new Promise((r) => setTimeout(r, 60));
+}
+
+// One turn opened by a delivered record: a pending record from a live
+// reader is seeded, the tick drains it, and the turn opens with the queued
+// delivery text.
+async function planHealthDeliveryTurn(h, clock, turnId, seq, answer) {
+  const at = clock.get();
+  seedReaderClaim(h, "writer-s5", at);
+  seedInboxRecord(h, "writer-s5", seq, { at: at - 1000, status: "pending" });
+  await tickAndSettle(h, clock, 50);
+  await h.handlers["turn.start"](h.fake, { turnId }, async () => ({ result: "ok" }));
+  await h.handlers["tool.call"](h.fake, { tool: "Bash", turnId }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId, answer, reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+}
+
+// Bullet 3: one call line and three answer lines per plan-entry turn, the
+// three primitives recorded by name, and the request carrying the state the
+// plan states, for the plan node and for a task under it.
+async function casePlanHealth_oneCallAndThreeAnswersPerPlanEntryTurn(clock) {
+  console.log("\n=== Section 5 plan health: one call and three answers per plan-entry turn ===");
+  for (const shape of [{ key: "plan", taskUnderPlan: false, leafId: "plan-1" }, { key: "taskunderplan", taskUnderPlan: true, leafId: "task-1" }]) {
+    const h = await planHealthHarness(`s5_lines_${shape.key}`, clock, { taskUnderPlan: shape.taskUnderPlan });
+    h.setHttpResponse(jevPicking());
+    await planHealthTurn(h, "t-ph-1", "Working on it.");
+    const label = `s5 lines (${shape.key})`;
+
+    const { calls, answers, outcomes } = planHealthLines(h);
+    check(`${label}: one plan-health call line, ok, naming the three sets`,
+      calls.length === 1 && calls[0].result === "ok" && calls[0].questionSet === PLAN_HEALTH_QUESTION_SET && calls[0].mode === "shadow", calls);
+    check(`${label}: the call line's state is the object with this turn's closing text and the one recent text`,
+      calls.length === 1 && calls[0].state === JSON.stringify({ closingText: "Working on it.", recentClosingTexts: ["Working on it."] }), calls[0] && calls[0].state);
+    check(`${label}: three answer lines joined to that call, the primitives by name in the request's order`,
+      answers.length === 3 && answers.every((a) => a.callStampId === calls[0].stampId)
+        && answers.map((a) => a.primitive).join(",") === "noul,score,choice"
+        && answers.map((a) => a.questionId).join(",") === PLAN_HEALTH_QUESTION_SET, answers);
+    check(`${label}: the Noul line carries its probability, the Score its level, the Choice its option, with no Haiku value`,
+      answers.length === 3 && answers[0].value === "0.2" && answers[0].confidence === null
+        && answers[1].value === "1" && answers[1].probabilities["1"] === 1
+        && answers[2].value === "operator" && answers.every((a) => a.haikuValue === null && a.agrees === null), answers);
+
+    const requests = planHealthRequests(h);
+    check(`${label}: exactly one request carried three questions`, requests.length === 1, h.httpCalls.length);
+    const q = requests.length === 1 ? requests[0].questions : {};
+    check(`${label}: the request's three questions are the noul, the score and the choice under their set ids`,
+      Object.keys(q).join(",") === PLAN_HEALTH_QUESTION_SET
+        && q["worker-blocked"].type === "noul" && q["rounds-converging"].type === "score" && q["block-owner"].type === "choice", q);
+    check(`${label}: the Score carries three levels and the Choice the five owner ids`,
+      Array.isArray(q["rounds-converging"].criteria) && q["rounds-converging"].criteria.length === 3
+        && Object.keys(q["block-owner"].criteria).join(",") === "operator,coordinator,another-plan,self-resolving,none", q);
+    check(`${label}: the request's state is an object whose two fields the instructions name`,
+      requests.length === 1 && typeof requests[0].state === "object" && requests[0].state.closingText === "Working on it."
+        && q["worker-blocked"].instructions.includes("`closingText`") && q["rounds-converging"].instructions.includes("`recentClosingTexts`")
+        && q["block-owner"].instructions.includes("`closingText`"), requests[0] && requests[0].state);
+    check(`${label}: one lead_blocked outcome, false, against the call's own stamp id, and no other outcome yet`,
+      outcomes.length === 1 && outcomes[0].kind === "lead_blocked" && outcomes[0].value === "false" && outcomes[0].callStampId === calls[0].stampId, outcomes);
+
+    // A second turn, whose closing text opens with the worker's BLOCKED:
+    // lead: its own lead_blocked is true, the first call's next_speaker
+    // lands now, and the state carries both closing texts oldest first.
+    clock.advance(1000);
+    await planHealthTurn(h, "t-ph-2", "BLOCKED: waiting on the operator's fork");
+    const after = planHealthLines(h);
+    check(`${label}: the second turn wrote its own call and three more answers`,
+      after.calls.length === 2 && after.answers.length === 6, { calls: after.calls.length, answers: after.answers.length });
+    check(`${label}: the second call's state carries both closing texts, oldest first`,
+      after.calls[1].state === JSON.stringify({ closingText: "BLOCKED: waiting on the operator's fork", recentClosingTexts: ["Working on it.", "BLOCKED: waiting on the operator's fork"] }),
+      after.calls[1].state);
+    const byKind = (kind) => after.outcomes.filter((o) => o.kind === kind);
+    check(`${label}: lead_blocked landed once per call, false then true, each against its own stamp id`,
+      byKind("lead_blocked").length === 2
+        && byKind("lead_blocked")[0].callStampId === after.calls[0].stampId && byKind("lead_blocked")[0].value === "false"
+        && byKind("lead_blocked")[1].callStampId === after.calls[1].stampId && byKind("lead_blocked")[1].value === "true", byKind("lead_blocked"));
+    check(`${label}: next_speaker landed once, neither, against the first call's stamp id`,
+      byKind("next_speaker").length === 1 && byKind("next_speaker")[0].value === "neither" && byKind("next_speaker")[0].callStampId === after.calls[0].stampId, byKind("next_speaker"));
+    check(`${label}: no chapter_within yet, the Chapter count not having risen`, byKind("chapter_within").length === 0, byKind("chapter_within"));
+    check(`${label}: the lead itself was still set by Section 3's read`,
+      getState(h).goals.find((g) => g.id === shape.leafId).lead?.state === "blocked", getState(h).goals.find((g) => g.id === shape.leafId).lead);
+    check(`${label}: no journal_write_failed decision was pushed`,
+      !getDecisions(h).some((d) => d.action === "journal_write_failed"), getDecisions(h).map((d) => d.action));
+
+    // Fix round 1, item 2: a third turn whose closing text runs past the
+    // 1,000-character cut. The request's closingText is cut where the recent
+    // list is, so the two are the same bytes, and the call line's state
+    // carries the cut text.
+    clock.advance(1000);
+    const longText = `Long closing text. ${"x".repeat(1200)}`;
+    await planHealthTurn(h, "t-ph-3", longText);
+    const longRequests = planHealthRequests(h);
+    const longCalls = planHealthLines(h).calls;
+    check(`${label}: a closing text past 1,000 characters is sent cut to exactly 1,000, the same bytes as the recent list's last element`,
+      longRequests.length === 3 && longRequests[2].state.closingText.length === 1000
+        && longRequests[2].state.closingText === longText.slice(0, 1000)
+        && longRequests[2].state.recentClosingTexts.length === 3
+        && longRequests[2].state.recentClosingTexts[2] === longRequests[2].state.closingText,
+      longRequests[2] && { closing: longRequests[2].state.closingText.length, recent: longRequests[2].state.recentClosingTexts.map((t) => t.length) });
+    check(`${label}: the call line's state carries the cut closing text`,
+      longCalls.length === 3 && typeof longCalls[2].state === "string" && JSON.parse(longCalls[2].state).closingText.length === 1000, longCalls[2] && longCalls[2].state && longCalls[2].state.length);
+  }
+}
+
+// The next_speaker outcome records what opened the next turn: a channel
+// message, a delivered record, or neither, each once against the call that
+// awaited it.
+async function casePlanHealth_nextSpeakerRecordsChannelDeliveryOrNeither(clock) {
+  console.log("\n=== Section 5 plan health: next_speaker records channel, delivery or neither ===");
+  const h = await planHealthHarness("s5_next_speaker", clock);
+  h.setHttpResponse(jevPicking());
+  await planHealthTurn(h, "t-ns-1", "Working on it.");
+  clock.advance(1000);
+  await planHealthTurn(h, "t-ns-2", "Answering the operator.", { channel: true });
+  clock.advance(1000);
+  await planHealthDeliveryTurn(h, clock, "t-ns-3", 1, "Handled the record.");
+  clock.advance(1000);
+  await planHealthTurn(h, "t-ns-4", "Carrying on.");
+
+  const { calls, outcomes } = planHealthLines(h);
+  const speakers = outcomes.filter((o) => o.kind === "next_speaker");
+  check("s5 next_speaker control: four plan-entry turns wrote four calls",
+    calls.length === 4, calls.length);
+  check("s5 next_speaker: three outcomes, one per call that had a next turn, none yet for the last",
+    speakers.length === 3 && speakers.every((o, i) => o.callStampId === calls[i].stampId), speakers.map((o) => o.callStampId));
+  check("s5 next_speaker: the values are channel, delivery, neither, in that order",
+    speakers.map((o) => o.value).join(",") === "channel,delivery,neither", speakers.map((o) => o.value));
+  check("s5 next_speaker control: the channel turn and the delivery turn were read as such by the scorer's own skip",
+    getDecisions(h).filter((d) => d.action === "score_skipped" && d.detail.includes("channel message")).length === 1
+      && getDecisions(h).filter((d) => d.action === "score_skipped" && d.detail.includes("delivered record")).length === 1,
+    getDecisions(h).filter((d) => d.action === "score_skipped").map((d) => d.detail));
+}
+
+// The chapter_within outcome is true when the Chapter count rises within the
+// next five turns on the entry, written at the rise, and false at the fifth
+// turn without one, each once against the call that awaited it.
+async function casePlanHealth_chapterWithinTrueOnARiseAndFalseAtTheFifthTurn(clock) {
+  console.log("\n=== Section 5 plan health: chapter_within is true at a rise and false at the fifth turn without one ===");
+  // A rise on the second turn after the question.
+  const rise = await planHealthHarness("s5_chapter_rise", clock);
+  rise.setHttpResponse(jevPicking());
+  await planHealthTurn(rise, "t-cw-1", "Working on it.");
+  clock.advance(1000);
+  await planHealthTurn(rise, "t-cw-2", "Still working.");
+  clock.advance(1000);
+  rise.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+  await planHealthTurn(rise, "t-cw-3", "Chapter 2 is in.");
+  const riseLines = planHealthLines(rise);
+  const within = riseLines.outcomes.filter((o) => o.kind === "chapter_within");
+  check("s5 chapter_within control: the rise was read as plan_progress",
+    getDecisions(rise).filter((d) => d.action === "plan_progress").length === 1, getDecisions(rise).map((d) => d.action));
+  check("s5 chapter_within: at the rise, true once for each call still waiting, against their own stamp ids",
+    within.length === 2 && within.every((o) => o.value === "true")
+      && within[0].callStampId === riseLines.calls[0].stampId && within[1].callStampId === riseLines.calls[1].stampId, within);
+  clock.advance(1000);
+  await planHealthTurn(rise, "t-cw-4", "Carrying on.");
+  const withinAfter = planHealthLines(rise).outcomes.filter((o) => o.kind === "chapter_within");
+  check("s5 chapter_within: a later turn writes nothing more for the calls already settled",
+    withinAfter.length === 2, withinAfter.length);
+
+  // No rise for five turns after the question.
+  const flat = await planHealthHarness("s5_chapter_flat", clock);
+  flat.setHttpResponse(jevPicking());
+  await planHealthTurn(flat, "t-cf-1", "Working on it.");
+  for (let turn = 2; turn <= 5; turn += 1) {
+    clock.advance(1000);
+    await planHealthTurn(flat, `t-cf-${turn}`, `Turn ${turn}.`);
+  }
+  const flatLines = planHealthLines(flat);
+  check("s5 chapter_within: after four turns without a rise, no chapter_within has been written",
+    flatLines.outcomes.filter((o) => o.kind === "chapter_within").length === 0, flatLines.outcomes.filter((o) => o.kind === "chapter_within"));
+  clock.advance(1000);
+  await planHealthTurn(flat, "t-cf-6", "Turn 6.");
+  const flatAfter = planHealthLines(flat);
+  const flatWithin = flatAfter.outcomes.filter((o) => o.kind === "chapter_within");
+  check("s5 chapter_within: at the fifth turn without a rise, false once, against the first call's stamp id alone",
+    flatWithin.length === 1 && flatWithin[0].value === "false" && flatWithin[0].callStampId === flatAfter.calls[0].stampId, flatWithin);
+  check("s5 chapter_within control: the document's count never rose in the flat run",
+    !getDecisions(flat).some((d) => d.action === "plan_progress"), getDecisions(flat).map((d) => d.action));
+}
+
+// The Section 2 tree with two task entries under the one plan holder: task-1
+// active and task-2 paused beside it, both plan entries by the ancestor rule,
+// sharing plan-1's document and its stored Chapter count.
+async function planHealthSiblingsHarness(caseName, clock) {
+  clock.set(T0);
+  const tree = plan2Goals({ taskUnderPlan: true, chapterCount: 1 });
+  tree.goals.push(makeGoalNode({ id: "task-2", parentId: "plan-1", kind: "task", status: "paused", blockedReason: "waiting its turn", maxRounds: 10, createdAt: T0 - 4000 }));
+  const h = await createTickHarness({
+    ...OPTS,
+    jevMode: "shadow",
+    caseName,
+    stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId },
+  });
+  h.fsMap.set(PLAN2_FILE, LEAD3_DOC);
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+  });
+  h.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+  h.setHttpResponse(jevPicking());
+  return h;
+}
+
+// Make the paused sibling the active entry through the worker's own
+// goal_resume, which pauses the one active now, so the next turn starts on
+// the sibling.
+async function planHealthSwitchTo(h, nodeId) {
+  const result = await callTool(h, { tool: "mcp__agentic-plugin__goal_resume", nodeId });
+  if (result.deny) throw new Error(`goal_resume ${nodeId} denied: ${result.deny}`);
+  const state = getState(h);
+  if (state.activeGoalId !== nodeId) throw new Error(`goal_resume ${nodeId} left ${state.activeGoalId} active`);
+}
+
+// chapter_within is measured against the holder's count at the call, per
+// entry: two task entries share one plan holder, so a rise read on one
+// entry's turn stores the new count on the holder, and the other entry's
+// pending call must still see that rise on its own next turn.
+async function casePlanHealth_chapterWithinSeesARiseReadOnASiblingsTurn(clock) {
+  console.log("\n=== Section 5 plan health (fix round 1, item 1): chapter_within on one task entry sees a rise read on its sibling's turn ===");
+  const h = await planHealthSiblingsHarness("s5_chapter_sibling", clock);
+  // A question on A's turn, then one on B's turn.
+  await planHealthTurn(h, "t-cs-1", "Working on A.");
+  clock.advance(1000);
+  await planHealthSwitchTo(h, "task-2");
+  await planHealthTurn(h, "t-cs-2", "Working on B.");
+  const asked = planHealthLines(h).calls;
+  check("s5 chapter_within sibling control: one call per turn, on A then on B",
+    asked.length === 2, asked.length);
+  // The rise is read on A's next turn, which stores the new count on the
+  // holder and settles A's call.
+  clock.advance(1000);
+  await planHealthSwitchTo(h, "task-1");
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+  await planHealthTurn(h, "t-cs-3", "Chapter 2 is in.");
+  const atRise = planHealthLines(h).outcomes.filter((o) => o.kind === "chapter_within");
+  check("s5 chapter_within sibling control: the rise was read once as plan_progress on A's turn",
+    getDecisions(h).filter((d) => d.action === "plan_progress").length === 1
+      && getState(h).goals.find((g) => g.id === "plan-1").chapterCount === 2, getDecisions(h).map((d) => d.action));
+  check("s5 chapter_within sibling: A's call lands true at the rise on A's own turn, and B's is still waiting",
+    atRise.length === 1 && atRise[0].value === "true" && atRise[0].callStampId === asked[0].stampId, atRise);
+  // B's next turn: the holder's count is above the count B's call was made
+  // at, so B's call lands true although the holder's count did not move on
+  // this turn.
+  clock.advance(1000);
+  await planHealthSwitchTo(h, "task-2");
+  await planHealthTurn(h, "t-cs-4", "Back on B.");
+  const afterB = planHealthLines(h).outcomes.filter((o) => o.kind === "chapter_within");
+  check("s5 chapter_within sibling: B's call lands true on B's next turn, against B's own stamp id",
+    afterB.length === 2 && afterB[1].value === "true" && afterB[1].callStampId === asked[1].stampId, afterB);
+  // Once: later turns on B, the new call on t-cs-4 included, write nothing
+  // more for the two settled calls.
+  clock.advance(1000);
+  await planHealthTurn(h, "t-cs-5", "Still on B.");
+  const later = planHealthLines(h).outcomes.filter((o) => o.kind === "chapter_within");
+  check("s5 chapter_within sibling: a later turn on B writes nothing more for the settled calls",
+    later.length === 2 && later.every((o) => o.callStampId !== planHealthLines(h).calls[3].stampId), later);
+}
+
+// An entry whose questions await an outcome is abandoned while a sibling is
+// the turn leaf: the sibling's turn drops the record, so no chapter_within is
+// ever written for the abandoned entry's call, whatever the sibling's later
+// turns read.
+async function casePlanHealth_abandonedEntryDropsItsRecordOnASiblingsTurn(clock) {
+  console.log("\n=== Section 5 plan health (fix round 1, item 3): an entry abandoned while a sibling is the leaf drops its held record ===");
+  const unhandled = [];
+  const onUnhandled = (reason) => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const h = await planHealthSiblingsHarness("s5_abandoned_sibling", clock);
+    await planHealthTurn(h, "t-ab-1", "Working on A.");
+    const asked = planHealthLines(h).calls;
+    check("s5 abandoned sibling control: A's turn wrote one call", asked.length === 1, asked.length);
+    // B becomes the leaf, which pauses A, and A is dropped.
+    clock.advance(1000);
+    await planHealthSwitchTo(h, "task-2");
+    const dropped = await callTool(h, { tool: "mcp__agentic-plugin__goal_edit", nodeId: "task-1", action: "drop", reason: "superseded" });
+    check("s5 abandoned sibling control: A is abandoned while B is active",
+      dropped.deny === undefined && getState(h).goals.find((g) => g.id === "task-1").status === "abandoned" && getState(h).activeGoalId === "task-2",
+      [dropped, getState(h).goals.find((g) => g.id === "task-1").status]);
+    // Six turns on B, a Chapter rise among them: every chance A's record
+    // would have had to settle, had it still been held and joined.
+    for (let turn = 2; turn <= 7; turn += 1) {
+      clock.advance(1000);
+      if (turn === 4) h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+      await planHealthTurn(h, `t-ab-${turn}`, `Turn ${turn} on B.`);
+    }
+    const { calls, outcomes } = planHealthLines(h);
+    check("s5 abandoned sibling control: the rise was read on B's turn and B's own first call landed true",
+      getDecisions(h).filter((d) => d.action === "plan_progress").length === 1
+        && outcomes.some((o) => o.kind === "chapter_within" && o.value === "true" && o.callStampId === calls[1].stampId), outcomes);
+    check("s5 abandoned sibling: no chapter_within was written for the abandoned entry's call",
+      !outcomes.some((o) => o.kind === "chapter_within" && o.callStampId === asked[0].stampId), outcomes.filter((o) => o.kind === "chapter_within"));
+    check("s5 abandoned sibling: the abandoned entry's next_speaker still landed once, its turn's origin being known before the drop",
+      outcomes.filter((o) => o.kind === "next_speaker" && o.callStampId === asked[0].stampId).length === 1, outcomes.filter((o) => o.kind === "next_speaker"));
+    check("s5 abandoned sibling: no later call was made for the abandoned entry",
+      calls.length === 7, calls.length);
+    check("s5 abandoned sibling: nothing threw into a turn",
+      !getDecisions(h).some((d) => d.action === "plan_record_failed" || d.action === "score_failed"), getDecisions(h).map((d) => d.action));
+    await new Promise((r) => setImmediate(r));
+    check("s5 abandoned sibling: no unhandled rejection surfaced", unhandled.length === 0, unhandled.map(String));
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+}
+
+// Bullet 4: an entry that completes two turns after a question writes no
+// chapter_within outcome for it and throws nothing. The entry completing
+// drops what it held: the outcomes it awaited are never written.
+async function casePlanHealth_entryCompletingDropsThePendingOutcomes(clock) {
+  console.log("\n=== Section 5 plan health: an entry completing two turns after a question writes no chapter_within and throws nothing ===");
+  const unhandled = [];
+  const onUnhandled = (reason) => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const h = await planHealthHarness("s5_completing", clock);
+    h.setHttpResponse(jevPicking());
+    await planHealthTurn(h, "t-done-1", "Working on it.");
+    clock.advance(1000);
+    await planHealthTurn(h, "t-done-2", "Nearly there.");
+    clock.advance(1000);
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+    h.fsMap.set(".agentic-health", "true");
+    await planHealthTurn(h, "t-done-3", "All done.");
+    const state = getState(h);
+    check("s5 completing control: the document read completed the entry and activated the next",
+      state.goals.find((g) => g.id === "plan-1").status === "complete" && state.activeGoalId === "plan-2", [state.goals.find((g) => g.id === "plan-1").status, state.activeGoalId]);
+    const { calls, outcomes } = planHealthLines(h);
+    check("s5 completing: the completing turn asked nothing, so two calls stand",
+      calls.length === 2, calls.length);
+    check("s5 completing: no chapter_within was written for either call",
+      outcomes.filter((o) => o.kind === "chapter_within").length === 0, outcomes);
+    check("s5 completing: the second call's next_speaker still landed, the turn's origin being known before the entry completed",
+      outcomes.filter((o) => o.kind === "next_speaker").length === 2, outcomes.filter((o) => o.kind === "next_speaker"));
+    // Later turns on the next entry, a task entry, ask nothing and write no
+    // outcome for the dropped calls.
+    clock.advance(1000);
+    await planHealthTurn(h, "t-done-4", "On the next plan now.");
+    clock.advance(1000);
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1", "### Chapter 2"]));
+    await planHealthTurn(h, "t-done-5", "And a Chapter landed somewhere.");
+    const later = planHealthLines(h);
+    check("s5 completing: no later turn wrote a call, a chapter_within or a next_speaker for the dropped calls",
+      later.calls.length === 2 && later.outcomes.filter((o) => o.kind === "chapter_within").length === 0
+        && later.outcomes.filter((o) => o.kind === "next_speaker").length === 2, later.outcomes);
+    check("s5 completing: nothing threw into a turn",
+      !getDecisions(h).some((d) => d.action === "plan_record_failed" || d.action === "score_failed"), getDecisions(h).map((d) => d.action));
+    await new Promise((r) => setImmediate(r));
+    check("s5 completing: no unhandled rejection surfaced", unhandled.length === 0, unhandled.map(String));
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+}
+
+// Bullet 5: a task-entry turn asks none of the three.
+async function casePlanHealth_taskEntryAsksNone(clock) {
+  console.log("\n=== Section 5 plan health: a task entry's turn asks none of the three ===");
+  clock.set(T0);
+  const shape = SECTION4_SHAPES.find((s) => !s.planEntry);
+  const h = await section4Harness("s5_task_none", shape);
+  h.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+  h.setHttpResponse(jevPicking());
+  await planHealthTurn(h, "t-task-1", "BLOCKED: waiting on the operator");
+  clock.advance(1000);
+  await planHealthTurn(h, "t-task-2", "Working.");
+  const { calls, answers, outcomes } = planHealthLines(h);
+  check("s5 task entry: no plan-health call line, no answer joined to one, no outcome of the three kinds",
+    calls.length === 0 && answers.length === 0 && outcomes.length === 0, { calls, answers, outcomes });
+  check("s5 task entry: no request carried three questions", planHealthRequests(h).length === 0, h.httpCalls.length);
+  // The control: the key was live and the turn did reach a shadow site, so
+  // the absence above is the plan-entry gate and not an off switch.
+  check("s5 task entry control: the same turns still sent the memory gate's own shadow request",
+    h.httpCalls.length >= 1 && journalLinesOfKind(h, "call").some((c) => c.site === "memory-kind"), journalLinesOfKind(h, "call").map((c) => c.site));
+}
+
+// The one drive every invariance run makes: a plain turn, a BLOCKED: turn,
+// a channel turn on which the Chapter count rises, a delivery turn, and a
+// plain turn. Every joiner and both scorer skips fire along it, so a value
+// that leaked from an answer into any of them would show as a differing
+// decision or goal field against the off run.
+async function planHealthDrive(h, clock) {
+  await planHealthTurn(h, "t-inv-1", "Working on it.");
+  clock.advance(1000);
+  await planHealthTurn(h, "t-inv-2", "BLOCKED: waiting on the operator's fork");
+  clock.advance(1000);
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+  await planHealthTurn(h, "t-inv-3", "Chapter 2 is in.", { channel: true });
+  clock.advance(1000);
+  await planHealthDeliveryTurn(h, clock, "t-inv-4", 1, "Handled the record.");
+  clock.advance(1000);
+  await planHealthTurn(h, "t-inv-5", "Carrying on.");
+}
+
+// The comparison every invariance run makes against the off run: the
+// decisions and every GoalNode field.
+function checkPlanHealthInvariant(label, shadow, off) {
+  const shadowState = getState(shadow);
+  const offState = getState(off);
+  check(`${label}: state.decisions is identical to the off run's`,
+    JSON.stringify(shadowState.decisions) === JSON.stringify(offState.decisions),
+    { off: offState.decisions.map((d) => d.action), shadow: shadowState.decisions.map((d) => d.action) });
+  check(`${label}: every GoalNode field is identical to the off run's`,
+    JSON.stringify(shadowState.goals) === JSON.stringify(offState.goals),
+    { off: offState.goals, shadow: shadowState.goals });
+  check(`${label}: no journal_write_failed decision was pushed`,
+    !shadowState.decisions.some((d) => d.action === "journal_write_failed"), shadowState.decisions.map((d) => d.action));
+}
+
+// Bullets 1 and 2, and the Tests line: decision invariance against a Jev
+// that answers at each extreme, fails, or hangs. Each fake is named by the
+// value it drives, and each run's control reads that value back off the
+// answer lines, so an identical pair of runs is never two runs that both
+// asked nothing.
+async function casePlanHealth_decisionsAreInvariantAcrossEveryJevExtreme(clock) {
+  console.log("\n=== Section 5 plan health: decisions and goal fields are invariant across a Jev at each extreme, failing and hung ===");
+  const off = await planHealthHarness("s5_inv_off", clock, { jevMode: "off" });
+  await planHealthDrive(off, clock);
+  check("s5 invariance control: the off run sent no request and wrote no journal line",
+    off.httpCalls.length === 0 && journalLines(off).length === 0, { calls: off.httpCalls.length, lines: journalLines(off).length });
+  check("s5 invariance control: the off run's drive did reach the lead, the Chapter rise and both scorer skips",
+    getDecisions(off).some((d) => d.action === "lead_set") && getDecisions(off).some((d) => d.action === "plan_progress")
+      && getDecisions(off).filter((d) => d.action === "score_skipped").length >= 5, getDecisions(off).map((d) => d.action));
+
+  const extremes = [
+    ["a Noul of 0", { noul: () => 0 }, (a) => a.filter((x) => x.primitive === "noul").every((x) => x.value === "0")],
+    ["a Noul of 1", { noul: () => 1 }, (a) => a.filter((x) => x.primitive === "noul").every((x) => x.value === "1")],
+    ["a Score at its lowest level", { score: () => 0 }, (a) => a.filter((x) => x.primitive === "score").every((x) => x.value === "0")],
+    ["a Score at its highest level", { score: (q, count) => count - 1 }, (a) => a.filter((x) => x.primitive === "score").every((x) => x.value === "2")],
+    ...["operator", "coordinator", "another-plan", "self-resolving", "none"].map((option) => [
+      `a Choice of ${option}`, { choice: () => option }, (a) => a.filter((x) => x.primitive === "choice").every((x) => x.value === option),
+    ]),
+  ];
+  for (const [label, pick, holds] of extremes) {
+    const shadow = await planHealthHarness(`s5_inv_${label.replace(/[^a-z0-9]+/gi, "_")}`, clock);
+    shadow.setHttpResponse(jevPicking(pick));
+    await planHealthDrive(shadow, clock);
+    const { calls, answers } = planHealthLines(shadow);
+    check(`s5 invariance control (${label}): five calls, fifteen answers, every answer carrying the driven value`,
+      calls.length === 5 && answers.length === 15 && holds(answers), answers.map((a) => [a.primitive, a.value]));
+    checkPlanHealthInvariant(`s5 invariance (${label})`, shadow, off);
+  }
+
+  const failing = await planHealthHarness("s5_inv_fail", clock);
+  failing.setHttpResponse({ status: 429, ok: false, headers: {}, text: "rate limited" });
+  await planHealthDrive(failing, clock);
+  const failLines = planHealthLines(failing);
+  check("s5 invariance control (failing): five call lines each http_429 and no answer line",
+    failLines.calls.length === 5 && failLines.calls.every((c) => c.result === "http_429") && failLines.answers.length === 0, failLines.calls.map((c) => c.result));
+  checkPlanHealthInvariant("s5 invariance (failing)", failing, off);
+
+  const hung = await planHealthHarness("s5_inv_hang", clock);
+  hung.setHttpResponse(() => new Promise(() => {}));
+  await planHealthDrive(hung, clock);
+  check("s5 invariance control (hung): the requests left and are still in flight with their timers pending",
+    planHealthRequests(hung).length === 5 && hung.pendingSleepCount >= 5 && planHealthLines(hung).calls.length === 0,
+    { requests: planHealthRequests(hung).length, sleeps: hung.pendingSleepCount });
+  checkPlanHealthInvariant("s5 invariance (hung)", hung, off);
+}
+
+// The Tests line: a hung request cannot delay a turn's end. The turn's own
+// completion handler resolves against a real timer while the request is
+// still pending, and the fake clock moves by the case's steps and nothing
+// else.
+async function casePlanHealth_hungRequestCannotDelayTheTurnEnd(clock) {
+  console.log("\n=== Section 5 plan health: a hung request cannot delay a turn's end ===");
+  const h = await planHealthHarness("s5_hung_turn", clock);
+  h.setHttpResponse(() => new Promise(() => {}));
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard");
+  const clockBefore = clock.get();
+  await h.handlers["turn.start"](h.fake, { turnId: "t-hung" }, async () => ({ result: "ok" }));
+  await h.handlers["tool.call"](h.fake, { tool: "Bash", turnId: "t-hung" }, async () => ({ result: "ok" }));
+  const completed = h.handlers["turn.complete"](h.fake, { turnId: "t-hung", answer: "BLOCKED: waiting on the suite", reason: "completed" }, async () => ({ result: "ok" }));
+  const winner = await Promise.race([
+    completed.then(() => "turn"),
+    new Promise((r) => setTimeout(() => r("timer"), 5000)),
+  ]);
+  check("s5 hung turn: the turn's completion handler resolved with the request still pending", winner === "turn", winner);
+  await new Promise((r) => setTimeout(r, 60));
+  check("s5 hung turn control: the request left and its timer is pending, so the silence is a call in flight",
+    planHealthRequests(h).length === 1 && h.pendingSleepCount >= 1, { requests: planHealthRequests(h).length, sleeps: h.pendingSleepCount });
+  const { calls, outcomes } = planHealthLines(h);
+  check("s5 hung turn: no call line landed, the call not having settled", calls.length === 0, calls);
+  check("s5 hung turn: the lead_blocked outcome still landed against the minted stamp id",
+    outcomes.length === 1 && outcomes[0].kind === "lead_blocked" && outcomes[0].value === "true" && typeof outcomes[0].callStampId === "string", outcomes);
+  check("s5 hung turn: the fake clock did not move", clock.get() === clockBefore, { before: clockBefore, after: clock.get() });
+  check("s5 hung turn: the lead was set as on any turn",
+    getState(h).goals.find((g) => g.id === "plan-1").lead?.state === "blocked", getState(h).goals.find((g) => g.id === "plan-1").lead);
 }

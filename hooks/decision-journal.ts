@@ -55,13 +55,25 @@
 // vocabulary agreement is measured in: the seam validates the vendor's answer
 // against the same ids it sent, and agreement is exact equality of option id
 // between that answer and Haiku's. Rewriting them would corrupt the instrument
-// rather than protect it. Three of the four question sets draw those ids from
-// the catalog's own constants; the fourth is the plan switch, whose ids are
+// rather than protect it. Every Choice set but one draws those ids from the
+// catalog's own constants; that one is the plan switch, whose ids are
 // pending plan ids the caller supplies. They are bounded by the clamp and
 // carried on a prototype-free map, and they are not scrubbed.
+//
+// A line's `primitive` names which question type answered, since the three
+// share the answer line's columns. A Score's `value` is its position on the
+// levels and its probabilities are keyed by level number; a Noul's `value` is
+// the probability of yes, with no distribution and no confidence beside it.
+// The three questions asked of a plan entry have no Haiku counterpart, so
+// their `haikuValue` is null and their `agrees` is null with it: there is no
+// agreement to record, and their measurement is the outcome lines instead.
 
 import type { PluginHost } from "./host";
-import type { SeamResult } from "./decision-seam";
+import type { SeamResult, SeamSetResult } from "./decision-seam";
+// The closed set of question types, single-sourced from the module that
+// sends them: an answer line names which of the three answered, and a load
+// reads that column against this set.
+import { QUESTION_PRIMITIVES } from "./decision-seam";
 import { fnv1aHash } from "./cost-ledger";
 
 // What the journal needs from the host: the home directory and the three file
@@ -88,11 +100,19 @@ export const TEXT_CUT_MARK = "...[cut]";
 // The longest a path segment built from a persona name or a session id may be.
 export const SEGMENT_MAX = 64;
 
-// The closed set of outcome kinds. A `next_score` is the first turn scored
-// after a controller call; an `ask_marker` is the first worker ASK: line
-// matched after one.
-export type OutcomeKind = "next_score" | "ask_marker";
-export const OUTCOME_KINDS: readonly OutcomeKind[] = ["next_score", "ask_marker"];
+// The closed set of outcome kinds. The first two belong to a controller
+// call: a `next_score` is the first turn scored after one, and an
+// `ask_marker` the first worker ASK: line matched after one.
+//
+// The other three belong to the three plan health questions, each recording
+// something the plugin observed for itself after the call. A `lead_blocked`
+// is whether the same turn's closing text opened with the worker's own
+// BLOCKED: lead. A `chapter_within` is whether the entry's plan document
+// gained a Chapter within the next few turns on that entry. A `next_speaker`
+// is what opened the next turn: a channel message, a delivered record, or
+// neither.
+export type OutcomeKind = "next_score" | "ask_marker" | "lead_blocked" | "chapter_within" | "next_speaker";
+export const OUTCOME_KINDS: readonly OutcomeKind[] = ["next_score", "ask_marker", "lead_blocked", "chapter_within", "next_speaker"];
 
 // The value every `ask_marker` outcome line carries, whatever the caller passes.
 // What matched is a line the worker wrote, and a journal line records that the
@@ -319,7 +339,7 @@ export type CallRecord = {
   site: string;
   questionSet: string;
   mode: string;
-  result: SeamResult;
+  result: SeamResult | SeamSetResult;
 };
 
 // The last state written per site, per file, so a run of calls on an unchanged
@@ -396,14 +416,20 @@ export async function writeCall(host: JournalHost, record: CallRecord): Promise<
 // One answer as it came back, beside the value Haiku gave for the same
 // question. `agrees` is computed here rather than passed: agreement is exact
 // equality of option id, and it is an agreement record and never a truth.
+// `primitive` names which question type answered, since the three shapes
+// share these columns: a Choice's `value` is the option id it chose and its
+// probabilities are keyed by option id, a Score's is its position on the
+// levels and its probabilities are keyed by level number, and a Noul's is the
+// probability of yes with no distribution and no confidence beside it.
 export type AnswerRecord = {
   callStampId: string;
   questionId: string;
   questionVersion: string;
   overrideRefused: string | null;
+  primitive: string;
   value: string;
   probabilities: Record<string, number>;
-  confidence: number;
+  confidence: number | null;
   haikuValue: string | null;
 };
 
@@ -444,7 +470,10 @@ export async function writeAnswers(host: JournalHost, record: AnswersRecord): Pr
       questionId: journalText(answer.questionId),
       questionVersion: journalText(answer.questionVersion),
       overrideRefused: textOrNull(answer.overrideRefused),
-      primitive: "choice",
+      // A closed vocabulary, so a value outside it is written as null rather
+      // than passed through: a load reads this column to know which of the
+      // three shapes the columns beside it carry.
+      primitive: QUESTION_PRIMITIVES.includes(answer.primitive as never) ? answer.primitive as string : null,
       value,
       probabilities: probabilitiesOf(answer.probabilities),
       confidence: finiteOf(answer.confidence),

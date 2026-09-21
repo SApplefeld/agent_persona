@@ -127,14 +127,15 @@ function createFake$(opts = {}) {
   // driving a real request sets the key itself through setEnv.
   const envMap = new Map([["USERPROFILE", homeFor(opts.caseName)]]);
 
-  // The suite-wide Jev sweep. Section 5 accepts on "every existing case
-  // passes unchanged with Jev faked to fail, to hang, and to answer the
-  // opposite of Haiku", and the default above cannot deliver that: with no
-  // key the seam stops at its absent-key guard, so an existing case never
-  // reaches any fake and the three drives would be proved over the handful
-  // of cases that seed a key themselves. JEV_SUITE_FAKE seeds the key and
-  // one fake into every harness the suite builds, so one run of the whole
-  // suite under each value is what the bullet actually asks for.
+  // The suite-wide Jev sweep. The decision seam's Section 5 accepts on "every
+  // existing case passes unchanged with Jev faked to fail, to hang, and to
+  // answer the opposite of Haiku", and the plan health questions' Section 5
+  // on the same with Jev answering at each extreme. The default above cannot
+  // deliver either: with no key the seam stops at its absent-key guard, so
+  // an existing case never reaches any fake, and the drives would be proved
+  // over the handful of cases that seed a key themselves. JEV_SUITE_FAKE
+  // seeds the key and one fake into every harness the suite builds, so one
+  // run of the whole suite under each value is what the bullet asks for.
   //
   // A case that sets its own response through setHttpResponse still wins,
   // since this only moves the default. That is what keeps the section's own
@@ -152,37 +153,36 @@ function createFake$(opts = {}) {
       // pending for the life of the case, which is the point.
       httpResponse = () => new Promise(() => {});
     } else if (suiteFake === "opposite") {
-      // Answers every question with the LAST option id the request offered.
+      // Answers every question at its far end: a Choice with the LAST option
+      // id the request offered, a Noul with 1, a Score at its highest level.
       // Stated plainly rather than as "the opposite of Haiku": this fake
       // cannot see Haiku's value, so where the plugin itself chose the last
       // option the two agree. What the sweep proves is that a well-formed
       // answer the plugin did not author changes nothing, across every case
-      // rather than across one drive shape. The six cases written for this
-      // section drive true opposition at a known site and keep that job.
-      httpResponse = (url, init) => {
-        let body;
-        try { body = JSON.parse(String(init && init.body)); } catch { body = null; }
-        const questions = body && body.questions;
-        const answers = Object.create(null);
-        if (questions && typeof questions === "object") {
-          for (const [qid, q] of Object.entries(questions)) {
-            const ids = q && q.criteria && typeof q.criteria === "object" ? Object.keys(q.criteria) : [];
-            if (!ids.length) continue;
-            const pick = ids[ids.length - 1];
-            const probabilities = Object.create(null);
-            for (const id of ids) probabilities[id] = id === pick ? 1 : 0;
-            answers[qid] = { type: "choice", choice: pick, probabilities, confidence: 1 };
-          }
-        }
-        return {
-          status: 200,
-          ok: true,
-          headers: {},
-          text: JSON.stringify({ model: "jev-suite-sweep", answers, usage: { input_tokens: 1, output_tokens: 1 } }),
-        };
-      };
+      // rather than across one drive shape. The cases written for the seam
+      // and for the plan health questions drive each extreme at a known site
+      // and keep that job.
+      httpResponse = (url, init) => jevResponseFor(init, {
+        choice: (questionId, optionIds) => optionIds[optionIds.length - 1],
+        noul: () => 1,
+        score: (questionId, levelCount) => levelCount - 1,
+      });
+    } else if (/^pick:[0-9]$/.test(suiteFake)) {
+      // Answers every question at the extreme `pick:<n>` names, which is how
+      // the sweep reaches each extreme the plan health questions can take: a
+      // Choice picks its option at index n, or its last where it has fewer; a
+      // Noul answers 0 and a Score its lowest level at pick:0, and 1 and the
+      // highest level at any other n. So pick:0 through pick:4 run every
+      // option of the five-option block owner, and both ends of the Noul and
+      // the Score, across every case in the suite.
+      const n = Number(suiteFake.slice(5));
+      httpResponse = (url, init) => jevResponseFor(init, {
+        choice: (questionId, optionIds) => optionIds[Math.min(n, optionIds.length - 1)],
+        noul: () => (n === 0 ? 0 : 1),
+        score: (questionId, levelCount) => (n === 0 ? 0 : levelCount - 1),
+      });
     } else {
-      throw new Error(`JEV_SUITE_FAKE must be fail, hang or opposite; got ${suiteFake}`);
+      throw new Error(`JEV_SUITE_FAKE must be fail, hang, opposite or pick:<0-9>; got ${suiteFake}`);
     }
   }
   const envGets = [];
@@ -520,6 +520,52 @@ function jevChoiceResponse(questionId, choice, optionIds) {
   };
 }
 
+// An HttpResponse-shaped answer to every question one request carried, each
+// in the shape the seam validates for its type, built from the request body
+// rather than from a literal a case wrote: a Choice is answered with the
+// option `pick.choice(questionId, optionIds)` names, a Noul with the value
+// `pick.noul(questionId)` returns, a Score at the level number
+// `pick.score(questionId, levelCount)` returns. A distribution puts the whole
+// mass on the answer, which is well-formed and not a claim about what Jev
+// would really return. A question of a type no picker covers gets no answer,
+// which the seam reads as a parse failure.
+function jevResponseFor(init, pick) {
+  let body;
+  try { body = JSON.parse(String(init && init.body)); } catch { body = null; }
+  const questions = body && body.questions;
+  const answers = Object.create(null);
+  if (questions && typeof questions === "object") {
+    for (const [questionId, q] of Object.entries(questions)) {
+      if (!q || typeof q !== "object") continue;
+      if (q.type === "choice" && pick.choice && q.criteria && typeof q.criteria === "object") {
+        const optionIds = Object.keys(q.criteria);
+        if (!optionIds.length) continue;
+        const choice = pick.choice(questionId, optionIds);
+        const probabilities = Object.create(null);
+        for (const id of optionIds) probabilities[id] = id === choice ? 1 : 0;
+        answers[questionId] = { type: "choice", choice, probabilities, confidence: 1 };
+      } else if (q.type === "noul" && pick.noul) {
+        answers[questionId] = { type: "noul", noul: pick.noul(questionId) };
+      } else if (q.type === "score" && pick.score && Array.isArray(q.criteria)) {
+        const level = pick.score(questionId, q.criteria.length);
+        const probabilities = Object.create(null);
+        const legend = Object.create(null);
+        for (let i = 0; i < q.criteria.length; i += 1) {
+          probabilities[String(i)] = i === level ? 1 : 0;
+          legend[String(i)] = q.criteria[i];
+        }
+        answers[questionId] = { type: "score", score: level, legend, probabilities, confidence: 1 };
+      }
+    }
+  }
+  return {
+    status: 200,
+    ok: true,
+    headers: {},
+    text: JSON.stringify({ model: "jev-fake", answers, usage: { input_tokens: 11, output_tokens: 2 } }),
+  };
+}
+
 // --- Date.now stub ---
 
 function stubDateNow() {
@@ -552,6 +598,7 @@ function makeGoalNode(overrides = {}) {
     planningRounds: 0,
     consecutiveBlockedPlannings: 0,
     consecutivePlanningFailures: 0,
+    planPath: undefined, // Section 1: optional; pass via overrides to build a plan entry.
     createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_000_000,
     ...overrides,
@@ -734,6 +781,7 @@ export {
   journalLines,
   journalLinesOfKind,
   jevChoiceResponse,
+  jevResponseFor,
   SESSION_ID,
   HARNESS_CWD,
   HARNESS_HOME,

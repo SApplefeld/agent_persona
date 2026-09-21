@@ -1,5 +1,29 @@
 # Backlog
 
+## Operator checks owed by the plan-health plan (parked 2026-09-21)
+
+Two checks only the operator can run, carried out of `docs/archive/agent_persona_plan-health-from-the-record_v1.md` so they survive its archive. After the fleet relaunches on that plan, message a worker mid-plan several times and confirm on the board or in its store that the entry stays active and never reads blocked; the work reopens as a new round if any plan entry shows `Max rounds reached` again. After a week, read the decision journal's three plan-health question sets (`lead_blocked`, `chapter_within` and `next_speaker`) against their outcomes; that reading decides whether a later plan may act on any of them. Retire this item once both are done.
+
+## README's nudge-counter sentence says the counter resets only on two events, and the code has six (found 2026-09-21)
+
+`README.md` under Nudge discipline says the counter "Resets only on an on-goal score or `complete`". The code also resets it on `goal_resume`, on a work-tool turn that reactivates a cap-paused node, on a new goal, and at a `goal_done` turn end (`hooks/index.ts`, every `consecutiveNudgesWithoutOnGoal = 0`). A maintainer trusting "only" would miss that `goal_resume` gives a stalled worker a fresh three-nudge budget. The sentence predates the plan-health plan, which added the plan-entry clause after it and left it as it stood. Remedy: replace "only" with the list. Raised by the plan-health plan's finishing docs curation.
+
+## The decision journal rewrites its whole day file for every line (found 2026-09-21)
+
+`hooks/decision-journal.ts` appends a line by reading the day's file, adding the line and writing the file back, one line at a time on one serialized chain. A plan entry's turn end now writes seven lines through it: one call line, three answer lines and three outcome lines. The call line carries up to about 6 KB of state that changes every turn, so the per-site dedup never fires for it. The day's total I/O therefore grows with the square of that day's turns, which at 300 plan-entry turns is on the order of gigabytes read and written per persona per day. It runs off the awaited path, so no turn waits on it. Remedy: have the answer writer append its lines in one write, or add an append operation to the host's file API so a line costs its own bytes. Raised by the plan-health plan's finishing performance review and deferred there, since it is the journal module's existing write shape rather than this plan's.
+
+## The tick suite waits on real timers beside its fake clock (found 2026-09-21)
+
+`.kit/controller-tick-test.mjs` rose from about 38 s to about 60 s across the plan-health plan while gaining about 650 checks. Several added cases wait on real time: a 20 ms sleep per round in the nudge race driver, several 60 ms waits, and a 5,000 ms race timer in the hung-request case that is never cleared and is harmless only because the suite ends in `process.exit`. Remedy: replace the real sleeps with the harness's `waitUntil`, and clear the race timer once the race settles. Raised by the plan-health plan's finishing performance review and deferred there.
+
+## A converted-complete nudge does not tell the worker its plan document is not Complete (found 2026-09-21)
+
+When the idle classifier reads a plan entry as finished while its plan document does not read `Status: Complete`, the plugin logs the verdict ignored and sends the generic idle nudge (`hooks/index.ts`, the idle-gap text near the controller's verdict conversions). That text never says what the worker needs to hear, that its document is what decides done. A worker that believes it has finished answers "already done" and is nudged again until the three-nudge stall pause holds it. A one-line variant of the nudge naming the document would end most of those loops at the first nudge. It is an injected string, so the change carries an injection-ledger regeneration. Found by the plan-health plan's Section 4 consult, outside that section's scope.
+
+## The load-time round-budget recovery writes no decision record (found 2026-09-21)
+
+`applyPlanRecordOnLoad` in `hooks/agent-state.ts` returns a plan entry blocked at `Max rounds reached` to `pending`, clears its reason, and frees the ancestors the block derived, with no `decisions` entry and no `updatedAt` bump, where every other status transition in the tree writes both. A coordinator reading the store sees an entry go from blocked to pending with nothing saying why or when, and the earlier `block` decision stands beside the changed node. Raised by every review lens in three consecutive rounds of the plan-health plan's Section 1 and left there because a decision record at load is a mechanism no bullet of that plan names, and Section 3's decisions are the three lead ones. Remedy: one `goal` decision per freed node at load, action `recovered`, detail naming the reason cleared, pushed through the same helper the other transitions use; about six lines, one case. Once the plan-health plan merges, the recovery frees nothing new (no plan entry accumulates a round count), so the record matters only for stores frozen before it.
+
 ## The recycled-pid check races the lifetime of the process it tests (found 2026-09-18)
 
 `.kit/supervisor-natural-exit-test.sh` spawns `powershell.exe -NoProfile -Command "Start-Sleep -Seconds 40"` as the subject of its recycled-pid guard, then asserts that a recorded pair whose start ticks no longer match is left running rather than killed. The assertion reads whether the process is still alive, so it fails whenever the process has already exited on its own forty-second timer, for a reason that has nothing to do with the guard. The checks between the spawn and that reading are bounded PowerShell calls, and those cost 3 to 12 seconds each on an idle box and more under load: on the run that caught this, the setup call alone took 12 seconds. So the budget is a fixed real-time value measured against a variable cost, which is the same defect shape as the `persona-live-refuse` bounds recorded below. Observed failing twice on 2026-09-18, once with four suite processes sharing the box and once in a solo `--units` run, and passing in the serial and two-process runs of the same commit. The control beside it passes in both cases, so the instrument is live and the refusal is what goes missing. Remedy: have the subject process exit on a signal the test sends rather than on a timer, the way this suite's stub children already wait on log lines instead of sleeping. Raising the forty seconds would only move the race. Proof: the check still red when the ticks comparison in `kill_process_snapshot` is removed, and green across repeated runs on a loaded box.
@@ -125,6 +149,8 @@ printed result and the exit code. Three immediate reruns in isolation came back 
 passed. Two occurrences six days apart on unrelated trees rules out the change in flight as the
 cause, which strengthens the teardown-handle reading. The recurrence was seen through a chained
 command, so the next hunt should keep the suite's own unpiped exit code beside the assertion text.
+
+`.kit/plan-record-unit-test.mjs` died the same way on 2026-09-21, one run of six lanes under a heavy-process claim: `PASS: 0 failure(s)` then the same assertion and exit 127, with the rerun a moment later exiting 0. Second suite in the class, so the shape is the process teardown rather than either suite.
 
 ## Suite hardening
 

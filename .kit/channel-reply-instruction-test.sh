@@ -134,6 +134,11 @@ SAY_PERSONA_ARG_CONTROL="the persona argument set to"
 # so a duty rewritten back to a per-tick trigger loses its label and reds.
 ROLE_FLEET_LABEL_CONTROL="[FLEET]"
 ROLE_SEAT_LABEL_CONTROL="[RECONCILE]"
+# The plan-entry duty: a worker queues a plan with its document path, and a
+# worker is judged from its lead and its plan document, never the round
+# counter a plan entry does not spend.
+ROLE_PLAN_PATH_CONTROL="as planPath on goal_add"
+ROLE_PLAN_JUDGE_CONTROL="lead and its plan document rather than completedRounds"
 # agentic_say accepts a record whether or not a session holds the architect
 # persona, so the duty reports a route as delivered only against a live
 # architect. The undelivered branch is the half a green send would hide.
@@ -845,6 +850,10 @@ esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_SEAT_LABEL_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the reconciliation pass runs on the [RECONCILE] prompt" 0 ;;
   *) check "persona matches COORDINATOR_PERSONA: the reconciliation pass runs on the [RECONCILE] prompt" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_PLAN_PATH_CONTROL"*"$ROLE_PLAN_JUDGE_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the plan-entry duty is present, queuing with planPath and judging from the lead and the plan document" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the plan-entry duty is present, queuing with planPath and judging from the lead and the plan document" 1 ;;
 esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$SAY_PERSONA_ARG_CONTROL"*"$ARCHITECT_PERSONA"*) check "persona matches COORDINATOR_PERSONA: the design-escalation duty is present, routing to the ARCHITECT_PERSONA name" 0 ;;

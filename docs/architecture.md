@@ -6,7 +6,7 @@ This repository ships one Claude Code plugin and two outer loops around it. The 
 
 | Layer | Process | Owns | Reads | Writes |
 |---|---|---|---|---|
-| Plugin | `claude` (the child) | goal tree, memory, decision log, heartbeat, commons inbox, the decision journal, the fleet reading on the coordinator persona | its own store, the commons store, the question override directory `<home>/.claude/agentic-questions/`, and on the coordinator persona the roster and every roster persona's `keeper.json` and `keeper.hold` | `<workdir>/.agentic-personas.json`, `.agentic-heartbeat.json`, the machine-global commons store, `<home>/.claude/agentic-decisions/<persona>/<YYYY-MM-DD>-<session>.jsonl` |
+| Plugin | `claude` (the child) | goal tree, memory, decision log, heartbeat, commons inbox, the decision journal, the fleet reading on the coordinator persona | its own store, the commons store, the question override directory `<home>/.claude/agentic-questions/`, the plan document a queue entry names under `<workdir>/docs/plans/` or one of three archive places, and on the coordinator persona the roster and every roster persona's `keeper.json` and `keeper.hold` | `<workdir>/.agentic-personas.json`, `.agentic-heartbeat.json`, the machine-global commons store, `<home>/.claude/agentic-decisions/<persona>/<YYYY-MM-DD>-<session>.jsonl` |
 | Supervisor | `bash bin/supervise.sh` | launch, poll, stop, relaunch of one child | the persona store, the heartbeat, the child's `stdout.jsonl`, the harness transcript's write time | `<rundir>/supervisor.log`, `supervisor.err`, `settings.json`, `child-N/` |
 | Keeper | `powershell.exe -File bin/Start-Persona.ps1` | relaunch, hold or exit on the supervisor's exit code | the roster, the env file, the supervisor's exit code and stderr | `<rundir>/keeper.log`, `keeper.json`, `keeper.hold`, `supervisor.out` |
 | Task Scheduler | `AgentPersona-<name>` | starting the keeper at boot, restarting it when the keeper itself fails | the task definition | the task's last-run result |
@@ -14,6 +14,8 @@ This repository ships one Claude Code plugin and two outer loops around it. The 
 Each layer's whole input from the layer below is one channel. The supervisor reads the child through files the child writes. The keeper reads the supervisor through its exit code, plus the last stderr line for the hold marker's text. The scheduler reads the keeper through the keeper's exit code alone. The supervisor never writes the persona store, and the keeper never reads it.
 
 No layer reads how full the child's context window is. The plugin keeps no estimate of it and the supervisor restarts no child on context grounds, so the signals in the table above are the whole set. Compaction is the harness's own, landed at the boundary the coordinator instruction has the child bank through the kit's checkpoint CLI at the end of each turn whose state is on disk.
+
+A queue entry that carries a plan document is judged from that document rather than from a count of turns. `hooks/plan-record.ts` parses it for a `Status: Complete` header and its Chapter count, and the session that owns the store reads it at the end of each turn on the entry, under the working directory or at one of three archive places. The entry's other record is the worker's own closing text. The owning session reads its first line at turn end for a `BLOCKED:` or `WAITING:` lead, and the controller holds its idle nudges for that entry while the lead stands. A blocked lead stands until a working turn clears it, `goal_resume` lifts it, or an ask on the entry closes after it was set. A waiting lead holds for 60 minutes. Completion by the document clears the lead on every entry it completes. `README.md` states the rules under "Plan entries: judged from the record". The supervisor reads none of this: its own checks read the `restart_requested`, `shutdown_requested` and `root_complete` decisions and never the round counter or the document.
 
 The fleet reading is the one channel that runs the other way. The coordinator persona's plugin reads the keeper's own state files for every persona in the roster, so one child sees the layer above it, and it sees that layer for the whole fleet rather than for its own supervisor. It only reads: no plugin path writes a roster, a `keeper.json` or a `keeper.hold`.
 
@@ -138,14 +140,14 @@ Two files write text into a child session that nobody typed: `bin/supervise.sh` 
 
 ### What is injected, and how large
 
-`.kit/injection-ledger.json` is the committed size baseline, 39 entries totalling 27,532 characters. Ten entries come from `bin/supervise.sh` and total 13,046; twenty-nine come from `hooks/index.ts` and total 14,486, of which the fourteen registered tool descriptions are 10,176.
+`.kit/injection-ledger.json` is the committed size baseline, 39 entries totalling 28,021 characters. Ten entries come from `bin/supervise.sh` and total 13,309; twenty-nine come from `hooks/index.ts` and total 14,712, of which the fourteen registered tool descriptions are 10,304.
 
 | What a launch reads | Characters |
 |---|---|
 | A worker with a channel: skill-load, coordinator steer, reply-tool | 2,474 |
-| The coordinator: those three plus the coordinator role instruction | 7,193 |
+| The coordinator: those three plus the coordinator role instruction | 7,456 |
 | The architect: reply-tool plus its charter, the other two cleared | 5,908 |
-| The fourteen tool descriptions, registered into every session | 10,176 |
+| The fourteen tool descriptions, registered into every session | 10,304 |
 
 `fleet_status` alone is 3,795 of that last row, because the five health-class definitions live in it and every other surface points there. It registers into every session whatever the persona, including a worker that cannot call it.
 
@@ -194,7 +196,7 @@ The hung check corroborates a stale heartbeat against the harness transcript's o
 - **`claude` CLI**: the supervisor's child, launched with stream-json on both ends. `KEEPER_PATH_PREPEND` is what makes it and `node` resolvable under a task with no user `PATH`.
 - **Discord relay** (`D:/discord-channels`): the child attaches to a thread named `supervisor-<persona>`, or the roster's `channelName`, unless `args` carries `--no-channel`.
 - **The commons store**: machine-global, one per installed plugin; the supervisor's pre-launch gate reads it for a live claim on the persona, and the plugin's inbox path runs through it.
-- **TypeSafe** (`https://api.typesafe.ai/v1/systemone`): the plugin's one direct HTTP call. The decision seam puts each of the four closed questions the plugin asks Haiku to Jev, TypeSafe's classifier, in shadow, and journals the answer. Authenticated with `TYPESAFE_API_KEY` from the child's own environment, which no file in this repository sets. `jevMode` `off` makes no call at all. `README.md` under Decision seam states what each call sends.
+- **TypeSafe** (`https://api.typesafe.ai/v1/systemone`): the plugin's one direct HTTP call. The decision seam puts each of the four closed questions the plugin asks Haiku to Jev, TypeSafe's classifier, in shadow. It also asks three plan-health questions about a plan entry's closing text in one request at that entry's turn end, which have no Haiku counterpart. Every answer is journaled. Authenticated with `TYPESAFE_API_KEY` from the child's own environment, which no file in this repository sets. `jevMode` `off` makes no call at all. `README.md` under Decision seam states what each call sends.
 
 ## Failure modes by layer
 
@@ -212,6 +214,8 @@ The hung check corroborates a stale heartbeat against the harness transcript's o
 | A worker's escalation reaches a persona nobody holds | `<rundir>/settings.json` for `coordinatorPersona`, and the worker's own launcher | the worker was launched on the default `coordinator` name, from a hand launcher carrying no `COORDINATOR_PERSONA` or from a settings file written before the cutover |
 | No design ask is ever routed, and the architect launches with a worker's shape | `<rundir>/settings.json` for `architectPersona` | the key is absent, which is a launch with no architect; the setting has no default and a misspelled roster key is silent |
 | No decision journal appears under `<home>/.claude/agentic-decisions/<persona>/` | `<rundir>/settings.json` for `jevMode` under the id this load mode uses, then `USERPROFILE` and `HOME` in the child's environment | the mode is `off`, which sends nothing and writes nothing; or the home the plugin resolved is not the one being looked in, `USERPROFILE` winning over `HOME` where both are set |
+| A worker mid-plan is never nudged | the entry's `lead` in `<workdir>/.agentic-personas.json`, and its `lead_set` decisions | the worker's last closing text opened with `BLOCKED:`; a turn that calls a work tool and opens with neither marker, `goal_resume` on the entry, or an ask on the entry closing lifts it |
+| A plan entry stays active after its document reads `Status: Complete` | `plan_record_unreadable` and `plan_record_failed` decisions | the document is absent from `planPath` and all three archive places, is over 256 KiB, or its stored `planPath` fails the shape check; or the `Status:` line sits below the first `##` heading or carries markup around the key |
 | Every `call` line reads `result` `no_key` | the `result` and `detail` columns of the day's journal file | `TYPESAFE_API_KEY` is absent from the child's environment, or is shorter than 16 characters once trimmed. It is not a settings option, not a roster field, and not in the keeper env file's allowlist, so only the environment the supervisor's child inherits can carry it |
 
 Whether `Stop-ScheduledTask` ends the whole process tree under an S4U task is not measured on this machine, and the wrapper has no stop path of its own. `README.md` under Process keeper states the stop options that are known to work.
