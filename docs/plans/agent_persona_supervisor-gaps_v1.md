@@ -349,3 +349,23 @@ Rulings and findings adopted since the last board entry:
 Next action per section: apply the adopted ruling to the module's constant, to its two age pins, and to the acceptance bullets in Section 1 and Section 2, then dispatch round 3 over the resulting delta. Sections 2 through 5 are unstarted. Section 2 is next and depends on Section 1's module.
 
 Commit Model: Branch-and-PR
+
+### Interim board 4 - 2026-09-21
+
+In-flight sections: Section 1 only, in its third fix round. No section has closed, so this entry carries no `Completed:` line.
+
+Execution authority. The session that held this run ended in the machine restart. This session took the dev persona on 2026-09-21, after the operator asked it to on the dev persona's Discord thread, and it found the goal tree intact. The operator then wrote on the same thread, "Can you resume the plans in order and continue them?" That is the operator's own word this plan's `## Dispatch Authorization` requires for execution. The operator also asked that the run be driven by the persona's goal tree rather than by the kit's plan-run leash, so the leash is cleared and this run holds none.
+
+Section 1 stage: the adopted five-minute ruling is applied and committed at `78a93eb`. The idle pins moved to six minutes, the boundary pin to exactly five minutes, and one case pins a 150-second record as busy. That suite read 27 passed, 2 failed, exit 1 against the previous module and 29 passed, 0 failed, exit 0 against the new one, both on 2026-09-21 on SCOTT-CLAUDE. Review rounds adjudicated: 3, against an opening bound of 5.
+
+Round 3 ran the round-1 roster, because round 2 returned a Critical: the adversarial and the blind lens, both at `opus`, effort `high`, through `Workflow`. Round 3 also returned a Critical, from the blind lens, confirmed by this session on live data. A new turn from the channel writes no `user` record. On the architect's `child-3` stream it writes `result`, then `system` `init`, then a run of `system` `thinking_tokens` records, and none of them carries a timestamp. The first assistant record arrives up to ten minutes later. The reader skips system records, so it ages the previous turn's reply, and in 6 of 26 new turns on that stream that reply passed five minutes before the new turn's first record. There the reader answers `idle` for a thinking child. The adopted ruling's "no `system/init` rule" was made on the text-to-tool_use residue and did not weigh this case. Its own evidence records that `init` precedes each prompt cycle, so this finding supersedes that one clause on new evidence, and the five-minute bound stands.
+
+Live dispatches: one `implementer-sonnet` on fix round 3. It was asked to read `init` and `thinking_tokens` records newer than the newest conversational record as busy, to read busy whenever widening stops at the ceiling with nothing found, and to time the widening path against 2,500 ms.
+
+Two Majors are left justified-not-fixed. Reading a `result` record as idle buys no time, on the adopted ruling's own ground: an idle child exits on EOF within seconds. The transient-429 objection to the `api_retry` override cannot be measured. No stream in the fleet carries an `api_retry` record: 21 streams were checked, and the same pattern finds all 28 `init` records on the architect stream. Eight Minors are listed for the close pass.
+
+Next action: verify the fix round, run review round 4 over its delta, and close Section 1 when a round leaves no Critical and no owed Major. Sections 2 through 5 are unstarted.
+
+Handover, 2026-09-21. A plugin hotfix restarted the session holding this run while the fix-round implementer above was mid-edit. Its transcript ends inside its first edit of `bin/supervise-turnstate.mjs`, and the suite had gained none of its cases. A fresh session took the dev persona by hand on the operator's word in the dev thread, "Yes please, take dev by hand, then resume and continue.", and found the goal tree intact with this plan active. The partial edit is set aside at `.kit/scratch/supervisor-gaps/1/partial-fix-round-3-killed.mjs`, the module is restored to its `78a93eb` bytes, and the same brief is re-dispatched to a fresh `implementer-sonnet` with a note naming the killed attempt. The review count is unchanged at 3, since the killed dispatch was a fix round rather than a review.
+
+Commit Model: Branch-and-PR
