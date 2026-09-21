@@ -2,7 +2,7 @@
 # the roster.
 #
 #   .\bin\Register-PersonaTasks.ps1 [-Roster <path>] [-EnvFile <path>] [-RepoRoot <path>]
-#       [-User <name>] [-Prune] [-Start] [-WhatIf]
+#       [-User <name>] [-StartupDelay <ISO 8601 duration>] [-Prune] [-Start] [-WhatIf]
 #
 # Requires an elevated PowerShell session, the same requirement
 # D:/discord-channels/install/Register-BrokerTask.ps1 carries for the same reason: registering a
@@ -29,6 +29,12 @@
 # operator runs this script from the root checkout at D:/agent_persona and wrong from a worktree,
 # since a task pointed at a worktree breaks when that worktree is removed.
 #
+# -StartupDelay holds every persona task back after its boot trigger fires, so the channel
+# broker's own boot task (D:/discord-channels/install/Register-BrokerTask.ps1, which fires at
+# PT30S) has started node and logged in to Discord before any persona child attaches its channel.
+# The value is an ISO 8601 duration of hours, minutes and seconds; the default is PT2M, written
+# once as $KeeperDefaultStartupDelay below.
+#
 # [CmdletBinding()] is what makes an unknown switch a binding error (exit 1) rather than a value
 # that lands in $args while the body runs anyway.
 [CmdletBinding()]
@@ -37,10 +43,16 @@ param(
     [string]$EnvFile = 'D:/personas/keeper.env',
     [string]$RepoRoot,
     [string]$User = [Security.Principal.WindowsIdentity]::GetCurrent().Name,
+    [string]$StartupDelay,
     [switch]$Prune,
     [switch]$Start,
     [switch]$WhatIf
 )
+
+# The one place the default startup delay is written. The script body fills an unbound
+# -StartupDelay from it, and both functions below take it as their parameter default, so a caller
+# reaching either function directly gets the same value the script run does.
+$KeeperDefaultStartupDelay = 'PT2M'
 
 <#
 .SYNOPSIS
@@ -199,8 +211,17 @@ function Get-PersonaTaskDefinitions {
         [Parameter(Mandatory)][string]$RepoRoot,
         [Parameter(Mandatory)][string]$Roster,
         [Parameter(Mandatory)][string]$EnvFile,
-        [Parameter(Mandatory)][string]$User
+        [Parameter(Mandatory)][string]$User,
+        [string]$StartupDelay = $KeeperDefaultStartupDelay
     )
+    # Checked here, where the operator is watching, rather than left for Register-ScheduledTask to
+    # refuse at the write or for the task engine to misread at boot. Uppercase PT, then hours,
+    # minutes and seconds with at least one digit, is the whole class this script admits; -cnotmatch
+    # because -notmatch ignores case and would pass pt2m through to the scheduler.
+    if ($StartupDelay -cnotmatch '\APT(?:\d+H)?(?:\d+M)?(?:\d+S)?\z' -or $StartupDelay -notmatch '\d') {
+        throw "Get-PersonaTaskDefinitions: -StartupDelay '$StartupDelay' must be an ISO 8601 " +
+            "duration of hours, minutes and seconds, such as PT2M or PT1M30S."
+    }
     $startScript = Join-Path (Join-Path $RepoRoot 'bin') 'Start-Persona.ps1'
     # A bare drive root ("D:\" or "D:/") is exempt from the trailing-separator refusal for
     # -RepoRoot and for nothing else. Resolve-AbsolutePath puts that trailing separator back on
@@ -277,8 +298,12 @@ function Get-PersonaTaskDefinitions {
         $argumentString = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File " +
             "`"$startScript`" -Name $name -Roster `"$Roster`" -EnvFile `"$EnvFile`""
         $action = New-ScheduledTaskAction -Execute $psExe -Argument $argumentString
-        # AtStartup, not the broker's AtLogOn: the goal is a fleet that needs no logon at all.
+        # AtStartup only, with no AtLogOn trigger beside it as the broker's task carries: the goal
+        # is a fleet that needs no logon at all.
         $trigger = New-ScheduledTaskTrigger -AtStartup
+        # Held back so the channel broker's own boot task, which fires at PT30S, is listening
+        # before the first persona child attaches its Discord channel.
+        $trigger.Delay = $StartupDelay
         # S4U and RunLevel Limited for the same reasons the broker's own comment gives: no stored
         # password, no interactive desktop, and an elevated task would write files this repo's own
         # tree does not expect an Administrators-owned file inside.
@@ -320,6 +345,7 @@ function Write-PersonaTaskDefinition {
     Write-Output "task $($Definition.TaskName)"
     Write-Output "  action: $($Definition.Action.Execute) $($Definition.Action.Arguments)"
     Write-Output "  trigger: $($Definition.Trigger.CimClass.CimClassName)"
+    Write-Output "  startupDelay: $($Definition.Trigger.Delay)"
     Write-Output "  account: $($Definition.Principal.UserId)"
     Write-Output "  logon: $($Definition.Principal.LogonType)"
     Write-Output "  runlevel: $($Definition.Principal.RunLevel)"
@@ -372,7 +398,8 @@ function Register-PersonaTasks {
         [switch]$Start,
         [switch]$WhatIf,
         [bool]$IsElevated = (Test-IsElevated),
-        [string[]]$ExistingTaskNames
+        [string[]]$ExistingTaskNames,
+        [string]$StartupDelay = $KeeperDefaultStartupDelay
     )
 
     if (-not $WhatIf -and -not $IsElevated) {
@@ -383,7 +410,7 @@ function Register-PersonaTasks {
     }
 
     $definitions = Get-PersonaTaskDefinitions -Entries $Entries -RepoRoot $RepoRoot -Roster $Roster `
-        -EnvFile $EnvFile -User $User
+        -EnvFile $EnvFile -User $User -StartupDelay $StartupDelay
     $definitionsByTaskName = @{}
     foreach ($definition in $definitions) { $definitionsByTaskName[$definition.TaskName] = $definition }
 
@@ -492,6 +519,9 @@ if ($MyInvocation.InvocationName -ne '.') {
         if ([string]::IsNullOrEmpty($RepoRoot)) {
             $RepoRoot = Split-Path -Parent $PSScriptRoot
         }
+        if ([string]::IsNullOrEmpty($StartupDelay)) {
+            $StartupDelay = $KeeperDefaultStartupDelay
+        }
         # Resolve-AbsolutePath's GetUnresolvedProviderPathFromPSPath throws its own generic message
         # for a drive that does not exist ("Cannot find drive. A drive with the name 'Z' does not
         # exist."), naming neither the parameter nor the value that carried it. Each call is wrapped
@@ -515,7 +545,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         $entries = Read-PersonaRoster -Path $rosterResolved
 
         Register-PersonaTasks -Entries $entries -RepoRoot $repoRootResolved -Roster $rosterResolved `
-            -EnvFile $envFileResolved -User $User -Prune:$Prune -Start:$Start -WhatIf:$WhatIf
+            -EnvFile $envFileResolved -User $User -StartupDelay $StartupDelay -Prune:$Prune -Start:$Start -WhatIf:$WhatIf
     } catch {
         # Console.Error.WriteLine, not Write-Error: Write-Error under $ErrorActionPreference =
         # 'Stop' raises a terminating error of its own, which skips the exit 1 below entirely (the

@@ -577,7 +577,7 @@ function currentIdentityName() {
 }
 const defaultUser = currentIdentityName();
 
-function assertDefinitionFields(fields, name, rosterPath, envFilePath) {
+function assertDefinitionFields(fields, name, rosterPath, envFilePath, expectedStartupDelay = 'PT2M') {
   const action = fields['action'];
   assert.ok(action.startsWith(qualifiedPowerShellExe + ' '), `action's Execute is the qualified powershell.exe path: ${action}`);
   assert.ok(action.includes(`-Name ${name} `) || action.endsWith(`-Name ${name}`), `action names -Name ${name}: ${action}`);
@@ -585,6 +585,7 @@ function assertDefinitionFields(fields, name, rosterPath, envFilePath) {
   assert.ok(action.includes(`"${resolve(rosterPath)}"`), `action carries the absolute roster path: ${action}`);
   assert.ok(action.includes(`"${resolve(envFilePath)}"`), `action carries the absolute env path: ${action}`);
   assert.equal(fields['trigger'], 'MSFT_TaskBootTrigger', 'trigger class');
+  assert.equal(fields['startupDelay'], expectedStartupDelay, 'startupDelay');
   assert.equal(fields['account'], defaultUser, 'account');
   assert.equal(fields['logon'], 'S4U', 'logon');
   assert.equal(fields['runlevel'], 'Limited', 'runlevel');
@@ -778,10 +779,10 @@ record('baseline: the AgentPersona-* task count is readable before the suite run
     assert.equal(blocks[0].taskLine, 'task AgentPersona-alpha');
     assert.equal(blocks[1].taskLine, 'task AgentPersona-beta');
   });
-  record('case 1: alpha block carries all twelve fields at the expected values', () => {
+  record('case 1: alpha block carries all thirteen fields at the expected values', () => {
     assertDefinitionFields(blocks[0].fields, 'alpha', fixtureRoster, scratchEnvFile);
   });
-  record('case 1: beta block carries all twelve fields at the expected values', () => {
+  record('case 1: beta block carries all thirteen fields at the expected values', () => {
     assertDefinitionFields(blocks[1].fields, 'beta', fixtureRoster, scratchEnvFile);
   });
 }
@@ -1071,6 +1072,34 @@ function runFunctionCase(prune) {
     assert.equal(result.status, 1, 'exit code');
     const collapsed = result.stderr.replace(/\s+/g, ' ');
     assert.ok(collapsed.includes('bad-name.json'), 'stderr names the roster file: ' + result.stderr);
+  });
+}
+
+// Extension: -StartupDelay reaches the trigger and the printed block. PT90S is withheld from every
+// value the script emits on any field (the default is PT2M and the restart interval prints as
+// PT1M), so a block reading it back carries the caller's value and no other field's.
+{
+  const result = runRegistrationScript(['-Roster', fixtureRoster, '-EnvFile', scratchEnvFile, '-RepoRoot', repoRoot, '-StartupDelay', 'PT90S', '-WhatIf']);
+  record('extension: -StartupDelay PT90S exits 0 and both blocks print startupDelay: PT90S', () => {
+    assert.equal(result.status, 0, 'exit code; stderr: ' + result.stderr);
+    const { blocks } = parseTaskBlocks(result.stdout);
+    assert.equal(blocks.length, 2, 'block count');
+    assertDefinitionFields(blocks[0].fields, 'alpha', fixtureRoster, scratchEnvFile, 'PT90S');
+    assertDefinitionFields(blocks[1].fields, 'beta', fixtureRoster, scratchEnvFile, 'PT90S');
+  });
+}
+
+// Extension: a -StartupDelay outside the hours-minutes-seconds duration class is refused at
+// registration with the parameter and the value named, rather than reaching Register-ScheduledTask
+// or the task engine. A bare number, a duration carrying no digit, and a lowercase duration (which
+// a case-insensitive -notmatch would have passed) are the three shapes tried.
+for (const bad of ['90', 'PT', 'pt2m']) {
+  const result = runRegistrationScript(['-Roster', fixtureRoster, '-EnvFile', scratchEnvFile, '-RepoRoot', repoRoot, '-StartupDelay', bad, '-WhatIf']);
+  record(`extension: -StartupDelay '${bad}' is refused with the parameter and value named`, () => {
+    assert.equal(result.status, 1, 'exit code; stdout: ' + result.stdout);
+    const collapsed = result.stderr.replace(/\s+/g, ' ');
+    assert.ok(collapsed.includes('-StartupDelay'), 'stderr names -StartupDelay: ' + result.stderr);
+    assert.ok(collapsed.includes("'" + bad + "'"), 'stderr carries the refused value: ' + result.stderr);
   });
 }
 
