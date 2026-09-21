@@ -5130,6 +5130,11 @@ export const register: Register = async (on, options) => {
     // list itself is not touched here: its entries leave it at turn.start,
     // one per turn the plugin opened.
     const wasNudged = currentTurnKind === "nudge";
+    // Section 4 (plan-health-from-the-record): captured before the resets
+    // below clear both facts, so the scorer can read what this turn opened
+    // as. A channel message or a delivered record carries no worker
+    // judgment to score.
+    const wasDelivery = currentTurnKind === "delivery";
     currentTurnKind = "unaccounted";
 
     // C3: error streak fold.
@@ -5178,6 +5183,9 @@ export const register: Register = async (on, options) => {
         }
       }
     }
+    // Section 4 (plan-health-from-the-record): captured beside wasNudged,
+    // before this same reset clears it for the next turn.
+    const wasChannelOrigin = currentTurnIsChannelOrigin;
     currentTurnIsChannelOrigin = false;
 
     // Item 2 sub-bullet (f016b69): a turn that did real work with no
@@ -5355,8 +5363,33 @@ export const register: Register = async (on, options) => {
         sess.consecutiveNudgesWithoutOnGoal = 0;
         turnLeafId = null;
       } else if (turnLeaf.status === "active") {
-        // Still active at turn end: classify as before.
         const g = turnLeaf;
+        const planEntry = isPlanEntry(sess.state, g);
+        // Section 4 (plan-health-from-the-record): a turn opened from a
+        // channel message or a delivered record carries no worker judgment
+        // to score, for any entry - an operator check-in must spend
+        // nothing, which is the incident this plan exists to fix. For a
+        // plan entry, an unaccounted turn (one the controller did not open
+        // with a nudge) is skipped too, since only a nudged turn is scored
+        // for one; a task entry's unaccounted turn is scored as today.
+        if (wasChannelOrigin || wasDelivery) {
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "goal",
+            action: "score_skipped",
+            detail: `${g.id}: turn opened from ${wasChannelOrigin ? "a channel message" : "a delivered record"}`,
+          });
+          turnLeafId = null;
+        } else if (planEntry && !wasNudged) {
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "goal",
+            action: "score_skipped",
+            detail: `${g.id}: plan entry, turn not opened by a nudge`,
+          });
+          turnLeafId = null;
+        } else {
+        // Still active at turn end: classify as before.
         const labels = wasNudged
           ? ["on-goal", "drift", "complete"]
           : ["on-goal", "off-goal-by-instruction", "drift", "complete"];
@@ -5375,7 +5408,6 @@ export const register: Register = async (on, options) => {
 
         // Only on-goal, drift, and complete burn rounds, and only on a task
         // entry: a plan entry has no round budget, so no label spends one.
-        const planEntry = isPlanEntry(sess.state, g);
         if (!planEntry && (label === "on-goal" || label === "drift" || label === "complete")) {
           g.completedRounds += 1;
         }
@@ -5387,13 +5419,17 @@ export const register: Register = async (on, options) => {
           detail: `${g.id} Round ${g.scores.length}: ${label}`,
         });
 
-        // Reset consecutive nudges when on-goal.
-        if (label === "on-goal") {
+        // Reset consecutive nudges when on-goal, and on a plan entry when
+        // complete too: a plan entry's complete verdict completes nothing
+        // (below), so the counter is the only thing the label still moves.
+        if (label === "on-goal" || (label === "complete" && planEntry)) {
           sess.consecutiveNudgesWithoutOnGoal = 0;
         }
 
-        if (label === "complete") {
-          // R3: use completeLeaf + activateNext.
+        if (label === "complete" && !planEntry) {
+          // R3: use completeLeaf + activateNext. Never for a plan entry:
+          // done is read from the plan document (Section 2), not from this
+          // classifier's label.
           const completedId = g.id;
           completeLeaf(sess.state, completedId, "scorer complete");
           // E2: health run at completeLeaf site (scorer complete).
@@ -5436,6 +5472,7 @@ export const register: Register = async (on, options) => {
           });
         }
         turnLeafId = null;
+        }
       } else if (turnLeaf.status === "paused" && turnLeaf.pausedByNudgeCap && toolCallsThisTurn > 0) {
         // Round 60 finding 3(b): the cap pause (above) opens no ask, so nothing but this
         // check ever reactivates it in a headless child - goal_resume is a tool call the

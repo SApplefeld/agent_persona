@@ -529,3 +529,17 @@ Delta: 2026-09-21 on SCOTT-CLAUDE, worktree at the closing tree of Section 3 bef
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 9 - 2026-09-21
+
+In-flight sections: Section 4 only, at its first build. Sections 1 through 3 closed at `a39a538`, `6887209` and `24ab378` with Chapters 1 to 3; this entry carries no `Completed:` line.
+
+Live dispatches: one `implementer-sonnet` on the brief at `.kit/scratch/plan-health/section-4-brief.txt`, adding the channel-origin and delivery captures beside `wasNudged`, the scorer skips, and the plan-entry label rules, with the cases.
+
+Section 4 open: the add-decision line and the intake gap check are at `.kit/scratch/plan-health/add-decisions-section-4.md`. The scorer's `complete` branch change also closes Section 3's recorded Minor that bullet 7 was met only at the idle branch.
+
+Gate baseline: the targeted lane at `24ab378` on 2026-09-21 on SCOTT-CLAUDE reads tsc, loader, unit 53, tick 1762 OK with 0 FAIL in 41 s, ledger and duplicate test, every lane exit 0, under this session's claim.
+
+Next action per section: read the implementer's report, verify it on this session's own run, commit at first green, then dispatch review round 1 at one tier above the sonnet writer (opus, effort high, through `Workflow`), the code pair only.
+
+Commit Model: Branch-and-PR
