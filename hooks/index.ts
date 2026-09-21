@@ -1874,10 +1874,11 @@ const isPlanEntry = (state: AgentState, g: GoalNode): boolean =>
 // entry's closing text opens with the literal `BLOCKED:` when the worker
 // cannot continue without someone else, and with `WAITING:` when background
 // work will wake it. The controller holds its idle branch for a blocked lead
-// until a working turn clears it, and for a waiting lead until this long
-// after the lead was read. The line is read at turn end, below the ASK:
-// marker parse; the hold sits in the controller tick beside the open-ask
-// skip. The value is the plan's 60-minute rule for a waiting lead.
+// until a working turn, goal_resume, or the operator's answer to its ask
+// clears it, and for a waiting lead until this long after the lead was
+// read. The line is read at turn end, below the ASK: marker parse; the hold
+// sits in the controller tick beside the open-ask skip. The value is the
+// plan's 60-minute rule for a waiting lead.
 const LEAD_WAITING_HOLD_MS = 60 * 60_000;
 
 // The bound on a lead's reason, which is text from the worker's own closing
@@ -4637,7 +4638,8 @@ export const register: Register = async (on, options) => {
       // Section 3 (plan-health-from-the-record): the worker's own lead holds
       // the whole idle branch for this entry, no classifier call and no
       // nudge. A blocked lead holds until a working turn clears it at turn
-      // end; a waiting lead holds until LEAD_WAITING_HOLD_MS after it was
+      // end, or goal_resume or the operator's answer to its ask clears it; a
+      // waiting lead holds until LEAD_WAITING_HOLD_MS after it was
       // read, and then the branch runs as usual with the lead left on the
       // entry. Nothing is logged per held tick.
       // Only a plan entry is held, since only a plan entry's turns write or
@@ -6883,6 +6885,11 @@ export const register: Register = async (on, options) => {
       target.blockedReason = undefined;
       target.pausedByNudgeCap = false;
       target.status = "active";
+      // The resume is the act the worker's lead waited on, so it lifts the
+      // lead too; otherwise a blocked lead would hold the idle branch until
+      // a later working turn that may never come.
+      const liftedLead = target.lead ?? null;
+      if (liftedLead) target.lead = null;
       target.updatedAt = Date.now();
       sess.state.activeGoalId = target.id;
       sess.consecutiveNudgesWithoutOnGoal = 0;
@@ -6893,6 +6900,14 @@ export const register: Register = async (on, options) => {
         action: "resume",
         detail: `Node ${target.id} resumed (paused: ${pausedReason})`,
       });
+      if (liftedLead) {
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "goal",
+          action: "lead_cleared",
+          detail: `${target.id}: ${liftedLead.state} lead cleared by goal_resume`,
+        });
+      }
       // AZ4: goal_resume on the ask's node closes the ask with status "resumed"
       if (sess.state.pendingAskId) {
         const askRecord = await readAskRecord(commonsStoreOf($), sess.persona, sess.state.pendingAskId);
@@ -7357,6 +7372,20 @@ export const register: Register = async (on, options) => {
         if (askedNode) {
           askedNode.lastAskQuestion = askRecord.question;
           askedNode.lastAskClosedAt = Date.now();
+          // The answer is what the worker's lead waited on, so it lifts the
+          // lead whether or not the node was paused; the worker's answer turn
+          // may call no work tool, and nothing else would clear it.
+          if (askedNode.lead) {
+            const liftedLead = askedNode.lead;
+            askedNode.lead = null;
+            askedNode.updatedAt = Date.now();
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "lead_cleared",
+              detail: `${askedNode.id}: ${liftedLead.state} lead cleared by the operator's answer to ask ${askId}`,
+            });
+          }
           if (askedNode.status === "paused") {
             askedNode.status = "active";
             askedNode.updatedAt = Date.now();

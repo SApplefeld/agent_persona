@@ -3135,6 +3135,8 @@ async function main() {
     await caseLead3_ignoredCompleteNudgesEachWindowUntilTheStallPause(clock);
     await caseLead3_staleLeadOnATaskEntryIsNotHeld(clock);
     await caseLead3_taskEntrySetsNoLead(clock);
+    await caseLead3_theOperatorsAnswerToTheAskLiftsABlockedLead(clock);
+    await caseLead3_goalResumeLiftsABlockedLead(clock);
 
     // Section 4 (plan-health-from-the-record): which turns are scored.
     await caseSection4_channelAndDeliveryTurnsSkipTheScorer(clock);
@@ -13409,6 +13411,60 @@ async function caseLead3_taskEntrySetsNoLead(clock) {
     const tick = await lead3IdleTick(h, clock);
     check(`lead3 task entry ${JSON.stringify(answer)}: the idle tick classifies and nudges`, tick.classified && tick.nudged, tick);
   }
+}
+
+// Section 3 Tests line, "lock the hold in both directions, since a hold that
+// never lifts is the defect this plan removes wearing a new name": a blocked
+// lead that opened an ask is lifted by the operator's answer. The worker's
+// answer turn after it is reply-only, which clears nothing at turn end, so
+// the answer closing the ask is the act that lifts the hold, and the idle
+// tick after that turn runs the idle branch.
+async function caseLead3_theOperatorsAnswerToTheAskLiftsABlockedLead(clock) {
+  console.log("\n=== Section 3 lead: the operator's answer to the ask lifts a blocked lead (the hold lifts in both directions) ===");
+  clock.set(T0);
+  const h = await lead3Harness("lead3_ask_answer_lifts");
+  await lead3Turn(h, "t-ask", "BLOCKED: need the operator's fork\nASK: Which DB? Recommend: X", { workTool: true });
+  const askId = getState(h).pendingAskId;
+  check("lead3 ask answer lifts setup: the ask is open, plan-1 paused, the lead blocked",
+    typeof askId === "string" && getState(h).goals.find(g => g.id === "plan-1").status === "paused" && lead3Of(h, "plan-1")?.state === "blocked",
+    { askId, lead: lead3Of(h, "plan-1") });
+
+  await h.handlers["prompt.submit"](h.fake, { text: "Use X.", origin: { kind: "channel" } }, async () => ({}));
+  await lead3Turn(h, "t-answer", "Going with X.", { reply: true });
+  const state = getState(h);
+  const plan1 = state.goals.find(g => g.id === "plan-1");
+  const cleared = getDecisions(h).filter(d => d.action === "lead_cleared");
+  check("lead3 ask answer lifts: the answer closed the ask and reactivated plan-1", !state.pendingAskId && plan1.status === "active", { pendingAskId: state.pendingAskId, status: plan1.status });
+  check("lead3 ask answer lifts: after a reply-only turn the lead is null", plan1.lead === null || plan1.lead === undefined, plan1.lead);
+  check("lead3 ask answer lifts: one lead_cleared decision naming the entry and the ask",
+    cleared.length === 1 && cleared[0].detail.startsWith("plan-1: blocked lead cleared") && cleared[0].detail.includes(askId), cleared);
+  const tick = await lead3IdleTick(h, clock);
+  check("lead3 ask answer lifts: the idle tick past the nudge threshold runs the idle branch", tick.classified || tick.nudged, tick);
+}
+
+// Section 3 Tests line, "lock the hold in both directions, since a hold that
+// never lifts is the defect this plan removes wearing a new name": a blocked
+// lead on a plan entry that is paused and then resumed with goal_resume is
+// lifted by the resume, with no working turn in between.
+async function caseLead3_goalResumeLiftsABlockedLead(clock) {
+  console.log("\n=== Section 3 lead: goal_resume lifts a blocked lead (the hold lifts in both directions) ===");
+  clock.set(T0);
+  const h = await lead3Harness("lead3_resume_lifts");
+  await lead3Turn(h, "t-set", "BLOCKED: waiting on the operator", { workTool: true });
+  const paused = await callTool(h, { tool: "mcp__agentic-plugin__goal_edit", nodeId: "plan-1", action: "pause", reason: "operator away" });
+  check("lead3 resume lifts setup: goal_edit pause accepted, plan-1 paused, the lead blocked",
+    !paused.deny && getState(h).goals.find(g => g.id === "plan-1").status === "paused" && lead3Of(h, "plan-1")?.state === "blocked",
+    { paused, lead: lead3Of(h, "plan-1") });
+
+  const resumed = await callTool(h, { tool: "mcp__agentic-plugin__goal_resume", nodeId: "plan-1" });
+  const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+  const cleared = getDecisions(h).filter(d => d.action === "lead_cleared");
+  check("lead3 resume lifts: goal_resume accepted and plan-1 active", !resumed.deny && plan1.status === "active", { resumed, status: plan1.status });
+  check("lead3 resume lifts: the lead is null", plan1.lead === null || plan1.lead === undefined, plan1.lead);
+  check("lead3 resume lifts: one lead_cleared decision naming the entry and goal_resume",
+    cleared.length === 1 && cleared[0].detail === "plan-1: blocked lead cleared by goal_resume", cleared);
+  const tick = await lead3IdleTick(h, clock);
+  check("lead3 resume lifts: the idle tick past the nudge threshold runs the idle branch", tick.classified || tick.nudged, tick);
 }
 
 // --- Section 4 (plan-health-from-the-record): which turns are scored ---
