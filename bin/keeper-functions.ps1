@@ -200,9 +200,9 @@ them (<workdir> <persona> <permission-mode>), then --rundir and --channel-name w
 carries them, then the args field verbatim. workdir and rundir go through ConvertTo-BashPath,
 because bash is the consumer of these two and a Windows spelling of the rundir reads to it as a
 relative path. The args field is passed as written, since the keeper does not know what a flag it
-has no row for means. model, effort, controllerTickMs, coordinatorPersona, architectPersona and
-fleetRoster become the MODEL, EFFORT, controllerTickMs, COORDINATOR_PERSONA, ARCHITECT_PERSONA and
-FLEET_ROSTER environment variables, each present only where the entry carries the field. A missing
+has no row for means. model, effort, controllerTickMs, coordinatorPersona, architectPersona, fleetRoster and
+jevMode become the MODEL, EFFORT, controllerTickMs, COORDINATOR_PERSONA, ARCHITECT_PERSONA, FLEET_ROSTER and
+JEV_MODE environment variables, each present only where the entry carries the field. A missing
 required field, or an args element that is --prompt or starts with --prompt=, is a thrown error
 naming the roster path, because the roster launches every persona passive and a prompt is not a
 thing a boot-time relaunch may carry.
@@ -248,6 +248,7 @@ function Build-SupervisorInvocation {
         coordinatorPersona = 'COORDINATOR_PERSONA'
         architectPersona = 'ARCHITECT_PERSONA'
         fleetRoster = 'FLEET_ROSTER'
+        jevMode = 'JEV_MODE'
     }
     foreach ($field in $map.Keys) {
         $value = $Entry.$field

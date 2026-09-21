@@ -3,6 +3,7 @@
 # Sourced by bin/supervise.sh and .kit/live-common.sh.
 # Provides: wait_persona_free, refuse_if_persona_live, emit_settings_json,
 #           ensure_settings_plugin_ids, ensure_settings_arming,
+#           ensure_settings_jev_mode,
 #           read_settings_coordinator_persona,
 #           read_settings_architect_persona,
 #           read_settings_fleet_roster,
@@ -89,6 +90,21 @@ emit_settings_json() {
   fi
   if [ -n "${COST_BACKOFF_MAX_MS:-}" ]; then
     cost_opts="$cost_opts,\"costBackoffMaxMs\":$COST_BACKOFF_MAX_MS"
+  fi
+  # jevMode is the decision seam's kill switch: off makes no shadow call and
+  # writes no journal line, shadow is the working default. A set JEV_MODE
+  # outside that pair is refused the way an invalid COST_* value is, rather
+  # than reaching the child where the seam would otherwise fold it to off.
+  local jev_opts=""
+  if [ -n "${JEV_MODE:-}" ]; then
+    case "$JEV_MODE" in
+      off|shadow) ;;
+      *)
+        echo "ERROR: emit_settings_json: JEV_MODE '$JEV_MODE' must be 'off' or 'shadow'" >&2
+        return 1
+        ;;
+    esac
+    jev_opts=",\"jevMode\":\"$JEV_MODE\""
   fi
   # Plan item 6: pass the persona the supervisor was given through to the
   # child, so it claims that persona at session.start instead of always
@@ -202,7 +218,7 @@ emit_settings_json() {
   # absent from the engine's type file, and options under the other id are
   # ignored without an error, so the same options are written under both.
   # .kit/settings-plugin-key-test.sh pins both ids against the two manifests.
-  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$self_review_opts$cost_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"$architect_opt$roster_opt}"
+  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$self_review_opts$cost_opts$jev_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"$architect_opt$roster_opt}"
   cat > "$out" <<EOF
 {"pluginConfigs":{"$AGENTIC_PLUGIN_DEV_ID":{"options":$options},"$AGENTIC_PLUGIN_INSTALLED_ID":{"options":$options}}}
 EOF
@@ -299,6 +315,68 @@ try {
 ' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID"
 }
 
+# --- ensure_settings_jev_mode ---
+# Usage: ensure_settings_jev_mode <settings-file>
+# For a settings file the caller already provided: where JEV_MODE is set in
+# the environment, writes it as options.jevMode under each of the two plugin
+# ids, creating pluginConfigs, the id entry and its options object where any
+# of them is absent, and leaving every other option the caller wrote exactly
+# as written. Where JEV_MODE is unset or empty the file is left alone, so a
+# hand-edited value survives a launch that says nothing about the mode.
+#
+# This one overwrites where ensure_settings_arming completes. The two keys
+# answer different questions. arming is a property of the launch, always
+# owner, so a file naming another tier is a mistake to refuse. jevMode is the
+# operator current intent, carried from the roster through the keeper, and a
+# kill switch that could not change a value an earlier launch wrote would be
+# unable to turn anything off on any machine that has ever run.
+#
+# An invalid value is refused here on the same rule emit_settings_json uses,
+# rather than written or folded, so the two branches cannot disagree about
+# what a bad value means. The file is replaced by rename, same as its two
+# siblings, so an interrupted write never leaves it truncated.
+ensure_settings_jev_mode() {
+  if [ -z "${JEV_MODE:-}" ]; then
+    return 0
+  fi
+  case "$JEV_MODE" in
+    off|shadow) ;;
+    *)
+      echo "ERROR: ensure_settings_jev_mode: JEV_MODE $JEV_MODE must be off or shadow" >&2
+      return 1
+      ;;
+  esac
+  node -e '
+const fs = require("fs");
+const [file, devId, installedId, mode] = process.argv.slice(1);
+const fail = (msg) => { console.error("ERROR: ensure_settings_jev_mode: " + file + " " + msg); process.exit(1); };
+const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+let s;
+try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
+if (!plain(s)) fail("is not a JSON object");
+let changed = false;
+if (s.pluginConfigs === undefined) { s.pluginConfigs = {}; changed = true; }
+const pc = s.pluginConfigs;
+if (!plain(pc)) fail("has a pluginConfigs value that is not an object");
+for (const id of [devId, installedId]) {
+  if (pc[id] === undefined) { pc[id] = {}; changed = true; }
+  if (!plain(pc[id])) fail("has a " + id + " entry that is not an object");
+  if (pc[id].options === undefined) { pc[id].options = {}; changed = true; }
+  const opts = pc[id].options;
+  if (!plain(opts)) fail("has " + id + " options that are not an object");
+  if (opts.jevMode !== mode) { opts.jevMode = mode; changed = true; }
+}
+if (!changed) process.exit(0);
+const tmp = file + ".tmp-" + process.pid;
+try {
+  fs.writeFileSync(tmp, JSON.stringify(s));
+  fs.renameSync(tmp, file);
+} catch (e) {
+  try { fs.unlinkSync(tmp); } catch (_) {}
+  fail("could not be rewritten: " + e.message);
+}
+' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID" "$JEV_MODE"
+}
 # --- read_settings_coordinator_persona ---
 # Usage: read_settings_coordinator_persona <settings-file> <dev_mode: 0|1>
 # For a settings file the caller already provided: prints the coordinator

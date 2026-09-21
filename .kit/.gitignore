@@ -28,7 +28,10 @@
 !/keeper-unit-test.mjs
 !/keeper-register-test.mjs
 !/fleet-status-unit-test.mjs
+!/decision-seam-unit-test.mjs
 !/fixtures/*
+!/question-catalog-unit-test.mjs
+!/decision-journal-unit-test.mjs
 !/injection-ledger.mjs
 !/injection-ledger.json
 !/injection-duplicate-test.mjs

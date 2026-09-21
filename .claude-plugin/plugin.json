@@ -98,6 +98,12 @@
       "title": "Fleet roster path",
       "description": "The roster file the fleet reading uses: a JSON array of persona entries, each naming a persona, its working directory, optionally its run directory, and whether the fleet runs it. The fleet_status tool reads it on demand, and the coordinator persona's controller tick reads it every tick to watch each roster persona's health class. Left unset, fleet_status reports that it has no roster to read and the tick's watcher stays silent."
     },
+    "jevMode": {
+      "type": "string",
+      "default": "shadow",
+      "title": "Jev shadow mode",
+      "description": "off or shadow, and shadow is the default. shadow has the decision seam put each closed question the plugin already asks Haiku to Jev as well, beside it, and write the answer to the decision journal, acting on nothing it gets back. off makes no such call and writes no journal line. The supervisor refuses any other value rather than writing it, so a typo stops that launch instead of quietly disabling the seam."
+    },
     "reconcileEveryMs": {
       "type": "number",
       "default": 14400000,

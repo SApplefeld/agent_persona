@@ -18,7 +18,8 @@
 // never that it exited. A claim is non-destructive: the epoch bump makes
 // the old holder yield on its next write.
 
-import type { PromptSubmitResult, Register } from "claude-code";
+import type { HttpInit, PromptSubmitResult, Register } from "claude-code";
+import type { PluginHost } from "./host";
 import {
   createDefaultState,
   parseState,
@@ -92,6 +93,27 @@ import {
   KAIZEN_MESSAGE_WAIT_MS,
 } from "./self-review";
 import { estimateTokens, fnv1aHash, effectiveWindowCount, bumpWindow, backoffFactor, shouldRunClassify } from "./cost-ledger";
+// The single source of the label arrays the three $.model.classify sites below
+// pass to Haiku, so the question catalog and those calls cannot drift, plus
+// the four question set ids the shadow calls name and the resolver they read
+// the wording through.
+import {
+  CONTROLLER_LABELS,
+  CONTROLLER_LABELS_WITH_SWITCH,
+  SCORER_LABELS,
+  SCORER_LABELS_AFTER_NUDGE,
+  MEMORY_KIND_LABELS,
+  CONTROLLER_DECISION,
+  PLAN_SWITCH,
+  TURN_SCORE,
+  MEMORY_KIND,
+  PLAN_SWITCH_NO_MATCH,
+  resolverOf,
+} from "./question-catalog";
+// The decision seam, which puts the same closed question to Jev that the four
+// sites below put to Haiku, and the journal that records both answers.
+import { ask, type SeamResult } from "./decision-seam";
+import { newStampId, writeCall, writeAnswers, writeOutcome, ASK_MARKER_VALUE, type JournalWrite, type OutcomeKind } from "./decision-journal";
 
 // --- Module-scope session identity ---
 // The loader requires `persist` and `activate` to be top-level functions.
@@ -114,6 +136,128 @@ function commonsStoreOf(dp: any): CommonsStore {
     delete: (k: string) => dp.store.delete(k),
     keys: () => dp.store.keys(),
   };
+}
+
+/**
+ * Adapter: wrap a hook- or persist-bound `$` into the `PluginHost` interface
+ * that `hooks/host.ts` declares and every module outside this file takes as
+ * a Pick, since `$` itself is refused across an import. Each arrow is a full
+ * `dp.noun.verb(...)` call at its site, and each `dp.env.get` spells its
+ * variable name as a literal, which is what the validator reads off the
+ * source. Built at each call site, never cached: `$` is rebuilt on a plugin
+ * reload and a cached closure set would hold the old one.
+ */
+function hostOf(dp: any): PluginHost {
+  return {
+    getApiKey: () => dp.env.get("TYPESAFE_API_KEY"),
+    getHome: () => dp.env.get("USERPROFILE").then((profile: string | undefined) => profile || dp.env.get("HOME")),
+    readFile: (path: string) => dp.fs.read(path),
+    writeFile: (path: string, text: string) => dp.fs.write(path, text),
+    fileExists: (path: string) => dp.fs.exists(path),
+    fetch: (url: string, init?: HttpInit) => dp.http.fetch(url, init),
+    sleep: (ms: number) => dp.clock.sleep(ms),
+  };
+}
+
+/**
+ * The one decision a shadow journal write earns. `firstFailureToday` is true
+ * on the first failed write of a UTC day and never on a write that landed, so
+ * an unwritable journal costs one decision line a day rather than one a tick.
+ * It is the only entry the decision seam adds to `state.decisions`.
+ */
+function noteJournalWrite(write: JournalWrite, site: string): void {
+  if (!write.firstFailureToday) return;
+  sess.state.decisions.push({
+    timestamp: Date.now(),
+    loop: "monitor",
+    action: "journal_write_failed",
+    detail: `${site}: the decision journal could not be written`,
+  });
+}
+
+/**
+ * Start one shadow measurement beside a Haiku call that has already returned,
+ * and journal it once it settles. Returns the stamp id its lines carry, or
+ * null where the kill switch is off, which is also what the two outcome
+ * joiners read as having no call to cite.
+ *
+ * Nothing here is awaited by the caller, so a slow, failing or hung Jev cannot
+ * delay the tick or the turn it sits in. Nothing it produces reaches a branch,
+ * a state field, a decision action or a nudge text: Haiku has already decided
+ * by the time this runs, and the only state it touches is the one decision an
+ * unwritable journal earns.
+ *
+ * `mode` off stops the writing as well as the sending. The seam would answer
+ * an off call with an off result and the journal would write it, which on a
+ * machine where the operator turned Jev off is a file per session per day
+ * saying so.
+ */
+function shadowAsk(
+  host: PluginHost,
+  site: string,
+  questionSetId: string,
+  optionIds: readonly string[],
+  state: string,
+  mode: string,
+  haikuValue: string | null,
+): string | null {
+  if (mode !== "shadow") return null;
+  // Read once here rather than in the continuation: these name the session the
+  // call was made in, and the continuation runs after the caller has returned.
+  const persona = sess.persona;
+  const session = sess.mySessionId;
+  // Minted when the call starts rather than when it settles, so a joiner
+  // always has an id to cite even where its outcome line reaches the file
+  // before this call's own line does.
+  const stampId = newStampId(persona, session);
+  void ask(host, questionSetId, optionIds, state, mode, haikuValue, resolverOf(host))
+    .then(async (result: SeamResult) => {
+      noteJournalWrite(await writeCall(host, {
+        stampId,
+        persona,
+        session,
+        site,
+        questionSet: questionSetId,
+        mode,
+        result,
+      }), site);
+      // A failed call has no answer to record, and writeAnswers would write
+      // nothing for it anyway.
+      if (!result.ok) return;
+      noteJournalWrite(await writeAnswers(host, {
+        persona,
+        session,
+        answers: [{
+          callStampId: stampId,
+          questionId: result.questionId,
+          questionVersion: result.questionVersion,
+          overrideRefused: result.overrideRefused,
+          value: result.answer.choice,
+          probabilities: result.answer.probabilities,
+          confidence: result.answer.confidence,
+          haikuValue: result.haikuValue,
+        }],
+      }), site);
+    })
+    .catch(() => {
+      // The seam and the journal each hold a never-rejects contract, so this
+      // catches a host that broke one rather than a path either module takes.
+      // It stays because no caller awaits this chain: a rejection with nothing
+      // attached is an unhandled rejection, which ends the process rather than
+      // losing one measurement.
+    });
+  return stampId;
+}
+
+/**
+ * Join one signal the plugin produced onto the shadow call held for it. Not
+ * awaited, for the reason shadowAsk is not, and the value it writes is read
+ * from nothing the journal returns.
+ */
+function shadowOutcome(host: PluginHost, callStampId: string, kind: OutcomeKind, value: string): void {
+  void writeOutcome(host, { persona: sess.persona, session: sess.mySessionId, callStampId, kind, value })
+    .then((write) => noteJournalWrite(write, kind))
+    .catch(() => { /* as in shadowAsk: nothing awaits this chain. */ });
 }
 
 // The persona an agentic_say or agentic_inbox call addresses: the `persona`
@@ -362,6 +506,18 @@ const sess: {
   // persona, so counting it as the first reading would report a whole healthy
   // fleet as new on the first tick that could read one.
   fleetFirstReadingDone: boolean;
+  // The stamp id of this session's latest shadow call on the controller
+  // decision, held in two halves so the two outcome joiners clear
+  // independently. The turn scorer reads and clears the first, the worker's
+  // own ASK marker reads and clears the second, so each writes one outcome per
+  // controller call and a second scored turn or a second marker writes none.
+  // Null where no controller call is held: before the first tick of the
+  // session, after a joiner has taken its half, and on every tick of a session
+  // running with the seam's kill switch off, which mints no id at all.
+  // Session memory rather than persisted state: a stamp id names a call this
+  // process made, and a restart's first tick mints a new one.
+  jevScoreOutcomeStampId: string | null;
+  jevAskMarkerOutcomeStampId: string | null;
 } = {
   persona: "default",
   mySessionId: "pending",
@@ -379,6 +535,8 @@ const sess: {
   workdir: "",
   fleetHealth: undefined,
   fleetFirstReadingDone: false,
+  jevScoreOutcomeStampId: null,
+  jevAskMarkerOutcomeStampId: null,
 };
 
 // The turn state and workdir every commons-entry write carries, so the entry
@@ -569,12 +727,23 @@ function stripBom(text: string): string {
 // that only ever mutate in-memory state after a successful roll (the
 // decision/memory caps in persist()) let it propagate too, since a decision
 // or memory entry silently dropped is the same defect either way.
-const appendToChannelLog = async (dp: any, lines: string[]): Promise<void> => {
+//
+// One JSONL append rule for every log this plugin keeps, the channel log and
+// the yield log alike: one object per line, exactly one newline terminating
+// each, and a separator newline inserted only where the file being appended to
+// does not already end in one. A line arrives either way, the channel log's
+// built without a terminator and the yield log's with one, so the terminator is
+// added only where the caller's line lacks it.
+const appendLines = async (dp: any, path: string, lines: string[]): Promise<void> => {
   if (lines.length === 0) return;
-  const existing = await dp.fs.exists(CHANNEL_LOG_PATH) ? await dp.fs.read(CHANNEL_LOG_PATH) : "";
+  const existing = await dp.fs.exists(path) ? await dp.fs.read(path) : "";
   const sep = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-  await dp.fs.write(CHANNEL_LOG_PATH, existing + sep + lines.join("\n") + "\n");
+  const body = lines.map((line) => (line.endsWith("\n") ? line : line + "\n")).join("");
+  await dp.fs.write(path, existing + sep + body);
 };
+
+// The channel log's own path, bound once for the callers that roll records into it.
+const appendToChannelLog = async (dp: any, lines: string[]): Promise<void> => appendLines(dp, CHANNEL_LOG_PATH, lines);
 
 // L26: the yield action (log the decision, drop ownership, append a single
 // well-formed line to the yield log) is one code path shared by every site
@@ -588,8 +757,7 @@ export const yieldNow = async (dp: any, onDisk: { activeSessionId: string; epoch
   sess.isOwner = false;
   try { dp.ui.log(`Agentic: yielded '${sess.persona}' to ${onDisk.activeSessionId} (epoch ${onDisk.epoch})`); } catch { /* non-fatal */ }
   try {
-    const el = await dp.fs.exists(sess.yieldLogPath) ? await dp.fs.read(sess.yieldLogPath) : "";
-    await dp.fs.write(sess.yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
+    await appendLines(dp, sess.yieldLogPath, [rec.logLine]);
   } catch { /* non-fatal */ }
   // F13: release the commons claim so an exited session does not lock the
   // persona for the full 90s staleness window.
@@ -1463,8 +1631,7 @@ export const persist = async (dp: any, rollBackOnYield?: () => void): Promise<bo
         0, // No epoch in commons; use 0 as a sentinel
       );
       try {
-        const el = await dp.fs.exists(sess.yieldLogPath) ? await dp.fs.read(sess.yieldLogPath) : "";
-        await dp.fs.write(sess.yieldLogPath, el + (el.length > 0 && !el.endsWith("\n") ? "\n" : "") + rec.logLine);
+        await appendLines(dp, sess.yieldLogPath, [rec.logLine]);
       } catch { /* non-fatal */ }
       sess.state.decisions.push({
         timestamp: Date.now(),
@@ -1870,6 +2037,15 @@ export const register: Register = async (on, options) => {
   const costMaxPluginCallsPerHour = typeof cfg.costMaxPluginCallsPerHour === "number" ? (cfg.costMaxPluginCallsPerHour as number) : 600;
   const costBackoffAfterTicks = typeof cfg.costBackoffAfterTicks === "number" ? (cfg.costBackoffAfterTicks as number) : 10;
   const costBackoffMaxMs = typeof cfg.costBackoffMaxMs === "number" ? (cfg.costBackoffMaxMs as number) : 300_000;
+
+  // The decision seam's kill switch. The fallback is the literal "shadow"
+  // rather than undefined because whether the engine fills a manifest
+  // userConfig default into this object is not established here, as the
+  // askOperatorWaitMs comment above records, and the supervisor omits the
+  // key entirely when the environment does not set it. Without a code
+  // fallback the declared default and the effective one disagree. The seam
+  // folds any value outside "off" and "shadow" to "off" on its own.
+  const jevMode = typeof cfg.jevMode === "string" ? cfg.jevMode : "shadow";
 
   // --- session.start: register tools, claim or join the persona ---
   // The one session.start registration in this file. An "off" session logs
@@ -4336,9 +4512,9 @@ export const register: Register = async (on, options) => {
         `ask-operator: blocked, ambiguous, or round budget nearly spent\n` +
         switchLabel;
 
-      const classifyLabels: string[] = hasSwitch
-        ? ["nudge", "pause", "complete", "ask-operator", "switch"]
-        : ["nudge", "pause", "complete", "ask-operator"];
+      const classifyLabels: readonly string[] = hasSwitch
+        ? CONTROLLER_LABELS_WITH_SWITCH
+        : CONTROLLER_LABELS;
 
       // Fire-and-forget: the timer callback is sync, so we schedule async work.
       Promise.resolve().then(async () => {
@@ -4517,6 +4693,27 @@ export const register: Register = async (on, options) => {
           sess.state.monitor.cost.classify.estTokens += estimateTokens(summary.length, 30);
           // D3: update call window (count the classify call)
           sess.state.monitor.cost.callWindow = bumpWindow(sess.state.monitor.cost.callWindow, Date.now());
+          // The decision seam, in shadow. Jev is asked the same question over
+          // the same option ids Haiku was just offered, and its answer is
+          // journaled beside Haiku's. It sits after the ledger rather than
+          // inside it because the ledger counts the Haiku call and does not
+          // count this one. The stamp id is held for the two joiners below,
+          // and it is held whatever it is: a null clears the previous tick's
+          // call, which is what leaves each joiner citing the latest one.
+          // `decision` rather than `finalDecision`: the conversion below is
+          // this plugin's own, so the value Haiku answered with is the one an
+          // agreement figure has to be read against.
+          const shadowStampId = shadowAsk(
+            hostOf($),
+            "controller",
+            CONTROLLER_DECISION,
+            classifyLabels,
+            summary,
+            jevMode,
+            typeof decision === "string" ? decision : null,
+          );
+          sess.jevScoreOutcomeStampId = shadowStampId;
+          sess.jevAskMarkerOutcomeStampId = shadowStampId;
           let finalDecision: string = decision ?? "nudge";
           // Item 8.2 (Round 36, extended Round 39): neither classifier
           // verdict that used to open an ask directly from classifier prose
@@ -4563,6 +4760,20 @@ export const register: Register = async (on, options) => {
               });
               const switchId = switchRaw.trim().split(/\s/)[0];
               const target = pendingPlans.find((p) => p.id === switchId);
+              // The decision seam, in shadow. This one site answers in free
+              // text rather than from a label array, so the options in force
+              // are the pending plan ids the prompt listed plus the catalog's
+              // own "no_match", and Haiku's value is its reply where that is
+              // exactly one of those ids and "no_match" where it is not.
+              shadowAsk(
+                hostOf($),
+                "plan-switch",
+                PLAN_SWITCH,
+                [...pendingPlans.map((p) => p.id), PLAN_SWITCH_NO_MATCH],
+                switchPrompt,
+                jevMode,
+                target ? switchId : PLAN_SWITCH_NO_MATCH,
+              );
               if (target) {
                 // Demote current active to paused (M10: write blockedReason).
                 g.status = "paused";
@@ -5154,6 +5365,17 @@ export const register: Register = async (on, options) => {
     if (!skipped && sess.isOwner && !sess.state.pendingAskId) {
       const askMarkerMatch = e.answer.match(/^ASK:\s*(.+?\?\s*Recommend:\s*.+)$/im);
       if (askMarkerMatch) {
+        // The outcome joiner for the ask marker. The first marker matched
+        // after a controller call writes one outcome against that call and
+        // clears this half of the hold, so a second marker writes none. The
+        // value is not the matched text and need not be: what matched is a
+        // line the worker wrote, and the journal writes a fixed token for
+        // this kind whatever the caller passes.
+        const askMarkerCallStampId = sess.jevAskMarkerOutcomeStampId;
+        if (askMarkerCallStampId !== null) {
+          sess.jevAskMarkerOutcomeStampId = null;
+          shadowOutcome(hostOf($), askMarkerCallStampId, "ask_marker", ASK_MARKER_VALUE);
+        }
         const question = askMarkerMatch[1].trim();
         if (/<[^<>]+>/.test(question)) {
           sess.state.decisions.push({
@@ -5222,16 +5444,39 @@ export const register: Register = async (on, options) => {
         // Still active at turn end: classify as before.
         const g = turnLeaf;
         const labels = wasNudged
-          ? ["on-goal", "drift", "complete"]
-          : ["on-goal", "off-goal-by-instruction", "drift", "complete"];
+          ? SCORER_LABELS_AFTER_NUDGE
+          : SCORER_LABELS;
         try {
-          const result = await $.model.classify(
+          // Bound to a name so the same bytes reach Haiku and the shadow call
+          // below it.
+          const scoreState =
             `User asked: ${currentPrompt.slice(0, 500)}\n\nWorker answered: ${e.answer.slice(0, 1000)}\n\nGoal objective: ${g.objective}\n\n` +
-            `Did the worker's answer advance the goal objective?`,
+            `Did the worker's answer advance the goal objective?`;
+          const result = await $.model.classify(
+            scoreState,
             labels,
             { model: "haiku" }
           );
+          // The decision seam, in shadow, over the same variant of the label
+          // array the caller offered Haiku.
+          shadowAsk(
+            hostOf($),
+            "turn-score",
+            TURN_SCORE,
+            labels,
+            scoreState,
+            jevMode,
+            typeof result === "string" ? result : null,
+          );
         const label = result ?? "unknown";
+        // The outcome joiner for the next score. The first turn scored after a
+        // controller call writes one outcome against that call and clears this
+        // half of the hold, so a second scored turn writes none.
+        const scoreCallStampId = sess.jevScoreOutcomeStampId;
+        if (scoreCallStampId !== null) {
+          sess.jevScoreOutcomeStampId = null;
+          shadowOutcome(hostOf($), scoreCallStampId, "next_score", label);
+        }
         g.scores.push({
           round: g.scores.length + 1,
           result: label,
@@ -5289,6 +5534,15 @@ export const register: Register = async (on, options) => {
         }
         g.updatedAt = Date.now();
         } catch (err) {
+          // The score joiner above sits after the awaited classify, so a
+          // classify that throws leaves the hold set and the next turn that
+          // does score writes its outcome against this controller call with
+          // an unscored turn in between. The journal defines next_score as
+          // the first turn scored after the call, which that row would still
+          // satisfy, and a load reading it as the very next turn's verdict
+          // would still be misled. Clearing here writes nothing and loses
+          // one measurement rather than recording a misleading one.
+          sess.jevScoreOutcomeStampId = null;
           sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "goal",
@@ -5334,13 +5588,27 @@ export const register: Register = async (on, options) => {
     // is not a user preference and must not be distilled into a memory.
     if (!skipped && !wasNudged) {
       try {
-        const kind = await $.model.classify(
+        // Bound to a name so the same bytes reach Haiku and the shadow call
+        // below it.
+        const memoryKindState =
           `What kind of memorable content is in this exchange? Answer with exactly one label.\n` +
           `A description of what happened this turn is "discard".\n` +
           `Only a fact or preference the user stated explicitly. An instruction to call a tool is discard.\n` +
-          `User asked: ${currentPrompt.slice(0, 300)}\nWorker answered: ${e.answer.slice(0, 500)}`,
-          ["fact", "preference", "lesson", "discard"],
+          `User asked: ${currentPrompt.slice(0, 300)}\nWorker answered: ${e.answer.slice(0, 500)}`;
+        const kind = await $.model.classify(
+          memoryKindState,
+          MEMORY_KIND_LABELS,
           { model: "haiku" }
+        );
+        // The decision seam, in shadow.
+        shadowAsk(
+          hostOf($),
+          "memory-kind",
+          MEMORY_KIND,
+          MEMORY_KIND_LABELS,
+          memoryKindState,
+          jevMode,
+          typeof kind === "string" ? kind : null,
         );
         if (kind && kind !== "discard") {
           const rawDistilled = await $.model.complete({

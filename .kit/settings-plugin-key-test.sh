@@ -56,6 +56,14 @@ console.log("ROSTER_INSTALLED_PRESENT=" + (!inst ? "noid" : inst.fleetRoster !==
 console.log("ROSTER_DEV=" + (dev && dev.fleetRoster !== undefined ? dev.fleetRoster : "") + ";");
 console.log("ROSTER_INSTALLED=" + (inst && inst.fleetRoster !== undefined ? inst.fleetRoster : "") + ";");
 console.log("TICK_DEV=" + (dev ? dev.controllerTickMs : "") + ";");
+// jevMode has no emitter default either, so it takes the same three-state
+// reading: an absent key and a key written empty are different states, and
+// an empty one is a present non-shadow value that would disable the seam on
+// every launch while every value assertion stayed green.
+console.log("JEV_DEV_PRESENT=" + (!dev ? "noid" : dev.jevMode !== undefined ? 1 : 0) + ";");
+console.log("JEV_INSTALLED_PRESENT=" + (!inst ? "noid" : inst.jevMode !== undefined ? 1 : 0) + ";");
+console.log("JEV_DEV=" + (dev && dev.jevMode !== undefined ? dev.jevMode : "") + ";");
+console.log("JEV_INSTALLED=" + (inst && inst.jevMode !== undefined ? inst.jevMode : "") + ";");
 ' "$ROOT" "$1"
 }
 
@@ -77,6 +85,64 @@ case "$R" in *"COORD_DEV=coordinator;"*"COORD_INSTALLED=coordinator;"*) check "e
 # ARCHITECT_PERSONA, which is a fleet with no architect, and the key is left
 # out of both ids rather than written empty.
 case "$R" in *"ARCH_DEV_PRESENT=0;"*"ARCH_INSTALLED_PRESENT=0;"*) check "emitted: ARCHITECT_PERSONA unset leaves architectPersona out of both ids" 0 ;; *) check "emitted: ARCHITECT_PERSONA unset leaves architectPersona out of both ids (out=$R)" 1 ;; esac
+# Section 4: the same leg for jevMode. The run above set no JEV_MODE, and the
+# key is left out of both ids rather than written empty. Without this the
+# value assertions below pass against a file emitting "jevMode":"", which is a
+# present non-shadow string and so disables the seam everywhere.
+case "$R" in *"JEV_DEV_PRESENT=0;"*"JEV_INSTALLED_PRESENT=0;"*) check "emitted: JEV_MODE unset leaves jevMode out of both ids" 0 ;; *) check "emitted: JEV_MODE unset leaves jevMode out of both ids (out=$R)" 1 ;; esac
+
+# --- Section 4: emit_settings_json writes JEV_MODE=off under both ids ---
+run_lib PERSONA="keyprobe" JEV_MODE="off" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevoff.json"
+check "emit_settings_json exits 0 with JEV_MODE=off" "$?"
+R=$(inspect "$TMP/jevoff.json")
+case "$R" in *"JEV_DEV=off;"*"JEV_INSTALLED=off;"*) check "emitted: JEV_MODE=off reaches jevMode under both ids" 0 ;; *) check "emitted: JEV_MODE=off reaches jevMode under both ids (out=$R)" 1 ;; esac
+
+# --- Section 4: shadow is the value that enables the seam, and it travels too ---
+# off is the value a kill switch test naturally reaches for, but shadow is the
+# one the manifest and the example roster carry, so it is the one a regression
+# would strand.
+run_lib PERSONA="keyprobe" JEV_MODE="shadow" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevshadow.json"
+check "emit_settings_json exits 0 with JEV_MODE=shadow" "$?"
+R=$(inspect "$TMP/jevshadow.json")
+case "$R" in *"JEV_DEV=shadow;"*"JEV_INSTALLED=shadow;"*) check "emitted: JEV_MODE=shadow reaches jevMode under both ids" 0 ;; *) check "emitted: JEV_MODE=shadow reaches jevMode under both ids (out=$R)" 1 ;; esac
+
+# --- Section 4: ensure_settings_jev_mode carries the mode onto a provided file ---
+# bin/supervise.sh runs emit_settings_json only where the run directory holds
+# no settings file. Every persona that has ever launched holds one, so without
+# this leg a roster turning the seam off reaches nothing on any live machine.
+# The prior value here is shadow and the new one off, so the case proves an
+# overwrite rather than a fill: a completing function would leave shadow.
+cp "$TMP/jevshadow.json" "$TMP/provided.json"
+run_lib JEV_MODE="off" bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_jev_mode "$2"' _ "$ROOT" "$TMP/provided.json"
+check "ensure_settings_jev_mode exits 0" "$?"
+R=$(inspect "$TMP/provided.json")
+case "$R" in *"JEV_DEV=off;"*"JEV_INSTALLED=off;"*) check "provided: ensure_settings_jev_mode overwrites shadow with off under both ids" 0 ;; *) check "provided: ensure_settings_jev_mode overwrites shadow with off under both ids (out=$R)" 1 ;; esac
+# The options the caller wrote are not disturbed by the rewrite.
+case "$R" in *"PERSONA_DEV=keyprobe;"*) check "provided: ensure_settings_jev_mode leaves the other options as written" 0 ;; *) check "provided: ensure_settings_jev_mode leaves the other options as written (out=$R)" 1 ;; esac
+
+# --- Section 4: an unset JEV_MODE leaves a provided file exactly as it was ---
+# A launch that says nothing about the mode must not clear a hand-edited one.
+cp "$TMP/jevshadow.json" "$TMP/untouched.json"
+BEFORE=$(cat "$TMP/untouched.json")
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_jev_mode "$2"' _ "$ROOT" "$TMP/untouched.json"
+check "ensure_settings_jev_mode exits 0 with JEV_MODE unset" "$?"
+[ "$BEFORE" = "$(cat "$TMP/untouched.json")" ]; check "provided: an unset JEV_MODE leaves the file byte-identical" "$?"
+
+# --- Section 4: ensure_settings_jev_mode refuses a value outside the pair ---
+# The two branches must agree about what a bad value means, or an operator
+# gets a refusal on a fresh run directory and a silent write on an old one.
+cp "$TMP/jevshadow.json" "$TMP/refused.json"
+BEFORE=$(cat "$TMP/refused.json")
+ERR=$(run_lib JEV_MODE="Shadow" bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_jev_mode "$2"' _ "$ROOT" "$TMP/refused.json" 2>&1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "ensure_settings_jev_mode refuses JEV_MODE=Shadow" 1 ;; *"must be off or shadow"*) check "ensure_settings_jev_mode refuses JEV_MODE=Shadow" 0 ;; *) check "ensure_settings_jev_mode refuses JEV_MODE=Shadow (rc=$RC, err=$ERR)" 1 ;; esac
+[ "$BEFORE" = "$(cat "$TMP/refused.json")" ]; check "a refused JEV_MODE leaves the provided file unchanged" "$?"
+
+# --- Section 4: emit_settings_json refuses a JEV_MODE outside off/shadow ---
+ERR=$(run_lib JEV_MODE="bogus" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevbogus.json" 2>&1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "emit_settings_json refuses JEV_MODE=bogus" 1 ;; *"JEV_MODE 'bogus' must be 'off' or 'shadow'"*) check "emit_settings_json refuses JEV_MODE=bogus" 0 ;; *) check "emit_settings_json refuses JEV_MODE=bogus (rc=$RC, err=$ERR)" 1 ;; esac
+[ ! -e "$TMP/jevbogus.json" ]; check "a refused JEV_MODE leaves no settings file" "$?"
 
 # --- emit_settings_json writes architectPersona under both ids ---
 # The name vellum is withheld from every literal the emitter carries, so the

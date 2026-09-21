@@ -120,20 +120,22 @@ The steward polls nothing. The controller tick starts no turn on a persona holdi
 
 ### Controller decision
 
-The controller tick builds a summary with **defined labels** (C1):
+The controller tick builds a summary from the active goal and the session's own state, line by line:
 
-| Label | Meaning |
+| Line | Content |
 |---|---|
-| `goal` | The active goal, status, objective, rounds |
-| `last_on_goal` | Last turn scored on-goal (minutes ago) |
-| `last_off_goal` | Last turn scored off-goal (minutes ago) |
-| `consecutive_nudges` | Nudges **sent** without an on-goal turn since |
-| `minutes_since_last_on_goal` | Wall-clock gap |
-| `memory_count` | Memory entries in state |
-| `turns_total` | Total turns this session |
-| `idle_minutes` | Minutes since last turn completed (L1) |
+| `Objective` | The active goal's objective text |
+| `Node` | The node's id and kind, its status, and its round count against its cap |
+| `Last 5 scores` | The node's five most recent turn scores, oldest first, or `none` |
+| `On-goal count` | How many of the node's scores read `on-goal`, against the total |
+| `Idle time` | How long the session has been idle, in seconds under a minute and in minutes otherwise |
+| `Consecutive nudges sent` | Nudges sent since the last on-goal score |
+| `Decisions tail` | The five most recent entries in `state.decisions[]`, each as `loop:action` |
+| `Memory` | The number of memory entries, and how many of them are self-review lessons |
+| `LESSON` | The newest self-review lesson's text, cut to 120 characters. Present only where one exists |
+| `Environment` | The git branch with its dirty, ahead and behind counts, and the last health check's exit code with the goal node id it ran for. Present only where either is known |
 
-The classify labels are: `nudge`, `pause`, `complete`, `ask-operator`.
+The summary ends with the four standing choices, and with `switch` as a fifth only where a plan is pending. So `$.model.classify` returns one of `nudge`, `pause`, `complete` or `ask-operator`, and `switch` where a pending plan exists to switch to.
 
 **L1**: The idle gate is enforced **in code**, not in the prompt. The tick computes `idleMs = now - lastTurnComplete` and only proceeds to a model call if `idleMs >= nudgeIdleMs`. The model decides **what** (nudge/pause/complete/ask-operator), never **whether** : the threshold is a hard gate.
 
@@ -225,6 +227,7 @@ Declared in `plugin.json` with defaults. Read as `options.<name>` in `register(o
 | `coordinatorPersona` | `coordinator` | The one persona name the inbox gates treat as the coordinator. A configured name of `default` is refused and falls back. |
 | `fleetRoster` | (none) | The roster file the fleet reading uses, which `fleet_status` reads on demand and the coordinator persona's controller tick reads every tick. Unset, the tool reports it has no roster and the tick's watcher stays silent. |
 | `reconcileEveryMs` | 14400000 | How long between the `[RECONCILE]` prompts the coordinator persona's tick submits. Four hours, the kit Coordinator seat's own cadence. |
+| `jevMode` | `shadow` | `off` or `shadow`, the decision seam's kill switch. `shadow` puts each closed question the plugin already asks Haiku to Jev as well, in shadow, and journals the answer. `off` makes no such call and journals nothing. Any other value reads as `off` at the plugin's own read, and the supervisor refuses such a value outright rather than writing it, so a typo in a roster entry stops that launch instead of reaching this read. See "Decision seam" below. |
 
 ## Loops
 
@@ -240,6 +243,10 @@ Declared in `plugin.json` with defaults. Read as `options.<name>` in `register(o
 |---|---|
 | `hooks/index.ts` | The plugin module (one file, all logic) |
 | `hooks/agent-state.ts` | `AgentState` interface + defaults + `shouldYield`/`yieldRecord` pure helpers |
+| `hooks/host.ts` | The `PluginHost` interface every module outside `hooks/index.ts` takes a slice of, since the engine refuses the module when the injected `$` crosses an import |
+| `hooks/decision-seam.ts` | The one path a closed question takes to Jev, and the only place the vendor key is held |
+| `hooks/question-catalog.ts` | The four shipped questions, the label arrays the classify sites pass, and the override resolver |
+| `hooks/decision-journal.ts` | The append-only record of every shadow call, its answer and its outcome |
 | `.agentic-personas.json` | Persona store (project root) |
 | `.agentic-heartbeat.json` | Heartbeat sidecar (project root) |
 | `.agentic-yields.log` | Yield sidecar, JSONL (project root) |
@@ -271,7 +278,7 @@ The plugin cadences the script only emits (`controllerTickMs`, `nudgeIdleMs`, `n
 
 ### Settings File
 
-The child reads its plugin options from `<rundir>/settings.json`, passed on `--settings`. `pluginConfigs` is keyed by plugin id, and the id differs by load mode: `agentic-plugin` under `--plugin-dir` (`--dev`), and `agentic-plugin@agent-persona` for the installed copy. Options under the other id are ignored without an error, and the child then claims persona `default` with default cadences. So `emit_settings_json` writes the same options under both ids, `arming` fixed at `owner` and `coordinatorPersona` from `COORDINATOR_PERSONA` (default `coordinator`; a value of `default` or one outside the persona character class is refused and no file is written), and exports `COORDINATOR_PERSONA` for the priming step. When the run directory already holds a settings file, the supervisor keeps it: `ensure_settings_plugin_ids` copies the options from whichever id carries them to the id that lacks them, every option as the caller wrote it. An id whose options object is missing or empty counts as absent, two ids that both carry options are left byte for byte, and the file is replaced by rename so an interrupted write never truncates it. `ensure_settings_arming` then completes a missing `arming` key to `owner` under both ids, creating `pluginConfigs` and the id entries from nothing where the file lacks them, and refuses a file whose `arming` names another tier, leaving it byte for byte. `read_settings_coordinator_persona` reads `coordinatorPersona` back from the id this launch loads, under the plugin's own rule (a missing key, `default`, or a name that fails the rule resolves to `coordinator`), and exports it as `COORDINATOR_PERSONA`. That rule is far wider than the persona character class: it admits any string that is non-empty after trim, carries no colon, bracket or comma, and holds no whitespace, so a name reading as a sentence passes it. The name is spliced into standing instructions, and the read stays as wide as the plugin's because a narrower one would name a different coordinator than the plugin resolves, so the launch is what refuses: a resolved name outside the persona character class exits 1 with the reason in `supervisor.log` and nothing launched. `architectPersona` travels those same two paths from `ARCHITECT_PERSONA`, held to the same character class and refusing `default`, with one difference: it has no default value, so an unset variable leaves the key out of the emitted file entirely, and `read_settings_architect_persona` resolves a missing or unusable key to the empty string, which is a launch with no architect. That read holds the file's value to the persona character class, the same one the emitter holds `ARCHITECT_PERSONA` to, because the name is spliced into the steward's standing instruction and the settings file sits in a run directory its own persona can rewrite. That read is the supervisor's own; the plugin reads `coordinatorPersona` and never this key. The file governs this key exactly as it governs `coordinatorPersona`: the provided branch writes nothing, so the name a launch takes is the one the file carries, and the launch environment does not enter the read. One persona for both seats is refused on both paths, since the two standing instructions contradict each other in a single priming write. A leading byte order mark is stripped before every read. A file that is not JSON, or whose `pluginConfigs`, id entry or options value is not a plain object, is refused by each of these steps: the supervisor exits 1 and the reason is in `supervisor.log`. A provided file's persona is not reconciled with the launch argument; `docs/backlog.md` records that gap. `.kit/settings-plugin-key-test.sh` pins both ids against the two manifests. `fleetRoster` is emitted from `FLEET_ROSTER` under both ids, and it has no default either, so an unset variable leaves the key out of the emitted file and a launch reading a file without it has no fleet to read. Its value is a filesystem path rather than a name, so it is held to what a JSON string can carry rather than to the persona character class: a backslash is doubled so the path parses back as it was written, and a double quote or a control character is refused with no file left behind. The read-back half is where this key differs from the two persona names. `read_settings_fleet_roster` resolves a missing or unusable key to the empty string under the plugin's own rule, which takes any string trimmed and reads everything else as no roster, and `.kit/settings-plugin-key-test.sh` pins it; the supervisor never calls it, because nothing in the launch needs the path. The plugin reads the key straight out of the settings file, so a provided file's roster reaches the fleet watcher and the `fleet_status` tool either way.
+The child reads its plugin options from `<rundir>/settings.json`, passed on `--settings`. `pluginConfigs` is keyed by plugin id, and the id differs by load mode: `agentic-plugin` under `--plugin-dir` (`--dev`), and `agentic-plugin@agent-persona` for the installed copy. Options under the other id are ignored without an error, and the child then claims persona `default` with default cadences. So `emit_settings_json` writes the same options under both ids, `arming` fixed at `owner` and `coordinatorPersona` from `COORDINATOR_PERSONA` (default `coordinator`; a value of `default` or one outside the persona character class is refused and no file is written), and exports `COORDINATOR_PERSONA` for the priming step. When the run directory already holds a settings file, the supervisor keeps it: `ensure_settings_plugin_ids` copies the options from whichever id carries them to the id that lacks them, every option as the caller wrote it. An id whose options object is missing or empty counts as absent, two ids that both carry options are left byte for byte, and the file is replaced by rename so an interrupted write never truncates it. `ensure_settings_arming` then completes a missing `arming` key to `owner` under both ids, creating `pluginConfigs` and the id entries from nothing where the file lacks them, and refuses a file whose `arming` names another tier, leaving it byte for byte. `ensure_settings_jev_mode` then writes `jevMode` under both ids from `JEV_MODE` where the environment sets it, overwriting whatever value the file already carries, and leaves the file untouched where `JEV_MODE` is unset or empty. It overwrites where `ensure_settings_arming` completes because the two keys answer different questions: arming is a property of the launch and is always `owner`, so a file naming another tier is a mistake to refuse, while `jevMode` carries the operator's current intent from the roster, and a kill switch that could not change a value an earlier launch wrote could never turn anything off on a machine that has ever run. `read_settings_coordinator_persona` reads `coordinatorPersona` back from the id this launch loads, under the plugin's own rule (a missing key, `default`, or a name that fails the rule resolves to `coordinator`), and exports it as `COORDINATOR_PERSONA`. That rule is far wider than the persona character class: it admits any string that is non-empty after trim, carries no colon, bracket or comma, and holds no whitespace, so a name reading as a sentence passes it. The name is spliced into standing instructions, and the read stays as wide as the plugin's because a narrower one would name a different coordinator than the plugin resolves, so the launch is what refuses: a resolved name outside the persona character class exits 1 with the reason in `supervisor.log` and nothing launched. `architectPersona` travels those same two paths from `ARCHITECT_PERSONA`, held to the same character class and refusing `default`, with one difference: it has no default value, so an unset variable leaves the key out of the emitted file entirely, and `read_settings_architect_persona` resolves a missing or unusable key to the empty string, which is a launch with no architect. That read holds the file's value to the persona character class, the same one the emitter holds `ARCHITECT_PERSONA` to, because the name is spliced into the steward's standing instruction and the settings file sits in a run directory its own persona can rewrite. That read is the supervisor's own; the plugin reads `coordinatorPersona` and never this key. The file governs this key exactly as it governs `coordinatorPersona`: the provided branch writes nothing, so the name a launch takes is the one the file carries, and the launch environment does not enter the read. One persona for both seats is refused on both paths, since the two standing instructions contradict each other in a single priming write. A leading byte order mark is stripped before every read. A file that is not JSON, or whose `pluginConfigs`, id entry or options value is not a plain object, is refused by each of these steps: the supervisor exits 1 and the reason is in `supervisor.log`. A provided file's persona is not reconciled with the launch argument; `docs/backlog.md` records that gap. `.kit/settings-plugin-key-test.sh` pins both ids against the two manifests. `fleetRoster` is emitted from `FLEET_ROSTER` under both ids, and it has no default either, so an unset variable leaves the key out of the emitted file and a launch reading a file without it has no fleet to read. Its value is a filesystem path rather than a name, so it is held to what a JSON string can carry rather than to the persona character class: a backslash is doubled so the path parses back as it was written, and a double quote or a control character is refused with no file left behind. The read-back half is where this key differs from the two persona names. `read_settings_fleet_roster` resolves a missing or unusable key to the empty string under the plugin's own rule, which takes any string trimmed and reads everything else as no roster, and `.kit/settings-plugin-key-test.sh` pins it; the supervisor never calls it, because nothing in the launch needs the path. The plugin reads the key straight out of the settings file, so a provided file's roster reaches the fleet watcher and the `fleet_status` tool either way.
 
 ### Pre-Launch Gate
 
@@ -358,7 +365,7 @@ The supervisor's own suites:
 - `.kit/supervisor-poll-unit-test.mjs`: `bin/supervise-poll.mjs`, the one process a poll launches, driven as its own process against a heartbeat, a store, a stream and a transcript each case writes under its own temp directory. Cases: a `restart_requested` newer than the start yields `restart_passive`; a stale heartbeat for the child's own session with no transcript restarts; the poll that first reads the session id reads its transcript too, so a transcript written just now corroborates; a transcript under another session id corroborates nothing; a stream whose first line is not a record still yields the session id; a malformed store entry costs no other fact, so a `shutdown_requested` beside it still stops; a `context_budget_crossed` decision an older plugin wrote to the store is no fact the reader selects, and the child continues; a live heartbeat continues; and an unreadable heartbeat reads as no heartbeat. Offline.
 - `.kit/supervisor-natural-exit-test.sh`: the natural-exit path and the decide path's `RESTART_PASSIVE`, driven through the real `bin/supervise.sh` with a stub `claude` and an isolated `HOME`. Cases: a backfilled root with exit 0 relaunches unaccounted with the `NOTE:` line and no `RESTART_PASSIVE`; a real root takes the natural-exit `RESTART_PASSIVE`; a real `root_complete` written while the child is still alive takes the decide path's `RESTART_PASSIVE` and relaunches; an exit 7 in the poll loop counts as a crash; a backfilled root with exit 7 takes the crash path; a child whose stdin is already gone at launch is counted and relaunched. It also pins that the `backfilled` substring the reader tests for sits inside the hook's backstop detail and no other `root_complete` detail. It also covers: a survivor a stub child leaves behind is killed, confirmed dead and only then does the next launch or the shutdown path proceed, with a control where no survivor is left; a stop that meets its wrapper under a Windows pid its own snapshot was never walked from fails closed rather than reporting a clean tree; the decide path's own restart branch refuses at the restart budget and at the crash limit exactly where the natural-exit path refuses, and still relaunches one below each; and a rate-limited child's newest stream record logs `RATE_LIMITED until <ISO>` while it stays the newest record, with no such line once real work follows it and no line at all for a retry the child has already worked past. Offline.
 - `.kit/supervisor-model-test.sh`: `supervisorModel` and `supervisorEffort` reaching the launch flags and an exported `MODEL` or `EFFORT` winning over each, both directions of both flags across a real process boundary, the shared numeric rule clause by clause, each numeric setting's own refusal line driven through the real script, the `supervisorPsBoundS` fallback, and a structural pin that every numeric setting is either checked by `positive_number` or emitted and never read by the script itself. Offline.
-- `.kit/settings-plugin-key-test.sh`: both plugin ids in the emitted settings with `arming` `owner` and the default `coordinatorPersona` under each, `COORDINATOR_PERSONA` exported by the emitter and `default` refused with no file left behind, completion of a provided single-id file with its options and persona kept, `ensure_settings_arming` completing a missing key under both ids (an empty file and a dev-id-only file included, sibling keys kept) and refusing another tier byte for byte, `read_settings_coordinator_persona` resolving a usable name, `default`, a missing key, a key under the other id only and a BOM-prefixed file per load mode, refusal of shapes that cannot hold options by both completion helpers, refusal of a persona or cadence that could break out of the JSON, the same persona class in both files that check it, `architectPersona` emitted under both ids from `ARCHITECT_PERSONA` and left out entirely when it is unset, exported by the emitter either way, `default` and a name carrying a quote refused with no file left behind, `read_settings_architect_persona` resolving the coordinator read's five classes and a BOM per load mode with no architect as its fallback, plus a sixth the two reads answer oppositely: a name outside the persona character class, which this read refuses and the coordinator read admits verbatim, one name refused for both seats by the emitter and by the driven script's provided-file branch, the driven script's provided-file branch taking the architect the file names rather than one the launch environment names, pinned in both directions on the launch's own exit code, a provided `coordinatorPersona` outside the persona character class refusing the launch with the read shown admitting that same name, `controllerTickMs` and `ARCHITECT_PERSONA` reaching the emitted file through the driven script, `fleetRoster` emitted under both ids from `FLEET_ROSTER` and left out entirely when it is unset (the absence read off a file the same run is shown to have written, with both id entries in it), a backslash path parsing back as it was written, a quote and a control character each refused with no file left behind, `read_settings_fleet_roster` resolving a missing key, a key under the other id only, a blank string, a non-string value and a BOM per load mode with no roster as its answer to each, and the round trip both ways, and `staleAfterMs` refused at startup even with a settings file provided and read as data by both halves of the gate. Offline.
+- `.kit/settings-plugin-key-test.sh`: both plugin ids in the emitted settings with `arming` `owner` and the default `coordinatorPersona` under each, `COORDINATOR_PERSONA` exported by the emitter and `default` refused with no file left behind, completion of a provided single-id file with its options and persona kept, `ensure_settings_arming` completing a missing key under both ids (an empty file and a dev-id-only file included, sibling keys kept) and refusing another tier byte for byte, `read_settings_coordinator_persona` resolving a usable name, `default`, a missing key, a key under the other id only and a BOM-prefixed file per load mode, refusal of shapes that cannot hold options by both completion helpers, refusal of a persona or cadence that could break out of the JSON, the same persona class in both files that check it, `architectPersona` emitted under both ids from `ARCHITECT_PERSONA` and left out entirely when it is unset, exported by the emitter either way, `default` and a name carrying a quote refused with no file left behind, `read_settings_architect_persona` resolving the coordinator read's five classes and a BOM per load mode with no architect as its fallback, plus a sixth the two reads answer oppositely: a name outside the persona character class, which this read refuses and the coordinator read admits verbatim, one name refused for both seats by the emitter and by the driven script's provided-file branch, the driven script's provided-file branch taking the architect the file names rather than one the launch environment names, pinned in both directions on the launch's own exit code, a provided `coordinatorPersona` outside the persona character class refusing the launch with the read shown admitting that same name, `controllerTickMs` and `ARCHITECT_PERSONA` reaching the emitted file through the driven script, `fleetRoster` emitted under both ids from `FLEET_ROSTER` and left out entirely when it is unset (the absence read off a file the same run is shown to have written, with both id entries in it), a backslash path parsing back as it was written, a quote and a control character each refused with no file left behind, `read_settings_fleet_roster` resolving a missing key, a key under the other id only, a blank string, a non-string value and a BOM per load mode with no roster as its answer to each, and the round trip both ways, and `staleAfterMs` refused at startup even with a settings file provided and read as data by both halves of the gate. It also pins `JEV_MODE` `off` and `shadow` each reaching `jevMode` under both plugin ids, an unset `JEV_MODE` leaving the key out of the emitted file entirely rather than writing it empty, a value outside that pair refused with no file left behind, and `ensure_settings_jev_mode` carrying the mode onto a provided settings file: it overwrites a value an earlier launch wrote, leaves the file byte-identical when `JEV_MODE` is unset, and refuses a bad value without changing the file. Offline.
 - `.kit/channel-reply-instruction-test.sh`: the priming turn carries the skill-load instruction and the coordinator steer sentence under both `--no-channel` values and the reply-tool instruction only with a channel attached, read from the script's own text and evaluated per persona: the coordinator persona gets the role instruction and no escalation clause, a named worker gets the escalation clause naming the coordinator and no role instruction, and `default` gets no escalation clause. The reply-tool instruction is read for the tool it names, the `CLAUDE.md` section it points at, and the internal numbers it withholds from an operator message, those read out of `CLAUDE.md`'s own sentence so that dropping the rule from either surface reds. Two sweeps read a class out of its own owning surface rather than a list written in the test, and assert the priming write copies no member of it: every sentence of eight or more words in `CLAUDE.md`, and every such sentence of a registered tool's description. Each runs its instrument against a string carrying a member taken from that same surface before it is trusted on one that should carry none. The architect's charter is read the same way against `ARCHITECT_PERSONA`: the persona it names gets every clause, every other persona gets none of them through any part of the priming write, an unset setting gets them to nobody, and that launch alone reads the skill-load and steer sentences as cleared to the empty string. The steward's design-escalation clause is read against a name withheld from the script's own literals, so the routing target is proven to come from the setting, and an unset setting builds that clause for nobody while the other two duties stand. Every persona name the priming write splices in is read back and required to be the launch's own coordinator or architect name, so a seat name hardcoded at any of the three shapes that carry one reds whatever clause it sits in. That read is an enumeration of those shapes rather than a read of a class, since the string it searches is rendered prose where a persona name looks like any other word, so a separate check counts the splice sites in the script's own source and reds when a fourth shape appears. Offline.
 - `.kit/live-stopprocesstree-test.sh`: the stop-path helpers and `stop_child` itself, extracted from `bin/supervise.sh`, against real Windows processes: a wrapper whose native child survives it, a wrapper that ignores TERM and forces the KILL phase, the PowerShell bound holding, and a CIM failure read as unverified. It launches no `claude` session, so it runs beside a live fleet on its own; `live-all.sh` does not run it.
 - `.kit/live-restartrequest-test.sh`: a reader's restart request stops a real `claude` child and relaunches one, with the claim handed over and the plan kept. Live.
@@ -372,7 +379,7 @@ The supervisor's own suites:
 
 `bin/Start-Persona.ps1` is what each `AgentPersona-<name>` scheduled task runs. It reads one entry from a JSON roster, applies an environment file's allowlisted keys, launches `bin/supervise.sh` through the bash the environment file names, and loops on the supervisor's exit code under a fixed policy: relaunch after a delay, hold, or stop.
 
-**The roster.** One JSON array, each entry a persona, read from `D:/personas/fleet.json` unless `-Roster` names another path. `workdir`, `name` and `permissionMode` are required and become the supervisor's three positional arguments, in that order. `rundir` becomes `--rundir`; where it is absent the supervisor uses `<workdir>/run` and the keeper writes its own state there too. `channelName` becomes `--channel-name`; where it is absent the supervisor uses its own `supervisor-<persona>` thread name. `model`, `effort`, `controllerTickMs`, `coordinatorPersona`, `architectPersona` and `fleetRoster` become the `MODEL`, `EFFORT`, `controllerTickMs`, `COORDINATOR_PERSONA`, `ARCHITECT_PERSONA` and `FLEET_ROSTER` environment variables, each set only where the entry carries the field. `args` is any further supervisor flag appended verbatim, refused if it carries `--prompt`, since every roster entry launches passive. `enabled` is required and decides whether a task is registered and turned on.
+**The roster.** One JSON array, each entry a persona, read from `D:/personas/fleet.json` unless `-Roster` names another path. `workdir`, `name` and `permissionMode` are required and become the supervisor's three positional arguments, in that order. `rundir` becomes `--rundir`; where it is absent the supervisor uses `<workdir>/run` and the keeper writes its own state there too. `channelName` becomes `--channel-name`; where it is absent the supervisor uses its own `supervisor-<persona>` thread name. `model`, `effort`, `controllerTickMs`, `coordinatorPersona`, `architectPersona`, `fleetRoster` and `jevMode` become the `MODEL`, `EFFORT`, `controllerTickMs`, `COORDINATOR_PERSONA`, `ARCHITECT_PERSONA`, `FLEET_ROSTER` and `JEV_MODE` environment variables, each set only where the entry carries the field. `args` is any further supervisor flag appended verbatim, refused if it carries `--prompt`, since every roster entry launches passive. `enabled` is required and decides whether a task is registered and turned on.
 
 `bin/fleet.example.json` is a four-entry worked example: the steward, the architect, and two workers. It is an example rather than a copy of any machine's roster, so the fleet a given box actually runs is whatever `D:/personas/fleet.json` names there. The steward's and the architect's launchers under `D:/personas` are the manual fallback for those two and match their entries field for field. The workers' launchers predate the roster and do not: they carry no coordinator name, and not every worker the example lists has one at all. Every entry sets `permissionMode` to `bypassPermissions`, which runs the child with its tool-permission prompts off. The steward entry's `fleetRoster` names `D:/personas/fleet.json`, the roster the keeper reads by default, and those two must be the same file: run the keeper with `-Roster` pointing somewhere else and the steward watches the fleet named by its own entry rather than the fleet it was launched from. Under a scheduled task that choice reaches further than it does at a launcher: the persona runs from boot, unattended, with no console for anyone to answer a prompt at. Set it to a stricter mode for any persona that should not hold that latitude.
 
@@ -590,6 +597,275 @@ The supervisor's own suites are listed under the Supervisor section's Test Cover
 3. **Try `$.model.fork`** for the controller tick (sees full transcript, shares prompt cache) : Fable suggested, not yet adopted.
 4. **Memory decay**: confidence -= f(age, accessCount).
 5. **Multiple-goal support**: state.goal → state.goals[], priority ordering.
+
+## Decision seam
+
+The decision seam puts each closed question this plugin already asks Haiku to a second classifier, Jev, and records both answers side by side. Haiku is the Claude model alias the plugin names at every `$.model.classify` and `$.model.complete` call it makes. Jev is the classifier TypeSafe serves at `https://api.typesafe.ai/v1/systemone`. The seam runs in shadow: Jev's answer is written to a journal file on this machine and read by no branch, no state field, no score and no nudge. Haiku still decides everything.
+
+Four questions go through it, one per site that already asks Haiku a closed question.
+
+| Site | Question set | The decision | Option ids in force |
+|---|---|---|---|
+| `controller` | `controller-decision` | what the controller does with an idle worker | `nudge`, `pause`, `complete`, `ask-operator`, and `switch` as a fifth only where at least one plan is pending |
+| `plan-switch` | `plan-switch` | which pending plan to take up, once the controller has decided to switch | one id per pending plan, plus `no_match` |
+| `turn-score` | `turn-score` | what the worker's answer did about the goal | `on-goal`, `drift`, `complete`, and `off-goal-by-instruction` as a fourth only on a turn the plugin did not nudge |
+| `memory-kind` | `memory-kind` | what kind of memorable content the turn holds | `fact`, `preference`, `lesson`, `discard` |
+
+Each call sends Jev the same state text and the same option ids Haiku received for that same question. The state is the prompt text the site built. The option ids are the labels the answer has to be one of, single-sourced in `hooks/question-catalog.ts` so the set Haiku is offered and the set Jev is offered cannot drift.
+
+### What Jev is
+
+Jev is a System One classifier. It takes one block of state and a set of questions, and answers each with one option id, a probability for every offered option, and a confidence. It returns no prose and holds no conversation.
+
+The seam exists to measure. Every shadow call writes Jev's option id beside Haiku's for the same input, so the agreement rate between the two can be counted from real traffic before anything is asked to depend on it. Nothing in this repository acts on a Jev answer, and nothing in this repository reads the journal back.
+
+A question asks for one answer shape, which the vendor calls a primitive. Every question this plugin sends uses the `choice` primitive: one option id out of a named set, with a probability per option. The seam validates each answer against that shape and refuses any other.
+
+### Reaching the seam
+
+Three modules carry the feature, and none of them imports `$`. The engine's loader follows `$` only into functions declared at the top level of `hooks/index.ts`, so each module takes a narrow slice of the `PluginHost` interface in `hooks/host.ts` instead. That interface is the injected host: one object built over `$` by `hostOf($)` in `hooks/index.ts`, each member making a single `$.noun.verb(...)` call.
+
+| Module | What it owns |
+|---|---|
+| `hooks/decision-seam.ts` | `ask`, the one path a question takes to Jev: the key, the request, the timeout race, the response validation and the closed failure set |
+| `hooks/question-catalog.ts` | the four shipped questions, the label arrays the Haiku sites pass, and `resolverOf`, which reads the override layer |
+| `hooks/decision-journal.ts` | `writeCall`, `writeAnswers` and `writeOutcome`, the three line kinds, the stamp id and the split |
+
+`ask` has this shape and never rejects:
+
+```ts
+ask(host, questionSetId, optionIds, state, mode, haikuValue, resolve): Promise<SeamResult>
+```
+
+A call site does not call it directly. `hooks/index.ts` wraps it in a local `shadowAsk`, which mints the stamp id, fires the call without awaiting it, and writes the journal lines once it settles. A site calls that wrapper right after its own Haiku call:
+
+```ts
+const stampId = shadowAsk(
+  hostOf($),        // the injected host
+  "turn-score",     // the site label the journal records
+  TURN_SCORE,       // the question set id, from hooks/question-catalog.ts
+  labels,           // the option ids in force for this call
+  scoreState,       // the same string that was passed to $.model.classify
+  jevMode,          // the kill switch, read once at register time
+  typeof result === "string" ? result : null,   // Haiku's own answer
+);
+```
+
+Four rules bind a call site. Bind the state to a name and pass that one name to both classifiers, so the bytes that reach Jev are the bytes that reached Haiku. Pass Haiku's raw answer rather than any value the plugin derived from it, because agreement is measured against what Haiku said. Never await the return, since the seam's whole contract is that it cannot delay the tick or the turn it sits in. Read the return as the call's stamp id, or as `null` where the mode is not `shadow`.
+
+`shadowOutcome(host, callStampId, kind, value)` is the other wrapper. It joins a signal the plugin produced later onto a call already made, by that call's stamp id.
+
+Adding a fifth question takes three edits, and none of them is in the journal, which is question-agnostic.
+
+1. `hooks/question-catalog.ts`: an id constant, that constant added to `QUESTION_SET_IDS`, an entry in `SHIPPED_QUESTIONS` carrying `instructions` and an `options` map with one description per option id, and the id added to `FIXED_OPTION_SETS` where the catalog owns every option the question offers.
+2. The same file's label array for the Haiku site, exported as a frozen constant, so one array feeds `$.model.classify` and the seam's `optionIds`.
+3. The call site in `hooks/index.ts`: bind the state to a name, pass that name to `$.model.classify` and to `shadowAsk`, and place the `shadowAsk` call after the Haiku call so Haiku's answer is available to pass.
+
+A question's instructions and its option descriptions travel in an HTTP request body and are never injected into a session, so `.kit/injection-ledger.mjs` does not count them and the duplicate-sentence test does not read them.
+
+### Question wording
+
+A question's wording lives in two layers. The shipped defaults are constants in `hooks/question-catalog.ts`, one question set per id, each carrying its instructions, a description per option, and the version label `v1`.
+
+An override layer sits outside the repository, under the home directory the plugin resolves (see "Which home" below):
+
+```
+<home>/.claude/agentic-questions/<questionSetId>/active.json
+<home>/.claude/agentic-questions/<questionSetId>/v<N>.json
+```
+
+`active.json` is the one mutable file and names the active version:
+
+```json
+{"version": "v3"}
+```
+
+A version file holds the question itself. All three fields are required, and `options` maps each option id to a one-line description or to `null`:
+
+```json
+{
+  "primitive": "choice",
+  "instructions": "An autonomous worker session has gone idle. Which action should the controller take now?",
+  "options": {
+    "nudge": "Prompt the worker to take the next concrete step toward the goal.",
+    "pause": "Repeated drift suggests the operator changed direction, so stop nudging.",
+    "complete": "The objective is evidently met.",
+    "ask-operator": "The worker is blocked, or the round budget is nearly spent.",
+    "switch": "A different pending plan is the one to work on now."
+  }
+}
+```
+
+Nothing else the file carries is read. The resolver copies out those three fields and drops the rest.
+
+The resolver holds nothing between calls and reads at most two files per call, so editing `active.json` takes effect on the next question asked, with no restart. Writing a new `v<N>.json` and then repointing `active.json` at it is how a wording changes without touching the answers already recorded under the old label. A version file is meant to be immutable once written, because the journal records only the version label beside each answer, so a label whose wording changed underneath it makes two different questions read as one. That rule is the operator's to keep. No code enforces it.
+
+Three of the four sets have option ids the catalog owns outright: `controller-decision`, `turn-score` and `memory-kind`, named in `FIXED_OPTION_SETS`. An override of one of those may reword anything and reorder anything, and may not change the set of option ids, because Haiku's ids come from the label arrays in the same file and an agreement figure compares the two. The fourth set, `plan-switch`, is absent from that list: its option ids are the pending plan ids the caller supplies per request, and the only one the catalog owns is `no_match`.
+
+An override that fails validation is not used. The shipped default is served instead, and the reason rides the answer line for that call. The reasons are these, and this list is complete.
+
+- Reaching the layer: no home directory, so no override was read; `active.json` could not be checked.
+- Reading `active.json`: it could not be read; it is not text; it is not JSON; it names no version; it names no `v<N>` version label, which is the letter `v` followed by one to nine digits.
+- Reading the version file: the named version file could not be checked; the named version file is missing; the version file could not be read; the version file is not text; the version file is not JSON.
+- Validating its content: the version file is not an object; the override is not a choice; the override has an empty instruction; the override has no options map; the override has an option description that is not a string or null; the override has fewer options than the floor, which is two for the three fixed sets and one for the plan switch; the override has more than 255 options; the override's option ids differ from the shipped set, which is checked for the three fixed sets only.
+
+A question set id the catalog does not know resolves to a question with an empty id, which the seam refuses before any request as the `no_question` failure.
+
+### The journal
+
+Every shadow call and its outcome are recorded to
+
+```
+<home>/.claude/agentic-decisions/<persona>/<YYYY-MM-DD>-<session>.jsonl
+```
+
+one file per persona per UTC day per session, so no two processes ever write the same file. The persona name and the session id are each sanitized into the path: everything outside letters, digits, underscore and hyphen becomes an underscore, and the result is cut to 64 characters.
+
+**Which home.** The plugin reads `USERPROFILE` first and falls back to `HOME` where `USERPROFILE` is unset or empty. Both are read from the process environment of the `claude` child. Under a keeper launch both are also in the env file's allowlist and can name different paths, in which case the journal follows `USERPROFILE`. The same resolution serves the override layer above.
+
+Three kinds of line appear, and no others. Every field of a line's kind is present on it, and a value that does not apply is `null` rather than omitted, so a bulk load can read a column per field with no per-line shape test.
+
+**A `call` line**, one per question asked.
+
+| Field | What it holds |
+|---|---|
+| `lineKind` | `call` |
+| `stampId` | this call's id, minted when the call starts. Four dot-separated parts: the sanitized persona, the sanitized session id, the milliseconds since the Unix epoch at which the call started, and a per-session counter. No part can carry a dot, so a reader splits an id into exactly four |
+| `at` | the ISO timestamp at which the line was written, which is after the call settled |
+| `persona`, `session`, `site` | the persona, the session id, and one of the four site labels in the table above |
+| `questionSet` | the question set id asked |
+| `mode` | always `shadow`, because `off` writes no line at all |
+| `split` | `holdout` or `dev`, a function of the stamp id alone so an id's split never changes. Present on this line kind only |
+| `stateHash` | a 32-bit FNV-1a hash of the state as sent, or `null` where the call carried no state |
+| `state` | the state text as it went to Jev, or `null` where this site's previous line in this file carried the same state |
+| `stateRef` | the stamp id of the earlier line carrying that same state, where `state` is `null` for that reason, and `null` otherwise |
+| `inputTokens` | the input token count the vendor reported, or `null` on any call that did not get an answer |
+| `outputTokens` | the output token count the vendor reported, on the same terms. Both ride the line, so one line carries the whole cost of one call |
+| `latencyMs` | milliseconds from just before the request to the moment the race settled, or `null` where no request was made |
+| `result` | `ok`, or one of the failure reasons below |
+| `detail` | a short string naming what failed, or `null` on a successful call. Cut to 512 characters, ending `...[cut]` where it was cut |
+
+One call line in five is `holdout` and the rest are `dev`. The split is a hash of the stamp id, so it is decided once and never changes, and a line's split is the same answer whoever computes it. It is there so a measurement taken over the `dev` lines can be checked against lines that measurement never saw.
+
+A line's `state` is written once per site per file. A run of calls on an unchanged state stores the text on the first line and points the rest at it through `stateRef`, so the day's file does not repeat one summary thirty times.
+
+The values `result` can take besides `ok` are these eleven, and no others:
+
+| Reason | What happened |
+|---|---|
+| `off` | the mode was not `shadow`. Never seen on a written line, since nothing is written in that case |
+| `no_key` | `TYPESAFE_API_KEY` was absent, unreadable, or shorter than 16 characters once trimmed. Nothing was sent and no state was carried |
+| `no_question` | the catalog resolver rejected, or answered with something that is not a usable question. Local, before any request |
+| `timeout` | the ten-second timer beat the request |
+| `network` | the request rejected with no HTTP status, or resolved with nothing usable |
+| `http_401` | the key was missing or invalid |
+| `http_422` | the vendor refused the request body |
+| `http_429` | rate limited |
+| `http_529` | the vendor is overloaded |
+| `http_other` | any status outside 200 to 299 that the four above do not name |
+| `parse` | the body was not JSON, or its answer for the question asked was missing or failed validation |
+
+A sample `call` line, with invented state:
+
+```json
+{"lineKind":"call","stampId":"default.abc123.1789905600000.4","at":"2026-09-20T12:00:00.412Z","persona":"default","session":"abc123","site":"controller","questionSet":"controller-decision","mode":"shadow","split":"dev","stateHash":906887610,"state":"Objective: turn the survey notes into three short essays\nNode: plan-2 (plan), status active, round 3/10\nLast 5 scores: on-goal, on-goal, drift, on-goal, on-goal\nOn-goal count: 4 of 5\nIdle time: 4min\nConsecutive nudges sent: 1\nDecisions tail: monitor:nudge_sent, goal:score_recorded\nMemory: 12 entries (self-review lessons: 2)\nLESSON: Read the whole brief before proposing a structure.\nEnvironment: git: essays dirty 2 ahead 0 behind 0\n","stateRef":null,"inputTokens":312,"outputTokens":9,"latencyMs":412,"result":"ok","detail":null}
+```
+
+**An `answer` line**, one per answer Jev returned. A failed call has no answer, so no answer line is written for one.
+
+| Field | What it holds |
+|---|---|
+| `lineKind` | `answer` |
+| `stampId` | this line's own id, minted at write time in the same four-part shape |
+| `callStampId` | the `stampId` of the call line this answers. The join key |
+| `questionId` | the question set id answered |
+| `questionVersion` | the version label the wording came from: `v1` for a shipped default, or the override's own label |
+| `overrideRefused` | the reason an override was refused for this call, or `null` where none was refused or none exists |
+| `primitive` | `choice` |
+| `value` | the option id Jev chose |
+| `probabilities` | one number per option id the request offered. The seam refuses a body naming any other id |
+| `confidence` | Jev's confidence, a finite number |
+| `haikuValue` | the option id Haiku chose for the same question, or `null` where Haiku answered with nothing usable |
+| `agrees` | whether `value` and `haikuValue` are the same option id, or `null` where either is absent |
+
+This line carries no `at` field. Its timestamp is the call line's, reached through `callStampId`.
+
+`overrideRefused` sits here and nowhere else. So a refused override on a call that timed out, returned an error status, or ran with no key is recorded nowhere, because such a call writes a call line and no answer line.
+
+```json
+{"lineKind":"answer","stampId":"default.abc123.1789905600412.5","callStampId":"default.abc123.1789905600000.4","questionId":"controller-decision","questionVersion":"v1","overrideRefused":null,"primitive":"choice","value":"nudge","probabilities":{"nudge":0.71,"pause":0.08,"complete":0.04,"ask-operator":0.09,"switch":0.08},"confidence":0.71,"haikuValue":"nudge","agrees":true}
+```
+
+**An `outcome` line**, one per signal the plugin produced later about a call already made.
+
+| Field | What it holds |
+|---|---|
+| `lineKind` | `outcome` |
+| `stampId` | this line's own id |
+| `callStampId` | the call this outcome is joined to |
+| `kind` | `next_score` or `ask_marker`, and nothing else. A kind outside that pair is refused rather than written |
+| `value` | for `next_score`, the label the turn scorer produced. For `ask_marker`, always the fixed token `matched` |
+| `at` | the ISO timestamp at which the line was written |
+
+A `next_score` outcome is the first turn scored after a controller call. An `ask_marker` outcome is the first worker `ASK:` line matched after one. Each fires once per controller call and then releases its hold, so a second scored turn or a second marker writes nothing. The ask marker's value is a fixed token because what matched is a line the worker wrote, and a journal line records that the marker fired rather than what it said.
+
+```json
+{"lineKind":"outcome","stampId":"default.abc123.1789905730000.6","callStampId":"default.abc123.1789905600000.4","kind":"next_score","value":"on-goal","at":"2026-09-20T12:02:10.000Z"}
+```
+
+No code here consumes a journal line, deletes one or uploads a file, and no other process in this repository loads one. The files are written and left. The journal module does read the day file, because an append reads it whole and rewrites it, which is why one file per session per day bounds that cost.
+
+A write that fails is recorded once a UTC day, as a single entry in the decision log, so an unwritable journal costs one decision line a day rather than one a tick. That latch is in memory, so a restart lets the day's first failure be reported again.
+
+### Turning Jev off
+
+`jevMode` is the kill switch. It takes two values, `shadow` and `off`, and `shadow` is the default. Under `off` the `shadowAsk` wrapper in `hooks/index.ts` returns before calling the seam, so no key is read, no request is sent and no journal line is written. A persona running with Jev off produces no journal file for that session. `ask` itself, called directly with any other mode, answers with an `off` failure rather than sending. It is the wrapper that does the skipping.
+
+The value travels six surfaces, and it arrives only where every surface between the one you set and the child carries it. So setting it in one place is not enough on its own, and which places suffice is what the list below is for.
+
+1. `plugin.json`, which declares the option and its default of `shadow`. That file sits at `.claude-plugin/plugin.json` in this repository, and the installed copy of the plugin carries its own under the plugins cache. A launched persona reads neither. It reads whatever `<rundir>/settings.json` carries under the plugin id for its load mode. Where nothing wrote the key, what an unset mode resolves to is the code fallback in item 6 rather than this declaration.
+2. A roster entry's `jevMode` field, in the fleet roster the keeper reads.
+3. The keeper's environment map, which turns that field into `JEV_MODE` for the supervisor it launches.
+4. `emit_settings_json` in `bin/agentic-common.sh`, which writes `jevMode` from `JEV_MODE` under both plugin ids when it creates a settings file.
+5. `ensure_settings_jev_mode` in the same file, which writes it onto a settings file the run directory already holds, overwriting whatever mode an earlier launch wrote there. That overwrite is what lets the switch work on a machine that has run before. `coordinatorPersona` and `architectPersona` behave the opposite way, each kept at whatever an earlier launch set.
+6. The plugin's own read of the option at registration, which carries its own fallback to `shadow`. That fallback is the default that actually applies, rather than the one the manifest declares, because whether the engine fills a manifest default into the options object is not established here. So editing the manifest default alone does not change what an unset mode resolves to.
+
+A value outside the two is refused rather than folded. Both shell helpers reject it, `bin/supervise.sh` exits and names it in `supervisor.log`, and nothing launches. So a typo stops that launch instead of quietly disabling the seam. The plugin's own read is the last line of defence and the only layer that folds: a settings file hand-edited to some third value reads there as `off`.
+
+The boundary a change takes effect at is the child process, not the next question. The plugin reads `jevMode` once, at registration, and the supervisor writes the settings file once, at its own start. So a roster edit reaches a persona when its keeper next launches the supervisor, and a hand edit of `<rundir>/settings.json` reaches it when the supervisor next launches a child. The question override layer is the opposite case, read fresh per question.
+
+### What leaves the machine
+
+Each shadow call sends TypeSafe one HTTP POST carrying the state text for that question, the question's instructions, the option ids in force each with its catalog description, and the model alias `jev-latest`. The bearer key rides the `Authorization` header. The state is the text the site had just sent Haiku, with one change: every occurrence of the API key's value is replaced with `[key]`. That scrub covers the key and nothing else.
+
+What is in that state differs by site, and three of the four carry free text a person wrote.
+
+**`turn-score`** sends the first 500 characters of the text that opened the turn, labelled `User asked`, then the first 1000 characters of the worker's own answer, then the goal's objective in full. On an ordinary turn the first of those is the operator's own prompt as typed. On a turn the controller nudged it is the plugin's nudge text, and on a turn opened by a delivered inbox record it is that record's text.
+
+**`memory-kind`** sends the first 300 characters of the text that opened the turn and the first 500 characters of the worker's answer. This site is skipped on nudged turns, so its first line is the operator's own prompt or a delivered record's text.
+
+**`controller`** sends the controller summary. Most of it is counters and closed vocabularies, and it carries three pieces of free text besides. The goal's objective goes in full. The newest self-review lesson goes in cut to 120 characters, on any tick where one exists. The environment line carries the current git branch name with the dirty, ahead and behind counts, and where a health probe has run it also carries that probe's exit code and the goal node id it ran for. Where at least one plan is pending, the summary lists each pending plan's title cut to 30 characters. The rest is the node id, kind, status and round counts, the last five score labels, the on-goal count, the idle time, the nudge count, the last five decisions as `loop:action` pairs with no detail text, and two memory counts. The second of those counts every memory whose source is self-review, whatever its kind, while the lesson line below it is drawn only from those whose kind is also `lesson`, so the two numbers answer different questions.
+
+**`plan-switch`** sends every pending plan's id and its full title, uncut. The option ids sent with it are those same plan ids plus `no_match`, so a call on this question tells TypeSafe what work is queued as well as what the prompt says.
+
+Nothing else is sent. The persona name, the session id, the site label and the stamp id stay on this machine: they ride journal lines and never the request.
+
+One property of the plugin host holds regardless of anything the seam does. Every call the plugin makes through the injected host is an op event, meaning a plugin loaded above this one in the same session can rewrite the call's arguments, refuse it, or answer it with a value of its own. So the API key is readable in memory by any plugin loaded in the same session, not only by TypeSafe, and a response this plugin validates could have been supplied by another plugin rather than by the vendor. The seam validates every field it reads out of a response for that reason, and it defends against nothing else here. The mitigation is controlling which plugins are installed on a machine that holds the key.
+
+**The key itself.** The plugin reads `TYPESAFE_API_KEY` from the `claude` child's own environment. It is not a settings option, it is not a roster field, and it is not in the keeper env file's allowlist, so nothing in this repository sets it or carries it anywhere. It has to be present in the environment the child inherits, and the way to put it there is the `env` block of the user-level `settings.json` under the home the launch resolves, which Claude applies to the child's process environment. A plain user or machine environment variable is not a reliable substitute: a keeper launch runs its scheduled task without loading a user profile, so a variable set that way may never reach the child, and the key would read as absent with every call ending `no_key`. A value shorter than 16 characters once trimmed is treated as no key at all. With no key the call ends as `no_key` before anything is sent, the journal records that reason, and the line carries no state, because the scrub that would protect the text needs the key it did not get.
+
+### At rest
+
+The journal is a plain-text copy of worker-derived and operator-derived text, written under `<home>/.claude/agentic-decisions/`. A `call` line's `state` field holds the same bytes that went to the vendor, so everything named under "What leaves the machine" above is also what sits in the file. An `answer` line adds the option id Jev chose and the one Haiku chose, and for the plan switch those are the operator's own pending plan ids.
+
+These files stay on disk until something deletes them. Nothing in the plugin removes them, nothing rotates them, and their permissions are whatever the home directory already gives them. The scrub removes the TypeSafe API key and nothing else, so a worker that printed some other secret during a turn, where that secret reached the state text, is not caught by it. Turning `jevMode` off stops new lines and deletes none.
+
+### Test coverage
+
+- `.kit/decision-seam-unit-test.mjs`: every closed failure reason resolving without a throw, the kill switch sending nothing, the timeout race settling cleanly, the request body's shape against the live contract, the answer validated rather than forwarded, and no failure detail carrying the key. Offline.
+- `.kit/question-catalog-unit-test.mjs`: the label arrays the three classify sites pass being the arrays this catalog ships, each fixed set's option ids being exactly its label constant's superset, a valid override resolving under its own version label, every refusal falling back to the shipped default while naming the rule that refused it, and a refused override's wording never reaching a request. Offline.
+- `.kit/decision-journal-unit-test.mjs`: the three line shapes, the path and its sanitizing, the write chain that keeps two concurrent appends from losing one, the never-throws rule, the once-a-day failure latch, and the stamp ids and their split. Offline.
+- `.kit/controller-tick-test.mjs` carries the wiring cases: a Jev answering the opposite of Haiku changing no decision and no ledger count, a Jev that never answers delaying nothing and deciding nothing, a failing Jev changing no decision and still writing its call line, each of the four sites writing a call line and an answer line, each joiner writing one outcome per controller call, an unwritable journal pushing exactly one decision a day, and a skipped tick and an `off` run sending no request, writing no line and reading no key.
 
 ## License
 
