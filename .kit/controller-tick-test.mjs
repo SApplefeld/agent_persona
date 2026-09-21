@@ -20,7 +20,7 @@
 // Exits 0 on success, 1 on failure.
 
 import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, HARNESS_CWD, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore } from "./tick-harness.mjs";
-import { DECISIONS_MAX, MEMORY_MAX, PLAN_PATH_PATTERN, isActivationEligible, parseState, resolvePlanPath } from "../hooks/agent-state.ts";
+import { DECISIONS_MAX, MEMORY_MAX, PLAN_PATH_PATTERN, PLAN_PATH_TEXT_PATTERN, isActivationEligible, parseState, resolvePlanPath } from "../hooks/agent-state.ts";
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -3083,6 +3083,7 @@ async function main() {
     await casePlanPath1Text_leftBoundaryRefusesLongerToken(clock);
     await casePlanPath1Fill_missingTitleOrObjectiveDoesNotThrow(clock);
     await casePlanPath1Text_rightBoundaryRefusesLongerPath(clock);
+    await casePlanPath1Text_captureBodyIsTheShapeGoalAddEnforces(clock);
 
     // Section 1: which round-budget-blocked nodes a recovery can consume.
     await casePlanPath1Children_pendingChildMakesTheParentRecoverable(clock);
@@ -11989,6 +11990,84 @@ async function casePlanPath1Text_rightBoundaryRefusesLongerPath() {
   check("text right-edge control: the same sentence with a space still fills",
     node && node.planPath === "docs/plans/a_v1.md", node && node.planPath);
   checkFilledPlanPathWellFormed("text right-edge control", node && node.planPath);
+}
+
+// A cross-component pin between the two producers on the planPath channel.
+// goal_add refuses a value PLAN_PATH_PATTERN refuses, and the load-time fill
+// writes whatever PLAN_PATH_TEXT_PATTERN captures, with no re-test between
+// the capture and the store. checkFilledPlanPathWellFormed asserts each fill
+// fixture's output, and every fixture names a path both patterns accept, so
+// relaxing the text pattern's body class to admit "/" leaves every fixture
+// green while "finish docs/plans/sub/x_v1.md now" fills a value goal_add
+// refuses. This case pins the relation between the patterns themselves,
+// because the fixtures cannot see it. Part 1 reads the two sources and reds
+// the moment either body drifts from the other. Part 2 runs a corpus the
+// anchored pattern refuses through the text pattern, so a rewrite of both
+// bodies together that passes Part 1 still reds if it admits a capture
+// goal_add would refuse.
+async function casePlanPath1Text_captureBodyIsTheShapeGoalAddEnforces() {
+  console.log("\n=== Section 1 text pattern: the capture body is PLAN_PATH_PATTERN's body, and every capture satisfies it ===");
+
+  // Part 1, structural. The capture group is the first "(" in the source
+  // that does not open a lookaround, and its body runs to the matching ")",
+  // counted outside character classes and past escaped characters.
+  const textSource = PLAN_PATH_TEXT_PATTERN.source;
+  const groupCount = new RegExp(textSource + "|").exec("").length - 1;
+  check("text pattern structure: the source carries exactly one capture group", groupCount === 1, groupCount);
+  let captureBody;
+  let depth = 0;
+  let inClass = false;
+  let start = -1;
+  for (let i = 0; i < textSource.length && captureBody === undefined; i++) {
+    const c = textSource[i];
+    if (c === "\\") { i++; continue; }
+    if (inClass) { if (c === "]") inClass = false; continue; }
+    if (c === "[") { inClass = true; continue; }
+    if (c === "(") {
+      if (start < 0 && textSource[i + 1] !== "?") start = i + 1;
+      if (start >= 0) depth++;
+      continue;
+    }
+    if (c === ")" && start >= 0 && --depth === 0) captureBody = textSource.slice(start, i);
+  }
+  check("text pattern structure: the capture group was found in the source", typeof captureBody === "string", textSource);
+  const lazyMarkers = (captureBody ?? "").match(/\}\?/g) ?? [];
+  check("text pattern structure: the capture body carries exactly one lazy marker after a bounded quantifier",
+    lazyMarkers.length === 1, captureBody);
+  const anchoredBody = PLAN_PATH_PATTERN.source.replace(/^\^/, "").replace(/\$$/, "");
+  check("text pattern structure: the capture body is the anchored pattern's body with the quantifier made lazy and nothing else",
+    (captureBody ?? "").replace("}?", "}") === anchoredBody, { captureBody, anchoredBody });
+
+  // Part 2, behavioural. Each token is one goal_add refuses. Embedded in
+  // prose, the text pattern either captures nothing from it or captures a
+  // value goal_add accepts. The corpus is checked against PLAN_PATH_PATTERN
+  // first, so a token the anchored pattern came to accept is reported as
+  // such rather than passing silently.
+  const refused = [
+    { label: "a subdirectory", token: "docs/plans/sub/x_v1.md" },
+    { label: "a non-.md suffix", token: "docs/plans/x.txt" },
+    { label: "a leading dot", token: "docs/plans/.hidden.md" },
+    { label: "a further extension", token: "docs/plans/x_v1.md.bak" },
+    { label: "a capitalised folder", token: "Docs/plans/x.md" },
+    { label: "a space in the name", token: "docs/plans/x v1.md" },
+    { label: "a 252-character name", token: `docs/plans/${"a".repeat(252)}.md` },
+  ];
+  for (const variant of refused) {
+    check(`text pattern corpus (${variant.label}): goal_add's pattern refuses the token`,
+      !PLAN_PATH_PATTERN.test(variant.token), variant.token);
+    const m = `finish ${variant.token} now, then archive.`.match(PLAN_PATH_TEXT_PATTERN);
+    check(`text pattern corpus (${variant.label}): no capture, or a capture goal_add accepts`,
+      m === null || PLAN_PATH_PATTERN.test(m[1]), m === null ? "(no capture)" : m[1]);
+  }
+
+  // The two acceptance shapes still capture, so the corpus above did not
+  // pass by capturing nothing everywhere.
+  const leading = "Finish docs/plans/a_v1.md, which".match(PLAN_PATH_TEXT_PATTERN);
+  check("text pattern corpus control: the leading acceptance shape captures exactly the path",
+    leading !== null && leading[1] === "docs/plans/a_v1.md", leading && leading[1]);
+  const trailing = "The next section is in docs/plans/a_v1.md.".match(PLAN_PATH_TEXT_PATTERN);
+  check("text pattern corpus control: the trailing full-stop acceptance shape captures exactly the path",
+    trailing !== null && trailing[1] === "docs/plans/a_v1.md", trailing && trailing[1]);
 }
 
 // A plan node loaded with no title, or with no objective, does not throw.

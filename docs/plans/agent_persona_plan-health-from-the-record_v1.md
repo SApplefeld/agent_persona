@@ -39,6 +39,8 @@ This plan starts only after `docs/plans/agent_persona_decision-seam_v1.md` has m
 
 - 2026-09-21, the operator: no section is added for the false-completion defect, and Section 4 gains one acceptance bullet instead. The defect is that `hooks/index.ts:5261` runs `completeLeaf` on whichever entry was active when a turn began, whenever the turn-end classifier returns `complete`. That entry is not the one the turn concerned. Sections 3 and 4 as written already close it for every entry that has a plan, a sub-task under a plan node included, because such an entry is a plan entry by the Approach's own ancestor rule. What the plan left unpinned is that rule's reach at the scorer: Section 2 states it outright for the round budget and Section 4 does not state it for scoring, so an implementer reading Section 4 alone could key on `kind` and reinstate the defect for sub-tasks. The added bullet closes that.
 
+- 2026-09-21, the operator, on the dev persona's Discord thread, answering Section 1's review-round backstop: continue, with three further review rounds. Order of work: finish the supervisor gaps section then in flight through its review and its Chapter, then carry this plan through before returning to supervisor gaps, taking the owed work first (the test that pins the two plan path patterns against each other, the review round the security fix earned, and the enumerated run of the nine suites once the box is clear). Ruling on the text pattern: the pattern that reads a plan path out of free prose is a one-time fill for old queue entries, the queue file is written by the persona itself, a wrong path can only name another plan document in the same repository, and the reader checks the stored path again against the strict pattern and the closed folder list before using it. So from here on, a finding on that pattern's left edge that is not Critical is accepted and declared under `## Assumptions` with the shape it admits, not fixed. A Critical there is still fixed. The architect does not edit this document while the branch carries it.
+
 **Provenance.** Distilled from the architect persona's design conversation with the operator on 2026-09-20, and from both workers' stores and decision logs read that day.
 
 ## Approach
@@ -198,6 +200,7 @@ Files in scope: `README.md`, `docs/architecture.md`, `bin/supervise.sh` (the coo
 - assumed 2026-09-20 (source: both workers' pause reasons, which name branch checkouts inside their working directories): the checked-out copy of the active entry's plan document is the live one; reversal: a git read, which the plugin does not do today.
 - assumed 2026-09-20 (source: `hooks/index.ts` channel-reply backfill): the operator already sees a worker's `BLOCKED:` text on the worker's own channel, so a lead opens no ask of its own; reversal: route a blocked lead through the ask path.
 - assumed 2026-09-20 (source: this repository's `docs/plans/archive/`, which holds two archived plans): a completed plan can sit in any of three archive places; reversal: one entry in the closed list.
+- declared 2026-09-21 (source: the operator's ruling of 2026-09-21 under `## Intent`, section 1): the load-time text pattern's left edge refuses the characters its comment lists (letters, digits, `.`, `_`, `-`, `/`, `\`, `:`) and no other, so a longer token that puts any other character immediately before `docs` (a quote, a bracket, a `%`, a non-ASCII letter) still fills `planPath` with the embedded `docs/plans/<name>.md`; the fill runs once per old entry, the persona writes its own queue file, the value can only name a plan document in this repository, and Section 2's reader re-tests it before the join; reversal: widen the lookbehind's class.
 
 ## Operator Verification
 
@@ -330,5 +333,21 @@ Rulings adopted since the last boundary:
 - The five Minors accumulate for the close pass. Two are claim findings on comments that overstate what the code does, one is a refusal message that describes an illegal value as legal, and two are store shapes only a hand-edited store produces.
 
 Next action per section: the backstop is declared to the operator with the phase analysis and the ruling in the body. On the answer, three things are taken before anything else: Major 1's owed fix in the form the judge named, a behavioural pin over the two patterns rather than a runtime branch; the review round the security fix's delta owes; and the enumerated offline suite roster. Sections 2 through 6 are unstarted.
+
+Commit Model: Branch-and-PR
+
+### Interim board 6 - 2026-09-21
+
+In-flight sections: Section 1 only, resumed past the backstop on the operator's answer. No section has closed, so this entry carries no `Completed:` line.
+
+Backstop stage: the operator answered continue on 2026-09-21, recorded under `## Intent`. The ladder restarts at that answer: the count stands at 5 and the continue buys three further rounds, so the next declaration point is the adjudication of round 8 that still leaves the terminal condition unmet.
+
+Resumption. The dev session that declared the backstop was restarted in the fleet-wide restart, and this session took the plan up after closing the supervisor gaps plan's Section 1 at `12c75e1` on its own branch, per the operator's ordering. The checkout moved from `supervisor-gaps-build` to `plan-health-build` at `426c9a0`, clean. The operator's ruling on the text pattern's left edge is recorded under `## Intent` and produces one declared assumption under `## Assumptions`, dated 2026-09-21, naming the shape the lookbehind admits.
+
+Live dispatches: fix round 5, one `implementer-opus` (the writer tier since the round-2 escalation) on the brief at `.kit/scratch/plan-health/fix-round-5-brief.txt`: the pin over the two plan path patterns in the form the judge named, a structural equality of the two bodies and a behavioral corpus of shapes `goal_add` refuses, in `.kit/controller-tick-test.mjs` alone, with a scratch mutant as the control.
+
+Owed after it, in order: the review round the security fix's delta owes (one adversarial lens at `opus`, effort `high`, through `Workflow`, since round 5 carried no Critical), and the enumerated offline suite roster, listed from the directory rather than from a memory's count. The claims directory read empty at this boundary, so the box is clear for that run.
+
+Next action per section: read fix round 5's report, verify it against the 1525 baseline, then dispatch review round 6, then run the enumerated roster. Sections 2 through 6 are unstarted.
 
 Commit Model: Branch-and-PR
