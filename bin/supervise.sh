@@ -191,6 +191,12 @@ if ! positive_number "$SUPERVISOR_PS_BOUND_S"; then
 fi
 
 SUPERVISOR_STOP_GRACE_MS="${supervisorStopGraceMs:-60000}"
+# The cap on how long a requested restart (the restart_passive label in
+# stop_child) keeps waiting past the grace for a child that is inside a turn,
+# measured from the moment its input is closed. Eleven minutes: the harness
+# caps one tool call at ten minutes, and the extra minute covers the reply the
+# model writes once that call returns. Only that one label reads it.
+SUPERVISOR_STOP_BUSY_CAP_MS="${supervisorStopBusyCapMs:-660000}"
 SUPERVISOR_MIN_RUN_MS="${supervisorMinRunMs:-120000}"
 SUPERVISOR_CRASH_LIMIT="${supervisorCrashLimit:-3}"
 SUPERVISOR_MAX_RESTARTS_PER_HOUR="${supervisorMaxRestartsPerHour:-6}"
@@ -264,13 +270,18 @@ fi
 #
 # The stop grace and the poll interval are the two the consumer divides by
 # 1000, so they take the 1000 minimum; the minimum run time is compared in
-# milliseconds as written and stays on the plain rule.
+# milliseconds as written and stays on the plain rule. The stop's busy cap
+# takes the same 1000 minimum as the grace it extends.
 if ! positive_number "$SUPERVISOR_PRIMING_WAIT_S"; then
   echo "ERROR: supervisorPrimingWaitS '$SUPERVISOR_PRIMING_WAIT_S' is not a whole number of seconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
   exit 1
 fi
 if ! positive_number "$SUPERVISOR_STOP_GRACE_MS" 1000; then
   echo "ERROR: supervisorStopGraceMs '$SUPERVISOR_STOP_GRACE_MS' is not a whole number of milliseconds of at least 1000, written with digits only, no leading zero and at most 9 digits. The stop grace is divided by 1000, so anything smaller is a zero-second grace." >&2
+  exit 1
+fi
+if ! positive_number "$SUPERVISOR_STOP_BUSY_CAP_MS" 1000; then
+  echo "ERROR: supervisorStopBusyCapMs '$SUPERVISOR_STOP_BUSY_CAP_MS' is not a whole number of milliseconds of at least 1000, written with digits only, no leading zero and at most 9 digits. The busy cap is measured against a poll that runs every five seconds, so anything smaller cannot extend a wait." >&2
   exit 1
 fi
 if ! positive_number "$SUPERVISOR_MIN_RUN_MS"; then
@@ -1915,6 +1926,29 @@ retry_stop_escalation() {
 # reading could account for.
 # Returns 1 in every failed case; callers should read that
 # return rather than trusting STOP_PATH's clean-looking values by name alone.
+# Whether the child is inside a turn, read off the tail of its own
+# stdout.jsonl by bin/supervise-turnstate.mjs. Prints busy or idle. Every
+# fault reads idle: an empty path (a caller with no stream to name), a reader
+# that fails, and any output but the two words. Idle is the fall-through to
+# the stop phases as they run for every other label, so a broken reader
+# costs the patient wait and never holds a persona. The call is the poll
+# loop's own shape, a plain capture with stderr on supervisor.err, since
+# run_bounded_native discards the stdout this verdict rides on.
+# Usage: child_turn_state <stdout.jsonl path>
+child_turn_state() {
+  local stream="$1" verdict
+  if [ -z "$stream" ]; then
+    echo idle
+    return 0
+  fi
+  verdict=$(node "$PLUGIN_DIR/bin/supervise-turnstate.mjs" "$stream" "$(date +%s%3N)" 2>> "$RUNDIR/supervisor.err")
+  verdict="${verdict%$'\r'}"
+  case "$verdict" in
+    busy|idle) echo "$verdict" ;;
+    *) echo idle ;;
+  esac
+}
+
 stop_child() {
   local label="$1"
   STOP_TREE_MOVED=""
@@ -2047,6 +2081,10 @@ stop_child() {
   if [ -n "$CHILD_IN" ]; then
     eval "exec $CHILD_IN>&-"
   fi
+  # The moment the input closed, which the patient wait below measures its
+  # cap from, so the ordinary grace counts toward that cap.
+  local eof_closed_ms
+  eof_closed_ms=$(date +%s%3N)
   # Poll for up to stopGraceMs for the child to exit on its own.
   local grace=$((SUPERVISOR_STOP_GRACE_MS / 1000))
   local n=0
@@ -2054,6 +2092,50 @@ stop_child() {
     sleep 1
     n=$((n + 1))
   done
+  # The patient wait. A requested restart of a live child, and that label
+  # alone, keeps waiting past the grace while the child is inside a turn: a
+  # closed input ends the child when its turn ends, and a TERM before then
+  # kills a session seconds after it wrote a file. Every other label stops on
+  # the grace as before, since a shutdown, a crash-loop stop, a budget stop
+  # and a hung restart have nothing a turn's end would save, and a hung child
+  # read as busy would hold its persona for the whole cap. The wait ends on
+  # the first of three: the child exits, the reader answers idle, or
+  # SUPERVISOR_STOP_BUSY_CAP_MS has passed since the input closed. On the
+  # last two, TERM follows at once with no further grace, since the ordinary
+  # grace has already run. Each exit lands on the same check below the EOF
+  # loop reaches, so a child that exits inside the wait is verified dead and
+  # reported on the eof path as one that exited inside the grace is.
+  if [ "$label" = "restart_passive" ] && kill -0 "$pid" 2>/dev/null; then
+    local turn waited_ms left_ms
+    turn=$(child_turn_state "${OUT:-}")
+    if [ "$turn" = "busy" ]; then
+      log "STOP[$label]: the child is inside a turn, waiting for it to end"
+      while :; do
+        # Five seconds a poll, cut short to what is left before the cap, so
+        # the cap is met when it falls rather than a poll late.
+        waited_ms=$(( $(date +%s%3N) - eof_closed_ms ))
+        left_ms=$((SUPERVISOR_STOP_BUSY_CAP_MS - waited_ms))
+        [ "$left_ms" -gt 5000 ] && left_ms=5000
+        if [ "$left_ms" -gt 0 ]; then
+          sleep "$((left_ms / 1000)).$(printf '%03d' $((left_ms % 1000)))"
+        fi
+        if ! kill -0 "$pid" 2>/dev/null; then
+          log "STOP[$label]: the child exited during the patient wait"
+          break
+        fi
+        waited_ms=$(( $(date +%s%3N) - eof_closed_ms ))
+        if [ "$waited_ms" -ge "$SUPERVISOR_STOP_BUSY_CAP_MS" ]; then
+          log "STOP[$label]: the busy cap of ${SUPERVISOR_STOP_BUSY_CAP_MS}ms was reached after ${waited_ms}ms, sending TERM"
+          break
+        fi
+        turn=$(child_turn_state "${OUT:-}")
+        if [ "$turn" = "idle" ]; then
+          log "STOP[$label]: the reader returned idle after $((waited_ms / 1000))s, sending TERM"
+          break
+        fi
+      done
+    fi
+  fi
   if ! kill -0 "$pid" 2>/dev/null; then
     if verify_snapshot_dead; then
       STOP_PATH="eof"

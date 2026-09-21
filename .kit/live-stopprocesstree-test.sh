@@ -516,6 +516,221 @@ else
   echo "  NOTE: no pid and start ticks were recorded for the R105 sleeper, so it is left to end on its own"
 fi
 
+# --- Cases: the patient stop ---
+# Under the restart_passive label alone, stop_child keeps waiting after the
+# EOF grace while the child's own stdout.jsonl reads busy, up to
+# SUPERVISOR_STOP_BUSY_CAP_MS from the EOF close. The cases below drive the
+# real stop_child against a stub that reads its input to end of file, as the
+# production child does, so the EOF close inside stop_child is what the stub
+# sees. The stream the reader consults is a scratch stdout.jsonl under
+# SUITE_DIR, named through OUT exactly as the poll loop names the child's.
+#
+# The stub is a coproc, which is what production launches: CHILD_IN holds the
+# coproc's write fd so stop_child's own `exec $CHILD_IN>&-` is the EOF. The
+# stub records the moment it saw end of input, and the log stub below stamps
+# each line, so the time from the EOF close to a TERM is read off the run
+# itself rather than off a clock started before stop_child's snapshot walk.
+patient_log() { echo "[log] $(date +%s%3N) $*"; }
+eval "$(declare -f log | sed '1s/^log/_plain_log_before_patient/')"
+eval "$(declare -f patient_log | sed '1s/^patient_log/log/')"
+PATIENT_DIR="$SUITE_DIR/patient-stop"
+mkdir -p "$PATIENT_DIR"
+USER_TOOL_RESULT='{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}'
+ASSISTANT_TOOL_USE='{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}'
+# A text-only reply whose own timestamp is six minutes old at the moment it is
+# built, so the reader ages it past the five minute idle bound at once.
+stale_assistant_text() {
+  local ts
+  ts=$(date -u -d '@'"$(( $(date +%s) - 360 ))" +%Y-%m-%dT%H:%M:%S.000Z)
+  printf '{"type":"assistant","timestamp":"%s","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}' "$ts"
+}
+# Usage: start_stub <name> <seconds to live after end of input>
+# Sets CHILD_LAUNCH_PID and CHILD_IN, and records the stub's EOF moment in
+# $PATIENT_DIR/<name>.eof once the stub sees it.
+start_stub() {
+  local name="$1" live_s="$2"
+  rm -f "$PATIENT_DIR/$name.eof"
+  coproc PATIENT_STUB { cat > /dev/null; date +%s%3N > "$PATIENT_DIR/$name.eof"; sleep "$live_s"; }
+  CHILD_LAUNCH_PID="$PATIENT_STUB_PID"
+  CHILD_IN="${PATIENT_STUB[1]}"
+  eval "exec ${PATIENT_STUB[0]}<&-"
+  disown "$CHILD_LAUNCH_PID" 2>/dev/null
+  sleep 2
+}
+# Usage: stamp_of <log file> <pattern> - the first stamped line matching.
+stamp_of() { grep -m1 "$2" "$1" | sed -n 's/^\[log\] \([0-9]*\) .*/\1/p'; }
+end_stub() {
+  kill -9 "$CHILD_LAUNCH_PID" 2>/dev/null
+  wait "$CHILD_LAUNCH_PID" 2>/dev/null
+  CHILD_LAUNCH_PID=""
+  CHILD_IN=""
+  OUT=""
+}
+
+# --- Case: restart_passive, busy stream, the stub exits on end of input ---
+# The stream ends in a tool_use record, so the reader answers busy for the
+# whole wait. The stub lives ninety seconds past the EOF close, well past the
+# grace and short of the cap, so the wait has to end on the stub's own exit:
+# no TERM line, and STOP_PATH is eof. The absence is grepped for the TERM
+# predicate every Phase 2 line carries; the stop_complete case below is the
+# control where the same predicate matches.
+OUT="$PATIENT_DIR/busy-exits.jsonl"
+printf '%s\n%s\n' "$USER_TOOL_RESULT" "$ASSISTANT_TOOL_USE" > "$OUT"
+SUPERVISOR_STOP_GRACE_MS=2000
+SUPERVISOR_STOP_BUSY_CAP_MS=120000
+STOP_PATH=""
+start_stub busy-exits 90
+P1_LOG="$PATIENT_DIR/busy-exits.log"
+stop_child "restart_passive" > "$P1_LOG" 2>&1
+P1_RC=$?
+if grep -q "sending TERM" "$P1_LOG"; then
+  failed "patient stop: restart_passive on a busy stub that exits on EOF sent TERM (STOP_PATH=$STOP_PATH rc=$P1_RC): $(grep 'sending TERM' "$P1_LOG" | head -1)"
+else
+  pass "patient stop: restart_passive on a busy stub that exits on EOF logged no TERM line"
+fi
+if [ "$STOP_PATH" = "eof" ] && [ "$P1_RC" -eq 0 ]; then
+  pass "patient stop: the stub's own exit inside the wait reaches STOP_PATH=eof (rc=$P1_RC)"
+else
+  failed "patient stop: expected STOP_PATH=eof rc=0 after the stub exited on EOF, got STOP_PATH=$STOP_PATH rc=$P1_RC"
+fi
+if grep -q "the child is inside a turn, waiting for it to end" "$P1_LOG" && grep -q "the child exited during the patient wait" "$P1_LOG"; then
+  pass "patient stop: the wait logged its entry and its exit by the child's own exit"
+else
+  failed "patient stop: the entry or exit line of the wait is missing: $(tr '\n' '|' < "$P1_LOG")"
+fi
+end_stub
+
+# --- Case: restart_passive, busy stream, the stub never exits ---
+# The wait runs to the cap. The first TERM line has to be the cap's own, and
+# the Phase 2 TERM has to land at or past the cap counted from the moment the
+# stub saw its input close, which is no earlier than the close stop_child
+# measures from. The cap is four times the grace, so a TERM at the grace reds
+# the timing leg.
+OUT="$PATIENT_DIR/busy-never-exits.jsonl"
+printf '%s\n%s\n' "$USER_TOOL_RESULT" "$ASSISTANT_TOOL_USE" > "$OUT"
+SUPERVISOR_STOP_GRACE_MS=2000
+SUPERVISOR_STOP_BUSY_CAP_MS=8000
+STOP_PATH=""
+start_stub busy-never-exits 180
+P2_LOG="$PATIENT_DIR/busy-never-exits.log"
+stop_child "restart_passive" > "$P2_LOG" 2>&1
+P2_RC=$?
+P2_EOF=$(cat "$PATIENT_DIR/busy-never-exits.eof" 2>/dev/null)
+P2_TERM=$(stamp_of "$P2_LOG" "EOF grace expired, sending TERM")
+if [ -z "$P2_EOF" ] || [ -z "$P2_TERM" ]; then
+  failed "patient stop: cap case could not read the EOF moment ($P2_EOF) or the TERM line ($P2_TERM): $(tr '\n' '|' < "$P2_LOG")"
+else
+  P2_AFTER=$((P2_TERM - P2_EOF))
+  if [ "$P2_AFTER" -ge "$SUPERVISOR_STOP_BUSY_CAP_MS" ] && [ "$P2_AFTER" -le $((SUPERVISOR_STOP_BUSY_CAP_MS + 7000)) ]; then
+    pass "patient stop: a busy stub that never exits gets TERM ${P2_AFTER}ms after its input closed, at the ${SUPERVISOR_STOP_BUSY_CAP_MS}ms cap and not before"
+  else
+    failed "patient stop: TERM came ${P2_AFTER}ms after the input closed, against a ${SUPERVISOR_STOP_BUSY_CAP_MS}ms cap (expected at the cap, within one poll)"
+  fi
+fi
+if grep -m1 "sending TERM" "$P2_LOG" | grep -q "the busy cap of ${SUPERVISOR_STOP_BUSY_CAP_MS}ms was reached"; then
+  pass "patient stop: the first TERM line is the cap's own, so no TERM was logged before the cap"
+else
+  failed "patient stop: the first TERM line is not the cap's: $(grep -m1 'sending TERM' "$P2_LOG")"
+fi
+if [ "$STOP_PATH" = "term" ] || [ "$STOP_PATH" = "kill" ]; then
+  pass "patient stop: the existing phases follow the cap (STOP_PATH=$STOP_PATH rc=$P2_RC)"
+else
+  failed "patient stop: expected the TERM or KILL phase after the cap, got STOP_PATH=$STOP_PATH rc=$P2_RC"
+fi
+end_stub
+
+# --- Case: restart_passive, the stream reads idle ---
+# A stale text-only reply is the newest record, so the reader answers idle at
+# once and no wait begins: TERM after the ordinary grace, as for every other
+# label. The cap sits at the minimum, below the grace, so it extends nothing.
+OUT="$PATIENT_DIR/idle.jsonl"
+printf '%s\n%s\n' "$USER_TOOL_RESULT" "$(stale_assistant_text)" > "$OUT"
+SUPERVISOR_STOP_GRACE_MS=2000
+SUPERVISOR_STOP_BUSY_CAP_MS=1000
+STOP_PATH=""
+start_stub idle 180
+P3_LOG="$PATIENT_DIR/idle.log"
+stop_child "restart_passive" > "$P3_LOG" 2>&1
+P3_EOF=$(cat "$PATIENT_DIR/idle.eof" 2>/dev/null)
+P3_TERM=$(stamp_of "$P3_LOG" "EOF grace expired, sending TERM")
+if grep -q "inside a turn" "$P3_LOG"; then
+  failed "patient stop: an idle stream still began the patient wait: $(grep 'inside a turn' "$P3_LOG")"
+elif [ -n "$P3_EOF" ] && [ -n "$P3_TERM" ] && [ $((P3_TERM - P3_EOF)) -lt $((SUPERVISOR_STOP_GRACE_MS + 3000)) ]; then
+  pass "patient stop: restart_passive on an idle stream sends TERM $((P3_TERM - P3_EOF))ms after the input closed, on the ordinary grace, with no wait begun"
+else
+  failed "patient stop: restart_passive on an idle stream did not TERM on the ordinary grace (eof=$P3_EOF term=$P3_TERM): $(tr '\n' '|' < "$P3_LOG")"
+fi
+end_stub
+
+# --- Cases: the other labels on the busy stub ---
+# The label guard in the negative direction: the same busy stream that holds a
+# restart_passive stop to the cap is stopped on the ordinary grace under
+# stop_complete and restart. These are also the control for the first case's
+# absence check: the TERM predicate it grepped for matches here.
+for other_label in stop_complete restart; do
+  OUT="$PATIENT_DIR/busy-$other_label.jsonl"
+  printf '%s\n%s\n' "$USER_TOOL_RESULT" "$ASSISTANT_TOOL_USE" > "$OUT"
+  SUPERVISOR_STOP_GRACE_MS=2000
+  SUPERVISOR_STOP_BUSY_CAP_MS=1000
+  STOP_PATH=""
+  start_stub "busy-$other_label" 180
+  P4_LOG="$PATIENT_DIR/busy-$other_label.log"
+  stop_child "$other_label" > "$P4_LOG" 2>&1
+  P4_EOF=$(cat "$PATIENT_DIR/busy-$other_label.eof" 2>/dev/null)
+  P4_TERM=$(stamp_of "$P4_LOG" "sending TERM")
+  if grep -q "inside a turn" "$P4_LOG"; then
+    failed "patient stop: the $other_label label began the patient wait, which belongs to restart_passive alone: $(grep 'inside a turn' "$P4_LOG")"
+  elif [ -n "$P4_EOF" ] && [ -n "$P4_TERM" ] && [ $((P4_TERM - P4_EOF)) -lt $((SUPERVISOR_STOP_GRACE_MS + 3000)) ]; then
+    pass "patient stop: $other_label on a busy stub sends TERM $((P4_TERM - P4_EOF))ms after the input closed, on the ordinary grace"
+  else
+    failed "patient stop: $other_label on a busy stub did not TERM on the ordinary grace (eof=$P4_EOF term=$P4_TERM): $(tr '\n' '|' < "$P4_LOG")"
+  fi
+  end_stub
+done
+
+# --- Case: the turn ends during the wait, and the stub never exits ---
+# The stream reads busy when the wait begins. Once the entry line is logged, a
+# stale text-only reply is appended, so the reader's next poll answers idle.
+# TERM has to follow within one five second poll of that append, allowing two
+# seconds for the reader's own process, and far short of a cap that would red
+# this case if the wait ran to it.
+OUT="$PATIENT_DIR/turn-ends.jsonl"
+printf '%s\n%s\n' "$USER_TOOL_RESULT" "$ASSISTANT_TOOL_USE" > "$OUT"
+SUPERVISOR_STOP_GRACE_MS=2000
+SUPERVISOR_STOP_BUSY_CAP_MS=60000
+STOP_PATH=""
+start_stub turn-ends 180
+P5_LOG="$PATIENT_DIR/turn-ends.log"
+P5_APPENDED="$PATIENT_DIR/turn-ends.appended"
+rm -f "$P5_APPENDED"
+: > "$P5_LOG"
+(
+  tries=0
+  until grep -q "inside a turn" "$P5_LOG" 2>/dev/null || [ "$tries" -ge 120 ]; do
+    sleep 0.5
+    tries=$((tries + 1))
+  done
+  sleep 3
+  stale_assistant_text >> "$OUT"
+  printf '\n' >> "$OUT"
+  date +%s%3N > "$P5_APPENDED"
+) &
+P5_APPENDER=$!
+stop_child "restart_passive" > "$P5_LOG" 2>&1
+wait "$P5_APPENDER" 2>/dev/null
+P5_AT=$(cat "$P5_APPENDED" 2>/dev/null)
+P5_TERM=$(stamp_of "$P5_LOG" "EOF grace expired, sending TERM")
+if [ -z "$P5_AT" ] || [ -z "$P5_TERM" ]; then
+  failed "patient stop: turn-end case could not read the append moment ($P5_AT) or the TERM line ($P5_TERM): $(tr '\n' '|' < "$P5_LOG")"
+elif [ $((P5_TERM - P5_AT)) -ge 0 ] && [ $((P5_TERM - P5_AT)) -le 7000 ] && grep -q "the reader returned idle after" "$P5_LOG"; then
+  pass "patient stop: TERM follows $((P5_TERM - P5_AT))ms after the turn ended, within one poll, on the reader's idle and not the ${SUPERVISOR_STOP_BUSY_CAP_MS}ms cap"
+else
+  failed "patient stop: TERM came $((P5_TERM - P5_AT))ms after the turn ended (expected 0 to 7000ms, ended by the reader): $(tr '\n' '|' < "$P5_LOG")"
+fi
+end_stub
+
+eval "$(declare -f _plain_log_before_patient | sed '1s/^_plain_log_before_patient/log/')"
+
 rm -f "$RUNDIR/child.pid" "$RUNDIR/child3.pid"
 kill -9 "$DIRECT_PID" "$CHILD_LAUNCH_PID" 2>/dev/null  # best-effort cleanup
 
