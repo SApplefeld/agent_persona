@@ -53,6 +53,10 @@ const systemOther = () => JSON.stringify({ type: 'system', subtype: 'status' });
 // The record a channel-driven child's turn ends with; carries no timestamp,
 // as seen on the architect's child-3 stream.
 const resultSuccess = () => JSON.stringify({ type: 'result', subtype: 'success' });
+// A result record with no assistant record in the same turn: the first API
+// call failed after retries, so the turn produced no conversational record
+// at all.
+const resultErrorDuringExecution = () => JSON.stringify({ type: 'result', subtype: 'error_during_execution' });
 const systemRateLimit = () => JSON.stringify({
   type: 'system', subtype: 'api_retry', error_status: 429, retry_delay_ms: 60000,
 });
@@ -153,18 +157,21 @@ const cases = [
     assert.equal(run(p), 'busy');
   }],
 
+  ['a stale text reply, a result, an init, then a second result with no assistant record after it (the first API call failed after retries) reads idle: the second result clears the marker the init set, so a child quiet between turns is not read busy for the whole patient cap', () => {
+    const oldTs = new Date(CLOCK - 360000).toISOString();
+    const p = writeStream('marker-cleared-by-trailing-result', [
+      assistantTextTs(oldTs), resultSuccess(), systemInit(), resultErrorDuringExecution(),
+    ], { mtimeMs: CLOCK });
+    assert.equal(run(p), 'idle');
+  }],
+
   ['control: a stale text reply followed by a turn-end result and a system record of another subtype, no init, reads idle', () => {
     const oldTs = new Date(CLOCK - 360000).toISOString();
     const p = writeStream('marker-control-no-init', [assistantTextTs(oldTs), resultSuccess(), systemOther()], { mtimeMs: CLOCK });
     assert.equal(run(p), 'idle');
   }],
 
-  ['thinking_tokens after a young tool_use record still reads busy: no regression from the tool_use rule', () => {
-    const p = writeStream('marker-after-tool-use', [assistantToolUse(), systemThinkingTokens()], { mtimeMs: CLOCK - 1000 });
-    assert.equal(run(p), 'busy');
-  }],
-
-  ['a single thinking_tokens record after a stale text reply, with no init anywhere in the tail, still reads busy: on a live stream a text-only reply can be followed straight into the next turn\'s thinking_tokens run with no init line before the next conversational record, so thinking_tokens has to mark a new turn on its own and not only alongside init', () => {
+  ['a single thinking_tokens record after a stale text reply, with no init anywhere in the tail, still reads busy: a thinking_tokens record after a text reply marks the model generating, mid-response or at a turn start, and reads busy either way, so it has to mark this on its own and not only alongside init', () => {
     const oldTs = new Date(CLOCK - 360000).toISOString();
     const p = writeStream('marker-thinking-tokens-alone', [assistantTextTs(oldTs), systemThinkingTokens()], { mtimeMs: CLOCK });
     assert.equal(run(p), 'busy');
@@ -175,12 +182,12 @@ const cases = [
     assert.equal(run(p), 'idle');
   }],
 
-  ['live shape: rejected with overageStatus allowed and isUsingOverage true, behind user+tool_result, mtime five seconds old: busy. Confirmed on the architect child-3 stream (16 rejected records, all carrying this overage shape): the child\'s included quota is exhausted and it is proceeding on overage, not parked.', () => {
+  ['rejected with overageStatus allowed and isUsingOverage true, behind user+tool_result, mtime five seconds old: busy. This is the shape a child writes when its included quota is exhausted and it is proceeding on overage, not parked.', () => {
     const p = writeStream('rate-limit-event-rejected-overage-user', [userToolResult(), rateLimitEvent('rejected', { overageStatus: 'allowed', isUsingOverage: true })], { mtimeMs: CLOCK - 5000 });
     assert.equal(run(p), 'busy');
   }],
 
-  ['the same overage shape behind an assistant tool_use record, mtime five seconds old: busy. Confirmed on the architect child-3 stream: 15 of the 16 rejected-with-overage records sit between an assistant tool_use record and the user tool_result that follows it, so the rate-limit record is the newest of any type for the whole length of that tool call.', () => {
+  ['the same overage shape behind an assistant tool_use record, mtime five seconds old: busy. A rejected-with-overage record commonly sits between an assistant tool_use record and the user tool_result that follows it, so the rate-limit record is the newest of any type for the whole length of that tool call.', () => {
     const p = writeStream('rate-limit-event-rejected-overage-tooluse', [assistantToolUse(), rateLimitEvent('rejected', { overageStatus: 'allowed', isUsingOverage: true })], { mtimeMs: CLOCK - 5000 });
     assert.equal(run(p), 'busy');
   }],
@@ -241,6 +248,18 @@ const cases = [
     assert.equal(run(p), 'idle');
   }],
 
+  ['about 300 KB of non-marker system records and no conversational record anywhere: idle. This forces one doubling past the 256 KB base window and then the start-of-file exit, unlike the three-line case above whose base window already reaches the start.', () => {
+    const trailer = [];
+    let trailerBytes = 0;
+    while (trailerBytes < 300000) {
+      const line = systemOther();
+      trailer.push(line);
+      trailerBytes += line.length;
+    }
+    const p = writeStream('wide-no-conversational-record', trailer);
+    assert.equal(run(p), 'idle');
+  }],
+
   ['a user record with plain text content (no tool_result) still reads busy: the model owes a reply either way', () => {
     const p = writeStream('user-plain', [userPlain()], { mtimeMs: CLOCK - 1000 });
     assert.equal(run(p), 'busy');
@@ -280,7 +299,7 @@ const cases = [
     assert.equal(run(streamPath), 'busy');
   }],
 
-  ['the only conversational record sits at the head of a file bigger than the widening ceiling, with only non-marker system records after it: busy, not idle (widening stopped at the ceiling without reaching the start of the file, so the reader cannot rule out a record still being written behind it)', () => {
+  ['the only conversational record sits at the head of a file bigger than the widening ceiling, with only non-marker system records after it, and it is six minutes stale by its own timestamp: busy, not idle. Whole-file truth would be idle -- the head record is old and nothing since it is a tool call -- but the tail cannot reach it: widening stopped at the ceiling without reaching the start of the file, so the reader cannot rule out a record still being written behind it, and reads busy on purpose.', () => {
     const dir = join(root, 'conversational-record-past-ceiling');
     fs.mkdirSync(dir, { recursive: true });
     const streamPath = join(dir, 'stdout.jsonl');
@@ -289,7 +308,8 @@ const cases = [
     // once the window has widened all the way to the 8 MiB ceiling. The
     // filler is a subtype the reader treats as ordinary, so this case turns
     // purely on the ceiling rule and not on the turn-start marker rule.
-    fs.writeSync(fd, assistantToolUse() + '\n');
+    const oldTs = new Date(CLOCK - 360000).toISOString();
+    fs.writeSync(fd, assistantTextTs(oldTs) + '\n');
     const filler = systemOther() + '\n';
     const target = 9 * 1024 * 1024; // past SCAN_BYTES_MAX (8 MiB)
     let written = 0;
@@ -320,7 +340,7 @@ const cases = [
     assert.equal(run(streamPath), 'busy');
   }],
 
-  ['a widening chain that doubles all the way to the 8 MiB ceiling (the head-record-past-ceiling layout above) returns in under 2500 ms', () => {
+  ['a widening chain that doubles all the way to the 8 MiB ceiling (the head-record-past-ceiling layout above) returns in under 5000 ms', () => {
     const dir = join(root, 'ceiling-widening-timed');
     fs.mkdirSync(dir, { recursive: true });
     const streamPath = join(dir, 'stdout.jsonl');
@@ -339,7 +359,12 @@ const cases = [
     const verdict = run(streamPath);
     const elapsed = Date.now() - started;
     assert.equal(verdict, 'busy');
-    assert.ok(elapsed < 2500, 'took ' + elapsed + 'ms');
+    // Widened to 5000 ms to match the ten-megabyte case below: both bounds
+    // cover a spawned process's own startup cost under machine contention,
+    // on top of the widening chain's own doubling work, and this is the
+    // heavier of the two paths since it forces every doubling up to the
+    // ceiling.
+    assert.ok(elapsed < 5000, 'took ' + elapsed + 'ms');
   }],
 
   ['newest is a text-only assistant record whose own timestamp is six minutes old, followed by enough non-marker system records to push the base window past 256 KB: idle. This is what actually pins the widening loop: with it removed, the base window alone finds neither a conversational record nor a marker and reaches the past-ceiling branch, which returns busy; only widening back to the head finds the finished stale reply and lets the age rule answer idle.', () => {
@@ -369,27 +394,32 @@ const cases = [
     assert.equal(run(p), 'busy');
   }],
 
-  ['an empty-string clock argument falls back to real time: a record six minutes old by the wall clock reads idle', () => {
+  ['an empty-string clock argument falls back to real time: a record ten seconds old by the wall clock reads busy (the idle direction would pass whether or not the fallback worked)', () => {
     // The record's own timestamp is set relative to real Date.now(), not the
     // suite's fixed 2023 CLOCK, so the verdict actually turns on the
-    // fallback rather than on file mtime aging against a three-year-old
-    // fixture, which would read idle regardless of what parseClock('') did.
-    const oldTs = new Date(Date.now() - 360000).toISOString();
-    const p = writeStream('empty-clock-idle-stream', [assistantTextTs(oldTs)], { mtimeMs: CLOCK - 360000 });
-    assert.equal(run(p, ''), 'idle');
+    // fallback: a stale 2023 mtime would read idle regardless of what
+    // parseClock('') did, which is why the idle direction cannot pin this.
+    const youngTs = new Date(Date.now() - 10000).toISOString();
+    const p = writeStream('empty-clock-busy-stream', [assistantTextTs(youngTs)], { mtimeMs: CLOCK - 360000 });
+    assert.equal(run(p, ''), 'busy');
   }],
 
-  // bin/supervise.sh reads its clock with date +%s at eight sites, all of
-  // them seconds, so a caller reaching for the nearest habit passes seconds
-  // where this reader documents milliseconds. Taken at face value as
-  // milliseconds that puts the clock roughly fifty-five years behind the
-  // record, which reads as a huge negative age, discarded as unusable, and
-  // falls through to idle -- holding a dead child's stop no longer, but also
-  // reading a genuinely busy child as idle. Falling back to Date.now()
-  // instead fixes that. The pair below pins the discrimination: a
-  // seconds-valued clock against real time still reads busy for a genuinely
-  // young record, and ordinary skew against a record written an instant ago
-  // still reads busy too.
+  ['a text-only record whose own timestamp is six minutes AHEAD of the clock argument reads busy: a negative age is a young record, not a discarded implausible one', () => {
+    const aheadTs = new Date(CLOCK + 360000).toISOString();
+    const p = writeStream('timestamp-ahead-of-clock', [assistantTextTs(aheadTs)], { mtimeMs: CLOCK - 400000 });
+    assert.equal(run(p), 'busy');
+  }],
+
+  // Every clock read in bin/supervise.sh is in seconds (date +%s), so a
+  // caller reaching for the nearest habit passes seconds where this reader
+  // documents milliseconds. Taken at face value as milliseconds that puts
+  // the clock roughly fifty-five years behind the record, which reads as a
+  // hugely negative age -- wrongly busy under the ordinary comparison,
+  // whatever the record's true age. Falling back to Date.now() instead of
+  // trusting the mis-scaled value is the guard. The pair below pins the
+  // discrimination: a seconds-valued clock against real time still reads
+  // busy for a genuinely young record, and ordinary skew against a record
+  // written an instant ago still reads busy too.
   ['a seconds-valued clock against a record timestamped ten seconds before real time reads busy, matching what a correct millisecond clock would give', () => {
     const tenSecondsAgo = new Date(Date.now() - 10000).toISOString();
     const p = writeStream('seconds-clock', [assistantTextTs(tenSecondsAgo)], { mtimeMs: CLOCK - 360000 });

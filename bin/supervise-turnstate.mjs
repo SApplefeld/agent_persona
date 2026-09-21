@@ -1,10 +1,11 @@
 // bin/supervise-turnstate.mjs - Is the child inside a turn, or between them.
 //
-// bin/supervise.sh's patient restart_passive stop reads this before it lets
-// an extended wait end: a child mid-turn gets more time, a child that has
-// finished one and gone quiet does not. It takes the child's own
-// child-<n>/stdout.jsonl and a clock value, and answers from the newest
-// conversational record it can find, touching nothing else the child wrote.
+// A path and a clock value in, one word out: busy or idle. Answers from the
+// newest conversational record it can find in the child's own
+// child-<n>/stdout.jsonl, touching nothing else the child wrote. The
+// contract this serves: a child mid-turn gets more time before a stop
+// signals it, a child that has finished a turn and gone quiet does not.
+// The patient stop the plan's Section 2 builds is what reads this.
 //
 // Arguments, both positional:
 //   1 path to child-<n>/stdout.jsonl
@@ -33,9 +34,7 @@
 // older. Inside a turn, the record that follows a text-only record is most
 // often a tool_use block of the same API response, and the stream writes
 // nothing while the model generates that block's input, which scales with
-// the input's size: inputs of 26 to 34 kilobytes took 90 to 135 seconds on
-// live streams, and no such gap over 150 seconds was measured across 6,324
-// mid-turn records on four streams. The age is taken from that record's own
+// the input's size. The age is taken from that record's own
 // timestamp field, not the file's modification time: a run of later system
 // records (a rate-limit retry, an init line) can keep the file's mtime fresh
 // long after the turn that produced the text reply has ended, and mtime
@@ -44,14 +43,17 @@
 // parse.
 //
 // A channel-driven child's own prompt is never written to the stream as a
-// user record: a new turn is visible only as a system record of subtype init,
-// followed by a run of system records of subtype thinking_tokens while the
-// model is still generating, and neither subtype carries a timestamp. Where
-// one of those sits after the newest conversational record in the tail, or
-// the tail holds one and no conversational record at all, this reads busy
-// regardless of how old the previous reply is: the child has started a new
-// turn, not gone quiet after the last one. Every other system subtype still
-// leaves the verdict resting on the newest conversational record.
+// user record: the marker records visible for a new turn are a system
+// record of subtype init, followed by a run of system records of subtype
+// thinking_tokens while the model is still generating. thinking_tokens also
+// appears mid-turn, on a response the model is still generating, and busy
+// is the right answer either way. Neither subtype carries a timestamp.
+// Where one of those sits after the newest conversational record in the
+// tail, or the tail holds one and no conversational record at all, this
+// reads busy regardless of how old the previous reply is: the child has
+// started a new turn, or is still generating, not gone quiet. Every other
+// system subtype still leaves the verdict resting on the newest
+// conversational record.
 // Ahead of every other rule: the newest record of ANY type, not only the
 // newest conversational one, is checked for a rate-limit shape first, and if
 // it is one this reads idle regardless of what sits under it. A rate-limit
@@ -113,12 +115,16 @@ function readTail(streamPath, scanBytes) {
       if (size > scanBytes) scanStart = size - scanBytes;
       const len = size - scanStart;
       const buf = Buffer.alloc(len);
-      // A single readSync call is not guaranteed to fill the buffer; the
-      // unread tail of buf stays zeroed, and decoding past the byte count
-      // the call actually returned would read that zero fill as content and
-      // can swallow the newest record's line boundary on a large widened
-      // read.
-      const bytesRead = len > 0 ? fs.readSync(fd, buf, 0, len, scanStart) : 0;
+      // A single readSync call is not guaranteed to fill the buffer, so this
+      // loops until len bytes are read or a call returns 0 (end of file):
+      // stopping after one short read would drop the newest bytes of the
+      // window, which is exactly the record this reader needs.
+      let bytesRead = 0;
+      while (bytesRead < len) {
+        const n = fs.readSync(fd, buf, bytesRead, len - bytesRead, scanStart + bytesRead);
+        if (n === 0) break;
+        bytesRead += n;
+      }
       text = buf.toString('utf8', 0, bytesRead);
     } finally {
       fs.closeSync(fd);
@@ -148,8 +154,12 @@ function isTurnStartMarker(record) {
 // The newest record of any type, the newest conversational one (type
 // assistant or user), and whether a turn-start marker (init or
 // thinking_tokens) sits after the newest conversational record in line
-// order, among a tail's parsed lines. An unparsable line is skipped, as is a
-// JSON value that is not an object.
+// order, among a tail's parsed lines. A result record clears that marker
+// without setting newestConversational: a turn that opens with init and
+// ends in a result with no assistant record (the first API call failed
+// after retries) leaves the marker cleared rather than stuck set for a
+// child that has gone quiet between turns. An unparsable line is skipped,
+// as is a JSON value that is not an object.
 function parseTail(lines) {
   let newestAny = null;
   let newestConversational = null;
@@ -169,6 +179,14 @@ function parseTail(lines) {
       markerAfterConversational = false;
     } else if (isTurnStartMarker(record)) {
       markerAfterConversational = true;
+    } else if (record.type === 'result') {
+      // A result with no assistant record after it in the same turn (the
+      // first API call failed after retries) leaves no conversational
+      // record to reset the marker. Clearing it here on the result itself
+      // is what keeps a child quiet between turns from reading busy for the
+      // whole patient cap; a result is never treated as conversational and
+      // never changes newestConversational.
+      markerAfterConversational = false;
     }
   }
   return { newestAny, newestConversational, markerAfterConversational };
@@ -180,9 +198,9 @@ function isRateLimitRecord(record) {
     const info = record.rate_limit_info;
     const status = info && info.status;
     // allowed and allowed_warning describe routine quota reporting, not a
-    // parked child; a status this reader cannot read as a string is treated
-    // the same way, since erring toward busy costs nothing and erring
-    // toward idle can kill a working child.
+    // parked child. A status this reader cannot read as a string is not
+    // treated as parked either; the verdict rests on the conversational
+    // record instead.
     if (status !== 'rejected') return false;
     // A rejected status alone does not mean the child is parked: a child
     // whose included quota is exhausted keeps writing a rejected record for
@@ -207,33 +225,21 @@ function hasToolUse(record) {
 }
 
 // The age, in milliseconds, of a text-only assistant record: its own
-// timestamp field against now where that field parses, the file's
-// modification time otherwise. Returns null when neither is usable, which
-// the caller reads as idle.
-// An age is usable when it is finite and not implausibly negative. A few
-// milliseconds of negative are ordinary skew against a record written the
-// instant before this ran, and read as a very young record. An age more
-// negative than the whole decision window is not skew: it says the clock and
-// the record disagree about what time it is, which is what a caller passing
-// seconds where this reader documents milliseconds produces. Such a reading
-// is discarded rather than used, so the verdict falls through to mtime and
-// then to idle, instead of pinning to busy and holding the persona for the
-// whole patient cap.
-function usableAge(age) {
-  return Number.isFinite(age) && age > -IDLE_AFTER_MS;
-}
-
+// timestamp field against now where that field parses to a finite number,
+// the file's modification time otherwise. Returns null when neither is
+// finite, which the caller reads as idle. A negative age -- the record's own
+// clock reading ahead of the clock argument, or ordinary skew against a
+// record written an instant before this ran -- is a young record and reads
+// busy through the ordinary comparison against IDLE_AFTER_MS below; nothing
+// here screens it out.
 function conversationalAgeMs(record, mtimeMs, now) {
   const raw = record && record.timestamp;
   if (typeof raw === 'string' || typeof raw === 'number') {
     const ts = new Date(raw).getTime();
-    if (Number.isFinite(ts)) {
-      const age = Number(now) - ts;
-      if (usableAge(age)) return age;
-    }
+    if (Number.isFinite(ts)) return Number(now) - ts;
   }
   const age = Number(now) - mtimeMs;
-  return usableAge(age) ? age : null;
+  return Number.isFinite(age) ? age : null;
 }
 
 function turnstate(streamPath, now) {
@@ -242,12 +248,10 @@ function turnstate(streamPath, now) {
   if (!tail) return 'idle';
   let { newestAny, newestConversational, markerAfterConversational } = parseTail(tail.lines);
 
-  // Settle the rate-limit override against this base window before paying
-  // for any widening: widening only ever extends the window backward from
-  // the same end of the file, so the newest record it finds does not change
-  // as the window grows. A parked child's newest record is always here
-  // already, so checking first avoids widening all the way to the ceiling
-  // to reach a verdict this window has already settled.
+  // The rate-limit check is settled on this base window and is not re-run
+  // after widening: a parked child's newest record is always here already,
+  // so checking first avoids widening all the way to the ceiling to reach a
+  // verdict this window has already settled.
   if (isRateLimitRecord(newestAny)) return 'idle';
 
   // The base window found no conversational record and no turn-start
@@ -263,13 +267,15 @@ function turnstate(streamPath, now) {
     ({ newestAny, newestConversational, markerAfterConversational } = parseTail(tail.lines));
   }
 
-  // A channel-driven child's prompt is never written as a user record: a new
-  // turn is visible only as a run of system records (init, then
-  // thinking_tokens while the model generates), none of which carries a
-  // timestamp. Where one of those sits after the newest conversational
-  // record -- or the tail holds one and no conversational record at all, a
-  // child in its first turn -- the child is inside the new turn regardless
-  // of how old the previous reply is.
+  // A channel-driven child's prompt is never written as a user record: the
+  // marker records visible for a new turn are init and a run of
+  // thinking_tokens while the model generates, and thinking_tokens also
+  // appears mid-turn on a response the model is still generating, where
+  // busy is right either way. Neither carries a timestamp. Where one of
+  // those sits after the newest conversational record -- or the tail holds
+  // one and no conversational record at all, a child in its first turn --
+  // the child is inside the new turn, or still generating, regardless of
+  // how old the previous reply is.
   if (markerAfterConversational) return 'busy';
 
   if (!newestConversational) {
@@ -298,9 +304,10 @@ function turnstate(streamPath, now) {
 // real epoch-ms value; a value below this threshold is read as such a
 // mis-scaled clock rather than trusted, and Date.now() is used instead. A
 // seconds-valued clock taken at face value as milliseconds lands decades
-// behind the record it is compared against, which reads as a huge negative
-// age, gets discarded as unusable, and falls through to idle -- the
-// kill-a-working-child direction.
+// behind the record it is compared against, which reads as a hugely
+// negative age -- wrongly busy under the ordinary comparison, whatever the
+// record's true age. Guarding at the clock read is what keeps that
+// scenario from ever reaching the age comparison at all.
 const MIN_PLAUSIBLE_EPOCH_MS = 1e12;
 
 function parseClock(raw) {
