@@ -73,6 +73,19 @@ Surfaces returned, cited by symbol because line numbers move.
 - `agent_persona_deferred-gate-run_v1.md` holds the gate policy of 2026-09-18 for four named plans. This plan is not one of them and defers nothing, so that plan's list does not change.
 - `docs/backlog.md`, "A reader session cannot write restart_requested when the owner is the stuck process". Section 5 retires it, since the coordinator's lever covers the wedged owner it describes.
 
+## Standing Brief Amendments
+
+Every entry here is binding on every section opened after it, and rides
+verbatim on every sighted reviewer dispatch.
+
+- The idle age bound is five minutes (`IDLE_AFTER_MS = 300000`), not thirty
+  seconds. A text-only assistant record reads `busy` until it is five minutes
+  old and `idle` after. The bound covers the time the model spends generating
+  the next block of the same API response, which scales with tool-input size,
+  rather than the latency of a reply. Section 1 acceptance reads ten seconds
+  `busy` and six minutes `idle`. Section 2 stub cases back-date a record's
+  `timestamp` field rather than waiting the bound out.
+
 ## Sections of Work
 
 ### 1. The turn-state reader
@@ -297,5 +310,42 @@ Rulings and findings adopted since interim board 1:
 Assumption corrected: interim board 1 recorded that the module writes diagnostics to stderr. It writes none; every error path is silently swallowed. The assumption is restated as silent failure.
 
 Next action per section: read the fix round and the ruling when they return, then either close Section 1 or take round 3. Sections 2 through 5 are unstarted. Section 2 is next and depends on Section 1's module.
+
+Commit Model: Branch-and-PR
+
+### Interim board 3 - 2026-09-21
+
+In-flight sections: Section 1 only, after its second fix round and its premise ruling. No section has closed, so this entry carries no `Completed:` line.
+
+Section 1 stage: built and committed at first green (`17b6698`), repaired twice and committed (`1874ebf`, `568b96e`). Review rounds adjudicated: 2, against an opening bound of 5. Round 3 is owed and unrun, because the ruling below changes the module that round would read. This session parked before dispatching it, on a coordinator relay of the operator's request to shut the machine down for a claude-kit update.
+
+Live dispatches: none. Both have returned and both were read. The fix round (`implementer-sonnet`) returned DONE_WITH_CONCERNS, and its work is verified and committed at `568b96e`. The premise consultant (`fable`, effort `high`, through `Workflow`, run `wf_4d7faebe-572`) returned RULED, and its ruling is adopted below.
+
+Gate reading, taken 2026-09-21 on SCOTT-CLAUDE at commit `568b96e`, worktree clean but for an untracked `.claude/worktrees/` directory. Every figure read from the run's own exit code. Targeted lane: `.kit/supervisor-turnstate-unit-test.mjs` 28 passed 0 failed exit 0; `.kit/supervisor-poll-unit-test.mjs` 23 passed 0 failed exit 0; `.kit/supervisor-unit-test.mjs` 22 passed 0 failed exit 0; `npx tsc -p tsconfig.json` exit 0. The turnstate baseline on this same lane was 23 passed at `1874ebf`, so the delta is five added cases and no regressions on it. No whole-gate baseline was taken at this commit, so no claim of no regressions across the suite is made here. The claims directory read empty at the reading, which is a sample and not a clearance.
+
+The premise ruling, adopted. The consultant was asked whether Section 1's thirty second age rule is sound enough for Section 2 to be built on it. It ruled: change the constant to five minutes, keep the heuristic's shape, and add no `result` rule, no `system/init` rule and no other marker. It reported that no operator fork survives, the value being a fact-driven bound rather than a preference. The plan's own Assumptions entry for this value pre-authorizes exactly this reversal, naming one constant in `bin/supervise-turnstate.mjs` as its cost and Section 1's re-measure as where a wrong value shows. So the adoption reverses a declared assumption rather than changing scope. The ruling is recorded in the `Standing Brief Amendments` block above, which is where later dispatches read it.
+
+What the ruling measured, for the Chapter that closes Section 1 to carry:
+
+- The bound covers tool-input generation time inside one API response, rather than reply latency. The driver is a text or thinking record followed by a `tool_use` record sharing its `message.id`. Inputs of 26 to 34 kilobytes took 90 to 135 seconds.
+- Pooled residue over four live streams, across 6,324 mid-turn records carrying no `tool_use` block: 114 over 30 seconds (1.8%), 28 over 60 seconds, 9 over 90, 3 over 120, none over 180, none over 300. The maximum observed is 150 seconds.
+- Between a text block and the `tool_use` block following it in the same response, the stream writes nothing at all, with 26 of 27 such gaps over sixty seconds holding zero records of any type. So no better in-stream signal exists for this case. The only explicit one would be the `--include-partial-messages` launch flag, which is outside this plan and would raise stream volume sharply.
+- The re-measure's own turn-end instrument, a gap over sixty seconds, misclassifies in both directions. It counts same-message-id continuations of 62 to 135 seconds as turn ends, and it misses turns that begin within sixty seconds of a `result` record. So the earlier "7 of 50 turn ends carry a result" figure is an artifact of that instrument. It is retired here rather than repeated as a fact about `result` records.
+- Idle children exit on EOF with the channel attached, inside ten seconds on two logged cases. So the cost of a longer bound falls only on a child that ignores EOF, which is the wedged case the plan already prices at eleven minutes in its other two branches.
+- Remaining exposure at five minutes: a single tool input above roughly 80 kilobytes, or a subagent whose last record is text-only while a sibling runs silently for longer than the bound.
+- Subagent records interleave heavily, with 2,920 of 8,399 conversational records on one stream carrying `parent_tool_use_id`, and the reader treats them as the child's own. That is correct for this purpose, since a subagent generating means the parent is inside a tool call. It is stated so that a later reader does not undo it.
+
+The ruling's own confidence: high on changing the constant rather than adding a marker, medium on the exact value. What would move the value is a measured same-message-id gap above five minutes on any stream, which would argue for the launch flag instead of a larger constant, or evidence that channel-connected idle children stop exiting on EOF, which would argue for three minutes.
+
+Rulings and findings adopted since the last board entry:
+
+- Round 2's Critical is fixed and committed. The rate-limit override now fires only on a `rate_limit_event` whose `rate_limit_info.status` is `rejected`. A status of `allowed` or `allowed_warning`, and a status that cannot be read, all fall through to the ordinary verdict.
+- Round 2's Majors and the rest of its defects are fixed in the same commit: the clock parser's magnitude floor, the past-ceiling busy verdict, the bounded decode of the reported byte count, the rate-limit check moved ahead of the widening loop, a dead null guard removed, a mislabeled timing case, a fixture that could not fail for its stated reason, and a tail-versus-whole-file design pin.
+- The round-1 clock fix chose the harmful direction and pinned it as correct. Round 2 reversed it. A seconds-valued clock now reads `busy` against a recent record, matching what a correct millisecond clock gives.
+- Two tests-floor deltas are declared, both route (b). The bounded-decode fix ships with no durable regression case, since a single read filled the buffer in every trial on this filesystem; it is a hardening fix confirmed by reading the code, reversible in the third argument to one `toString` call. And the tail-versus-whole-file case is a design-boundary pin rather than a regression pin, validated against a throwaway whole-file control rather than against the committed module.
+- The operator ruled on 2026-09-20 that this session continues past the review-round bound with three further rounds, and that Section 1 finishes through its review and its Chapter before plan health resumes. That ruling is named again in the Chapter that closes this section.
+- `readRateLimitReset` in `bin/supervise-poll.mjs` carries the same discarded-byte-count and no-widening shapes. It is outside Section 1's files, is named rather than touched, and is routed to Section 5.
+
+Next action per section: apply the adopted ruling to the module's constant, to its two age pins, and to the acceptance bullets in Section 1 and Section 2, then dispatch round 3 over the resulting delta. Sections 2 through 5 are unstarted. Section 2 is next and depends on Section 1's module.
 
 Commit Model: Branch-and-PR
