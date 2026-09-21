@@ -1,5 +1,13 @@
 # Backlog
 
+## Operator checks owed by the plan-health plan (parked 2026-09-21)
+
+Two checks only the operator can run, carried out of `docs/archive/agent_persona_plan-health-from-the-record_v1.md` so they survive its archive. After the fleet relaunches on that plan, message a worker mid-plan several times and confirm on the board or in its store that the entry stays active and never reads blocked; the work reopens as a new round if any plan entry shows `Max rounds reached` again. After a week, read the decision journal's three plan-health question sets (`lead_blocked`, `chapter_within` and `next_speaker`) against their outcomes; that reading decides whether a later plan may act on any of them. Retire this item once both are done.
+
+## README's nudge-counter sentence says the counter resets only on two events, and the code has six (found 2026-09-21)
+
+`README.md` under Nudge discipline says the counter "Resets only on an on-goal score or `complete`". The code also resets it on `goal_resume`, on a work-tool turn that reactivates a cap-paused node, on a new goal, and at a `goal_done` turn end (`hooks/index.ts`, every `consecutiveNudgesWithoutOnGoal = 0`). A maintainer trusting "only" would miss that `goal_resume` gives a stalled worker a fresh three-nudge budget. The sentence predates the plan-health plan, which added the plan-entry clause after it and left it as it stood. Remedy: replace "only" with the list. Raised by the plan-health plan's finishing docs curation.
+
 ## The decision journal rewrites its whole day file for every line (found 2026-09-21)
 
 `hooks/decision-journal.ts` appends a line by reading the day's file, adding the line and writing the file back, one line at a time on one serialized chain. A plan entry's turn end now writes seven lines through it: one call line, three answer lines and three outcome lines. The call line carries up to about 6 KB of state that changes every turn, so the per-site dedup never fires for it. The day's total I/O therefore grows with the square of that day's turns, which at 300 plan-entry turns is on the order of gigabytes read and written per persona per day. It runs off the awaited path, so no turn waits on it. Remedy: have the answer writer append its lines in one write, or add an append operation to the host's file API so a line costs its own bytes. Raised by the plan-health plan's finishing performance review and deferred there, since it is the journal module's existing write shape rather than this plan's.
