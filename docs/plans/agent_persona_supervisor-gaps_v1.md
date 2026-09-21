@@ -115,7 +115,7 @@ Acceptance criteria.
 - The suites set `supervisorStopGraceMs` to 2000. The first case sets `supervisorStopBusyCapMs` above the stub's exit delay. The second case sets the cap to at least three times the grace, and the fifth sets it above the thirty second idle age, so a TERM at the ordinary grace reds both. The remaining cases set it near the minimum. No case waits eleven minutes.
 
 Files in scope: `bin/supervise.sh`, `.kit/live-stopprocesstree-test.sh`, `.kit/supervisor-fn-extract.sh`, `.kit/supervisor-model-test.sh`.
-Tests: the label guard is pinned in both directions, since a patient hung restart would hold a frozen persona eleven minutes longer. `.kit/live-stopprocesstree-test.sh` holds the box, so it runs alone under the heavy-process claim.
+Tests: the label guard is pinned in both directions, since a patient hung restart would hold a frozen persona eleven minutes longer. `.kit/live-stopprocesstree-test.sh` holds the box, so it runs alone.
 
 ### 3. The restart request
 
@@ -140,7 +140,7 @@ Acceptance criteria.
 - The coordinator instruction carries the new sentence, and `.kit/channel-reply-instruction-test.sh` pins it.
 
 Files in scope: `hooks/index.ts`, `.claude/types/claude-code-mcp.d.ts`, `bin/supervise-restart-request.mjs`, `bin/supervise-poll.mjs`, `bin/supervise.sh`, `.kit/fleet-status-unit-test.mjs`, `.kit/supervisor-poll-unit-test.mjs`, `.kit/channel-reply-instruction-test.sh`, `.kit/supervisor-natural-exit-test.sh`, `.kit/controller-tick-test.mjs` (the owner tier's tool count pin moves from fourteen to fifteen, and the reader list pin stays).
-Tests: every refusal is pinned, because the tool's own rule is the only fence between a worker and a restart of the coordinator. The future-dated case is pinned because its failure is a restart loop. `.kit/supervisor-natural-exit-test.sh` takes over half an hour and holds the box, so it runs alone under the heavy-process claim.
+Tests: every refusal is pinned, because the tool's own rule is the only fence between a worker and a restart of the coordinator. The future-dated case is pinned because its failure is a restart loop. `.kit/supervisor-natural-exit-test.sh` takes over half an hour and holds the box, so it runs alone.
 
 ### 4. The keeper adopts a live supervisor
 
@@ -185,7 +185,7 @@ Files in scope: `README.md`, `docs/architecture.md`, `docs/backlog.md`, `docs/RE
 
 ## Gate
 
-- The gate policy of 2026-09-18 in `agent_persona_deferred-gate-run_v1.md` names four plans and this is not one of them, so this plan runs its own suites and defers nothing. The two slow suites it touches hold the box, so each runs alone under the machine's heavy-process claim, one at a time, and never beside a build or another suite.
+- The gate policy of 2026-09-18 in `agent_persona_deferred-gate-run_v1.md` names four plans and this is not one of them, so this plan runs its own suites and defers nothing. The two slow suites it touches hold the box, so each runs alone, one at a time, and never beside a build or another suite.
 - Baseline: before touching anything, the worker runs every `.kit/*-unit-test.mjs` suite, `.kit/supervisor-model-test.sh`, `.kit/live-stopprocesstree-test.sh` and `.kit/supervisor-natural-exit-test.sh` on a clean tree at the base commit and records each one's pass and fail counts, exit code and wall clock. Every later run is reported as a delta against that.
 - Sections 1, 3 and 4 each close on their own unit suites green, with the red-then-green record for the new cases in the Chapter. Section 2 closes on `.kit/supervisor-model-test.sh` and `.kit/live-stopprocesstree-test.sh` green. Section 3 also closes on `.kit/supervisor-natural-exit-test.sh` green, since its natural-exit case lives there.
 - Section 3 edits `hooks/`, so `.kit/check-loader-rule.mjs` runs at its close.
