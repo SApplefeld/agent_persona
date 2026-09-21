@@ -118,8 +118,8 @@
     {
       "name": "GOAL_TREE_BLOCK",
       "file": "hooks/index.ts",
-      "chars": 213,
-      "words": 34
+      "chars": 223,
+      "words": 37
     },
     {
       "name": "GOAL_TREE_PAUSED_BLOCK",

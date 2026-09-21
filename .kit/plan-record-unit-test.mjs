@@ -74,6 +74,16 @@ check("a bare ### Chapter heading with no number is not counted",
   parsePlanRecord(doc("Status: In Progress", chaptersBody(["### Chapter", "### Chapter 1"]))).chapters === 1);
 check("a two-digit Chapter number counts",
   parsePlanRecord(doc("Status: In Progress", chaptersBody(["### Chapter 10"]))).chapters === 1);
+check("### Chapter 1: title counts one (a colon after the number is convention, not the contract)",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody(["### Chapter 1: Section 1, delivered in one changeset"]))).chapters === 1);
+check("### Chapter 12 - 2026-09-21 still counts one",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody(["### Chapter 12 - 2026-09-21"]))).chapters === 1);
+check("### Chapter 1b and ### Chapter 8.2 count one each (N is the digits; what follows is convention)",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody(["### Chapter 1b", "### Chapter 8.2"]))).chapters === 2);
+check("### Chapters and ### Chapter with no number count zero",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody(["### Chapters", "### Chapter "]))).chapters === 0);
+check("## Chapters (append-only) still opens the block",
+  parsePlanRecord(doc("Status: In Progress", "\n## Chapters (append-only)\n\n### Chapter 1\n")).chapters === 1);
 check("a CRLF Chapters section counts",
   parsePlanRecord(doc("Status: In Progress", chaptersBody(["### Chapter 1", "### Chapter 2"])).replace(/\n/g, "\r\n")).chapters === 2);
 

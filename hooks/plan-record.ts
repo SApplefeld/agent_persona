@@ -48,8 +48,12 @@ const PLAN_DIR_PREFIX = "docs/plans/";
 // Status line in its header is simply not complete.
 //
 // Chapters: the number of "### Chapter N" headings under the "## Chapters"
-// heading, counted up to the next "## " heading. "### Interim board N" is
-// not one. A document with no "## Chapters" section has zero.
+// heading, counted up to the next "## " heading. N is the digits; what
+// follows them (a colon, a dash and a date, a suffix) is convention rather
+// than the contract, so "### Chapter 1: title" counts. "### Interim board N"
+// and a "### Chapter" with no number are not Chapters. The heading may carry
+// text after the word, as "## Chapters (append-only)" does. A document with
+// no "## Chapters" section has zero.
 export function parsePlanRecord(text: string): PlanRecord {
   const lines = text.split(/\r?\n/);
 
@@ -67,10 +71,10 @@ export function parsePlanRecord(text: string): PlanRecord {
   let inChapters = false;
   for (const line of lines) {
     if (/^## /.test(line)) {
-      inChapters = /^## Chapters\s*$/.test(line);
+      inChapters = /^## Chapters\b/.test(line);
       continue;
     }
-    if (inChapters && /^### Chapter \d+(?![^\s])/.test(line)) chapters += 1;
+    if (inChapters && /^### Chapter \d+(?!\d)/.test(line)) chapters += 1;
   }
 
   return { complete, chapters };

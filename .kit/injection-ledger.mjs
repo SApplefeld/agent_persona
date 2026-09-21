@@ -837,10 +837,20 @@ function extractNudgeFrames(src) {
 // here. Their own fixed openers (`Pending siblings: `, `Last note: `) and the
 // `root > ` of `path` are therefore not sized by this rule. Declaring them is
 // what lets any other bare identifier refuse rather than vanish.
+//
+// The Active line's round text is the `${roundText}` interpolation, whose
+// value is a ternary declared just above the block: an empty string for a
+// plan entry, or a template literal for a task entry. The row pins the larger
+// shape, so the task-entry arm's literal is read from that declaration and
+// sized with the block. The arm must be a single template literal; a
+// declaration that has moved, or an arm that is not one, refuses.
 function extractGoalTreeBlock(src) {
   const m = /const goalBlock =\s*\n([\s\S]*?);\n/.exec(src);
   if (!m) throw new Error("goalBlock not found in hooks/index.ts");
-  const literal = literalOfTemplateChain(m[1], "GOAL_TREE_BLOCK", ["siblingLine", "lastNote"]);
+  const r = /const roundText = isPlanEntry\(sess\.state, activeNode\)\s*\n\s*\?\s*""\s*\n\s*:\s*(`[^`]*`);\n/.exec(src);
+  if (!r) throw new Error("the [GOAL TREE] roundText ternary was not found in hooks/index.ts in the shape this rule reads");
+  const literal = literalOfTemplateChain(m[1], "GOAL_TREE_BLOCK", ["siblingLine", "lastNote"])
+    + literalOfTemplateChain(r[1], "GOAL_TREE_BLOCK roundText");
   return record("GOAL_TREE_BLOCK", "hooks/index.ts", literal);
 }
 

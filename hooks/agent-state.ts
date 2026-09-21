@@ -908,14 +908,23 @@ export function isActivationEligible(state: AgentState, node: GoalNode): boolean
 // node count, the same guard isActivationEligible uses, since a parentId
 // cycle the tree's shape rules do not permit would otherwise spin here too.
 export function resolvePlanPath(state: AgentState, node: GoalNode): string | undefined {
-  if (node.planPath) return node.planPath;
+  return planHolderOf(state, node)?.planPath;
+}
+
+// The entry that holds the planPath a node is judged against: the node
+// itself, or else its nearest ancestor with one. This is the entry a plan
+// document's completion completes, which for a task under a plan node is
+// its parent. Returns undefined for a task entry. resolvePlanPath is this
+// walk's path; the two never diverge because one derives from the other.
+export function planHolderOf(state: AgentState, node: GoalNode): GoalNode | undefined {
+  if (node.planPath) return node;
   let current: GoalNode | undefined = node;
   let steps = state.goals.length;
   while (current && current.parentId) {
     if (steps-- <= 0) return undefined;
     const parent: GoalNode | undefined = state.goals.find((g) => g.id === current!.parentId);
     if (!parent) return undefined;
-    if (parent.planPath) return parent.planPath;
+    if (parent.planPath) return parent;
     current = parent;
   }
   return undefined;

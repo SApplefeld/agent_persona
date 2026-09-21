@@ -3119,6 +3119,8 @@ async function main() {
     await casePlanRecord2_roundTextAtTheFourSites(clock);
     await casePlanRecord2_documentCompletionReachesLiveDescendants(clock);
     await casePlanRecord2_descendantStatusesReached(clock);
+    await casePlanRecord2_blockedHolderCompletesWithNoReason(clock);
+    await casePlanRecord2_unreadableRearmsAfterARead(clock);
 
     await caseItem81_goalEditDropAllowsBlocked(clock);
     await caseItem81_goalEditDropStillRefusesActive_control(clock);
@@ -12831,6 +12833,50 @@ async function casePlanRecord2_descendantStatusesReached(clock) {
   check("plan2 descendant statuses: the complete descendant is left as it is", byId("task-done").status === "complete" && byId("task-done").notes.length === 1 && byId("task-done").updatedAt === T0 - 3000, byId("task-done"));
   check("plan2 descendant statuses: the abandoned descendant is left as it is", byId("task-dropped").status === "abandoned" && byId("task-dropped").notes.length === 1 && byId("task-dropped").updatedAt === T0 - 2000, byId("task-dropped"));
   check("plan2 descendant statuses: plan-1 is complete", byId("plan-1").status === "complete");
+}
+
+// A holder blocked over a child ("Child task blocked") completed by document
+// ends complete with no live reason left on it. The blocked task itself stays
+// blocked: only live statuses are reached by the descendant completion. The
+// task's reason is not "Max rounds reached", which the load-time recovery
+// would free (and clear the parent's reason with) before the turn ran.
+async function casePlanRecord2_blockedHolderCompletesWithNoReason(clock) {
+  console.log("\n=== Section 2: a holder blocked over a child ends complete with no blockedReason ===");
+  clock.set(T0);
+  const goals = [
+    makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+    makeGoalNode({ id: "plan-1", parentId: "root-1", kind: "plan", status: "blocked", blockedReason: "Child task blocked", planPath: PLAN2_PATH, createdAt: T0 - 20000 }),
+    makeGoalNode({ id: "task-1", parentId: "plan-1", kind: "task", status: "blocked", blockedReason: "tests failing", createdAt: T0 - 5000 }),
+    makeGoalNode({ id: "task-2", parentId: "plan-1", kind: "task", status: "active", createdAt: T0 - 4000 }),
+  ];
+  const h = await createTickHarness({ ...OPTS, caseName: "plan2_blocked_holder", stateOpts: { now: T0, goals, activeGoalId: "task-2" } });
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+  await plan2ScoredTurn(h, "t-blocked-holder", "on-goal");
+  const state = getState(h);
+  const byId = (id) => state.goals.find(g => g.id === id);
+  check("plan2 blocked holder: plan-1 is complete with no blockedReason", byId("plan-1").status === "complete" && byId("plan-1").blockedReason === undefined, byId("plan-1"));
+  check("plan2 blocked holder: the blocked task stays blocked with its reason", byId("task-1").status === "blocked" && byId("task-1").blockedReason === "tests failing", byId("task-1"));
+  check("plan2 blocked holder: the active task was completed", byId("task-2").status === "complete");
+}
+
+// The once-per-session unreadable log re-arms on a successful read: absent
+// logs, present reads, absent again logs again, present, absent logs a third
+// time. Five turns, three decisions.
+async function casePlanRecord2_unreadableRearmsAfterARead(clock) {
+  console.log("\n=== Section 2: an unreadable document logs again after a successful read ===");
+  clock.set(T0);
+  const h = await plan2Harness("plan2_unreadable_rearm", { chapterCount: 1 });
+  const present = () => h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"]));
+  const absent = () => h.fsMap.delete(PLAN2_FILE);
+  const steps = [["absent", absent, 1], ["present", present, 1], ["absent", absent, 2], ["present", present, 2], ["absent", absent, 3]];
+  for (let i = 0; i < steps.length; i++) {
+    const [label, seed, expected] = steps[i];
+    seed();
+    await plan2ScoredTurn(h, `t-rearm-${i}`, "on-goal");
+    const count = getDecisions(h).filter(d => d.action === "plan_record_unreadable").length;
+    check(`plan2 unreadable re-arm: after "${label}" the plan_record_unreadable count is ${expected}`, count === expected, count);
+  }
+  check("plan2 unreadable re-arm: plan-1 is still active throughout", getState(h).goals.find(g => g.id === "plan-1").status === "active");
 }
 
 // Item 8.1 / Round 58 finding 4: goal_edit's drop action refused a blocked node outright, which is

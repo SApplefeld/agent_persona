@@ -126,6 +126,8 @@ passed. Two occurrences six days apart on unrelated trees rules out the change i
 cause, which strengthens the teardown-handle reading. The recurrence was seen through a chained
 command, so the next hunt should keep the suite's own unpiped exit code beside the assertion text.
 
+`.kit/plan-record-unit-test.mjs` died the same way on 2026-09-21, one run of six lanes under a heavy-process claim: `PASS: 0 failure(s)` then the same assertion and exit 127, with the rerun a moment later exiting 0. Second suite in the class, so the shape is the process teardown rather than either suite.
+
 ## Suite hardening
 
 _No open items. Resolved items are archived in `docs/archive/backlog-2026-09-11.md`._

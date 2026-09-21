@@ -41,6 +41,7 @@ import {
   PLAN_PATH_PATTERN,
   PLAN_PATH_REQUIRED_FORM,
   resolvePlanPath,
+  planHolderOf,
 } from "./agent-state";
 import { readPlanRecord } from "./plan-record";
 import type { AgentState, FleetHealth, FleetHealthMemo, GoalNode, NudgeBudget, EnvGit, EnvState } from "./agent-state";
@@ -1581,22 +1582,6 @@ export const activate = (dp: any, nextId: string | null, reason: string): void =
 const isPlanEntry = (state: AgentState, g: GoalNode): boolean =>
   resolvePlanPath(state, g) !== undefined;
 
-// The entry that holds the planPath a node is judged against: the node
-// itself, or else its nearest ancestor with one. This is the entry the plan
-// document's completion completes, which for a task under a plan node is its
-// parent. The walk is resolvePlanPath's, bounded the same way, and returns
-// undefined for a task entry.
-function planHolderOf(state: AgentState, node: GoalNode): GoalNode | undefined {
-  let current: GoalNode | undefined = node;
-  let steps = state.goals.length;
-  while (current) {
-    if (current.planPath) return current;
-    if (!current.parentId || steps-- <= 0) return undefined;
-    current = state.goals.find((g) => g.id === current!.parentId);
-  }
-  return undefined;
-}
-
 // The round text the controller's idle summary and its skip-hash subset
 // carry for an entry. A task entry reads its budget; a plan entry has none.
 const roundSummaryText = (state: AgentState, g: GoalNode): string =>
@@ -1749,8 +1734,9 @@ export const register: Register = async (on, options) => {
   let turnLeafId: string | null = null;
 
   // Section 2 (plan-health-from-the-record): the plan holders whose document
-  // has already logged plan_record_unreadable this session, so an unreadable
-  // document logs once per entry rather than once per turn.
+  // have logged plan_record_unreadable since their document last read, so an
+  // unreadable document logs once per entry rather than once per turn, and
+  // once more if it becomes unreadable again after a successful read.
   const planRecordUnreadableLogged = new Set<string>();
 
   // M8: planning reentrancy guard.
@@ -5411,10 +5397,13 @@ export const register: Register = async (on, options) => {
               timestamp: Date.now(),
               loop: "goal",
               action: "plan_record_unreadable",
-              detail: `${holder.id}: ${planPath}: ${reading.reason}`,
+              detail: `${holder.id}: ${planPath.slice(0, 150)}: ${reading.reason}`,
             });
           }
         } else {
+          // A readable document re-arms the once-per-session log, so a
+          // document that becomes unreadable again later logs once more.
+          planRecordUnreadableLogged.delete(holder.id);
           if (reading.kind === "read" && reading.chapters > (holder.chapterCount ?? 0)) {
             const previous = holder.chapterCount ?? 0;
             holder.chapterCount = reading.chapters;
@@ -5463,6 +5452,9 @@ export const register: Register = async (on, options) => {
               });
             }
             completeLeaf(sess.state, completedId, "plan document complete");
+            // A holder blocked over a child ("Child task blocked") ends
+            // complete with no live reason left on it.
+            holder.blockedReason = undefined;
             await runHealth($, completedId);
             sess.state.decisions.push({
               timestamp: Date.now(),
