@@ -351,13 +351,104 @@ try {
       JSON.stringify(Object.keys(line).sort()) === JSON.stringify([...expectedFields].sort()), Object.keys(line));
     check("outcome line: the kind is the outcome's own, and the line names itself separately",
       line.kind === "next_score" && line.lineKind === "outcome", line);
-    check("outcome line: the two kinds are the closed set",
-      JSON.stringify(J.OUTCOME_KINDS) === JSON.stringify(["next_score", "ask_marker"]), J.OUTCOME_KINDS);
+    check("outcome line: the five kinds are the closed set",
+      JSON.stringify(J.OUTCOME_KINDS) === JSON.stringify(["next_score", "ask_marker", "lead_blocked", "chapter_within", "next_speaker"]), J.OUTCOME_KINDS);
 
     const { host: h2, files: f2 } = makeHost();
     const bad = await J.writeOutcome(h2, { persona: PERSONA, session: SESSION, callStampId: "a.b.1.1", kind: "something_else", value: "x" });
     check("outcome line: a kind outside the set writes nothing and resolves false",
       bad.ok === false && f2.size === 0, { bad, keys: [...f2.keys()] });
+  }
+
+
+  // --- The answer line names its primitive, and carries a Noul's and a Score's values ---
+  {
+    console.log("\n=== The answer line's primitive column and the three answer shapes ===");
+    const J = await freshModule();
+    clock.set(T0);
+    const { host, files } = makeHost();
+    const head = { callStampId: "a.b.1.1", questionVersion: "v1", overrideRefused: null };
+    const answers = [
+      { ...head, questionId: "worker-blocked", primitive: "noul", value: "0.93", probabilities: {}, confidence: null, haikuValue: null },
+      { ...head, questionId: "rounds-converging", primitive: "score", value: "1.4", probabilities: { "0": 0.1, "1": 0.4, "2": 0.5 }, confidence: 0.4, haikuValue: null },
+      { ...head, questionId: "block-owner", primitive: "choice", value: "operator", probabilities: { operator: 0.9, none: 0.1 }, confidence: 0.85, haikuValue: null },
+    ];
+    const r = await J.writeAnswers(host, { persona: PERSONA, session: SESSION, answers });
+    check("primitive column: three answers landed", r.ok === true, r);
+    const lines = linesOf(files);
+    const expectedFields = ["lineKind", "stampId", "callStampId", "questionId", "questionVersion", "overrideRefused", "primitive", "value", "probabilities", "confidence", "haikuValue", "agrees"];
+    check("primitive column: every line still carries the answer line's fields and no other",
+      lines.length === 3 && lines.every((line) => JSON.stringify(Object.keys(line).sort()) === JSON.stringify([...expectedFields].sort())), lines.map((l) => Object.keys(l)));
+    check("primitive column: each line names its primitive by name",
+      lines.map((l) => l.primitive).join(",") === "noul,score,choice", lines.map((l) => l.primitive));
+    check("primitive column: the Noul line carries its probability as the value, an empty distribution and a null confidence",
+      lines[0].value === "0.93" && JSON.stringify(lines[0].probabilities) === "{}" && lines[0].confidence === null, lines[0]);
+    check("primitive column: the Score line carries its position as the value and its distribution by level number",
+      lines[1].value === "1.4" && lines[1].probabilities["2"] === 0.5 && lines[1].confidence === 0.4, lines[1]);
+    check("primitive column: with no Haiku value, agreement is null on all three rather than false",
+      lines.every((l) => l.haikuValue === null && l.agrees === null), lines.map((l) => [l.haikuValue, l.agrees]));
+
+    // The column is a closed vocabulary: a value outside it is written as
+    // null rather than passed through, and an absent one is null too.
+    const { host: h2, files: f2 } = makeHost();
+    await J.writeAnswers(h2, { persona: PERSONA, session: SESSION, answers: [
+      { ...head, questionId: "q", primitive: "verdict", value: "x", probabilities: {}, confidence: 1, haikuValue: "x" },
+      { ...head, questionId: "q", value: "x", probabilities: {}, confidence: 1, haikuValue: "x" },
+    ] });
+    const l2 = linesOf(f2);
+    check("primitive column: a primitive outside the closed set, or none, is written as null",
+      l2.length === 2 && l2[0].primitive === null && l2[1].primitive === null, l2.map((l) => l.primitive));
+  }
+
+  // --- The three plan health outcome kinds ---
+  {
+    console.log("\n=== The three plan health outcome kinds each write a line ===");
+    const J = await freshModule();
+    clock.set(T0);
+    const { host, files } = makeHost();
+    const writes = [
+      ["lead_blocked", "true"],
+      ["chapter_within", "false"],
+      ["next_speaker", "channel"],
+    ];
+    for (const [kind, value] of writes) {
+      const r = await J.writeOutcome(host, { persona: PERSONA, session: SESSION, callStampId: "a.b.1.1", kind, value });
+      check(`plan health outcome: ${kind} landed`, r.ok === true, r);
+    }
+    const lines = linesOf(files);
+    check("plan health outcome: three lines, each carrying its kind and the value as given",
+      lines.length === 3 && lines.every((l, i) => l.lineKind === "outcome" && l.kind === writes[i][0] && l.value === writes[i][1] && l.callStampId === "a.b.1.1"), lines);
+  }
+
+  // --- A call line from a request that carried several questions ---
+  {
+    console.log("\n=== The call line from a set result ===");
+    const J = await freshModule();
+    clock.set(T0);
+    const { host, files } = makeHost();
+    const setOk = {
+      ok: true,
+      questionSetIds: ["worker-blocked", "rounds-converging", "block-owner"],
+      answers: [],
+      usage: { input_tokens: 400, output_tokens: 30 },
+      latencyMs: 41,
+      model: "jev-fake",
+      state: '{"closingText":"Working.","recentClosingTexts":["Working."]}',
+    };
+    await J.writeCall(host, callRecord(J, { site: "plan-health", questionSet: "worker-blocked,rounds-converging,block-owner", result: setOk }));
+    const [line] = linesOf(files);
+    const expectedFields = ["lineKind", "stampId", "at", "persona", "session", "site", "questionSet", "mode", "split", "stateHash", "state", "stateRef", "inputTokens", "outputTokens", "latencyMs", "result", "detail"];
+    check("set call line: the same fields as a single call's line",
+      JSON.stringify(Object.keys(line).sort()) === JSON.stringify([...expectedFields].sort()), Object.keys(line));
+    check("set call line: it carries the site, the joined set ids, the usage, the latency and the state text",
+      line.site === "plan-health" && line.questionSet === "worker-blocked,rounds-converging,block-owner" && line.inputTokens === 400
+        && line.outputTokens === 30 && line.latencyMs === 41 && line.result === "ok" && line.state === setOk.state, line);
+    const { host: h2, files: f2 } = makeHost();
+    const setFailure = { ok: false, reason: "parse", detail: "no answer for block-owner", questionSetIds: setOk.questionSetIds, latencyMs: 12, state: setOk.state };
+    await J.writeCall(h2, callRecord(J, { stampId: "a.b.1.2", site: "plan-health", result: setFailure }));
+    const [failLine] = linesOf(f2);
+    check("set call line: a failed set call records the reason and the detail with null counts",
+      failLine.result === "parse" && failLine.detail === "no answer for block-owner" && failLine.inputTokens === null && failLine.latencyMs === 12, failLine);
   }
 
   // --- The bytes ---

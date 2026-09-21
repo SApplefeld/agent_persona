@@ -113,11 +113,20 @@ import {
   TURN_SCORE,
   MEMORY_KIND,
   PLAN_SWITCH_NO_MATCH,
+  WORKER_BLOCKED,
+  ROUNDS_CONVERGING,
+  BLOCK_OWNER,
+  BLOCK_OWNER_OPTIONS,
+  PLAN_HEALTH_SET_IDS,
+  PLAN_HEALTH_STATE_CLOSING,
+  PLAN_HEALTH_STATE_RECENT,
   resolverOf,
 } from "./question-catalog";
 // The decision seam, which puts the same closed question to Jev that the four
-// sites below put to Haiku, and the journal that records both answers.
-import { ask, type SeamResult } from "./decision-seam";
+// Haiku-paired sites below put to Haiku, and also carries the three plan
+// health questions no classifier asks, plus the journal that records every
+// answer.
+import { ask, askAll, type JevAnswer, type QuestionAsk, type SeamResult, type SeamSetResult } from "./decision-seam";
 import { newStampId, writeCall, writeAnswers, writeOutcome, ASK_MARKER_VALUE, type JournalWrite, type OutcomeKind } from "./decision-journal";
 
 // --- Module-scope session identity ---
@@ -237,6 +246,7 @@ function shadowAsk(
           questionId: result.questionId,
           questionVersion: result.questionVersion,
           overrideRefused: result.overrideRefused,
+          primitive: result.primitive,
           value: result.answer.choice,
           probabilities: result.answer.probabilities,
           confidence: result.answer.confidence,
@@ -250,6 +260,98 @@ function shadowAsk(
       // It stays because no caller awaits this chain: a rejection with nothing
       // attached is an unhandled rejection, which ends the process rather than
       // losing one measurement.
+    });
+  return stampId;
+}
+
+// Section 5 (plan-health-from-the-record): the three plan health questions.
+// The journal site their call line carries.
+const PLAN_HEALTH_SITE = "plan-health";
+// How many of an entry's closing texts the request's state carries, and the
+// most characters each one carries.
+const PLAN_HEALTH_RECENT_MAX = 5;
+const PLAN_HEALTH_TEXT_MAX = 1000;
+// How many turns on the entry a chapter_within outcome waits for a Chapter
+// rise before it is written as false.
+const CHAPTER_WITHIN_TURNS = 5;
+
+/**
+ * The answer line's three value columns for one answer, by its shape. A
+ * Choice's value is the option id it chose, a Score's its position on the
+ * levels, a Noul's the probability of yes; the last carries no distribution
+ * and no confidence.
+ */
+function journalValuesOf(answer: JevAnswer): { value: string; probabilities: Record<string, number>; confidence: number | null } {
+  if (answer.type === "choice") return { value: answer.choice, probabilities: answer.probabilities, confidence: answer.confidence };
+  if (answer.type === "score") return { value: String(answer.score), probabilities: answer.probabilities, confidence: answer.confidence };
+  return { value: String(answer.noul), probabilities: {}, confidence: null };
+}
+
+/**
+ * Start the three plan health measurements at the end of a turn on a plan
+ * entry, in one request over one state, and journal them once it settles:
+ * one call line and one answer line per question. Returns the stamp id its
+ * lines carry, or null where the kill switch is off, which is also what the
+ * three outcome joiners read as having no call to cite.
+ *
+ * Not awaited by the caller, for the reason shadowAsk is not: a slow,
+ * failing or hung Jev cannot delay the turn's end. Nothing it produces
+ * reaches a branch, a state field, a decision action or a nudge text; the
+ * only state it touches is the one decision an unwritable journal earns.
+ * There is no Haiku value beside these answers, since no classifier asks
+ * them: what they are measured against is the outcome lines the plugin
+ * writes from what it observes afterwards.
+ */
+function shadowAskPlanHealth(
+  host: PluginHost,
+  closingText: string,
+  recentClosingTexts: readonly string[],
+  mode: string,
+): string | null {
+  if (mode !== "shadow") return null;
+  const persona = sess.persona;
+  const session = sess.mySessionId;
+  const stampId = newStampId(persona, session);
+  const asks: readonly QuestionAsk[] = [
+    { questionSetId: WORKER_BLOCKED, primitive: "noul" },
+    { questionSetId: ROUNDS_CONVERGING, primitive: "score" },
+    { questionSetId: BLOCK_OWNER, primitive: "choice", optionIds: BLOCK_OWNER_OPTIONS },
+  ];
+  // The one state the request carries, whose two fields the three questions
+  // name by their field names.
+  const state = {
+    [PLAN_HEALTH_STATE_CLOSING]: closingText,
+    [PLAN_HEALTH_STATE_RECENT]: recentClosingTexts,
+  };
+  void askAll(host, asks, state, mode, resolverOf(host))
+    .then(async (result: SeamSetResult) => {
+      noteJournalWrite(await writeCall(host, {
+        stampId,
+        persona,
+        session,
+        site: PLAN_HEALTH_SITE,
+        questionSet: PLAN_HEALTH_SET_IDS.join(","),
+        mode,
+        result,
+      }), PLAN_HEALTH_SITE);
+      if (!result.ok) return;
+      noteJournalWrite(await writeAnswers(host, {
+        persona,
+        session,
+        answers: result.answers.map((answered) => ({
+          callStampId: stampId,
+          questionId: answered.questionId,
+          questionVersion: answered.questionVersion,
+          overrideRefused: answered.overrideRefused,
+          primitive: answered.primitive,
+          ...journalValuesOf(answered.answer),
+          haikuValue: null,
+        })),
+      }), PLAN_HEALTH_SITE);
+    })
+    .catch(() => {
+      // As in shadowAsk: nothing awaits this chain, so a host that broke a
+      // never-rejects contract is caught here rather than ending the process.
     });
   return stampId;
 }
@@ -523,6 +625,18 @@ const sess: {
   // process made, and a restart's first tick mints a new one.
   jevScoreOutcomeStampId: string | null;
   jevAskMarkerOutcomeStampId: string | null;
+  // Section 5 (plan-health-from-the-record): what the three plan health
+  // questions are still waiting on, per plan entry. `closingTexts` is the
+  // entry's last few closing texts, oldest first, which the next request's
+  // state carries. `chapterWithin` is every stamp id whose chapter_within
+  // outcome is undecided, each with the turns on the entry counted since its
+  // call. Session memory rather than persisted state: a restart or the entry
+  // completing drops the record and the outcomes it awaited are never
+  // written, which the journal's readers tolerate.
+  jevPlanHealth: Map<string, { closingTexts: string[]; chapterWithin: { stampId: string; turns: number }[] }>;
+  // The stamp id of the latest plan health call, awaiting the next turn's
+  // origin for its next_speaker outcome. Null where none is held.
+  jevNextSpeakerStampId: string | null;
 } = {
   persona: "default",
   mySessionId: "pending",
@@ -542,6 +656,8 @@ const sess: {
   fleetFirstReadingDone: false,
   jevScoreOutcomeStampId: null,
   jevAskMarkerOutcomeStampId: null,
+  jevPlanHealth: new Map(),
+  jevNextSpeakerStampId: null,
 };
 
 // The turn state and workdir every commons-entry write carries, so the entry
@@ -5766,6 +5882,9 @@ export const register: Register = async (on, options) => {
     // here covers the completion steps, as the scorer's does.
     const planHolder = turnLeaf ? planHolderOf(sess.state, turnLeaf) : undefined;
     const planPath = planHolder?.planPath;
+    // Section 5 (plan-health-from-the-record): the count before this turn's
+    // read, so the chapter_within joiner below can tell a rise this turn.
+    const chaptersBeforeRead = planHolder?.chapterCount ?? 0;
     if (planHolder && planPath) {
       const holder = planHolder;
       try {
@@ -5859,6 +5978,68 @@ export const register: Register = async (on, options) => {
           action: "plan_record_failed",
           detail: `${holder.id}: ${String(err).slice(0, 150)}`,
         });
+      }
+    }
+
+    // Section 5 (plan-health-from-the-record): the three shadow questions
+    // and their outcome joiners. Everything here writes journal lines and
+    // session memory and nothing else: no branch above or below reads a
+    // value from it, and the one decision it can push is the journal's own
+    // write-failure line.
+    //
+    // Three joiners, in the order their facts are known. The origin of this
+    // turn settles the next_speaker outcome of the previous plan health call,
+    // whatever entry that call was on. A Chapter rise on this turn's read,
+    // or the fifth turn on the entry without one, settles each chapter_within
+    // outcome still held for the entry. Then, on a completed turn on a plan
+    // entry, the three questions are asked over this turn's closing text and
+    // the entry's last few, and the lead_blocked outcome is written at once
+    // from the same first-line read Section 3 makes. An entry that has
+    // completed or been abandoned drops what it held: no outcome it awaited
+    // is written, which the journal's readers tolerate.
+    if (jevMode === "shadow") {
+      const nextSpeakerStampId = sess.jevNextSpeakerStampId;
+      if (nextSpeakerStampId !== null) {
+        sess.jevNextSpeakerStampId = null;
+        shadowOutcome(hostOf($), nextSpeakerStampId, "next_speaker", wasChannelOrigin ? "channel" : wasDelivery ? "delivery" : "neither");
+      }
+      if (turnLeaf && isPlanEntry(sess.state, turnLeaf)) {
+        const entryId = turnLeaf.id;
+        const entryOver = turnLeaf.status === "complete" || turnLeaf.status === "abandoned";
+        const held = sess.jevPlanHealth.get(entryId);
+        if (entryOver) {
+          sess.jevPlanHealth.delete(entryId);
+        } else if (held !== undefined) {
+          const chaptersRose = (planHolder?.chapterCount ?? 0) > chaptersBeforeRead;
+          const stillWaiting: { stampId: string; turns: number }[] = [];
+          for (const pending of held.chapterWithin) {
+            const turns = pending.turns + 1;
+            if (chaptersRose) {
+              shadowOutcome(hostOf($), pending.stampId, "chapter_within", "true");
+            } else if (turns >= CHAPTER_WITHIN_TURNS) {
+              shadowOutcome(hostOf($), pending.stampId, "chapter_within", "false");
+            } else {
+              stillWaiting.push({ stampId: pending.stampId, turns });
+            }
+          }
+          held.chapterWithin = stillWaiting;
+        }
+        if (!skipped && sess.isOwner && !entryOver) {
+          let record = held;
+          if (record === undefined) {
+            record = { closingTexts: [], chapterWithin: [] };
+            sess.jevPlanHealth.set(entryId, record);
+          }
+          record.closingTexts.push(e.answer.slice(0, PLAN_HEALTH_TEXT_MAX));
+          while (record.closingTexts.length > PLAN_HEALTH_RECENT_MAX) record.closingTexts.shift();
+          const stampId = shadowAskPlanHealth(hostOf($), e.answer, [...record.closingTexts], jevMode);
+          if (stampId !== null) {
+            record.chapterWithin.push({ stampId, turns: 0 });
+            sess.jevNextSpeakerStampId = stampId;
+            const lead = readLeadLine(e.answer);
+            shadowOutcome(hostOf($), stampId, "lead_blocked", lead !== null && lead.state === "blocked" ? "true" : "false");
+          }
+        }
       }
     }
 

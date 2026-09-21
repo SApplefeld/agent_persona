@@ -19,7 +19,7 @@
 // Usage: node controller-tick-test.mjs
 // Exits 0 on success, 1 on failure.
 
-import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, HARNESS_CWD, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, JEV_FAKE_KEY, JOURNAL_MARK } from "./tick-harness.mjs";
+import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, HARNESS_CWD, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, jevResponseFor, JEV_FAKE_KEY, JOURNAL_MARK } from "./tick-harness.mjs";
 import { DECISIONS_MAX, MEMORY_MAX, PLAN_PATH_PATTERN, PLAN_PATH_TEXT_PATTERN, isActivationEligible, parseState, resolvePlanPath } from "../hooks/agent-state.ts";
 
 let failures = 0;
@@ -3353,6 +3353,15 @@ async function main() {
     await caseSeamJoinersFireOncePerControllerCall(clock);
     await caseSeamSkippedTickAndOffModeWriteNothing(clock);
     await caseSeamAnUnwritableJournalPushesOneDecisionADay(clock);
+
+    // Section 5 (plan-health-from-the-record): the three shadow questions.
+    await casePlanHealth_oneCallAndThreeAnswersPerPlanEntryTurn(clock);
+    await casePlanHealth_nextSpeakerRecordsChannelDeliveryOrNeither(clock);
+    await casePlanHealth_chapterWithinTrueOnARiseAndFalseAtTheFifthTurn(clock);
+    await casePlanHealth_entryCompletingDropsThePendingOutcomes(clock);
+    await casePlanHealth_taskEntryAsksNone(clock);
+    await casePlanHealth_decisionsAreInvariantAcrossEveryJevExtreme(clock);
+    await casePlanHealth_hungRequestCannotDelayTheTurnEnd(clock);
   } finally {
     clock.restore();
   }
@@ -15606,4 +15615,413 @@ async function caseSeamSkippedTickAndOffModeWriteNothing(clock) {
   check("seam off: no request left the machine", off.httpCalls.length === 0, off.httpCalls);
   check("seam off: no journal line was written", journalLines(off).length === 0, journalLines(off));
   check("seam off: no key was even read", !off.envGets.includes("TYPESAFE_API_KEY"), off.envGets);
+}
+
+// ============================================================
+// Section 5 (plan-health-from-the-record): the three shadow questions asked
+// at the end of every turn on a plan entry, journaled with three outcomes,
+// and never read by a branch.
+//
+// The invariance cases read the plan's central constraint the way the
+// decision seam's own cases do: a run with the questions on, against a Jev
+// answering at each extreme, failing, or never answering, produces the same
+// decisions and the same goal tree as a run with the kill switch off. The
+// rest pin the lines: one call and three answers per plan-entry turn, the
+// three primitives by name, each outcome kind landing once against the right
+// stamp id, a completing entry dropping what it held, a task entry asking
+// none, and a hung request delaying no turn's end.
+// ============================================================
+
+const PLAN_HEALTH_SITE = "plan-health";
+const PLAN_HEALTH_KINDS = ["lead_blocked", "chapter_within", "next_speaker"];
+const PLAN_HEALTH_QUESTION_SET = "worker-blocked,rounds-converging,block-owner";
+
+// The lines the plan health request wrote: its call lines, the answer lines
+// joined to them, and the outcome lines of its three kinds.
+function planHealthLines(h) {
+  const calls = journalLinesOfKind(h, "call").filter((c) => c.site === PLAN_HEALTH_SITE);
+  const answers = journalLinesOfKind(h, "answer").filter((a) => calls.some((c) => c.stampId === a.callStampId));
+  const outcomes = journalLinesOfKind(h, "outcome").filter((o) => PLAN_HEALTH_KINDS.includes(o.kind));
+  return { calls, answers, outcomes };
+}
+
+// The request bodies that carried the three questions, read off the fake's
+// own record of every fetch rather than a path the case names.
+function planHealthRequests(h) {
+  return h.httpCalls
+    .map((c) => { try { return JSON.parse(c.init.body); } catch { return null; } })
+    .filter((b) => b && b.questions && Object.keys(b.questions).length === 3);
+}
+
+// A Jev answering every question from the request body it was handed, with
+// the pickers given: the first option, a Noul in the middle and the middle
+// level unless a case says otherwise.
+function jevPicking(pick = {}) {
+  const pickers = { choice: (questionId, optionIds) => optionIds[0], noul: () => 0.2, score: () => 1, ...pick };
+  return (url, init) => jevResponseFor(init, pickers);
+}
+
+// A harness on the Section 2 tree with the plan document seeded at one
+// Chapter matching the stored count, claimed as owner so a delivery can
+// drain, with the seam's key present so a shadow call reaches a request. A
+// case passing jevMode "off" gets no key, the shape of a machine with the
+// switch turned off.
+async function planHealthHarness(caseName, clock, { taskUnderPlan = false, jevMode = "shadow" } = {}) {
+  clock.set(T0);
+  const h = await lead3Harness(caseName, { taskUnderPlan }, { jevMode });
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+  });
+  if (jevMode !== "off") h.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+  return h;
+}
+
+// One completed turn on the entry with a work tool call, then a pause for the
+// non-awaited shadow chains to settle before the case reads the journal.
+async function planHealthTurn(h, turnId, answer, opts = {}) {
+  await lead3Turn(h, turnId, answer, { workTool: true, ...opts });
+  await new Promise((r) => setTimeout(r, 60));
+}
+
+// One turn opened by a delivered record: a pending record from a live
+// reader is seeded, the tick drains it, and the turn opens with the queued
+// delivery text.
+async function planHealthDeliveryTurn(h, clock, turnId, seq, answer) {
+  const at = clock.get();
+  seedReaderClaim(h, "writer-s5", at);
+  seedInboxRecord(h, "writer-s5", seq, { at: at - 1000, status: "pending" });
+  await tickAndSettle(h, clock, 50);
+  await h.handlers["turn.start"](h.fake, { turnId }, async () => ({ result: "ok" }));
+  await h.handlers["tool.call"](h.fake, { tool: "Bash", turnId }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId, answer, reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+}
+
+// Bullet 3: one call line and three answer lines per plan-entry turn, the
+// three primitives recorded by name, and the request carrying the state the
+// plan states, for the plan node and for a task under it.
+async function casePlanHealth_oneCallAndThreeAnswersPerPlanEntryTurn(clock) {
+  console.log("\n=== Section 5 plan health: one call and three answers per plan-entry turn ===");
+  for (const shape of [{ key: "plan", taskUnderPlan: false, leafId: "plan-1" }, { key: "taskunderplan", taskUnderPlan: true, leafId: "task-1" }]) {
+    const h = await planHealthHarness(`s5_lines_${shape.key}`, clock, { taskUnderPlan: shape.taskUnderPlan });
+    h.setHttpResponse(jevPicking());
+    await planHealthTurn(h, "t-ph-1", "Working on it.");
+    const label = `s5 lines (${shape.key})`;
+
+    const { calls, answers, outcomes } = planHealthLines(h);
+    check(`${label}: one plan-health call line, ok, naming the three sets`,
+      calls.length === 1 && calls[0].result === "ok" && calls[0].questionSet === PLAN_HEALTH_QUESTION_SET && calls[0].mode === "shadow", calls);
+    check(`${label}: the call line's state is the object with this turn's closing text and the one recent text`,
+      calls.length === 1 && calls[0].state === JSON.stringify({ closingText: "Working on it.", recentClosingTexts: ["Working on it."] }), calls[0] && calls[0].state);
+    check(`${label}: three answer lines joined to that call, the primitives by name in the request's order`,
+      answers.length === 3 && answers.every((a) => a.callStampId === calls[0].stampId)
+        && answers.map((a) => a.primitive).join(",") === "noul,score,choice"
+        && answers.map((a) => a.questionId).join(",") === PLAN_HEALTH_QUESTION_SET, answers);
+    check(`${label}: the Noul line carries its probability, the Score its level, the Choice its option, with no Haiku value`,
+      answers.length === 3 && answers[0].value === "0.2" && answers[0].confidence === null
+        && answers[1].value === "1" && answers[1].probabilities["1"] === 1
+        && answers[2].value === "operator" && answers.every((a) => a.haikuValue === null && a.agrees === null), answers);
+
+    const requests = planHealthRequests(h);
+    check(`${label}: exactly one request carried three questions`, requests.length === 1, h.httpCalls.length);
+    const q = requests.length === 1 ? requests[0].questions : {};
+    check(`${label}: the request's three questions are the noul, the score and the choice under their set ids`,
+      Object.keys(q).join(",") === PLAN_HEALTH_QUESTION_SET
+        && q["worker-blocked"].type === "noul" && q["rounds-converging"].type === "score" && q["block-owner"].type === "choice", q);
+    check(`${label}: the Score carries three levels and the Choice the five owner ids`,
+      Array.isArray(q["rounds-converging"].criteria) && q["rounds-converging"].criteria.length === 3
+        && Object.keys(q["block-owner"].criteria).join(",") === "operator,coordinator,another-plan,self-resolving,none", q);
+    check(`${label}: the request's state is an object whose two fields the instructions name`,
+      requests.length === 1 && typeof requests[0].state === "object" && requests[0].state.closingText === "Working on it."
+        && q["worker-blocked"].instructions.includes("`closingText`") && q["rounds-converging"].instructions.includes("`recentClosingTexts`")
+        && q["block-owner"].instructions.includes("`closingText`"), requests[0] && requests[0].state);
+    check(`${label}: one lead_blocked outcome, false, against the call's own stamp id, and no other outcome yet`,
+      outcomes.length === 1 && outcomes[0].kind === "lead_blocked" && outcomes[0].value === "false" && outcomes[0].callStampId === calls[0].stampId, outcomes);
+
+    // A second turn, whose closing text opens with the worker's BLOCKED:
+    // lead: its own lead_blocked is true, the first call's next_speaker
+    // lands now, and the state carries both closing texts oldest first.
+    clock.advance(1000);
+    await planHealthTurn(h, "t-ph-2", "BLOCKED: waiting on the operator's fork");
+    const after = planHealthLines(h);
+    check(`${label}: the second turn wrote its own call and three more answers`,
+      after.calls.length === 2 && after.answers.length === 6, { calls: after.calls.length, answers: after.answers.length });
+    check(`${label}: the second call's state carries both closing texts, oldest first`,
+      after.calls[1].state === JSON.stringify({ closingText: "BLOCKED: waiting on the operator's fork", recentClosingTexts: ["Working on it.", "BLOCKED: waiting on the operator's fork"] }),
+      after.calls[1].state);
+    const byKind = (kind) => after.outcomes.filter((o) => o.kind === kind);
+    check(`${label}: lead_blocked landed once per call, false then true, each against its own stamp id`,
+      byKind("lead_blocked").length === 2
+        && byKind("lead_blocked")[0].callStampId === after.calls[0].stampId && byKind("lead_blocked")[0].value === "false"
+        && byKind("lead_blocked")[1].callStampId === after.calls[1].stampId && byKind("lead_blocked")[1].value === "true", byKind("lead_blocked"));
+    check(`${label}: next_speaker landed once, neither, against the first call's stamp id`,
+      byKind("next_speaker").length === 1 && byKind("next_speaker")[0].value === "neither" && byKind("next_speaker")[0].callStampId === after.calls[0].stampId, byKind("next_speaker"));
+    check(`${label}: no chapter_within yet, the Chapter count not having risen`, byKind("chapter_within").length === 0, byKind("chapter_within"));
+    check(`${label}: the lead itself was still set by Section 3's read`,
+      getState(h).goals.find((g) => g.id === shape.leafId).lead?.state === "blocked", getState(h).goals.find((g) => g.id === shape.leafId).lead);
+    check(`${label}: no journal_write_failed decision was pushed`,
+      !getDecisions(h).some((d) => d.action === "journal_write_failed"), getDecisions(h).map((d) => d.action));
+  }
+}
+
+// The next_speaker outcome records what opened the next turn: a channel
+// message, a delivered record, or neither, each once against the call that
+// awaited it.
+async function casePlanHealth_nextSpeakerRecordsChannelDeliveryOrNeither(clock) {
+  console.log("\n=== Section 5 plan health: next_speaker records channel, delivery or neither ===");
+  const h = await planHealthHarness("s5_next_speaker", clock);
+  h.setHttpResponse(jevPicking());
+  await planHealthTurn(h, "t-ns-1", "Working on it.");
+  clock.advance(1000);
+  await planHealthTurn(h, "t-ns-2", "Answering the operator.", { channel: true });
+  clock.advance(1000);
+  await planHealthDeliveryTurn(h, clock, "t-ns-3", 1, "Handled the record.");
+  clock.advance(1000);
+  await planHealthTurn(h, "t-ns-4", "Carrying on.");
+
+  const { calls, outcomes } = planHealthLines(h);
+  const speakers = outcomes.filter((o) => o.kind === "next_speaker");
+  check("s5 next_speaker control: four plan-entry turns wrote four calls",
+    calls.length === 4, calls.length);
+  check("s5 next_speaker: three outcomes, one per call that had a next turn, none yet for the last",
+    speakers.length === 3 && speakers.every((o, i) => o.callStampId === calls[i].stampId), speakers.map((o) => o.callStampId));
+  check("s5 next_speaker: the values are channel, delivery, neither, in that order",
+    speakers.map((o) => o.value).join(",") === "channel,delivery,neither", speakers.map((o) => o.value));
+  check("s5 next_speaker control: the channel turn and the delivery turn were read as such by the scorer's own skip",
+    getDecisions(h).filter((d) => d.action === "score_skipped" && d.detail.includes("channel message")).length === 1
+      && getDecisions(h).filter((d) => d.action === "score_skipped" && d.detail.includes("delivered record")).length === 1,
+    getDecisions(h).filter((d) => d.action === "score_skipped").map((d) => d.detail));
+}
+
+// The chapter_within outcome is true when the Chapter count rises within the
+// next five turns on the entry, written at the rise, and false at the fifth
+// turn without one, each once against the call that awaited it.
+async function casePlanHealth_chapterWithinTrueOnARiseAndFalseAtTheFifthTurn(clock) {
+  console.log("\n=== Section 5 plan health: chapter_within is true at a rise and false at the fifth turn without one ===");
+  // A rise on the second turn after the question.
+  const rise = await planHealthHarness("s5_chapter_rise", clock);
+  rise.setHttpResponse(jevPicking());
+  await planHealthTurn(rise, "t-cw-1", "Working on it.");
+  clock.advance(1000);
+  await planHealthTurn(rise, "t-cw-2", "Still working.");
+  clock.advance(1000);
+  rise.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+  await planHealthTurn(rise, "t-cw-3", "Chapter 2 is in.");
+  const riseLines = planHealthLines(rise);
+  const within = riseLines.outcomes.filter((o) => o.kind === "chapter_within");
+  check("s5 chapter_within control: the rise was read as plan_progress",
+    getDecisions(rise).filter((d) => d.action === "plan_progress").length === 1, getDecisions(rise).map((d) => d.action));
+  check("s5 chapter_within: at the rise, true once for each call still waiting, against their own stamp ids",
+    within.length === 2 && within.every((o) => o.value === "true")
+      && within[0].callStampId === riseLines.calls[0].stampId && within[1].callStampId === riseLines.calls[1].stampId, within);
+  clock.advance(1000);
+  await planHealthTurn(rise, "t-cw-4", "Carrying on.");
+  const withinAfter = planHealthLines(rise).outcomes.filter((o) => o.kind === "chapter_within");
+  check("s5 chapter_within: a later turn writes nothing more for the calls already settled",
+    withinAfter.length === 2, withinAfter.length);
+
+  // No rise for five turns after the question.
+  const flat = await planHealthHarness("s5_chapter_flat", clock);
+  flat.setHttpResponse(jevPicking());
+  await planHealthTurn(flat, "t-cf-1", "Working on it.");
+  for (let turn = 2; turn <= 5; turn += 1) {
+    clock.advance(1000);
+    await planHealthTurn(flat, `t-cf-${turn}`, `Turn ${turn}.`);
+  }
+  const flatLines = planHealthLines(flat);
+  check("s5 chapter_within: after four turns without a rise, no chapter_within has been written",
+    flatLines.outcomes.filter((o) => o.kind === "chapter_within").length === 0, flatLines.outcomes.filter((o) => o.kind === "chapter_within"));
+  clock.advance(1000);
+  await planHealthTurn(flat, "t-cf-6", "Turn 6.");
+  const flatAfter = planHealthLines(flat);
+  const flatWithin = flatAfter.outcomes.filter((o) => o.kind === "chapter_within");
+  check("s5 chapter_within: at the fifth turn without a rise, false once, against the first call's stamp id alone",
+    flatWithin.length === 1 && flatWithin[0].value === "false" && flatWithin[0].callStampId === flatAfter.calls[0].stampId, flatWithin);
+  check("s5 chapter_within control: the document's count never rose in the flat run",
+    !getDecisions(flat).some((d) => d.action === "plan_progress"), getDecisions(flat).map((d) => d.action));
+}
+
+// Bullet 4: an entry that completes two turns after a question writes no
+// chapter_within outcome for it and throws nothing. The entry completing
+// drops what it held: the outcomes it awaited are never written.
+async function casePlanHealth_entryCompletingDropsThePendingOutcomes(clock) {
+  console.log("\n=== Section 5 plan health: an entry completing two turns after a question writes no chapter_within and throws nothing ===");
+  const unhandled = [];
+  const onUnhandled = (reason) => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const h = await planHealthHarness("s5_completing", clock);
+    h.setHttpResponse(jevPicking());
+    await planHealthTurn(h, "t-done-1", "Working on it.");
+    clock.advance(1000);
+    await planHealthTurn(h, "t-done-2", "Nearly there.");
+    clock.advance(1000);
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+    h.fsMap.set(".agentic-health", "true");
+    await planHealthTurn(h, "t-done-3", "All done.");
+    const state = getState(h);
+    check("s5 completing control: the document read completed the entry and activated the next",
+      state.goals.find((g) => g.id === "plan-1").status === "complete" && state.activeGoalId === "plan-2", [state.goals.find((g) => g.id === "plan-1").status, state.activeGoalId]);
+    const { calls, outcomes } = planHealthLines(h);
+    check("s5 completing: the completing turn asked nothing, so two calls stand",
+      calls.length === 2, calls.length);
+    check("s5 completing: no chapter_within was written for either call",
+      outcomes.filter((o) => o.kind === "chapter_within").length === 0, outcomes);
+    check("s5 completing: the second call's next_speaker still landed, the turn's origin being known before the entry completed",
+      outcomes.filter((o) => o.kind === "next_speaker").length === 2, outcomes.filter((o) => o.kind === "next_speaker"));
+    // Later turns on the next entry, a task entry, ask nothing and write no
+    // outcome for the dropped calls.
+    clock.advance(1000);
+    await planHealthTurn(h, "t-done-4", "On the next plan now.");
+    clock.advance(1000);
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1", "### Chapter 2"]));
+    await planHealthTurn(h, "t-done-5", "And a Chapter landed somewhere.");
+    const later = planHealthLines(h);
+    check("s5 completing: no later turn wrote a call, a chapter_within or a next_speaker for the dropped calls",
+      later.calls.length === 2 && later.outcomes.filter((o) => o.kind === "chapter_within").length === 0
+        && later.outcomes.filter((o) => o.kind === "next_speaker").length === 2, later.outcomes);
+    check("s5 completing: nothing threw into a turn",
+      !getDecisions(h).some((d) => d.action === "plan_record_failed" || d.action === "score_failed"), getDecisions(h).map((d) => d.action));
+    await new Promise((r) => setImmediate(r));
+    check("s5 completing: no unhandled rejection surfaced", unhandled.length === 0, unhandled.map(String));
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+}
+
+// Bullet 5: a task-entry turn asks none of the three.
+async function casePlanHealth_taskEntryAsksNone(clock) {
+  console.log("\n=== Section 5 plan health: a task entry's turn asks none of the three ===");
+  clock.set(T0);
+  const shape = SECTION4_SHAPES.find((s) => !s.planEntry);
+  const h = await section4Harness("s5_task_none", shape);
+  h.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+  h.setHttpResponse(jevPicking());
+  await planHealthTurn(h, "t-task-1", "BLOCKED: waiting on the operator");
+  clock.advance(1000);
+  await planHealthTurn(h, "t-task-2", "Working.");
+  const { calls, answers, outcomes } = planHealthLines(h);
+  check("s5 task entry: no plan-health call line, no answer joined to one, no outcome of the three kinds",
+    calls.length === 0 && answers.length === 0 && outcomes.length === 0, { calls, answers, outcomes });
+  check("s5 task entry: no request carried three questions", planHealthRequests(h).length === 0, h.httpCalls.length);
+  // The control: the key was live and the turn did reach a shadow site, so
+  // the absence above is the plan-entry gate and not an off switch.
+  check("s5 task entry control: the same turns still sent the memory gate's own shadow request",
+    h.httpCalls.length >= 1 && journalLinesOfKind(h, "call").some((c) => c.site === "memory-kind"), journalLinesOfKind(h, "call").map((c) => c.site));
+}
+
+// The one drive every invariance run makes: a plain turn, a BLOCKED: turn,
+// a channel turn on which the Chapter count rises, a delivery turn, and a
+// plain turn. Every joiner and both scorer skips fire along it, so a value
+// that leaked from an answer into any of them would show as a differing
+// decision or goal field against the off run.
+async function planHealthDrive(h, clock) {
+  await planHealthTurn(h, "t-inv-1", "Working on it.");
+  clock.advance(1000);
+  await planHealthTurn(h, "t-inv-2", "BLOCKED: waiting on the operator's fork");
+  clock.advance(1000);
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+  await planHealthTurn(h, "t-inv-3", "Chapter 2 is in.", { channel: true });
+  clock.advance(1000);
+  await planHealthDeliveryTurn(h, clock, "t-inv-4", 1, "Handled the record.");
+  clock.advance(1000);
+  await planHealthTurn(h, "t-inv-5", "Carrying on.");
+}
+
+// The comparison every invariance run makes against the off run: the
+// decisions and every GoalNode field.
+function checkPlanHealthInvariant(label, shadow, off) {
+  const shadowState = getState(shadow);
+  const offState = getState(off);
+  check(`${label}: state.decisions is identical to the off run's`,
+    JSON.stringify(shadowState.decisions) === JSON.stringify(offState.decisions),
+    { off: offState.decisions.map((d) => d.action), shadow: shadowState.decisions.map((d) => d.action) });
+  check(`${label}: every GoalNode field is identical to the off run's`,
+    JSON.stringify(shadowState.goals) === JSON.stringify(offState.goals),
+    { off: offState.goals, shadow: shadowState.goals });
+  check(`${label}: no journal_write_failed decision was pushed`,
+    !shadowState.decisions.some((d) => d.action === "journal_write_failed"), shadowState.decisions.map((d) => d.action));
+}
+
+// Bullets 1 and 2, and the Tests line: decision invariance against a Jev
+// that answers at each extreme, fails, or hangs. Each fake is named by the
+// value it drives, and each run's control reads that value back off the
+// answer lines, so an identical pair of runs is never two runs that both
+// asked nothing.
+async function casePlanHealth_decisionsAreInvariantAcrossEveryJevExtreme(clock) {
+  console.log("\n=== Section 5 plan health: decisions and goal fields are invariant across a Jev at each extreme, failing and hung ===");
+  const off = await planHealthHarness("s5_inv_off", clock, { jevMode: "off" });
+  await planHealthDrive(off, clock);
+  check("s5 invariance control: the off run sent no request and wrote no journal line",
+    off.httpCalls.length === 0 && journalLines(off).length === 0, { calls: off.httpCalls.length, lines: journalLines(off).length });
+  check("s5 invariance control: the off run's drive did reach the lead, the Chapter rise and both scorer skips",
+    getDecisions(off).some((d) => d.action === "lead_set") && getDecisions(off).some((d) => d.action === "plan_progress")
+      && getDecisions(off).filter((d) => d.action === "score_skipped").length >= 5, getDecisions(off).map((d) => d.action));
+
+  const extremes = [
+    ["a Noul of 0", { noul: () => 0 }, (a) => a.filter((x) => x.primitive === "noul").every((x) => x.value === "0")],
+    ["a Noul of 1", { noul: () => 1 }, (a) => a.filter((x) => x.primitive === "noul").every((x) => x.value === "1")],
+    ["a Score at its lowest level", { score: () => 0 }, (a) => a.filter((x) => x.primitive === "score").every((x) => x.value === "0")],
+    ["a Score at its highest level", { score: (q, count) => count - 1 }, (a) => a.filter((x) => x.primitive === "score").every((x) => x.value === "2")],
+    ...["operator", "coordinator", "another-plan", "self-resolving", "none"].map((option) => [
+      `a Choice of ${option}`, { choice: () => option }, (a) => a.filter((x) => x.primitive === "choice").every((x) => x.value === option),
+    ]),
+  ];
+  for (const [label, pick, holds] of extremes) {
+    const shadow = await planHealthHarness(`s5_inv_${label.replace(/[^a-z0-9]+/gi, "_")}`, clock);
+    shadow.setHttpResponse(jevPicking(pick));
+    await planHealthDrive(shadow, clock);
+    const { calls, answers } = planHealthLines(shadow);
+    check(`s5 invariance control (${label}): five calls, fifteen answers, every answer carrying the driven value`,
+      calls.length === 5 && answers.length === 15 && holds(answers), answers.map((a) => [a.primitive, a.value]));
+    checkPlanHealthInvariant(`s5 invariance (${label})`, shadow, off);
+  }
+
+  const failing = await planHealthHarness("s5_inv_fail", clock);
+  failing.setHttpResponse({ status: 429, ok: false, headers: {}, text: "rate limited" });
+  await planHealthDrive(failing, clock);
+  const failLines = planHealthLines(failing);
+  check("s5 invariance control (failing): five call lines each http_429 and no answer line",
+    failLines.calls.length === 5 && failLines.calls.every((c) => c.result === "http_429") && failLines.answers.length === 0, failLines.calls.map((c) => c.result));
+  checkPlanHealthInvariant("s5 invariance (failing)", failing, off);
+
+  const hung = await planHealthHarness("s5_inv_hang", clock);
+  hung.setHttpResponse(() => new Promise(() => {}));
+  await planHealthDrive(hung, clock);
+  check("s5 invariance control (hung): the requests left and are still in flight with their timers pending",
+    planHealthRequests(hung).length === 5 && hung.pendingSleepCount >= 5 && planHealthLines(hung).calls.length === 0,
+    { requests: planHealthRequests(hung).length, sleeps: hung.pendingSleepCount });
+  checkPlanHealthInvariant("s5 invariance (hung)", hung, off);
+}
+
+// The Tests line: a hung request cannot delay a turn's end. The turn's own
+// completion handler resolves against a real timer while the request is
+// still pending, and the fake clock moves by the case's steps and nothing
+// else.
+async function casePlanHealth_hungRequestCannotDelayTheTurnEnd(clock) {
+  console.log("\n=== Section 5 plan health: a hung request cannot delay a turn's end ===");
+  const h = await planHealthHarness("s5_hung_turn", clock);
+  h.setHttpResponse(() => new Promise(() => {}));
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard");
+  const clockBefore = clock.get();
+  await h.handlers["turn.start"](h.fake, { turnId: "t-hung" }, async () => ({ result: "ok" }));
+  await h.handlers["tool.call"](h.fake, { tool: "Bash", turnId: "t-hung" }, async () => ({ result: "ok" }));
+  const completed = h.handlers["turn.complete"](h.fake, { turnId: "t-hung", answer: "BLOCKED: waiting on the suite", reason: "completed" }, async () => ({ result: "ok" }));
+  const winner = await Promise.race([
+    completed.then(() => "turn"),
+    new Promise((r) => setTimeout(() => r("timer"), 5000)),
+  ]);
+  check("s5 hung turn: the turn's completion handler resolved with the request still pending", winner === "turn", winner);
+  await new Promise((r) => setTimeout(r, 60));
+  check("s5 hung turn control: the request left and its timer is pending, so the silence is a call in flight",
+    planHealthRequests(h).length === 1 && h.pendingSleepCount >= 1, { requests: planHealthRequests(h).length, sleeps: h.pendingSleepCount });
+  const { calls, outcomes } = planHealthLines(h);
+  check("s5 hung turn: no call line landed, the call not having settled", calls.length === 0, calls);
+  check("s5 hung turn: the lead_blocked outcome still landed against the minted stamp id",
+    outcomes.length === 1 && outcomes[0].kind === "lead_blocked" && outcomes[0].value === "true" && typeof outcomes[0].callStampId === "string", outcomes);
+  check("s5 hung turn: the fake clock did not move", clock.get() === clockBefore, { before: clockBefore, after: clock.get() });
+  check("s5 hung turn: the lead was set as on any turn",
+    getState(h).goals.find((g) => g.id === "plan-1").lead?.state === "blocked", getState(h).goals.find((g) => g.id === "plan-1").lead);
 }

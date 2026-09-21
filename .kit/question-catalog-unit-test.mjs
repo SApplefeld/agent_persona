@@ -42,11 +42,19 @@ const {
   SHIPPED_VERSION,
   MIN_OPTIONS,
   MAX_OPTIONS,
+  MIN_LEVELS,
+  MAX_LEVELS,
+  WORKER_BLOCKED,
+  ROUNDS_CONVERGING,
+  BLOCK_OWNER,
+  BLOCK_OWNER_OPTIONS,
+  PLAN_HEALTH_SET_IDS,
+  FIXED_LEVEL_SETS,
   OVERRIDE_DIR,
   resolverOf,
 } = catalog;
 
-const { ask } = await import("../hooks/decision-seam.ts");
+const { ask, askAll } = await import("../hooks/decision-seam.ts");
 
 let failed = 0;
 function ok(name) { console.log(`  OK: ${name}`); }
@@ -154,8 +162,11 @@ const VALID_CONTROLLER_OVERRIDE = {
 
 // --- Test 2: the option-id pin, the check a drifting catalog fails ---
 {
-  check("Test 2a: the four question set ids are the ones the catalog exports",
-    sameSet(QUESTION_SET_IDS, [CONTROLLER_DECISION, PLAN_SWITCH, TURN_SCORE, MEMORY_KIND]) && QUESTION_SET_IDS.length === 4, QUESTION_SET_IDS);
+  check("Test 2a: the seven question set ids are the ones the catalog exports",
+    sameSet(QUESTION_SET_IDS, [CONTROLLER_DECISION, PLAN_SWITCH, TURN_SCORE, MEMORY_KIND, WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER])
+      && QUESTION_SET_IDS.length === 7, QUESTION_SET_IDS);
+  check("Test 2a: the three plan health sets are the noul, the score and the choice, in the request's order",
+    JSON.stringify(PLAN_HEALTH_SET_IDS) === JSON.stringify([WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER]), PLAN_HEALTH_SET_IDS);
   check("Test 2b: every question set id has a shipped default",
     QUESTION_SET_IDS.every((id) => SHIPPED_QUESTIONS[id] !== undefined), Object.keys(SHIPPED_QUESTIONS));
   check("Test 2c: no shipped default exists that no id names",
@@ -166,6 +177,9 @@ const VALID_CONTROLLER_OVERRIDE = {
     [CONTROLLER_DECISION, CONTROLLER_LABELS_WITH_SWITCH],
     [TURN_SCORE, SCORER_LABELS],
     [MEMORY_KIND, MEMORY_KIND_LABELS],
+    // The block owner has no Haiku label array; its constant is the caller's
+    // one source of the ids it offers, pinned here the same way.
+    [BLOCK_OWNER, BLOCK_OWNER_OPTIONS],
   ];
   check("Test 2d: the pinned sets are exactly the catalog's fixed sets", sameSet(pins.map(([id]) => id), FIXED_OPTION_SETS), FIXED_OPTION_SETS);
   for (const [id, labels] of pins) {
@@ -180,7 +194,8 @@ const VALID_CONTROLLER_OVERRIDE = {
   for (const id of QUESTION_SET_IDS) {
     const q = SHIPPED_QUESTIONS[id];
     check(`Test 2h: ${id} ships the shape the seam validates`,
-      q.id === id && q.version === SHIPPED_VERSION && q.overrideRefused === null && q.primitive === "choice"
+      q.id === id && q.version === SHIPPED_VERSION && q.overrideRefused === null
+        && q.primitive === (id === WORKER_BLOCKED ? "noul" : id === ROUNDS_CONVERGING ? "score" : "choice")
         && typeof q.instructions === "string" && q.instructions.trim().length > 0, id);
   }
   check("Test 2i: the upper option bound is the vendor's and the lower is this catalog's",
@@ -624,6 +639,181 @@ const VALID_CONTROLLER_OVERRIDE = {
       && Object.hasOwn(ri.value.answer.probabilities, "__proto__")
       && ri.value.answer.probabilities["__proto__"] === 0.25,
     ri.resolved ? (ri.value.ok ? Object.keys(ri.value.answer.probabilities) : ri.value.reason) : ri);
+}
+
+
+// --- Test 9: the three plan health sets ship in the shapes the plan states ---
+{
+  const blocked = SHIPPED_QUESTIONS[WORKER_BLOCKED];
+  check("Test 9a: worker-blocked is a Noul with an instruction and no options or levels",
+    blocked.primitive === "noul" && typeof blocked.instructions === "string" && blocked.instructions.trim().length > 0
+      && !("options" in blocked) && !("levels" in blocked), blocked);
+  check("Test 9b: worker-blocked's instruction names the closing text field",
+    blocked.instructions.includes("`closingText`"), blocked.instructions);
+  const converging = SHIPPED_QUESTIONS[ROUNDS_CONVERGING];
+  check("Test 9c: rounds-converging is a Score with three levels and no options",
+    converging.primitive === "score" && Array.isArray(converging.levels) && converging.levels.length === 3 && !("options" in converging), converging);
+  check("Test 9d: its levels are the plan's three situations in order: closes more than it opens, holds steady, reopens",
+    /closes more than it opens/i.test(converging.levels[0]) && /hold steady/i.test(converging.levels[1]) && /reopen/i.test(converging.levels[2]),
+    converging.levels);
+  check("Test 9e: rounds-converging's instruction names the recent closing texts field",
+    converging.instructions.includes("`recentClosingTexts`"), converging.instructions);
+  check("Test 9f: the levels array is frozen, for the reason the label arrays are",
+    Object.isFrozen(converging.levels), converging.levels);
+  const owner = SHIPPED_QUESTIONS[BLOCK_OWNER];
+  check("Test 9g: block-owner is a Choice among exactly operator, coordinator, another-plan, self-resolving and none",
+    owner.primitive === "choice" && sameSet(Object.keys(owner.options), ["operator", "coordinator", "another-plan", "self-resolving", "none"]), Object.keys(owner.options));
+  check("Test 9h: BLOCK_OWNER_OPTIONS is those ids in that order, frozen, and is a fixed set",
+    JSON.stringify(BLOCK_OWNER_OPTIONS) === JSON.stringify(["operator", "coordinator", "another-plan", "self-resolving", "none"])
+      && Object.isFrozen(BLOCK_OWNER_OPTIONS) && FIXED_OPTION_SETS.includes(BLOCK_OWNER), BLOCK_OWNER_OPTIONS);
+  check("Test 9i: block-owner's instruction names the closing text field",
+    owner.instructions.includes("`closingText`"), owner.instructions);
+  check("Test 9j: the level bounds are the vendor's two and ten, and rounds-converging is the one fixed-level set",
+    MIN_LEVELS === 2 && MAX_LEVELS === 10 && JSON.stringify(FIXED_LEVEL_SETS) === JSON.stringify([ROUNDS_CONVERGING]) && Object.isFrozen(FIXED_LEVEL_SETS),
+    [MIN_LEVELS, MAX_LEVELS, FIXED_LEVEL_SETS]);
+  // Resolving hands back copies: a consumer writing into what it resolved
+  // cannot reach the shipped constant.
+  const r = await settle(resolverOf(fakeHostOf(harness()))(ROUNDS_CONVERGING));
+  check("Test 9k: the resolved Score carries a copy of the levels rather than the frozen constant",
+    r.resolved && r.value.levels !== converging.levels && JSON.stringify(r.value.levels) === JSON.stringify(converging.levels), r);
+  const rn = await settle(resolverOf(fakeHostOf(harness()))(WORKER_BLOCKED));
+  check("Test 9l: the resolved Noul is the shipped shape with no refusal reason",
+    rn.resolved && rn.value.primitive === "noul" && rn.value.version === SHIPPED_VERSION && rn.value.overrideRefused === null
+      && sameSet(Object.keys(rn.value), ["id", "version", "overrideRefused", "primitive", "instructions"]), rn);
+}
+
+// --- Test 10: an override of a Score keeps its level count; a Noul override keeps its shape ---
+{
+  const threeLevels = {
+    primitive: "score",
+    instructions: "OVERRIDE: converging or reopening?",
+    levels: ["reworded closing", "reworded steady", "reworded reopening"],
+  };
+  // The control first: three reworded levels are admitted under their own
+  // version label, so the refusals below are the count rule and not a plant
+  // that never landed.
+  const hc = harness();
+  plant(hc, ROUNDS_CONVERGING, "v2", threeLevels);
+  const rc = await settle(resolverOf(fakeHostOf(hc))(ROUNDS_CONVERGING));
+  check("Test 10 control: a rounds-converging override with three reworded levels is admitted",
+    rc.resolved && rc.value.overrideRefused === null && rc.value.version === "v2" && rc.value.primitive === "score"
+      && JSON.stringify(rc.value.levels) === JSON.stringify(threeLevels.levels) && rc.value.instructions === threeLevels.instructions, rc);
+  check("Test 10 control: the admitted override carries no options field",
+    rc.resolved && !("options" in rc.value), rc.resolved ? Object.keys(rc.value) : rc);
+
+  const refusals = [
+    ["two levels", { ...threeLevels, levels: ["low", "high"] }, "the override's level count differs from the shipped set"],
+    ["five levels", { ...threeLevels, levels: ["a", "b", "c", "d", "e"] }, "the override's level count differs from the shipped set"],
+    ["no levels array", { primitive: "score", instructions: "x" }, "the override has no levels array"],
+    ["levels that is an object", { ...threeLevels, levels: { "0": "a", "1": "b", "2": "c" } }, "the override has no levels array"],
+    ["a level that is not a string", { ...threeLevels, levels: ["a", 2, "c"] }, "the override has a level that is not a non-empty string"],
+    ["an empty level", { ...threeLevels, levels: ["a", "", "c"] }, "the override has a level that is not a non-empty string"],
+    ["a choice primitive", { primitive: "choice", instructions: "x", options: { a: null, b: null, c: null } }, "the override is not a score"],
+    ["an absent primitive", { instructions: "x", levels: threeLevels.levels }, "the override is not a score"],
+    ["an empty instruction", { ...threeLevels, instructions: " " }, "the override has an empty instruction"],
+  ];
+  for (const [label, body, reason] of refusals) {
+    const h = harness();
+    plant(h, ROUNDS_CONVERGING, "v2", body);
+    const r = await settle(resolverOf(fakeHostOf(h))(ROUNDS_CONVERGING));
+    check(`Test 10: a rounds-converging override with ${label} is refused as "${reason}" and falls back to the shipped levels`,
+      r.resolved && r.value.overrideRefused === reason && r.value.version === SHIPPED_VERSION && r.value.primitive === "score"
+        && JSON.stringify(r.value.levels) === JSON.stringify(SHIPPED_QUESTIONS[ROUNDS_CONVERGING].levels)
+        && r.value.instructions === SHIPPED_QUESTIONS[ROUNDS_CONVERGING].instructions, r.resolved ? r.value.overrideRefused : r);
+  }
+
+  // A Noul override is its instruction alone.
+  const hn = harness();
+  plant(hn, WORKER_BLOCKED, "v3", { primitive: "noul", instructions: "OVERRIDE: is the worker stuck?" });
+  const rn = await settle(resolverOf(fakeHostOf(hn))(WORKER_BLOCKED));
+  check("Test 10 noul: a worker-blocked override with an instruction alone is admitted under its version",
+    rn.resolved && rn.value.overrideRefused === null && rn.value.version === "v3" && rn.value.primitive === "noul"
+      && rn.value.instructions === "OVERRIDE: is the worker stuck?" && sameSet(Object.keys(rn.value), ["id", "version", "overrideRefused", "primitive", "instructions"]), rn);
+  const hn2 = harness();
+  plant(hn2, WORKER_BLOCKED, "v3", { primitive: "choice", instructions: "x", options: { yes: null, no: null } });
+  const rn2 = await settle(resolverOf(fakeHostOf(hn2))(WORKER_BLOCKED));
+  check('Test 10 noul: a worker-blocked override naming another primitive is refused as "the override is not a noul"',
+    rn2.resolved && rn2.value.overrideRefused === "the override is not a noul" && rn2.value.primitive === "noul" && rn2.value.version === SHIPPED_VERSION,
+    rn2.resolved ? rn2.value.overrideRefused : rn2);
+  // Fields the Noul shape does not carry are not copied out of an override.
+  const hn3 = harness();
+  plant(hn3, WORKER_BLOCKED, "v3", { primitive: "noul", instructions: "with extras", options: { a: null }, levels: ["x", "y"] });
+  const rn3 = await settle(resolverOf(fakeHostOf(hn3))(WORKER_BLOCKED));
+  check("Test 10 noul: an admitted override's stray options and levels do not ride the resolved question",
+    rn3.resolved && rn3.value.overrideRefused === null && !("options" in rn3.value) && !("levels" in rn3.value), rn3.resolved ? Object.keys(rn3.value) : rn3);
+
+  // The block owner is a fixed option set like the Haiku-paired three.
+  const hb = harness();
+  const { none, ...fourOptions } = SHIPPED_QUESTIONS[BLOCK_OWNER].options;
+  plant(hb, BLOCK_OWNER, "v2", { primitive: "choice", instructions: "override owner", options: fourOptions });
+  const rb = await settle(resolverOf(fakeHostOf(hb))(BLOCK_OWNER));
+  check("Test 10 owner: a block-owner override dropping an id is refused by the option-id pin",
+    rb.resolved && rb.value.overrideRefused === "the override's option ids differ from the shipped set" && sameSet(Object.keys(rb.value.options), BLOCK_OWNER_OPTIONS),
+    rb.resolved ? rb.value.overrideRefused : rb);
+  // The existing Choice refusal wording still names choice for a choice set.
+  const hb2 = harness();
+  plant(hb2, BLOCK_OWNER, "v2", { primitive: "noul", instructions: "x" });
+  const rb2 = await settle(resolverOf(fakeHostOf(hb2))(BLOCK_OWNER));
+  check('Test 10 owner: a block-owner override naming noul is refused as "the override is not a choice"',
+    rb2.resolved && rb2.value.overrideRefused === "the override is not a choice", rb2.resolved ? rb2.value.overrideRefused : rb2);
+}
+
+// --- Test 11: the three sets end to end through the seam in one request ---
+{
+  function response(text) { return { status: 200, ok: true, headers: {}, text }; }
+  const asks = [
+    { questionSetId: WORKER_BLOCKED, primitive: "noul" },
+    { questionSetId: ROUNDS_CONVERGING, primitive: "score" },
+    { questionSetId: BLOCK_OWNER, primitive: "choice", optionIds: BLOCK_OWNER_OPTIONS },
+  ];
+  const state = { closingText: "BLOCKED: waiting on the operator", recentClosingTexts: ["Working.", "BLOCKED: waiting on the operator"] };
+  const body = JSON.stringify({
+    model: "jev-fake",
+    answers: {
+      [WORKER_BLOCKED]: { type: "noul", noul: 0.9 },
+      [ROUNDS_CONVERGING]: { type: "score", score: 0.5, probabilities: { "0": 0.5, "1": 0.5, "2": 0 }, confidence: 0.5 },
+      [BLOCK_OWNER]: { type: "choice", choice: "operator", probabilities: { operator: 1, coordinator: 0, "another-plan": 0, "self-resolving": 0, none: 0 }, confidence: 1 },
+    },
+    usage: { input_tokens: 10, output_tokens: 3 },
+  });
+
+  // 11a: the shipped wording of all three reaches one request.
+  const h = harness();
+  h.setHttpResponse(response(body));
+  const r = await settle(askAll(fakeHostOf(h), asks, state, "shadow", resolverOf(fakeHostOf(h))));
+  const sent = h.httpCalls.length === 1 ? JSON.parse(h.httpCalls[0].init.body) : null;
+  check("Test 11a: one request carries the three shipped questions under their ids",
+    r.resolved && r.value.ok === true && sent !== null && JSON.stringify(Object.keys(sent.questions)) === JSON.stringify([WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER]),
+    sent && Object.keys(sent.questions));
+  check("Test 11a: the Noul carries the shipped instruction and no criteria",
+    sent !== null && sent.questions[WORKER_BLOCKED].type === "noul" && sent.questions[WORKER_BLOCKED].instructions === SHIPPED_QUESTIONS[WORKER_BLOCKED].instructions
+      && !("criteria" in sent.questions[WORKER_BLOCKED]), sent && sent.questions[WORKER_BLOCKED]);
+  check("Test 11a: the Score carries the shipped levels as its criteria, in order",
+    sent !== null && sent.questions[ROUNDS_CONVERGING].type === "score"
+      && JSON.stringify(sent.questions[ROUNDS_CONVERGING].criteria) === JSON.stringify(SHIPPED_QUESTIONS[ROUNDS_CONVERGING].levels), sent && sent.questions[ROUNDS_CONVERGING]);
+  check("Test 11a: the Choice carries the five owner ids with the shipped descriptions",
+    sent !== null && sent.questions[BLOCK_OWNER].type === "choice"
+      && JSON.stringify(Object.keys(sent.questions[BLOCK_OWNER].criteria)) === JSON.stringify([...BLOCK_OWNER_OPTIONS])
+      && sent.questions[BLOCK_OWNER].criteria.operator === SHIPPED_QUESTIONS[BLOCK_OWNER].options.operator, sent && sent.questions[BLOCK_OWNER]);
+  check("Test 11a: the state rides as the object with its two fields",
+    sent !== null && JSON.stringify(sent.state) === JSON.stringify(state), sent && sent.state);
+  check("Test 11a: three answers ride back, each naming its primitive and the shipped version",
+    r.resolved && r.value.ok === true && r.value.answers.map((a) => a.primitive).join(",") === "noul,score,choice"
+      && r.value.answers.every((a) => a.questionVersion === SHIPPED_VERSION && a.overrideRefused === null), r.resolved ? r.value : r);
+
+  // 11b: a refused Score override never reaches the request; the shipped
+  // levels do, and the refusal rides the answer.
+  const h2 = harness();
+  plant(h2, ROUNDS_CONVERGING, "v2", { primitive: "score", instructions: "OVERRIDE five levels", levels: ["a", "b", "c", "d", "e"] });
+  h2.setHttpResponse(response(body));
+  const r2 = await settle(askAll(fakeHostOf(h2), asks, state, "shadow", resolverOf(fakeHostOf(h2))));
+  const sent2 = h2.httpCalls.length === 1 ? JSON.parse(h2.httpCalls[0].init.body) : null;
+  check("Test 11b: the refused five-level override's wording never reaches the request",
+    sent2 !== null && !h2.httpCalls[0].init.body.includes("OVERRIDE five levels")
+      && JSON.stringify(sent2.questions[ROUNDS_CONVERGING].criteria) === JSON.stringify(SHIPPED_QUESTIONS[ROUNDS_CONVERGING].levels), sent2 && sent2.questions[ROUNDS_CONVERGING]);
+  check("Test 11b: the answer records the shipped version and the level-count rule as the refusal",
+    r2.resolved && r2.value.ok === true && r2.value.answers[1].questionVersion === SHIPPED_VERSION
+      && r2.value.answers[1].overrideRefused === "the override's level count differs from the shipped set", r2.resolved ? r2.value : r2);
 }
 
 // Give any rejection the last case left behind one turn of the loop to surface.
