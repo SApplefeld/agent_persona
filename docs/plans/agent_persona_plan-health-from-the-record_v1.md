@@ -1,6 +1,6 @@
 # Plan health from the record
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-20
 
@@ -35,7 +35,9 @@ This plan starts only after `docs/plans/agent_persona_decision-seam_v1.md` has m
 - Acting on the three new Jev answers now: a probability on a health reading looks like a fact, and nothing has measured these questions yet.
 - Advancing to the next entry when a worker says it is blocked: the worker's tree is mid-plan, and both workers already refuse such a start in writing.
 
-**Rulings after the spec shipped.** None at the write.
+**Rulings after the spec shipped.**
+
+- 2026-09-21, the operator: no section is added for the false-completion defect, and Section 4 gains one acceptance bullet instead. The defect is that `hooks/index.ts:5261` runs `completeLeaf` on whichever entry was active when a turn began, whenever the turn-end classifier returns `complete`. That entry is not the one the turn concerned. Sections 3 and 4 as written already close it for every entry that has a plan, a sub-task under a plan node included, because such an entry is a plan entry by the Approach's own ancestor rule. What the plan left unpinned is that rule's reach at the scorer: Section 2 states it outright for the round budget and Section 4 does not state it for scoring, so an implementer reading Section 4 alone could key on `kind` and reinstate the defect for sub-tasks. The added bullet closes that.
 
 **Provenance.** Distilled from the architect persona's design conversation with the operator on 2026-09-20, and from both workers' stores and decision logs read that day.
 
@@ -62,6 +64,10 @@ While `lead` is blocked the controller skips its whole idle branch for that entr
 **Jev in shadow.** The decision seam handles the `choice` primitive only, in its types, its validation and its answer parsing, and its journal closes the outcome kinds at two. A Choice returns one option of a fixed set with a probability for each. A Noul returns the probability that a stated condition holds. A Score returns a position on ordered levels the question itself describes, with a probability for each level. Section 5 widens the seam and the catalog to `noul` and `score`. It adds three question sets, asks them in one request at the end of every turn on a plan entry, and journals each answer with an outcome the plugin can observe later. No value from them reaches a branch.
 
 **The sweep.** Searches run on trunk `fd8f4cb` and re-read on `c22d0fc`: `interface GoalNode`; `maxRounds|completedRounds|Max rounds reached`; the four scorer labels; `consecutiveNudgesWithoutOnGoal|pausedByNudgeCap|wasNudged`; `currentTurnKind|currentTurnIsChannelOrigin`; `ASK:|BLOCKED:|WAITING:`; `goal_add|goal_create`; the same names over `bin/`, `docs/` and `README.md`. Surfaces found: `hooks/agent-state.ts` (the `GoalNode` interface and the v2 to v3 migration); `hooks/index.ts` (the `goal_add` schema and handler, the two `completedRounds` increments, the block, the round text at four sites, the scorer, the nudge cap, the turn-origin tracking, the `ASK:` parse, the idle branch and its no-active-leaf case); `.kit/tick-harness.mjs` `makeGoalNode`; `.kit/controller-tick-test.mjs`; `.kit/injection-ledger.json` and `.kit/injection-ledger.mjs`, which pin the size and shape of every injected string, with their totals stated at `docs/architecture.md:121`; `bin/supervise.sh` (the coordinator instruction); `README.md`; `docs/architecture.md`. Nothing under `bin/` reads the round counter, confirmed by a search that matched one comment there and 38 lines under `hooks/`. No `BLOCKED:` or `WAITING:` parse exists today. On `origin/decision-seam-build`: `hooks/decision-seam.ts`, `hooks/question-catalog.ts`, `hooks/decision-journal.ts` and their three unit tests.
+
+## Standing Brief Amendments
+
+- A plan entry is one that has a plan by the Approach's ancestor rule, never one whose `kind` is `plan`. Every rule this plan states for a plan entry reaches a task entry under a plan node, at the scorer and the idle branch exactly as at the round budget.
 
 ## Sections of Work
 
@@ -126,6 +132,7 @@ Acceptance:
 - A nudged turn on a plan entry labelled `on-goal` or `complete` resets the nudge counter, and the entry is not completed by the label.
 - Three nudged turns labelled `drift` on a plan entry trip the existing stall pause.
 - An unaccounted turn on a task entry is scored exactly as today. An unaccounted turn on a plan entry is not scored.
+- A task under a plan node is treated exactly as its parent plan entry is, at every rule this section states: its unaccounted turns are not scored, and a nudged turn labelled `complete` does not complete it. An entry with no plan ancestor is the only one that keeps today's scoring.
 
 Files in scope: `hooks/index.ts`, `.kit/controller-tick-test.mjs`.
 Tests: lock that an operator check-in spends nothing, which is the incident. Lock that the stall pause still trips, since it is the one health signal this plan keeps.
@@ -201,3 +208,25 @@ Files in scope: `README.md`, `docs/architecture.md`, `bin/supervise.sh` (the coo
 None.
 
 ## Chapters
+
+### Interim board 1 - 2026-09-21
+
+In-flight sections: Section 1 only. It is at its fix round over review round 1's findings. No section has closed, so this entry carries no `Completed:` line.
+
+Live dispatches: one implementer at sonnet, given the five fixes below and an explicit do-not-fix list of six held Minors, so the fix delta stays reviewable. The round 1 review of three lenses has returned and is adjudicated.
+
+Gate baseline: the controller tick suite reads 1410 assertions and 0 failures on this tree, and 1378 with 0 failures at the base commit `8df99af`, measured by cutting a scratch worktree there and running the same suite. Both readings taken 2026-09-21T01:05Z on SCOTT-CLAUDE by this session, under this session's own heavy-process claim, uncontended, with the claim released after. The rest of the targeted lane is green at exit 0: `npx tsc --noEmit`, `node .kit/check-loader-rule.mjs`, `node .kit/injection-ledger.mjs`, `node .kit/injection-duplicate-test.mjs`.
+
+Rulings adopted since the last boundary:
+
+- The operator ruled on 2026-09-21 that no section is added for the false-completion defect and that Section 4 gains one acceptance bullet instead. Recorded in the `## Intent` record with its reasoning, and the Standing Brief Amendments block was created for the definition that ruling turns on.
+- Review round 1 returned CHANGES_REQUIRED from the blind lens with one Critical, APPROVED_WITH_CONCERNS from the adversarial lens, and CLEAR from the security lens. One Critical and five Majors enter the fix round; eight Minors accumulate for the close pass; three findings are recorded and not fixed.
+- No finding was held and no judge was convened. Every Major traces to the Goal sentence "No plan entry is stopped by a count of turns", to Section 1's own acceptance, or to the Standing Brief Amendment, so none reads as new-requirement and no design stop fired. Two Minors were upgraded on a stated consequence: a text pattern that fills a different document than the one named, and an unguarded field read that turns session start into a throw.
+- The security lens's finding that the path pattern guards one producer rather than the channel is routed to Section 2, whose reader owns the join. It is named there rather than fixed here, since this section owns no reader.
+- The security lens's finding that the project has no security model document is out of this plan's goal and is routed to `docs/backlog.md` at the section close.
+
+The Critical, confirmed at the code rather than taken on report: `applyPlanRecordOnLoad` returns a round-budget-blocked entry to pending without testing its root, and `isActivationEligible` deliberately exempts the root from its status test, breaking out of its ancestor walk at the root before reading status. So a store load can resurrect work under a root already marked complete, which also defeats the planning cap. The blind lens's separate Major about a recovered node with children is the same defect from another angle: such a node is activatable by nothing, since `isActivationEligible` refuses a node with children, and the planner never runs either, since `isPlanningDue` returns false while any descendant is pending. One guard answers both.
+
+Next action per section: read the fix round's report, verify it against the recorded baseline, then run review round 2. Round 1 returned a Critical, so round 2 runs round 1's full roster at its tier rather than a single lens. Sections 2 through 6 are unstarted. Section 5's precondition is met: pull request 57 merged at 2026-09-21T00:38Z as `622c19b`, and all three decision seam modules are confirmed present on `origin/main` by a direct read rather than inferred from the merge state.
+
+Commit Model: Branch-and-PR
