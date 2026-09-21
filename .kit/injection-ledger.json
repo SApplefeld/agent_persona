@@ -106,8 +106,8 @@
     {
       "name": "NUDGE_TEXT_idle_gap_converted",
       "file": "hooks/index.ts",
-      "chars": 423,
-      "words": 72
+      "chars": 521,
+      "words": 88
     },
     {
       "name": "NUDGE_TEXT_idle_timeout",

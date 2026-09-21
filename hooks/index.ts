@@ -1582,6 +1582,34 @@ export const activate = (dp: any, nextId: string | null, reason: string): void =
 const isPlanEntry = (state: AgentState, g: GoalNode): boolean =>
   resolvePlanPath(state, g) !== undefined;
 
+// Section 3 (plan-health-from-the-record): the worker's own lead. A plan
+// entry's closing text opens with the literal `BLOCKED:` when the worker
+// cannot continue without someone else, and with `WAITING:` when background
+// work will wake it. The controller holds its idle branch for a blocked lead
+// until a working turn clears it, and for a waiting lead until this long
+// after the lead was read. The line is read at turn end, below the ASK:
+// marker parse; the hold sits in the controller tick beside the open-ask
+// skip. .kit/controller-tick-test.mjs pins the value as LEAD3_HOLD_MS.
+const LEAD_WAITING_HOLD_MS = 60 * 60_000;
+
+// The bound on a lead's reason, which is text from the worker's own closing
+// line written into the store.
+const LEAD_REASON_MAX = 300;
+
+// The lead a closing text states, read from its first non-blank line: the
+// literal uppercase marker at the start of that line, with the rest of the
+// line as the reason. `Blocked:`, `BLOCKED x`, the marker on a later line and
+// the word inside a sentence all read as no lead. Never throws: a text that
+// is not a string reads as no lead.
+function readLeadLine(text: unknown): { state: "blocked" | "waiting"; reason: string } | null {
+  if (typeof text !== "string") return null;
+  const firstLine = text.split(/\r?\n/).find((line) => line.trim() !== "");
+  if (firstLine === undefined) return null;
+  const m = /^(BLOCKED|WAITING):(.*)$/.exec(firstLine);
+  if (!m) return null;
+  return { state: m[1] === "BLOCKED" ? "blocked" : "waiting", reason: m[2].trim().slice(0, LEAD_REASON_MAX) };
+}
+
 // The round text the controller's idle summary and its skip-hash subset
 // carry for an entry. A task entry reads its budget; a plan entry has none.
 const roundSummaryText = (state: AgentState, g: GoalNode): string =>
@@ -4318,6 +4346,15 @@ export const register: Register = async (on, options) => {
         sess.state.pendingAskId = undefined;
       }
 
+      // Section 3 (plan-health-from-the-record): the worker's own lead holds
+      // the whole idle branch for this entry, no classifier call and no
+      // nudge. A blocked lead holds until a working turn clears it at turn
+      // end; a waiting lead holds until LEAD_WAITING_HOLD_MS after it was
+      // read, and then the branch runs as usual with the lead left on the
+      // entry. Nothing is logged per held tick.
+      if (g.lead && g.lead.state === "blocked") return;
+      if (g.lead && g.lead.state === "waiting" && now - g.lead.at < LEAD_WAITING_HOLD_MS) return;
+
       // L6: print seconds below one minute, minutes otherwise
       const idleDisplay = idleMs < 60_000 ? `${Math.floor(idleMs / 1000)}s` : `${Math.floor(idleMs / 60_000)}min`;
       const last5 = g.scores.slice(-5).map((s) => s.result).join(", ") || "none";
@@ -4702,6 +4739,7 @@ export const register: Register = async (on, options) => {
                   `The controller read this as an idle gap, not a real fork: no concrete blocking question. ` +
                   `Re-read the plan doc and DISCUSSION.md before continuing - the next concrete step should already be there.\n` +
                   `If you genuinely hold a fork the plan doesn't resolve, state it in this turn as a line: ASK: <question>? Recommend: <choice>\n` +
+                  `The controller reads a first-line BLOCKED: or WAITING: in your closing text and holds its nudges.\n` +
                   `Otherwise take the next concrete step and mark it finished with goal_done.`
                 : `[GOAL] The active goal is: ${g.objective}\n` +
                   `The Controller detected ${idleDisplay} of idle time. ` +
@@ -4785,6 +4823,17 @@ export const register: Register = async (on, options) => {
                 detail: `${g.id}: idle ${idleDisplay}, floor not elapsed`,
               });
             }
+          } else if (finalDecision === "complete" && g.status === "active" && isPlanEntry(sess.state, g)) {
+            // Section 3 (plan-health-from-the-record): a plan entry's done is
+            // read from its plan document at turn end, so the classifier's
+            // complete verdict completes nothing here and is recorded as
+            // ignored. The entry stays active and nothing else is activated.
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "complete_ignored",
+              detail: `${g.id}: classifier complete ignored on a plan entry, done is read from the plan document`,
+            });
           } else if (finalDecision === "complete" && g.status === "active") {
             // R3: use completeLeaf + activateNext.
             const completedId = g.id;
@@ -5242,6 +5291,46 @@ export const register: Register = async (on, options) => {
     const turnLeaf = turnLeafId
       ? sess.state.goals.find((g) => g.id === turnLeafId)
       : null;
+
+    // Section 3 (plan-health-from-the-record): the worker's lead, read from
+    // the first non-blank line of the closing text for the entry that was
+    // active at turn start, when it is a plan entry, at the end of every
+    // turn whatever opened it. A BLOCKED: or WAITING: line writes the lead
+    // fresh (state, reason, and the clock now, which is what the waiting
+    // hold measures from); any other first line clears it when the turn made
+    // at least one work tool call, the count isWorkTool keeps, so a reply to
+    // the operator clears nothing. lead_set and lead_cleared are logged once
+    // per change: a turn re-reading the same state and reason logs nothing.
+    // The entry's status, the nudge counter and the active entry are not
+    // touched here, and a task entry's closing text sets no lead. The ASK:
+    // marker above is handled as it is whether or not this line is present.
+    if (!skipped && sess.isOwner && turnLeaf && isPlanEntry(sess.state, turnLeaf)) {
+      const leadLine = readLeadLine(e.answer);
+      const previous = turnLeaf.lead ?? null;
+      if (leadLine) {
+        const changed = !previous || previous.state !== leadLine.state || previous.reason !== leadLine.reason;
+        turnLeaf.lead = { state: leadLine.state, reason: leadLine.reason, at: Date.now() };
+        turnLeaf.updatedAt = Date.now();
+        if (changed) {
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "goal",
+            action: "lead_set",
+            detail: `${turnLeaf.id}: ${leadLine.state}: ${leadLine.reason.slice(0, 150)}`,
+          });
+        }
+      } else if (previous && toolCallsThisTurn > 0) {
+        turnLeaf.lead = null;
+        turnLeaf.updatedAt = Date.now();
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "goal",
+          action: "lead_cleared",
+          detail: `${turnLeaf.id}: ${previous.state} lead cleared by a turn that called a work tool`,
+        });
+      }
+    }
+
     if (!skipped && turnLeaf) {
       if (turnLeaf.status === "complete") {
         // M11: goal_done ran during this turn, the credit is already in the

@@ -479,3 +479,17 @@ Delta: 2026-09-21 on SCOTT-CLAUDE, worktree at the closing tree of Section 2 bef
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 8 - 2026-09-21
+
+In-flight sections: Section 3 only, at its first build. Sections 1 and 2 closed at `a39a538` and `6887209` with Chapters 1 and 2; this entry carries no `Completed:` line.
+
+Live dispatches: one `implementer-opus` on the brief at `.kit/scratch/plan-health/section-3-brief.txt`, building the lead read beside the `ASK:` parse, the idle-branch hold, the `complete_ignored` branch, the three decisions, the one added sentence in the nudge frames, and the ledger regeneration.
+
+Section 3 open: the add-decision line and the intake gap check are at `.kit/scratch/plan-health/add-decisions-section-3.md`. Section 1's carried Minor, that the load-time recovery writes no decision record, names a mechanism no Section 3 bullet names, so it is routed to `docs/backlog.md` with the reason rather than built.
+
+Gate baseline: the targeted lane at `6887209` on 2026-09-21 on SCOTT-CLAUDE reads tsc exit 0, loader exit 0, unit 53, tick 1668 OK with 0 FAIL in 39 s, ledger exit 0, duplicate exit 0, under this session's claim.
+
+Next action per section: read the implementer's report, verify it on this session's own run, commit at first green, then dispatch review round 1 at round 1's roster (the code pair at fable; no advisory lens is summoned, since the section reads no external input beyond the worker's own answer text and spawns nothing).
+
+Commit Model: Branch-and-PR
