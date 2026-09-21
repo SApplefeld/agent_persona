@@ -3132,6 +3132,8 @@ async function main() {
     await caseLead3_leadSurvivesARestart(clock);
     await caseLead3_blockedWithAnAskOpensTheAskAndSetsTheLead(clock);
     await caseLead3_controllerCompleteIsIgnoredOnAPlanEntry(clock);
+    await caseLead3_ignoredCompleteNudgesEachWindowUntilTheStallPause(clock);
+    await caseLead3_staleLeadOnATaskEntryIsNotHeld(clock);
     await caseLead3_taskEntrySetsNoLead(clock);
 
     await caseItem81_goalEditDropAllowsBlocked(clock);
@@ -12952,9 +12954,10 @@ const lead3Of = (h, id) => getState(h).goals.find(g => g.id === id).lead;
 // classifier call and sends no nudge. The predicate for the absence is "no
 // classify call whose labels include nudge" over every classify call the
 // tick made, and "no nudge_sent decision" over the whole log; the control
-// that the instrument speaks is the same tree with no lead, below, where
-// both fire. The entry stays active, the nudge counter is unchanged (read
-// off the idle summary once the lead is cleared), and plan-2 stays pending.
+// that the instrument speaks is the priming tick at the top of the case, on
+// the same tree before any lead is set, where both fire. The entry stays
+// active, the nudge counter is unchanged (read off the idle summary once the
+// lead is cleared), and plan-2 stays pending.
 async function caseLead3_blockedFirstLineSetsTheLeadAndHoldsTheIdleBranch(clock) {
   console.log("\n=== Section 3 lead: a first-line BLOCKED: sets the lead and holds the idle branch ===");
   for (const taskUnderPlan of [false, true]) {
@@ -13027,6 +13030,16 @@ async function caseLead3_nearMissesSetNothing(clock) {
     const lead = lead3Of(h, "plan-1");
     check("lead3 first non-blank line: blank lines above the marker are skipped", lead && lead.state === "blocked", lead);
     check("lead3 reason cut: a 400-character reason is stored at 300", lead && lead.reason.length === 300 && lead.reason === "r".repeat(300), lead && lead.reason.length);
+  }
+  clock.set(T0);
+  {
+    // A \r\r\n line ending leaves one carriage return on the first line
+    // after the split; it is stripped before the match, not kept as reason.
+    const h = await lead3Harness("lead3_stray_cr");
+    await lead3Turn(h, "t-cr", "BLOCKED: waiting on the operator\r\r\nmore", { workTool: true });
+    const lead = lead3Of(h, "plan-1");
+    check("lead3 stray carriage return: a first line ending CR CR LF sets the lead with no carriage return in the reason",
+      lead && lead.state === "blocked" && lead.reason === "waiting on the operator", lead);
   }
 }
 
@@ -13135,9 +13148,10 @@ async function caseLead3_blockedWithAnAskOpensTheAskAndSetsTheLead(clock) {
 }
 
 // With no lead set, an idle classifier outcome of complete on a plan entry
-// completes nothing and logs complete_ignored, for the plan node and for a
-// task under it. On a task entry it completes the entry as today, which is
-// the control that the classifier's complete verdict reached the branch.
+// completes nothing, logs complete_ignored and sends a nudge in its place,
+// for the plan node and for a task under it. On a task entry it completes
+// the entry as today, which is the control that the classifier's complete
+// verdict reached the branch.
 async function caseLead3_controllerCompleteIsIgnoredOnAPlanEntry(clock) {
   console.log("\n=== Section 3 lead: a controller complete verdict is ignored on a plan entry and honoured on a task entry ===");
   const shapes = [
@@ -13176,11 +13190,62 @@ async function caseLead3_controllerCompleteIsIgnoredOnAPlanEntry(clock) {
       check(`lead3 complete (${shape.label}): one complete_ignored decision naming the entry, no completed_by_controller`,
         ignored.length === 1 && ignored[0].detail.startsWith(`${shape.leafId}:`) && completed.length === 0, { ignored, completed });
       check(`lead3 complete (${shape.label}): plan-2 stays pending`, state.goals.find(g => g.id === "plan-2").status === "pending");
+      check(`lead3 complete (${shape.label}): the ignored verdict is converted to a nudge that is sent`,
+        decisions.filter(d => d.action === "nudge_sent").length === 1, decisions.filter(d => d.action === "nudge_sent"));
     } else {
       check(`lead3 complete (${shape.label}): the entry is complete as today`, leaf.status === "complete" && completed.length === 1 && ignored.length === 0, { status: leaf.status, completed, ignored });
       check(`lead3 complete (${shape.label}): the next task is activated`, state.activeGoalId === "task-2");
     }
   }
+}
+
+// A plan entry whose closing text reads finished while its document stays In
+// Progress is not left idle: every nudge window whose classifier answers
+// complete logs complete_ignored and sends a nudge, and the three-nudge
+// stall pause is what bounds the repeats. The nudge cost cap is raised so
+// the stall pause, not the hourly cap, is the bound read here.
+async function caseLead3_ignoredCompleteNudgesEachWindowUntilTheStallPause(clock) {
+  console.log("\n=== Section 3 lead: an ignored complete nudges each window until the stall pause ===");
+  clock.set(T0);
+  const h = await lead3Harness("lead3_complete_repeats", {}, { costMaxNudgesPerHour: 10 });
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("complete")) ? "complete" : "discard");
+  for (let window = 1; window <= 3; window++) {
+    clock.advance(130_000);
+    await tickAndSettle(h, clock, 50);
+    const decisions = getDecisions(h);
+    const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+    check(`lead3 complete repeats: window ${window} logs complete_ignored ${window} time(s) in all`,
+      decisions.filter(d => d.action === "complete_ignored").length === window, decisions.filter(d => d.action === "complete_ignored").length);
+    check(`lead3 complete repeats: window ${window} sends nudge #${window}`,
+      decisions.filter(d => d.action === "nudge_sent").length === window && decisions.some(d => d.action === "nudge_sent" && d.detail.includes(`nudge #${window}`)),
+      decisions.filter(d => d.action === "nudge_sent"));
+    check(`lead3 complete repeats: window ${window} leaves plan-1 active`, plan1.status === "active", plan1.status);
+  }
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  const decisions = getDecisions(h);
+  const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+  check("lead3 complete repeats: the fourth window reaches the stall pause, no fourth nudge",
+    decisions.some(d => d.action === "nudge_cap_reached") && decisions.filter(d => d.action === "nudge_sent").length === 3, decisions.slice(-4));
+  check("lead3 complete repeats: the stall pause pauses plan-1 and completes nothing",
+    plan1.status === "paused" && plan1.pausedByNudgeCap === true && !decisions.some(d => d.action === "completed_by_controller"), plan1);
+}
+
+// A task entry carrying a stale blocked lead is not held: the hold reads a
+// lead only on a plan entry, the one kind of entry whose turns clear it. The
+// lead is hand-set in the fixture, since no turn writes one on a task entry.
+async function caseLead3_staleLeadOnATaskEntryIsNotHeld(clock) {
+  console.log("\n=== Section 3 lead: a stale lead on a task entry does not hold the idle branch ===");
+  clock.set(T0);
+  const goals = [
+    makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+    makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", maxRounds: 10, createdAt: T0 - 20000,
+      lead: { state: "blocked", reason: "stale", at: T0 - 1000 } }),
+  ];
+  const h = await createTickHarness({ ...OPTS, caseName: "lead3_stale_task_lead", stateOpts: { now: T0, goals, activeGoalId: "task-1" } });
+  check("lead3 stale task lead setup: the store carries the blocked lead on the task", getState(h).goals.find(g => g.id === "task-1").lead?.state === "blocked");
+  const tick = await lead3IdleTick(h, clock);
+  check("lead3 stale task lead: the idle tick classifies and nudges", tick.classified && tick.nudged, tick);
 }
 
 // A task entry's closing text sets no lead, whatever its first line says:

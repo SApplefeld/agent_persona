@@ -1589,7 +1589,7 @@ const isPlanEntry = (state: AgentState, g: GoalNode): boolean =>
 // until a working turn clears it, and for a waiting lead until this long
 // after the lead was read. The line is read at turn end, below the ASK:
 // marker parse; the hold sits in the controller tick beside the open-ask
-// skip. .kit/controller-tick-test.mjs pins the value as LEAD3_HOLD_MS.
+// skip. The value is the plan's 60-minute rule for a waiting lead.
 const LEAD_WAITING_HOLD_MS = 60 * 60_000;
 
 // The bound on a lead's reason, which is text from the worker's own closing
@@ -1603,8 +1603,10 @@ const LEAD_REASON_MAX = 300;
 // is not a string reads as no lead.
 function readLeadLine(text: unknown): { state: "blocked" | "waiting"; reason: string } | null {
   if (typeof text !== "string") return null;
-  const firstLine = text.split(/\r?\n/).find((line) => line.trim() !== "");
-  if (firstLine === undefined) return null;
+  const found = text.split(/\r?\n/).find((line) => line.trim() !== "");
+  if (found === undefined) return null;
+  // One stray carriage return left by a \r\r\n ending is not reason text.
+  const firstLine = found.endsWith("\r") ? found.slice(0, -1) : found;
   const m = /^(BLOCKED|WAITING):(.*)$/.exec(firstLine);
   if (!m) return null;
   return { state: m[1] === "BLOCKED" ? "blocked" : "waiting", reason: m[2].trim().slice(0, LEAD_REASON_MAX) };
@@ -4352,8 +4354,11 @@ export const register: Register = async (on, options) => {
       // end; a waiting lead holds until LEAD_WAITING_HOLD_MS after it was
       // read, and then the branch runs as usual with the lead left on the
       // entry. Nothing is logged per held tick.
-      if (g.lead && g.lead.state === "blocked") return;
-      if (g.lead && g.lead.state === "waiting" && now - g.lead.at < LEAD_WAITING_HOLD_MS) return;
+      // Only a plan entry is held, since only a plan entry's turns write or
+      // clear a lead.
+      const heldLead = g.lead && isPlanEntry(sess.state, g) ? g.lead : null;
+      if (heldLead && heldLead.state === "blocked") return;
+      if (heldLead && heldLead.state === "waiting" && now - heldLead.at < LEAD_WAITING_HOLD_MS) return;
 
       // L6: print seconds below one minute, minutes otherwise
       const idleDisplay = idleMs < 60_000 ? `${Math.floor(idleMs / 1000)}s` : `${Math.floor(idleMs / 60_000)}min`;
@@ -4617,6 +4622,23 @@ export const register: Register = async (on, options) => {
             });
           }
 
+          // Section 3 (plan-health-from-the-record): a plan entry's done is
+          // read from its plan document at turn end, so the classifier's
+          // complete verdict completes nothing here. It is recorded as
+          // ignored and becomes a nudge, the same way the verdicts above do:
+          // a worker whose closing text reads finished while its document
+          // does not is woken rather than left idle. The three-nudge stall
+          // pause bounds the repeats.
+          if (finalDecision === "complete" && g.status === "active" && isPlanEntry(sess.state, g)) {
+            finalDecision = "nudge";
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "complete_ignored",
+              detail: `${g.id}: classifier complete ignored on a plan entry and converted to nudge, done is read from the plan document`,
+            });
+          }
+
           // R6: switch, second Haiku call to pick a plan id.
           if (finalDecision === "switch" && pendingPlans.length > 0) {
             try {
@@ -4823,17 +4845,6 @@ export const register: Register = async (on, options) => {
                 detail: `${g.id}: idle ${idleDisplay}, floor not elapsed`,
               });
             }
-          } else if (finalDecision === "complete" && g.status === "active" && isPlanEntry(sess.state, g)) {
-            // Section 3 (plan-health-from-the-record): a plan entry's done is
-            // read from its plan document at turn end, so the classifier's
-            // complete verdict completes nothing here and is recorded as
-            // ignored. The entry stays active and nothing else is activated.
-            sess.state.decisions.push({
-              timestamp: Date.now(),
-              loop: "goal",
-              action: "complete_ignored",
-              detail: `${g.id}: classifier complete ignored on a plan entry, done is read from the plan document`,
-            });
           } else if (finalDecision === "complete" && g.status === "active") {
             // R3: use completeLeaf + activateNext.
             const completedId = g.id;
