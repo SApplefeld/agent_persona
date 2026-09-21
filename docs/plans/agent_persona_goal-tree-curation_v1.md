@@ -14,7 +14,7 @@ The operator asked for this plan on 2026-09-21 on the architect persona's Discor
 
 > I think we need to look at how the goal tree is managed in Personas. Every session came back up saying it's goal tree was cleared, or is having issues with items getting cleared off it, one session said it can't mark things completed, only abandoned. Can you take a look at how the goals are curated and managed and reset?
 
-After the findings and a five-part sketch he wrote: "can you complete the plan for the goal improvements and open a PR for it so it can be ready to run?" That covers authoring. He did not pick among the three options put to him for untracked work. Section 2 is written on the recommended one, and the question stands under `## Open Questions` until he answers it in words. A merge of this plan's pull request is not that answer. Execution waits on the operator handing this plan to a worker by name, and Section 2 waits on his answer as well. Sections 1, 3 and 4 do not depend on the answer. A worker that reaches Section 2 with the question still open runs Sections 3 and 4 first, in that order, and then stops with a `BLOCKED:` lead naming the question.
+After the findings and a five-part sketch he wrote: "can you complete the plan for the goal improvements and open a PR for it so it can be ready to run?" That covers authoring. Three options for untracked work were put to him, and he picked option A, which is how Section 2 is written. His ruling is recorded under `## Intent`. Execution waits on the operator handing this plan to a worker by name.
 
 This plan starts only after two other efforts have merged to the trunk, because they edit the same regions. `docs/plans/agent_persona_plan-health-from-the-record_v1.md` edits the `goal_done` handler and the end of `turn.complete`. `docs/plans/agent_persona_supervisor-gaps_v1.md` edits `bin/supervise.sh`. The trunk is `origin/main`, read after a fetch. The check is that `git ls-tree --name-only origin/main docs/plans/` lists neither file, since a finished plan moves to `docs/archive/`. A worker that finds either still listed stops with a `BLOCKED:` lead naming it. The work runs on one branch cut from that fetched trunk and lands as one pull request for the whole plan. The emergency fix that cut the `fleet_status` description under the host's limit is also expected on the trunk, and Section 1 states what to do where it is not.
 
@@ -33,7 +33,9 @@ Alternatives refused:
 - Move the persona claim ahead of every tool registration: refused in favor of catching each registration's refusal, which protects the same steps without moving four hundred lines of a seven-thousand-line file that three other plans are editing.
 - Let `goal_done` close an entry that still has unfinished children: refused, because the parent would read complete over open work.
 
-Rulings after the spec shipped: none at the write.
+Rulings after the spec shipped:
+- 2026-09-21, the operator, on the architect persona's Discord thread: "I think Option A is fine". A turn that works with no goal open records nothing in the tree and one line per session in the decision log. Section 2 stands as written.
+- 2026-09-21, the operator, in the same message: the tree he is aiming for has several levels, after the PIANO architecture from Project Sid. Short-term goals direct the immediate actions, medium-term goals are the plans being worked, and long-term goals span many sections. He reads today's tree as serving the medium term only, "adequate, but short of the ideal". This plan repairs the tree that exists and builds no levels. The levels are a separate design effort.
 
 Provenance: distilled from the architect persona's session of 2026-09-21 on its Discord thread, from the code at trunk `622c19b`, the five personas' store files and their debug logs.
 
@@ -198,14 +200,6 @@ Tests: lock both directions of the replace guard, since a guard that also refuse
 
 ## Open Questions
 
-One, owned by the operator, and it gates Section 2 alone.
-
-When a turn does real work and no goal is open, what should the plugin record? Today it replaces the whole tree with a finished entry, which is the defect. The options:
-
-- A (recommended): nothing in the tree, and one line per session in the decision log, which is how Section 2 is written. It costs the least code and leaves the tree holding only goals someone opened. Nothing in the plugin or the supervisor reads the tree entry today.
-- B: a finished entry appended under the existing tree for each such turn. It keeps a visible record in the tree and adds several entries an hour, and that clutter is what buried the real history.
-- C: prompts the operator did not type are ignored, and small typed requests land under one permanent "conversation" entry. This is the remedy `docs/backlog.md` recorded on 2026-09-16. It keeps a visible record without the clutter, costs the most code, and keeps a mechanism nothing reads.
-
-A is recommended because no reader exists for the tree entry, so B and C both pay for a record nobody consumes. Choosing B or C means Section 2 is rewritten before it runs. Sections 1, 3 and 4 stand either way. His answer is appended under `## Intent` as a dated ruling the same turn.
+None open. The plan carried one question: what the plugin records when a turn does real work and no goal is open. The operator answered it, and the ruling under `## Intent` records his answer. The two options he passed over are the first two lines under "Alternatives refused" in that section.
 
 ## Chapters
