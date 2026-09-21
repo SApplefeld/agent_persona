@@ -4645,9 +4645,11 @@ export const register: Register = async (on, options) => {
       // Only a plan entry is held, since only a plan entry's turns write or
       // clear a lead.
       const heldLead = g.lead && isPlanEntry(sess.state, g) ? g.lead : null;
-      // An ask on the entry that closed after the lead was set (answered by
-      // the operator or the coordinator, or timed out) settled what the
-      // block waited on, so the lead is cleared here and the branch runs.
+      // An ask on the entry that closed after the lead was set, answered by
+      // the operator or the coordinator, settled what the block waited on,
+      // so the lead is cleared here and the branch runs. A timed-out ask
+      // leaves its entry paused, and that entry stays paused until
+      // goal_resume lifts its lead.
       if (heldLead && heldLead.state === "blocked" && typeof g.lastAskClosedAt === "number" && g.lastAskClosedAt > heldLead.at) {
         g.lead = null;
         g.updatedAt = now;
@@ -4657,7 +4659,7 @@ export const register: Register = async (on, options) => {
           action: "lead_cleared",
           detail: `${g.id}: blocked lead cleared by an ask closed after it was set`,
         });
-        await persist($);
+        if (!(await persist($))) return;
       } else if (heldLead && heldLead.state === "blocked") return;
       if (heldLead && heldLead.state === "waiting" && now - heldLead.at < LEAD_WAITING_HOLD_MS) return;
 
@@ -6898,10 +6900,11 @@ export const register: Register = async (on, options) => {
       target.blockedReason = undefined;
       target.pausedByNudgeCap = false;
       target.status = "active";
-      // The resume is the act a blocked lead waited on, so it lifts that
-      // lead; otherwise the lead would hold the idle branch until a later
-      // working turn that may never come. A waiting lead keeps its own
-      // hold window and stays.
+      // A resume lifts a blocked lead whatever paused the entry, since the
+      // lead would otherwise hold the idle branch until a working turn that
+      // may never come. A worker still blocked restates BLOCKED: at its next
+      // turn end and is held again. A waiting lead keeps its own hold window
+      // and stays.
       const liftedLead = target.lead && target.lead.state === "blocked" ? target.lead : null;
       if (liftedLead) target.lead = null;
       target.updatedAt = Date.now();
@@ -6919,7 +6922,7 @@ export const register: Register = async (on, options) => {
           timestamp: Date.now(),
           loop: "goal",
           action: "lead_cleared",
-          detail: `${target.id}: ${liftedLead.state} lead cleared by goal_resume`,
+          detail: `${target.id}: blocked lead cleared by goal_resume`,
         });
       }
       // AZ4: goal_resume on the ask's node closes the ask with status "resumed"

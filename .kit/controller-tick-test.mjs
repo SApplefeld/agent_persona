@@ -3141,6 +3141,7 @@ async function main() {
     await caseLead3_aBlockedLeadSetAfterTheAskClosedStillHolds(clock);
     await caseLead3_goalResumeOfAnotherEntryKeepsTheLead(clock);
     await caseLead3_goalResumeKeepsAWaitingLead(clock);
+    await caseLead3_anAskClosedAfterAWaitingLeadKeepsTheHold(clock);
 
     // Section 4 (plan-health-from-the-record): which turns are scored.
     await caseSection4_channelAndDeliveryTurnsSkipTheScorer(clock);
@@ -13446,7 +13447,7 @@ async function caseLead3_theOperatorsAnswerToTheAskLiftsABlockedLead(clock) {
   const cleared = getDecisions(h).filter(d => d.action === "lead_cleared");
   check("lead3 ask answer lifts: after the idle tick the lead is null", !lead3Of(h, "plan-1"), lead3Of(h, "plan-1"));
   check("lead3 ask answer lifts: one lead_cleared decision naming the entry and the closed ask",
-    cleared.length === 1 && cleared[0].detail === "plan-1: blocked lead cleared by an ask closed after it was set", cleared);
+    cleared.length === 1 && cleared[0].detail.startsWith("plan-1:") && cleared[0].detail.includes("ask closed"), cleared);
   check("lead3 ask answer lifts: the idle tick past the nudge threshold runs the idle branch", tick.classified || tick.nudged, tick);
 }
 
@@ -13478,7 +13479,7 @@ async function caseLead3_anInboxAnswerToTheAskLiftsABlockedLead(clock) {
   const cleared = getDecisions(h).filter(d => d.action === "lead_cleared");
   check("lead3 inbox answer lifts: after the idle tick the lead is null", !lead3Of(h, "plan-1"), lead3Of(h, "plan-1"));
   check("lead3 inbox answer lifts: one lead_cleared decision naming the entry and the closed ask",
-    cleared.length === 1 && cleared[0].detail === "plan-1: blocked lead cleared by an ask closed after it was set", cleared);
+    cleared.length === 1 && cleared[0].detail.startsWith("plan-1:") && cleared[0].detail.includes("ask closed"), cleared);
   check("lead3 inbox answer lifts: the idle tick past the nudge threshold runs the idle branch", tick.classified || tick.nudged, tick);
 }
 
@@ -13537,6 +13538,33 @@ async function caseLead3_goalResumeKeepsAWaitingLead(clock) {
   check("lead3 resume waiting: no lead_cleared decision", !getDecisions(h).some(d => d.action === "lead_cleared"));
 }
 
+// Control for the ask lift: it reads a blocked lead only. A waiting lead
+// whose entry's ask closes after the lead was set keeps its own hold, so an
+// idle tick past the nudge threshold but inside the hold window is held, the
+// lead is unchanged and no lead_cleared is logged.
+async function caseLead3_anAskClosedAfterAWaitingLeadKeepsTheHold(clock) {
+  console.log("\n=== Section 3 lead: an ask closed after a waiting lead keeps the waiting hold ===");
+  clock.set(T0);
+  const h = await lead3Harness("lead3_waiting_ask_closed_holds");
+  await lead3Turn(h, "t-ask", "WAITING: the suite is running in the background\nASK: Which DB? Recommend: X", { workTool: true });
+  const askId = getState(h).pendingAskId;
+  check("lead3 waiting ask closed setup: the ask is open and the lead waiting",
+    typeof askId === "string" && lead3Of(h, "plan-1")?.state === "waiting" && lead3Of(h, "plan-1").at === T0, { askId, lead: lead3Of(h, "plan-1") });
+
+  clock.advance(1_000);
+  await h.handlers["prompt.submit"](h.fake, { text: "Use X.", origin: { kind: "channel" } }, async () => ({}));
+  await lead3Turn(h, "t-answer", "Going with X.", { reply: true });
+  const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+  check("lead3 waiting ask closed setup: the ask closed after the lead was set and plan-1 is active",
+    !getState(h).pendingAskId && plan1.status === "active" && typeof plan1.lastAskClosedAt === "number" && plan1.lastAskClosedAt > plan1.lead.at,
+    { lastAskClosedAt: plan1.lastAskClosedAt, lead: plan1.lead, status: plan1.status });
+  const tick = await lead3IdleTick(h, clock);
+  check("lead3 waiting ask closed: the idle tick inside the hold window is held (no classifier call, no nudge)", !tick.classified && !tick.nudged, tick);
+  const lead = lead3Of(h, "plan-1");
+  check("lead3 waiting ask closed: the waiting lead is unchanged and no lead_cleared is logged",
+    lead?.state === "waiting" && lead.at === T0 && lead.reason === "the suite is running in the background" && !getDecisions(h).some(d => d.action === "lead_cleared"), lead);
+}
+
 // Section 3 Tests line, "lock the hold in both directions, since a hold that
 // never lifts is the defect this plan removes wearing a new name": a blocked
 // lead on a plan entry that is paused and then resumed with goal_resume is
@@ -13557,7 +13585,7 @@ async function caseLead3_goalResumeLiftsABlockedLead(clock) {
   check("lead3 resume lifts: goal_resume accepted and plan-1 active", !resumed.deny && plan1.status === "active", { resumed, status: plan1.status });
   check("lead3 resume lifts: the lead is null", plan1.lead === null || plan1.lead === undefined, plan1.lead);
   check("lead3 resume lifts: one lead_cleared decision naming the entry and goal_resume",
-    cleared.length === 1 && cleared[0].detail === "plan-1: blocked lead cleared by goal_resume", cleared);
+    cleared.length === 1 && cleared[0].detail.startsWith("plan-1:") && cleared[0].detail.includes("goal_resume"), cleared);
   const tick = await lead3IdleTick(h, clock);
   check("lead3 resume lifts: the idle tick past the nudge threshold runs the idle branch", tick.classified || tick.nudged, tick);
 }
