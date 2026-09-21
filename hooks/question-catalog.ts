@@ -28,7 +28,7 @@
 // failure and report why. Nothing here throws into a controller tick.
 
 import type { PluginHost } from "./host";
-import type { ResolvedQuestion, QuestionResolver } from "./decision-seam";
+import { SCORE_MIN_LEVELS, SCORE_MAX_LEVELS, type ChoiceQuestion, type ResolvedQuestion, type QuestionResolver } from "./decision-seam";
 
 // --- The label arrays the three classify sites pass to Haiku ---
 //
@@ -74,6 +74,30 @@ export const PLAN_SWITCH = "plan-switch";
 export const TURN_SCORE = "turn-score";
 export const MEMORY_KIND = "memory-kind";
 
+// --- The three plan health sets ---
+//
+// These three are asked together, in one request, at the end of every turn on
+// an entry that carries a plan document. They have no Haiku counterpart: no
+// classify call asks them, and nothing branches on an answer. What each one is
+// measured against is an outcome the plugin observes for itself afterwards,
+// which the decision journal records as an outcome line.
+export const WORKER_BLOCKED = "worker-blocked";
+export const ROUNDS_CONVERGING = "rounds-converging";
+export const BLOCK_OWNER = "block-owner";
+
+// The block owner's options, which are this catalog's own. The caller names
+// them at request time, the way it names a label array for the Haiku-paired
+// sets, so the ids offered and the ids journaled are one constant.
+export const BLOCK_OWNER_OPTIONS: readonly string[] = Object.freeze(["operator", "coordinator", "another-plan", "self-resolving", "none"]);
+
+// The state field each set's instructions name. One request carries one
+// state, so the state is an object and each question reads the field it needs
+// by name (https://docs.typesafe.ai/api.md, on structured instructions).
+// `closingText` is the turn's own closing text, and `recentClosingTexts` the
+// entry's last few, oldest first.
+export const PLAN_HEALTH_STATE_CLOSING = "closingText";
+export const PLAN_HEALTH_STATE_RECENT = "recentClosingTexts";
+
 // The plan switch is the one set whose options are not all the catalog own:
 // the rest are the pending plan ids the caller supplies per request. This is
 // the option that covers none of them, and the wiring in hooks/index.ts sends
@@ -81,7 +105,14 @@ export const MEMORY_KIND = "memory-kind";
 // the two files are pinned to one spelling rather than two literals.
 export const PLAN_SWITCH_NO_MATCH = "no_match";
 
-export const QUESTION_SET_IDS: readonly string[] = Object.freeze([CONTROLLER_DECISION, PLAN_SWITCH, TURN_SCORE, MEMORY_KIND]);
+export const QUESTION_SET_IDS: readonly string[] = Object.freeze([
+  CONTROLLER_DECISION, PLAN_SWITCH, TURN_SCORE, MEMORY_KIND,
+  WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER,
+]);
+
+// The three asked together at a plan entry's turn end, in the order the
+// request carries them.
+export const PLAN_HEALTH_SET_IDS: readonly string[] = Object.freeze([WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER]);
 
 // The version label a shipped default carries into the journal. An override
 // carries its own label instead.
@@ -95,12 +126,22 @@ export const SHIPPED_VERSION = "v1";
 export const MIN_OPTIONS = 2;
 export const MAX_OPTIONS = 255;
 
-// The three sets whose options are this catalog's own, so an override that
+// The Choice sets whose options are this catalog's own, so an override that
 // changes the set of option ids is refused: the journal's agreement figure
 // compares Jev's option id against Haiku's, and Haiku's come from the label
-// arrays above. The plan switch is absent because its option ids are the
-// caller's pending plan ids rather than the catalog's.
-export const FIXED_OPTION_SETS: readonly string[] = Object.freeze([CONTROLLER_DECISION, TURN_SCORE, MEMORY_KIND]);
+// arrays above. The block owner has no Haiku answer to agree with and is
+// here for the other half of the same reason: its ids are the caller's one
+// constant, and a load reads that column as a closed vocabulary. The plan
+// switch is absent because its option ids are the caller's pending plan ids
+// rather than the catalog's.
+export const FIXED_OPTION_SETS: readonly string[] = Object.freeze([CONTROLLER_DECISION, TURN_SCORE, MEMORY_KIND, BLOCK_OWNER]);
+
+// A Score's levels are positions rather than names, so what an override of
+// one must keep is their count: the journal records a level number and a load
+// reads it against the levels the question shipped with. An override that
+// rewords the three levels of a shipped Score is admitted; one that adds or
+// drops a level is refused.
+export const FIXED_LEVEL_SETS: readonly string[] = Object.freeze([ROUNDS_CONVERGING]);
 
 // The shipped defaults. Instructions are one snap judgment each, which is
 // what a System One model is built for, and every option carries a one-line
@@ -161,13 +202,49 @@ export const SHIPPED_QUESTIONS: Readonly<Record<string, ResolvedQuestion>> = {
       "discard": "Nothing worth keeping, including a description of what happened this turn and an instruction to call a tool.",
     },
   },
+  [WORKER_BLOCKED]: {
+    id: WORKER_BLOCKED,
+    version: SHIPPED_VERSION,
+    overrideRefused: null,
+    primitive: "noul",
+    instructions: "`closingText` is how an autonomous worker session ended its last turn. In it, is the worker saying it cannot carry on until someone or something else acts first?",
+  },
+  [ROUNDS_CONVERGING]: {
+    id: ROUNDS_CONVERGING,
+    version: SHIPPED_VERSION,
+    overrideRefused: null,
+    primitive: "score",
+    instructions: "`recentClosingTexts` holds how an autonomous worker session ended each of its last few turns on one plan, oldest first. Across those turns, where does the work sit between closing out and reopening?",
+    // Ordered from the low end to the high end, and a level's number is its
+    // position here. The order is the plan's own: converging, steady, then
+    // reopening.
+    levels: Object.freeze([
+      "Each turn closes more than it opens: the worker reports work finished, and raises less new work than it finished.",
+      "The turns hold steady: about as much new work is raised as is finished, so the same ground is held.",
+      "The turns reopen what earlier turns settled: work reported finished in an earlier turn is open again.",
+    ]),
+  },
+  [BLOCK_OWNER]: {
+    id: BLOCK_OWNER,
+    version: SHIPPED_VERSION,
+    overrideRefused: null,
+    primitive: "choice",
+    instructions: "`closingText` is how an autonomous worker session ended its last turn. Who has to act before the worker can carry on?",
+    options: {
+      "operator": "The human operator: a question, a decision or an approval is owed.",
+      "coordinator": "The coordinating session that queues this worker's work: it has to queue, release or reassign something.",
+      "another-plan": "Other work has to land first, such as another plan or another worker's change.",
+      "self-resolving": "Nobody: something already running will finish on its own, such as a background job, a suite or a timer.",
+      "none": "Nobody: the worker is not waiting on anything and is carrying on.",
+    },
+  },
 };
 
 // What the resolver hands back for a question set id it does not know. Its
 // empty id is the first thing the seam's questionProblem rejects, so the call
 // ends as no_question before any request is sent. Returned rather than thrown
 // because the resolver's contract is that it never rejects.
-export const UNKNOWN_QUESTION: ResolvedQuestion = {
+export const UNKNOWN_QUESTION: ChoiceQuestion = {
   id: "",
   version: "",
   overrideRefused: "unknown question set",
@@ -224,9 +301,18 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 // The shipped default with a refusal reason written onto it. The default is
-// never mutated: a refusal is per call, and the constants are shared.
+// never mutated: a refusal is per call, and the constants are shared. Its
+// answer vocabulary is copied rather than shared for the same reason, so a
+// consumer that writes into the options map or the levels array of what it
+// resolved cannot reach the constant behind it.
 function fallback(shipped: ResolvedQuestion, refused: string | null): ResolvedQuestion {
-  return { ...shipped, options: optionsCopy(shipped.options), overrideRefused: refused };
+  if (shipped.primitive === "choice") {
+    return { ...shipped, options: optionsCopy(shipped.options), overrideRefused: refused };
+  }
+  if (shipped.primitive === "score") {
+    return { ...shipped, levels: [...shipped.levels], overrideRefused: refused };
+  }
+  return { ...shipped, overrideRefused: refused };
 }
 
 // Every options map the resolver returns is prototype-free, on every path.
@@ -258,9 +344,34 @@ function sameIdSet(a: readonly string[], b: readonly string[]): boolean {
 // file's own content.
 function overrideProblem(parsed: unknown, shipped: ResolvedQuestion): string | null {
   if (!isRecord(parsed)) return "the version file is not an object";
-  if (parsed.primitive !== "choice") return "the override is not a choice";
+  // An override keeps its question's primitive: the shipped primitive is what
+  // the caller asks for and what the answer is validated against, so a file
+  // naming another one is a different question wearing this one's id.
+  if (parsed.primitive !== shipped.primitive) return `the override is not a ${shipped.primitive}`;
   if (typeof parsed.instructions !== "string" || parsed.instructions.trim().length === 0) {
     return "the override has an empty instruction";
+  }
+  // A Noul's instruction is its whole vocabulary, so there is nothing further
+  // to check on one.
+  if (shipped.primitive === "noul") return null;
+  if (shipped.primitive === "score") {
+    if (!Array.isArray(parsed.levels)) return "the override has no levels array";
+    for (const level of parsed.levels) {
+      if (typeof level !== "string" || level.trim().length === 0) {
+        return "the override has a level that is not a non-empty string";
+      }
+    }
+    // The count, not the wording: a level number is what a journal line
+    // records, so an override that adds or drops a level renumbers every
+    // answer already recorded against this set.
+    if (FIXED_LEVEL_SETS.includes(shipped.id) && parsed.levels.length !== shipped.levels.length) {
+      return "the override's level count differs from the shipped set";
+    }
+    // The vendor's level bounds, held by the seam so this validator and the
+    // seam's own refuse on one pair of numbers.
+    if (parsed.levels.length < SCORE_MIN_LEVELS) return `the override has fewer than ${SCORE_MIN_LEVELS} levels`;
+    if (parsed.levels.length > SCORE_MAX_LEVELS) return `the override has more than ${SCORE_MAX_LEVELS} levels`;
+    return null;
   }
   if (!isRecord(parsed.options)) return "the override has no options map";
   for (const description of Object.values(parsed.options)) {
@@ -368,17 +479,18 @@ export function resolverOf(host: CatalogHost): QuestionResolver {
     const problem = overrideProblem(parsed, shipped);
     if (problem !== null) return fallback(shipped, problem);
 
-    // Validated field by field above, so only the three fields this module
-    // checked are copied out. Nothing else the file carried rides along.
-    const source = parsed as { instructions: string; options: Record<string, string | null> };
-    const options = optionsCopy(source.options);
-    return {
-      id: shipped.id,
-      version,
-      overrideRefused: null,
-      primitive: "choice",
-      instructions: source.instructions,
-      options,
-    };
+    // Validated field by field above, so only the fields this module checked
+    // are copied out. Nothing else the file carried rides along, and the
+    // primitive is the shipped question's rather than the file's, the two
+    // having been checked equal.
+    const source = parsed as { instructions: string; options: Record<string, string | null>; levels: string[] };
+    const head = { id: shipped.id, version, overrideRefused: null, instructions: source.instructions };
+    if (shipped.primitive === "choice") {
+      return { ...head, primitive: "choice", options: optionsCopy(source.options) };
+    }
+    if (shipped.primitive === "score") {
+      return { ...head, primitive: "score", levels: [...source.levels] };
+    }
+    return { ...head, primitive: "noul" };
   };
 }

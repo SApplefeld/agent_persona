@@ -16,6 +16,7 @@
 !/live-operator-test.sh
 !/tick-harness.mjs
 !/controller-tick-test.mjs
+!/plan-record-unit-test.mjs
 !/channel-reply-instruction-test.sh
 !/supervisor-model-test.sh
 !/live-stopprocesstree-test.sh
@@ -36,3 +37,4 @@
 !/injection-ledger.mjs
 !/injection-ledger.json
 !/injection-duplicate-test.mjs
+!/tool-description-length-test.mjs

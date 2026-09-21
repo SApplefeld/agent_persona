@@ -72,6 +72,22 @@ export interface GoalNode {
                          // from the worker's own record, naming the weakness signal
                          // it was raised for, so the loop never raises the same
                          // signal twice while one is open.
+  planPath?: string; // Section 1 (plan-health-from-the-record): the plan document's
+                      // path, relative to the persona's working directory, in the
+                      // form docs/plans/<name>.md. Set on a plan node only, by
+                      // goal_add or filled from the node's own text on load. The
+                      // v2/v3 migration itself writes no value; the load-time
+                      // fill runs on every migration exit and may fill one.
+  lead?: { state: "blocked" | "waiting"; reason: string; at: number } | null; // Section 3:
+                      // the worker's own BLOCKED/WAITING first line for a plan entry.
+                      // Set and cleared at turn end from the first line of a plan
+                      // entry's closing text; a blocked lead is also lifted by
+                      // goal_resume and by the idle tick once an ask on the entry
+                      // closes after it, and completion by the plan document
+                      // clears it. Unset by the v2-v4 migration.
+  chapterCount?: number; // Section 2: the number of "### Chapter N" headings the
+                      // plan document held at the last read. Written by the
+                      // document read at turn end. Unset by the v2-v4 migration.
 }
 
 export interface EnvErrors {
@@ -302,6 +318,62 @@ export const DECISIONS_MAX = 200;
 // Pinned entries are never evicted regardless of this cap.
 export const MEMORY_MAX = 50;
 
+// Section 1 (plan-health-from-the-record): the shape a plan node's planPath
+// must hold. Anchored at both ends, so a value like "x/docs/plans/a.md" or
+// "docs/plans/a.md/x" is refused rather than admitted by a partial match.
+// This guards one producer, goal_add: a value it would refuse (a ".."
+// segment, a subdirectory, a drive letter, a non-.md suffix) is never
+// written to an entry by that tool. The store is the other producer, and a
+// planPath read back out of it is not re-tested here, so a hand-edited or
+// foreign-written store can carry any value at all. Section 2 joins a
+// planPath onto the persona's working directory and reads the file it
+// names. Its reader owes that value a re-test against this pattern before
+// the join, since nothing between the store and the join performs one.
+export const PLAN_PATH_PATTERN = /^docs\/plans\/[A-Za-z0-9][A-Za-z0-9._-]{0,250}\.md$/;
+
+// The same shape, found inside free text (a node's title or objective), used
+// to fill planPath on load for a plan node that lacks one. The lazy body
+// stops at the first ".md", and the negative lookahead refuses to end the
+// match inside a longer filename; together they leave a path's own trailing
+// punctuation (a comma, a full stop) outside the capture, exactly as a
+// worker writes it in prose.
+//
+// The lookbehind guards the LEFT edge the same way the lookahead guards the
+// right. Without it the pattern matches inside a longer token: "finish
+// ../docs/plans/a_v1.md", a URL such as
+// "https://host/repo/docs/plans/a_v1.md", and a Windows path such as
+// "D:\other_repo\docs/plans/a_v1.md" each fill planPath with
+// "docs/plans/a_v1.md", a different file from the one actually named, with
+// no signal that a rewrite happened. The excluded set covers the characters
+// a longer path or filename puts immediately before "docs": letters,
+// digits, ".", "_" and "-" (filename characters), "/" and "\" (path
+// separators, the second being the one this host's own paths carry), and
+// ":" (a drive-relative path such as "D:docs/plans/a_v1.md", which names a
+// file under that drive's own current directory rather than this repo's).
+// It is a set wide enough for the token shapes above rather than a proof
+// that no other character can precede a longer token.
+//
+// A shape guard cannot stand in for this edge. Every rewrite above yields a
+// capture that is itself well formed, so re-testing the capture against
+// PLAN_PATH_PATTERN passes it. The left edge is the only thing that refuses
+// a path belonging to another tree.
+//
+// The right edge is guarded by a class of its own, narrower than the
+// left's, in three parts. A filename character ends the match inside a
+// longer name. A "." followed by a letter or digit is a further extension,
+// so "docs/plans/a_v1.md.bak" names a different file. A "/" makes the match
+// a directory prefix of a longer path, as in "docs/plans/a_v1.md/notes". A
+// "." followed by anything else is ordinary sentence punctuation and stays
+// outside the capture, which is how a worker's own prose writes the path.
+export const PLAN_PATH_TEXT_PATTERN = /(?<![A-Za-z0-9._/:\\-])(docs\/plans\/[A-Za-z0-9][A-Za-z0-9._-]{0,250}?\.md)(?![A-Za-z0-9_-]|\.[A-Za-z0-9]|\/)/;
+
+// The plain-language form of PLAN_PATH_PATTERN, named in every goal_add
+// refusal so a worker sees the required shape rather than a regex literal.
+export const PLAN_PATH_REQUIRED_FORM =
+  'planPath must be a project-relative path of the form "docs/plans/<name>.md": ' +
+  "no leading slash, no drive letter, no further path segments, and a name " +
+  "starting with a letter or digit and using only letters, digits, \".\", \"_\" or \"-\".";
+
 // Default state (per persona)
 export function createDefaultState(persona: string, sessionId: string): AgentState {
   const now = Date.now();
@@ -348,6 +420,158 @@ export function createDefaultState(persona: string, sessionId: string): AgentSta
 // Serialize/deserialize
 export function serializeState(state: AgentState): string {
   return JSON.stringify(state, null, 2);
+}
+
+// Section 1 (plan-health-from-the-record): the store-load side of the plan
+// path. Runs once per load, on every version's exit, since a plan node can
+// come from a v2 store's migration as easily as a v4 one. Idempotent, one
+// test per step: the fill skips a node that already carries planPath, and
+// the recovery skips an entry that is not the exact frozen shape below, so
+// a second load over the same store changes nothing.
+//
+// Fill: a plan node loaded without planPath gets one from the first capture
+// of PLAN_PATH_TEXT_PATTERN in its title, then (only if the title held none)
+// its objective. A node naming no plan document in either field gains none.
+// Each field is read only when it is a string, since a stored node can lack
+// either one or hold a value of another type, and these call sites sit
+// outside the try that produces the "store could not be read" fallback: a
+// throw here stops the session coming up at all.
+//
+// Recover: a node frozen by the round budget - status "blocked",
+// blockedReason exactly "Max rounds reached" - and which HAS a plan by the
+// ancestor rule (Standing Brief Amendment: a plan entry is one that has a
+// plan by that rule, never one whose kind is "plan") returns to "pending"
+// with the reason cleared (undefined, the same absent value goal_resume's
+// own clear leaves behind) and completedRounds reset to 0, since a node left
+// at its maxRounds re-blocks on its first scored round. The ancestor rule
+// rather than kind is what it keys on: the scorer blocks the active LEAF and
+// a plan node with children is never the active leaf, so the frozen entry is
+// usually a task under a plan node, and no goal tool reopens a blocked entry.
+// resolvePlanPath is the same ancestor walk Section 2's reader uses, so both
+// sides of "has a plan" agree.
+//
+// A node is freed only where the freed entry can be consumed, on two tests.
+// The root must be live, because isActivationEligible exempts the root from
+// its status test, so otherwise a recovered entry is activatable under a root
+// that is complete, abandoned or blocked. That test reuses the exact three
+// statuses isPlanningDue already names, and the root is found the way every
+// other helper here finds it: state.goals.find(g => g.parentId === null).
+// And a freed node is consumed through a leaf. A childless node is that leaf.
+// A node WITH children is reached through them, since activateNext's DFS
+// filters each level on "pending", tries isActivationEligible on each
+// candidate and descends where it fails, so a pending parent yields its
+// pending leaf. Such a node is freed only when at least one child is pending
+// once this pass has been applied. Where every child is complete, abandoned
+// or still blocked, freeing it yields no activatable leaf while isPlanningDue
+// reads the pending node as work in hand and holds the planner back, so it
+// stays blocked.
+//
+// The fill and the recovery run as two passes over state.goals, and the
+// recovery is computed whole to a fixpoint before any of it is applied. The
+// recovery reads an ancestor's planPath through resolvePlanPath and that
+// ancestor can sit after the node in the array, and accepting one entry can
+// be what makes its parent's child test pass. Sweeping until a sweep accepts
+// nothing yields the least set satisfying both tests, independent of the
+// array's order, which nothing states or enforces. The bound is the node
+// count, since each sweep past the first accepts at least one node.
+//
+// The ancestors between a frozen entry and the root, excluding the root,
+// decide the recovery with it. A plan parent whose blockedReason is exactly
+// "Child task blocked" holds that status only from completeLeaf's upward walk
+// over a blocked child, so it is the same round budget one hop up and returns
+// to "pending" with the entry. An ancestor frozen by the round budget itself
+// and carrying a plan is freed on the same ground, its own child test
+// satisfied by construction since the entry beneath it becomes pending in the
+// same pass. Leaving either blocked would leave the entry pending and
+// reachable by nothing: isActivationEligible refuses a node whose ancestor is
+// not pending, activateNext's DFS filters each level on "pending" and so
+// never descends to it, and isPlanningDue reads the pending descendant as
+// work in hand and does not run the planner. An ancestor in any other state
+// refuses the whole recovery, and the chain is decided before any of it is
+// mutated, so a refusal high in the chain cannot leave the lower half
+// cleared.
+function blockedAncestorsToFree(state: AgentState, node: GoalNode): GoalNode[] | undefined {
+  const toFree: GoalNode[] = [];
+  let current = node;
+  // The walk is bounded by the node count, the same guard isActivationEligible
+  // and resolvePlanPath use against a parentId cycle.
+  let steps = state.goals.length;
+  while (current.parentId) {
+    if (steps-- <= 0) return undefined;
+    const parent = state.goals.find((g) => g.id === current.parentId);
+    // A missing parent is a chain activateNext's DFS from the root cannot
+    // walk down, so the entry would be unreachable freed.
+    if (!parent) return undefined;
+    if (parent.parentId === null) break; // the root, which the caller's own liveness test owns
+    if (parent.status === "blocked" && parent.blockedReason === "Child task blocked") {
+      toFree.push(parent);
+    } else if (parent.status === "blocked" && parent.blockedReason === "Max rounds reached"
+      && resolvePlanPath(state, parent) !== undefined) {
+      toFree.push(parent);
+    } else if (parent.status !== "pending" && parent.status !== "active") {
+      // "active" is accepted because enforceInvariants, which demotes an
+      // active node that has children, runs after this.
+      return undefined;
+    }
+    current = parent;
+  }
+  return toFree;
+}
+
+function applyPlanRecordOnLoad(state: AgentState): void {
+  for (const node of state.goals) {
+    if (node.kind === "plan" && !node.planPath) {
+      const fromTitle = typeof node.title === "string" ? node.title.match(PLAN_PATH_TEXT_PATTERN) : null;
+      const found = fromTitle
+        ? fromTitle[1]
+        : typeof node.objective === "string" ? node.objective.match(PLAN_PATH_TEXT_PATTERN)?.[1] : undefined;
+      if (found) node.planPath = found;
+    }
+  }
+
+  const root = state.goals.find((g) => g.parentId === null);
+  const rootIsLive = root !== undefined
+    && root.status !== "complete" && root.status !== "abandoned" && root.status !== "blocked";
+  if (!rootIsLive) return;
+
+  // Any entry with a plan by the ancestor rule, not just one whose kind is
+  // "plan". An entry with no plan keeps the round budget as its only signal.
+  const frozen = state.goals.filter(
+    (g) => g.status === "blocked" && g.blockedReason === "Max rounds reached"
+      && resolvePlanPath(state, g) !== undefined,
+  );
+
+  const toFree = new Map<string, GoalNode>();
+  // What a child's status will be once this pass has been applied.
+  const pendingAfterPass = (child: GoalNode): boolean =>
+    child.status === "pending" || toFree.has(child.id);
+
+  let sweeps = state.goals.length + 1;
+  let accepted = true;
+  while (accepted && sweeps-- > 0) {
+    accepted = false;
+    for (const node of frozen) {
+      if (toFree.has(node.id)) continue;
+      const children = state.goals.filter((g) => g.parentId === node.id);
+      // No child this pass leaves pending, so freeing this node yields no
+      // activatable leaf.
+      if (children.length > 0 && !children.some(pendingAfterPass)) continue;
+      const ancestors = blockedAncestorsToFree(state, node);
+      if (!ancestors) continue; // an ancestor in a state this cannot explain: the entry stays blocked
+      toFree.set(node.id, node);
+      for (const ancestor of ancestors) toFree.set(ancestor.id, ancestor);
+      accepted = true;
+    }
+  }
+
+  for (const node of toFree.values()) {
+    node.status = "pending";
+    // An entry the round budget froze is reset, since left at its maxRounds
+    // it re-blocks on its very first scored round. An ancestor blocked by its
+    // own child never spent a round of its own.
+    if (node.blockedReason === "Max rounds reached") node.completedRounds = 0;
+    node.blockedReason = undefined;
+  }
 }
 
 export function parseState(json: string): AgentState {
@@ -457,6 +681,8 @@ export function parseState(json: string): AgentState {
     };
 
     // L10: invariant block runs on both v2 and v3 branches.
+    // Section 1: fill/recover runs on every branch's exit; see the function.
+    applyPlanRecordOnLoad(state);
     enforceInvariants(state);
     return state;
   }
@@ -475,6 +701,7 @@ export function parseState(json: string): AgentState {
     if (!state.nudge) {
       state.nudge = { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 };
     }
+    applyPlanRecordOnLoad(state);
     enforceInvariants(state);
     return state;
   }
@@ -567,6 +794,8 @@ export function parseState(json: string): AgentState {
   }
 
   // L10: invariant block runs on both v2 and v3 branches.
+  // Section 1: fill/recover runs here too, on the already-v4 exit.
+  applyPlanRecordOnLoad(state);
   enforceInvariants(state);
   return state;
 }
@@ -673,6 +902,36 @@ export function isActivationEligible(state: AgentState, node: GoalNode): boolean
     current = parent;
   }
   return true;
+}
+
+// Section 1 (plan-health-from-the-record): the plan document a node is
+// judged against. A node's plan is its own planPath, or else the planPath
+// of its nearest ancestor that has one - so a task a worker adds under a
+// plan node is judged against that plan's document too. Returns undefined
+// for a task entry, one with no such ancestor. The walk is bounded by the
+// node count, the same guard isActivationEligible uses, since a parentId
+// cycle the tree's shape rules do not permit would otherwise spin here too.
+export function resolvePlanPath(state: AgentState, node: GoalNode): string | undefined {
+  return planHolderOf(state, node)?.planPath;
+}
+
+// The entry that holds the planPath a node is judged against: the node
+// itself, or else its nearest ancestor with one. This is the entry a plan
+// document's completion completes, which for a task under a plan node is
+// its parent. Returns undefined for a task entry. resolvePlanPath is this
+// walk's path; the two never diverge because one derives from the other.
+export function planHolderOf(state: AgentState, node: GoalNode): GoalNode | undefined {
+  if (node.planPath) return node;
+  let current: GoalNode | undefined = node;
+  let steps = state.goals.length;
+  while (current && current.parentId) {
+    if (steps-- <= 0) return undefined;
+    const parent: GoalNode | undefined = state.goals.find((g) => g.id === current!.parentId);
+    if (!parent) return undefined;
+    if (parent.planPath) return parent;
+    current = parent;
+  }
+  return undefined;
 }
 
 // M6: Activate the next pending leaf (a node with no children).
