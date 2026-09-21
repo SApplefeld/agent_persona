@@ -13491,8 +13491,7 @@ async function caseSection4_nudgedOnGoalResetsButCompleteMovesNothingOnAPlanEntr
   }
 }
 
-// Ruling (review round 1): a plan entry's complete verdict at the scorer
-// moves the counter not at all, so three nudged turns each scored complete,
+// A plan entry's complete verdict at the scorer moves the counter not at all, so three nudged turns each scored complete,
 // with the plan document's Chapter count never rising, trip the same
 // three-nudge stall pause three drift-labelled turns do.
 async function caseSection4_threeNudgedCompleteTurnsTripTheStallPause(clock) {
@@ -13548,8 +13547,7 @@ async function caseSection4_nudgedCompleteStillCompletesATaskEntry_control(clock
     state.activeGoalId === "task-2" && decisions.some(d => d.action === "activated" && d.detail.includes("task-2")), state.activeGoalId);
 }
 
-// Item 5 (review round 1, Minor fix): wasNudged is checked before the
-// channel/delivery skip, so a turn matched as a nudge is scored as a nudge
+// wasNudged is checked before the channel/delivery skip, so a turn matched as a nudge is scored as a nudge
 // whatever else it also carries - here, a channel-origin flag that
 // coincides with the nudge's own queued text.
 async function caseSection4_channelOriginNudgeIsStillScoredAsANudge(clock) {
