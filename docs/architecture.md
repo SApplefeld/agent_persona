@@ -6,7 +6,7 @@ This repository ships one Claude Code plugin and two outer loops around it. The 
 
 | Layer | Process | Owns | Reads | Writes |
 |---|---|---|---|---|
-| Plugin | `claude` (the child) | goal tree, memory, decision log, heartbeat, commons inbox, the fleet reading on the coordinator persona | its own store, the commons store, and on the coordinator persona the roster and every roster persona's `keeper.json` and `keeper.hold` | `<workdir>/.agentic-personas.json`, `.agentic-heartbeat.json`, the machine-global commons store |
+| Plugin | `claude` (the child) | goal tree, memory, decision log, heartbeat, commons inbox, the decision journal, the fleet reading on the coordinator persona | its own store, the commons store, the question override directory `<home>/.claude/agentic-questions/`, and on the coordinator persona the roster and every roster persona's `keeper.json` and `keeper.hold` | `<workdir>/.agentic-personas.json`, `.agentic-heartbeat.json`, the machine-global commons store, `<home>/.claude/agentic-decisions/<persona>/<YYYY-MM-DD>-<session>.jsonl` |
 | Supervisor | `bash bin/supervise.sh` | launch, poll, stop, relaunch of one child | the persona store, the heartbeat, the child's `stdout.jsonl`, the harness transcript's write time | `<rundir>/supervisor.log`, `supervisor.err`, `settings.json`, `child-N/` |
 | Keeper | `powershell.exe -File bin/Start-Persona.ps1` | relaunch, hold or exit on the supervisor's exit code | the roster, the env file, the supervisor's exit code and stderr | `<rundir>/keeper.log`, `keeper.json`, `keeper.hold`, `supervisor.out` |
 | Task Scheduler | `AgentPersona-<name>` | starting the keeper at boot, restarting it when the keeper itself fails | the task definition | the task's last-run result |
@@ -23,7 +23,7 @@ The fleet reading is the one channel that runs the other way. The coordinator pe
 2. The task's action runs `powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File <repo>/bin/Start-Persona.ps1 -Name <name> -Roster <roster> -EnvFile <envfile>`, every path absolute (`bin/Register-PersonaTasks.ps1:277-279`).
 3. The wrapper reads the roster entry (`Read-KeeperRoster`), resolves the run directory, and stops if a hold marker exists there.
 4. It applies the env file's allowlisted keys to its own process (`Set-KeeperEnvironment` in `bin/Start-Persona.ps1:144-182`), which pins `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP`, prepends `KEEPER_PATH_PREPEND` to `PATH`, and takes `KEEPER_BASH_EXE` as the bash to run.
-5. It builds the supervisor's argument list and environment from the entry (`Build-SupervisorInvocation`), sets `MODEL`, `EFFORT`, `controllerTickMs`, `COORDINATOR_PERSONA`, `ARCHITECT_PERSONA` and `FLEET_ROSTER` where the entry carries them, and launches `bash <repo>/bin/supervise.sh <workdir> <name> <permissionMode> [--rundir ...] [--channel-name ...] [args...]` with the repository root as the working directory.
+5. It builds the supervisor's argument list and environment from the entry (`Build-SupervisorInvocation`), sets `MODEL`, `EFFORT`, `controllerTickMs`, `COORDINATOR_PERSONA`, `ARCHITECT_PERSONA`, `FLEET_ROSTER` and `JEV_MODE` where the entry carries them, and launches `bash <repo>/bin/supervise.sh <workdir> <name> <permissionMode> [--rundir ...] [--channel-name ...] [args...]` with the repository root as the working directory.
 6. The supervisor checks its settings, gates on the persona being free in the commons store and the heartbeat file, launches `claude -p` as a coproc, and polls it. The child claims the persona, attaches to the Discord relay thread, and idles until a goal arrives.
 7. When the supervisor exits, the wrapper appends the supervisor's stdout and stderr to `<rundir>/supervisor.out`, writes `keeper.json`, logs a `DECIDE` line, and either sleeps and relaunches, writes `keeper.hold` and exits 0, or exits 0 with no marker.
 
@@ -110,7 +110,27 @@ Both settings reach the child through `<rundir>/settings.json`. The supervisor e
 
 The seats themselves are instruction text the supervisor writes at priming. A launch whose persona equals `coordinatorPersona` gets the coordinator role instruction, which carries the fleet duty, the kit Coordinator seat and the design-escalation clause. A launch whose persona equals `architectPersona` gets the architect's charter instead: design work only, no standing goal, worktrees cut under its own directory, and a plan handed back through the coordinator persona. That launch is also the one that takes neither the skill-load sentence nor the coordinator steer sentence: both are cleared to the empty string for it (`bin/supervise.sh:2813-2814`), because the charter already states which skills a design ask takes and what it does with a coordinator record. `architectPersona` has no default, so a fleet that names no architect builds that charter for nobody and the escalation clause for nobody.
 
-Which class a fleet row takes, the order the five are tried in, and how the two words they share with a row's own `action` field behave are stated once, in the `fleet_status` tool description (`hooks/index.ts:2158-2172`). The `[FLEET]` prompt frame and `README.md` point there rather than restating it, because a session calling the tool holds that description and holds no file in this repository.
+Which class a fleet row takes, the order the five are tried in, and how the two words they share with a row's own `action` field behave are stated once, in the `fleet_status` tool description (`hooks/index.ts:2364-2401`). The `[FLEET]` prompt frame and `README.md` point there rather than restating it, because a session calling the tool holds that description and holds no file in this repository.
+
+That description states the rules a caller acts on and leaves the reasons here, because the engine refuses a tool description over 4,096 characters and the refusal throws out of the `session.start` hook every registration sits in. `.kit/tool-description-length-test.mjs` holds every registered description to 4,000.
+
+### Why a row's keeper standing reads as it does
+
+`keeper.json` is written after a supervisor exit and never at a launch. Three of the description's rules follow from that one fact.
+
+- A live claim under no hold marker reads `running` whatever the file records, because the file describes the exit before this session and not the session itself. A `running` row therefore carries no keeper standing in its `action`, and `nextDelaySeconds` and `note` are where one reads from.
+- A signalled exit and a live claim together are settled on the clock. A claim last seen before that exit is the session that took the signal, so the row reads `stopped`. A claim last seen after it is a session that started since, so the row reads `running`. Where the exit carries no timestamp that can be read, the claim decides, the row reads `running`, and its note says the exit could not be placed against the claim.
+- The file records the next rung of the keeper's delay ladder and no timer. `nextDelaySeconds` is therefore the delay the keeper applies after the persona's next crash, and how long a persona waiting to relaunch has left cannot be read from the row.
+
+### Two vocabularies over one row
+
+A row's `action` and its health class are two vocabularies. `action` is the keeper standing alone. The five health classes are a second vocabulary, derived from the row's fields, naming a whole row in one reading, and they are what a `[FLEET]` prompt's lines carry.
+
+`stale` has three grounds. The first is tried second in the order: the action reads `stopped` and a live session holds the claim. The other two come out of what is left once the first four classes have been tried: a commons entry still standing for a persona the roster disables and nothing live holds, and a live claim whose row carries any note but an unwritten `keeper.json`.
+
+`backing off` is read before `no live claim while the roster enables it` and before that remainder, so a row with no live claim whose delay has climbed reads `backing off` rather than either of them.
+
+`held` means the same in both vocabularies, a hold marker being what sets it either way. `backing off` does not. Once a claim is live the action reads `running` for every keeper standing but `held`, and but a stop the clock settles against the claim, while the health class still reads `nextDelaySeconds` against the base. So a row whose action reads `running` carries the `backing off` class wherever that delay has climbed.
 
 ## Injected text and its guard
 
@@ -118,16 +138,16 @@ Two files write text into a child session that nobody typed: `bin/supervise.sh` 
 
 ### What is injected, and how large
 
-`.kit/injection-ledger.json` is the committed size baseline, 39 entries totalling 28,663 characters. Ten entries come from `bin/supervise.sh` and total 13,046; twenty-nine come from `hooks/index.ts` and total 15,617, of which the fourteen registered tool descriptions are 11,307.
+`.kit/injection-ledger.json` is the committed size baseline, 39 entries totalling 27,532 characters. Ten entries come from `bin/supervise.sh` and total 13,046; twenty-nine come from `hooks/index.ts` and total 14,486, of which the fourteen registered tool descriptions are 10,176.
 
 | What a launch reads | Characters |
 |---|---|
 | A worker with a channel: skill-load, coordinator steer, reply-tool | 2,474 |
 | The coordinator: those three plus the coordinator role instruction | 7,193 |
 | The architect: reply-tool plus its charter, the other two cleared | 5,908 |
-| The fourteen tool descriptions, registered into every session | 11,307 |
+| The fourteen tool descriptions, registered into every session | 10,176 |
 
-`fleet_status` alone is 4,926 of that last row, because the five health-class definitions live in it and every other surface points there. It registers into every session whatever the persona, including a worker that cannot call it.
+`fleet_status` alone is 3,795 of that last row, because the five health-class definitions live in it and every other surface points there. It registers into every session whatever the persona, including a worker that cannot call it.
 
 The startup message is assembled at one `printf` (`bin/supervise.sh:2862`) from `SKILL_LOAD_INSTRUCTION`, `COORDINATOR_STEER_INSTRUCTION`, `COORDINATOR_ROLE_INSTRUCTION`, `ARCHITECT_ROLE_INSTRUCTION`, `CHANNEL_REPLY_INSTRUCTION` and the priming body. Each is empty for the launch shapes it does not apply to. The reply-tool instruction is built only with a channel attached, and it states the operator-writing rules inline rather than by pointer alone: four of the five persona launch directories hold no `CLAUDE.md`, so a pointer at that file reaches one persona of five. Its closing sentence points there for the rules the kit doctrine carries, where the child's own working directory holds the file.
 
@@ -174,6 +194,7 @@ The hung check corroborates a stale heartbeat against the harness transcript's o
 - **`claude` CLI**: the supervisor's child, launched with stream-json on both ends. `KEEPER_PATH_PREPEND` is what makes it and `node` resolvable under a task with no user `PATH`.
 - **Discord relay** (`D:/discord-channels`): the child attaches to a thread named `supervisor-<persona>`, or the roster's `channelName`, unless `args` carries `--no-channel`.
 - **The commons store**: machine-global, one per installed plugin; the supervisor's pre-launch gate reads it for a live claim on the persona, and the plugin's inbox path runs through it.
+- **TypeSafe** (`https://api.typesafe.ai/v1/systemone`): the plugin's one direct HTTP call. The decision seam puts each of the four closed questions the plugin asks Haiku to Jev, TypeSafe's classifier, in shadow, and journals the answer. Authenticated with `TYPESAFE_API_KEY` from the child's own environment, which no file in this repository sets. `jevMode` `off` makes no call at all. `README.md` under Decision seam states what each call sends.
 
 ## Failure modes by layer
 
@@ -190,5 +211,7 @@ The hung check corroborates a stale heartbeat against the harness transcript's o
 | The steward reports no fleet, and `fleet_status` says it has no roster | `<rundir>/settings.json` for `fleetRoster` under the id this load mode uses | the roster entry carries no `fleetRoster`, or an existing settings file predates it and the supervisor kept that file |
 | A worker's escalation reaches a persona nobody holds | `<rundir>/settings.json` for `coordinatorPersona`, and the worker's own launcher | the worker was launched on the default `coordinator` name, from a hand launcher carrying no `COORDINATOR_PERSONA` or from a settings file written before the cutover |
 | No design ask is ever routed, and the architect launches with a worker's shape | `<rundir>/settings.json` for `architectPersona` | the key is absent, which is a launch with no architect; the setting has no default and a misspelled roster key is silent |
+| No decision journal appears under `<home>/.claude/agentic-decisions/<persona>/` | `<rundir>/settings.json` for `jevMode` under the id this load mode uses, then `USERPROFILE` and `HOME` in the child's environment | the mode is `off`, which sends nothing and writes nothing; or the home the plugin resolved is not the one being looked in, `USERPROFILE` winning over `HOME` where both are set |
+| Every `call` line reads `result` `no_key` | the `result` and `detail` columns of the day's journal file | `TYPESAFE_API_KEY` is absent from the child's environment, or is shorter than 16 characters once trimmed. It is not a settings option, not a roster field, and not in the keeper env file's allowlist, so only the environment the supervisor's child inherits can carry it |
 
 Whether `Stop-ScheduledTask` ends the whole process tree under an S4U task is not measured on this machine, and the wrapper has no stop path of its own. `README.md` under Process keeper states the stop options that are known to work.

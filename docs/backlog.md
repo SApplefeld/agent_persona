@@ -323,3 +323,59 @@ The failure output was not captured. The command that produced the red kept only
 The red is therefore unreproduced rather than explained, and it is deliberately not recorded as a flake. One sample cannot distinguish a genuine intermittent failure from a condition nobody has identified, and the conditions that differed on the red run were not isolated: it ran inside a backgrounded shell immediately after `node .kit/controller-tick-test.mjs`, with the live fleet holding five `claude` processes on the box. The sequence itself was tested and did not reproduce it, which rules out the sequence alone and leaves memory pressure and the preceding node run untested as causes.
 
 The cost lands on `docs/plans/agent_persona_deferred-gate-run_v1.md`, whose whole job is one full pass over every suite. A suite that fails once in eight runs for an unknown reason will most likely surface during that pass, where it will read as a regression against the plans the pass is attributing reds to. Remedy: capture full output per suite in that run, and where this suite reds again, keep the artifact and compare its failing assertion against this entry before attributing it to any plan's diff.
+
+## A persona named after an Object prototype member reads a function out of the state store (found 2026-09-20)
+
+`hooks/index.ts:2336` reads `existing[sess.persona]` straight out of a `JSON.parse` result with no own-property guard, and `hooks/index.ts:2366` repeats the shape. The persona name is outside-supplied text held only to `/^[A-Za-z0-9_-]+$/`, validated at `bin/agentic-common.sh:396` and again at `:448`. That pattern admits `constructor`, `valueOf`, `toString`, `hasOwnProperty` and `__proto__`, so a persona under any of those names resolves to a member of `Object.prototype` rather than to a stored state, and the lookup reads truthy.
+
+The session then takes the `existingPersona` branch and calls `parseState(JSON.stringify(existingPersona))` at `hooks/index.ts:2358`. `JSON.stringify` of a function returns `undefined`, so the parse is handed nothing and throws out of `session.start`. A throw there is the failure the comment block at `hooks/index.ts:2295-2306` was written to prevent: the child comes up with no tools registered, no heartbeat and no controller tick, and the refusal is silent from the model's side.
+
+Reaching it needs a persona named after a prototype member, which no fleet entry uses today, so this is a latent defect rather than a live one. Remedy: guard both reads with `Object.hasOwn(existing, sess.persona)`, or reject the reserved names where the persona is validated.
+
+Raised by the round 4 adversarial lens over the decision-seam plan's Section 2 and confirmed here against the cited lines. It is out of that section's scope, whose `hooks/index.ts` allowance is one import and three label literals, and it predates that plan.
+
+## The shared log append helper serializes nothing, so two overlapping appends drop a line (found 2026-09-20)
+
+`appendLines` at `hooks/index.ts:605-612` appends by reading the whole file and rewriting it, with nothing serializing two calls on one path. Two appends started before either write lands both read the same prior content, and the second write replaces the first, so one line is lost with no error on either path.
+
+Three sites reach it. The channel log's four callers go through the `appendToChannelLog` wrapper at `hooks/index.ts:615`, and both yield-log writers call the helper directly at `:626` and `:1498`. The yield-log pair is the reachable one: `yieldNow` runs on the heartbeat tick and the commons-arbitration branch runs inside a persisted write, and nothing orders those two against each other.
+
+The defect predates the decision-seam plan, whose Section 3 generalized the helper to take a path without changing how it writes. That section's allowance for `hooks/index.ts` is three regions, and a chain would change shipped behaviour for four call sites outside them, so it was routed here rather than folded.
+
+Remedy: key a promise chain per path inside the helper, as `hooks/decision-journal.ts` does at its own `chained` function, which exists for exactly this reason and is pinned by a control that turns three assertions red when the chain is removed.
+
+Raised by the round 1 blind lens over the decision-seam plan's Section 3 and confirmed here by reading the helper, which holds no chain, no lock and no queue.
+
+## The decision seam discards a whole shadow measurement over one unoffered probability key (found 2026-09-20)
+
+`hooks/decision-seam.ts:250` refuses the vendor's answer outright when its probability map carries any key outside the option ids the request offered. The refusal lands as the `parse` failure reason, so the call records no choice, no distribution and no confidence, and the shadow measurement for that tick is lost rather than degraded.
+
+The strictness has a real ground, stated in the code's own comment: the request carries the caller's ids and nothing else, so refusing an unoffered key bounds the map and stops a body answering with a hundred thousand keys from reaching a journal line, where one append rewrites the whole day's file. That bound is worth keeping.
+
+What is questionable is the disposition rather than the check. The plan defines `parse` as a body that is not JSON, or JSON missing the answer for a question that was asked, and an unoffered probability key is neither, so the refusal widens a reason the plan closed at eleven members. The validation is also asymmetric: a body carrying `probabilities: {}` resolves as a good measurement, pinned at `.kit/decision-seam-unit-test.mjs:343`, so an answer with no distribution at all is recorded while one with an extra bucket is thrown away.
+
+Whether the vendor can emit an unoffered key is unverified. `https://docs.typesafe.ai/api.md` was not read when this was raised, and reading it is the first step of any remedy.
+
+Remedy: drop the unoffered keys, keep the count bound the comment wants, and record the drop in the call line's `detail` field, rather than failing the whole call. That keeps both the bound and the measurement.
+
+Raised by the round 6 adversarial lens over the decision-seam plan's Section 3 and confirmed here against the cited line. It was not fixed in that section on the operator's decision of 2026-09-20 to close the section rather than take a further review round, the finding naming a tradeoff rather than a break.
+
+## A state that cannot be converted is journaled as a measurement of the empty string (found 2026-09-20)
+
+`hooks/decision-seam.ts` converts the caller's state with the guarded `safeString` helper and falls back to the empty string where the conversion throws. The call then proceeds: an empty state goes to the vendor, tokens are spent on it, and the journal records a `call` line whose `state` is `""` with the hash of `""`. A reader cannot tell that line from a real measurement of a genuinely empty state.
+
+The path is unreachable from the four typed call sites this plan wires, all of which pass a string. It becomes reachable if a later plan passes a host-supplied value as state.
+
+Remedy: return a failure on the conversion's fallback path, or carry a null state so the line reads as a call that measured nothing, which is the shape the plan already gives a call that read no key.
+
+Raised by the round 6 adversarial lens over the decision-seam plan's Section 3 and confirmed here by reading the fallback. Not fixed in that section under the same operator decision as the entry above.
+
+## `costEnabled` is read but has no emit path, so a value the operator sets never reaches the plugin (found 2026-09-20)
+
+`costEnabled` is read at `hooks/index.ts:2035` as `cfg.costEnabled !== false`, so a session turns the cost ledger's master switch off only where the settings file's own options object carries `costEnabled: false`. No emitter ever writes that key.
+
+`emit_settings_json` in `bin/agentic-common.sh` carries every other cost option from a `COST_*` environment variable: `costSummaryEveryNTicks`, `costMaxNudgesPerHour`, `costMaxPluginCallsPerHour`, `costBackoffAfterTicks` and `costBackoffMaxMs`. It carries none for `costEnabled`. So an operator setting `COST_ENABLED=false`, or adding a roster field meant to carry it, has nothing for the value to travel on. It never reaches a launched child, and every session runs with the ledger's caps and its idle skip on.
+
+Remedy: add a `COST_ENABLED` branch to `emit_settings_json` beside the other `COST_*` options, and a roster field with a keeper map entry if the roster is meant to set it.
+
+Raised while documenting the decision seam, whose own `jevMode` option travels all five surfaces an option needs to reach a launched child and so cannot fall into this gap: the manifest declaration, the roster field, the keeper environment map onto `JEV_MODE`, the `emit_settings_json` branch that writes a new settings file, and `ensure_settings_jev_mode` for a run directory that already holds one. The root `README.md` counts six rather than five, the sixth being the plugin's own read of the option, which is the consumption point rather than a delivery leg and is what decides the effective default. `costEnabled` travels none of them, not even the manifest, where it is not declared at all. Confirmed here against the cited line, against the emitter, which carries no such branch, and against the manifest, which holds no such key.

@@ -226,8 +226,8 @@
     {
       "name": "fleet_status_description",
       "file": "hooks/index.ts",
-      "chars": 4926,
-      "words": 841
+      "chars": 3795,
+      "words": 641
     },
     {
       "name": "agentic_resolve_description",

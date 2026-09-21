@@ -351,6 +351,15 @@ else
     echo "ERROR: could not complete $SETTINGS_FILE; see $LOG" | tee -a "$LOG" >&2
     exit 1
   fi
+  # The emit branch above writes jevMode from JEV_MODE. This branch writes
+  # nothing, so without the call below a roster that turns the decision seam
+  # off would reach no persona that has ever launched, the run directory
+  # already holding a settings file. That is the shape the kill switch exists
+  # to avoid, so the value is carried onto the provided file too.
+  if ! ensure_settings_jev_mode "$SETTINGS_FILE" 2>>"$LOG"; then
+    echo "ERROR: could not complete $SETTINGS_FILE; see $LOG" | tee -a "$LOG" >&2
+    exit 1
+  fi
   # The emit branch above exports COORDINATOR_PERSONA from the value it
   # writes. This branch writes nothing, so the name is read back from the
   # provided file under the plugin's own rule, and the coordinator-role

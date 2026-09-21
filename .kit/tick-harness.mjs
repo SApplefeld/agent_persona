@@ -25,6 +25,39 @@ const HEARTBEAT_FILE = `${HARNESS_CWD}/.agentic-heartbeat.json`;
 const PERSONA_STORE_FILE = `${HARNESS_CWD}/.agentic-personas.json`;
 const YIELD_LOG_FILE = `${HARNESS_CWD}/.agentic-yields.log`;
 
+// The home the decision journal and the question overrides resolve under.
+// Seeded into every fake's environment, because the plugin runs with the
+// seam's default mode and a host that can name no home turns every shadow
+// call into a failed journal write, which is a state no supervised persona is
+// in and which would hide the writes these cases read.
+const HARNESS_HOME = "D:/harness-home";
+
+// The path fragment every decision journal file sits under, whatever home it
+// was resolved against.
+const JOURNAL_MARK = "/.claude/agentic-decisions/";
+
+// The home one case resolves its journal and overrides under. It is per case
+// because only hooks/index.ts is reloaded per case: the query string that
+// makes it fresh does not reach its own imports, so hooks/decision-journal.ts
+// is one shared module instance for the whole run, and its per-path write
+// chain and its per-path state dedup are shared with it. Two cases resolving
+// one path would queue their writes behind each other and would read each
+// other's last state, which is a property of this suite's module loading and
+// of nothing a supervised persona does.
+// Isolation is per NAMED case. A case built without a caseName shares the
+// "default" home with every other unnamed case, and so shares the journal
+// module's per-path write chain, its state dedup and its day latch. No
+// unnamed case reads the journal today, so nothing is red, but the sharing
+// is real and the next author adding a journal-reading case has to name it.
+function homeFor(caseName) {
+  return `${HARNESS_HOME}/${caseName || "default"}`;
+}
+
+// A value long enough to clear the seam's 16-character key floor, so a case
+// setting it drives the request path rather than the absent-key one. No part
+// of it is a real key.
+const JEV_FAKE_KEY = "harness-fake-key-0000000000";
+
 // AO1: Resolve hook - when specifier starts with "./", has no extension, and
 // parent URL is under hooks/, append ".ts" and defer to next resolver.
 const resolveHook = (specifier, context, nextResolve) => {
@@ -54,6 +87,9 @@ function createFake$(opts = {}) {
   // reads this rather than a path it would have to name itself: a path that
   // was never written and a path the case guessed wrong read the same way.
   const fsWrites = [];
+  // Every path a refusal turned away, and the predicate deciding which.
+  const fsWriteRefusals = [];
+  let writeRefusal = null;
   const promptSubmits = [];
   // The texts of accepted submits whose turn has not opened yet, in
   // submission order. A turn.start a case fires without `text` takes the
@@ -68,6 +104,92 @@ function createFake$(opts = {}) {
   const completeCalls = [];
   let completeValue = opts.completeValue ?? "[]";
   const uiLogs = [];
+  // Every $.http.fetch call, in order, as { url, init }. The decision seam's
+  // kill switch is pinned by this list staying empty, which is a stronger
+  // reading than any assertion on what a request would have carried.
+  const httpCalls = [];
+  // What the next fetches resolve with: an HttpResponse-shaped object
+  // ({ status, ok, headers, text }), or a function of (url, init) returning
+  // a promise, so a case can hang, reject, or answer from the request it was
+  // handed. The default answers 200 with an empty answers map, which the
+  // seam reads as a parse failure: a case that forgot to set a response sees
+  // a settled, visible result rather than a hang.
+  let httpResponse = {
+    status: 200,
+    ok: true,
+    headers: {},
+    text: '{"model":"jev-fake","answers":{},"usage":{"input_tokens":0,"output_tokens":0}}',
+  };
+  // The environment $.env.get reads, and every name read, in order. It holds
+  // a home by default and no TYPESAFE_API_KEY, which is the shape of a VM the
+  // operator has not given a key: the seam reads no key and sends nothing,
+  // while the journal can still name a file to write its line to. A case
+  // driving a real request sets the key itself through setEnv.
+  const envMap = new Map([["USERPROFILE", homeFor(opts.caseName)]]);
+
+  // The suite-wide Jev sweep. Section 5 accepts on "every existing case
+  // passes unchanged with Jev faked to fail, to hang, and to answer the
+  // opposite of Haiku", and the default above cannot deliver that: with no
+  // key the seam stops at its absent-key guard, so an existing case never
+  // reaches any fake and the three drives would be proved over the handful
+  // of cases that seed a key themselves. JEV_SUITE_FAKE seeds the key and
+  // one fake into every harness the suite builds, so one run of the whole
+  // suite under each value is what the bullet actually asks for.
+  //
+  // A case that sets its own response through setHttpResponse still wins,
+  // since this only moves the default. That is what keeps the section's own
+  // cases meaningful under a sweep run.
+  const suiteFake = process.env.JEV_SUITE_FAKE;
+  if (suiteFake) {
+    // Sixteen characters is the seam's floor for a usable bearer token, and
+    // a shorter value would be treated as absent and defeat the sweep.
+    envMap.set("TYPESAFE_API_KEY", "jev-suite-sweep-key-0000");
+    if (suiteFake === "fail") {
+      httpResponse = { status: 429, ok: false, headers: {}, text: "" };
+    } else if (suiteFake === "hang") {
+      // Never settles. Nothing in the harness fires a sleep on its own, so
+      // the seam's own timer does not rescue this either: the call stays
+      // pending for the life of the case, which is the point.
+      httpResponse = () => new Promise(() => {});
+    } else if (suiteFake === "opposite") {
+      // Answers every question with the LAST option id the request offered.
+      // Stated plainly rather than as "the opposite of Haiku": this fake
+      // cannot see Haiku's value, so where the plugin itself chose the last
+      // option the two agree. What the sweep proves is that a well-formed
+      // answer the plugin did not author changes nothing, across every case
+      // rather than across one drive shape. The six cases written for this
+      // section drive true opposition at a known site and keep that job.
+      httpResponse = (url, init) => {
+        let body;
+        try { body = JSON.parse(String(init && init.body)); } catch { body = null; }
+        const questions = body && body.questions;
+        const answers = Object.create(null);
+        if (questions && typeof questions === "object") {
+          for (const [qid, q] of Object.entries(questions)) {
+            const ids = q && q.criteria && typeof q.criteria === "object" ? Object.keys(q.criteria) : [];
+            if (!ids.length) continue;
+            const pick = ids[ids.length - 1];
+            const probabilities = Object.create(null);
+            for (const id of ids) probabilities[id] = id === pick ? 1 : 0;
+            answers[qid] = { type: "choice", choice: pick, probabilities, confidence: 1 };
+          }
+        }
+        return {
+          status: 200,
+          ok: true,
+          headers: {},
+          text: JSON.stringify({ model: "jev-suite-sweep", answers, usage: { input_tokens: 1, output_tokens: 1 } }),
+        };
+      };
+    } else {
+      throw new Error(`JEV_SUITE_FAKE must be fail, hang or opposite; got ${suiteFake}`);
+    }
+  }
+  const envGets = [];
+  // Every $.clock.sleep call, in order, each holding its own resolve and
+  // reject so a case decides when a timer fires. Nothing fires on its own,
+  // which is what lets a case pin the race between a request and its timer.
+  const sleeps = [];
   // Non-null while prompt submissions are held open; every submit issued in
   // that window returns this same promise and parks on it.
   let submitHold = null;
@@ -95,6 +217,12 @@ function createFake$(opts = {}) {
       status() {},
       toast() {},
     },
+    // A Map keyed on the raw path string, relative or absolute, with no
+    // directory model: a write to an absolute path under a directory nothing
+    // has created lands like any other. That is the real $.fs.write's
+    // behavior too (it creates the file and its directories as needed), so
+    // a module writing journal or catalog files under an absolute <home>
+    // path reads the same here as on the engine.
     fs: {
       exists(p) { return Promise.resolve(fsMap.has(p)); },
       read(p) {
@@ -102,6 +230,15 @@ function createFake$(opts = {}) {
         return Promise.resolve(fsMap.get(p));
       },
       write(p, content) {
+        // A case can refuse a write by path, which is the only way to drive
+        // the journal's once-a-day failure latch and the one decision the
+        // shadow wiring is allowed to push. A refusal rejects rather than
+        // returning false, because that is what a real filesystem does and
+        // what the journal's own writers are written to survive.
+        if (writeRefusal && writeRefusal(p)) {
+          fsWriteRefusals.push(p);
+          return Promise.reject(new Error("EACCES: " + p));
+        }
         const text = typeof content === "string" ? content : JSON.stringify(content);
         fsMap.set(p, text);
         fsWrites.push({ path: p, content: text });
@@ -181,6 +318,23 @@ function createFake$(opts = {}) {
         clockEveryCallbacks.push({ intervalMs, fn });
         return 0;
       },
+      now() { return Date.now(); },
+      sleep(ms) {
+        return new Promise((resolve, reject) => { sleeps.push({ ms, resolve, reject }); });
+      },
+    },
+    http: {
+      fetch(url, init) {
+        httpCalls.push({ url, init });
+        const r = httpResponse;
+        return typeof r === "function" ? Promise.resolve().then(() => r(url, init)) : Promise.resolve(r);
+      },
+    },
+    env: {
+      get(name) {
+        envGets.push(name);
+        return Promise.resolve(envMap.get(name));
+      },
     },
     store: {
       // A copy, as the real store hands back a parsed JSON value: a plugin
@@ -211,6 +365,8 @@ function createFake$(opts = {}) {
   fake.promptSubmits = promptSubmits;
   fake.toolCalls = toolCalls;
   fake.uiLogs = uiLogs;
+  fake.httpCalls = httpCalls;
+  fake.envGets = envGets;
 
   return {
     fake,
@@ -225,7 +381,27 @@ function createFake$(opts = {}) {
     classifyCalls,
     completeCalls,
     uiLogs,
+    httpCalls,
+    envGets,
+    sleeps,
     setClassifyValue(v) { classifyValue = v; },
+    // What every subsequent $.http.fetch resolves with: a response object,
+    // or a function of (url, init) returning a promise.
+    setHttpResponse(v) { httpResponse = v; },
+    // Refuse every write whose path the predicate accepts. Pass null to lift.
+    setWriteRefusal(predicate) { writeRefusal = predicate; },
+    fsWriteRefusals,
+    // Set (or, with undefined, unset) a variable $.env.get reads.
+    setEnv(name, value) {
+      if (value === undefined) envMap.delete(name); else envMap.set(name, value);
+    },
+    get pendingSleepCount() { return sleeps.length; },
+    // Resolve the oldest pending $.clock.sleep, the way the host's timer
+    // would fire it. Called once per timer, so a case chooses the order.
+    fireSleep() {
+      const s = sleeps.shift();
+      if (s) s.resolve();
+    },
     setCompleteValue(v) { completeValue = v; },
     resetClassifyCalls() { classifyCalls.length = 0; },
     resetCompleteCalls() { completeCalls.length = 0; },
@@ -274,6 +450,73 @@ function createFake$(opts = {}) {
     get heartbeatTick() {
       return clockEveryCallbacks.length >= 1 ? clockEveryCallbacks[0].fn : null;
     },
+  };
+}
+
+// --- Fake PluginHost ---
+
+// The PluginHost hooks/index.ts builds over $ in its top-level hostOf,
+// built here over the fake $, member for member (hooks/host.ts declares the
+// members). Each closure reads the fake at call time, so a case that
+// replaces h.fake.http.fetch or h.fake.clock.sleep after this is still what
+// the module under test reaches. A module that takes a Pick of PluginHost
+// takes this whole object; the extra members are simply unread.
+function fakeHostOf(h) {
+  return {
+    getApiKey: () => h.fake.env.get("TYPESAFE_API_KEY"),
+    getHome: () => h.fake.env.get("USERPROFILE").then((v) => v || h.fake.env.get("HOME")),
+    readFile: (p) => h.fake.fs.read(p),
+    writeFile: (p, text) => h.fake.fs.write(p, text),
+    fileExists: (p) => h.fake.fs.exists(p),
+    fetch: (url, init) => h.fake.http.fetch(url, init),
+    sleep: (ms) => h.fake.clock.sleep(ms),
+  };
+}
+
+// --- Decision journal reads ---
+
+// Every journal line the plugin has written under the harness home, parsed, in
+// file order. It reads the fake fs rather than a path a case names itself,
+// because a path that was never written and a path a case guessed wrong read
+// the same way. A line that is not JSON is returned as { unparsed }, so a
+// malformed write is visible rather than thrown over.
+function journalLines(h) {
+  const out = [];
+  for (const [path, content] of h.fsMap) {
+    if (!path.includes(JOURNAL_MARK)) continue;
+    for (const line of content.split("\n")) {
+      if (line.trim().length === 0) continue;
+      try {
+        out.push(JSON.parse(line));
+      } catch {
+        out.push({ unparsed: line });
+      }
+    }
+  }
+  return out;
+}
+
+// The journal lines of one kind, in file order.
+function journalLinesOfKind(h, lineKind) {
+  return journalLines(h).filter((line) => line.lineKind === lineKind);
+}
+
+// An HttpResponse-shaped answer to one Choice question, the shape the seam
+// validates. `choice` is the option id Jev picked; the distribution puts the
+// whole mass on it, which is a well-formed answer and not a claim about what
+// Jev would really return.
+function jevChoiceResponse(questionId, choice, optionIds) {
+  const probabilities = {};
+  for (const id of optionIds) probabilities[id] = id === choice ? 1 : 0;
+  return {
+    status: 200,
+    ok: true,
+    headers: {},
+    text: JSON.stringify({
+      model: "jev-fake",
+      answers: { [questionId]: { type: "choice", choice, probabilities, confidence: 0.9 } },
+      usage: { input_tokens: 11, output_tokens: 2 },
+    }),
   };
 }
 
@@ -480,6 +723,7 @@ async function createTickHarness(options = {}) {
 export {
   createTickHarness,
   createFake$,
+  fakeHostOf,
   stubDateNow,
   makeState,
   makeGoalNode,
@@ -488,8 +732,14 @@ export {
   fireHeartbeat,
   seedPersonaStore,
   loadModule,
+  journalLines,
+  journalLinesOfKind,
+  jevChoiceResponse,
   SESSION_ID,
   HARNESS_CWD,
+  HARNESS_HOME,
+  JOURNAL_MARK,
+  JEV_FAKE_KEY,
   HEARTBEAT_FILE,
   PERSONA_STORE_FILE,
   YIELD_LOG_FILE,

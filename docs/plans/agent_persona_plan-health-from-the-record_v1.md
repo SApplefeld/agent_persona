@@ -582,3 +582,15 @@ Delta: 2026-09-21 on SCOTT-CLAUDE, worktree at the closing tree of Section 4 bef
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 10 - 2026-09-21
+
+In-flight sections: Section 5, at its precondition. Sections 1 through 4 closed at `a39a538`, `6887209`, `24ab378` and `54bf5e4` with Chapters 1 to 4; this entry carries no `Completed:` line.
+
+Section 5's precondition. Its body says to rebase onto trunk first and check that `hooks/decision-seam.ts`, `hooks/question-catalog.ts` and `hooks/decision-journal.ts` exist there. All three exist on `origin/main` at `21a5ee2`, read directly. This branch was cut before the decision seam merged, so it lacked all three. A rebase would rewrite the pushed `plan-health-build` and need a force push, which stays outside this run's authority, so trunk is merged into the branch instead, following the decision seam plan's own precedent (its commit `cfc692b`). Declared deviation from the body's word "rebase"; the precondition it serves holds either way. The merge conflicted in two files: `hooks/index.ts`, resolved by keeping this branch's scorer (the skips, the plan-entry gates, the re-indented block) and splicing in trunk's four scorer changes (the label constants, the shadow classifier call over the same bytes, its outcome joiner, and the joiner reset in the catch); and `.kit/controller-tick-test.mjs`, resolved as the union of both import lines. `npx tsc --noEmit` exit 0 on the resolved tree.
+
+Live dispatches: the enumerated offline roster on the merged tree, under this session's claim, since a merge takes the whole gate.
+
+Next action: read the roster; commit the merge where every lane is green, or root-cause a red first; push; then build Section 5.
+
+Commit Model: Branch-and-PR
