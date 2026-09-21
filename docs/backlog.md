@@ -1,5 +1,13 @@
 # Backlog
 
+## The decision journal rewrites its whole day file for every line (found 2026-09-21)
+
+`hooks/decision-journal.ts` appends a line by reading the day's file, adding the line and writing the file back, one line at a time on one serialized chain. A plan entry's turn end now writes seven lines through it: one call line, three answer lines and three outcome lines. The call line carries up to about 6 KB of state that changes every turn, so the per-site dedup never fires for it. The day's total I/O therefore grows with the square of that day's turns, which at 300 plan-entry turns is on the order of gigabytes read and written per persona per day. It runs off the awaited path, so no turn waits on it. Remedy: have the answer writer append its lines in one write, or add an append operation to the host's file API so a line costs its own bytes. Raised by the plan-health plan's finishing performance review and deferred there, since it is the journal module's existing write shape rather than this plan's.
+
+## The tick suite waits on real timers beside its fake clock (found 2026-09-21)
+
+`.kit/controller-tick-test.mjs` rose from about 38 s to about 60 s across the plan-health plan while gaining about 650 checks. Several added cases wait on real time: a 20 ms sleep per round in the nudge race driver, several 60 ms waits, and a 5,000 ms race timer in the hung-request case that is never cleared and is harmless only because the suite ends in `process.exit`. Remedy: replace the real sleeps with the harness's `waitUntil`, and clear the race timer once the race settles. Raised by the plan-health plan's finishing performance review and deferred there.
+
 ## A converted-complete nudge does not tell the worker its plan document is not Complete (found 2026-09-21)
 
 When the idle classifier reads a plan entry as finished while its plan document does not read `Status: Complete`, the plugin logs the verdict ignored and sends the generic idle nudge (`hooks/index.ts`, the idle-gap text near the controller's verdict conversions). That text never says what the worker needs to hear, that its document is what decides done. A worker that believes it has finished answers "already done" and is nudged again until the three-nudge stall pause holds it. A one-line variant of the nudge naming the document would end most of those loops at the first nudge. It is an injected string, so the change carries an injection-ledger regeneration. Found by the plan-health plan's Section 4 consult, outside that section's scope.

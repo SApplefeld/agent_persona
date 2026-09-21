@@ -3142,6 +3142,9 @@ async function main() {
     await caseLead3_goalResumeOfAnotherEntryKeepsTheLead(clock);
     await caseLead3_goalResumeKeepsAWaitingLead(clock);
     await caseLead3_anAskClosedAfterAWaitingLeadKeepsTheHold(clock);
+    await caseLead3_aReaderSessionDoesNotReadThePlanDocument(clock);
+    await caseLead3_documentCompletionClearsTheLead(clock);
+    await caseLead3_goalDoneThenBlockedSetsNoLead(clock);
 
     // Section 4 (plan-health-from-the-record): which turns are scored.
     await caseSection4_channelAndDeliveryTurnsSkipTheScorer(clock);
@@ -13563,6 +13566,89 @@ async function caseLead3_anAskClosedAfterAWaitingLeadKeepsTheHold(clock) {
   const lead = lead3Of(h, "plan-1");
   check("lead3 waiting ask closed: the waiting lead is unchanged and no lead_cleared is logged",
     lead?.state === "waiting" && lead.at === T0 && lead.reason === "the suite is running in the background" && !getDecisions(h).some(d => d.action === "lead_cleared"), lead);
+}
+
+// A reader session never reads the plan document: its state is never saved,
+// so a completion there would run completeLeaf, a health run and activateNext
+// in memory that persist refuses. The reader joins a persona another session
+// owns, on the Section 2 tree with a document reading Complete, and closes a
+// turn. Every $.fs.read of the document is counted, which is the instrument;
+// the owner-side control on the same document and tree completes plan-1.
+async function caseLead3_aReaderSessionDoesNotReadThePlanDocument(clock) {
+  console.log("\n=== Section 2 document read: a reader session does not read the plan document ===");
+  for (const asReader of [true, false]) {
+    clock.set(T0);
+    const label = asReader ? "plan doc reader" : "plan doc reader (control, owner)";
+    const tree = plan2Goals({ chapterCount: 1 });
+    let h;
+    if (asReader) {
+      h = await createTickHarness({ ...OPTS, caseName: "lead3_reader_doc" });
+      h.storeMap.delete(`commons:${SESSION_ID}`);
+      seedOwnerCommons(h, "doc-owner-001", T0, {});
+      const ownerState = buildPersonaState("doc-owner-001", T0);
+      ownerState.goals = tree.goals;
+      ownerState.activeGoalId = tree.activeGoalId;
+      h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: ownerState }));
+      h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: "doc-owner-001", epoch: 1, lastSeen: T0 } }));
+      await h.handlers["session.start"](h.fake, {}, () => {});
+      check(`${label} setup: joined as a reader`, h.storeMap.get(`commons:${SESSION_ID}`)?.claims?.some(c => c.resource === "reader:default") === true, h.storeMap.get(`commons:${SESSION_ID}`));
+    } else {
+      h = await lead3Harness("lead3_reader_doc_control");
+    }
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+    const docReads = [];
+    const read = h.fake.fs.read;
+    h.fake.fs.read = (p) => { if (p === PLAN2_FILE) docReads.push(p); return read(p); };
+    await h.handlers["turn.start"](h.fake, { turnId: "t-doc" }, async () => ({ result: "ok" }));
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-doc", answer: "Working on it.", reason: "completed" }, async () => ({ result: "ok" }));
+    const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+    const completeLogged = h.uiLogs.some(l => l.includes("plan complete"));
+    if (asReader) {
+      check(`${label}: the plan document is not read`, docReads.length === 0, docReads);
+      check(`${label}: nothing is completed (no plan complete log, plan-1 still active in the store)`, !completeLogged && plan1.status === "active", { completeLogged, status: plan1.status });
+      check(`${label}: no plan decision is logged`, !getDecisions(h).some(d => d.action === "complete" || d.action === "plan_progress" || d.action === "plan_record_unreadable"));
+    } else {
+      check(`${label}: the owner reads the document and completes plan-1`, docReads.length > 0 && completeLogged && plan1.status === "complete", { reads: docReads.length, completeLogged, status: plan1.status });
+    }
+  }
+}
+
+// Completion by the plan document leaves no lead on what it completes: a
+// blocked lead on the plan node, or on a task under it, is gone once a
+// document reading Complete completes the holder and its live subtree. The
+// turn that reads the document calls no work tool and carries no lead line,
+// so the document is the only thing that can clear the lead.
+async function caseLead3_documentCompletionClearsTheLead(clock) {
+  console.log("\n=== Section 3 lead: completion by the plan document clears the lead ===");
+  for (const taskUnderPlan of [false, true]) {
+    clock.set(T0);
+    const leafId = taskUnderPlan ? "task-1" : "plan-1";
+    const label = `lead3 doc complete (${taskUnderPlan ? "task under a plan node" : "plan node"})`;
+    const h = await lead3Harness(`lead3_doc_complete_${taskUnderPlan ? "task" : "plan"}`, { taskUnderPlan });
+    await lead3Turn(h, "t-set", "BLOCKED: waiting on the operator", { workTool: true });
+    check(`${label} setup: the lead is blocked`, lead3Of(h, leafId)?.state === "blocked", lead3Of(h, leafId));
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+    await lead3Turn(h, "t-done", "Wrapped up.");
+    const leaf = getState(h).goals.find(g => g.id === leafId);
+    check(`${label}: the entry is complete`, leaf.status === "complete", leaf.status);
+    check(`${label}: the completed entry carries no lead`, leaf.lead === null || leaf.lead === undefined, leaf.lead);
+  }
+}
+
+// A turn that calls goal_done and closes with BLOCKED: leaves the entry it
+// completed with no lead: goal_done completes the entry first, and the lead
+// read at turn end writes no lead on a finished entry.
+async function caseLead3_goalDoneThenBlockedSetsNoLead(clock) {
+  console.log("\n=== Section 3 lead: goal_done then a BLOCKED: closing line sets no lead ===");
+  clock.set(T0);
+  const h = await lead3Harness("lead3_goal_done_blocked");
+  await h.handlers["turn.start"](h.fake, { turnId: "t-done" }, async () => ({ result: "ok" }));
+  const done = await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__goal_done", note: "finished", turnId: "t-done" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-done", answer: "BLOCKED: waiting on the operator", reason: "completed" }, async () => ({ result: "ok" }));
+  const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+  check("lead3 goal_done blocked setup: goal_done accepted and plan-1 complete", !done?.deny && plan1.status === "complete", { done, status: plan1.status });
+  check("lead3 goal_done blocked: the completed entry carries no lead", plan1.lead === null || plan1.lead === undefined, plan1.lead);
+  check("lead3 goal_done blocked: no lead_set decision", !getDecisions(h).some(d => d.action === "lead_set"));
 }
 
 // Section 3 Tests line, "lock the hold in both directions, since a hold that

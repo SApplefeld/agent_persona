@@ -80,10 +80,14 @@ export interface GoalNode {
                       // fill runs on every migration exit and may fill one.
   lead?: { state: "blocked" | "waiting"; reason: string; at: number } | null; // Section 3:
                       // the worker's own BLOCKED/WAITING first line for a plan entry.
-                      // Unset by the v2-v4 migration; Section 1 adds no writer for it.
+                      // Set and cleared at turn end from the first line of a plan
+                      // entry's closing text; a blocked lead is also lifted by
+                      // goal_resume and by the idle tick once an ask on the entry
+                      // closes after it, and completion by the plan document
+                      // clears it. Unset by the v2-v4 migration.
   chapterCount?: number; // Section 2: the number of "### Chapter N" headings the
-                      // plan document held at the last read. Unset by the v2-v4
-                      // migration; Section 1 adds no writer for it.
+                      // plan document held at the last read. Written by the
+                      // document read at turn end. Unset by the v2-v4 migration.
 }
 
 export interface EnvErrors {

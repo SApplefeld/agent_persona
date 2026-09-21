@@ -5670,12 +5670,15 @@ export const register: Register = async (on, options) => {
     // the operator clears nothing. lead_set and lead_cleared are logged once
     // per change: a turn re-reading the same state and reason logs nothing.
     // The entry's status, the nudge counter and the active entry are not
-    // touched here, and a task entry's closing text sets no lead. The ASK:
-    // marker above is handled as it is whether or not this line is present.
+    // touched here, and a task entry's closing text sets no lead. An entry
+    // already complete or abandoned at turn end (goal_done in the same turn)
+    // takes no lead. The ASK: marker above is handled as it is whether or
+    // not this line is present.
     if (!skipped && sess.isOwner && turnLeaf && isPlanEntry(sess.state, turnLeaf)) {
       const leadLine = readLeadLine(e.answer);
       const previous = turnLeaf.lead ?? null;
-      if (leadLine) {
+      const entryOver = turnLeaf.status === "complete" || turnLeaf.status === "abandoned";
+      if (leadLine && !entryOver) {
         const changed = !previous || previous.state !== leadLine.state || previous.reason !== leadLine.reason;
         turnLeaf.lead = { state: leadLine.state, reason: leadLine.reason, at: Date.now() };
         turnLeaf.updatedAt = Date.now();
@@ -5687,7 +5690,7 @@ export const register: Register = async (on, options) => {
             detail: `${turnLeaf.id}: ${leadLine.state}: ${leadLine.reason.slice(0, 150)}`,
           });
         }
-      } else if (previous && toolCallsThisTurn > 0) {
+      } else if (!leadLine && previous && toolCallsThisTurn > 0) {
         turnLeaf.lead = null;
         turnLeaf.updatedAt = Date.now();
         sess.state.decisions.push({
@@ -5900,11 +5903,13 @@ export const register: Register = async (on, options) => {
     // new count, resets the nudge counter and logs plan_progress; an
     // unchanged count logs nothing. An unreadable document changes nothing
     // and logs one plan_record_unreadable decision per holder per session.
+    // Only the owner reads: a reader's state is never saved, and completion
+    // would spawn a health run for nothing.
     // The reader never throws on a document it cannot read; the try/catch
     // here covers the completion steps, as the scorer's does.
     const planHolder = turnLeaf ? planHolderOf(sess.state, turnLeaf) : undefined;
     const planPath = planHolder?.planPath;
-    if (planHolder && planPath) {
+    if (sess.isOwner && planHolder && planPath) {
       const holder = planHolder;
       try {
         const reading = await readPlanRecord(
@@ -5964,6 +5969,7 @@ export const register: Register = async (on, options) => {
               if (!descendant) continue;
               if (descendant.status !== "pending" && descendant.status !== "active" && descendant.status !== "paused") continue;
               descendant.status = "complete";
+              descendant.lead = null;
               descendant.notes.push(`completed with ${cause}`);
               descendant.updatedAt = Date.now();
               sess.state.decisions.push({
@@ -5975,8 +5981,9 @@ export const register: Register = async (on, options) => {
             }
             completeLeaf(sess.state, completedId, "plan document complete");
             // A holder blocked over a child ("Child task blocked") ends
-            // complete with no live reason left on it.
+            // complete with no live reason and no lead left on it.
             holder.blockedReason = undefined;
+            holder.lead = null;
             await runHealth($, completedId);
             sess.state.decisions.push({
               timestamp: Date.now(),
