@@ -1,6 +1,6 @@
 # Supervisor gaps: a restart lever, a patient stop, and a keeper that adopts
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-20
 
@@ -95,7 +95,7 @@ Acceptance criteria.
 - A missing file, an empty file, and a tail holding no parseable conversational record: `idle`, with no throw.
 - A file of ten megabytes returns in under one second.
 
-Files in scope: `bin/supervise-turnstate.mjs`, `.kit/supervisor-turnstate-unit-test.mjs`.
+Files in scope: `bin/supervise-turnstate.mjs`, `.kit/supervisor-turnstate-unit-test.mjs`, `.kit/.gitignore` (folded at execution: that file ignores `.kit/` by default and needs an explicit allow-line per tracked file, without which the new suite is invisible to git).
 Tests: lock both directions. A busy child read as idle is the defect this plan fixes. An idle child read as busy holds a persona eleven minutes, so the text-only case is pinned at both ages.
 
 ### 2. The patient stop
@@ -225,3 +225,34 @@ The running supervisors and keepers keep the scripts they started with, so none 
 None.
 
 ## Chapters
+
+### Interim board 1 - 2026-09-21
+
+In-flight sections: Section 1 only, at its first review round. No section has closed, so this entry carries no `Completed:` line.
+
+Section 1 stage: built, verified on this session's own run, and committed at first green as Branch-and-PR directs. Round 1 is dispatched and has not returned. Round count: 1.
+
+Live dispatches: one review round of two lenses, the adversarial and the blind, both at `opus` and effort `high` through `Workflow`, which is one tier above the section's `sonnet` writer. The adversarial lens was asked for spec compliance against Section 1's nine acceptance bullets first, then the tail-read and performance claim, then every failure path reaching `idle`, then whether the rate-limit override was narrowed from newest-of-any-type, then whether any comment or test string asserts something the re-measure does not support. The blind lens was given the base ref and the changed-file list alone, with no spec, no section name and no docs path.
+
+Gate baseline, measured 2026-09-21T03:18Z on SCOTT-CLAUDE by this session, under this session's own heavy-process claim, written after the claim file was read absent and released at the run's end rather than the turn's. Every figure read from the run's own exit code.
+
+Fifteen node suites, all exit 0: commons 1s, cost-ledger 0s, decision-journal 0s, decision-seam 0s, fleet-status 1s, keeper-unit 64 passed 68s, question-catalog 0s, self-review 1s, supervisor-poll 23 passed 1s, supervisor-turnstate 17 passed 1s, supervisor-unit 22 passed 0s, controller-tick 41s, cost-migration 0s, keeper-register 105 passed 1 skipped 27s, injection-duplicate 1s. Five shell suites, all exit 0: supervisor-model 8s, channel-reply-instruction 4s, settings-plugin-key 12s, persona-live-refuse 4s, supervisor-tree-walk 10s. `npx tsc -p tsconfig.json` exit 0.
+
+That baseline is taken on the tree carrying Section 1's new files rather than at the base commit, which is a departure from the Gate's wording. The new module is imported by nothing but its own suite, so no existing suite's counts can move on it. Stated here rather than reported as a base-commit reading.
+
+Not run, and named rather than reported clean: `.kit/live-stopprocesstree-test.sh` and `.kit/supervisor-natural-exit-test.sh`. The project memory `the-live-gate-is-operator-only-while-the-fleet-is-up` records that the live suites refuse to start beside any live persona claim, and that the natural-exit suite runs only with every supervisor stopped. No supervisor process is running on this box, read from the process list, so the refusal may not fire, but that reading is a sample rather than a clearance. Those suites gate Sections 2 and 3, and the question is settled there rather than guessed at here.
+
+Rulings and findings adopted since the plan started:
+
+- The re-measure Section 1 mandates is done and recorded at `.kit/scratch/supervisor-gaps/section-1/remeasure.md`. It ran against `D:/personas/dev-plugin/run/child-2/stdout.jsonl`, 43,464,963 bytes, a persona other than the one the rule was designed on, with turn boundaries found from the records' own `timestamp` fields rather than from the rule under test. The rule holds.
+- Two of the Approach's supporting claims do not hold, and the code carries the measured figures instead. The stated reason for the thirty-second threshold, that a text record inside a turn is followed within about a second, is true of 1,230 of 3,004 such records (41%). The threshold itself is supported: 2,937 of 3,004 (97.8%) are followed within thirty seconds. And the claim that such a stream carries no record of type `result` is false here, with forty of them, all subtype `success` and all carrying no `timestamp` field.
+- The conclusion those claims supported survives on stronger evidence than absence gave it. Placed by line position, only 7 of 50 turn ends carry a `result` record and only 7 of the 40 sit inside a turn-end gap, so a `result` record cannot mark a turn end for a channel-driven child. All 5,662 assistant records carry `stop_reason: null`, so that half of the claim is confirmed outright.
+- The plan's fourth assumption cites the project memory `claude-child-stdin-via-coproc-eof-is-the-graceful-stop` as the source for a child whose input closes mid-turn exiting when the turn ends. Read in full, that record's probe closed the write end on an **idle** child and says nothing about one inside a turn. The assumption is therefore inferred rather than confirmed and its citation overstates the source. It does not stop the work: Section 2's acceptance cases drive a stub whose exit timing the test controls, and the plan already routes the real behaviour to its Operator Verification, where a TERM line reopens Section 2. Section 2's brief marks it inferred, and the close-out names it as the operator's to settle.
+- One claim finding was found and fixed at verification rather than carried to the close pass. A comment in `bin/supervise-turnstate.mjs` credited the threshold to "two independent 40+MB streams, one from each of two personas". One stream of that size was measured; the plan's own was 1.6MB. The comment now carries the counts and the single stream.
+- One surface outside Section 1's declared files was folded into it. `.kit/.gitignore` ignores that directory by default and needs an explicit allow-line per tracked file, so the new suite was invisible to git and could not be staged. The fold meets all three tests: same directory as a file the section changed, no acceptance criterion the section does not already carry, and verified by `git status` in the gate that follows. Section 1's `Files in scope` gains `.kit/.gitignore`.
+
+Two declared assumptions, both route (b), reversible in one line each. The extended wait in Section 2 will spawn one node process every five seconds, up to 132 over a full cap; accepted, because the poll loop beside it already spawns one per poll at a ten second interval, so this is the same order of cost on a path that runs only during a requested restart. And Section 1's module writes its one word to stdout with diagnostics to stderr, since the plan does not say where diagnostics go and a diagnostic on stdout would be read as a verdict.
+
+Next action per section: adjudicate round 1 when it returns, then close Section 1 or take its fix round. Sections 2 through 5 are unstarted. Section 2 is next and depends on Section 1's module.
+
+Commit Model: Branch-and-PR
