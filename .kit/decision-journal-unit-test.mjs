@@ -207,13 +207,13 @@ try {
     const { host, files } = makeHost();
     await J.writeCall(host, callRecord(J));
     const [line] = linesOf(files);
-    const expectedFields = ["lineKind", "stampId", "at", "persona", "session", "site", "questionSet", "mode", "split", "stateHash", "state", "stateRef", "inputTokens", "latencyMs", "result", "detail"];
+    const expectedFields = ["lineKind", "stampId", "at", "persona", "session", "site", "questionSet", "mode", "split", "stateHash", "state", "stateRef", "inputTokens", "outputTokens", "latencyMs", "result", "detail"];
     check("call line: every field of the shape is present and no other",
       JSON.stringify(Object.keys(line).sort()) === JSON.stringify([...expectedFields].sort()), Object.keys(line));
     check("call line: it names itself a call", line.lineKind === "call", line);
     check("call line: at is the ISO instant of the write", line.at === new Date(T0).toISOString(), line.at);
     check("call line: a successful call records ok", line.result === "ok" && line.detail === null, line);
-    check("call line: the usage count and the latency ride it", line.inputTokens === 296 && line.latencyMs === 412, line);
+    check("call line: both usage counts and the latency ride it", line.inputTokens === 296 && line.outputTokens === 4 && line.latencyMs === 412, line);
     check("call line: the state rides the first call for a site", line.state === "worker idle 3 ticks" && line.stateRef === null, line);
     check("call line: the state hash is a number", typeof line.stateHash === "number", line);
     check("call line: the split is the stamp id's own", line.split === J.splitOf(line.stampId), line);
@@ -224,7 +224,7 @@ try {
     await J.writeCall(h2, callRecord(J, { result: failureResult(), stampId: "steward.harness-session.1700000000000.2" }));
     const [failLine] = linesOf(f2);
     check("call line: a call that made no request carries null token count and null latency",
-      failLine.inputTokens === null && failLine.latencyMs === null, failLine);
+      failLine.inputTokens === null && failLine.outputTokens === null && failLine.latencyMs === null, failLine);
     check("call line: and it records the seam's own reason", failLine.result === "no_key", failLine);
     check("call line: every field is still present on it",
       JSON.stringify(Object.keys(failLine).sort()) === JSON.stringify([...expectedFields].sort()), Object.keys(failLine));

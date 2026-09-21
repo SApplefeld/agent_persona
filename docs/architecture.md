@@ -174,7 +174,7 @@ The hung check corroborates a stale heartbeat against the harness transcript's o
 - **`claude` CLI**: the supervisor's child, launched with stream-json on both ends. `KEEPER_PATH_PREPEND` is what makes it and `node` resolvable under a task with no user `PATH`.
 - **Discord relay** (`D:/discord-channels`): the child attaches to a thread named `supervisor-<persona>`, or the roster's `channelName`, unless `args` carries `--no-channel`.
 - **The commons store**: machine-global, one per installed plugin; the supervisor's pre-launch gate reads it for a live claim on the persona, and the plugin's inbox path runs through it.
-- **TypeSafe** (`https://api.typesafe.ai/v1/systemone`): the plugin's one outbound network call. The decision seam puts each of the four closed questions the plugin asks Haiku to Jev, TypeSafe's classifier, in shadow, and journals the answer. Authenticated with `TYPESAFE_API_KEY` from the child's own environment, which no file in this repository sets. `jevMode` `off` makes no call at all. `README.md` under Decision seam states what each call sends.
+- **TypeSafe** (`https://api.typesafe.ai/v1/systemone`): the plugin's one direct HTTP call. The decision seam puts each of the four closed questions the plugin asks Haiku to Jev, TypeSafe's classifier, in shadow, and journals the answer. Authenticated with `TYPESAFE_API_KEY` from the child's own environment, which no file in this repository sets. `jevMode` `off` makes no call at all. `README.md` under Decision seam states what each call sends.
 
 ## Failure modes by layer
 

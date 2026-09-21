@@ -210,7 +210,11 @@ export type CatalogHost = Pick<PluginHost, "getHome" | "readFile" | "fileExists"
 // The join hooks/index.ts uses at workdirPathOf and rosterRunDir: trailing
 // separators off the root, then an unconditional forward slash, which Windows
 // resolves as readily as POSIX. Kept here because those two are local to
-// hooks/index.ts and `$` cannot cross an import to reach them.
+// hooks/index.ts. The ground is not that a helper cannot cross an import,
+// which it can: only the injected host object cannot. This is a copy, kept
+// because the helper is three lines and this module imports no runtime value
+// from its siblings. The cost of the copy is that a path join drifting in one
+// of them changes where one module reads and another writes.
 function joined(root: string, ...parts: string[]): string {
   return [root.replace(/[/\\]+$/, ""), ...parts].join("/");
 }

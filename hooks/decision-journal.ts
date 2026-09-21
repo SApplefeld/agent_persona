@@ -116,7 +116,18 @@ export type JournalWrite = { ok: boolean; firstFailureToday: boolean };
 // here: it arrives already scrubbed from the seam, and it is the one field
 // whose exact bytes a later reader needs.
 export function journalText(value: unknown): string {
-  const text = typeof value === "string" ? value : String(value);
+  // String() raises a TypeError on an object with a null prototype and on any
+  // object whose toString throws, which is the shape JSON.parse and this plan's
+  // own prototype-free maps produce. Every caller today hands this a string the
+  // plugin authored, so nothing host-supplied reaches it. It is exported as the
+  // one helper every unauthored free-text field goes through, so the next caller
+  // is the one this guard is for.
+  let text;
+  try {
+    text = typeof value === "string" ? value : String(value);
+  } catch {
+    text = "unconvertible value";
+  }
   return text.length <= FREE_TEXT_MAX ? text : text.slice(0, FREE_TEXT_MAX - TEXT_CUT_MARK.length) + TEXT_CUT_MARK;
 }
 
@@ -366,6 +377,7 @@ export async function writeCall(host: JournalHost, record: CallRecord): Promise<
     // Null on a call that made no request, which is what the seam's own null
     // latency already says.
     inputTokens: result.ok ? countOf(result.usage.input_tokens) : null,
+    outputTokens: result.ok ? countOf(result.usage.output_tokens) : null,
     latencyMs: countOf(result.latencyMs),
     result: result.ok ? "ok" : journalText(result.reason),
     // Built from a message the host or the resolver produced, so bounded by

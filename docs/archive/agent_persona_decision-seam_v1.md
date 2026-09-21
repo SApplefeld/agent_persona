@@ -1,6 +1,6 @@
 # Decision seam
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-09-19
 
@@ -110,7 +110,7 @@ Acceptance:
 - A grep of `hooks/decision-seam.ts` for the key variable reaching a journal, log or decision call returns nothing, with a control that shows the grep matches a planted line.
 - `.kit/check-loader-rule.mjs` passes.
 
-Files in scope: `hooks/decision-seam.ts` (new), `.kit/decision-seam-unit-test.mjs` (new), `.kit/tick-harness.mjs` (add `http`, `env` and absolute-path `fs` fakes), the temporary probe file and its one call line, and one environment pass-through file only where the probe shows the key does not arrive.
+Files in scope: `hooks/decision-seam.ts` (new), `.kit/decision-seam-unit-test.mjs` (new), `.kit/tick-harness.mjs` (add `http`, `env` and absolute-path `fs` fakes), the temporary probe file and its one call line, and one environment pass-through file only where the probe shows the key does not arrive. Widened during the section: `hooks/host.ts` (new), the shared `PluginHost` interface the engine forced when it refused a module that passes the injected host object across an import, and `.kit/check-loader-rule.mjs`, re-anchored to that shape in the same delta.
 Tests: lock every failure reason returning without a throw, since a throw into the controller tick is the expensive failure. Lock that `off` and an unrecognized mode make no request, since a kill switch that fails open sends data off the machine. Lock that a timeout resolves the race and leaves no unhandled rejection.
 References: `https://docs.typesafe.ai/api.md`, `.claude/types/claude-code.d.ts:1846-1863` and `:1914-1932`.
 
@@ -142,7 +142,7 @@ First add two cases to `.kit/controller-tick-test.mjs` asserting the yield log's
 Build `hooks/decision-journal.ts`. It exports `newStampId`, `splitOf`, `writeCall`, `writeAnswers` and `writeOutcome`, each taking `Pick<PluginHost, "getHome" | "writeFile" | "readFile" | "fileExists">`. No key scrub lives here. A guard that needs the key cannot sit on a boundary that must not hold one, so the scrub lives in the seam and this module reads the already-scrubbed state off the seam's result rather than taking a state field of its own. A length clamp on every free text field does sit on this boundary, because it needs only the text it is handed, and it is exported for the reason a channel guard always is: the next module that writes a journal line will not reimplement a guard it cannot see. A `detail` is built from a message the host or a resolver produced and is bounded by neither, while the append idiom reads the whole file and rewrites it, so one unbounded message would grow that rewrite cost for every later line of the day. Writes to one path run through one in-module promise chain. Each writer resolves to `true` or `false` and never throws. The module keeps an in-memory latch per UTC day and returns `firstFailureToday` on the first failed write of a day, so the caller can log it once. A restart resets the latch.
 
 Line shapes. Every field is always present, and a value that does not apply is `null`:
-- `call`: `stampId`, `at`, `persona`, `session`, `site`, `questionSet`, `mode`, `split`, `stateHash`, `state`, `stateRef`, `inputTokens`, `latencyMs`, `result` (`ok` or a failure reason).
+- `call`: `stampId`, `at`, `persona`, `session`, `site`, `questionSet`, `mode`, `split`, `stateHash`, `state`, `stateRef`, `inputTokens`, `outputTokens`, `latencyMs`, `result` (`ok` or a failure reason). Seventeen fields in all: this list omitted `lineKind`, the discriminator a loader reads first, and `detail`, which carries the failure message, while the code wrote both. Both token counts ride the line, since the Goal asks for the real token count and the seam reads the vendor input and output counts together. Both are null on every result that is not `ok`, including one that made a request and came back with an HTTP status or an unreadable body, which is wider than the no-request rule below. Both usage counts ride the line: the Goal asks for the real token count, the seam reads the vendor's input and output counts together, and recording one while dropping the other puts half a call's cost on the line.
 - `answer`: `stampId`, `callStampId`, `questionId`, `questionVersion`, `overrideRefused`, `primitive`, `value`, `probabilities`, `confidence`, `haikuValue`, `agrees`.
 - `outcome`: `stampId`, `callStampId`, `kind`, `value`, `at`. The set of kinds is closed at `next_score` and `ask_marker`. An `ask_marker` line's `value` is a fixed token the journal substitutes, whatever the caller passes, because what matched is a line the worker wrote. A `next_score` value is the plugin's own label from a closed set and rides as it was given.
 
@@ -171,7 +171,7 @@ Acceptance:
 - `JEV_MODE=bogus` makes `emit_settings_json` fail the way an invalid `COST_*` value does.
 - `.kit/keeper-unit-test.mjs`, which pins the map at its line 314, passes with the new entry.
 
-Files in scope: the five files named above, `.kit/settings-plugin-key-test.sh`, `.kit/keeper-unit-test.mjs`.
+Files in scope: the five files named above, `.kit/settings-plugin-key-test.sh`, `.kit/keeper-unit-test.mjs`. Widened during the section review round: `bin/supervise.sh`, one call site on the provided-settings branch, without which the option reaches no run directory that already holds a settings file.
 
 ### 5. Shadow wiring and the outcome joiners
 Model: opus
@@ -249,7 +249,7 @@ Files in scope: `README.md`, `docs/architecture.md`, `docs/backlog.md`, `docs/RE
 ## Related
 
 - The claude-kit memory database plan on branch `feat/memory-database` sets the local-queue-then-sync pattern this journal follows. The journal's SQL side is a separate claude-kit plan, not yet written.
-- `docs/plans/agent_persona_lean-injection_v1.md` and `docs/plans/agent_persona_supervisor-peer_v1.md` edit `hooks/index.ts` ahead of this plan.
+- `docs/archive/agent_persona_lean-injection_v1.md`, which merged and moved to the archive, and `docs/plans/agent_persona_supervisor-peer_v1.md` both edit `hooks/index.ts` ahead of this plan. The supervisor gaps plan edits `bin/supervise.sh`, which this plan also touches at one call site, and it runs next. The same stale `docs/plans/` path for the lean injection plan survives in the live sections of the supervisor peer and deferred gate run plans, which are theirs to correct.
 
 ## Chapters
 
@@ -532,3 +532,32 @@ Delta: reading taken 2026-09-20T21:30Z on SCOTT-CLAUDE, worktree against HEAD.
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Chapter 7 (finishing) - 2026-09-20
+Completed: finishing-work, whole effort
+Status: Complete
+
+Recap: This plan built one module, called the decision seam, that lets the persona plugin put a closed question to Jev, an outside classifier service from a vendor called TypeSafe. The plugin already asks four such questions of Haiku, the model that actually decides things. Those four questions are now asked of Jev as well, at the same moment, and Jev's answer is written down beside Haiku's. Nothing acts on Jev's answer. Haiku still decides everything, exactly as before. The point is to accumulate a record of how the two compare, because five later plans want to hand real decisions to Jev and none of them can be argued for without that record. Each question's wording is stored as versioned data with an override file outside the repository, so the wording can be changed without a code change. Every shadow answer lands in an append-only journal carrying the question version, every probability, and the real token cost. A kill switch called `jevMode` turns the whole thing off.
+
+Delivered: six sections, closed by Chapters 1 through 6. A live probe settled whether the plugin can read its own environment, and the seam and its Jev client were built on the answer. A question catalog holds the four questions as versioned data. A journal writes three kinds of line. The `jevMode` kill switch travels from the fleet roster to the running child. Shadow wiring puts all four sites through the seam and joins outcomes back. Documentation covers the feature for an operator and for a fresh session.
+
+The central constraint held, and it was tested rather than asserted. No value read from a Jev answer reaches any branch, state field, decision action or nudge text. That is checked by an instrument in the suite, and the instrument was proved live: a decision was deliberately planted that branched on a seam value, and 81 assertions went red. The tree was then restored from a copy taken before the probe and verified byte-identical against it.
+
+Gate: whole gate, run by this session at 2026-09-20 on SCOTT-CLAUDE under this session's own heavy-process claim. Seventeen steps: `npx tsc --noEmit` and sixteen suites. Every one exit 0, read from its own run rather than from grep over its output, each step writing its own exit code to `.kit/scratch/gate.log`. Zero failures reported by any suite. Assertion counts: controller tick 1444, decision seam 163, fleet status 132, decision journal 123, question catalog 102, injection duplicate 46, self-review 26, commons 23, cost migration 20, cost ledger 17, for 2096 `OK:` lines, plus the count-style suites at 105 passed 0 failed 1 skipped (keeper register), 64 passed 0 failed (keeper), 23 passed 0 failed (supervisor poll), 22 passed 0 failed (supervisor). The controller tick figure of 1444 matches the figure Chapter 5 recorded on the same suite, which is the delta this run is read against: no regression and no change in that count.
+
+Contention: the process table was polled in the same turn as the gate. No `testhost` or `vstest` was present. Sixteen node processes were resident, all with creation times of 12:40 and 13:45, which reads as the standing persona fleet rather than a suite. That attribution is inferred from creation times and process names, not confirmed by reading what each was doing.
+
+Drift: the docs curator returned seven drift items and two housekeeping ones. Seven applied. D1, the count of surfaces the `jevMode` value travels, which said six and listed five, closed by adding the plugin's own read of the option as the sixth. D3, which default actually applies, closed on the same edit: the effective default is the plugin's own code fallback rather than the manifest's declaration, because whether the engine fills a manifest default into the options object is not established, so editing the manifest alone changes nothing. D4, the README environment-line row omitting the goal node id the health check ran for. D5 and D6, this plan's own Section 3 line-shape list, which named fifteen fields where the code writes seventeen, omitting the line-kind discriminator a loader reads first and the detail field carrying the failure message, and which stated the token-count null rule narrower than the code applies it. D7, an absolute that the module's own append contradicted. H1, the lean injection plan having moved to the archive, so the Related section pointed at a path that no longer exists. H2, the cross-reference to the supervisor gaps plan, which edits the same shell file this plan touches at one call site and runs next.
+
+Two further contradictions were found inside the same README list while placing the D1 fix, both in text this plan wrote, and both fixed. Its lead sentence said a value set in one place is found reaching the child, which is the opposite of what the list demonstrates. And its first item asserted the manifest default applies where nothing wrote the key, which the sixth item denies.
+
+Recorded and not fixed: D2, an asymmetry in how probabilities are presented, which is already carried at `docs/backlog.md:339-351` and predates this delta.
+
+Assumptions made during execution: The two from Chapter 6 stand and are restated here because they were made while the operator was away. The plan's `Status:` header was left at In Progress for this pass to flip, which is now done. And the vendor's own ceiling on the number of options a question may offer is not stated in these documents, only the override validator's own ceiling of 255, because the vendor's published contract was not read this session; reversal is to read it and add a sentence. Two scope widenings were recorded on their sections' `Files in scope:` lines rather than asked, both low-blast and both declared: Section 1 gained `hooks/host.ts` and `.kit/check-loader-rule.mjs`, because the plugin engine statically refuses `hooks/index.ts` when the injected host object is passed to a function imported from another file, and that refusal is silent; Section 4 gained `bin/supervise.sh`, because the kill switch could not otherwise reach a run directory that already held a settings file.
+
+Carried to the operator: three items the scope adjudicator ruled ASK rather than settling, all on the goal-read site, with accept recommended. One gap is recorded as asked-but-unbuilt: the outcome line is joined back for one of the four sites and not the other three, so three sites produce a call line and an answer line with no outcome beside them. That is a measurement gap rather than a correctness fault, and closing it is a later plan's work. One procedural defect in this run is recorded rather than swept: a mid-round bracket violation, where a fix round ran before the round that found it had closed. And Section 1's Chapter does not name the command that produced each probe fact, which is a record gap in that chapter rather than a doubt about the facts.
+
+Security review: the operator directed on 2026-09-20, on their own channel, that the security reviewer's recommendations on this plan be dropped, on the ground that the seat is over-weighted for its purview and that a separate plan in another worker reduces it to advisory. That direction was applied to Section 3 and to this pass. The reviewer's findings are therefore recorded as not adjudicated rather than as cleared.
+
+Next: none. The effort is complete.
+Commit Model: Branch-and-PR
