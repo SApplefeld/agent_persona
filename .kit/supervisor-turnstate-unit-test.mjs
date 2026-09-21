@@ -44,6 +44,15 @@ const assistantTextTs = (timestamp) => JSON.stringify({
   message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
 });
 const systemInit = () => JSON.stringify({ type: 'system', subtype: 'init', session_id: 's1' });
+const systemThinkingTokens = () => JSON.stringify({ type: 'system', subtype: 'thinking_tokens' });
+// A system record of a subtype the reader never treats specially, used
+// wherever a fixture needs "a system record that changes nothing" without
+// colliding with the two turn-start subtypes (init, thinking_tokens) or the
+// rate-limit subtype (api_retry), all three of which now carry meaning.
+const systemOther = () => JSON.stringify({ type: 'system', subtype: 'status' });
+// The record a channel-driven child's turn ends with; carries no timestamp,
+// as seen on the architect's child-3 stream.
+const resultSuccess = () => JSON.stringify({ type: 'result', subtype: 'success' });
 const systemRateLimit = () => JSON.stringify({
   type: 'system', subtype: 'api_retry', error_status: 429, retry_delay_ms: 60000,
 });
@@ -109,18 +118,48 @@ const cases = [
 
   ['a text-only record whose own timestamp is 150 seconds old, file mtime fresh, reads busy: the model can still be generating a large tool input for the same response', () => {
     const ts = new Date(CLOCK - 150000).toISOString();
-    const p = writeStream('text-only-ts-mid-band', [assistantTextTs(ts), systemInit()], { mtimeMs: CLOCK });
+    const p = writeStream('text-only-ts-mid-band', [assistantTextTs(ts), systemOther()], { mtimeMs: CLOCK });
     assert.equal(run(p), 'busy');
   }],
 
-  ['system records other than a rate-limit record after the newest conversational record do not change a busy verdict', () => {
-    const p = writeStream('system-after-busy', [assistantToolUse(), systemInit(), systemInit()], { mtimeMs: CLOCK - 1000 });
+  ['a system record of a subtype other than a rate-limit or turn-start one, after the newest conversational record, does not change a busy verdict', () => {
+    const p = writeStream('system-after-busy', [assistantToolUse(), systemOther(), systemOther()], { mtimeMs: CLOCK - 1000 });
     assert.equal(run(p), 'busy');
   }],
 
-  ['system records other than a rate-limit record after the newest conversational record do not change an idle verdict', () => {
-    const p = writeStream('system-after-idle', [assistantText(), systemInit()], { mtimeMs: CLOCK - 360000 });
+  ['a system record of a subtype other than a rate-limit or turn-start one, after the newest conversational record, does not change an idle verdict', () => {
+    const p = writeStream('system-after-idle', [assistantText(), systemOther()], { mtimeMs: CLOCK - 360000 });
     assert.equal(run(p), 'idle');
+  }],
+
+  ['a system init record after a stale text reply reads busy: the child has started a new turn, not gone quiet after the last one', () => {
+    const oldTs = new Date(CLOCK - 360000).toISOString();
+    const p = writeStream('marker-after-old-reply-init-only', [assistantTextTs(oldTs), resultSuccess(), systemInit()], { mtimeMs: CLOCK });
+    assert.equal(run(p), 'busy');
+  }],
+
+  ['a stale text reply followed by a turn-end result, an init and a run of thinking_tokens records reads busy, matching the architect child-3 sequence', () => {
+    const oldTs = new Date(CLOCK - 360000).toISOString();
+    const p = writeStream('marker-after-old-reply-full-sequence', [
+      assistantTextTs(oldTs), resultSuccess(), systemInit(), systemThinkingTokens(), systemThinkingTokens(), systemThinkingTokens(),
+    ], { mtimeMs: CLOCK });
+    assert.equal(run(p), 'busy');
+  }],
+
+  ['init and thinking_tokens records with no conversational record anywhere in the tail read busy: a child in its first turn', () => {
+    const p = writeStream('marker-no-conversational', [systemInit(), systemThinkingTokens()], { mtimeMs: CLOCK - 1000 });
+    assert.equal(run(p), 'busy');
+  }],
+
+  ['control: a stale text reply followed by a turn-end result and a system record of another subtype, no init, reads idle', () => {
+    const oldTs = new Date(CLOCK - 360000).toISOString();
+    const p = writeStream('marker-control-no-init', [assistantTextTs(oldTs), resultSuccess(), systemOther()], { mtimeMs: CLOCK });
+    assert.equal(run(p), 'idle');
+  }],
+
+  ['thinking_tokens after a young tool_use record still reads busy: no regression from the tool_use rule', () => {
+    const p = writeStream('marker-after-tool-use', [assistantToolUse(), systemThinkingTokens()], { mtimeMs: CLOCK - 1000 });
+    assert.equal(run(p), 'busy');
   }],
 
   ['newest record of any type is rate_limit_event with rate_limit_info.status rejected (the child is actually parked), behind user+tool_result, mtime five seconds old: idle', () => {
@@ -175,7 +214,7 @@ const cases = [
   }],
 
   ['a tail holding no parseable conversational record reads idle, no throw', () => {
-    const p = writeStream('no-conversational-record', [systemInit(), 'garbage', systemInit()]);
+    const p = writeStream('no-conversational-record', [systemOther(), 'garbage', systemOther()]);
     assert.equal(run(p), 'idle');
   }],
 
@@ -213,16 +252,17 @@ const cases = [
     assert.equal(run(streamPath), 'busy');
   }],
 
-  ['the only conversational record sits at the head of a file bigger than the widening ceiling, with only system records after it: idle, the tail reader\'s answer (a whole-file reader would see the head record and answer busy)', () => {
+  ['the only conversational record sits at the head of a file bigger than the widening ceiling, with only non-marker system records after it: busy, not idle (widening stopped at the ceiling without reaching the start of the file, so the reader cannot rule out a record still being written behind it)', () => {
     const dir = join(root, 'conversational-record-past-ceiling');
     fs.mkdirSync(dir, { recursive: true });
     const streamPath = join(dir, 'stdout.jsonl');
     const fd = fs.openSync(streamPath, 'w');
-    // The file's only conversational record, at its very head. It carries
-    // tool_use, so its own verdict would be busy regardless of age: this
-    // case turns on whether the read window reaches it at all, not on aging.
+    // The file's only conversational record, at its very head, unreachable
+    // once the window has widened all the way to the 8 MiB ceiling. The
+    // filler is a subtype the reader treats as ordinary, so this case turns
+    // purely on the ceiling rule and not on the turn-start marker rule.
     fs.writeSync(fd, assistantToolUse() + '\n');
-    const filler = systemInit() + '\n';
+    const filler = systemOther() + '\n';
     const target = 9 * 1024 * 1024; // past SCAN_BYTES_MAX (8 MiB)
     let written = 0;
     while (written < target) {
@@ -231,19 +271,59 @@ const cases = [
     }
     fs.closeSync(fd);
     fs.utimesSync(streamPath, new Date(CLOCK - 1000), new Date(CLOCK - 1000));
-    assert.equal(run(streamPath), 'idle');
+    assert.equal(run(streamPath), 'busy');
   }],
 
-  ['newest is a text-only assistant record whose own timestamp is six minutes old, followed by fifty system records, file mtime fresh: idle (age comes from the record, not the file write time)', () => {
+  ['a user record larger than the widening ceiling (9 MiB), followed by a short trailing record: busy, not idle (the ceiling giving up must not drop to idle just because a short record survived behind the oversized one)', () => {
+    const dir = join(root, 'past-ceiling-with-trailer');
+    fs.mkdirSync(dir, { recursive: true });
+    const streamPath = join(dir, 'stdout.jsonl');
+    // The oversized record itself exceeds the 8 MiB ceiling, so no widened
+    // window ever reaches a full copy of it and it is always dropped as a
+    // partial. The short trailing record (a routine rate_limit_event, as
+    // commonly follows) survives inside every widened window, so the old
+    // rule (busy only when the window holds zero lines) answered idle here.
+    const bigUser = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'x'.repeat(9 * 1024 * 1024) }] },
+    });
+    fs.writeFileSync(streamPath, bigUser + '\n' + rateLimitEvent('allowed') + '\n');
+    fs.utimesSync(streamPath, new Date(CLOCK - 1000), new Date(CLOCK - 1000));
+    assert.equal(run(streamPath), 'busy');
+  }],
+
+  ['a widening chain that doubles all the way to the 8 MiB ceiling (the head-record-past-ceiling layout above) returns in under 2500 ms', () => {
+    const dir = join(root, 'ceiling-widening-timed');
+    fs.mkdirSync(dir, { recursive: true });
+    const streamPath = join(dir, 'stdout.jsonl');
+    const fd = fs.openSync(streamPath, 'w');
+    fs.writeSync(fd, assistantToolUse() + '\n');
+    const filler = systemOther() + '\n';
+    const target = 9 * 1024 * 1024;
+    let written = 0;
+    while (written < target) {
+      fs.writeSync(fd, filler);
+      written += filler.length;
+    }
+    fs.closeSync(fd);
+    fs.utimesSync(streamPath, new Date(CLOCK - 1000), new Date(CLOCK - 1000));
+    const started = Date.now();
+    const verdict = run(streamPath);
+    const elapsed = Date.now() - started;
+    assert.equal(verdict, 'busy');
+    assert.ok(elapsed < 2500, 'took ' + elapsed + 'ms');
+  }],
+
+  ['newest is a text-only assistant record whose own timestamp is six minutes old, followed by fifty non-marker system records, file mtime fresh: idle (age comes from the record, not the file write time)', () => {
     const oldTs = new Date(CLOCK - 360000).toISOString();
-    const trailer = new Array(50).fill(0).map(() => systemInit());
+    const trailer = new Array(50).fill(0).map(() => systemOther());
     const p = writeStream('text-only-ts-old-fresh-mtime', [assistantTextTs(oldTs), ...trailer], { mtimeMs: CLOCK });
     assert.equal(run(p), 'idle');
   }],
 
   ['the same shape with the record\'s own timestamp ten seconds old: busy', () => {
     const youngTs = new Date(CLOCK - 10000).toISOString();
-    const trailer = new Array(50).fill(0).map(() => systemInit());
+    const trailer = new Array(50).fill(0).map(() => systemOther());
     const p = writeStream('text-only-ts-young-fresh-mtime', [assistantTextTs(youngTs), ...trailer], { mtimeMs: CLOCK });
     assert.equal(run(p), 'busy');
   }],
@@ -306,8 +386,9 @@ const cases = [
     assert.equal(verdict, 'busy');
     // Widened from one second: this bound also carries a spawned node
     // process's own startup cost, which a busy machine can push well past
-    // one second with no regression in the reader itself. It still fails on
-    // a whole-file read of a stream this size.
+    // one second with no regression in the reader itself. The tool_use
+    // record sits in the base 256 KB window here, so this case never
+    // exercises widening; the case above forces every doubling instead.
     assert.ok(elapsed < 5000, 'took ' + elapsed + 'ms');
   }],
 ];

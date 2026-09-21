@@ -14,32 +14,44 @@
 //     Date.now() is used in its place instead.
 //
 // Prints exactly one word, busy or idle, and nothing else. Most failure paths
-// -- a missing file, an unreadable one, a tail with no parseable conversational
-// record where the tail covers the whole file -- read idle, so a fault in
-// this reader falls back to the stop phases' behavior before this module
-// existed, rather than holding a dead child's persona for the patient cap.
-// One failure path reads busy on purpose: a widened window that still does
-// not reach the start of the file and holds no line boundary at all means a
-// single record wider than the widening ceiling is still being written, so
-// the child is mid-turn (see the widening note below).
+// -- a missing file, an unreadable one, a tail whose scan reaches the start
+// of the file and holds no conversational record or turn-start marker --
+// read idle, so a fault in this reader falls back to the stop phases'
+// behavior before this module existed, rather than holding a dead child's
+// persona for the patient cap. Where the tail's scan does not reach the
+// start of the file and neither is found, this reads busy on purpose: a
+// record (or run of records) wider than the widening ceiling sits behind the
+// window, and giving up and reading idle there is the kill-a-working-child
+// direction (see the widening note below).
 //
-// Conversational records are of type assistant and user; system records and
-// rate_limit_event records are skipped when looking for the newest one. A
-// user record reads busy (the model owes a reply). An assistant record
-// carrying a tool_use block reads busy (a tool is running). An assistant
-// record with no tool_use block reads busy while younger than five minutes
-// and idle once older. Inside a turn, the record that follows a text-only
-// record is most often a tool_use block of the same API response, and the
-// stream writes nothing while the model generates that block's input, which
-// scales with the input's size: inputs of 26 to 34 kilobytes took 90 to 135
-// seconds on live streams, and no such gap over 150 seconds was measured
-// across 6,324 mid-turn records on four streams. The age is
-// taken from that record's own timestamp field, not the file's modification
-// time: a run of later system records (a rate-limit retry, an init line) can
-// keep the file's mtime fresh long after the turn that produced the text
-// reply has ended, and mtime aging would then misread that child as busy.
-// The file's modification time is used only when the record carries no
-// timestamp field the reader can parse.
+// Conversational records are of type assistant and user; rate_limit_event
+// records are skipped when looking for the newest one, as are system records
+// other than the two turn-start subtypes described below. A user record
+// reads busy (the model owes a reply). An assistant record carrying a
+// tool_use block reads busy (a tool is running). An assistant record with no
+// tool_use block reads busy while younger than five minutes and idle once
+// older. Inside a turn, the record that follows a text-only record is most
+// often a tool_use block of the same API response, and the stream writes
+// nothing while the model generates that block's input, which scales with
+// the input's size: inputs of 26 to 34 kilobytes took 90 to 135 seconds on
+// live streams, and no such gap over 150 seconds was measured across 6,324
+// mid-turn records on four streams. The age is taken from that record's own
+// timestamp field, not the file's modification time: a run of later system
+// records (a rate-limit retry, an init line) can keep the file's mtime fresh
+// long after the turn that produced the text reply has ended, and mtime
+// aging would then misread that child as busy. The file's modification time
+// is used only when the record carries no timestamp field the reader can
+// parse.
+//
+// A channel-driven child's own prompt is never written to the stream as a
+// user record: a new turn is visible only as a system record of subtype init,
+// followed by a run of system records of subtype thinking_tokens while the
+// model is still generating, and neither subtype carries a timestamp. Where
+// one of those sits after the newest conversational record in the tail, or
+// the tail holds one and no conversational record at all, this reads busy
+// regardless of how old the previous reply is: the child has started a new
+// turn, not gone quiet after the last one. Every other system subtype still
+// leaves the verdict resting on the newest conversational record.
 // Ahead of every other rule: the newest record of ANY type, not only the
 // newest conversational one, is checked for a rate-limit shape first, and if
 // it is one this reads idle regardless of what sits under it. A rate-limit
@@ -117,12 +129,25 @@ function readTail(streamPath, scanBytes) {
   return { lines, mtimeMs, scanStart };
 }
 
-// The newest record of any type, and the newest conversational one (type
-// assistant or user), among a tail's parsed lines. An unparsable line is
-// skipped, as is a JSON value that is not an object.
+// True when a record is a system record marking a prompt cycle that produces
+// no conversational record of its own: init (sent once per turn before the
+// model's first block) or thinking_tokens (sent while the model is still
+// generating). Neither carries a timestamp, so they are ordered by line
+// position -- the order they were written in -- rather than by age.
+function isTurnStartMarker(record) {
+  return record && record.type === 'system'
+    && (record.subtype === 'init' || record.subtype === 'thinking_tokens');
+}
+
+// The newest record of any type, the newest conversational one (type
+// assistant or user), and whether a turn-start marker (init or
+// thinking_tokens) sits after the newest conversational record in line
+// order, among a tail's parsed lines. An unparsable line is skipped, as is a
+// JSON value that is not an object.
 function parseTail(lines) {
   let newestAny = null;
   let newestConversational = null;
+  let markerAfterConversational = false;
   for (const line of lines) {
     if (!line.trim()) continue;
     let record;
@@ -133,9 +158,14 @@ function parseTail(lines) {
     }
     if (!record || typeof record !== 'object') continue;
     newestAny = record;
-    if (record.type === 'assistant' || record.type === 'user') newestConversational = record;
+    if (record.type === 'assistant' || record.type === 'user') {
+      newestConversational = record;
+      markerAfterConversational = false;
+    } else if (isTurnStartMarker(record)) {
+      markerAfterConversational = true;
+    }
   }
-  return { newestAny, newestConversational };
+  return { newestAny, newestConversational, markerAfterConversational };
 }
 
 function isRateLimitRecord(record) {
@@ -193,7 +223,7 @@ function turnstate(streamPath, now) {
   let scanBytes = SCAN_BYTES;
   let tail = readTail(streamPath, scanBytes);
   if (!tail) return 'idle';
-  let { newestAny, newestConversational } = parseTail(tail.lines);
+  let { newestAny, newestConversational, markerAfterConversational } = parseTail(tail.lines);
 
   // Settle the rate-limit override against this base window before paying
   // for any widening: widening only ever extends the window backward from
@@ -203,25 +233,38 @@ function turnstate(streamPath, now) {
   // to reach a verdict this window has already settled.
   if (isRateLimitRecord(newestAny)) return 'idle';
 
-  // The base window found no conversational record. Where the window
-  // already covers the whole file, that absence is the true answer. Where
-  // it does not, a single record wider than the window could be sitting
-  // just behind it, so widen and look again before concluding idle.
-  while (!newestConversational && tail.scanStart > 0 && scanBytes < SCAN_BYTES_MAX) {
+  // The base window found no conversational record and no turn-start
+  // marker. Where the window already covers the whole file, that absence is
+  // the true answer. Where it does not, a single record wider than the
+  // window could be sitting just behind it, so widen and look again before
+  // concluding idle. Either a conversational record or a turn-start marker
+  // settles the verdict, so either stops the widening.
+  while (!newestConversational && !markerAfterConversational && tail.scanStart > 0 && scanBytes < SCAN_BYTES_MAX) {
     scanBytes *= 2;
     tail = readTail(streamPath, scanBytes);
     if (!tail) return 'idle';
-    ({ newestAny, newestConversational } = parseTail(tail.lines));
+    ({ newestAny, newestConversational, markerAfterConversational } = parseTail(tail.lines));
   }
 
+  // A channel-driven child's prompt is never written as a user record: a new
+  // turn is visible only as a run of system records (init, then
+  // thinking_tokens while the model generates), none of which carries a
+  // timestamp. Where one of those sits after the newest conversational
+  // record -- or the tail holds one and no conversational record at all, a
+  // child in its first turn -- the child is inside the new turn regardless
+  // of how old the previous reply is.
+  if (markerAfterConversational) return 'busy';
+
   if (!newestConversational) {
-    // The window still does not reach the start of the file and holds no
-    // line boundary at all: the newest record is wider than the widening
-    // ceiling and is still being written, so a turn is running. Giving up
-    // and reading idle here is the kill-a-working-child direction. Where
-    // the window does cover the whole file, an absence of conversational
-    // records is the true answer.
-    if (tail.scanStart > 0 && tail.lines.length === 0) return 'busy';
+    // The window still does not reach the start of the file: a record (or a
+    // run of records) wider than the widening ceiling sits behind it, and
+    // that record may well be finished rather than still being written.
+    // Reading busy here is chosen because idle is the kill-a-working-child
+    // direction, and a wedged child that never turns idle here is still
+    // bounded by the patient stop's own cap (see the widening note above).
+    // Where the window does cover the whole file, an absence of
+    // conversational records and turn-start markers is the true answer.
+    if (tail.scanStart > 0) return 'busy';
     return 'idle';
   }
   if (newestConversational.type === 'user') return 'busy';
