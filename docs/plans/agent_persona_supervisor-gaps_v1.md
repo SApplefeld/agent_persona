@@ -454,3 +454,21 @@ Delta: 2026-09-21 on SCOTT-CLAUDE, worktree at the closing tree of Section 1 bef
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 6 - 2026-09-21
+
+In-flight sections: Section 2 only, at its first review round. No section has closed since Chapter 1, so this entry carries no `Completed:` line.
+
+Handover. Plan health closed and merged as PR 66, and this plan resumed at Section 2 with main merged in at `45c5a95`. Section 2's `implementer-opus` was dispatched on `.kit/scratch/supervisor-gaps/2/brief.md` and was killed at 2026-09-21T20:40Z by an operator-run persona reset, before it reported. Personas were renamed in that reset (this one is now `DEV-PERSONA`, the coordinator `STEWARD`) and the goal store was restored under the new names. The operator then wrote on this persona's thread, "Yes please, resume the plan, resume or recreate any lost work, and then keep going on your goals!" This session resumed the tree entry `plan-muatqfss-esfn` on that word.
+
+Section 2 stage: the killed implementer's unstaged edits were kept rather than rebuilt. Its red-first run survives (`red-case1.log`, 25 checks, 3 failed against the unmodified `stop_child`), and so does its last run (`green-2.log`, 32 checks, 0 failed). This session re-ran both suites on its own run on 2026-09-21 on SCOTT-CLAUDE at `45c5a95` plus the delta: `.kit/supervisor-model-test.sh` 28 OK, exit 0, against a baseline of 27 at `45c5a95`; `.kit/live-stopprocesstree-test.sh` 32 checks, 0 failed, exit 0, 280 s wall, against a baseline of 22, run alone after a foreign `node --test` run cleared. Committed at first green as `346d277` and pushed. Review rounds adjudicated: 0.
+
+Live dispatches: review round 1 over `45c5a95..346d277`, the adversarial, blind, security and performance lenses, all at `fable` through the Agent tool. The security lens is triggered by the process spawn and the signals, the performance lens by the five-second node spawn and the wait on another process. Beside them runs the round Chapter 1's Assumptions line owes over Section 1's fix-round-5 delta, `40639c1..12c75e1` on the two turn-state files: one adversarial lens at `sonnet`, effort `high`, through `Workflow` run `wf_b33d9a0d-ddc`. It was dispatched beside Section 2's round rather than strictly before it, since both are read-only and its findings are adjudicated before Section 2 closes.
+
+Workspace fact. Every live supervisor on this machine executes this checkout's `bin/supervise.sh` directly, read from the process list. An in-place write to that file can derail a running supervisor, which resumes reading at its saved byte offset. So any fix to it in this plan is written to a temporary file and renamed over the original, which gives the file a new inode the running processes do not see.
+
+Push route. A bare `git push` hangs on this machine in Git Credential Manager. The push that landed used the GitHub CLI's credential for that one command, `git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push`, which changes no stored configuration.
+
+Next action: adjudicate round 1 and the Section 1 round when they return, then take the fix round or close Section 2. Sections 3 through 5 are unstarted.
+
+Commit Model: Branch-and-PR
