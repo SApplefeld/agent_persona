@@ -309,6 +309,7 @@ function makeGoalNode(overrides = {}) {
     planningRounds: 0,
     consecutiveBlockedPlannings: 0,
     consecutivePlanningFailures: 0,
+    planPath: undefined, // Section 1: optional; pass via overrides to build a plan entry.
     createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_000_000,
     ...overrides,

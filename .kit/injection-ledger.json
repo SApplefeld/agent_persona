@@ -166,8 +166,8 @@
     {
       "name": "goal_add_description",
       "file": "hooks/index.ts",
-      "chars": 381,
-      "words": 68
+      "chars": 509,
+      "words": 83
     },
     {
       "name": "goal_done_description",

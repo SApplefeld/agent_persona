@@ -38,6 +38,8 @@ import {
   FLEET_ROSTER_STATE_KEY,
   FLEET_ENTRY_PROBLEMS_KEY,
   fleetClassValue,
+  PLAN_PATH_PATTERN,
+  PLAN_PATH_REQUIRED_FORM,
 } from "./agent-state";
 import type { AgentState, FleetHealth, FleetHealthMemo, GoalNode, NudgeBudget, EnvGit, EnvState } from "./agent-state";
 import {
@@ -1986,6 +1988,12 @@ export const register: Register = async (on, options) => {
           maxRounds: {
             type: "number",
             description: "maxRounds is the round budget. Default 10.",
+          },
+          planPath: {
+            type: "string",
+            description:
+              'planPath is only allowed on kind "plan". Its plan document\'s path: ' +
+              '"docs/plans/<name>.md", project-relative, no subdirectories.',
           },
         },
         required: ["title", "objective"],
@@ -5698,6 +5706,37 @@ export const register: Register = async (on, options) => {
       const maxRounds = Math.min(Math.max(parseInt(String((e as any).maxRounds || "10"), 10) || 10, 1), 50);
       const explicitParent = String((e as any).parentId || "").trim();
 
+      // Section 1 (plan-health-from-the-record): planPath is validated before
+      // anything is mutated, same as every other goal_add refusal below. The
+      // kind check comes first so a task carrying a syntactically valid path
+      // is refused for the kind reason, not the pattern reason - each rule
+      // owns exactly the cases it names, since a later reader (Section 2)
+      // joins this value onto the working directory and reads the file it
+      // names, and needs to know a task never held one. Both refusals state
+      // the required form, so the rule that fired is named by how the
+      // message opens rather than by which of them mentions the form.
+      //
+      // Absent means undefined or null, and nothing else. A present but
+      // empty or whitespace-only value is a caller that meant to pass a path
+      // and passed nothing, so it goes through both rules like any other
+      // value rather than being silently read as absent: on a task it is the
+      // kind refusal, and on a plan it fails the pattern and is refused by
+      // the form rule.
+      const rawPlanPath = (e as any).planPath;
+      let planPath: string | undefined;
+      if (rawPlanPath !== undefined && rawPlanPath !== null) {
+        const trimmed = String(rawPlanPath).trim();
+        if (kind !== "plan") {
+          toolErrorsThisTurn++;
+          return { deny: 'planPath is only allowed on kind "plan". ' + PLAN_PATH_REQUIRED_FORM };
+        }
+        if (!PLAN_PATH_PATTERN.test(trimmed)) {
+          toolErrorsThisTurn++;
+          return { deny: PLAN_PATH_REQUIRED_FORM };
+        }
+        planPath = trimmed;
+      }
+
       const root = sess.state.goals.find((g) => g.parentId === null);
       if (!root) {
         toolErrorsThisTurn++;
@@ -5774,6 +5813,7 @@ export const register: Register = async (on, options) => {
         notes: [],
         createdAt: now,
         updatedAt: now,
+        ...(planPath ? { planPath } : {}),
       };
       sess.state.goals.push(newNode);
 

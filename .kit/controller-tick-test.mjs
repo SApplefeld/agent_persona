@@ -20,7 +20,7 @@
 // Exits 0 on success, 1 on failure.
 
 import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, HARNESS_CWD, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore } from "./tick-harness.mjs";
-import { DECISIONS_MAX, MEMORY_MAX, parseState } from "../hooks/agent-state.ts";
+import { DECISIONS_MAX, MEMORY_MAX, PLAN_PATH_PATTERN, isActivationEligible, parseState, resolvePlanPath } from "../hooks/agent-state.ts";
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -47,6 +47,19 @@ const OPTS = {
 };
 
 const T0 = 1_700_000_000_000;
+
+// A stored planPath always satisfies the shape goal_add enforces, whichever
+// writer produced it. The load-time fill is a writer goal_add's validation
+// never sees: it takes its value from PLAN_PATH_TEXT_PATTERN's capture, whose
+// body is maintained separately from PLAN_PATH_PATTERN's. Nothing between the
+// two compares them, so every case below that expects a fill asserts the
+// filled value against PLAN_PATH_PATTERN as well as against its own literal.
+// Without that, a later relaxation of the text pattern's body writes a value
+// goal_add would refuse straight into the store, and every test still passes.
+function checkFilledPlanPathWellFormed(label, value) {
+  check(`${label}: the filled planPath satisfies the shape goal_add enforces`,
+    typeof value === "string" && PLAN_PATH_PATTERN.test(value), value);
+}
 
 // Helper: read state from the fake store (persona JSON).
 function getState(h) {
@@ -3048,6 +3061,42 @@ async function main() {
     await caseSection10FixRound_droppedPlanParentNotActivated(clock);
     await caseSection10FixRound_secondPlanAddLandsUnderRoot(clock);
     await caseSection10FixRound_taskUnderPendingPlanActivated(clock);
+
+    // Section 1 (plan-health-from-the-record): planPath on a queue entry.
+    await casePlanPath1_validPlanPathOnPlanStored(clock);
+    await casePlanPath1_patternRefusalCases(clock);
+    await casePlanPath1_validPathOnTaskRefusedByKindNotPattern(clock);
+    await casePlanPath1_emptyPlanPathIsRefusedNotIgnored(clock);
+    await casePlanPath1_fillFromObjectiveLeadingText(clock);
+    await casePlanPath1_fillFromObjectiveTrailingFullStop(clock);
+    await casePlanPath1_noMatchFillsNothing(clock);
+    await casePlanPath1_taskKindNeverFilled(clock);
+    await casePlanPath1_resolveHelperWalksToPlanAncestor(clock);
+    await casePlanPath1_resolveHelperNoneWithoutAncestor(clock);
+    await casePlanPath1_recoversMaxRoundsBlockWithPlanPath(clock);
+    await casePlanPath1_staysBlockedWithoutPlanPath_control(clock);
+
+    // Section 1: which entries applyPlanRecordOnLoad fills and frees.
+    await casePlanPath1Recovery_taskUnderPlanNodeRecovered(clock);
+    await casePlanPath1Recovery_taskWithNoPlanAncestorStaysBlocked_control(clock);
+    await casePlanPath1Recovery_rootStatusGatesRecovery(clock);
+    await casePlanPath1Text_leftBoundaryRefusesLongerToken(clock);
+    await casePlanPath1Fill_missingTitleOrObjectiveDoesNotThrow(clock);
+    await casePlanPath1Text_rightBoundaryRefusesLongerPath(clock);
+
+    // Section 1: which round-budget-blocked nodes a recovery can consume.
+    await casePlanPath1Children_pendingChildMakesTheParentRecoverable(clock);
+    await casePlanPath1Children_noPendingChildRefusesRecovery(clock);
+    await casePlanPath1Children_frozenParentAndChildFreedInEitherArrayOrder(clock);
+
+    // Section 1: the ancestor chain of a round-budget recovery.
+    await casePlanPath1Ancestors_derivedBlockedParentFreedWithTheEntry(clock);
+    await casePlanPath1Ancestors_missingParentRefusesRecovery(clock);
+    await casePlanPath1Ancestors_unexplainedParentStateRefusesRecovery(clock);
+    await casePlanPath1Ancestors_activeAncestorAcceptedAcrossTwoLevels(clock);
+    await casePlanPath1Ancestors_refusalHighInChainLeavesLowerAncestorUntouched(clock);
+    await casePlanPath1Ancestors_fillPrecedesRecoveryWhateverTheArrayOrder(clock);
+
     await caseItem81_goalEditDropAllowsBlocked(clock);
     await caseItem81_goalEditDropStillRefusesActive_control(clock);
     await caseNudgeGuard_sentBetweenTurns_control(clock);
@@ -11183,6 +11232,995 @@ async function caseSection10FixRound_taskUnderPendingPlanActivated(clock) {
     newTask && newTask.status === "active" && state.activeGoalId === newTask.id);
   check("section10 task-under-pending-plan: the pending plan parent stays pending (it was never active, so nothing demotes it)",
     state.goals.find(g => g.id === "plan-pending").status === "pending");
+}
+
+// ============================================================
+// Section 1 (plan-health-from-the-record): the plan path on a queue entry.
+// ============================================================
+
+// A valid planPath on kind "plan" is accepted and stored on the new node.
+async function casePlanPath1_validPlanPathOnPlanStored(clock) {
+  console.log("\n=== Section 1: goal_add stores a valid planPath on kind plan ===");
+  clock.set(T0);
+
+  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "planpath1_valid_stored",
+    stateOpts: { now: T0, goals: [rootGoal], activeGoalId: null },
+  });
+
+  const toolCallH = h.handlers["tool.call"];
+  const result = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "plan",
+    title: "A plan",
+    objective: "Do the plan",
+    planPath: "docs/plans/a_v1.md",
+  }, async () => ({ result: "passthrough" }));
+
+  check("planpath1 valid: not denied", result.deny === undefined, result.deny);
+  const state = getState(h);
+  const plan = state.goals.find(g => g.kind === "plan");
+  check("planpath1 valid: the node carries the given planPath", plan && plan.planPath === "docs/plans/a_v1.md");
+}
+
+// Each of the pattern's near-misses is refused by the pattern rule
+// specifically (not the kind rule, which does not apply here since kind is
+// "plan" throughout), naming the required form, and adds no node. Named in
+// words per case rather than left to a bare pass/fail count, since a green
+// here could otherwise mean any rule fired, or none, and this is the one
+// acceptance criterion the plan calls out as becoming a read path.
+async function casePlanPath1_patternRefusalCases(clock) {
+  console.log("\n=== Section 1: goal_add refuses every planPath near-miss by the pattern rule ===");
+  clock.set(T0);
+
+  const nearMisses = [
+    "../x.md",
+    "docs/plans/sub/x.md",
+    "C:\\x.md",
+    "docs/plans/x.txt",
+    "Docs/plans/x.md",
+  ];
+
+  for (const bad of nearMisses) {
+    const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+    const h = await createTickHarness({
+      ...OPTS,
+      caseName: `planpath1_pattern_${nearMisses.indexOf(bad)}`,
+      stateOpts: { now: T0, goals: [rootGoal], activeGoalId: null },
+    });
+    const toolCallH = h.handlers["tool.call"];
+    const result = await toolCallH(h.fake, {
+      tool: "mcp__agentic-plugin__goal_add",
+      kind: "plan",
+      title: "A plan",
+      objective: "Do the plan",
+      planPath: bad,
+    }, async () => ({ result: "passthrough" }));
+
+    check(`planpath1 pattern-refusal (${bad}): denied`, typeof result.deny === "string", result);
+    check(`planpath1 pattern-refusal (${bad}): the pattern rule named the required form, not the kind rule`,
+      typeof result.deny === "string" && result.deny.includes('docs/plans/<name>.md') && !result.deny.startsWith('planPath is only allowed'),
+      result.deny);
+    const state = getState(h);
+    check(`planpath1 pattern-refusal (${bad}): no node was added`, state.goals.filter(g => g.kind === "plan").length === 0);
+  }
+}
+
+// A syntactically valid planPath on kind "task" is refused by the kind rule,
+// distinct from the pattern rule above - the two rules cover different
+// cases, and this pins that the kind check fires first / names itself.
+async function casePlanPath1_validPathOnTaskRefusedByKindNotPattern(clock) {
+  console.log("\n=== Section 1: a valid planPath on kind task is refused by the kind rule ===");
+  clock.set(T0);
+
+  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const activePlan = makeGoalNode({ id: "plan-active", parentId: "root-1", kind: "plan", status: "active" });
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "planpath1_task_kind_refused",
+    stateOpts: { now: T0, goals: [rootGoal, activePlan], activeGoalId: "plan-active" },
+  });
+  const toolCallH = h.handlers["tool.call"];
+  const result = await toolCallH(h.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "task",
+    parentId: "plan-active",
+    title: "A task",
+    objective: "Do the task",
+    planPath: "docs/plans/a_v1.md",
+  }, async () => ({ result: "passthrough" }));
+
+  check("planpath1 task-refused: denied", typeof result.deny === "string", result);
+  check("planpath1 task-refused: the kind rule named itself, not the pattern rule",
+    typeof result.deny === "string" && result.deny.startsWith('planPath is only allowed'),
+    result.deny);
+  check("planpath1 task-refused: the kind refusal also names the required form",
+    typeof result.deny === "string" && result.deny.includes('docs/plans/<name>.md'),
+    result.deny);
+  const state = getState(h);
+  check("planpath1 task-refused: no task node was added", state.goals.filter(g => g.kind === "task").length === 0);
+}
+
+// A present but empty or whitespace-only planPath is a caller that meant to
+// pass a path and passed nothing, so it is refused rather than read as
+// absent. Each shape below is refused by the rule that owns it, told apart
+// by how the message opens: the kind rule fires first on a task whatever the
+// value, and on a plan the empty value falls through to the pattern rule.
+// Read as absent instead, the first would be accepted silently and the
+// second would store nothing and say nothing.
+async function casePlanPath1_emptyPlanPathIsRefusedNotIgnored(clock) {
+  console.log("\n=== Section 1: a present but empty planPath is refused, not read as absent ===");
+  clock.set(T0);
+
+  // Whitespace-only on kind "task": the kind rule owns it.
+  const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const activePlan = makeGoalNode({ id: "plan-active", parentId: "root-1", kind: "plan", status: "active" });
+  const hTask = await createTickHarness({
+    ...OPTS,
+    caseName: "planpath1_empty_on_task",
+    stateOpts: { now: T0, goals: [rootGoal, activePlan], activeGoalId: "plan-active" },
+  });
+  const taskResult = await hTask.handlers["tool.call"](hTask.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "task",
+    parentId: "plan-active",
+    title: "A task",
+    objective: "Do the task",
+    planPath: "   ",
+  }, async () => ({ result: "passthrough" }));
+
+  check("planpath1 empty-on-task: denied rather than accepted silently",
+    typeof taskResult.deny === "string", taskResult);
+  check("planpath1 empty-on-task: the kind rule named itself, not the pattern rule",
+    typeof taskResult.deny === "string" && taskResult.deny.startsWith('planPath is only allowed'),
+    taskResult.deny);
+  check("planpath1 empty-on-task: no task node was added",
+    getState(hTask).goals.filter(g => g.kind === "task").length === 0);
+
+  // Empty string on kind "plan": the kind rule does not apply, so the value
+  // reaches the pattern rule and fails it.
+  const rootGoal2 = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const hPlan = await createTickHarness({
+    ...OPTS,
+    caseName: "planpath1_empty_on_plan",
+    stateOpts: { now: T0, goals: [rootGoal2], activeGoalId: null },
+  });
+  const planResult = await hPlan.handlers["tool.call"](hPlan.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "plan",
+    title: "A plan",
+    objective: "Do the plan",
+    planPath: "",
+  }, async () => ({ result: "passthrough" }));
+
+  check("planpath1 empty-on-plan: denied rather than stored as absent",
+    typeof planResult.deny === "string", planResult);
+  check("planpath1 empty-on-plan: the pattern rule named the required form, not the kind rule",
+    typeof planResult.deny === "string" && planResult.deny.includes('docs/plans/<name>.md')
+      && !planResult.deny.startsWith('planPath is only allowed'),
+    planResult.deny);
+  check("planpath1 empty-on-plan: no plan node was added",
+    getState(hPlan).goals.filter(g => g.kind === "plan").length === 0);
+
+  // Control: the same call with planPath omitted entirely is accepted and
+  // stores no planPath, so the two refusals above key on the value being
+  // present-and-empty rather than on anything else in the call.
+  const rootGoal3 = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
+  const hAbsent = await createTickHarness({
+    ...OPTS,
+    caseName: "planpath1_absent_on_plan_control",
+    stateOpts: { now: T0, goals: [rootGoal3], activeGoalId: null },
+  });
+  const absentResult = await hAbsent.handlers["tool.call"](hAbsent.fake, {
+    tool: "mcp__agentic-plugin__goal_add",
+    kind: "plan",
+    title: "A plan",
+    objective: "Do the plan",
+  }, async () => ({ result: "passthrough" }));
+
+  check("planpath1 absent control: an omitted planPath is still accepted",
+    absentResult.deny === undefined, absentResult.deny);
+  const addedPlan = getState(hAbsent).goals.find(g => g.kind === "plan");
+  check("planpath1 absent control: the node stores no planPath",
+    addedPlan && addedPlan.planPath === undefined, addedPlan && addedPlan.planPath);
+}
+
+// Store load fills planPath from a leading mention in the objective, cut at
+// the trailing comma the worker's own prose adds.
+async function casePlanPath1_fillFromObjectiveLeadingText() {
+  console.log("\n=== Section 1: load fills planPath from a leading mention in objective ===");
+  const raw = JSON.stringify({
+    version: 4,
+    persona: "default",
+    activeSessionId: "s1",
+    epoch: 1,
+    memory: [],
+    goals: [
+      { id: "root-1", parentId: null, kind: "root", title: "Root", objective: "Root", status: "pending",
+        source: "operator", maxRounds: 0, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+      { id: "plan-1", parentId: "root-1", kind: "plan", title: "A plan",
+        objective: "Finish docs/plans/a_v1.md, which closes the gap", status: "pending",
+        source: "worker", maxRounds: 10, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+    ],
+    activeGoalId: null,
+    monitor: { sessionStart: T0, turnCount: 0, totalToolCalls: 0, errors: 0 },
+    nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
+    decisions: [],
+    createdAt: T0, updatedAt: T0,
+  });
+  const state = parseState(raw);
+  const plan = state.goals.find(g => g.id === "plan-1");
+  check("planpath1 fill-leading: planPath filled from the objective, cut at the comma",
+    plan && plan.planPath === "docs/plans/a_v1.md", plan && plan.planPath);
+  checkFilledPlanPathWellFormed("planpath1 fill-leading", plan && plan.planPath);
+}
+
+// Store load fills planPath from a mention that ends the objective with a
+// full stop, which the text pattern's lookahead must also leave outside.
+async function casePlanPath1_fillFromObjectiveTrailingFullStop() {
+  console.log("\n=== Section 1: load fills planPath from a mention ending in a full stop ===");
+  const raw = JSON.stringify({
+    version: 4,
+    persona: "default",
+    activeSessionId: "s1",
+    epoch: 1,
+    memory: [],
+    goals: [
+      { id: "root-1", parentId: null, kind: "root", title: "Root", objective: "Root", status: "pending",
+        source: "operator", maxRounds: 0, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+      { id: "plan-1", parentId: "root-1", kind: "plan", title: "A plan",
+        objective: "See docs/plans/a_v1.md.", status: "pending",
+        source: "worker", maxRounds: 10, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+    ],
+    activeGoalId: null,
+    monitor: { sessionStart: T0, turnCount: 0, totalToolCalls: 0, errors: 0 },
+    nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
+    decisions: [],
+    createdAt: T0, updatedAt: T0,
+  });
+  const state = parseState(raw);
+  const plan = state.goals.find(g => g.id === "plan-1");
+  check("planpath1 fill-trailing: planPath filled, cut before the full stop",
+    plan && plan.planPath === "docs/plans/a_v1.md", plan && plan.planPath);
+  checkFilledPlanPathWellFormed("planpath1 fill-trailing", plan && plan.planPath);
+}
+
+// A plan entry naming no plan document in its title or objective gains no
+// planPath at load.
+async function casePlanPath1_noMatchFillsNothing() {
+  console.log("\n=== Section 1: load leaves planPath unset when the text names no plan ===");
+  const raw = JSON.stringify({
+    version: 4,
+    persona: "default",
+    activeSessionId: "s1",
+    epoch: 1,
+    memory: [],
+    goals: [
+      { id: "root-1", parentId: null, kind: "root", title: "Root", objective: "Root", status: "pending",
+        source: "operator", maxRounds: 0, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+      { id: "plan-1", parentId: "root-1", kind: "plan", title: "A plan",
+        objective: "Get one thing done, no document named", status: "pending",
+        source: "worker", maxRounds: 10, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+    ],
+    activeGoalId: null,
+    monitor: { sessionStart: T0, turnCount: 0, totalToolCalls: 0, errors: 0 },
+    nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
+    decisions: [],
+    createdAt: T0, updatedAt: T0,
+  });
+  const state = parseState(raw);
+  const plan = state.goals.find(g => g.id === "plan-1");
+  check("planpath1 no-match: planPath stays unset", plan && plan.planPath === undefined);
+}
+
+// A task entry whose text names a plan document gains no planPath at load -
+// the fill applies to kind "plan" only.
+async function casePlanPath1_taskKindNeverFilled() {
+  console.log("\n=== Section 1: load never fills planPath on a task entry ===");
+  const raw = JSON.stringify({
+    version: 4,
+    persona: "default",
+    activeSessionId: "s1",
+    epoch: 1,
+    memory: [],
+    goals: [
+      { id: "root-1", parentId: null, kind: "root", title: "Root", objective: "Root", status: "pending",
+        source: "operator", maxRounds: 0, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+      { id: "plan-1", parentId: "root-1", kind: "plan", title: "A plan", objective: "Do the plan", status: "active",
+        source: "worker", maxRounds: 10, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+      { id: "task-1", parentId: "plan-1", kind: "task",
+        title: "A task", objective: "Finish docs/plans/a_v1.md, which closes the gap", status: "pending",
+        source: "worker", maxRounds: 10, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+    ],
+    activeGoalId: "plan-1",
+    monitor: { sessionStart: T0, turnCount: 0, totalToolCalls: 0, errors: 0 },
+    nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
+    decisions: [],
+    createdAt: T0, updatedAt: T0,
+  });
+  const state = parseState(raw);
+  const task = state.goals.find(g => g.id === "task-1");
+  check("planpath1 task-never-filled: the task gains no planPath", task && task.planPath === undefined);
+}
+
+// resolvePlanPath walks up to a plan ancestor for a task node under it.
+async function casePlanPath1_resolveHelperWalksToPlanAncestor() {
+  console.log("\n=== Section 1: resolvePlanPath returns the parent plan's path for a task under it ===");
+  const state = {
+    goals: [
+      { id: "root-1", parentId: null, kind: "root" },
+      { id: "plan-1", parentId: "root-1", kind: "plan", planPath: "docs/plans/a_v1.md" },
+      { id: "task-1", parentId: "plan-1", kind: "task" },
+    ],
+  };
+  const task = state.goals.find(g => g.id === "task-1");
+  check("planpath1 resolve-walks: returns the ancestor plan's path",
+    resolvePlanPath(state, task) === "docs/plans/a_v1.md");
+}
+
+// resolvePlanPath returns none for an entry with no plan-carrying ancestor.
+async function casePlanPath1_resolveHelperNoneWithoutAncestor() {
+  console.log("\n=== Section 1: resolvePlanPath returns none for an entry with no plan ancestor ===");
+  const state = {
+    goals: [
+      { id: "root-1", parentId: null, kind: "root" },
+      { id: "plan-1", parentId: "root-1", kind: "plan" },
+      { id: "task-1", parentId: "plan-1", kind: "task" },
+    ],
+  };
+  const task = state.goals.find(g => g.id === "task-1");
+  check("planpath1 resolve-none: returns undefined when no ancestor carries planPath",
+    resolvePlanPath(state, task) === undefined);
+}
+
+// A plan entry frozen by the round budget, with a planPath filled at this
+// same load, returns to pending with the reason cleared - the recovery
+// direction that lets a real plan mid-work stop reading blocked.
+async function casePlanPath1_recoversMaxRoundsBlockWithPlanPath() {
+  console.log("\n=== Section 1: load frees a Max-rounds-blocked plan entry that now has a planPath ===");
+  const raw = JSON.stringify({
+    version: 4,
+    persona: "default",
+    activeSessionId: "s1",
+    epoch: 1,
+    memory: [],
+    goals: [
+      { id: "root-1", parentId: null, kind: "root", title: "Root", objective: "Root", status: "pending",
+        source: "operator", maxRounds: 0, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+      { id: "plan-1", parentId: "root-1", kind: "plan", title: "A plan",
+        objective: "Finish docs/plans/a_v1.md, which closes the gap", status: "blocked",
+        blockedReason: "Max rounds reached",
+        source: "worker", maxRounds: 10, completedRounds: 10, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+    ],
+    activeGoalId: null,
+    monitor: { sessionStart: T0, turnCount: 0, totalToolCalls: 0, errors: 0 },
+    nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
+    decisions: [],
+    createdAt: T0, updatedAt: T0,
+  });
+  const state = parseState(raw);
+  const plan = state.goals.find(g => g.id === "plan-1");
+  check("planpath1 recover: planPath was filled", plan && plan.planPath === "docs/plans/a_v1.md");
+  checkFilledPlanPathWellFormed("planpath1 recover", plan && plan.planPath);
+  check("planpath1 recover: status returns to pending", plan && plan.status === "pending", plan && plan.status);
+  check("planpath1 recover: blockedReason is cleared", plan && plan.blockedReason === undefined, plan && plan.blockedReason);
+  check("planpath1 recover: completedRounds reset to 0 ", plan && plan.completedRounds === 0, plan && plan.completedRounds);
+}
+
+// Control for the case above: the same frozen shape, but with no plan
+// document named anywhere in the entry's text, stays blocked - an entry
+// wrongly freed would run a task past its budget, so this direction is
+// locked exactly as hard as the recovery direction above.
+async function casePlanPath1_staysBlockedWithoutPlanPath_control() {
+  console.log("\n=== Section 1 control: a Max-rounds-blocked plan entry naming no plan stays blocked ===");
+  const raw = JSON.stringify({
+    version: 4,
+    persona: "default",
+    activeSessionId: "s1",
+    epoch: 1,
+    memory: [],
+    goals: [
+      { id: "root-1", parentId: null, kind: "root", title: "Root", objective: "Root", status: "pending",
+        source: "operator", maxRounds: 0, completedRounds: 0, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+      { id: "plan-1", parentId: "root-1", kind: "plan", title: "A plan",
+        objective: "Get one thing done, no document named", status: "blocked",
+        blockedReason: "Max rounds reached",
+        source: "worker", maxRounds: 10, completedRounds: 10, scores: [], notes: [],
+        planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0,
+        planningRound: 0, createdAt: T0, updatedAt: T0 },
+    ],
+    activeGoalId: null,
+    monitor: { sessionStart: T0, turnCount: 0, totalToolCalls: 0, errors: 0 },
+    nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
+    decisions: [],
+    createdAt: T0, updatedAt: T0,
+  });
+  const state = parseState(raw);
+  const plan = state.goals.find(g => g.id === "plan-1");
+  check("planpath1 stays-blocked: planPath is still unset", plan && plan.planPath === undefined);
+  check("planpath1 stays-blocked: status stays blocked", plan && plan.status === "blocked", plan && plan.status);
+  check("planpath1 stays-blocked: blockedReason is unchanged", plan && plan.blockedReason === "Max rounds reached", plan && plan.blockedReason);
+}
+
+// ============================================================
+// Section 1: which entries applyPlanRecordOnLoad fills and frees.
+// ============================================================
+
+// Builds the JSON parseState takes from a goals array built with
+// makeGoalNode, so each case below states only the fields it varies rather
+// than repeating monitor/nudge/decisions boilerplate.
+function planPath1StateJson(goals, activeGoalId = null) {
+  return JSON.stringify({
+    version: 4,
+    persona: "default",
+    activeSessionId: "s1",
+    epoch: 1,
+    memory: [],
+    goals,
+    activeGoalId,
+    monitor: { sessionStart: T0, turnCount: 0, totalToolCalls: 0, errors: 0 },
+    nudge: { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 },
+    decisions: [],
+    createdAt: T0, updatedAt: T0,
+  });
+}
+
+// The recovery reaches any entry that HAS a plan by the ancestor rule, not
+// only one whose kind is "plan". The scorer blocks the active LEAF, and a
+// plan node with children is never the active leaf, so the entry actually
+// frozen with Max rounds reached is usually a task under a plan node.
+async function casePlanPath1Recovery_taskUnderPlanNodeRecovered() {
+  console.log("\n=== Section 1 recovery: load frees a Max-rounds-blocked task under a plan node ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const plan = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: "active",
+    planPath: "docs/plans/a_v1.md",
+  });
+  const task = makeGoalNode({
+    id: "task-1", parentId: "plan-1", kind: "task", status: "blocked",
+    blockedReason: "Max rounds reached", maxRounds: 10, completedRounds: 10,
+  });
+  const state = parseState(planPath1StateJson([root, plan, task]));
+  const recovered = state.goals.find(g => g.id === "task-1");
+  check("recovery task-under-plan: status returns to pending", recovered && recovered.status === "pending", recovered && recovered.status);
+  check("recovery task-under-plan: blockedReason is cleared", recovered && recovered.blockedReason === undefined, recovered && recovered.blockedReason);
+  check("recovery task-under-plan: completedRounds reset to 0", recovered && recovered.completedRounds === 0, recovered && recovered.completedRounds);
+}
+
+// Control for the case above: a task with no plan-carrying ancestor at all.
+// resolvePlanPath returns undefined for it, and its root is live and it is a
+// leaf, so the ancestor-rule guard is the only one that can be keeping it
+// blocked.
+async function casePlanPath1Recovery_taskWithNoPlanAncestorStaysBlocked_control() {
+  console.log("\n=== Section 1 recovery: a task with no plan ancestor stays blocked ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const task = makeGoalNode({
+    id: "task-1", parentId: "root-1", kind: "task", status: "blocked",
+    blockedReason: "Max rounds reached", maxRounds: 10, completedRounds: 10,
+  });
+  const state = parseState(planPath1StateJson([root, task]));
+  const node = state.goals.find(g => g.id === "task-1");
+  check("recovery no-plan-ancestor control: stays blocked with no plan ancestor", node && node.status === "blocked", node && node.status);
+  check("recovery no-plan-ancestor control: blockedReason unchanged", node && node.blockedReason === "Max rounds reached", node && node.blockedReason);
+  check("recovery no-plan-ancestor control: completedRounds unchanged (a refusing guard leaves the node exactly as found)", node && node.completedRounds === 10, node && node.completedRounds);
+}
+
+// The recovery fires only under a live root. Without
+// this, a recovered entry under a root already complete, abandoned or
+// blocked is activatable, since isActivationEligible deliberately exempts
+// the root from its own status test - resurrecting work under a goal
+// already announced done. The three dead statuses reuse exactly the set
+// isPlanningDue already names for "no work to do".
+async function casePlanPath1Recovery_rootStatusGatesRecovery() {
+  console.log("\n=== Section 1 recovery: recovery only fires under a live root ===");
+  const deadStatuses = ["complete", "abandoned", "blocked"];
+  for (const rootStatus of deadStatuses) {
+    const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: rootStatus });
+    const plan = makeGoalNode({
+      id: "plan-1", parentId: "root-1", kind: "plan", status: "blocked",
+      blockedReason: "Max rounds reached", planPath: "docs/plans/a_v1.md",
+      maxRounds: 10, completedRounds: 10,
+    });
+    const state = parseState(planPath1StateJson([root, plan]));
+    const node = state.goals.find(g => g.id === "plan-1");
+    check(`recovery root-status (root ${rootStatus}): stays blocked`, node && node.status === "blocked", node && node.status);
+    check(`recovery root-status (root ${rootStatus}): blockedReason unchanged`, node && node.blockedReason === "Max rounds reached", node && node.blockedReason);
+    check(`recovery root-status (root ${rootStatus}): completedRounds unchanged`, node && node.completedRounds === 10, node && node.completedRounds);
+  }
+
+  // Live-root control: the identical shape with root "pending" IS recovered -
+  // so the three refusals above are the root-status guard and not some other
+  // difference in the fixture.
+  const liveRoot = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const livePlan = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: "blocked",
+    blockedReason: "Max rounds reached", planPath: "docs/plans/a_v1.md",
+    maxRounds: 10, completedRounds: 10,
+  });
+  const liveState = parseState(planPath1StateJson([liveRoot, livePlan]));
+  const liveNode = liveState.goals.find(g => g.id === "plan-1");
+  check("recovery root-status control (live root): recovered", liveNode && liveNode.status === "pending", liveNode && liveNode.status);
+}
+
+// A round-budget-blocked node with children is reached through them, so it
+// is freed when a child will be pending after the pass: activateNext's DFS
+// descends into a pending parent and activates a pending leaf beneath it.
+// The activatable leaf is asserted directly rather than inferred from the
+// parent's status.
+async function casePlanPath1Children_pendingChildMakesTheParentRecoverable() {
+  console.log("\n=== Section 1 children: a node with a pending child is freed and its leaf is activatable ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const parentPlan = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: "blocked",
+    blockedReason: "Max rounds reached", planPath: "docs/plans/a_v1.md",
+    maxRounds: 10, completedRounds: 10,
+  });
+  const child = makeGoalNode({ id: "task-1", parentId: "plan-1", kind: "task", status: "pending" });
+
+  const state = parseState(planPath1StateJson([root, parentPlan, child]));
+  const parent = state.goals.find(g => g.id === "plan-1");
+  const leaf = state.goals.find(g => g.id === "task-1");
+  check("children pending-child: the parent returns to pending", parent && parent.status === "pending", parent && parent.status);
+  check("children pending-child: its blockedReason is cleared", parent && parent.blockedReason === undefined, parent && parent.blockedReason);
+  check("children pending-child: its completedRounds reset to 0", parent && parent.completedRounds === 0, parent && parent.completedRounds);
+  check("children pending-child: a leaf under it is activatable", leaf && isActivationEligible(state, leaf) === true);
+}
+
+// The other direction: a node whose children will all be complete,
+// abandoned or still blocked after the pass is left blocked, because
+// freeing it yields no activatable leaf while isPlanningDue reads the
+// pending node as work in hand and holds the planner back. Each refusing
+// fixture differs from the control below by the child statuses alone.
+async function casePlanPath1Children_noPendingChildRefusesRecovery() {
+  console.log("\n=== Section 1 children: a node whose children are all done or still blocked stays blocked ===");
+  const childSets = [
+    { label: "all complete", children: [{ status: "complete" }, { status: "complete" }] },
+    { label: "complete and abandoned", children: [{ status: "complete" }, { status: "abandoned" }] },
+    {
+      label: "blocked for a reason this pass cannot free",
+      children: [{ status: "complete" }, { status: "blocked", blockedReason: "Waiting on the operator" }],
+    },
+  ];
+
+  for (const variant of childSets) {
+    const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+    const parentPlan = makeGoalNode({
+      id: "plan-1", parentId: "root-1", kind: "plan", status: "blocked",
+      blockedReason: "Max rounds reached", planPath: "docs/plans/a_v1.md",
+      maxRounds: 10, completedRounds: 10,
+    });
+    const children = variant.children.map((c, i) => makeGoalNode({
+      id: `task-${i}`, parentId: "plan-1", kind: "task",
+      status: c.status, blockedReason: c.blockedReason,
+    }));
+
+    const state = parseState(planPath1StateJson([root, parentPlan, ...children]));
+    const parent = state.goals.find(g => g.id === "plan-1");
+    check(`children (${variant.label}): the parent stays blocked`, parent && parent.status === "blocked", parent && parent.status);
+    check(`children (${variant.label}): its blockedReason is unchanged`, parent && parent.blockedReason === "Max rounds reached", parent && parent.blockedReason);
+    check(`children (${variant.label}): its completedRounds is unchanged`, parent && parent.completedRounds === 10, parent && parent.completedRounds);
+  }
+
+  // Control: the identical parent, with the second child pending instead of
+  // done or blocked, IS freed - so the three refusals above are the child
+  // test and not some other difference in the fixture.
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const parentPlan = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: "blocked",
+    blockedReason: "Max rounds reached", planPath: "docs/plans/a_v1.md",
+    maxRounds: 10, completedRounds: 10,
+  });
+  const done = makeGoalNode({ id: "task-0", parentId: "plan-1", kind: "task", status: "complete" });
+  const pending = makeGoalNode({ id: "task-1", parentId: "plan-1", kind: "task", status: "pending" });
+  const state = parseState(planPath1StateJson([root, parentPlan, done, pending]));
+  const parent = state.goals.find(g => g.id === "plan-1");
+  check("children control (one child pending): the parent is freed", parent && parent.status === "pending", parent && parent.status);
+}
+
+// A parent and its only child both frozen by the round budget are freed
+// together: the child is freed as a leaf, which is what makes the parent's
+// child test pass, and the parent is freed as the child's own ancestor.
+// Running the identical tree in both array orders pins that neither half of
+// that pair depends on which node the sweep reaches first.
+async function casePlanPath1Children_frozenParentAndChildFreedInEitherArrayOrder() {
+  console.log("\n=== Section 1 children: a frozen parent and its frozen child are freed in either array order ===");
+  const buildGoals = () => {
+    const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+    const parentPlan = makeGoalNode({
+      id: "plan-1", parentId: "root-1", kind: "plan", status: "blocked",
+      blockedReason: "Max rounds reached", planPath: "docs/plans/a_v1.md",
+      maxRounds: 10, completedRounds: 10,
+    });
+    const child = makeGoalNode({
+      id: "task-1", parentId: "plan-1", kind: "task", status: "blocked",
+      blockedReason: "Max rounds reached", maxRounds: 10, completedRounds: 10,
+    });
+    return { root, parentPlan, child };
+  };
+
+  const orders = [
+    { label: "parent before child", pick: (g) => [g.root, g.parentPlan, g.child] },
+    { label: "child before parent", pick: (g) => [g.root, g.child, g.parentPlan] },
+  ];
+
+  for (const order of orders) {
+    const state = parseState(planPath1StateJson(order.pick(buildGoals())));
+    const parent = state.goals.find(g => g.id === "plan-1");
+    const child = state.goals.find(g => g.id === "task-1");
+    check(`children order (${order.label}): the parent returns to pending`, parent && parent.status === "pending", parent && parent.status);
+    check(`children order (${order.label}): the parent's blockedReason is cleared`, parent && parent.blockedReason === undefined, parent && parent.blockedReason);
+    check(`children order (${order.label}): the parent's completedRounds reset to 0`, parent && parent.completedRounds === 0, parent && parent.completedRounds);
+    check(`children order (${order.label}): the child returns to pending`, child && child.status === "pending", child && child.status);
+    check(`children order (${order.label}): the child's completedRounds reset to 0`, child && child.completedRounds === 0, child && child.completedRounds);
+    check(`children order (${order.label}): the child is activatable`, child && isActivationEligible(state, child) === true);
+  }
+}
+
+// The text pattern's left boundary refuses a match sitting inside a longer
+// token, while a plain-prose mention of the identical file name still fills.
+// Each refused form below names a DIFFERENT file from the one the capture
+// would hold, so without the lookbehind the fill writes a truncated, wrong
+// path and nothing signals the rewrite. The Windows form is the one this
+// host's own paths take: a drive-rooted prefix with backslash separators and
+// a forward-slash tail, which is what a repository path looks like here.
+async function casePlanPath1Text_leftBoundaryRefusesLongerToken() {
+  console.log("\n=== Section 1 text pattern: the left boundary refuses a longer token ===");
+  const refusing = [
+    { label: "a relative path", objective: "finish ../docs/plans/a_v1.md" },
+    { label: "a backslash-separated path", objective: "Finish D:\\other_repo\\docs/plans/a_v1.md" },
+    { label: "a drive-relative path", objective: "Finish D:docs/plans/a_v1.md" },
+  ];
+
+  for (const variant of refusing) {
+    const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+    const rewritten = makeGoalNode({
+      id: "plan-1", parentId: "root-1", kind: "plan",
+      title: "A plan", objective: variant.objective,
+    });
+    const state = parseState(planPath1StateJson([root, rewritten]));
+    const node = state.goals.find(g => g.id === "plan-1");
+    check(`text left-edge (${variant.label}): fills no planPath`, node && node.planPath === undefined, node && node.planPath);
+  }
+
+  // Control for the backslash case, differing from it in one character: a
+  // space where that case carries the backslash before "docs". It still
+  // fills, so the refusal above is the left-boundary guard reading that one
+  // character rather than anything else in the sentence.
+  const rootSep = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const spaced = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan",
+    title: "A plan", objective: "Finish D:\\other_repo docs/plans/a_v1.md",
+  });
+  const stateSep = parseState(planPath1StateJson([rootSep, spaced]));
+  const nodeSep = stateSep.goals.find(g => g.id === "plan-1");
+  check("text left-edge control: a space in place of the backslash still fills",
+    nodeSep && nodeSep.planPath === "docs/plans/a_v1.md", nodeSep && nodeSep.planPath);
+  checkFilledPlanPathWellFormed("text left-edge control", nodeSep && nodeSep.planPath);
+
+  // Control for the drive-relative case, differing from it in one character:
+  // a space where that case carries the colon before "docs". It still fills,
+  // so the refusal above is the left-boundary guard reading the colon rather
+  // than the "D" or anything else in the sentence. A shape guard on the
+  // capture cannot stand in for this: "D:docs/plans/a_v1.md" yields
+  // "docs/plans/a_v1.md", which is well formed and names the wrong tree.
+  const rootDrive = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const spacedDrive = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan",
+    title: "A plan", objective: "Finish D docs/plans/a_v1.md",
+  });
+  const stateDrive = parseState(planPath1StateJson([rootDrive, spacedDrive]));
+  const nodeDrive = stateDrive.goals.find(g => g.id === "plan-1");
+  check("text left-edge control: a space in place of the drive colon still fills",
+    nodeDrive && nodeDrive.planPath === "docs/plans/a_v1.md", nodeDrive && nodeDrive.planPath);
+  checkFilledPlanPathWellFormed("text left-edge drive control", nodeDrive && nodeDrive.planPath);
+
+  // Control: the same file name, named in ordinary prose, still fills - so
+  // the refusals above are the left-boundary guard and not some broader
+  // change that stopped the fill from working at all.
+  const root2 = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const plain = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan",
+    title: "A plan", objective: "finish docs/plans/a_v1.md, which closes the gap",
+  });
+  const state2 = parseState(planPath1StateJson([root2, plain]));
+  const node2 = state2.goals.find(g => g.id === "plan-1");
+  check("left-edge control: plain-prose mention still fills", node2 && node2.planPath === "docs/plans/a_v1.md", node2 && node2.planPath);
+  checkFilledPlanPathWellFormed("left-edge control", node2 && node2.planPath);
+}
+
+// The pattern's right boundary refuses a match that is a prefix of a longer
+// path: a further extension (".md.bak") and a directory segment (".md/") each
+// name a different file from the one the capture would hold. The control
+// below differs from both only in the character following ".md".
+async function casePlanPath1Text_rightBoundaryRefusesLongerPath() {
+  console.log("\n=== Section 1 text pattern: the right boundary refuses a longer path ===");
+  const refusing = [
+    { label: "a further extension", objective: "see docs/plans/a_v1.md.bak for the old copy" },
+    { label: "a directory segment", objective: "see docs/plans/a_v1.md/notes for the old copy" },
+  ];
+
+  for (const variant of refusing) {
+    const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+    const plan = makeGoalNode({
+      id: "plan-1", parentId: "root-1", kind: "plan",
+      title: "A plan", objective: variant.objective,
+    });
+    const state = parseState(planPath1StateJson([root, plan]));
+    const node = state.goals.find(g => g.id === "plan-1");
+    check(`text right-edge (${variant.label}): fills no planPath`, node && node.planPath === undefined, node && node.planPath);
+  }
+
+  // Control: the same sentence with a space where the refused cases carry
+  // "." or "/" still fills, so the two refusals are the right-boundary
+  // guard rather than some broader change that stopped the fill working.
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const plan = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan",
+    title: "A plan", objective: "see docs/plans/a_v1.md for the old copy",
+  });
+  const state = parseState(planPath1StateJson([root, plan]));
+  const node = state.goals.find(g => g.id === "plan-1");
+  check("text right-edge control: the same sentence with a space still fills",
+    node && node.planPath === "docs/plans/a_v1.md", node && node.planPath);
+  checkFilledPlanPathWellFormed("text right-edge control", node && node.planPath);
+}
+
+// A plan node loaded with no title, or with no objective, does not throw.
+// The fill reads both fields through a nullish guard, and its call sites sit
+// outside the try that produces the "store could not be read at session
+// start" fallback, so a throw here escapes into the session-start hook and
+// the session does not come up at all.
+async function casePlanPath1Fill_missingTitleOrObjectiveDoesNotThrow() {
+  console.log("\n=== Section 1 fill: a missing title or objective does not throw ===");
+  const root1 = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const noTitle = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan",
+    objective: "finish docs/plans/a_v1.md, which closes the gap",
+  });
+  delete noTitle.title;
+  let threw1 = false;
+  let state1;
+  try {
+    state1 = parseState(planPath1StateJson([root1, noTitle]));
+  } catch (e) {
+    threw1 = true;
+  }
+  check("fill no-title: parseState does not throw", !threw1);
+  const node1 = state1 && state1.goals.find(g => g.id === "plan-1");
+  check("fill no-title: falls back to the objective's mention", node1 && node1.planPath === "docs/plans/a_v1.md", node1 && node1.planPath);
+  checkFilledPlanPathWellFormed("fill no-title", node1 && node1.planPath);
+
+  const root2 = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const noObjective = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan",
+    title: "A plan naming no document",
+  });
+  delete noObjective.objective;
+  let threw2 = false;
+  let state2;
+  try {
+    state2 = parseState(planPath1StateJson([root2, noObjective]));
+  } catch (e) {
+    threw2 = true;
+  }
+  check("fill no-objective: parseState does not throw", !threw2);
+  const node2 = state2 && state2.goals.find(g => g.id === "plan-1");
+  check("fill no-objective: gains no planPath (neither field named one)", node2 && node2.planPath === undefined);
+}
+
+// ============================================================
+// Section 1: the ancestor chain of a round-budget recovery.
+// ============================================================
+
+// The ordinary shape after a plan entry hits its budget: the scorer blocks
+// the task, activateNext moves to its sibling, and when that sibling
+// finishes completeLeaf's upward walk marks the plan parent blocked with
+// "Child task blocked". Freeing the task alone leaves it reachable by
+// nothing - isActivationEligible refuses it on the parent's status,
+// activateNext's DFS filters each level on "pending" and never descends,
+// and isPlanningDue reads the pending task as work in hand - so the parent
+// is freed with it and the entry is activatable again.
+async function casePlanPath1Ancestors_derivedBlockedParentFreedWithTheEntry() {
+  console.log("\n=== Section 1 ancestors: a parent blocked by its own child is freed with the entry ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const plan = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: "blocked",
+    blockedReason: "Child task blocked", planPath: "docs/plans/a_v1.md",
+  });
+  const task1 = makeGoalNode({
+    id: "task-1", parentId: "plan-1", kind: "task", status: "blocked",
+    blockedReason: "Max rounds reached", maxRounds: 10, completedRounds: 10,
+  });
+  const task2 = makeGoalNode({ id: "task-2", parentId: "plan-1", kind: "task", status: "complete" });
+
+  const state = parseState(planPath1StateJson([root, plan, task1, task2]));
+  const node = state.goals.find(g => g.id === "task-1");
+  const parent = state.goals.find(g => g.id === "plan-1");
+  check("ancestors: the entry returns to pending", node && node.status === "pending", node && node.status);
+  check("ancestors: the entry's blockedReason is cleared", node && node.blockedReason === undefined, node && node.blockedReason);
+  check("ancestors: the entry's completedRounds reset to 0", node && node.completedRounds === 0, node && node.completedRounds);
+  check("ancestors: the derived-blocked parent returns to pending", parent && parent.status === "pending", parent && parent.status);
+  check("ancestors: the parent's blockedReason is cleared", parent && parent.blockedReason === undefined, parent && parent.blockedReason);
+  check("ancestors: the freed entry is activatable", node && isActivationEligible(state, node) === true);
+}
+
+// Every ancestor state the recovery cannot explain refuses it, and refuses
+// it whole: the entry stays blocked and the ancestor is left exactly as
+// found. Each fixture below differs from the recovered control by the one
+// parent field under test and nothing else.
+async function casePlanPath1Ancestors_unexplainedParentStateRefusesRecovery() {
+  console.log("\n=== Section 1 ancestors: an ancestor in any other state refuses the whole recovery ===");
+  const refusing = [
+    { label: "blocked for another reason", status: "blocked", blockedReason: "Waiting on the operator" },
+    { label: "paused", status: "paused", blockedReason: undefined },
+    { label: "abandoned", status: "abandoned", blockedReason: undefined },
+    { label: "complete", status: "complete", blockedReason: undefined },
+  ];
+
+  for (const variant of refusing) {
+    const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+    const plan = makeGoalNode({
+      id: "plan-1", parentId: "root-1", kind: "plan", status: variant.status,
+      blockedReason: variant.blockedReason, planPath: "docs/plans/a_v1.md",
+    });
+    const task1 = makeGoalNode({
+      id: "task-1", parentId: "plan-1", kind: "task", status: "blocked",
+      blockedReason: "Max rounds reached", maxRounds: 10, completedRounds: 10,
+    });
+    const task2 = makeGoalNode({ id: "task-2", parentId: "plan-1", kind: "task", status: "complete" });
+
+    const state = parseState(planPath1StateJson([root, plan, task1, task2]));
+    const node = state.goals.find(g => g.id === "task-1");
+    const parent = state.goals.find(g => g.id === "plan-1");
+    check(`ancestors (parent ${variant.label}): the entry stays blocked`, node && node.status === "blocked", node && node.status);
+    check(`ancestors (parent ${variant.label}): the entry's blockedReason is unchanged`, node && node.blockedReason === "Max rounds reached", node && node.blockedReason);
+    check(`ancestors (parent ${variant.label}): the entry's completedRounds is unchanged`, node && node.completedRounds === 10, node && node.completedRounds);
+    check(`ancestors (parent ${variant.label}): the parent's status is unchanged`, parent && parent.status === variant.status, parent && parent.status);
+    check(`ancestors (parent ${variant.label}): the parent's blockedReason is unchanged`, parent && parent.blockedReason === variant.blockedReason, parent && parent.blockedReason);
+  }
+}
+
+// A chain that does not reach the root refuses the recovery: activateNext's
+// DFS walks down from the root, so a node whose parentId names nothing in
+// the tree is unreachable freed. The control differs only in pointing that
+// parentId at the root that is there.
+async function casePlanPath1Ancestors_missingParentRefusesRecovery() {
+  console.log("\n=== Section 1 ancestors: a node whose parent is not in the tree stays blocked ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const orphan = makeGoalNode({
+    id: "plan-1", parentId: "plan-gone", kind: "plan", status: "blocked",
+    blockedReason: "Max rounds reached", planPath: "docs/plans/a_v1.md",
+    maxRounds: 10, completedRounds: 10,
+  });
+  const state = parseState(planPath1StateJson([root, orphan]));
+  const node = state.goals.find(g => g.id === "plan-1");
+  check("ancestors missing-parent: the orphan stays blocked", node && node.status === "blocked", node && node.status);
+  check("ancestors missing-parent: its blockedReason is unchanged", node && node.blockedReason === "Max rounds reached", node && node.blockedReason);
+  check("ancestors missing-parent: its completedRounds is unchanged", node && node.completedRounds === 10, node && node.completedRounds);
+
+  // Control: the identical node parented on the root that exists IS freed.
+  const controlRoot = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const attached = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: "blocked",
+    blockedReason: "Max rounds reached", planPath: "docs/plans/a_v1.md",
+    maxRounds: 10, completedRounds: 10,
+  });
+  const controlState = parseState(planPath1StateJson([controlRoot, attached]));
+  const controlNode = controlState.goals.find(g => g.id === "plan-1");
+  check("ancestors missing-parent control: the same node under the real root is freed",
+    controlNode && controlNode.status === "pending", controlNode && controlNode.status);
+}
+
+// An ancestor reading "active" is live, not a refusal: applyPlanRecordOnLoad
+// runs before enforceInvariants, which is what demotes an active node that
+// has children, so a parent can still read "active" at this moment. The
+// chain here is two deep, so the walk crosses a live ancestor and a
+// derived-blocked one in the same recovery.
+async function casePlanPath1Ancestors_activeAncestorAcceptedAcrossTwoLevels() {
+  console.log("\n=== Section 1 ancestors: an active ancestor does not refuse, across a two-level chain ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const outer = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: "active",
+    planPath: "docs/plans/a_v1.md",
+  });
+  const inner = makeGoalNode({
+    id: "plan-2", parentId: "plan-1", kind: "plan", status: "blocked",
+    blockedReason: "Child task blocked",
+  });
+  const task = makeGoalNode({
+    id: "task-1", parentId: "plan-2", kind: "task", status: "blocked",
+    blockedReason: "Max rounds reached", maxRounds: 10, completedRounds: 10,
+  });
+
+  const state = parseState(planPath1StateJson([root, outer, inner, task]));
+  const node = state.goals.find(g => g.id === "task-1");
+  const innerNode = state.goals.find(g => g.id === "plan-2");
+  check("ancestors active: the entry is recovered under an active ancestor", node && node.status === "pending", node && node.status);
+  check("ancestors active: the entry's blockedReason is cleared", node && node.blockedReason === undefined, node && node.blockedReason);
+  check("ancestors active: the derived-blocked middle ancestor is freed too", innerNode && innerNode.status === "pending", innerNode && innerNode.status);
+  check("ancestors active: the middle ancestor's blockedReason is cleared", innerNode && innerNode.blockedReason === undefined, innerNode && innerNode.blockedReason);
+}
+
+// A refusal high in the chain leaves the whole chain untouched, including
+// the derived-blocked ancestor nearer the entry that on its own would have
+// been freed. The chain is decided before any of it is mutated, so the
+// store never rests half-cleared.
+async function casePlanPath1Ancestors_refusalHighInChainLeavesLowerAncestorUntouched() {
+  console.log("\n=== Section 1 ancestors: a refusal high in the chain clears nothing below it ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const outer = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: "paused",
+    planPath: "docs/plans/a_v1.md",
+  });
+  const inner = makeGoalNode({
+    id: "plan-2", parentId: "plan-1", kind: "plan", status: "blocked",
+    blockedReason: "Child task blocked",
+  });
+  const task = makeGoalNode({
+    id: "task-1", parentId: "plan-2", kind: "task", status: "blocked",
+    blockedReason: "Max rounds reached", maxRounds: 10, completedRounds: 10,
+  });
+
+  const state = parseState(planPath1StateJson([root, outer, inner, task]));
+  const node = state.goals.find(g => g.id === "task-1");
+  const innerNode = state.goals.find(g => g.id === "plan-2");
+  const outerNode = state.goals.find(g => g.id === "plan-1");
+  check("ancestors half-clear: the entry stays blocked", node && node.status === "blocked", node && node.status);
+  check("ancestors half-clear: the nearer derived-blocked ancestor is untouched", innerNode && innerNode.status === "blocked", innerNode && innerNode.status);
+  check("ancestors half-clear: its blockedReason is untouched", innerNode && innerNode.blockedReason === "Child task blocked", innerNode && innerNode.blockedReason);
+  check("ancestors half-clear: the paused ancestor is untouched", outerNode && outerNode.status === "paused", outerNode && outerNode.status);
+}
+
+// The fill runs over every node before any recovery does, so an entry that
+// sits ahead of its plan parent in the goals array still resolves that
+// parent's filled planPath. Ordered the other way round, a single pass
+// would read the parent's planPath before the fill had written it and leave
+// the entry blocked.
+async function casePlanPath1Ancestors_fillPrecedesRecoveryWhateverTheArrayOrder() {
+  console.log("\n=== Section 1 ancestors: the fill pass precedes the recovery pass whatever the array order ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const task = makeGoalNode({
+    id: "task-1", parentId: "plan-1", kind: "task", status: "blocked",
+    blockedReason: "Max rounds reached", maxRounds: 10, completedRounds: 10,
+  });
+  const plan = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan", status: "active",
+    title: "A plan", objective: "finish docs/plans/a_v1.md, which closes the gap",
+  });
+
+  const state = parseState(planPath1StateJson([root, task, plan]));
+  const planNode = state.goals.find(g => g.id === "plan-1");
+  const node = state.goals.find(g => g.id === "task-1");
+  check("ancestors order: the parent's planPath is filled", planNode && planNode.planPath === "docs/plans/a_v1.md", planNode && planNode.planPath);
+  checkFilledPlanPathWellFormed("ancestors order", planNode && planNode.planPath);
+  check("ancestors order: the entry ahead of its parent is still recovered", node && node.status === "pending", node && node.status);
+  check("ancestors order: its blockedReason is cleared", node && node.blockedReason === undefined, node && node.blockedReason);
 }
 
 // Item 8.1 / Round 58 finding 4: goal_edit's drop action refused a blocked node outright, which is
