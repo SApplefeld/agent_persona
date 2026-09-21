@@ -87,8 +87,8 @@ Acceptance criteria.
 
 - Newest conversational record is a `user` record carrying `tool_result`: `busy`.
 - Newest is an `assistant` record carrying `tool_use`, with file modification time twenty minutes old: `busy`. This is the long silent tool call.
-- Newest is an `assistant` record with text only and a modification time ten seconds old: `busy`.
-- The same record with a modification time forty seconds old: `idle`.
+- Newest is an `assistant` record with text only whose age is ten seconds: `busy`.
+- The same record aged forty seconds: `idle`. The age comes from the record's own `timestamp` field, and from the file's modification time only where that field is missing or unparsable. Amended at execution: the bullets above originally named the modification time alone, which cannot hold beside the next bullet, since later system records are exactly what refreshes it. The record's own timestamp satisfies both. Both clock sources are pinned in the suite, in both directions.
 - `system` records other than a rate-limit record after the newest conversational record do not change the verdict.
 - Newest record of any type is a `rate_limit_event`, behind a `user` record carrying `tool_result`, with a modification time five seconds old: `idle`. The same with a `system` record of subtype `api_retry` and `error_status` 429: `idle`.
 - A file whose last line is a partial record behind a complete `tool_use` record: `busy`. An unparsable line is skipped, and the verdict rests on the newest parseable conversational record in the tail.

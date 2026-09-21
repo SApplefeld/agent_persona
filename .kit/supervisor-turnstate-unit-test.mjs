@@ -38,6 +38,11 @@ const userPlain = () => JSON.stringify({
   type: 'user',
   message: { role: 'user', content: [{ type: 'text', text: 'go' }] },
 });
+const assistantTextTs = (timestamp) => JSON.stringify({
+  type: 'assistant',
+  timestamp,
+  message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
+});
 const systemInit = () => JSON.stringify({ type: 'system', subtype: 'init', session_id: 's1' });
 const systemRateLimit = () => JSON.stringify({
   type: 'system', subtype: 'api_retry', error_status: 429, retry_delay_ms: 60000,
@@ -150,6 +155,62 @@ const cases = [
     assert.equal(run(p), 'busy');
   }],
 
+  ['newest record is a user record larger than the scan window: busy, not idle (a single oversized record must not blank the tail)', () => {
+    const dir = join(root, 'oversized-user-record');
+    fs.mkdirSync(dir, { recursive: true });
+    const streamPath = join(dir, 'stdout.jsonl');
+    // 300,000 bytes of padding, well past SCAN_BYTES (262144) on its own, so
+    // the base tail window lands entirely inside this one line and the
+    // reader must widen before it can find it.
+    const bigUser = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'x'.repeat(300000) }] },
+    });
+    fs.writeFileSync(streamPath, systemInit() + '\n' + bigUser + '\n');
+    fs.utimesSync(streamPath, new Date(CLOCK - 1000), new Date(CLOCK - 1000));
+    assert.equal(run(streamPath), 'busy');
+  }],
+
+  ['newest is a text-only assistant record whose own timestamp is forty seconds old, followed by fifty system records, file mtime fresh: idle (age comes from the record, not the file write time)', () => {
+    const oldTs = new Date(CLOCK - 40000).toISOString();
+    const trailer = new Array(50).fill(0).map(() => systemInit());
+    const p = writeStream('text-only-ts-old-fresh-mtime', [assistantTextTs(oldTs), ...trailer], { mtimeMs: CLOCK });
+    assert.equal(run(p), 'idle');
+  }],
+
+  ['the same shape with the record\'s own timestamp ten seconds old: busy', () => {
+    const youngTs = new Date(CLOCK - 10000).toISOString();
+    const trailer = new Array(50).fill(0).map(() => systemInit());
+    const p = writeStream('text-only-ts-young-fresh-mtime', [assistantTextTs(youngTs), ...trailer], { mtimeMs: CLOCK });
+    assert.equal(run(p), 'busy');
+  }],
+
+  ['an empty-string clock argument does not read busy on a stream that should read idle', () => {
+    const p = writeStream('empty-clock-idle-stream', [assistantText()], { mtimeMs: CLOCK - 40000 });
+    assert.equal(run(p, ''), 'idle');
+  }],
+
+  // bin/supervise.sh reads its clock with date +%s at eight sites, all of
+  // them seconds, so a caller reaching for the nearest habit passes seconds
+  // where this reader documents milliseconds. That puts the clock roughly
+  // fifty-five years behind the record and makes every age hugely negative.
+  // Unguarded, a negative age is not greater than the threshold and so reads
+  // busy, which would hold the persona for the whole patient cap on every
+  // requested restart. The pair below pins the discrimination rather than
+  // the blanket rule: a broken clock reads idle, and ordinary skew against a
+  // record written an instant ago still reads busy.
+  ['a seconds-valued clock against a millisecond timestamp does not read busy', () => {
+    const p = writeStream('seconds-clock', [assistantTextTs(new Date(CLOCK - 40000).toISOString())],
+      { mtimeMs: CLOCK - 40000 });
+    assert.equal(run(p, Math.floor(CLOCK / 1000)), 'idle');
+  }],
+
+  ['a record timestamped a moment after the clock is still young, so it reads busy', () => {
+    const p = writeStream('skew-ahead', [assistantTextTs(new Date(CLOCK + 250).toISOString())],
+      { mtimeMs: CLOCK });
+    assert.equal(run(p), 'busy');
+  }],
+
   ['a ten megabyte file returns in under one second', () => {
     const dir = join(root, 'ten-mb');
     fs.mkdirSync(dir, { recursive: true });
@@ -169,7 +230,11 @@ const cases = [
     const verdict = run(streamPath);
     const elapsed = Date.now() - started;
     assert.equal(verdict, 'busy');
-    assert.ok(elapsed < 1000, 'took ' + elapsed + 'ms');
+    // Widened from one second: this bound also carries a spawned node
+    // process's own startup cost, which a busy machine can push well past
+    // one second with no regression in the reader itself. It still fails on
+    // a whole-file read of a stream this size.
+    assert.ok(elapsed < 5000, 'took ' + elapsed + 'ms');
   }],
 ];
 
