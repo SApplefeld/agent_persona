@@ -5433,6 +5433,35 @@ export const register: Register = async (on, options) => {
             const cause = reading.kind === "archived"
               ? `plan document ${planPath} is archived at ${reading.at}`
               : `plan document ${planPath} reads Status: Complete`;
+            // The document is the record for the holder's whole subtree, so
+            // its live descendants (pending, active or paused, a task the
+            // worker added under the plan node among them) are marked
+            // complete before the holder is, each with one note naming the
+            // document and one complete decision, the shape the scorer's
+            // complete branch writes for the one node it completes. A
+            // descendant already complete or abandoned is left as it is,
+            // nothing outside the holder's subtree is touched, and no walk
+            // goes upward past the holder.
+            const subtree: string[] = [holder.id];
+            for (let i = 0; i < subtree.length; i++) {
+              for (const child of sess.state.goals) {
+                if (child.parentId === subtree[i] && !subtree.includes(child.id)) subtree.push(child.id);
+              }
+            }
+            for (const id of subtree.slice(1)) {
+              const descendant = sess.state.goals.find((g) => g.id === id);
+              if (!descendant) continue;
+              if (descendant.status !== "pending" && descendant.status !== "active" && descendant.status !== "paused") continue;
+              descendant.status = "complete";
+              descendant.notes.push(`completed with ${cause}`);
+              descendant.updatedAt = Date.now();
+              sess.state.decisions.push({
+                timestamp: Date.now(),
+                loop: "goal",
+                action: "complete",
+                detail: `${descendant.id}: completed under ${completedId}, ${cause}`,
+              });
+            }
             completeLeaf(sess.state, completedId, "plan document complete");
             await runHealth($, completedId);
             sess.state.decisions.push({

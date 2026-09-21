@@ -3117,6 +3117,8 @@ async function main() {
     await casePlanRecord2_planEntryHasNoRoundBudget(clock);
     await casePlanRecord2_taskEntryStillBlocksAtBudget_control(clock);
     await casePlanRecord2_roundTextAtTheFourSites(clock);
+    await casePlanRecord2_documentCompletionReachesLiveDescendants(clock);
+    await casePlanRecord2_descendantStatusesReached(clock);
 
     await caseItem81_goalEditDropAllowsBlocked(clock);
     await caseItem81_goalEditDropStillRefusesActive_control(clock);
@@ -12761,6 +12763,74 @@ async function casePlanRecord2_roundTextAtTheFourSites(clock) {
     check(`plan2 skip-hash subset (${planEntry ? "plan entry" : "task entry (control)"}): the stored hash ${planEntry ? "ignores" : "moves with"} completedRounds`,
       hashes.length === 2 && hashes[0] !== 0 && (planEntry ? hashes[0] === hashes[1] : hashes[0] !== hashes[1]), hashes);
   }
+}
+
+// Completion by document reaches the holder's live descendants: with task-1
+// active under plan-1 and task-2 pending beside it, a document reading
+// Complete at the end of task-1's turn completes task-1, task-2 and plan-1,
+// each descendant carrying one note naming the document, activates plan-2,
+// and leaves exactly one active node. The control shape, In Progress,
+// completes nothing.
+async function casePlanRecord2_documentCompletionReachesLiveDescendants(clock) {
+  console.log("\n=== Section 2: completion by document completes the holder's live descendants ===");
+  for (const header of ["Status: Complete", "Status: In Progress"]) {
+    clock.set(T0);
+    const goals = [
+      makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+      makeGoalNode({ id: "plan-1", parentId: "root-1", kind: "plan", status: "pending", planPath: PLAN2_PATH, createdAt: T0 - 20000 }),
+      makeGoalNode({ id: "plan-2", parentId: "root-1", kind: "plan", status: "pending", createdAt: T0 - 10000 }),
+      makeGoalNode({ id: "task-1", parentId: "plan-1", kind: "task", status: "active", createdAt: T0 - 5000 }),
+      makeGoalNode({ id: "task-2", parentId: "plan-1", kind: "task", status: "pending", createdAt: T0 - 4000 }),
+    ];
+    const h = await createTickHarness({ ...OPTS, caseName: `plan2_descendants_${header === "Status: Complete" ? "complete" : "control"}`, stateOpts: { now: T0, goals, activeGoalId: "task-1" } });
+    h.fsMap.set(PLAN2_FILE, plan2Doc(header, ["### Chapter 1"]));
+    await plan2ScoredTurn(h, "t-desc", "on-goal");
+
+    const state = getState(h);
+    const byId = (id) => state.goals.find(g => g.id === id);
+    const actives = state.goals.filter(g => g.status === "active").map(g => g.id);
+    const label = `plan2 descendants (${header})`;
+    if (header === "Status: Complete") {
+      check(`${label}: plan-1 is complete`, byId("plan-1").status === "complete", byId("plan-1").status);
+      for (const id of ["task-1", "task-2"]) {
+        const node = byId(id);
+        check(`${label}: ${id} is complete with one note naming the document`,
+          node.status === "complete" && node.notes.length === 1 && node.notes[0].includes(PLAN2_PATH), node);
+        check(`${label}: a complete decision names ${id} under plan-1`,
+          getDecisions(h).some(d => d.action === "complete" && d.detail.startsWith(`${id}:`) && d.detail.includes("plan-1")));
+      }
+      check(`${label}: plan-2 is active and is the only active node`, actives.length === 1 && actives[0] === "plan-2" && state.activeGoalId === "plan-2", actives);
+      check(`${label}: nothing outside plan-1's subtree was completed (root pending)`, byId("root-1").status === "pending");
+    } else {
+      check(`${label} control: nothing completed`, state.goals.every(g => g.status !== "complete"), state.goals.map(g => `${g.id}:${g.status}`));
+      check(`${label} control: task-1 is still the only active node`, actives.length === 1 && actives[0] === "task-1", actives);
+      check(`${label} control: no notes were written`, state.goals.every(g => g.notes.length === 0));
+    }
+  }
+}
+
+// A paused descendant is completed too, and a descendant already complete or
+// abandoned is left exactly as it is: its status, its notes and its updatedAt.
+async function casePlanRecord2_descendantStatusesReached(clock) {
+  console.log("\n=== Section 2: paused descendants are completed, complete and abandoned ones are left alone ===");
+  clock.set(T0);
+  const goals = [
+    makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+    makeGoalNode({ id: "plan-1", parentId: "root-1", kind: "plan", status: "pending", planPath: PLAN2_PATH, createdAt: T0 - 20000 }),
+    makeGoalNode({ id: "task-1", parentId: "plan-1", kind: "task", status: "active", createdAt: T0 - 5000 }),
+    makeGoalNode({ id: "task-paused", parentId: "plan-1", kind: "task", status: "paused", blockedReason: "operator input needed", createdAt: T0 - 4000 }),
+    makeGoalNode({ id: "task-done", parentId: "plan-1", kind: "task", status: "complete", notes: ["done earlier"], createdAt: T0 - 3000, updatedAt: T0 - 3000 }),
+    makeGoalNode({ id: "task-dropped", parentId: "plan-1", kind: "task", status: "abandoned", notes: ["dropped earlier"], createdAt: T0 - 2000, updatedAt: T0 - 2000 }),
+  ];
+  const h = await createTickHarness({ ...OPTS, caseName: "plan2_descendant_statuses", stateOpts: { now: T0, goals, activeGoalId: "task-1" } });
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+  await plan2ScoredTurn(h, "t-desc-statuses", "on-goal");
+  const state = getState(h);
+  const byId = (id) => state.goals.find(g => g.id === id);
+  check("plan2 descendant statuses: the paused descendant is completed with the note", byId("task-paused").status === "complete" && byId("task-paused").notes.some(n => n.includes(PLAN2_PATH)), byId("task-paused"));
+  check("plan2 descendant statuses: the complete descendant is left as it is", byId("task-done").status === "complete" && byId("task-done").notes.length === 1 && byId("task-done").updatedAt === T0 - 3000, byId("task-done"));
+  check("plan2 descendant statuses: the abandoned descendant is left as it is", byId("task-dropped").status === "abandoned" && byId("task-dropped").notes.length === 1 && byId("task-dropped").updatedAt === T0 - 2000, byId("task-dropped"));
+  check("plan2 descendant statuses: plan-1 is complete", byId("plan-1").status === "complete");
 }
 
 // Item 8.1 / Round 58 finding 4: goal_edit's drop action refused a blocked node outright, which is
