@@ -130,13 +130,12 @@ function createFake$(opts = {}) {
   // The suite-wide Jev sweep. The decision seam's Section 5 accepts on "every
   // existing case passes unchanged with Jev faked to fail, to hang, and to
   // answer the opposite of Haiku", and the plan health questions' Section 5
-  // on the same with Jev answering at each extreme; the default above cannot
-  // deliver either: with no
-  // key the seam stops at its absent-key guard, so an existing case never
-  // reaches any fake and the three drives would be proved over the handful
-  // of cases that seed a key themselves. JEV_SUITE_FAKE seeds the key and
-  // one fake into every harness the suite builds, so one run of the whole
-  // suite under each value is what the bullet actually asks for.
+  // on the same with Jev answering at each extreme. The default above cannot
+  // deliver either: with no key the seam stops at its absent-key guard, so
+  // an existing case never reaches any fake, and the drives would be proved
+  // over the handful of cases that seed a key themselves. JEV_SUITE_FAKE
+  // seeds the key and one fake into every harness the suite builds, so one
+  // run of the whole suite under each value is what the bullet asks for.
   //
   // A case that sets its own response through setHttpResponse still wins,
   // since this only moves the default. That is what keeps the section's own

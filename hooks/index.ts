@@ -630,10 +630,13 @@ const sess: {
   // entry's last few closing texts, oldest first, which the next request's
   // state carries. `chapterWithin` is every stamp id whose chapter_within
   // outcome is undecided, each with the turns on the entry counted since its
-  // call. Session memory rather than persisted state: a restart or the entry
-  // completing drops the record and the outcomes it awaited are never
-  // written, which the journal's readers tolerate.
-  jevPlanHealth: Map<string, { closingTexts: string[]; chapterWithin: { stampId: string; turns: number }[] }>;
+  // call and the plan holder's Chapter count at the call, which is what a
+  // rise is measured against: two entries under one holder share its count,
+  // and a rise read on one entry's turn is still a rise for the other's
+  // pending call. Session memory rather than persisted state: a restart or
+  // the entry completing drops the record and the outcomes it awaited are
+  // never written, which the journal's readers tolerate.
+  jevPlanHealth: Map<string, { closingTexts: string[]; chapterWithin: { stampId: string; turns: number; chapterCount: number }[] }>;
   // The stamp id of the latest plan health call, awaiting the next turn's
   // origin for its next_speaker outcome. Null where none is held.
   jevNextSpeakerStampId: string | null;
@@ -5882,9 +5885,6 @@ export const register: Register = async (on, options) => {
     // here covers the completion steps, as the scorer's does.
     const planHolder = turnLeaf ? planHolderOf(sess.state, turnLeaf) : undefined;
     const planPath = planHolder?.planPath;
-    // Section 5 (plan-health-from-the-record): the count before this turn's
-    // read, so the chapter_within joiner below can tell a rise this turn.
-    const chaptersBeforeRead = planHolder?.chapterCount ?? 0;
     if (planHolder && planPath) {
       const holder = planHolder;
       try {
@@ -5989,37 +5989,42 @@ export const register: Register = async (on, options) => {
     //
     // Three joiners, in the order their facts are known. The origin of this
     // turn settles the next_speaker outcome of the previous plan health call,
-    // whatever entry that call was on. A Chapter rise on this turn's read,
-    // or the fifth turn on the entry without one, settles each chapter_within
-    // outcome still held for the entry. Then, on a completed turn on a plan
+    // whatever entry that call was on. Every record held for an entry that
+    // has completed, been abandoned or left the tree is dropped, whichever
+    // entry this turn was on: no outcome it awaited is written, which the
+    // journal's readers tolerate. Then, for the entry this turn was on, each
+    // chapter_within outcome still held is settled true where the plan
+    // holder's Chapter count now stands above the count at its call, which
+    // covers a rise read on a sibling entry's turn, and false at the fifth
+    // turn on the entry without one. Last, on a completed turn on a plan
     // entry, the three questions are asked over this turn's closing text and
     // the entry's last few, and the lead_blocked outcome is written at once
-    // from the same first-line read Section 3 makes. An entry that has
-    // completed or been abandoned drops what it held: no outcome it awaited
-    // is written, which the journal's readers tolerate.
+    // from the same first-line read Section 3 makes.
     if (jevMode === "shadow") {
       const nextSpeakerStampId = sess.jevNextSpeakerStampId;
       if (nextSpeakerStampId !== null) {
         sess.jevNextSpeakerStampId = null;
         shadowOutcome(hostOf($), nextSpeakerStampId, "next_speaker", wasChannelOrigin ? "channel" : wasDelivery ? "delivery" : "neither");
       }
+      for (const heldId of [...sess.jevPlanHealth.keys()]) {
+        const heldEntry = sess.state.goals.find((g) => g.id === heldId);
+        if (!heldEntry || heldEntry.status === "complete" || heldEntry.status === "abandoned") sess.jevPlanHealth.delete(heldId);
+      }
       if (turnLeaf && isPlanEntry(sess.state, turnLeaf)) {
         const entryId = turnLeaf.id;
         const entryOver = turnLeaf.status === "complete" || turnLeaf.status === "abandoned";
         const held = sess.jevPlanHealth.get(entryId);
-        if (entryOver) {
-          sess.jevPlanHealth.delete(entryId);
-        } else if (held !== undefined) {
-          const chaptersRose = (planHolder?.chapterCount ?? 0) > chaptersBeforeRead;
-          const stillWaiting: { stampId: string; turns: number }[] = [];
+        const chaptersNow = planHolder?.chapterCount ?? 0;
+        if (held !== undefined) {
+          const stillWaiting: { stampId: string; turns: number; chapterCount: number }[] = [];
           for (const pending of held.chapterWithin) {
             const turns = pending.turns + 1;
-            if (chaptersRose) {
+            if (chaptersNow > pending.chapterCount) {
               shadowOutcome(hostOf($), pending.stampId, "chapter_within", "true");
             } else if (turns >= CHAPTER_WITHIN_TURNS) {
               shadowOutcome(hostOf($), pending.stampId, "chapter_within", "false");
             } else {
-              stillWaiting.push({ stampId: pending.stampId, turns });
+              stillWaiting.push({ stampId: pending.stampId, turns, chapterCount: pending.chapterCount });
             }
           }
           held.chapterWithin = stillWaiting;
@@ -6030,11 +6035,16 @@ export const register: Register = async (on, options) => {
             record = { closingTexts: [], chapterWithin: [] };
             sess.jevPlanHealth.set(entryId, record);
           }
-          record.closingTexts.push(e.answer.slice(0, PLAN_HEALTH_TEXT_MAX));
+          // The one cut of the closing text, which both the request's
+          // closingText and the recent list carry: the journal's state
+          // column is exempt from the field clamp, so what bounds a call
+          // line and the request body is this cut alone.
+          const closingText = e.answer.slice(0, PLAN_HEALTH_TEXT_MAX);
+          record.closingTexts.push(closingText);
           while (record.closingTexts.length > PLAN_HEALTH_RECENT_MAX) record.closingTexts.shift();
-          const stampId = shadowAskPlanHealth(hostOf($), e.answer, [...record.closingTexts], jevMode);
+          const stampId = shadowAskPlanHealth(hostOf($), closingText, [...record.closingTexts], jevMode);
           if (stampId !== null) {
-            record.chapterWithin.push({ stampId, turns: 0 });
+            record.chapterWithin.push({ stampId, turns: 0, chapterCount: chaptersNow });
             sess.jevNextSpeakerStampId = stampId;
             const lead = readLeadLine(e.answer);
             shadowOutcome(hostOf($), stampId, "lead_blocked", lead !== null && lead.state === "blocked" ? "true" : "false");

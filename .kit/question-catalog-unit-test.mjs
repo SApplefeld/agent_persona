@@ -26,6 +26,9 @@
 import { createFake$, fakeHostOf } from "./tick-harness.mjs";
 
 const catalog = await import("../hooks/question-catalog.ts");
+// The Score level bounds are the seam's pair, which the catalog's override
+// validator reads rather than restating.
+const { SCORE_MIN_LEVELS, SCORE_MAX_LEVELS } = await import("../hooks/decision-seam.ts");
 const {
   CONTROLLER_LABELS,
   CONTROLLER_LABELS_WITH_SWITCH,
@@ -42,8 +45,6 @@ const {
   SHIPPED_VERSION,
   MIN_OPTIONS,
   MAX_OPTIONS,
-  MIN_LEVELS,
-  MAX_LEVELS,
   WORKER_BLOCKED,
   ROUNDS_CONVERGING,
   BLOCK_OWNER,
@@ -668,9 +669,10 @@ const VALID_CONTROLLER_OVERRIDE = {
       && Object.isFrozen(BLOCK_OWNER_OPTIONS) && FIXED_OPTION_SETS.includes(BLOCK_OWNER), BLOCK_OWNER_OPTIONS);
   check("Test 9i: block-owner's instruction names the closing text field",
     owner.instructions.includes("`closingText`"), owner.instructions);
-  check("Test 9j: the level bounds are the vendor's two and ten, and rounds-converging is the one fixed-level set",
-    MIN_LEVELS === 2 && MAX_LEVELS === 10 && JSON.stringify(FIXED_LEVEL_SETS) === JSON.stringify([ROUNDS_CONVERGING]) && Object.isFrozen(FIXED_LEVEL_SETS),
-    [MIN_LEVELS, MAX_LEVELS, FIXED_LEVEL_SETS]);
+  check("Test 9j: the level bounds are the seam's vendor pair of two and ten, the catalog exporting no pair of its own, and rounds-converging is the one fixed-level set",
+    SCORE_MIN_LEVELS === 2 && SCORE_MAX_LEVELS === 10 && catalog.MIN_LEVELS === undefined && catalog.MAX_LEVELS === undefined
+      && JSON.stringify(FIXED_LEVEL_SETS) === JSON.stringify([ROUNDS_CONVERGING]) && Object.isFrozen(FIXED_LEVEL_SETS),
+    [SCORE_MIN_LEVELS, SCORE_MAX_LEVELS, FIXED_LEVEL_SETS]);
   // Resolving hands back copies: a consumer writing into what it resolved
   // cannot reach the shipped constant.
   const r = await settle(resolverOf(fakeHostOf(harness()))(ROUNDS_CONVERGING));

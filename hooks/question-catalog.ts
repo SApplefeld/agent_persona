@@ -28,7 +28,7 @@
 // failure and report why. Nothing here throws into a controller tick.
 
 import type { PluginHost } from "./host";
-import type { ChoiceQuestion, ResolvedQuestion, QuestionResolver } from "./decision-seam";
+import { SCORE_MIN_LEVELS, SCORE_MAX_LEVELS, type ChoiceQuestion, type ResolvedQuestion, type QuestionResolver } from "./decision-seam";
 
 // --- The label arrays the three classify sites pass to Haiku ---
 //
@@ -125,12 +125,6 @@ export const SHIPPED_VERSION = "v1";
 // switch, whose other options arrive per request. See overrideProblem.
 export const MIN_OPTIONS = 2;
 export const MAX_OPTIONS = 255;
-
-// A Score should have at least two levels and the API accepts up to ten
-// (https://docs.typesafe.ai/primitives/score.md). Both bounds are the
-// vendor's, unlike the option floor above.
-export const MIN_LEVELS = 2;
-export const MAX_LEVELS = 10;
 
 // The Choice sets whose options are this catalog's own, so an override that
 // changes the set of option ids is refused: the journal's agreement figure
@@ -373,8 +367,10 @@ function overrideProblem(parsed: unknown, shipped: ResolvedQuestion): string | n
     if (FIXED_LEVEL_SETS.includes(shipped.id) && parsed.levels.length !== shipped.levels.length) {
       return "the override's level count differs from the shipped set";
     }
-    if (parsed.levels.length < MIN_LEVELS) return `the override has fewer than ${MIN_LEVELS} levels`;
-    if (parsed.levels.length > MAX_LEVELS) return `the override has more than ${MAX_LEVELS} levels`;
+    // The vendor's level bounds, held by the seam so this validator and the
+    // seam's own refuse on one pair of numbers.
+    if (parsed.levels.length < SCORE_MIN_LEVELS) return `the override has fewer than ${SCORE_MIN_LEVELS} levels`;
+    if (parsed.levels.length > SCORE_MAX_LEVELS) return `the override has more than ${SCORE_MAX_LEVELS} levels`;
     return null;
   }
   if (!isRecord(parsed.options)) return "the override has no options map";

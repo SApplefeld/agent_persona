@@ -3358,6 +3358,8 @@ async function main() {
     await casePlanHealth_oneCallAndThreeAnswersPerPlanEntryTurn(clock);
     await casePlanHealth_nextSpeakerRecordsChannelDeliveryOrNeither(clock);
     await casePlanHealth_chapterWithinTrueOnARiseAndFalseAtTheFifthTurn(clock);
+    await casePlanHealth_chapterWithinSeesARiseReadOnASiblingsTurn(clock);
+    await casePlanHealth_abandonedEntryDropsItsRecordOnASiblingsTurn(clock);
     await casePlanHealth_entryCompletingDropsThePendingOutcomes(clock);
     await casePlanHealth_taskEntryAsksNone(clock);
     await casePlanHealth_decisionsAreInvariantAcrossEveryJevExtreme(clock);
@@ -15763,6 +15765,24 @@ async function casePlanHealth_oneCallAndThreeAnswersPerPlanEntryTurn(clock) {
       getState(h).goals.find((g) => g.id === shape.leafId).lead?.state === "blocked", getState(h).goals.find((g) => g.id === shape.leafId).lead);
     check(`${label}: no journal_write_failed decision was pushed`,
       !getDecisions(h).some((d) => d.action === "journal_write_failed"), getDecisions(h).map((d) => d.action));
+
+    // Fix round 1, item 2: a third turn whose closing text runs past the
+    // 1,000-character cut. The request's closingText is cut where the recent
+    // list is, so the two are the same bytes, and the call line's state
+    // carries the cut text.
+    clock.advance(1000);
+    const longText = `Long closing text. ${"x".repeat(1200)}`;
+    await planHealthTurn(h, "t-ph-3", longText);
+    const longRequests = planHealthRequests(h);
+    const longCalls = planHealthLines(h).calls;
+    check(`${label}: a closing text past 1,000 characters is sent cut to exactly 1,000, the same bytes as the recent list's last element`,
+      longRequests.length === 3 && longRequests[2].state.closingText.length === 1000
+        && longRequests[2].state.closingText === longText.slice(0, 1000)
+        && longRequests[2].state.recentClosingTexts.length === 3
+        && longRequests[2].state.recentClosingTexts[2] === longRequests[2].state.closingText,
+      longRequests[2] && { closing: longRequests[2].state.closingText.length, recent: longRequests[2].state.recentClosingTexts.map((t) => t.length) });
+    check(`${label}: the call line's state carries the cut closing text`,
+      longCalls.length === 3 && typeof longCalls[2].state === "string" && JSON.parse(longCalls[2].state).closingText.length === 1000, longCalls[2] && longCalls[2].state && longCalls[2].state.length);
   }
 }
 
@@ -15841,6 +15861,132 @@ async function casePlanHealth_chapterWithinTrueOnARiseAndFalseAtTheFifthTurn(clo
     flatWithin.length === 1 && flatWithin[0].value === "false" && flatWithin[0].callStampId === flatAfter.calls[0].stampId, flatWithin);
   check("s5 chapter_within control: the document's count never rose in the flat run",
     !getDecisions(flat).some((d) => d.action === "plan_progress"), getDecisions(flat).map((d) => d.action));
+}
+
+// The Section 2 tree with two task entries under the one plan holder: task-1
+// active and task-2 paused beside it, both plan entries by the ancestor rule,
+// sharing plan-1's document and its stored Chapter count.
+async function planHealthSiblingsHarness(caseName, clock) {
+  clock.set(T0);
+  const tree = plan2Goals({ taskUnderPlan: true, chapterCount: 1 });
+  tree.goals.push(makeGoalNode({ id: "task-2", parentId: "plan-1", kind: "task", status: "paused", blockedReason: "waiting its turn", maxRounds: 10, createdAt: T0 - 4000 }));
+  const h = await createTickHarness({
+    ...OPTS,
+    jevMode: "shadow",
+    caseName,
+    stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId },
+  });
+  h.fsMap.set(PLAN2_FILE, LEAD3_DOC);
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+  });
+  h.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+  h.setHttpResponse(jevPicking());
+  return h;
+}
+
+// Make the paused sibling the active entry through the worker's own
+// goal_resume, which pauses the one active now, so the next turn starts on
+// the sibling.
+async function planHealthSwitchTo(h, nodeId) {
+  const result = await callTool(h, { tool: "mcp__agentic-plugin__goal_resume", nodeId });
+  if (result.deny) throw new Error(`goal_resume ${nodeId} denied: ${result.deny}`);
+  const state = getState(h);
+  if (state.activeGoalId !== nodeId) throw new Error(`goal_resume ${nodeId} left ${state.activeGoalId} active`);
+}
+
+// chapter_within is measured against the holder's count at the call, per
+// entry: two task entries share one plan holder, so a rise read on one
+// entry's turn stores the new count on the holder, and the other entry's
+// pending call must still see that rise on its own next turn.
+async function casePlanHealth_chapterWithinSeesARiseReadOnASiblingsTurn(clock) {
+  console.log("\n=== Section 5 plan health (fix round 1, item 1): chapter_within on one task entry sees a rise read on its sibling's turn ===");
+  const h = await planHealthSiblingsHarness("s5_chapter_sibling", clock);
+  // A question on A's turn, then one on B's turn.
+  await planHealthTurn(h, "t-cs-1", "Working on A.");
+  clock.advance(1000);
+  await planHealthSwitchTo(h, "task-2");
+  await planHealthTurn(h, "t-cs-2", "Working on B.");
+  const asked = planHealthLines(h).calls;
+  check("s5 chapter_within sibling control: one call per turn, on A then on B",
+    asked.length === 2, asked.length);
+  // The rise is read on A's next turn, which stores the new count on the
+  // holder and settles A's call.
+  clock.advance(1000);
+  await planHealthSwitchTo(h, "task-1");
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+  await planHealthTurn(h, "t-cs-3", "Chapter 2 is in.");
+  const atRise = planHealthLines(h).outcomes.filter((o) => o.kind === "chapter_within");
+  check("s5 chapter_within sibling control: the rise was read once as plan_progress on A's turn",
+    getDecisions(h).filter((d) => d.action === "plan_progress").length === 1
+      && getState(h).goals.find((g) => g.id === "plan-1").chapterCount === 2, getDecisions(h).map((d) => d.action));
+  check("s5 chapter_within sibling: A's call lands true at the rise on A's own turn, and B's is still waiting",
+    atRise.length === 1 && atRise[0].value === "true" && atRise[0].callStampId === asked[0].stampId, atRise);
+  // B's next turn: the holder's count is above the count B's call was made
+  // at, so B's call lands true although the holder's count did not move on
+  // this turn.
+  clock.advance(1000);
+  await planHealthSwitchTo(h, "task-2");
+  await planHealthTurn(h, "t-cs-4", "Back on B.");
+  const afterB = planHealthLines(h).outcomes.filter((o) => o.kind === "chapter_within");
+  check("s5 chapter_within sibling: B's call lands true on B's next turn, against B's own stamp id",
+    afterB.length === 2 && afterB[1].value === "true" && afterB[1].callStampId === asked[1].stampId, afterB);
+  // Once: later turns on B, the new call on t-cs-4 included, write nothing
+  // more for the two settled calls.
+  clock.advance(1000);
+  await planHealthTurn(h, "t-cs-5", "Still on B.");
+  const later = planHealthLines(h).outcomes.filter((o) => o.kind === "chapter_within");
+  check("s5 chapter_within sibling: a later turn on B writes nothing more for the settled calls",
+    later.length === 2 && later.every((o) => o.callStampId !== planHealthLines(h).calls[3].stampId), later);
+}
+
+// An entry whose questions await an outcome is abandoned while a sibling is
+// the turn leaf: the sibling's turn drops the record, so no chapter_within is
+// ever written for the abandoned entry's call, whatever the sibling's later
+// turns read.
+async function casePlanHealth_abandonedEntryDropsItsRecordOnASiblingsTurn(clock) {
+  console.log("\n=== Section 5 plan health (fix round 1, item 3): an entry abandoned while a sibling is the leaf drops its held record ===");
+  const unhandled = [];
+  const onUnhandled = (reason) => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const h = await planHealthSiblingsHarness("s5_abandoned_sibling", clock);
+    await planHealthTurn(h, "t-ab-1", "Working on A.");
+    const asked = planHealthLines(h).calls;
+    check("s5 abandoned sibling control: A's turn wrote one call", asked.length === 1, asked.length);
+    // B becomes the leaf, which pauses A, and A is dropped.
+    clock.advance(1000);
+    await planHealthSwitchTo(h, "task-2");
+    const dropped = await callTool(h, { tool: "mcp__agentic-plugin__goal_edit", nodeId: "task-1", action: "drop", reason: "superseded" });
+    check("s5 abandoned sibling control: A is abandoned while B is active",
+      dropped.deny === undefined && getState(h).goals.find((g) => g.id === "task-1").status === "abandoned" && getState(h).activeGoalId === "task-2",
+      [dropped, getState(h).goals.find((g) => g.id === "task-1").status]);
+    // Six turns on B, a Chapter rise among them: every chance A's record
+    // would have had to settle, had it still been held and joined.
+    for (let turn = 2; turn <= 7; turn += 1) {
+      clock.advance(1000);
+      if (turn === 4) h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+      await planHealthTurn(h, `t-ab-${turn}`, `Turn ${turn} on B.`);
+    }
+    const { calls, outcomes } = planHealthLines(h);
+    check("s5 abandoned sibling control: the rise was read on B's turn and B's own first call landed true",
+      getDecisions(h).filter((d) => d.action === "plan_progress").length === 1
+        && outcomes.some((o) => o.kind === "chapter_within" && o.value === "true" && o.callStampId === calls[1].stampId), outcomes);
+    check("s5 abandoned sibling: no chapter_within was written for the abandoned entry's call",
+      !outcomes.some((o) => o.kind === "chapter_within" && o.callStampId === asked[0].stampId), outcomes.filter((o) => o.kind === "chapter_within"));
+    check("s5 abandoned sibling: the abandoned entry's next_speaker still landed once, its turn's origin being known before the drop",
+      outcomes.filter((o) => o.kind === "next_speaker" && o.callStampId === asked[0].stampId).length === 1, outcomes.filter((o) => o.kind === "next_speaker"));
+    check("s5 abandoned sibling: no later call was made for the abandoned entry",
+      calls.length === 7, calls.length);
+    check("s5 abandoned sibling: nothing threw into a turn",
+      !getDecisions(h).some((d) => d.action === "plan_record_failed" || d.action === "score_failed"), getDecisions(h).map((d) => d.action));
+    await new Promise((r) => setImmediate(r));
+    check("s5 abandoned sibling: no unhandled rejection surfaced", unhandled.length === 0, unhandled.map(String));
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
 }
 
 // Bullet 4: an entry that completes two turns after a question writes no
