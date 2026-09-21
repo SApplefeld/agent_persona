@@ -268,7 +268,9 @@ function shadowAsk(
 // The journal site their call line carries.
 const PLAN_HEALTH_SITE = "plan-health";
 // How many of an entry's closing texts the request's state carries, and the
-// most characters each one carries.
+// most characters any closing text carries in that state: the one cut bounds
+// the request's closingText, each entry of its recent list, and so the
+// journal's state column, which is exempt from the field clamp.
 const PLAN_HEALTH_RECENT_MAX = 5;
 const PLAN_HEALTH_TEXT_MAX = 1000;
 // How many turns on the entry a chapter_within outcome waits for a Chapter
