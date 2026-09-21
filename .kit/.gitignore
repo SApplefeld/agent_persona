@@ -35,3 +35,4 @@
 !/injection-ledger.mjs
 !/injection-ledger.json
 !/injection-duplicate-test.mjs
+!/tool-description-length-test.mjs

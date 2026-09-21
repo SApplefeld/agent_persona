@@ -110,7 +110,27 @@ Both settings reach the child through `<rundir>/settings.json`. The supervisor e
 
 The seats themselves are instruction text the supervisor writes at priming. A launch whose persona equals `coordinatorPersona` gets the coordinator role instruction, which carries the fleet duty, the kit Coordinator seat and the design-escalation clause. A launch whose persona equals `architectPersona` gets the architect's charter instead: design work only, no standing goal, worktrees cut under its own directory, and a plan handed back through the coordinator persona. That launch is also the one that takes neither the skill-load sentence nor the coordinator steer sentence: both are cleared to the empty string for it (`bin/supervise.sh:2813-2814`), because the charter already states which skills a design ask takes and what it does with a coordinator record. `architectPersona` has no default, so a fleet that names no architect builds that charter for nobody and the escalation clause for nobody.
 
-Which class a fleet row takes, the order the five are tried in, and how the two words they share with a row's own `action` field behave are stated once, in the `fleet_status` tool description (`hooks/index.ts:2158-2172`). The `[FLEET]` prompt frame and `README.md` point there rather than restating it, because a session calling the tool holds that description and holds no file in this repository.
+Which class a fleet row takes, the order the five are tried in, and how the two words they share with a row's own `action` field behave are stated once, in the `fleet_status` tool description (`hooks/index.ts:2364-2401`). The `[FLEET]` prompt frame and `README.md` point there rather than restating it, because a session calling the tool holds that description and holds no file in this repository.
+
+That description states the rules a caller acts on and leaves the reasons here, because the engine refuses a tool description over 4,096 characters and the refusal throws out of the `session.start` hook every registration sits in. `.kit/tool-description-length-test.mjs` holds every registered description to 4,000.
+
+### Why a row's keeper standing reads as it does
+
+`keeper.json` is written after a supervisor exit and never at a launch. Three of the description's rules follow from that one fact.
+
+- A live claim under no hold marker reads `running` whatever the file records, because the file describes the exit before this session and not the session itself. A `running` row therefore carries no keeper standing in its `action`, and `nextDelaySeconds` and `note` are where one reads from.
+- A signalled exit and a live claim together are settled on the clock. A claim last seen before that exit is the session that took the signal, so the row reads `stopped`. A claim last seen after it is a session that started since, so the row reads `running`. Where the exit carries no timestamp that can be read, the claim decides, the row reads `running`, and its note says the exit could not be placed against the claim.
+- The file records the next rung of the keeper's delay ladder and no timer. `nextDelaySeconds` is therefore the delay the keeper applies after the persona's next crash, and how long a persona waiting to relaunch has left cannot be read from the row.
+
+### Two vocabularies over one row
+
+A row's `action` and its health class are two vocabularies. `action` is the keeper standing alone. The five health classes are a second vocabulary, derived from the row's fields, naming a whole row in one reading, and they are what a `[FLEET]` prompt's lines carry.
+
+`stale` has three grounds. The first is tried second in the order: the action reads `stopped` and a live session holds the claim. The other two come out of what is left once the first four classes have been tried: a commons entry still standing for a persona the roster disables and nothing live holds, and a live claim whose row carries any note but an unwritten `keeper.json`.
+
+`backing off` is read before `no live claim while the roster enables it` and before that remainder, so a row with no live claim whose delay has climbed reads `backing off` rather than either of them.
+
+`held` means the same in both vocabularies, a hold marker being what sets it either way. `backing off` does not. Once a claim is live the action reads `running` for every keeper standing but `held`, and but a stop the clock settles against the claim, while the health class still reads `nextDelaySeconds` against the base. So a row whose action reads `running` carries the `backing off` class wherever that delay has climbed.
 
 ## Injected text and its guard
 
@@ -118,16 +138,16 @@ Two files write text into a child session that nobody typed: `bin/supervise.sh` 
 
 ### What is injected, and how large
 
-`.kit/injection-ledger.json` is the committed size baseline, 39 entries totalling 28,663 characters. Ten entries come from `bin/supervise.sh` and total 13,046; twenty-nine come from `hooks/index.ts` and total 15,617, of which the fourteen registered tool descriptions are 11,307.
+`.kit/injection-ledger.json` is the committed size baseline, 39 entries totalling 27,532 characters. Ten entries come from `bin/supervise.sh` and total 13,046; twenty-nine come from `hooks/index.ts` and total 14,486, of which the fourteen registered tool descriptions are 10,176.
 
 | What a launch reads | Characters |
 |---|---|
 | A worker with a channel: skill-load, coordinator steer, reply-tool | 2,474 |
 | The coordinator: those three plus the coordinator role instruction | 7,193 |
 | The architect: reply-tool plus its charter, the other two cleared | 5,908 |
-| The fourteen tool descriptions, registered into every session | 11,307 |
+| The fourteen tool descriptions, registered into every session | 10,176 |
 
-`fleet_status` alone is 4,926 of that last row, because the five health-class definitions live in it and every other surface points there. It registers into every session whatever the persona, including a worker that cannot call it.
+`fleet_status` alone is 3,795 of that last row, because the five health-class definitions live in it and every other surface points there. It registers into every session whatever the persona, including a worker that cannot call it.
 
 The startup message is assembled at one `printf` (`bin/supervise.sh:2862`) from `SKILL_LOAD_INSTRUCTION`, `COORDINATOR_STEER_INSTRUCTION`, `COORDINATOR_ROLE_INSTRUCTION`, `ARCHITECT_ROLE_INSTRUCTION`, `CHANNEL_REPLY_INSTRUCTION` and the priming body. Each is empty for the launch shapes it does not apply to. The reply-tool instruction is built only with a channel attached, and it states the operator-writing rules inline rather than by pointer alone: four of the five persona launch directories hold no `CLAUDE.md`, so a pointer at that file reaches one persona of five. Its closing sentence points there for the rules the kit doctrine carries, where the child's own working directory holds the file.
 

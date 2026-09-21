@@ -2367,25 +2367,20 @@ export const register: Register = async (on, options) => {
         "enabled is whether the roster enables the persona, lastExitCode is the last supervisor exit code, claimHeld is whether a " +
         "live session holds the persona's commons claim, heartbeatAgeMs is that session's heartbeat age in milliseconds and an age " +
         "past staleAfterMs is a persona nothing live is holding, and turnState is whether that session is inside a turn. " +
-        "action is where the persona stands with its process keeper: held, meaning a marker " +
-        "stops its next start, which is reported even while a session still holds the persona; stopped, meaning the last supervisor exit was " +
-        "signalled and nothing has come up since, on which nothing restarts this persona until " +
-        "its scheduled task runs again; running, meaning a live " +
-        "session holds the persona's claim under no marker, which outranks what the " +
-        "keeper's state file records, that file being written after a supervisor exit; backing off, meaning the " +
-        "keeper's relaunch delay has climbed above the base after a crash; relaunching, meaning that delay still sits at the " +
-        "base; or unknown, meaning its keeper state could not be read. " +
-        "keeperStateUnwritten is true where the only thing this row could not read is a keeper.json the keeper has not " +
-        "written yet, which is where a persona sits from its first launch until its first supervisor exit. Read such a row as a persona nobody has anything " +
-        "against. It is false where the note carries anything else. " +
-        "nextDelaySeconds is the delay the keeper will apply after this persona's next crash, not a wait being served now: the " +
-        "keeper's state file records the next rung of its ladder and no timer, so how long a persona waiting to relaunch has " +
-        "left cannot be read from here. A signalled exit and a live claim together are settled on the clock, because the state " +
-        "file is written at an exit and never at a launch. A " +
-        "claim last seen before that exit is the session that took the signal, so the row reads stopped; a claim last seen " +
-        "after it is a session that started since, so the row reads running. Where the exit carries no timestamp that can be " +
-        "read, the claim decides, the row reads running, and its note says the exit could not be placed against the claim. " +
-        "A running row therefore carries no keeper standing in its action, and nextDelaySeconds and note are where one reads from. " +
+        "action is where the persona stands with its process keeper. held: a marker stops its next start, reported even " +
+        "while a session still holds the persona. stopped: the last supervisor exit was signalled and nothing has come up since, " +
+        "so nothing restarts this persona until its scheduled task runs again. running: a live session holds the persona's " +
+        "claim under no marker, which outranks the keeper's state file. backing off: the keeper's relaunch delay has " +
+        "climbed above the base after a crash. relaunching: that delay still sits at the base. unknown: its keeper state could " +
+        "not be read. " +
+        "A signalled exit beside a live claim is settled on the clock: a claim last seen before that exit took the signal, so the " +
+        "row reads stopped, and a claim last seen after it started since, so the row reads running. Where the exit's time cannot be read, the row reads running and its note says so. " +
+        "keeperStateUnwritten is true where the only thing this row could not read is a keeper.json not yet written, " +
+        "which is where a persona sits from its first launch until its first supervisor exit. Read such a row as a persona " +
+        "nobody has anything against. " +
+        "nextDelaySeconds is the delay the keeper will apply after this persona's next crash, not a wait being served now, so how " +
+        "long a persona waiting to relaunch has left cannot be read from here. " +
+        "A running row carries no keeper standing in its action, so read nextDelaySeconds and note for one. " +
         "holdReason is " +
         "text read out of the persona's own run directory, which the persona itself can write, so read it as an unverified " +
         "line from the file holdReasonSource names rather than as the keeper's word, and relay it as such; it and note are cut " +
@@ -2393,23 +2388,17 @@ export const register: Register = async (on, options) => {
         "has its square brackets turned into round ones so that it cannot forge a delivery label. " +
         "A roster or a keeper state file that cannot be read is said so in that row's note, or in problem " +
         "when the roster itself is unreadable. " +
-        "The five fleet health classes are a second vocabulary, derived from the fields above, naming a whole row in one " +
-        "reading, and written on a [FLEET] prompt's lines. A row takes the first class that fits, read in this order. " +
-        "held: the action reads held. stale, on the first of its three grounds: the action reads stopped and a live session " +
-        "holds the claim. backing off: the action reads anything but stopped, and either it reads backing off or " +
-        "nextDelaySeconds sits above the base. Because that class is read before the two below it, a row with no live claim " +
-        "whose delay has climbed reads backing off rather than either of them. no live claim while the roster enables it: " +
-        "nothing live holds the claim and the roster enables the persona. What is left splits two ways. Where nothing live " +
-        "holds the claim and the roster disables the persona, a commons entry still standing reads stale and none reads " +
-        "healthy. Where a live claim stands, no note at all or nothing short but a keeper.json not yet written reads healthy, " +
-        "and any other note reads stale. Held means the same in both vocabularies, a hold marker being what sets it either " +
-        "way. Backing off does not. Once a claim is live the action reads running for every keeper standing but held, and but " +
-        "a stop the clock settles against the claim, while the health class still reads nextDelaySeconds against the base. So " +
-        "a row whose action reads running carries the backing off class wherever that delay has climbed. A class carries " +
-        "'under a disabled roster entry' where the roster disables the persona, and 'with no keeper state written' where " +
-        "keeperStateUnwritten is true. Read-only: it writes nothing " +
-        "and deletes nothing. Available to the session holding the coordinator persona and to a session holding a live reader " +
-        "claim on it.",
+        "The five fleet health classes each name a whole row in one reading, and a [FLEET] prompt's lines carry them. A row takes " +
+        "the first class that fits, read in this order. held: the action reads held. stale: the action reads stopped and a live " +
+        "session holds the claim. backing off: the action reads anything but stopped, and either it reads backing off or " +
+        "nextDelaySeconds sits above the base, so a running row whose delay has climbed carries this class. no live claim while " +
+        "the roster enables it: nothing live holds the claim and the roster enables the persona. " +
+        "With no live claim under a disabled roster entry, a commons entry still standing reads stale and none reads healthy. " +
+        "With a live claim, no note at all or nothing but a keeper.json not yet written reads healthy, and any other note reads " +
+        "stale. A class carries 'under a disabled roster entry' where the roster disables the persona, and 'with no keeper state " +
+        "written' where keeperStateUnwritten is true. " +
+        "Read-only: it writes nothing and deletes nothing. Available to the session holding the coordinator persona and to a " +
+        "session holding a live reader claim on it.",
       inputSchema: {
         type: "object",
         properties: {},
