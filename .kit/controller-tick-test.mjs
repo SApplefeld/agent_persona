@@ -61,6 +61,12 @@ function checkFilledPlanPathWellFormed(label, value) {
     typeof value === "string" && PLAN_PATH_PATTERN.test(value), value);
 }
 
+// The token that tells goal_add's two planPath refusals apart. The kind rule's
+// message names the one kind the parameter is allowed on, and the form rule's
+// message (PLAN_PATH_REQUIRED_FORM) names no kind at all, so a refusal is
+// read as the kind rule's by this token rather than by its opening sentence.
+const PLANPATH_KIND_RULE_TOKEN = 'kind "plan"';
+
 // Helper: read state from the fake store (persona JSON).
 function getState(h) {
   const storePath = PERSONA_STORE_FILE;
@@ -3082,6 +3088,8 @@ async function main() {
     await casePlanPath1Recovery_rootStatusGatesRecovery(clock);
     await casePlanPath1Text_leftBoundaryRefusesLongerToken(clock);
     await casePlanPath1Fill_missingTitleOrObjectiveDoesNotThrow(clock);
+    await casePlanPath1Fill_nonStringTitleReadAsAbsent(clock);
+    await casePlanPath1Fill_titleTakesPrecedenceOverObjective(clock);
     await casePlanPath1Text_rightBoundaryRefusesLongerPath(clock);
     await casePlanPath1Text_captureBodyIsTheShapeGoalAddEnforces(clock);
 
@@ -11302,7 +11310,7 @@ async function casePlanPath1_patternRefusalCases(clock) {
 
     check(`planpath1 pattern-refusal (${bad}): denied`, typeof result.deny === "string", result);
     check(`planpath1 pattern-refusal (${bad}): the pattern rule named the required form, not the kind rule`,
-      typeof result.deny === "string" && result.deny.includes('docs/plans/<name>.md') && !result.deny.startsWith('planPath is only allowed'),
+      typeof result.deny === "string" && result.deny.includes('docs/plans/<name>.md') && !result.deny.includes(PLANPATH_KIND_RULE_TOKEN),
       result.deny);
     const state = getState(h);
     check(`planpath1 pattern-refusal (${bad}): no node was added`, state.goals.filter(g => g.kind === "plan").length === 0);
@@ -11335,7 +11343,7 @@ async function casePlanPath1_validPathOnTaskRefusedByKindNotPattern(clock) {
 
   check("planpath1 task-refused: denied", typeof result.deny === "string", result);
   check("planpath1 task-refused: the kind rule named itself, not the pattern rule",
-    typeof result.deny === "string" && result.deny.startsWith('planPath is only allowed'),
+    typeof result.deny === "string" && result.deny.includes(PLANPATH_KIND_RULE_TOKEN),
     result.deny);
   check("planpath1 task-refused: the kind refusal also names the required form",
     typeof result.deny === "string" && result.deny.includes('docs/plans/<name>.md'),
@@ -11347,8 +11355,9 @@ async function casePlanPath1_validPathOnTaskRefusedByKindNotPattern(clock) {
 // A present but empty or whitespace-only planPath is a caller that meant to
 // pass a path and passed nothing, so it is refused rather than read as
 // absent. Each shape below is refused by the rule that owns it, told apart
-// by how the message opens: the kind rule fires first on a task whatever the
-// value, and on a plan the empty value falls through to the pattern rule.
+// by the kind token only the kind rule's message carries: the kind rule
+// fires first on a task whatever the value, and on a plan the empty value
+// falls through to the pattern rule.
 // Read as absent instead, the first would be accepted silently and the
 // second would store nothing and say nothing.
 async function casePlanPath1_emptyPlanPathIsRefusedNotIgnored(clock) {
@@ -11375,7 +11384,7 @@ async function casePlanPath1_emptyPlanPathIsRefusedNotIgnored(clock) {
   check("planpath1 empty-on-task: denied rather than accepted silently",
     typeof taskResult.deny === "string", taskResult);
   check("planpath1 empty-on-task: the kind rule named itself, not the pattern rule",
-    typeof taskResult.deny === "string" && taskResult.deny.startsWith('planPath is only allowed'),
+    typeof taskResult.deny === "string" && taskResult.deny.includes(PLANPATH_KIND_RULE_TOKEN),
     taskResult.deny);
   check("planpath1 empty-on-task: no task node was added",
     getState(hTask).goals.filter(g => g.kind === "task").length === 0);
@@ -11400,7 +11409,7 @@ async function casePlanPath1_emptyPlanPathIsRefusedNotIgnored(clock) {
     typeof planResult.deny === "string", planResult);
   check("planpath1 empty-on-plan: the pattern rule named the required form, not the kind rule",
     typeof planResult.deny === "string" && planResult.deny.includes('docs/plans/<name>.md')
-      && !planResult.deny.startsWith('planPath is only allowed'),
+      && !planResult.deny.includes(PLANPATH_KIND_RULE_TOKEN),
     planResult.deny);
   check("planpath1 empty-on-plan: no plan node was added",
     getState(hPlan).goals.filter(g => g.kind === "plan").length === 0);
@@ -12071,7 +12080,7 @@ async function casePlanPath1Text_captureBodyIsTheShapeGoalAddEnforces() {
 }
 
 // A plan node loaded with no title, or with no objective, does not throw.
-// The fill reads both fields through a nullish guard, and its call sites sit
+// The fill reads a field only when it is a string, and its call sites sit
 // outside the try that produces the "store could not be read at session
 // start" fallback, so a throw here escapes into the session-start hook and
 // the session does not come up at all.
@@ -12111,6 +12120,49 @@ async function casePlanPath1Fill_missingTitleOrObjectiveDoesNotThrow() {
   check("fill no-objective: parseState does not throw", !threw2);
   const node2 = state2 && state2.goals.find(g => g.id === "plan-1");
   check("fill no-objective: gains no planPath (neither field named one)", node2 && node2.planPath === undefined);
+}
+
+// A plan node whose stored title is not a string does not throw either: the
+// fill reads a field only when it is a string, so a number or an array there
+// is read as absent and the objective is consulted. A nullish guard alone
+// would pass the number through to .match and throw at the same unguarded
+// call site the case above describes.
+async function casePlanPath1Fill_nonStringTitleReadAsAbsent() {
+  console.log("\n=== Section 1 fill: a non-string title is read as absent and does not throw ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const numberTitle = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan",
+    title: 123, objective: "finish docs/plans/a_v1.md, which closes the gap",
+  });
+  let threw = false;
+  let state;
+  try {
+    state = parseState(planPath1StateJson([root, numberTitle]));
+  } catch (e) {
+    threw = true;
+  }
+  check("fill number-title: parseState does not throw", !threw);
+  const node = state && state.goals.find(g => g.id === "plan-1");
+  check("fill number-title: falls back to the objective's mention", node && node.planPath === "docs/plans/a_v1.md", node && node.planPath);
+  checkFilledPlanPathWellFormed("fill number-title", node && node.planPath);
+}
+
+// The fill reads the title first and consults the objective only when the
+// title names no plan document. A title and an objective naming two
+// different documents therefore fill from the title. Reading the fields the
+// other way round fills from the objective and this case reds.
+async function casePlanPath1Fill_titleTakesPrecedenceOverObjective() {
+  console.log("\n=== Section 1 fill: the title's mention wins over the objective's ===");
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const twoMentions = makeGoalNode({
+    id: "plan-1", parentId: "root-1", kind: "plan",
+    title: "Finish docs/plans/from_title_v1.md",
+    objective: "See docs/plans/from_objective_v1.md for the record",
+  });
+  const state = parseState(planPath1StateJson([root, twoMentions]));
+  const node = state.goals.find(g => g.id === "plan-1");
+  check("fill precedence: planPath is the title's document", node && node.planPath === "docs/plans/from_title_v1.md", node && node.planPath);
+  checkFilledPlanPathWellFormed("fill precedence", node && node.planPath);
 }
 
 // ============================================================
@@ -12220,7 +12272,10 @@ async function casePlanPath1Ancestors_missingParentRefusesRecovery() {
 // runs before enforceInvariants, which is what demotes an active node that
 // has children, so a parent can still read "active" at this moment. The
 // chain here is two deep, so the walk crosses a live ancestor and a
-// derived-blocked one in the same recovery.
+// derived-blocked one in the same recovery. A plan under a plan is a shape
+// only a hand-edited store holds, since goal_add refuses kind "plan" under
+// any parent but the root, and parseState accepts it without checking. The
+// case pins the walk over such a store, not a shape the tools build.
 async function casePlanPath1Ancestors_activeAncestorAcceptedAcrossTwoLevels() {
   console.log("\n=== Section 1 ancestors: an active ancestor does not refuse, across a two-level chain ===");
   const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });

@@ -75,8 +75,9 @@ export interface GoalNode {
   planPath?: string; // Section 1 (plan-health-from-the-record): the plan document's
                       // path, relative to the persona's working directory, in the
                       // form docs/plans/<name>.md. Set on a plan node only, by
-                      // goal_add or filled from the node's own text on load. A
-                      // v2/v3 store migrates with this unset.
+                      // goal_add or filled from the node's own text on load. The
+                      // v2/v3 migration itself writes no value; the load-time
+                      // fill runs on every migration exit and may fill one.
   lead?: { state: "blocked" | "waiting"; reason: string; at: number } | null; // Section 3:
                       // the worker's own BLOCKED/WAITING first line for a plan entry.
                       // Unset by the v2-v4 migration; Section 1 adds no writer for it.
@@ -353,11 +354,11 @@ export const PLAN_PATH_PATTERN = /^docs\/plans\/[A-Za-z0-9][A-Za-z0-9._-]{0,250}
 // PLAN_PATH_PATTERN passes it. The left edge is the only thing that refuses
 // a path belonging to another tree.
 //
-// The right edge excludes the same class for the same reason, in three
-// parts. A filename character ends the match inside a longer name. A "."
-// followed by a letter or digit is a further extension, so
-// "docs/plans/a_v1.md.bak" names a different file. A "/" makes the match a
-// directory prefix of a longer path, as in "docs/plans/a_v1.md/notes". A
+// The right edge is guarded by a class of its own, narrower than the
+// left's, in three parts. A filename character ends the match inside a
+// longer name. A "." followed by a letter or digit is a further extension,
+// so "docs/plans/a_v1.md.bak" names a different file. A "/" makes the match
+// a directory prefix of a longer path, as in "docs/plans/a_v1.md/notes". A
 // "." followed by anything else is ordinary sentence punctuation and stays
 // outside the capture, which is how a worker's own prose writes the path.
 export const PLAN_PATH_TEXT_PATTERN = /(?<![A-Za-z0-9._/:\\-])(docs\/plans\/[A-Za-z0-9][A-Za-z0-9._-]{0,250}?\.md)(?![A-Za-z0-9_-]|\.[A-Za-z0-9]|\/)/;
@@ -367,7 +368,7 @@ export const PLAN_PATH_TEXT_PATTERN = /(?<![A-Za-z0-9._/:\\-])(docs\/plans\/[A-Z
 export const PLAN_PATH_REQUIRED_FORM =
   'planPath must be a project-relative path of the form "docs/plans/<name>.md": ' +
   "no leading slash, no drive letter, no further path segments, and a name " +
-  "using only letters, digits, \".\", \"_\" or \"-\".";
+  "starting with a letter or digit and using only letters, digits, \".\", \"_\" or \"-\".";
 
 // Default state (per persona)
 export function createDefaultState(persona: string, sessionId: string): AgentState {
@@ -419,17 +420,18 @@ export function serializeState(state: AgentState): string {
 
 // Section 1 (plan-health-from-the-record): the store-load side of the plan
 // path. Runs once per load, on every version's exit, since a plan node can
-// come from a v2 store's migration as easily as a v4 one. Idempotent: an
-// entry that already carries planPath, or is not the exact frozen shape
-// below, is untouched by both steps.
+// come from a v2 store's migration as easily as a v4 one. Idempotent, one
+// test per step: the fill skips a node that already carries planPath, and
+// the recovery skips an entry that is not the exact frozen shape below, so
+// a second load over the same store changes nothing.
 //
 // Fill: a plan node loaded without planPath gets one from the first capture
 // of PLAN_PATH_TEXT_PATTERN in its title, then (only if the title held none)
 // its objective. A node naming no plan document in either field gains none.
-// Both fields are read through a nullish guard, since a stored node can lack
-// either one and these call sites sit outside the try that produces the
-// "store could not be read" fallback: a throw here stops the session coming
-// up at all.
+// Each field is read only when it is a string, since a stored node can lack
+// either one or hold a value of another type, and these call sites sit
+// outside the try that produces the "store could not be read" fallback: a
+// throw here stops the session coming up at all.
 //
 // Recover: a node frozen by the round budget - status "blocked",
 // blockedReason exactly "Max rounds reached" - and which HAS a plan by the
@@ -515,8 +517,10 @@ function blockedAncestorsToFree(state: AgentState, node: GoalNode): GoalNode[] |
 function applyPlanRecordOnLoad(state: AgentState): void {
   for (const node of state.goals) {
     if (node.kind === "plan" && !node.planPath) {
-      const fromTitle = node.title?.match(PLAN_PATH_TEXT_PATTERN);
-      const found = fromTitle ? fromTitle[1] : node.objective?.match(PLAN_PATH_TEXT_PATTERN)?.[1];
+      const fromTitle = typeof node.title === "string" ? node.title.match(PLAN_PATH_TEXT_PATTERN) : null;
+      const found = fromTitle
+        ? fromTitle[1]
+        : typeof node.objective === "string" ? node.objective.match(PLAN_PATH_TEXT_PATTERN)?.[1] : undefined;
       if (found) node.planPath = found;
     }
   }
