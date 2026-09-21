@@ -27,9 +27,13 @@
 // rate_limit_event records are skipped when looking for the newest one. A
 // user record reads busy (the model owes a reply). An assistant record
 // carrying a tool_use block reads busy (a tool is running). An assistant
-// record with no tool_use block reads busy while younger than thirty seconds
-// and idle once older, since inside a turn the reply that follows a
-// text-only record arrives within thirty seconds almost always. The age is
+// record with no tool_use block reads busy while younger than five minutes
+// and idle once older. Inside a turn, the record that follows a text-only
+// record is most often a tool_use block of the same API response, and the
+// stream writes nothing while the model generates that block's input, which
+// scales with the input's size: inputs of 26 to 34 kilobytes took 90 to 135
+// seconds on live streams, and no such gap over 150 seconds was measured
+// across 6,324 mid-turn records on four streams. The age is
 // taken from that record's own timestamp field, not the file's modification
 // time: a run of later system records (a rate-limit retry, an init line) can
 // keep the file's mtime fresh long after the turn that produced the text
@@ -71,7 +75,7 @@ const SCAN_BYTES = 262144;
 // running several megabytes; far short of reading a multi-ten-megabyte
 // stream whole.
 const SCAN_BYTES_MAX = 8 * 1024 * 1024;
-const IDLE_AFTER_MS = 30000;
+const IDLE_AFTER_MS = 300000;
 
 // The tail of the stream as whole lines, plus the file's own modification
 // time and size read from the same handle. A missing file, one that cannot

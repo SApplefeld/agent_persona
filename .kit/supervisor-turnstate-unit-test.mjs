@@ -97,13 +97,19 @@ const cases = [
     assert.equal(run(p), 'busy');
   }],
 
-  ['the same record, mtime forty seconds old: idle', () => {
-    const p = writeStream('text-only-old', [assistantText()], { mtimeMs: CLOCK - 40000 });
+  ['the same record, mtime six minutes old: idle', () => {
+    const p = writeStream('text-only-old', [assistantText()], { mtimeMs: CLOCK - 360000 });
     assert.equal(run(p), 'idle');
   }],
 
-  ['a text-only record at exactly thirty seconds old still reads busy (the boundary is > 30s, not >=)', () => {
-    const p = writeStream('text-only-boundary', [assistantText()], { mtimeMs: CLOCK - 30000 });
+  ['a text-only record at exactly five minutes old still reads busy (the boundary is > 5min, not >=)', () => {
+    const p = writeStream('text-only-boundary', [assistantText()], { mtimeMs: CLOCK - 300000 });
+    assert.equal(run(p), 'busy');
+  }],
+
+  ['a text-only record whose own timestamp is 150 seconds old, file mtime fresh, reads busy: the model can still be generating a large tool input for the same response', () => {
+    const ts = new Date(CLOCK - 150000).toISOString();
+    const p = writeStream('text-only-ts-mid-band', [assistantTextTs(ts), systemInit()], { mtimeMs: CLOCK });
     assert.equal(run(p), 'busy');
   }],
 
@@ -113,7 +119,7 @@ const cases = [
   }],
 
   ['system records other than a rate-limit record after the newest conversational record do not change an idle verdict', () => {
-    const p = writeStream('system-after-idle', [assistantText(), systemInit()], { mtimeMs: CLOCK - 40000 });
+    const p = writeStream('system-after-idle', [assistantText(), systemInit()], { mtimeMs: CLOCK - 360000 });
     assert.equal(run(p), 'idle');
   }],
 
@@ -155,7 +161,7 @@ const cases = [
 
   ['a plain-garbage last line (not JSON at all) is skipped the same way: verdict rests on the record before it', () => {
     const p = writeStream('garbage-last-line', [assistantText(), 'not json at all'],
-      { trailingNewline: false, mtimeMs: CLOCK - 40000 });
+      { trailingNewline: false, mtimeMs: CLOCK - 360000 });
     assert.equal(run(p), 'idle');
   }],
 
@@ -228,8 +234,8 @@ const cases = [
     assert.equal(run(streamPath), 'idle');
   }],
 
-  ['newest is a text-only assistant record whose own timestamp is forty seconds old, followed by fifty system records, file mtime fresh: idle (age comes from the record, not the file write time)', () => {
-    const oldTs = new Date(CLOCK - 40000).toISOString();
+  ['newest is a text-only assistant record whose own timestamp is six minutes old, followed by fifty system records, file mtime fresh: idle (age comes from the record, not the file write time)', () => {
+    const oldTs = new Date(CLOCK - 360000).toISOString();
     const trailer = new Array(50).fill(0).map(() => systemInit());
     const p = writeStream('text-only-ts-old-fresh-mtime', [assistantTextTs(oldTs), ...trailer], { mtimeMs: CLOCK });
     assert.equal(run(p), 'idle');
@@ -242,13 +248,13 @@ const cases = [
     assert.equal(run(p), 'busy');
   }],
 
-  ['an empty-string clock argument falls back to real time: a record forty seconds old by the wall clock reads idle', () => {
+  ['an empty-string clock argument falls back to real time: a record six minutes old by the wall clock reads idle', () => {
     // The record's own timestamp is set relative to real Date.now(), not the
     // suite's fixed 2023 CLOCK, so the verdict actually turns on the
     // fallback rather than on file mtime aging against a three-year-old
     // fixture, which would read idle regardless of what parseClock('') did.
-    const oldTs = new Date(Date.now() - 40000).toISOString();
-    const p = writeStream('empty-clock-idle-stream', [assistantTextTs(oldTs)], { mtimeMs: CLOCK - 40000 });
+    const oldTs = new Date(Date.now() - 360000).toISOString();
+    const p = writeStream('empty-clock-idle-stream', [assistantTextTs(oldTs)], { mtimeMs: CLOCK - 360000 });
     assert.equal(run(p, ''), 'idle');
   }],
 
@@ -265,7 +271,7 @@ const cases = [
   // still reads busy too.
   ['a seconds-valued clock against a record timestamped ten seconds before real time reads busy, matching what a correct millisecond clock would give', () => {
     const tenSecondsAgo = new Date(Date.now() - 10000).toISOString();
-    const p = writeStream('seconds-clock', [assistantTextTs(tenSecondsAgo)], { mtimeMs: CLOCK - 40000 });
+    const p = writeStream('seconds-clock', [assistantTextTs(tenSecondsAgo)], { mtimeMs: CLOCK - 360000 });
     // A caller reaching for `date +%s` (every clock read in bin/supervise.sh)
     // passes seconds. Falling back to Date.now() instead of trusting the
     // mis-scaled value as milliseconds is what makes this busy rather than
