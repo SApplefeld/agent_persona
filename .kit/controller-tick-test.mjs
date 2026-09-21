@@ -3139,8 +3139,11 @@ async function main() {
     // Section 4 (plan-health-from-the-record): which turns are scored.
     await caseSection4_channelAndDeliveryTurnsSkipTheScorer(clock);
     await caseSection4_unaccountedTurnScoredOnTaskEntryNotOnPlanEntry(clock);
-    await caseSection4_nudgedOnGoalAndCompleteResetTheCounterWithoutCompleting(clock);
+    await caseSection4_nudgedOnGoalResetsButCompleteMovesNothingOnAPlanEntry(clock);
     await caseSection4_threeNudgedDriftTurnsTripTheStallPause(clock);
+    await caseSection4_threeNudgedCompleteTurnsTripTheStallPause(clock);
+    await caseSection4_nudgedCompleteStillCompletesATaskEntry_control(clock);
+    await caseSection4_channelOriginNudgeIsStillScoredAsANudge(clock);
 
     await caseItem81_goalEditDropAllowsBlocked(clock);
     await caseItem81_goalEditDropStillRefusesActive_control(clock);
@@ -12645,32 +12648,35 @@ async function casePlanRecord2_unchangedChapterCountLogsNothing(clock) {
   check("plan2 unchanged control: the nudge counter was not reset (idle summary reads Consecutive nudges sent: 1)", summary.includes("Consecutive nudges sent: 1"), summary.split("\n").find(l => l.startsWith("Consecutive")));
 }
 
-// The round budget is gone for a plan entry: 25 unaccounted turns never
+// The round budget is gone for a plan entry: 25 nudged, scored turns never
 // block it and completedRounds stays 0, for the plan node itself and for a
-// task under it alike, and goal_done spends nothing either. Section 4
-// (plan-health-from-the-record) also means none of the 25 is scored: an
-// unaccounted turn (plan2ScoredTurn opens no nudge) is skipped for a plan
-// entry, so the round-budget rules below hold on an entry that was never
-// scored at all rather than on one scored 25 times, and each turn logs
-// score_skipped in place of the score it used to record.
+// task under it alike, and goal_done spends nothing either. Turns alternate
+// on-goal and drift so the on-goal label resets the nudge counter every
+// other turn and the three-nudge stall pause never trips - a separate
+// mechanism this case must not exercise. The hourly nudge cap is raised, as
+// Section 3's own repeat case raises it, since 25 nudges inside one
+// fake-clock hour would otherwise hit that cap before the round-budget
+// question is even reached.
 async function casePlanRecord2_planEntryHasNoRoundBudget(clock) {
-  console.log("\n=== Section 2: a plan entry never blocks over 25 unaccounted turns and spends no round ===");
+  console.log("\n=== Section 2: a plan entry scored 25 times is never blocked and spends no round ===");
   for (const taskUnderPlan of [false, true]) {
     clock.set(T0);
     const leafId = taskUnderPlan ? "task-1" : "plan-1";
-    const h = await plan2Harness(`plan2_no_budget_${taskUnderPlan ? "task" : "plan"}`, { taskUnderPlan, maxRounds: 10 });
+    const h = await plan2Harness(`plan2_no_budget_${taskUnderPlan ? "task" : "plan"}`, { taskUnderPlan, maxRounds: 10 }, { costMaxNudgesPerHour: 30 });
     h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"]));
     for (let i = 0; i < 25; i++) {
-      await plan2ScoredTurn(h, `t-${i}`, i % 2 === 0 ? "on-goal" : "drift");
+      const scoredLabel = i % 2 === 0 ? "on-goal" : "drift";
+      h.setClassifyValue(section4Classify(scoredLabel));
+      clock.advance(130_000);
+      await tickAndSettle(h, clock, 50);
+      await h.handlers["turn.start"](h.fake, { turnId: `t-${i}` }, async () => ({ result: "ok" }));
+      await h.handlers["turn.complete"](h.fake, { turnId: `t-${i}`, answer: "Working on it.", reason: "completed" }, async () => ({ result: "ok" }));
     }
     const state = getState(h);
     const leaf = state.goals.find(g => g.id === leafId);
     const decisions = getDecisions(h);
     const label = taskUnderPlan ? "task under a plan node" : "plan node";
-    check(`plan2 no budget (${label}): no scores from 25 unaccounted turns (Section 4: unaccounted skips a plan entry)`, leaf && leaf.scores.length === 0, leaf && leaf.scores.length);
-    check(`plan2 no budget (${label}): all 25 turns logged score_skipped naming the entry`,
-      decisions.filter(d => d.action === "score_skipped" && d.detail.startsWith(`${leafId}:`)).length === 25,
-      decisions.filter(d => d.action === "score_skipped").length);
+    check(`plan2 no budget (${label}): 25 scores were recorded`, leaf && leaf.scores.length === 25, leaf && leaf.scores.length);
     check(`plan2 no budget (${label}): still active, never blocked`, leaf && leaf.status === "active" && state.activeGoalId === leafId, leaf && leaf.status);
     check(`plan2 no budget (${label}): completedRounds stays 0`, leaf && leaf.completedRounds === 0, leaf && leaf.completedRounds);
     check(`plan2 no budget (${label}): no block decision`, !decisions.some(d => d.action === "block"), decisions.filter(d => d.action === "block"));
@@ -12680,7 +12686,7 @@ async function casePlanRecord2_planEntryHasNoRoundBudget(clock) {
     const after = getState(h).goals.find(g => g.id === leafId);
     check(`plan2 no budget (${label}): goal_done is served and completes the leaf`, done.deny === undefined && after && after.status === "complete", done);
     check(`plan2 no budget (${label}): goal_done leaves completedRounds at 0`, after && after.completedRounds === 0, after && after.completedRounds);
-    check(`plan2 no budget (${label}): goal_done still records its own score, the only one on the leaf`, after && after.scores.length === 1, after && after.scores.length);
+    check(`plan2 no budget (${label}): goal_done still records its score`, after && after.scores.length === 26, after && after.scores.length);
   }
 }
 
@@ -13334,11 +13340,11 @@ function section4Classify(scorerLabel) {
 
 // Bullet 1: a channel-origin turn and a delivery turn each log score_skipped
 // and leave scores, completedRounds and the nudge counter untouched, for a
-// plan entry and for a task entry alike - an operator check-in spending
-// nothing is the incident this plan exists to fix. The nudge counter is
-// primed to 1 first (one nudge absorbed by a drift-labelled nudged turn, the
-// same setup Section 2's own "unchanged" cases use) so "untouched" has a
-// value to hold.
+// plan entry and for a task entry alike - a channel-origin operator
+// check-in spending nothing is the incident this plan exists to fix. The
+// nudge counter is primed to 1 first (one nudge absorbed by a
+// drift-labelled nudged turn, the same setup Section 2's own "unchanged"
+// cases use) so "untouched" has a value to hold.
 async function caseSection4_channelAndDeliveryTurnsSkipTheScorer(clock) {
   console.log("\n=== Section 4: a channel-origin turn and a delivery turn each skip the scorer ===");
   for (const shape of SECTION4_SHAPES) {
@@ -13356,6 +13362,11 @@ async function caseSection4_channelAndDeliveryTurnsSkipTheScorer(clock) {
       const roundsBefore = before.completedRounds;
 
       const decisionsBefore = getDecisions(h).length;
+      // The origin turn's own classify stub answers on-goal, not drift: an
+      // on-goal answer resets the counter, so a skip that failed to fire
+      // (the turn scored instead) shows up as a moved counter below, where
+      // a drift stub would leave the counter looking untouched either way.
+      h.setClassifyValue(section4Classify("on-goal"));
       if (origin === "channel") {
         await h.handlers["prompt.submit"](h.fake, { text: "Status update?", origin: { kind: "channel" } }, async () => ({}));
         await h.handlers["turn.start"](h.fake, { turnId: "t-origin", text: "Status update?" }, async () => ({ result: "ok" }));
@@ -13425,27 +13436,26 @@ async function caseSection4_unaccountedTurnScoredOnTaskEntryNotOnPlanEntry(clock
   }
 }
 
-// Bullet 2: a nudged turn on a plan entry labelled on-goal or complete
-// resets the nudge counter, and the entry is not completed by the label -
-// done is read from the plan document (Section 2), never from this
-// classifier. This closes the Minor Section 3 left open: before this
-// section, the scorer's complete branch still ran completeLeaf on a plan
-// entry regardless of wasNudged, so bullet 7 of Section 3's Tests was met
-// only at the idle branch.
-async function caseSection4_nudgedOnGoalAndCompleteResetTheCounterWithoutCompleting(clock) {
-  console.log("\n=== Section 4: a nudged on-goal or complete on a plan entry resets the counter and completes nothing ===");
+// Bullet 2: a nudged turn on a plan entry labelled on-goal resets the nudge
+// counter. One labelled complete moves nothing at the scorer - not the
+// counter, not a round, not the entry's status - so it neither completes
+// the entry nor clears what a run of nudges owes the stall pause. Done is
+// read from the plan document (Section 2), never from this classifier's
+// label.
+async function caseSection4_nudgedOnGoalResetsButCompleteMovesNothingOnAPlanEntry(clock) {
+  console.log("\n=== Section 4: a nudged on-goal resets the counter on a plan entry; a nudged complete moves nothing ===");
   const shapes = SECTION4_SHAPES.filter((s) => s.planEntry);
   for (const shape of shapes) {
     for (const scoredLabel of ["on-goal", "complete"]) {
       clock.set(T0);
-      // The default hourly nudge cap is 2: this case sends three (prime,
-      // the labelled turn's own nudge, and the confirming idle tick), so
+      // The default hourly nudge cap is 2: this case sends three nudges
+      // (prime, the labelled turn's own, and the confirming idle tick), so
       // the cap is raised the way Section 3's own stall-pause case raises
-      // it, to isolate the reset from the unrelated hourly cost cap.
+      // it, to isolate the label's effect from the unrelated hourly cost cap.
       const h = await section4Harness(`section4_reset_${shape.key}_${scoredLabel.replace("-", "")}`, shape, { costMaxNudgesPerHour: 10 });
 
       // Raise the counter to 1 with one nudge-and-drift cycle first, so a
-      // reset by the label under test has a nonzero value to move.
+      // reset, or its absence, has a nonzero value to move or leave alone.
       h.setClassifyValue(section4Classify("drift"));
       clock.advance(130_000);
       await tickAndSettle(h, clock, 50);
@@ -13471,18 +13481,107 @@ async function caseSection4_nudgedOnGoalAndCompleteResetTheCounterWithoutComplet
       clock.advance(130_000);
       await tickAndSettle(h, clock, 50);
       const summary = h.classifyCalls.length > 0 ? String(h.classifyCalls[0][0]) : "";
-      check(`${desc}: the counter reads 0 after the ${scoredLabel} label (reset, not left at 1)`,
-        summary.includes("Consecutive nudges sent: 0"), summary.split("\n").find(l => l.startsWith("Consecutive")));
+      // Two nudges have been sent by this point (the priming cycle's and
+      // the labelled turn's own), so on-goal resets the counter to 0;
+      // complete leaves it at 2, the value those two nudges left it at.
+      const expectedCount = scoredLabel === "on-goal" ? 0 : 2;
+      check(`${desc}: the counter reads ${expectedCount} after the ${scoredLabel} label`,
+        summary.includes(`Consecutive nudges sent: ${expectedCount}`), summary.split("\n").find(l => l.startsWith("Consecutive")));
     }
   }
 }
 
+// Ruling (review round 1): a plan entry's complete verdict at the scorer
+// moves the counter not at all, so three nudged turns each scored complete,
+// with the plan document's Chapter count never rising, trip the same
+// three-nudge stall pause three drift-labelled turns do.
+async function caseSection4_threeNudgedCompleteTurnsTripTheStallPause(clock) {
+  console.log("\n=== Section 4: three nudged complete turns on a plan entry (no Chapter rise) trip the stall pause ===");
+  clock.set(T0);
+  const h = await plan2Harness("section4_stall_pause_complete", { chapterCount: 1 }, { costMaxNudgesPerHour: 10 });
+  h.fsMap.set(PLAN2_FILE, LEAD3_DOC);
+  h.setClassifyValue(section4Classify("complete"));
+  for (let window = 1; window <= 3; window++) {
+    clock.advance(130_000);
+    await tickAndSettle(h, clock, 50);
+    await h.handlers["turn.start"](h.fake, { turnId: `t-complete-${window}` }, async () => ({ result: "ok" }));
+    await h.handlers["turn.complete"](h.fake, { turnId: `t-complete-${window}`, answer: "Think it's done.", reason: "completed" }, async () => ({ result: "ok" }));
+    const decisions = getDecisions(h);
+    const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+    check(`section4 stall pause (complete): window ${window} scores complete ${window} time(s) in all`,
+      decisions.filter(d => d.action === "score" && d.detail.includes(": complete")).length === window, decisions.filter(d => d.action === "score"));
+    check(`section4 stall pause (complete): window ${window} sends nudge #${window}`,
+      decisions.filter(d => d.action === "nudge_sent").length === window, decisions.filter(d => d.action === "nudge_sent"));
+    check(`section4 stall pause (complete): window ${window} leaves plan-1 active, not completed`, plan1.status === "active", plan1.status);
+  }
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  const decisions = getDecisions(h);
+  const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+  check("section4 stall pause (complete): the fourth window reaches the stall pause, no fourth nudge",
+    decisions.some(d => d.action === "nudge_cap_reached") && decisions.filter(d => d.action === "nudge_sent").length === 3, decisions.slice(-4));
+  check("section4 stall pause (complete): the stall pause pauses plan-1 without completing it",
+    plan1.status === "paused" && plan1.pausedByNudgeCap === true && !decisions.some(d => d.action === "complete"), plan1);
+}
+
+// Bullet 2's control: a task entry's nudged complete verdict completes it
+// at the scorer - the plan entry above is the only shape whose complete
+// verdict moves nothing.
+async function caseSection4_nudgedCompleteStillCompletesATaskEntry_control(clock) {
+  console.log("\n=== Section 4 control: a nudged complete still completes a task entry ===");
+  clock.set(T0);
+  const shape = SECTION4_SHAPES.find((s) => !s.planEntry);
+  const h = await section4Harness("section4_reset_task_complete_control", shape);
+  h.setClassifyValue(section4Classify("complete"));
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  await h.handlers["turn.start"](h.fake, { turnId: "t-complete" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-complete", answer: "All done.", reason: "completed" }, async () => ({ result: "ok" }));
+
+  const state = getState(h);
+  const leaf = state.goals.find(g => g.id === shape.leafId);
+  const decisions = getDecisions(h);
+  check("section4 task complete control: the leaf is complete", leaf.status === "complete", leaf.status);
+  check("section4 task complete control: a complete decision was logged naming it",
+    decisions.some(d => d.action === "complete" && d.detail.startsWith(`${shape.leafId}:`)), decisions.filter(d => d.action === "complete"));
+  check("section4 task complete control: the next entry was activated",
+    state.activeGoalId === "task-2" && decisions.some(d => d.action === "activated" && d.detail.includes("task-2")), state.activeGoalId);
+}
+
+// Item 5 (review round 1, Minor fix): wasNudged is checked before the
+// channel/delivery skip, so a turn matched as a nudge is scored as a nudge
+// whatever else it also carries - here, a channel-origin flag that
+// coincides with the nudge's own queued text.
+async function caseSection4_channelOriginNudgeIsStillScoredAsANudge(clock) {
+  console.log("\n=== Section 4: a turn matched as a nudge is scored as a nudge even when it is also channel-origin ===");
+  clock.set(T0);
+  const shape = SECTION4_SHAPES.find((s) => s.key === "plan");
+  const h = await section4Harness("section4_nudge_and_channel", shape);
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  const nudgeText = h.queuedTurnTexts[h.queuedTurnTexts.length - 1];
+  check("section4 nudge+channel setup: a nudge text is queued", typeof nudgeText === "string" && nudgeText.length > 0, nudgeText);
+
+  h.setClassifyValue(section4Classify("on-goal"));
+  await h.handlers["prompt.submit"](h.fake, { text: nudgeText, origin: { kind: "channel" } }, async () => ({}));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-both", text: nudgeText }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-both", answer: "Working on it.", reason: "completed" }, async () => ({ result: "ok" }));
+
+  const decisions = getDecisions(h);
+  const leaf = getState(h).goals.find(g => g.id === shape.leafId);
+  check("section4 nudge+channel: scored as a nudge, not skipped",
+    decisions.some(d => d.action === "score" && d.detail.includes(": on-goal")), decisions.filter(d => d.action.startsWith("score")));
+  check("section4 nudge+channel: no score_skipped for this turn",
+    !decisions.some(d => d.action === "score_skipped" && d.detail.startsWith(`${shape.leafId}:`)), decisions.filter(d => d.action === "score_skipped"));
+  check("section4 nudge+channel: one score pushed onto the leaf", leaf.scores.length === 1, leaf.scores.length);
+}
+
 // Bullet 3: three nudged turns labelled drift on a plan entry trip the
-// existing stall pause - drift never resets the counter, so three real
-// nudge-and-score cycles raise it to the MAX_CONSECUTIVE_NUDGES bound
-// exactly as they did before this section, proving the pause survives the
-// new skip and reset rules untouched. The nudge cost cap is raised so the
-// stall pause, not the hourly cap, is the bound reached.
+// stall pause - drift never resets the counter, so three real
+// nudge-and-score cycles raise it to the MAX_CONSECUTIVE_NUDGES bound. The
+// nudge cost cap is raised so the stall pause, not the hourly cap, is the
+// bound reached.
 async function caseSection4_threeNudgedDriftTurnsTripTheStallPause(clock) {
   console.log("\n=== Section 4: three nudged drift turns on a plan entry trip the existing stall pause ===");
   clock.set(T0);

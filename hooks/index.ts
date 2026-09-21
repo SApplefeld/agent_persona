@@ -5365,14 +5365,15 @@ export const register: Register = async (on, options) => {
       } else if (turnLeaf.status === "active") {
         const g = turnLeaf;
         const planEntry = isPlanEntry(sess.state, g);
-        // Section 4 (plan-health-from-the-record): a turn opened from a
-        // channel message or a delivered record carries no worker judgment
-        // to score, for any entry - an operator check-in must spend
-        // nothing, which is the incident this plan exists to fix. For a
-        // plan entry, an unaccounted turn (one the controller did not open
-        // with a nudge) is skipped too, since only a nudged turn is scored
-        // for one; a task entry's unaccounted turn is scored as today.
-        if (wasChannelOrigin || wasDelivery) {
+        // Section 4 (plan-health-from-the-record): a channel-origin or
+        // delivered-record turn carries no worker judgment to score, for
+        // any entry, and a plan entry's own unaccounted turn is skipped
+        // too, since only a nudged turn is scored for one. wasNudged is
+        // checked first: a turn matched as a nudge is scored as a nudge
+        // whatever else it also carries, so the channel/delivery skip
+        // below reaches only a turn that was not a matched nudge.
+        const skippedForOrigin = !wasNudged && (wasChannelOrigin || wasDelivery);
+        if (skippedForOrigin) {
           sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "goal",
@@ -5389,89 +5390,92 @@ export const register: Register = async (on, options) => {
           });
           turnLeafId = null;
         } else {
-        // Still active at turn end: classify as before.
-        const labels = wasNudged
-          ? ["on-goal", "drift", "complete"]
-          : ["on-goal", "off-goal-by-instruction", "drift", "complete"];
-        try {
-          const result = await $.model.classify(
-            `User asked: ${currentPrompt.slice(0, 500)}\n\nWorker answered: ${e.answer.slice(0, 1000)}\n\nGoal objective: ${g.objective}\n\n` +
-            `Did the worker's answer advance the goal objective?`,
-            labels,
-            { model: "haiku" }
-          );
-        const label = result ?? "unknown";
-        g.scores.push({
-          round: g.scores.length + 1,
-          result: label,
-        });
+          // Still active at turn end: classify as before.
+          const labels = wasNudged
+            ? ["on-goal", "drift", "complete"]
+            : ["on-goal", "off-goal-by-instruction", "drift", "complete"];
+          try {
+            const result = await $.model.classify(
+              `User asked: ${currentPrompt.slice(0, 500)}\n\nWorker answered: ${e.answer.slice(0, 1000)}\n\nGoal objective: ${g.objective}\n\n` +
+              `Did the worker's answer advance the goal objective?`,
+              labels,
+              { model: "haiku" }
+            );
+            const label = result ?? "unknown";
+            g.scores.push({
+              round: g.scores.length + 1,
+              result: label,
+            });
 
-        // Only on-goal, drift, and complete burn rounds, and only on a task
-        // entry: a plan entry has no round budget, so no label spends one.
-        if (!planEntry && (label === "on-goal" || label === "drift" || label === "complete")) {
-          g.completedRounds += 1;
-        }
+            // Only on-goal, drift, and complete burn rounds, and only on a
+            // task entry: a plan entry has no round budget, so no label
+            // spends one.
+            if (!planEntry && (label === "on-goal" || label === "drift" || label === "complete")) {
+              g.completedRounds += 1;
+            }
 
-        sess.state.decisions.push({
-          timestamp: Date.now(),
-          loop: "goal",
-          action: "score",
-          detail: `${g.id} Round ${g.scores.length}: ${label}`,
-        });
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "score",
+              detail: `${g.id} Round ${g.scores.length}: ${label}`,
+            });
 
-        // Reset consecutive nudges when on-goal, and on a plan entry when
-        // complete too: a plan entry's complete verdict completes nothing
-        // (below), so the counter is the only thing the label still moves.
-        if (label === "on-goal" || (label === "complete" && planEntry)) {
-          sess.consecutiveNudgesWithoutOnGoal = 0;
-        }
+            // Reset consecutive nudges when on-goal. A plan entry's
+            // complete verdict at the scorer moves nothing, the counter
+            // included: the idle branch's own converted complete still
+            // counts toward the three-nudge stall pause, which is what
+            // bounds it.
+            if (label === "on-goal") {
+              sess.consecutiveNudgesWithoutOnGoal = 0;
+            }
 
-        if (label === "complete" && !planEntry) {
-          // R3: use completeLeaf + activateNext. Never for a plan entry:
-          // done is read from the plan document (Section 2), not from this
-          // classifier's label.
-          const completedId = g.id;
-          completeLeaf(sess.state, completedId, "scorer complete");
-          // E2: health run at completeLeaf site (scorer complete).
-          await runHealth($, completedId);
-          sess.state.decisions.push({
-            timestamp: Date.now(),
-            loop: "goal",
-            action: "complete",
-            detail: `${completedId}: Goal completed in ${g.completedRounds} rounds`,
-          });
-          const nextId = activateNext(sess.state, completedId);
-          activate($, nextId, `${completedId} complete`);
-          // L11: plan completion is a log line, not a speech.
-          try { $.ui.log(`Agentic: ${completedId} plan complete`); } catch { /* non-fatal */ }
-          try { $.ui.status(""); } catch { /* non-fatal */ }
-        } else if (!planEntry && g.completedRounds >= g.maxRounds) {
-          // R7: round budget → leaf blocked, toast once, then activateNext.
-          // Never for a plan entry, whose maxRounds is not read.
-          g.status = "blocked";
-          g.blockedReason = "Max rounds reached";
-          g.updatedAt = Date.now();
-          sess.state.decisions.push({
-            timestamp: Date.now(),
-            loop: "goal",
-            action: "block",
-            detail: `${g.id}: Max rounds reached`,
-          });
-          try { $.ui.toast(`Agentic: ${g.id} blocked: max rounds reached`); } catch { /* non-fatal */ }
-          const nextId = activateNext(sess.state, g.id);
-          activate($, nextId, `${g.id} blocked`);
-          try { $.ui.status(""); } catch { /* non-fatal */ }
-        }
-        g.updatedAt = Date.now();
-        } catch (err) {
-          sess.state.decisions.push({
-            timestamp: Date.now(),
-            loop: "goal",
-            action: "score_failed",
-            detail: `${g.id}: ${String(err).slice(0, 150)}`,
-          });
-        }
-        turnLeafId = null;
+            if (label === "complete" && !planEntry) {
+              // R3: use completeLeaf + activateNext. Never for a plan
+              // entry: done is read from the plan document (Section 2),
+              // not from this classifier's label.
+              const completedId = g.id;
+              completeLeaf(sess.state, completedId, "scorer complete");
+              // E2: health run at completeLeaf site (scorer complete).
+              await runHealth($, completedId);
+              sess.state.decisions.push({
+                timestamp: Date.now(),
+                loop: "goal",
+                action: "complete",
+                detail: `${completedId}: Goal completed in ${g.completedRounds} rounds`,
+              });
+              const nextId = activateNext(sess.state, completedId);
+              activate($, nextId, `${completedId} complete`);
+              // L11: plan completion is a log line, not a speech.
+              try { $.ui.log(`Agentic: ${completedId} plan complete`); } catch { /* non-fatal */ }
+              try { $.ui.status(""); } catch { /* non-fatal */ }
+            } else if (!planEntry && g.completedRounds >= g.maxRounds) {
+              // R7: round budget → leaf blocked, toast once, then activateNext.
+              // Never for a plan entry, whose maxRounds is not read.
+              g.status = "blocked";
+              g.blockedReason = "Max rounds reached";
+              g.updatedAt = Date.now();
+              sess.state.decisions.push({
+                timestamp: Date.now(),
+                loop: "goal",
+                action: "block",
+                detail: `${g.id}: Max rounds reached`,
+              });
+              try { $.ui.toast(`Agentic: ${g.id} blocked: max rounds reached`); } catch { /* non-fatal */ }
+              const nextId = activateNext(sess.state, g.id);
+              activate($, nextId, `${g.id} blocked`);
+              try { $.ui.status(""); } catch { /* non-fatal */ }
+            }
+            g.updatedAt = Date.now();
+          } catch (err) {
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "score_failed",
+              detail: `${g.id}: ${String(err).slice(0, 150)}`,
+            });
+          }
+          turnLeafId = null;
         }
       } else if (turnLeaf.status === "paused" && turnLeaf.pausedByNudgeCap && toolCallsThisTurn > 0) {
         // Round 60 finding 3(b): the cap pause (above) opens no ask, so nothing but this
