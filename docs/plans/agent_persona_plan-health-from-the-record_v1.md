@@ -252,3 +252,25 @@ Rulings adopted since the last boundary:
 Next action per section: read the fix round's report, verify it against the 1436 baseline, then run review round 3. Round 2 returned a Critical, so round 3 runs the full roster again rather than a single lens. That will be the third round, and the operator backstop fires at the fifth. Sections 2 through 6 are unstarted.
 
 Commit Model: Branch-and-PR
+
+### Interim board 3 - 2026-09-21
+
+In-flight sections: Section 1 only, at its third fix round. No section has closed, so this entry carries no `Completed:` line.
+
+Live dispatches: one implementer at opus, given four fixes and a nine-item do-not-fix list. Review round 3 of three lenses has returned and is adjudicated.
+
+Gate baseline: the controller tick suite reads 1473 assertions and 0 failures on this tree, up from 1436 before fix round 2, 1410 before fix round 1, and 1378 at base commit `8df99af`. Read from the run's own exit code of 0. Measured 2026-09-21T01:57Z on SCOTT-CLAUDE by this session, with no claim live on the box at the reading. `npx tsc --noEmit`, `node .kit/check-loader-rule.mjs` and `node .kit/injection-duplicate-test.mjs` each exit 0.
+
+Rulings adopted since the last boundary:
+
+- Review round 3 returned no Critical from any of the three lenses, which is the first round with none. The blind lens returned APPROVED_WITH_CONCERNS, the adversarial CHANGES_REQUIRED, the security CONCERNS. Three Majors enter fix round 3; the Minors accumulate for the close pass.
+- The round overturns a fix adopted in round 1. Round 1's leaf guard refuses recovery for any node with children, on the stated ground that such a node can be activated by nothing. That ground is false and was adopted here without being checked. `isActivationEligible` does refuse a node with children, but `activateNext`'s DFS descends through a pending parent into its children, so a freed parent with pending children is reachable. `goal_add` with an explicit `parentId` checks the parent's existence and kind and never its status, so a blocked plan node can gain a pending child. All three confirmed by reading the code. The guard therefore refuses the one shape where freeing works, and the subtree is stranded in the same permanent idle this plan exists to remove. Fix round 3 replaces the leaf test with a reachability test and must make the result independent of the order of `state.goals`.
+- The kind-rule refusal on `goal_add` names no required form, and fix round 2's test asserts the form token is absent. Section 1's acceptance bullet reads "is refused with a message naming the required form, and adds no entry. So is a valid planPath on kind `task`." Ruled here that the plain reading governs: "So is" carries the whole predicate. The message gains the form and the assertion flips.
+- The text pattern's right-edge lookahead excludes neither a full stop nor a slash, so text naming `docs/plans/a_v1.md.bak` fills the path with `docs/plans/a_v1.md`, a different file, silently. Same class as the left-edge defect an earlier round closed. The repair was tested here across eight cases including both acceptance bullets before being handed over.
+- The comment on `PLAN_PATH_PATTERN` calls it the path-joining guard and says a refused shape never reaches the join. That is untrue: the store is a second producer and is read verbatim with no re-test. The sentence is corrected. The validation itself stays routed to Section 2, as round 1 decided, because Section 2 owns the reader that performs the join.
+- Two declared assumptions from fix round 2, both accepted: the ancestor clear does not reset `completedRounds`, because a plan parent's block is not a round-budget block and its counter is never read; and a missing parent mid-chain refuses the whole recovery, because an orphaned subtree is what the activation walk cannot reach. The second had no test, and fix round 3 adds one.
+- The security lens's Major is advisory under the operator's standing instruction of 2026-09-20 that the security lens gives no recommendations and is acted on only where it finds a Critical. It found none. Its subject is the stored-value producer, already routed to Section 2. The false comment is fixed on the separate ground that nothing untrue ships.
+
+Next action per section: read fix round 3's report, verify it against the 1473 baseline, then run review round 4. Round 3 returned no Critical, so round 4 is one lens at the writer tier rather than the full roster. That will be the fourth round; the operator backstop fires at the fifth. Sections 2 through 6 are unstarted.
+
+Commit Model: Branch-and-PR
