@@ -47,7 +47,15 @@ const systemInit = () => JSON.stringify({ type: 'system', subtype: 'init', sessi
 const systemRateLimit = () => JSON.stringify({
   type: 'system', subtype: 'api_retry', error_status: 429, retry_delay_ms: 60000,
 });
-const rateLimitEvent = () => JSON.stringify({ type: 'rate_limit_event', resets_at: CLOCK + 60000 });
+// A rate_limit_event record as the child actually emits it: routine quota
+// info on almost every response, most of it not blocking at all. Passing no
+// status models a record whose rate_limit_info.status this reader cannot
+// read as a string.
+const rateLimitEvent = (status) => JSON.stringify({
+  type: 'rate_limit_event',
+  resets_at: CLOCK + 60000,
+  ...(status === undefined ? {} : { rate_limit_info: { status } }),
+});
 
 // Writes a stream from an array of line strings, joined with newlines. A
 // trailing newline is included by default, as every complete JSONL write
@@ -109,9 +117,24 @@ const cases = [
     assert.equal(run(p), 'idle');
   }],
 
-  ['newest record of any type is rate_limit_event, behind user+tool_result, mtime five seconds old: idle', () => {
-    const p = writeStream('rate-limit-event-newest', [userToolResult(), rateLimitEvent()], { mtimeMs: CLOCK - 5000 });
+  ['newest record of any type is rate_limit_event with rate_limit_info.status rejected (the child is actually parked), behind user+tool_result, mtime five seconds old: idle', () => {
+    const p = writeStream('rate-limit-event-rejected', [userToolResult(), rateLimitEvent('rejected')], { mtimeMs: CLOCK - 5000 });
     assert.equal(run(p), 'idle');
+  }],
+
+  ['newest record of any type is rate_limit_event with rate_limit_info.status allowed (routine quota info, not parked), behind user+tool_result, mtime five seconds old: busy', () => {
+    const p = writeStream('rate-limit-event-allowed', [userToolResult(), rateLimitEvent('allowed')], { mtimeMs: CLOCK - 5000 });
+    assert.equal(run(p), 'busy');
+  }],
+
+  ['newest record of any type is rate_limit_event with rate_limit_info.status allowed_warning (still routine, not parked), behind user+tool_result, mtime five seconds old: busy', () => {
+    const p = writeStream('rate-limit-event-allowed-warning', [userToolResult(), rateLimitEvent('allowed_warning')], { mtimeMs: CLOCK - 5000 });
+    assert.equal(run(p), 'busy');
+  }],
+
+  ['newest record of any type is rate_limit_event with no readable rate_limit_info.status, behind user+tool_result, mtime five seconds old: busy (an unreadable status errs toward busy, not idle)', () => {
+    const p = writeStream('rate-limit-event-unreadable-status', [userToolResult(), rateLimitEvent()], { mtimeMs: CLOCK - 5000 });
+    assert.equal(run(p), 'busy');
   }],
 
   ['newest record of any type is a system api_retry 429, behind user+tool_result, mtime five seconds old: idle', () => {
@@ -171,6 +194,40 @@ const cases = [
     assert.equal(run(streamPath), 'busy');
   }],
 
+  ['newest record is wider than the widening ceiling itself (9 MiB, past the 8 MiB ceiling), no line boundary anywhere in the widened window: busy, not idle (the ceiling giving up must not read a still-writing record as idle)', () => {
+    const dir = join(root, 'past-ceiling-record');
+    fs.mkdirSync(dir, { recursive: true });
+    const streamPath = join(dir, 'stdout.jsonl');
+    // No trailing newline: this models the record still being written, and
+    // it is wide enough that even the fully widened 8 MiB window holds no
+    // newline at all, so the reader cannot find its start no matter how far
+    // it widens short of reading the whole file.
+    fs.writeFileSync(streamPath, systemInit() + '\n' + 'x'.repeat(9 * 1024 * 1024));
+    fs.utimesSync(streamPath, new Date(CLOCK - 1000), new Date(CLOCK - 1000));
+    assert.equal(run(streamPath), 'busy');
+  }],
+
+  ['the only conversational record sits at the head of a file bigger than the widening ceiling, with only system records after it: idle, the tail reader\'s answer (a whole-file reader would see the head record and answer busy)', () => {
+    const dir = join(root, 'conversational-record-past-ceiling');
+    fs.mkdirSync(dir, { recursive: true });
+    const streamPath = join(dir, 'stdout.jsonl');
+    const fd = fs.openSync(streamPath, 'w');
+    // The file's only conversational record, at its very head. It carries
+    // tool_use, so its own verdict would be busy regardless of age: this
+    // case turns on whether the read window reaches it at all, not on aging.
+    fs.writeSync(fd, assistantToolUse() + '\n');
+    const filler = systemInit() + '\n';
+    const target = 9 * 1024 * 1024; // past SCAN_BYTES_MAX (8 MiB)
+    let written = 0;
+    while (written < target) {
+      fs.writeSync(fd, filler);
+      written += filler.length;
+    }
+    fs.closeSync(fd);
+    fs.utimesSync(streamPath, new Date(CLOCK - 1000), new Date(CLOCK - 1000));
+    assert.equal(run(streamPath), 'idle');
+  }],
+
   ['newest is a text-only assistant record whose own timestamp is forty seconds old, followed by fifty system records, file mtime fresh: idle (age comes from the record, not the file write time)', () => {
     const oldTs = new Date(CLOCK - 40000).toISOString();
     const trailer = new Array(50).fill(0).map(() => systemInit());
@@ -185,24 +242,35 @@ const cases = [
     assert.equal(run(p), 'busy');
   }],
 
-  ['an empty-string clock argument does not read busy on a stream that should read idle', () => {
-    const p = writeStream('empty-clock-idle-stream', [assistantText()], { mtimeMs: CLOCK - 40000 });
+  ['an empty-string clock argument falls back to real time: a record forty seconds old by the wall clock reads idle', () => {
+    // The record's own timestamp is set relative to real Date.now(), not the
+    // suite's fixed 2023 CLOCK, so the verdict actually turns on the
+    // fallback rather than on file mtime aging against a three-year-old
+    // fixture, which would read idle regardless of what parseClock('') did.
+    const oldTs = new Date(Date.now() - 40000).toISOString();
+    const p = writeStream('empty-clock-idle-stream', [assistantTextTs(oldTs)], { mtimeMs: CLOCK - 40000 });
     assert.equal(run(p, ''), 'idle');
   }],
 
   // bin/supervise.sh reads its clock with date +%s at eight sites, all of
   // them seconds, so a caller reaching for the nearest habit passes seconds
-  // where this reader documents milliseconds. That puts the clock roughly
-  // fifty-five years behind the record and makes every age hugely negative.
-  // Unguarded, a negative age is not greater than the threshold and so reads
-  // busy, which would hold the persona for the whole patient cap on every
-  // requested restart. The pair below pins the discrimination rather than
-  // the blanket rule: a broken clock reads idle, and ordinary skew against a
-  // record written an instant ago still reads busy.
-  ['a seconds-valued clock against a millisecond timestamp does not read busy', () => {
-    const p = writeStream('seconds-clock', [assistantTextTs(new Date(CLOCK - 40000).toISOString())],
-      { mtimeMs: CLOCK - 40000 });
-    assert.equal(run(p, Math.floor(CLOCK / 1000)), 'idle');
+  // where this reader documents milliseconds. Taken at face value as
+  // milliseconds that puts the clock roughly fifty-five years behind the
+  // record, which reads as a huge negative age, discarded as unusable, and
+  // falls through to idle -- holding a dead child's stop no longer, but also
+  // reading a genuinely busy child as idle. Falling back to Date.now()
+  // instead fixes that. The pair below pins the discrimination: a
+  // seconds-valued clock against real time still reads busy for a genuinely
+  // young record, and ordinary skew against a record written an instant ago
+  // still reads busy too.
+  ['a seconds-valued clock against a record timestamped ten seconds before real time reads busy, matching what a correct millisecond clock would give', () => {
+    const tenSecondsAgo = new Date(Date.now() - 10000).toISOString();
+    const p = writeStream('seconds-clock', [assistantTextTs(tenSecondsAgo)], { mtimeMs: CLOCK - 40000 });
+    // A caller reaching for `date +%s` (every clock read in bin/supervise.sh)
+    // passes seconds. Falling back to Date.now() instead of trusting the
+    // mis-scaled value as milliseconds is what makes this busy rather than
+    // fifty-five years stale.
+    assert.equal(run(p, Math.floor(Date.now() / 1000)), 'busy');
   }],
 
   ['a record timestamped a moment after the clock is still young, so it reads busy', () => {
@@ -211,7 +279,7 @@ const cases = [
     assert.equal(run(p), 'busy');
   }],
 
-  ['a ten megabyte file returns in under one second', () => {
+  ['a ten megabyte file returns in under five seconds', () => {
     const dir = join(root, 'ten-mb');
     fs.mkdirSync(dir, { recursive: true });
     const streamPath = join(dir, 'stdout.jsonl');

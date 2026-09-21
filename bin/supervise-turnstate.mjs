@@ -9,15 +9,19 @@
 // Arguments, both positional:
 //   1 path to child-<n>/stdout.jsonl
 //   2 clock value in epoch milliseconds, used as "now" when aging a quiet
-//     text-only reply. Milliseconds, not seconds: a seconds value puts the
-//     clock far behind the record it is compared against, and that reading
-//     is discarded rather than trusted, so the verdict falls back to idle.
+//     text-only reply. Milliseconds, not seconds: a value too small to be a
+//     plausible epoch-ms "now" is not trusted as a mis-scaled clock, and
+//     Date.now() is used in its place instead.
 //
-// Prints exactly one word, busy or idle, and nothing else. Every failure path
+// Prints exactly one word, busy or idle, and nothing else. Most failure paths
 // -- a missing file, an unreadable one, a tail with no parseable conversational
-// record -- reads idle, so a fault in this reader falls back to the stop
-// phases' behavior before this module existed, rather than holding a dead
-// child's persona for the patient cap.
+// record where the tail covers the whole file -- read idle, so a fault in
+// this reader falls back to the stop phases' behavior before this module
+// existed, rather than holding a dead child's persona for the patient cap.
+// One failure path reads busy on purpose: a widened window that still does
+// not reach the start of the file and holds no line boundary at all means a
+// single record wider than the widening ceiling is still being written, so
+// the child is mid-turn (see the widening note below).
 //
 // Conversational records are of type assistant and user; system records and
 // rate_limit_event records are skipped when looking for the newest one. A
@@ -35,8 +39,15 @@
 // Ahead of every other rule: the newest record of ANY type, not only the
 // newest conversational one, is checked for a rate-limit shape first, and if
 // it is one this reads idle regardless of what sits under it. A rate-limit
-// record is a rate_limit_event record, or a system record of subtype
-// api_retry with error_status 429. A child parked on a limit rewrites such a
+// record is a rate_limit_event record whose rate_limit_info.status is a
+// blocking status (rejected), or a system record of subtype api_retry with
+// error_status 429. A rate_limit_event record is routine quota information
+// emitted on ordinary API responses and carries this shape on almost every
+// turn; most of them (status allowed or allowed_warning) describe a child
+// that is not parked at all, and only rejected means the child is actually
+// blocked on the limit. A record whose status cannot be read is not treated
+// as parked either, since erring that way reads busy and the other way can
+// kill a working child. A child truly parked on a limit rewrites a rejected
 // record every thirty seconds, so its stream never goes quiet on its own,
 // and it has nothing left to finish.
 //
@@ -80,8 +91,13 @@ function readTail(streamPath, scanBytes) {
       if (size > scanBytes) scanStart = size - scanBytes;
       const len = size - scanStart;
       const buf = Buffer.alloc(len);
-      if (len > 0) fs.readSync(fd, buf, 0, len, scanStart);
-      text = buf.toString('utf8');
+      // A single readSync call is not guaranteed to fill the buffer; the
+      // unread tail of buf stays zeroed, and decoding past the byte count
+      // the call actually returned would read that zero fill as content and
+      // can swallow the newest record's line boundary on a large widened
+      // read.
+      const bytesRead = len > 0 ? fs.readSync(fd, buf, 0, len, scanStart) : 0;
+      text = buf.toString('utf8', 0, bytesRead);
     } finally {
       fs.closeSync(fd);
     }
@@ -120,7 +136,14 @@ function parseTail(lines) {
 
 function isRateLimitRecord(record) {
   if (!record || typeof record !== 'object') return false;
-  if (record.type === 'rate_limit_event') return true;
+  if (record.type === 'rate_limit_event') {
+    const status = record.rate_limit_info && record.rate_limit_info.status;
+    // allowed and allowed_warning describe routine quota reporting, not a
+    // parked child; a status this reader cannot read as a string is treated
+    // the same way, since erring toward busy costs nothing and erring
+    // toward idle can kill a working child.
+    return status === 'rejected';
+  }
   return record.type === 'system'
     && record.subtype === 'api_retry'
     && Number(record.error_status) === 429;
@@ -158,7 +181,6 @@ function conversationalAgeMs(record, mtimeMs, now) {
       if (usableAge(age)) return age;
     }
   }
-  if (mtimeMs === null) return null;
   const age = Number(now) - mtimeMs;
   return usableAge(age) ? age : null;
 }
@@ -168,6 +190,14 @@ function turnstate(streamPath, now) {
   let tail = readTail(streamPath, scanBytes);
   if (!tail) return 'idle';
   let { newestAny, newestConversational } = parseTail(tail.lines);
+
+  // Settle the rate-limit override against this base window before paying
+  // for any widening: widening only ever extends the window backward from
+  // the same end of the file, so the newest record it finds does not change
+  // as the window grows. A parked child's newest record is always here
+  // already, so checking first avoids widening all the way to the ceiling
+  // to reach a verdict this window has already settled.
+  if (isRateLimitRecord(newestAny)) return 'idle';
 
   // The base window found no conversational record. Where the window
   // already covers the whole file, that absence is the true answer. Where
@@ -180,8 +210,16 @@ function turnstate(streamPath, now) {
     ({ newestAny, newestConversational } = parseTail(tail.lines));
   }
 
-  if (isRateLimitRecord(newestAny)) return 'idle';
-  if (!newestConversational) return 'idle';
+  if (!newestConversational) {
+    // The window still does not reach the start of the file and holds no
+    // line boundary at all: the newest record is wider than the widening
+    // ceiling and is still being written, so a turn is running. Giving up
+    // and reading idle here is the kill-a-working-child direction. Where
+    // the window does cover the whole file, an absence of conversational
+    // records is the true answer.
+    if (tail.scanStart > 0 && tail.lines.length === 0) return 'busy';
+    return 'idle';
+  }
   if (newestConversational.type === 'user') return 'busy';
   if (hasToolUse(newestConversational)) return 'busy';
 
@@ -190,9 +228,20 @@ function turnstate(streamPath, now) {
   return age > IDLE_AFTER_MS ? 'idle' : 'busy';
 }
 
+// The smallest magnitude an epoch-millisecond "now" can plausibly carry
+// (roughly the year 2001). bin/supervise.sh reads its clock with `date +%s`
+// at every call site, which is seconds, three orders of magnitude below any
+// real epoch-ms value; a value below this threshold is read as such a
+// mis-scaled clock rather than trusted, and Date.now() is used instead. A
+// seconds-valued clock taken at face value as milliseconds lands decades
+// behind the record it is compared against, which reads as a huge negative
+// age, gets discarded as unusable, and falls through to idle -- the
+// kill-a-working-child direction.
+const MIN_PLAUSIBLE_EPOCH_MS = 1e12;
+
 function parseClock(raw) {
   const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : Date.now();
+  return Number.isFinite(n) && n >= MIN_PLAUSIBLE_EPOCH_MS ? n : Date.now();
 }
 
 // Run unconditionally: this file is only ever launched, never imported, and
