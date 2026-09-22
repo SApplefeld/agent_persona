@@ -366,27 +366,38 @@ test('bashpath: a backslash path, a bare drive and a UNC path each keep naming t
 // Find-KeeperLiveSupervisor: records built here, in the shape Get-CimInstance Win32_Process
 // returns, so no case reads the machine's process list. One powershell spawn evaluates every case.
 // The command lines are the live shapes: Git bash's launcher, then the inner bash it starts under
-// the ..\usr\bin spelling, each carrying the supervisor's arguments as the keeper quoted them.
+// the ..\usr\bin spelling and a long-lived fork of that inner one, each carrying the supervisor's
+// arguments as the keeper quoted them. Each case names the launcher the wrapper would pass.
 // ---------------------------------------------------------------------------------------------
 {
   const sup = '/d/agent_persona/bin/supervise.sh';
   const work = '/d/personas/dev-plugin/repo';
-  const outerExe = '"C:\\Program Files\\Git\\bin\\bash.exe"';
+  const launcher = 'C:\\Program Files\\Git\\bin\\bash.exe';
+  const outerExe = '"' + launcher + '"';
   const innerExe = '"C:\\Program Files\\Git\\bin\\..\\usr\\bin\\bash.exe"';
   const tail = ' bypassPermissions --rundir /d/personas/dev-plugin/run --channel-name dev-plugin';
-  const rec = (pid, ppid, cmd) => ({ ProcessId: pid, ParentProcessId: ppid, CommandLine: cmd, CreationDate: '2026-09-21T00:00:00Z' });
-  // The inner process and a forked grandchild come first, so a rule that took the first match, or
-  // the youngest, would return one of them rather than the outer.
+  const rec = (pid, ppid, cmd, created = '2026-09-21T00:00:00Z') => ({ ProcessId: pid, ParentProcessId: ppid, CommandLine: cmd, CreationDate: created });
+  // The inner process and a forked grandchild come first and started later, so a rule that took
+  // the first match, or the youngest, would return one of them rather than the outer.
   const pair = [
     rec(4, 0, null),
-    rec(101, 100, innerExe + ' ' + sup + ' ' + work + ' dev-plugin' + tail),
-    rec(102, 101, innerExe + ' ' + sup + ' ' + work + ' dev-plugin' + tail),
+    rec(101, 100, innerExe + ' ' + sup + ' ' + work + ' dev-plugin' + tail, '2026-09-21T00:00:01Z'),
+    rec(102, 101, innerExe + ' ' + sup + ' ' + work + ' dev-plugin' + tail, '2026-09-21T00:00:03Z'),
     rec(100, 50, outerExe + ' ' + sup + ' ' + work + ' dev-plugin' + tail),
     rec(50, 1, '"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -File "D:\\agent_persona\\bin\\Start-Persona.ps1" -Name dev-plugin'),
   ];
   const argsFor = (w, name) => [sup, w, name, 'bypassPermissions', '--rundir', '/d/personas/' + name + '/run', '--channel-name', name];
   const matchCases = [
     { name: 'an outer and an inner bash.exe for dev-plugin, asked for dev-plugin, return the outer', records: pair, args: argsFor(work, 'dev-plugin'), pid: 100 },
+    // Two launchers for the persona, the child listed first and started later, so only the rule
+    // that the returned record's parent is not itself a match returns the outer.
+    { name: 'a launcher started from another launcher for the same persona yields the outer one', records: [rec(501, 500, outerExe + ' ' + sup + ' ' + work + ' dev-plugin' + tail, '2026-09-21T00:00:05Z'), rec(500, 50, outerExe + ' ' + sup + ' ' + work + ' dev-plugin' + tail)], args: argsFor(work, 'dev-plugin'), pid: 500 },
+    // What a supervisor that exited 5 leaves: the MSYS fork, its parents gone, still carrying the
+    // persona's arguments. Its parent id names no record, so only the executable rules it out.
+    { name: 'an orphaned usr\\bin bash.exe fork for this persona, its parent gone, returns nothing', records: [rec(102, 101, innerExe + ' ' + sup + ' ' + work + ' dev-plugin' + tail)], args: argsFor(work, 'dev-plugin'), pid: null },
+    { name: 'another executable carrying the three tokens returns nothing', records: [rec(600, 50, 'notepad.exe ' + sup + ' ' + work + ' dev-plugin' + tail)], args: argsFor(work, 'dev-plugin'), pid: null },
+    { name: 'the launcher spelled with forward slashes and in another case still matches', records: [rec(700, 50, '"c:/program files/GIT/bin/BASH.exe" ' + sup + ' ' + work + ' dev-plugin' + tail)], args: argsFor(work, 'dev-plugin'), pid: 700 },
+    { name: 'a launcher the wrapper spells with forward slashes matches the backslash command line', records: [rec(701, 50, outerExe + ' ' + sup + ' ' + work + ' dev-plugin' + tail)], exe: 'C:/Program Files/Git/bin/bash.exe', args: argsFor(work, 'dev-plugin'), pid: 701 },
     // Same working directory, so only the persona token differs: a prefix, substring or
     // whole-line pattern over the command line would return dev-plugin's supervisor here.
     { name: 'the same list asked for dev returns nothing, since dev is a prefix of dev-plugin and not its name', records: pair, args: argsFor(work, 'dev'), pid: null },
@@ -394,20 +405,21 @@ test('bashpath: a backslash path, a bare drive and a UNC path each keep naming t
     { name: 'a supervisor for this persona with another channel name and an extra trailing argument is returned', records: [rec(300, 50, outerExe + ' ' + sup + ' ' + work + ' dev-plugin bypassPermissions --rundir /d/personas/dev-plugin/run --channel-name old-channel --dev')], args: argsFor(work, 'dev-plugin'), pid: 300 },
     { name: 'an empty list returns nothing', records: [], args: argsFor(work, 'dev-plugin'), pid: null },
     // The tokenizer at the boundary: an unquoted executable, a quoted working directory carrying a
-    // space, and a quoted token carrying an escaped quote and backslashes before it.
-    { name: 'a quoted working directory with a space matches its unquoted argument', records: [rec(400, 50, 'C:\\Git\\bin\\bash.exe ' + sup + ' "/d/scratch/full work" full' + tail)], args: argsFor('/d/scratch/full work', 'full'), pid: 400 },
-    { name: 'the quoted directory is one token, so its first word alone does not match', records: [rec(401, 50, 'C:\\Git\\bin\\bash.exe ' + sup + ' "/d/scratch/full work" full' + tail)], args: argsFor('/d/scratch/full', 'work'), pid: null },
+    // space, and a quoted token carrying an escaped quote and backslashes before it. The unquoted
+    // executable is a launcher installed where its path has no space.
+    { name: 'a quoted working directory with a space matches its unquoted argument', records: [rec(400, 50, 'C:\\Git\\bin\\bash.exe ' + sup + ' "/d/scratch/full work" full' + tail)], exe: 'C:\\Git\\bin\\bash.exe', args: argsFor('/d/scratch/full work', 'full'), pid: 400 },
+    { name: 'the quoted directory is one token, so its first word alone does not match', records: [rec(401, 50, 'C:\\Git\\bin\\bash.exe ' + sup + ' "/d/scratch/full work" full' + tail)], exe: 'C:\\Git\\bin\\bash.exe', args: argsFor('/d/scratch/full', 'work'), pid: null },
     { name: 'backslashes and an escaped quote inside a quoted token come back as the argument was written', records: [rec(402, 50, outerExe + ' ' + sup + ' "/d/a b\\\\\\"c" q' + tail)], args: argsFor('/d/a b\\"c', 'q'), pid: 402 },
   ];
   const casesFile = path.join(tmp, 'match-cases.json');
-  fs.writeFileSync(casesFile, JSON.stringify(matchCases.map((c) => ({ records: c.records, args: c.args }))));
+  fs.writeFileSync(casesFile, JSON.stringify(matchCases.map((c) => ({ records: c.records, exe: c.exe || launcher, args: c.args }))));
   let results;
   try {
     results = runFunctions([
       "$cases = @((Get-Content -LiteralPath '" + casesFile + "' -Raw | ConvertFrom-Json) | ForEach-Object { $_ })",
       '$out = @()',
       'foreach ($c in $cases) {',
-      '  $r = Find-KeeperLiveSupervisor -Processes @($c.records | ForEach-Object { $_ }) -Arguments @($c.args)',
+      '  $r = Find-KeeperLiveSupervisor -Processes @($c.records | ForEach-Object { $_ }) -Executable $c.exe -Arguments @($c.args)',
       '  if ($null -eq $r) { $out += [pscustomobject]@{ pid = $null } } else { $out += [pscustomobject]@{ pid = [int]$r.ProcessId } }',
       '}',
       'ConvertTo-Json -InputObject $out -Compress -Depth 3',
@@ -867,8 +879,11 @@ test('wrapper: keeper.json names the persona the roster spells, not the case the
 // real bin/supervise.sh, which no case may run. So the two scripts are copied into a scratch tree
 // whose bin/supervise.sh is a stub, and the stub is started through the real Git bash with the
 // tokens the copied wrapper builds, under a test-only persona name and a scratch working directory
-// no live supervisor carries. The stub exits 1 once keeper.log shows the wrapper adopted it, and
-// gives up after a bound so a wrapper that never adopts cannot leave it running.
+// no live supervisor carries. The match reads the executable too, so the env file names the same
+// Git bash, and the stub tells the two runs apart by the channel name only the live one carries.
+// The live run exits 1 once keeper.log shows the wrapper adopted it, and gives up after a bound so
+// a wrapper that never adopts cannot leave it running. A run the wrapper launches writes a marker
+// and exits 130 so the wrapper's run ends.
 test('wrapper: a live supervisor for its persona is adopted, nothing is launched beside it, and its exit 1 gets the exit-1 DECIDE line', () => {
   const tree = path.join(tmp, 'adopt-tree');
   fs.mkdirSync(path.join(tree, 'bin'), { recursive: true });
@@ -880,8 +895,13 @@ test('wrapper: a live supervisor for its persona is adopted, nothing is launched
   fs.mkdirSync(runDir, { recursive: true });
   const log = path.join(runDir, 'keeper.log');
   const startedMarker = path.join(tree, 'stub-started');
+  const launchMarker = path.join(tree, 'launched.txt');
   fs.writeFileSync(path.join(tree, 'bin', 'supervise.sh'), [
     '#!/bin/bash',
+    'case " $* " in',
+    '  *" --channel-name earlier-roster "*) ;;',
+    '  *) echo launched >> "' + fwd(launchMarker) + '"; exit 130 ;;',
+    'esac',
     'touch "' + fwd(startedMarker) + '"',
     'for i in $(seq 1 300); do',
     '  grep -q "ADOPT pid=" "' + fwd(log) + '" 2>/dev/null && exit 1',
@@ -890,14 +910,10 @@ test('wrapper: a live supervisor for its persona is adopted, nothing is launched
     'exit 99',
     '',
   ].join('\n'));
-  // What the wrapper runs if it launches: a marker per launch, then exit 130 so the run ends.
-  const launchMarker = path.join(tree, 'launched.txt');
-  const launchCmd = path.join(tree, 'launch.cmd');
-  fs.writeFileSync(launchCmd, '@echo off\r\necho launched>>"' + launchMarker + '"\r\nexit /b 130\r\n');
   const roster = path.join(tree, 'fleet.json');
   fs.writeFileSync(roster, JSON.stringify([{ name: persona, workdir: fwd(work), permissionMode: 'bypassPermissions', enabled: true }]));
   const envFile = path.join(tree, 'keeper.env');
-  fs.writeFileSync(envFile, 'KEEPER_BASH_EXE=' + fwd(launchCmd) + '\n');
+  fs.writeFileSync(envFile, 'KEEPER_BASH_EXE=' + bashExe + '\n');
 
   // The live supervisor, spelled as the copied wrapper spells its launch, with a different channel
   // name after the three tokens the match reads.
@@ -912,12 +928,15 @@ test('wrapper: a live supervisor for its persona is adopted, nothing is launched
     assert.ok(adoptAt >= 0, 'an ADOPT line: ' + lines.join('\n'));
     const decideAt = lines.findIndex((l) => l.startsWith('DECIDE '));
     assert.ok(decideAt > adoptAt, 'the DECIDE line follows the ADOPT line: ' + lines.join('\n'));
+    // The adopted run's EXIT line names the process it waited on rather than a launch number.
+    const adoptedPid = lines[adoptAt].slice('ADOPT pid='.length);
+    assert.match(lines[decideAt - 1], new RegExp('^EXIT adopted pid=' + adoptedPid + ' code=1 uptime=\\d+$'), 'the EXIT line before the DECIDE: ' + lines.join('\n'));
     // Nothing was launched while the adopted supervisor lived: no LAUNCH line before its DECIDE.
     assert.equal(lines.slice(0, decideAt).filter((l) => l.startsWith('LAUNCH ')).length, 0, 'no LAUNCH before the DECIDE: ' + lines.join('\n'));
     const m = /^DECIDE exit=(-?\d+) uptime=(\d+) action=(\w+) delay=(\d+) reason=(.*)$/.exec(lines[decideAt]);
     assert.ok(m, 'DECIDE line has the contract shape: ' + lines[decideAt]);
     assert.equal(Number(m[1]), 1, 'the stub exit code reached the policy');
-    const expected = runFunctions('ConvertTo-Json -InputObject ([pscustomobject](Get-KeeperDecision -ExitCode 1 -UptimeSeconds ' + m[2] + ' -PreviousDelaySeconds 300 -ConsecutiveExit1Count 0)) -Compress');
+    const expected = runFunctions('ConvertTo-Json -InputObject ([pscustomobject](Get-KeeperDecision -ExitCode 1 -UptimeSeconds ' + m[2] + ' -PreviousDelaySeconds $script:KeeperBaseDelaySeconds -ConsecutiveExit1Count 0)) -Compress');
     assert.equal(m[3], expected.Action, 'action');
     assert.equal(Number(m[4]), expected.DelaySeconds, 'delay');
     assert.equal(m[5], expected.Reason, 'reason');
@@ -933,6 +952,153 @@ test('wrapper: a live supervisor for its persona is adopted, nothing is launched
     try { process.kill(live.pid, 0); } catch { alive = false; }
     if (alive) spawnSync('taskkill', ['/T', '/F', '/PID', String(live.pid)]);
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Open-KeeperLiveSupervisor's refusals, driven through the wrapper's own function text. The
+// wrapper runs its loop when invoked, so the functions and the constants they read are lifted out
+// of it by the PowerShell parser rather than dot-sourced. Get-CimInstance and Start-Sleep are
+// replaced by functions that serve records built here and count the calls, so no case reads the
+// machine's process list or waits the watch interval out. Each filtered read serves the next entry
+// of filterDates, where 'throw' is a read that fails and a read past the list finds no record. A
+// handle that cannot be opened is a process id no process holds, which GetProcessById refuses. A
+// handle that opens is this driver's own process, whose start time the case knows.
+// ---------------------------------------------------------------------------------------------
+function runOpenCase(recordDate, filterDates, pid) {
+  const log = path.join(tmp, 'open-' + (driverCount + 1) + '.log');
+  return runFunctions(`
+$ast = [System.Management.Automation.Language.Parser]::ParseFile('${wrapperPath}', [ref]$null, [ref]$null)
+foreach ($s in $ast.EndBlock.Statements) {
+  if ($s -is [System.Management.Automation.Language.AssignmentStatementAst] -and @('$script:AdoptStartToleranceSeconds', '$script:AdoptWatchSeconds', '$script:Utf8NoBom', '$script:LogCapBytes') -contains $s.Left.Extent.Text) { . ([scriptblock]::Create($s.Extent.Text)) }
+}
+foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $false)) {
+  if (@('Write-KeeperLog', 'Open-KeeperLiveSupervisor', 'Watch-KeeperUnopenedSupervisor', 'Test-KeeperSupervisorRecord') -contains $f.Name) { . ([scriptblock]::Create($f.Extent.Text)) }
+}
+$script:LogPath = '${log}'
+$self = (Get-Process -Id $PID).StartTime
+$targetId = ${pid === 'self' ? '$PID' : pid}
+$dateOf = { param($offset) if ($null -eq $offset) { $null } elseif ($offset -eq 'self') { $self } else { $self.AddSeconds([double]$offset) } }
+$script:recordDate = & $dateOf ${recordDate === null ? '$null' : "'" + recordDate + "'"}
+$script:filterDates = @(${filterDates.map((d) => (d === null ? '$null' : "'" + d + "'")).join(', ')})
+$script:scans = 0; $script:filters = 0; $script:sleeps = @()
+function Get-CimInstance {
+  [CmdletBinding()]
+  param([Parameter(Position = 0)][string]$ClassName, [string[]]$Property, [string]$Filter)
+  if ($Filter) {
+    $n = $script:filters; $script:filters++
+    if ($Filter -ne "ProcessId=$targetId") { throw "unexpected filter $Filter" }
+    if ($n -lt $script:filterDates.Count -and $script:filterDates[$n] -eq 'throw') { throw 'stub filtered read failed' }
+    if ($n -lt $script:filterDates.Count) { [pscustomobject]@{ ProcessId = $targetId; CreationDate = (& $dateOf $script:filterDates[$n]) } }
+    return
+  }
+  $n = $script:scans; $script:scans++
+  if ($n -eq 0) {
+    [pscustomobject]@{ ProcessId = $targetId; ParentProcessId = 1; CreationDate = $script:recordDate; CommandLine = '"C:\\Program Files\\Git\\bin\\bash.exe" /x/sup.sh /x/work open-probe bypassPermissions' }
+  }
+}
+function Start-Sleep { param([double]$Seconds) $script:sleeps += $Seconds }
+$r = Open-KeeperLiveSupervisor -Executable 'C:/Program Files/Git/bin/bash.exe' -Arguments @('/x/sup.sh', '/x/work', 'open-probe', 'bypassPermissions')
+$got = $null
+if ($null -ne $r) { $got = $r.ProcessId; $r.Process.Dispose() }
+$lines = @()
+if (Test-Path -LiteralPath $script:LogPath) { $lines = @(Get-Content -LiteralPath $script:LogPath | ForEach-Object { $_ -replace '^\\S+ ', '' }) }
+ConvertTo-Json -InputObject @{ pid = $got; self = $PID; target = $targetId; log = $lines; sleeps = @($script:sleeps); scans = $script:scans; filters = $script:filters } -Compress -Depth 3
+`);
+}
+
+test('adopt: a matching record with no start time is no match, in one line, and the wrapper launches', () => {
+  const r = runOpenCase(null, [], 'self');
+  assert.equal(r.pid, null, 'nothing opened');
+  assert.deepEqual(r.log, ['ADOPT skipped pid=' + r.self + ': its process record carries no start time']);
+});
+
+test('adopt: an opened match whose record carries another start time on the second read is another process under the id, and no match', () => {
+  const r = runOpenCase('self', ['3600'], 'self');
+  assert.equal(r.pid, null, 'nothing opened');
+  assert.equal(r.log.length, 1, 'one line: ' + r.log.join('\n'));
+  assert.match(r.log[0], new RegExp('^ADOPT skipped pid=' + r.self + ': its process record changed after the scan'));
+  assert.equal(r.filters, 1, 'one second read');
+  assert.equal(r.scans, 1, 'no second scan');
+});
+
+test('adopt: an opened match whose record is gone on the second read is no match', () => {
+  const r = runOpenCase('self', [], 'self');
+  assert.equal(r.pid, null, 'nothing opened');
+  assert.equal(r.log.length, 1, 'one line: ' + r.log.join('\n'));
+  assert.match(r.log[0], new RegExp('^ADOPT skipped pid=' + r.self + ': its process record changed after the scan'));
+});
+
+test('adopt: an opened match whose second read carries no start time is no match', () => {
+  const r = runOpenCase('self', [null], 'self');
+  assert.equal(r.pid, null, 'nothing opened');
+  assert.equal(r.log.length, 1, 'one line: ' + r.log.join('\n'));
+  assert.match(r.log[0], new RegExp('^ADOPT skipped pid=' + r.self + ': its process record changed after the scan'));
+  assert.equal(r.filters, 1, 'one second read');
+});
+
+test('adopt: the same live process with its record\'s start time on both reads is opened, the control for the start-time cases', () => {
+  const r = runOpenCase('self', ['self'], 'self');
+  assert.equal(r.pid, r.self, 'this driver\'s own process opened: ' + r.log.join('\n'));
+  assert.deepEqual(r.log, []);
+  assert.equal(r.filters, 1, 'one second read');
+});
+
+test('adopt: a process whose own start time is an hour off two agreeing reads of its record is adopted, as across a daylight-saving change', () => {
+  const r = runOpenCase('3600', ['3600'], 'self');
+  assert.equal(r.pid, r.self, 'opened, since only the two record reads are compared: ' + r.log.join('\n'));
+  assert.deepEqual(r.log, []);
+});
+
+test('adopt: an opened match whose second read fails is adopted rather than launched beside, with one SCAN failed line', () => {
+  const r = runOpenCase('self', ['throw'], 'self');
+  assert.equal(r.pid, r.self, 'opened: ' + r.log.join('\n'));
+  assert.deepEqual(r.log, ['SCAN failed: stub filtered read failed']);
+  assert.equal(r.filters, 1, 'the second read was made');
+});
+
+test('adopt: a live match whose handle cannot be opened is watched until its record goes, then the list is scanned again', () => {
+  const r = runOpenCase('0', ['0', '0'], 2147483644);
+  assert.equal(r.pid, null, 'nothing opened, so the wrapper launches');
+  assert.equal(r.log.length, 2, 'two lines: ' + r.log.join('\n'));
+  assert.match(r.log[0], /^ADOPT watching pid=2147483644 without a handle: .+/);
+  assert.equal(r.log[1], 'ADOPT ended pid=2147483644, exit code unreadable');
+  assert.deepEqual(r.sleeps, [10, 10], 'the record is read again every ten seconds');
+  assert.equal(r.filters, 3, 'the confirming read, the read still present, the read gone');
+  assert.equal(r.scans, 2, 'the list is scanned again after the watch');
+});
+
+test('adopt: an unopenable match whose record carries another start time on the second read is no match, and nothing is watched', () => {
+  const r = runOpenCase('0', ['3600'], 2147483644);
+  assert.equal(r.pid, null, 'nothing opened');
+  assert.equal(r.log.length, 1, 'one line: ' + r.log.join('\n'));
+  assert.match(r.log[0], /^ADOPT failed pid=2147483644: .+/);
+  assert.deepEqual(r.sleeps, []);
+  assert.equal(r.scans, 1, 'no second scan');
+});
+
+test('adopt: an unopenable match whose second read fails is watched rather than launched beside', () => {
+  const r = runOpenCase('0', ['throw'], 2147483644);
+  assert.equal(r.pid, null, 'nothing opened, so the wrapper launches once the watch ends');
+  assert.equal(r.log.length, 3, 'three lines: ' + r.log.join('\n'));
+  assert.equal(r.log[0], 'SCAN failed: stub filtered read failed');
+  assert.match(r.log[1], /^ADOPT watching pid=2147483644 without a handle: .+/);
+  assert.equal(r.log[2], 'ADOPT ended pid=2147483644, exit code unreadable');
+  assert.ok(!r.log.some((l) => l.startsWith('ADOPT failed')), 'no ADOPT failed line');
+  assert.deepEqual(r.sleeps, [10], 'one sleep, then the read showing the record gone');
+  assert.equal(r.filters, 2);
+  assert.equal(r.scans, 2, 'the list is scanned again after the watch');
+});
+
+test('adopt: a read that fails during the watch keeps the watch going, and it ends on the next read showing the record gone', () => {
+  const r = runOpenCase('0', ['0', 'throw'], 2147483644);
+  assert.equal(r.pid, null, 'nothing opened');
+  assert.equal(r.log.length, 3, 'three lines: ' + r.log.join('\n'));
+  assert.match(r.log[0], /^ADOPT watching pid=2147483644 without a handle: .+/);
+  assert.equal(r.log[1], 'SCAN failed: stub filtered read failed');
+  assert.equal(r.log[2], 'ADOPT ended pid=2147483644, exit code unreadable');
+  assert.deepEqual(r.sleeps, [10, 10], 'the watch slept again after the failed read');
+  assert.equal(r.filters, 3, 'the confirming read, the failed read, the read gone');
+  assert.equal(r.scans, 2);
 });
 
 // ---------------------------------------------------------------------------------------------

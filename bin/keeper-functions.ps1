@@ -334,28 +334,41 @@ Finds the live supervisor for this persona in a list of process records, or retu
 
 .DESCRIPTION
 Processes is a list of records carrying ProcessId, ParentProcessId and CommandLine, which is the
-shape Get-CimInstance Win32_Process returns; a record with no command line is skipped. Arguments is
-the wrapper's full argument array: the supervisor script path first, then what
-Build-SupervisorInvocation returned. A record matches when the three tokens after its executable
-equal the first three elements of Arguments, which are the supervise.sh path, the working
-directory and the persona name. The compare is whole-token and ignores case, as the roster lookup
-does, so dev never matches dev-plugin. No later token is read, so a supervisor launched under an
-earlier roster, with another channel name or extra arguments, still matches. The strings are
-compared in the forms Build-SupervisorInvocation emits and no path is converted here, so a
-supervisor started under another spelling of the same path does not match.
+shape Get-CimInstance Win32_Process returns; a record with no command line is skipped. Executable
+is the bash the wrapper launches with, and Arguments is the wrapper's full argument array: the
+supervisor script path first, then what Build-SupervisorInvocation returned.
 
-A supervisor runs as an outer and an inner bash.exe carrying the same command line, and bash forks
-more under the inner one. The record returned is the first match whose parent is not itself a
-match, which is the outer process whose exit code is the supervisor's.
+A record matches when its executable token equals Executable and the three tokens after it equal the
+first three elements of Arguments, which are the supervise.sh path, the working directory and the
+persona name. The executable is compared ignoring case and treating / and \ as the same character,
+since the env file may spell the launcher either way, and nothing else about that path is
+normalized. So Executable must be the full path the launcher runs as, spelled as its command line
+carries it, since another spelling of the same file does not match. It is read because one
+supervisor is three bash.exe processes carrying the same arguments: the Git launcher the keeper
+starts and waits on, whose exit code is the supervisor's, and two MSYS bash.exe processes under it
+spelled ..\usr\bin\bash.exe, one of them a long-lived fork. A fork orphaned by a supervisor that has
+exited carries this persona's arguments with no live parent, and only the executable tells it from a
+supervisor that is still running.
+
+The three argument tokens are compared whole and ignoring case, as the roster lookup does, so dev
+never matches dev-plugin. No later token is read, so a supervisor launched under an earlier roster,
+with another channel name or extra arguments, still matches. The strings are compared in the forms
+Build-SupervisorInvocation emits and no path is converted here, so a supervisor started under
+another spelling of the same path does not match.
+
+Among the matches, the record returned is the first whose parent is not itself a match, so a
+launcher started from another launcher for the same persona yields the outer one.
 
 Returns the matching record, or $null.
 #>
 function Find-KeeperLiveSupervisor {
     param(
         [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Processes,
+        [Parameter(Mandatory)][string]$Executable,
         [Parameter(Mandatory)][string[]]$Arguments
     )
     $ignoreCase = [System.StringComparison]::OrdinalIgnoreCase
+    $launcher = $Executable.Replace('/', '\')
     $matched = New-Object System.Collections.Generic.List[object]
     foreach ($record in $Processes) {
         if ($null -eq $record) { continue }
@@ -366,6 +379,7 @@ function Find-KeeperLiveSupervisor {
         if ($line.IndexOf($Arguments[0], $ignoreCase) -lt 0) { continue }
         $tokens = Split-KeeperCommandLine -CommandLine $line
         if ($tokens.Count -lt 4) { continue }
+        if (-not [string]::Equals($tokens[0].Replace('/', '\'), $launcher, $ignoreCase)) { continue }
         $same = $true
         for ($k = 0; $k -lt 3; $k++) {
             if (-not [string]::Equals($tokens[$k + 1], $Arguments[$k], $ignoreCase)) { $same = $false; break }
