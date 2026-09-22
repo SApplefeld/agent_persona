@@ -1,7 +1,7 @@
 # Pure functions shared by the process keeper's scripts. Dot-sourced by bin/Start-Persona.ps1 (the
 # wrapper the scheduled task runs) and bin/keeper-probe.ps1 (the recorder that measures what a
 # task delivers), so the allowlist, the env file reader, the roster reader, the supervisor
-# invocation builder and the exit-code policy each exist once.
+# invocation builder, the live supervisor match and the exit-code policy each exist once.
 #
 #   . (Join-Path $PSScriptRoot 'keeper-functions.ps1')
 #
@@ -256,6 +256,127 @@ function Build-SupervisorInvocation {
         $environment[$map[$field]] = [string]$value
     }
     return @{ Arguments = $arguments.ToArray(); Environment = $environment }
+}
+
+<#
+.SYNOPSIS
+Splits a Windows command line into its tokens, the executable first.
+
+.DESCRIPTION
+A command line is one string that the process which started another wrote, and the reader has to
+undo its quoting. The executable is read as CreateProcess reads it: up to the closing quote when it
+opens with one, otherwise up to the first space or tab, with no backslash handling, since a path
+such as "C:\Program Files\Git\bin\bash.exe" carries backslashes that escape nothing. Every later
+token follows the Microsoft C runtime rules that ConvertTo-NativeArgument in bin/Start-Persona.ps1
+writes to: a space or tab outside quotes ends a token, a quote toggles quoting, a doubled quote
+inside quotes is one literal quote, 2n backslashes before a quote are n backslashes and the quote
+toggles, 2n+1 backslashes before a quote are n backslashes and a literal quote, and backslashes
+before anything else are kept as written. An unclosed quote runs to the end of the line.
+
+Returns a string array, empty for a blank line.
+#>
+function Split-KeeperCommandLine {
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$CommandLine)
+    $tokens = New-Object System.Collections.Generic.List[string]
+    $text = $CommandLine
+    $length = $text.Length
+    $i = 0
+    while ($i -lt $length -and ($text[$i] -eq [char]' ' -or $text[$i] -eq [char]"`t")) { $i++ }
+    if ($i -ge $length) { return , $tokens.ToArray() }
+
+    $token = New-Object System.Text.StringBuilder
+    if ($text[$i] -eq [char]'"') {
+        $i++
+        while ($i -lt $length -and $text[$i] -ne [char]'"') { [void]$token.Append($text[$i]); $i++ }
+        if ($i -lt $length) { $i++ }
+    } else {
+        while ($i -lt $length -and $text[$i] -ne [char]' ' -and $text[$i] -ne [char]"`t") { [void]$token.Append($text[$i]); $i++ }
+    }
+    $tokens.Add($token.ToString())
+
+    while ($true) {
+        while ($i -lt $length -and ($text[$i] -eq [char]' ' -or $text[$i] -eq [char]"`t")) { $i++ }
+        if ($i -ge $length) { break }
+        $token = New-Object System.Text.StringBuilder
+        $quoted = $false
+        while ($i -lt $length) {
+            $c = $text[$i]
+            if (-not $quoted -and ($c -eq [char]' ' -or $c -eq [char]"`t")) { break }
+            if ($c -eq [char]'\') {
+                $run = 0
+                while ($i -lt $length -and $text[$i] -eq [char]'\') { $run++; $i++ }
+                if ($i -lt $length -and $text[$i] -eq [char]'"') {
+                    [void]$token.Append([char]'\', [int][Math]::Floor($run / 2))
+                    if ($run % 2 -eq 1) { [void]$token.Append([char]'"'); $i++ }
+                } else {
+                    [void]$token.Append([char]'\', $run)
+                }
+                continue
+            }
+            if ($c -eq [char]'"') {
+                if ($quoted -and $i + 1 -lt $length -and $text[$i + 1] -eq [char]'"') {
+                    [void]$token.Append([char]'"'); $i += 2
+                } else {
+                    $quoted = -not $quoted; $i++
+                }
+                continue
+            }
+            [void]$token.Append($c); $i++
+        }
+        $tokens.Add($token.ToString())
+    }
+    return , $tokens.ToArray()
+}
+
+<#
+.SYNOPSIS
+Finds the live supervisor for this persona in a list of process records, or returns nothing.
+
+.DESCRIPTION
+Processes is a list of records carrying ProcessId, ParentProcessId and CommandLine, which is the
+shape Get-CimInstance Win32_Process returns; a record with no command line is skipped. Arguments is
+the wrapper's full argument array: the supervisor script path first, then what
+Build-SupervisorInvocation returned. A record matches when the three tokens after its executable
+equal the first three elements of Arguments, which are the supervise.sh path, the working
+directory and the persona name. The compare is whole-token and ignores case, as the roster lookup
+does, so dev never matches dev-plugin. No later token is read, so a supervisor launched under an
+earlier roster, with another channel name or extra arguments, still matches. The strings are
+compared in the forms Build-SupervisorInvocation emits and no path is converted here, so a
+supervisor started under another spelling of the same path does not match.
+
+A supervisor runs as an outer and an inner bash.exe carrying the same command line, and bash forks
+more under the inner one. The record returned is the first match whose parent is not itself a
+match, which is the outer process whose exit code is the supervisor's.
+
+Returns the matching record, or $null.
+#>
+function Find-KeeperLiveSupervisor {
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Processes,
+        [Parameter(Mandatory)][string[]]$Arguments
+    )
+    $ignoreCase = [System.StringComparison]::OrdinalIgnoreCase
+    $matched = New-Object System.Collections.Generic.List[object]
+    foreach ($record in $Processes) {
+        if ($null -eq $record) { continue }
+        $line = [string]$record.CommandLine
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        # A match's command line carries the script path as written, since a path holds no quote
+        # for the tokenizer to undo, so a line without it is passed over before it is tokenized.
+        if ($line.IndexOf($Arguments[0], $ignoreCase) -lt 0) { continue }
+        $tokens = Split-KeeperCommandLine -CommandLine $line
+        if ($tokens.Count -lt 4) { continue }
+        $same = $true
+        for ($k = 0; $k -lt 3; $k++) {
+            if (-not [string]::Equals($tokens[$k + 1], $Arguments[$k], $ignoreCase)) { $same = $false; break }
+        }
+        if ($same) { $matched.Add($record) }
+    }
+    $matchedIds = @($matched | ForEach-Object { [string]$_.ProcessId })
+    foreach ($record in $matched) {
+        if ($matchedIds -notcontains [string]$record.ParentProcessId) { return $record }
+    }
+    return $null
 }
 
 <#

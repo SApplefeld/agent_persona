@@ -15,7 +15,7 @@ import { strict as assert } from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -361,6 +361,70 @@ test('bashpath: a backslash path, a bare drive and a UNC path each keep naming t
   const r = runFunctions("ConvertTo-Json -InputObject @(@('D:\\personas\\dev\\run','C:/x','E:','//host/share/x','/d/already','') | ForEach-Object { [string](ConvertTo-BashPath $_) }) -Compress");
   assert.deepEqual(r, ['/d/personas/dev/run', '/c/x', '/e', '//host/share/x', '/d/already', '']);
 });
+
+// ---------------------------------------------------------------------------------------------
+// Find-KeeperLiveSupervisor: records built here, in the shape Get-CimInstance Win32_Process
+// returns, so no case reads the machine's process list. One powershell spawn evaluates every case.
+// The command lines are the live shapes: Git bash's launcher, then the inner bash it starts under
+// the ..\usr\bin spelling, each carrying the supervisor's arguments as the keeper quoted them.
+// ---------------------------------------------------------------------------------------------
+{
+  const sup = '/d/agent_persona/bin/supervise.sh';
+  const work = '/d/personas/dev-plugin/repo';
+  const outerExe = '"C:\\Program Files\\Git\\bin\\bash.exe"';
+  const innerExe = '"C:\\Program Files\\Git\\bin\\..\\usr\\bin\\bash.exe"';
+  const tail = ' bypassPermissions --rundir /d/personas/dev-plugin/run --channel-name dev-plugin';
+  const rec = (pid, ppid, cmd) => ({ ProcessId: pid, ParentProcessId: ppid, CommandLine: cmd, CreationDate: '2026-09-21T00:00:00Z' });
+  // The inner process and a forked grandchild come first, so a rule that took the first match, or
+  // the youngest, would return one of them rather than the outer.
+  const pair = [
+    rec(4, 0, null),
+    rec(101, 100, innerExe + ' ' + sup + ' ' + work + ' dev-plugin' + tail),
+    rec(102, 101, innerExe + ' ' + sup + ' ' + work + ' dev-plugin' + tail),
+    rec(100, 50, outerExe + ' ' + sup + ' ' + work + ' dev-plugin' + tail),
+    rec(50, 1, '"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -File "D:\\agent_persona\\bin\\Start-Persona.ps1" -Name dev-plugin'),
+  ];
+  const argsFor = (w, name) => [sup, w, name, 'bypassPermissions', '--rundir', '/d/personas/' + name + '/run', '--channel-name', name];
+  const matchCases = [
+    { name: 'an outer and an inner bash.exe for dev-plugin, asked for dev-plugin, return the outer', records: pair, args: argsFor(work, 'dev-plugin'), pid: 100 },
+    // Same working directory, so only the persona token differs: a prefix, substring or
+    // whole-line pattern over the command line would return dev-plugin's supervisor here.
+    { name: 'the same list asked for dev returns nothing, since dev is a prefix of dev-plugin and not its name', records: pair, args: argsFor(work, 'dev'), pid: null },
+    { name: 'a supervisor for the same persona under another working directory is not returned', records: [rec(200, 50, outerExe + ' ' + sup + ' /d/personas/other/repo dev-plugin' + tail)], args: argsFor(work, 'dev-plugin'), pid: null },
+    { name: 'a supervisor for this persona with another channel name and an extra trailing argument is returned', records: [rec(300, 50, outerExe + ' ' + sup + ' ' + work + ' dev-plugin bypassPermissions --rundir /d/personas/dev-plugin/run --channel-name old-channel --dev')], args: argsFor(work, 'dev-plugin'), pid: 300 },
+    { name: 'an empty list returns nothing', records: [], args: argsFor(work, 'dev-plugin'), pid: null },
+    // The tokenizer at the boundary: an unquoted executable, a quoted working directory carrying a
+    // space, and a quoted token carrying an escaped quote and backslashes before it.
+    { name: 'a quoted working directory with a space matches its unquoted argument', records: [rec(400, 50, 'C:\\Git\\bin\\bash.exe ' + sup + ' "/d/scratch/full work" full' + tail)], args: argsFor('/d/scratch/full work', 'full'), pid: 400 },
+    { name: 'the quoted directory is one token, so its first word alone does not match', records: [rec(401, 50, 'C:\\Git\\bin\\bash.exe ' + sup + ' "/d/scratch/full work" full' + tail)], args: argsFor('/d/scratch/full', 'work'), pid: null },
+    { name: 'backslashes and an escaped quote inside a quoted token come back as the argument was written', records: [rec(402, 50, outerExe + ' ' + sup + ' "/d/a b\\\\\\"c" q' + tail)], args: argsFor('/d/a b\\"c', 'q'), pid: 402 },
+  ];
+  const casesFile = path.join(tmp, 'match-cases.json');
+  fs.writeFileSync(casesFile, JSON.stringify(matchCases.map((c) => ({ records: c.records, args: c.args }))));
+  let results;
+  try {
+    results = runFunctions([
+      "$cases = @((Get-Content -LiteralPath '" + casesFile + "' -Raw | ConvertFrom-Json) | ForEach-Object { $_ })",
+      '$out = @()',
+      'foreach ($c in $cases) {',
+      '  $r = Find-KeeperLiveSupervisor -Processes @($c.records | ForEach-Object { $_ }) -Arguments @($c.args)',
+      '  if ($null -eq $r) { $out += [pscustomobject]@{ pid = $null } } else { $out += [pscustomobject]@{ pid = [int]$r.ProcessId } }',
+      '}',
+      'ConvertTo-Json -InputObject $out -Compress -Depth 3',
+    ].join('\n'));
+  } catch (e) {
+    console.error('FAIL: match driver: ' + e.message);
+    fail++;
+    results = [];
+  }
+  matchCases.forEach((c, i) => {
+    test('match: ' + c.name, () => {
+      const r = results[i];
+      assert.ok(r, 'result present');
+      assert.equal(r.pid, c.pid, 'the process id returned, or null for nothing');
+    });
+  });
+}
 
 // ---------------------------------------------------------------------------------------------
 // The allowlist and Read-KeeperEnvFile, from the single list in keeper-functions.ps1.
@@ -796,6 +860,79 @@ test('wrapper: keeper.json names the persona the roster spells, not the case the
   assert.equal(JSON.parse(readText(sc.state)).persona, 'alpha');
   const launch = logLines(sc).find((l) => l.startsWith('LAUNCH '));
   assert.ok(/ alpha bypassPermissions/.test(launch), launch);
+});
+
+// A live supervisor for the wrapper's persona, which the wrapper must wait on rather than launch
+// beside. The wrapper names its supervisor from its own location, and in this checkout that is the
+// real bin/supervise.sh, which no case may run. So the two scripts are copied into a scratch tree
+// whose bin/supervise.sh is a stub, and the stub is started through the real Git bash with the
+// tokens the copied wrapper builds, under a test-only persona name and a scratch working directory
+// no live supervisor carries. The stub exits 1 once keeper.log shows the wrapper adopted it, and
+// gives up after a bound so a wrapper that never adopts cannot leave it running.
+test('wrapper: a live supervisor for its persona is adopted, nothing is launched beside it, and its exit 1 gets the exit-1 DECIDE line', () => {
+  const tree = path.join(tmp, 'adopt-tree');
+  fs.mkdirSync(path.join(tree, 'bin'), { recursive: true });
+  fs.copyFileSync(wrapperPath, path.join(tree, 'bin', 'Start-Persona.ps1'));
+  fs.copyFileSync(functionsPath, path.join(tree, 'bin', 'keeper-functions.ps1'));
+  const persona = 'keeper-adopt-probe-' + process.pid;
+  const work = path.join(tree, 'work');
+  const runDir = path.join(work, 'run');
+  fs.mkdirSync(runDir, { recursive: true });
+  const log = path.join(runDir, 'keeper.log');
+  const startedMarker = path.join(tree, 'stub-started');
+  fs.writeFileSync(path.join(tree, 'bin', 'supervise.sh'), [
+    '#!/bin/bash',
+    'touch "' + fwd(startedMarker) + '"',
+    'for i in $(seq 1 300); do',
+    '  grep -q "ADOPT pid=" "' + fwd(log) + '" 2>/dev/null && exit 1',
+    '  sleep 0.1',
+    'done',
+    'exit 99',
+    '',
+  ].join('\n'));
+  // What the wrapper runs if it launches: a marker per launch, then exit 130 so the run ends.
+  const launchMarker = path.join(tree, 'launched.txt');
+  const launchCmd = path.join(tree, 'launch.cmd');
+  fs.writeFileSync(launchCmd, '@echo off\r\necho launched>>"' + launchMarker + '"\r\nexit /b 130\r\n');
+  const roster = path.join(tree, 'fleet.json');
+  fs.writeFileSync(roster, JSON.stringify([{ name: persona, workdir: fwd(work), permissionMode: 'bypassPermissions', enabled: true }]));
+  const envFile = path.join(tree, 'keeper.env');
+  fs.writeFileSync(envFile, 'KEEPER_BASH_EXE=' + fwd(launchCmd) + '\n');
+
+  // The live supervisor, spelled as the copied wrapper spells its launch, with a different channel
+  // name after the three tokens the match reads.
+  const stubPath = toBash(tree + '/bin/supervise.sh');
+  const live = spawn(bashExe, [stubPath, toBash(work), persona, 'bypassPermissions', '--channel-name', 'earlier-roster'], { stdio: 'ignore' });
+  try {
+    waitForMarkers([startedMarker]);
+    const r = runPs([path.join(tree, 'bin', 'Start-Persona.ps1'), '-Name', persona, '-Roster', roster, '-EnvFile', envFile, '-DelayScale', '0.0001']);
+    assert.equal(r.status, 0, r.stderr);
+    const lines = readText(log).split(/\r?\n/).filter((l) => l.length > 0).map((l) => l.replace(/^\S+ /, ''));
+    const adoptAt = lines.findIndex((l) => /^ADOPT pid=\d+$/.test(l));
+    assert.ok(adoptAt >= 0, 'an ADOPT line: ' + lines.join('\n'));
+    const decideAt = lines.findIndex((l) => l.startsWith('DECIDE '));
+    assert.ok(decideAt > adoptAt, 'the DECIDE line follows the ADOPT line: ' + lines.join('\n'));
+    // Nothing was launched while the adopted supervisor lived: no LAUNCH line before its DECIDE.
+    assert.equal(lines.slice(0, decideAt).filter((l) => l.startsWith('LAUNCH ')).length, 0, 'no LAUNCH before the DECIDE: ' + lines.join('\n'));
+    const m = /^DECIDE exit=(-?\d+) uptime=(\d+) action=(\w+) delay=(\d+) reason=(.*)$/.exec(lines[decideAt]);
+    assert.ok(m, 'DECIDE line has the contract shape: ' + lines[decideAt]);
+    assert.equal(Number(m[1]), 1, 'the stub exit code reached the policy');
+    const expected = runFunctions('ConvertTo-Json -InputObject ([pscustomobject](Get-KeeperDecision -ExitCode 1 -UptimeSeconds ' + m[2] + ' -PreviousDelaySeconds 300 -ConsecutiveExit1Count 0)) -Compress');
+    assert.equal(m[3], expected.Action, 'action');
+    assert.equal(Number(m[4]), expected.DelaySeconds, 'delay');
+    assert.equal(m[5], expected.Reason, 'reason');
+    // The exit-1 row relaunches, so exactly one launch follows, and it is launch 1: the adopted run
+    // did not count as one.
+    assert.equal(readText(launchMarker).split(/\r?\n/).filter((l) => l === 'launched').length, 1, 'one launch, after the DECIDE');
+    assert.deepEqual(lines.filter((l) => l.startsWith('LAUNCH ')).map((l) => l.split(' ')[1]), ['1']);
+    assert.equal(JSON.parse(readText(path.join(runDir, 'keeper.json'))).launchCount, 1, 'keeper.json counts the one launch');
+  } finally {
+    // A wrapper that adopted has already waited the stub out. One that did not leaves it running
+    // toward its bound, and it is this suite's own process, so it is ended here.
+    let alive = true;
+    try { process.kill(live.pid, 0); } catch { alive = false; }
+    if (alive) spawnSync('taskkill', ['/T', '/F', '/PID', String(live.pid)]);
+  }
 });
 
 // ---------------------------------------------------------------------------------------------

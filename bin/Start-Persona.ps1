@@ -6,7 +6,9 @@
 # The wrapper reads the persona's roster entry, applies the env file's allowlisted keys to its own
 # process, launches bin/supervise.sh through the bash the env file names, and loops on
 # Get-KeeperDecision (bin/keeper-functions.ps1) over the supervisor's exit code: relaunch after a
-# delay, hold, or exit. State the operator can read lives under the entry's run directory:
+# delay, hold, or exit. Before each launch it looks for a supervisor already running for the
+# persona, and where it finds one it waits on that one instead of launching (ADOPT in keeper.log).
+# State the operator can read lives under the entry's run directory:
 # keeper.log (one line per event, rotated at 5 MB keeping keeper.log.1), keeper.json (the last
 # run's facts), supervisor.out (the supervisor's own stdout and stderr, appended per run) and
 # keeper.hold (present while the persona is held; -Release removes it). A refusal that happens
@@ -349,6 +351,80 @@ function Invoke-Supervisor {
 
 <#
 .SYNOPSIS
+Looks for a supervisor already running for this persona and opens a handle to it, or returns nothing.
+
+.DESCRIPTION
+A supervisor outlives the keeper that launched it when that keeper ends first, and the scheduler's
+next start of the task would otherwise launch a second one beside it, which the pre-launch gate
+refuses for as long as the first one lives. The machine's process list is read and handed to
+Find-KeeperLiveSupervisor (bin/keeper-functions.ps1) with the arguments this wrapper would launch
+with. The match's start time is read off its process record before anything waits on it, so its
+uptime counts from when it started rather than from when this wrapper found it.
+
+The handle is opened and read before the wait for the reason Invoke-Supervisor reads its own: the
+exit code is readable afterwards only where the handle was taken while the process was alive. A
+match that has exited by the time the handle is open is no match, and the wrapper launches. A
+match still running whose handle cannot be opened ends the wrapper through Stop-KeeperWithError
+rather than launching a second supervisor beside it; the scheduler starts the keeper again. A
+process list that cannot be read is no match. Each of those is one keeper.log line.
+
+Returns a hashtable: Process is the opened process, ProcessId its id, StartedUtc its start time.
+#>
+function Open-KeeperLiveSupervisor {
+    param([Parameter(Mandatory)][string[]]$Arguments)
+    try {
+        $processes = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CommandLine, CreationDate -ErrorAction Stop)
+        $match = Find-KeeperLiveSupervisor -Processes $processes -Arguments $Arguments
+    } catch {
+        Write-KeeperLog "SCAN failed: $($_.Exception.Message)"
+        return $null
+    }
+    if ($null -eq $match) { return $null }
+    $matchId = [int]$match.ProcessId
+    $process = $null
+    try {
+        $startedUtc = ([DateTime]$match.CreationDate).ToUniversalTime()
+        $process = [System.Diagnostics.Process]::GetProcessById($matchId)
+        $null = $process.Handle
+        if ($process.HasExited) { throw 'the process exited before its handle was opened' }
+    } catch {
+        if ($null -ne $process) { $process.Dispose() }
+        if ($null -ne (Get-Process -Id $matchId -ErrorAction SilentlyContinue)) {
+            Stop-KeeperWithError "adopted supervisor pid=${matchId} is running and its handle could not be opened: $($_.Exception.Message)"
+        }
+        Write-KeeperLog "ADOPT failed pid=${matchId}: $($_.Exception.Message)"
+        return $null
+    }
+    return @{ Process = $process; ProcessId = $matchId; StartedUtc = $startedUtc }
+}
+
+<#
+.SYNOPSIS
+Waits on an adopted supervisor and returns its exit code, uptime and an empty last stderr line.
+
+.DESCRIPTION
+The shape Invoke-Supervisor returns, so the loop hands an adopted run to Get-KeeperDecision exactly
+as it hands a launched one. The uptime runs from the process's own start time. The wrapper did not
+start this process and holds neither of its output streams, so there is no last stderr line. An
+exit code that cannot be read comes back as $null, which the loop treats as the wrapper fault it is
+for a launched supervisor.
+#>
+function Wait-KeeperAdoptedSupervisor {
+    param(
+        [Parameter(Mandatory)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory)][DateTime]$StartedUtc
+    )
+    while (-not $Process.WaitForExit($script:ExitWaitMilliseconds)) { }
+    $uptime = [int][Math]::Floor(([DateTime]::UtcNow - $StartedUtc).TotalSeconds)
+    if ($uptime -lt 0) { $uptime = 0 }
+    $exitCode = $null
+    try { $exitCode = $Process.ExitCode } catch { $exitCode = $null }
+    $Process.Dispose()
+    return @{ ExitCode = $exitCode; UptimeSeconds = $uptime; LastErrorLine = '' }
+}
+
+<#
+.SYNOPSIS
 Writes keeper.json as UTF-8 without a byte-order mark; a failure is logged and stepped over.
 #>
 function Write-KeeperState {
@@ -480,10 +556,19 @@ $launchCount = 0
 $delay = $script:KeeperBaseDelaySeconds
 $exit1Count = 0
 while ($true) {
-    $launchCount++
-    $started = [DateTime]::UtcNow
-    Write-KeeperLog "LAUNCH $launchCount $bashExe $($arguments -join ' ')"
-    $run = Invoke-Supervisor -BashExe $bashExe -Arguments $arguments -WorkingDirectory $repoRoot -OutputPath $outputPath -Launch $launchCount
+    # A supervisor already running for this persona is waited on rather than launched beside. An
+    # adopted run is not a launch, so it leaves launchCount where it stands.
+    $adopted = Open-KeeperLiveSupervisor -Arguments $arguments
+    if ($null -ne $adopted) {
+        $started = $adopted.StartedUtc
+        Write-KeeperLog "ADOPT pid=$($adopted.ProcessId)"
+        $run = Wait-KeeperAdoptedSupervisor -Process $adopted.Process -StartedUtc $started
+    } else {
+        $launchCount++
+        $started = [DateTime]::UtcNow
+        Write-KeeperLog "LAUNCH $launchCount $bashExe $($arguments -join ' ')"
+        $run = Invoke-Supervisor -BashExe $bashExe -Arguments $arguments -WorkingDirectory $repoRoot -OutputPath $outputPath -Launch $launchCount
+    }
     $ended = [DateTime]::UtcNow
     Write-KeeperLog "EXIT $launchCount code=$($run.ExitCode) uptime=$($run.UptimeSeconds)"
 
@@ -491,6 +576,9 @@ while ($true) {
     # uncaught binding error, which would end the wrapper with no DECIDE line, no state file and no
     # hold marker. It is a fault of the wrapper's own instead.
     if ($null -eq $run.ExitCode) {
+        if ($null -ne $adopted) {
+            Stop-KeeperWithError "adopted supervisor pid=$($adopted.ProcessId) reported no exit code"
+        }
         Stop-KeeperWithError "supervisor '$bashExe' reported no exit code after launch $launchCount"
     }
 
@@ -510,11 +598,13 @@ while ($true) {
 
     switch ($decision.Action) {
         'hold' {
-            # Line 1 is the reason. An exit-1 hold adds the supervisor's last stderr line and the
-            # path of supervisor.out, so the operator reading the marker sees why without opening it.
+            # Line 1 is the reason. An exit-1 hold of a launched supervisor adds its last stderr line
+            # and the path of supervisor.out, so the operator reading the marker sees why without
+            # opening it. An adopted supervisor's output never reached supervisor.out, so its marker
+            # carries the reason alone.
             $lines = New-Object System.Collections.Generic.List[string]
             $lines.Add($decision.Reason)
-            if ($run.ExitCode -eq 1) {
+            if ($run.ExitCode -eq 1 -and $null -eq $adopted) {
                 $lines.Add($run.LastErrorLine)
                 $lines.Add($outputPath)
             }
