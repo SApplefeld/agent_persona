@@ -7204,12 +7204,16 @@ export const register: Register = async (on, options) => {
     // writes into a store another session owns. The refusals are a closed set,
     // checked in this order, and each one writes nothing. The ground is the
     // one the reach rule computes for fleet_status, narrowed to COORDINATOR
-    // alone: this rule is the only fence between a worker and a restart of the
-    // coordinator, and a reader claim reads the fleet without steering it.
+    // alone, since a reader claim reads the fleet without steering it. That
+    // ground fences this tool and not the file: every persona runs as the
+    // operator's own account, so any local process can write restart.request
+    // directly, the same boundary the persona store already sits inside.
     if ((e as any).tool === "mcp__agentic-plugin__fleet_restart") {
       const now = Date.now();
       const target = String((e as any).persona || "").trim();
       const reason = String((e as any).reason || "").trim().slice(0, FLEET_RESTART_REASON_MAX);
+      // The caller's own argument, as every refusal and the result echo it.
+      const shown = boundedText(bracketSafeText(target));
       const refuse = (why: string) => {
         toolErrorsThisTurn++;
         return { deny: `fleet_restart refused: ${why}` };
@@ -7239,20 +7243,20 @@ export const register: Register = async (on, options) => {
         return typeof name === "string" && name.trim() === target;
       }) as RosterEntry | undefined;
       if (entry === undefined) {
-        return refuse(`the roster '${fleetRoster}' carries no entry named '${target}'.`);
+        return refuse(`the roster '${fleetRoster}' carries no entry named '${shown}'.`);
       }
       if (entry.enabled !== true) {
-        return refuse(`the roster entry for '${target}' is not enabled, and only a persona the roster enables is restarted.`);
+        return refuse(`the roster entry for '${shown}' is not enabled, and only a persona the roster enables is restarted.`);
       }
       if (target === sess.persona) {
-        return refuse(`'${target}' is this session's own persona, whose restart lever is supervisor_restart.`);
+        return refuse(`'${shown}' is this session's own persona, whose restart lever is supervisor_restart.`);
       }
       const runDir = rosterRunDir(entry);
       const runDirExists = runDir !== null && await $.fs.exists(runDir).catch(() => false);
       if (runDir === null || !runDirExists) {
         return refuse(runDir === null
-          ? `the roster entry for '${target}' names neither a run directory nor a working directory, so there is nowhere to write the request.`
-          : `the run directory '${runDir}' for '${target}' does not exist.`);
+          ? `the roster entry for '${shown}' names neither a run directory nor a working directory, so there is nowhere to write the request.`
+          : `the run directory '${runDir}' for '${shown}' does not exist.`);
       }
       // A request the supervisor would read as no request is no request here
       // either: one that does not parse, carries no numeric at, or is dated
@@ -7267,7 +7271,7 @@ export const register: Register = async (on, options) => {
         }
       } catch { /* an unreadable request is treated as absent and overwritten */ }
       if (standingAt !== null && now - standingAt < FLEET_RESTART_MIN_INTERVAL_MS) {
-        return refuse(`a restart.request for '${target}' was written ${Math.floor((now - standingAt) / 1000)} seconds ago, and a second request inside fifteen minutes of the first is refused.`);
+        return refuse(`a restart.request for '${shown}' was written ${Math.floor((now - standingAt) / 1000)} seconds ago, and a second request inside fifteen minutes of the first is refused.`);
       }
       // One write rather than a temporary file renamed over the target, since
       // the host's filesystem has no rename. A supervisor that reads the file
@@ -7278,7 +7282,7 @@ export const register: Register = async (on, options) => {
       } catch (err) {
         return refuse(`the request file '${requestPath}' could not be written: ${boundedText(safeErrorText(err))}`);
       }
-      return { result: `Restart requested for '${target}': its supervisor restarts the child at its next poll and lets a running turn end first.` };
+      return { result: `Restart requested for '${shown}': its supervisor restarts the child at its next poll and lets a running turn end first.` };
     }
 
     // Section 12: serve agentic_resolve (the owner marks a record's work

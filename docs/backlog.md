@@ -1,5 +1,9 @@
 # Backlog
 
+## The generated tool-list mirror does not list fleet_restart (found 2026-09-21)
+
+`.claude/types/claude-code-mcp.d.ts` mirrors the plugin's registered tools and is written by the `/plugin-types` command of an interactive session. The supervisor gaps plan's Section 3 registered `fleet_restart` under the owner tier from a headless session, which cannot run that command. The mirror was last regenerated on 2026-09-12 and lists ten tools, so it already lacked `fleet_status` and `agentic_resolve`, and it now lacks `fleet_restart` too. Nothing at runtime reads the mirror. Its readers are authors and type checks that consult it for a tool's shape, and they find no entry for the new tool. The file is generated, so it is never edited by hand. Remedy: run `/plugin-types` in an interactive session on this checkout and commit the regenerated file.
+
 ## The poll's rate-limit tail read takes one readSync and decodes the whole buffer (found 2026-09-21)
 
 `readRateLimitReset` in `bin/supervise-poll.mjs` reads the stream's last 256 KB with a single `fs.readSync` call and decodes the whole buffer whatever that call returned. A short read leaves the buffer's tail zeroed and decodes it as content, so the newest record's line boundary can be swallowed and the reset value read from an older record. `bin/supervise-turnstate.mjs` had the same shape and now loops until the window is filled or a read returns zero bytes. A regular file does not short-read on this platform, so no fixture reds it, and the hazard is unobserved. Remedy: copy the fill loop, since the two modules share the tail read by design and the module's header says so. Found by the supervisor gaps plan's Section 1 close pass, outside that section's files.
