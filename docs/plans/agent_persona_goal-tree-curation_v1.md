@@ -81,7 +81,9 @@ Untracked work is a log line and nothing else. The block at 5298-5351 stops buil
 
 ## Standing Brief Amendments
 
-- A session whose persona state never loaded keeps answering with the not-loaded cause until a tool call that names the load clears it. No tick, timer or other background path loads that state or clears that field. A background path that swapped the session's in-memory tree from the built-in default to the stored one would itself be a tree change with no tool call naming it, which is what this plan exists to stop, and a session that recovered silently stops saying it could not load, which is what the Goal promises it will say.
+- A session whose persona state never loaded keeps answering with the not-loaded cause until a tool call that names the load clears it. No tick, timer or other background path may clear that field, and this plan adds none that does. A background path that swapped the session's in-memory tree from the built-in default to the stored one would itself be a tree change with no tool call naming it, which is what this plan exists to stop, and a session that recovered silently stops saying it could not load, which is what the Goal promises it will say.
+
+  This amendment states a rule about what may clear the field, not a description of what the file does today. One background path already loads persona state: the heartbeat tick's reader-promotion branch assigns the parsed store state to the session. It does not clear the not-loaded field, which is why the rule holds over it, and this plan guards that branch rather than changing what it loads.
 
 ## Sections of Work
 
@@ -326,7 +328,13 @@ One correction to the framing recorded above. The saying half of the Goal did no
 
 Next action. Fix round 4 is dispatched and it removes rather than adds: delete the guard, keep the two tick guards, revert the fleet discriminator to the pre-existing sentence with its landing promise amended, keep round 3's call-site denies and catches, rewrite the two cases that now assert the reverse, and fix three stale texts including README.md. Then review round 4, the Minor close pass, the close gate and Chapter 1.
 
-The operator has been sent the three batched decisions with recommendations: accept the keeper restart as the recovery, accept that a session in this state cannot signal the supervisor with the better path backlogged, and correct the Standing Brief Amendment's untrue sentence while keeping its rule. The run proceeds on those recommendations unless answered otherwise.
+The operator answered all three, decided 2026-09-22, each approving the recommendation put to them.
+
+The keeper restart is the accepted recovery. A session that came up over an unreadable store gives the persona up at the first heartbeat tick after the store is repaired, goes quiet, and the keeper restarts it once its transcript stops advancing. The rationale recorded with the ask was that the alternative is an in-session recovery path, which is new code on a section already rewritten repeatedly, against a cost of one quiet child for about one staleness window per corrupt-store incident.
+
+The supervisor-signal residual is accepted. A session in this state answers the not-loaded sentence rather than acting on a shutdown or restart request, because the write behind those requests is the one that would destroy the tree. The better version, a read-merge-write path that lets the signal land without touching the tree, is recorded in docs/backlog.md as future work. The rationale was that the keeper restart above already covers the same ground.
+
+The Standing Brief Amendment's wording is corrected and its rule kept. The sentence saying no background path loads that state was untrue of the code and untrue before this plan, the heartbeat tick's reader-promotion branch being the path that does. The amendment now states the rule it always meant, that no background path may clear the field, and says plainly that one background path loads state without clearing it.
 
 A slip to carry to the close-out. The round 1 implementer deleted the machine's heavy-process claim with rm -f without first re-reading its Session line, so if a peer had replaced the claim in that interval it removed the peer's. The claims directory is empty now, which cannot settle it either way.
 
