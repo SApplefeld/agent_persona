@@ -3226,6 +3226,7 @@ async function main() {
     await caseDirectLines_workerRecordIsDeliveredToTheArchitect(clock);
     await caseDirectLines_architectAnswersAWorkerWithAnOpenRecord(clock);
     await caseDirectLines_architectAnswerIsDeliveredToTheWorker(clock);
+    await caseDirectLines_idleNudgeNamesTheArchitectLine(clock);
     await caseSection4_coordinatorRecordIsLabelledCoordinator(clock);
     await caseSection4_readerLabelNamesTheTargetAmongSeveralReaderClaims(clock);
     await caseSection4_readerClaimWinsOverWorkerAndFirstPersonaNames(clock);
@@ -6346,6 +6347,58 @@ async function caseDirectLines_architectAnswerIsDeliveredToTheWorker(clock) {
   check("direct lines answer ask: the stamped answer closes the worker's ask and is delivered labelled WORKER:architect",
     readStoreRecord(hk, askKey)?.status === "answered" && readStoreRecord(hk, askAnswerKey)?.status === "delivered"
       && (hk.promptSubmits || []).some((p) => p.startsWith("[WORKER:architect id=dev-arch-001-1] Answer to One store or two?: Answer: keep one store.")), hk.promptSubmits);
+}
+
+// The idle-gap nudge names the architect line beside its ASK: instruction,
+// only where the plugin holds an architect name and the nudged session owns a
+// named persona, which is what the worker leg of the reach rule admits.
+// Controls: the same named worker with no architect configured, and a
+// default-persona session with one, each still get the ASK: line and no
+// architect sentence. The ASK: line is the proof each nudge went out, so the
+// absence reads a sent nudge rather than an empty submit list.
+async function caseDirectLines_idleNudgeNamesTheArchitectLine(clock) {
+  console.log("\n=== Direct lines: the idle-gap nudge names the architect line only where an architect is configured ===");
+  const nudgeOf = async (caseName, persona, extraOpts) => {
+    clock.set(T0);
+    const now = T0;
+    const h = await seedNamedOwnerHarness(caseName, now, persona, "coordinator", extraOpts);
+    const personaState = buildPersonaState(SESSION_ID, now);
+    personaState.persona = persona;
+    personaState.goals = [
+      { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
+      { id: "node-001", kind: "leaf", parentId: "root", objective: "Some task", status: "active", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    ];
+    personaState.activeGoalId = "node-001";
+    personaState.monitor.turnCount = 5;
+    personaState.monitor.lastTurnComplete = now - 120_000;
+    personaState.updatedAt = now;
+    h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ [persona]: personaState }));
+    h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ [persona]: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+    const startH = h.handlers["session.start"];
+    if (startH) await startH(h.fake, {}, () => {});
+    h.setClassifyValue("ask-operator");
+    h.fake.model.complete = async () => "Blocked on a design choice the plan leaves open";
+    clock.advance(130_000);
+    await tickAndSettle(h, clock, 50);
+    clock.advance(130_000);
+    await tickAndSettle(h, clock, 50);
+    return (h.promptSubmits || []).find((t) => t.includes("ASK: <question>? Recommend: <choice>"));
+  };
+
+  const named = await nudgeOf("direct_lines_nudge_named", "dev", ARCH);
+  check("direct lines nudge: a named worker's idle-gap nudge carries the ASK: line", typeof named === "string", named);
+  check("direct lines nudge: with an architect configured it names the architect line by the architect's persona",
+    typeof named === "string" && named.includes("can go to the architect instead: send it with agentic_say, persona set to architect."), named);
+  check("direct lines nudge: the architect line follows the ASK: line",
+    typeof named === "string" && named.indexOf("ASK: <question>?") < named.indexOf("persona set to architect."), named);
+
+  const unset = await nudgeOf("direct_lines_nudge_unset", "dev", {});
+  check("direct lines nudge control: with no architect configured the named worker's nudge still carries the ASK: line", typeof unset === "string", unset);
+  check("direct lines nudge control: and names no architect at all", typeof unset === "string" && !/architect/i.test(unset), unset);
+
+  const plain = await nudgeOf("direct_lines_nudge_default", "default", ARCH);
+  check("direct lines nudge control: a default-persona session's nudge still carries the ASK: line", typeof plain === "string", plain);
+  check("direct lines nudge control: and names no architect, since the reach rule refuses its send there", typeof plain === "string" && !/architect/i.test(plain), plain);
 }
 
 // ============================================================

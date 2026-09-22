@@ -5366,12 +5366,20 @@ export const register: Register = async (on, options) => {
               // re-read the plan and the discussion file, and only state a
               // fork as a literal marker line if one truly exists, since
               // the classifier itself never carries a concrete blocking
-              // question, only an idle reading.
+              // question, only an idle reading. Where the plugin holds an
+              // architect name and this session owns a named persona, the
+              // fork line also names the architect, which the worker leg of
+              // the reach rule lets such a session reach; a default-persona
+              // session has no such leg, so the line is withheld from it.
+              const architectLine = architectPersona !== "" && sess.persona !== "default" && sess.persona !== architectPersona
+                ? `A design question the plan doesn't cover (a spec gap, an approach fork, a plan review or a consult) can go to the architect instead: send it with agentic_say, persona set to ${architectPersona}.\n`
+                : "";
               const nudgeText = idleGapConverted
                 ? `[GOAL] The active goal is: ${g.objective}\n` +
                   `The controller read this as an idle gap, not a real fork: no concrete blocking question. ` +
                   `Re-read the plan doc and DISCUSSION.md before continuing - the next concrete step should already be there.\n` +
                   `If you genuinely hold a fork the plan doesn't resolve, state it in this turn as a line: ASK: <question>? Recommend: <choice>\n` +
+                  architectLine +
                   `The controller reads a first-line BLOCKED: or WAITING: in your closing text and holds its nudges.\n` +
                   `Otherwise take the next concrete step and mark it finished with goal_done.`
                 : `[GOAL] The active goal is: ${g.objective}\n` +

@@ -352,7 +352,7 @@ function literalOfTemplateChain(chainSrc, owner, allowedIdentifiers = []) {
 // growth rule applied to the shape as well as to the size.
 const INSTRUCTION_ASSIGNMENT_COUNTS = {
   SKILL_LOAD_INSTRUCTION: 2,
-  COORDINATOR_STEER_INSTRUCTION: 3,
+  COORDINATOR_STEER_INSTRUCTION: 4,
   CHANNEL_REPLY_INSTRUCTION: 2,
   COORDINATOR_ROLE_INSTRUCTION: 5,
   ARCHITECT_ROLE_INSTRUCTION: 2,
@@ -820,13 +820,25 @@ function extractBackstopFrame(src) {
 // template-literal pieces joined by `+`, with `${g.objective}` and
 // `${idleDisplay}` as the only interpolations, both per-goal data and
 // excluded.
+//
+// The idle-gap arm splices `architectLine` whole, the architect sentence
+// built only where the plugin holds an architect name. Its value is a ternary
+// declared just above the frame: a template literal, or an empty string. The
+// row pins the larger shape, as the [GOAL TREE] block's roundText does, so
+// that arm's literal is read from the declaration and sized with the frame.
+// The arm must be a single template literal; a declaration that has moved, or
+// an arm that is not one, refuses.
 function extractNudgeFrames(src) {
   const m = /const nudgeText = idleGapConverted\s*\n\s*\?\s*([\s\S]*?)\n\s*:\s*([\s\S]*?);\n/.exec(src);
   if (!m) throw new Error("nudgeText ternary not found in hooks/index.ts");
-  // Neither arm splices a whole variable, so no identifier is declared and
-  // any operand that is not a template literal refuses.
+  const a = /const architectLine = [^\n]*\n\s*\?\s*(`[^`]*`)\s*\n\s*:\s*"";\n/.exec(src);
+  if (!a) throw new Error("the idle-gap nudge's architectLine ternary was not found in hooks/index.ts in the shape this rule reads");
+  // The idle-gap arm declares architectLine and nothing else, and the other
+  // arm splices no whole variable, so any other operand that is not a
+  // template literal refuses.
   return [
-    record("NUDGE_TEXT_idle_gap_converted", "hooks/index.ts", literalOfTemplateChain(m[1], "NUDGE_TEXT_idle_gap_converted")),
+    record("NUDGE_TEXT_idle_gap_converted", "hooks/index.ts", literalOfTemplateChain(m[1], "NUDGE_TEXT_idle_gap_converted", ["architectLine"])
+      + literalOfTemplateChain(a[1], "NUDGE_TEXT_idle_gap_converted architectLine")),
     record("NUDGE_TEXT_idle_timeout", "hooks/index.ts", literalOfTemplateChain(m[2], "NUDGE_TEXT_idle_timeout")),
   ];
 }
