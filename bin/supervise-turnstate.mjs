@@ -301,14 +301,14 @@ function turnstate(streamPath, now) {
 // The smallest magnitude an epoch-millisecond "now" can plausibly carry
 // (roughly the year 2001). bin/supervise.sh passes `date +%s%3N` at its one
 // call, but every other clock read in that script is `date +%s`, seconds,
-// three orders of magnitude below any real epoch-ms value, and a caller
-// reaching for that habit passes seconds; a value below this threshold is read as such a
-// mis-scaled clock rather than trusted, and Date.now() is used instead. A
-// seconds-valued clock taken at face value as milliseconds lands decades
-// behind the record it is compared against, which reads as a hugely
-// negative age -- wrongly busy under the ordinary comparison, whatever the
-// record's true age. Guarding at the clock read is what keeps that
-// scenario from ever reaching the age comparison at all.
+// three orders of magnitude below any real epoch-ms value. A caller
+// reaching for that habit passes seconds. A value below this threshold is
+// therefore read as a mis-scaled clock rather than trusted, and Date.now()
+// is used instead. A seconds-valued clock taken at face value as
+// milliseconds lands decades behind the record it is compared against,
+// which reads as a hugely negative age: wrongly busy under the ordinary
+// comparison, whatever the record's true age. Guarding at the clock read
+// is what keeps that scenario from ever reaching the age comparison.
 const MIN_PLAUSIBLE_EPOCH_MS = 1e12;
 
 function parseClock(raw) {

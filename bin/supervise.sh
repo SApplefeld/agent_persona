@@ -2078,7 +2078,7 @@ stop_child() {
   }
   verify_snapshot_dead() {
     if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
-      log "STOP[$label]: no snapshot was ever resolved for this stop (resolve or walk failed) - not confirming dead on an unverified read"
+      log "STOP[$label]: no verified snapshot covers this stop (the entry resolve or walk failed, or the post-wait rebuild did) - not confirming dead on an unverified read"
       return 1
     fi
     local alive rc
@@ -2105,6 +2105,9 @@ stop_child() {
   # cap from, so the ordinary grace counts toward that cap.
   local eof_closed_ms
   eof_closed_ms=$(date +%s%3N)
+  # Logged so the suite can bound the cap from the close on the log's own
+  # clock rather than from the wait's arithmetic.
+  log "STOP[$label]: input closed (eof_closed)"
   # Poll for up to stopGraceMs for the child to exit on its own.
   local grace=$((SUPERVISOR_STOP_GRACE_MS / 1000))
   local n=0
@@ -2295,6 +2298,11 @@ stop_child() {
       else
         log "STOP[$label]: a process the snapshot walked from Windows pid $snapshot_winpid names is alive or unverifiable after the kill"
       fi
+    else
+      # A failed post-wait rebuild leaves the verified entry list in
+      # `snapshot`, and this arm is where a moved wrapper lands after one.
+      # That list is killed here as at every other unverified exit.
+      kill_stale_entry_list
     fi
     log "STOP[$label]: the snapshot this stop holds was walked from Windows pid $snapshot_winpid and names nothing the wrapper started under $kill_winpid, so the tree cannot be confirmed dead from it"
     STOP_PATH="unverified"
@@ -2320,7 +2328,7 @@ stop_child() {
   # at all. Checked explicitly before trusting that return.
   if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
     kill_stale_entry_list
-    log "STOP[$label]: no snapshot was ever resolved for this stop (resolve or walk failed) - not confirming dead on an unverified read"
+    log "STOP[$label]: no verified snapshot covers this stop (the entry resolve or walk failed, or the post-wait rebuild did) - not confirming dead on an unverified read"
     STOP_PATH="unverified"
     return 1
   fi
