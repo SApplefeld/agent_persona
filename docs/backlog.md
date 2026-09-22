@@ -1,5 +1,13 @@
 # Backlog
 
+## A thread reply that closes an ask sets the asked entry active without pointing activeGoalId at it (found 2026-09-22)
+
+The ask close in the `prompt.submit` handler reactivates a paused asked entry by setting its status to `active` alone (`hooks/index.ts`, the block opening "D5b (bullet 1): an open ask never silences the worker"). It never sets `activeGoalId`. Until the next store load, which runs `enforceInvariants` and repairs the pointer, a session can hold an active entry that `activeGoalId` does not name. Anything that keys on the pointer then misreads the tree. `goal_done`'s no-nodeId path is one such reader. Found by the goal tree curation plan's Section 3, whose harness case reaches that stale state through this path. The remedy is to set `activeGoalId` beside the status, as `goal_resume` does.
+
+## Dropping a blocked entry leaves its plan blocked over nothing (found 2026-09-22)
+
+`goal_edit`'s drop marks a blocked entry abandoned and changes nothing above it (`hooks/index.ts`, the `action === "drop"` branch). A plan that `completeLeaf`'s walk marked blocked with "Child task blocked" therefore stays blocked after its only blocked child is dropped. `activateNext` then never reaches the plan's pending children. The goal tree curation plan's Section 3 adds a handler-side helper that returns such a plan to pending after `goal_done` completes the child by name. Calling that same helper from the drop branch closes this case too.
+
 ## Remove the supervisor's `backfilled` readers once no store can still hold such a line (found 2026-09-22)
 
 The plugin no longer writes a `root_complete` decision whose detail says `backfilled`. It writes one collapsed `untracked_work` line instead. `bin/supervise.sh` still reads the old line through `get_root_complete` and its backfilled branch, and `.kit/supervisor-natural-exit-test.sh` cases (a) and (e) and the `detail-backfilled` stub fixture prove that reader, because a persona store written before this change can still carry the line. Each store's decision log is capped at 200 lines, so the old line ages out once a persona has written that many decisions since the plugin was updated. Remedy: once every roster persona's store has been read and holds no `root_complete` detail carrying `backfilled`, remove the flag from `get_root_complete`, the backfilled branch from the clean-exit path, and those two cases and the fixture. Proof: a grep for `backfilled` over `bin/supervise.sh` returning nothing, and the natural-exit suite passing without the removed cases.

@@ -3305,6 +3305,11 @@ async function main() {
     await caseGtc3_anOpenAskOnTheCompletedEntryIsClosed(clock);
     await caseGtc3_anOpenAskOnAPlanTheWalkCompletesIsClosed(clock);
     await caseGtc3_noActiveEntryActivatesNextUnlessHeld(clock);
+    await caseGtc3_aBlockedChildCompletedByNameReturnsItsPlanToPending(clock);
+    await caseGtc3_aPlanWithAnotherBlockedChildStaysBlocked(clock);
+    await caseGtc3_aPlanTheWalkCompletesLosesTheStaleReason(clock);
+    await caseGtc3_noActiveEntryUnblocksThePlanAndActivatesTheSibling(clock);
+    await caseGtc3_eachAncestorCarryingTheReasonIsUnblocked(clock);
     await caseSection6Fleet_unchangedIsSilentAndOneChangeSubmitsOnce(clock);
     await caseSection6Fleet_runningRowsAreNotAllHealthy(clock);
     await caseSection6Fleet_aFirstEverLaunchIsNotStale(clock);
@@ -16808,6 +16813,157 @@ async function caseGtc3_noActiveEntryActivatesNextUnlessHeld(clock) {
       check(`${label}: the result names the hold`, String(out.res?.result).includes(arm.heldText), out.res);
     }
   }
+}
+
+// A plan held blocked over a blocked child, the shape completeLeaf's walk
+// leaves: plan-p blocked with "Child task blocked" over pt-1 blocked with
+// "Max rounds reached". plan-p carries no planPath, so the load-time recovery
+// in applyPlanRecordOnLoad, which frees only entries with a plan, leaves the
+// seed as written. `children` replaces plan-p's children, and `overrides` and
+// `extra` pass through to gtc3Tree.
+const GTC3_CHILD_BLOCKED = "Child task blocked";
+function gtc3BlockedPlanTree({ overrides = {}, children, extra = [] } = {}) {
+  const kids = children ?? [
+    { id: "pt-1", parentId: "plan-p", kind: "task", status: "blocked", blockedReason: "Max rounds reached", title: "Blocked task", createdAt: T0 - 19000 },
+    { id: "pt-2", parentId: "plan-p", kind: "task", status: "pending", title: "Next task", createdAt: T0 - 18000 },
+  ];
+  return gtc3Tree(overrides, [
+    { id: "plan-p", parentId: "root-1", kind: "plan", status: "blocked", blockedReason: GTC3_CHILD_BLOCKED, title: "Plan", createdAt: T0 - 20000 },
+    ...kids,
+    ...extra,
+  ]);
+}
+
+// The setup check every blocked-plan case runs: the seed survived the load.
+function gtc3CheckBlockedSeed(h, label, blockedChildren = ["pt-1"]) {
+  const goals = getState(h).goals;
+  const plan = goals.find((g) => g.id === "plan-p");
+  check(`${label} setup: plan-p is blocked with "${GTC3_CHILD_BLOCKED}" and ${blockedChildren.join(", ")} blocked after the load`,
+    plan?.status === "blocked" && plan?.blockedReason === GTC3_CHILD_BLOCKED &&
+    blockedChildren.every((id) => goals.find((g) => g.id === id)?.status === "blocked"),
+    goals.map((g) => ({ id: g.id, status: g.status, blockedReason: g.blockedReason })));
+}
+
+// Section 3 acceptance: a blocked child completed by name with a pending
+// sibling, while another entry is active. plan-p returns to pending with no
+// reason and one unblocked decision, and task-1 stays active. When task-1
+// then completes with no nodeId, pt-2 is the entry activated. Left blocked,
+// plan-p would be skipped by activateNext's DFS and pt-2 stranded.
+async function caseGtc3_aBlockedChildCompletedByNameReturnsItsPlanToPending(clock) {
+  console.log("\n=== Goal tree curation 3: a blocked child completed by name returns its plan to pending ===");
+  clock.set(T0);
+  const h = await gtc3Harness("gtc3_unblock_plan", gtc3BlockedPlanTree({ overrides: { "task-2": { status: "complete" } } }));
+  const label = "gtc3 unblock plan";
+  gtc3CheckBlockedSeed(h, label);
+  const out = await gtc3Done(h, { nodeId: "pt-1" });
+  const plan = getState(h).goals.find((g) => g.id === "plan-p");
+  check(`${label}: pt-1 is complete`, out.nodes["pt-1"].status === "complete", out.nodes);
+  check(`${label}: plan-p is pending with no blockedReason`, plan.status === "pending" && plan.blockedReason === undefined, plan);
+  const unblocked = out.written.filter((d) => d.action === "unblocked");
+  check(`${label}: one unblocked decision naming plan-p, pt-1, goal_done and the cleared reason`,
+    unblocked.length === 1 && ["plan-p", "pt-1", "goal_done", GTC3_CHILD_BLOCKED].every((t) => unblocked[0].detail.includes(t)), out.written);
+  check(`${label}: task-1 is still active and the active entry, and pt-2 is still pending`,
+    out.nodes["task-1"].status === "active" && out.activeGoalId === "task-1" && out.nodes["pt-2"].status === "pending",
+    { nodes: out.nodes, activeGoalId: out.activeGoalId });
+  check(`${label}: nothing was activated`, !out.actions.includes("activated") && !out.actions.includes("activate_none"), out.actions);
+
+  const next = await gtc3Done(h, {});
+  check(`${label}: task-1 completed with no nodeId activates pt-2`,
+    next.nodes["task-1"].status === "complete" && next.nodes["pt-2"].status === "active" && next.activeGoalId === "pt-2" &&
+    String(next.res?.result).includes("Next active: pt-2"), { res: next.res, nodes: next.nodes });
+}
+
+// A second child still blocked keeps the plan blocked. The absence is read
+// over the decisions this call wrote, with the unblocked decision in the case
+// above as the control that speaks.
+async function caseGtc3_aPlanWithAnotherBlockedChildStaysBlocked(clock) {
+  console.log("\n=== Goal tree curation 3: a plan with another blocked child stays blocked ===");
+  clock.set(T0);
+  const children = [
+    { id: "pt-1", parentId: "plan-p", kind: "task", status: "blocked", blockedReason: "Max rounds reached", title: "Blocked task", createdAt: T0 - 19000 },
+    { id: "pt-2", parentId: "plan-p", kind: "task", status: "pending", title: "Next task", createdAt: T0 - 18000 },
+    { id: "pt-3", parentId: "plan-p", kind: "task", status: "blocked", blockedReason: "Max rounds reached", title: "Still blocked", createdAt: T0 - 17000 },
+  ];
+  const h = await gtc3Harness("gtc3_still_blocked", gtc3BlockedPlanTree({ overrides: { "task-2": { status: "complete" } }, children }));
+  const label = "gtc3 still blocked";
+  gtc3CheckBlockedSeed(h, label, ["pt-1", "pt-3"]);
+  const out = await gtc3Done(h, { nodeId: "pt-1" });
+  const plan = getState(h).goals.find((g) => g.id === "plan-p");
+  check(`${label}: pt-1 is complete and pt-3 still blocked`, out.nodes["pt-1"].status === "complete" && out.nodes["pt-3"].status === "blocked", out.nodes);
+  check(`${label}: plan-p is still blocked with "${GTC3_CHILD_BLOCKED}"`, plan.status === "blocked" && plan.blockedReason === GTC3_CHILD_BLOCKED, plan);
+  check(`${label}: no unblocked or reason_cleared decision among those this call wrote`,
+    !out.actions.includes("unblocked") && !out.actions.includes("reason_cleared"), out.actions);
+  check(`${label}: task-1 is still active`, out.nodes["task-1"].status === "active" && out.activeGoalId === "task-1", out.nodes);
+}
+
+// A blocked child completed by name whose siblings are all complete: the
+// walk completes plan-p, and the stale reason on it is cleared with one
+// reason_cleared decision.
+async function caseGtc3_aPlanTheWalkCompletesLosesTheStaleReason(clock) {
+  console.log("\n=== Goal tree curation 3: a plan the walk completes loses the stale reason ===");
+  clock.set(T0);
+  const children = [
+    { id: "pt-1", parentId: "plan-p", kind: "task", status: "blocked", blockedReason: "Max rounds reached", title: "Blocked task", createdAt: T0 - 19000 },
+    { id: "pt-2", parentId: "plan-p", kind: "task", status: "complete", title: "Done task", createdAt: T0 - 18000 },
+  ];
+  const h = await gtc3Harness("gtc3_reason_cleared", gtc3BlockedPlanTree({ children }));
+  const label = "gtc3 reason cleared";
+  gtc3CheckBlockedSeed(h, label);
+  const out = await gtc3Done(h, { nodeId: "pt-1" });
+  const plan = getState(h).goals.find((g) => g.id === "plan-p");
+  check(`${label}: plan-p is complete with no blockedReason`, plan.status === "complete" && plan.blockedReason === undefined, plan);
+  const cleared = out.written.filter((d) => d.action === "reason_cleared");
+  check(`${label}: one reason_cleared decision naming plan-p, pt-1 and the cleared reason, and no unblocked decision`,
+    cleared.length === 1 && ["plan-p", "pt-1", GTC3_CHILD_BLOCKED].every((t) => cleared[0].detail.includes(t)) && !out.actions.includes("unblocked"), out.written);
+  check(`${label}: the root is untouched and task-1 still active`,
+    out.nodes["root-1"].status === "pending" && out.nodes["task-1"].status === "active" && out.activeGoalId === "task-1", out.nodes);
+}
+
+// With no entry active, the plan returns to pending and pt-2 is activated
+// in the same call.
+async function caseGtc3_noActiveEntryUnblocksThePlanAndActivatesTheSibling(clock) {
+  console.log("\n=== Goal tree curation 3: with no active entry, the plan unblocks and the sibling activates ===");
+  clock.set(T0);
+  const h = await gtc3Harness("gtc3_unblock_no_active",
+    gtc3BlockedPlanTree({ overrides: { "task-1": { status: "paused", blockedReason: "held" }, "task-2": { status: "complete" } } }));
+  const label = "gtc3 unblock with no active entry";
+  gtc3CheckBlockedSeed(h, label);
+  check(`${label} setup: no entry is active`, getState(h).activeGoalId === null && !getState(h).goals.some((g) => g.status === "active"));
+  const out = await gtc3Done(h, { nodeId: "pt-1" });
+  const plan = getState(h).goals.find((g) => g.id === "plan-p");
+  check(`${label}: plan-p is pending with no blockedReason`, plan.status === "pending" && plan.blockedReason === undefined, plan);
+  check(`${label}: one unblocked decision naming plan-p`,
+    out.written.filter((d) => d.action === "unblocked").length === 1 && out.written.find((d) => d.action === "unblocked").detail.includes("plan-p"), out.written);
+  check(`${label}: pt-2 is activated and named`,
+    out.nodes["pt-2"].status === "active" && out.activeGoalId === "pt-2" && String(out.res?.result).includes("Next active: pt-2"), { res: out.res, nodes: out.nodes });
+}
+
+// The walk goes up through each ancestor carrying the reason: plan-o holds
+// plan-p, both blocked with "Child task blocked". Both return to pending,
+// with one unblocked decision each, plan-p's first.
+async function caseGtc3_eachAncestorCarryingTheReasonIsUnblocked(clock) {
+  console.log("\n=== Goal tree curation 3: each ancestor carrying the reason is unblocked ===");
+  clock.set(T0);
+  const goals = gtc3BlockedPlanTree({
+    overrides: { "task-2": { status: "complete" }, "plan-p": { parentId: "plan-o" } },
+    extra: [{ id: "plan-o", parentId: "root-1", kind: "plan", status: "blocked", blockedReason: GTC3_CHILD_BLOCKED, title: "Outer plan", createdAt: T0 - 21000 }],
+  });
+  const h = await gtc3Harness("gtc3_unblock_nested", goals);
+  const label = "gtc3 unblock nested";
+  gtc3CheckBlockedSeed(h, label);
+  const outerBefore = getState(h).goals.find((g) => g.id === "plan-o");
+  check(`${label} setup: plan-o is blocked with "${GTC3_CHILD_BLOCKED}" and holds plan-p`,
+    outerBefore?.status === "blocked" && outerBefore?.blockedReason === GTC3_CHILD_BLOCKED &&
+    getState(h).goals.find((g) => g.id === "plan-p")?.parentId === "plan-o", outerBefore);
+  const out = await gtc3Done(h, { nodeId: "pt-1" });
+  const state = getState(h);
+  const [inner, outer] = ["plan-p", "plan-o"].map((id) => state.goals.find((g) => g.id === id));
+  check(`${label}: plan-p and plan-o are both pending with no blockedReason`,
+    [inner, outer].every((g) => g.status === "pending" && g.blockedReason === undefined), [inner, outer]);
+  const unblocked = out.written.filter((d) => d.action === "unblocked");
+  check(`${label}: two unblocked decisions, plan-p's then plan-o's`,
+    unblocked.length === 2 && unblocked[0].detail.startsWith("plan-p") && unblocked[1].detail.startsWith("plan-o"), out.written);
+  check(`${label}: task-1 is still active`, out.nodes["task-1"].status === "active" && out.activeGoalId === "task-1", out.nodes);
 }
 
 // The heartbeat file is the supervisor's liveness instrument, and the supervisor

@@ -1950,6 +1950,50 @@ const closeAskOnNode = async (dp: any, nodeId: string, closedBy: string): Promis
   return true;
 };
 
+// completeLeaf's walk marks a plan parent blocked with the reason "Child task
+// blocked" while a child is blocked, and leaves that status and reason in
+// place when goal_done later completes the blocked child by name. A parent
+// left blocked is never descended into by activateNext's DFS, so its pending
+// children are stranded. This walks up from the completed entry through each
+// non-root ancestor carrying that reason. A complete ancestor has the reason
+// cleared. A blocked ancestor with no child still blocked returns to pending.
+// A blocked ancestor with a child still blocked stays blocked and ends the
+// walk, as does any other state. Each ancestor changed gets one decision.
+// The walk is bounded by the node count, as isActivationEligible's is.
+const clearChildBlockedAncestors = (completedId: string): void => {
+  const goals = sess.state.goals;
+  let current = goals.find((g) => g.id === completedId);
+  let steps = goals.length;
+  while (current && current.parentId) {
+    if (steps-- <= 0) return;
+    const parent = goals.find((g) => g.id === current!.parentId);
+    if (!parent || parent.parentId === null || parent.blockedReason !== "Child task blocked") return;
+    const cause = `goal_done's completion of ${completedId} cleared "Child task blocked"`;
+    if (parent.status === "complete") {
+      parent.blockedReason = undefined;
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "goal",
+        action: "reason_cleared",
+        detail: `${parent.id}: ${cause}`,
+      });
+    } else if (parent.status === "blocked" && !goals.some((g) => g.parentId === parent.id && g.status === "blocked")) {
+      parent.status = "pending";
+      parent.blockedReason = undefined;
+      parent.updatedAt = Date.now();
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "goal",
+        action: "unblocked",
+        detail: `${parent.id}: returned to pending, ${cause}`,
+      });
+    } else {
+      return;
+    }
+    current = parent;
+  }
+};
+
 // Section 2 (plan-health-from-the-record): a plan entry is an entry that has
 // a plan by resolvePlanPath's ancestor rule, whatever its kind, so a task a
 // worker adds under its plan node is one too. A plan entry is judged from its
@@ -7024,6 +7068,7 @@ export const register: Register = async (on, options) => {
       const statusBefore = new Map(sess.state.goals.map((g) => [g.id, g.status]));
       completeLeaf(sess.state, completedId, note || "goal_done");
       if (byNameId) {
+        clearChildBlockedAncestors(completedId);
         target.blockedReason = undefined;
         target.pausedByNudgeCap = false;
         target.lead = null;
