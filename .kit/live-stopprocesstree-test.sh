@@ -627,7 +627,8 @@ end_stub
 # input-closed line to its cap line, on the log's one clock, so neither
 # end is the wait's own arithmetic: a reference clock moved ahead of the
 # close ends the wait early against that stamp and reds the lower bound,
-# and a cap a poll late reds the upper. The cap is four times the grace,
+# and a cap later than one poll plus the reader's own run reds the upper.
+# The cap is four times the grace,
 # so a wait ended at the grace reds the lower bound too. The
 # sleeper started after the entry snapshot, so it is dead afterwards only if
 # the snapshot was rebuilt after the wait.

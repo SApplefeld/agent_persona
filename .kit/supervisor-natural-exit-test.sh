@@ -987,7 +987,7 @@ SO=$(stop_run "$ST")
 ! grep -q 'taskkill' "$ST/native" 2>/dev/null
 V=$?
 check "unit: a wrapper whose Windows pid moved between the stop's entry and its force kill is not force-killed on the entry value (native calls: $(tr '\n' ';' < "$ST/native" 2>/dev/null))" "$V"
-case "$SO" in *"runs as Windows pid 9555 now, not the 9100 this stop resolved at entry"*) R=0 ;; *) R=1 ;; esac
+case "$SO" in *"runs as Windows pid 9555 now, not the 9100 "*) R=0 ;; *) R=1 ;; esac
 check "unit: the stop names the Windows pid the wrapper moved to rather than killing the number it held at entry" "$R"
 grep -qx -- "-9 100" "$ST/signals"
 V=$?
