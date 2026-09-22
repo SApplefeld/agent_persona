@@ -2127,12 +2127,12 @@ stop_child() {
         fi
         waited_ms=$(( $(date +%s%3N) - eof_closed_ms ))
         if [ "$waited_ms" -ge "$SUPERVISOR_STOP_BUSY_CAP_MS" ]; then
-          log "STOP[$label]: the busy cap of ${SUPERVISOR_STOP_BUSY_CAP_MS}ms was reached after ${waited_ms}ms, sending TERM"
+          log "STOP[$label]: the busy cap of ${SUPERVISOR_STOP_BUSY_CAP_MS}ms was reached after ${waited_ms}ms, ending the wait"
           break
         fi
         turn=$(child_turn_state "${OUT:-}")
         if [ "$turn" = "idle" ]; then
-          log "STOP[$label]: the reader returned idle after $((waited_ms / 1000))s, sending TERM"
+          log "STOP[$label]: the reader returned idle after $((waited_ms / 1000))s, ending the wait"
           break
         fi
       done
@@ -2144,14 +2144,24 @@ stop_child() {
       # last point before the TERM. A wait the child's own exit ended keeps
       # the entry snapshot, as the ordinary EOF exit does, since a walk after
       # an exit reads recycled pids.
+      # The rebuilt list is the union of the entry list and the new walk,
+      # since a descendant alive at entry whose parent exited during the
+      # wait is unreachable from the wrapper's parent chain and would drop
+      # out of a fresh walk alone. Every entry is ticks-matched, so a pid the
+      # entry list named that has since exited and been reused confirms as
+      # gone rather than as a survivor. The wrapper's own Windows pid is
+      # resolved again beside the rebuild, so the KILL phase compares against
+      # the pid the rebuilt list was walked from.
       if kill -0 "$pid" 2>/dev/null; then
         refresh_child_tree
         build_stop_snapshot "$label"
         snap_rc=$?
-        snapshot="$STOP_SNAPSHOT_BUILT"
         if [ "$snap_rc" -ne 0 ]; then
+          snapshot="$STOP_SNAPSHOT_BUILT"
           log "STOP[$label]: tree not verified after the patient wait (the walk did not complete, rc=$snap_rc) - stop relies on the coproc's own pid alone"
         else
+          snapshot=$(printf '%s\n%s\n' "$snapshot" "$STOP_SNAPSHOT_BUILT" | grep -v '^$' | sort -u)
+          snapshot_winpid=$(resolve_windows_pid "$pid")
           log "STOP[$label]: the tree snapshot was rebuilt after the wait, before any signal"
         fi
         LAST_STOP_SNAPSHOT="$snapshot"
@@ -2208,7 +2218,8 @@ stop_child() {
   # Routed through `run_bounded_native`, like every other native command
   # this script spawns, rather than left as a native spawn with nothing
   # capping how long it can run.
-  # `$snapshot_winpid` was resolved at stop entry, two grace windows back. The
+  # `$snapshot_winpid` was resolved two grace windows back, at stop entry or
+  # at the patient wait's rebuild, whichever came last. The
   # guard above proves the wrapper lives; it does not prove the wrapper still
   # runs as that Windows pid, and Windows hands a dead process's id out again,
   # so a force kill on the entry value can land on an unrelated process. The

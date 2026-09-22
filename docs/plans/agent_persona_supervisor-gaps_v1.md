@@ -130,7 +130,7 @@ Acceptance criteria.
 - The same stub that never exits: TERM is sent at the cap and not before, and the existing phases follow.
 - A `restart_passive` stop of a stub whose stream reads `idle`: TERM after the ordinary grace, as today.
 - A `stop_complete` stop and a `restart` stop of the busy stub: TERM after the ordinary grace, as today.
-- A busy stub whose stream gains a text-only record during the wait and then goes quiet, and which never exits: TERM is sent within one poll of the reader first returning `idle`, well before the cap.
+- A busy stub whose stream gains a text-only record during the wait and then goes quiet, and which never exits: TERM is sent within one poll of the reader first returning `idle`, well before the cap. Amended at execution: the wait ends within one poll of the reader first returning `idle`, and TERM follows the snapshot rebuild the Approach names, inside the suite's rebuild allowance.
 - `supervisorStopBusyCapMs` set to `500` is refused at startup, as `supervisorStopGraceMs` is.
 - The suites set `supervisorStopGraceMs` to 2000. The first case sets `supervisorStopBusyCapMs` above the stub's exit delay. The second case sets the cap to at least three times the grace, and the fifth sets it above the five minute idle age or back-dates the stub record's `timestamp` field past that age, per the `Standing Brief Amendments` block, so a TERM at the ordinary grace reds both. The remaining cases set it near the minimum. No case waits eleven minutes.
 
