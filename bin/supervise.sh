@@ -1762,6 +1762,7 @@ build_stop_snapshot() {
   local label="$1"
   local pid="${CHILD_LAUNCH_PID:-}"
   STOP_SNAPSHOT_BUILT=""
+  STOP_SNAPSHOT_WRAPPER_WINPID=""
   local record_state
   record_state=$(child_tree_record_state)
   if [ "$record_state" != "whole" ]; then
@@ -1772,6 +1773,9 @@ build_stop_snapshot() {
   if [ -n "$pid" ]; then
     wrapper_winpid=$(resolve_windows_pid "$pid")
   fi
+  # The wrapper's Windows pid this build walked from, for a caller that
+  # compares a later resolve against the pid its list was walked from.
+  STOP_SNAPSHOT_WRAPPER_WINPID="$wrapper_winpid"
   if [ -n "$wrapper_winpid" ]; then
     walk_pairs="$pid:$wrapper_winpid"
   fi
@@ -1910,22 +1914,6 @@ retry_stop_escalation() {
   return 1
 }
 
-# Usage: stop_child <label>
-# Sets STOP_PATH to one of nine values: "eof", "term", or "kill" when the
-# tree is confirmed dead at that phase, "eof_kill_failed",
-# "term_kill_failed", "kill_failed" when a survivor from the snapshot was
-# alive or unverifiable after that phase's own escalation, "unverified" when
-# nothing was confirmed either way: the snapshot could never be built in the
-# first place, because a walk did not complete, the tree record is not whole,
-# or the snapshot could not be cleared of this supervisor's own pid, or the
-# wrapper reached the force kill running as a Windows pid the snapshot was
-# never walked from -
-# "gone" when the wrapper had already
-# exited and the tree recorded while the child ran leaves nothing alive, or
-# "gone_kill_failed" when that record holds a process that is alive or that no
-# reading could account for.
-# Returns 1 in every failed case; callers should read that
-# return rather than trusting STOP_PATH's clean-looking values by name alone.
 # Whether the child is inside a turn, read off the tail of its own
 # stdout.jsonl by bin/supervise-turnstate.mjs. Prints busy or idle. Every
 # fault reads idle: an empty path (a caller with no stream to name), a reader
@@ -1949,6 +1937,22 @@ child_turn_state() {
   esac
 }
 
+# Usage: stop_child <label>
+# Sets STOP_PATH to one of nine values: "eof", "term", or "kill" when the
+# tree is confirmed dead at that phase, "eof_kill_failed",
+# "term_kill_failed", "kill_failed" when a survivor from the snapshot was
+# alive or unverifiable after that phase's own escalation, "unverified" when
+# nothing was confirmed either way: the snapshot could never be built in the
+# first place, because a walk did not complete, the tree record is not whole,
+# or the snapshot could not be cleared of this supervisor's own pid, or the
+# wrapper reached the force kill running as a Windows pid the snapshot was
+# never walked from -
+# "gone" when the wrapper had already
+# exited and the tree recorded while the child ran leaves nothing alive, or
+# "gone_kill_failed" when that record holds a process that is alive or that no
+# reading could account for.
+# Returns 1 in every failed case; callers should read that
+# return rather than trusting STOP_PATH's clean-looking values by name alone.
 stop_child() {
   local label="$1"
   STOP_TREE_MOVED=""
@@ -2057,6 +2061,21 @@ stop_child() {
   # would be the exact report a slow-spawn regime (the bound this whole
   # function exists for) produces on a tree that was never actually
   # looked at.
+  # Usage: kill_stale_entry_list - the one unverified case that still holds
+  # a verified list: the patient wait's rebuild failed and `snapshot` is the
+  # entry list. That list is killed, ticks-matched, so nothing it names
+  # outlives the stop, while the verdict stays unverified because nothing
+  # the child started during the wait is on it. Every other unverified case
+  # holds an empty list and this does nothing.
+  kill_stale_entry_list() {
+    if [ -n "$snapshot" ]; then
+      if kill_process_snapshot "$snapshot"; then
+        log "STOP[$label]: every process the entry list names is confirmed dead; what the child started during the wait is unaccounted for"
+      else
+        log "STOP[$label]: a process the entry list names is alive or unverifiable after the kill"
+      fi
+    fi
+  }
   verify_snapshot_dead() {
     if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
       log "STOP[$label]: no snapshot was ever resolved for this stop (resolve or walk failed) - not confirming dead on an unverified read"
@@ -2122,17 +2141,17 @@ stop_child() {
           sleep "$((left_ms / 1000)).$(printf '%03d' $((left_ms % 1000)))"
         fi
         if ! kill -0 "$pid" 2>/dev/null; then
-          log "STOP[$label]: the child exited during the patient wait"
+          log "STOP[$label]: the child exited during the patient wait (wait_ended=exit)"
           break
         fi
         waited_ms=$(( $(date +%s%3N) - eof_closed_ms ))
         if [ "$waited_ms" -ge "$SUPERVISOR_STOP_BUSY_CAP_MS" ]; then
-          log "STOP[$label]: the busy cap of ${SUPERVISOR_STOP_BUSY_CAP_MS}ms was reached after ${waited_ms}ms, ending the wait"
+          log "STOP[$label]: the busy cap of ${SUPERVISOR_STOP_BUSY_CAP_MS}ms was reached after ${waited_ms}ms, ending the wait (wait_ended=cap)"
           break
         fi
         turn=$(child_turn_state "${OUT:-}")
         if [ "$turn" = "idle" ]; then
-          log "STOP[$label]: the reader returned idle after $((waited_ms / 1000))s, ending the wait"
+          log "STOP[$label]: the reader returned idle after $((waited_ms / 1000))s, ending the wait (wait_ended=idle)"
           break
         fi
       done
@@ -2149,22 +2168,27 @@ stop_child() {
       # wait is unreachable from the wrapper's parent chain and would drop
       # out of a fresh walk alone. Every entry is ticks-matched, so a pid the
       # entry list named that has since exited and been reused confirms as
-      # gone rather than as a survivor. The wrapper's own Windows pid is
-      # resolved again beside the rebuild, so the KILL phase compares against
-      # the pid the rebuilt list was walked from.
+      # gone rather than as a survivor. The wrapper's Windows pid becomes the
+      # one the rebuild walked from, so the KILL phase compares against the
+      # pid the rebuilt list was walked from.
       if kill -0 "$pid" 2>/dev/null; then
         refresh_child_tree
         build_stop_snapshot "$label"
         snap_rc=$?
         if [ "$snap_rc" -ne 0 ]; then
-          snapshot="$STOP_SNAPSHOT_BUILT"
-          log "STOP[$label]: tree not verified after the patient wait (the walk did not complete, rc=$snap_rc) - stop relies on the coproc's own pid alone"
+          # The entry list stays in `snapshot`, so the phases below still
+          # run the ticks-matched kill over what it names, but nothing the
+          # child started during the wait is on it, so the stop reports
+          # unverified and leaves no list for the retry, which then takes
+          # its own re-snapshot.
+          LAST_STOP_SNAPSHOT=""
+          log "STOP[$label]: tree not verified after the patient wait (the walk did not complete, rc=$snap_rc) - the entry list is still killed, ticks-matched, and the stop reports unverified"
         else
           snapshot=$(printf '%s\n%s\n' "$snapshot" "$STOP_SNAPSHOT_BUILT" | grep -v '^$' | sort -u)
-          snapshot_winpid=$(resolve_windows_pid "$pid")
+          snapshot_winpid="$STOP_SNAPSHOT_WRAPPER_WINPID"
           log "STOP[$label]: the tree snapshot was rebuilt after the wait, before any signal"
+          LAST_STOP_SNAPSHOT="$snapshot"
         fi
-        LAST_STOP_SNAPSHOT="$snapshot"
       fi
     fi
   fi
@@ -2175,6 +2199,7 @@ stop_child() {
       return 0
     fi
     if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
+      kill_stale_entry_list
       STOP_PATH="unverified"
     else
       log "STOP[$label]: a snapshot survivor could not be killed after the EOF path"
@@ -2197,6 +2222,7 @@ stop_child() {
       return 0
     fi
     if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
+      kill_stale_entry_list
       STOP_PATH="unverified"
     else
       log "STOP[$label]: a snapshot survivor could not be killed after the TERM path"
@@ -2205,8 +2231,8 @@ stop_child() {
     return 1
   fi
   # Phase 3: KILL - send SIGKILL to the wrapper, then force-kill the whole
-  # snapshot taken at entry (not a fresh walk from a possibly-dead or
-  # -recycled pid).
+  # snapshot this stop holds, taken at entry or rebuilt after the patient
+  # wait (not a fresh walk from a possibly-dead or -recycled pid).
   log "STOP[$label]: TERM grace expired, sending KILL to pid $pid (winpid $snapshot_winpid) and its process tree"
   # A bare `kill -9` on the wrapper's own MSYS pid is the same class of
   # call that can block on this box with a "Permission denied" - whether
@@ -2258,7 +2284,7 @@ stop_child() {
     # refusal for `retry_stop_escalation`, which fails on it rather than
     # rebuilding a snapshot from the same record and reporting that partial
     # tree dead as a clean stop.
-    log "STOP[$label]: wrapper pid $pid runs as Windows pid $kill_winpid now, not the $snapshot_winpid this stop resolved at entry - not force-killing that number, signaling the wrapper's own pid instead"
+    log "STOP[$label]: wrapper pid $pid runs as Windows pid $kill_winpid now, not the $snapshot_winpid this stop resolved before signaling - not force-killing that number, signaling the wrapper's own pid instead"
     kill -9 "$pid" 2>/dev/null
     if kill -0 "$pid" 2>/dev/null; then
       log "STOP[$label]: wrapper pid $pid is still present after the kill -9, so a caller's wait on it can block until it ends on its own"
@@ -2293,6 +2319,7 @@ stop_child() {
   # STOP_PATH="kill", a clean report, on a tree that was never resolved
   # at all. Checked explicitly before trusting that return.
   if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
+    kill_stale_entry_list
     log "STOP[$label]: no snapshot was ever resolved for this stop (resolve or walk failed) - not confirming dead on an unverified read"
     STOP_PATH="unverified"
     return 1

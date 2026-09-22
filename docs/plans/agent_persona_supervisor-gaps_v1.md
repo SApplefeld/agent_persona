@@ -134,7 +134,7 @@ Acceptance criteria.
 - `supervisorStopBusyCapMs` set to `500` is refused at startup, as `supervisorStopGraceMs` is.
 - The suites set `supervisorStopGraceMs` to 2000. The first case sets `supervisorStopBusyCapMs` above the stub's exit delay. The second case sets the cap to at least three times the grace, and the fifth sets it above the five minute idle age or back-dates the stub record's `timestamp` field past that age, per the `Standing Brief Amendments` block, so a TERM at the ordinary grace reds both. The remaining cases set it near the minimum. No case waits eleven minutes.
 
-Files in scope: `bin/supervise.sh`, `.kit/live-stopprocesstree-test.sh`, `.kit/supervisor-fn-extract.sh`, `.kit/supervisor-model-test.sh`.
+Files in scope: `bin/supervise.sh`, `.kit/live-stopprocesstree-test.sh`, `.kit/supervisor-fn-extract.sh`, `.kit/supervisor-model-test.sh`, `bin/supervise-turnstate.mjs` (folded at execution: its clock comment said the supervisor passes seconds, and this section's call passes milliseconds).
 Tests: the label guard is pinned in both directions, since a patient hung restart would hold a frozen persona eleven minutes longer. `.kit/live-stopprocesstree-test.sh` holds the box, so it runs alone.
 
 ### 3. The restart request

@@ -613,7 +613,7 @@ if [ "$STOP_PATH" = "eof" ] && [ "$P1_RC" -eq 0 ]; then
 else
   failed "patient stop: expected STOP_PATH=eof rc=0 after the stub exited on EOF, got STOP_PATH=$STOP_PATH rc=$P1_RC"
 fi
-if grep -q "the child is inside a turn, waiting for it to end" "$P1_LOG" && grep -q "the child exited during the patient wait" "$P1_LOG"; then
+if grep -q "the child is inside a turn, waiting for it to end" "$P1_LOG" && grep -q "wait_ended=exit" "$P1_LOG"; then
   pass "patient stop: the wait logged its entry and its exit by the child's own exit"
 else
   failed "patient stop: the entry or exit line of the wait is missing: $(tr '\n' '|' < "$P1_LOG")"
@@ -623,11 +623,12 @@ end_stub
 # --- Case: restart_passive, busy stream, the stub never exits ---
 # The wait runs to the cap. No TERM line may precede the cap line, and the
 # cap line has to land at or past the cap, with the Phase 2 TERM following it
-# inside the rebuild allowance. Both bounds count from the moment the stub
-# saw its input close, which is no earlier than the close stop_child measures
-# from and lands one spawn later. The lower bound carries one second of slack
-# for that spawn, so a cap met on time never reads as early, while the cap is
-# four times the grace, so a wait ended at the grace still reds it. The
+# inside the rebuild allowance. The lower bound is the wait's own figure on
+# the cap line, the milliseconds stop_child counted from its close, so a cap
+# met on time never reads as early. The upper bound counts from the moment
+# the stub saw its input close, which is no earlier than that close, so a
+# late cap never reads as on time. The cap is four times the grace, so a
+# wait ended at the grace reds the lower bound. The
 # sleeper started after the entry snapshot, so it is dead afterwards only if
 # the snapshot was rebuilt after the wait.
 OUT="$PATIENT_DIR/busy-never-exits.jsonl"
@@ -640,16 +641,17 @@ P2_LOG="$PATIENT_DIR/busy-never-exits.log"
 stop_child "restart_passive" > "$P2_LOG" 2>&1
 P2_RC=$?
 P2_EOF=$(cat "$PATIENT_DIR/busy-never-exits.eof" 2>/dev/null)
-P2_CAP=$(stamp_of "$P2_LOG" "the busy cap of ${SUPERVISOR_STOP_BUSY_CAP_MS}ms was reached")
+P2_CAP=$(stamp_of "$P2_LOG" "wait_ended=cap")
+P2_WAITED=$(grep -m1 "wait_ended=cap" "$P2_LOG" | sed -n 's/.*after \([0-9]*\)ms.*/\1/p')
 P2_TERM=$(stamp_of "$P2_LOG" "EOF grace expired, sending TERM")
-if [ -z "$P2_EOF" ] || [ -z "$P2_CAP" ] || [ -z "$P2_TERM" ]; then
-  failed "patient stop: cap case could not read the EOF moment ($P2_EOF), the cap line ($P2_CAP) or the TERM line ($P2_TERM): $(tr '\n' '|' < "$P2_LOG")"
+if [ -z "$P2_EOF" ] || [ -z "$P2_CAP" ] || [ -z "$P2_WAITED" ] || [ -z "$P2_TERM" ]; then
+  failed "patient stop: cap case could not read the EOF moment ($P2_EOF), the cap line ($P2_CAP, waited $P2_WAITED) or the TERM line ($P2_TERM): $(tr '\n' '|' < "$P2_LOG")"
 else
   P2_AFTER=$((P2_CAP - P2_EOF))
-  if [ "$P2_AFTER" -ge $((SUPERVISOR_STOP_BUSY_CAP_MS - 1000)) ] && [ "$P2_AFTER" -le $((SUPERVISOR_STOP_BUSY_CAP_MS + 7000)) ]; then
-    pass "patient stop: a busy stub that never exits reaches the cap ${P2_AFTER}ms after its input closed, at the ${SUPERVISOR_STOP_BUSY_CAP_MS}ms cap and not before"
+  if [ "$P2_WAITED" -ge "$SUPERVISOR_STOP_BUSY_CAP_MS" ] && [ "$P2_AFTER" -le $((SUPERVISOR_STOP_BUSY_CAP_MS + 7000)) ]; then
+    pass "patient stop: a busy stub that never exits reaches the cap after ${P2_WAITED}ms by the stop's own count, ${P2_AFTER}ms after the stub saw its input close, at the ${SUPERVISOR_STOP_BUSY_CAP_MS}ms cap and not before"
   else
-    failed "patient stop: the cap was reached ${P2_AFTER}ms after the input closed, against a ${SUPERVISOR_STOP_BUSY_CAP_MS}ms cap (expected at the cap, within one poll)"
+    failed "patient stop: the cap was reached after ${P2_WAITED}ms by the stop's own count and ${P2_AFTER}ms after the input closed, against a ${SUPERVISOR_STOP_BUSY_CAP_MS}ms cap (expected at the cap, within one poll)"
   fi
   # The TERM follows the cap line by the snapshot rebuild; a TERM later than
   # the allowance means the rebuild hung.
@@ -699,6 +701,35 @@ elif [ -n "$P3_EOF" ] && [ -n "$P3_TERM" ] && [ $((P3_TERM - P3_EOF)) -lt $((SUP
   pass "patient stop: restart_passive on an idle stream sends TERM $((P3_TERM - P3_EOF))ms after the input closed, on the ordinary grace, with no wait begun"
 else
   failed "patient stop: restart_passive on an idle stream did not TERM on the ordinary grace (eof=$P3_EOF term=$P3_TERM): $(tr '\n' '|' < "$P3_LOG")"
+fi
+end_stub
+
+# --- Case: restart_passive, the reader cannot run ---
+# The section's fault rule: a reader call that fails reads idle, so a stop
+# whose reader is missing runs the ordinary grace with no wait begun, and the
+# broken direction (a fault read as busy) would hold the persona for the cap.
+# PLUGIN_DIR is pointed at a directory with no bin/supervise-turnstate.mjs
+# for this case alone, so node exits non-zero and prints no verdict.
+OUT="$PATIENT_DIR/reader-fails.jsonl"
+printf '%s\n%s\n' "$USER_TOOL_RESULT" "$ASSISTANT_TOOL_USE" > "$OUT"
+SUPERVISOR_STOP_GRACE_MS=2000
+SUPERVISOR_STOP_BUSY_CAP_MS=60000
+STOP_PATH=""
+PLUGIN_DIR_REAL="$PLUGIN_DIR"
+PLUGIN_DIR="$PATIENT_DIR/no-plugin"
+mkdir -p "$PLUGIN_DIR"
+start_stub reader-fails 180
+P6_LOG="$PATIENT_DIR/reader-fails.log"
+stop_child "restart_passive" > "$P6_LOG" 2>&1
+PLUGIN_DIR="$PLUGIN_DIR_REAL"
+P6_EOF=$(cat "$PATIENT_DIR/reader-fails.eof" 2>/dev/null)
+P6_TERM=$(stamp_of "$P6_LOG" "EOF grace expired, sending TERM")
+if grep -q "inside a turn" "$P6_LOG"; then
+  failed "patient stop: a reader that cannot run was read as busy and began the wait: $(grep 'inside a turn' "$P6_LOG")"
+elif [ -n "$P6_EOF" ] && [ -n "$P6_TERM" ] && [ $((P6_TERM - P6_EOF)) -lt $((SUPERVISOR_STOP_GRACE_MS + 5000)) ]; then
+  pass "patient stop: a reader that cannot run reads idle, so restart_passive sends TERM $((P6_TERM - P6_EOF))ms after the input closed, on the ordinary grace, with no wait begun"
+else
+  failed "patient stop: a reader that cannot run did not fall through to the ordinary grace (eof=$P6_EOF term=$P6_TERM): $(tr '\n' '|' < "$P6_LOG")"
 fi
 end_stub
 
@@ -760,7 +791,7 @@ P5_APPENDER=$!
 stop_child "restart_passive" > "$P5_LOG" 2>&1
 wait "$P5_APPENDER" 2>/dev/null
 P5_AT=$(cat "$P5_APPENDED" 2>/dev/null)
-P5_IDLE=$(stamp_of "$P5_LOG" "the reader returned idle after")
+P5_IDLE=$(stamp_of "$P5_LOG" "wait_ended=idle")
 P5_TERM=$(stamp_of "$P5_LOG" "EOF grace expired, sending TERM")
 if [ -z "$P5_AT" ] || [ -z "$P5_IDLE" ] || [ -z "$P5_TERM" ]; then
   failed "patient stop: turn-end case could not read the append moment ($P5_AT), the idle line ($P5_IDLE) or the TERM line ($P5_TERM): $(tr '\n' '|' < "$P5_LOG")"

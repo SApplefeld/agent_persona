@@ -299,9 +299,10 @@ function turnstate(streamPath, now) {
 }
 
 // The smallest magnitude an epoch-millisecond "now" can plausibly carry
-// (roughly the year 2001). bin/supervise.sh reads its clock with `date +%s`
-// at every call site, which is seconds, three orders of magnitude below any
-// real epoch-ms value; a value below this threshold is read as such a
+// (roughly the year 2001). bin/supervise.sh passes `date +%s%3N` at its one
+// call, but every other clock read in that script is `date +%s`, seconds,
+// three orders of magnitude below any real epoch-ms value, and a caller
+// reaching for that habit passes seconds; a value below this threshold is read as such a
 // mis-scaled clock rather than trusted, and Date.now() is used instead. A
 // seconds-valued clock taken at face value as milliseconds lands decades
 // behind the record it is compared against, which reads as a hugely
