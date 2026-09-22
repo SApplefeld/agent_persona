@@ -478,3 +478,19 @@ Push route. A bare `git push` hangs on this machine in Git Credential Manager. T
 Next action: adjudicate round 1 and the Section 1 round when they return, then take the fix round or close Section 2. Sections 3 through 5 are unstarted.
 
 Commit Model: Branch-and-PR
+
+### Interim board 7 - 2026-09-21
+
+In-flight sections: Section 2 only, at its fifth review round. No section has closed since Chapter 1, so this entry carries no `Completed:` line.
+
+Section 2 stage: four review rounds adjudicated, four fix rounds taken and committed. Round 1 ran the full roster at `fable` (adversarial, blind, security, performance) and the Section 1 owed round beside it; that owed round found the clock-guard tests non-discriminating, the finding was held as new-requirement, and the scope adjudicator ruled accept-and-declare, which the second `Standing Brief Amendments` bullet records. Rounds 2 to 4 each ran one adversarial lens at `opus`, effort `high`, through `Workflow`. Fix commits: `8a7ba06` (rebuild the snapshot after the wait), `830871c` (union the rebuilt list with the entry list, bound the cap from the stub close), `f144d73` (kill the entry list when the rebuild fails, token pins, stamp the wait end), `f1ae69e` (kill the entry list on the moved-wrapper arm too, a live case for the failed rebuild, bound the cap from the stop's own input-closed stamp). Round 4 returned three Majors, one spec-traceable on the KILL phase arm, one spec-traceable test absence, one fix-introduced on the cap bound, and four Minors, all fixed in fix round 4 with the close-pass items folded in so round 5 reads them. Provenance so far: 9 correctness Criticals and Majors survived adjudication, 7 spec-traceable, 1 fix-introduced, 1 new-requirement; rulings 0 refused, 1 declared, 0 asked. Advisory: 3 findings, 1 fixed as covered by a correctness finding, 0 deferred, 2 refused. The per-round records sit in `.kit/scratch/supervisor-gaps/` (minors, add-decisions and advisory lists for section 2, captures under `section-2/`).
+
+Gate baseline: `.kit/live-stopprocesstree-test.sh` at `f1ae69e`, run alone on 2026-09-21 on SCOTT-CLAUDE with no foreign dirty files: 38 checks, 0 failed, exit 0 read from the run's own marker. The two pins fix round 4 added were watched red first in a scratch copy of the tree carrying two mutants: 38 checks, 2 failed, exit 1. The turnstate unit suite at the same tree: 43 passed, exit 0. `.kit/supervisor-model-test.sh` was last run at `f144d73`: 28 OK, exit 0. Rebuild legs measured this run: 7708 ms after the cap and 7104 ms after idle, up from about 6.2 s in the round 2 and round 3 runs, on a box carrying six live supervisors.
+
+Rulings adopted since the last boundary: the Section 1 accept-and-declare above; performance Majors 2 (a goal-complete relaunch is patient too) and 3 (a shutdown request landing during the wait is read when the wait ends, bounded by the cap) refused on the Approach's closed exit set, both to be stated in Chapter 2.
+
+Live dispatch: review round 5 over `f144d73..f1ae69e`, one adversarial lens at `opus`, effort `high`, `Workflow` run `wf_5b89234b-7cf`, task `wj86tmch4`. Round 5 is the review-round backstop: an adjudication that still leaves the terminal condition unmet declares `BLOCKED` rather than opening a sixth round, unless the owed fix is prose-only or otherwise owes no round.
+
+Next action: adjudicate round 5, then either the backstop declaration or the close gate (both suites, each alone), Chapter 2, commit and push, one relay message to the operator. Sections 3 through 5 are unstarted.
+
+Commit Model: Branch-and-PR
