@@ -5371,7 +5371,10 @@ export const register: Register = async (on, options) => {
               // fork line also names the architect, which the worker leg of
               // the reach rule lets such a session reach; a default-persona
               // session has no such leg, so the line is withheld from it.
-              const architectLine = architectPersona !== "" && sess.persona !== "default" && sess.persona !== architectPersona
+              // The architect and the coordinator take no such line either,
+              // matching the seats the supervisor's steer text withholds the
+              // worker's architect sentences from.
+              const architectLine = architectPersona !== "" && sess.persona !== "default" && sess.persona !== architectPersona && sess.persona !== coordinatorPersona
                 ? `A design question the plan doesn't cover (a spec gap, an approach fork, a plan review or a consult) can go to the architect instead: send it with agentic_say, persona set to ${architectPersona}.\n`
                 : "";
               const nudgeText = idleGapConverted

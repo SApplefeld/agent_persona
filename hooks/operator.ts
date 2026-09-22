@@ -646,12 +646,15 @@ export interface ArchitectLine {
  * The ground names the strongest standing the writer holds, in this order:
  * `COORDINATOR` when the writer owns the coordinator persona;
  * `READER:<target>` when the writer holds a reader claim on the target;
- * on the worker leg, `READER:<persona>` naming the alphabetically first
- * persona the writer reads where it reads any, and otherwise
- * `WORKER:<persona>` naming the alphabetically first named persona it
- * owns; and `WORKER:<architect persona>` on the answer leg, whatever else
- * the writer reads. A reader claim on another persona is not a reach leg by
- * itself. The gate and the label are one rule over one claims array, so a
+ * on the worker leg to the coordinator, `READER:<persona>` naming the
+ * alphabetically first persona the writer reads where it reads any, and
+ * otherwise `WORKER:<persona>` naming the alphabetically first named
+ * persona it owns; on the worker leg to the architect, that
+ * `WORKER:<persona>` whatever else the writer reads, since the architect
+ * works a WORKER record as its own and reads a READER record as
+ * information; and `WORKER:<architect persona>` on the answer leg, whatever
+ * else the writer reads. A reader claim on another persona is not a reach
+ * leg by itself. The gate and the label are one rule over one claims array, so a
  * record that is delivered is a record that is labelled.
  *
  * The persona a READER or WORKER ground would name is store data any
@@ -699,7 +702,7 @@ export function deliveryGroundIn(
   if (readsTarget) {
     kind = "READER";
     persona = target;
-  } else if (workerLeg && readerPersonas.length > 0) {
+  } else if (workerLeg && readerPersonas.length > 0 && target !== architect.persona) {
     kind = "READER";
     persona = readerPersonas[0];
   } else if (workerLeg) {

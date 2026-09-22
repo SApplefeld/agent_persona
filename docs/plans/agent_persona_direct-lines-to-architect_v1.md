@@ -113,7 +113,7 @@ Acceptance (draft):
 - `.kit/channel-reply-instruction-test.sh`'s charter pins pass, edited only where they pin the sentences this section changes (`ARCH_OTHER_PATH_CONTROL`, and the relay controls only if their wording moves).
 - The Chapter records each changed ledger entry's character delta against the committed baseline in `.kit/injection-ledger.json`. The refreshed ledger is the record of that growth, not the gate, since the size test compares live text to whatever baseline is committed.
 
-Files in scope: `bin/supervise.sh` (the three charters), `hooks/index.ts` (the nudge text), `.kit/channel-reply-instruction-test.sh`, `.kit/controller-tick-test.mjs` where it pins the nudge, `.kit/injection-ledger.mjs` (the assignment count), `.kit/injection-ledger.json`, `README.md`, `docs/architecture.md`.
+Files in scope: `bin/supervise.sh` (the three charters), `hooks/index.ts` (the nudge text), `hooks/operator.ts` (the worker-leg label to the architect, folded at review round 1), `.kit/channel-reply-instruction-test.sh`, `.kit/controller-tick-test.mjs` where it pins the nudge, `.kit/injection-ledger.mjs` (the assignment count), `.kit/injection-ledger.json`, `README.md`, `docs/architecture.md`.
 
 ## Out of Scope
 

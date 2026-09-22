@@ -3224,6 +3224,7 @@ async function main() {
     await caseDirectLines_namedOwnerReachesTheArchitect(clock);
     await caseDirectLines_unusableArchitectSettingReadsAsUnset(clock);
     await caseDirectLines_workerRecordIsDeliveredToTheArchitect(clock);
+    await caseDirectLines_workerLabelToTheArchitectHoldsOverReaderClaimsElsewhere(clock);
     await caseDirectLines_architectAnswersAWorkerWithAnOpenRecord(clock);
     await caseDirectLines_architectAnswerIsDeliveredToTheWorker(clock);
     await caseDirectLines_idleNudgeNamesTheArchitectLine(clock);
@@ -6125,6 +6126,45 @@ async function caseDirectLines_workerRecordIsDeliveredToTheArchitect(clock) {
   check("direct lines worker delivery control: the skip detail names no architect", skip !== undefined && !skip.detail.includes("'architect' persona claim answering"), skip);
 }
 
+// A worker that also reads another persona still reaches the architect
+// labelled WORKER:<its own persona>, since the architect works a WORKER record
+// as its own and reads a READER record as information. Controls: the same
+// writer's record to the coordinator keeps the READER:<first persona read>
+// label, and a writer reading the architect persona itself is labelled
+// READER:architect. The answer leg still opens for that worker.
+async function caseDirectLines_workerLabelToTheArchitectHoldsOverReaderClaimsElsewhere(clock) {
+  console.log("\n=== Direct lines: a worker reading another persona reaches the architect labelled WORKER:<persona> ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("direct_lines_worker_label_reads_elsewhere", now, "architect", "coordinator", ARCH);
+  seedForeignClaims(h, "worker-dev-001", now, ["persona:dev", "reader:zed"]);
+  const key = seedRecordFor(h, "architect", "worker-dev-001", 1, { at: now - 5000, text: "Spec gap: which store owns the ledger?" });
+  await tickAndSettle(h, clock, 50);
+  check("direct lines worker label (reads elsewhere): the record to the architect is delivered labelled [WORKER:dev id=<record id>]",
+    readStoreRecord(h, key)?.status === "delivered" && (h.promptSubmits || []).includes("[WORKER:dev id=architect-worker-dev-001-1] Spec gap: which store owns the ledger?"), { rec: readStoreRecord(h, key), submits: h.promptSubmits });
+
+  const hc = await seedNamedOwnerHarness("direct_lines_worker_label_reads_elsewhere_coordinator", now, "coordinator", "coordinator", ARCH);
+  seedForeignClaims(hc, "worker-dev-001", now, ["persona:dev", "reader:zed"]);
+  const keyC = seedRecordFor(hc, "coordinator", "worker-dev-001", 1, { at: now - 5000, text: "Escalation from a worker that also reads." });
+  await tickAndSettle(hc, clock, 50);
+  check("direct lines worker label control: the same writer's record to the coordinator is still labelled [READER:zed id=<record id>]",
+    readStoreRecord(hc, keyC)?.status === "delivered" && (hc.promptSubmits || []).includes("[READER:zed id=coordinator-worker-dev-001-1] Escalation from a worker that also reads."), { rec: readStoreRecord(hc, keyC), submits: hc.promptSubmits });
+
+  const hr = await seedNamedOwnerHarness("direct_lines_worker_label_reads_architect", now, "architect", "coordinator", ARCH);
+  seedForeignClaims(hr, "worker-dev-002", now, ["persona:dev", "reader:architect"]);
+  const keyR = seedRecordFor(hr, "architect", "worker-dev-002", 1, { at: now - 5000, text: "Note from a worker that reads the architect." });
+  await tickAndSettle(hr, clock, 50);
+  check("direct lines worker label control: a writer reading the architect persona itself is labelled [READER:architect id=<record id>]",
+    readStoreRecord(hr, keyR)?.status === "delivered" && (hr.promptSubmits || []).includes("[READER:architect id=architect-worker-dev-002-1] Note from a worker that reads the architect."), { rec: readStoreRecord(hr, keyR), submits: hr.promptSubmits });
+
+  const ha = await seedNamedOwnerHarness("direct_lines_worker_label_reads_elsewhere_answer", now, "architect", "coordinator", ARCH);
+  seedForeignClaims(ha, "worker-dev-001", now, ["persona:dev", "reader:zed"]);
+  seedRecordFor(ha, "architect", "worker-dev-001", 1, { status: "delivered", deliveredAt: now - 4000 });
+  const answer = await callTool(ha, { tool: SAY, text: "Answer: the ledger store.", persona: "dev" });
+  check("direct lines worker label (reads elsewhere): the architect's answer to that worker is admitted on the answer leg and stamped",
+    answer.deny === undefined && readStoreRecord(ha, `inbox:dev:${SESSION_ID}:1`)?.answersRecord === "architect-worker-dev-001-1", { answer, rec: readStoreRecord(ha, `inbox:dev:${SESSION_ID}:1`) });
+}
+
 // The answer leg at the send gate and the inbox read: the architect's owner
 // reaches a worker whose own record to the architect is delivered or
 // answered, and the answer it writes is stamped with that record's id. It is
@@ -6353,8 +6393,8 @@ async function caseDirectLines_architectAnswerIsDeliveredToTheWorker(clock) {
 // only where the plugin holds an architect name and the nudged session owns a
 // named persona, which is what the worker leg of the reach rule admits.
 // Controls: the same named worker with no architect configured, and a
-// default-persona session with one, each still get the ASK: line and no
-// architect sentence. The ASK: line is the proof each nudge went out, so the
+// default-persona session and the coordinator persona with one, each still
+// get the ASK: line and no architect sentence. The ASK: line is the proof each nudge went out, so the
 // absence reads a sent nudge rather than an empty submit list.
 async function caseDirectLines_idleNudgeNamesTheArchitectLine(clock) {
   console.log("\n=== Direct lines: the idle-gap nudge names the architect line only where an architect is configured ===");
@@ -6399,6 +6439,13 @@ async function caseDirectLines_idleNudgeNamesTheArchitectLine(clock) {
   const plain = await nudgeOf("direct_lines_nudge_default", "default", ARCH);
   check("direct lines nudge control: a default-persona session's nudge still carries the ASK: line", typeof plain === "string", plain);
   check("direct lines nudge control: and names no architect, since the reach rule refuses its send there", typeof plain === "string" && !/architect/i.test(plain), plain);
+
+  // The coordinator routes design asks by its own charter clause and takes
+  // none of the worker's architect sentences, so its nudge names no architect
+  // line either.
+  const coord = await nudgeOf("direct_lines_nudge_coordinator", "coordinator", ARCH);
+  check("direct lines nudge control: the coordinator persona's nudge still carries the ASK: line", typeof coord === "string", coord);
+  check("direct lines nudge control: and names no architect line, matching the seats the steer text gates on", typeof coord === "string" && !/architect/i.test(coord), coord);
 }
 
 // ============================================================

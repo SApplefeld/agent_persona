@@ -10,8 +10,8 @@
     {
       "name": "COORDINATOR_STEER_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 2095,
-      "words": 359
+      "chars": 2224,
+      "words": 381
     },
     {
       "name": "CHANNEL_REPLY_INSTRUCTION",
@@ -22,14 +22,14 @@
     {
       "name": "COORDINATOR_ROLE_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 5134,
-      "words": 899
+      "chars": 5344,
+      "words": 937
     },
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 5968,
-      "words": 1060
+      "chars": 6010,
+      "words": 1067
     },
     {
       "name": "PRIMING_BODY_prompt_pending",

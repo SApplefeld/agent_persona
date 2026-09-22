@@ -194,9 +194,14 @@ DESIGN_ARCHITECT_ROW_READ_CONTROL="holds no live claim, no architect is live"
 # sentence names only the escalating worker. Without this leg the architect's
 # answer to an operator's own question reaches nobody.
 DESIGN_ARCHITECT_OPERATOR_RELAY_CONTROL="where the ask was the operator's own, to the operator on your own channel"
+# The third relay leg. The architect answers a worker's own record directly,
+# and where the plugin refuses that send the answer comes to the coordinator
+# instead. Without this leg that answer reaches the coordinator with no
+# instruction to pass it on, and the worker never hears it.
+DESIGN_ARCHITECT_REFUSED_RELAY_CONTROL="because its direct send to that worker was refused, and you relay that answer to the worker as a coordinator record"
 # Section 2: the architect's own standing instruction, gated on the launch
 # persona matching ARCHITECT_PERSONA. One fragment per clause of its charter,
-# so a red names the clause that went missing: the seat itself, the two ways
+# so a red names the clause that went missing: the seat itself, the three ways
 # an ask arrives, the worktree rule, the clone the worktree is cut from, the
 # commit-and-report rule, the ask that names no repository, the steer rule this
 # seat overrides, and the never-execute rule. None of these strings appears in the coordinator's own
@@ -207,7 +212,7 @@ ARCH_SEAT_CONTROL="design work only"
 # Three ways since a worker reaches the architect directly: the coordinator's
 # record, a worker's own record, and the operator's message on the channel.
 ARCH_ASK_CONTROL="normally reaches you in one of three ways"
-# The two ways are how a design ask arrives and not the only text that reaches
+# The three ways are how a design ask arrives and not the only text that reaches
 # the seat: a reader session delivers a [READER:<persona> ...] record and the
 # supervisor writes a launch prompt as a second turn. The charter places that
 # text rather than denying it exists, so this fragment is read beside the three
@@ -221,10 +226,14 @@ ARCH_OTHER_PATH_READER_CONTROL="a record labelled [READER:<persona> ...] among i
 # delivered or answered, so the answer goes out before the resolve, and the
 # answer's own label carries the answer's id, so the text quotes the worker's
 # record id for the worker to match. Where the plugin refuses that send, the
-# answer takes the coordinator route and the record is resolved after it.
+# answer takes the coordinator route and the record is resolved after it. The
+# fallback covers every refusal the tool gives rather than a list of causes,
+# since a closed list leaves an answer refused for any other reason with no
+# route at all.
 ARCH_WORKER_ASK_CONTROL="which is that worker's own record to you, and you work it as your own work item the way you work a coordinator record"
 ARCH_WORKER_ANSWER_CONTROL="you send it before you close the record with agentic_resolve"
 ARCH_WORKER_QUOTE_CONTROL="The answer quotes the id of the worker's record it answers"
+ARCH_WORKER_FALLBACK_ANY_CONTROL="Where that send is refused, for whatever reason the tool gives"
 ARCH_WORKER_FALLBACK_CONTROL="you answer through the coordinator persona as you answer a coordinator record, and then resolve"
 # A plan the architect writes for a worker still enters that worker's queue
 # through the coordinator alone, the one routing the direct line leaves as it
@@ -341,6 +350,10 @@ STEER_ARCH_REST_CONTROL="every other finding or escalation still goes to the coo
 STEER_ARCH_ANSWER_CONTROL="quotes the id of a record you sent the architect is that question's answer"
 STEER_ARCH_INBOX_CONTROL="agentic_inbox with the same persona argument lists that record among your own there"
 STEER_ARCH_NOT_OPERATOR_CONTROL="does not send it there"
+# What makes the answer trustworthy is the label, which the plugin gives only
+# to the architect's own send. The inbox read matches it to the question and
+# proves nothing on its own, so the sentence says which does which.
+STEER_ARCH_LABEL_PROOF_CONTROL="The label is the plugin's proof that the architect sent it, and the agentic_inbox read only matches the answer to your question"
 
 failed=0
 check() {
@@ -1016,6 +1029,13 @@ case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$DESIGN_ARCHITECT_NOROW_CONTROL"*"$DESIGN_ARCHITECT_UNCONFIRMED_CONTROL"*) check "persona matches COORDINATOR_PERSONA: a reply carrying no architect row is reported as sent with delivery unconfirmed" 0 ;;
   *) check "persona matches COORDINATOR_PERSONA: a reply carrying no architect row is reported as sent with delivery unconfirmed" 1 ;;
 esac
+# The three relay legs, read in order: the escalating worker, the operator's own
+# ask, and the answer the architect could not send to a worker directly. The
+# third names the refused direct send, so it cannot pass on the first leg's text.
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$DESIGN_ARCHITECT_RELAY_CONTROL"*"$DESIGN_ARCHITECT_OPERATOR_RELAY_CONTROL"*"$DESIGN_ARCHITECT_REFUSED_RELAY_CONTROL"*) check "persona matches COORDINATOR_PERSONA: both relay legs stand and an architect answer refused at the worker is relayed to it" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: both relay legs stand and an architect answer refused at the worker is relayed to it" 1 ;;
+esac
 # Every fragment of the design clause, read as a class on the launch that does
 # build it. This is the control for the absence sweep on the no-architect
 # launch below: the same class read runs against an instance known to hold the
@@ -1146,6 +1166,11 @@ esac
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *"$STEER_UNVERIFIED_ACT_CONTROL"*"$STEER_ARCH_ANSWER_CONTROL"*) check "named worker, ARCHITECT_PERSONA set: the architect's answer is placed after the rule it narrows" 0 ;;
   *) check "named worker, ARCHITECT_PERSONA set: the architect's answer is placed after the rule it narrows" 1 ;;
+esac
+# The proof sentence follows the answer sentence it qualifies.
+case "${COORDINATOR_STEER_INSTRUCTION:-}" in
+  *"$STEER_ARCH_ANSWER_CONTROL"*"$STEER_ARCH_LABEL_PROOF_CONTROL"*) check "named worker, ARCHITECT_PERSONA set: the label is named as the proof and the inbox read as the match" 0 ;;
+  *) check "named worker, ARCHITECT_PERSONA set: the label is named as the proof and the inbox read as the match" 1 ;;
 esac
 check_spliced_names "named worker, ARCHITECT_PERSONA set: every persona name in the priming write comes from the settings"
 check_no_removed_routing "named worker, ARCHITECT_PERSONA set: no retired routing phrase reaches the priming write" "$(priming_concat)"
@@ -1282,8 +1307,8 @@ case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
   *) check "persona matches ARCHITECT_PERSONA: the architect instruction is present, naming the design seat" 1 ;;
 esac
 case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
-  *"$ARCH_ASK_CONTROL"*"$STEER_LABEL_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the two ways an ask arrives are named, one of them the coordinator record's label" 0 ;;
-  *) check "persona matches ARCHITECT_PERSONA: the two ways an ask arrives are named, one of them the coordinator record's label" 1 ;;
+  *"$ARCH_ASK_CONTROL"*"$STEER_LABEL_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the three ways an ask arrives are named, one of them the coordinator record's label" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: the three ways an ask arrives are named, one of them the coordinator record's label" 1 ;;
 esac
 case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
   *"$ARCH_WORKTREE_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the worktree rule is present" 0 ;;
@@ -1446,7 +1471,7 @@ case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
   *"$ARCH_NOCHANNEL_CONTROL"*) check "persona matches ARCHITECT_PERSONA: the report clause carries its no-channel fallback" 0 ;;
   *) check "persona matches ARCHITECT_PERSONA: the report clause carries its no-channel fallback" 1 ;;
 esac
-# The two ways an ask arrives are how a design ask normally comes, not a claim
+# The three ways an ask arrives are how a design ask normally comes, not a claim
 # that no other text reaches the seat: a reader session's record and the launch
 # prompt both do.
 case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
@@ -1473,8 +1498,8 @@ case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
   *) check "persona matches ARCHITECT_PERSONA: a worker is answered before its record is resolved, and the answer quotes that record's id" 1 ;;
 esac
 case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
-  *"$ARCH_WORKER_FALLBACK_CONTROL"*) check "persona matches ARCHITECT_PERSONA: a refused answer to a worker goes through the coordinator, then the record is resolved" 0 ;;
-  *) check "persona matches ARCHITECT_PERSONA: a refused answer to a worker goes through the coordinator, then the record is resolved" 1 ;;
+  *"$ARCH_WORKER_FALLBACK_ANY_CONTROL"*"$ARCH_WORKER_FALLBACK_CONTROL"*) check "persona matches ARCHITECT_PERSONA: an answer to a worker refused for any reason goes through the coordinator, then the record is resolved" 0 ;;
+  *) check "persona matches ARCHITECT_PERSONA: an answer to a worker refused for any reason goes through the coordinator, then the record is resolved" 1 ;;
 esac
 case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
   *"$ARCH_PLAN_ROUTE_CONTROL"*) check "persona matches ARCHITECT_PERSONA: a plan still reaches a worker's queue only through the coordinator" 0 ;;
