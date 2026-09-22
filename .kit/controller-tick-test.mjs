@@ -6194,6 +6194,21 @@ async function caseDirectLines_architectAnswersAWorkerWithAnOpenRecord(clock) {
   const readerSend = await callTool(hr, { tool: SAY, text: "Answer from an architect that reads zed.", persona: "dev" });
   check("direct lines answer send (reader claim elsewhere): the answer is accepted and stamped",
     readerSend.deny === undefined && readStoreRecord(hr, `inbox:dev:${SESSION_ID}:1`)?.answersRecord === "architect-worker-dev-001-1", { readerSend, rec: readStoreRecord(hr, `inbox:dev:${SESSION_ID}:1`) });
+
+  // An architect owner that also reads the target is labelled READER:<target>
+  // at send, and its answer is still stamped, so the answer leg carries it to
+  // delivery if the reader claim has gone by then.
+  const hrt = await seedNamedOwnerHarness("direct_lines_answer_send_reads_target", now, "architect", "coordinator", ARCH);
+  hrt.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:architect", claimedAt: now - 2000 }, { resource: "reader:dev", claimedAt: now - 1500 }],
+  });
+  seedForeignClaims(hrt, "worker-dev-001", now, ["persona:dev"]);
+  seedRecordFor(hrt, "architect", "worker-dev-001", 1, { status: "delivered" });
+  const readsTargetSend = await callTool(hrt, { tool: SAY, text: "Answer from an architect that reads dev.", persona: "dev" });
+  check("direct lines answer send (reader claim on the target): the answer is accepted and still stamped",
+    readsTargetSend.deny === undefined && readStoreRecord(hrt, `inbox:dev:${SESSION_ID}:1`)?.answersRecord === "architect-worker-dev-001-1", { readsTargetSend, rec: readStoreRecord(hrt, `inbox:dev:${SESSION_ID}:1`) });
 }
 
 // The answer leg at delivery is the send gate's verdict carried on the
@@ -6277,7 +6292,7 @@ async function caseDirectLines_architectAnswerIsDeliveredToTheWorker(clock) {
   seedReaderNote(h4);
   const skip4 = await expectSkipped("writer no longer owns the architect", h4, key4, "arch-001");
   check("direct lines answer delivery (writer no longer owns the architect): the skip detail names the answer leg",
-    skip4 !== undefined && skip4.detail.includes("no 'architect' persona claim answering a record this persona's owner sent it"), skip4);
+    skip4 !== undefined && skip4.detail.includes("no answer stamped at send by the 'architect' persona's owner"), skip4);
 
   // A forged stamp from a writer that owns a named persona but not the architect.
   const h5 = await seedNamedOwnerHarness("direct_lines_answer_forged", now, "dev", "coordinator", ARCH);

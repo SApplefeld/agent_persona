@@ -220,8 +220,8 @@
     {
       "name": "agentic_inbox_description",
       "file": "hooks/index.ts",
-      "chars": 1405,
-      "words": 227
+      "chars": 1421,
+      "words": 228
     },
     {
       "name": "fleet_status_description",

@@ -2236,7 +2236,7 @@ export const register: Register = async (on, options) => {
   // where the plugin holds no architect, so an unset seat is never named.
   const architectLegRefusal = architectPersona === ""
     ? ""
-    : `, no '${architectPersona}' persona claim answering a record this persona's owner sent it`;
+    : `, no answer stamped at send by the '${architectPersona}' persona's owner`;
   // The roster fleet_status reads, and the controller tick's fleet watcher
   // with it: the process keeper's own roster file, a JSON array of persona
   // entries. An unset or blank setting leaves the tool with no fleet to read,
@@ -2716,7 +2716,7 @@ export const register: Register = async (on, options) => {
         "the session holding the coordinator persona may read any persona, a session owning a named persona may read the coordinator persona " +
         "and the architect persona where one is set, the architect's owner may read a persona it may answer until it resolves that worker's record, " +
         "and a persona this session owns is refused. " +
-        "Returns {inbox: [{id, from, at, text, kind, status, reply?, deferred?, turnRunningMs?, outcome?, note?, resolvedAt?}], asks: [{id, at, nodeId, question, status}], workdir?}: workdir is the target persona's live owner's working directory, where its own store file sits. " +
+        "Returns {inbox: [{id, from, at, text, kind, status, reply?, deferred?, turnRunningMs?, outcome?, note?, resolvedAt?, answersRecord?}], asks: [{id, at, nodeId, question, status}], workdir?}: workdir is the target persona's live owner's working directory, where its own store file sits. " +
         "A pending record carries deferred: true and turnRunningMs while the owner is inside a turn: it waits for that turn to end, or breaks into it once it has waited past the break-in bound, which a record labelled COORDINATOR at delivery never does. " +
         "A record delivered on its wait alone is never replied to: it stays delivered until the owner resolves it. " +
         "A resolved record carries outcome (done or declined), note and resolvedAt. " +

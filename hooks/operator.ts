@@ -691,7 +691,9 @@ export function deliveryGroundIn(
   const workerLeg = seatTarget && holdsOwnerClaim(claims, writer, undefined, "default");
   const readerPersonas = readerPersonasOf(claims, writer);
   const readsTarget = readerPersonas.includes(target);
-  const opener = readsTarget || workerLeg ? null : answerLegOpener(claims, target, writer, architect);
+  // The answer leg is read whenever the worker leg does not hold, so a send
+  // it admits is stamped even where a reader claim on the target labels it.
+  const opener = workerLeg ? null : answerLegOpener(claims, target, writer, architect);
   let kind: string;
   let persona: string;
   if (readsTarget) {
@@ -712,23 +714,6 @@ export function deliveryGroundIn(
   const problem = bracketSafeProblem(persona);
   if (problem !== null) return { refused: "bad_name", persona, problem };
   return opener ? { ground: `${kind}:${persona}`, answersRecord: opener } : { ground: `${kind}:${persona}` };
-}
-
-/**
- * Whether `writer` may address `target`'s inbox, over claims already read:
- * deliveryGroundIn's four legs and its bracket rule, as a boolean. The
- * send gate and the inbox read call the reading forms below; the three
- * delivery sites read once and call deliveryGroundIn per record, so the
- * gate and the label they apply cannot disagree.
- */
-export function mayReachPersonaIn(
-  claims: UnionedClaim[],
-  target: string,
-  writer: string,
-  coordinatorPersona: string,
-  architect: ArchitectLine,
-): boolean {
-  return "ground" in deliveryGroundIn(claims, target, writer, coordinatorPersona, architect);
 }
 
 /**
