@@ -6687,11 +6687,13 @@ export const register: Register = async (on, options) => {
       const isOpen = (g: GoalNode) => g.status !== "complete" && g.status !== "abandoned";
       if (oldRoot && isOpen(oldRoot) && !replace) {
         const openCount = sess.state.goals.filter((g) => g.parentId !== null && isOpen(g)).length;
+        const openText = openCount === 0
+          ? `its root is ${oldRoot.status}`
+          : `${openCount === 1 ? "1 entry under its root is" : `${openCount} entries under its root are`} not complete or abandoned`;
         toolErrorsThisTurn++;
         return {
           deny:
-            `The goal tree "${oldRoot.title}" is unfinished: ` +
-            `${openCount === 1 ? "1 entry under its root is" : `${openCount} entries under its root are`} not complete or abandoned. ` +
+            `The goal tree "${oldRoot.title}" is unfinished: ${openText}. ` +
             `Pass replace: true to replace the tree, or use goal_add to extend it.`,
         };
       }
@@ -6890,11 +6892,14 @@ export const register: Register = async (on, options) => {
         updatedAt: now,
         ...(planPath ? { planPath } : {}),
       };
-      // A node added under a finished root reopens the root, so the tree never
-      // holds live work under a root that reads finished. It runs after every
-      // refusal above, so a refused add reopens nothing, and it touches no
-      // other node: finished children stay finished.
-      if (root.status === "complete" || root.status === "abandoned") {
+      // A node added directly under a finished root reopens the root, so the
+      // tree never holds live work under a root that reads finished. A node
+      // added under a plan leaves the root as it was, since a finished plan
+      // keeps its child out of reach and a reopened root over it would read
+      // live with nothing to activate. It runs after every refusal above, so a
+      // refused add reopens nothing, and it touches no other node: finished
+      // children stay finished.
+      if (parentId === root.id && (root.status === "complete" || root.status === "abandoned")) {
         const priorStatus = root.status;
         root.status = "pending";
         root.blockedReason = undefined;

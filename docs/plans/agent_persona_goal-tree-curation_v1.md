@@ -88,6 +88,8 @@ Untracked work is a log line and nothing else. The block at 5298-5351 stops buil
 
 - Section 3 acceptance: `goal_done` sometimes completes an entry by name under a plan whose `blockedReason` reads exactly "Child task blocked". Where no child of that plan is still blocked afterwards, the handler returns the plan to pending and clears its reason. Where a child is still blocked, the plan stays blocked. The handler walks up through each ancestor carrying that reason. It clears the reason on an ancestor the walk completed and returns a blocked one to pending. It writes one decision per ancestor it changes. `completeLeaf` in `hooks/agent-state.ts` is not edited.
 
+- Section 4's root reopen takes the form its acceptance bullet names: `goal_add` reopens a finished root only when the node it adds has the root as its parent. A node added under a plan leaves the root as it was, and `goal_add` gains no refusal keyed on a parent's status.
+
 ## Sections of Work
 
 ### 1. Start-up survives a refused tool registration
@@ -163,7 +165,7 @@ Model: opus
 
 Whenever the call goes on to replace a tree that holds at least one entry besides its root, it first appends one line to `.agentic-goal-history.jsonl` in the persona's working directory through `appendLines`. The line is a JSON object with the clock, the persona, the reason `goal_create`, and the whole replaced `goals` array. The path is resolved with `workdirPathOf`, the way the store path is. A failed append refuses the `goal_create` and leaves the tree as it was, since a replacement that cannot keep its copy is the loss this section exists to stop.
 
-`goal_add`, when the root it resolves is complete or abandoned, sets the root to pending, clears its `blockedReason`, and records a decision with action `root_reopened` before adding the node. It touches no other node, so children already complete or abandoned stay as they are. The new node is activated by the handler's existing no-active-leaf branch, which this section does not change.
+`goal_add`, when the node it adds has the root as its parent and that root is complete or abandoned, sets the root to pending, clears its `blockedReason`, and records a decision with action `root_reopened` before adding the node. It touches no other node, so children already complete or abandoned stay as they are. The new node is activated by the handler's existing no-active-leaf branch, which this section does not change.
 
 The paused reminder at 6929 and the `goal_edit` root refusal at 6137 are reworded to match: replacing takes `replace: true`.
 
@@ -176,7 +178,7 @@ Acceptance:
 - The `goal_create` description is under 600 characters, the parameter pin passes, and `.kit/injection-duplicate-test.mjs` passes on a refreshed `.kit/injection-ledger.json`, with `docs/architecture.md:121-128` updated.
 - `README.md` names the history file beside its account of the store file, says what writes to it and that nothing reads it back.
 
-Files in scope: `hooks/index.ts` (the `goal_create` registration 2113-2137 and handler 5893-5951, the `goal_add` handler 5953-6112, the lines at 6137 and 6929), `.kit/controller-tick-test.mjs`, `.kit/injection-ledger.json`, `docs/architecture.md`, `README.md`.
+Files in scope: `hooks/index.ts` (the `goal_create` registration 2113-2137 and handler 5893-5951, the `goal_add` handler 5953-6112, the lines at 6137 and 6929), `.kit/controller-tick-test.mjs`, `.kit/injection-ledger.json`, `docs/architecture.md`, `docs/backlog.md`, `README.md`.
 Tests: lock both directions of the replace guard, since a guard that also refuses a finished tree would stop every second goal. Lock that a failed history write stops the replacement.
 
 ## Out of Scope
@@ -491,6 +493,32 @@ Gate: targeted lane, SCOTT-CLAUDE, 2026-09-22T18:57Z, the worktree at 6b6423f ca
 Next: 4. Replacing a tree is deliberate, and a replaced tree is kept
 Commit Model: Branch-and-PR
 Delta: SCOTT-CLAUDE, 2026-09-22T18:58Z, worktree as on the Gate line. kit-size exited 2.
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
+
+### Chapter 4 - 2026-09-22
+Completed: 4. Replacing a tree is deliberate, and a replaced tree is kept
+Implemented By: implementer-opus for the build; fix round 1 and the close pass inline in the main session, being one condition and one case each, cheaper written than briefed; no tier escalation
+Metrics: review rounds 1, closed major-closed; provenance 1 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (1 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+- section open (2026-09-22): Section 4 makes goal_create refuse to replace an unfinished tree unless the call passes replace: true, appends a replaced tree with entries besides its root to .agentic-goal-history.jsonl before replacing it and refuses when that append fails, and makes goal_add reopen a complete or abandoned root to pending with a root_reopened decision. Serves the Goal sentence "goal_create refuses to replace an unfinished tree unless the call says to, and a replaced tree is kept in a history file". Adds mechanism: yes, the replace guard, the history append and the root reopen, all named by the section text. Size: about 40 lines in hooks/index.ts, one description sentence, two reworded texts, and six or more harness cases. Cost of not building: a goal_create over live work deletes it with no copy, and goal_add keeps putting live work under a finished root.
+- r1 fix, blind + adversarial Major (task added under a finished plan strands under a reopened root) (2026-09-22): rewritten after the design stop's REFUSE on the form ground. goal_add reopens a finished root only when the node it adds has the root as its parent, so a node added under a plan leaves the root as it was and no refusal is added. Serves Section 4's acceptance bullet "goal_add of a plan under a complete root leaves the root pending, the plan active, and one root_reopened decision", in the form that bullet names. Adds mechanism: no, the reopen's existing condition narrowed to the bullet's case. Size: one condition in hooks/index.ts and one harness case. Cost of not building: a task added under a finished plan leaves an unreachable pending entry under a root that reads live, and a plain goal_create is refused.
+- The design stop's judge, the scope adjudicator, ruled REFUSE on the form ground: the acceptance bullet names a plan added under the root, so the reopen is bounded to a node whose parent is the root, and goal_add gains no refusal keyed on a parent's status. The ruling is recorded as the third Standing Brief Amendment, and Section 4's goal_add sentence was corrected to the same form. Both are approval drift made on purpose.
+- A task added under a finished plan still sits pending and unreachable, as it did at the base. No bullet covers that case, and the judge ruled that the answer rather than a gap.
+- The live goal-tree test cannot meet the new guard: it deletes its suite directory and starts from an empty store (.kit/live-goaltree-test.sh:16-18). It was not run.
+- Scope fold: docs/backlog.md took two entries. One is an open ask left pointing into a replaced tree. The other is the supervisor relaunching a child that reopened a root it completed. The Files in scope line now names docs/backlog.md.
+Assumptions:
+- replace reads as true for boolean true or the string "true", since the handler already tolerates stringified maxRounds; the schema declares a boolean (decided 2026-09-22, section 4).
+- The history line's fields are timestamp, persona, reason "goal_create" and goals (decided 2026-09-22, section 4).
+- A history line written before a persist that then fails stays in the file, since an extra recovery copy is harmless and removing it would take a rewrite (decided 2026-09-22, section 4).
+- goal_add reopens the root after every refusal and just before the node is pushed, so a refused add reopens nothing (decided 2026-09-22, section 4).
+Review Findings: design stop: a refusal in goal_add on a finished parent, ruling refuse (form ground) by the scope adjudicator. review: adversarial + blind + security at fable, Agent tool, round 1. Round 1 had one Major, reported by both the blind and the adversarial lens: the reopen fired for a task under a finished plan and left a live root over an unreachable task. Fixed in fix round 1 within the ruled form, probed red with the new control before the condition was narrowed. The blind lens's Major was traced by the orchestrator, to Section 4's goal_add acceptance bullet. Security returned CLEAR with no Critical or Major. Minors: 3 fixed in the close pass (the zero-open-entries refusal now names the root's status, probed red then green with the restore verified by cmp; README's "append-only" corrected to say each append rewrites the file with no lock; docs/architecture.md totals placed), 0 upgraded, 5 left with the reason. A history line before a failed persist is declared above. The reopened root's planning counters carry over, and the Out of Scope list keeps the planner and the round budget unchanged. The string "true" is a declared assumption. The stale ask pointer after a replace and the supervisor's read of root_reopened went to docs/backlog.md, being outside this section's goal_create change and the supervisor's rules respectively. The fix round and the close pass owed no round: no outward action, no new module, and each subject is exercised directly by a case probed red.
+Stamps: adjudicated 1, stamped 0, over a 1h window covering the section since Chapter 3. The one unstamped record, the fan-out cap, shaped no choice: the round ran three agents on the review table's own routes.
+Gate: targeted lane, SCOTT-CLAUDE, 2026-09-22T19:23Z, the worktree at db156c8 carrying fix round 1 and the close pass uncommitted in hooks/index.ts, .kit/controller-tick-test.mjs, README.md, docs/architecture.md, docs/backlog.md and this plan doc. Seven lanes, each exit code read from its own run: node .kit/check-loader-rule.mjs 0, npx tsc --noEmit 0, node .kit/controller-tick-test.mjs 0 at 2481 OK and 0 FAIL, node .kit/injection-duplicate-test.mjs 0, node .kit/tool-description-length-test.mjs 0, node .kit/self-review-unit-test.mjs 0, node .kit/fleet-status-unit-test.mjs 0. Delta against the 2404 baseline on the same lane at 8a59364 (19:01Z): +77 at 0 FAIL, all new caseGtc4_* checks. The build added 75 (2479 at first green, 19:13Z), fix round 1 added 1, and the close pass added 1. Tests added: six caseGtc4_* cases. They pin both directions of the replace guard, the history copy on replace and its absence for a lone finished root, a failed history write in three failure shapes leaving the tree standing, the root reopen with its refused-add, under-a-plan and live-root controls, and the reworded paused reminder and goal_edit refusal. None spawns a process. Tests retired: none. Tests edited: none outside the new cases. Wall clock 73 s for the seven lanes, against 73 s at baseline. No foreign runner was up at any poll this section.
+Next: finishing-work
+Commit Model: Branch-and-PR
+Delta: SCOTT-CLAUDE, 2026-09-22T19:23Z, worktree as on the Gate line. kit-size exited 2.
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```

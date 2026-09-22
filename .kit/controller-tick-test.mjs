@@ -17076,6 +17076,14 @@ async function caseGtc4_theReplaceGuardRefusesAnUnfinishedTree(clock) {
   check("gtc4 guard count: the refusal names the root's title and 3 open entries",
     typeof wideRes?.deny === "string" && wideRes.deny.includes('"Ship the widget"') && wideRes.deny.includes("3 entries"), wideRes);
 
+  // A live root with nothing open under it names the root's own status
+  // rather than a count of zero open entries.
+  clock.set(T0);
+  const bare = await gtc3Harness("gtc4_guard_bare_root", gtc4Tree("pending"));
+  const bareRes = await callTool(bare, { tool: "mcp__agentic-plugin__goal_create", objective: "Another objective" });
+  check("gtc4 guard, a pending root with no entries: refused naming the root's status, not zero entries",
+    typeof bareRes?.deny === "string" && bareRes.deny.includes("its root is pending") && !bareRes.deny.includes("0 entries"), bareRes);
+
   // The goal_edit root refusal points at the same way through.
   const edit = await callTool(h, { tool: "mcp__agentic-plugin__goal_edit", nodeId: "root-1", action: "drop" });
   check("gtc4 goal_edit root refusal: names goal_create with replace: true",
@@ -17250,6 +17258,19 @@ async function caseGtc4_goalAddUnderAFinishedRootReopensIt(clock) {
       typeof res?.deny === "string" && state.goals.find((g) => g.id === "root-1").status === "complete" && !state.decisions.some((d) => d.action === "root_reopened"),
       { res, actions: state.decisions.map((d) => d.action) });
   }
+
+  // Control: a node added under a plan leaves a finished root as it was. The
+  // reopen fires only for a node whose parent is the root, so a task added
+  // under a finished plan never puts a live root over work no leaf reaches.
+  clock.set(T0);
+  const under = await gtc3Harness("gtc4_reopen_under_plan", gtc4Tree("complete", [
+    { id: "plan-old", parentId: "root-1", kind: "plan", status: "complete", title: "Old plan" },
+  ]));
+  const underRes = await callTool(under, { tool: "mcp__agentic-plugin__goal_add", title: "Late task", objective: "Added under a finished plan", parentId: "plan-old" });
+  const underState = getState(under);
+  check("gtc4 reopen control, a task under a complete plan: accepted, the root still complete, and no root_reopened written",
+    underRes?.deny === undefined && underState.goals.find((g) => g.id === "root-1").status === "complete" && !underState.decisions.some((d) => d.action === "root_reopened"),
+    { underRes, root: underState.goals.find((g) => g.id === "root-1"), actions: underState.decisions.map((d) => d.action) });
 
   // Control: an add under a live root writes no root_reopened.
   clock.set(T0);

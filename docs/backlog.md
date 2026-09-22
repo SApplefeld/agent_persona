@@ -1,5 +1,13 @@
 # Backlog
 
+## goal_create leaves an open ask and the nudge-cap hold pointing into the tree it replaced (found 2026-09-22)
+
+When `goal_create` replaces a tree, it resets `activeGoalId` and nothing else that names a node. `pendingAskId` can still name an open ask on an entry that now lives only in `.agentic-goal-history.jsonl`. While it does, `goal_add`'s no-active-leaf branch reads the ask as a hold and activates nothing on the new tree, for as long as the ask stays open. This predates the goal tree curation plan, whose Section 4 made replacement deliberate and left this path as it was. The remedy is to close an ask open on the replaced tree the way `goal_resume` closes one, with the decision detail naming `goal_create`.
+
+## The supervisor relaunches a child that reopened a root it had completed (found 2026-09-22)
+
+`goal_add` now writes `root_reopened` when a node lands directly under a finished root. The supervisor's passive-restart read (`bin/supervise-decide.mjs`, the `restart_passive` branch) looks only for a `root_complete` newer than the child's start. A child that completes its root and then reopens it in the same life is relaunched mid-work. The tree survives the relaunch, so the cost is a turn rather than entries. The shape predates the goal tree curation plan, since `goal_add` already accepted nodes under a complete root. That plan kept the supervisor's rules out of scope. The remedy is for the read to treat a `root_reopened` newer than the `root_complete` as cancelling it.
+
 ## A thread reply that closes an ask sets the asked entry active without pointing activeGoalId at it (found 2026-09-22)
 
 The ask close in the `prompt.submit` handler reactivates a paused asked entry by setting its status to `active` alone (`hooks/index.ts`, the block opening "D5b (bullet 1): an open ask never silences the worker"). It never sets `activeGoalId`. Until the next store load, which runs `enforceInvariants` and repairs the pointer, a session can hold an active entry that `activeGoalId` does not name. Anything that keys on the pointer then misreads the tree. `goal_done`'s no-nodeId path is one such reader. Found by the goal tree curation plan's Section 3, whose harness case reaches that stale state through this path. The remedy is to set `activeGoalId` beside the status, as `goal_resume` does.
