@@ -6503,7 +6503,7 @@ async function caseSection4_readerLabelNamesTheTargetAmongSeveralReaderClaims(cl
 // the target is not among them; a writer owning two named personas and no
 // reader claim is labelled WORKER, naming the alphabetically first.
 async function caseSection4_readerClaimWinsOverWorkerAndFirstPersonaNames(clock) {
-  console.log("\n=== Section 4: a reader claim anywhere labels READER over WORKER; several claims name the first alphabetically ===");
+  console.log("\n=== Section 4: on a record to the coordinator, a reader claim anywhere labels READER over WORKER; several claims name the first alphabetically ===");
   clock.set(T0);
   const now = T0;
   const h = await seedNamedOwnerHarness("section4_worker_precedence", now, "coordinator", "coordinator");

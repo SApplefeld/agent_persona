@@ -826,12 +826,13 @@ function extractBackstopFrame(src) {
 // declared just above the frame: a template literal, or an empty string. The
 // row pins the larger shape, as the [GOAL TREE] block's roundText does, so
 // that arm's literal is read from the declaration and sized with the frame.
-// The arm must be a single template literal; a declaration that has moved, or
-// an arm that is not one, refuses.
+// The declaration is matched only where the nudgeText ternary follows it
+// directly, and its arm must be a single template literal, so a declaration
+// moved away from the frame, or an arm that is not one, refuses.
 function extractNudgeFrames(src) {
   const m = /const nudgeText = idleGapConverted\s*\n\s*\?\s*([\s\S]*?)\n\s*:\s*([\s\S]*?);\n/.exec(src);
   if (!m) throw new Error("nudgeText ternary not found in hooks/index.ts");
-  const a = /const architectLine = [^\n]*\n\s*\?\s*(`[^`]*`)\s*\n\s*:\s*"";\n/.exec(src);
+  const a = /const architectLine = [^\n]*\n\s*\?\s*(`[^`]*`)\s*\n\s*:\s*"";\n\s*const nudgeText = idleGapConverted\b/.exec(src);
   if (!a) throw new Error("the idle-gap nudge's architectLine ternary was not found in hooks/index.ts in the shape this rule reads");
   // The idle-gap arm declares architectLine and nothing else, and the other
   // arm splices no whole variable, so any other operand that is not a

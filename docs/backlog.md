@@ -485,3 +485,7 @@ Remedy: a log line in the catch naming the held count, or rolling held lines to 
 ## A persona named __proto__, constructor or prototype is never stored (found 2026-09-22)
 
 `personaNameProblem` in `hooks/operator.ts` admits the three names. Assigning `store["__proto__"]` replaces the parsed object's prototype instead of writing a key, so the session reports itself owner of a persona that `JSON.stringify` never emits. The name comes from the tool argument or the configured persona, both operator-side. Remedy: refuse the three names in `personaNameProblem`.
+
+## The steward's charter recognises a worker's record only as a prompt, not in a tool result (found 2026-09-22)
+
+The coordinator role instruction in `bin/supervise.sh` says "A prompt labelled [WORKER:<persona> id=<record id>] is that worker's finding or escalation". A worker's record also takes the break-in, reaching a busy steward inside a tool result under a `, waited` or `, urgent` marker (`hooks/index.ts`, the wait leg skips only coordinator-ground records). The architect's and the worker's charters name both tool-result forms, and the steward's does not. The gap predates the direct-lines plan, which found it in review. Remedy: name the two tool-result forms in that sentence, as the architect's charter does, with a pin in `.kit/channel-reply-instruction-test.sh`.
