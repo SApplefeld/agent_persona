@@ -36,6 +36,7 @@ Alternatives refused:
 Rulings after the spec shipped:
 - 2026-09-21, the operator, on the architect persona's Discord thread: "I think Option A is fine". A turn that works with no goal open records nothing in the tree and one line per session in the decision log. Section 2 stands as written.
 - 2026-09-21, the operator, in the same message: the tree he is aiming for has several levels, after the PIANO architecture from Project Sid. Short-term goals direct the immediate actions, medium-term goals are the plans being worked, and long-term goals span many sections. He reads today's tree as serving the medium term only, "adequate, but short of the ideal". This plan repairs the tree that exists and builds no levels. The levels are a separate design effort.
+- 2026-09-22, the operator, on the persona's Discord thread: "I'm good with Option A. Let's proceed that way!" A blocked entry completed by name must not leave its plan blocked over it. The goal_done handler returns such a plan to pending, and completeLeaf's walk in hooks/agent-state.ts stays untouched.
 
 Provenance: distilled from the architect persona's session of 2026-09-21 on its Discord thread, from the code at trunk `622c19b`, the five personas' store files and their debug logs.
 
@@ -84,6 +85,8 @@ Untracked work is a log line and nothing else. The block at 5298-5351 stops buil
 - A session whose persona state never loaded keeps answering with the not-loaded cause until a tool call that names the load clears it. No tick, timer or other background path may clear that field, and this plan adds none that does. A background path that swapped the session's in-memory tree from the built-in default to the stored one would itself be a tree change with no tool call naming it, which is what this plan exists to stop, and a session that recovered silently stops saying it could not load, which is what the Goal promises it will say.
 
   This amendment states a rule about what may clear the field, not a description of what the file does today. One background path already loads persona state: the heartbeat tick's reader-promotion branch assigns the parsed store state to the session. It does not clear the not-loaded field, which is why the rule holds over it, and this plan guards that branch rather than changing what it loads.
+
+- Section 3 acceptance: `goal_done` sometimes completes an entry by name under a plan whose `blockedReason` reads exactly "Child task blocked". Where no child of that plan is still blocked afterwards, the handler returns the plan to pending and clears its reason. Where a child is still blocked, the plan stays blocked. The handler walks up through each ancestor carrying that reason. It clears the reason on an ancestor the walk completed and returns a blocked one to pending. It writes one decision per ancestor it changes. `completeLeaf` in `hooks/agent-state.ts` is not edited.
 
 ## Sections of Work
 
@@ -445,3 +448,19 @@ Delta: SCOTT-CLAUDE, 2026-09-22T17:58Z, worktree as on the Gate line. kit-size e
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 3 - 2026-09-22
+
+Section 3, "goal_done completes an entry by name", is in fix round 1. Its build is committed and pushed at e12e2c4. Review round 1 ran the adversarial, blind and security lenses at fable through the Agent tool. The performance lens was not triggered, because the added work runs only on a goal_done call. No lens returned a Critical.
+
+Live dispatches. First, implementer-opus on fix round 1. It closes an open ask on every entry the call completes, including a plan completeLeaf's walk finishes above the named entry. It reshapes the new cases' whole-sentence pins into token checks, leaving the no-nodeId case's checks as they are. It also takes five Minors: the echoed id sliced to 50, the lead cleared, the description's "leaves the active entry active" made true, the none-active test aligned with goal_add's predicate, and the no-nodeId case's comment restated as current behaviour. Second, a consultant testing the framing of the held question below before it goes to the operator.
+
+Held finding. A blocked entry completed by name, under a plan the walk had marked blocked with "Child task blocked", leaves that plan blocked while a sibling is pending, so the sibling is never activated. Confirmed against hooks/agent-state.ts:857-873 and activateNext's pending-only DFS. The proposed fix adds a parent restore that no clause names, so it took a design stop. The scope adjudicator ruled ASK, because the Out of Scope list keeps completeLeaf's walk untouched and a handler-side restore routes around that entry. The finding waits on the operator's answer, which goes out after the consult rules. Section 3 does not close until it is answered.
+
+Gate baseline. The targeted lane on this branch at e12e2c4, worktree clean, SCOTT-CLAUDE, 2026-09-22: all seven lanes exit 0, and node .kit/controller-tick-test.mjs reads 2358 OK and 0 FAIL, 70 s beside a foreign claude-kit probe-corpus run.
+
+Next action. Adjudicate fix round 1, send the operator the held question with the consult's ruling, then take review round 2 at the writer's tier.
+
+The consult ruled option A with no operator fork, finding the ASK's premise unsupported. The Out of Scope entry names functions in hooks/agent-state.ts, and the restore edits only the goal_done handler, which already clears a holder's "Child task blocked" reason after completeLeaf at the plan-document-complete site, hooks/index.ts:6175-6179. Both points were checked here. Its shape is a local helper in hooks/index.ts, called after completeLeaf on the by-name path. The helper walks up while the parent's reason is exactly "Child task blocked", clears the reason on a complete parent, sets a blocked parent with no child still blocked to pending, and writes one decision. It does not reuse blockedAncestorsToFree, which frees without testing for another blocked child. The consult also confirmed by running the module that Section 3 as built forecloses the load-time recovery that used to heal this tree. The adjudicator's ASK still routes to the operator, so the question went out on the relay on 2026-09-22 recommending A. The section holds its close on the answer.
+
+The operator answered on the relay on 2026-09-22, choosing option A. The answer is recorded under Intent and as the plan's second Standing Brief Amendment, both approval drift made on purpose. Fix round 1 is verified here. All seven lanes exit 0, and the tick suite reads 2372 OK and 0 FAIL, +14 on 2358: 4 checks for the stale-activeGoalId arm and 10 for the cascade-ask case. Fix round 1 also reported a surface outside the section: prompt.submit's thread-reply ask close sets the asked node active without setting activeGoalId. That goes to docs/backlog.md. Next action: fix round 2 builds the restore, then review round 2 at the writer's tier covers both fix rounds.

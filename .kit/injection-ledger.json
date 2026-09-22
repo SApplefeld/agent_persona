@@ -172,8 +172,8 @@
     {
       "name": "goal_done_description",
       "file": "hooks/index.ts",
-      "chars": 584,
-      "words": 104
+      "chars": 590,
+      "words": 105
     },
     {
       "name": "goal_status_description",

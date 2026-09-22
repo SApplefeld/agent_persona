@@ -2466,7 +2466,7 @@ export const register: Register = async (on, options) => {
       description:
         "Mark the active goal leaf as complete, with an optional one-line note. The controller then activates the next pending plan or fires the planner. " +
         "The result names the goal that became active where there is one, and that goal is the one to carry on with. " +
-        "nodeId completes a named entry instead, once every child it has is complete or abandoned, and leaves the active entry active. " +
+        "nodeId completes a named entry instead, once every child it has is complete or abandoned, and leaves any other active entry active. " +
         "Finished work on an entry that is not active is recorded with goal_done and its nodeId, never with a drop.",
       inputSchema: {
         type: "object",
@@ -6966,7 +6966,7 @@ export const register: Register = async (on, options) => {
     // name, where the entry is not the root, is not already complete or
     // abandoned, and has no child still open. An entry that was not the
     // active one when the call arrived earns no round or score credit and
-    // leaves any active entry active.
+    // leaves any other active entry active.
     if (e.tool === "mcp__agentic-plugin__goal_done") {
       if (sess.stateNotLoaded !== null) {
         toolErrorsThisTurn++;
@@ -6986,7 +6986,7 @@ export const register: Register = async (on, options) => {
         const named = sess.state.goals.find((g) => g.id === byNameId);
         if (!named) {
           toolErrorsThisTurn++;
-          return { deny: `nodeId "${byNameId}" not found in goal tree.` };
+          return { deny: `nodeId "${byNameId.slice(0, 50)}" not found in goal tree.` };
         }
         if (named.parentId === null) {
           toolErrorsThisTurn++;
@@ -7011,16 +7011,22 @@ export const register: Register = async (on, options) => {
         }
         target = active;
       }
-      // Which entry was active is read before anything changes, so the
-      // follow-on below keys on the tree as the call found it.
-      const activeOnArrival = active && active.status === "active" ? active : null;
+      // Which entries were active is read before anything changes, so the
+      // follow-on below keys on the tree as the call found it. The credit
+      // goes to the target only where activeGoalId names it and its status
+      // is active. Another entry is active where any node besides the target
+      // has status active, whatever activeGoalId names, the same test
+      // goal_add's no-active-leaf branch reads.
       const wasActive = active != null && active.status === "active" && active.id === target.id;
+      const otherActive = sess.state.goals.find((g) => g.status === "active" && g.id !== target.id) ?? null;
       const completedId = target.id;
       const completedTitle = target.title;
+      const statusBefore = new Map(sess.state.goals.map((g) => [g.id, g.status]));
       completeLeaf(sess.state, completedId, note || "goal_done");
       if (byNameId) {
         target.blockedReason = undefined;
         target.pausedByNudgeCap = false;
+        target.lead = null;
       }
       // E2: health run at completeLeaf site (goal_done).
       await runHealth($, completedId);
@@ -7043,10 +7049,20 @@ export const register: Register = async (on, options) => {
         action: "done",
         detail: `${completedId} "${completedTitle.slice(0, 50)}" marked complete${byNameId ? " by name" : ""}${note ? `: ${note.slice(0, 80)}` : ""}`,
       });
-      // An open ask on the entry completed by name closes the way goal_resume
-      // closes one. An ask on another entry stays open and holds activation.
-      if (byNameId && (await closeAskOnNode($, completedId, "goal_done"))) {
-        sess.state.pendingAskId = undefined;
+      // An open ask on an entry this call completed closes the way
+      // goal_resume closes one. Those entries are the one named and any plan
+      // completeLeaf's walk took to complete. An ask on any other entry stays
+      // open and holds activation.
+      if (byNameId) {
+        const completedNow = sess.state.goals
+          .filter((g) => g.status === "complete" && statusBefore.get(g.id) !== "complete")
+          .map((g) => g.id);
+        for (const id of completedNow) {
+          if (await closeAskOnNode($, id, "goal_done")) {
+            sess.state.pendingAskId = undefined;
+            break;
+          }
+        }
       }
 
       // The completed entry was active: activate the next one, as the call
@@ -7059,7 +7075,7 @@ export const register: Register = async (on, options) => {
       if (wasActive) {
         nextId = activateNext(sess.state, completedId);
         activate($, nextId, `${completedId} done`);
-      } else if (!activeOnArrival) {
+      } else if (!otherActive) {
         if (sess.state.pendingAskId) {
           heldBy = "an operator ask is open";
         } else if (sess.state.goals.some((g) => g.pausedByNudgeCap === true)) {
@@ -7094,8 +7110,8 @@ export const register: Register = async (on, options) => {
             result: `Complete: "${completedTitle}". Next active: ${nextId} "${nextNode.title}".${healthText}`,
           };
         }
-        if (activeOnArrival && !wasActive) {
-          return { result: `Complete: "${completedTitle}". ${activeOnArrival.id} "${activeOnArrival.title}" is still active.${healthText}` };
+        if (otherActive && !wasActive) {
+          return { result: `Complete: "${completedTitle}". ${otherActive.id} "${otherActive.title}" is still active.${healthText}` };
         }
         if (heldBy) {
           return { result: `Complete: "${completedTitle}". Nothing was activated: ${heldBy}.${healthText}` };
