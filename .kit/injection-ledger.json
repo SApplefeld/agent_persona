@@ -124,8 +124,8 @@
     {
       "name": "GOAL_TREE_PAUSED_BLOCK",
       "file": "hooks/index.ts",
-      "chars": 75,
-      "words": 12
+      "chars": 94,
+      "words": 15
     },
     {
       "name": "NO_GOAL_BLOCK",
@@ -160,8 +160,8 @@
     {
       "name": "goal_create_description",
       "file": "hooks/index.ts",
-      "chars": 376,
-      "words": 60
+      "chars": 557,
+      "words": 87
     },
     {
       "name": "goal_add_description",

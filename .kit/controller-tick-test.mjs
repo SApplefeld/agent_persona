@@ -3311,6 +3311,12 @@ async function main() {
     await caseGtc3_noActiveEntryUnblocksThePlanAndActivatesTheSibling(clock);
     await caseGtc3_eachAncestorCarryingTheReasonIsUnblocked(clock);
     await caseGtc3_theWalkGoesOnPastACompletedPlanToABlockedOne(clock);
+    await caseGtc4_theReplaceGuardRefusesAnUnfinishedTree(clock);
+    await caseGtc4_replaceTrueReplacesAndKeepsTheOldTree(clock);
+    await caseGtc4_aFinishedRootNeedsNoReplace(clock);
+    await caseGtc4_aFailedHistoryWriteStopsTheReplacement(clock);
+    await caseGtc4_goalAddUnderAFinishedRootReopensIt(clock);
+    await caseGtc4_thePausedReminderNamesReplaceTrue(clock);
     await caseSection6Fleet_unchangedIsSilentAndOneChangeSubmitsOnce(clock);
     await caseSection6Fleet_runningRowsAreNotAllHealthy(clock);
     await caseSection6Fleet_aFirstEverLaunchIsNotStale(clock);
@@ -17000,6 +17006,271 @@ async function caseGtc3_theWalkGoesOnPastACompletedPlanToABlockedOne(clock) {
     out.written[at("reason_cleared")].detail.startsWith("plan-p") && out.written[at("unblocked")].detail.startsWith("plan-o"), out.written);
   check(`${label}: task-1 is still active and po-2 pending`,
     out.nodes["task-1"].status === "active" && out.activeGoalId === "task-1" && out.nodes["po-2"].status === "pending", out.nodes);
+}
+
+// --- Goal tree curation Section 4: replacing a tree is deliberate, and a
+// replaced tree is kept ---
+
+// The history file goal_create appends a replaced tree to, resolved against
+// the launch directory the way the store is.
+const GOAL_HISTORY_FILE = `${HARNESS_CWD}/.agentic-goal-history.jsonl`;
+
+// A root titled "Ship the widget" with `children` under it. The root's status
+// is `rootStatus`, and each child is a makeGoalNode field set.
+function gtc4Tree(rootStatus, children = [], rootExtra = {}) {
+  return [
+    makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: rootStatus, title: "Ship the widget", objective: "Ship the widget", createdAt: T0 - 50000, ...rootExtra }),
+    ...children.map((n) => makeGoalNode({ createdAt: T0 - 40000, ...n })),
+  ];
+}
+
+// The store text, the in-memory tree as goal_status shows it, and the history
+// file, read together so a refusal can be checked against all three.
+async function gtc4Views(h) {
+  const views = await gtc3TreeViews(h);
+  return { ...views, storeBytes: h.fsMap.get(PERSONA_STORE_FILE), history: h.fsMap.get(GOAL_HISTORY_FILE) };
+}
+
+function gtc4HistoryLines(h) {
+  const text = h.fsMap.get(GOAL_HISTORY_FILE);
+  return text === undefined ? [] : text.split("\n").filter((l) => l.length > 0);
+}
+
+// The Tests line, first direction: an unfinished tree is not replaced without
+// replace: true. The refusal comes from the replace guard, and says so by
+// naming the root's title, the open-entry count and the way through. The
+// store bytes, the session's tree and the history file are all unchanged. A
+// replace value other than true or "true" is refused the same way.
+async function caseGtc4_theReplaceGuardRefusesAnUnfinishedTree(clock) {
+  console.log("\n=== Goal tree curation 4: goal_create over an unfinished tree without replace is refused ===");
+  clock.set(T0);
+  const h = await gtc3Harness("gtc4_guard_refuses", gtc4Tree("pending", [
+    { id: "plan-1", parentId: "root-1", kind: "plan", status: "pending", title: "Plan one" },
+  ]));
+  for (const [label, extra] of [["no replace", {}], ["replace: false", { replace: false }], ['replace: "false"', { replace: "false" }], ["replace: 1", { replace: 1 }]]) {
+    const before = await gtc4Views(h);
+    const decisionsBefore = getDecisions(h).length;
+    const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "Something new", ...extra });
+    const after = await gtc4Views(h);
+    const tag = `gtc4 guard (${label})`;
+    check(`${tag}: refused by the replace guard, naming the root's title, one open entry and replace: true`,
+      typeof res?.deny === "string" && res.deny.includes('"Ship the widget"') && res.deny.includes("1 entry") &&
+      res.deny.includes("replace: true") && res.deny.includes("goal_add") && !res.deny.includes("held by a live session"), res);
+    check(`${tag}: the store file is byte-identical`, after.storeBytes === before.storeBytes, { before: before.storeBytes, after: after.storeBytes });
+    check(`${tag}: the session's tree is unchanged`, after.shown === before.shown, { before: before.shown, after: after.shown });
+    check(`${tag}: no decision was written`, getDecisions(h).length === decisionsBefore, getDecisions(h).slice(decisionsBefore));
+    check(`${tag}: no history file was written`, after.history === undefined, after.history);
+  }
+
+  // The count names entries under the root that are not complete or
+  // abandoned, and nothing else: three open of five.
+  clock.set(T0);
+  const wide = await gtc3Harness("gtc4_guard_count", gtc4Tree("active", [
+    { id: "plan-a", parentId: "root-1", kind: "plan", status: "active", title: "Plan a" },
+    { id: "a-1", parentId: "plan-a", kind: "task", status: "blocked", title: "Task a1" },
+    { id: "a-2", parentId: "plan-a", kind: "task", status: "complete", title: "Task a2" },
+    { id: "plan-b", parentId: "root-1", kind: "plan", status: "paused", title: "Plan b" },
+    { id: "plan-c", parentId: "root-1", kind: "plan", status: "abandoned", title: "Plan c" },
+  ]));
+  const wideRes = await callTool(wide, { tool: "mcp__agentic-plugin__goal_create", objective: "Something new" });
+  check("gtc4 guard count: the refusal names the root's title and 3 open entries",
+    typeof wideRes?.deny === "string" && wideRes.deny.includes('"Ship the widget"') && wideRes.deny.includes("3 entries"), wideRes);
+
+  // The goal_edit root refusal points at the same way through.
+  const edit = await callTool(h, { tool: "mcp__agentic-plugin__goal_edit", nodeId: "root-1", action: "drop" });
+  check("gtc4 goal_edit root refusal: names goal_create with replace: true",
+    typeof edit?.deny === "string" && edit.deny.includes("goal_create with replace: true"), edit);
+}
+
+// The same call with replace: true replaces the tree, and the history file's
+// last line holds the whole replaced tree with the clock, the persona and the
+// reason. The string "true" reads the same as the boolean.
+async function caseGtc4_replaceTrueReplacesAndKeepsTheOldTree(clock) {
+  console.log("\n=== Goal tree curation 4: goal_create with replace: true replaces and keeps the old tree ===");
+  for (const [label, value] of [["boolean", true], ["string", "true"]]) {
+    clock.set(T0);
+    const h = await gtc3Harness(`gtc4_replace_${label}`, gtc4Tree("pending", [
+      { id: "plan-1", parentId: "root-1", kind: "plan", status: "pending", title: "Plan one" },
+    ]));
+    h.fsMap.set(GOAL_HISTORY_FILE, '{"earlier":true}\n');
+    const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "Something new", replace: value });
+    const state = getState(h);
+    const tag = `gtc4 replace (${label} true)`;
+    check(`${tag}: the call is accepted`, res?.deny === undefined && typeof res?.result === "string", res);
+    check(`${tag}: the tree is one new root carrying the new objective`,
+      state.goals.length === 1 && state.goals[0].parentId === null && state.goals[0].objective === "Something new", state.goals);
+    const lines = gtc4HistoryLines(h);
+    check(`${tag}: the history file gained exactly one line after the earlier one`, lines.length === 2 && lines[0] === '{"earlier":true}', lines);
+    let last = null;
+    try { last = JSON.parse(lines[lines.length - 1]); } catch { /* checked below */ }
+    check(`${tag}: the last line holds both old nodes`,
+      !!last && Array.isArray(last.goals) && last.goals.map((g) => g.id).join() === "root-1,plan-1", last);
+    check(`${tag}: the last line carries the reason, the persona and the clock`,
+      !!last && last.reason === "goal_create" && last.persona === "default" && last.timestamp === T0, last);
+  }
+}
+
+// The Tests line, second direction: a finished tree needs no replace, since a
+// guard that also refused a finished tree would stop every second goal. A
+// lone finished root writes no history line; a finished root with entries
+// under it writes one.
+async function caseGtc4_aFinishedRootNeedsNoReplace(clock) {
+  console.log("\n=== Goal tree curation 4: goal_create over a finished root needs no replace ===");
+  clock.set(T0);
+  const lone = await gtc3Harness("gtc4_finished_lone", gtc4Tree("complete"));
+  const loneRes = await callTool(lone, { tool: "mcp__agentic-plugin__goal_create", objective: "Next thing" });
+  check("gtc4 finished lone root: accepted with no replace", loneRes?.deny === undefined && getState(lone).goals[0]?.objective === "Next thing", { res: loneRes, goals: getState(lone).goals });
+  check("gtc4 finished lone root: no history file was written (the file is absent)", !lone.fsMap.has(GOAL_HISTORY_FILE), lone.fsMap.get(GOAL_HISTORY_FILE));
+
+  for (const rootStatus of ["complete", "abandoned"]) {
+    clock.set(T0);
+    const h = await gtc3Harness(`gtc4_finished_with_plans_${rootStatus}`, gtc4Tree(rootStatus, [
+      { id: "plan-1", parentId: "root-1", kind: "plan", status: "complete", title: "Plan one" },
+      { id: "plan-2", parentId: "root-1", kind: "plan", status: "abandoned", title: "Plan two" },
+    ]));
+    const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "Next thing" });
+    const tag = `gtc4 finished (${rootStatus}) root with plans`;
+    check(`${tag}: accepted with no replace`, res?.deny === undefined && getState(h).goals.length === 1 && getState(h).goals[0].objective === "Next thing", { res, goals: getState(h).goals });
+    const lines = gtc4HistoryLines(h);
+    let last = null;
+    try { last = JSON.parse(lines[0]); } catch { /* checked below */ }
+    check(`${tag}: one history line holding the three old nodes`,
+      lines.length === 1 && !!last && last.goals.map((g) => g.id).join() === "root-1,plan-1,plan-2", lines);
+  }
+
+  // No tree at all: nothing to replace, nothing to keep.
+  clock.set(T0);
+  const empty = await gtc3Harness("gtc4_no_tree", []);
+  const emptyRes = await callTool(empty, { tool: "mcp__agentic-plugin__goal_create", objective: "First thing" });
+  check("gtc4 no tree: accepted, and no history file written", emptyRes?.deny === undefined && !empty.fsMap.has(GOAL_HISTORY_FILE), { res: emptyRes, history: empty.fsMap.get(GOAL_HISTORY_FILE) });
+}
+
+// The Tests line: a failed history write stops the replacement, since a
+// replacement that cannot keep its copy is the loss this section stops. Each
+// of the append's three filesystem steps is made to fail in turn: the write,
+// the read of an existing file, and the existence check. The refusal is the
+// history append's, and says so. The control replaces a lone finished root
+// under the same refused write, which appends nothing and so goes through.
+async function caseGtc4_aFailedHistoryWriteStopsTheReplacement(clock) {
+  console.log("\n=== Goal tree curation 4: a failed history write stops the replacement ===");
+  const arms = [
+    ["write", (h) => h.setWriteRefusal((p) => p === GOAL_HISTORY_FILE)],
+    ["read", (h) => {
+      h.fsMap.set(GOAL_HISTORY_FILE, '{"earlier":true}\n');
+      const realRead = h.fake.fs.read;
+      h.fake.fs.read = (p, ...rest) => (p === GOAL_HISTORY_FILE ? Promise.reject(new Error("EIO: history read")) : realRead(p, ...rest));
+    }],
+    ["exists", (h) => {
+      const realExists = h.fake.fs.exists;
+      h.fake.fs.exists = (p) => (p === GOAL_HISTORY_FILE ? Promise.reject(new Error("EIO: history stat")) : realExists(p));
+    }],
+  ];
+  for (const [label, arm] of arms) {
+    clock.set(T0);
+    const h = await gtc3Harness(`gtc4_history_fails_${label}`, gtc4Tree("pending", [
+      { id: "plan-1", parentId: "root-1", kind: "plan", status: "active", title: "Plan one" },
+    ]));
+    arm(h);
+    const before = await gtc4Views(h);
+    const stateBefore = getState(h);
+    const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "Something new", replace: true });
+    const after = await gtc4Views(h);
+    const stateAfter = getState(h);
+    const tag = `gtc4 history ${label} fails`;
+    check(`${tag}: refused by the history append, saying the tree was not replaced`,
+      typeof res?.deny === "string" && res.deny.includes(".agentic-goal-history.jsonl") && res.deny.includes("not replaced") && res.deny.includes("EIO") === (label !== "write"), res);
+    check(`${tag}: the store file is byte-identical`, after.storeBytes === before.storeBytes, { before: before.storeBytes, after: after.storeBytes });
+    check(`${tag}: the session's tree is unchanged`, after.shown === before.shown, { before: before.shown, after: after.shown });
+    check(`${tag}: goals, activeGoalId and decisions are as they were`,
+      JSON.stringify(stateAfter.goals) === JSON.stringify(stateBefore.goals) && stateAfter.activeGoalId === "plan-1" &&
+      JSON.stringify(stateAfter.decisions) === JSON.stringify(stateBefore.decisions), { goals: stateAfter.goals, activeGoalId: stateAfter.activeGoalId });
+    check(`${tag}: the history file is as it was`, after.history === before.history, after.history);
+    // The in-memory tree is what the next persist writes, so a later write
+    // must still carry the old tree rather than a half-applied replacement.
+    await callTool(h, { tool: "mcp__agentic-plugin__goal_status" });
+    await callTool(h, { tool: "mcp__agentic-plugin__goal_add", title: "After", objective: "Added after the refusal", kind: "task", parentId: "plan-1" });
+    check(`${tag}: a later write still carries the old root and plan`,
+      ["root-1", "plan-1"].every((id) => getState(h).goals.some((g) => g.id === id)), getState(h).goals.map((g) => g.id));
+  }
+
+  clock.set(T0);
+  const c = await gtc3Harness("gtc4_history_fails_control", gtc4Tree("complete"));
+  c.setWriteRefusal((p) => p === GOAL_HISTORY_FILE);
+  const ok = await callTool(c, { tool: "mcp__agentic-plugin__goal_create", objective: "Next thing", replace: true });
+  check("gtc4 history fails control: a lone finished root is replaced under the same refused write, which it never reaches",
+    ok?.deny === undefined && getState(c).goals[0]?.objective === "Next thing" && c.fsWriteRefusals.length === 0, { ok, refusals: c.fsWriteRefusals });
+}
+
+// goal_add under a finished root reopens the root and touches no other node,
+// and the existing no-active-leaf branch activates the new plan. The control
+// is a refused goal_add under a complete root, which reopens nothing, and an
+// accepted goal_add under a pending root, which writes no root_reopened.
+async function caseGtc4_goalAddUnderAFinishedRootReopensIt(clock) {
+  console.log("\n=== Goal tree curation 4: goal_add under a finished root reopens the root ===");
+  for (const rootStatus of ["complete", "abandoned"]) {
+    clock.set(T0);
+    const h = await gtc3Harness(`gtc4_reopen_${rootStatus}`, gtc4Tree(rootStatus, [
+      { id: "plan-old", parentId: "root-1", kind: "plan", status: "complete", title: "Old plan" },
+      { id: "plan-gone", parentId: "root-1", kind: "plan", status: "abandoned", title: "Dropped plan" },
+    ], { blockedReason: "stale reason" }));
+    const beforeCount = getDecisions(h).length;
+    const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_add", title: "New plan", objective: "Do the next thing", kind: "plan" });
+    const state = getState(h);
+    const written = state.decisions.slice(beforeCount);
+    const root = state.goals.find((g) => g.id === "root-1");
+    const added = state.goals.find((g) => g.title === "New plan");
+    const tag = `gtc4 reopen (${rootStatus} root)`;
+    check(`${tag}: the call is accepted`, res?.deny === undefined, res);
+    check(`${tag}: the root is pending with no blockedReason`, root.status === "pending" && root.blockedReason === undefined, root);
+    check(`${tag}: the new plan is active and is the active entry`, added?.status === "active" && state.activeGoalId === added?.id, { added, activeGoalId: state.activeGoalId });
+    check(`${tag}: the old plans keep their statuses`,
+      state.goals.find((g) => g.id === "plan-old").status === "complete" && state.goals.find((g) => g.id === "plan-gone").status === "abandoned", state.goals);
+    const reopened = written.filter((d) => d.action === "root_reopened");
+    check(`${tag}: exactly one root_reopened decision, naming the root and its prior status`,
+      reopened.length === 1 && reopened[0].loop === "goal" && reopened[0].detail.includes("root-1") && reopened[0].detail.includes(rootStatus), written);
+    const reopenAt = written.findIndex((d) => d.action === "root_reopened");
+    check(`${tag}: root_reopened is written before the add`,
+      reopenAt !== -1 && reopenAt < written.findIndex((d) => d.action === "add"), written.map((d) => d.action));
+  }
+
+  // Control: a refused add under a complete root reopens nothing.
+  clock.set(T0);
+  const r = await gtc3Harness("gtc4_reopen_refused", gtc4Tree("complete", [
+    { id: "plan-old", parentId: "root-1", kind: "plan", status: "complete", title: "Old plan" },
+  ]));
+  const refusals = [
+    ["a parentId not in the tree", { parentId: "no-such-node" }],
+    ["a plan under a plan", { kind: "plan", parentId: "plan-old" }],
+    ["a planPath on a task", { planPath: "docs/plans/x.md" }],
+  ];
+  for (const [label, args] of refusals) {
+    const res = await callTool(r, { tool: "mcp__agentic-plugin__goal_add", title: "Refused", objective: "Should not land", ...args });
+    const state = getState(r);
+    check(`gtc4 reopen control, ${label}: refused, the root still complete, and no root_reopened anywhere in the log`,
+      typeof res?.deny === "string" && state.goals.find((g) => g.id === "root-1").status === "complete" && !state.decisions.some((d) => d.action === "root_reopened"),
+      { res, actions: state.decisions.map((d) => d.action) });
+  }
+
+  // Control: an add under a live root writes no root_reopened.
+  clock.set(T0);
+  const live = await gtc3Harness("gtc4_reopen_live_root", gtc4Tree("pending"));
+  const liveRes = await callTool(live, { tool: "mcp__agentic-plugin__goal_add", title: "New plan", objective: "Do the next thing", kind: "plan" });
+  check("gtc4 reopen control, a pending root: accepted and no root_reopened written",
+    liveRes?.deny === undefined && !getDecisions(live).some((d) => d.action === "root_reopened"), getDecisions(live).map((d) => d.action));
+}
+
+// The paused reminder names the way to replace the tree.
+async function caseGtc4_thePausedReminderNamesReplaceTrue(clock) {
+  console.log("\n=== Goal tree curation 4: the paused reminder names goal_create with replace: true ===");
+  clock.set(T0);
+  const h = await gtc3Harness("gtc4_paused_reminder", gtc4Tree("pending", [
+    { id: "plan-1", parentId: "root-1", kind: "plan", status: "paused", title: "Plan one", blockedReason: "paused by operator" },
+  ]));
+  const out = await h.handlers["prompt.submit"](h.fake, { text: "hello" }, async () => ({}));
+  const blocks = (out?.context ?? []).map(String);
+  const paused = blocks.find((b) => b.startsWith("Goal tree paused"));
+  check("gtc4 paused reminder: the block is injected and names goal_create with replace: true",
+    !!paused && paused.includes("goal_create with replace: true"), blocks);
 }
 
 // The heartbeat file is the supervisor's liveness instrument, and the supervisor

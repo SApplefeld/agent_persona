@@ -220,6 +220,7 @@ The yield logic is extracted into pure helpers `shouldYield(onDisk, mySessionId,
 The durable key is a **persona** (e.g. `default`, `refactorer`), not the session id.
 
 - **Store**: `.agentic-personas.json` in the project root.
+- **Goal history**: `.agentic-goal-history.jsonl` beside the store (append-only JSONL). Before `goal_create` replaces a tree that holds any entry besides its root, it appends the whole replaced tree there as one line. If that line cannot be written, the tree is not replaced. `goal_create` replaces a tree whose root is not complete or abandoned only when the call passes `replace: true`. Nothing in the plugin reads the file back. It is a recovery copy opened by hand.
 - **Heartbeat sidecar**: `.agentic-heartbeat.json` (separate file, separate concern).
 - **Yield sidecar**: `.agentic-yields.log` (append-only JSONL).
 - **Concurrency**: `activeSessionId` + monotonic `epoch` in the store. Heartbeat sidecar for liveness. Guarded write for safety.
@@ -273,6 +274,7 @@ Declared in `plugin.json` with defaults. Read as `options.<name>` in `register(o
 | `.agentic-personas.json` | Persona store (project root) |
 | `.agentic-heartbeat.json` | Heartbeat sidecar (project root) |
 | `.agentic-yields.log` | Yield sidecar, JSONL (project root) |
+| `.agentic-goal-history.jsonl` | Trees `goal_create` replaced, JSONL (project root). Written only, never read back |
 
 ## Supervisor
 

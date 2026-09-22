@@ -757,6 +757,10 @@ const commonsMeta = () => ({ turnStartedAt: sess.turnStartedAt, workdir: sess.wo
 const HEARTBEAT_FILENAME = ".agentic-heartbeat.json";
 const PERSONA_STORE_FILENAME = ".agentic-personas.json";
 const YIELD_LOG_FILENAME = ".agentic-yields.log";
+// goal_create appends each tree it replaces here, one JSON line per tree,
+// beside the store. It is a recovery copy opened by hand, and nothing in the
+// plugin reads it back.
+const GOAL_HISTORY_FILENAME = ".agentic-goal-history.jsonl";
 const workdirPathOf = (filename: string): string => {
   const root = sess.workdir;
   if (!root) return filename;
@@ -2447,7 +2451,8 @@ export const register: Register = async (on, options) => {
       name: "goal_create",
       description:
         "Create a new goal tree for this persona. The root carries the objective; the planner " +
-        "creates the plans under it at the next controller tick.",
+        "creates the plans under it at the next controller tick. A tree whose root is unfinished " +
+        "is replaced only with replace: true.",
       inputSchema: {
         type: "object",
         properties: {
@@ -2462,6 +2467,10 @@ export const register: Register = async (on, options) => {
           roadmapPath: {
             type: "string",
             description: "roadmapPath is an optional project-relative path to a roadmap file. The planner reads it at every planning event.",
+          },
+          replace: {
+            type: "boolean",
+            description: "replace: true replaces an unfinished tree. A replaced tree with entries is kept in .agentic-goal-history.jsonl.",
           },
         },
         required: ["objective"],
@@ -6666,8 +6675,46 @@ export const register: Register = async (on, options) => {
       }
       const maxRounds = Math.min(Math.max(parseInt(String((e as any).maxRounds || "10"), 10) || 10, 1), 50);
       const roadmapPath = String((e as any).roadmapPath || "").trim() || undefined;
+      // Arguments can arrive stringified, as maxRounds above can, so the
+      // string "true" counts. Any other value leaves replace unset.
+      const rawReplace = (e as any).replace;
+      const replace = rawReplace === true || rawReplace === "true";
+
+      // An unfinished tree, one whose root is neither complete nor abandoned,
+      // is replaced only when the call says so. A finished tree needs no
+      // replace, so starting the next goal after one completes stays one call.
+      const oldRoot = sess.state.goals.find((g) => g.parentId === null);
+      const isOpen = (g: GoalNode) => g.status !== "complete" && g.status !== "abandoned";
+      if (oldRoot && isOpen(oldRoot) && !replace) {
+        const openCount = sess.state.goals.filter((g) => g.parentId !== null && isOpen(g)).length;
+        toolErrorsThisTurn++;
+        return {
+          deny:
+            `The goal tree "${oldRoot.title}" is unfinished: ` +
+            `${openCount === 1 ? "1 entry under its root is" : `${openCount} entries under its root are`} not complete or abandoned. ` +
+            `Pass replace: true to replace the tree, or use goal_add to extend it.`,
+        };
+      }
 
       const now = Date.now();
+
+      // A tree holding any entry besides its root is copied to the history
+      // file before it is replaced. The copy comes first, so a replacement
+      // whose copy could not be written is refused and the tree stands.
+      if (sess.state.goals.some((g) => g.parentId !== null)) {
+        const line = JSON.stringify({ timestamp: now, persona: sess.persona, reason: "goal_create", goals: sess.state.goals });
+        try {
+          await appendLines($, workdirPathOf(GOAL_HISTORY_FILENAME), [line]);
+        } catch (err) {
+          toolErrorsThisTurn++;
+          return {
+            deny:
+              `The history copy in ${GOAL_HISTORY_FILENAME} could not be written, so the goal tree was not replaced: ` +
+              boundedText(safeErrorText(err)),
+          };
+        }
+      }
+
       const rootId = `root-${now.toString(36)}`;
       const root: GoalNode = {
         id: rootId,
@@ -6843,6 +6890,22 @@ export const register: Register = async (on, options) => {
         updatedAt: now,
         ...(planPath ? { planPath } : {}),
       };
+      // A node added under a finished root reopens the root, so the tree never
+      // holds live work under a root that reads finished. It runs after every
+      // refusal above, so a refused add reopens nothing, and it touches no
+      // other node: finished children stay finished.
+      if (root.status === "complete" || root.status === "abandoned") {
+        const priorStatus = root.status;
+        root.status = "pending";
+        root.blockedReason = undefined;
+        root.updatedAt = now;
+        sess.state.decisions.push({
+          timestamp: now,
+          loop: "goal",
+          action: "root_reopened",
+          detail: `${root.id} reopened from ${priorStatus} to pending for a new ${kind}`,
+        });
+      }
       sess.state.goals.push(newNode);
 
       sess.state.decisions.push({
@@ -6938,7 +7001,7 @@ export const register: Register = async (on, options) => {
       }
       if (node.parentId === null) {
         toolErrorsThisTurn++;
-        return { deny: "Cannot edit the root; goal_create replaces the whole tree instead." };
+        return { deny: "Cannot edit the root; goal_create with replace: true replaces the whole tree instead." };
       }
       const now = Date.now();
 
@@ -7946,7 +8009,7 @@ export const register: Register = async (on, options) => {
       // M5: when the tree is paused, inject a one-line reminder.
       const pausedNode = sess.state.goals.find((g) => g.status === "paused");
       if (pausedNode) {
-        const pausedBlock = `Goal tree paused: ${pausedNode.blockedReason || "paused by controller"}. Call goal_resume to continue or goal_create to replace.`;
+        const pausedBlock = `Goal tree paused: ${pausedNode.blockedReason || "paused by controller"}. Call goal_resume to continue or goal_create with replace: true to replace.`;
         contextBlocks.push(pausedBlock);
         try { $.ui.log(`Agentic: [GOAL TREE paused] injected`); } catch { /* non-fatal */ }
       } else if (sess.state.goals.length === 0) {
