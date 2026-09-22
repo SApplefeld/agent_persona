@@ -110,8 +110,9 @@ verbatim on every sighted reviewer dispatch.
   refused one item as built but unasked: the backlog entry on two inbox
   records that waited twelve and thirteen minutes, since no Goal sentence,
   Intent clause or acceptance bullet covers a controller inbox observation.
-  It leaves this changeset and is carried to `docs/backlog.md` out of band
-  as its own commit. The read declared three built items as serving the
+  It left this changeset at `938751d`; its text rests at
+  `.kit/scratch/supervisor-gaps/finishing/carried-inbox-wait-entry.md`
+  for the next plan's branch to carry to `docs/backlog.md` as its own commit. The read declared three built items as serving the
   Goal: the keeper's watch of a live supervisor whose handle cannot be
   opened (the Goal's "watches that supervisor"), the kill of the entry
   snapshot when the rebuild before TERM fails (the failure path of the
@@ -646,4 +647,4 @@ Steps 2 and 3: `review: performance, security, adversarial at fable, Workflow, e
 
 Minors for the Minor pass (`.kit/scratch/supervisor-gaps/finishing/minors.md`): adversarial's six (the decide order letting a same-poll request take the patient wait for a hung child, recorded for the supervisor-peer plan; the `fleet_restart` result wording, shared with security; `bin/Start-Persona.ps1`'s header saying `supervisor.out` is appended per run; a missing blank line in `docs/backlog.md`; an adopted run's output staying in the dead keeper's capture pair, deferred to the backlog; the `docs/README.md` index line, rewritten at archive).
 
-Live dispatches: step 4's goal read, `scope-adjudicator` at fable through the Agent tool over `d1ff322..315654f`.
+Step 4's goal read (`scope-adjudicator` at fable, Agent tool, over `d1ff322..315654f`) returned: nothing asked-but-unbuilt, one refuse and three declares, recorded in Standing Brief Amendments. No dispatch is live.
