@@ -100,6 +100,14 @@ const scratchEnvFile = join(scratchDir, 'keeper.env');
 // file at this path.
 writeFileSync(scratchEnvFile, '', 'utf8');
 
+// The credential every case that reaches a real write passes, since the write refuses to run
+// without one. Its user name is the "u" those cases pass as -User, and its password is a literal
+// the no-password-on-stdout pin searches for, withheld from every stub's record line.
+const suiteCredentialPassword = 'keeper-suite-secret';
+const scratchCredentialLines = [
+  `$suiteCredential = [pscredential]::new("u", (ConvertTo-SecureString "${suiteCredentialPassword}" -AsPlainText -Force))`,
+];
+
 // The hazard's source of truth is the ScheduledTasks module's own export list, read from the real
 // Windows PowerShell 5.1 at suite start (MODULE_EXPORT_READ_LINES below), never written here and
 // never derived from the registration script's text. Each export is classified by its verb alone,
@@ -191,8 +199,13 @@ function schedulerShadowLines(exports, { realReads = false, getScheduledTaskRetu
       );
     } else {
       lines.push(
-        '    param($TaskName, $TaskPath, $Action, $Trigger, $Principal, $Settings, [switch]$Confirm)',
-        `    $global:KeeperSuiteCalls.Add("${label} TaskName=$TaskName TaskPath=$TaskPath")`
+        // $User and $RunLevel are recorded so a case can read which account and run level a
+        // write carried. $Password is declared so it binds here and never lands in $args; the
+        // record carries only whether it was bound, never its value, so a script that dropped
+        // the -Password argument reds the bound pin while the no-password-on-stdout pin stays
+        // readable over the whole of what the run printed.
+        '    param($TaskName, $TaskPath, $Action, $Trigger, $Principal, $Settings, $User, $Password, $RunLevel, [switch]$Confirm)',
+        `    $global:KeeperSuiteCalls.Add("${label} TaskName=$TaskName TaskPath=$TaskPath User=$User RunLevel=$RunLevel PasswordBound=$($PSBoundParameters.ContainsKey('Password'))")`
       );
     }
     lines.push('}');
@@ -587,7 +600,7 @@ function assertDefinitionFields(fields, name, rosterPath, envFilePath, expectedS
   assert.equal(fields['trigger'], 'MSFT_TaskBootTrigger', 'trigger class');
   assert.equal(fields['startupDelay'], expectedStartupDelay, 'startupDelay');
   assert.equal(fields['account'], defaultUser, 'account');
-  assert.equal(fields['logon'], 'S4U', 'logon');
+  assert.equal(fields['logon'], 'Password', 'logon');
   assert.equal(fields['runlevel'], 'Limited', 'runlevel');
   assert.equal(fields['restartCount'], '999', 'restartCount');
   assert.equal(fields['restartInterval'], 'PT1M', 'restartInterval');
@@ -1403,7 +1416,8 @@ assertNameRefused('alpha\n', 'trailing-newline');
     '$ErrorActionPreference = "Stop"',
     `. "${scriptPath}"`,
     '$entries = @([pscustomobject]@{name="alpha";enabled=$true})',
-    `Register-PersonaTasks -Entries $entries -RepoRoot "${stubRepoRoot}" -Roster "${stubRoster}" -EnvFile "${scratchEnvFile}" -User "u" -IsElevated $true -ExistingTaskNames @()`,
+    ...scratchCredentialLines,
+    `Register-PersonaTasks -Entries $entries -RepoRoot "${stubRepoRoot}" -Roster "${stubRoster}" -EnvFile "${scratchEnvFile}" -User "u" -Credential $suiteCredential -IsElevated $true -ExistingTaskNames @()`,
     'Write-Output "NO_THROW"',
     'Write-Output "=== CALLS ==="',
     '$script:Calls | ForEach-Object { Write-Output $_ }',
@@ -1462,7 +1476,8 @@ assertNameRefused('alpha\n', 'trailing-newline');
     '    [pscustomobject]@{ name = "gamma"; enabled = $false },',
     '    [pscustomobject]@{ name = "delta"; enabled = $false }',
     ')',
-    `Register-PersonaTasks -Entries $entries -RepoRoot "${stubRepoRoot}" -Roster "${stubRoster}" -EnvFile "${scratchEnvFile}" -User "u" -IsElevated $true -Prune -Start`,
+    ...scratchCredentialLines,
+    `Register-PersonaTasks -Entries $entries -RepoRoot "${stubRepoRoot}" -Roster "${stubRoster}" -EnvFile "${scratchEnvFile}" -User "u" -Credential $suiteCredential -IsElevated $true -Prune -Start`,
     'Write-Output "=== CALLS ==="',
     '$script:Calls | ForEach-Object { Write-Output $_ }',
   ];
@@ -1617,8 +1632,9 @@ function runExistingTaskReadCase(category, errorId) {
     '$ErrorActionPreference = "Stop"',
     `. "${scriptPath}"`,
     '$entries = @([pscustomobject]@{name="alpha";enabled=$true})',
+    ...scratchCredentialLines,
     'try {',
-    `    Register-PersonaTasks -Entries $entries -RepoRoot "${stubRepoRoot}" -Roster "${stubRoster}" -EnvFile "${scratchEnvFile}" -User "u" -IsElevated $true`,
+    `    Register-PersonaTasks -Entries $entries -RepoRoot "${stubRepoRoot}" -Roster "${stubRoster}" -EnvFile "${scratchEnvFile}" -User "u" -Credential $suiteCredential -IsElevated $true`,
     '    Write-Output "NO_THROW"',
     '} catch {',
     '    Write-Output ("THREW: " + $_.Exception.Message)',
@@ -1835,6 +1851,148 @@ assertBareDriveRootRefused('EnvFile');
   record('extension: -User reaches New-ScheduledTaskPrincipal -UserId on the built definition', () => {
     assert.equal(result.status, 0, 'exit code; stderr: ' + result.stderr);
     assert.ok(result.stdout.includes('USERID=keeper-probe-user'), 'stdout: ' + result.stdout);
+  });
+}
+
+// The Password logon type at the write. One enabled entry that exists (the update branch) and one
+// that does not (the register branch), so both cmdlets are driven in one call, with every
+// ScheduledTasks cmdlet shadowed. The stubs record the account and run level each write carried
+// and never record the password, so the pin that the password is absent from stdout reads the
+// whole of what the run printed.
+{
+  const lines = [
+    '$ErrorActionPreference = "Stop"',
+    `. "${scriptPath}"`,
+    '$entries = @(',
+    '    [pscustomobject]@{ name = "alpha"; enabled = $true },',
+    '    [pscustomobject]@{ name = "beta"; enabled = $true }',
+    ')',
+    ...scratchCredentialLines,
+    `Register-PersonaTasks -Entries $entries -RepoRoot "${stubRepoRoot}" -Roster "${stubRoster}" -EnvFile "${scratchEnvFile}" -User "u" -Credential $suiteCredential -IsElevated $true -ExistingTaskNames @("AgentPersona-alpha")`,
+    'Write-Output "=== CALLS ==="',
+    '$script:Calls | ForEach-Object { Write-Output $_ }',
+  ];
+  const result = runScratchScript(lines);
+  record('extension: a register carries -User and the definition\'s run level, and an update carries -User', () => {
+    assert.equal(result.status, 0, 'exit code; stderr: ' + result.stderr);
+    assert.ok(result.stdout.includes('SET TaskName=AgentPersona-alpha TaskPath=\\ User=u RunLevel='), 'stdout: ' + result.stdout);
+    assert.ok(result.stdout.includes('REGISTER TaskName=AgentPersona-beta TaskPath=\\ User=u RunLevel=Limited'), 'stdout: ' + result.stdout);
+  });
+  record('extension: -Password is bound at both the register and the update call', () => {
+    assert.ok(/SET TaskName=AgentPersona-alpha [^\n]*PasswordBound=True/.test(result.stdout), 'stdout: ' + result.stdout);
+    assert.ok(/REGISTER TaskName=AgentPersona-beta [^\n]*PasswordBound=True/.test(result.stdout), 'stdout: ' + result.stdout);
+  });
+  record('extension: the password value reaches nothing the run prints', () => {
+    assert.ok(!result.stdout.includes(suiteCredentialPassword), 'stdout: ' + result.stdout);
+    assert.ok(!result.stderr.includes(suiteCredentialPassword), 'stderr: ' + result.stderr);
+  });
+}
+
+// The credential refusals, each before any scheduler read or write is recorded. The roster here
+// puts a disabled entry whose task exists ahead of the enabled one, so a refusal that sat inside
+// the entry loop would land after that entry's Disable call; the pin is that no call of any kind
+// was recorded. The disabled, absent and orphan branches take no credential, which the earlier
+// cases that pass none already pin by running green.
+{
+  const lines = [
+    '$ErrorActionPreference = "Stop"',
+    `. "${scriptPath}"`,
+    '$entries = @(',
+    '    [pscustomobject]@{ name = "gamma"; enabled = $false },',
+    '    [pscustomobject]@{ name = "alpha"; enabled = $true }',
+    ')',
+    'try {',
+    `    Register-PersonaTasks -Entries $entries -RepoRoot "${stubRepoRoot}" -Roster "${stubRoster}" -EnvFile "${scratchEnvFile}" -User "u" -IsElevated $true -ExistingTaskNames @("AgentPersona-gamma")`,
+    '    Write-Output "NO_THROW"',
+    '} catch {',
+    '    Write-Output ("THREW: " + $_.Exception.Message)',
+    '}',
+    'Write-Output "=== CALLS ==="',
+    '$script:Calls | ForEach-Object { Write-Output $_ }',
+  ];
+  const result = runScratchScript(lines);
+  record('extension: a real run with an enabled entry and no -Credential is refused naming the parameter, before any scheduler call', () => {
+    assert.equal(result.status, 0, 'exit code; stderr: ' + result.stderr);
+    const collapsed = result.stdout.replace(/\s+/g, ' ');
+    assert.ok(collapsed.includes('THREW: Register-PersonaTasks: -Credential is required to register or update AgentPersona-alpha'), 'stdout: ' + result.stdout);
+    const calls = (result.stdout.split('=== CALLS ===')[1] || '').trim();
+    assert.equal(calls, '', 'no scheduler call was recorded, the Disable on gamma included: ' + calls);
+  });
+}
+
+// A bound credential's two checks run under -WhatIf too, so a dry run refuses a wrong credential
+// rather than printing "would register" for a run that would throw.
+{
+  const lines = [
+    '$ErrorActionPreference = "Stop"',
+    `. "${scriptPath}"`,
+    '$entries = @([pscustomobject]@{name="alpha";enabled=$true})',
+    `$otherCredential = [pscredential]::new("someone-else", (ConvertTo-SecureString "${suiteCredentialPassword}" -AsPlainText -Force))`,
+    'try {',
+    `    Register-PersonaTasks -Entries $entries -RepoRoot "${stubRepoRoot}" -Roster "${stubRoster}" -EnvFile "${scratchEnvFile}" -User "u" -Credential $otherCredential -IsElevated $false -WhatIf -ExistingTaskNames @()`,
+    '    Write-Output "NO_THROW"',
+    '} catch {',
+    '    Write-Output ("THREW: " + $_.Exception.Message)',
+    '}',
+  ];
+  const result = runScratchScript(lines);
+  record('extension: under -WhatIf a -Credential for another account is still refused, and nothing is printed as "would register"', () => {
+    assert.equal(result.status, 0, 'exit code; stderr: ' + result.stderr);
+    const collapsed = result.stdout.replace(/\s+/g, ' ');
+    assert.ok(collapsed.includes("THREW: Register-PersonaTasks: -Credential names 'someone-else' but -User is 'u'"), 'stdout: ' + result.stdout);
+    assert.ok(!collapsed.includes('would register'), 'stdout: ' + result.stdout);
+  });
+}
+
+// An empty password is a credential Get-Credential hands back for an empty entry, so it is
+// refused by name rather than handed to the cmdlet.
+{
+  const lines = [
+    '$ErrorActionPreference = "Stop"',
+    `. "${scriptPath}"`,
+    '$entries = @([pscustomobject]@{name="alpha";enabled=$true})',
+    '$emptyCredential = [pscredential]::new("u", [securestring]::new())',
+    'try {',
+    `    Register-PersonaTasks -Entries $entries -RepoRoot "${stubRepoRoot}" -Roster "${stubRoster}" -EnvFile "${scratchEnvFile}" -User "u" -Credential $emptyCredential -IsElevated $true -ExistingTaskNames @()`,
+    '    Write-Output "NO_THROW"',
+    '} catch {',
+    '    Write-Output ("THREW: " + $_.Exception.Message)',
+    '}',
+    'Write-Output "=== CALLS ==="',
+    '$script:Calls | ForEach-Object { Write-Output $_ }',
+  ];
+  const result = runScratchScript(lines);
+  record('extension: a -Credential with an empty password is refused by name, before any scheduler call', () => {
+    assert.equal(result.status, 0, 'exit code; stderr: ' + result.stderr);
+    const collapsed = result.stdout.replace(/\s+/g, ' ');
+    assert.ok(collapsed.includes('THREW: Register-PersonaTasks: -Credential carries an empty password'), 'stdout: ' + result.stdout);
+    const calls = (result.stdout.split('=== CALLS ===')[1] || '').trim();
+    assert.equal(calls, '', 'no scheduler call was recorded: ' + calls);
+  });
+}
+
+{
+  const lines = [
+    '$ErrorActionPreference = "Stop"',
+    `. "${scriptPath}"`,
+    '$entries = @([pscustomobject]@{name="alpha";enabled=$true})',
+    `$otherCredential = [pscredential]::new("someone-else", (ConvertTo-SecureString "${suiteCredentialPassword}" -AsPlainText -Force))`,
+    'try {',
+    `    Register-PersonaTasks -Entries $entries -RepoRoot "${stubRepoRoot}" -Roster "${stubRoster}" -EnvFile "${scratchEnvFile}" -User "u" -Credential $otherCredential -IsElevated $true -ExistingTaskNames @()`,
+    '    Write-Output "NO_THROW"',
+    '} catch {',
+    '    Write-Output ("THREW: " + $_.Exception.Message)',
+    '}',
+    'Write-Output "=== CALLS ==="',
+    '$script:Calls | ForEach-Object { Write-Output $_ }',
+  ];
+  const result = runScratchScript(lines);
+  record('extension: a -Credential for another account than -User is refused naming both, before any scheduler call', () => {
+    assert.equal(result.status, 0, 'exit code; stderr: ' + result.stderr);
+    const collapsed = result.stdout.replace(/\s+/g, ' ');
+    assert.ok(collapsed.includes("THREW: Register-PersonaTasks: -Credential names 'someone-else' but -User is 'u'"), 'stdout: ' + result.stdout);
+    const calls = (result.stdout.split('=== CALLS ===')[1] || '').trim();
+    assert.equal(calls, '', 'no scheduler call was recorded: ' + calls);
   });
 }
 

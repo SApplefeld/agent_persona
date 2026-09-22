@@ -2,7 +2,8 @@
 # the roster.
 #
 #   .\bin\Register-PersonaTasks.ps1 [-Roster <path>] [-EnvFile <path>] [-RepoRoot <path>]
-#       [-User <name>] [-StartupDelay <ISO 8601 duration>] [-Prune] [-Start] [-WhatIf]
+#       [-User <name>] [-Credential <pscredential>] [-StartupDelay <ISO 8601 duration>]
+#       [-Prune] [-Start] [-WhatIf]
 #
 # Requires an elevated PowerShell session, the same requirement
 # D:/discord-channels/install/Register-BrokerTask.ps1 carries for the same reason: registering a
@@ -35,6 +36,17 @@
 # The value is an ISO 8601 duration of hours, minutes and seconds; the default is PT2M, written
 # once as $KeeperDefaultStartupDelay below.
 #
+# Every task is registered with the Password logon type, which is what lets a persona's git reach
+# Windows Credential Manager, Git Credential Manager's store and the Azure CLI token cache. Those
+# all sit behind the account's user-scope DPAPI key, and Windows unlocks that key at task start
+# only when the scheduler holds the account's password. Under the S4U logon the broker's task uses,
+# no password is stored and user-scope DPAPI returns access denied, so every credential store the
+# operator's own session reads is unreadable to the persona. -Credential carries that password.
+# Left unbound on a real run from an elevated session, the script prompts for it with
+# Get-Credential for -User; it is never taken from the command line, a file or the environment.
+# -WhatIf never prompts, since it writes nothing. The cost of this logon type is that a change to
+# the account's password stops every task until this script runs again.
+#
 # [CmdletBinding()] is what makes an unknown switch a binding error (exit 1) rather than a value
 # that lands in $args while the body runs anyway.
 [CmdletBinding()]
@@ -43,6 +55,7 @@ param(
     [string]$EnvFile = 'D:/personas/keeper.env',
     [string]$RepoRoot,
     [string]$User = [Security.Principal.WindowsIdentity]::GetCurrent().Name,
+    [pscredential]$Credential,
     [string]$StartupDelay,
     [switch]$Prune,
     [switch]$Start,
@@ -304,10 +317,15 @@ function Get-PersonaTaskDefinitions {
         # Held back so the channel broker's own boot task, which fires at PT30S, is listening
         # before the first persona child attaches its Discord channel.
         $trigger.Delay = $StartupDelay
-        # S4U and RunLevel Limited for the same reasons the broker's own comment gives: no stored
-        # password, no interactive desktop, and an elevated task would write files this repo's own
-        # tree does not expect an Administrators-owned file inside.
-        $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType S4U -RunLevel Limited
+        # Password rather than the broker's S4U, for the reason the header gives: only a logon the
+        # scheduler holds the password for unlocks the account's user-scope DPAPI key, and every
+        # credential store a persona's git reads sits behind that key. RunLevel Limited for the
+        # reason the broker's own comment gives: an elevated task would write files this repo's
+        # own tree does not expect an Administrators-owned file inside. This object is what -WhatIf
+        # prints and what the write below reads its account and run level from; the password
+        # itself reaches only the cmdlet call, from -Credential, since a principal object cannot
+        # carry one.
+        $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Password -RunLevel Limited
         $settings = New-ScheduledTaskSettingsSet `
             -RestartCount 999 `
             -RestartInterval (New-TimeSpan -Minutes 1) `
@@ -384,6 +402,27 @@ unregister would take a persona's task away with no roster change behind it, so 
 on every run rather than a side effect of a plain registration pass. The orphan count is printed
 before any of them are removed, and each removal is named as it happens, so a run that is
 interrupted partway still leaves a record of what it meant to do and what it reached.
+
+$Credential is needed only where the roster carries an enabled entry, so a roster of disabled
+entries and a bare -Prune pass run without one exactly as before. Where one is needed it is
+checked right after the elevation guard and before any scheduler read or write, since a refusal
+inside the entry loop would land after a Disable-ScheduledTask on an earlier disabled entry and
+leave the run half-applied under a message that reads as a pre-write refusal. A missing
+credential is refused on a real run only, since -WhatIf writes nothing. A bound credential is
+checked under -WhatIf too, so a dry run with a wrong one refuses rather than printing "would
+register" for a run that would throw. The two checks on a bound credential: its user name must
+be $User, compared ignoring case since Windows account names do, because the principal every
+definition prints carries $User and a credential for another account would register a task whose
+printed block names one account and whose stored logon is another's; and its password must not
+be empty, since Get-Credential returns a credential for an empty entry and the cmdlets would
+otherwise be handed one. Register takes the password with -User and the definition's own run
+level; Set takes it with -User alone, since Set-ScheduledTask offers no -RunLevel in that
+parameter set and the task it updates keeps the run level it was registered with. The password
+is read off the credential at each call and is assigned to no variable of this script's, and no
+output line of this script's carries it. It does reach the cmdlet's bound parameters, which is
+the module's only interface, so it can surface where PowerShell records those: module logging
+(event 4103) where a policy turns it on, and the $Error record a failed call leaves in the
+session.
 #>
 function Register-PersonaTasks {
     param(
@@ -394,6 +433,7 @@ function Register-PersonaTasks {
         [Parameter(Mandatory)][string]$Roster,
         [Parameter(Mandatory)][string]$EnvFile,
         [Parameter(Mandatory)][string]$User,
+        [pscredential]$Credential,
         [switch]$Prune,
         [switch]$Start,
         [switch]$WhatIf,
@@ -407,6 +447,25 @@ function Register-PersonaTasks {
             "(right-click PowerShell, 'Run as Administrator'). Registering a scheduled task under " +
             "the Task Scheduler root fails without it, with an access-denied error that does not " +
             "say why."
+    }
+
+    $enabledTaskNames = @($Entries | Where-Object { $_.enabled } | ForEach-Object { "AgentPersona-$($_.name)" })
+    if ($enabledTaskNames.Count -gt 0) {
+        if ($null -ne $Credential) {
+            if (-not [string]::Equals($Credential.UserName, $User, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Register-PersonaTasks: -Credential names '$($Credential.UserName)' but " +
+                    "-User is '$User'; the task's account and its stored logon must be the " +
+                    "same account, spelled the same way, machine or domain prefix included."
+            }
+            if ([string]::IsNullOrEmpty($Credential.GetNetworkCredential().Password)) {
+                throw "Register-PersonaTasks: -Credential carries an empty password, which the " +
+                    "Task Scheduler cannot store a logon under."
+            }
+        } elseif (-not $WhatIf) {
+            throw "Register-PersonaTasks: -Credential is required to register or update " +
+                "$($enabledTaskNames[0]) and every other enabled entry's task, since a task with " +
+                "the Password logon type cannot be written without the account's password."
+        }
     }
 
     $definitions = Get-PersonaTaskDefinitions -Entries $Entries -RepoRoot $RepoRoot -Roster $Roster `
@@ -455,13 +514,15 @@ function Register-PersonaTasks {
             } else {
                 if ($existing -contains $taskName) {
                     Set-ScheduledTask -TaskName $taskName -TaskPath '\' -Action $definition.Action `
-                        -Trigger $definition.Trigger -Principal $definition.Principal `
-                        -Settings $definition.Settings | Out-Null
+                        -Trigger $definition.Trigger -Settings $definition.Settings `
+                        -User $definition.Principal.UserId `
+                        -Password $Credential.GetNetworkCredential().Password | Out-Null
                     Write-Output "updated $taskName"
                 } else {
                     Register-ScheduledTask -TaskName $taskName -TaskPath '\' -Action $definition.Action `
-                        -Trigger $definition.Trigger -Principal $definition.Principal `
-                        -Settings $definition.Settings | Out-Null
+                        -Trigger $definition.Trigger -Settings $definition.Settings `
+                        -User $definition.Principal.UserId -RunLevel $definition.Principal.RunLevel `
+                        -Password $Credential.GetNetworkCredential().Password | Out-Null
                     Write-Output "registered $taskName"
                 }
                 # Enable-ScheduledTask costs nothing on a task that is already enabled, and it
@@ -544,8 +605,25 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         $entries = Read-PersonaRoster -Path $rosterResolved
 
+        # The prompt is gated on elevation as well as on -WhatIf, so an unelevated real run meets
+        # Register-PersonaTasks's own elevation refusal rather than a password prompt it would
+        # then fail after, and on the roster carrying an enabled entry, so a roster of disabled
+        # entries or a bare -Prune pass never asks for a password it would not use.
+        # Get-Credential is the one place the password enters: it is never a string parameter of
+        # this script.
+        $hasEnabledEntry = @($entries | Where-Object { $_.enabled }).Count -gt 0
+        if (-not $WhatIf -and $null -eq $Credential -and $hasEnabledEntry -and (Test-IsElevated)) {
+            $Credential = Get-Credential -UserName $User -Message (
+                "Password for $User, stored by the Task Scheduler so each AgentPersona-* task " +
+                "runs under a logon that unlocks this account's credential stores.")
+            if ($null -eq $Credential) {
+                throw "Register-PersonaTasks: no credential was entered, so nothing was registered or updated."
+            }
+        }
+
         Register-PersonaTasks -Entries $entries -RepoRoot $repoRootResolved -Roster $rosterResolved `
-            -EnvFile $envFileResolved -User $User -StartupDelay $StartupDelay -Prune:$Prune -Start:$Start -WhatIf:$WhatIf
+            -EnvFile $envFileResolved -User $User -Credential $Credential -StartupDelay $StartupDelay `
+            -Prune:$Prune -Start:$Start -WhatIf:$WhatIf
     } catch {
         # Console.Error.WriteLine, not Write-Error: Write-Error under $ErrorActionPreference =
         # 'Stop' raises a terminating error of its own, which skips the exit 1 below entirely (the
