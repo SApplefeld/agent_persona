@@ -2010,8 +2010,9 @@ stop_child() {
   # checked against reality. A snapshot taken after killing risks a
   # recycled pid too (Windows reuses pids quickly and keeps
   # ParentProcessId associations after a process exits) - so this list is
-  # fixed once, before anything is signaled, and is the same list checked
-  # and killed at every phase below.
+  # fixed before anything is signaled, and is the same list checked and
+  # killed at every phase below. The one rebuild is the patient wait's,
+  # below, which still sits before the first signal.
   #
   # A Windows walk from the wrapper does not reach the child, so the snapshot
   # is the merged one `build_stop_snapshot` builds from the record the refresh
@@ -2101,10 +2102,11 @@ stop_child() {
   # read as busy would hold its persona for the whole cap. The wait ends on
   # the first of three: the child exits, the reader answers idle, or
   # SUPERVISOR_STOP_BUSY_CAP_MS has passed since the input closed. On the
-  # last two, TERM follows at once with no further grace, since the ordinary
-  # grace has already run. Each exit lands on the same check below the EOF
-  # loop reaches, so a child that exits inside the wait is verified dead and
-  # reported on the eof path as one that exited inside the grace is.
+  # last two, TERM follows once the tree snapshot is rebuilt, with no further
+  # grace, since the ordinary grace has already run. Each exit lands on the
+  # same check below the EOF loop reaches, so a child that exits inside the
+  # wait is verified dead and reported on the eof path as one that exited
+  # inside the grace is.
   if [ "$label" = "restart_passive" ] && kill -0 "$pid" 2>/dev/null; then
     local turn waited_ms left_ms
     turn=$(child_turn_state "${OUT:-}")
@@ -2134,6 +2136,26 @@ stop_child() {
           break
         fi
       done
+      # A wait that ends with the child alive, on idle or on the cap, has let
+      # the child run tool calls for up to the cap since the entry snapshot
+      # was built, and each of those spawned processes the entry never saw.
+      # Nothing has been signaled yet, so the rule above (one list, fixed
+      # before any signal) still holds, and the list is rebuilt here, at the
+      # last point before the TERM. A wait the child's own exit ended keeps
+      # the entry snapshot, as the ordinary EOF exit does, since a walk after
+      # an exit reads recycled pids.
+      if kill -0 "$pid" 2>/dev/null; then
+        refresh_child_tree
+        build_stop_snapshot "$label"
+        snap_rc=$?
+        snapshot="$STOP_SNAPSHOT_BUILT"
+        if [ "$snap_rc" -ne 0 ]; then
+          log "STOP[$label]: tree not verified after the patient wait (the walk did not complete, rc=$snap_rc) - stop relies on the coproc's own pid alone"
+        else
+          log "STOP[$label]: the tree snapshot was rebuilt after the wait, before any signal"
+        fi
+        LAST_STOP_SNAPSHOT="$snapshot"
+      fi
     fi
   fi
   if ! kill -0 "$pid" 2>/dev/null; then

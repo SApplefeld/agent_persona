@@ -394,14 +394,16 @@ const cases = [
     assert.equal(run(p), 'busy');
   }],
 
-  ['an empty-string clock argument falls back to real time: a record ten seconds old by the wall clock reads busy (the idle direction would pass whether or not the fallback worked)', () => {
+  ['an empty-string clock argument falls back to real time: a record six minutes old by the wall clock reads idle (the busy direction would pass whether or not the fallback worked)', () => {
     // The record's own timestamp is set relative to real Date.now(), not the
-    // suite's fixed 2023 CLOCK, so the verdict actually turns on the
-    // fallback: a stale 2023 mtime would read idle regardless of what
-    // parseClock('') did, which is why the idle direction cannot pin this.
-    const youngTs = new Date(Date.now() - 10000).toISOString();
-    const p = writeStream('empty-clock-busy-stream', [assistantTextTs(youngTs)], { mtimeMs: CLOCK - 360000 });
-    assert.equal(run(p, ''), 'busy');
+    // suite's fixed 2023 CLOCK, so the verdict turns on the fallback. Idle is
+    // the direction that discriminates: a parseClock('') that returned 0
+    // instead of Date.now() would put the clock decades behind the record,
+    // and a hugely negative age reads busy through the ordinary comparison,
+    // so a young record asserting busy would pass either way.
+    const oldTs = new Date(Date.now() - 360000).toISOString();
+    const p = writeStream('empty-clock-idle-stream', [assistantTextTs(oldTs)], { mtimeMs: Date.now() });
+    assert.equal(run(p, ''), 'idle');
   }],
 
   ['a text-only record whose own timestamp is six minutes AHEAD of the clock argument reads busy: a negative age is a young record, not a discarded implausible one', () => {
@@ -416,18 +418,13 @@ const cases = [
   // the clock roughly fifty-five years behind the record, which reads as a
   // hugely negative age -- wrongly busy under the ordinary comparison,
   // whatever the record's true age. Falling back to Date.now() instead of
-  // trusting the mis-scaled value is the guard. The pair below pins the
-  // discrimination: a seconds-valued clock against real time still reads
-  // busy for a genuinely young record, and ordinary skew against a record
-  // written an instant ago still reads busy too.
-  ['a seconds-valued clock against a record timestamped ten seconds before real time reads busy, matching what a correct millisecond clock would give', () => {
-    const tenSecondsAgo = new Date(Date.now() - 10000).toISOString();
-    const p = writeStream('seconds-clock', [assistantTextTs(tenSecondsAgo)], { mtimeMs: CLOCK - 360000 });
-    // A caller reaching for `date +%s` (every clock read in bin/supervise.sh)
-    // passes seconds. Falling back to Date.now() instead of trusting the
-    // mis-scaled value as milliseconds is what makes this busy rather than
-    // fifty-five years stale.
-    assert.equal(run(p, Math.floor(Date.now() / 1000)), 'busy');
+  // trusting the mis-scaled value is the guard, and an old record is what
+  // pins it: the guard working gives idle, while trusting the seconds value
+  // gives busy. A young record reads busy either way and pins nothing.
+  ['a seconds-valued clock against a record timestamped six minutes before real time reads idle, matching what a correct millisecond clock would give', () => {
+    const sixMinutesAgo = new Date(Date.now() - 360000).toISOString();
+    const p = writeStream('seconds-clock', [assistantTextTs(sixMinutesAgo)], { mtimeMs: Date.now() });
+    assert.equal(run(p, Math.floor(Date.now() / 1000)), 'idle');
   }],
 
   ['a record timestamped a moment after the clock is still young, so it reads busy', () => {
