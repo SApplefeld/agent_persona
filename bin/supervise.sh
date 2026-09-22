@@ -191,6 +191,12 @@ if ! positive_number "$SUPERVISOR_PS_BOUND_S"; then
 fi
 
 SUPERVISOR_STOP_GRACE_MS="${supervisorStopGraceMs:-60000}"
+# The cap on how long a requested restart (the restart_passive label in
+# stop_child) keeps waiting past the grace for a child that is inside a turn,
+# measured from the moment its input is closed. Eleven minutes: the harness
+# caps one tool call at ten minutes, and the extra minute covers the reply the
+# model writes once that call returns. Only that one label reads it.
+SUPERVISOR_STOP_BUSY_CAP_MS="${supervisorStopBusyCapMs:-660000}"
 SUPERVISOR_MIN_RUN_MS="${supervisorMinRunMs:-120000}"
 SUPERVISOR_CRASH_LIMIT="${supervisorCrashLimit:-3}"
 SUPERVISOR_MAX_RESTARTS_PER_HOUR="${supervisorMaxRestartsPerHour:-6}"
@@ -264,13 +270,18 @@ fi
 #
 # The stop grace and the poll interval are the two the consumer divides by
 # 1000, so they take the 1000 minimum; the minimum run time is compared in
-# milliseconds as written and stays on the plain rule.
+# milliseconds as written and stays on the plain rule. The stop's busy cap
+# takes the same 1000 minimum as the grace it extends.
 if ! positive_number "$SUPERVISOR_PRIMING_WAIT_S"; then
   echo "ERROR: supervisorPrimingWaitS '$SUPERVISOR_PRIMING_WAIT_S' is not a whole number of seconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
   exit 1
 fi
 if ! positive_number "$SUPERVISOR_STOP_GRACE_MS" 1000; then
   echo "ERROR: supervisorStopGraceMs '$SUPERVISOR_STOP_GRACE_MS' is not a whole number of milliseconds of at least 1000, written with digits only, no leading zero and at most 9 digits. The stop grace is divided by 1000, so anything smaller is a zero-second grace." >&2
+  exit 1
+fi
+if ! positive_number "$SUPERVISOR_STOP_BUSY_CAP_MS" 1000; then
+  echo "ERROR: supervisorStopBusyCapMs '$SUPERVISOR_STOP_BUSY_CAP_MS' is not a whole number of milliseconds of at least 1000, written with digits only, no leading zero and at most 9 digits. The busy cap is measured against a poll that runs every five seconds, so anything smaller cannot extend a wait." >&2
   exit 1
 fi
 if ! positive_number "$SUPERVISOR_MIN_RUN_MS"; then
@@ -1751,6 +1762,7 @@ build_stop_snapshot() {
   local label="$1"
   local pid="${CHILD_LAUNCH_PID:-}"
   STOP_SNAPSHOT_BUILT=""
+  STOP_SNAPSHOT_WRAPPER_WINPID=""
   local record_state
   record_state=$(child_tree_record_state)
   if [ "$record_state" != "whole" ]; then
@@ -1761,6 +1773,9 @@ build_stop_snapshot() {
   if [ -n "$pid" ]; then
     wrapper_winpid=$(resolve_windows_pid "$pid")
   fi
+  # The wrapper's Windows pid this build walked from, for a caller that
+  # compares a later resolve against the pid its list was walked from.
+  STOP_SNAPSHOT_WRAPPER_WINPID="$wrapper_winpid"
   if [ -n "$wrapper_winpid" ]; then
     walk_pairs="$pid:$wrapper_winpid"
   fi
@@ -1899,6 +1914,29 @@ retry_stop_escalation() {
   return 1
 }
 
+# Whether the child is inside a turn, read off the tail of its own
+# stdout.jsonl by bin/supervise-turnstate.mjs. Prints busy or idle. Every
+# fault reads idle: an empty path (a caller with no stream to name), a reader
+# that fails, and any output but the two words. Idle is the fall-through to
+# the stop phases as they run for every other label, so a broken reader
+# costs the patient wait and never holds a persona. The call is the poll
+# loop's own shape, a plain capture with stderr on supervisor.err, since
+# run_bounded_native discards the stdout this verdict rides on.
+# Usage: child_turn_state <stdout.jsonl path>
+child_turn_state() {
+  local stream="$1" verdict
+  if [ -z "$stream" ]; then
+    echo idle
+    return 0
+  fi
+  verdict=$(node "$PLUGIN_DIR/bin/supervise-turnstate.mjs" "$stream" "$(date +%s%3N)" 2>> "$RUNDIR/supervisor.err")
+  verdict="${verdict%$'\r'}"
+  case "$verdict" in
+    busy|idle) echo "$verdict" ;;
+    *) echo idle ;;
+  esac
+}
+
 # Usage: stop_child <label>
 # Sets STOP_PATH to one of nine values: "eof", "term", or "kill" when the
 # tree is confirmed dead at that phase, "eof_kill_failed",
@@ -1976,8 +2014,9 @@ stop_child() {
   # checked against reality. A snapshot taken after killing risks a
   # recycled pid too (Windows reuses pids quickly and keeps
   # ParentProcessId associations after a process exits) - so this list is
-  # fixed once, before anything is signaled, and is the same list checked
-  # and killed at every phase below.
+  # fixed before anything is signaled, and is the same list checked and
+  # killed at every phase below. The one rebuild is the patient wait's,
+  # below, which still sits before the first signal.
   #
   # A Windows walk from the wrapper does not reach the child, so the snapshot
   # is the merged one `build_stop_snapshot` builds from the record the refresh
@@ -2022,9 +2061,24 @@ stop_child() {
   # would be the exact report a slow-spawn regime (the bound this whole
   # function exists for) produces on a tree that was never actually
   # looked at.
+  # Usage: kill_stale_entry_list - the one unverified case that still holds
+  # a verified list: the patient wait's rebuild failed and `snapshot` is the
+  # entry list. That list is killed, ticks-matched, so nothing it names
+  # outlives the stop, while the verdict stays unverified because nothing
+  # the child started during the wait is on it. Every other unverified case
+  # holds an empty list and this does nothing.
+  kill_stale_entry_list() {
+    if [ -n "$snapshot" ]; then
+      if kill_process_snapshot "$snapshot"; then
+        log "STOP[$label]: every process the entry list names is confirmed dead; what the child started during the wait is unaccounted for"
+      else
+        log "STOP[$label]: a process the entry list names is alive or unverifiable after the kill"
+      fi
+    fi
+  }
   verify_snapshot_dead() {
     if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
-      log "STOP[$label]: no snapshot was ever resolved for this stop (resolve or walk failed) - not confirming dead on an unverified read"
+      log "STOP[$label]: no verified snapshot covers this stop (the entry resolve or walk failed, or the post-wait rebuild did) - not confirming dead on an unverified read"
       return 1
     fi
     local alive rc
@@ -2047,6 +2101,13 @@ stop_child() {
   if [ -n "$CHILD_IN" ]; then
     eval "exec $CHILD_IN>&-"
   fi
+  # The moment the input closed, which the patient wait below measures its
+  # cap from, so the ordinary grace counts toward that cap.
+  local eof_closed_ms
+  eof_closed_ms=$(date +%s%3N)
+  # Logged so the suite can bound the cap from the close on the log's own
+  # clock rather than from the wait's arithmetic.
+  log "STOP[$label]: input closed (eof_closed)"
   # Poll for up to stopGraceMs for the child to exit on its own.
   local grace=$((SUPERVISOR_STOP_GRACE_MS / 1000))
   local n=0
@@ -2054,6 +2115,86 @@ stop_child() {
     sleep 1
     n=$((n + 1))
   done
+  # The patient wait. A requested restart of a live child, and that label
+  # alone, keeps waiting past the grace while the child is inside a turn: a
+  # closed input ends the child when its turn ends, and a TERM before then
+  # kills a session seconds after it wrote a file. Every other label stops on
+  # the grace as before, since a shutdown, a crash-loop stop, a budget stop
+  # and a hung restart have nothing a turn's end would save, and a hung child
+  # read as busy would hold its persona for the whole cap. The wait ends on
+  # the first of three: the child exits, the reader answers idle, or
+  # SUPERVISOR_STOP_BUSY_CAP_MS has passed since the input closed. On the
+  # last two, TERM follows once the tree snapshot is rebuilt, with no further
+  # grace, since the ordinary grace has already run. Each exit lands on the
+  # same check below the EOF loop reaches, so a child that exits inside the
+  # wait is verified dead and reported on the eof path as one that exited
+  # inside the grace is.
+  if [ "$label" = "restart_passive" ] && kill -0 "$pid" 2>/dev/null; then
+    local turn waited_ms left_ms
+    turn=$(child_turn_state "${OUT:-}")
+    if [ "$turn" = "busy" ]; then
+      log "STOP[$label]: the child is inside a turn, waiting for it to end"
+      while :; do
+        # Five seconds a poll, cut short to what is left before the cap, so
+        # the cap is met when it falls rather than a poll late.
+        waited_ms=$(( $(date +%s%3N) - eof_closed_ms ))
+        left_ms=$((SUPERVISOR_STOP_BUSY_CAP_MS - waited_ms))
+        [ "$left_ms" -gt 5000 ] && left_ms=5000
+        if [ "$left_ms" -gt 0 ]; then
+          sleep "$((left_ms / 1000)).$(printf '%03d' $((left_ms % 1000)))"
+        fi
+        if ! kill -0 "$pid" 2>/dev/null; then
+          log "STOP[$label]: the child exited during the patient wait (wait_ended=exit)"
+          break
+        fi
+        waited_ms=$(( $(date +%s%3N) - eof_closed_ms ))
+        if [ "$waited_ms" -ge "$SUPERVISOR_STOP_BUSY_CAP_MS" ]; then
+          log "STOP[$label]: the busy cap of ${SUPERVISOR_STOP_BUSY_CAP_MS}ms was reached after ${waited_ms}ms, ending the wait (wait_ended=cap)"
+          break
+        fi
+        turn=$(child_turn_state "${OUT:-}")
+        if [ "$turn" = "idle" ]; then
+          log "STOP[$label]: the reader returned idle after $((waited_ms / 1000))s, ending the wait (wait_ended=idle)"
+          break
+        fi
+      done
+      # A wait that ends with the child alive, on idle or on the cap, has let
+      # the child run tool calls for up to the cap since the entry snapshot
+      # was built, and each of those spawned processes the entry never saw.
+      # Nothing has been signaled yet, so the rule above (one list, fixed
+      # before any signal) still holds, and the list is rebuilt here, at the
+      # last point before the TERM. A wait the child's own exit ended keeps
+      # the entry snapshot, as the ordinary EOF exit does, since a walk after
+      # an exit reads recycled pids.
+      # The rebuilt list is the union of the entry list and the new walk,
+      # since a descendant alive at entry whose parent exited during the
+      # wait is unreachable from the wrapper's parent chain and would drop
+      # out of a fresh walk alone. Every entry is ticks-matched, so a pid the
+      # entry list named that has since exited and been reused confirms as
+      # gone rather than as a survivor. The wrapper's Windows pid becomes the
+      # one the rebuild walked from, so the KILL phase compares against the
+      # pid the rebuilt list was walked from.
+      if kill -0 "$pid" 2>/dev/null; then
+        refresh_child_tree
+        build_stop_snapshot "$label"
+        snap_rc=$?
+        if [ "$snap_rc" -ne 0 ]; then
+          # The entry list stays in `snapshot`, so the phases below still
+          # run the ticks-matched kill over what it names, but nothing the
+          # child started during the wait is on it, so the stop reports
+          # unverified and leaves no list for the retry, which then takes
+          # its own re-snapshot.
+          LAST_STOP_SNAPSHOT=""
+          log "STOP[$label]: tree not verified after the patient wait (the walk did not complete, rc=$snap_rc) - the entry list is still killed, ticks-matched, and the stop reports unverified"
+        else
+          snapshot=$(printf '%s\n%s\n' "$snapshot" "$STOP_SNAPSHOT_BUILT" | grep -v '^$' | sort -u)
+          snapshot_winpid="$STOP_SNAPSHOT_WRAPPER_WINPID"
+          log "STOP[$label]: the tree snapshot was rebuilt after the wait, before any signal"
+          LAST_STOP_SNAPSHOT="$snapshot"
+        fi
+      fi
+    fi
+  fi
   if ! kill -0 "$pid" 2>/dev/null; then
     if verify_snapshot_dead; then
       STOP_PATH="eof"
@@ -2061,6 +2202,7 @@ stop_child() {
       return 0
     fi
     if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
+      kill_stale_entry_list
       STOP_PATH="unverified"
     else
       log "STOP[$label]: a snapshot survivor could not be killed after the EOF path"
@@ -2083,6 +2225,7 @@ stop_child() {
       return 0
     fi
     if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
+      kill_stale_entry_list
       STOP_PATH="unverified"
     else
       log "STOP[$label]: a snapshot survivor could not be killed after the TERM path"
@@ -2091,8 +2234,8 @@ stop_child() {
     return 1
   fi
   # Phase 3: KILL - send SIGKILL to the wrapper, then force-kill the whole
-  # snapshot taken at entry (not a fresh walk from a possibly-dead or
-  # -recycled pid).
+  # snapshot this stop holds, taken at entry or rebuilt after the patient
+  # wait (not a fresh walk from a possibly-dead or -recycled pid).
   log "STOP[$label]: TERM grace expired, sending KILL to pid $pid (winpid $snapshot_winpid) and its process tree"
   # A bare `kill -9` on the wrapper's own MSYS pid is the same class of
   # call that can block on this box with a "Permission denied" - whether
@@ -2104,7 +2247,8 @@ stop_child() {
   # Routed through `run_bounded_native`, like every other native command
   # this script spawns, rather than left as a native spawn with nothing
   # capping how long it can run.
-  # `$snapshot_winpid` was resolved at stop entry, two grace windows back. The
+  # `$snapshot_winpid` was resolved two grace windows back, at stop entry or
+  # at the patient wait's rebuild, whichever came last. The
   # guard above proves the wrapper lives; it does not prove the wrapper still
   # runs as that Windows pid, and Windows hands a dead process's id out again,
   # so a force kill on the entry value can land on an unrelated process. The
@@ -2143,7 +2287,7 @@ stop_child() {
     # refusal for `retry_stop_escalation`, which fails on it rather than
     # rebuilding a snapshot from the same record and reporting that partial
     # tree dead as a clean stop.
-    log "STOP[$label]: wrapper pid $pid runs as Windows pid $kill_winpid now, not the $snapshot_winpid this stop resolved at entry - not force-killing that number, signaling the wrapper's own pid instead"
+    log "STOP[$label]: wrapper pid $pid runs as Windows pid $kill_winpid now, not the $snapshot_winpid this stop resolved before signaling - not force-killing that number, signaling the wrapper's own pid instead"
     kill -9 "$pid" 2>/dev/null
     if kill -0 "$pid" 2>/dev/null; then
       log "STOP[$label]: wrapper pid $pid is still present after the kill -9, so a caller's wait on it can block until it ends on its own"
@@ -2154,6 +2298,11 @@ stop_child() {
       else
         log "STOP[$label]: a process the snapshot walked from Windows pid $snapshot_winpid names is alive or unverifiable after the kill"
       fi
+    else
+      # A failed post-wait rebuild leaves the verified entry list in
+      # `snapshot`, and this arm is where a moved wrapper lands after one.
+      # That list is killed here as at every other unverified exit.
+      kill_stale_entry_list
     fi
     log "STOP[$label]: the snapshot this stop holds was walked from Windows pid $snapshot_winpid and names nothing the wrapper started under $kill_winpid, so the tree cannot be confirmed dead from it"
     STOP_PATH="unverified"
@@ -2178,7 +2327,8 @@ stop_child() {
   # STOP_PATH="kill", a clean report, on a tree that was never resolved
   # at all. Checked explicitly before trusting that return.
   if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
-    log "STOP[$label]: no snapshot was ever resolved for this stop (resolve or walk failed) - not confirming dead on an unverified read"
+    kill_stale_entry_list
+    log "STOP[$label]: no verified snapshot covers this stop (the entry resolve or walk failed, or the post-wait rebuild did) - not confirming dead on an unverified read"
     STOP_PATH="unverified"
     return 1
   fi
@@ -2261,6 +2411,22 @@ if (d.length === 0) process.exit(1);
 const newest = d[d.length - 1];
 console.log(newest.timestamp || 0);
 " "$store" "$persona" "$fact" 2>> "$RUNDIR/supervisor.err"
+}
+
+# --- Helper: read the restart request the coordinator left in the run directory ---
+# The coordinator's fleet_restart tool writes <rundir>/restart.request rather
+# than a restart_requested decision, since this persona's store has one
+# writer. It is the same fact, read through the parser the poll imports
+# (bin/supervise-restart-request.mjs), so the two paths cannot disagree on
+# what a request is. Prints its timestamp, or nothing where the parser reads
+# no request.
+get_restart_request() {
+  node --input-type=module -e "
+import { pathToFileURL } from 'node:url';
+const { readRestartRequest } = await import(pathToFileURL(process.argv[1]).href);
+const at = readRestartRequest(process.argv[2], Date.now());
+if (at !== null) console.log(Math.floor(at));
+" "$PLUGIN_DIR/bin/supervise-restart-request.mjs" "$RUNDIR" 2>> "$RUNDIR/supervisor.err"
 }
 
 # --- Helper: read the newest root_complete decision's timestamp AND
@@ -2725,7 +2891,11 @@ while true; do
     # names the two cases this duty makes: the design duty below makes a third
     # call and is built only on a fleet that names an architect, so that duty
     # names its own case where it is built rather than here.
-    COORDINATOR_ROLE_INSTRUCTION+="A prompt labelled [FLEET] carries the personas whose health class changed since the last such prompt, one line each. You report those lines on your own channel and you poll the fleet at no point, and that prompt's own opening line says what a line beginning with '> ' is and what to do with it. You call fleet_status only in the cases this instruction names, and none of them is polling. This duty names two. The operator asks for fleet state, and you need the whole picture behind a change. That tool's description is where a row's fields and the standing it settles for a persona are stated. "
+    # The restart lever closes the clause: fleet_restart acts on what a fleet
+    # reading shows, the coordinator is the only persona the plugin lets use
+    # it, and the operator hears of every use. Its refusals are in its own
+    # description.
+    COORDINATOR_ROLE_INSTRUCTION+="A prompt labelled [FLEET] carries the personas whose health class changed since the last such prompt, one line each. You report those lines on your own channel and you poll the fleet at no point, and that prompt's own opening line says what a line beginning with '> ' is and what to do with it. You call fleet_status only in the cases this instruction names, and none of them is polling. This duty names two. The operator asks for fleet state, and you need the whole picture behind a change. That tool's description is where a row's fields and the standing it settles for a persona are stated. fleet_restart restarts another persona's child: you use it on a persona the fleet reading shows stuck or one the operator names, and you report every use to the operator. "
     # The kit's Coordinator seat, which this persona holds for the machine.
     # The seat is taken once at priming, and the reconciliation pass runs on
     # the [RECONCILE] prompt alone. The kit's coordinator skill states a
@@ -2954,6 +3124,7 @@ while true; do
       "$HEARTBEAT" "$STORE" "$PERSONA" "$OUT" "${TRANSCRIPT_DIR:-}" "${CHILD_SESSION_ID:-}" \
       "$CHILD_START_TS" "$LAUNCHED_AT" "$STALE_AFTER_MS" "$SUPERVISOR_MIN_RUN_MS" \
       "$SUPERVISOR_MAX_RESTARTS_PER_HOUR" "$CRASH_COUNT" "$RESTART_COUNT" "$SUPERVISOR_CRASH_LIMIT" \
+      "$RUNDIR" \
       2>> "$RUNDIR/supervisor.err")
     DECIDE_ERR=$?
     DECIDE_ACTION=""; DECIDE_REASON=""; POLL_RATE_LIMIT=""; POLL_SESSION_ID=""
@@ -3232,6 +3403,12 @@ while true; do
     fi
   fi
   RESTART_REQUESTED_TS=$(get_fact "$WORKDIR" "$PERSONA" "restart_requested")
+  # The coordinator's request file is the same fact, and the later of the two
+  # is the one compared against this child's start, as the poll compares it.
+  RESTART_REQUEST_FILE_TS=$(get_restart_request)
+  if [ -n "$RESTART_REQUEST_FILE_TS" ] && { [ -z "$RESTART_REQUESTED_TS" ] || [ "$RESTART_REQUEST_FILE_TS" -gt "$RESTART_REQUESTED_TS" ]; }; then
+    RESTART_REQUESTED_TS="$RESTART_REQUEST_FILE_TS"
+  fi
   if [ -n "$RESTART_REQUESTED_TS" ] && [ "$RESTART_REQUESTED_TS" -gt "$CHILD_START_TS" ]; then
     log "RESTART_PASSIVE: restart_requested at $RESTART_REQUESTED_TS > child start $CHILD_START_TS (no shutdown requested)"
     log "PASSIVE: restart requested; relaunching the child with the goal tree kept, the new child resumes the active plan"

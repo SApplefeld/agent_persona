@@ -157,10 +157,12 @@ fi
 # named in a positive_number call, and the clauses themselves are covered
 # above. The two settings whose consumer divides by 1000 get a spawn for the
 # minimum, since a value like 500 passes every other clause and still floors
-# to a zero-second wait. That the defaults pass every check is covered by the
+# to a zero-second wait. The stop's busy cap takes the same minimum and gets
+# the same spawn. That the defaults pass every check is covered by the
 # gate-passing control above and by the suites that launch a child.
 refused_by "supervisorCrashLimit 'abc' is refused at its own call site" "ERROR: supervisorCrashLimit 'abc'" supervisorCrashLimit=abc
 refused_by "supervisorStopGraceMs '500' is refused by the 1000 minimum" "ERROR: supervisorStopGraceMs '500'" supervisorStopGraceMs=500
+refused_by "supervisorStopBusyCapMs '500' is refused by the 1000 minimum" "ERROR: supervisorStopBusyCapMs '500'" supervisorStopBusyCapMs=500
 refused_by "supervisorPollMs '500' is refused by the 1000 minimum" "ERROR: supervisorPollMs '500'" supervisorPollMs=500
 
 # supervisorPsBoundS is the one setting on this rule that falls back to 30

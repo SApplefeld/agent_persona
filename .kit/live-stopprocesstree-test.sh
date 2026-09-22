@@ -516,6 +516,370 @@ else
   echo "  NOTE: no pid and start ticks were recorded for the R105 sleeper, so it is left to end on its own"
 fi
 
+# --- Cases: the patient stop ---
+# Under the restart_passive label alone, stop_child keeps waiting after the
+# EOF grace while the child's own stdout.jsonl reads busy, up to
+# SUPERVISOR_STOP_BUSY_CAP_MS from the EOF close. The cases below drive the
+# real stop_child against a stub that reads its input to end of file, as the
+# production child does, so the EOF close inside stop_child is what the stub
+# sees. The stream the reader consults is a scratch stdout.jsonl under
+# SUITE_DIR, named through OUT exactly as the poll loop names the child's.
+#
+# The stub is a coproc, which is what production launches: CHILD_IN holds the
+# coproc's write fd so stop_child's own `exec $CHILD_IN>&-` is the EOF. The
+# stub records the moment it saw end of input, and the log stub below stamps
+# each line, so the time from the EOF close to a TERM is read off the run
+# itself rather than off a clock started before stop_child's snapshot walk.
+patient_log() { echo "[log] $(date +%s%3N) $*"; }
+eval "$(declare -f log | sed '1s/^log/_plain_log_before_patient/')"
+eval "$(declare -f patient_log | sed '1s/^patient_log/log/')"
+PATIENT_DIR="$SUITE_DIR/patient-stop"
+mkdir -p "$PATIENT_DIR"
+# What the snapshot rebuild after a wait may cost before the TERM: the
+# refresh walks each changed pair and the build walks them again, four
+# PowerShell walks in these cases, sized with headroom over the run's own
+# figures, which the plan's Chapter carries.
+REBUILD_ALLOWANCE_MS=15000
+USER_TOOL_RESULT='{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}'
+ASSISTANT_TOOL_USE='{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}'
+# A text-only reply whose own timestamp is six minutes old at the moment it is
+# built, so the reader ages it past the five minute idle bound at once.
+stale_assistant_text() {
+  local ts
+  ts=$(date -u -d '@'"$(( $(date +%s) - 360 ))" +%Y-%m-%dT%H:%M:%S.000Z)
+  printf '{"type":"assistant","timestamp":"%s","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}' "$ts"
+}
+# Usage: start_stub <name> <seconds to live after end of input>
+# Sets CHILD_LAUNCH_PID and CHILD_IN, and records the stub's EOF moment in
+# $PATIENT_DIR/<name>.eof once the stub sees it. The sleeper that keeps the
+# stub alive past its EOF starts only after the stop's entry snapshot was
+# built, exactly as a tool call the child runs during the wait does, and its
+# pid lands in $PATIENT_DIR/<name>.sleeper so a case can ask whether the tree
+# kill reached it.
+start_stub() {
+  local name="$1" live_s="$2"
+  rm -f "$PATIENT_DIR/$name.eof" "$PATIENT_DIR/$name.sleeper"
+  coproc PATIENT_STUB { cat > /dev/null; date +%s%3N > "$PATIENT_DIR/$name.eof"; sleep "$live_s" & echo $! > "$PATIENT_DIR/$name.sleeper"; wait; }
+  CHILD_LAUNCH_PID="$PATIENT_STUB_PID"
+  CHILD_IN="${PATIENT_STUB[1]}"
+  eval "exec ${PATIENT_STUB[0]}<&-"
+  disown "$CHILD_LAUNCH_PID" 2>/dev/null
+  STUB_NAME="$name"
+  sleep 2
+}
+# Usage: stamp_of <log file> <pattern> - the first stamped line matching.
+stamp_of() { grep -m1 "$2" "$1" | sed -n 's/^\[log\] \([0-9]*\) .*/\1/p'; }
+# Usage: sleeper_alive - 0 when the current stub's sleeper is still running.
+# A stub that never recorded a sleeper is reported by the caller rather than
+# read as dead, so the dead-sleeper legs are never passed vacuously.
+sleeper_started() { [ -s "$PATIENT_DIR/$STUB_NAME.sleeper" ]; }
+sleeper_alive() {
+  local sp
+  sp=$(cat "$PATIENT_DIR/$STUB_NAME.sleeper" 2>/dev/null)
+  [ -n "$sp" ] && kill -0 "$sp" 2>/dev/null
+}
+end_stub() {
+  local sp
+  sp=$(cat "$PATIENT_DIR/$STUB_NAME.sleeper" 2>/dev/null)
+  kill -9 "$CHILD_LAUNCH_PID" ${sp:+"$sp"} 2>/dev/null
+  CHILD_LAUNCH_PID=""
+  CHILD_IN=""
+  OUT=""
+}
+
+# --- Case: restart_passive, busy stream, the stub exits on end of input ---
+# The stream ends in a tool_use record, so the reader answers busy for the
+# whole wait. The stub lives ninety seconds past the EOF close, well past the
+# grace and short of the cap, so the wait has to end on the stub's own exit:
+# no TERM line, and STOP_PATH is eof. The absence is grepped for the TERM
+# predicate every Phase 2 line carries; the stop_complete case below is the
+# control where the same predicate matches.
+OUT="$PATIENT_DIR/busy-exits.jsonl"
+printf '%s\n%s\n' "$USER_TOOL_RESULT" "$ASSISTANT_TOOL_USE" > "$OUT"
+SUPERVISOR_STOP_GRACE_MS=2000
+SUPERVISOR_STOP_BUSY_CAP_MS=120000
+STOP_PATH=""
+start_stub busy-exits 90
+P1_LOG="$PATIENT_DIR/busy-exits.log"
+stop_child "restart_passive" > "$P1_LOG" 2>&1
+P1_RC=$?
+if grep -q "sending TERM" "$P1_LOG"; then
+  failed "patient stop: restart_passive on a busy stub that exits on EOF sent TERM (STOP_PATH=$STOP_PATH rc=$P1_RC): $(grep 'sending TERM' "$P1_LOG" | head -1)"
+else
+  pass "patient stop: restart_passive on a busy stub that exits on EOF logged no TERM line"
+fi
+if [ "$STOP_PATH" = "eof" ] && [ "$P1_RC" -eq 0 ]; then
+  pass "patient stop: the stub's own exit inside the wait reaches STOP_PATH=eof (rc=$P1_RC)"
+else
+  failed "patient stop: expected STOP_PATH=eof rc=0 after the stub exited on EOF, got STOP_PATH=$STOP_PATH rc=$P1_RC"
+fi
+if grep -q "the child is inside a turn, waiting for it to end" "$P1_LOG" && grep -q "wait_ended=exit" "$P1_LOG"; then
+  pass "patient stop: the wait logged its entry and its exit by the child's own exit"
+else
+  failed "patient stop: the entry or exit line of the wait is missing: $(tr '\n' '|' < "$P1_LOG")"
+fi
+end_stub
+
+# --- Case: restart_passive, busy stream, the stub never exits ---
+# The wait runs to the cap. No TERM line may precede the cap line, and the
+# cap line has to land at or past the cap, with the Phase 2 TERM following it
+# inside the rebuild allowance. Both bounds count from the stop's own
+# input-closed line to its cap line, on the log's one clock, so neither
+# end is the wait's own arithmetic: a reference clock moved ahead of the
+# close ends the wait early against that stamp and reds the lower bound,
+# and a cap later than one poll plus the reader's own run reds the upper.
+# The cap is four times the grace,
+# so a wait ended at the grace reds the lower bound too. The
+# sleeper started after the entry snapshot, so it is dead afterwards only if
+# the snapshot was rebuilt after the wait.
+OUT="$PATIENT_DIR/busy-never-exits.jsonl"
+printf '%s\n%s\n' "$USER_TOOL_RESULT" "$ASSISTANT_TOOL_USE" > "$OUT"
+SUPERVISOR_STOP_GRACE_MS=2000
+SUPERVISOR_STOP_BUSY_CAP_MS=8000
+STOP_PATH=""
+start_stub busy-never-exits 180
+P2_LOG="$PATIENT_DIR/busy-never-exits.log"
+stop_child "restart_passive" > "$P2_LOG" 2>&1
+P2_RC=$?
+P2_CLOSED=$(stamp_of "$P2_LOG" "input closed (eof_closed)")
+P2_CAP=$(stamp_of "$P2_LOG" "wait_ended=cap")
+P2_TERM=$(stamp_of "$P2_LOG" "EOF grace expired, sending TERM")
+if [ -z "$P2_CLOSED" ] || [ -z "$P2_CAP" ] || [ -z "$P2_TERM" ]; then
+  failed "patient stop: cap case could not read the input-closed line ($P2_CLOSED), the cap line ($P2_CAP) or the TERM line ($P2_TERM): $(tr '\n' '|' < "$P2_LOG")"
+else
+  P2_AFTER=$((P2_CAP - P2_CLOSED))
+  if [ "$P2_AFTER" -ge $((SUPERVISOR_STOP_BUSY_CAP_MS - 500)) ] && [ "$P2_AFTER" -le $((SUPERVISOR_STOP_BUSY_CAP_MS + 7000)) ]; then
+    pass "patient stop: a busy stub that never exits reaches the cap ${P2_AFTER}ms after the stop closed its input, at the ${SUPERVISOR_STOP_BUSY_CAP_MS}ms cap and not before"
+  else
+    failed "patient stop: the cap was reached ${P2_AFTER}ms after the stop closed its input, against a ${SUPERVISOR_STOP_BUSY_CAP_MS}ms cap (expected at the cap, within one poll)"
+  fi
+  # The TERM follows the cap line by the snapshot rebuild; a TERM later than
+  # the allowance means the rebuild hung.
+  if [ $((P2_TERM - P2_CAP)) -ge 0 ] && [ $((P2_TERM - P2_CAP)) -le "$REBUILD_ALLOWANCE_MS" ]; then
+    pass "patient stop: TERM follows the cap line by $((P2_TERM - P2_CAP))ms, inside the ${REBUILD_ALLOWANCE_MS}ms rebuild allowance"
+  else
+    failed "patient stop: TERM followed the cap line by $((P2_TERM - P2_CAP))ms, outside the ${REBUILD_ALLOWANCE_MS}ms rebuild allowance"
+  fi
+fi
+if ! sleeper_started; then
+  failed "patient stop: the stub never recorded its sleeper, so the dead-sleeper leg has nothing to check"
+elif sleeper_alive; then
+  failed "patient stop: the sleeper the stub started during the wait survived the stop (STOP_PATH=$STOP_PATH), so the tree kill ran on the entry snapshot"
+else
+  pass "patient stop: the sleeper the stub started during the wait is dead after the stop, so the tree kill saw the rebuilt snapshot"
+fi
+P2_FIRST_TERM=$(stamp_of "$P2_LOG" "sending TERM")
+if [ -n "$P2_CAP" ] && [ -n "$P2_FIRST_TERM" ] && [ "$P2_FIRST_TERM" -ge "$P2_CAP" ]; then
+  pass "patient stop: the first TERM line follows the cap line, so no TERM was logged before the cap"
+else
+  failed "patient stop: a TERM line precedes the cap line (first TERM at $P2_FIRST_TERM, cap at $P2_CAP): $(grep -m1 'sending TERM' "$P2_LOG")"
+fi
+if [ "$STOP_PATH" = "term" ] || [ "$STOP_PATH" = "kill" ]; then
+  pass "patient stop: the existing phases follow the cap (STOP_PATH=$STOP_PATH rc=$P2_RC)"
+else
+  failed "patient stop: expected the TERM or KILL phase after the cap, got STOP_PATH=$STOP_PATH rc=$P2_RC"
+fi
+end_stub
+
+# --- Case: restart_passive, the stream reads idle ---
+# A stale text-only reply is the newest record, so the reader answers idle at
+# once and no wait begins: TERM after the ordinary grace, as for every other
+# label. The cap sits at the minimum, below the grace, so it extends nothing.
+OUT="$PATIENT_DIR/idle.jsonl"
+printf '%s\n%s\n' "$USER_TOOL_RESULT" "$(stale_assistant_text)" > "$OUT"
+SUPERVISOR_STOP_GRACE_MS=2000
+SUPERVISOR_STOP_BUSY_CAP_MS=1000
+STOP_PATH=""
+start_stub idle 180
+P3_LOG="$PATIENT_DIR/idle.log"
+stop_child "restart_passive" > "$P3_LOG" 2>&1
+P3_EOF=$(cat "$PATIENT_DIR/idle.eof" 2>/dev/null)
+P3_TERM=$(stamp_of "$P3_LOG" "EOF grace expired, sending TERM")
+if grep -q "inside a turn" "$P3_LOG"; then
+  failed "patient stop: an idle stream still began the patient wait: $(grep 'inside a turn' "$P3_LOG")"
+elif [ -n "$P3_EOF" ] && [ -n "$P3_TERM" ] && [ $((P3_TERM - P3_EOF)) -lt $((SUPERVISOR_STOP_GRACE_MS + 5000)) ]; then
+  pass "patient stop: restart_passive on an idle stream sends TERM $((P3_TERM - P3_EOF))ms after the input closed, on the ordinary grace, with no wait begun"
+else
+  failed "patient stop: restart_passive on an idle stream did not TERM on the ordinary grace (eof=$P3_EOF term=$P3_TERM): $(tr '\n' '|' < "$P3_LOG")"
+fi
+end_stub
+
+# --- Case: restart_passive, the post-wait rebuild fails ---
+# The entry walk succeeds and the wait runs to the cap. Once the entry line
+# is logged, a marker file arms a CIM shadow of the R105 shape, so the
+# rebuild walk fails while the kill and the survivor check, which read
+# Get-Process, still run. The stop then has a verified entry list and no
+# rebuilt one: it reports unverified with rc 1, logs the rebuild-failed
+# line, and still kills what the entry list names, which is pinned on a
+# sleeper the stub started before its input closed. The sleeper it starts
+# after the close is on no list and is ended by the case.
+OUT="$PATIENT_DIR/rebuild-fails.jsonl"
+printf '%s\n%s\n' "$USER_TOOL_RESULT" "$ASSISTANT_TOOL_USE" > "$OUT"
+SUPERVISOR_STOP_GRACE_MS=2000
+SUPERVISOR_STOP_BUSY_CAP_MS=8000
+STOP_PATH=""
+REBUILDFAIL_MARKER="$PATIENT_DIR/rebuild-fails.marker"
+rm -f "$REBUILDFAIL_MARKER" "$PATIENT_DIR/rebuild-fails.entry"
+eval "$(declare -f run_bounded_powershell_capture | sed '1s/run_bounded_powershell_capture/_real_rbpc_for_rebuildfail/')"
+run_bounded_powershell_capture() {
+  if [ -e "$REBUILDFAIL_MARKER" ]; then
+    _real_rbpc_for_rebuildfail "$1" "function Get-CimInstance { throw 'REBUILDFAIL_SIMULATED_CIM_FAILURE' }
+$2"
+  else
+    _real_rbpc_for_rebuildfail "$1" "$2"
+  fi
+}
+coproc PATIENT_STUB { sleep 180 & echo $! > "$PATIENT_DIR/rebuild-fails.entry"; cat > /dev/null; date +%s%3N > "$PATIENT_DIR/rebuild-fails.eof"; sleep 180 & echo $! > "$PATIENT_DIR/rebuild-fails.sleeper"; wait; }
+CHILD_LAUNCH_PID="$PATIENT_STUB_PID"
+CHILD_IN="${PATIENT_STUB[1]}"
+eval "exec ${PATIENT_STUB[0]}<&-"
+disown "$CHILD_LAUNCH_PID" 2>/dev/null
+STUB_NAME="rebuild-fails"
+sleep 2
+P7_LOG="$PATIENT_DIR/rebuild-fails.log"
+: > "$P7_LOG"
+(
+  tries=0
+  until grep -q "inside a turn" "$P7_LOG" 2>/dev/null || [ "$tries" -ge 120 ]; do
+    sleep 0.5
+    tries=$((tries + 1))
+  done
+  : > "$REBUILDFAIL_MARKER"
+) &
+P7_ARMER=$!
+stop_child "restart_passive" > "$P7_LOG" 2>&1
+P7_RC=$?
+wait "$P7_ARMER" 2>/dev/null
+eval "$(declare -f _real_rbpc_for_rebuildfail | sed '1s/_real_rbpc_for_rebuildfail/run_bounded_powershell_capture/')"
+P7_ENTRY=$(cat "$PATIENT_DIR/rebuild-fails.entry" 2>/dev/null)
+if ! grep -q "wait_ended=cap" "$P7_LOG"; then
+  failed "patient stop: rebuild-failure case never reached the cap, so the rebuild was never attempted: $(tr '\n' '|' < "$P7_LOG")"
+elif ! grep -q "tree not verified after the patient wait" "$P7_LOG"; then
+  failed "patient stop: the armed CIM shadow did not fail the post-wait rebuild: $(tr '\n' '|' < "$P7_LOG")"
+elif [ "$STOP_PATH" = "unverified" ] && [ "$P7_RC" -eq 1 ]; then
+  pass "patient stop: a failed post-wait rebuild reports unverified (STOP_PATH=$STOP_PATH rc=$P7_RC) rather than a clean stop on the entry list"
+else
+  failed "patient stop: a failed post-wait rebuild reported STOP_PATH=$STOP_PATH rc=$P7_RC (expected unverified, rc 1): $(tr '\n' '|' < "$P7_LOG")"
+fi
+if [ -z "$P7_ENTRY" ]; then
+  failed "patient stop: the stub never recorded its entry sleeper, so the entry-list leg has nothing to check"
+elif ! grep -q "every process the entry list names is confirmed dead" "$P7_LOG"; then
+  failed "patient stop: the entry list was not killed after the failed rebuild (entry sleeper $P7_ENTRY alive: $(kill -0 "$P7_ENTRY" 2>/dev/null && echo yes || echo no)): $(tr '\n' '|' < "$P7_LOG")"
+elif kill -0 "$P7_ENTRY" 2>/dev/null; then
+  failed "patient stop: the entry list kill was logged but the entry sleeper $P7_ENTRY survived the stop"
+else
+  pass "patient stop: the entry list is killed after a failed rebuild, ticks-matched, so the sleeper the entry walk saw is dead while the verdict stays unverified"
+fi
+end_stub
+rm -f "$REBUILDFAIL_MARKER"
+
+# --- Case: restart_passive, the reader cannot run ---
+# The section's fault rule: a reader call that fails reads idle, so a stop
+# whose reader is missing runs the ordinary grace with no wait begun, and the
+# broken direction (a fault read as busy) would hold the persona for the cap.
+# PLUGIN_DIR is pointed at a directory with no bin/supervise-turnstate.mjs
+# for this case alone, so node exits non-zero and prints no verdict.
+OUT="$PATIENT_DIR/reader-fails.jsonl"
+printf '%s\n%s\n' "$USER_TOOL_RESULT" "$ASSISTANT_TOOL_USE" > "$OUT"
+SUPERVISOR_STOP_GRACE_MS=2000
+SUPERVISOR_STOP_BUSY_CAP_MS=1000
+STOP_PATH=""
+PLUGIN_DIR_REAL="$PLUGIN_DIR"
+PLUGIN_DIR="$PATIENT_DIR/no-plugin"
+mkdir -p "$PLUGIN_DIR"
+start_stub reader-fails 180
+P6_LOG="$PATIENT_DIR/reader-fails.log"
+stop_child "restart_passive" > "$P6_LOG" 2>&1
+PLUGIN_DIR="$PLUGIN_DIR_REAL"
+P6_EOF=$(cat "$PATIENT_DIR/reader-fails.eof" 2>/dev/null)
+P6_TERM=$(stamp_of "$P6_LOG" "EOF grace expired, sending TERM")
+if grep -q "inside a turn" "$P6_LOG"; then
+  failed "patient stop: a reader that cannot run was read as busy and began the wait: $(grep 'inside a turn' "$P6_LOG")"
+elif [ -n "$P6_EOF" ] && [ -n "$P6_TERM" ] && [ $((P6_TERM - P6_EOF)) -lt $((SUPERVISOR_STOP_GRACE_MS + 5000)) ]; then
+  pass "patient stop: a reader that cannot run reads idle, so restart_passive sends TERM $((P6_TERM - P6_EOF))ms after the input closed, on the ordinary grace, with no wait begun"
+else
+  failed "patient stop: a reader that cannot run did not fall through to the ordinary grace (eof=$P6_EOF term=$P6_TERM): $(tr '\n' '|' < "$P6_LOG")"
+fi
+end_stub
+
+# --- Cases: the other labels on the busy stub ---
+# The label guard in the negative direction: the same busy stream that holds a
+# restart_passive stop to the cap is stopped on the ordinary grace under
+# stop_complete and restart. These are also the control for the first case's
+# absence check: the TERM predicate it grepped for matches here.
+for other_label in stop_complete restart; do
+  OUT="$PATIENT_DIR/busy-$other_label.jsonl"
+  printf '%s\n%s\n' "$USER_TOOL_RESULT" "$ASSISTANT_TOOL_USE" > "$OUT"
+  SUPERVISOR_STOP_GRACE_MS=2000
+  SUPERVISOR_STOP_BUSY_CAP_MS=1000
+  STOP_PATH=""
+  start_stub "busy-$other_label" 180
+  P4_LOG="$PATIENT_DIR/busy-$other_label.log"
+  stop_child "$other_label" > "$P4_LOG" 2>&1
+  P4_EOF=$(cat "$PATIENT_DIR/busy-$other_label.eof" 2>/dev/null)
+  P4_TERM=$(stamp_of "$P4_LOG" "sending TERM")
+  if grep -q "inside a turn" "$P4_LOG"; then
+    failed "patient stop: the $other_label label began the patient wait, which belongs to restart_passive alone: $(grep 'inside a turn' "$P4_LOG")"
+  elif [ -n "$P4_EOF" ] && [ -n "$P4_TERM" ] && [ $((P4_TERM - P4_EOF)) -lt $((SUPERVISOR_STOP_GRACE_MS + 5000)) ]; then
+    pass "patient stop: $other_label on a busy stub sends TERM $((P4_TERM - P4_EOF))ms after the input closed, on the ordinary grace"
+  else
+    failed "patient stop: $other_label on a busy stub did not TERM on the ordinary grace (eof=$P4_EOF term=$P4_TERM): $(tr '\n' '|' < "$P4_LOG")"
+  fi
+  end_stub
+done
+
+# --- Case: the turn ends during the wait, and the stub never exits ---
+# The stream reads busy when the wait begins. Once the entry line is logged, a
+# stale text-only reply is appended, so the reader's next poll answers idle.
+# The wait has to end within one five second poll of that append, allowing
+# two seconds for the reader's own process, and far short of a cap that would
+# red this case if the wait ran to it. TERM follows the wait's end by the
+# snapshot rebuild, inside REBUILD_ALLOWANCE_MS.
+OUT="$PATIENT_DIR/turn-ends.jsonl"
+printf '%s\n%s\n' "$USER_TOOL_RESULT" "$ASSISTANT_TOOL_USE" > "$OUT"
+SUPERVISOR_STOP_GRACE_MS=2000
+SUPERVISOR_STOP_BUSY_CAP_MS=60000
+STOP_PATH=""
+start_stub turn-ends 180
+P5_LOG="$PATIENT_DIR/turn-ends.log"
+P5_APPENDED="$PATIENT_DIR/turn-ends.appended"
+rm -f "$P5_APPENDED"
+: > "$P5_LOG"
+(
+  tries=0
+  until grep -q "inside a turn" "$P5_LOG" 2>/dev/null || [ "$tries" -ge 120 ]; do
+    sleep 0.5
+    tries=$((tries + 1))
+  done
+  sleep 3
+  stale_assistant_text >> "$OUT"
+  printf '\n' >> "$OUT"
+  date +%s%3N > "$P5_APPENDED"
+) &
+P5_APPENDER=$!
+stop_child "restart_passive" > "$P5_LOG" 2>&1
+wait "$P5_APPENDER" 2>/dev/null
+P5_AT=$(cat "$P5_APPENDED" 2>/dev/null)
+P5_IDLE=$(stamp_of "$P5_LOG" "wait_ended=idle")
+P5_TERM=$(stamp_of "$P5_LOG" "EOF grace expired, sending TERM")
+if [ -z "$P5_AT" ] || [ -z "$P5_IDLE" ] || [ -z "$P5_TERM" ]; then
+  failed "patient stop: turn-end case could not read the append moment ($P5_AT), the idle line ($P5_IDLE) or the TERM line ($P5_TERM): $(tr '\n' '|' < "$P5_LOG")"
+elif [ $((P5_IDLE - P5_AT)) -ge 0 ] && [ $((P5_IDLE - P5_AT)) -le 7000 ] && [ $((P5_TERM - P5_IDLE)) -le "$REBUILD_ALLOWANCE_MS" ]; then
+  pass "patient stop: the reader's idle ends the wait $((P5_IDLE - P5_AT))ms after the turn ended, within one poll and not at the ${SUPERVISOR_STOP_BUSY_CAP_MS}ms cap, and TERM follows it by $((P5_TERM - P5_IDLE))ms inside the rebuild allowance"
+else
+  failed "patient stop: the wait ended $((P5_IDLE - P5_AT))ms after the turn ended (expected 0 to 7000ms, ended by the reader) and TERM followed by $((P5_TERM - P5_IDLE))ms (allowance ${REBUILD_ALLOWANCE_MS}ms): $(tr '\n' '|' < "$P5_LOG")"
+fi
+if ! sleeper_started; then
+  failed "patient stop: the stub never recorded its sleeper, so the dead-sleeper leg has nothing to check"
+elif sleeper_alive; then
+  failed "patient stop: the sleeper the stub started during the wait survived the idle-ended stop (STOP_PATH=$STOP_PATH), so the tree kill ran on the entry snapshot"
+else
+  pass "patient stop: the sleeper the stub started during the wait is dead after the idle-ended stop, so the tree kill saw the rebuilt snapshot"
+fi
+end_stub
+
+eval "$(declare -f _plain_log_before_patient | sed '1s/^_plain_log_before_patient/log/')"
+
 rm -f "$RUNDIR/child.pid" "$RUNDIR/child3.pid"
 kill -9 "$DIRECT_PID" "$CHILD_LAUNCH_PID" 2>/dev/null  # best-effort cleanup
 

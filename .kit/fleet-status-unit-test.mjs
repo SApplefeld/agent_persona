@@ -45,6 +45,16 @@
 //     reads a heartbeat age from included
 //   - the base keeper delay this plugin compares against is the one
 //     bin/keeper-functions.ps1 holds
+//   - fleet_restart registers under the owner tier and not the reader tier,
+//     writes one restart.request into the target's run directory for a
+//     caller on the coordinator ground, and writes nothing to any store
+//   - every refusal in its closed set, each writing nothing: a reader of the
+//     coordinator persona, a worker and a session with no claim; no roster
+//     setting, a roster that cannot be read or parsed; a target the roster
+//     does not carry or does not enable; the caller's own persona; a run
+//     directory that does not exist; a request less than fifteen minutes old
+//   - a request dated ahead of the clock, one that is not JSON and one with
+//     no numeric at are overwritten rather than refused
 //
 // The harness's resolve hook is what makes hooks/index.ts loadable: a static
 // top-level import of it does not resolve under plain Node ESM, because its
@@ -73,6 +83,10 @@ const PLUGIN_MODULE = "../hooks/index.ts";
 const T0 = 1_700_000_000_000;
 const STALE_AFTER_MS = 90_000;
 const ROSTER_PATH = "D:/fleet/fleet.json";
+// The stubbed Date.now main() installs, so a fleet_restart case can move the
+// clock the tool reads its fifteen minutes against. Each such case sets it
+// back to T0 before it returns.
+let suiteClock = null;
 
 const OPTS = {
   arming: "owner",
@@ -885,8 +899,202 @@ function caseBaseDelayMatchesTheKeeper() {
 }
 
 // ============================================================
+// fleet_restart: the coordinator restarts another persona's child
+// ============================================================
+const RESTART_TOOL = "mcp__agentic-plugin__fleet_restart";
+
+function callFleetRestart(h, persona, reason) {
+  return h.handlers["tool.call"](h.fake, { tool: RESTART_TOOL, persona, reason }, async () => ({ result: "passthrough" }));
+}
+
+// A roster whose entries differ in the one field each refusal turns on. The
+// run directories that exist are seeded as keys of the fake filesystem,
+// which is how its exists() answers for a directory; nodir's is not.
+const RESTART_ROSTER = [
+  { name: "coordinator", rundir: "D:/restart/coordinator/run", enabled: true },
+  { name: "alpha", rundir: "D:/restart/alpha/run", enabled: true },
+  { name: "off", rundir: "D:/restart/off/run", enabled: false },
+  { name: "nodir", rundir: "D:/restart/nodir/run", enabled: true },
+  { name: "worker-a", rundir: "D:/restart/worker-a/run", enabled: true },
+];
+const ALPHA_REQUEST = "D:/restart/alpha/run/restart.request";
+
+function seedRestartFleet(h) {
+  h.fsMap.set(ROSTER_PATH, JSON.stringify(RESTART_ROSTER));
+  for (const dir of ["D:/restart/coordinator/run", "D:/restart/alpha/run", "D:/restart/off/run", "D:/restart/worker-a/run"]) {
+    h.fsMap.set(dir, "");
+  }
+}
+
+// Moves the suite clock and stamps this session's commons entry at the new
+// moment, which is what a live session's heartbeat does. Without the stamp a
+// clock moved fifteen minutes ages the caller's own claim past the staleness
+// bound, and the ground rule refuses before the rule under test is reached.
+function moveClockTo(h, ms) {
+  suiteClock.set(ms);
+  const entry = h.storeMap.get(`commons:${SESSION_ID}`);
+  if (entry) h.storeMap.set(`commons:${SESSION_ID}`, { ...entry, lastSeen: ms });
+}
+
+function parsedRequest(h, path) {
+  try { return JSON.parse(h.fsMap.get(path)); } catch { return null; }
+}
+
+async function caseRestartRegistersForTheOwnerTierAlone() {
+  console.log("\n=== fleet_restart: registered for the owner tier and not for a reader ===");
+  const owner = await startSession("restart_register_owner");
+  const ownerTool = owner.toolRegisters.find((t) => t.name === "fleet_restart");
+  check("register: the owner tier registers fleet_restart", ownerTool !== undefined, owner.toolRegisters.map((t) => t.name));
+  check("register: its schema requires persona and reason", JSON.stringify([...(ownerTool?.inputSchema?.required ?? [])].sort()) === JSON.stringify(["persona", "reason"]), ownerTool?.inputSchema);
+  const reader = await startSession("restart_register_reader", { arming: "reader" });
+  check("register: the reader tier does not register fleet_restart", !reader.toolRegisters.some((t) => t.name === "fleet_restart"), reader.toolRegisters.map((t) => t.name));
+  check("register control: the reader tier still registers fleet_status", reader.toolRegisters.some((t) => t.name === "fleet_status"), reader.toolRegisters.map((t) => t.name));
+}
+
+async function caseRestartWritesTheRequest() {
+  console.log("\n=== fleet_restart: a coordinator's request lands in the target's run directory and nowhere else ===");
+  const h = await startSession("restart_ok");
+  seedRestartFleet(h);
+  const storeBefore = JSON.stringify([...h.storeMap.entries()]);
+  h.resetFsWrites();
+
+  const result = await callFleetRestart(h, "alpha", "   stuck on a tool call for an hour   ");
+  check("restart: the call is served, not denied", typeof result?.result === "string" && result.deny === undefined, result);
+  const request = parsedRequest(h, ALPHA_REQUEST);
+  check("restart: the request file exists under the target's run directory and parses", request !== null && typeof request === "object", h.fsMap.get(ALPHA_REQUEST));
+  check("restart: at is the tool's clock, as a number", request?.at === T0, request);
+  check("restart: by is the calling session's persona", request?.by === "coordinator", request);
+  check("restart: reason is the trimmed reason", request?.reason === "stuck on a tool call for an hour", request);
+  check("restart: the result names the persona and the next poll", says(result?.result, "'alpha'") && says(result?.result, "next poll"), result?.result);
+  check("restart: the result says a running turn ends first", says(result?.result, "turn"), result?.result);
+  // The absence half. Every write the plugin made is in fsWrites, so a store
+  // file or any other path written beside the request shows up here by name.
+  check("restart: exactly one file was written, and it is the request", h.fsWrites.length === 1 && h.fsWrites[0].path === ALPHA_REQUEST, h.fsWrites.map((w) => w.path));
+  check("restart: the commons store is untouched", JSON.stringify([...h.storeMap.entries()]) === storeBefore, [...h.storeMap.keys()]);
+
+  // The reason bound, on a second target so the fifteen-minute rule does not
+  // refuse the call.
+  h.resetFsWrites();
+  const long = `  ${"r".repeat(300)}  `;
+  const second = await callFleetRestart(h, "worker-a", long);
+  const secondRequest = parsedRequest(h, "D:/restart/worker-a/run/restart.request");
+  check("restart bound: a long reason is trimmed and cut at 200 characters", second?.deny === undefined && secondRequest?.reason === "r".repeat(200), secondRequest?.reason?.length);
+}
+
+// A caller that does not hold the coordinator persona, against the same
+// roster the served case above writes through, so the ground is the only
+// thing that differs.
+async function caseRestartDeniedOffTheCoordinatorGround() {
+  console.log("\n=== fleet_restart: denied to every caller off the coordinator ground, writing nothing ===");
+  const callers = [
+    ["reader of the coordinator persona", "restart_deny_reader", { arming: "reader" }, "'READER:coordinator'"],
+    ["worker", "restart_deny_worker", { persona: "worker-a" }, "'WORKER:worker-a'"],
+    ["session with no claim", "restart_deny_noclaim", { persona: "default" }, "no ground"],
+  ];
+  for (const [label, caseName, overrides, groundToken] of callers) {
+    const h = await startSession(caseName, overrides);
+    seedRestartFleet(h);
+    if (caseName === "restart_deny_noclaim") {
+      const entry = h.storeMap.get(`commons:${SESSION_ID}`);
+      check(`deny ${label} control: the session holds no coordinator, reader or named persona claim`, !entry?.claims?.some((c) => c.resource === "persona:coordinator" || c.resource.startsWith("reader:") || (c.resource.startsWith("persona:") && c.resource !== "persona:default")), entry);
+    }
+    const storeBefore = JSON.stringify([...h.storeMap.entries()]);
+    h.resetFsWrites();
+    const result = await callFleetRestart(h, "alpha", "stuck");
+    check(`deny ${label}: the call is denied`, typeof result?.deny === "string" && result.result === undefined, result);
+    check(`deny ${label}: the deny names the coordinator ground as the rule and the ground this session holds`, says(result?.deny, "'coordinator'") && says(result?.deny, groundToken), result?.deny);
+    check(`deny ${label}: no file is written`, h.fsWrites.length === 0 && !h.fsMap.has(ALPHA_REQUEST), h.fsWrites.map((w) => w.path));
+    check(`deny ${label}: the commons store is untouched`, JSON.stringify([...h.storeMap.entries()]) === storeBefore, [...h.storeMap.keys()]);
+  }
+}
+
+// Every refusal a coordinator can meet, each naming its reason and each
+// writing nothing.
+async function caseRestartRefusals() {
+  console.log("\n=== fleet_restart: each refusal a coordinator can meet names its reason and writes nothing ===");
+  const refusals = [
+    ["a target the roster does not carry", "ghost", (h) => seedRestartFleet(h), ["'ghost'", "no entry"]],
+    ["a target the roster does not enable", "off", (h) => seedRestartFleet(h), ["'off'", "enabled"]],
+    ["the caller's own persona", "coordinator", (h) => seedRestartFleet(h), ["own persona", "supervisor_restart"]],
+    ["a run directory that does not exist", "nodir", (h) => seedRestartFleet(h), ["D:/restart/nodir/run", "does not exist"]],
+    ["a roster file that is missing", "alpha", () => {}, [ROSTER_PATH, "could not be read"]],
+    ["a roster file that is not JSON", "alpha", (h) => h.fsMap.set(ROSTER_PATH, "[{\"name\": \"alpha\""), [ROSTER_PATH, "could not be read"]],
+    ["a roster that is not an array", "alpha", (h) => h.fsMap.set(ROSTER_PATH, JSON.stringify({ alpha: {} })), [ROSTER_PATH, "JSON array"]],
+  ];
+  for (const [label, target, seed, tokens] of refusals) {
+    const h = await startSession(`restart_refuse_${target}_${tokens[1].replace(/\W+/g, "_")}`);
+    seed(h);
+    h.resetFsWrites();
+    const result = await callFleetRestart(h, target, "stuck");
+    check(`refuse ${label}: the call is denied`, typeof result?.deny === "string" && result.result === undefined, result);
+    check(`refuse ${label}: the deny names the reason`, tokens.every((t) => says(result?.deny, t)), result?.deny);
+    check(`refuse ${label}: no file is written`, h.fsWrites.length === 0, h.fsWrites.map((w) => w.path));
+  }
+
+  // No roster setting at all is a session of its own, since the setting is
+  // read at register time.
+  const unset = await startSession("restart_refuse_unset", { fleetRoster: "" });
+  unset.resetFsWrites();
+  const result = await callFleetRestart(unset, "alpha", "stuck");
+  check("refuse no fleetRoster setting: the call is denied", typeof result?.deny === "string" && result.result === undefined, result);
+  check("refuse no fleetRoster setting: the deny names the setting", says(result?.deny, "fleetRoster"), result?.deny);
+  check("refuse no fleetRoster setting: no file is written", unset.fsWrites.length === 0, unset.fsWrites.map((w) => w.path));
+}
+
+async function caseRestartInsideFifteenMinutes() {
+  console.log("\n=== fleet_restart: a second request inside fifteen minutes is refused, one at fifteen is written ===");
+  const h = await startSession("restart_interval");
+  seedRestartFleet(h);
+  try {
+    const first = await callFleetRestart(h, "alpha", "first");
+    check("interval: the first request is written", first?.deny === undefined && parsedRequest(h, ALPHA_REQUEST)?.at === T0, first);
+    const firstBytes = h.fsMap.get(ALPHA_REQUEST);
+
+    moveClockTo(h, T0 + 15 * 60_000 - 1);
+    h.resetFsWrites();
+    const second = await callFleetRestart(h, "alpha", "second");
+    check("interval: a second request one millisecond short of fifteen minutes is denied", typeof second?.deny === "string" && second.result === undefined, second);
+    check("interval: the deny names the request already standing", says(second?.deny, "restart.request") && says(second?.deny, "fifteen minutes"), second?.deny);
+    check("interval: the first file is unchanged and nothing was written", h.fsMap.get(ALPHA_REQUEST) === firstBytes && h.fsWrites.length === 0, { bytes: h.fsMap.get(ALPHA_REQUEST), writes: h.fsWrites.map((w) => w.path) });
+
+    moveClockTo(h, T0 + 15 * 60_000);
+    h.resetFsWrites();
+    const third = await callFleetRestart(h, "alpha", "third");
+    const request = parsedRequest(h, ALPHA_REQUEST);
+    check("interval: a request exactly fifteen minutes after the first is written", third?.deny === undefined && request?.at === T0 + 15 * 60_000 && request?.reason === "third", { third, request });
+    check("interval: that write is the one file written", h.fsWrites.length === 1 && h.fsWrites[0].path === ALPHA_REQUEST, h.fsWrites.map((w) => w.path));
+  } finally {
+    suiteClock.set(T0);
+  }
+}
+
+// A request the supervisor would read as no request is no request here
+// either, so it does not hold a restart off. A future-dated one is the case
+// that matters: refusing on it would hold the persona's lever off for as long
+// as the date is ahead.
+async function caseRestartOverAStaleOrBrokenRequest() {
+  console.log("\n=== fleet_restart: a future-dated, unparsable or at-less request is overwritten, not refused ===");
+  const standing = [
+    ["dated ten minutes ahead of the clock", JSON.stringify({ at: T0 + 10 * 60_000, by: "coordinator", reason: "ahead" })],
+    ["that is not JSON", "{\"at\": 17"],
+    ["with no numeric at", JSON.stringify({ at: String(T0 - 1000), by: "coordinator" })],
+  ];
+  for (const [label, body] of standing) {
+    const h = await startSession(`restart_overwrite_${label.replace(/\W+/g, "_")}`);
+    seedRestartFleet(h);
+    h.fsMap.set(ALPHA_REQUEST, body);
+    h.resetFsWrites();
+    const result = await callFleetRestart(h, "alpha", "stuck");
+    const request = parsedRequest(h, ALPHA_REQUEST);
+    check(`overwrite a request ${label}: the call is served`, result?.deny === undefined && typeof result?.result === "string", result);
+    check(`overwrite a request ${label}: the file now carries this call's at`, request?.at === T0 && request?.reason === "stuck", h.fsMap.get(ALPHA_REQUEST));
+  }
+}
+
+// ============================================================
 async function main() {
   const clock = stubDateNow();
+  suiteClock = clock;
   clock.set(T0);
   try {
     await caseRows();
@@ -907,6 +1115,12 @@ async function main() {
     await caseDescriptionMatchesTheRows();
     await caseWritesNothing();
     caseBaseDelayMatchesTheKeeper();
+    await caseRestartRegistersForTheOwnerTierAlone();
+    await caseRestartWritesTheRequest();
+    await caseRestartDeniedOffTheCoordinatorGround();
+    await caseRestartRefusals();
+    await caseRestartInsideFifteenMinutes();
+    await caseRestartOverAStaleOrBrokenRequest();
   } finally {
     clock.restore();
   }

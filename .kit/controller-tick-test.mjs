@@ -15322,7 +15322,7 @@ async function caseSection6_owner_matchesTheFullExistingShape(clock) {
   console.log("\n=== Section 6 owner control: every tool and both clock timers still register, matching today ===");
   clock.set(T0);
   const h = await createTickHarness({ ...OPTS, arming: "owner", caseName: "s6_owner_control" });
-  check("s6 owner: fourteen tools registered", h.toolRegisters.length === 14, h.toolRegisters.map((t) => t.name));
+  check("s6 owner: fifteen tools registered", h.toolRegisters.length === 15, h.toolRegisters.map((t) => t.name));
   check("s6 owner: two clock callbacks (heartbeat, controller tick)", h.clockEveryCallbacks.length === 2, h.clockEveryCallbacks.length);
   const entry = h.storeMap.get(`commons:${SESSION_ID}`);
   check("s6 owner: commons entry holds persona:default (ownership taken)", !!entry && entry.claims.some((c) => c.resource === "persona:default"), entry);

@@ -1,8 +1,9 @@
 // bin/supervise-poll.mjs - One poll's readings and its decision, in one process.
 //
 // bin/supervise.sh runs this once per poll. It reads the clock, the heartbeat
-// sidecar, the decision store, the tail of the child's stream and the harness
-// transcript's modification time, hands them to the decide unit, and prints
+// sidecar, the decision store, the run directory's restart request, the tail
+// of the child's stream and the harness transcript's modification time, hands
+// them to the decide unit, and prints
 // what the poll loop acts on. Each reading follows the shell helper of the
 // same name in bin/supervise.sh and bin/agentic-common.sh, which the paths
 // outside the poll loop still call. A process launch under Git for Windows
@@ -16,6 +17,8 @@
 //   7 childStartTs          8 launchedAt           9 staleAfterMs
 //  10 minRunMs             11 maxRestartsPerHour  12 crashCount
 //  13 restartCount         14 crashLimit
+//  15 run directory, which holds the restart.request file the coordinator's
+//     fleet_restart tool writes ('' or absent where there is none to read)
 //
 // Prints four lines:
 //   action
@@ -26,6 +29,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { decide } from './supervise-decide.mjs';
+import { readRestartRequest } from './supervise-restart-request.mjs';
 
 // A reading off a file reads back through parseInt, and an unparseable one
 // reaches the decide unit as null. The supervisor's own settings and counts
@@ -170,7 +174,7 @@ function readMtimeMs(path) {
 export function poll(argv) {
   const [heartbeatPath, storePath, persona, streamPath, transcriptDir, knownSessionId,
     childStartTs, launchedAt, staleAfterMs, minRunMs, maxRestartsPerHour,
-    crashCount, restartCount, crashLimit] = argv;
+    crashCount, restartCount, crashLimit, runDir] = argv;
 
   // The clock and the heartbeat are read together: the staleness the decide
   // unit computes is the gap between the two.
@@ -184,6 +188,14 @@ export function poll(argv) {
   const rateLimit = safe(() => readRateLimitReset(streamPath), '- -');
   const childSessionId = knownSessionId || safe(() => readChildSessionId(streamPath), '');
   const facts = safe(() => readStoreFacts(storePath, persona), readStoreFacts('', persona));
+  // A restart can be asked for in two places: the persona's own store, which
+  // its owner writes through supervisor_restart, and the run directory's
+  // request file, which the coordinator writes through fleet_restart. They
+  // are one fact, so the later of the two is the one the decide unit reads.
+  const requestAt = safe(() => readRestartRequest(runDir, now), null);
+  const restartRequestedTs = facts.restartRequestedTs === null ? requestAt
+    : requestAt === null ? facts.restartRequestedTs
+      : Math.max(facts.restartRequestedTs, requestAt);
   // The transcript is addressed by the session id, so the poll that first
   // reads the id off the stream reads the transcript too.
   const transcriptPath = transcriptDir && /^[A-Za-z0-9_-]+$/.test(childSessionId)
@@ -194,7 +206,7 @@ export function poll(argv) {
     childExitCode: null,
     rootCompleteTs: facts.rootCompleteTs,
     shutdownRequestedTs: facts.shutdownRequestedTs,
-    restartRequestedTs: facts.restartRequestedTs,
+    restartRequestedTs,
     crashCount: intOr(crashCount, 0),
     crashLimit: intOr(crashLimit, 3),
     restartCount: intOr(restartCount, 0),

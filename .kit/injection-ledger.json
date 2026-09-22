@@ -22,8 +22,8 @@
     {
       "name": "COORDINATOR_ROLE_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 4982,
-      "words": 872
+      "chars": 5153,
+      "words": 901
     },
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
@@ -228,6 +228,12 @@
       "file": "hooks/index.ts",
       "chars": 3795,
       "words": 641
+    },
+    {
+      "name": "fleet_restart_description",
+      "file": "hooks/index.ts",
+      "chars": 989,
+      "words": 164
     },
     {
       "name": "agentic_resolve_description",
