@@ -63,7 +63,8 @@ import {
   claimReaderRole,
   mayReachPersona,
   deliveryGroundIn,
-  architectLineRecords,
+  deliveryGroundAtSend,
+  deliveryArchitectLine,
   deliveryRecordProblem,
   COORDINATOR_GROUND,
   quoteContinuationLines,
@@ -2678,7 +2679,7 @@ export const register: Register = async (on, options) => {
         "the session holding the coordinator persona may address any persona, and a session owning a named persona may address the coordinator persona " +
         "and, where the architectPersona setting names one, the architect persona. " +
         "The architect's line back: the session owning the architect persona may answer a persona whose owner sent the architect a record " +
-        "that is delivered or answered, so it sends the answer before it closes that record with agentic_resolve. " +
+        "that is delivered or answered, and the answer is delivered even if the architect resolves that record with agentic_resolve after sending it. " +
         "A target this session owns is refused, because an owner does not message itself. " +
         "The owner sees the message on its next quiet tick, and urgent: true breaks into a running turn instead and takes that turn's own " +
         "answer as the reply. What a sent record does between those two moments, and what the sender reads back afterwards, is stated in " +
@@ -2713,7 +2714,7 @@ export const register: Register = async (on, options) => {
         "Read replies from the owner session of a persona. Without persona, the target is this session's own persona: a reader session " +
         "calls this to poll for replies to its messages. With persona, the target is that persona, under the rule agentic_say uses at send: " +
         "the session holding the coordinator persona may read any persona, a session owning a named persona may read the coordinator persona " +
-        "and the architect persona where one is set, the architect's owner may read a persona it may answer, " +
+        "and the architect persona where one is set, the architect's owner may read a persona it may answer until it resolves that worker's record, " +
         "and a persona this session owns is refused. " +
         "Returns {inbox: [{id, from, at, text, kind, status, reply?, deferred?, turnRunningMs?, outcome?, note?, resolvedAt?}], asks: [{id, at, nodeId, question, status}], workdir?}: workdir is the target persona's live owner's working directory, where its own store file sits. " +
         "A pending record carries deferred: true and turnRunningMs while the owner is inside a turn: it waits for that turn to end, or breaks into it once it has waited past the break-in bound, which a record labelled COORDINATOR at delivery never does. " +
@@ -4012,10 +4013,9 @@ export const register: Register = async (on, options) => {
       // (deliveryGroundIn over one claims read: a reader claim on it, the
       // coordinator persona owned, a named persona owned when this persona
       // is the coordinator or the architect, or the architect persona owned
-      // while this session's own record to it is open or was resolved no
-      // earlier than the answer was written), take the lowest at, mark
-      // delivered, submit as a prompt opening with the provenance label that
-      // same read produced.
+      // by the writer of an answer agentic_say admitted on the answer leg
+      // and stamped), take the lowest at, mark delivered, submit as a prompt
+      // opening with the provenance label that same read produced.
       // D5: if a pending record answers the open ask, close the ask first
       // (ask_answered path) before the general drain.
       // The open-turn reading is taken again here rather than trusted from the
@@ -4045,12 +4045,7 @@ export const register: Register = async (on, options) => {
               // inside the bracket, or whose id or text fails the record
               // rule, is marked skipped here, once, so the drain never
               // lists it.
-              const answerClaims = await readAllClaims(store, sess.staleAfterMs);
-              const answerGround = deliveryGroundIn(answerClaims, persona, answer.from, coordinatorPersona, {
-                persona: architectPersona,
-                records: await architectLineRecords(store, answerClaims, answer.from, architectPersona),
-                answerAt: answer.at,
-              });
+              const answerGround = deliveryGroundIn(await readAllClaims(store, sess.staleAfterMs), persona, answer.from, coordinatorPersona, deliveryArchitectLine(architectPersona, answer));
               const answerProblem = deliveryRecordProblem(answer);
               if ("refused" in answerGround && answerGround.refused === "no_claim") {
                 sess.state.decisions.push({
@@ -4151,11 +4146,7 @@ export const register: Register = async (on, options) => {
         const claims = pending.length > 0 ? await readAllClaims(store, sess.staleAfterMs) : [];
         for (const rec of pending) {
           if (rec.status !== "pending") continue;
-          const ground = deliveryGroundIn(claims, persona, rec.from, coordinatorPersona, {
-            persona: architectPersona,
-            records: await architectLineRecords(store, claims, rec.from, architectPersona),
-            answerAt: rec.at,
-          });
+          const ground = deliveryGroundIn(claims, persona, rec.from, coordinatorPersona, deliveryArchitectLine(architectPersona, rec));
           const recordProblem = deliveryRecordProblem(rec);
           if ("refused" in ground) {
             if (ground.refused === "no_claim") withoutClaim.push(rec);
@@ -7512,8 +7503,11 @@ export const register: Register = async (on, options) => {
       // architect persona while this session owns a named persona of its
       // own, or this session owning the architect persona while the target's
       // owner has an open record to it.
-      const mayReach = await mayReachPersona(commonsStoreOf($), persona, sess.mySessionId, coordinatorPersona, architectPersona, sess.staleAfterMs);
-      if (!mayReach) {
+      // An answer admitted on the answer leg is stamped with the id of the
+      // record that opened it, and the delivery sites admit it on that stamp
+      // without reading the architect's inbox again.
+      const sendGround = await deliveryGroundAtSend(commonsStoreOf($), persona, sess.mySessionId, coordinatorPersona, architectPersona, sess.staleAfterMs);
+      if (!("ground" in sendGround)) {
         toolErrorsThisTurn++;
         return { deny: `agentic_say cannot reach '${persona}': this session holds no live reader claim on it and does not hold the '${coordinatorPersona}' persona, and ${reachDenyTail(persona, "push")}.` };
       }
@@ -7529,7 +7523,7 @@ export const register: Register = async (on, options) => {
       }
       // Write the inbox record
       const seq = await getHighestInboxSeq(commonsStoreOf($), persona, sess.mySessionId) + 1;
-      const id = await writeInboxRecord(commonsStoreOf($), persona, sess.mySessionId, seq, text, "say", answers, urgent);
+      const id = await writeInboxRecord(commonsStoreOf($), persona, sess.mySessionId, seq, text, "say", answers, urgent, sendGround.answersRecord);
       sess.state.decisions.push({
         timestamp: Date.now(),
         loop: "worker",
@@ -7872,18 +7866,14 @@ export const register: Register = async (on, options) => {
         // label its text opens with, so it is kept here rather than recomputed
         // at delivery, and no record is judged twice in one scan.
         const grounds = new Map<InboxRecord, string>();
-        const groundFor = async (rec: InboxRecord): Promise<string | null> => {
-          const ground = deliveryGroundIn(claims, persona, rec.from, coordinatorPersona, {
-            persona: architectPersona,
-            records: await architectLineRecords(store, claims, rec.from, architectPersona),
-            answerAt: rec.at,
-          });
+        const groundFor = (rec: InboxRecord): string | null => {
+          const ground = deliveryGroundIn(claims, persona, rec.from, coordinatorPersona, deliveryArchitectLine(architectPersona, rec));
           if ("refused" in ground || deliveryRecordProblem(rec) !== null) return null;
           return ground.ground;
         };
         for (const rec of candidates) {
           if (rec.urgent !== true) continue;
-          const ground = await groundFor(rec);
+          const ground = groundFor(rec);
           if (ground !== null) grounds.set(rec, ground);
         }
         // The oldest deliverable record qualifying on its wait alone, and only
@@ -7907,7 +7897,7 @@ export const register: Register = async (on, options) => {
         // instruction whatever marker they arrive with.
         for (const rec of candidates) {
           if (rec.urgent === true) continue;
-          const ground = await groundFor(rec);
+          const ground = groundFor(rec);
           // A coordinator-ground record never takes the wait leg. The worker
           // steer instruction names only the flagged coordinator bracket as
           // carrying no delegated authority, so a coordinator record reaches a

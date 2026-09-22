@@ -90,7 +90,7 @@
       "type": "string",
       "default": "",
       "title": "Architect persona name",
-      "description": "The persona name this file offers as the architect: the design seat the coordinator routes design asks to, and the seat whose own launch receives the architect charter. The supervisor reads it to build that charter and the coordinator's design clause. The plugin reads it for the inbox gates: any named persona owner may address it, and its owner may answer a persona whose owner's record to it is delivered or answered. The plugin reads a name of 'default', or the coordinator's own name, as no architect. Where this file names no architect, the fleet has none, no design-escalation clause is built, and both of those inbox lines stay closed."
+      "description": "The persona name this file offers as the architect: the design seat the coordinator routes design asks to, and the seat whose own launch receives the architect charter. The supervisor reads it to build that charter and the coordinator's design clause. The plugin reads it for the inbox gates: any named persona owner may address it, and its owner may answer a persona whose owner's record to it is delivered or answered, an answer that is delivered even if the architect resolves that record after sending it. The plugin reads a name of 'default', or the coordinator's own name, as no architect. Where this file names no architect, the fleet has none, no design-escalation clause is built, and both of those inbox lines stay closed."
     },
     "fleetRoster": {
       "type": "string",
