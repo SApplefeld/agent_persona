@@ -3050,6 +3050,7 @@ async function main() {
     await caseItem2_untrackedWorkKeepsLivePlanUnderCompleteRoot(clock);
     await caseItem2_untrackedWorkCollapsesToOneLine(clock);
     await caseItem2_untrackedWorkCarriesCountPastCap(clock);
+    await caseItem2_untrackedWorkRestartsCountOnPersonaSwitch(clock);
     await caseItem8p2_classifier_ask_operator_converts_unconditionally(clock);
     await caseItem8p2_pause_converts_unconditionally(clock);
     await caseItem8p2_worker_states_fork_opens_ask(clock);
@@ -3960,6 +3961,49 @@ async function caseItem2_untrackedWorkCarriesCountPastCap(clock) {
   check("item2 cap: the next firing pushes one line", lines.length === 1, lines);
   check("item2 cap: the count carries on from the dropped line", lines[0]?.detail === "x2: after the cap", lines[0]?.detail);
   check("item2 cap: the line is the tail of the log", getDecisions(h).at(-1)?.action === "untracked_work");
+}
+
+// The held line lives in one persona's log. agentic_identity switching the
+// session to another persona starts that persona's line at one; naming the
+// persona already held keeps collapsing the same line, which is the control.
+async function caseItem2_untrackedWorkRestartsCountOnPersonaSwitch(clock) {
+  console.log("\n=== Item 2: untracked_work restarts its count when the session switches persona ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_untracked_switch", stateOpts: { hasActiveLeaf: false } });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  const identity = (persona) => h.handlers["tool.call"](h.fake, {
+    tool: "mcp__agentic-plugin__agentic_identity",
+    persona,
+  }, async () => ({ result: "passthrough" }));
+
+  await untrackedWorkTurn(h, "t-s1", "first on default");
+  clock.advance(10_000);
+  await untrackedWorkTurn(h, "t-s2", "second on default");
+
+  // Control: naming the persona already held reloads its log, held line included.
+  clock.advance(10_000);
+  await identity("default");
+  clock.advance(10_000);
+  await untrackedWorkTurn(h, "t-s3", "third on default");
+  const onDefault = untrackedLines(h);
+  check("item2 switch control: re-naming the held persona keeps one line", onDefault.length === 1, onDefault);
+  check("item2 switch control: that line's count carries on to three", onDefault[0]?.detail === "x3: third on default", onDefault[0]?.detail);
+
+  clock.advance(10_000);
+  await identity("other");
+  clock.advance(10_000);
+  await untrackedWorkTurn(h, "t-o1", "first on other");
+  const onOther = (getStateForPersona(h, "other")?.decisions || []).filter(d => d.action === "untracked_work");
+  check("item2 switch: the new persona holds one untracked_work line", onOther.length === 1, onOther);
+  check("item2 switch: the new persona's line counts from one", onOther[0]?.detail === "x1: first on other", onOther[0]?.detail);
+  check("item2 switch: the previous persona's line stays as written", untrackedLines(h).length === 1 && untrackedLines(h)[0]?.detail === "x3: third on default", untrackedLines(h));
 }
 
 // ============================================================

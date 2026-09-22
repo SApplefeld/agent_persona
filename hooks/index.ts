@@ -6429,6 +6429,13 @@ export const register: Register = async (on, options) => {
       }
       const previousPersona = sess.persona;
       sess.persona = name;
+      // The held untracked_work line lives in the previous persona's log, so
+      // a switch starts the new persona's line afresh rather than carrying
+      // the old count into it.
+      if (name !== previousPersona) {
+        sess.untrackedWorkAt = null;
+        sess.untrackedWorkCount = 0;
+      }
       if (arming === "reader") {
         // A reader session never claims persona:<name> here, never
         // arbitrates for it, and never becomes its owner: it only ever
