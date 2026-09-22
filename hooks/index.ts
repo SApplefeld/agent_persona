@@ -552,14 +552,16 @@ function shouldSuppressReask(
 
 /**
  * Item 2 backstop (Round 28): whether a tool call counts as "did real
- * work" for the turn.complete backstop. Built-in file/shell tools that
- * change state; any MCP tool that is neither this plugin's own (which
- * would have opened a goal itself, making the backstop moot) nor the
+ * work" for the turn.complete backstop, which logs an `untracked_work`
+ * decision for a turn that did work with no open root. Built-in file/shell
+ * tools that change state; any MCP tool that is neither this plugin's own
+ * (which would have opened a goal itself, making the backstop moot) nor the
  * channel's reply tool (a priming turn's only call, which must never look
- * like task work - a channel-attached passive child otherwise backfills
- * a completed goal on its own acknowledgment turn and gets restarted in
- * a loop). Read-only tools (Read, Grep, Glob, ...) do not count: looking
- * at something is not doing the thing the operator asked for.
+ * like task work - a channel-attached passive child's acknowledgment turn
+ * would otherwise log untracked work, which the supervisor reads on a clean
+ * exit as a reason to relaunch). Read-only tools (Read, Grep, Glob, ...) do
+ * not count: looking at something is not doing the thing the operator
+ * asked for.
  */
 function isWorkTool(toolName: string): boolean {
   if (["Write", "Edit", "Bash", "NotebookEdit"].includes(toolName)) return true;
@@ -642,6 +644,26 @@ const sess: {
   // The stamp id of the latest plan health call, awaiting the next turn's
   // origin for its next_speaker outcome. Null where none is held.
   jevNextSpeakerStampId: string | null;
+  // Why this session's persona state is not loaded, or null once it is. It
+  // starts as the start-up cause, because a session whose session.start
+  // never finished holds the built-in default state below and nothing else.
+  // session.start's store read sets the store cause where the file would not
+  // read and clears it where the read parsed, and agentic_identity clears it
+  // on a store that parsed as an object. While it stands, the six goal tools
+  // answer with it in place of an empty tree or a refusal naming a live
+  // holder, neither of which is true of a session that never loaded. Every
+  // other tool answers on its own terms: persist reads the store before it
+  // writes and gives the persona up to whatever session the stored entry
+  // names, so a stored tree is not a session's to destroy by writing over it.
+  stateNotLoaded: string | null;
+  // The one `untracked_work` decision this session keeps in the log: the
+  // timestamp of the line it last pushed, and how many turns that line
+  // counts. Both are unset until the turn.complete backstop first fires in
+  // this session, so a new session pushes its own line and leaves any line
+  // an earlier session wrote where it is. Session memory rather than
+  // persisted state, for that reason.
+  untrackedWorkAt: number | null;
+  untrackedWorkCount: number;
 } = {
   persona: "default",
   mySessionId: "pending",
@@ -663,7 +685,34 @@ const sess: {
   jevAskMarkerOutcomeStampId: null,
   jevPlanHealth: new Map(),
   jevNextSpeakerStampId: null,
+  stateNotLoaded: "plugin start-up did not finish, and the debug log's `session.start hook skipped` line names why",
+  untrackedWorkAt: null,
+  untrackedWorkCount: 0,
 };
+
+// The store cause sess.stateNotLoaded takes where session.start's store read
+// fails, and the one-sentence answer the goal tools build from whichever
+// cause stands.
+const STATE_NOT_LOADED_STORE_CAUSE = "the store file could not be read, so this session came up on an empty default state";
+function stateNotLoadedText(cause: string): string {
+  return `This session never loaded its persona's state: ${cause}. The stored goal tree is not shown and was not changed.`;
+}
+
+// The persona store's text parsed and shape-checked, for the reads that load a
+// persona's state from it: session.start's and agentic_identity's two. A parse
+// that returns is not a store that read. JSON.parse("null") returns null, and
+// an array, a number and a string all parse as cleanly, but none of them holds
+// a persona entry to load or an object a claim can be written into: a lookup
+// on null throws a TypeError, and a claim written into an array serializes
+// back as the array with the entry dropped. So anything but an object throws
+// here, the same refusal as a file that would not parse at all.
+function parsePersonaStore(text: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(text);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`the file parsed as ${parsed === null ? "null" : Array.isArray(parsed) ? "an array" : typeof parsed} rather than as an object of persona entries`);
+  }
+  return parsed as Record<string, unknown>;
+}
 
 // The turn state and workdir every commons-entry write carries, so the entry
 // tracks the turn the way the heartbeat file's own stamp does.
@@ -708,6 +757,10 @@ const commonsMeta = () => ({ turnStartedAt: sess.turnStartedAt, workdir: sess.wo
 const HEARTBEAT_FILENAME = ".agentic-heartbeat.json";
 const PERSONA_STORE_FILENAME = ".agentic-personas.json";
 const YIELD_LOG_FILENAME = ".agentic-yields.log";
+// goal_create appends each tree it replaces here, one JSON line per tree,
+// beside the store. It is a recovery copy opened by hand, and nothing in the
+// plugin reads it back.
+const GOAL_HISTORY_FILENAME = ".agentic-goal-history.jsonl";
 const workdirPathOf = (filename: string): string => {
   const root = sess.workdir;
   if (!root) return filename;
@@ -1880,6 +1933,73 @@ export const activate = (dp: any, nextId: string | null, reason: string): void =
   }
 };
 
+// Closes the operator ask pendingAskId names when that ask is open on
+// `nodeId`: the record's status becomes "resumed" and one ask_answered
+// decision names the tool that closed it. Returns whether it closed the ask.
+// pendingAskId itself is the caller's to clear, since goal_resume clears it
+// whatever the record says and goal_done clears it only when this closed it.
+const closeAskOnNode = async (dp: any, nodeId: string, closedBy: string): Promise<boolean> => {
+  const askId = sess.state.pendingAskId;
+  if (!askId) return false;
+  const askRecord = await readAskRecord(commonsStoreOf(dp), sess.persona, askId);
+  if (!askRecord || askRecord.status !== "open" || askRecord.nodeId !== nodeId) return false;
+  askRecord.status = "resumed";
+  await (commonsStoreOf(dp)).set(askKey(sess.persona, askId), askRecord);
+  sess.state.decisions.push({
+    timestamp: Date.now(),
+    loop: "monitor",
+    action: "ask_answered",
+    detail: `ask ${askId} closed by ${closedBy} (status: resumed)`,
+  });
+  return true;
+};
+
+// completeLeaf's walk marks a plan parent blocked with the reason "Child task
+// blocked" while a child is blocked, and leaves that status and reason in
+// place when goal_done later completes the blocked child by name. A parent
+// left blocked is never descended into by activateNext's DFS, so its pending
+// children are stranded. This walks up from the completed entry through each
+// non-root ancestor carrying that reason. A complete ancestor has the stale
+// reason cleared, whether the walk completed it in this call or earlier, and
+// the walk goes on above it. A blocked ancestor with no child still blocked returns to pending.
+// A blocked ancestor with a child still blocked stays blocked and ends the
+// walk, as does any other state. Each ancestor changed gets one decision.
+// The walk is bounded by the node count, as isActivationEligible's is.
+const clearChildBlockedAncestors = (completedId: string): void => {
+  const goals = sess.state.goals;
+  let current = goals.find((g) => g.id === completedId);
+  let steps = goals.length;
+  while (current && current.parentId) {
+    if (steps-- <= 0) return;
+    const parent = goals.find((g) => g.id === current!.parentId);
+    if (!parent || parent.parentId === null || parent.blockedReason !== "Child task blocked") return;
+    const cause = `goal_done's completion of ${completedId} cleared "Child task blocked"`;
+    if (parent.status === "complete") {
+      parent.blockedReason = undefined;
+      parent.updatedAt = Date.now();
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "goal",
+        action: "reason_cleared",
+        detail: `${parent.id}: ${cause}`,
+      });
+    } else if (parent.status === "blocked" && !goals.some((g) => g.parentId === parent.id && g.status === "blocked")) {
+      parent.status = "pending";
+      parent.blockedReason = undefined;
+      parent.updatedAt = Date.now();
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "goal",
+        action: "unblocked",
+        detail: `${parent.id}: returned to pending, ${cause}`,
+      });
+    } else {
+      return;
+    }
+    current = parent;
+  }
+};
+
 // Section 2 (plan-health-from-the-record): a plan entry is an entry that has
 // a plan by resolvePlanPath's ancestor rule, whatever its kind, so a task a
 // worker adds under its plan node is one too. A plan entry is judged from its
@@ -2281,8 +2401,29 @@ export const register: Register = async (on, options) => {
     sess.yieldLogPath = workdirPathOf(YIELD_LOG_FILENAME);
     $.ui.log(`Agentic: session.start (${sess.mySessionId})`);
 
-    // Register tools.
-    await $.tool.register({
+    // Register tools. Every registration goes through registerTool, so a
+    // host that refuses one (a description over its length limit is the
+    // known case) costs the session that tool alone: the claim, the store
+    // load, the heartbeat and the controller tick below all still run. A
+    // refusal is logged here and held until the persona state is loaded,
+    // where each becomes one tool_register_refused decision. The catch takes
+    // any throw, not only an Error, and rethrows nothing.
+    // Each call site keeps its own register call with the object literal
+    // inline and hands it in as a thunk, because
+    // .kit/tool-description-length-test.mjs and .kit/injection-ledger.mjs
+    // read every registration out of this file by that literal call shape,
+    // and the name is passed beside it for the refusal to carry.
+    const refusedRegistrations: { name: string; text: string }[] = [];
+    const registerTool = async (name: string, attempt: () => unknown) => {
+      try {
+        await attempt();
+      } catch (err) {
+        const text = boundedText(safeErrorText(err));
+        refusedRegistrations.push({ name, text });
+        try { $.ui.log(`Agentic: the host refused to register ${name}; this session runs without it: ${text}`); } catch { /* non-fatal */ }
+      }
+    };
+    await registerTool("agentic_identity", () => $.tool.register({
       name: "agentic_identity",
       description:
         "Switch this session to a persona's store. It never evicts a live session: where another " +
@@ -2300,17 +2441,18 @@ export const register: Register = async (on, options) => {
         },
         required: ["persona"],
       },
-    });
+    }));
 
     // Section 6: the goal-tree tools never register under arming "reader".
     // A reader session steers through agentic_say/agentic_inbox only; it
     // owns no persona and so has no goal tree of its own to create or edit.
     if (arming !== "reader") {
-    await $.tool.register({
+    await registerTool("goal_create", () => $.tool.register({
       name: "goal_create",
       description:
         "Create a new goal tree for this persona. The root carries the objective; the planner " +
-        "creates the plans under it at the next controller tick.",
+        "creates the plans under it at the next controller tick. A tree whose root is unfinished " +
+        "is replaced only with replace: true.",
       inputSchema: {
         type: "object",
         properties: {
@@ -2326,12 +2468,16 @@ export const register: Register = async (on, options) => {
             type: "string",
             description: "roadmapPath is an optional project-relative path to a roadmap file. The planner reads it at every planning event.",
           },
+          replace: {
+            type: "boolean",
+            description: "replace: true replaces an unfinished tree. A replaced tree with entries is kept in .agentic-goal-history.jsonl.",
+          },
         },
         required: ["objective"],
       },
-    });
+    }));
 
-    await $.tool.register({
+    await registerTool("goal_add", () => $.tool.register({
       name: "goal_add",
       description:
         "Add a node to the goal tree under parentId. With parentId omitted the parent is the " +
@@ -2368,13 +2514,15 @@ export const register: Register = async (on, options) => {
         },
         required: ["title", "objective"],
       },
-    });
+    }));
 
-    await $.tool.register({
+    await registerTool("goal_done", () => $.tool.register({
       name: "goal_done",
       description:
         "Mark the active goal leaf as complete, with an optional one-line note. The controller then activates the next pending plan or fires the planner. " +
-        "The result names the goal that became active where there is one, and that goal is the one to carry on with.",
+        "The result names the goal that became active where there is one, and that goal is the one to carry on with. " +
+        "nodeId completes a named entry instead, once every child it has is complete or abandoned, and leaves any other active entry active. " +
+        "Finished work on an entry that is not active is recorded with goal_done and its nodeId, never with a drop.",
       inputSchema: {
         type: "object",
         properties: {
@@ -2382,20 +2530,24 @@ export const register: Register = async (on, options) => {
             type: "string",
             description: "One-line note about why this is done.",
           },
+          nodeId: {
+            type: "string",
+            description: "nodeId names the entry to complete, as goal_status lists it.",
+          },
         },
       },
-    });
+    }));
 
-    await $.tool.register({
+    await registerTool("goal_status", () => $.tool.register({
       name: "goal_status",
       description: "Show the current goal tree as formatted text. Read-only; works for passive readers.",
       inputSchema: {
         type: "object",
         properties: {},
       },
-    });
+    }));
 
-    await $.tool.register({
+    await registerTool("goal_resume", () => $.tool.register({
       name: "goal_resume",
       description:
         "Resume a paused goal leaf and reset its nudge budget. A different active node is paused first, with the reason " +
@@ -2409,9 +2561,9 @@ export const register: Register = async (on, options) => {
           },
         },
       },
-    });
+    }));
 
-    await $.tool.register({
+    await registerTool("supervisor_shutdown", () => $.tool.register({
       name: "supervisor_shutdown",
       description:
         "Stop the supervisor itself, not just the current goal: the child exits by the graceful " +
@@ -2427,9 +2579,9 @@ export const register: Register = async (on, options) => {
           },
         },
       },
-    });
+    }));
 
-    await $.tool.register({
+    await registerTool("supervisor_restart", () => $.tool.register({
       name: "supervisor_restart",
       description:
         "Relaunch the supervised child without stopping the supervisor: this child exits by the graceful EOF " +
@@ -2445,13 +2597,13 @@ export const register: Register = async (on, options) => {
           },
         },
       },
-    });
+    }));
 
-    await $.tool.register({
+    await registerTool("goal_edit", () => $.tool.register({
       name: "goal_edit",
       description:
         "Change one node of the goal tree. drop marks a pending, paused or blocked node abandoned, so it is " +
-        "never activated, and refuses any other status; pause holds an active or pending node with a reason, and goal_resume " +
+        "never activated, and refuses any other status; a drop is for work that will not be done. pause holds an active or pending node with a reason, and goal_resume " +
         "continues it; reprioritize moves a pending node ahead of its siblings. Owner only.",
       inputSchema: {
         type: "object",
@@ -2471,9 +2623,9 @@ export const register: Register = async (on, options) => {
         },
         required: ["nodeId", "action"],
       },
-    });
+    }));
 
-    await $.tool.register({
+    await registerTool("memory_add", () => $.tool.register({
       name: "memory_add",
       description:
         "Add one entry to this persona's durable memory store, which later sessions read.",
@@ -2495,11 +2647,11 @@ export const register: Register = async (on, options) => {
         },
         required: ["text"],
       },
-    });
+    }));
     }
 
     // D2: inbox tools (plan signatures: agentic_say(text, answers?, urgent?, persona?), agentic_inbox(persona?))
-    await $.tool.register({
+    await registerTool("agentic_say", () => $.tool.register({
       name: "agentic_say",
       description:
         "Send a message to the owner session of a persona. Without persona, the target is this session's own persona: a reader session " +
@@ -2531,9 +2683,9 @@ export const register: Register = async (on, options) => {
         },
         required: ["text"],
       },
-    });
+    }));
 
-    await $.tool.register({
+    await registerTool("agentic_inbox", () => $.tool.register({
       name: "agentic_inbox",
       description:
         "Read replies from the owner session of a persona. Without persona, the target is this session's own persona: a reader session " +
@@ -2555,13 +2707,13 @@ export const register: Register = async (on, options) => {
         },
         required: [],
       },
-    });
+    }));
 
     // Section 3: fleet health, for the session that watches the fleet. It
     // registers beside the inbox tools because it shares their reach rule,
     // so a reader seat holding a live reader claim on the coordinator
     // persona reads the fleet the same way it reads that persona's inbox.
-    await $.tool.register({
+    await registerTool("fleet_status", () => $.tool.register({
       name: "fleet_status",
       description:
         "Read fleet health: one row per persona in the roster the plugin's fleetRoster setting names. Returns " +
@@ -2606,14 +2758,14 @@ export const register: Register = async (on, options) => {
         properties: {},
         required: [],
       },
-    });
+    }));
 
     // The coordinator's restart lever on another persona. It registers under
     // the owner tier only: a reader seat restarts nothing, so the reader's
     // tool list stays the four that tier names. The handler's own gate is
     // the coordinator ground, which an owner-tier worker does not hold.
     if (arming !== "reader") {
-    await $.tool.register({
+    await registerTool("fleet_restart", () => $.tool.register({
       name: "fleet_restart",
       description:
         "Restart another persona's child. Writes restart.request into the run directory the roster that the plugin's " +
@@ -2637,13 +2789,13 @@ export const register: Register = async (on, options) => {
         },
         required: ["persona", "reason"],
       },
-    });
+    }));
     }
 
     // Section 12 registers agentic_resolve under arming "owner" only: a
     // reader owns no persona's records to resolve.
     if (arming !== "reader") {
-    await $.tool.register({
+    await registerTool("agentic_resolve", () => $.tool.register({
       name: "agentic_resolve",
       description:
         "Owner only. Mark an operator record addressed to this persona as resolved. " +
@@ -2668,7 +2820,7 @@ export const register: Register = async (on, options) => {
         },
         required: ["id", "outcome"],
       },
-    });
+    }));
     }
 
     // --- Claim or join the persona based on liveness (heartbeat sidecar) ---
@@ -2685,26 +2837,19 @@ export const register: Register = async (on, options) => {
     // quietly starts fresh being the same silence in another shape.
     let existing: Record<string, unknown> = {};
     try {
-      const parsed = await $.fs.exists(sess.storePath)
-        ? JSON.parse(await $.fs.read(sess.storePath))
+      // parsePersonaStore refuses a file that parses to anything but an
+      // object, so a store holding null, an array, a number or a string takes
+      // the catch below exactly as a parse error does, rather than reaching
+      // the persona lookup and throwing out of session.start from there.
+      existing = await $.fs.exists(sess.storePath)
+        ? parsePersonaStore(await $.fs.read(sess.storePath))
         : {};
-      // A parse that returned is not a store that read. JSON.parse("null")
-      // returns null, and an array, a number and a string all parse as
-      // cleanly, so a store holding any of them reaches the persona lookup
-      // below as something that has no entry to look up: on null that lookup
-      // throws a TypeError out of session.start, which leaves the rest of it
-      // unrun exactly as a parse error would. The shape is what this branch
-      // needs, so it is what is checked, and anything else is the same
-      // refusal as a file that would not parse at all.
-      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error(`the file parsed as ${parsed === null ? "null" : Array.isArray(parsed) ? "an array" : typeof parsed} rather than as an object of persona entries`);
-      }
-      existing = parsed as Record<string, unknown>;
     } catch (err) {
       // The claim this session takes below cannot be written into a store
       // that would not read, so the heartbeat tick publishes it at the first
       // read that parses rather than yielding to whatever that store names.
       claimUnpublished = true;
+      sess.stateNotLoaded = STATE_NOT_LOADED_STORE_CAUSE;
       startStoreProblem = {
         composed: `the steward's own state store '${sess.storePath}' could not be read when this session started, so it came up on a default state and carries none of what the last session recorded.`,
         carried: boundedText(safeErrorText(err)),
@@ -2791,6 +2936,12 @@ export const register: Register = async (on, options) => {
       });
     }
 
+    // The state above came from the store where that read parsed, a persona
+    // the store does not name being a fresh one rather than a lost one.
+    // Where the read took the catch above, the session is on a default state
+    // and the field keeps the store cause that catch set.
+    if (startStoreProblem === null) sess.stateNotLoaded = null;
+
     if (startPersonaProblem !== null) {
       sess.state.decisions.push({
         timestamp: Date.now(),
@@ -2800,6 +2951,16 @@ export const register: Register = async (on, options) => {
       });
       startPersonaProblem = null;
     }
+
+    for (const refused of refusedRegistrations) {
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "tool_register_refused",
+        detail: `${refused.name}: ${refused.text}`,
+      });
+    }
+    refusedRegistrations.length = 0;
 
     if (startStoreProblem !== null) {
       sess.state.decisions.push({
@@ -2896,11 +3057,29 @@ export const register: Register = async (on, options) => {
             // as itself and so never promotes again for the life of the
             // process, and the controller tick returns at its owner check
             // from here on, so no [FLEET] and no [RECONCILE] prompt is ever
-            // submitted and the start-up refusal above reaches nobody. The
-            // claim is taken here instead, at the first read that parses,
-            // with commons deciding whether a live session got there first.
+            // submitted and the start-up refusal above reaches nobody. So a
+            // session that has its persona's state to publish takes the claim
+            // here instead, at the first read that parses, with commons
+            // deciding whether a live session got there first.
+            // A session that never loaded its state does not publish here.
+            // What writeClaimDirect below writes is the whole of sess.state,
+            // so a session still carrying the built-in default would put an
+            // empty tree into the store it has just managed to read. Where the
+            // state never loaded the branch is skipped, claimTaken stays false,
+            // and the yield below hands the persona to the name the store
+            // carries: giving it up costs this session's watcher, where
+            // publishing costs the persona's stored tree. Such a session can
+            // still take the claim the ordinary way, through a persist that
+            // finds no entry for its persona and writes its own, which is the
+            // self-heal and destroys nothing, so what this branch guards is the
+            // store that does hold a tree. A session that recovered through
+            // agentic_identity has the real state and its field cleared, so it
+            // publishes here. With the field cleared this way the branch is
+            // reached only when a foreign entry lands in the store after
+            // agentic_identity's own claim write, since that write puts this
+            // session's name in the store and the next tick reads it as its own.
             let claimTaken = false;
-            if (claimUnpublished) {
+            if (claimUnpublished && sess.stateNotLoaded === null) {
               try {
                 const claims = await readAllClaims(commonsStoreOf($), staleAfterMs);
                 const winner = commonsWinner(claims, `persona:${sess.persona}`);
@@ -2956,7 +3135,15 @@ export const register: Register = async (on, options) => {
         // live owner, no store-owner comparison needed. A reader-tier
         // session never promotes: it stays a reader even when the holder
         // it reads goes stale.
-        if (!sess.isOwner && arming !== "reader") {
+        // A session whose state never loaded stays a reader too. Taking the
+        // persona here loads the stored state and raises the epoch, and the
+        // field is cleared only by session.start, where its own store read
+        // parsed, and by agentic_identity, so what it would make is
+        // an owner every write of which is refused, holding the persona away
+        // from a session that could keep it. The same condition guards the
+        // claim publish above, so the tick's two persona-taking branches read
+        // alike, and a healthy session promotes in this one's place.
+        if (!sess.isOwner && arming !== "reader" && sess.stateNotLoaded === null) {
           let holderHb: HeartbeatEntry | null = null;
           try {
             if (await $.fs.exists(heartbeatPathOf())) {
@@ -3546,6 +3733,15 @@ export const register: Register = async (on, options) => {
               sess.fleetHealth = current;
               if (report.problem === undefined) sess.fleetFirstReadingDone = true;
               if (!sess.state.decisions.includes(changeDecision)) sess.state.decisions.push(changeDecision);
+              // What the line waits on, said without promising it lands. The
+              // repair is a store that parses again, and it is the only thing
+              // named here: a session carrying the built-in default rather
+              // than the persona's own state comes to hold that state only
+              // through a worker calling agentic_identity, which no background
+              // path does, so naming it beside the repair would name a wait
+              // that may never end. What the line does after the repair depends
+              // on what the file then says, and no sentence here tells an
+              // operator it will arrive.
               storeRefusedDecision = {
                 timestamp: Date.now(),
                 loop: "monitor",
@@ -3560,7 +3756,7 @@ export const register: Register = async (on, options) => {
               // it rides a carried line of its own, and the composed line above
               // it holds the plugin's own sentence alone.
               notes.push({
-                composed: `the steward's own state store '${sess.storePath}' refused the write that carries this report's audit line, so the report below went out and that line lands when the store parses again.`,
+                composed: `the steward's own state store '${sess.storePath}' refused the write that carries this report's audit line, so the report below went out and that line waits for a store that parses again.`,
                 carried: boundedText(safeErrorText(err)),
               });
               // Swallowed rather than rethrown. $.clock.every takes a callback
@@ -5426,7 +5622,12 @@ export const register: Register = async (on, options) => {
           action: "operator_stamp_withheld",
           detail: `record ${queuedDelivery.recordId} not stamped with turn ${e.turnId} (${reason} turn)`,
         });
-        await persist($);
+        // Attempted rather than depended on. This is bookkeeping with no
+        // caller to answer: a throw here would leave the tool call itself, so
+        // the tool the worker asked for would report a failure about a line
+        // the plugin writes for its own record. The line stands in memory and
+        // the first write that is not refused carries it.
+        try { await persist($); } catch { /* persist could not read or write the store; the line above waits in memory */ }
       }
     }
     if (sess.isOwner && stampRecordId) {
@@ -5448,7 +5649,10 @@ export const register: Register = async (on, options) => {
           action: "operator_turn_stamped",
           detail: `record ${submitted.id} stamped with turn ${e.turnId}`,
         });
-        await persist($);
+        // Attempted rather than depended on, as at the withheld stamp above.
+        // The stamp itself is in the commons record, which is written above
+        // this and stands whatever the persona store does.
+        try { await persist($); } catch { /* persist could not read or write the store; the line above waits in memory */ }
       }
     }
 
@@ -5577,59 +5781,52 @@ export const register: Register = async (on, options) => {
     const wasChannelOrigin = currentTurnIsChannelOrigin;
     currentTurnIsChannelOrigin = false;
 
-    // Item 2 sub-bullet (f016b69): a turn that did real work with no
-    // active root - the exact shape a cost-conscious model produces when
-    // it reads a one-step request as too small for goal_create, even
-    // after the [NO GOAL] reminder names size explicitly - gets a
-    // synthetic goal record after the fact, so "every request opens a
-    // goal, whatever its size" holds even when the model skipped the
-    // ritual. The condition is "no active root", not "goals.length === 0":
-    // item 4's second conversational request arrives with the first
-    // root still sitting in state, complete but present, so an empty-
-    // array check would silently never fire for that case. Gated off
+    // Item 2 sub-bullet (f016b69): a turn that did real work with no open
+    // root logs one `untracked_work` decision and leaves the goal tree
+    // alone. The tree changes only through a goal tool call that names the
+    // change, so this block builds no root, assigns nothing to goals and
+    // leaves activeGoalId as it is. A complete root can still hold a live
+    // plan that goal_add put under it, and that plan stays.
+    // The session keeps at most one such line. The first firing pushes it
+    // with count 1. Each later firing removes the one entry this session
+    // pushed, matched on action and on the held timestamp so a line an
+    // earlier session wrote stays, and pushes a fresh line at the tail with
+    // the new clock, the raised count and the new prompt excerpt. The log
+    // stays in time order, and the supervisor's clean-exit path reads the
+    // line's clock as newer than the child's start. Where the decision cap
+    // has already dropped the held line, the firing pushes and carries the
+    // count on. The match cannot be "the log's last entry", because turn
+    // starts, cost summaries and the like land between firings.
+    // The condition is "no open root", not "goals.length === 0": a request
+    // after a finished one arrives with that root still in state. Gated off
     // real work only (isWorkTool, Round 28) and off priming/nudge turns
-    // (isPrimingTurn, wasNudged) - a channel-attached passive child's own
-    // acknowledgment turn must never look like task work, or the
-    // supervisor sees a fabricated root_complete and restart-loops it.
+    // (isPrimingTurn, wasNudged), since a channel-attached passive child's
+    // own acknowledgment turn is not task work. The turn's persist below
+    // carries the write.
     const currentRoot = sess.state.goals.find((g) => g.parentId === null);
     const noActiveRoot = !currentRoot || currentRoot.status === "complete" || currentRoot.status === "abandoned";
     if (!skipped && sess.isOwner && !isPrimingTurn && !wasNudged && noActiveRoot && toolCallsThisTurn > 0) {
-      const backfillNow = Date.now();
-      const objective = (currentPrompt || "Untitled request").slice(0, 200);
-      const rootId = `root-${backfillNow.toString(36)}`;
-      const backfillRoot: GoalNode = {
-        id: rootId,
-        parentId: null,
-        kind: "root",
-        title: objective.slice(0, 80),
-        objective,
-        status: "complete",
-        source: "worker",
-        maxRounds: 1,
-        completedRounds: 1,
-        scores: [{ round: 1, result: "complete" }],
-        notes: ["Backfilled: the worker did the work without calling goal_create this turn."],
-        planningRounds: 0,
-        consecutiveBlockedPlannings: 0,
-        consecutivePlanningFailures: 0,
-        planningRound: 0,
-        createdAt: backfillNow,
-        updatedAt: backfillNow,
-      };
-      sess.state.goals = [backfillRoot];
-      sess.state.activeGoalId = null;
+      const untrackedNow = Date.now();
+      const excerpt = (currentPrompt || "Untitled request").slice(0, 80);
+      const heldAt = sess.untrackedWorkAt;
+      if (heldAt !== null) {
+        const decisions = sess.state.decisions;
+        for (let i = decisions.length - 1; i >= 0; i--) {
+          if (decisions[i].action === "untracked_work" && decisions[i].timestamp === heldAt) {
+            decisions.splice(i, 1);
+            break;
+          }
+        }
+      }
+      const count = sess.untrackedWorkCount + 1;
       sess.state.decisions.push({
-        timestamp: backfillNow,
+        timestamp: untrackedNow,
         loop: "goal",
-        action: "create",
-        detail: `Root ${rootId} "${objective.slice(0, 80)}" created (max 1 rounds) - backfilled, no goal_create call this turn`,
+        action: "untracked_work",
+        detail: `x${count}: ${excerpt}`,
       });
-      sess.state.decisions.push({
-        timestamp: backfillNow,
-        loop: "goal",
-        action: "root_complete",
-        detail: `Root ${rootId} marked complete - backfilled, work already done`,
-      });
+      sess.untrackedWorkAt = untrackedNow;
+      sess.untrackedWorkCount = count;
     }
 
     // Item 8.2 (Round 36, extended Round 39): an ask record opens only when
@@ -6279,7 +6476,12 @@ export const register: Register = async (on, options) => {
     }
 
     // M7: single guarded-write path (shared helper).
-    await persist($);
+    // Attempted rather than depended on. A throw from here would skip the
+    // next(e) below and leave the turn hook chain unfinished for every hook
+    // behind this one, which is a cost out of all proportion to a save this
+    // handler has no caller to report. The state stands in memory and the
+    // first write that is not refused carries it.
+    try { await persist($); } catch { /* persist could not read or write the store; this turn's record waits in memory */ }
 
     return next(e);
   });
@@ -6307,18 +6509,31 @@ export const register: Register = async (on, options) => {
         toolErrorsThisTurn++;
         return { deny: `agentic_identity: 'persona' ${nameProblem} (got '${name}').` };
       }
+      // A store that is not an object of persona entries throws here, as a
+      // store that does not parse does, before the session takes the new
+      // name, resets its untracked-work line or releases its old claim. A
+      // refused switch leaves the session on the persona it held.
+      const store: Record<string, unknown> = await $.fs.exists(sess.storePath)
+        ? parsePersonaStore(await $.fs.read(sess.storePath))
+        : {};
       const previousPersona = sess.persona;
       sess.persona = name;
+      // The held untracked_work line lives in the previous persona's log, so
+      // a switch starts the new persona's line afresh rather than carrying
+      // the old count into it.
+      if (name !== previousPersona) {
+        sess.untrackedWorkAt = null;
+        sess.untrackedWorkCount = 0;
+      }
       if (arming === "reader") {
         // A reader session never claims persona:<name> here, never
         // arbitrates for it, and never becomes its owner: it only ever
         // joins as a reader. It keeps every reader:<target> claim it has
         // made, because delivery grounds each pending record on a live
         // reader:<target> claim at delivery time.
-        const store: Record<string, unknown> = await $.fs.exists(sess.storePath)
-          ? (JSON.parse(await $.fs.read(sess.storePath)) as Record<string, unknown>)
-          : {};
         const existing = store[name] as AgentState | undefined;
+        // The store parsed as an object, so the state below is the persona's own.
+        sess.stateNotLoaded = null;
         if (existing) {
           sess.state = parseState(JSON.stringify(existing));
           sess.state.persona = name;
@@ -6349,10 +6564,11 @@ export const register: Register = async (on, options) => {
           await releaseResource(commonsStoreOf($), `persona:${previousPersona}`, sess.mySessionId, Date.now(), commonsMeta());
         } catch { /* non-fatal: commons is a coordination layer */ }
       }
-      const store: Record<string, unknown> = await $.fs.exists(sess.storePath)
-        ? (JSON.parse(await $.fs.read(sess.storePath)) as Record<string, unknown>)
-        : {};
       const existing = store[name] as AgentState | undefined;
+      // The store parsed as an object, so the state below is the persona's
+      // own. This is how a session whose session.start did not finish
+      // recovers its state: the goal tools answer from it once this has run.
+      sess.stateNotLoaded = null;
       if (existing) {
         sess.state = parseState(JSON.stringify(existing));
         sess.state.persona = name;
@@ -6438,6 +6654,12 @@ export const register: Register = async (on, options) => {
 
     // Serve goal_create (v3: creates the root node, NO planning in handler: R1).
     if (e.tool === "mcp__agentic-plugin__goal_create") {
+      // Before the owner check: a session that never loaded its state is not
+      // an owner either, and "held by a live session" would be untrue of it.
+      if (sess.stateNotLoaded !== null) {
+        toolErrorsThisTurn++;
+        return { deny: stateNotLoadedText(sess.stateNotLoaded) };
+      }
       if (!sess.isOwner) {
         toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
@@ -6449,8 +6671,48 @@ export const register: Register = async (on, options) => {
       }
       const maxRounds = Math.min(Math.max(parseInt(String((e as any).maxRounds || "10"), 10) || 10, 1), 50);
       const roadmapPath = String((e as any).roadmapPath || "").trim() || undefined;
+      // Arguments can arrive stringified, as maxRounds above can, so the
+      // string "true" counts. Any other value leaves replace unset.
+      const rawReplace = (e as any).replace;
+      const replace = rawReplace === true || rawReplace === "true";
+
+      // An unfinished tree, one whose root is neither complete nor abandoned,
+      // is replaced only when the call says so. A finished tree needs no
+      // replace, so starting the next goal after one completes stays one call.
+      const oldRoot = sess.state.goals.find((g) => g.parentId === null);
+      const isOpen = (g: GoalNode) => g.status !== "complete" && g.status !== "abandoned";
+      if (oldRoot && isOpen(oldRoot) && !replace) {
+        const openCount = sess.state.goals.filter((g) => g.parentId !== null && isOpen(g)).length;
+        const openText = openCount === 0
+          ? `its root is ${oldRoot.status}`
+          : `${openCount === 1 ? "1 entry under its root is" : `${openCount} entries under its root are`} not complete or abandoned`;
+        toolErrorsThisTurn++;
+        return {
+          deny:
+            `The goal tree "${oldRoot.title}" is unfinished: ${openText}. ` +
+            `Pass replace: true to replace the tree, or use goal_add to extend it.`,
+        };
+      }
 
       const now = Date.now();
+
+      // A tree holding any entry besides its root is copied to the history
+      // file before it is replaced. The copy comes first, so a replacement
+      // whose copy could not be written is refused and the tree stands.
+      if (sess.state.goals.some((g) => g.parentId !== null)) {
+        const line = JSON.stringify({ timestamp: now, persona: sess.persona, reason: "goal_create", goals: sess.state.goals });
+        try {
+          await appendLines($, workdirPathOf(GOAL_HISTORY_FILENAME), [line]);
+        } catch (err) {
+          toolErrorsThisTurn++;
+          return {
+            deny:
+              `The history copy in ${GOAL_HISTORY_FILENAME} could not be written, so the goal tree was not replaced: ` +
+              boundedText(safeErrorText(err)),
+          };
+        }
+      }
+
       const rootId = `root-${now.toString(36)}`;
       const root: GoalNode = {
         id: rootId,
@@ -6499,6 +6761,10 @@ export const register: Register = async (on, options) => {
 
     // Serve goal_add (R4: parent resolution).
     if (e.tool === "mcp__agentic-plugin__goal_add") {
+      if (sess.stateNotLoaded !== null) {
+        toolErrorsThisTurn++;
+        return { deny: stateNotLoadedText(sess.stateNotLoaded) };
+      }
       if (!sess.isOwner) {
         toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
@@ -6622,6 +6888,25 @@ export const register: Register = async (on, options) => {
         updatedAt: now,
         ...(planPath ? { planPath } : {}),
       };
+      // A node added directly under a finished root reopens the root, so the
+      // tree never holds live work under a root that reads finished. A node
+      // added under a plan leaves the root as it was, since a finished plan
+      // keeps its child out of reach and a reopened root over it would read
+      // live with nothing to activate. It runs after every refusal above, so a
+      // refused add reopens nothing, and it touches no other node: finished
+      // children stay finished.
+      if (parentId === root.id && (root.status === "complete" || root.status === "abandoned")) {
+        const priorStatus = root.status;
+        root.status = "pending";
+        root.blockedReason = undefined;
+        root.updatedAt = now;
+        sess.state.decisions.push({
+          timestamp: now,
+          loop: "goal",
+          action: "root_reopened",
+          detail: `${root.id} reopened from ${priorStatus} to pending for a new ${kind}`,
+        });
+      }
       sess.state.goals.push(newNode);
 
       sess.state.decisions.push({
@@ -6695,6 +6980,10 @@ export const register: Register = async (on, options) => {
     // change, so the decision log plus the resulting tree diff is the proof
     // the operator's request actually changed something.
     if (e.tool === "mcp__agentic-plugin__goal_edit") {
+      if (sess.stateNotLoaded !== null) {
+        toolErrorsThisTurn++;
+        return { deny: stateNotLoadedText(sess.stateNotLoaded) };
+      }
       if (!sess.isOwner) {
         toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
@@ -6713,7 +7002,7 @@ export const register: Register = async (on, options) => {
       }
       if (node.parentId === null) {
         toolErrorsThisTurn++;
-        return { deny: "Cannot edit the root; goal_create replaces the whole tree instead." };
+        return { deny: "Cannot edit the root; goal_create with replace: true replaces the whole tree instead." };
       }
       const now = Date.now();
 
@@ -6782,47 +7071,142 @@ export const register: Register = async (on, options) => {
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
-    // Serve goal_done (R3: use completeLeaf + activateNext).
+    // Serve goal_done (R3: use completeLeaf + activateNext). With no nodeId it
+    // completes the active leaf. With a nodeId it completes that entry by
+    // name, where the entry is not the root, is not already complete or
+    // abandoned, and has no child still open. An entry that was not the
+    // active one when the call arrived earns no round or score credit and
+    // leaves any other active entry active.
     if (e.tool === "mcp__agentic-plugin__goal_done") {
+      if (sess.stateNotLoaded !== null) {
+        toolErrorsThisTurn++;
+        return { deny: stateNotLoadedText(sess.stateNotLoaded) };
+      }
       if (!sess.isOwner) {
         toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
       }
       const note = String((e as any).note || "").trim();
+      const byNameId = String((e as any).nodeId || "").trim();
       const active = sess.state.activeGoalId
         ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
         : null;
-      if (!active || active.status !== "active") {
-        toolErrorsThisTurn++;
-        return { deny: "No active goal leaf to complete." };
+      let target: GoalNode;
+      if (byNameId) {
+        const named = sess.state.goals.find((g) => g.id === byNameId);
+        if (!named) {
+          toolErrorsThisTurn++;
+          return { deny: `nodeId "${byNameId.slice(0, 50)}" not found in goal tree.` };
+        }
+        if (named.parentId === null) {
+          toolErrorsThisTurn++;
+          return { deny: `Cannot complete ${byNameId}: it is the root, status "${named.status}". goal_done completes entries under the root, never the root itself.` };
+        }
+        if (named.status === "complete" || named.status === "abandoned") {
+          toolErrorsThisTurn++;
+          return { deny: `Cannot complete ${byNameId}: status is already "${named.status}".` };
+        }
+        const openChild = sess.state.goals.find(
+          (g) => g.parentId === named.id && g.status !== "complete" && g.status !== "abandoned",
+        );
+        if (openChild) {
+          toolErrorsThisTurn++;
+          return { deny: `Cannot complete ${byNameId}: status is "${named.status}" and its child ${openChild.id} is "${openChild.status}". Complete or drop every child first.` };
+        }
+        target = named;
+      } else {
+        if (!active || active.status !== "active") {
+          toolErrorsThisTurn++;
+          return { deny: "No active goal leaf to complete." };
+        }
+        target = active;
       }
-      const completedId = active.id;
-      const completedTitle = active.title;
+      // Which entries were active is read before anything changes, so the
+      // follow-on below keys on the tree as the call found it. The credit
+      // goes to the target only where activeGoalId names it and its status
+      // is active. Another entry is active where any node besides the target
+      // has status active, whatever activeGoalId names, the same test
+      // goal_add's no-active-leaf branch reads.
+      const wasActive = active != null && active.status === "active" && active.id === target.id;
+      const otherActive = sess.state.goals.find((g) => g.status === "active" && g.id !== target.id) ?? null;
+      const completedId = target.id;
+      const completedTitle = target.title;
+      const statusBefore = new Map(sess.state.goals.map((g) => [g.id, g.status]));
       completeLeaf(sess.state, completedId, note || "goal_done");
+      if (byNameId) {
+        target.blockedReason = undefined;
+        target.pausedByNudgeCap = false;
+        target.lead = null;
+      }
       // E2: health run at completeLeaf site (goal_done).
       await runHealth($, completedId);
-      // M11: credit the round and score in goal_done, not turn.complete.
-      // The score is recorded for every entry; the round is spent on a task
-      // entry only, since a plan entry has no round budget.
-      active.scores.push({ round: active.scores.length + 1, result: "on-goal" });
-      if (!isPlanEntry(sess.state, active)) active.completedRounds += 1;
-      sess.state.decisions.push({
-        timestamp: Date.now(),
-        loop: "goal",
-        action: "score",
-        detail: `${completedId} Round ${active.scores.length}: on-goal (goal_done)`,
-      });
+      if (wasActive) {
+        // M11: credit the round and score in goal_done, not turn.complete.
+        // The score is recorded for every entry; the round is spent on a task
+        // entry only, since a plan entry has no round budget.
+        active.scores.push({ round: active.scores.length + 1, result: "on-goal" });
+        if (!isPlanEntry(sess.state, active)) active.completedRounds += 1;
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "goal",
+          action: "score",
+          detail: `${completedId} Round ${active.scores.length}: on-goal (goal_done)`,
+        });
+      }
       sess.state.decisions.push({
         timestamp: Date.now(),
         loop: "goal",
         action: "done",
-        detail: `${completedId} "${completedTitle.slice(0, 50)}" marked complete${note ? `: ${note.slice(0, 80)}` : ""}`,
+        detail: `${completedId} "${completedTitle.slice(0, 50)}" marked complete${byNameId ? " by name" : ""}${note ? `: ${note.slice(0, 80)}` : ""}`,
       });
-      const nextId = activateNext(sess.state, completedId);
-      activate($, nextId, `${completedId} done`);
+      // An open ask on an entry this call completed closes the way
+      // goal_resume closes one. Those entries are the one named and any plan
+      // completeLeaf's walk took to complete. An ask on any other entry stays
+      // open and holds activation. The ancestors the completion freed from
+      // "Child task blocked" are logged after its done line and restored
+      // before any activation below, so activateNext reads them as pending.
+      if (byNameId) {
+        clearChildBlockedAncestors(completedId);
+        const completedNow = sess.state.goals
+          .filter((g) => g.status === "complete" && statusBefore.get(g.id) !== "complete")
+          .map((g) => g.id);
+        for (const id of completedNow) {
+          if (await closeAskOnNode($, id, "goal_done")) {
+            sess.state.pendingAskId = undefined;
+            break;
+          }
+        }
+      }
+
+      // The completed entry was active: activate the next one, as the call
+      // with no nodeId always does. Another entry is active: it stays so.
+      // None is active: activate the next one unless an open ask or a nudge
+      // cap pause holds the tree, the two holds goal_add's no-active-leaf
+      // branch honors.
+      let nextId: string | null = null;
+      let heldBy = "";
+      if (wasActive) {
+        nextId = activateNext(sess.state, completedId);
+        activate($, nextId, `${completedId} done`);
+      } else if (!otherActive) {
+        if (sess.state.pendingAskId) {
+          heldBy = "an operator ask is open";
+        } else if (sess.state.goals.some((g) => g.pausedByNudgeCap === true)) {
+          heldBy = "an entry is paused by the nudge cap";
+        } else {
+          nextId = activateNext(sess.state, completedId);
+          activate($, nextId, `${completedId} done by name`);
+        }
+      }
+      // activeGoalId never names the entry this call completed. Where it still
+      // does, it moves to the entry that is still active, or to null where
+      // none is, the same pointer a store load's invariant repair would set.
+      if (!wasActive && sess.state.activeGoalId === completedId) {
+        sess.state.activeGoalId = otherActive ? otherActive.id : null;
+      }
 
       // S9: goal_done sets pendingPeriodic; the tick runs the review.
-      if (sess.state.monitor.selfReview) {
+      if (wasActive && sess.state.monitor.selfReview) {
         sess.state.monitor.selfReview.pendingPeriodic = true;
       }
 
@@ -6841,6 +7225,12 @@ export const register: Register = async (on, options) => {
           return {
             result: `Complete: "${completedTitle}". Next active: ${nextId} "${nextNode.title}".${healthText}`,
           };
+        }
+        if (otherActive && !wasActive) {
+          return { result: `Complete: "${completedTitle}". ${otherActive.id} "${otherActive.title}" is still active.${healthText}` };
+        }
+        if (heldBy) {
+          return { result: `Complete: "${completedTitle}". Nothing was activated: ${heldBy}.${healthText}` };
         }
         return { result: `Complete: "${completedTitle}". No pending goals; planning runs at the next tick.${healthText}` };
       }
@@ -6897,6 +7287,11 @@ export const register: Register = async (on, options) => {
 
     // Serve goal_status (read-only, passive-reader OK).
     if (e.tool === "mcp__agentic-plugin__goal_status") {
+      // A session that never loaded its state holds no tree to show, and
+      // "No goal tree exists." would read as a fact about the store.
+      if (sess.stateNotLoaded !== null) {
+        return { result: stateNotLoadedText(sess.stateNotLoaded) };
+      }
       const root = sess.state.goals.find((g) => g.parentId === null);
       if (!root) {
         return { result: "No goal tree exists." };
@@ -6922,6 +7317,10 @@ export const register: Register = async (on, options) => {
 
     // M5: Serve goal_resume (owner only: resumes paused leaf, resets nudge budget).
     if (e.tool === "mcp__agentic-plugin__goal_resume") {
+      if (sess.stateNotLoaded !== null) {
+        toolErrorsThisTurn++;
+        return { deny: stateNotLoadedText(sess.stateNotLoaded) };
+      }
       if (!sess.isOwner) {
         toolErrorsThisTurn++;
         return { deny: "goal_resume requires ownership of this persona." };
@@ -6985,17 +7384,7 @@ export const register: Register = async (on, options) => {
       }
       // AZ4: goal_resume on the ask's node closes the ask with status "resumed"
       if (sess.state.pendingAskId) {
-        const askRecord = await readAskRecord(commonsStoreOf($), sess.persona, sess.state.pendingAskId);
-        if (askRecord && askRecord.status === "open" && askRecord.nodeId === target.id) {
-          askRecord.status = "resumed";
-          await (commonsStoreOf($)).set(askKey(sess.persona, sess.state.pendingAskId), askRecord);
-          sess.state.decisions.push({
-            timestamp: Date.now(),
-            loop: "monitor",
-            action: "ask_answered",
-            detail: `ask ${sess.state.pendingAskId} closed by goal_resume (status: resumed)`,
-          });
-        }
+        await closeAskOnNode($, target.id, "goal_resume");
         sess.state.pendingAskId = undefined;
       }
       sess.state.updatedAt = Date.now();
@@ -7349,7 +7738,13 @@ export const register: Register = async (on, options) => {
         action: "operator_resolved",
         detail: `record ${id} resolved ${outcome}${note ? `: "${note.slice(0, 80)}"` : ""}`,
       });
-      await persist($);
+      // Attempted rather than depended on. The resolve itself is the commons
+      // record written above, which stands whatever the persona store does, so
+      // a throw here would tell the caller the resolve failed after it landed
+      // and invite a second call on a record that is already resolved. The
+      // decision line stands in memory and the first write that is not refused
+      // carries it.
+      try { await persist($); } catch { /* persist could not read or write the store; the line above waits in memory */ }
       return { result: `Record ${id} resolved (${outcome}).` };
     }
 
@@ -7615,7 +8010,7 @@ export const register: Register = async (on, options) => {
       // M5: when the tree is paused, inject a one-line reminder.
       const pausedNode = sess.state.goals.find((g) => g.status === "paused");
       if (pausedNode) {
-        const pausedBlock = `Goal tree paused: ${pausedNode.blockedReason || "paused by controller"}. Call goal_resume to continue or goal_create to replace.`;
+        const pausedBlock = `Goal tree paused: ${pausedNode.blockedReason || "paused by controller"}. Call goal_resume to continue or goal_create with replace: true to replace.`;
         contextBlocks.push(pausedBlock);
         try { $.ui.log(`Agentic: [GOAL TREE paused] injected`); } catch { /* non-fatal */ }
       } else if (sess.state.goals.length === 0) {

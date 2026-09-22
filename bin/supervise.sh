@@ -2431,10 +2431,12 @@ if (at !== null) console.log(Math.floor(at));
 
 # --- Helper: read the newest root_complete decision's timestamp AND
 # whether it was backfilled, in one read ---
-# v2 Section 0 item 1: the item 2 backstop (hooks/index.ts) writes a
-# root_complete decision whose own detail text says "backfilled" when the
-# worker did real tool work with no active goal tree - that is not a real
-# goal completion, and must never trigger RESTART_PASSIVE. A sibling to
+# v2 Section 0 item 1: a root_complete decision whose own detail text says
+# "backfilled" records real tool work with no active goal tree - that is not
+# a real goal completion, and must never trigger RESTART_PASSIVE. The hook
+# now logs such work as an untracked_work decision and writes no such line,
+# so this flag reads the lines a store written before that still carries
+# until they roll off its decision log. A sibling to
 # get_fact rather than a change to it: get_fact's existing single-token
 # output feeds bare numeric comparisons elsewhere (the -gt checks below),
 # and a two-word answer there would fail those silently. The timestamp and
@@ -2999,8 +3001,8 @@ while true; do
   #
   # [SUPERVISOR-PRIMING] marks this turn as synthetic (the child has no
   # real goal yet) so hooks/index.ts's turn.complete backstop - which
-  # backfills a completed goal for a turn that did real tool work with
-  # no active root - never mistakes the channel's own acknowledgment
+  # logs an untracked_work line for a turn that did real tool work with
+  # no open root - never mistakes the channel's own acknowledgment
   # turn for genuine operator content. Never strip this marker; it is
   # read by the hook, not meant for the model's own reasoning about the
   # task (which is why it precedes, rather than replaces, the reply
@@ -3438,6 +3440,24 @@ while true; do
       log "PASSIVE: goal complete; returning to passive state, waiting for the next goal delivered by chat"
       continue  # only the outer loop encloses this point; no crash/restart accounting
     fi
+  fi
+  # A turn that did real tool work with no open goal logs an untracked_work
+  # decision, and the hook re-pushes that one line with a fresh clock on each
+  # such turn, so a line newer than this child's start means the child did
+  # work this life. A clean exit after it is a healthy child between
+  # requests, so it relaunches unaccounted, the same as the backfilled branch
+  # above: counting it would let a chatty hour of operator steers trip
+  # stop_budget and kill a healthy supervisor. A real root_complete newer
+  # than the start has already been taken above. A non-zero exit falls
+  # through to the accounted path below like any other crash.
+  UNTRACKED_WORK_TS=""
+  if [ "$EXIT_CODE" -eq 0 ]; then
+    UNTRACKED_WORK_TS=$(get_fact "$WORKDIR" "$PERSONA" "untracked_work")
+  fi
+  if [ "$EXIT_CODE" -eq 0 ] && [ -n "$UNTRACKED_WORK_TS" ] && [ "$UNTRACKED_WORK_TS" -gt "$CHILD_START_TS" ]; then
+    log "NOTE: untracked_work at $UNTRACKED_WORK_TS > child start $CHILD_START_TS is untracked work with no open goal, not a completion (exit $EXIT_CODE); not taking RESTART_PASSIVE"
+    log "PASSIVE: relaunching unaccounted after untracked work; the child exited clean, not a failure"
+    continue  # only the outer loop encloses this point; no crash/restart accounting
   fi
 
   # Update crash counter.

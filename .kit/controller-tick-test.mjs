@@ -3040,13 +3040,17 @@ async function main() {
     await caseD5b_reraiseOnce(clock);
     await caseItem2_noGoalReminderPushesOnSize(clock);
     await caseItem2_noGoalReminder_control(clock);
-    await caseItem2_backfillOnRealWork(clock);
-    await caseItem2_backfillOnRealWork_control(clock);
-    await caseItem2_backfillSkipsPrimingTurn(clock);
-    await caseItem2_backfillSkipsNudgeTurn(clock);
+    await caseItem2_untrackedWorkLogsLineAndBuildsNoRoot(clock);
+    await caseItem2_untrackedWorkExcerptIsBounded(clock);
+    await caseItem2_untrackedWorkNotOnNoToolTurn(clock);
+    await caseItem2_untrackedWorkSkipsPrimingTurn(clock);
+    await caseItem2_untrackedWorkSkipsNudgeTurn(clock);
     await caseChannelBackstop_firesOnChannelOriginNoReply(clock);
     await caseChannelBackstop_skipsKeyboardOrigin(clock);
-    await caseItem2_backfillFiresOnSecondRequest(clock);
+    await caseItem2_untrackedWorkKeepsLivePlanUnderCompleteRoot(clock);
+    await caseItem2_untrackedWorkCollapsesToOneLine(clock);
+    await caseItem2_untrackedWorkCarriesCountPastCap(clock);
+    await caseItem2_untrackedWorkRestartsCountOnPersonaSwitch(clock);
     await caseItem8p2_classifier_ask_operator_converts_unconditionally(clock);
     await caseItem8p2_pause_converts_unconditionally(clock);
     await caseItem8p2_worker_states_fork_opens_ask(clock);
@@ -3283,6 +3287,37 @@ async function main() {
     await caseSection6_reader_sayControlStillWritesARecord(clock);
     await caseSection6_owner_matchesTheFullExistingShape(clock);
     await caseSection6_owner_everyParameterIsNamedInItsDescription(clock);
+    await caseGtc1_aRefusedRegistrationCostsThatToolAlone(clock);
+    await caseGtc1_aSessionThatNeverStartedSaysSoAndWritesNothing(clock);
+    await caseGtc1_anUnparseableStoreSaysSoAndWritesNothing(clock);
+    await caseGtc1_aRepairedStoreIsNotOverwrittenWithTheDefault(clock);
+    await caseGtc1_aNotLoadedSessionYieldsRatherThanOverwriteTheStoredTree(clock);
+    await caseGtc1_theOtherWritingToolsAnswerOnTheirOwnTerms(clock);
+    await caseGtc1_refusedBookkeepingDoesNotBreakTheTurnChain(clock);
+    await caseGtc1_aNotLoadedReaderDoesNotPromote(clock);
+    await caseGtc1_aNonObjectStoreDoesNotRecoverThroughIdentity(clock);
+    await caseGtc1_aRefusedSwitchLeavesTheSessionAsItWas(clock);
+    await caseGtc3_goalDoneWithNoNodeIdBehavesAsBefore(clock);
+    await caseGtc3_completingByNameNeverMovesTheActiveEntry(clock);
+    await caseGtc3_aTaskCompletedByNameWalksItsPlanToComplete(clock);
+    await caseGtc3_eachRefusalReturnsItsReasonAndChangesNoNode(clock);
+    await caseGtc3_unfinishedChildrenRefusalInBothDirections(clock);
+    await caseGtc3_completingTheActiveEntryByNameMatchesTheCallWithNoNodeId(clock);
+    await caseGtc3_anOpenAskOnTheCompletedEntryIsClosed(clock);
+    await caseGtc3_anOpenAskOnAPlanTheWalkCompletesIsClosed(clock);
+    await caseGtc3_noActiveEntryActivatesNextUnlessHeld(clock);
+    await caseGtc3_aBlockedChildCompletedByNameReturnsItsPlanToPending(clock);
+    await caseGtc3_aPlanWithAnotherBlockedChildStaysBlocked(clock);
+    await caseGtc3_aPlanTheWalkCompletesLosesTheStaleReason(clock);
+    await caseGtc3_noActiveEntryUnblocksThePlanAndActivatesTheSibling(clock);
+    await caseGtc3_eachAncestorCarryingTheReasonIsUnblocked(clock);
+    await caseGtc3_theWalkGoesOnPastACompletedPlanToABlockedOne(clock);
+    await caseGtc4_theReplaceGuardRefusesAnUnfinishedTree(clock);
+    await caseGtc4_replaceTrueReplacesAndKeepsTheOldTree(clock);
+    await caseGtc4_aFinishedRootNeedsNoReplace(clock);
+    await caseGtc4_aFailedHistoryWriteStopsTheReplacement(clock);
+    await caseGtc4_goalAddUnderAFinishedRootReopensIt(clock);
+    await caseGtc4_thePausedReminderNamesReplaceTrue(clock);
     await caseSection6Fleet_unchangedIsSilentAndOneChangeSubmitsOnce(clock);
     await caseSection6Fleet_runningRowsAreNotAllHealthy(clock);
     await caseSection6Fleet_aFirstEverLaunchIsNotStale(clock);
@@ -3634,54 +3669,80 @@ async function caseItem2_noGoalReminder_control(clock) {
 }
 
 // ============================================================
-// Item 2 sub-bullet: the turn.complete backstop backfills a goal record
-// when a turn does real tool work with no goal tree at all - the shape a
-// cost-conscious model produces even after the [NO GOAL] reminder (live-
-// confirmed three times, Round 24/26, commit c0e07f5/this section).
+// Item 2 sub-bullet: the turn.complete backstop logs one `untracked_work`
+// decision when a turn does real tool work with no open root, and leaves the
+// goal tree alone. A session keeps one such line, re-pushed at the tail on
+// each firing with a raised count.
 // ============================================================
-async function caseItem2_backfillOnRealWork(clock) {
-  console.log("\n=== Item 2: turn.complete backfills a goal when work happened with no tree ===");
+
+// One working turn: a prompt, a turn, one Write call, a completed answer.
+async function untrackedWorkTurn(h, turnId, text) {
+  await h.handlers["prompt.submit"](h.fake, { text }, async () => ({}));
+  await h.handlers["turn.start"](h.fake, { turnId }, async () => ({ result: "ok" }));
+  await h.handlers["tool.call"](h.fake, { tool: "Write", turnId }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId, answer: "Done.", reason: "completed" }, async () => ({ result: "ok" }));
+}
+
+function untrackedLines(h) {
+  return getDecisions(h).filter(d => d.action === "untracked_work");
+}
+
+async function caseItem2_untrackedWorkLogsLineAndBuildsNoRoot(clock) {
+  console.log("\n=== Item 2: a working turn with no tree logs untracked_work and builds no root ===");
   clock.set(T0);
   const mySid = SESSION_ID;
   const now = T0;
 
-  const h = await createTickHarness({ ...OPTS, caseName: "item2_backfill", stateOpts: { hasActiveLeaf: false } });
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_untracked_no_root", stateOpts: { hasActiveLeaf: false } });
   h.storeMap.set(`commons:${mySid}`, {
     sessionId: mySid,
     lastSeen: now,
     claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
   });
 
-  const submitH = h.handlers["prompt.submit"];
-  await submitH(h.fake, { text: "Write a haiku to ocean.txt." }, async () => ({}));
-
-  const turnStartH = h.handlers["turn.start"];
-  await turnStartH(h.fake, { turnId: "t-backfill" }, async () => ({ result: "ok" }));
-
-  // The model wrote the file directly - a real tool call, no goal_create.
-  const toolCallH = h.handlers["tool.call"];
-  await toolCallH(h.fake, { tool: "Write", turnId: "t-backfill" }, async () => ({ result: "ok" }));
-
-  const turnCompleteH = h.handlers["turn.complete"];
-  await turnCompleteH(h.fake, { turnId: "t-backfill", answer: "Wrote the haiku.", reason: "completed" }, async () => ({ result: "ok" }));
+  await untrackedWorkTurn(h, "t-untracked", "Write a haiku to ocean.txt.");
 
   const state = getState(h);
-  check("item2 backfill: a root node now exists", state.goals.length === 1);
-  check("item2 backfill: root is marked complete", state.goals[0]?.status === "complete");
+  check("item2 untracked: goals stay empty", state.goals.length === 0, state.goals);
+  check("item2 untracked: activeGoalId stays null", state.activeGoalId === null);
+  const lines = untrackedLines(h);
+  check("item2 untracked: exactly one untracked_work decision", lines.length === 1, lines);
+  check("item2 untracked: the line is on the goal loop", lines[0]?.loop === "goal");
+  check("item2 untracked: detail is the count and the prompt excerpt", lines[0]?.detail === "x1: Write a haiku to ocean.txt.", lines[0]?.detail);
   const decisions = state.decisions || [];
-  check("item2 backfill: create decision logged", decisions.some(d => d.action === "create" && d.detail.includes("backfilled")));
-  check("item2 backfill: root_complete decision logged", decisions.some(d => d.action === "root_complete" && d.detail.includes("backfilled")));
+  check("item2 untracked: no create decision", !decisions.some(d => d.action === "create"));
+  check("item2 untracked: no root_complete decision", !decisions.some(d => d.action === "root_complete"));
 }
 
-// Control: the same shape, but the turn used no tool at all (pure chat) -
-// the backstop must not fabricate a goal for a turn that did nothing.
-async function caseItem2_backfillOnRealWork_control(clock) {
-  console.log("\n=== Item 2 control: no backfill when the turn used no tool ===");
+// The excerpt is the prompt's first 80 characters.
+async function caseItem2_untrackedWorkExcerptIsBounded(clock) {
+  console.log("\n=== Item 2: the untracked_work excerpt is the prompt's first 80 characters ===");
   clock.set(T0);
   const mySid = SESSION_ID;
   const now = T0;
 
-  const h = await createTickHarness({ ...OPTS, caseName: "item2_backfill_control", stateOpts: { hasActiveLeaf: false } });
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_untracked_excerpt", stateOpts: { hasActiveLeaf: false } });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  const longPrompt = "a".repeat(80) + "TAIL-NOT-KEPT";
+  await untrackedWorkTurn(h, "t-long", longPrompt);
+  const lines = untrackedLines(h);
+  check("item2 untracked excerpt: detail carries exactly 80 prompt characters", lines.length === 1 && lines[0].detail === `x1: ${"a".repeat(80)}`, lines[0]?.detail);
+}
+
+// Control: the same shape, but the turn used no tool at all (pure chat) -
+// the backstop writes nothing for a turn that did nothing.
+async function caseItem2_untrackedWorkNotOnNoToolTurn(clock) {
+  console.log("\n=== Item 2 control: no untracked_work when the turn used no tool ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_untracked_control", stateOpts: { hasActiveLeaf: false } });
   h.storeMap.set(`commons:${mySid}`, {
     sessionId: mySid,
     lastSeen: now,
@@ -3700,20 +3761,19 @@ async function caseItem2_backfillOnRealWork_control(clock) {
   await turnCompleteH(h.fake, { turnId: "t-nochat", answer: "I like blue.", reason: "completed" }, async () => ({ result: "ok" }));
 
   const state = getState(h);
-  check("item2 backfill control: no goal fabricated for a no-tool turn", state.goals.length === 0);
+  check("item2 untracked control: goals stay empty on a no-tool turn", state.goals.length === 0);
+  check("item2 untracked control: no untracked_work on a no-tool turn", untrackedLines(h).length === 0);
 }
 
-// Round 28: the backstop must never fire on a priming turn (a channel-
-// attached passive child's own acknowledgment, whose only tool call is
-// reply) - the exact shape that would otherwise restart-loop the
-// supervisor on a fabricated root_complete.
-async function caseItem2_backfillSkipsPrimingTurn(clock) {
-  console.log("\n=== Item 2 Round 28: no backfill on a priming turn ===");
+// Round 28: the backstop never fires on a priming turn (a channel-attached
+// passive child's own acknowledgment, whose only tool call is reply).
+async function caseItem2_untrackedWorkSkipsPrimingTurn(clock) {
+  console.log("\n=== Item 2 Round 28: no untracked_work on a priming turn ===");
   clock.set(T0);
   const mySid = SESSION_ID;
   const now = T0;
 
-  const h = await createTickHarness({ ...OPTS, caseName: "item2_backfill_priming", stateOpts: { hasActiveLeaf: false } });
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_untracked_priming", stateOpts: { hasActiveLeaf: false } });
   h.storeMap.set(`commons:${mySid}`, {
     sessionId: mySid,
     lastSeen: now,
@@ -3734,13 +3794,14 @@ async function caseItem2_backfillSkipsPrimingTurn(clock) {
   await turnCompleteH(h.fake, { turnId: "t-priming", answer: "Ready.", reason: "completed" }, async () => ({ result: "ok" }));
 
   const state = getState(h);
-  check("item2 Round28: no goal fabricated on the priming turn", state.goals.length === 0);
+  check("item2 Round28: goals stay empty on the priming turn", state.goals.length === 0);
+  check("item2 Round28: no untracked_work on the priming turn", untrackedLines(h).length === 0);
 }
 
-// Round 28: the backstop must never fire on a nudge turn, even if the
-// nudged turn happens to use a real work tool.
-async function caseItem2_backfillSkipsNudgeTurn(clock) {
-  console.log("\n=== Item 2 Round 28: no backfill on a nudge turn ===");
+// Round 28: the backstop never fires on a nudge turn, even if the nudged
+// turn happens to use a real work tool.
+async function caseItem2_untrackedWorkSkipsNudgeTurn(clock) {
+  console.log("\n=== Item 2 Round 28: no untracked_work on a nudge turn ===");
   clock.set(T0);
   const mySid = SESSION_ID;
   const now = T0;
@@ -3751,7 +3812,7 @@ async function caseItem2_backfillSkipsNudgeTurn(clock) {
   // top of noActiveRoot here, not independently isolable through the
   // production nudge path. This proves the whole path stays quiet across
   // a real nudge-and-answer cycle rather than isolating wasNudged alone.
-  const h = await createTickHarness({ ...OPTS, caseName: "item2_backfill_nudge" });
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_untracked_nudge" });
   h.storeMap.set(`commons:${mySid}`, {
     sessionId: mySid,
     lastSeen: now,
@@ -3771,19 +3832,21 @@ async function caseItem2_backfillSkipsNudgeTurn(clock) {
   await turnCompleteH(h.fake, { turnId: "t-nudge", answer: "Working on it.", reason: "completed" }, async () => ({ result: "ok" }));
 
   const state = getState(h);
-  check("item2 Round28: no extra goal fabricated on the nudge-answering turn", state.goals.length === 2);
+  check("item2 Round28: the tree is unchanged on the nudge-answering turn", state.goals.length === 2);
+  check("item2 Round28: no untracked_work on the nudge-answering turn", untrackedLines(h).length === 0);
 }
 
-// Round 28: the trigger condition is "no active root", not
-// "goals.length === 0" - item 4's second conversational request arrives
-// with the first (completed) root still present in the array.
-async function caseItem2_backfillFiresOnSecondRequest(clock) {
-  console.log("\n=== Item 2 Round 28: backfill fires on a second request after a completed root ===");
+// The loss the operator reported: a plan added under a complete root was
+// deleted by the next working turn. The trigger is "no open root", not
+// "goals.length === 0", so this turn fires the backstop, and every node
+// stays exactly as it was.
+async function caseItem2_untrackedWorkKeepsLivePlanUnderCompleteRoot(clock) {
+  console.log("\n=== Item 2: a live plan under a complete root survives a working turn ===");
   clock.set(T0);
   const mySid = SESSION_ID;
   const now = T0;
 
-  const h = await createTickHarness({ ...OPTS, caseName: "item2_backfill_second_request" });
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_untracked_live_plan" });
   h.storeMap.set(`commons:${mySid}`, {
     sessionId: mySid,
     lastSeen: now,
@@ -3793,6 +3856,8 @@ async function caseItem2_backfillFiresOnSecondRequest(clock) {
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
     { id: "root-1", kind: "root", parentId: null, title: "First goal", objective: "First goal", status: "complete", completedRounds: 1, maxRounds: 1, scores: [], createdAt: now - 20000, updatedAt: now - 10000, children: [], notes: [] },
+    { id: "plan-1", kind: "plan", parentId: "root-1", title: "Live plan", objective: "Live plan", status: "pending", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 5000, updatedAt: now - 5000, children: [], notes: [] },
+    { id: "task-1", kind: "task", parentId: "plan-1", title: "Live task", objective: "Live task", status: "pending", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 4000, updatedAt: now - 4000, children: [], notes: [] },
   ];
   personaState.activeGoalId = null;
   h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
@@ -3800,20 +3865,167 @@ async function caseItem2_backfillFiresOnSecondRequest(clock) {
 
   const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
+  const before = getState(h).goals.map(g => `${g.id}|${g.parentId}|${g.kind}|${g.status}`);
 
-  const submitH = h.handlers["prompt.submit"];
-  await submitH(h.fake, { text: "Now write a limerick to limerick.txt." }, async () => ({}));
-
-  const turnStartH = h.handlers["turn.start"];
-  await turnStartH(h.fake, { turnId: "t-second" }, async () => ({ result: "ok" }));
-  const toolCallH = h.handlers["tool.call"];
-  await toolCallH(h.fake, { tool: "Write", turnId: "t-second" }, async () => ({ result: "ok" }));
-  const turnCompleteH = h.handlers["turn.complete"];
-  await turnCompleteH(h.fake, { turnId: "t-second", answer: "Wrote the limerick.", reason: "completed" }, async () => ({ result: "ok" }));
+  await untrackedWorkTurn(h, "t-second", "Now write a limerick to limerick.txt.");
 
   const state = getState(h);
-  check("item2 Round28: a second root was backfilled (goals.length was 1, not 0, before this turn)",
-    state.goals.length === 1 && state.goals[0].id !== "root-1" && state.goals[0].status === "complete");
+  const after = state.goals.map(g => `${g.id}|${g.parentId}|${g.kind}|${g.status}`);
+  check("item2 live plan: the seeded tree loaded as three nodes (setup sanity)", before.length === 3, before);
+  check("item2 live plan: the backstop fired on this turn", untrackedLines(h).length === 1, untrackedLines(h));
+  check("item2 live plan: every node is in place with its parent, kind and status", JSON.stringify(after) === JSON.stringify(before), { before, after });
+  check("item2 live plan: activeGoalId is left as it was", state.activeGoalId === null);
+  check("item2 live plan: no root_complete decision", !state.decisions.some(d => d.action === "root_complete"));
+}
+
+// The collapse: three firings with other decisions written between them
+// leave one line, at the tail, counting three. A fresh session over the same
+// store pushes its own line and leaves the first, and its own second firing
+// removes only its own line.
+async function caseItem2_untrackedWorkCollapsesToOneLine(clock) {
+  console.log("\n=== Item 2: untracked_work collapses to one line per session ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_untracked_collapse", stateOpts: { hasActiveLeaf: false } });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  await untrackedWorkTurn(h, "t-c1", "first request");
+  const firstAt = untrackedLines(h)[0]?.timestamp;
+  // Two ticks reach the cost_summary cadence (costSummaryEveryNTicks is 2).
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  clock.advance(10_000);
+  await untrackedWorkTurn(h, "t-c2", "second request");
+  clock.advance(10_000);
+  await untrackedWorkTurn(h, "t-c3", "third request");
+
+  const decisions = getDecisions(h);
+  const lines = untrackedLines(h);
+  const last = decisions[decisions.length - 1];
+  check("item2 collapse: exactly one untracked_work line after three firings", lines.length === 1, lines);
+  check("item2 collapse: the line is the tail of the log", last?.action === "untracked_work", last);
+  check("item2 collapse: its detail opens x3: and carries the newest excerpt", last?.detail === "x3: third request", last?.detail);
+  check("item2 collapse: its clock is the third firing's, newer than the first", typeof firstAt === "number" && last?.timestamp > firstAt, { firstAt, last: last?.timestamp });
+  check("item2 collapse: a turn_start was written after the first firing", decisions.some(d => d.action === "turn_start" && d.timestamp > firstAt));
+  check("item2 collapse: a cost_summary was written after the first firing", decisions.some(d => d.action === "cost_summary" && d.timestamp > firstAt));
+  check("item2 collapse: goals stay empty", getState(h).goals.length === 0);
+
+  // A fresh session over the same store: a new module, so nothing is held.
+  const storeAfterFirst = h.fsMap.get(PERSONA_STORE_FILE);
+  clock.advance(10_000);
+  const h2 = await createTickHarness({ ...OPTS, caseName: "item2_untracked_collapse_fresh", stateOpts: { hasActiveLeaf: false } });
+  h2.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: T0 + 50_000,
+    claims: [{ resource: "persona:default", claimedAt: T0 + 48_000 }],
+  });
+  h2.fsMap.set(PERSONA_STORE_FILE, storeAfterFirst);
+  h2.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: T0 + 50_000 } }));
+  const startH = h2.handlers["session.start"];
+  if (startH) await startH(h2.fake, {}, () => {});
+  check("item2 collapse fresh: the earlier session's line loaded (setup sanity)", untrackedLines(h2).length === 1 && untrackedLines(h2)[0].detail === "x3: third request", untrackedLines(h2));
+
+  await untrackedWorkTurn(h2, "t-f1", "fresh request");
+  let fresh = untrackedLines(h2);
+  check("item2 collapse fresh: a fresh session pushes a second line", fresh.length === 2, fresh);
+  check("item2 collapse fresh: the earlier session's line stays as written", fresh[0]?.detail === "x3: third request" && fresh[0]?.timestamp === last?.timestamp, fresh[0]);
+  check("item2 collapse fresh: the fresh line counts from one", fresh[1]?.detail === "x1: fresh request", fresh[1]?.detail);
+
+  clock.advance(10_000);
+  await untrackedWorkTurn(h2, "t-f2", "fresh again");
+  fresh = untrackedLines(h2);
+  const tail = getDecisions(h2).at(-1);
+  check("item2 collapse fresh: a second firing removes only this session's own line", fresh.length === 2 && fresh[0]?.detail === "x3: third request" && fresh[1]?.detail === "x2: fresh again", fresh);
+  check("item2 collapse fresh: this session's line is the tail", tail?.action === "untracked_work" && tail?.detail === "x2: fresh again", tail);
+}
+
+// The held line can leave the log before the next firing, because the
+// decision cap rolls the oldest entries off. The next firing then pushes a
+// new line and carries the count on.
+async function caseItem2_untrackedWorkCarriesCountPastCap(clock) {
+  console.log("\n=== Item 2: untracked_work carries its count on after the cap drops the held line ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_untracked_cap", stateOpts: { hasActiveLeaf: false } });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  await untrackedWorkTurn(h, "t-cap1", "before the cap");
+  check("item2 cap: the first firing pushed one line (setup sanity)", untrackedLines(h).length === 1);
+
+  // Aborted turns each write a turn_start, which rolls the held line off
+  // the front of the log once DECISIONS_MAX newer entries sit behind it.
+  let turns = 0;
+  while (untrackedLines(h).length > 0 && turns < DECISIONS_MAX + 50) {
+    clock.advance(1_000);
+    await fireTurn(h, `t-roll-${turns}`);
+    turns++;
+  }
+  check("item2 cap: the held line rolled off the log", untrackedLines(h).length === 0, { turns });
+  check("item2 cap: the log sits at the cap", getDecisions(h).length === DECISIONS_MAX, getDecisions(h).length);
+
+  clock.advance(1_000);
+  await untrackedWorkTurn(h, "t-cap2", "after the cap");
+  const lines = untrackedLines(h);
+  check("item2 cap: the next firing pushes one line", lines.length === 1, lines);
+  check("item2 cap: the count carries on from the dropped line", lines[0]?.detail === "x2: after the cap", lines[0]?.detail);
+  check("item2 cap: the line is the tail of the log", getDecisions(h).at(-1)?.action === "untracked_work");
+}
+
+// The held line lives in one persona's log. agentic_identity switching the
+// session to another persona starts that persona's line at one; naming the
+// persona already held keeps collapsing the same line, which is the control.
+async function caseItem2_untrackedWorkRestartsCountOnPersonaSwitch(clock) {
+  console.log("\n=== Item 2: untracked_work restarts its count when the session switches persona ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_untracked_switch", stateOpts: { hasActiveLeaf: false } });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  const identity = (persona) => h.handlers["tool.call"](h.fake, {
+    tool: "mcp__agentic-plugin__agentic_identity",
+    persona,
+  }, async () => ({ result: "passthrough" }));
+
+  await untrackedWorkTurn(h, "t-s1", "first on default");
+  clock.advance(10_000);
+  await untrackedWorkTurn(h, "t-s2", "second on default");
+
+  // Control: naming the persona already held reloads its log, held line included.
+  clock.advance(10_000);
+  await identity("default");
+  clock.advance(10_000);
+  await untrackedWorkTurn(h, "t-s3", "third on default");
+  const onDefault = untrackedLines(h);
+  check("item2 switch control: re-naming the held persona keeps one line", onDefault.length === 1, onDefault);
+  check("item2 switch control: that line's count carries on to three", onDefault[0]?.detail === "x3: third on default", onDefault[0]?.detail);
+
+  clock.advance(10_000);
+  await identity("other");
+  clock.advance(10_000);
+  await untrackedWorkTurn(h, "t-o1", "first on other");
+  const onOther = (getStateForPersona(h, "other")?.decisions || []).filter(d => d.action === "untracked_work");
+  check("item2 switch: the new persona holds one untracked_work line", onOther.length === 1, onOther);
+  check("item2 switch: the new persona's line counts from one", onOther[0]?.detail === "x1: first on other", onOther[0]?.detail);
+  check("item2 switch: the previous persona's line stays as written", untrackedLines(h).length === 1 && untrackedLines(h)[0]?.detail === "x3: third on default", untrackedLines(h));
 }
 
 // ============================================================
@@ -9266,6 +9478,17 @@ async function caseSection6Fleet_aThrownPersistStillReports(clock) {
   check("s6 fleet persist throw: it carries the persona whose class moved", spoke.length === 1 && spoke[0].includes("beta: healthy -> held"), spoke);
   check("s6 fleet persist throw: and the line saying the steward's own store refused the write",
     spoke.length === 1 && spoke[0].includes("refused the write that carries this report's audit line"), spoke);
+  // What that line promises the operator, which is where their next move comes
+  // from. The repair is a store that parses again and that is the only thing
+  // the line names: a session carrying the built-in default rather than the
+  // persona's own state comes to hold that state only through a worker calling
+  // agentic_identity, which no background path does, so a clause naming it
+  // would name a wait that may never end. What is pinned is what must be
+  // absent: no landing promised and no agentic_identity wait named.
+  check("s6 fleet persist throw: and that line promises no landing and names no wait on the persona's own state",
+    spoke.length === 1
+      && !spoke[0].includes("holding the persona's own state")
+      && !spoke[0].includes("lands when the store parses again"), spoke);
   // The message a failed write returns carries store text, so it rides a
   // carried line and the composed line above it holds the plugin's sentence
   // alone. The shape is what is read here, not a string the guard was handed.
@@ -9701,13 +9924,27 @@ async function caseSection6_anUnreadableStoreAtStartComesUpAndSaysSo(clock) {
   await tickAndSettle(h, clock);
   check("s6 start store: the line is said once rather than on every tick", fleetPrompts(h).length === 0, h.promptSubmits);
 
-  // The state the session came up on, read once the store parses again.
+  // The store, once the file parses again and carries no entry for this
+  // persona. Nothing of the persona's is in that file to lose, so the write
+  // lands and the entry is written from the state this session came up on.
+  // That is the heal rather than a leak: a persona whose store went missing
+  // gets an entry back, where a persona whose tree is in the file keeps it,
+  // the heartbeat tick handing the persona over before any write is reached.
   h.fsMap.set(PERSONA_STORE_FILE, "{}");
+  h.fsWrites.length = 0;
   await tickAndSettle(h, clock);
-  const after = getStateForPersona(h, "steward");
-  check("s6 start store: the session came up on a default state and recorded the refusal",
-    !!after && after.decisions.some((d) => d.action === "persona_store_unreadable") && after.decisions.some((d) => d.action === "persona_create"),
-    after?.decisions.map((d) => d.action));
+  check("s6 start store: the session writes its own entry into the store that parses again, there being none there to lose",
+    !!getStateForPersona(h, "steward"), h.fsMap.get(PERSONA_STORE_FILE));
+  check("s6 start store: and that write reached the store file",
+    h.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), h.fsWrites.map((w) => w.path));
+
+  // The cause the session recorded for itself, now in the entry that write
+  // created. It came up on the built-in default and said why, and that is
+  // what the file carries.
+  const held = getStateForPersona(h, "steward").decisions;
+  check("s6 start store: the session wrote the refusal it recorded at start, over the default state it came up on",
+    held.some((d) => d.action === "persona_store_unreadable") && held.some((d) => d.action === "persona_create"),
+    held.map((d) => d.action));
 
   // The control, varying the one axis: the same relaunch onto a store that
   // parses, with a persona already held so that a prompt goes out to carry the
@@ -9734,11 +9971,22 @@ async function caseSection6_anUnreadableStoreAtStartComesUpAndSaysSo(clock) {
   // The store heals to one naming the session that held the persona before
   // this one started. The claim this session took is in its heartbeat and in
   // commons and in nothing the store carries, so the name it finds there is
-  // its predecessor's rather than a successor's: yielding to it drops the
-  // persona to a session that is gone, and this session's own sidecar stamp
-  // then reads as the holder at the promotion check, which never fires again.
-  // What that costs is every [FLEET] and every [RECONCILE] prompt for the life
-  // of the process, so the claim is taken at the first read that parses.
+  // its predecessor's rather than a successor's.
+  //
+  // The claim is not taken at that first read that parses, and the persona is
+  // handed over instead. What the publish would write is the whole of this
+  // session's state, and a session that came up on an unreadable store holds
+  // the built-in default rather than the persona's own: publishing there puts
+  // an empty tree into the file it has just managed to read, and every later
+  // write keeps that version. So the two costs are weighed and the smaller one
+  // taken. Giving the persona up costs this session's watcher: the sidecar
+  // stamp reads as the holder at the promotion check, which never fires again,
+  // so every [FLEET] and every [RECONCILE] prompt stops for the life of the
+  // process. Publishing costs the persona's stored goal tree, which no
+  // relaunch brings back. The way back from the yield is agentic_identity,
+  // which loads the real state off a store that parses and clears the field,
+  // and caseGtc1_aRepairedStoreIsNotOverwrittenWithTheDefault drives that
+  // recovery beside this.
   const healedSeed = { fsMap: new Map(), storeMap: new Map() };
   seedHealthyFleet(healedSeed, now);
   healedSeed.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
@@ -9753,26 +10001,38 @@ async function caseSection6_anUnreadableStoreAtStartComesUpAndSaysSo(clock) {
   check("s6 start store heals: the session that came up on the broken store said so",
     fleetPrompts(healed).length === 1 && fleetPrompts(healed)[0].includes("could not be read when this session started"), healed.promptSubmits);
 
+  // The positive control for the silence at the end of this case, taken on
+  // this same harness and before the yield, on the same kind of change: a
+  // watched persona's class moves while this session still holds its own, and
+  // the prompt goes out. So the silence below is what giving the persona up
+  // costs rather than a harness that never speaks.
+  healed.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  healed.resetPromptSubmits();
+  await tickAndSettle(healed, clock);
+  check("s6 start store heals: a class that moves before the yield is reported",
+    fleetPrompts(healed).length === 1 && fleetPrompts(healed)[0].includes("beta: healthy -> held"), healed.promptSubmits);
+
   healed.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({
     steward: { persona: "steward", activeSessionId: "session-before-this-one", epoch: 4, decisions: [], memory: [], goals: [] },
   }));
   await fireHeartbeat(healed);
   const claimed = getStateForPersona(healed, "steward");
-  check("s6 start store heals: the first read that parses carries this session's own claim into the store",
-    !!claimed && claimed.activeSessionId === SESSION_ID, claimed && { activeSessionId: claimed.activeSessionId, epoch: claimed.epoch });
-  check("s6 start store heals: and the epoch is above the one the store carried",
-    !!claimed && claimed.epoch > 4, claimed?.epoch);
-  check("s6 start store heals: nothing was handed over",
-    !(healed.fsMap.get(YIELD_LOG_FILE) || "").length, healed.fsMap.get(YIELD_LOG_FILE));
+  check("s6 start store heals: the first read that parses does not carry this session's claim into the store",
+    !!claimed && claimed.activeSessionId === "session-before-this-one", claimed && { activeSessionId: claimed.activeSessionId, epoch: claimed.epoch });
+  check("s6 start store heals: and the epoch the store carried is left where it was",
+    !!claimed && claimed.epoch === 4, claimed?.epoch);
+  check("s6 start store heals: the persona was handed to the name the store carries",
+    (healed.fsMap.get(YIELD_LOG_FILE) || "").includes("session-before-this-one"), healed.fsMap.get(YIELD_LOG_FILE));
 
-  // The watcher still runs, which is the whole of what the yield above would
-  // have cost. The change is one the fleet has not carried on this harness, so
-  // a prompt naming it is this tick's own work rather than a queued one.
-  healed.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  // The watcher stops, which is what giving the persona up costs and the
+  // reason the comment above weighs it against the tree. The same persona's
+  // class moves back, which is the change the control above carried, and this
+  // time nothing goes out.
+  healed.fsMap.delete("D:/fleetwake/p1/run/keeper.hold");
   healed.resetPromptSubmits();
   await tickAndSettle(healed, clock);
-  check("s6 start store heals: the steward submits [FLEET] after the store parses again",
-    fleetPrompts(healed).length === 1 && fleetPrompts(healed)[0].includes("beta: healthy -> held"), healed.promptSubmits);
+  check("s6 start store heals: and the steward that gave the persona up submits no [FLEET]",
+    fleetPrompts(healed).length === 0, healed.promptSubmits);
 }
 
 // JSON.parse("null") returns null and throws nothing, so a store holding those
@@ -15401,6 +15661,1707 @@ function missingParamNames(defs) {
   return missing;
 }
 
+// ============================================================
+// Goal tree curation, Section 1: start-up survives a refused tool
+// registration, and a session whose state never loaded says so.
+// ============================================================
+
+// The tokens the goal tools' not-loaded answer is read by: that the state was
+// never loaded, the cause held for it, and that the tree was left alone.
+const NOT_LOADED_TOKEN = "never loaded";
+const NOT_LOADED_START_CAUSE_TOKEN = "session.start hook skipped";
+const NOT_LOADED_STORE_CAUSE_TOKEN = "could not be read";
+const NOT_LOADED_UNCHANGED_TOKEN = "was not changed";
+
+function readsAsNotLoaded(text, causeToken) {
+  const t = String(text ?? "");
+  return t.includes(NOT_LOADED_TOKEN) && t.includes(causeToken) && t.includes(NOT_LOADED_UNCHANGED_TOKEN);
+}
+
+// A host that refuses one registration costs the session that tool alone.
+// Everything session.start does after the registrations, the claim, the
+// store load, both clock callbacks, still runs, and the refusal is one
+// decision naming the tool. The guard is locked in both directions: the
+// tools registered after the refused one are present, so a helper that
+// swallowed the throw by skipping the rest of the block would fail here.
+async function caseGtc1_aRefusedRegistrationCostsThatToolAlone(clock) {
+  console.log("\n=== Goal tree curation 1: a refused registration costs that tool alone ===");
+  clock.set(T0);
+  let startThrew = null;
+  let h = null;
+  try {
+    h = await createTickHarness({ ...OPTS, caseName: "gtc1_refused_registration", registerRefuses: new Set(["fleet_status"]) });
+  } catch (err) {
+    startThrew = err;
+  }
+  check("gtc1 refused: session.start comes up rather than throwing", startThrew === null, String(startThrew));
+  if (h === null) return;
+  const names = h.toolRegisters.map((t) => t.name);
+  check("gtc1 refused: fleet_status is not registered", !names.includes("fleet_status"), names);
+  check("gtc1 refused: the tools registered after it are present (fleet_restart, agentic_resolve)",
+    names.includes("fleet_restart") && names.includes("agentic_resolve"), names);
+  check("gtc1 refused: both clock callbacks are registered (heartbeat, controller tick)", h.clockEveryCallbacks.length === 2, h.clockEveryCallbacks.length);
+  const entry = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("gtc1 refused: the session owns its persona (persona:default in commons)", !!entry && entry.claims.some((c) => c.resource === "persona:default"), entry);
+  const state = getState(h);
+  check("gtc1 refused: its goals are the stored goals", JSON.stringify(state.goals.map((g) => g.id)) === JSON.stringify(["g-root", "g-plan"]), state.goals.map((g) => g.id));
+  const refused = state.decisions.filter((d) => d.action === "tool_register_refused");
+  check("gtc1 refused: exactly one tool_register_refused decision, naming fleet_status",
+    refused.length === 1 && refused[0].loop === "monitor" && refused[0].detail.includes("fleet_status"), state.decisions.map((d) => [d.action, d.detail]));
+  check("gtc1 refused: one log line names the refused tool", h.uiLogs.filter((l) => l.includes("fleet_status")).length === 1, h.uiLogs);
+  const toolH = h.handlers["tool.call"];
+  const status = await toolH(h.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
+  check("gtc1 refused: goal_status shows the stored tree", (status?.result || "").includes("g-plan"), status);
+
+  // Control, varying the one axis: no refusal registers every tool and
+  // leaves no tool_register_refused line. The absence is read over a
+  // decision log that holds the claim, so an empty log could not pass it.
+  const control = await createTickHarness({ ...OPTS, caseName: "gtc1_refused_registration_control" });
+  const controlNames = control.toolRegisters.map((t) => t.name);
+  check("gtc1 refused control: fleet_status is registered",
+    controlNames.includes("fleet_status"), controlNames);
+  check("gtc1 refused control: the refusing session registered every other tool",
+    JSON.stringify(names) === JSON.stringify(controlNames.filter((n) => n !== "fleet_status")), { names, controlNames });
+  const controlDecisions = getState(control).decisions;
+  check("gtc1 refused control: no tool_register_refused beside the persona_claim the log holds",
+    countAction(controlDecisions, "tool_register_refused") === 0 && countAction(controlDecisions, "persona_claim") === 1, controlDecisions.map((d) => d.action));
+}
+
+// A session whose session.start never ran holds the built-in default state
+// and never loaded its persona's. Its goal tools say so, with the start-up
+// cause, rather than showing an empty tree or refusing as held by a live
+// session, and nothing reaches the store file: the expensive failure is a
+// default state persisted over a real one.
+async function caseGtc1_aSessionThatNeverStartedSaysSoAndWritesNothing(clock) {
+  console.log("\n=== Goal tree curation 1: a session whose start never ran says so and writes nothing ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, caseName: "gtc1_never_started", skipSessionStart: true });
+  check("gtc1 never started: no clock callback registered, so the start really did not run", h.clockEveryCallbacks.length === 0, h.clockEveryCallbacks.length);
+  const before = h.fsMap.get(PERSONA_STORE_FILE);
+  const toolH = h.handlers["tool.call"];
+  const status = await toolH(h.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
+  check("gtc1 never started: goal_status answers that the state never loaded, with the start-up cause",
+    readsAsNotLoaded(status?.result, NOT_LOADED_START_CAUSE_TOKEN) && status.deny === undefined, status);
+  const done = await toolH(h.fake, { tool: "mcp__agentic-plugin__goal_done", note: "finished" }, async () => ({ result: "passthrough" }));
+  check("gtc1 never started: goal_done denies with the same sentence and never says held by a live session",
+    readsAsNotLoaded(done?.deny, NOT_LOADED_START_CAUSE_TOKEN) && !String(done?.deny).includes("held by a live session"), done);
+  // Byte identity: the fake fs holds the file as one string, and string
+  // equality compares every code unit of it.
+  const after = h.fsMap.get(PERSONA_STORE_FILE);
+  check("gtc1 never started: the store file is byte-identical afterwards", after === before, { before, after });
+  check("gtc1 never started: no write reached any file", h.fsWrites.length === 0, h.fsWrites.map((w) => w.path));
+
+  // Control for the comparison: the same goal_done on a session that did
+  // start changes the file under the same predicate, so the identity above
+  // is a write that was not made rather than a comparison that cannot speak.
+  const control = await createTickHarness({ ...OPTS, caseName: "gtc1_never_started_control" });
+  const controlBefore = control.fsMap.get(PERSONA_STORE_FILE);
+  const controlDone = await control.handlers["tool.call"](control.fake, { tool: "mcp__agentic-plugin__goal_done", note: "finished" }, async () => ({ result: "passthrough" }));
+  check("gtc1 never started control: a started session's goal_done is not refused", controlDone?.deny === undefined, controlDone);
+  check("gtc1 never started control: and its store file differs afterwards under the same comparison",
+    control.fsMap.get(PERSONA_STORE_FILE) !== controlBefore, controlBefore);
+}
+
+// A session that started over a store file that does not parse came up on a
+// default state. Its goal tools say so with the store cause, and the file it
+// could not read is left exactly as it was.
+//
+// What the byte-identical assertion below rests on, plainly: the two tool
+// calls are refused at the not-loaded check ahead of every write path, so
+// nothing here reaches a write at all, and a write that did reach one would
+// throw at persist's own JSON.parse of this garbage rather than be held back
+// by anything. So this case cannot speak for the guard that stops an unloaded
+// session publishing its default. The case that covers that guard is
+// caseGtc1_aRepairedStoreIsNotOverwrittenWithTheDefault, which drives it over
+// a store file that parses.
+async function caseGtc1_anUnparseableStoreSaysSoAndWritesNothing(clock) {
+  console.log("\n=== Goal tree curation 1: a session over an unparseable store says so and writes nothing ===");
+  clock.set(T0);
+  const opts = { ...OPTS, caseName: "gtc1_store_unparseable" };
+  const seeded = { fsMap: new Map(), storeMap: new Map() };
+  const garbage = "{ this is not the JSON a store holds";
+  seeded.fsMap.set(PERSONA_STORE_FILE, garbage);
+  let startThrew = null;
+  let h = null;
+  try {
+    h = await relaunchStewardHarness("gtc1_store_unparseable", seeded, opts);
+  } catch (err) {
+    startThrew = err;
+  }
+  check("gtc1 unparseable: session.start comes up rather than throwing", startThrew === null, String(startThrew));
+  if (h === null) return;
+  const toolH = h.handlers["tool.call"];
+  const status = await toolH(h.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
+  check("gtc1 unparseable: goal_status answers that the state never loaded, with the store cause",
+    readsAsNotLoaded(status?.result, NOT_LOADED_STORE_CAUSE_TOKEN) && status.deny === undefined, status);
+  // Caught rather than awaited bare: a handler that reaches persist over
+  // this file throws out of the tool call, and that is a failure of this
+  // case rather than of the suite around it.
+  let created = null;
+  try {
+    created = await toolH(h.fake, { tool: "mcp__agentic-plugin__goal_create", objective: "a tree over a store that did not read" }, async () => ({ result: "passthrough" }));
+  } catch (err) {
+    created = { threw: String(err) };
+  }
+  check("gtc1 unparseable: goal_create denies with the same sentence", readsAsNotLoaded(created?.deny, NOT_LOADED_STORE_CAUSE_TOKEN), created);
+  check("gtc1 unparseable: the unparseable file is byte-identical afterwards", h.fsMap.get(PERSONA_STORE_FILE) === garbage, h.fsMap.get(PERSONA_STORE_FILE));
+  check("gtc1 unparseable: no write reached the store file", !h.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), h.fsWrites.map((w) => w.path));
+
+  // The control for this case and the one above: a session that started
+  // over a readable store answers goal_status with its stored tree.
+  const control = await createTickHarness({ ...OPTS, caseName: "gtc1_store_readable_control" });
+  const controlStatus = await control.handlers["tool.call"](control.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
+  check("gtc1 readable control: goal_status shows the stored tree and no not-loaded sentence",
+    (controlStatus?.result || "").includes("g-root") && (controlStatus.result || "").includes("g-plan") && !String(controlStatus.result).includes(NOT_LOADED_TOKEN), controlStatus);
+}
+
+// The store file as it reads once whatever made it unreadable is repaired:
+// the persona's own tree, a root and one child, under the name of the session
+// that held the persona before this one. That name is what makes the
+// heartbeat tick read the store as one this session's claim is not in yet,
+// which is the condition its publish branch fires on.
+const GTC1_PREVIOUS_SESSION = "gtc1-previous-session";
+function gtc1RepairedStoreFile() {
+  const root = makeGoalNode({ id: "g-real-root", parentId: null, kind: "root", status: "pending", title: "The persona's own root" });
+  const plan = makeGoalNode({ id: "g-real-plan", parentId: "g-real-root", kind: "plan", status: "active", title: "The persona's own plan" });
+  const state = makeState({ goals: [root, plan], activeGoalId: "g-real-plan" });
+  state.activeSessionId = GTC1_PREVIOUS_SESSION;
+  state.epoch = 1;
+  return JSON.stringify({ default: state }, null, 2);
+}
+
+// The expensive failure this section names, driven over the write path rather
+// than over a throw. A session that starts on a store that does not parse
+// comes up owner on the built-in default state, holding its claim in the
+// heartbeat sidecar and in commons and nowhere in the store. Once the file
+// reads again, the heartbeat tick's publish branch is the one write that puts
+// this session's whole state into it, and that state is the built-in default
+// rather than the persona's. Published there it destroys the stored tree, and
+// every later persist rewrites the destroyed version.
+//
+// The case above cannot see this. Its store never parses, so persist throws
+// on the file and it is byte-identical for that reason rather than because
+// anything held a write back. Here the file parses and a write would land.
+async function caseGtc1_aRepairedStoreIsNotOverwrittenWithTheDefault(clock) {
+  console.log("\n=== Goal tree curation 1: a store that reads again is not overwritten with the default state ===");
+  clock.set(T0);
+  const seeded = { fsMap: new Map(), storeMap: new Map() };
+  seeded.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
+  const h = await relaunchStewardHarness("gtc1_repaired_store", seeded, { ...OPTS, caseName: "gtc1_repaired_store" });
+  const status = await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
+  check("gtc1 repaired: the session came up not loaded, with the store cause",
+    readsAsNotLoaded(status?.result, NOT_LOADED_STORE_CAUSE_TOKEN), status);
+  const commonsEntry = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("gtc1 repaired: and it came up holding its persona, which is what makes the tick want to publish",
+    !!commonsEntry && commonsEntry.claims.some((c) => c.resource === "persona:default"), commonsEntry);
+
+  // The file is repaired under the running session, which is what a session
+  // that started during a bad write meets a moment later.
+  const repaired = gtc1RepairedStoreFile();
+  h.fsMap.set(PERSONA_STORE_FILE, repaired);
+  h.fsWrites.length = 0;
+
+  await fireHeartbeat(h);
+  await fireTurn(h);
+
+  check("gtc1 repaired: the repaired file is byte-identical afterwards", h.fsMap.get(PERSONA_STORE_FILE) === repaired, h.fsMap.get(PERSONA_STORE_FILE));
+  check("gtc1 repaired: no write reached the store file", !h.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), h.fsWrites.map((w) => w.path));
+  const stored = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE)).default;
+  check("gtc1 repaired: the persona's own tree is still the stored tree",
+    JSON.stringify(stored.goals.map((g) => g.id)) === JSON.stringify(["g-real-root", "g-real-plan"]), stored.goals.map((g) => g.id));
+  check("gtc1 repaired: the store still names the session that held the persona before",
+    stored.activeSessionId === GTC1_PREVIOUS_SESSION, stored.activeSessionId);
+  check("gtc1 repaired: no persona_claim_published line landed in the store",
+    countAction(stored.decisions, "persona_claim_published") === 0, stored.decisions.map((d) => d.action));
+  // What the tick did instead, which is the intended behaviour rather than a
+  // silence: a session holding no real state gives the persona up.
+  check("gtc1 repaired: the tick yielded the persona to the name the store carries",
+    String(h.fsMap.get(YIELD_LOG_FILE) || "").includes(GTC1_PREVIOUS_SESSION), h.fsMap.get(YIELD_LOG_FILE));
+
+  // The control, varying the one axis the guard reads and nothing else. The
+  // same session over the same repaired file, except agentic_identity loads
+  // the persona's state off it first, which is how this section has a session
+  // recover. The store is then put back under the previous holder's name, so
+  // the tick meets the same unpublished-claim condition, and this time it
+  // publishes. The non-write above therefore rests on the guard rather than
+  // on anything else the sequence does.
+  const controlSeeded = { fsMap: new Map(), storeMap: new Map() };
+  controlSeeded.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
+  const control = await relaunchStewardHarness("gtc1_repaired_store_control", controlSeeded, { ...OPTS, caseName: "gtc1_repaired_store_control" });
+  control.fsMap.set(PERSONA_STORE_FILE, gtc1RepairedStoreFile());
+  const identity = await control.handlers["tool.call"](control.fake, { tool: "mcp__agentic-plugin__agentic_identity", persona: "default" }, async () => ({ result: "passthrough" }));
+  check("gtc1 repaired control: agentic_identity recovers the state and takes ownership",
+    String(identity?.result || "").includes("owner"), identity);
+  const controlStatus2 = await control.handlers["tool.call"](control.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
+  check("gtc1 repaired control: and the goal tools answer from the persona's tree rather than the not-loaded sentence",
+    String(controlStatus2?.result || "").includes("g-real-plan") && !String(controlStatus2?.result).includes(NOT_LOADED_TOKEN), controlStatus2);
+  control.fsMap.set(PERSONA_STORE_FILE, gtc1RepairedStoreFile());
+  await fireHeartbeat(control);
+  const controlStored = JSON.parse(control.fsMap.get(PERSONA_STORE_FILE)).default;
+  check("gtc1 repaired control: the tick does publish the claim under the same store conditions",
+    controlStored.activeSessionId === SESSION_ID, controlStored.activeSessionId);
+  check("gtc1 repaired control: and what it publishes is the persona's own tree, not a default",
+    JSON.stringify(controlStored.goals.map((g) => g.id)) === JSON.stringify(["g-real-root", "g-real-plan"]), controlStored.goals.map((g) => g.id));
+}
+
+
+// The order production runs the two clock callbacks in, which is what decides
+// whether a session that never loaded its state can reach the persona's tree
+// at all. Both timers default to 30000ms and the heartbeat tick is registered
+// first, so on a store that has been repaired under a running session the
+// heartbeat tick meets it before the controller tick does. It finds the name
+// the file carries, which is the session that held the persona before this one
+// started, and hands the persona over. Every write after that is a no-op at
+// persist's ownership check, so the stored tree stands with nothing inside
+// persist refusing anything.
+//
+// The control is the same sequence over a store that parses and holds no entry
+// for this persona. There the heartbeat tick finds nothing to yield to, the
+// session keeps the persona, and the write lands: a persona whose entry is
+// missing gets one back rather than staying unwritable for the life of the
+// process. So the two arms differ in whether a tree is there to lose, which is
+// the only thing that decides the outcome.
+
+// A store that parses and carries another persona's entry and none for this
+// one, which is what a persona whose entry was lost finds.
+function gtc1StoreWithNoEntryForThisPersona() {
+  const root = makeGoalNode({ id: "g-other-root", parentId: null, kind: "root", status: "pending", title: "Another persona's root" });
+  const other = makeState({ goals: [root], activeGoalId: null });
+  other.persona = "someone-else";
+  other.activeSessionId = "a-session-of-another-persona";
+  other.epoch = 2;
+  return JSON.stringify({ "someone-else": other }, null, 2);
+}
+
+async function caseGtc1_aNotLoadedSessionYieldsRatherThanOverwriteTheStoredTree(clock) {
+  console.log("\n=== Goal tree curation 1: a session that never loaded gives the persona up rather than overwrite its tree ===");
+  clock.set(T0);
+  const seeded = { fsMap: new Map(), storeMap: new Map() };
+  seeded.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
+  const h = await relaunchStewardHarness("gtc1_not_loaded_yields", seeded, { ...OPTS, caseName: "gtc1_not_loaded_yields" });
+  const status = await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
+  check("gtc1 yields: the session came up not loaded, with the store cause",
+    readsAsNotLoaded(status?.result, NOT_LOADED_STORE_CAUSE_TOKEN), status);
+  const heldAtStart = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("gtc1 yields: and it came up holding its persona, which is what puts the stored tree at risk",
+    !!heldAtStart && heldAtStart.claims.some((c) => c.resource === "persona:default"), heldAtStart);
+
+  // The file is repaired under the running session, and the two callbacks fire
+  // in the order the engine fires them.
+  const repaired = gtc1RepairedStoreFile();
+  h.fsMap.set(PERSONA_STORE_FILE, repaired);
+  h.fsWrites.length = 0;
+  await fireHeartbeat(h);
+  await tickAndSettle(h, clock);
+  // A turn behind the two callbacks, because a session holding no tree has an
+  // idle controller tick and an idle tick saves nothing. The turn's own save
+  // is the write both arms are read on, and it runs where production runs it,
+  // behind the heartbeat tick that has already met the repaired file.
+  await fireTurn(h);
+
+  check("gtc1 yields: the repaired file is byte-identical afterwards", h.fsMap.get(PERSONA_STORE_FILE) === repaired, h.fsMap.get(PERSONA_STORE_FILE));
+  check("gtc1 yields: no write reached the store file", !h.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), h.fsWrites.map((w) => w.path));
+  const stored = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE)).default;
+  check("gtc1 yields: the persona's own tree is still the stored tree",
+    JSON.stringify(stored.goals.map((g) => g.id)) === JSON.stringify(["g-real-root", "g-real-plan"]), stored.goals.map((g) => g.id));
+  // What the session is now, which is what makes every later write a no-op
+  // rather than a refusal. yieldNow releases the commons claim as it drops
+  // ownership, so the claim it took at start is the thing to read.
+  const heldAfter = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("gtc1 yields: and the session is no longer the owner",
+    !!heldAfter && !heldAfter.claims.some((c) => c.resource === "persona:default"), heldAfter);
+  check("gtc1 yields: the persona went to the name the store carries",
+    String(h.fsMap.get(YIELD_LOG_FILE) || "").includes(GTC1_PREVIOUS_SESSION), h.fsMap.get(YIELD_LOG_FILE));
+
+  // The control, varying the one axis: the same session, the same two
+  // callbacks in the same order, over a repaired store that holds no entry for
+  // this persona. Nothing is there to lose, the session keeps the persona, and
+  // the write lands. So the silence above is the stored tree rather than a
+  // sequence that never reached a write.
+  const controlSeed = { fsMap: new Map(), storeMap: new Map() };
+  controlSeed.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
+  const control = await relaunchStewardHarness("gtc1_not_loaded_yields_control", controlSeed, { ...OPTS, caseName: "gtc1_not_loaded_yields_control" });
+  const noEntry = gtc1StoreWithNoEntryForThisPersona();
+  control.fsMap.set(PERSONA_STORE_FILE, noEntry);
+  control.fsWrites.length = 0;
+  await fireHeartbeat(control);
+  await tickAndSettle(control, clock);
+  await fireTurn(control);
+
+  check("gtc1 yields control: the write reached the store file", control.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), control.fsWrites.map((w) => w.path));
+  const controlStored = JSON.parse(control.fsMap.get(PERSONA_STORE_FILE));
+  check("gtc1 yields control: the persona has an entry again, under this session's own name",
+    !!controlStored.default && controlStored.default.activeSessionId === SESSION_ID, controlStored.default && controlStored.default.activeSessionId);
+  check("gtc1 yields control: and the other persona's entry is untouched",
+    JSON.stringify(controlStored["someone-else"].goals.map((g) => g.id)) === JSON.stringify(["g-other-root"]), controlStored["someone-else"]);
+  const controlHeld = control.storeMap.get(`commons:${SESSION_ID}`);
+  check("gtc1 yields control: the session kept the persona, there being no name in the file to yield to",
+    !!controlHeld && controlHeld.claims.some((c) => c.resource === "persona:default"), controlHeld);
+  // The write is not a recovery. The state it wrote is the built-in default
+  // this session came up on, so the session still says its own state never
+  // loaded and a worker asking is still told so.
+  const controlStatus = await control.handlers["tool.call"](control.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
+  check("gtc1 yields control: and the session still says its state never loaded",
+    readsAsNotLoaded(controlStatus?.result, NOT_LOADED_STORE_CAUSE_TOKEN), controlStatus);
+}
+
+
+// A not-loaded session over a store that parses, which is the state every
+// case below drives: the session came up on a file it could not read, so it
+// holds the built-in default and its persona's own tree is what the file
+// carries once it is repaired. Its claim is in the heartbeat sidecar and in
+// commons and in nothing the store says.
+async function gtc1NotLoadedOverARepairedStore(caseName) {
+  return gtc1NotLoadedOverStoreFile(caseName, gtc1RepairedStoreFile());
+}
+
+// The same session over whatever the file reads as once it is repaired, which
+// is the axis the cases below vary: a file carrying the persona's own tree
+// under another session's name, a file carrying no entry for this persona, and
+// a file that still does not parse.
+async function gtc1NotLoadedOverStoreFile(caseName, fileText, extraOpts = {}) {
+  const seeded = { fsMap: new Map(), storeMap: new Map() };
+  seeded.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
+  const h = await relaunchStewardHarness(caseName, seeded, { ...OPTS, ...extraOpts, caseName });
+  h.fsMap.set(PERSONA_STORE_FILE, fileText);
+  h.fsWrites.length = 0;
+  return h;
+}
+
+// The four state-writing tools that are not goal tools answer a session whose
+// state never loaded on their own terms. What keeps the persona's stored tree
+// out of their reach is the write path rather than anything at the tool:
+// persist reads the store, and a stored entry a session in this state could
+// destroy was written by another session, so the id comparison fires and
+// persist gives the persona up one line past the read.
+//
+// A refusal at the tool would cost function and buy nothing. The two
+// supervisor tools are the only in-band way to end or relaunch the run, which
+// is this section's own recovery; memory_add would discard a memory the store
+// takes safely; and agentic_resolve writes to the shared inbox store rather
+// than to the persona's, so a refusal there strands a delivered record at
+// delivered for good.
+//
+// Three arms, varying the one thing the write path reads: what the store file
+// carries for this persona. Over a file with no entry for this persona, each
+// of the four answers and its write lands. Over a file holding the persona's
+// tree under another session's name, each answers without throwing, the file
+// is byte-identical, and the persona goes to that name. Over a file that
+// still does not parse, agentic_resolve answers with its record resolved,
+// the other three leave the file byte-identical whatever they answer, and
+// goal_status read after all four shows the session was still not loaded.
+async function caseGtc1_theOtherWritingToolsAnswerOnTheirOwnTerms(clock) {
+  console.log("\n=== Goal tree curation 1: the remaining state-writing tools answer on their own terms while the state is not loaded ===");
+  clock.set(T0);
+
+  // Caught rather than awaited bare: a throw out of the tool call is a failure
+  // in the first two arms and an open answer in the third, and either way it
+  // is read here rather than aborting the suite around it.
+  const callOn = (harness) => async (event) => {
+    try {
+      return await harness.handlers["tool.call"](harness.fake, event, async () => ({ result: "passthrough" }));
+    } catch (err) {
+      return { threw: String(err) };
+    }
+  };
+
+  // Arm one: the store carries no entry for this persona, which is what a
+  // persona whose entry was lost finds. Nothing is there to destroy, persist
+  // writes, and every one of the four does its job.
+  const fresh = await gtc1NotLoadedOverStoreFile("gtc1_other_writers_fresh", gtc1StoreWithNoEntryForThisPersona());
+  const freshCall = callOn(fresh);
+  seedInboxRecord(fresh, "writer-a", 1, { at: T0 - 5000, status: "delivered", deliveredAt: T0 - 4000, turnId: "t-a" });
+  // The instrument's own control: on this same session a goal tool does answer
+  // the not-loaded sentence, so an answer below that does not read as one is
+  // the tool rather than a reader that never speaks.
+  const freshStatus = await freshCall({ tool: "mcp__agentic-plugin__goal_status" });
+  check("gtc1 other writers fresh: the session is not loaded, with the store cause",
+    readsAsNotLoaded(freshStatus?.result, NOT_LOADED_STORE_CAUSE_TOKEN), freshStatus);
+  // This persona's entry as the file carries it, absent until a write lands.
+  // Read tolerantly, so a write that never landed fails the check that reads
+  // it rather than the suite.
+  const freshEntry = () => JSON.parse(fresh.fsMap.get(PERSONA_STORE_FILE)).default;
+  const freshActions = () => (freshEntry()?.decisions ?? []).map((d) => d.action);
+
+  const remembered = await freshCall({ tool: "mcp__agentic-plugin__memory_add", text: "a memory worth keeping" });
+  check("gtc1 other writers fresh: memory_add is answered rather than refused on the state",
+    remembered?.deny === undefined && remembered?.threw === undefined, remembered);
+  check("gtc1 other writers fresh: and the memory reached the store file",
+    freshEntry()?.memory?.length === 1, freshEntry()?.memory);
+
+  const shutdown = await freshCall({ tool: "mcp__agentic-plugin__supervisor_shutdown", reason: "done for the day" });
+  check("gtc1 other writers fresh: supervisor_shutdown is answered",
+    String(shutdown?.result || "").includes("Shutdown requested") && shutdown?.deny === undefined, shutdown);
+  check("gtc1 other writers fresh: and the shutdown fact reached the store the supervisor polls",
+    freshActions().filter((a) => a === "shutdown_requested").length === 1, freshActions());
+
+  const restart = await freshCall({ tool: "mcp__agentic-plugin__supervisor_restart", reason: "picking up new hooks" });
+  check("gtc1 other writers fresh: supervisor_restart is answered",
+    String(restart?.result || "").includes("Restart requested") && restart?.deny === undefined, restart);
+  check("gtc1 other writers fresh: and the restart fact reached the store the supervisor polls",
+    freshActions().filter((a) => a === "restart_requested").length === 1, freshActions());
+
+  const freshResolve = await freshCall({ tool: "mcp__agentic-plugin__agentic_resolve", id: "default-writer-a-1", outcome: "done", note: "shipped" });
+  check("gtc1 other writers fresh: agentic_resolve is answered",
+    String(freshResolve?.result || "").includes("resolved") && freshResolve?.deny === undefined, freshResolve);
+  check("gtc1 other writers fresh: and the record reads resolved rather than delivered",
+    readStoreRecord(fresh, "inbox:default:writer-a:1")?.status === "resolved", readStoreRecord(fresh, "inbox:default:writer-a:1"));
+  check("gtc1 other writers fresh: and the other persona's entry is untouched",
+    JSON.stringify(JSON.parse(fresh.fsMap.get(PERSONA_STORE_FILE))["someone-else"].goals.map((g) => g.id)) === JSON.stringify(["g-other-root"]),
+    JSON.parse(fresh.fsMap.get(PERSONA_STORE_FILE))["someone-else"]);
+
+  // Arm two: the same four calls over a store that carries the persona's own
+  // tree under the name of the session that held it before. This is the tree
+  // the removed refusal was meant to protect. persist reads that name, gives
+  // the persona up and writes nothing, so the tree stands with no tool
+  // refusing anything. The write that landed in arm one is the control for
+  // the silence here: the two arms differ in the stored entry and nothing
+  // else.
+  const held = await gtc1NotLoadedOverStoreFile("gtc1_other_writers_held", gtc1RepairedStoreFile());
+  const heldCall = callOn(held);
+  seedInboxRecord(held, "writer-a", 1, { at: T0 - 5000, status: "delivered", deliveredAt: T0 - 4000, turnId: "t-a" });
+  const repaired = held.fsMap.get(PERSONA_STORE_FILE);
+  const heldStatus = await heldCall({ tool: "mcp__agentic-plugin__goal_status" });
+  check("gtc1 other writers held: the session is not loaded, with the store cause",
+    readsAsNotLoaded(heldStatus?.result, NOT_LOADED_STORE_CAUSE_TOKEN), heldStatus);
+
+  // The resolve goes first, because the first of these to reach persist is the
+  // one that meets the other session's name: persist gives the persona up
+  // there and every call behind it is a non-owner's.
+  const heldCases = [
+    ["agentic_resolve", { tool: "mcp__agentic-plugin__agentic_resolve", id: "default-writer-a-1", outcome: "done", note: "" }],
+    ["memory_add", { tool: "mcp__agentic-plugin__memory_add", text: "a memory written over a tree this session never read" }],
+    ["supervisor_shutdown", { tool: "mcp__agentic-plugin__supervisor_shutdown", reason: "done for the day" }],
+    ["supervisor_restart", { tool: "mcp__agentic-plugin__supervisor_restart", reason: "picking up new hooks" }],
+  ];
+  for (const [name, event] of heldCases) {
+    const r = await heldCall(event);
+    check(`gtc1 other writers held: ${name} answers rather than throwing`, r?.threw === undefined, r);
+  }
+  check("gtc1 other writers held: the repaired file is byte-identical afterwards", held.fsMap.get(PERSONA_STORE_FILE) === repaired, held.fsMap.get(PERSONA_STORE_FILE));
+  check("gtc1 other writers held: no write reached the store file", !held.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), held.fsWrites.map((w) => w.path));
+  const stillStored = JSON.parse(held.fsMap.get(PERSONA_STORE_FILE)).default;
+  check("gtc1 other writers held: the persona's own tree is still the stored tree",
+    JSON.stringify(stillStored.goals.map((g) => g.id)) === JSON.stringify(["g-real-root", "g-real-plan"]), stillStored.goals.map((g) => g.id));
+  // The resolve is not the persona store's, so giving the persona up costs it
+  // nothing: the record is resolved in the shared inbox store either way.
+  check("gtc1 other writers held: the record still reads resolved, that write not being the persona store's",
+    readStoreRecord(held, "inbox:default:writer-a:1")?.status === "resolved", readStoreRecord(held, "inbox:default:writer-a:1"));
+  // What the three calls behind the resolve were answered on, which is the
+  // persona this session no longer holds rather than the state it never
+  // loaded. This is the whole of the protection the removed refusal claimed.
+  check("gtc1 other writers held: the first write gave the persona up to the name the store carries",
+    String(held.fsMap.get(YIELD_LOG_FILE) || "").includes(GTC1_PREVIOUS_SESSION), held.fsMap.get(YIELD_LOG_FILE));
+
+  // Arm three: the store still does not parse, which is what makes persist
+  // throw rather than return. The resolve has already landed in the shared
+  // store by then, so the throw must not reach the caller and report a failure
+  // for work that is done. The other three follow it over the same file.
+  const broken = await gtc1NotLoadedOverStoreFile("gtc1_other_writers_broken", "{ this is not the JSON a store holds");
+  const brokenCall = callOn(broken);
+  seedInboxRecord(broken, "writer-a", 1, { at: T0 - 5000, status: "delivered", deliveredAt: T0 - 4000, turnId: "t-a" });
+  const brokenResolve = await brokenCall({ tool: "mcp__agentic-plugin__agentic_resolve", id: "default-writer-a-1", outcome: "done", note: "" });
+  check("gtc1 other writers broken: agentic_resolve answers rather than throwing the refused write at the caller",
+    brokenResolve?.threw === undefined && String(brokenResolve?.result || "").includes("resolved"), brokenResolve);
+  check("gtc1 other writers broken: and the record reads resolved rather than delivered",
+    readStoreRecord(broken, "inbox:default:writer-a:1")?.status === "resolved", readStoreRecord(broken, "inbox:default:writer-a:1"));
+  check("gtc1 other writers broken: the unparseable file is byte-identical afterwards",
+    broken.fsMap.get(PERSONA_STORE_FILE) === "{ this is not the JSON a store holds", broken.fsMap.get(PERSONA_STORE_FILE));
+
+  // The other three over the same file. What each answers here is not read:
+  // a throw and an answer are both open, since what these tools do over a
+  // store that will not read is not settled. What is read is the file, which
+  // none of them may change.
+  const brokenCases = [
+    ["memory_add", { tool: "mcp__agentic-plugin__memory_add", text: "a memory written over a store that will not read" }],
+    ["supervisor_shutdown", { tool: "mcp__agentic-plugin__supervisor_shutdown", reason: "done for the day" }],
+    ["supervisor_restart", { tool: "mcp__agentic-plugin__supervisor_restart", reason: "picking up new hooks" }],
+  ];
+  for (const [name, event] of brokenCases) {
+    await brokenCall(event);
+    check(`gtc1 other writers broken: after ${name} the unparseable file is byte-identical`,
+      broken.fsMap.get(PERSONA_STORE_FILE) === "{ this is not the JSON a store holds", broken.fsMap.get(PERSONA_STORE_FILE));
+    check(`gtc1 other writers broken: after ${name} no write reached the store file`,
+      !broken.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), broken.fsWrites.map((w) => w.path));
+  }
+  // The control that the four ran on a session still not loaded, read after
+  // them on the same session.
+  const brokenStatus = await brokenCall({ tool: "mcp__agentic-plugin__goal_status" });
+  check("gtc1 other writers broken: goal_status after all four still answers that the state never loaded, with the store cause",
+    readsAsNotLoaded(brokenStatus?.result, NOT_LOADED_STORE_CAUSE_TOKEN), brokenStatus);
+}
+
+// The plugin's own bookkeeping writes have no caller to answer. A refused
+// write there is not the worker's business and must not become the worker's
+// failure: the save at the end of turn.complete sits above the call that hands
+// the turn on to every hook behind this one, so a throw out of it stops the
+// chain for all of them.
+async function caseGtc1_refusedBookkeepingDoesNotBreakTheTurnChain(clock) {
+  console.log("\n=== Goal tree curation 1: a refused bookkeeping write does not break the turn hook chain ===");
+  clock.set(T0);
+  // Driven over a store file that does not parse, which is what makes persist
+  // throw: it reads the file with no try of its own. That throw is the one
+  // these three saves have to contain, and it reaches any session whose store
+  // goes bad rather than only one whose state never loaded.
+  const seeded = { fsMap: new Map(), storeMap: new Map() };
+  seeded.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
+  const h = await relaunchStewardHarness("gtc1_turn_chain", seeded, { ...OPTS, caseName: "gtc1_turn_chain" });
+  h.fsWrites.length = 0;
+  const unreadable = h.fsMap.get(PERSONA_STORE_FILE);
+
+  // turn.start opens the turn and is setup here: with no delivery queued it
+  // reaches neither of its stamp saves, so it has no refused write to contain.
+  // The stamp saves are driven by the second harness below.
+  await h.handlers["turn.start"](h.fake, { turnId: "gtc1-turn", text: "" }, async () => ({ result: "ok" }));
+
+  let completeRan = false;
+  let completeThrew = null;
+  try {
+    await h.handlers["turn.complete"](h.fake, { turnId: "gtc1-turn", aborted: true, reason: "aborted" }, async () => { completeRan = true; return { result: "ok" }; });
+  } catch (err) {
+    completeThrew = err;
+  }
+  check("gtc1 turn chain: turn.complete completes rather than throwing", completeThrew === null, String(completeThrew));
+  check("gtc1 turn chain: and it handed the turn on to the hooks behind it", completeRan, completeRan);
+
+  // The refusal is still a refusal: the turn ran to its end and wrote nothing.
+  check("gtc1 turn chain: the unreadable file is byte-identical afterwards", h.fsMap.get(PERSONA_STORE_FILE) === unreadable, h.fsMap.get(PERSONA_STORE_FILE));
+  check("gtc1 turn chain: no write reached the store file", !h.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), h.fsWrites.map((w) => w.path));
+
+  // The other two bookkeeping writes of the same pair of hooks: the line
+  // saying a delivered record was not stamped with this turn, and the line
+  // saying it was. Both sit in turn.start above the same handing-on, and a
+  // record's own stamp is in the commons store rather than in this file, so a
+  // refusal here costs a line of the log and nothing else.
+  // The record is delivered over a store the tick can write, and the file goes
+  // bad again before the two stamp turns run, which is the order a store that
+  // breaks under a running session produces.
+  const stampSeed = { fsMap: new Map(), storeMap: new Map() };
+  stampSeed.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
+  const d = await relaunchStewardHarness("gtc1_turn_chain_stamp", stampSeed, { ...OPTS, caseName: "gtc1_turn_chain_stamp" });
+  d.fsMap.set(PERSONA_STORE_FILE, gtc1StoreWithNoEntryForThisPersona());
+  d.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+  });
+  seedReaderClaim(d, "writer-nl", T0);
+  const key = seedInboxRecord(d, "writer-nl", 1, { at: T0 - 5000, status: "pending" });
+  await tickAndSettle(d, clock, 50);
+  check("gtc1 turn chain stamp: the record was delivered, which is what puts a turn's stamp in question",
+    readStoreRecord(d, key)?.status === "delivered", readStoreRecord(d, key));
+  const beforeBreak = d.fsMap.get(PERSONA_STORE_FILE);
+  d.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
+
+  let withheldRan = false;
+  let withheldThrew = null;
+  try {
+    await d.handlers["turn.start"](d.fake, { turnId: "t-foreign", text: "a turn the plugin did not open" }, async () => { withheldRan = true; return { result: "ok" }; });
+  } catch (err) {
+    withheldThrew = err;
+  }
+  check("gtc1 turn chain stamp: a turn that withholds the stamp completes rather than throwing", withheldThrew === null, String(withheldThrew));
+  check("gtc1 turn chain stamp: and it handed the turn on to the hooks behind it", withheldRan, withheldRan);
+
+  let stampedRan = false;
+  let stampedThrew = null;
+  try {
+    await d.handlers["turn.start"](d.fake, { turnId: "t-own" }, async () => { stampedRan = true; return { result: "ok" }; });
+  } catch (err) {
+    stampedThrew = err;
+  }
+  check("gtc1 turn chain stamp: the turn that takes the stamp completes rather than throwing", stampedThrew === null, String(stampedThrew));
+  check("gtc1 turn chain stamp: and it handed the turn on to the hooks behind it", stampedRan, stampedRan);
+  check("gtc1 turn chain stamp: the record carries that turn's stamp, which is the write that is not this file's",
+    readStoreRecord(d, key)?.turnId === "t-own", readStoreRecord(d, key));
+
+  // That the withheld turn ran the withheld branch, rather than handing on
+  // from somewhere short of its save. The branch's decision line waits in
+  // memory past the refused save, so the file is put back as it read before
+  // it broke, a later turn's save carries the line, and it is read from there.
+  d.fsMap.set(PERSONA_STORE_FILE, beforeBreak);
+  await fireTurn(d, "t-after-repair");
+  const carried = JSON.parse(d.fsMap.get(PERSONA_STORE_FILE)).default;
+  check("gtc1 turn chain stamp: the withheld turn's operator_stamp_withheld line reached the store once it read again",
+    (carried?.decisions ?? []).some((dec) => dec.action === "operator_stamp_withheld" && String(dec.detail).includes("t-foreign")),
+    (carried?.decisions ?? []).map((dec) => [dec.action, dec.detail]));
+
+  // The control, varying the one axis: the same two hooks on a session whose
+  // state is loaded pass the turn on in the same way and do write. So the
+  // pair above is a refusal that was contained rather than a turn that never
+  // reached its save.
+  const control = await gtc1NotLoadedOverARepairedStore("gtc1_turn_chain_control");
+  await control.handlers["tool.call"](control.fake, { tool: "mcp__agentic-plugin__agentic_identity", persona: "default" }, async () => ({ result: "passthrough" }));
+  control.fsWrites.length = 0;
+  let controlRan = false;
+  await control.handlers["turn.start"](control.fake, { turnId: "gtc1-turn", text: "" }, async () => ({ result: "ok" }));
+  await control.handlers["turn.complete"](control.fake, { turnId: "gtc1-turn", aborted: true, reason: "aborted" }, async () => { controlRan = true; return { result: "ok" }; });
+  check("gtc1 turn chain control: a loaded session hands the turn on too", controlRan, controlRan);
+  check("gtc1 turn chain control: and its turn did reach the store file",
+    control.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), control.fsWrites.map((w) => w.path));
+}
+
+// The heartbeat tick's other persona-taking branch. A session that gave the
+// persona up while its state was not loaded meets a stale holder in the
+// sidecar and is the one session that must not take the persona back: the
+// promotion loads the store's state and raises the epoch, while the field
+// stays set, so every write it then makes is refused. It stays a reader, does
+// not stamp the owner heartbeat, and the persona waits for a session that can
+// keep it.
+async function caseGtc1_aNotLoadedReaderDoesNotPromote(clock) {
+  console.log("\n=== Goal tree curation 1: a session that never loaded its state does not promote to owner ===");
+  clock.set(T0);
+  const h = await gtc1NotLoadedOverARepairedStore("gtc1_no_promotion");
+  await fireHeartbeat(h);
+  check("gtc1 no promotion: the session gave the persona up, which is what leaves it a reader",
+    String(h.fsMap.get(YIELD_LOG_FILE) || "").includes(GTC1_PREVIOUS_SESSION), h.fsMap.get(YIELD_LOG_FILE));
+
+  // The sidecar names a holder that is not this session and has stopped
+  // stamping, which is the condition the promotion branch fires on.
+  const staleHolder = { default: { sessionId: GTC1_PREVIOUS_SESSION, epoch: 1, lastSeen: T0 - 600_000 } };
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify(staleHolder));
+  const beforeStore = h.fsMap.get(PERSONA_STORE_FILE);
+  h.fsWrites.length = 0;
+  await fireHeartbeat(h);
+  check("gtc1 no promotion: the store still names the session that held the persona before",
+    JSON.parse(h.fsMap.get(PERSONA_STORE_FILE)).default.activeSessionId === GTC1_PREVIOUS_SESSION,
+    JSON.parse(h.fsMap.get(PERSONA_STORE_FILE)).default.activeSessionId);
+  check("gtc1 no promotion: the store file is byte-identical afterwards", h.fsMap.get(PERSONA_STORE_FILE) === beforeStore, h.fsMap.get(PERSONA_STORE_FILE));
+  check("gtc1 no promotion: the owner heartbeat still names the stale holder rather than this session",
+    JSON.parse(h.fsMap.get(HEARTBEAT_FILE)).default.sessionId === GTC1_PREVIOUS_SESSION, h.fsMap.get(HEARTBEAT_FILE));
+  check("gtc1 no promotion: nothing logged a promotion", !h.uiLogs.some((l) => l.includes("promoted to owner")), h.uiLogs);
+
+  // The control, varying the one axis. A session whose state did load, made a
+  // reader the same way by a store that named a holder it could not beat,
+  // meets the same stale sidecar and does promote. So the silence above is the
+  // field rather than a promotion branch this sequence never reached.
+  const controlSeed = { fsMap: new Map(), storeMap: new Map() };
+  controlSeed.fsMap.set(PERSONA_STORE_FILE, gtc1RepairedStoreFile());
+  const control = await relaunchStewardHarness("gtc1_no_promotion_control", controlSeed, { ...OPTS, caseName: "gtc1_no_promotion_control" });
+  const controlStatus = await control.handlers["tool.call"](control.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
+  check("gtc1 no promotion control: it came up with the persona's own tree loaded",
+    String(controlStatus?.result || "").includes("g-real-plan") && !String(controlStatus?.result).includes(NOT_LOADED_TOKEN), controlStatus);
+  const taken = JSON.parse(control.fsMap.get(PERSONA_STORE_FILE)).default;
+  control.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: { ...taken, activeSessionId: "a-session-it-cannot-beat", epoch: taken.epoch + 8 } }, null, 2));
+  await fireHeartbeat(control);
+  check("gtc1 no promotion control: it gave the persona up the same way",
+    String(control.fsMap.get(YIELD_LOG_FILE) || "").includes("a-session-it-cannot-beat"), control.fsMap.get(YIELD_LOG_FILE));
+  control.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: "a-session-it-cannot-beat", epoch: taken.epoch + 8, lastSeen: T0 - 600_000 } }));
+  await fireHeartbeat(control);
+  check("gtc1 no promotion control: the stale holder is taken over",
+    JSON.parse(control.fsMap.get(PERSONA_STORE_FILE)).default.activeSessionId === SESSION_ID,
+    JSON.parse(control.fsMap.get(PERSONA_STORE_FILE)).default.activeSessionId);
+  check("gtc1 no promotion control: and the promotion stamped the owner heartbeat",
+    JSON.parse(control.fsMap.get(HEARTBEAT_FILE)).default.sessionId === SESSION_ID, control.fsMap.get(HEARTBEAT_FILE));
+  // What makes the silence above readable. The log line the absence check
+  // looks for is one this instrument does produce, on a session that promotes,
+  // so an empty log there is a promotion that did not happen rather than a
+  // string the check was handed and nothing ever writes.
+  check("gtc1 no promotion control: and the promotion logged the line the absence above is read on",
+    control.uiLogs.some((l) => l.includes("promoted to owner")), control.uiLogs);
+}
+
+// agentic_identity is how a not-loaded session recovers, and it recovers only
+// from a store that reads as an object of persona entries, the same shape
+// session.start's own read requires. A file holding an array, a number or null
+// parses, but it holds no entry to load and no object to write a claim into:
+// on an array the claim write puts the array back with the persona's entry
+// dropped, since a named property on an array does not serialize, and every
+// goal write after it is lost. So each such file is refused the way a file
+// that does not parse is refused, by a throw, and the session is still not
+// loaded afterwards.
+//
+// The control is the same session over the same sequence, with the file then
+// repaired to an object holding the persona's entry: agentic_identity answers
+// and the goal tools show the stored tree, so the refusal above is the file's
+// shape rather than a session that could not recover at all. The reader arm
+// runs the identity call's reader branch, which reads the store on its own.
+async function caseGtc1_aNonObjectStoreDoesNotRecoverThroughIdentity(clock) {
+  console.log("\n=== Goal tree curation 1: agentic_identity does not recover a session from a store that is not an object ===");
+  clock.set(T0);
+  const callOn = (harness) => async (event) => {
+    try {
+      return await harness.handlers["tool.call"](harness.fake, event, async () => ({ result: "passthrough" }));
+    } catch (err) {
+      return { threw: String(err) };
+    }
+  };
+  const arms = [
+    ["an array", "[]", "owner"],
+    ["a number", "42", "owner"],
+    ["null", "null", "owner"],
+    ["an array, reader tier", "[]", "reader"],
+  ];
+  for (const [label, fileText, arming] of arms) {
+    const caseName = `gtc1_identity_non_object_${arming}_${fileText.replace(/\W/g, "") || "array"}`;
+    const h = await gtc1NotLoadedOverStoreFile(caseName, fileText, { arming });
+    const call = callOn(h);
+    const identity = await call({ tool: "mcp__agentic-plugin__agentic_identity", persona: "default" });
+    check(`gtc1 identity over ${label}: the call throws, as it does on a file that does not parse`,
+      identity?.threw !== undefined, identity);
+    // The refusal is the shape check's rather than some other throw, such as
+    // a property read on null, which would also throw.
+    check(`gtc1 identity over ${label}: and the throw is the store-shape refusal`,
+      String(identity?.threw ?? "").includes("rather than as an object of persona entries"), identity);
+    const status = await call({ tool: "mcp__agentic-plugin__goal_status" });
+    check(`gtc1 identity over ${label}: goal_status still answers that the state never loaded, with the store cause`,
+      readsAsNotLoaded(status?.result, NOT_LOADED_STORE_CAUSE_TOKEN), status);
+    check(`gtc1 identity over ${label}: the store file is byte-identical afterwards`,
+      h.fsMap.get(PERSONA_STORE_FILE) === fileText, h.fsMap.get(PERSONA_STORE_FILE));
+    check(`gtc1 identity over ${label}: no write reached the store file`,
+      !h.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), h.fsWrites.map((w) => w.path));
+
+    // The control on the same session: the file repaired to an object holding
+    // the persona's own entry.
+    h.fsMap.set(PERSONA_STORE_FILE, gtc1RepairedStoreFile());
+    const recovered = await call({ tool: "mcp__agentic-plugin__agentic_identity", persona: "default" });
+    check(`gtc1 identity over ${label} control: once the file is an object, agentic_identity answers`,
+      recovered?.threw === undefined && recovered?.deny === undefined && String(recovered?.result || "").includes("persona 'default'"), recovered);
+    const recoveredStatus = await call({ tool: "mcp__agentic-plugin__goal_status" });
+    check(`gtc1 identity over ${label} control: and goal_status shows the stored tree`,
+      String(recoveredStatus?.result || "").includes("g-real-plan") && !String(recoveredStatus?.result).includes(NOT_LOADED_TOKEN), recoveredStatus);
+  }
+}
+
+// A persona switch the store read refuses leaves the session as it was. The
+// store read is what can throw, so it runs before the session takes the new
+// name, resets its untracked-work line or releases the old persona's claim.
+// Run the other way round, a switch onto a store holding an array throws
+// with the session already named for the new persona over the old one's
+// tree, and once the file is repaired the next write lands that tree under
+// the new persona's key. The control is the switch over a readable store,
+// which does take the new name and release the old claim.
+async function caseGtc1_aRefusedSwitchLeavesTheSessionAsItWas(clock) {
+  console.log("\n=== Goal tree curation 1: a persona switch the store read refuses leaves the session on its old persona ===");
+  clock.set(T0);
+  const setUp = async (caseName) => {
+    const h = await createTickHarness({ ...OPTS, caseName });
+    h.storeMap.set(`commons:${SESSION_ID}`, {
+      sessionId: SESSION_ID,
+      lastSeen: T0,
+      claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+    });
+    const call = async (event) => {
+      try {
+        return await h.handlers["tool.call"](h.fake, event, async () => ({ result: "passthrough" }));
+      } catch (err) {
+        return { threw: String(err) };
+      }
+    };
+    return { h, call };
+  };
+  const holdsDefaultClaim = (h) => (h.storeMap.get(`commons:${SESSION_ID}`)?.claims || []).some((c) => c.resource === "persona:default");
+
+  const { h, call } = await setUp("gtc1_refused_switch");
+  h.fsMap.set(PERSONA_STORE_FILE, "[]");
+  const switched = await call({ tool: "mcp__agentic-plugin__agentic_identity", persona: "other" });
+  check("gtc1 refused switch: the switch throws the store-shape refusal",
+    String(switched?.threw ?? "").includes("rather than as an object of persona entries"), switched);
+  check("gtc1 refused switch: the claim on the old persona is still held", holdsDefaultClaim(h), h.storeMap.get(`commons:${SESSION_ID}`));
+  h.fsMap.set(PERSONA_STORE_FILE, "{}");
+  const added = await call({ tool: "mcp__agentic-plugin__goal_add", title: "a task after the refused switch", objective: "a write after the store is repaired", kind: "task" });
+  check("gtc1 refused switch: a goal write after the repair is accepted", added?.threw === undefined && added?.deny === undefined, added);
+  const written = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE) || "{}");
+  check("gtc1 refused switch: that write lands under the old persona's key", written.default !== undefined, Object.keys(written));
+  check("gtc1 refused switch: and never under the persona the refused switch named", written.other === undefined, Object.keys(written));
+
+  // The third change the switch makes, the untracked-work reset, is held
+  // back too: the old persona's line keeps counting on after a refused switch.
+  const untracked = await createTickHarness({ ...OPTS, caseName: "gtc1_refused_switch_untracked", stateOpts: { hasActiveLeaf: false } });
+  untracked.storeMap.set(`commons:${SESSION_ID}`, { sessionId: SESSION_ID, lastSeen: T0, claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }] });
+  await untrackedWorkTurn(untracked, "t-r1", "first before the switch");
+  clock.advance(10_000);
+  const storeText = untracked.fsMap.get(PERSONA_STORE_FILE);
+  untracked.fsMap.set(PERSONA_STORE_FILE, "[]");
+  try {
+    await untracked.handlers["tool.call"](untracked.fake, { tool: "mcp__agentic-plugin__agentic_identity", persona: "other" }, async () => ({ result: "passthrough" }));
+  } catch { /* the refusal the first half of this case pins */ }
+  untracked.fsMap.set(PERSONA_STORE_FILE, storeText);
+  clock.advance(10_000);
+  await untrackedWorkTurn(untracked, "t-r2", "second after the refused switch");
+  const lines = untrackedLines(untracked);
+  check("gtc1 refused switch: the old persona's untracked_work line counts on", lines.length === 1 && lines[0]?.detail === "x2: second after the refused switch", lines);
+
+  // Control: the same switch over a readable store takes the new name and
+  // releases the old claim.
+  const control = await setUp("gtc1_refused_switch_control");
+  const took = await control.call({ tool: "mcp__agentic-plugin__agentic_identity", persona: "other" });
+  check("gtc1 refused switch control: a switch over a readable store answers for the new persona",
+    took?.threw === undefined && String(took?.result || "").includes("persona 'other'"), took);
+  check("gtc1 refused switch control: and releases the old persona's claim", !holdsDefaultClaim(control.h), control.h.storeMap.get(`commons:${SESSION_ID}`));
+}
+
+// --- Goal tree curation Section 3: goal_done completes an entry by name ---
+
+// The flat tree most by-name cases start from: a pending root with task-1
+// active and task-2 pending under it. `overrides` replaces fields on a node
+// by id, and `extra` appends nodes.
+function gtc3Tree(overrides = {}, extra = []) {
+  const nodes = [
+    makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", title: "Root", createdAt: T0 - 50000 }),
+    makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", title: "Task one", maxRounds: 10, createdAt: T0 - 40000 }),
+    makeGoalNode({ id: "task-2", parentId: "root-1", kind: "task", status: "pending", title: "Task two", maxRounds: 10, createdAt: T0 - 30000 }),
+    ...extra.map((n) => makeGoalNode(n)),
+  ];
+  return nodes.map((n) => (overrides[n.id] ? { ...n, ...overrides[n.id] } : n));
+}
+
+// A started owner session over `goals`. The state is seeded before the one
+// session.start so a pendingAskId rides in the stored state, and the ask
+// record itself is written after it, since an owner's start expires the
+// open asks a prior owner left.
+async function gtc3Harness(caseName, goals, { pendingAsk } = {}) {
+  const h = await createTickHarness({ ...OPTS, caseName, skipSessionStart: true });
+  const state = makeState({ now: T0, goals, activeGoalId: goals.find((g) => g.status === "active")?.id ?? null });
+  if (pendingAsk) state.pendingAskId = pendingAsk.askId;
+  seedPersonaStore(h, state);
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+  });
+  await h.handlers["session.start"](h.fake, {}, () => {});
+  if (pendingAsk) {
+    const key = `ask:default:${pendingAsk.askId}`;
+    h.storeMap.set(key, { id: pendingAsk.askId, key, persona: "default", askId: pendingAsk.askId, at: T0 - 1000, nodeId: pendingAsk.nodeId, question: "Which way?", status: "open" });
+  }
+  return h;
+}
+
+// Calls goal_done with `args` and returns what the call changed: the result,
+// the actions of the decisions it wrote in order, and each node's status,
+// scores and completedRounds from the stored state afterwards.
+async function gtc3Done(h, args) {
+  const beforeCount = getDecisions(h).length;
+  const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", ...args });
+  const state = getState(h);
+  const written = state.decisions.slice(beforeCount);
+  const nodes = {};
+  for (const g of state.goals) nodes[g.id] = { status: g.status, scores: g.scores, completedRounds: g.completedRounds };
+  return {
+    res,
+    written,
+    actions: written.map((d) => d.action),
+    nodes,
+    activeGoalId: state.activeGoalId,
+    pendingAskId: state.pendingAskId,
+    pendingPeriodic: state.monitor.selfReview?.pendingPeriodic,
+  };
+}
+
+// A call with no nodeId on a tree with an active leaf writes score, done and
+// activated in that order, with the exact score and done details and result
+// text. It completes the active leaf with one on-goal score and one completed
+// round, activates the next sibling, names it, and flags the periodic
+// self-review.
+async function caseGtc3_goalDoneWithNoNodeIdBehavesAsBefore(clock) {
+  console.log("\n=== Goal tree curation 3: goal_done with no nodeId behaves as before ===");
+  clock.set(T0);
+  const h = await gtc3Harness("gtc3_no_node_id", gtc3Tree());
+  const out = await gtc3Done(h, { note: "finished" });
+  check("gtc3 no nodeId: the call is accepted with the existing result text",
+    out.res?.deny === undefined && out.res?.result === 'Complete: "Task one". Next active: task-2 "Task two".', out.res);
+  check("gtc3 no nodeId: the decisions written are score, done, activated in that order",
+    JSON.stringify(out.actions) === JSON.stringify(["score", "done", "activated"]), out.actions);
+  check("gtc3 no nodeId: the done detail names the entry and the note",
+    out.written[1]?.detail === 'task-1 "Task one" marked complete: finished', out.written[1]);
+  check("gtc3 no nodeId: the score detail names the entry and its first round",
+    out.written[0]?.detail === "task-1 Round 1: on-goal (goal_done)", out.written[0]);
+  check("gtc3 no nodeId: root pending, task-1 complete, task-2 active",
+    out.nodes["root-1"].status === "pending" && out.nodes["task-1"].status === "complete" && out.nodes["task-2"].status === "active", out.nodes);
+  check("gtc3 no nodeId: task-1 carries one on-goal score and one completed round",
+    JSON.stringify(out.nodes["task-1"].scores) === JSON.stringify([{ round: 1, result: "on-goal" }]) && out.nodes["task-1"].completedRounds === 1, out.nodes["task-1"]);
+  check("gtc3 no nodeId: task-2 is the active entry", out.activeGoalId === "task-2", out.activeGoalId);
+  check("gtc3 no nodeId: the periodic self-review is flagged", out.pendingPeriodic === true, out.pendingPeriodic);
+}
+
+// Both views of the tree: the stored goals and active id, and the goal_status
+// text, which reads the session's in-memory tree rather than the store.
+async function gtc3TreeViews(h) {
+  const state = getState(h);
+  const status = await callTool(h, { tool: "mcp__agentic-plugin__goal_status" });
+  return { stored: JSON.stringify({ goals: state.goals, activeGoalId: state.activeGoalId }), shown: status?.result };
+}
+
+// The Tests line: completing by name never moves the active entry, since
+// silently pausing live work is the cost of the goal_resume then goal_done
+// workaround. Run for each status a by-name completion accepts besides
+// active. The entry earns no round or score credit, and nothing is
+// activated. The control runs the workaround on the same tree and shows the
+// paused_by_resume predicate speaking.
+async function caseGtc3_completingByNameNeverMovesTheActiveEntry(clock) {
+  console.log("\n=== Goal tree curation 3: completing an entry by name leaves the active entry active ===");
+  for (const status of ["paused", "pending", "blocked"]) {
+    clock.set(T0);
+    const extra = [{ id: "plan-p", parentId: "root-1", kind: "plan", status, title: "Finished plan", blockedReason: status === "pending" ? undefined : "held", scores: [{ round: 1, result: "drift" }], completedRounds: 2, createdAt: T0 - 20000 }];
+    const h = await gtc3Harness(`gtc3_by_name_keeps_active_${status}`, gtc3Tree({}, extra));
+    const out = await gtc3Done(h, { nodeId: "plan-p", note: "shipped" });
+    const all = getDecisions(h);
+    const label = `gtc3 by name keeps active (${status} plan)`;
+    check(`${label}: the call is accepted and says task-1 is still active`,
+      out.res?.deny === undefined && String(out.res?.result).includes("task-1") && String(out.res?.result).includes("is still active"), out.res);
+    check(`${label}: plan-p reads complete`, out.nodes["plan-p"].status === "complete", out.nodes["plan-p"]);
+    check(`${label}: task-1 is still active and still the active entry`, out.nodes["task-1"].status === "active" && out.activeGoalId === "task-1", { nodes: out.nodes, activeGoalId: out.activeGoalId });
+    check(`${label}: task-2 is still pending`, out.nodes["task-2"].status === "pending", out.nodes["task-2"]);
+    check(`${label}: no paused_by_resume decision anywhere in the log`, !all.some((d) => d.action === "paused_by_resume"), all.map((d) => d.action));
+    check(`${label}: the one decision written is done, naming the entry and that it was closed by name`,
+      JSON.stringify(out.actions) === JSON.stringify(["done"]) && out.written[0].detail.includes("plan-p") && out.written[0].detail.includes("by name"), out.written);
+    check(`${label}: plan-p's scores and completedRounds are as they were`,
+      JSON.stringify(out.nodes["plan-p"].scores) === JSON.stringify([{ round: 1, result: "drift" }]) && out.nodes["plan-p"].completedRounds === 2, out.nodes["plan-p"]);
+    check(`${label}: task-1's credit is untouched`, out.nodes["task-1"].scores.length === 0 && out.nodes["task-1"].completedRounds === 0, out.nodes["task-1"]);
+    const stored = getState(h).goals.find((g) => g.id === "plan-p");
+    check(`${label}: plan-p's blockedReason and pausedByNudgeCap are cleared`, stored.blockedReason === undefined && !stored.pausedByNudgeCap, stored);
+  }
+
+  // Control: the workaround on the same tree pauses the live entry, and the
+  // predicate above matches its decision.
+  clock.set(T0);
+  const extra = [{ id: "plan-p", parentId: "root-1", kind: "plan", status: "paused", title: "Finished plan", createdAt: T0 - 20000 }];
+  const c = await gtc3Harness("gtc3_by_name_keeps_active_control", gtc3Tree({}, extra));
+  await callTool(c, { tool: "mcp__agentic-plugin__goal_resume", nodeId: "plan-p" });
+  const controlState = getState(c);
+  check("gtc3 by name keeps active control: goal_resume on the same tree writes paused_by_resume and pauses task-1",
+    controlState.decisions.some((d) => d.action === "paused_by_resume") && controlState.goals.find((g) => g.id === "task-1").status === "paused",
+    controlState.decisions.map((d) => d.action));
+
+  // activeGoalId null while task-1's status is active. An operator reply to
+  // an open ask sets the asked entry active and leaves activeGoalId as it
+  // was, which is null for an entry the ask paused. task-1 is the active
+  // entry all the same, so completing plan-p by name leaves it active,
+  // activates nothing, and names it.
+  clock.set(T0);
+  const stale = await gtc3Harness("gtc3_by_name_keeps_active_null_id",
+    gtc3Tree({ "task-1": { status: "paused", blockedReason: "operator input needed" } }, extra),
+    { pendingAsk: { askId: "ask-1", nodeId: "task-1" } });
+  await stale.handlers["prompt.submit"](stale.fake, { text: "go with the first option" }, async () => ({}));
+  check("gtc3 by name keeps active (activeGoalId null) setup: the reply set task-1 active, left activeGoalId null and closed the ask",
+    getState(stale).activeGoalId === null && getState(stale).goals.find((g) => g.id === "task-1").status === "active" && !getState(stale).pendingAskId,
+    { activeGoalId: getState(stale).activeGoalId, pendingAskId: getState(stale).pendingAskId });
+  const staleOut = await gtc3Done(stale, { nodeId: "plan-p" });
+  check("gtc3 by name keeps active (activeGoalId null): plan-p reads complete", staleOut.nodes["plan-p"].status === "complete", staleOut.nodes);
+  check("gtc3 by name keeps active (activeGoalId null): task-1 is still active, task-2 still pending, and nothing was activated",
+    staleOut.nodes["task-1"].status === "active" && staleOut.nodes["task-2"].status === "pending" &&
+    !staleOut.actions.includes("activated") && !staleOut.actions.includes("activate_none"),
+    { nodes: staleOut.nodes, actions: staleOut.actions });
+  check("gtc3 by name keeps active (activeGoalId null): the result says task-1 is still active",
+    String(staleOut.res?.result).includes("task-1") && String(staleOut.res?.result).includes("is still active"), staleOut.res);
+}
+
+// A pending task completed by name under a plan whose other children are
+// complete takes the plan to complete through completeLeaf's walk.
+async function caseGtc3_aTaskCompletedByNameWalksItsPlanToComplete(clock) {
+  console.log("\n=== Goal tree curation 3: a task completed by name walks its plan to complete ===");
+  clock.set(T0);
+  const extra = [
+    { id: "plan-p", parentId: "root-1", kind: "plan", status: "pending", title: "Plan", createdAt: T0 - 20000 },
+    { id: "pt-1", parentId: "plan-p", kind: "task", status: "complete", title: "Done task", createdAt: T0 - 19000 },
+    { id: "pt-2", parentId: "plan-p", kind: "task", status: "pending", title: "Last task", createdAt: T0 - 18000 },
+  ];
+  const h = await gtc3Harness("gtc3_walk", gtc3Tree({}, extra));
+  const out = await gtc3Done(h, { nodeId: "pt-2" });
+  check("gtc3 walk: the call is accepted", out.res?.deny === undefined, out.res);
+  check("gtc3 walk: pt-2 is complete", out.nodes["pt-2"].status === "complete", out.nodes);
+  check("gtc3 walk: plan-p is complete through completeLeaf's walk", out.nodes["plan-p"].status === "complete", out.nodes);
+  check("gtc3 walk: the root is untouched and task-1 still active", out.nodes["root-1"].status === "pending" && out.nodes["task-1"].status === "active" && out.activeGoalId === "task-1", { nodes: out.nodes, activeGoalId: out.activeGoalId });
+}
+
+// Each refusal names what refused it and changes no node: not in the tree,
+// the root, already complete, already abandoned, and a child still open.
+// The views are compared before and after. The control is an accepted call
+// on the same harness, where the same comparison speaks.
+async function caseGtc3_eachRefusalReturnsItsReasonAndChangesNoNode(clock) {
+  console.log("\n=== Goal tree curation 3: each by-name refusal returns its reason and changes no node ===");
+  clock.set(T0);
+  const extra = [
+    { id: "task-x", parentId: "root-1", kind: "task", status: "complete", title: "Done", createdAt: T0 - 25000 },
+    { id: "task-y", parentId: "root-1", kind: "task", status: "abandoned", title: "Dropped", createdAt: T0 - 24000 },
+    { id: "plan-q", parentId: "root-1", kind: "plan", status: "pending", title: "Open plan", createdAt: T0 - 20000 },
+    { id: "q-1", parentId: "plan-q", kind: "task", status: "pending", title: "Open child", createdAt: T0 - 19000 },
+  ];
+  const h = await gtc3Harness("gtc3_refusals", gtc3Tree({}, extra));
+  const arms = [
+    ["an id not in the tree", "no-such-node", ['"no-such-node"', "not found"]],
+    ["the root", "root-1", ["root", 'status "pending"']],
+    ["an entry already complete", "task-x", ['"complete"']],
+    ["an entry already abandoned", "task-y", ['"abandoned"']],
+    ["an entry with an open child", "plan-q", ['status is "pending"', "q-1"]],
+  ];
+  for (const [label, nodeId, tokens] of arms) {
+    const before = await gtc3TreeViews(h);
+    const decisionsBefore = getDecisions(h).length;
+    const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", nodeId, note: "should not land" });
+    const after = await gtc3TreeViews(h);
+    check(`gtc3 refusal, ${label}: denied with a reason naming ${tokens.join(" and ")}`,
+      typeof res?.deny === "string" && tokens.every((t) => res.deny.includes(t)), res);
+    check(`gtc3 refusal, ${label}: the stored tree is unchanged`, after.stored === before.stored, { before: before.stored, after: after.stored });
+    check(`gtc3 refusal, ${label}: the session's tree is unchanged`, after.shown === before.shown, { before: before.shown, after: after.shown });
+    check(`gtc3 refusal, ${label}: no decision was written`, getDecisions(h).length === decisionsBefore, getDecisions(h).slice(decisionsBefore));
+  }
+  const before = await gtc3TreeViews(h);
+  const ok = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", nodeId: "q-1" });
+  const after = await gtc3TreeViews(h);
+  check("gtc3 refusal control: an accepted by-name call on the same harness changes both views",
+    ok?.deny === undefined && after.stored !== before.stored && after.shown !== before.shown, { ok, before: before.shown, after: after.shown });
+}
+
+// The Tests line: the unfinished-children refusal in both directions. A plan
+// with a pending child and one with a blocked child are refused. The same
+// plan once its children are complete or abandoned is completed.
+async function caseGtc3_unfinishedChildrenRefusalInBothDirections(clock) {
+  console.log("\n=== Goal tree curation 3: the unfinished-children refusal holds in both directions ===");
+  for (const openStatus of ["pending", "blocked"]) {
+    clock.set(T0);
+    const extra = [
+      { id: "plan-q", parentId: "root-1", kind: "plan", status: "paused", title: "Plan", createdAt: T0 - 20000 },
+      { id: "q-1", parentId: "plan-q", kind: "task", status: openStatus, title: "Open child", createdAt: T0 - 19000 },
+      { id: "q-2", parentId: "plan-q", kind: "task", status: "complete", title: "Done child", createdAt: T0 - 18000 },
+    ];
+    const h = await gtc3Harness(`gtc3_children_${openStatus}`, gtc3Tree({}, extra));
+    const label = `gtc3 children (${openStatus} child)`;
+    const refused = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", nodeId: "plan-q" });
+    check(`${label}: refused while q-1 is ${openStatus}, naming the plan's status and the child`,
+      typeof refused?.deny === "string" && refused.deny.includes('status is "paused"') && refused.deny.includes(`q-1 is "${openStatus}"`), refused);
+    check(`${label}: plan-q is still paused`, getState(h).goals.find((g) => g.id === "plan-q").status === "paused");
+
+    const dropped = await callTool(h, { tool: "mcp__agentic-plugin__goal_edit", nodeId: "q-1", action: "drop", reason: "not needed" });
+    check(`${label}: setup, q-1 dropped to abandoned`, !dropped?.deny && getState(h).goals.find((g) => g.id === "q-1").status === "abandoned", dropped);
+    const accepted = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", nodeId: "plan-q" });
+    const state = getState(h);
+    check(`${label}: accepted once every child is complete or abandoned, and plan-q reads complete`,
+      accepted?.deny === undefined && state.goals.find((g) => g.id === "plan-q").status === "complete", accepted);
+    check(`${label}: task-1 is still the active entry`, state.activeGoalId === "task-1" && state.goals.find((g) => g.id === "task-1").status === "active");
+  }
+}
+
+// Completing the active entry by its own name writes the same decision
+// actions and the same credit as the call with no nodeId, on two harnesses
+// over the same tree. The done detail adds that it was closed by name.
+async function caseGtc3_completingTheActiveEntryByNameMatchesTheCallWithNoNodeId(clock) {
+  console.log("\n=== Goal tree curation 3: the active entry completed by name matches the call with no nodeId ===");
+  clock.set(T0);
+  const plain = await gtc3Done(await gtc3Harness("gtc3_active_plain", gtc3Tree()), { note: "finished" });
+  clock.set(T0);
+  const named = await gtc3Done(await gtc3Harness("gtc3_active_named", gtc3Tree()), { nodeId: "task-1", note: "finished" });
+  check("gtc3 active by name: the same decision actions in the same order",
+    JSON.stringify(named.actions) === JSON.stringify(plain.actions) && plain.actions.includes("score"), { plain: plain.actions, named: named.actions });
+  check("gtc3 active by name: the same score decision", named.written[0]?.detail === plain.written[0]?.detail, { plain: plain.written[0], named: named.written[0] });
+  check("gtc3 active by name: the same node statuses, scores and completedRounds",
+    JSON.stringify(named.nodes) === JSON.stringify(plain.nodes), { plain: plain.nodes, named: named.nodes });
+  check("gtc3 active by name: the same next active entry and result text",
+    named.activeGoalId === plain.activeGoalId && named.res?.result === plain.res?.result, { plain: plain.res, named: named.res });
+  check("gtc3 active by name: the periodic self-review is flagged on both", named.pendingPeriodic === true && plain.pendingPeriodic === true);
+  check("gtc3 active by name: the done detail says it was closed by name",
+    String(named.written[1]?.detail).includes("task-1") && String(named.written[1]?.detail).includes("by name"), named.written[1]);
+}
+
+// An open ask on the entry completed by name is closed as goal_resume closes
+// one. An ask on another entry is left open, with pendingAskId still set.
+async function caseGtc3_anOpenAskOnTheCompletedEntryIsClosed(clock) {
+  console.log("\n=== Goal tree curation 3: an open ask on the entry completed by name is closed ===");
+  clock.set(T0);
+  const extra = [{ id: "task-3", parentId: "root-1", kind: "task", status: "paused", title: "Asked about", blockedReason: "operator input needed", createdAt: T0 - 20000 }];
+  const h = await gtc3Harness("gtc3_ask_closed", gtc3Tree({}, extra), { pendingAsk: { askId: "ask-3", nodeId: "task-3" } });
+  check("gtc3 ask closed setup: pendingAskId is set", getState(h).pendingAskId === "ask-3", getState(h).pendingAskId);
+  const out = await gtc3Done(h, { nodeId: "task-3" });
+  const record = h.storeMap.get("ask:default:ask-3");
+  check("gtc3 ask closed: task-3 is complete", out.nodes["task-3"].status === "complete", out.nodes);
+  check("gtc3 ask closed: pendingAskId is cleared", !out.pendingAskId, out.pendingAskId);
+  check("gtc3 ask closed: the ask record reads resumed", record?.status === "resumed", record);
+  check("gtc3 ask closed: one ask_answered decision says goal_done closed it",
+    out.written.filter((d) => d.action === "ask_answered").length === 1 &&
+    ["ask-3", "goal_done", "resumed"].every((t) => out.written.find((d) => d.action === "ask_answered").detail.includes(t)), out.written);
+  check("gtc3 ask closed: task-1 is still active", out.nodes["task-1"].status === "active" && out.activeGoalId === "task-1", out.nodes);
+
+  clock.set(T0);
+  const extra2 = [
+    { id: "task-3", parentId: "root-1", kind: "task", status: "paused", title: "Asked about", createdAt: T0 - 20000 },
+    { id: "task-4", parentId: "root-1", kind: "task", status: "paused", title: "Finished", createdAt: T0 - 19000 },
+  ];
+  const o = await gtc3Harness("gtc3_ask_other", gtc3Tree({}, extra2), { pendingAsk: { askId: "ask-3", nodeId: "task-3" } });
+  const other = await gtc3Done(o, { nodeId: "task-4" });
+  check("gtc3 ask on another entry: task-4 is complete", other.nodes["task-4"].status === "complete", other.nodes);
+  check("gtc3 ask on another entry: pendingAskId still names the open ask", other.pendingAskId === "ask-3", other.pendingAskId);
+  check("gtc3 ask on another entry: the ask record is still open", o.storeMap.get("ask:default:ask-3")?.status === "open", o.storeMap.get("ask:default:ask-3"));
+  check("gtc3 ask on another entry: no ask_answered decision", !other.written.some((d) => d.action === "ask_answered"), other.actions);
+
+  // goal_resume shares the ask-closing step, and still closes its own
+  // entry's ask with its own name on the decision.
+  clock.set(T0);
+  const r = await gtc3Harness("gtc3_ask_resume", gtc3Tree({}, extra), { pendingAsk: { askId: "ask-3", nodeId: "task-3" } });
+  const resumeBefore = getDecisions(r).length;
+  await callTool(r, { tool: "mcp__agentic-plugin__goal_resume", nodeId: "task-3" });
+  const resumed = getState(r);
+  const answered = resumed.decisions.slice(resumeBefore).filter((d) => d.action === "ask_answered");
+  check("gtc3 ask closed by goal_resume: pendingAskId cleared, the record resumed, one ask_answered naming goal_resume",
+    !resumed.pendingAskId && r.storeMap.get("ask:default:ask-3")?.status === "resumed" &&
+    answered.length === 1 && ["ask-3", "goal_resume", "resumed"].every((t) => answered[0].detail.includes(t)),
+    { pendingAskId: resumed.pendingAskId, record: r.storeMap.get("ask:default:ask-3"), answered });
+}
+
+// An open ask on a plan that completeLeaf's walk completes during a by-name
+// call is closed as an ask on the named entry is: the record reads resumed,
+// pendingAskId clears, and with no entry active the next one activates
+// rather than being held by the closed ask. The control puts the ask on an
+// entry the call does not complete, and there it stays open and holds.
+async function caseGtc3_anOpenAskOnAPlanTheWalkCompletesIsClosed(clock) {
+  console.log("\n=== Goal tree curation 3: an open ask on a plan the walk completes is closed ===");
+  const HOLD = "an operator ask is open";
+  const cascadeTree = (extra = []) => gtc3Tree({ "task-1": { status: "paused", blockedReason: "held" } }, [
+    { id: "plan-p", parentId: "root-1", kind: "plan", status: "pending", title: "Plan", createdAt: T0 - 20000 },
+    { id: "pt-1", parentId: "plan-p", kind: "task", status: "complete", title: "Done task", createdAt: T0 - 19000 },
+    { id: "pt-2", parentId: "plan-p", kind: "task", status: "pending", title: "Last task", createdAt: T0 - 18000 },
+    ...extra,
+  ]);
+
+  clock.set(T0);
+  const h = await gtc3Harness("gtc3_ask_on_walked_plan", cascadeTree(), { pendingAsk: { askId: "ask-p", nodeId: "plan-p" } });
+  check("gtc3 ask on walked plan setup: pendingAskId is set and no entry is active",
+    getState(h).pendingAskId === "ask-p" && !getState(h).goals.some((g) => g.status === "active"), getState(h));
+  const out = await gtc3Done(h, { nodeId: "pt-2" });
+  const record = h.storeMap.get("ask:default:ask-p");
+  check("gtc3 ask on walked plan: pt-2 and plan-p are complete", out.nodes["pt-2"].status === "complete" && out.nodes["plan-p"].status === "complete", out.nodes);
+  check("gtc3 ask on walked plan: the ask record reads resumed", record?.status === "resumed", record);
+  check("gtc3 ask on walked plan: pendingAskId is cleared", !out.pendingAskId, out.pendingAskId);
+  check("gtc3 ask on walked plan: one ask_answered decision naming ask-p and goal_done",
+    out.written.filter((d) => d.action === "ask_answered").length === 1 &&
+    ["ask-p", "goal_done"].every((t) => out.written.find((d) => d.action === "ask_answered").detail.includes(t)), out.written);
+  check("gtc3 ask on walked plan: the next entry is activated rather than held",
+    String(out.res?.result).includes("Next active:") && !String(out.res?.result).includes(HOLD) &&
+    out.activeGoalId !== null && out.nodes[out.activeGoalId]?.status === "active", { res: out.res, activeGoalId: out.activeGoalId });
+
+  // Control: the ask is on task-3, which the call does not complete.
+  clock.set(T0);
+  const c = await gtc3Harness("gtc3_ask_on_walked_plan_control",
+    cascadeTree([{ id: "task-3", parentId: "root-1", kind: "task", status: "paused", title: "Asked about", createdAt: T0 - 17000 }]),
+    { pendingAsk: { askId: "ask-3", nodeId: "task-3" } });
+  const ctl = await gtc3Done(c, { nodeId: "pt-2" });
+  check("gtc3 ask on walked plan control: plan-p is complete", ctl.nodes["plan-p"].status === "complete", ctl.nodes);
+  check("gtc3 ask on walked plan control: the ask record is still open and pendingAskId still names it",
+    c.storeMap.get("ask:default:ask-3")?.status === "open" && ctl.pendingAskId === "ask-3",
+    { record: c.storeMap.get("ask:default:ask-3"), pendingAskId: ctl.pendingAskId });
+  check("gtc3 ask on walked plan control: no ask_answered decision", !ctl.actions.includes("ask_answered"), ctl.actions);
+  check("gtc3 ask on walked plan control: nothing is activated and the result names the hold",
+    ctl.activeGoalId === null && !ctl.actions.includes("activated") && String(ctl.res?.result).includes(HOLD), { res: ctl.res, actions: ctl.actions });
+}
+
+// With no entry active, completing by name activates the next entry unless
+// an open ask or a nudge cap pause holds the tree. The completed entry's own
+// ask and its own cap flag are not holds, since both clear with it.
+async function caseGtc3_noActiveEntryActivatesNextUnlessHeld(clock) {
+  console.log("\n=== Goal tree curation 3: with no active entry, the next one activates unless a hold applies ===");
+  const noActive = (extraOverrides = {}, extra = []) =>
+    gtc3Tree({ "task-1": { status: "paused", blockedReason: "held", ...extraOverrides } }, extra);
+  const arms = [
+    { label: "no hold", goals: noActive(), ask: null, activated: true },
+    { label: "the completed entry's own cap flag", goals: noActive({ pausedByNudgeCap: true }), ask: null, activated: true },
+    { label: "the completed entry's own open ask", goals: noActive(), ask: { askId: "ask-1", nodeId: "task-1" }, activated: true },
+    {
+      label: "an open ask on another entry",
+      goals: noActive({}, [{ id: "task-3", parentId: "root-1", kind: "task", status: "paused", title: "Asked about", createdAt: T0 - 20000 }]),
+      ask: { askId: "ask-3", nodeId: "task-3" },
+      activated: false,
+      heldText: "an operator ask is open",
+    },
+    {
+      label: "another entry paused by the nudge cap",
+      goals: noActive({}, [{ id: "task-3", parentId: "root-1", kind: "task", status: "paused", title: "Capped", pausedByNudgeCap: true, createdAt: T0 - 20000 }]),
+      ask: null,
+      activated: false,
+      heldText: "an entry is paused by the nudge cap",
+    },
+  ];
+  let i = 0;
+  for (const arm of arms) {
+    clock.set(T0);
+    const h = await gtc3Harness(`gtc3_no_active_${i++}`, arm.goals, arm.ask ? { pendingAsk: arm.ask } : {});
+    check(`gtc3 no active (${arm.label}) setup: no entry is active`, getState(h).activeGoalId === null && !getState(h).goals.some((g) => g.status === "active"));
+    const out = await gtc3Done(h, { nodeId: "task-1" });
+    const label = `gtc3 no active (${arm.label})`;
+    check(`${label}: task-1 is complete`, out.nodes["task-1"].status === "complete", out.nodes);
+    check(`${label}: no score decision and no credit`, !out.actions.includes("score") && out.nodes["task-1"].scores.length === 0, out.actions);
+    if (arm.activated) {
+      check(`${label}: task-2 is activated and named`,
+        out.nodes["task-2"].status === "active" && out.activeGoalId === "task-2" && String(out.res?.result).includes("Next active: task-2"), { res: out.res, nodes: out.nodes });
+      check(`${label}: one activated decision naming task-2`, out.written.filter((d) => d.action === "activated").length === 1 && out.written.find((d) => d.action === "activated").detail.startsWith("Node task-2 activated"), out.written);
+    } else {
+      check(`${label}: task-2 stays pending and nothing is active`, out.nodes["task-2"].status === "pending" && out.activeGoalId === null, { nodes: out.nodes, activeGoalId: out.activeGoalId });
+      check(`${label}: no activated or activate_none decision`, !out.actions.includes("activated") && !out.actions.includes("activate_none"), out.actions);
+      check(`${label}: the result names the hold`, String(out.res?.result).includes(arm.heldText), out.res);
+    }
+  }
+}
+
+// A plan held blocked over a blocked child, the shape completeLeaf's walk
+// leaves: plan-p blocked with "Child task blocked" over pt-1 blocked with
+// "Max rounds reached". plan-p carries no planPath, so the load-time recovery
+// in applyPlanRecordOnLoad, which frees only entries with a plan, leaves the
+// seed as written. `children` replaces plan-p's children, and `overrides` and
+// `extra` pass through to gtc3Tree.
+const GTC3_CHILD_BLOCKED = "Child task blocked";
+function gtc3BlockedPlanTree({ overrides = {}, children, extra = [] } = {}) {
+  const kids = children ?? [
+    { id: "pt-1", parentId: "plan-p", kind: "task", status: "blocked", blockedReason: "Max rounds reached", title: "Blocked task", createdAt: T0 - 19000 },
+    { id: "pt-2", parentId: "plan-p", kind: "task", status: "pending", title: "Next task", createdAt: T0 - 18000 },
+  ];
+  return gtc3Tree(overrides, [
+    { id: "plan-p", parentId: "root-1", kind: "plan", status: "blocked", blockedReason: GTC3_CHILD_BLOCKED, title: "Plan", createdAt: T0 - 20000 },
+    ...kids,
+    ...extra,
+  ]);
+}
+
+// The setup check every blocked-plan case runs: the seed survived the load.
+function gtc3CheckBlockedSeed(h, label, blockedChildren = ["pt-1"]) {
+  const goals = getState(h).goals;
+  const plan = goals.find((g) => g.id === "plan-p");
+  check(`${label} setup: plan-p is blocked with "${GTC3_CHILD_BLOCKED}" and ${blockedChildren.join(", ")} blocked after the load`,
+    plan?.status === "blocked" && plan?.blockedReason === GTC3_CHILD_BLOCKED &&
+    blockedChildren.every((id) => goals.find((g) => g.id === id)?.status === "blocked"),
+    goals.map((g) => ({ id: g.id, status: g.status, blockedReason: g.blockedReason })));
+}
+
+// Section 3 acceptance: a blocked child completed by name with a pending
+// sibling, while another entry is active. plan-p returns to pending with no
+// reason and one unblocked decision, and task-1 stays active. When task-1
+// then completes with no nodeId, pt-2 is the entry activated. Left blocked,
+// plan-p would be skipped by activateNext's DFS and pt-2 stranded.
+async function caseGtc3_aBlockedChildCompletedByNameReturnsItsPlanToPending(clock) {
+  console.log("\n=== Goal tree curation 3: a blocked child completed by name returns its plan to pending ===");
+  clock.set(T0);
+  const h = await gtc3Harness("gtc3_unblock_plan", gtc3BlockedPlanTree({ overrides: { "task-2": { status: "complete" } } }));
+  const label = "gtc3 unblock plan";
+  gtc3CheckBlockedSeed(h, label);
+  const out = await gtc3Done(h, { nodeId: "pt-1" });
+  const plan = getState(h).goals.find((g) => g.id === "plan-p");
+  check(`${label}: pt-1 is complete`, out.nodes["pt-1"].status === "complete", out.nodes);
+  check(`${label}: plan-p is pending with no blockedReason`, plan.status === "pending" && plan.blockedReason === undefined, plan);
+  const unblocked = out.written.filter((d) => d.action === "unblocked");
+  check(`${label}: one unblocked decision naming plan-p, pt-1, goal_done and the cleared reason`,
+    unblocked.length === 1 && ["plan-p", "pt-1", "goal_done", GTC3_CHILD_BLOCKED].every((t) => unblocked[0].detail.includes(t)), out.written);
+  check(`${label}: task-1 is still active and the active entry, and pt-2 is still pending`,
+    out.nodes["task-1"].status === "active" && out.activeGoalId === "task-1" && out.nodes["pt-2"].status === "pending",
+    { nodes: out.nodes, activeGoalId: out.activeGoalId });
+  check(`${label}: nothing was activated`, !out.actions.includes("activated") && !out.actions.includes("activate_none"), out.actions);
+
+  const next = await gtc3Done(h, {});
+  check(`${label}: task-1 completed with no nodeId activates pt-2`,
+    next.nodes["task-1"].status === "complete" && next.nodes["pt-2"].status === "active" && next.activeGoalId === "pt-2" &&
+    String(next.res?.result).includes("Next active: pt-2"), { res: next.res, nodes: next.nodes });
+}
+
+// A second child still blocked keeps the plan blocked. The absence is read
+// over the decisions this call wrote, with the unblocked decision in the case
+// above as the control that speaks.
+async function caseGtc3_aPlanWithAnotherBlockedChildStaysBlocked(clock) {
+  console.log("\n=== Goal tree curation 3: a plan with another blocked child stays blocked ===");
+  clock.set(T0);
+  const children = [
+    { id: "pt-1", parentId: "plan-p", kind: "task", status: "blocked", blockedReason: "Max rounds reached", title: "Blocked task", createdAt: T0 - 19000 },
+    { id: "pt-2", parentId: "plan-p", kind: "task", status: "pending", title: "Next task", createdAt: T0 - 18000 },
+    { id: "pt-3", parentId: "plan-p", kind: "task", status: "blocked", blockedReason: "Max rounds reached", title: "Still blocked", createdAt: T0 - 17000 },
+  ];
+  const h = await gtc3Harness("gtc3_still_blocked", gtc3BlockedPlanTree({ overrides: { "task-2": { status: "complete" } }, children }));
+  const label = "gtc3 still blocked";
+  gtc3CheckBlockedSeed(h, label, ["pt-1", "pt-3"]);
+  const out = await gtc3Done(h, { nodeId: "pt-1" });
+  const plan = getState(h).goals.find((g) => g.id === "plan-p");
+  check(`${label}: pt-1 is complete and pt-3 still blocked`, out.nodes["pt-1"].status === "complete" && out.nodes["pt-3"].status === "blocked", out.nodes);
+  check(`${label}: plan-p is still blocked with "${GTC3_CHILD_BLOCKED}"`, plan.status === "blocked" && plan.blockedReason === GTC3_CHILD_BLOCKED, plan);
+  check(`${label}: no unblocked or reason_cleared decision among those this call wrote`,
+    !out.actions.includes("unblocked") && !out.actions.includes("reason_cleared"), out.actions);
+  check(`${label}: task-1 is still active`, out.nodes["task-1"].status === "active" && out.activeGoalId === "task-1", out.nodes);
+}
+
+// A blocked child completed by name whose siblings are all complete: the
+// walk completes plan-p, and the stale reason on it is cleared with one
+// reason_cleared decision.
+async function caseGtc3_aPlanTheWalkCompletesLosesTheStaleReason(clock) {
+  console.log("\n=== Goal tree curation 3: a plan the walk completes loses the stale reason ===");
+  clock.set(T0);
+  const children = [
+    { id: "pt-1", parentId: "plan-p", kind: "task", status: "blocked", blockedReason: "Max rounds reached", title: "Blocked task", createdAt: T0 - 19000 },
+    { id: "pt-2", parentId: "plan-p", kind: "task", status: "complete", title: "Done task", createdAt: T0 - 18000 },
+  ];
+  const h = await gtc3Harness("gtc3_reason_cleared", gtc3BlockedPlanTree({ children }));
+  const label = "gtc3 reason cleared";
+  gtc3CheckBlockedSeed(h, label);
+  const out = await gtc3Done(h, { nodeId: "pt-1" });
+  const plan = getState(h).goals.find((g) => g.id === "plan-p");
+  check(`${label}: plan-p is complete with no blockedReason`, plan.status === "complete" && plan.blockedReason === undefined, plan);
+  const cleared = out.written.filter((d) => d.action === "reason_cleared");
+  check(`${label}: one reason_cleared decision naming plan-p, pt-1 and the cleared reason, and no unblocked decision`,
+    cleared.length === 1 && ["plan-p", "pt-1", GTC3_CHILD_BLOCKED].every((t) => cleared[0].detail.includes(t)) && !out.actions.includes("unblocked"), out.written);
+  check(`${label}: the root is untouched and task-1 still active`,
+    out.nodes["root-1"].status === "pending" && out.nodes["task-1"].status === "active" && out.activeGoalId === "task-1", out.nodes);
+}
+
+// With no entry active, the plan returns to pending and pt-2 is activated
+// in the same call.
+async function caseGtc3_noActiveEntryUnblocksThePlanAndActivatesTheSibling(clock) {
+  console.log("\n=== Goal tree curation 3: with no active entry, the plan unblocks and the sibling activates ===");
+  clock.set(T0);
+  const h = await gtc3Harness("gtc3_unblock_no_active",
+    gtc3BlockedPlanTree({ overrides: { "task-1": { status: "paused", blockedReason: "held" }, "task-2": { status: "complete" } } }));
+  const label = "gtc3 unblock with no active entry";
+  gtc3CheckBlockedSeed(h, label);
+  check(`${label} setup: no entry is active`, getState(h).activeGoalId === null && !getState(h).goals.some((g) => g.status === "active"));
+  const out = await gtc3Done(h, { nodeId: "pt-1" });
+  const plan = getState(h).goals.find((g) => g.id === "plan-p");
+  check(`${label}: plan-p is pending with no blockedReason`, plan.status === "pending" && plan.blockedReason === undefined, plan);
+  check(`${label}: one unblocked decision naming plan-p`,
+    out.written.filter((d) => d.action === "unblocked").length === 1 && out.written.find((d) => d.action === "unblocked").detail.includes("plan-p"), out.written);
+  check(`${label}: pt-2 is activated and named`,
+    out.nodes["pt-2"].status === "active" && out.activeGoalId === "pt-2" && String(out.res?.result).includes("Next active: pt-2"), { res: out.res, nodes: out.nodes });
+}
+
+// The walk goes up through each ancestor carrying the reason: plan-o holds
+// plan-p, both blocked with "Child task blocked". Both return to pending,
+// with one unblocked decision each, plan-p's first.
+async function caseGtc3_eachAncestorCarryingTheReasonIsUnblocked(clock) {
+  console.log("\n=== Goal tree curation 3: each ancestor carrying the reason is unblocked ===");
+  clock.set(T0);
+  const goals = gtc3BlockedPlanTree({
+    overrides: { "task-2": { status: "complete" }, "plan-p": { parentId: "plan-o" } },
+    extra: [{ id: "plan-o", parentId: "root-1", kind: "plan", status: "blocked", blockedReason: GTC3_CHILD_BLOCKED, title: "Outer plan", createdAt: T0 - 21000 }],
+  });
+  const h = await gtc3Harness("gtc3_unblock_nested", goals);
+  const label = "gtc3 unblock nested";
+  gtc3CheckBlockedSeed(h, label);
+  const outerBefore = getState(h).goals.find((g) => g.id === "plan-o");
+  check(`${label} setup: plan-o is blocked with "${GTC3_CHILD_BLOCKED}" and holds plan-p`,
+    outerBefore?.status === "blocked" && outerBefore?.blockedReason === GTC3_CHILD_BLOCKED &&
+    getState(h).goals.find((g) => g.id === "plan-p")?.parentId === "plan-o", outerBefore);
+  const out = await gtc3Done(h, { nodeId: "pt-1" });
+  const state = getState(h);
+  const [inner, outer] = ["plan-p", "plan-o"].map((id) => state.goals.find((g) => g.id === id));
+  check(`${label}: plan-p and plan-o are both pending with no blockedReason`,
+    [inner, outer].every((g) => g.status === "pending" && g.blockedReason === undefined), [inner, outer]);
+  const unblocked = out.written.filter((d) => d.action === "unblocked");
+  check(`${label}: two unblocked decisions, plan-p's then plan-o's`,
+    unblocked.length === 2 && unblocked[0].detail.startsWith("plan-p") && unblocked[1].detail.startsWith("plan-o"), out.written);
+  check(`${label}: task-1 is still active`, out.nodes["task-1"].status === "active" && out.activeGoalId === "task-1", out.nodes);
+}
+
+// The walk goes on past an ancestor completeLeaf's walk completed: pt-1 is
+// plan-p's last open child, so completing it completes plan-p, and plan-o
+// above it holds a pending child po-2. plan-p keeps no stale reason, plan-o
+// returns to pending, and both decisions follow the done line that caused
+// them. Stopped at plan-p, plan-o would stay blocked and po-2 stranded.
+async function caseGtc3_theWalkGoesOnPastACompletedPlanToABlockedOne(clock) {
+  console.log("\n=== Goal tree curation 3: the walk goes on past a completed plan to a blocked one ===");
+  clock.set(T0);
+  const goals = gtc3BlockedPlanTree({
+    overrides: { "task-2": { status: "complete" }, "plan-p": { parentId: "plan-o" }, "pt-2": { status: "complete" } },
+    extra: [
+      { id: "plan-o", parentId: "root-1", kind: "plan", status: "blocked", blockedReason: GTC3_CHILD_BLOCKED, title: "Outer plan", createdAt: T0 - 21000 },
+      { id: "po-2", parentId: "plan-o", kind: "task", status: "pending", title: "Outer task", createdAt: T0 - 17000 },
+    ],
+  });
+  const h = await gtc3Harness("gtc3_unblock_past_complete", goals);
+  const label = "gtc3 unblock past complete";
+  gtc3CheckBlockedSeed(h, label);
+  check(`${label} setup: plan-o is blocked with "${GTC3_CHILD_BLOCKED}", pt-2 complete and po-2 pending`,
+    ["plan-o", "pt-2", "po-2"].map((id) => getState(h).goals.find((g) => g.id === id)?.status).join() === "blocked,complete,pending" &&
+    getState(h).goals.find((g) => g.id === "plan-o")?.blockedReason === GTC3_CHILD_BLOCKED,
+    getState(h).goals.map((g) => ({ id: g.id, status: g.status, blockedReason: g.blockedReason })));
+  const out = await gtc3Done(h, { nodeId: "pt-1" });
+  const state = getState(h);
+  const [inner, outer] = ["plan-p", "plan-o"].map((id) => state.goals.find((g) => g.id === id));
+  check(`${label}: plan-p is complete with no blockedReason`, inner.status === "complete" && inner.blockedReason === undefined, inner);
+  check(`${label}: plan-o is pending with no blockedReason`, outer.status === "pending" && outer.blockedReason === undefined, outer);
+  const at = (action) => out.written.findIndex((d) => d.action === action);
+  check(`${label}: done, then reason_cleared for plan-p, then unblocked for plan-o`,
+    at("done") !== -1 && at("done") < at("reason_cleared") && at("reason_cleared") < at("unblocked") &&
+    out.written[at("reason_cleared")].detail.startsWith("plan-p") && out.written[at("unblocked")].detail.startsWith("plan-o"), out.written);
+  check(`${label}: task-1 is still active and po-2 pending`,
+    out.nodes["task-1"].status === "active" && out.activeGoalId === "task-1" && out.nodes["po-2"].status === "pending", out.nodes);
+}
+
+// --- Goal tree curation Section 4: replacing a tree is deliberate, and a
+// replaced tree is kept ---
+
+// The history file goal_create appends a replaced tree to, resolved against
+// the launch directory the way the store is.
+const GOAL_HISTORY_FILE = `${HARNESS_CWD}/.agentic-goal-history.jsonl`;
+
+// A root titled "Ship the widget" with `children` under it. The root's status
+// is `rootStatus`, and each child is a makeGoalNode field set.
+function gtc4Tree(rootStatus, children = [], rootExtra = {}) {
+  return [
+    makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: rootStatus, title: "Ship the widget", objective: "Ship the widget", createdAt: T0 - 50000, ...rootExtra }),
+    ...children.map((n) => makeGoalNode({ createdAt: T0 - 40000, ...n })),
+  ];
+}
+
+// The store text, the in-memory tree as goal_status shows it, and the history
+// file, read together so a refusal can be checked against all three.
+async function gtc4Views(h) {
+  const views = await gtc3TreeViews(h);
+  return { ...views, storeBytes: h.fsMap.get(PERSONA_STORE_FILE), history: h.fsMap.get(GOAL_HISTORY_FILE) };
+}
+
+function gtc4HistoryLines(h) {
+  const text = h.fsMap.get(GOAL_HISTORY_FILE);
+  return text === undefined ? [] : text.split("\n").filter((l) => l.length > 0);
+}
+
+// The Tests line, first direction: an unfinished tree is not replaced without
+// replace: true. The refusal comes from the replace guard, and says so by
+// naming the root's title, the open-entry count and the way through. The
+// store bytes, the session's tree and the history file are all unchanged. A
+// replace value other than true or "true" is refused the same way.
+async function caseGtc4_theReplaceGuardRefusesAnUnfinishedTree(clock) {
+  console.log("\n=== Goal tree curation 4: goal_create over an unfinished tree without replace is refused ===");
+  clock.set(T0);
+  const h = await gtc3Harness("gtc4_guard_refuses", gtc4Tree("pending", [
+    { id: "plan-1", parentId: "root-1", kind: "plan", status: "pending", title: "Plan one" },
+  ]));
+  for (const [label, extra] of [["no replace", {}], ["replace: false", { replace: false }], ['replace: "false"', { replace: "false" }], ["replace: 1", { replace: 1 }]]) {
+    const before = await gtc4Views(h);
+    const decisionsBefore = getDecisions(h).length;
+    const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "Something new", ...extra });
+    const after = await gtc4Views(h);
+    const tag = `gtc4 guard (${label})`;
+    check(`${tag}: refused by the replace guard, naming the root's title, one open entry and replace: true`,
+      typeof res?.deny === "string" && res.deny.includes('"Ship the widget"') && res.deny.includes("1 entry") &&
+      res.deny.includes("replace: true") && res.deny.includes("goal_add") && !res.deny.includes("held by a live session"), res);
+    check(`${tag}: the store file is byte-identical`, after.storeBytes === before.storeBytes, { before: before.storeBytes, after: after.storeBytes });
+    check(`${tag}: the session's tree is unchanged`, after.shown === before.shown, { before: before.shown, after: after.shown });
+    check(`${tag}: no decision was written`, getDecisions(h).length === decisionsBefore, getDecisions(h).slice(decisionsBefore));
+    check(`${tag}: no history file was written`, after.history === undefined, after.history);
+  }
+
+  // The count names entries under the root that are not complete or
+  // abandoned, and nothing else: three open of five.
+  clock.set(T0);
+  const wide = await gtc3Harness("gtc4_guard_count", gtc4Tree("active", [
+    { id: "plan-a", parentId: "root-1", kind: "plan", status: "active", title: "Plan a" },
+    { id: "a-1", parentId: "plan-a", kind: "task", status: "blocked", title: "Task a1" },
+    { id: "a-2", parentId: "plan-a", kind: "task", status: "complete", title: "Task a2" },
+    { id: "plan-b", parentId: "root-1", kind: "plan", status: "paused", title: "Plan b" },
+    { id: "plan-c", parentId: "root-1", kind: "plan", status: "abandoned", title: "Plan c" },
+  ]));
+  const wideRes = await callTool(wide, { tool: "mcp__agentic-plugin__goal_create", objective: "Something new" });
+  check("gtc4 guard count: the refusal names the root's title and 3 open entries",
+    typeof wideRes?.deny === "string" && wideRes.deny.includes('"Ship the widget"') && wideRes.deny.includes("3 entries"), wideRes);
+
+  // A live root with nothing open under it names the root's own status
+  // rather than a count of zero open entries.
+  clock.set(T0);
+  const bare = await gtc3Harness("gtc4_guard_bare_root", gtc4Tree("pending"));
+  const bareRes = await callTool(bare, { tool: "mcp__agentic-plugin__goal_create", objective: "Another objective" });
+  check("gtc4 guard, a pending root with no entries: refused naming the root's status, not zero entries",
+    typeof bareRes?.deny === "string" && bareRes.deny.includes("its root is pending") && !bareRes.deny.includes("0 entries"), bareRes);
+
+  // The goal_edit root refusal points at the same way through.
+  const edit = await callTool(h, { tool: "mcp__agentic-plugin__goal_edit", nodeId: "root-1", action: "drop" });
+  check("gtc4 goal_edit root refusal: names goal_create with replace: true",
+    typeof edit?.deny === "string" && edit.deny.includes("goal_create with replace: true"), edit);
+}
+
+// The same call with replace: true replaces the tree, and the history file's
+// last line holds the whole replaced tree with the clock, the persona and the
+// reason. The string "true" reads the same as the boolean.
+async function caseGtc4_replaceTrueReplacesAndKeepsTheOldTree(clock) {
+  console.log("\n=== Goal tree curation 4: goal_create with replace: true replaces and keeps the old tree ===");
+  for (const [label, value] of [["boolean", true], ["string", "true"]]) {
+    clock.set(T0);
+    const h = await gtc3Harness(`gtc4_replace_${label}`, gtc4Tree("pending", [
+      { id: "plan-1", parentId: "root-1", kind: "plan", status: "pending", title: "Plan one" },
+    ]));
+    h.fsMap.set(GOAL_HISTORY_FILE, '{"earlier":true}\n');
+    const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "Something new", replace: value });
+    const state = getState(h);
+    const tag = `gtc4 replace (${label} true)`;
+    check(`${tag}: the call is accepted`, res?.deny === undefined && typeof res?.result === "string", res);
+    check(`${tag}: the tree is one new root carrying the new objective`,
+      state.goals.length === 1 && state.goals[0].parentId === null && state.goals[0].objective === "Something new", state.goals);
+    const lines = gtc4HistoryLines(h);
+    check(`${tag}: the history file gained exactly one line after the earlier one`, lines.length === 2 && lines[0] === '{"earlier":true}', lines);
+    let last = null;
+    try { last = JSON.parse(lines[lines.length - 1]); } catch { /* checked below */ }
+    check(`${tag}: the last line holds both old nodes`,
+      !!last && Array.isArray(last.goals) && last.goals.map((g) => g.id).join() === "root-1,plan-1", last);
+    check(`${tag}: the last line carries the reason, the persona and the clock`,
+      !!last && last.reason === "goal_create" && last.persona === "default" && last.timestamp === T0, last);
+  }
+}
+
+// The Tests line, second direction: a finished tree needs no replace, since a
+// guard that also refused a finished tree would stop every second goal. A
+// lone finished root writes no history line; a finished root with entries
+// under it writes one.
+async function caseGtc4_aFinishedRootNeedsNoReplace(clock) {
+  console.log("\n=== Goal tree curation 4: goal_create over a finished root needs no replace ===");
+  clock.set(T0);
+  const lone = await gtc3Harness("gtc4_finished_lone", gtc4Tree("complete"));
+  const loneRes = await callTool(lone, { tool: "mcp__agentic-plugin__goal_create", objective: "Next thing" });
+  check("gtc4 finished lone root: accepted with no replace", loneRes?.deny === undefined && getState(lone).goals[0]?.objective === "Next thing", { res: loneRes, goals: getState(lone).goals });
+  check("gtc4 finished lone root: no history file was written (the file is absent)", !lone.fsMap.has(GOAL_HISTORY_FILE), lone.fsMap.get(GOAL_HISTORY_FILE));
+
+  for (const rootStatus of ["complete", "abandoned"]) {
+    clock.set(T0);
+    const h = await gtc3Harness(`gtc4_finished_with_plans_${rootStatus}`, gtc4Tree(rootStatus, [
+      { id: "plan-1", parentId: "root-1", kind: "plan", status: "complete", title: "Plan one" },
+      { id: "plan-2", parentId: "root-1", kind: "plan", status: "abandoned", title: "Plan two" },
+    ]));
+    const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "Next thing" });
+    const tag = `gtc4 finished (${rootStatus}) root with plans`;
+    check(`${tag}: accepted with no replace`, res?.deny === undefined && getState(h).goals.length === 1 && getState(h).goals[0].objective === "Next thing", { res, goals: getState(h).goals });
+    const lines = gtc4HistoryLines(h);
+    let last = null;
+    try { last = JSON.parse(lines[0]); } catch { /* checked below */ }
+    check(`${tag}: one history line holding the three old nodes`,
+      lines.length === 1 && !!last && last.goals.map((g) => g.id).join() === "root-1,plan-1,plan-2", lines);
+  }
+
+  // No tree at all: nothing to replace, nothing to keep.
+  clock.set(T0);
+  const empty = await gtc3Harness("gtc4_no_tree", []);
+  const emptyRes = await callTool(empty, { tool: "mcp__agentic-plugin__goal_create", objective: "First thing" });
+  check("gtc4 no tree: accepted, and no history file written", emptyRes?.deny === undefined && !empty.fsMap.has(GOAL_HISTORY_FILE), { res: emptyRes, history: empty.fsMap.get(GOAL_HISTORY_FILE) });
+}
+
+// The Tests line: a failed history write stops the replacement, since a
+// replacement that cannot keep its copy is the loss this section stops. Each
+// of the append's three filesystem steps is made to fail in turn: the write,
+// the read of an existing file, and the existence check. The refusal is the
+// history append's, and says so. The control replaces a lone finished root
+// under the same refused write, which appends nothing and so goes through.
+async function caseGtc4_aFailedHistoryWriteStopsTheReplacement(clock) {
+  console.log("\n=== Goal tree curation 4: a failed history write stops the replacement ===");
+  const arms = [
+    ["write", (h) => h.setWriteRefusal((p) => p === GOAL_HISTORY_FILE)],
+    ["read", (h) => {
+      h.fsMap.set(GOAL_HISTORY_FILE, '{"earlier":true}\n');
+      const realRead = h.fake.fs.read;
+      h.fake.fs.read = (p, ...rest) => (p === GOAL_HISTORY_FILE ? Promise.reject(new Error("EIO: history read")) : realRead(p, ...rest));
+    }],
+    ["exists", (h) => {
+      const realExists = h.fake.fs.exists;
+      h.fake.fs.exists = (p) => (p === GOAL_HISTORY_FILE ? Promise.reject(new Error("EIO: history stat")) : realExists(p));
+    }],
+  ];
+  for (const [label, arm] of arms) {
+    clock.set(T0);
+    const h = await gtc3Harness(`gtc4_history_fails_${label}`, gtc4Tree("pending", [
+      { id: "plan-1", parentId: "root-1", kind: "plan", status: "active", title: "Plan one" },
+    ]));
+    arm(h);
+    const before = await gtc4Views(h);
+    const stateBefore = getState(h);
+    const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "Something new", replace: true });
+    const after = await gtc4Views(h);
+    const stateAfter = getState(h);
+    const tag = `gtc4 history ${label} fails`;
+    check(`${tag}: refused by the history append, saying the tree was not replaced`,
+      typeof res?.deny === "string" && res.deny.includes(".agentic-goal-history.jsonl") && res.deny.includes("not replaced") && res.deny.includes("EIO") === (label !== "write"), res);
+    check(`${tag}: the store file is byte-identical`, after.storeBytes === before.storeBytes, { before: before.storeBytes, after: after.storeBytes });
+    check(`${tag}: the session's tree is unchanged`, after.shown === before.shown, { before: before.shown, after: after.shown });
+    check(`${tag}: goals, activeGoalId and decisions are as they were`,
+      JSON.stringify(stateAfter.goals) === JSON.stringify(stateBefore.goals) && stateAfter.activeGoalId === "plan-1" &&
+      JSON.stringify(stateAfter.decisions) === JSON.stringify(stateBefore.decisions), { goals: stateAfter.goals, activeGoalId: stateAfter.activeGoalId });
+    check(`${tag}: the history file is as it was`, after.history === before.history, after.history);
+    // The in-memory tree is what the next persist writes, so a later write
+    // must still carry the old tree rather than a half-applied replacement.
+    await callTool(h, { tool: "mcp__agentic-plugin__goal_status" });
+    await callTool(h, { tool: "mcp__agentic-plugin__goal_add", title: "After", objective: "Added after the refusal", kind: "task", parentId: "plan-1" });
+    check(`${tag}: a later write still carries the old root and plan`,
+      ["root-1", "plan-1"].every((id) => getState(h).goals.some((g) => g.id === id)), getState(h).goals.map((g) => g.id));
+  }
+
+  clock.set(T0);
+  const c = await gtc3Harness("gtc4_history_fails_control", gtc4Tree("complete"));
+  c.setWriteRefusal((p) => p === GOAL_HISTORY_FILE);
+  const ok = await callTool(c, { tool: "mcp__agentic-plugin__goal_create", objective: "Next thing", replace: true });
+  check("gtc4 history fails control: a lone finished root is replaced under the same refused write, which it never reaches",
+    ok?.deny === undefined && getState(c).goals[0]?.objective === "Next thing" && c.fsWriteRefusals.length === 0, { ok, refusals: c.fsWriteRefusals });
+}
+
+// goal_add under a finished root reopens the root and touches no other node,
+// and the existing no-active-leaf branch activates the new plan. The control
+// is a refused goal_add under a complete root, which reopens nothing, and an
+// accepted goal_add under a pending root, which writes no root_reopened.
+async function caseGtc4_goalAddUnderAFinishedRootReopensIt(clock) {
+  console.log("\n=== Goal tree curation 4: goal_add under a finished root reopens the root ===");
+  for (const rootStatus of ["complete", "abandoned"]) {
+    clock.set(T0);
+    const h = await gtc3Harness(`gtc4_reopen_${rootStatus}`, gtc4Tree(rootStatus, [
+      { id: "plan-old", parentId: "root-1", kind: "plan", status: "complete", title: "Old plan" },
+      { id: "plan-gone", parentId: "root-1", kind: "plan", status: "abandoned", title: "Dropped plan" },
+    ], { blockedReason: "stale reason" }));
+    const beforeCount = getDecisions(h).length;
+    const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_add", title: "New plan", objective: "Do the next thing", kind: "plan" });
+    const state = getState(h);
+    const written = state.decisions.slice(beforeCount);
+    const root = state.goals.find((g) => g.id === "root-1");
+    const added = state.goals.find((g) => g.title === "New plan");
+    const tag = `gtc4 reopen (${rootStatus} root)`;
+    check(`${tag}: the call is accepted`, res?.deny === undefined, res);
+    check(`${tag}: the root is pending with no blockedReason`, root.status === "pending" && root.blockedReason === undefined, root);
+    check(`${tag}: the new plan is active and is the active entry`, added?.status === "active" && state.activeGoalId === added?.id, { added, activeGoalId: state.activeGoalId });
+    check(`${tag}: the old plans keep their statuses`,
+      state.goals.find((g) => g.id === "plan-old").status === "complete" && state.goals.find((g) => g.id === "plan-gone").status === "abandoned", state.goals);
+    const reopened = written.filter((d) => d.action === "root_reopened");
+    check(`${tag}: exactly one root_reopened decision, naming the root and its prior status`,
+      reopened.length === 1 && reopened[0].loop === "goal" && reopened[0].detail.includes("root-1") && reopened[0].detail.includes(rootStatus), written);
+    const reopenAt = written.findIndex((d) => d.action === "root_reopened");
+    check(`${tag}: root_reopened is written before the add`,
+      reopenAt !== -1 && reopenAt < written.findIndex((d) => d.action === "add"), written.map((d) => d.action));
+  }
+
+  // Control: a refused add under a complete root reopens nothing.
+  clock.set(T0);
+  const r = await gtc3Harness("gtc4_reopen_refused", gtc4Tree("complete", [
+    { id: "plan-old", parentId: "root-1", kind: "plan", status: "complete", title: "Old plan" },
+  ]));
+  const refusals = [
+    ["a parentId not in the tree", { parentId: "no-such-node" }],
+    ["a plan under a plan", { kind: "plan", parentId: "plan-old" }],
+    ["a planPath on a task", { planPath: "docs/plans/x.md" }],
+  ];
+  for (const [label, args] of refusals) {
+    const res = await callTool(r, { tool: "mcp__agentic-plugin__goal_add", title: "Refused", objective: "Should not land", ...args });
+    const state = getState(r);
+    check(`gtc4 reopen control, ${label}: refused, the root still complete, and no root_reopened anywhere in the log`,
+      typeof res?.deny === "string" && state.goals.find((g) => g.id === "root-1").status === "complete" && !state.decisions.some((d) => d.action === "root_reopened"),
+      { res, actions: state.decisions.map((d) => d.action) });
+  }
+
+  // Control: a node added under a plan leaves a finished root as it was. The
+  // reopen fires only for a node whose parent is the root, so a task added
+  // under a finished plan never puts a live root over work no leaf reaches.
+  clock.set(T0);
+  const under = await gtc3Harness("gtc4_reopen_under_plan", gtc4Tree("complete", [
+    { id: "plan-old", parentId: "root-1", kind: "plan", status: "complete", title: "Old plan" },
+  ]));
+  const underRes = await callTool(under, { tool: "mcp__agentic-plugin__goal_add", title: "Late task", objective: "Added under a finished plan", parentId: "plan-old" });
+  const underState = getState(under);
+  check("gtc4 reopen control, a task under a complete plan: accepted, the root still complete, and no root_reopened written",
+    underRes?.deny === undefined && underState.goals.find((g) => g.id === "root-1").status === "complete" && !underState.decisions.some((d) => d.action === "root_reopened"),
+    { underRes, root: underState.goals.find((g) => g.id === "root-1"), actions: underState.decisions.map((d) => d.action) });
+
+  // Control: an add under a live root writes no root_reopened.
+  clock.set(T0);
+  const live = await gtc3Harness("gtc4_reopen_live_root", gtc4Tree("pending"));
+  const liveRes = await callTool(live, { tool: "mcp__agentic-plugin__goal_add", title: "New plan", objective: "Do the next thing", kind: "plan" });
+  check("gtc4 reopen control, a pending root: accepted and no root_reopened written",
+    liveRes?.deny === undefined && !getDecisions(live).some((d) => d.action === "root_reopened"), getDecisions(live).map((d) => d.action));
+}
+
+// The paused reminder names the way to replace the tree.
+async function caseGtc4_thePausedReminderNamesReplaceTrue(clock) {
+  console.log("\n=== Goal tree curation 4: the paused reminder names goal_create with replace: true ===");
+  clock.set(T0);
+  const h = await gtc3Harness("gtc4_paused_reminder", gtc4Tree("pending", [
+    { id: "plan-1", parentId: "root-1", kind: "plan", status: "paused", title: "Plan one", blockedReason: "paused by operator" },
+  ]));
+  const out = await h.handlers["prompt.submit"](h.fake, { text: "hello" }, async () => ({}));
+  const blocks = (out?.context ?? []).map(String);
+  const paused = blocks.find((b) => b.startsWith("Goal tree paused"));
+  check("gtc4 paused reminder: the block is injected and names goal_create with replace: true",
+    !!paused && paused.includes("goal_create with replace: true"), blocks);
+}
 
 // The heartbeat file is the supervisor's liveness instrument, and the supervisor
 // resolves it once against the absolute directory it launched the child in.

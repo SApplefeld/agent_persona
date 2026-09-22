@@ -246,7 +246,17 @@ function createFake$(opts = {}) {
       },
     },
     tool: {
-      register(def) { toolRegisters.push(def); },
+      // A host refuses a registration it will not take (a description over
+      // its length limit is the known case), and the plugin's session.start
+      // has to survive that. `registerRefuses`, a Set of tool names, makes
+      // the fake reject those and record nothing for them, the way the real
+      // host leaves a refused tool unregistered.
+      register(def) {
+        if (opts.registerRefuses && opts.registerRefuses.has(def.name)) {
+          return Promise.reject(new Error(`the host refused ${def.name}: tool description exceeds the limit`));
+        }
+        toolRegisters.push(def);
+      },
       // Records a hook-initiated call (e.g. the channel-reply backstop's
       // own $.tool.call({ tool: "...reply", message }) - never invoked for
       // model tool calls, which arrive through the "tool.call" hook event
@@ -756,8 +766,13 @@ async function createTickHarness(options = {}) {
   // Fire session.start to initialize sess and register clock callbacks.
   // The stale heartbeat causes session.start to claim the persona and
   // re-set sess.state from the seeded store.
+  // A real session starts exactly once, and the engine fires that start
+  // itself. `skipSessionStart` builds the session the engine leaves behind
+  // when that hook never finished: the module is registered, every other
+  // hook is installed, and the persona state is the built-in default. No
+  // case fires session.start on such a harness afterwards.
   const startH = handlers["session.start"];
-  if (startH) {
+  if (startH && !options.skipSessionStart) {
     await startH(h.fake, {}, () => {});
   }
 

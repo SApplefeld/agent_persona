@@ -88,8 +88,8 @@
     {
       "name": "FLEET_NOTE_COMPOSED_PROSE",
       "file": "hooks/index.ts",
-      "chars": 1464,
-      "words": 281
+      "chars": 1466,
+      "words": 282
     },
     {
       "name": "KAIZEN_FRAME",
@@ -124,8 +124,8 @@
     {
       "name": "GOAL_TREE_PAUSED_BLOCK",
       "file": "hooks/index.ts",
-      "chars": 75,
-      "words": 12
+      "chars": 94,
+      "words": 15
     },
     {
       "name": "NO_GOAL_BLOCK",
@@ -160,8 +160,8 @@
     {
       "name": "goal_create_description",
       "file": "hooks/index.ts",
-      "chars": 376,
-      "words": 60
+      "chars": 557,
+      "words": 87
     },
     {
       "name": "goal_add_description",
@@ -172,8 +172,8 @@
     {
       "name": "goal_done_description",
       "file": "hooks/index.ts",
-      "chars": 290,
-      "words": 53
+      "chars": 590,
+      "words": 105
     },
     {
       "name": "goal_status_description",
@@ -202,8 +202,8 @@
     {
       "name": "goal_edit_description",
       "file": "hooks/index.ts",
-      "chars": 456,
-      "words": 75
+      "chars": 498,
+      "words": 85
     },
     {
       "name": "memory_add_description",
