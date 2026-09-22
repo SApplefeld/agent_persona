@@ -10,7 +10,7 @@
 # persona, and where it finds one it waits on that one instead of launching (ADOPT in keeper.log).
 # State the operator can read lives under the entry's run directory:
 # keeper.log (one line per event, rotated at 5 MB keeping keeper.log.1), keeper.json (the last
-# run's facts), supervisor.out (the supervisor's own stdout and stderr, appended per run) and
+# run's facts), supervisor.out (the supervisor's own stdout and stderr, appended per launched run) and
 # keeper.hold (present while the persona is held; -Release removes it). A refusal that happens
 # before the roster has named a run directory goes to keeper-refused.log beside the roster file,
 # the only place known at that point, because a scheduled task has no console for stderr to reach.

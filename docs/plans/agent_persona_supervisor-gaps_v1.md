@@ -106,6 +106,18 @@ verbatim on every sighted reviewer dispatch.
   supervisor that ended on a shutdown is followed by a launch, not a hold.
   An adopted run's EXIT line reads `EXIT adopted pid=<pid> code=<c>
   uptime=<u>`.
+- The finishing goal read (`scope-adjudicator` at fable, 2026-09-22)
+  refused one item as built but unasked: the backlog entry on two inbox
+  records that waited twelve and thirteen minutes, since no Goal sentence,
+  Intent clause or acceptance bullet covers a controller inbox observation.
+  It leaves this changeset and is carried to `docs/backlog.md` out of band
+  as its own commit. The read declared three built items as serving the
+  Goal: the keeper's watch of a live supervisor whose handle cannot be
+  opened (the Goal's "watches that supervisor"), the kill of the entry
+  snapshot when the rebuild before TERM fails (the failure path of the
+  rebuild the Section 2 bullet names), and the retirement of the
+  reader-cannot-restart backlog entry (superseded by the coordinator's
+  lever, which the Intent keeps as the only cross-persona restart).
 
 ## Sections of Work
 
@@ -620,3 +632,18 @@ Delta: 2026-09-22 on SCOTT-CLAUDE, worktree at the closing tree of Section 5 bef
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 8 - 2026-09-22
+
+In-flight: the finishing pass. Base ref `d1ff322` (merge-base with main); the changeset listing falls inside the plan's `Files in scope:` lines apart from the persistent untracked `.claude/worktrees/`. No section is open.
+
+Step 1, QA: `qa-verifier` at the session model, whole gate at `315654f` green, every exit marker 0 read by the orchestrator from `.kit/scratch/supervisor-gaps/finishing/*.exit`; counts match each section's close figure (keeper 89, supervisor-poll 32, supervisor-turnstate 43, supervisor 22, supervisor-model 28, live-stopprocesstree 38, natural-exit 223 in 668 s, the eight other unit suites and check-loader-rule passing, `tsc` exit 0). A foreign claude-kit `node --test` run was waited out before the natural-exit suite. No contention lane is defined. Two operator-only checks carried: the plan's two Operator Verification bullets.
+
+Steps 2 and 3: `review: performance, security, adversarial at fable, Workflow, effort high` over `d1ff322..315654f`, bracket clean. No Critical. Advisory dispositions:
+- Performance Major, a `shutdown_requested` written during the patient wait is dropped behind the next child's start (the `restart_passive` branch reaches the loop head and takes `CHILD_START_TS` with no re-read); confirmed on the code. Chapter 2's sentence that such a request "is read when the wait ends" is untrue, and round 1's performance Major 3 was refused on it. Relevance ruling by `scope-adjudicator` at fable: ask (no Goal or Intent sentence admits or excludes the requirement; it leans fix). Put to the operator on the relay thread 2026-09-22 with a recommendation to fix; the stated default if unanswered before the pull request is a backlog entry for the supervisor-peer plan.
+- Performance Minors, deferred to `docs/backlog.md` at close: the fifteen-minute interval against a configured grace above about 227 s; the turn-state reader call carrying no wall-clock bound inside the wait; the keeper watch looping on a permanently failing CIM read; the widening re-reading the file from scratch at each doubling.
+- Security Minors (verdict clear, threat model absent): `fleet_restart`'s result and the README promising a restart where no supervisor is live, fixed in the Minor pass as a conditional wording; an `at` at or below -1e21 printing in exponent form to bash, deferred; README's "its executable is" for the command line's first token, fixed in the Minor pass; two refusals echoing roster paths unbounded, deferred; a relative roster `rundir` resolving differently in the plugin and the supervisor, deferred.
+
+Minors for the Minor pass (`.kit/scratch/supervisor-gaps/finishing/minors.md`): adversarial's six (the decide order letting a same-poll request take the patient wait for a hung child, recorded for the supervisor-peer plan; the `fleet_restart` result wording, shared with security; `bin/Start-Persona.ps1`'s header saying `supervisor.out` is appended per run; a missing blank line in `docs/backlog.md`; an adopted run's output staying in the dead keeper's capture pair, deferred to the backlog; the `docs/README.md` index line, rewritten at archive).
+
+Live dispatches: step 4's goal read, `scope-adjudicator` at fable through the Agent tool over `d1ff322..315654f`.

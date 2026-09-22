@@ -7282,7 +7282,7 @@ export const register: Register = async (on, options) => {
       } catch (err) {
         return refuse(`the request file '${requestPath}' could not be written: ${boundedText(safeErrorText(err))}`);
       }
-      return { result: `Restart requested for '${shown}': its supervisor restarts the child at its next poll and lets a running turn end first.` };
+      return { result: `Restart requested for '${shown}': where its supervisor is running, it restarts the child at its next poll and lets a running turn end first. Where none is running, the next child it launches starts after the request and reads it as served.` };
     }
 
     // Section 12: serve agentic_resolve (the owner marks a record's work
