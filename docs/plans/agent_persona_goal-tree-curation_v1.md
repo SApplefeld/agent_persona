@@ -153,7 +153,7 @@ Acceptance:
 - Completing the active entry by its own name writes the same decisions and the same credit as the call with no `nodeId`. Completing an entry that was not active leaves that entry's `scores` and `completedRounds` as they were and writes no `score` decision.
 - Completing by name the entry an open ask points at clears `pendingAskId` and leaves the ask record `resumed`.
 - The parameter-named-in-description pin at `.kit/controller-tick-test.mjs:12650` passes, the tool count stays fourteen, the `goal_done` description is under 600 characters, and `.kit/injection-duplicate-test.mjs` passes on a refreshed `.kit/injection-ledger.json`.
-- `docs/architecture.md:134` and the totals at 121-128 state the new description and the new character counts.
+- The totals in `docs/architecture.md` (at 143-150 once the trunk merged) state the new character counts. The description itself is stated once, in the tool's registration, and `docs/architecture.md:156` points there rather than restating it.
 
 Files in scope: `hooks/index.ts` (2171-2185, the `goal_edit` registration near 2249, the handler 6206-6268, and the local helpers `closeAskOnNode` and `clearChildBlockedAncestors` beside `activate`), `.kit/controller-tick-test.mjs`, `.kit/injection-ledger.json`, `docs/architecture.md`, `docs/backlog.md`, `README.md` where it describes the goal tools.
 Tests: lock that completing by name never moves the active entry, since silently pausing live work is the cost of today's workaround. Lock the unfinished-children refusal in both directions.

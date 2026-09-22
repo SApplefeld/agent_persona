@@ -16465,6 +16465,23 @@ async function caseGtc1_aRefusedSwitchLeavesTheSessionAsItWas(clock) {
   check("gtc1 refused switch: that write lands under the old persona's key", written.default !== undefined, Object.keys(written));
   check("gtc1 refused switch: and never under the persona the refused switch named", written.other === undefined, Object.keys(written));
 
+  // The third change the switch makes, the untracked-work reset, is held
+  // back too: the old persona's line keeps counting on after a refused switch.
+  const untracked = await createTickHarness({ ...OPTS, caseName: "gtc1_refused_switch_untracked", stateOpts: { hasActiveLeaf: false } });
+  untracked.storeMap.set(`commons:${SESSION_ID}`, { sessionId: SESSION_ID, lastSeen: T0, claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }] });
+  await untrackedWorkTurn(untracked, "t-r1", "first before the switch");
+  clock.advance(10_000);
+  const storeText = untracked.fsMap.get(PERSONA_STORE_FILE);
+  untracked.fsMap.set(PERSONA_STORE_FILE, "[]");
+  try {
+    await untracked.handlers["tool.call"](untracked.fake, { tool: "mcp__agentic-plugin__agentic_identity", persona: "other" }, async () => ({ result: "passthrough" }));
+  } catch { /* the refusal the first half of this case pins */ }
+  untracked.fsMap.set(PERSONA_STORE_FILE, storeText);
+  clock.advance(10_000);
+  await untrackedWorkTurn(untracked, "t-r2", "second after the refused switch");
+  const lines = untrackedLines(untracked);
+  check("gtc1 refused switch: the old persona's untracked_work line counts on", lines.length === 1 && lines[0]?.detail === "x2: second after the refused switch", lines);
+
   // Control: the same switch over a readable store takes the new name and
   // releases the old claim.
   const control = await setUp("gtc1_refused_switch_control");
