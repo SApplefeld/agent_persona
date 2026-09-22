@@ -110,7 +110,7 @@ The comparison state is what keeps the report quiet. The tick holds the last rep
 
 Both settings reach the child through `<rundir>/settings.json`. The supervisor emits that file from `COORDINATOR_PERSONA` and `FLEET_ROSTER`, and the keeper sets both from the roster entry's `coordinatorPersona` and `fleetRoster` fields. The supervisor writes the file only where none exists, so a roster edit repointing either one reaches nothing until the stale file is deleted. `README.md` holds the cutover steps that cover it.
 
-The seats themselves are instruction text the supervisor writes at priming. A launch whose persona equals `coordinatorPersona` gets the coordinator role instruction, which carries the fleet duty, the kit Coordinator seat and the design-escalation clause. A launch whose persona equals `architectPersona` gets the architect's charter instead: design work only, no standing goal, worktrees cut under its own directory, and a plan handed back through the coordinator persona. That launch is also the one that takes neither the skill-load sentence nor the coordinator steer sentence: both are cleared to the empty string for it (`bin/supervise.sh:2992-2993`), because the charter already states which skills a design ask takes and what it does with a coordinator record. `architectPersona` has no default, so a fleet that names no architect builds that charter for nobody and the escalation clause for nobody.
+The seats themselves are instruction text the supervisor writes at priming. A launch whose persona equals `coordinatorPersona` gets the coordinator role instruction, which carries the fleet duty, the kit Coordinator seat and the design-escalation clause. A launch whose persona equals `architectPersona` gets the architect's charter instead: design work only, no standing goal, worktrees cut under its own directory, and a plan handed back through the coordinator persona. That launch is also the one that takes neither the skill-load sentence nor the coordinator steer sentence: both are cleared to the empty string for it (`bin/supervise.sh:2992-2993`), because the charter already states which skills a design ask takes and what it does with a coordinator record. `architectPersona` has no default, so a fleet that names no architect builds that charter for nobody and the escalation clause for nobody. The plugin reads `architectPersona` as well, for its inbox gates: any named persona owner may address the architect, and the architect may answer a persona whose owner's record to it is delivered or answered. A value of `default`, or one equal to the coordinator's name, reads there as no architect.
 
 Which class a fleet row takes, the order the five are tried in, and how the two words they share with a row's own `action` field behave are stated once, in the `fleet_status` tool description, the `registerTool("fleet_status"` call in `hooks/index.ts`. The `[FLEET]` prompt frame and `README.md` point there rather than restating it, because a session calling the tool holds that description and holds no file in this repository.
 
@@ -140,14 +140,14 @@ Two files write text into a child session that nobody typed: `bin/supervise.sh` 
 
 ### What is injected, and how large
 
-`.kit/injection-ledger.json` is the committed size baseline, 40 entries totalling 29,725 characters. Ten entries come from `bin/supervise.sh` and total 13,480; thirty come from `hooks/index.ts` and total 16,245, of which the fifteen registered tool descriptions are 11,816.
+`.kit/injection-ledger.json` is the committed size baseline, 40 entries totalling 30,131 characters. Ten entries come from `bin/supervise.sh` and total 13,480; thirty come from `hooks/index.ts` and total 16,651, of which the fifteen registered tool descriptions are 12,222.
 
 | What a launch reads | Characters |
 |---|---|
 | A worker with a channel: skill-load, coordinator steer, reply-tool | 2,474 |
 | The coordinator: those three plus the coordinator role instruction | 7,627 |
 | The architect: reply-tool plus its charter, the other two cleared | 5,908 |
-| The fifteen tool descriptions an owner-tier session registers | 11,816 |
+| The fifteen tool descriptions an owner-tier session registers | 12,222 |
 
 `fleet_status` alone is 3,795 of that last row, because the five health-class definitions live in it and every other surface points there. It registers into every session whatever the persona, including a worker that cannot call it.
 

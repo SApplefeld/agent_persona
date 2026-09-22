@@ -63,6 +63,7 @@ import {
   claimReaderRole,
   mayReachPersona,
   deliveryGroundIn,
+  architectLineRecords,
   deliveryRecordProblem,
   COORDINATOR_GROUND,
   quoteContinuationLines,
@@ -2217,6 +2218,24 @@ export const register: Register = async (on, options) => {
       && cfg.coordinatorPersona.trim() !== "default"
     ? cfg.coordinatorPersona.trim()
     : "coordinator";
+  // The one persona name the inbox gates treat as the architect: any named
+  // persona owner may address it, and its owner may answer a persona whose
+  // owner's record to it is still open. It takes the coordinator name's rule
+  // and "default" refusal but has no fallback, so an absent, blank, refused
+  // or "default" value leaves the plugin with no architect and both of those
+  // legs closed. A value equal to the coordinator name reads the same way,
+  // since one persona cannot hold both seats.
+  const architectPersona = typeof cfg.architectPersona === "string"
+      && personaNameProblem(cfg.architectPersona) === null
+      && cfg.architectPersona.trim() !== "default"
+      && cfg.architectPersona.trim() !== coordinatorPersona
+    ? cfg.architectPersona.trim()
+    : "";
+  // The answer leg's clause in an operator_skipped_no_claim detail, empty
+  // where the plugin holds no architect, so an unset seat is never named.
+  const architectLegRefusal = architectPersona === ""
+    ? ""
+    : `, no '${architectPersona}' persona claim answering a record this persona's owner sent it`;
   // The roster fleet_status reads, and the controller tick's fleet watcher
   // with it: the process keeper's own roster file, a JSON array of persona
   // entries. An unset or blank setting leaves the tool with no fleet to read,
@@ -2656,7 +2675,10 @@ export const register: Register = async (on, options) => {
       description:
         "Send a message to the owner session of a persona. Without persona, the target is this session's own persona: a reader session " +
         "calls this to send text to the owner it reads. With persona, the target is that persona's inbox, reached with no identity switch: " +
-        "the session holding the coordinator persona may address any persona, and a session owning a named persona may address the coordinator persona. " +
+        "the session holding the coordinator persona may address any persona, and a session owning a named persona may address the coordinator persona " +
+        "and, where the architectPersona setting names one, the architect persona. " +
+        "The architect's line back: the session owning the architect persona may answer a persona whose owner sent the architect a record " +
+        "that is delivered or answered, so it sends the answer before it closes that record with agentic_resolve. " +
         "A target this session owns is refused, because an owner does not message itself. " +
         "The owner sees the message on its next quiet tick, and urgent: true breaks into a running turn instead and takes that turn's own " +
         "answer as the reply. What a sent record does between those two moments, and what the sender reads back afterwards, is stated in " +
@@ -2690,7 +2712,8 @@ export const register: Register = async (on, options) => {
       description:
         "Read replies from the owner session of a persona. Without persona, the target is this session's own persona: a reader session " +
         "calls this to poll for replies to its messages. With persona, the target is that persona, under the rule agentic_say uses at send: " +
-        "the session holding the coordinator persona may read any persona, a session owning a named persona may read the coordinator persona, " +
+        "the session holding the coordinator persona may read any persona, a session owning a named persona may read the coordinator persona " +
+        "and the architect persona where one is set, the architect's owner may read a persona it may answer, " +
         "and a persona this session owns is refused. " +
         "Returns {inbox: [{id, from, at, text, kind, status, reply?, deferred?, turnRunningMs?, outcome?, note?, resolvedAt?}], asks: [{id, at, nodeId, question, status}], workdir?}: workdir is the target persona's live owner's working directory, where its own store file sits. " +
         "A pending record carries deferred: true and turnRunningMs while the owner is inside a turn: it waits for that turn to end, or breaks into it once it has waited past the break-in bound, which a record labelled COORDINATOR at delivery never does. " +
@@ -3987,9 +4010,12 @@ export const register: Register = async (on, options) => {
       // D3: drain operator inbox (one record per tick, owner only).
       // List pending inbox records whose writer may reach this persona
       // (deliveryGroundIn over one claims read: a reader claim on it, the
-      // coordinator persona owned, or a named persona owned when this persona
-      // is the coordinator), take the lowest at, mark delivered, submit as a
-      // prompt opening with the provenance label that same read produced.
+      // coordinator persona owned, a named persona owned when this persona
+      // is the coordinator or the architect, or the architect persona owned
+      // while this session's own record to it is open or was resolved no
+      // earlier than the answer was written), take the lowest at, mark
+      // delivered, submit as a prompt opening with the provenance label that
+      // same read produced.
       // D5: if a pending record answers the open ask, close the ask first
       // (ask_answered path) before the general drain.
       // The open-turn reading is taken again here rather than trusted from the
@@ -4019,14 +4045,19 @@ export const register: Register = async (on, options) => {
               // inside the bracket, or whose id or text fails the record
               // rule, is marked skipped here, once, so the drain never
               // lists it.
-              const answerGround = deliveryGroundIn(await readAllClaims(store, sess.staleAfterMs), persona, answer.from, coordinatorPersona);
+              const answerClaims = await readAllClaims(store, sess.staleAfterMs);
+              const answerGround = deliveryGroundIn(answerClaims, persona, answer.from, coordinatorPersona, {
+                persona: architectPersona,
+                records: await architectLineRecords(store, answerClaims, answer.from, architectPersona),
+                answerAt: answer.at,
+              });
               const answerProblem = deliveryRecordProblem(answer);
               if ("refused" in answerGround && answerGround.refused === "no_claim") {
                 sess.state.decisions.push({
                   timestamp: Date.now(),
                   loop: "monitor",
                   action: "operator_skipped_no_claim",
-                  detail: `answer ${answer.id} from ${answer.from} holds no live claim that reaches '${persona}' (no reader claim, no '${coordinatorPersona}' persona claim, no named persona of its own)`,
+                  detail: `answer ${answer.id} from ${answer.from} holds no live claim that reaches '${persona}' (no reader claim, no '${coordinatorPersona}' persona claim, no named persona of its own${architectLegRefusal})`,
                 });
               } else if ("refused" in answerGround || answerProblem !== null) {
                 answer.status = "skipped";
@@ -4120,7 +4151,11 @@ export const register: Register = async (on, options) => {
         const claims = pending.length > 0 ? await readAllClaims(store, sess.staleAfterMs) : [];
         for (const rec of pending) {
           if (rec.status !== "pending") continue;
-          const ground = deliveryGroundIn(claims, persona, rec.from, coordinatorPersona);
+          const ground = deliveryGroundIn(claims, persona, rec.from, coordinatorPersona, {
+            persona: architectPersona,
+            records: await architectLineRecords(store, claims, rec.from, architectPersona),
+            answerAt: rec.at,
+          });
           const recordProblem = deliveryRecordProblem(rec);
           if ("refused" in ground) {
             if (ground.refused === "no_claim") withoutClaim.push(rec);
@@ -4138,7 +4173,7 @@ export const register: Register = async (on, options) => {
             timestamp: Date.now(),
             loop: "monitor",
             action: "operator_skipped_no_claim",
-            detail: `record ${rec.id} writer ${rec.from} holds no live claim that reaches '${persona}' (no reader claim, no '${coordinatorPersona}' persona claim, no named persona of its own; marked skipped)`,
+            detail: `record ${rec.id} writer ${rec.from} holds no live claim that reaches '${persona}' (no reader claim, no '${coordinatorPersona}' persona claim, no named persona of its own${architectLegRefusal}; marked skipped)`,
           });
         }
         for (const { rec, persona: writerPersona, problem } of badName) {
@@ -7432,6 +7467,21 @@ export const register: Register = async (on, options) => {
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
+    // The closing clause of agentic_say's and agentic_inbox's reach refusal,
+    // naming the legs that could have admitted the target. The architect
+    // persona is named only where the plugin holds one, and the answer leg
+    // only to the session that owns it.
+    const reachDenyTail = (persona: string, verb: "push" | "read"): string => {
+      if (persona === coordinatorPersona || (architectPersona !== "" && persona === architectPersona)) {
+        return `owns no named persona of its own to ${verb} from`;
+      }
+      if (architectPersona === "") return `'${persona}' is not the coordinator persona`;
+      const seats = `'${persona}' is neither the coordinator persona nor the '${architectPersona}' architect persona`;
+      return sess.isOwner && sess.persona === architectPersona
+        ? `${seats}, and no live owner of '${persona}' has a record to '${architectPersona}' that is delivered or answered`
+        : seats;
+    };
+
     // D2: Serve agentic_say (a message to the owner of a persona)
     // Plan D2: agentic_say(text, answers?, urgent?, persona?). The target is
     // the persona argument when given, else sess.persona; sess.persona itself
@@ -7458,12 +7508,14 @@ export const register: Register = async (on, options) => {
         return { deny: `agentic_say cannot address '${persona}': this session owns that persona, and the owner does not need to send itself a message.` };
       }
       // The reach rule: a live reader claim on the target, the coordinator
-      // persona held by this session, or the target being the coordinator
-      // persona while this session owns a named persona of its own.
-      const mayReach = await mayReachPersona(commonsStoreOf($), persona, sess.mySessionId, coordinatorPersona, sess.staleAfterMs);
+      // persona held by this session, the target being the coordinator or
+      // architect persona while this session owns a named persona of its
+      // own, or this session owning the architect persona while the target's
+      // owner has an open record to it.
+      const mayReach = await mayReachPersona(commonsStoreOf($), persona, sess.mySessionId, coordinatorPersona, architectPersona, sess.staleAfterMs);
       if (!mayReach) {
         toolErrorsThisTurn++;
-        return { deny: `agentic_say cannot reach '${persona}': this session holds no live reader claim on it and does not hold the '${coordinatorPersona}' persona, and ${persona === coordinatorPersona ? "owns no named persona of its own to push from" : `'${persona}' is not the coordinator persona`}.` };
+        return { deny: `agentic_say cannot reach '${persona}': this session holds no live reader claim on it and does not hold the '${coordinatorPersona}' persona, and ${reachDenyTail(persona, "push")}.` };
       }
       // BD3 part 2: when answers is set, verify it names a live open ask.
       if (answers) {
@@ -7502,10 +7554,10 @@ export const register: Register = async (on, options) => {
         toolErrorsThisTurn++;
         return { deny: `agentic_inbox cannot address '${persona}': this session owns that persona, and the owner reads its own replies directly.` };
       }
-      const mayReach = await mayReachPersona(commonsStoreOf($), persona, sess.mySessionId, coordinatorPersona, sess.staleAfterMs);
+      const mayReach = await mayReachPersona(commonsStoreOf($), persona, sess.mySessionId, coordinatorPersona, architectPersona, sess.staleAfterMs);
       if (!mayReach) {
         toolErrorsThisTurn++;
-        return { deny: `agentic_inbox cannot reach '${persona}': this session holds no live reader claim on it and does not hold the '${coordinatorPersona}' persona, and ${persona === coordinatorPersona ? "owns no named persona of its own to read from" : `'${persona}' is not the coordinator persona`}.` };
+        return { deny: `agentic_inbox cannot reach '${persona}': this session holds no live reader claim on it and does not hold the '${coordinatorPersona}' persona, and ${reachDenyTail(persona, "read")}.` };
       }
       // D2: List inbox records for the target persona, filtered to the caller's messages
       const allRecords = await listInboxRecords(commonsStoreOf($), persona);
@@ -7561,11 +7613,13 @@ export const register: Register = async (on, options) => {
       const entries = await readAllEntries(commonsStoreOf($));
       // The reach rule with the coordinator persona as the target, narrowed
       // to the two standings that read fleet state: holding that persona, or
-      // holding a live reader claim on it. deliveryGroundIn decides all three
-      // of its legs here; the third, a session owning a named persona of its
-      // own, reaches the coordinator persona to send it a record and is not a
-      // standing to read the fleet from, so its WORKER ground is refused.
-      const ground = deliveryGroundIn(liveClaimsOf(entries, sess.staleAfterMs, now), coordinatorPersona, sess.mySessionId, coordinatorPersona);
+      // holding a live reader claim on it. deliveryGroundIn decides its legs
+      // here; the worker leg, a session owning a named persona of its own,
+      // reaches the coordinator persona to send it a record and is not a
+      // standing to read the fleet from, so its WORKER ground is refused. The
+      // answer leg reads no records here, since no ground it alone admits is
+      // one this check accepts.
+      const ground = deliveryGroundIn(liveClaimsOf(entries, sess.staleAfterMs, now), coordinatorPersona, sess.mySessionId, coordinatorPersona, { persona: architectPersona, records: [] });
       const mayRead = "ground" in ground && (ground.ground === "COORDINATOR" || ground.ground === `READER:${coordinatorPersona}`);
       if (!mayRead) {
         toolErrorsThisTurn++;
@@ -7608,7 +7662,7 @@ export const register: Register = async (on, options) => {
         return { deny: `fleet_restart refused: ${why}` };
       };
       const entries = await readAllEntries(commonsStoreOf($));
-      const ground = deliveryGroundIn(liveClaimsOf(entries, sess.staleAfterMs, now), coordinatorPersona, sess.mySessionId, coordinatorPersona);
+      const ground = deliveryGroundIn(liveClaimsOf(entries, sess.staleAfterMs, now), coordinatorPersona, sess.mySessionId, coordinatorPersona, { persona: architectPersona, records: [] });
       if (!("ground" in ground) || ground.ground !== COORDINATOR_GROUND) {
         const standing = "ground" in ground ? `the ground '${ground.ground}'` : "no ground on that persona at all";
         return refuse(`only the session holding the '${coordinatorPersona}' persona may restart another persona's child, and this session holds ${standing}.`);
@@ -7818,14 +7872,18 @@ export const register: Register = async (on, options) => {
         // label its text opens with, so it is kept here rather than recomputed
         // at delivery, and no record is judged twice in one scan.
         const grounds = new Map<InboxRecord, string>();
-        const groundFor = (rec: InboxRecord): string | null => {
-          const ground = deliveryGroundIn(claims, persona, rec.from, coordinatorPersona);
+        const groundFor = async (rec: InboxRecord): Promise<string | null> => {
+          const ground = deliveryGroundIn(claims, persona, rec.from, coordinatorPersona, {
+            persona: architectPersona,
+            records: await architectLineRecords(store, claims, rec.from, architectPersona),
+            answerAt: rec.at,
+          });
           if ("refused" in ground || deliveryRecordProblem(rec) !== null) return null;
           return ground.ground;
         };
         for (const rec of candidates) {
           if (rec.urgent !== true) continue;
-          const ground = groundFor(rec);
+          const ground = await groundFor(rec);
           if (ground !== null) grounds.set(rec, ground);
         }
         // The oldest deliverable record qualifying on its wait alone, and only
@@ -7849,7 +7907,7 @@ export const register: Register = async (on, options) => {
         // instruction whatever marker they arrive with.
         for (const rec of candidates) {
           if (rec.urgent === true) continue;
-          const ground = groundFor(rec);
+          const ground = await groundFor(rec);
           // A coordinator-ground record never takes the wait leg. The worker
           // steer instruction names only the flagged coordinator bracket as
           // carrying no delegated authority, so a coordinator record reaches a

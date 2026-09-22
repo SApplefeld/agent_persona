@@ -596,31 +596,58 @@ function ownedNamedPersonasOf(claims: UnionedClaim[], sessionId: string): string
 export const COORDINATOR_GROUND = "COORDINATOR";
 
 /**
+ * What the reach rule knows about the architect seat. `persona` is the
+ * configured architect name, or "" when the plugin has none, which closes
+ * both architect legs. `records` are the inbox records addressed to that
+ * persona, as architectLineRecords reads them: empty unless the writer owns
+ * the architect persona, since only then does the answer leg read them.
+ * `answerAt` is set only at a delivery site, to the `at` of the record
+ * being delivered; the send gate and the inbox read leave it unset.
+ */
+export interface ArchitectLine {
+  persona: string;
+  records: readonly InboxRecord[];
+  answerAt?: number;
+}
+
+/**
  * The provenance ground a record from `writer` carries when delivered to
- * `target`, read from claims already read, or null when the writer may not
- * reach the target at all. Reach holds on any of three legs: the writer
- * holds a reader claim on the target (a reader steering the owner it
- * reads); the writer owns the coordinator persona (the coordinator
- * addressing any persona); or the target is the coordinator persona and
- * the writer owns a named persona other than `default` (a worker pushing
- * to the coordinator). Every leg is a claim a session issues itself: any
+ * `target`, read from claims and records already read, or null when the
+ * writer may not reach the target at all. Reach holds on any of four legs:
+ * the writer holds a reader claim on the target (a reader steering the
+ * owner it reads); the writer owns the coordinator persona (the
+ * coordinator addressing any persona); the target is the coordinator
+ * persona or the architect persona and the writer owns a named persona
+ * other than `default` (a worker pushing to either seat); or the answer
+ * leg below. Every claim leg is a claim a session issues itself: any
  * plugin-loaded session on this machine can take a reader claim, own a
  * named persona through agentic_identity, or own the coordinator persona
  * while no live session holds it. Excluding `persona:default` keeps out a
  * session that has done none of that, which is every plugin-loaded session
  * at start, and nothing more.
  *
+ * The answer leg lets the architect answer a worker that asked it. The
+ * writer owns the architect persona, the target persona has a live owner,
+ * and that owner's session wrote a record to the architect persona whose
+ * status is `delivered` or `answered`: a record the architect has taken
+ * delivery of and not resolved. At delivery a record the architect
+ * resolved at or after the moment the answer was written also holds the
+ * leg open, so an architect that answers and then resolves in the same
+ * turn still has its answer delivered, while one resolved before the
+ * answer was written does not.
+ *
  * The ground names the strongest standing the writer holds, in this order:
  * `COORDINATOR` when the writer owns the coordinator persona;
  * `READER:<persona>` when the writer holds any reader claim, naming the
  * target where the writer reads it and otherwise the alphabetically first
  * persona it reads (a reader claim on another persona is not a reach leg
- * by itself, so this branch is reached only through the worker leg then);
- * `WORKER:<persona>` when the writer's only standing is an owned named
- * persona, naming the alphabetically first one. The gate and the label are
- * one rule over one claims array, so a record that is delivered is a
- * record that is labelled, and a writer holding a reader claim anywhere is
- * never labelled WORKER.
+ * by itself, so this branch is reached only through the worker or answer
+ * leg then); `WORKER:<persona>` on the worker leg, naming the
+ * alphabetically first named persona the writer owns; and
+ * `WORKER:<architect persona>` on the answer leg alone. The gate and the
+ * label are one rule over one claims array, so a record that is delivered
+ * is a record that is labelled, and a writer holding a reader claim
+ * anywhere is never labelled WORKER.
  *
  * The persona a READER or WORKER ground would name is store data any
  * process can write straight into the claims, so it is held to the bracket
@@ -633,25 +660,43 @@ export type DeliveryGround =
   | { refused: "no_claim" }
   | { refused: "bad_name"; persona: string; problem: string };
 
+// The answer leg of deliveryGroundIn, over claims and records already read.
+function answerLegHolds(claims: UnionedClaim[], target: string, writer: string, architect: ArchitectLine): boolean {
+  if (architect.persona === "" || !holdsOwnerClaim(claims, writer, architect.persona)) return false;
+  const targetOwner = commonsWinner(claims, personaKey(target));
+  if (targetOwner === null) return false;
+  const answerAt = architect.answerAt;
+  return architect.records.some((r) => r.from === targetOwner
+    && (r.status === "delivered"
+      || r.status === "answered"
+      || (answerAt !== undefined && r.status === "resolved" && typeof r.resolvedAt === "number" && r.resolvedAt >= answerAt)));
+}
+
 export function deliveryGroundIn(
   claims: UnionedClaim[],
   target: string,
   writer: string,
   coordinatorPersona: string,
+  architect: ArchitectLine,
 ): DeliveryGround {
   if (holdsOwnerClaim(claims, writer, coordinatorPersona)) return { ground: COORDINATOR_GROUND };
-  const workerLeg = target === coordinatorPersona && holdsOwnerClaim(claims, writer, undefined, "default");
+  const seatTarget = target === coordinatorPersona || (architect.persona !== "" && target === architect.persona);
+  const workerLeg = seatTarget && holdsOwnerClaim(claims, writer, undefined, "default");
+  const answerLeg = !workerLeg && answerLegHolds(claims, target, writer, architect);
   const readerPersonas = readerPersonasOf(claims, writer);
   let kind: string;
   let persona: string;
   if (readerPersonas.length > 0) {
     const readsTarget = readerPersonas.includes(target);
-    if (!readsTarget && !workerLeg) return { refused: "no_claim" };
+    if (!readsTarget && !workerLeg && !answerLeg) return { refused: "no_claim" };
     kind = "READER";
     persona = readsTarget ? target : readerPersonas[0];
   } else if (workerLeg) {
     kind = "WORKER";
     persona = ownedNamedPersonasOf(claims, writer)[0];
+  } else if (answerLeg) {
+    kind = "WORKER";
+    persona = architect.persona;
   } else {
     return { refused: "no_claim" };
   }
@@ -662,7 +707,7 @@ export function deliveryGroundIn(
 
 /**
  * Whether `writer` may address `target`'s inbox, over claims already read:
- * deliveryGroundIn's three legs and its bracket rule, as a boolean. The
+ * deliveryGroundIn's four legs and its bracket rule, as a boolean. The
  * send gate and the inbox read call the reading form below; the three
  * delivery sites read once and call deliveryGroundIn per record, so the
  * gate and the label they apply cannot disagree.
@@ -672,8 +717,27 @@ export function mayReachPersonaIn(
   target: string,
   writer: string,
   coordinatorPersona: string,
+  architect: ArchitectLine,
 ): boolean {
-  return "ground" in deliveryGroundIn(claims, target, writer, coordinatorPersona);
+  return "ground" in deliveryGroundIn(claims, target, writer, coordinatorPersona, architect);
+}
+
+/**
+ * The records the answer leg reads for `writer`: every inbox record
+ * addressed to the architect persona when `writer` owns that persona under
+ * `claims`, and otherwise none, with no store read. The send gate, the
+ * inbox read and the three delivery sites all fill ArchitectLine.records
+ * here, so none of them reads the architect's inbox for a writer the
+ * answer leg could not admit.
+ */
+export async function architectLineRecords(
+  store: CommonsStore,
+  claims: UnionedClaim[],
+  writer: string,
+  architectPersona: string,
+): Promise<InboxRecord[]> {
+  if (architectPersona === "" || !holdsOwnerClaim(claims, writer, architectPersona)) return [];
+  return listInboxRecords(store, architectPersona);
 }
 
 /**
@@ -761,16 +825,22 @@ export function deliveryText(
 }
 
 /**
- * mayReachPersonaIn over one fresh read of the commons claims.
+ * mayReachPersonaIn over one fresh read of the commons claims, and of the
+ * architect's records where the writer owns the architect persona. No
+ * answer time is passed, so the answer leg holds only on a record that is
+ * `delivered` or `answered` now.
  */
 export async function mayReachPersona(
   store: CommonsStore,
   target: string,
   writer: string,
   coordinatorPersona: string,
+  architectPersona: string,
   staleAfterMs: number = 90_000,
 ): Promise<boolean> {
-  return mayReachPersonaIn(await readAllClaims(store, staleAfterMs), target, writer, coordinatorPersona);
+  const claims = await readAllClaims(store, staleAfterMs);
+  const records = await architectLineRecords(store, claims, writer, architectPersona);
+  return mayReachPersonaIn(claims, target, writer, coordinatorPersona, { persona: architectPersona, records });
 }
 
 /**

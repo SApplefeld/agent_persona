@@ -2979,8 +2979,9 @@ while true; do
   # so the charter has it report where it got to before it ends such a turn. Built only when this launch's persona equals
   # ARCHITECT_PERSONA, which both settings branches above export from the
   # settings file, the same comparison the coordinator instruction takes. The
-  # supervisor is this setting's only reader: the plugin reads coordinatorPersona
-  # and never this key.
+  # plugin reads the same key for its inbox gates, under which any named
+  # persona owner may address the architect and the architect may answer a
+  # persona whose record to it is open.
   # That setting carries no default, so a launch whose settings file names no
   # architect builds this for no persona at all. Empty for every other launch,
   # and it rides the same NO_CHANNEL-independent priming write.

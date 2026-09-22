@@ -214,14 +214,14 @@
     {
       "name": "agentic_say_description",
       "file": "hooks/index.ts",
-      "chars": 1183,
-      "words": 196
+      "chars": 1490,
+      "words": 244
     },
     {
       "name": "agentic_inbox_description",
       "file": "hooks/index.ts",
-      "chars": 1267,
-      "words": 203
+      "chars": 1366,
+      "words": 221
     },
     {
       "name": "fleet_status_description",
