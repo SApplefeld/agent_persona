@@ -6509,6 +6509,13 @@ export const register: Register = async (on, options) => {
         toolErrorsThisTurn++;
         return { deny: `agentic_identity: 'persona' ${nameProblem} (got '${name}').` };
       }
+      // A store that is not an object of persona entries throws here, as a
+      // store that does not parse does, before the session takes the new
+      // name, resets its untracked-work line or releases its old claim. A
+      // refused switch leaves the session on the persona it held.
+      const store: Record<string, unknown> = await $.fs.exists(sess.storePath)
+        ? parsePersonaStore(await $.fs.read(sess.storePath))
+        : {};
       const previousPersona = sess.persona;
       sess.persona = name;
       // The held untracked_work line lives in the previous persona's log, so
@@ -6524,11 +6531,6 @@ export const register: Register = async (on, options) => {
         // joins as a reader. It keeps every reader:<target> claim it has
         // made, because delivery grounds each pending record on a live
         // reader:<target> claim at delivery time.
-        // A store that is not an object of persona entries throws here, ahead
-        // of the field below, as a store that does not parse does.
-        const store: Record<string, unknown> = await $.fs.exists(sess.storePath)
-          ? parsePersonaStore(await $.fs.read(sess.storePath))
-          : {};
         const existing = store[name] as AgentState | undefined;
         // The store parsed as an object, so the state below is the persona's own.
         sess.stateNotLoaded = null;
@@ -6562,12 +6564,6 @@ export const register: Register = async (on, options) => {
           await releaseResource(commonsStoreOf($), `persona:${previousPersona}`, sess.mySessionId, Date.now(), commonsMeta());
         } catch { /* non-fatal: commons is a coordination layer */ }
       }
-      // A store that is not an object of persona entries throws here, ahead
-      // of the field below and of the claim write, as a store that does not
-      // parse does.
-      const store: Record<string, unknown> = await $.fs.exists(sess.storePath)
-        ? parsePersonaStore(await $.fs.read(sess.storePath))
-        : {};
       const existing = store[name] as AgentState | undefined;
       // The store parsed as an object, so the state below is the persona's
       // own. This is how a session whose session.start did not finish

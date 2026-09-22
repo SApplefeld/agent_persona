@@ -3296,6 +3296,7 @@ async function main() {
     await caseGtc1_refusedBookkeepingDoesNotBreakTheTurnChain(clock);
     await caseGtc1_aNotLoadedReaderDoesNotPromote(clock);
     await caseGtc1_aNonObjectStoreDoesNotRecoverThroughIdentity(clock);
+    await caseGtc1_aRefusedSwitchLeavesTheSessionAsItWas(clock);
     await caseGtc3_goalDoneWithNoNodeIdBehavesAsBefore(clock);
     await caseGtc3_completingByNameNeverMovesTheActiveEntry(clock);
     await caseGtc3_aTaskCompletedByNameWalksItsPlanToComplete(clock);
@@ -16420,6 +16421,57 @@ async function caseGtc1_aNonObjectStoreDoesNotRecoverThroughIdentity(clock) {
     check(`gtc1 identity over ${label} control: and goal_status shows the stored tree`,
       String(recoveredStatus?.result || "").includes("g-real-plan") && !String(recoveredStatus?.result).includes(NOT_LOADED_TOKEN), recoveredStatus);
   }
+}
+
+// A persona switch the store read refuses leaves the session as it was. The
+// store read is what can throw, so it runs before the session takes the new
+// name, resets its untracked-work line or releases the old persona's claim.
+// Run the other way round, a switch onto a store holding an array throws
+// with the session already named for the new persona over the old one's
+// tree, and once the file is repaired the next write lands that tree under
+// the new persona's key. The control is the switch over a readable store,
+// which does take the new name and release the old claim.
+async function caseGtc1_aRefusedSwitchLeavesTheSessionAsItWas(clock) {
+  console.log("\n=== Goal tree curation 1: a persona switch the store read refuses leaves the session on its old persona ===");
+  clock.set(T0);
+  const setUp = async (caseName) => {
+    const h = await createTickHarness({ ...OPTS, caseName });
+    h.storeMap.set(`commons:${SESSION_ID}`, {
+      sessionId: SESSION_ID,
+      lastSeen: T0,
+      claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+    });
+    const call = async (event) => {
+      try {
+        return await h.handlers["tool.call"](h.fake, event, async () => ({ result: "passthrough" }));
+      } catch (err) {
+        return { threw: String(err) };
+      }
+    };
+    return { h, call };
+  };
+  const holdsDefaultClaim = (h) => (h.storeMap.get(`commons:${SESSION_ID}`)?.claims || []).some((c) => c.resource === "persona:default");
+
+  const { h, call } = await setUp("gtc1_refused_switch");
+  h.fsMap.set(PERSONA_STORE_FILE, "[]");
+  const switched = await call({ tool: "mcp__agentic-plugin__agentic_identity", persona: "other" });
+  check("gtc1 refused switch: the switch throws the store-shape refusal",
+    String(switched?.threw ?? "").includes("rather than as an object of persona entries"), switched);
+  check("gtc1 refused switch: the claim on the old persona is still held", holdsDefaultClaim(h), h.storeMap.get(`commons:${SESSION_ID}`));
+  h.fsMap.set(PERSONA_STORE_FILE, "{}");
+  const added = await call({ tool: "mcp__agentic-plugin__goal_add", title: "a task after the refused switch", objective: "a write after the store is repaired", kind: "task" });
+  check("gtc1 refused switch: a goal write after the repair is accepted", added?.threw === undefined && added?.deny === undefined, added);
+  const written = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE) || "{}");
+  check("gtc1 refused switch: that write lands under the old persona's key", written.default !== undefined, Object.keys(written));
+  check("gtc1 refused switch: and never under the persona the refused switch named", written.other === undefined, Object.keys(written));
+
+  // Control: the same switch over a readable store takes the new name and
+  // releases the old claim.
+  const control = await setUp("gtc1_refused_switch_control");
+  const took = await control.call({ tool: "mcp__agentic-plugin__agentic_identity", persona: "other" });
+  check("gtc1 refused switch control: a switch over a readable store answers for the new persona",
+    took?.threw === undefined && String(took?.result || "").includes("persona 'other'"), took);
+  check("gtc1 refused switch control: and releases the old persona's claim", !holdsDefaultClaim(control.h), control.h.storeMap.get(`commons:${SESSION_ID}`));
 }
 
 // --- Goal tree curation Section 3: goal_done completes an entry by name ---
