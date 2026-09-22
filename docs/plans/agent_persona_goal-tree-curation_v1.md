@@ -1,6 +1,6 @@
 # Goal tree curation
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-21
 

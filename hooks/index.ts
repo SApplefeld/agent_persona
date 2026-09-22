@@ -642,6 +642,15 @@ const sess: {
   // The stamp id of the latest plan health call, awaiting the next turn's
   // origin for its next_speaker outcome. Null where none is held.
   jevNextSpeakerStampId: string | null;
+  // Why this session's persona state is not loaded, or null once it is. It
+  // starts as the start-up cause, because a session whose session.start
+  // never finished holds the built-in default state below and nothing else.
+  // session.start's store read sets the store cause where the file would not
+  // read and clears it where the read parsed, and agentic_identity clears it
+  // on a store that parsed. While it stands, the six goal tools answer with
+  // it in place of an empty tree or a refusal naming a live holder, neither
+  // of which is true of a session that never loaded.
+  stateNotLoaded: string | null;
 } = {
   persona: "default",
   mySessionId: "pending",
@@ -663,7 +672,16 @@ const sess: {
   jevAskMarkerOutcomeStampId: null,
   jevPlanHealth: new Map(),
   jevNextSpeakerStampId: null,
+  stateNotLoaded: "plugin start-up did not finish, and the debug log's `session.start hook skipped` line names why",
 };
+
+// The store cause sess.stateNotLoaded takes where session.start's store read
+// fails, and the one-sentence answer the goal tools build from whichever
+// cause stands.
+const STATE_NOT_LOADED_STORE_CAUSE = "the store file could not be read, so this session came up on an empty default state";
+function stateNotLoadedText(cause: string): string {
+  return `This session never loaded its persona's state: ${cause}. The stored goal tree is not shown and was not changed.`;
+}
 
 // The turn state and workdir every commons-entry write carries, so the entry
 // tracks the turn the way the heartbeat file's own stamp does.
@@ -2281,8 +2299,29 @@ export const register: Register = async (on, options) => {
     sess.yieldLogPath = workdirPathOf(YIELD_LOG_FILENAME);
     $.ui.log(`Agentic: session.start (${sess.mySessionId})`);
 
-    // Register tools.
-    await $.tool.register({
+    // Register tools. Every registration goes through registerTool, so a
+    // host that refuses one (a description over its length limit is the
+    // known case) costs the session that tool alone: the claim, the store
+    // load, the heartbeat and the controller tick below all still run. A
+    // refusal is logged here and held until the persona state is loaded,
+    // where each becomes one tool_register_refused decision. The catch takes
+    // any throw, not only an Error, and rethrows nothing.
+    // Each call site keeps its own register call with the object literal
+    // inline and hands it in as a thunk, because
+    // .kit/tool-description-length-test.mjs and .kit/injection-ledger.mjs
+    // read every registration out of this file by that literal call shape,
+    // and the name is passed beside it for the refusal to carry.
+    const refusedRegistrations: { name: string; text: string }[] = [];
+    const registerTool = async (name: string, attempt: () => unknown) => {
+      try {
+        await attempt();
+      } catch (err) {
+        const text = boundedText(safeErrorText(err));
+        refusedRegistrations.push({ name, text });
+        try { $.ui.log(`Agentic: the host refused to register ${name}; this session runs without it: ${text}`); } catch { /* non-fatal */ }
+      }
+    };
+    await registerTool("agentic_identity", () => $.tool.register({
       name: "agentic_identity",
       description:
         "Switch this session to a persona's store. It never evicts a live session: where another " +
@@ -2300,13 +2339,13 @@ export const register: Register = async (on, options) => {
         },
         required: ["persona"],
       },
-    });
+    }));
 
     // Section 6: the goal-tree tools never register under arming "reader".
     // A reader session steers through agentic_say/agentic_inbox only; it
     // owns no persona and so has no goal tree of its own to create or edit.
     if (arming !== "reader") {
-    await $.tool.register({
+    await registerTool("goal_create", () => $.tool.register({
       name: "goal_create",
       description:
         "Create a new goal tree for this persona. The root carries the objective; the planner " +
@@ -2329,9 +2368,9 @@ export const register: Register = async (on, options) => {
         },
         required: ["objective"],
       },
-    });
+    }));
 
-    await $.tool.register({
+    await registerTool("goal_add", () => $.tool.register({
       name: "goal_add",
       description:
         "Add a node to the goal tree under parentId. With parentId omitted the parent is the " +
@@ -2368,9 +2407,9 @@ export const register: Register = async (on, options) => {
         },
         required: ["title", "objective"],
       },
-    });
+    }));
 
-    await $.tool.register({
+    await registerTool("goal_done", () => $.tool.register({
       name: "goal_done",
       description:
         "Mark the active goal leaf as complete, with an optional one-line note. The controller then activates the next pending plan or fires the planner. " +
@@ -2384,18 +2423,18 @@ export const register: Register = async (on, options) => {
           },
         },
       },
-    });
+    }));
 
-    await $.tool.register({
+    await registerTool("goal_status", () => $.tool.register({
       name: "goal_status",
       description: "Show the current goal tree as formatted text. Read-only; works for passive readers.",
       inputSchema: {
         type: "object",
         properties: {},
       },
-    });
+    }));
 
-    await $.tool.register({
+    await registerTool("goal_resume", () => $.tool.register({
       name: "goal_resume",
       description:
         "Resume a paused goal leaf and reset its nudge budget. A different active node is paused first, with the reason " +
@@ -2409,9 +2448,9 @@ export const register: Register = async (on, options) => {
           },
         },
       },
-    });
+    }));
 
-    await $.tool.register({
+    await registerTool("supervisor_shutdown", () => $.tool.register({
       name: "supervisor_shutdown",
       description:
         "Stop the supervisor itself, not just the current goal: the child exits by the graceful " +
@@ -2427,9 +2466,9 @@ export const register: Register = async (on, options) => {
           },
         },
       },
-    });
+    }));
 
-    await $.tool.register({
+    await registerTool("supervisor_restart", () => $.tool.register({
       name: "supervisor_restart",
       description:
         "Relaunch the supervised child without stopping the supervisor: this child exits by the graceful EOF " +
@@ -2445,9 +2484,9 @@ export const register: Register = async (on, options) => {
           },
         },
       },
-    });
+    }));
 
-    await $.tool.register({
+    await registerTool("goal_edit", () => $.tool.register({
       name: "goal_edit",
       description:
         "Change one node of the goal tree. drop marks a pending, paused or blocked node abandoned, so it is " +
@@ -2471,9 +2510,9 @@ export const register: Register = async (on, options) => {
         },
         required: ["nodeId", "action"],
       },
-    });
+    }));
 
-    await $.tool.register({
+    await registerTool("memory_add", () => $.tool.register({
       name: "memory_add",
       description:
         "Add one entry to this persona's durable memory store, which later sessions read.",
@@ -2495,11 +2534,11 @@ export const register: Register = async (on, options) => {
         },
         required: ["text"],
       },
-    });
+    }));
     }
 
     // D2: inbox tools (plan signatures: agentic_say(text, answers?, urgent?, persona?), agentic_inbox(persona?))
-    await $.tool.register({
+    await registerTool("agentic_say", () => $.tool.register({
       name: "agentic_say",
       description:
         "Send a message to the owner session of a persona. Without persona, the target is this session's own persona: a reader session " +
@@ -2531,9 +2570,9 @@ export const register: Register = async (on, options) => {
         },
         required: ["text"],
       },
-    });
+    }));
 
-    await $.tool.register({
+    await registerTool("agentic_inbox", () => $.tool.register({
       name: "agentic_inbox",
       description:
         "Read replies from the owner session of a persona. Without persona, the target is this session's own persona: a reader session " +
@@ -2555,13 +2594,13 @@ export const register: Register = async (on, options) => {
         },
         required: [],
       },
-    });
+    }));
 
     // Section 3: fleet health, for the session that watches the fleet. It
     // registers beside the inbox tools because it shares their reach rule,
     // so a reader seat holding a live reader claim on the coordinator
     // persona reads the fleet the same way it reads that persona's inbox.
-    await $.tool.register({
+    await registerTool("fleet_status", () => $.tool.register({
       name: "fleet_status",
       description:
         "Read fleet health: one row per persona in the roster the plugin's fleetRoster setting names. Returns " +
@@ -2606,14 +2645,14 @@ export const register: Register = async (on, options) => {
         properties: {},
         required: [],
       },
-    });
+    }));
 
     // The coordinator's restart lever on another persona. It registers under
     // the owner tier only: a reader seat restarts nothing, so the reader's
     // tool list stays the four that tier names. The handler's own gate is
     // the coordinator ground, which an owner-tier worker does not hold.
     if (arming !== "reader") {
-    await $.tool.register({
+    await registerTool("fleet_restart", () => $.tool.register({
       name: "fleet_restart",
       description:
         "Restart another persona's child. Writes restart.request into the run directory the roster that the plugin's " +
@@ -2637,13 +2676,13 @@ export const register: Register = async (on, options) => {
         },
         required: ["persona", "reason"],
       },
-    });
+    }));
     }
 
     // Section 12 registers agentic_resolve under arming "owner" only: a
     // reader owns no persona's records to resolve.
     if (arming !== "reader") {
-    await $.tool.register({
+    await registerTool("agentic_resolve", () => $.tool.register({
       name: "agentic_resolve",
       description:
         "Owner only. Mark an operator record addressed to this persona as resolved. " +
@@ -2668,7 +2707,7 @@ export const register: Register = async (on, options) => {
         },
         required: ["id", "outcome"],
       },
-    });
+    }));
     }
 
     // --- Claim or join the persona based on liveness (heartbeat sidecar) ---
@@ -2705,6 +2744,7 @@ export const register: Register = async (on, options) => {
       // that would not read, so the heartbeat tick publishes it at the first
       // read that parses rather than yielding to whatever that store names.
       claimUnpublished = true;
+      sess.stateNotLoaded = STATE_NOT_LOADED_STORE_CAUSE;
       startStoreProblem = {
         composed: `the steward's own state store '${sess.storePath}' could not be read when this session started, so it came up on a default state and carries none of what the last session recorded.`,
         carried: boundedText(safeErrorText(err)),
@@ -2791,6 +2831,12 @@ export const register: Register = async (on, options) => {
       });
     }
 
+    // The state above came from the store where that read parsed, a persona
+    // the store does not name being a fresh one rather than a lost one.
+    // Where the read took the catch above, the session is on a default state
+    // and the field keeps the store cause that catch set.
+    if (startStoreProblem === null) sess.stateNotLoaded = null;
+
     if (startPersonaProblem !== null) {
       sess.state.decisions.push({
         timestamp: Date.now(),
@@ -2800,6 +2846,16 @@ export const register: Register = async (on, options) => {
       });
       startPersonaProblem = null;
     }
+
+    for (const refused of refusedRegistrations) {
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "tool_register_refused",
+        detail: `${refused.name}: ${refused.text}`,
+      });
+    }
+    refusedRegistrations.length = 0;
 
     if (startStoreProblem !== null) {
       sess.state.decisions.push({
@@ -6319,6 +6375,8 @@ export const register: Register = async (on, options) => {
           ? (JSON.parse(await $.fs.read(sess.storePath)) as Record<string, unknown>)
           : {};
         const existing = store[name] as AgentState | undefined;
+        // The store parsed, so the state below is the persona's own.
+        sess.stateNotLoaded = null;
         if (existing) {
           sess.state = parseState(JSON.stringify(existing));
           sess.state.persona = name;
@@ -6353,6 +6411,10 @@ export const register: Register = async (on, options) => {
         ? (JSON.parse(await $.fs.read(sess.storePath)) as Record<string, unknown>)
         : {};
       const existing = store[name] as AgentState | undefined;
+      // The store parsed, so the state below is the persona's own. This is
+      // how a session whose session.start did not finish recovers its state:
+      // the goal tools answer from it once this has run.
+      sess.stateNotLoaded = null;
       if (existing) {
         sess.state = parseState(JSON.stringify(existing));
         sess.state.persona = name;
@@ -6438,6 +6500,12 @@ export const register: Register = async (on, options) => {
 
     // Serve goal_create (v3: creates the root node, NO planning in handler: R1).
     if (e.tool === "mcp__agentic-plugin__goal_create") {
+      // Before the owner check: a session that never loaded its state is not
+      // an owner either, and "held by a live session" would be untrue of it.
+      if (sess.stateNotLoaded !== null) {
+        toolErrorsThisTurn++;
+        return { deny: stateNotLoadedText(sess.stateNotLoaded) };
+      }
       if (!sess.isOwner) {
         toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
@@ -6499,6 +6567,10 @@ export const register: Register = async (on, options) => {
 
     // Serve goal_add (R4: parent resolution).
     if (e.tool === "mcp__agentic-plugin__goal_add") {
+      if (sess.stateNotLoaded !== null) {
+        toolErrorsThisTurn++;
+        return { deny: stateNotLoadedText(sess.stateNotLoaded) };
+      }
       if (!sess.isOwner) {
         toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
@@ -6695,6 +6767,10 @@ export const register: Register = async (on, options) => {
     // change, so the decision log plus the resulting tree diff is the proof
     // the operator's request actually changed something.
     if (e.tool === "mcp__agentic-plugin__goal_edit") {
+      if (sess.stateNotLoaded !== null) {
+        toolErrorsThisTurn++;
+        return { deny: stateNotLoadedText(sess.stateNotLoaded) };
+      }
       if (!sess.isOwner) {
         toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
@@ -6784,6 +6860,10 @@ export const register: Register = async (on, options) => {
 
     // Serve goal_done (R3: use completeLeaf + activateNext).
     if (e.tool === "mcp__agentic-plugin__goal_done") {
+      if (sess.stateNotLoaded !== null) {
+        toolErrorsThisTurn++;
+        return { deny: stateNotLoadedText(sess.stateNotLoaded) };
+      }
       if (!sess.isOwner) {
         toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
@@ -6897,6 +6977,11 @@ export const register: Register = async (on, options) => {
 
     // Serve goal_status (read-only, passive-reader OK).
     if (e.tool === "mcp__agentic-plugin__goal_status") {
+      // A session that never loaded its state holds no tree to show, and
+      // "No goal tree exists." would read as a fact about the store.
+      if (sess.stateNotLoaded !== null) {
+        return { result: stateNotLoadedText(sess.stateNotLoaded) };
+      }
       const root = sess.state.goals.find((g) => g.parentId === null);
       if (!root) {
         return { result: "No goal tree exists." };
@@ -6922,6 +7007,10 @@ export const register: Register = async (on, options) => {
 
     // M5: Serve goal_resume (owner only: resumes paused leaf, resets nudge budget).
     if (e.tool === "mcp__agentic-plugin__goal_resume") {
+      if (sess.stateNotLoaded !== null) {
+        toolErrorsThisTurn++;
+        return { deny: stateNotLoadedText(sess.stateNotLoaded) };
+      }
       if (!sess.isOwner) {
         toolErrorsThisTurn++;
         return { deny: "goal_resume requires ownership of this persona." };

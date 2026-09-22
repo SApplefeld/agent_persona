@@ -3283,6 +3283,9 @@ async function main() {
     await caseSection6_reader_sayControlStillWritesARecord(clock);
     await caseSection6_owner_matchesTheFullExistingShape(clock);
     await caseSection6_owner_everyParameterIsNamedInItsDescription(clock);
+    await caseGtc1_aRefusedRegistrationCostsThatToolAlone(clock);
+    await caseGtc1_aSessionThatNeverStartedSaysSoAndWritesNothing(clock);
+    await caseGtc1_anUnparseableStoreSaysSoAndWritesNothing(clock);
     await caseSection6Fleet_unchangedIsSilentAndOneChangeSubmitsOnce(clock);
     await caseSection6Fleet_runningRowsAreNotAllHealthy(clock);
     await caseSection6Fleet_aFirstEverLaunchIsNotStale(clock);
@@ -15399,6 +15402,151 @@ function missingParamNames(defs) {
     }
   }
   return missing;
+}
+
+// ============================================================
+// Goal tree curation, Section 1: start-up survives a refused tool
+// registration, and a session whose state never loaded says so.
+// ============================================================
+
+// The tokens the goal tools' not-loaded answer is read by: that the state was
+// never loaded, the cause held for it, and that the tree was left alone.
+const NOT_LOADED_TOKEN = "never loaded";
+const NOT_LOADED_START_CAUSE_TOKEN = "session.start hook skipped";
+const NOT_LOADED_STORE_CAUSE_TOKEN = "could not be read";
+const NOT_LOADED_UNCHANGED_TOKEN = "was not changed";
+
+function readsAsNotLoaded(text, causeToken) {
+  const t = String(text ?? "");
+  return t.includes(NOT_LOADED_TOKEN) && t.includes(causeToken) && t.includes(NOT_LOADED_UNCHANGED_TOKEN);
+}
+
+// A host that refuses one registration costs the session that tool alone.
+// Everything session.start does after the registrations, the claim, the
+// store load, both clock callbacks, still runs, and the refusal is one
+// decision naming the tool. The guard is locked in both directions: the
+// tools registered after the refused one are present, so a helper that
+// swallowed the throw by skipping the rest of the block would fail here.
+async function caseGtc1_aRefusedRegistrationCostsThatToolAlone(clock) {
+  console.log("\n=== Goal tree curation 1: a refused registration costs that tool alone ===");
+  clock.set(T0);
+  let startThrew = null;
+  let h = null;
+  try {
+    h = await createTickHarness({ ...OPTS, caseName: "gtc1_refused_registration", registerRefuses: new Set(["fleet_status"]) });
+  } catch (err) {
+    startThrew = err;
+  }
+  check("gtc1 refused: session.start comes up rather than throwing", startThrew === null, String(startThrew));
+  if (h === null) return;
+  const names = h.toolRegisters.map((t) => t.name);
+  check("gtc1 refused: fleet_status is not registered", !names.includes("fleet_status"), names);
+  check("gtc1 refused: the tools registered after it are present (fleet_restart, agentic_resolve)",
+    names.includes("fleet_restart") && names.includes("agentic_resolve"), names);
+  check("gtc1 refused: both clock callbacks are registered (heartbeat, controller tick)", h.clockEveryCallbacks.length === 2, h.clockEveryCallbacks.length);
+  const entry = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("gtc1 refused: the session owns its persona (persona:default in commons)", !!entry && entry.claims.some((c) => c.resource === "persona:default"), entry);
+  const state = getState(h);
+  check("gtc1 refused: its goals are the stored goals", JSON.stringify(state.goals.map((g) => g.id)) === JSON.stringify(["g-root", "g-plan"]), state.goals.map((g) => g.id));
+  const refused = state.decisions.filter((d) => d.action === "tool_register_refused");
+  check("gtc1 refused: exactly one tool_register_refused decision, naming fleet_status",
+    refused.length === 1 && refused[0].loop === "monitor" && refused[0].detail.includes("fleet_status"), state.decisions.map((d) => [d.action, d.detail]));
+  check("gtc1 refused: one log line names the refused tool", h.uiLogs.filter((l) => l.includes("fleet_status")).length === 1, h.uiLogs);
+  const toolH = h.handlers["tool.call"];
+  const status = await toolH(h.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
+  check("gtc1 refused: goal_status shows the stored tree", (status?.result || "").includes("g-plan"), status);
+
+  // Control, varying the one axis: no refusal registers every tool and
+  // leaves no tool_register_refused line. The absence is read over a
+  // decision log that holds the claim, so an empty log could not pass it.
+  const control = await createTickHarness({ ...OPTS, caseName: "gtc1_refused_registration_control" });
+  const controlNames = control.toolRegisters.map((t) => t.name);
+  check("gtc1 refused control: fifteen tools registered, fleet_status among them",
+    controlNames.length === 15 && controlNames.includes("fleet_status"), controlNames);
+  check("gtc1 refused control: the refusing session registered every other tool",
+    JSON.stringify(names) === JSON.stringify(controlNames.filter((n) => n !== "fleet_status")), { names, controlNames });
+  const controlDecisions = getState(control).decisions;
+  check("gtc1 refused control: no tool_register_refused beside the persona_claim the log holds",
+    countAction(controlDecisions, "tool_register_refused") === 0 && countAction(controlDecisions, "persona_claim") === 1, controlDecisions.map((d) => d.action));
+}
+
+// A session whose session.start never ran holds the built-in default state
+// and never loaded its persona's. Its goal tools say so, with the start-up
+// cause, rather than showing an empty tree or refusing as held by a live
+// session, and nothing reaches the store file: the expensive failure is a
+// default state persisted over a real one.
+async function caseGtc1_aSessionThatNeverStartedSaysSoAndWritesNothing(clock) {
+  console.log("\n=== Goal tree curation 1: a session whose start never ran says so and writes nothing ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, caseName: "gtc1_never_started", skipSessionStart: true });
+  check("gtc1 never started: no clock callback registered, so the start really did not run", h.clockEveryCallbacks.length === 0, h.clockEveryCallbacks.length);
+  const before = h.fsMap.get(PERSONA_STORE_FILE);
+  const toolH = h.handlers["tool.call"];
+  const status = await toolH(h.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
+  check("gtc1 never started: goal_status answers that the state never loaded, with the start-up cause",
+    readsAsNotLoaded(status?.result, NOT_LOADED_START_CAUSE_TOKEN) && status.deny === undefined, status);
+  const done = await toolH(h.fake, { tool: "mcp__agentic-plugin__goal_done", note: "finished" }, async () => ({ result: "passthrough" }));
+  check("gtc1 never started: goal_done denies with the same sentence and never says held by a live session",
+    readsAsNotLoaded(done?.deny, NOT_LOADED_START_CAUSE_TOKEN) && !String(done?.deny).includes("held by a live session"), done);
+  // Byte identity: the fake fs holds the file as one string, and string
+  // equality compares every code unit of it.
+  const after = h.fsMap.get(PERSONA_STORE_FILE);
+  check("gtc1 never started: the store file is byte-identical afterwards", after === before, { before, after });
+  check("gtc1 never started: no write reached any file", h.fsWrites.length === 0, h.fsWrites.map((w) => w.path));
+
+  // Control for the comparison: the same goal_done on a session that did
+  // start changes the file under the same predicate, so the identity above
+  // is a write that was not made rather than a comparison that cannot speak.
+  const control = await createTickHarness({ ...OPTS, caseName: "gtc1_never_started_control" });
+  const controlBefore = control.fsMap.get(PERSONA_STORE_FILE);
+  const controlDone = await control.handlers["tool.call"](control.fake, { tool: "mcp__agentic-plugin__goal_done", note: "finished" }, async () => ({ result: "passthrough" }));
+  check("gtc1 never started control: a started session's goal_done is not refused", controlDone?.deny === undefined, controlDone);
+  check("gtc1 never started control: and its store file differs afterwards under the same comparison",
+    control.fsMap.get(PERSONA_STORE_FILE) !== controlBefore, controlBefore);
+}
+
+// A session that started over a store file that does not parse came up on a
+// default state. Its goal tools say so with the store cause, and the file it
+// could not read is left exactly as it was.
+async function caseGtc1_anUnparseableStoreSaysSoAndWritesNothing(clock) {
+  console.log("\n=== Goal tree curation 1: a session over an unparseable store says so and writes nothing ===");
+  clock.set(T0);
+  const opts = { ...OPTS, caseName: "gtc1_store_unparseable" };
+  const seeded = { fsMap: new Map(), storeMap: new Map() };
+  const garbage = "{ this is not the JSON a store holds";
+  seeded.fsMap.set(PERSONA_STORE_FILE, garbage);
+  let startThrew = null;
+  let h = null;
+  try {
+    h = await relaunchStewardHarness("gtc1_store_unparseable", seeded, opts);
+  } catch (err) {
+    startThrew = err;
+  }
+  check("gtc1 unparseable: session.start comes up rather than throwing", startThrew === null, String(startThrew));
+  if (h === null) return;
+  const toolH = h.handlers["tool.call"];
+  const status = await toolH(h.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
+  check("gtc1 unparseable: goal_status answers that the state never loaded, with the store cause",
+    readsAsNotLoaded(status?.result, NOT_LOADED_STORE_CAUSE_TOKEN) && status.deny === undefined, status);
+  // Caught rather than awaited bare: a handler that reaches persist over
+  // this file throws out of the tool call, and that is a failure of this
+  // case rather than of the suite around it.
+  let created = null;
+  try {
+    created = await toolH(h.fake, { tool: "mcp__agentic-plugin__goal_create", objective: "a tree over a store that did not read" }, async () => ({ result: "passthrough" }));
+  } catch (err) {
+    created = { threw: String(err) };
+  }
+  check("gtc1 unparseable: goal_create denies with the same sentence", readsAsNotLoaded(created?.deny, NOT_LOADED_STORE_CAUSE_TOKEN), created);
+  check("gtc1 unparseable: the unparseable file is byte-identical afterwards", h.fsMap.get(PERSONA_STORE_FILE) === garbage, h.fsMap.get(PERSONA_STORE_FILE));
+  check("gtc1 unparseable: no write reached the store file", !h.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), h.fsWrites.map((w) => w.path));
+
+  // The control for this case and the one above: a session that started
+  // over a readable store answers goal_status with its stored tree.
+  const control = await createTickHarness({ ...OPTS, caseName: "gtc1_store_readable_control" });
+  const controlStatus = await control.handlers["tool.call"](control.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
+  check("gtc1 readable control: goal_status shows the stored tree and no not-loaded sentence",
+    (controlStatus?.result || "").includes("g-root") && (controlStatus.result || "").includes("g-plan") && !String(controlStatus.result).includes(NOT_LOADED_TOKEN), controlStatus);
 }
 
 
