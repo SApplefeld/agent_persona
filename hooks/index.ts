@@ -1013,6 +1013,25 @@ function rosterRunDir(entry: RosterEntry): string | null {
   return `${workdir.replace(/[/\\]+$/, "")}/run`;
 }
 
+// The roster file as JSON, for the fleet reading and for fleet_restart alike,
+// so the two cannot differ on what a roster with a byte-order mark parses to.
+// Rejects where the read or the parse fails; each caller reports that its own
+// way.
+async function readRosterFile(dp: any, fleetRoster: string): Promise<unknown> {
+  return JSON.parse(stripBom(String(await dp.fs.read(fleetRoster))));
+}
+
+// fleet_restart refuses a second request for one persona while the first is
+// younger than this. A restart takes a poll to begin and a running turn up to
+// the supervisor's patient-stop cap to end, so a second request inside that
+// window restarts the child the first request just launched.
+const FLEET_RESTART_MIN_INTERVAL_MS = 15 * 60_000;
+
+// The bound on the reason fleet_restart writes into the request file. The
+// file sits in the target persona's own run directory, and the reason is a
+// note for whoever reads that directory, not a record anything replays.
+const FLEET_RESTART_REASON_MAX = 200;
+
 // The keeper half of one row, read from the two files the process keeper
 // leaves in a run directory. keeper.hold decides the standing, because that
 // marker is what stops the next start from launching at all
@@ -1327,7 +1346,7 @@ const readFleetRows = async (
   }
   let roster: unknown;
   try {
-    roster = JSON.parse(stripBom(String(await dp.fs.read(fleetRoster))));
+    roster = await readRosterFile(dp, fleetRoster);
   } catch (err) {
     // The read's own message rides a carried half of its own. Node builds a
     // JSON parse failure's message out of the bytes it stopped on, so about
@@ -2588,6 +2607,38 @@ export const register: Register = async (on, options) => {
         required: [],
       },
     });
+
+    // The coordinator's restart lever on another persona. It registers under
+    // the owner tier only: a reader seat restarts nothing, so the reader's
+    // tool list stays the four that tier names. The handler's own gate is
+    // the coordinator ground, which an owner-tier worker does not hold.
+    if (arming !== "reader") {
+    await $.tool.register({
+      name: "fleet_restart",
+      description:
+        "Restart another persona's child. Writes restart.request into the run directory the roster that the plugin's " +
+        "fleetRoster setting names gives that persona; its supervisor reads the file at its next poll and restarts the " +
+        "child, letting a running turn end first. The goal tree is kept. Refused when this session does not hold the " +
+        "coordinator persona, when no roster is set or it cannot be read, when persona is not a roster entry whose enabled " +
+        "is true, when persona is this session's own (supervisor_restart restarts that one), when the run directory does " +
+        "not exist, and when the persona's standing request is less than fifteen minutes old. Writes nothing to the commons " +
+        "store or to any persona's store. Available to the session holding the coordinator persona alone.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          persona: {
+            type: "string",
+            description: "The roster name of the persona whose child is restarted.",
+          },
+          reason: {
+            type: "string",
+            description: "The reason the restart is asked for, written into the request file beside the time and this session's persona. Trimmed and cut at 200 characters.",
+          },
+        },
+        required: ["persona", "reason"],
+      },
+    });
+    }
 
     // Section 12 registers agentic_resolve under arming "owner" only: a
     // reader owns no persona's records to resolve.
@@ -7144,6 +7195,90 @@ export const register: Register = async (on, options) => {
         ...(report.problem !== undefined ? { problem: fleetLineText(report.problem) } : {}),
         ...(report.problems !== undefined ? { problems: report.problems.map(fleetLineText) } : {}),
       }, null, 2) };
+    }
+
+    // Serve fleet_restart (the coordinator restarts another persona's child).
+    // The request is a file in the target's run directory, which that
+    // persona's supervisor reads as the same fact as its store's
+    // restart_requested (bin/supervise-restart-request.mjs), so no session
+    // writes into a store another session owns. The refusals are a closed set,
+    // checked in this order, and each one writes nothing. The ground is the
+    // one the reach rule computes for fleet_status, narrowed to COORDINATOR
+    // alone: this rule is the only fence between a worker and a restart of the
+    // coordinator, and a reader claim reads the fleet without steering it.
+    if ((e as any).tool === "mcp__agentic-plugin__fleet_restart") {
+      const now = Date.now();
+      const target = String((e as any).persona || "").trim();
+      const reason = String((e as any).reason || "").trim().slice(0, FLEET_RESTART_REASON_MAX);
+      const refuse = (why: string) => {
+        toolErrorsThisTurn++;
+        return { deny: `fleet_restart refused: ${why}` };
+      };
+      const entries = await readAllEntries(commonsStoreOf($));
+      const ground = deliveryGroundIn(liveClaimsOf(entries, sess.staleAfterMs, now), coordinatorPersona, sess.mySessionId, coordinatorPersona);
+      if (!("ground" in ground) || ground.ground !== COORDINATOR_GROUND) {
+        const standing = "ground" in ground ? `the ground '${ground.ground}'` : "no ground on that persona at all";
+        return refuse(`only the session holding the '${coordinatorPersona}' persona may restart another persona's child, and this session holds ${standing}.`);
+      }
+      if (fleetRoster === "") {
+        return refuse("the plugin's fleetRoster setting names no roster file, so there is no persona to restart.");
+      }
+      let roster: unknown;
+      try {
+        roster = await readRosterFile($, fleetRoster);
+      } catch (err) {
+        return refuse(`the roster '${fleetRoster}' could not be read or parsed: ${boundedText(safeErrorText(err))}`);
+      }
+      if (!Array.isArray(roster)) {
+        return refuse(`the roster '${fleetRoster}' does not hold a JSON array of persona entries.`);
+      }
+      // The first entry under the name, as the fleet reading gives the first
+      // one a row and reports a repeat as a problem.
+      const entry = (roster as unknown[]).find((candidate) => {
+        const name = ((candidate ?? {}) as RosterEntry).name;
+        return typeof name === "string" && name.trim() === target;
+      }) as RosterEntry | undefined;
+      if (entry === undefined) {
+        return refuse(`the roster '${fleetRoster}' carries no entry named '${target}'.`);
+      }
+      if (entry.enabled !== true) {
+        return refuse(`the roster entry for '${target}' is not enabled, and only a persona the roster enables is restarted.`);
+      }
+      if (target === sess.persona) {
+        return refuse(`'${target}' is this session's own persona, whose restart lever is supervisor_restart.`);
+      }
+      const runDir = rosterRunDir(entry);
+      const runDirExists = runDir !== null && await $.fs.exists(runDir).catch(() => false);
+      if (runDir === null || !runDirExists) {
+        return refuse(runDir === null
+          ? `the roster entry for '${target}' names neither a run directory nor a working directory, so there is nowhere to write the request.`
+          : `the run directory '${runDir}' for '${target}' does not exist.`);
+      }
+      // A request the supervisor would read as no request is no request here
+      // either: one that does not parse, carries no numeric at, or is dated
+      // ahead of this clock is overwritten rather than holding the lever off.
+      const requestPath = `${runDir}/restart.request`;
+      let standingAt: number | null = null;
+      try {
+        if (await $.fs.exists(requestPath)) {
+          const parsed = JSON.parse(stripBom(String(await $.fs.read(requestPath))));
+          const at = parsed !== null && typeof parsed === "object" ? (parsed as { at?: unknown }).at : undefined;
+          if (typeof at === "number" && Number.isFinite(at) && at <= now) standingAt = at;
+        }
+      } catch { /* an unreadable request is treated as absent and overwritten */ }
+      if (standingAt !== null && now - standingAt < FLEET_RESTART_MIN_INTERVAL_MS) {
+        return refuse(`a restart.request for '${target}' was written ${Math.floor((now - standingAt) / 1000)} seconds ago, and a second request inside fifteen minutes of the first is refused.`);
+      }
+      // One write rather than a temporary file renamed over the target, since
+      // the host's filesystem has no rename. A supervisor that reads the file
+      // mid-write parses a truncated object as no request and reads the whole
+      // file at its next poll.
+      try {
+        await $.fs.write(requestPath, JSON.stringify({ at: now, by: sess.persona, reason }));
+      } catch (err) {
+        return refuse(`the request file '${requestPath}' could not be written: ${boundedText(safeErrorText(err))}`);
+      }
+      return { result: `Restart requested for '${target}': its supervisor restarts the child at its next poll and lets a running turn end first.` };
     }
 
     // Section 12: serve agentic_resolve (the owner marks a record's work

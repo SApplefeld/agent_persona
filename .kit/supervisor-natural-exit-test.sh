@@ -13,7 +13,7 @@
 # ends the supervisor on its own: a shutdown_requested decision, or the crash
 # limit set to 1.
 #
-# Cases (a), (b) and (e) launch with --prompt. The supervisor then waits for the
+# Cases (a), (b), (b2) and (e) launch with --prompt. The supervisor then waits for the
 # priming turn's result line, and a child that exits without writing one is
 # seen dead before the poll loop starts, so the exit is handled by the
 # natural-exit path and never by a decide-unit read of the same store.
@@ -1318,6 +1318,9 @@ case "\$action" in
   backfilled) IFS= read -r _; record root_complete "\$S/detail-backfilled"; exit 0 ;;
   backfilled7) IFS= read -r _; record root_complete "\$S/detail-backfilled"; exit 7 ;;
   real) IFS= read -r _; record root_complete "\$S/detail-real"; exit 0 ;;
+  # The coordinator's restart request, written the way fleet_restart writes
+  # it: one file in the run directory, with no store fact beside it.
+  request) IFS= read -r _; node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ at: Date.now(), by: "coordinator", reason: "stub" }))' "\$CASE_DIR/rd/restart.request"; exit 0 ;;
   # A real root_complete with the child still alive: the supervisor's decide
   # path, not the natural-exit path, must act on it. The loop blocks on stdin
   # until the supervisor's EOF stop closes it.
@@ -1491,6 +1494,20 @@ grep -q 'EXIT child-1 code=0 (natural)' "$LOG"; check "(b) child-1's exit is han
 grep -q 'RESTART_PASSIVE: root_complete at [0-9]* > child start [0-9]* (no shutdown requested)' "$LOG"; check "(b) the natural-exit RESTART_PASSIVE line is present" "$?"
 ! grep -q 'is backfilled' "$LOG"; check "(b) no backfilled NOTE line" "$?"
 grep -q 'LAUNCH child-2' "$LOG"; check "(b) a second child launches" "$?"
+
+# --- (b2) a restart request file, exit 0, takes RESTART_PASSIVE ---
+# Case (b) with the coordinator's restart.request in the run directory in
+# place of the store fact, and no store fact at all. The natural-exit path
+# reads the file as the same restart_requested fact and relaunches
+# unaccounted, so the restart budget of 1 is not spent. The file is left in
+# place, and the second child starts after it, so the request it carries is
+# stale for that child and does not restart it again.
+drive b2 "request,shutdown" 1 --prompt "stub goal"
+[ "$RC" -eq 0 ]; check "(b2) supervisor exits 0 on the second child's shutdown_requested (rc=$RC)" "$?"
+grep -q 'EXIT child-1 code=0 (natural)' "$LOG"; check "(b2) child-1's exit is handled by the natural-exit path with code 0" "$?"
+grep -q 'RESTART_PASSIVE: restart_requested at [0-9]* > child start [0-9]* (no shutdown requested)' "$LOG"; check "(b2) the natural-exit RESTART_PASSIVE line names the restart request" "$?"
+! grep -q -e 'STOP_BUDGET' -e 'STOP_CRASH_LOOP' "$LOG"; check "(b2) no STOP_BUDGET or STOP_CRASH_LOOP line, so the relaunch was not accounted" "$?"
+grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 2 ]; check "(b2) exactly two children launch, so the served request did not restart the second (stub launches=$LAUNCHES)" "$?"
 
 # --- (g) a real root_complete while the child is still alive: the decide path ---
 # No --prompt, so the launch writes only the priming line and the poll loop

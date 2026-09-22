@@ -39,7 +39,7 @@ WIDTH="${1:-1}"
 # are filled round-robin over this order, which is the usual greedy way to
 # balance jobs of known length. When the profile's order changes materially,
 # update this line from it rather than guessing.
-ORDER="o p s x u y v r j ab ac h g k aa a t i c b f e"
+ORDER="o p s x u y v r j ab ac h g k aa a t i c b b2 f e"
 
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT

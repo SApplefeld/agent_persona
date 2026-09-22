@@ -2413,6 +2413,22 @@ console.log(newest.timestamp || 0);
 " "$store" "$persona" "$fact" 2>> "$RUNDIR/supervisor.err"
 }
 
+# --- Helper: read the restart request the coordinator left in the run directory ---
+# The coordinator's fleet_restart tool writes <rundir>/restart.request rather
+# than a restart_requested decision, since this persona's store has one
+# writer. It is the same fact, read through the parser the poll imports
+# (bin/supervise-restart-request.mjs), so the two paths cannot disagree on
+# what a request is. Prints its timestamp, or nothing where the parser reads
+# no request.
+get_restart_request() {
+  node --input-type=module -e "
+import { pathToFileURL } from 'node:url';
+const { readRestartRequest } = await import(pathToFileURL(process.argv[1]).href);
+const at = readRestartRequest(process.argv[2], Date.now());
+if (at !== null) console.log(Math.floor(at));
+" "$PLUGIN_DIR/bin/supervise-restart-request.mjs" "$RUNDIR" 2>> "$RUNDIR/supervisor.err"
+}
+
 # --- Helper: read the newest root_complete decision's timestamp AND
 # whether it was backfilled, in one read ---
 # v2 Section 0 item 1: the item 2 backstop (hooks/index.ts) writes a
@@ -2875,7 +2891,11 @@ while true; do
     # names the two cases this duty makes: the design duty below makes a third
     # call and is built only on a fleet that names an architect, so that duty
     # names its own case where it is built rather than here.
-    COORDINATOR_ROLE_INSTRUCTION+="A prompt labelled [FLEET] carries the personas whose health class changed since the last such prompt, one line each. You report those lines on your own channel and you poll the fleet at no point, and that prompt's own opening line says what a line beginning with '> ' is and what to do with it. You call fleet_status only in the cases this instruction names, and none of them is polling. This duty names two. The operator asks for fleet state, and you need the whole picture behind a change. That tool's description is where a row's fields and the standing it settles for a persona are stated. "
+    # The restart lever closes the clause: fleet_restart acts on what a fleet
+    # reading shows, the coordinator is the only persona the plugin lets use
+    # it, and the operator hears of every use. Its refusals are in its own
+    # description.
+    COORDINATOR_ROLE_INSTRUCTION+="A prompt labelled [FLEET] carries the personas whose health class changed since the last such prompt, one line each. You report those lines on your own channel and you poll the fleet at no point, and that prompt's own opening line says what a line beginning with '> ' is and what to do with it. You call fleet_status only in the cases this instruction names, and none of them is polling. This duty names two. The operator asks for fleet state, and you need the whole picture behind a change. That tool's description is where a row's fields and the standing it settles for a persona are stated. fleet_restart restarts another persona's child: you use it on a persona the fleet reading shows stuck or one the operator names, and you report every use to the operator. "
     # The kit's Coordinator seat, which this persona holds for the machine.
     # The seat is taken once at priming, and the reconciliation pass runs on
     # the [RECONCILE] prompt alone. The kit's coordinator skill states a
@@ -3104,6 +3124,7 @@ while true; do
       "$HEARTBEAT" "$STORE" "$PERSONA" "$OUT" "${TRANSCRIPT_DIR:-}" "${CHILD_SESSION_ID:-}" \
       "$CHILD_START_TS" "$LAUNCHED_AT" "$STALE_AFTER_MS" "$SUPERVISOR_MIN_RUN_MS" \
       "$SUPERVISOR_MAX_RESTARTS_PER_HOUR" "$CRASH_COUNT" "$RESTART_COUNT" "$SUPERVISOR_CRASH_LIMIT" \
+      "$RUNDIR" \
       2>> "$RUNDIR/supervisor.err")
     DECIDE_ERR=$?
     DECIDE_ACTION=""; DECIDE_REASON=""; POLL_RATE_LIMIT=""; POLL_SESSION_ID=""
@@ -3382,6 +3403,12 @@ while true; do
     fi
   fi
   RESTART_REQUESTED_TS=$(get_fact "$WORKDIR" "$PERSONA" "restart_requested")
+  # The coordinator's request file is the same fact, and the later of the two
+  # is the one compared against this child's start, as the poll compares it.
+  RESTART_REQUEST_FILE_TS=$(get_restart_request)
+  if [ -n "$RESTART_REQUEST_FILE_TS" ] && { [ -z "$RESTART_REQUESTED_TS" ] || [ "$RESTART_REQUEST_FILE_TS" -gt "$RESTART_REQUESTED_TS" ]; }; then
+    RESTART_REQUESTED_TS="$RESTART_REQUEST_FILE_TS"
+  fi
   if [ -n "$RESTART_REQUESTED_TS" ] && [ "$RESTART_REQUESTED_TS" -gt "$CHILD_START_TS" ]; then
     log "RESTART_PASSIVE: restart_requested at $RESTART_REQUESTED_TS > child start $CHILD_START_TS (no shutdown requested)"
     log "PASSIVE: restart requested; relaunching the child with the goal tree kept, the new child resumes the active plan"

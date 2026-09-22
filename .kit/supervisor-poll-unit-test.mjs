@@ -10,18 +10,38 @@ import { strict as assert } from 'node:assert';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pollPath = resolve(here, '../bin/supervise-poll.mjs');
+const requestModulePath = resolve(here, '../bin/supervise-restart-request.mjs');
 const root = fs.mkdtempSync(join(os.tmpdir(), 'supervise-poll-'));
+
+// The restart-request parser, imported rather than spawned: it is a pure
+// function the poll imports, and it runs nothing at load. An import that
+// fails leaves the parser cases to fail on their own rather than ending the
+// run before the poll cases.
+let readRestartRequest = null;
+let requestImportError = null;
+try {
+  ({ readRestartRequest } = await import(pathToFileURL(requestModulePath).href));
+} catch (e) {
+  requestImportError = e;
+}
+const parser = () => {
+  if (typeof readRestartRequest !== 'function') throw new Error('the parser did not import: ' + (requestImportError && requestImportError.message));
+  return readRestartRequest;
+};
 
 const PERSONA = 'dev';
 const START = 1000000;
 
-// Writes whichever of the four files a case names and runs the reader as the
-// supervisor does, as its own process, returning its four printed lines.
+// Writes whichever of the files a case names and runs the reader as the
+// supervisor does, as its own process, returning its four printed lines. A
+// case that seeds a restart request passes the run directory holding it as
+// the fifteenth argument, the way bin/supervise.sh does; every other case
+// passes the fourteen an older caller passes, so that shape stays exercised.
 function run(name, files, overrides = {}) {
   const dir = join(root, name);
   fs.mkdirSync(dir, { recursive: true });
@@ -30,8 +50,10 @@ function run(name, files, overrides = {}) {
     store: join(dir, 'store.json'),
     stream: join(dir, 'stdout.jsonl'),
     transcript: join(dir, 'transcripts', 'sess-1.jsonl'),
+    request: join(dir, 'run', 'restart.request'),
   };
   fs.mkdirSync(join(dir, 'transcripts'), { recursive: true });
+  fs.mkdirSync(join(dir, 'run'), { recursive: true });
   for (const [key, body] of Object.entries(files)) {
     fs.writeFileSync(paths[key], typeof body === 'string' ? body : JSON.stringify(body));
   }
@@ -48,11 +70,12 @@ function run(name, files, overrides = {}) {
     crashLimit: 3,
     ...overrides,
   };
-  const r = spawnSync(process.execPath, [pollPath,
+  const argv = [pollPath,
     paths.heartbeat, paths.store, PERSONA, paths.stream, args.transcriptArg, args.sessionId,
     args.childStartTs, args.launchedAt, args.staleAfterMs, args.minRunMs,
-    args.maxRestartsPerHour, args.crashCount, args.restartCount, args.crashLimit].map(String),
-  { encoding: 'utf8' });
+    args.maxRestartsPerHour, args.crashCount, args.restartCount, args.crashLimit];
+  if ('request' in files) argv.push(join(dir, 'run'));
+  const r = spawnSync(process.execPath, argv.map(String), { encoding: 'utf8' });
   assert.equal(r.status, 0, 'reader exited ' + r.status + ': ' + r.stderr);
   const lines = r.stdout.split('\n');
   assert.equal(lines.length, 5, 'four lines and a trailing newline, got ' + JSON.stringify(r.stdout));
@@ -178,6 +201,76 @@ const cases = [
   ['the restart budget is read from the counts handed in: stop_budget', () => {
     const r = run('budget', {}, { restartCount: 6 });
     assert.equal(r.action, 'stop_budget');
+  }],
+
+  // The restart request file fleet_restart writes into the run directory.
+  // The poll takes the later of it and the store's restart_requested, and
+  // the decide unit's own rule does the rest: a request newer than the child
+  // start restarts, an older one is a request an earlier restart served.
+  ['a restart request file newer than the child start, no store fact: restart_passive, named as requested', () => {
+    const r = run('request-new', { request: { at: START + 5, by: 'coordinator', reason: 'stuck' } });
+    assert.equal(r.action, 'restart_passive');
+    assert.match(r.reason, /^restart_requested/);
+  }],
+  ['a restart request file older than the child start, no store fact: continue', () => {
+    const r = run('request-old', { request: { at: START - 5, by: 'coordinator', reason: 'stuck' } });
+    assert.equal(r.action, 'continue');
+  }],
+  // The two sources in both orders, so a poll that reads one ahead of the
+  // other rather than the later of the two reds on one of these.
+  ['an older store fact beside a newer request file: the file is the later, so restart_passive', () => {
+    const r = run('request-over-store', {
+      store: store(decision('restart_requested', START - 5)),
+      request: { at: START + 5, by: 'coordinator', reason: 'stuck' },
+    });
+    assert.equal(r.action, 'restart_passive');
+  }],
+  ['a newer store fact beside an older request file: the store is the later, so restart_passive', () => {
+    const r = run('store-over-request', {
+      store: store(decision('restart_requested', START + 5)),
+      request: { at: START - 5, by: 'coordinator', reason: 'stuck' },
+    });
+    assert.equal(r.action, 'restart_passive');
+  }],
+
+  // The parser alone. Each null case is a file the supervisor must read as
+  // no request at all, and the control beside them is what shows the parser
+  // returns something for a file it should read.
+  ['parser control: a well-formed request returns its at', () => {
+    const dir = join(root, 'parse-ok');
+    fs.mkdirSync(dir, { recursive: true });
+    const now = Date.now();
+    fs.writeFileSync(join(dir, 'restart.request'), JSON.stringify({ at: now - 1000, by: 'coordinator', reason: 'stuck' }));
+    assert.equal(parser()(dir, now), now - 1000);
+  }],
+  ['parser: a missing file reads as no request', () => {
+    const dir = join(root, 'parse-missing');
+    fs.mkdirSync(dir, { recursive: true });
+    assert.equal(parser()(dir, Date.now()), null);
+  }],
+  ['parser: a file that is not JSON reads as no request, with no throw', () => {
+    const dir = join(root, 'parse-garbage');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(join(dir, 'restart.request'), '{"at": 17');
+    assert.equal(parser()(dir, Date.now()), null);
+  }],
+  ['parser: JSON that is not an object, or an object with no numeric at, reads as no request', () => {
+    const dir = join(root, 'parse-shape');
+    fs.mkdirSync(dir, { recursive: true });
+    const now = Date.now();
+    for (const body of ['null', '[1]', '5', JSON.stringify({ by: 'coordinator' }), JSON.stringify({ at: String(now - 1000) })]) {
+      fs.writeFileSync(join(dir, 'restart.request'), body);
+      assert.equal(parser()(dir, now), null, 'body ' + body);
+    }
+  }],
+  // A future-dated request stays newer than every child the supervisor
+  // launches, so reading it would restart the persona on every poll forever.
+  ['parser: an at ten minutes ahead of the clock reads as no request', () => {
+    const dir = join(root, 'parse-future');
+    fs.mkdirSync(dir, { recursive: true });
+    const now = Date.now();
+    fs.writeFileSync(join(dir, 'restart.request'), JSON.stringify({ at: now + 600000, by: 'coordinator', reason: 'stuck' }));
+    assert.equal(parser()(dir, now), null);
   }],
 ];
 

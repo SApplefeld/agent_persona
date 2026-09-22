@@ -115,6 +115,13 @@ ROLE_BOUNDARY_CONTROL="kit-compact-checkpoint.js boundary"
 # own presence case.
 ROLE_FLEET_CONTROL="health class changed"
 ROLE_FLEET_TOOL_CONTROL="fleet_status"
+# The restart lever on another persona, read as an ordered pair: the tool and
+# the duty to report every use of it. A sentence that names the tool and drops
+# the report reds, since the lever acts on a persona the operator may not know
+# is stuck. The tool name alone joins the absence sweeps, so the lever never
+# reaches a worker's priming.
+ROLE_RESTART_TOOL_CONTROL="fleet_restart"
+ROLE_RESTART_REPORT_CONTROL="report every use to the operator"
 ROLE_SEAT_CONTROL="reconciliation pass"
 # The duty points at the prompt's own opening line for what a quoted line is,
 # rather than carrying a second copy of that rule, so what is pinned here is
@@ -836,6 +843,10 @@ case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *) check "persona matches COORDINATOR_PERSONA: the fleet status tool is named for the on-demand read" 1 ;;
 esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_RESTART_TOOL_CONTROL"*"$ROLE_RESTART_REPORT_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the restart lever is named, with every use reported to the operator" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the restart lever is named, with every use reported to the operator" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_FLEET_LABEL_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the fleet-health duty runs on the [FLEET] prompt" 0 ;;
   *) check "persona matches COORDINATOR_PERSONA: the fleet-health duty runs on the [FLEET] prompt" 1 ;;
 esac
@@ -1004,7 +1015,7 @@ fi
 # reply variable reds here rather than slipping past a read of the role
 # variable alone.
 case "$(priming_concat)" in
-  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$SAY_PERSONA_ARG_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_QUOTE_POINTER_CONTROL"*|*"$ROLE_FLEET_TOOL_POINTER_CONTROL"*|*"$DESIGN_ARCHITECT_LIVE_CONTROL"*) check "persona differs from COORDINATOR_PERSONA: none of the named fleet-keeper duty literals reaches a worker through any part of the priming write" 1 ;;
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_RESTART_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$SAY_PERSONA_ARG_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_QUOTE_POINTER_CONTROL"*|*"$ROLE_FLEET_TOOL_POINTER_CONTROL"*|*"$DESIGN_ARCHITECT_LIVE_CONTROL"*) check "persona differs from COORDINATOR_PERSONA: none of the named fleet-keeper duty literals reaches a worker through any part of the priming write" 1 ;;
   *) check "persona differs from COORDINATOR_PERSONA: none of the named fleet-keeper duty literals reaches a worker through any part of the priming write" 0 ;;
 esac
 check_no_design_clause_fragment "persona differs from COORDINATOR_PERSONA: no design-escalation fragment reaches a worker through any part of the priming write" "$(priming_concat)"
@@ -1062,7 +1073,7 @@ else
   check "channel attached, COORDINATOR_PERSONA differs: coordinator role instruction is empty" 1
 fi
 case "$(priming_concat)" in
-  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$SAY_PERSONA_ARG_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_QUOTE_POINTER_CONTROL"*|*"$ROLE_FLEET_TOOL_POINTER_CONTROL"*|*"$DESIGN_ARCHITECT_LIVE_CONTROL"*) check "channel attached, COORDINATOR_PERSONA differs: none of the named fleet-keeper duty literals reaches the priming write" 1 ;;
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_RESTART_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$SAY_PERSONA_ARG_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_QUOTE_POINTER_CONTROL"*|*"$ROLE_FLEET_TOOL_POINTER_CONTROL"*|*"$DESIGN_ARCHITECT_LIVE_CONTROL"*) check "channel attached, COORDINATOR_PERSONA differs: none of the named fleet-keeper duty literals reaches the priming write" 1 ;;
   *) check "channel attached, COORDINATOR_PERSONA differs: none of the named fleet-keeper duty literals reaches the priming write" 0 ;;
 esac
 check_no_design_clause_fragment "channel attached, COORDINATOR_PERSONA differs: no design-escalation fragment reaches the priming write" "$(priming_concat)"
@@ -1088,7 +1099,7 @@ esac
 # holds no named owner claim, so a fleet probe or a design escalation from it
 # would be refused by the reach rule anyway.
 case "$(priming_concat)" in
-  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$SAY_PERSONA_ARG_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_QUOTE_POINTER_CONTROL"*|*"$ROLE_FLEET_TOOL_POINTER_CONTROL"*|*"$DESIGN_ARCHITECT_LIVE_CONTROL"*) check "default persona: none of the named fleet-keeper duty literals reaches the priming write" 1 ;;
+  *"$ROLE_FLEET_CONTROL"*|*"$ROLE_FLEET_TOOL_CONTROL"*|*"$ROLE_RESTART_TOOL_CONTROL"*|*"$ROLE_SEAT_CONTROL"*|*"$SAY_PERSONA_ARG_CONTROL"*|*"$ROLE_FLEET_LABEL_CONTROL"*|*"$ROLE_SEAT_LABEL_CONTROL"*|*"$ROLE_FLEET_QUOTE_POINTER_CONTROL"*|*"$ROLE_FLEET_TOOL_POINTER_CONTROL"*|*"$DESIGN_ARCHITECT_LIVE_CONTROL"*) check "default persona: none of the named fleet-keeper duty literals reaches the priming write" 1 ;;
   *) check "default persona: none of the named fleet-keeper duty literals reaches the priming write" 0 ;;
 esac
 check_no_design_clause_fragment "default persona: no design-escalation fragment reaches the priming write" "$(priming_concat)"

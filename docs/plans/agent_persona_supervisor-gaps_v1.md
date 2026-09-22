@@ -159,7 +159,7 @@ Acceptance criteria.
 - A file with `at` ten minutes ahead of the clock: ignored. A file that is not JSON: ignored, with no throw.
 - The coordinator instruction carries the new sentence, and `.kit/channel-reply-instruction-test.sh` pins it.
 
-Files in scope: `hooks/index.ts`, `.claude/types/claude-code-mcp.d.ts`, `bin/supervise-restart-request.mjs`, `bin/supervise-poll.mjs`, `bin/supervise.sh`, `.kit/fleet-status-unit-test.mjs`, `.kit/supervisor-poll-unit-test.mjs`, `.kit/channel-reply-instruction-test.sh`, `.kit/supervisor-natural-exit-test.sh`, `.kit/controller-tick-test.mjs` (the owner tier's tool count pin moves from fourteen to fifteen, and the reader list pin stays).
+Files in scope: `hooks/index.ts`, `.claude/types/claude-code-mcp.d.ts`, `bin/supervise-restart-request.mjs`, `bin/supervise-poll.mjs`, `bin/supervise.sh`, `.kit/fleet-status-unit-test.mjs`, `.kit/supervisor-poll-unit-test.mjs`, `.kit/channel-reply-instruction-test.sh`, `.kit/supervisor-natural-exit-test.sh`, `.kit/controller-tick-test.mjs` (the owner tier's tool count pin moves from fourteen to fifteen, and the reader list pin stays), `.kit/injection-ledger.json` (fold: the two new strings' sizes, per Related), `.kit/supervisor-natural-exit-parallel.sh` (fold: the new case in the runner's order).
 Tests: every refusal is pinned, because the tool's own rule is the only fence between a worker and a restart of the coordinator. The future-dated case is pinned because its failure is a restart loop. `.kit/supervisor-natural-exit-test.sh` takes over half an hour and holds the box, so it runs alone.
 
 ### 4. The keeper adopts a live supervisor
