@@ -411,3 +411,57 @@ Raised by the round 6 adversarial lens over the decision-seam plan's Section 3 a
 Remedy: add a `COST_ENABLED` branch to `emit_settings_json` beside the other `COST_*` options, and a roster field with a keeper map entry if the roster is meant to set it.
 
 Raised while documenting the decision seam, whose own `jevMode` option travels all five surfaces an option needs to reach a launched child and so cannot fall into this gap: the manifest declaration, the roster field, the keeper environment map onto `JEV_MODE`, the `emit_settings_json` branch that writes a new settings file, and `ensure_settings_jev_mode` for a run directory that already holds one. The root `README.md` counts six rather than five, the sixth being the plugin's own read of the option, which is the consumption point rather than a delivery leg and is what decides the effective default. `costEnabled` travels none of them, not even the manifest, where it is not declared at all. Confirmed here against the cited line, against the emitter, which carries no such branch, and against the manifest, which holds no such key.
+
+## A session that could not load its persona holds no watcher until a tool call reloads it (found 2026-09-22)
+
+A session whose store file does not parse at start-up comes up on the built-in default state. Its writes cannot publish that empty tree over the persona's real one, because `persist` reads the store before it writes and gives the persona up to whatever session the stored entry names. On the first heartbeat tick whose read parses, it yields the persona rather than publishing a claim built from a state it never loaded.
+
+What the yield costs is the watcher. The session stops owning the persona, so the owner-gated fleet and reconciliation work stops running for the life of that process. Recovery is the `agentic_identity` tool, which loads the persona's entry from a store that parses and clears the not-loaded field.
+
+Nothing recovers it on its own. The supervisor's hung check at `bin/supervise-decide.mjs:130-164` requires a stale heartbeat, a heartbeat session id matching the child, elapsed start-up grace, and no transcript write inside the staleness bound. A yielded session that is still answering turns keeps writing its transcript, so the check reads it as corroborated alive and continues rather than restarting it. So the session sits alive and watcher-less until a worker calls the tool.
+
+The goal tools do tell the worker the state was never loaded, and name the cause. They do not name the remedy, so a worker has to know that `agentic_identity` is what clears it.
+
+Remedy: one of three, and which is right is a design question rather than a known fix. Name the remedy in the not-loaded sentence the goal tools return, which is the cheapest and leaves the recovery manual. Or give the heartbeat a branch that holds the seat by sidecar and commons while publishing nothing and yielding to nothing, until a tool call loads the state, which keeps the watcher and is a new mechanism needing its own design stop. Or have the supervisor read the not-loaded state as its own restart trigger, which crosses into the restart rules the curation plan's `## Intent` refuses to change. The second keeps the sidecar live, which blocks the very relaunch that would otherwise recover the session, so its cost is not obviously smaller than the one it removes.
+
+Raised while executing section 1 of `docs/plans/agent_persona_goal-tree-curation_v1.md`, where a consultant priced the yield as recoverable through a supervisor relaunch. That pricing is wrong, and the restart rule cited above is why: the transcript corroboration is what stops the relaunch for a session that is alive. The yield is still the right behavior for that section, because the alternative writes the built-in default over the persona's stored tree.
+
+## A session that does not own its persona never trims its decision log (found 2026-09-22)
+
+`persist` in `hooks/index.ts` caps the decision log and the memory list at write time, rolling the overflow to the append-only channel log. Both caps sit below the ownership guard at the top of `persist`, which returns before reaching them. So a session that has yielded the persona, or that never took it, accumulates decisions in memory with nothing ever draining them. The fleet path pushes a decision on every reporting tick, and a passive reader can run for a long time.
+
+The population is pre-existing: the ownership guard has always returned above the caps. A session that holds the persona while its state never loaded is an owner, so it trims on every write like any other owner.
+
+The candidate remedy is to move the cap and roll above both guards, so the trim runs whatever the write decides. That needs care, because the roll writes to the channel log, and a session that has given up the persona writing to a shared log is its own question.
+
+## A supervisor shutdown or restart does not land while the state did not load (found 2026-09-22)
+
+A session whose persona state never loaded can call `supervisor_shutdown` and `supervisor_restart`, but the request reaches the supervisor in only one of the states such a session can be in. Both tools deliver their signal as a decision line written through `persist`. Over a store file that still will not parse, that write throws out of the tool. Over a repaired store that holds the persona's tree, `persist` gives the persona up and the tool answers with the live-holder sentence below. The request lands only where the store reads and holds no entry for this persona.
+
+So a session in this state cannot ask to be restarted, which is the one action most likely to fix it. The recovery in the meantime is `agentic_identity` once the store file reads again, after which both tools work, or stopping the process from outside, which `bin/supervise.sh` relaunches through its natural-exit path.
+
+The candidate remedy is a read-merge-write path for the supervisor signals, modelled on the commons-deferral write already in the heartbeat tick, which would let a restart request land as its own record without touching the tree. It was kept out of the curation work because it is a new write path.
+
+## A write refused by persist is reported as held by a live session, whether or not the holder is alive (found 2026-09-22)
+
+Fourteen lines in `hooks/index.ts` answer a refused write with "persona '<name>' is held by a live session; this write was not saved." `persist` refuses a write for two reasons, and neither one establishes that anything is alive. Either this session does not own the persona, or the stored entry names another session or epoch. That named session is often the one this session replaced, and it may have exited long ago.
+
+The sentence sends the reader looking for a live holder that may not exist. The goal tree curation plan replaced it for the six goal tools while a session's state is not loaded, and left every other site as it stands, since fixing three more of fourteen identical sites is a special case rather than a fix.
+
+Remedy: one sentence at every site that states what `persist` actually knows, that the store names another session and this write was not saved, or a check of the named holder's liveness where the sentence is built. The first is a wording change across fourteen sites and their test assertions. The second needs a commons read on every refused write.
+
+## persist and writeClaimDirect write into a store file of any JSON shape (found 2026-09-22)
+
+`session.start` and `agentic_identity` refuse a store file that parses to null, an array, a number or a string. `persist` and `writeClaimDirect` in `hooks/index.ts` parse the same file with no shape check. Over an array, the persona's entry is set as a named property that `JSON.stringify` drops, so the write reports success and stores nothing. Over a number or a string, the property assignment throws a TypeError. A store in either shape has no tree to lose, so nothing stored is destroyed, but an owner writing into it loses every write in silence.
+
+Remedy: route both reads through the shape-checking helper the start-up read and `agentic_identity` share. That changes the write path of every healthy session, which is why the goal tree curation work kept it out.
+
+## Decision lines held in memory past a failed persist are lost at exit (found 2026-09-22)
+
+Several sites in `hooks/index.ts` now catch a throw from `persist` and continue, among them the operator-turn stamps in `turn.start` and the turn's own record in `turn.complete`. The decision lines they pushed stay in memory and ride the next write that lands. If none lands before the process exits, they are gone, with no marker that they were ever held. Before the catches the same lines were lost with the escaping throw, so this is not a regression. These lines are the audit trail of operator-directed turns.
+
+Remedy: a log line in the catch naming the held count, or rolling held lines to the append-only channel log the decision cap already writes to.
+
+## A persona named __proto__, constructor or prototype is never stored (found 2026-09-22)
+
+`personaNameProblem` in `hooks/operator.ts` admits the three names. Assigning `store["__proto__"]` replaces the parsed object's prototype instead of writing a key, so the session reports itself owner of a persona that `JSON.stringify` never emits. The name comes from the tool argument or the configured persona, both operator-side. Remedy: refuse the three names in `personaNameProblem`.

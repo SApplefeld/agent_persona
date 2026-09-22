@@ -647,9 +647,12 @@ const sess: {
   // never finished holds the built-in default state below and nothing else.
   // session.start's store read sets the store cause where the file would not
   // read and clears it where the read parsed, and agentic_identity clears it
-  // on a store that parsed. While it stands, the six goal tools answer with
-  // it in place of an empty tree or a refusal naming a live holder, neither
-  // of which is true of a session that never loaded.
+  // on a store that parsed as an object. While it stands, the six goal tools
+  // answer with it in place of an empty tree or a refusal naming a live
+  // holder, neither of which is true of a session that never loaded. Every
+  // other tool answers on its own terms: persist reads the store before it
+  // writes and gives the persona up to whatever session the stored entry
+  // names, so a stored tree is not a session's to destroy by writing over it.
   stateNotLoaded: string | null;
 } = {
   persona: "default",
@@ -681,6 +684,22 @@ const sess: {
 const STATE_NOT_LOADED_STORE_CAUSE = "the store file could not be read, so this session came up on an empty default state";
 function stateNotLoadedText(cause: string): string {
   return `This session never loaded its persona's state: ${cause}. The stored goal tree is not shown and was not changed.`;
+}
+
+// The persona store's text parsed and shape-checked, for the reads that load a
+// persona's state from it: session.start's and agentic_identity's two. A parse
+// that returns is not a store that read. JSON.parse("null") returns null, and
+// an array, a number and a string all parse as cleanly, but none of them holds
+// a persona entry to load or an object a claim can be written into: a lookup
+// on null throws a TypeError, and a claim written into an array serializes
+// back as the array with the entry dropped. So anything but an object throws
+// here, the same refusal as a file that would not parse at all.
+function parsePersonaStore(text: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(text);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`the file parsed as ${parsed === null ? "null" : Array.isArray(parsed) ? "an array" : typeof parsed} rather than as an object of persona entries`);
+  }
+  return parsed as Record<string, unknown>;
 }
 
 // The turn state and workdir every commons-entry write carries, so the entry
@@ -2724,21 +2743,13 @@ export const register: Register = async (on, options) => {
     // quietly starts fresh being the same silence in another shape.
     let existing: Record<string, unknown> = {};
     try {
-      const parsed = await $.fs.exists(sess.storePath)
-        ? JSON.parse(await $.fs.read(sess.storePath))
+      // parsePersonaStore refuses a file that parses to anything but an
+      // object, so a store holding null, an array, a number or a string takes
+      // the catch below exactly as a parse error does, rather than reaching
+      // the persona lookup and throwing out of session.start from there.
+      existing = await $.fs.exists(sess.storePath)
+        ? parsePersonaStore(await $.fs.read(sess.storePath))
         : {};
-      // A parse that returned is not a store that read. JSON.parse("null")
-      // returns null, and an array, a number and a string all parse as
-      // cleanly, so a store holding any of them reaches the persona lookup
-      // below as something that has no entry to look up: on null that lookup
-      // throws a TypeError out of session.start, which leaves the rest of it
-      // unrun exactly as a parse error would. The shape is what this branch
-      // needs, so it is what is checked, and anything else is the same
-      // refusal as a file that would not parse at all.
-      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error(`the file parsed as ${parsed === null ? "null" : Array.isArray(parsed) ? "an array" : typeof parsed} rather than as an object of persona entries`);
-      }
-      existing = parsed as Record<string, unknown>;
     } catch (err) {
       // The claim this session takes below cannot be written into a store
       // that would not read, so the heartbeat tick publishes it at the first
@@ -2952,11 +2963,29 @@ export const register: Register = async (on, options) => {
             // as itself and so never promotes again for the life of the
             // process, and the controller tick returns at its owner check
             // from here on, so no [FLEET] and no [RECONCILE] prompt is ever
-            // submitted and the start-up refusal above reaches nobody. The
-            // claim is taken here instead, at the first read that parses,
-            // with commons deciding whether a live session got there first.
+            // submitted and the start-up refusal above reaches nobody. So a
+            // session that has its persona's state to publish takes the claim
+            // here instead, at the first read that parses, with commons
+            // deciding whether a live session got there first.
+            // A session that never loaded its state does not publish here.
+            // What writeClaimDirect below writes is the whole of sess.state,
+            // so a session still carrying the built-in default would put an
+            // empty tree into the store it has just managed to read. Where the
+            // state never loaded the branch is skipped, claimTaken stays false,
+            // and the yield below hands the persona to the name the store
+            // carries: giving it up costs this session's watcher, where
+            // publishing costs the persona's stored tree. Such a session can
+            // still take the claim the ordinary way, through a persist that
+            // finds no entry for its persona and writes its own, which is the
+            // self-heal and destroys nothing, so what this branch guards is the
+            // store that does hold a tree. A session that recovered through
+            // agentic_identity has the real state and its field cleared, so it
+            // publishes here. With the field cleared this way the branch is
+            // reached only when a foreign entry lands in the store after
+            // agentic_identity's own claim write, since that write puts this
+            // session's name in the store and the next tick reads it as its own.
             let claimTaken = false;
-            if (claimUnpublished) {
+            if (claimUnpublished && sess.stateNotLoaded === null) {
               try {
                 const claims = await readAllClaims(commonsStoreOf($), staleAfterMs);
                 const winner = commonsWinner(claims, `persona:${sess.persona}`);
@@ -3012,7 +3041,15 @@ export const register: Register = async (on, options) => {
         // live owner, no store-owner comparison needed. A reader-tier
         // session never promotes: it stays a reader even when the holder
         // it reads goes stale.
-        if (!sess.isOwner && arming !== "reader") {
+        // A session whose state never loaded stays a reader too. Taking the
+        // persona here loads the stored state and raises the epoch, and the
+        // field is cleared only by session.start, where its own store read
+        // parsed, and by agentic_identity, so what it would make is
+        // an owner every write of which is refused, holding the persona away
+        // from a session that could keep it. The same condition guards the
+        // claim publish above, so the tick's two persona-taking branches read
+        // alike, and a healthy session promotes in this one's place.
+        if (!sess.isOwner && arming !== "reader" && sess.stateNotLoaded === null) {
           let holderHb: HeartbeatEntry | null = null;
           try {
             if (await $.fs.exists(heartbeatPathOf())) {
@@ -3602,6 +3639,15 @@ export const register: Register = async (on, options) => {
               sess.fleetHealth = current;
               if (report.problem === undefined) sess.fleetFirstReadingDone = true;
               if (!sess.state.decisions.includes(changeDecision)) sess.state.decisions.push(changeDecision);
+              // What the line waits on, said without promising it lands. The
+              // repair is a store that parses again, and it is the only thing
+              // named here: a session carrying the built-in default rather
+              // than the persona's own state comes to hold that state only
+              // through a worker calling agentic_identity, which no background
+              // path does, so naming it beside the repair would name a wait
+              // that may never end. What the line does after the repair depends
+              // on what the file then says, and no sentence here tells an
+              // operator it will arrive.
               storeRefusedDecision = {
                 timestamp: Date.now(),
                 loop: "monitor",
@@ -3616,7 +3662,7 @@ export const register: Register = async (on, options) => {
               // it rides a carried line of its own, and the composed line above
               // it holds the plugin's own sentence alone.
               notes.push({
-                composed: `the steward's own state store '${sess.storePath}' refused the write that carries this report's audit line, so the report below went out and that line lands when the store parses again.`,
+                composed: `the steward's own state store '${sess.storePath}' refused the write that carries this report's audit line, so the report below went out and that line waits for a store that parses again.`,
                 carried: boundedText(safeErrorText(err)),
               });
               // Swallowed rather than rethrown. $.clock.every takes a callback
@@ -5482,7 +5528,12 @@ export const register: Register = async (on, options) => {
           action: "operator_stamp_withheld",
           detail: `record ${queuedDelivery.recordId} not stamped with turn ${e.turnId} (${reason} turn)`,
         });
-        await persist($);
+        // Attempted rather than depended on. This is bookkeeping with no
+        // caller to answer: a throw here would leave the tool call itself, so
+        // the tool the worker asked for would report a failure about a line
+        // the plugin writes for its own record. The line stands in memory and
+        // the first write that is not refused carries it.
+        try { await persist($); } catch { /* persist could not read or write the store; the line above waits in memory */ }
       }
     }
     if (sess.isOwner && stampRecordId) {
@@ -5504,7 +5555,10 @@ export const register: Register = async (on, options) => {
           action: "operator_turn_stamped",
           detail: `record ${submitted.id} stamped with turn ${e.turnId}`,
         });
-        await persist($);
+        // Attempted rather than depended on, as at the withheld stamp above.
+        // The stamp itself is in the commons record, which is written above
+        // this and stands whatever the persona store does.
+        try { await persist($); } catch { /* persist could not read or write the store; the line above waits in memory */ }
       }
     }
 
@@ -6335,7 +6389,12 @@ export const register: Register = async (on, options) => {
     }
 
     // M7: single guarded-write path (shared helper).
-    await persist($);
+    // Attempted rather than depended on. A throw from here would skip the
+    // next(e) below and leave the turn hook chain unfinished for every hook
+    // behind this one, which is a cost out of all proportion to a save this
+    // handler has no caller to report. The state stands in memory and the
+    // first write that is not refused carries it.
+    try { await persist($); } catch { /* persist could not read or write the store; this turn's record waits in memory */ }
 
     return next(e);
   });
@@ -6371,11 +6430,13 @@ export const register: Register = async (on, options) => {
         // joins as a reader. It keeps every reader:<target> claim it has
         // made, because delivery grounds each pending record on a live
         // reader:<target> claim at delivery time.
+        // A store that is not an object of persona entries throws here, ahead
+        // of the field below, as a store that does not parse does.
         const store: Record<string, unknown> = await $.fs.exists(sess.storePath)
-          ? (JSON.parse(await $.fs.read(sess.storePath)) as Record<string, unknown>)
+          ? parsePersonaStore(await $.fs.read(sess.storePath))
           : {};
         const existing = store[name] as AgentState | undefined;
-        // The store parsed, so the state below is the persona's own.
+        // The store parsed as an object, so the state below is the persona's own.
         sess.stateNotLoaded = null;
         if (existing) {
           sess.state = parseState(JSON.stringify(existing));
@@ -6407,13 +6468,16 @@ export const register: Register = async (on, options) => {
           await releaseResource(commonsStoreOf($), `persona:${previousPersona}`, sess.mySessionId, Date.now(), commonsMeta());
         } catch { /* non-fatal: commons is a coordination layer */ }
       }
+      // A store that is not an object of persona entries throws here, ahead
+      // of the field below and of the claim write, as a store that does not
+      // parse does.
       const store: Record<string, unknown> = await $.fs.exists(sess.storePath)
-        ? (JSON.parse(await $.fs.read(sess.storePath)) as Record<string, unknown>)
+        ? parsePersonaStore(await $.fs.read(sess.storePath))
         : {};
       const existing = store[name] as AgentState | undefined;
-      // The store parsed, so the state below is the persona's own. This is
-      // how a session whose session.start did not finish recovers its state:
-      // the goal tools answer from it once this has run.
+      // The store parsed as an object, so the state below is the persona's
+      // own. This is how a session whose session.start did not finish
+      // recovers its state: the goal tools answer from it once this has run.
       sess.stateNotLoaded = null;
       if (existing) {
         sess.state = parseState(JSON.stringify(existing));
@@ -7438,7 +7502,13 @@ export const register: Register = async (on, options) => {
         action: "operator_resolved",
         detail: `record ${id} resolved ${outcome}${note ? `: "${note.slice(0, 80)}"` : ""}`,
       });
-      await persist($);
+      // Attempted rather than depended on. The resolve itself is the commons
+      // record written above, which stands whatever the persona store does, so
+      // a throw here would tell the caller the resolve failed after it landed
+      // and invite a second call on a record that is already resolved. The
+      // decision line stands in memory and the first write that is not refused
+      // carries it.
+      try { await persist($); } catch { /* persist could not read or write the store; the line above waits in memory */ }
       return { result: `Record ${id} resolved (${outcome}).` };
     }
 

@@ -112,7 +112,7 @@ Both settings reach the child through `<rundir>/settings.json`. The supervisor e
 
 The seats themselves are instruction text the supervisor writes at priming. A launch whose persona equals `coordinatorPersona` gets the coordinator role instruction, which carries the fleet duty, the kit Coordinator seat and the design-escalation clause. A launch whose persona equals `architectPersona` gets the architect's charter instead: design work only, no standing goal, worktrees cut under its own directory, and a plan handed back through the coordinator persona. That launch is also the one that takes neither the skill-load sentence nor the coordinator steer sentence: both are cleared to the empty string for it (`bin/supervise.sh:2992-2993`), because the charter already states which skills a design ask takes and what it does with a coordinator record. `architectPersona` has no default, so a fleet that names no architect builds that charter for nobody and the escalation clause for nobody.
 
-Which class a fleet row takes, the order the five are tried in, and how the two words they share with a row's own `action` field behave are stated once, in the `fleet_status` tool description (`hooks/index.ts:2566-2603`). The `[FLEET]` prompt frame and `README.md` point there rather than restating it, because a session calling the tool holds that description and holds no file in this repository.
+Which class a fleet row takes, the order the five are tried in, and how the two words they share with a row's own `action` field behave are stated once, in the `fleet_status` tool description (`hooks/index.ts:2608-2645`). The `[FLEET]` prompt frame and `README.md` point there rather than restating it, because a session calling the tool holds that description and holds no file in this repository.
 
 That description states the rules a caller acts on and leaves the reasons here, because the engine refuses a tool description over 4,096 characters and the refusal throws out of the `session.start` hook every registration sits in. `.kit/tool-description-length-test.mjs` holds every registered description to 4,000.
 
@@ -140,7 +140,7 @@ Two files write text into a child session that nobody typed: `bin/supervise.sh` 
 
 ### What is injected, and how large
 
-`.kit/injection-ledger.json` is the committed size baseline, 40 entries totalling 29,181 characters. Ten entries come from `bin/supervise.sh` and total 13,480; thirty come from `hooks/index.ts` and total 15,701, of which the fifteen registered tool descriptions are 11,293.
+`.kit/injection-ledger.json` is the committed size baseline, 40 entries totalling 29,183 characters. Ten entries come from `bin/supervise.sh` and total 13,480; thirty come from `hooks/index.ts` and total 15,703, of which the fifteen registered tool descriptions are 11,293.
 
 | What a launch reads | Characters |
 |---|---|

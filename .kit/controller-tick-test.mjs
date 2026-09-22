@@ -3286,6 +3286,12 @@ async function main() {
     await caseGtc1_aRefusedRegistrationCostsThatToolAlone(clock);
     await caseGtc1_aSessionThatNeverStartedSaysSoAndWritesNothing(clock);
     await caseGtc1_anUnparseableStoreSaysSoAndWritesNothing(clock);
+    await caseGtc1_aRepairedStoreIsNotOverwrittenWithTheDefault(clock);
+    await caseGtc1_aNotLoadedSessionYieldsRatherThanOverwriteTheStoredTree(clock);
+    await caseGtc1_theOtherWritingToolsAnswerOnTheirOwnTerms(clock);
+    await caseGtc1_refusedBookkeepingDoesNotBreakTheTurnChain(clock);
+    await caseGtc1_aNotLoadedReaderDoesNotPromote(clock);
+    await caseGtc1_aNonObjectStoreDoesNotRecoverThroughIdentity(clock);
     await caseSection6Fleet_unchangedIsSilentAndOneChangeSubmitsOnce(clock);
     await caseSection6Fleet_runningRowsAreNotAllHealthy(clock);
     await caseSection6Fleet_aFirstEverLaunchIsNotStale(clock);
@@ -9269,6 +9275,17 @@ async function caseSection6Fleet_aThrownPersistStillReports(clock) {
   check("s6 fleet persist throw: it carries the persona whose class moved", spoke.length === 1 && spoke[0].includes("beta: healthy -> held"), spoke);
   check("s6 fleet persist throw: and the line saying the steward's own store refused the write",
     spoke.length === 1 && spoke[0].includes("refused the write that carries this report's audit line"), spoke);
+  // What that line promises the operator, which is where their next move comes
+  // from. The repair is a store that parses again and that is the only thing
+  // the line names: a session carrying the built-in default rather than the
+  // persona's own state comes to hold that state only through a worker calling
+  // agentic_identity, which no background path does, so a clause naming it
+  // would name a wait that may never end. What is pinned is what must be
+  // absent: no landing promised and no agentic_identity wait named.
+  check("s6 fleet persist throw: and that line promises no landing and names no wait on the persona's own state",
+    spoke.length === 1
+      && !spoke[0].includes("holding the persona's own state")
+      && !spoke[0].includes("lands when the store parses again"), spoke);
   // The message a failed write returns carries store text, so it rides a
   // carried line and the composed line above it holds the plugin's sentence
   // alone. The shape is what is read here, not a string the guard was handed.
@@ -9704,13 +9721,27 @@ async function caseSection6_anUnreadableStoreAtStartComesUpAndSaysSo(clock) {
   await tickAndSettle(h, clock);
   check("s6 start store: the line is said once rather than on every tick", fleetPrompts(h).length === 0, h.promptSubmits);
 
-  // The state the session came up on, read once the store parses again.
+  // The store, once the file parses again and carries no entry for this
+  // persona. Nothing of the persona's is in that file to lose, so the write
+  // lands and the entry is written from the state this session came up on.
+  // That is the heal rather than a leak: a persona whose store went missing
+  // gets an entry back, where a persona whose tree is in the file keeps it,
+  // the heartbeat tick handing the persona over before any write is reached.
   h.fsMap.set(PERSONA_STORE_FILE, "{}");
+  h.fsWrites.length = 0;
   await tickAndSettle(h, clock);
-  const after = getStateForPersona(h, "steward");
-  check("s6 start store: the session came up on a default state and recorded the refusal",
-    !!after && after.decisions.some((d) => d.action === "persona_store_unreadable") && after.decisions.some((d) => d.action === "persona_create"),
-    after?.decisions.map((d) => d.action));
+  check("s6 start store: the session writes its own entry into the store that parses again, there being none there to lose",
+    !!getStateForPersona(h, "steward"), h.fsMap.get(PERSONA_STORE_FILE));
+  check("s6 start store: and that write reached the store file",
+    h.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), h.fsWrites.map((w) => w.path));
+
+  // The cause the session recorded for itself, now in the entry that write
+  // created. It came up on the built-in default and said why, and that is
+  // what the file carries.
+  const held = getStateForPersona(h, "steward").decisions;
+  check("s6 start store: the session wrote the refusal it recorded at start, over the default state it came up on",
+    held.some((d) => d.action === "persona_store_unreadable") && held.some((d) => d.action === "persona_create"),
+    held.map((d) => d.action));
 
   // The control, varying the one axis: the same relaunch onto a store that
   // parses, with a persona already held so that a prompt goes out to carry the
@@ -9737,11 +9768,22 @@ async function caseSection6_anUnreadableStoreAtStartComesUpAndSaysSo(clock) {
   // The store heals to one naming the session that held the persona before
   // this one started. The claim this session took is in its heartbeat and in
   // commons and in nothing the store carries, so the name it finds there is
-  // its predecessor's rather than a successor's: yielding to it drops the
-  // persona to a session that is gone, and this session's own sidecar stamp
-  // then reads as the holder at the promotion check, which never fires again.
-  // What that costs is every [FLEET] and every [RECONCILE] prompt for the life
-  // of the process, so the claim is taken at the first read that parses.
+  // its predecessor's rather than a successor's.
+  //
+  // The claim is not taken at that first read that parses, and the persona is
+  // handed over instead. What the publish would write is the whole of this
+  // session's state, and a session that came up on an unreadable store holds
+  // the built-in default rather than the persona's own: publishing there puts
+  // an empty tree into the file it has just managed to read, and every later
+  // write keeps that version. So the two costs are weighed and the smaller one
+  // taken. Giving the persona up costs this session's watcher: the sidecar
+  // stamp reads as the holder at the promotion check, which never fires again,
+  // so every [FLEET] and every [RECONCILE] prompt stops for the life of the
+  // process. Publishing costs the persona's stored goal tree, which no
+  // relaunch brings back. The way back from the yield is agentic_identity,
+  // which loads the real state off a store that parses and clears the field,
+  // and caseGtc1_aRepairedStoreIsNotOverwrittenWithTheDefault drives that
+  // recovery beside this.
   const healedSeed = { fsMap: new Map(), storeMap: new Map() };
   seedHealthyFleet(healedSeed, now);
   healedSeed.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
@@ -9756,26 +9798,38 @@ async function caseSection6_anUnreadableStoreAtStartComesUpAndSaysSo(clock) {
   check("s6 start store heals: the session that came up on the broken store said so",
     fleetPrompts(healed).length === 1 && fleetPrompts(healed)[0].includes("could not be read when this session started"), healed.promptSubmits);
 
+  // The positive control for the silence at the end of this case, taken on
+  // this same harness and before the yield, on the same kind of change: a
+  // watched persona's class moves while this session still holds its own, and
+  // the prompt goes out. So the silence below is what giving the persona up
+  // costs rather than a harness that never speaks.
+  healed.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  healed.resetPromptSubmits();
+  await tickAndSettle(healed, clock);
+  check("s6 start store heals: a class that moves before the yield is reported",
+    fleetPrompts(healed).length === 1 && fleetPrompts(healed)[0].includes("beta: healthy -> held"), healed.promptSubmits);
+
   healed.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({
     steward: { persona: "steward", activeSessionId: "session-before-this-one", epoch: 4, decisions: [], memory: [], goals: [] },
   }));
   await fireHeartbeat(healed);
   const claimed = getStateForPersona(healed, "steward");
-  check("s6 start store heals: the first read that parses carries this session's own claim into the store",
-    !!claimed && claimed.activeSessionId === SESSION_ID, claimed && { activeSessionId: claimed.activeSessionId, epoch: claimed.epoch });
-  check("s6 start store heals: and the epoch is above the one the store carried",
-    !!claimed && claimed.epoch > 4, claimed?.epoch);
-  check("s6 start store heals: nothing was handed over",
-    !(healed.fsMap.get(YIELD_LOG_FILE) || "").length, healed.fsMap.get(YIELD_LOG_FILE));
+  check("s6 start store heals: the first read that parses does not carry this session's claim into the store",
+    !!claimed && claimed.activeSessionId === "session-before-this-one", claimed && { activeSessionId: claimed.activeSessionId, epoch: claimed.epoch });
+  check("s6 start store heals: and the epoch the store carried is left where it was",
+    !!claimed && claimed.epoch === 4, claimed?.epoch);
+  check("s6 start store heals: the persona was handed to the name the store carries",
+    (healed.fsMap.get(YIELD_LOG_FILE) || "").includes("session-before-this-one"), healed.fsMap.get(YIELD_LOG_FILE));
 
-  // The watcher still runs, which is the whole of what the yield above would
-  // have cost. The change is one the fleet has not carried on this harness, so
-  // a prompt naming it is this tick's own work rather than a queued one.
-  healed.fsMap.set("D:/fleetwake/p1/run/keeper.hold", "held while the disk fills\n");
+  // The watcher stops, which is what giving the persona up costs and the
+  // reason the comment above weighs it against the tree. The same persona's
+  // class moves back, which is the change the control above carried, and this
+  // time nothing goes out.
+  healed.fsMap.delete("D:/fleetwake/p1/run/keeper.hold");
   healed.resetPromptSubmits();
   await tickAndSettle(healed, clock);
-  check("s6 start store heals: the steward submits [FLEET] after the store parses again",
-    fleetPrompts(healed).length === 1 && fleetPrompts(healed)[0].includes("beta: healthy -> held"), healed.promptSubmits);
+  check("s6 start store heals: and the steward that gave the persona up submits no [FLEET]",
+    fleetPrompts(healed).length === 0, healed.promptSubmits);
 }
 
 // JSON.parse("null") returns null and throws nothing, so a store holding those
@@ -15461,8 +15515,8 @@ async function caseGtc1_aRefusedRegistrationCostsThatToolAlone(clock) {
   // decision log that holds the claim, so an empty log could not pass it.
   const control = await createTickHarness({ ...OPTS, caseName: "gtc1_refused_registration_control" });
   const controlNames = control.toolRegisters.map((t) => t.name);
-  check("gtc1 refused control: fifteen tools registered, fleet_status among them",
-    controlNames.length === 15 && controlNames.includes("fleet_status"), controlNames);
+  check("gtc1 refused control: fleet_status is registered",
+    controlNames.includes("fleet_status"), controlNames);
   check("gtc1 refused control: the refusing session registered every other tool",
     JSON.stringify(names) === JSON.stringify(controlNames.filter((n) => n !== "fleet_status")), { names, controlNames });
   const controlDecisions = getState(control).decisions;
@@ -15508,6 +15562,15 @@ async function caseGtc1_aSessionThatNeverStartedSaysSoAndWritesNothing(clock) {
 // A session that started over a store file that does not parse came up on a
 // default state. Its goal tools say so with the store cause, and the file it
 // could not read is left exactly as it was.
+//
+// What the byte-identical assertion below rests on, plainly: the two tool
+// calls are refused at the not-loaded check ahead of every write path, so
+// nothing here reaches a write at all, and a write that did reach one would
+// throw at persist's own JSON.parse of this garbage rather than be held back
+// by anything. So this case cannot speak for the guard that stops an unloaded
+// session publishing its default. The case that covers that guard is
+// caseGtc1_aRepairedStoreIsNotOverwrittenWithTheDefault, which drives it over
+// a store file that parses.
 async function caseGtc1_anUnparseableStoreSaysSoAndWritesNothing(clock) {
   console.log("\n=== Goal tree curation 1: a session over an unparseable store says so and writes nothing ===");
   clock.set(T0);
@@ -15549,6 +15612,613 @@ async function caseGtc1_anUnparseableStoreSaysSoAndWritesNothing(clock) {
     (controlStatus?.result || "").includes("g-root") && (controlStatus.result || "").includes("g-plan") && !String(controlStatus.result).includes(NOT_LOADED_TOKEN), controlStatus);
 }
 
+// The store file as it reads once whatever made it unreadable is repaired:
+// the persona's own tree, a root and one child, under the name of the session
+// that held the persona before this one. That name is what makes the
+// heartbeat tick read the store as one this session's claim is not in yet,
+// which is the condition its publish branch fires on.
+const GTC1_PREVIOUS_SESSION = "gtc1-previous-session";
+function gtc1RepairedStoreFile() {
+  const root = makeGoalNode({ id: "g-real-root", parentId: null, kind: "root", status: "pending", title: "The persona's own root" });
+  const plan = makeGoalNode({ id: "g-real-plan", parentId: "g-real-root", kind: "plan", status: "active", title: "The persona's own plan" });
+  const state = makeState({ goals: [root, plan], activeGoalId: "g-real-plan" });
+  state.activeSessionId = GTC1_PREVIOUS_SESSION;
+  state.epoch = 1;
+  return JSON.stringify({ default: state }, null, 2);
+}
+
+// The expensive failure this section names, driven over the write path rather
+// than over a throw. A session that starts on a store that does not parse
+// comes up owner on the built-in default state, holding its claim in the
+// heartbeat sidecar and in commons and nowhere in the store. Once the file
+// reads again, the heartbeat tick's publish branch is the one write that puts
+// this session's whole state into it, and that state is the built-in default
+// rather than the persona's. Published there it destroys the stored tree, and
+// every later persist rewrites the destroyed version.
+//
+// The case above cannot see this. Its store never parses, so persist throws
+// on the file and it is byte-identical for that reason rather than because
+// anything held a write back. Here the file parses and a write would land.
+async function caseGtc1_aRepairedStoreIsNotOverwrittenWithTheDefault(clock) {
+  console.log("\n=== Goal tree curation 1: a store that reads again is not overwritten with the default state ===");
+  clock.set(T0);
+  const seeded = { fsMap: new Map(), storeMap: new Map() };
+  seeded.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
+  const h = await relaunchStewardHarness("gtc1_repaired_store", seeded, { ...OPTS, caseName: "gtc1_repaired_store" });
+  const status = await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
+  check("gtc1 repaired: the session came up not loaded, with the store cause",
+    readsAsNotLoaded(status?.result, NOT_LOADED_STORE_CAUSE_TOKEN), status);
+  const commonsEntry = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("gtc1 repaired: and it came up holding its persona, which is what makes the tick want to publish",
+    !!commonsEntry && commonsEntry.claims.some((c) => c.resource === "persona:default"), commonsEntry);
+
+  // The file is repaired under the running session, which is what a session
+  // that started during a bad write meets a moment later.
+  const repaired = gtc1RepairedStoreFile();
+  h.fsMap.set(PERSONA_STORE_FILE, repaired);
+  h.fsWrites.length = 0;
+
+  await fireHeartbeat(h);
+  await fireTurn(h);
+
+  check("gtc1 repaired: the repaired file is byte-identical afterwards", h.fsMap.get(PERSONA_STORE_FILE) === repaired, h.fsMap.get(PERSONA_STORE_FILE));
+  check("gtc1 repaired: no write reached the store file", !h.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), h.fsWrites.map((w) => w.path));
+  const stored = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE)).default;
+  check("gtc1 repaired: the persona's own tree is still the stored tree",
+    JSON.stringify(stored.goals.map((g) => g.id)) === JSON.stringify(["g-real-root", "g-real-plan"]), stored.goals.map((g) => g.id));
+  check("gtc1 repaired: the store still names the session that held the persona before",
+    stored.activeSessionId === GTC1_PREVIOUS_SESSION, stored.activeSessionId);
+  check("gtc1 repaired: no persona_claim_published line landed in the store",
+    countAction(stored.decisions, "persona_claim_published") === 0, stored.decisions.map((d) => d.action));
+  // What the tick did instead, which is the intended behaviour rather than a
+  // silence: a session holding no real state gives the persona up.
+  check("gtc1 repaired: the tick yielded the persona to the name the store carries",
+    String(h.fsMap.get(YIELD_LOG_FILE) || "").includes(GTC1_PREVIOUS_SESSION), h.fsMap.get(YIELD_LOG_FILE));
+
+  // The control, varying the one axis the guard reads and nothing else. The
+  // same session over the same repaired file, except agentic_identity loads
+  // the persona's state off it first, which is how this section has a session
+  // recover. The store is then put back under the previous holder's name, so
+  // the tick meets the same unpublished-claim condition, and this time it
+  // publishes. The non-write above therefore rests on the guard rather than
+  // on anything else the sequence does.
+  const controlSeeded = { fsMap: new Map(), storeMap: new Map() };
+  controlSeeded.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
+  const control = await relaunchStewardHarness("gtc1_repaired_store_control", controlSeeded, { ...OPTS, caseName: "gtc1_repaired_store_control" });
+  control.fsMap.set(PERSONA_STORE_FILE, gtc1RepairedStoreFile());
+  const identity = await control.handlers["tool.call"](control.fake, { tool: "mcp__agentic-plugin__agentic_identity", persona: "default" }, async () => ({ result: "passthrough" }));
+  check("gtc1 repaired control: agentic_identity recovers the state and takes ownership",
+    String(identity?.result || "").includes("owner"), identity);
+  const controlStatus2 = await control.handlers["tool.call"](control.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
+  check("gtc1 repaired control: and the goal tools answer from the persona's tree rather than the not-loaded sentence",
+    String(controlStatus2?.result || "").includes("g-real-plan") && !String(controlStatus2?.result).includes(NOT_LOADED_TOKEN), controlStatus2);
+  control.fsMap.set(PERSONA_STORE_FILE, gtc1RepairedStoreFile());
+  await fireHeartbeat(control);
+  const controlStored = JSON.parse(control.fsMap.get(PERSONA_STORE_FILE)).default;
+  check("gtc1 repaired control: the tick does publish the claim under the same store conditions",
+    controlStored.activeSessionId === SESSION_ID, controlStored.activeSessionId);
+  check("gtc1 repaired control: and what it publishes is the persona's own tree, not a default",
+    JSON.stringify(controlStored.goals.map((g) => g.id)) === JSON.stringify(["g-real-root", "g-real-plan"]), controlStored.goals.map((g) => g.id));
+}
+
+
+// The order production runs the two clock callbacks in, which is what decides
+// whether a session that never loaded its state can reach the persona's tree
+// at all. Both timers default to 30000ms and the heartbeat tick is registered
+// first, so on a store that has been repaired under a running session the
+// heartbeat tick meets it before the controller tick does. It finds the name
+// the file carries, which is the session that held the persona before this one
+// started, and hands the persona over. Every write after that is a no-op at
+// persist's ownership check, so the stored tree stands with nothing inside
+// persist refusing anything.
+//
+// The control is the same sequence over a store that parses and holds no entry
+// for this persona. There the heartbeat tick finds nothing to yield to, the
+// session keeps the persona, and the write lands: a persona whose entry is
+// missing gets one back rather than staying unwritable for the life of the
+// process. So the two arms differ in whether a tree is there to lose, which is
+// the only thing that decides the outcome.
+
+// A store that parses and carries another persona's entry and none for this
+// one, which is what a persona whose entry was lost finds.
+function gtc1StoreWithNoEntryForThisPersona() {
+  const root = makeGoalNode({ id: "g-other-root", parentId: null, kind: "root", status: "pending", title: "Another persona's root" });
+  const other = makeState({ goals: [root], activeGoalId: null });
+  other.persona = "someone-else";
+  other.activeSessionId = "a-session-of-another-persona";
+  other.epoch = 2;
+  return JSON.stringify({ "someone-else": other }, null, 2);
+}
+
+async function caseGtc1_aNotLoadedSessionYieldsRatherThanOverwriteTheStoredTree(clock) {
+  console.log("\n=== Goal tree curation 1: a session that never loaded gives the persona up rather than overwrite its tree ===");
+  clock.set(T0);
+  const seeded = { fsMap: new Map(), storeMap: new Map() };
+  seeded.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
+  const h = await relaunchStewardHarness("gtc1_not_loaded_yields", seeded, { ...OPTS, caseName: "gtc1_not_loaded_yields" });
+  const status = await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
+  check("gtc1 yields: the session came up not loaded, with the store cause",
+    readsAsNotLoaded(status?.result, NOT_LOADED_STORE_CAUSE_TOKEN), status);
+  const heldAtStart = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("gtc1 yields: and it came up holding its persona, which is what puts the stored tree at risk",
+    !!heldAtStart && heldAtStart.claims.some((c) => c.resource === "persona:default"), heldAtStart);
+
+  // The file is repaired under the running session, and the two callbacks fire
+  // in the order the engine fires them.
+  const repaired = gtc1RepairedStoreFile();
+  h.fsMap.set(PERSONA_STORE_FILE, repaired);
+  h.fsWrites.length = 0;
+  await fireHeartbeat(h);
+  await tickAndSettle(h, clock);
+  // A turn behind the two callbacks, because a session holding no tree has an
+  // idle controller tick and an idle tick saves nothing. The turn's own save
+  // is the write both arms are read on, and it runs where production runs it,
+  // behind the heartbeat tick that has already met the repaired file.
+  await fireTurn(h);
+
+  check("gtc1 yields: the repaired file is byte-identical afterwards", h.fsMap.get(PERSONA_STORE_FILE) === repaired, h.fsMap.get(PERSONA_STORE_FILE));
+  check("gtc1 yields: no write reached the store file", !h.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), h.fsWrites.map((w) => w.path));
+  const stored = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE)).default;
+  check("gtc1 yields: the persona's own tree is still the stored tree",
+    JSON.stringify(stored.goals.map((g) => g.id)) === JSON.stringify(["g-real-root", "g-real-plan"]), stored.goals.map((g) => g.id));
+  // What the session is now, which is what makes every later write a no-op
+  // rather than a refusal. yieldNow releases the commons claim as it drops
+  // ownership, so the claim it took at start is the thing to read.
+  const heldAfter = h.storeMap.get(`commons:${SESSION_ID}`);
+  check("gtc1 yields: and the session is no longer the owner",
+    !!heldAfter && !heldAfter.claims.some((c) => c.resource === "persona:default"), heldAfter);
+  check("gtc1 yields: the persona went to the name the store carries",
+    String(h.fsMap.get(YIELD_LOG_FILE) || "").includes(GTC1_PREVIOUS_SESSION), h.fsMap.get(YIELD_LOG_FILE));
+
+  // The control, varying the one axis: the same session, the same two
+  // callbacks in the same order, over a repaired store that holds no entry for
+  // this persona. Nothing is there to lose, the session keeps the persona, and
+  // the write lands. So the silence above is the stored tree rather than a
+  // sequence that never reached a write.
+  const controlSeed = { fsMap: new Map(), storeMap: new Map() };
+  controlSeed.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
+  const control = await relaunchStewardHarness("gtc1_not_loaded_yields_control", controlSeed, { ...OPTS, caseName: "gtc1_not_loaded_yields_control" });
+  const noEntry = gtc1StoreWithNoEntryForThisPersona();
+  control.fsMap.set(PERSONA_STORE_FILE, noEntry);
+  control.fsWrites.length = 0;
+  await fireHeartbeat(control);
+  await tickAndSettle(control, clock);
+  await fireTurn(control);
+
+  check("gtc1 yields control: the write reached the store file", control.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), control.fsWrites.map((w) => w.path));
+  const controlStored = JSON.parse(control.fsMap.get(PERSONA_STORE_FILE));
+  check("gtc1 yields control: the persona has an entry again, under this session's own name",
+    !!controlStored.default && controlStored.default.activeSessionId === SESSION_ID, controlStored.default && controlStored.default.activeSessionId);
+  check("gtc1 yields control: and the other persona's entry is untouched",
+    JSON.stringify(controlStored["someone-else"].goals.map((g) => g.id)) === JSON.stringify(["g-other-root"]), controlStored["someone-else"]);
+  const controlHeld = control.storeMap.get(`commons:${SESSION_ID}`);
+  check("gtc1 yields control: the session kept the persona, there being no name in the file to yield to",
+    !!controlHeld && controlHeld.claims.some((c) => c.resource === "persona:default"), controlHeld);
+  // The write is not a recovery. The state it wrote is the built-in default
+  // this session came up on, so the session still says its own state never
+  // loaded and a worker asking is still told so.
+  const controlStatus = await control.handlers["tool.call"](control.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
+  check("gtc1 yields control: and the session still says its state never loaded",
+    readsAsNotLoaded(controlStatus?.result, NOT_LOADED_STORE_CAUSE_TOKEN), controlStatus);
+}
+
+
+// A not-loaded session over a store that parses, which is the state every
+// case below drives: the session came up on a file it could not read, so it
+// holds the built-in default and its persona's own tree is what the file
+// carries once it is repaired. Its claim is in the heartbeat sidecar and in
+// commons and in nothing the store says.
+async function gtc1NotLoadedOverARepairedStore(caseName) {
+  return gtc1NotLoadedOverStoreFile(caseName, gtc1RepairedStoreFile());
+}
+
+// The same session over whatever the file reads as once it is repaired, which
+// is the axis the cases below vary: a file carrying the persona's own tree
+// under another session's name, a file carrying no entry for this persona, and
+// a file that still does not parse.
+async function gtc1NotLoadedOverStoreFile(caseName, fileText, extraOpts = {}) {
+  const seeded = { fsMap: new Map(), storeMap: new Map() };
+  seeded.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
+  const h = await relaunchStewardHarness(caseName, seeded, { ...OPTS, ...extraOpts, caseName });
+  h.fsMap.set(PERSONA_STORE_FILE, fileText);
+  h.fsWrites.length = 0;
+  return h;
+}
+
+// The four state-writing tools that are not goal tools answer a session whose
+// state never loaded on their own terms. What keeps the persona's stored tree
+// out of their reach is the write path rather than anything at the tool:
+// persist reads the store, and a stored entry a session in this state could
+// destroy was written by another session, so the id comparison fires and
+// persist gives the persona up one line past the read.
+//
+// A refusal at the tool would cost function and buy nothing. The two
+// supervisor tools are the only in-band way to end or relaunch the run, which
+// is this section's own recovery; memory_add would discard a memory the store
+// takes safely; and agentic_resolve writes to the shared inbox store rather
+// than to the persona's, so a refusal there strands a delivered record at
+// delivered for good.
+//
+// Three arms, varying the one thing the write path reads: what the store file
+// carries for this persona. Over a file with no entry for this persona, each
+// of the four answers and its write lands. Over a file holding the persona's
+// tree under another session's name, each answers without throwing, the file
+// is byte-identical, and the persona goes to that name. Over a file that
+// still does not parse, agentic_resolve answers with its record resolved,
+// the other three leave the file byte-identical whatever they answer, and
+// goal_status read after all four shows the session was still not loaded.
+async function caseGtc1_theOtherWritingToolsAnswerOnTheirOwnTerms(clock) {
+  console.log("\n=== Goal tree curation 1: the remaining state-writing tools answer on their own terms while the state is not loaded ===");
+  clock.set(T0);
+
+  // Caught rather than awaited bare: a throw out of the tool call is a failure
+  // in the first two arms and an open answer in the third, and either way it
+  // is read here rather than aborting the suite around it.
+  const callOn = (harness) => async (event) => {
+    try {
+      return await harness.handlers["tool.call"](harness.fake, event, async () => ({ result: "passthrough" }));
+    } catch (err) {
+      return { threw: String(err) };
+    }
+  };
+
+  // Arm one: the store carries no entry for this persona, which is what a
+  // persona whose entry was lost finds. Nothing is there to destroy, persist
+  // writes, and every one of the four does its job.
+  const fresh = await gtc1NotLoadedOverStoreFile("gtc1_other_writers_fresh", gtc1StoreWithNoEntryForThisPersona());
+  const freshCall = callOn(fresh);
+  seedInboxRecord(fresh, "writer-a", 1, { at: T0 - 5000, status: "delivered", deliveredAt: T0 - 4000, turnId: "t-a" });
+  // The instrument's own control: on this same session a goal tool does answer
+  // the not-loaded sentence, so an answer below that does not read as one is
+  // the tool rather than a reader that never speaks.
+  const freshStatus = await freshCall({ tool: "mcp__agentic-plugin__goal_status" });
+  check("gtc1 other writers fresh: the session is not loaded, with the store cause",
+    readsAsNotLoaded(freshStatus?.result, NOT_LOADED_STORE_CAUSE_TOKEN), freshStatus);
+  // This persona's entry as the file carries it, absent until a write lands.
+  // Read tolerantly, so a write that never landed fails the check that reads
+  // it rather than the suite.
+  const freshEntry = () => JSON.parse(fresh.fsMap.get(PERSONA_STORE_FILE)).default;
+  const freshActions = () => (freshEntry()?.decisions ?? []).map((d) => d.action);
+
+  const remembered = await freshCall({ tool: "mcp__agentic-plugin__memory_add", text: "a memory worth keeping" });
+  check("gtc1 other writers fresh: memory_add is answered rather than refused on the state",
+    remembered?.deny === undefined && remembered?.threw === undefined, remembered);
+  check("gtc1 other writers fresh: and the memory reached the store file",
+    freshEntry()?.memory?.length === 1, freshEntry()?.memory);
+
+  const shutdown = await freshCall({ tool: "mcp__agentic-plugin__supervisor_shutdown", reason: "done for the day" });
+  check("gtc1 other writers fresh: supervisor_shutdown is answered",
+    String(shutdown?.result || "").includes("Shutdown requested") && shutdown?.deny === undefined, shutdown);
+  check("gtc1 other writers fresh: and the shutdown fact reached the store the supervisor polls",
+    freshActions().filter((a) => a === "shutdown_requested").length === 1, freshActions());
+
+  const restart = await freshCall({ tool: "mcp__agentic-plugin__supervisor_restart", reason: "picking up new hooks" });
+  check("gtc1 other writers fresh: supervisor_restart is answered",
+    String(restart?.result || "").includes("Restart requested") && restart?.deny === undefined, restart);
+  check("gtc1 other writers fresh: and the restart fact reached the store the supervisor polls",
+    freshActions().filter((a) => a === "restart_requested").length === 1, freshActions());
+
+  const freshResolve = await freshCall({ tool: "mcp__agentic-plugin__agentic_resolve", id: "default-writer-a-1", outcome: "done", note: "shipped" });
+  check("gtc1 other writers fresh: agentic_resolve is answered",
+    String(freshResolve?.result || "").includes("resolved") && freshResolve?.deny === undefined, freshResolve);
+  check("gtc1 other writers fresh: and the record reads resolved rather than delivered",
+    readStoreRecord(fresh, "inbox:default:writer-a:1")?.status === "resolved", readStoreRecord(fresh, "inbox:default:writer-a:1"));
+  check("gtc1 other writers fresh: and the other persona's entry is untouched",
+    JSON.stringify(JSON.parse(fresh.fsMap.get(PERSONA_STORE_FILE))["someone-else"].goals.map((g) => g.id)) === JSON.stringify(["g-other-root"]),
+    JSON.parse(fresh.fsMap.get(PERSONA_STORE_FILE))["someone-else"]);
+
+  // Arm two: the same four calls over a store that carries the persona's own
+  // tree under the name of the session that held it before. This is the tree
+  // the removed refusal was meant to protect. persist reads that name, gives
+  // the persona up and writes nothing, so the tree stands with no tool
+  // refusing anything. The write that landed in arm one is the control for
+  // the silence here: the two arms differ in the stored entry and nothing
+  // else.
+  const held = await gtc1NotLoadedOverStoreFile("gtc1_other_writers_held", gtc1RepairedStoreFile());
+  const heldCall = callOn(held);
+  seedInboxRecord(held, "writer-a", 1, { at: T0 - 5000, status: "delivered", deliveredAt: T0 - 4000, turnId: "t-a" });
+  const repaired = held.fsMap.get(PERSONA_STORE_FILE);
+  const heldStatus = await heldCall({ tool: "mcp__agentic-plugin__goal_status" });
+  check("gtc1 other writers held: the session is not loaded, with the store cause",
+    readsAsNotLoaded(heldStatus?.result, NOT_LOADED_STORE_CAUSE_TOKEN), heldStatus);
+
+  // The resolve goes first, because the first of these to reach persist is the
+  // one that meets the other session's name: persist gives the persona up
+  // there and every call behind it is a non-owner's.
+  const heldCases = [
+    ["agentic_resolve", { tool: "mcp__agentic-plugin__agentic_resolve", id: "default-writer-a-1", outcome: "done", note: "" }],
+    ["memory_add", { tool: "mcp__agentic-plugin__memory_add", text: "a memory written over a tree this session never read" }],
+    ["supervisor_shutdown", { tool: "mcp__agentic-plugin__supervisor_shutdown", reason: "done for the day" }],
+    ["supervisor_restart", { tool: "mcp__agentic-plugin__supervisor_restart", reason: "picking up new hooks" }],
+  ];
+  for (const [name, event] of heldCases) {
+    const r = await heldCall(event);
+    check(`gtc1 other writers held: ${name} answers rather than throwing`, r?.threw === undefined, r);
+  }
+  check("gtc1 other writers held: the repaired file is byte-identical afterwards", held.fsMap.get(PERSONA_STORE_FILE) === repaired, held.fsMap.get(PERSONA_STORE_FILE));
+  check("gtc1 other writers held: no write reached the store file", !held.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), held.fsWrites.map((w) => w.path));
+  const stillStored = JSON.parse(held.fsMap.get(PERSONA_STORE_FILE)).default;
+  check("gtc1 other writers held: the persona's own tree is still the stored tree",
+    JSON.stringify(stillStored.goals.map((g) => g.id)) === JSON.stringify(["g-real-root", "g-real-plan"]), stillStored.goals.map((g) => g.id));
+  // The resolve is not the persona store's, so giving the persona up costs it
+  // nothing: the record is resolved in the shared inbox store either way.
+  check("gtc1 other writers held: the record still reads resolved, that write not being the persona store's",
+    readStoreRecord(held, "inbox:default:writer-a:1")?.status === "resolved", readStoreRecord(held, "inbox:default:writer-a:1"));
+  // What the three calls behind the resolve were answered on, which is the
+  // persona this session no longer holds rather than the state it never
+  // loaded. This is the whole of the protection the removed refusal claimed.
+  check("gtc1 other writers held: the first write gave the persona up to the name the store carries",
+    String(held.fsMap.get(YIELD_LOG_FILE) || "").includes(GTC1_PREVIOUS_SESSION), held.fsMap.get(YIELD_LOG_FILE));
+
+  // Arm three: the store still does not parse, which is what makes persist
+  // throw rather than return. The resolve has already landed in the shared
+  // store by then, so the throw must not reach the caller and report a failure
+  // for work that is done. The other three follow it over the same file.
+  const broken = await gtc1NotLoadedOverStoreFile("gtc1_other_writers_broken", "{ this is not the JSON a store holds");
+  const brokenCall = callOn(broken);
+  seedInboxRecord(broken, "writer-a", 1, { at: T0 - 5000, status: "delivered", deliveredAt: T0 - 4000, turnId: "t-a" });
+  const brokenResolve = await brokenCall({ tool: "mcp__agentic-plugin__agentic_resolve", id: "default-writer-a-1", outcome: "done", note: "" });
+  check("gtc1 other writers broken: agentic_resolve answers rather than throwing the refused write at the caller",
+    brokenResolve?.threw === undefined && String(brokenResolve?.result || "").includes("resolved"), brokenResolve);
+  check("gtc1 other writers broken: and the record reads resolved rather than delivered",
+    readStoreRecord(broken, "inbox:default:writer-a:1")?.status === "resolved", readStoreRecord(broken, "inbox:default:writer-a:1"));
+  check("gtc1 other writers broken: the unparseable file is byte-identical afterwards",
+    broken.fsMap.get(PERSONA_STORE_FILE) === "{ this is not the JSON a store holds", broken.fsMap.get(PERSONA_STORE_FILE));
+
+  // The other three over the same file. What each answers here is not read:
+  // a throw and an answer are both open, since what these tools do over a
+  // store that will not read is not settled. What is read is the file, which
+  // none of them may change.
+  const brokenCases = [
+    ["memory_add", { tool: "mcp__agentic-plugin__memory_add", text: "a memory written over a store that will not read" }],
+    ["supervisor_shutdown", { tool: "mcp__agentic-plugin__supervisor_shutdown", reason: "done for the day" }],
+    ["supervisor_restart", { tool: "mcp__agentic-plugin__supervisor_restart", reason: "picking up new hooks" }],
+  ];
+  for (const [name, event] of brokenCases) {
+    await brokenCall(event);
+    check(`gtc1 other writers broken: after ${name} the unparseable file is byte-identical`,
+      broken.fsMap.get(PERSONA_STORE_FILE) === "{ this is not the JSON a store holds", broken.fsMap.get(PERSONA_STORE_FILE));
+    check(`gtc1 other writers broken: after ${name} no write reached the store file`,
+      !broken.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), broken.fsWrites.map((w) => w.path));
+  }
+  // The control that the four ran on a session still not loaded, read after
+  // them on the same session.
+  const brokenStatus = await brokenCall({ tool: "mcp__agentic-plugin__goal_status" });
+  check("gtc1 other writers broken: goal_status after all four still answers that the state never loaded, with the store cause",
+    readsAsNotLoaded(brokenStatus?.result, NOT_LOADED_STORE_CAUSE_TOKEN), brokenStatus);
+}
+
+// The plugin's own bookkeeping writes have no caller to answer. A refused
+// write there is not the worker's business and must not become the worker's
+// failure: the save at the end of turn.complete sits above the call that hands
+// the turn on to every hook behind this one, so a throw out of it stops the
+// chain for all of them.
+async function caseGtc1_refusedBookkeepingDoesNotBreakTheTurnChain(clock) {
+  console.log("\n=== Goal tree curation 1: a refused bookkeeping write does not break the turn hook chain ===");
+  clock.set(T0);
+  // Driven over a store file that does not parse, which is what makes persist
+  // throw: it reads the file with no try of its own. That throw is the one
+  // these three saves have to contain, and it reaches any session whose store
+  // goes bad rather than only one whose state never loaded.
+  const seeded = { fsMap: new Map(), storeMap: new Map() };
+  seeded.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
+  const h = await relaunchStewardHarness("gtc1_turn_chain", seeded, { ...OPTS, caseName: "gtc1_turn_chain" });
+  h.fsWrites.length = 0;
+  const unreadable = h.fsMap.get(PERSONA_STORE_FILE);
+
+  // turn.start opens the turn and is setup here: with no delivery queued it
+  // reaches neither of its stamp saves, so it has no refused write to contain.
+  // The stamp saves are driven by the second harness below.
+  await h.handlers["turn.start"](h.fake, { turnId: "gtc1-turn", text: "" }, async () => ({ result: "ok" }));
+
+  let completeRan = false;
+  let completeThrew = null;
+  try {
+    await h.handlers["turn.complete"](h.fake, { turnId: "gtc1-turn", aborted: true, reason: "aborted" }, async () => { completeRan = true; return { result: "ok" }; });
+  } catch (err) {
+    completeThrew = err;
+  }
+  check("gtc1 turn chain: turn.complete completes rather than throwing", completeThrew === null, String(completeThrew));
+  check("gtc1 turn chain: and it handed the turn on to the hooks behind it", completeRan, completeRan);
+
+  // The refusal is still a refusal: the turn ran to its end and wrote nothing.
+  check("gtc1 turn chain: the unreadable file is byte-identical afterwards", h.fsMap.get(PERSONA_STORE_FILE) === unreadable, h.fsMap.get(PERSONA_STORE_FILE));
+  check("gtc1 turn chain: no write reached the store file", !h.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), h.fsWrites.map((w) => w.path));
+
+  // The other two bookkeeping writes of the same pair of hooks: the line
+  // saying a delivered record was not stamped with this turn, and the line
+  // saying it was. Both sit in turn.start above the same handing-on, and a
+  // record's own stamp is in the commons store rather than in this file, so a
+  // refusal here costs a line of the log and nothing else.
+  // The record is delivered over a store the tick can write, and the file goes
+  // bad again before the two stamp turns run, which is the order a store that
+  // breaks under a running session produces.
+  const stampSeed = { fsMap: new Map(), storeMap: new Map() };
+  stampSeed.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
+  const d = await relaunchStewardHarness("gtc1_turn_chain_stamp", stampSeed, { ...OPTS, caseName: "gtc1_turn_chain_stamp" });
+  d.fsMap.set(PERSONA_STORE_FILE, gtc1StoreWithNoEntryForThisPersona());
+  d.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+  });
+  seedReaderClaim(d, "writer-nl", T0);
+  const key = seedInboxRecord(d, "writer-nl", 1, { at: T0 - 5000, status: "pending" });
+  await tickAndSettle(d, clock, 50);
+  check("gtc1 turn chain stamp: the record was delivered, which is what puts a turn's stamp in question",
+    readStoreRecord(d, key)?.status === "delivered", readStoreRecord(d, key));
+  const beforeBreak = d.fsMap.get(PERSONA_STORE_FILE);
+  d.fsMap.set(PERSONA_STORE_FILE, "{ this is not the JSON a store holds");
+
+  let withheldRan = false;
+  let withheldThrew = null;
+  try {
+    await d.handlers["turn.start"](d.fake, { turnId: "t-foreign", text: "a turn the plugin did not open" }, async () => { withheldRan = true; return { result: "ok" }; });
+  } catch (err) {
+    withheldThrew = err;
+  }
+  check("gtc1 turn chain stamp: a turn that withholds the stamp completes rather than throwing", withheldThrew === null, String(withheldThrew));
+  check("gtc1 turn chain stamp: and it handed the turn on to the hooks behind it", withheldRan, withheldRan);
+
+  let stampedRan = false;
+  let stampedThrew = null;
+  try {
+    await d.handlers["turn.start"](d.fake, { turnId: "t-own" }, async () => { stampedRan = true; return { result: "ok" }; });
+  } catch (err) {
+    stampedThrew = err;
+  }
+  check("gtc1 turn chain stamp: the turn that takes the stamp completes rather than throwing", stampedThrew === null, String(stampedThrew));
+  check("gtc1 turn chain stamp: and it handed the turn on to the hooks behind it", stampedRan, stampedRan);
+  check("gtc1 turn chain stamp: the record carries that turn's stamp, which is the write that is not this file's",
+    readStoreRecord(d, key)?.turnId === "t-own", readStoreRecord(d, key));
+
+  // That the withheld turn ran the withheld branch, rather than handing on
+  // from somewhere short of its save. The branch's decision line waits in
+  // memory past the refused save, so the file is put back as it read before
+  // it broke, a later turn's save carries the line, and it is read from there.
+  d.fsMap.set(PERSONA_STORE_FILE, beforeBreak);
+  await fireTurn(d, "t-after-repair");
+  const carried = JSON.parse(d.fsMap.get(PERSONA_STORE_FILE)).default;
+  check("gtc1 turn chain stamp: the withheld turn's operator_stamp_withheld line reached the store once it read again",
+    (carried?.decisions ?? []).some((dec) => dec.action === "operator_stamp_withheld" && String(dec.detail).includes("t-foreign")),
+    (carried?.decisions ?? []).map((dec) => [dec.action, dec.detail]));
+
+  // The control, varying the one axis: the same two hooks on a session whose
+  // state is loaded pass the turn on in the same way and do write. So the
+  // pair above is a refusal that was contained rather than a turn that never
+  // reached its save.
+  const control = await gtc1NotLoadedOverARepairedStore("gtc1_turn_chain_control");
+  await control.handlers["tool.call"](control.fake, { tool: "mcp__agentic-plugin__agentic_identity", persona: "default" }, async () => ({ result: "passthrough" }));
+  control.fsWrites.length = 0;
+  let controlRan = false;
+  await control.handlers["turn.start"](control.fake, { turnId: "gtc1-turn", text: "" }, async () => ({ result: "ok" }));
+  await control.handlers["turn.complete"](control.fake, { turnId: "gtc1-turn", aborted: true, reason: "aborted" }, async () => { controlRan = true; return { result: "ok" }; });
+  check("gtc1 turn chain control: a loaded session hands the turn on too", controlRan, controlRan);
+  check("gtc1 turn chain control: and its turn did reach the store file",
+    control.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), control.fsWrites.map((w) => w.path));
+}
+
+// The heartbeat tick's other persona-taking branch. A session that gave the
+// persona up while its state was not loaded meets a stale holder in the
+// sidecar and is the one session that must not take the persona back: the
+// promotion loads the store's state and raises the epoch, while the field
+// stays set, so every write it then makes is refused. It stays a reader, does
+// not stamp the owner heartbeat, and the persona waits for a session that can
+// keep it.
+async function caseGtc1_aNotLoadedReaderDoesNotPromote(clock) {
+  console.log("\n=== Goal tree curation 1: a session that never loaded its state does not promote to owner ===");
+  clock.set(T0);
+  const h = await gtc1NotLoadedOverARepairedStore("gtc1_no_promotion");
+  await fireHeartbeat(h);
+  check("gtc1 no promotion: the session gave the persona up, which is what leaves it a reader",
+    String(h.fsMap.get(YIELD_LOG_FILE) || "").includes(GTC1_PREVIOUS_SESSION), h.fsMap.get(YIELD_LOG_FILE));
+
+  // The sidecar names a holder that is not this session and has stopped
+  // stamping, which is the condition the promotion branch fires on.
+  const staleHolder = { default: { sessionId: GTC1_PREVIOUS_SESSION, epoch: 1, lastSeen: T0 - 600_000 } };
+  h.fsMap.set(HEARTBEAT_FILE, JSON.stringify(staleHolder));
+  const beforeStore = h.fsMap.get(PERSONA_STORE_FILE);
+  h.fsWrites.length = 0;
+  await fireHeartbeat(h);
+  check("gtc1 no promotion: the store still names the session that held the persona before",
+    JSON.parse(h.fsMap.get(PERSONA_STORE_FILE)).default.activeSessionId === GTC1_PREVIOUS_SESSION,
+    JSON.parse(h.fsMap.get(PERSONA_STORE_FILE)).default.activeSessionId);
+  check("gtc1 no promotion: the store file is byte-identical afterwards", h.fsMap.get(PERSONA_STORE_FILE) === beforeStore, h.fsMap.get(PERSONA_STORE_FILE));
+  check("gtc1 no promotion: the owner heartbeat still names the stale holder rather than this session",
+    JSON.parse(h.fsMap.get(HEARTBEAT_FILE)).default.sessionId === GTC1_PREVIOUS_SESSION, h.fsMap.get(HEARTBEAT_FILE));
+  check("gtc1 no promotion: nothing logged a promotion", !h.uiLogs.some((l) => l.includes("promoted to owner")), h.uiLogs);
+
+  // The control, varying the one axis. A session whose state did load, made a
+  // reader the same way by a store that named a holder it could not beat,
+  // meets the same stale sidecar and does promote. So the silence above is the
+  // field rather than a promotion branch this sequence never reached.
+  const controlSeed = { fsMap: new Map(), storeMap: new Map() };
+  controlSeed.fsMap.set(PERSONA_STORE_FILE, gtc1RepairedStoreFile());
+  const control = await relaunchStewardHarness("gtc1_no_promotion_control", controlSeed, { ...OPTS, caseName: "gtc1_no_promotion_control" });
+  const controlStatus = await control.handlers["tool.call"](control.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
+  check("gtc1 no promotion control: it came up with the persona's own tree loaded",
+    String(controlStatus?.result || "").includes("g-real-plan") && !String(controlStatus?.result).includes(NOT_LOADED_TOKEN), controlStatus);
+  const taken = JSON.parse(control.fsMap.get(PERSONA_STORE_FILE)).default;
+  control.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: { ...taken, activeSessionId: "a-session-it-cannot-beat", epoch: taken.epoch + 8 } }, null, 2));
+  await fireHeartbeat(control);
+  check("gtc1 no promotion control: it gave the persona up the same way",
+    String(control.fsMap.get(YIELD_LOG_FILE) || "").includes("a-session-it-cannot-beat"), control.fsMap.get(YIELD_LOG_FILE));
+  control.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: "a-session-it-cannot-beat", epoch: taken.epoch + 8, lastSeen: T0 - 600_000 } }));
+  await fireHeartbeat(control);
+  check("gtc1 no promotion control: the stale holder is taken over",
+    JSON.parse(control.fsMap.get(PERSONA_STORE_FILE)).default.activeSessionId === SESSION_ID,
+    JSON.parse(control.fsMap.get(PERSONA_STORE_FILE)).default.activeSessionId);
+  check("gtc1 no promotion control: and the promotion stamped the owner heartbeat",
+    JSON.parse(control.fsMap.get(HEARTBEAT_FILE)).default.sessionId === SESSION_ID, control.fsMap.get(HEARTBEAT_FILE));
+  // What makes the silence above readable. The log line the absence check
+  // looks for is one this instrument does produce, on a session that promotes,
+  // so an empty log there is a promotion that did not happen rather than a
+  // string the check was handed and nothing ever writes.
+  check("gtc1 no promotion control: and the promotion logged the line the absence above is read on",
+    control.uiLogs.some((l) => l.includes("promoted to owner")), control.uiLogs);
+}
+
+// agentic_identity is how a not-loaded session recovers, and it recovers only
+// from a store that reads as an object of persona entries, the same shape
+// session.start's own read requires. A file holding an array, a number or null
+// parses, but it holds no entry to load and no object to write a claim into:
+// on an array the claim write puts the array back with the persona's entry
+// dropped, since a named property on an array does not serialize, and every
+// goal write after it is lost. So each such file is refused the way a file
+// that does not parse is refused, by a throw, and the session is still not
+// loaded afterwards.
+//
+// The control is the same session over the same sequence, with the file then
+// repaired to an object holding the persona's entry: agentic_identity answers
+// and the goal tools show the stored tree, so the refusal above is the file's
+// shape rather than a session that could not recover at all. The reader arm
+// runs the identity call's reader branch, which reads the store on its own.
+async function caseGtc1_aNonObjectStoreDoesNotRecoverThroughIdentity(clock) {
+  console.log("\n=== Goal tree curation 1: agentic_identity does not recover a session from a store that is not an object ===");
+  clock.set(T0);
+  const callOn = (harness) => async (event) => {
+    try {
+      return await harness.handlers["tool.call"](harness.fake, event, async () => ({ result: "passthrough" }));
+    } catch (err) {
+      return { threw: String(err) };
+    }
+  };
+  const arms = [
+    ["an array", "[]", "owner"],
+    ["a number", "42", "owner"],
+    ["null", "null", "owner"],
+    ["an array, reader tier", "[]", "reader"],
+  ];
+  for (const [label, fileText, arming] of arms) {
+    const caseName = `gtc1_identity_non_object_${arming}_${fileText.replace(/\W/g, "") || "array"}`;
+    const h = await gtc1NotLoadedOverStoreFile(caseName, fileText, { arming });
+    const call = callOn(h);
+    const identity = await call({ tool: "mcp__agentic-plugin__agentic_identity", persona: "default" });
+    check(`gtc1 identity over ${label}: the call throws, as it does on a file that does not parse`,
+      identity?.threw !== undefined, identity);
+    // The refusal is the shape check's rather than some other throw, such as
+    // a property read on null, which would also throw.
+    check(`gtc1 identity over ${label}: and the throw is the store-shape refusal`,
+      String(identity?.threw ?? "").includes("rather than as an object of persona entries"), identity);
+    const status = await call({ tool: "mcp__agentic-plugin__goal_status" });
+    check(`gtc1 identity over ${label}: goal_status still answers that the state never loaded, with the store cause`,
+      readsAsNotLoaded(status?.result, NOT_LOADED_STORE_CAUSE_TOKEN), status);
+    check(`gtc1 identity over ${label}: the store file is byte-identical afterwards`,
+      h.fsMap.get(PERSONA_STORE_FILE) === fileText, h.fsMap.get(PERSONA_STORE_FILE));
+    check(`gtc1 identity over ${label}: no write reached the store file`,
+      !h.fsWrites.some((w) => w.path === PERSONA_STORE_FILE), h.fsWrites.map((w) => w.path));
+
+    // The control on the same session: the file repaired to an object holding
+    // the persona's own entry.
+    h.fsMap.set(PERSONA_STORE_FILE, gtc1RepairedStoreFile());
+    const recovered = await call({ tool: "mcp__agentic-plugin__agentic_identity", persona: "default" });
+    check(`gtc1 identity over ${label} control: once the file is an object, agentic_identity answers`,
+      recovered?.threw === undefined && recovered?.deny === undefined && String(recovered?.result || "").includes("persona 'default'"), recovered);
+    const recoveredStatus = await call({ tool: "mcp__agentic-plugin__goal_status" });
+    check(`gtc1 identity over ${label} control: and goal_status shows the stored tree`,
+      String(recoveredStatus?.result || "").includes("g-real-plan") && !String(recoveredStatus?.result).includes(NOT_LOADED_TOKEN), recoveredStatus);
+  }
+}
 
 // The heartbeat file is the supervisor's liveness instrument, and the supervisor
 // resolves it once against the absolute directory it launched the child in.
