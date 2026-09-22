@@ -6393,8 +6393,8 @@ async function caseDirectLines_architectAnswerIsDeliveredToTheWorker(clock) {
 // only where the plugin holds an architect name and the nudged session owns a
 // named persona, which is what the worker leg of the reach rule admits.
 // Controls: the same named worker with no architect configured, and a
-// default-persona session and the coordinator persona with one, each still
-// get the ASK: line and no architect sentence. The ASK: line is the proof each nudge went out, so the
+// default-persona session, the coordinator persona and the architect persona
+// itself with one, each still get the ASK: line and no architect sentence. The ASK: line is the proof each nudge went out, so the
 // absence reads a sent nudge rather than an empty submit list.
 async function caseDirectLines_idleNudgeNamesTheArchitectLine(clock) {
   console.log("\n=== Direct lines: the idle-gap nudge names the architect line only where an architect is configured ===");
@@ -6446,6 +6446,12 @@ async function caseDirectLines_idleNudgeNamesTheArchitectLine(clock) {
   const coord = await nudgeOf("direct_lines_nudge_coordinator", "coordinator", ARCH);
   check("direct lines nudge control: the coordinator persona's nudge still carries the ASK: line", typeof coord === "string", coord);
   check("direct lines nudge control: and names no architect line, matching the seats the steer text gates on", typeof coord === "string" && !/architect/i.test(coord), coord);
+
+  // The architect's own session holds the design seat and cannot route a
+  // design question to itself, so its nudge names no architect line.
+  const arch = await nudgeOf("direct_lines_nudge_architect", "architect", ARCH);
+  check("direct lines nudge control: the architect persona's nudge still carries the ASK: line", typeof arch === "string", arch);
+  check("direct lines nudge control: and names no architect line, since that session is the architect", typeof arch === "string" && !arch.includes("can go to the architect instead"), arch);
 }
 
 // ============================================================

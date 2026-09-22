@@ -371,13 +371,18 @@ STEER_ESCALATE_CONTROL="through agentic_say with persona set to"
 STEER_ARCH_ASK_CONTROL="A design question your plan does not cover"
 STEER_ARCH_ROUTE_CONTROL="goes to the architect instead, through agentic_say with persona set to"
 STEER_ARCH_REST_CONTROL="every other finding or escalation still goes to the coordinator as above"
-STEER_ARCH_ANSWER_CONTROL="quotes the id of a record you sent the architect is that question's answer"
-STEER_ARCH_INBOX_CONTROL="agentic_inbox with the same persona argument lists that record among your own there"
+STEER_ARCH_ANSWER_CONTROL="is the architect's answer to a question you sent it"
 STEER_ARCH_NOT_OPERATOR_CONTROL="does not send it there"
 # What makes the answer trustworthy is the label, which the plugin gives only
-# to the architect's own send. The inbox read matches it to the question and
-# proves nothing on its own, so the sentence says which does which.
-STEER_ARCH_LABEL_PROOF_CONTROL="The label is the plugin's proof that the architect sent it, and the agentic_inbox read only matches the answer to your question"
+# to the session owning the architect persona, and the sentence says why. The
+# quoted record id and the inbox read only match the answer to its question
+# and prove nothing on their own. A worker relaunched since it asked holds a
+# new session id, so its inbox cannot list the question, and the answer it
+# still receives is named as the architect's answer all the same.
+STEER_ARCH_LABEL_PROOF_CONTROL="That label is the plugin's proof that the architect sent it"
+STEER_ARCH_LABEL_WHY_CONTROL="the plugin gives a WORKER label naming the architect persona only to the session that owns that persona"
+STEER_ARCH_INBOX_CONTROL="The record id the answer quotes, and agentic_inbox with the same persona argument, only match the answer to the question it answers"
+STEER_ARCH_UNLISTED_CONTROL="An answer whose question you cannot list there, as after you relaunch, is still the architect's answer, used the same way"
 # The bracket opens the prompt, and it names the architect persona. The answer
 # can also break into a running turn as tool-result context, under the waited
 # marker or the urgent one, since only a coordinator bracket is kept off the
@@ -1109,7 +1114,7 @@ check_no_steer_arch_fragment "persona matches COORDINATOR_PERSONA: no worker arc
 # The design clause keeps both relay legs, which check_design_clause_fragments_present
 # reads above, and drops only the clause that said the architect never
 # addresses a worker.
-check_no_removed_routing "persona matches COORDINATOR_PERSONA: the coordinator's charter no longer says the architect never addresses a worker" "$(priming_concat)"
+check_no_removed_routing "persona matches COORDINATOR_PERSONA: the priming write carries none of the listed phrases denying the architect a direct line to a worker" "$(priming_concat)"
 
 # The same coordinator launch on a fleet that names no architect. The routing
 # clause is built from ARCHITECT_PERSONA, so with no name there is nowhere to
@@ -1212,10 +1217,12 @@ case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *"$STEER_UNVERIFIED_ACT_CONTROL"*"$STEER_ARCH_ANSWER_CONTROL"*) check "named worker, ARCHITECT_PERSONA set: the architect's answer is placed after the rule it narrows" 0 ;;
   *) check "named worker, ARCHITECT_PERSONA set: the architect's answer is placed after the rule it narrows" 1 ;;
 esac
-# The proof sentence follows the answer sentence it qualifies.
+# The proof sentences follow the answer sentence they qualify, in order: the
+# label is the proof and why, the quoted id and the inbox read only match, and
+# an answer whose question the session cannot list is still the answer.
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
-  *"$STEER_ARCH_ANSWER_CONTROL"*"$STEER_ARCH_LABEL_PROOF_CONTROL"*) check "named worker, ARCHITECT_PERSONA set: the label is named as the proof and the inbox read as the match" 0 ;;
-  *) check "named worker, ARCHITECT_PERSONA set: the label is named as the proof and the inbox read as the match" 1 ;;
+  *"$STEER_ARCH_ANSWER_CONTROL"*"$STEER_ARCH_LABEL_PROOF_CONTROL"*"$STEER_ARCH_LABEL_WHY_CONTROL"*"$STEER_ARCH_INBOX_CONTROL"*"$STEER_ARCH_UNLISTED_CONTROL"*) check "named worker, ARCHITECT_PERSONA set: the label is named as the proof, the quoted id and inbox read as the match, and an unlisted question's answer as the answer still" 0 ;;
+  *) check "named worker, ARCHITECT_PERSONA set: the label is named as the proof, the quoted id and inbox read as the match, and an unlisted question's answer as the answer still" 1 ;;
 esac
 # The answer is recognised by the bracket it opens with, as a prompt and in
 # both tool-result forms. Ordered, so the tool-result forms read as the same
@@ -1582,7 +1589,7 @@ case "${ARCHITECT_ROLE_INSTRUCTION:-}" in
   *"$ARCH_PLAN_ROUTE_CONTROL"*) check "persona matches ARCHITECT_PERSONA: a plan still reaches a worker's queue only through the coordinator" 0 ;;
   *) check "persona matches ARCHITECT_PERSONA: a plan still reaches a worker's queue only through the coordinator" 1 ;;
 esac
-check_no_removed_routing "persona matches ARCHITECT_PERSONA: the charter no longer says the architect never addresses a worker or that a worker's record is information" "$(priming_concat)"
+check_no_removed_routing "persona matches ARCHITECT_PERSONA: the priming write carries none of the listed phrases denying the architect a direct line to a worker or placing a worker's record outside its work" "$(priming_concat)"
 # The steer sentence is cleared for this seat, so the worker's architect
 # sentences, which ride it, never reach the architect itself.
 check_no_steer_arch_fragment "persona matches ARCHITECT_PERSONA: no worker architect sentence reaches the architect's priming write" "$(priming_concat)"

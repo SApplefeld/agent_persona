@@ -10,8 +10,8 @@
     {
       "name": "COORDINATOR_STEER_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 2611,
-      "words": 445
+      "chars": 2796,
+      "words": 477
     },
     {
       "name": "CHANNEL_REPLY_INSTRUCTION",
