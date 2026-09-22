@@ -2,7 +2,8 @@
 # supervisor-natural-exit-test.sh - harness case for bin/supervise.sh's
 # natural-exit path: what the supervisor does after a child exits on its own
 # rather than through a decide-unit stop. This is the coverage for the
-# backfilled root_complete branch of that path. Case (g) covers the other
+# untracked_work branch of that path and for the backfilled root_complete
+# branch, which reads the lines an old store still carries. Case (g) covers the other
 # route to RESTART_PASSIVE, the decide path acting on a real root_complete
 # while the child is still alive.
 #
@@ -13,14 +14,14 @@
 # ends the supervisor on its own: a shutdown_requested decision, or the crash
 # limit set to 1.
 #
-# Cases (a), (b), (b2) and (e) launch with --prompt. The supervisor then waits for the
+# Cases (a), (b), (b2), (e), (uw), (uw2) and (uw7) launch with --prompt. The supervisor then waits for the
 # priming turn's result line, and a child that exits without writing one is
 # seen dead before the poll loop starts, so the exit is handled by the
 # natural-exit path and never by a decide-unit read of the same store.
 #
 # Static pin, read from the files rather than restated here: the substring
-# get_root_complete tests for is inside the backstop's root_complete detail in
-# hooks/index.ts and absent from every other root_complete detail there.
+# get_root_complete tests for is absent from every root_complete detail in
+# hooks/index.ts, so no completion the hooks write reads as backfilled.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -204,56 +205,50 @@ fi  # end of the survivor-kill unit block
 # what made a case run alone behave differently from the same case run in the
 # whole suite: the stub wrote an empty detail and the supervisor read it as a
 # different decision.
-# --- Pin: the backfill literal, writer against reader ---
+# --- Pin: the backfill literal, reader against the hooks ---
 # get_root_complete's node script is the one place bin/supervise.sh tests a
 # decision's detail with includes(); more than one match fails the pin below.
 READER_SUBSTR=$(sed -n "s/.*newest\.detail\.includes('\([^']*\)').*/\1/p" "$SUP")
-# Each root_complete detail literal in the hooks, tagged by whether its
-# decision is timestamped backfillNow, which only the backstop uses. The
-# search for a detail ends at the next `action:` line, so a root_complete
-# whose detail is written in another shape yields no pair at all rather than
-# taking the following decision's detail as its own.
+# Every root_complete detail literal in the hooks. The search for a detail
+# ends at the next `action:` line, so a root_complete whose detail is written
+# in another shape yields no detail at all rather than taking the following
+# decision's detail as its own.
 DETAILS=$(awk '
-  /timestamp:/ { ts = $0 }
   /action: "root_complete",/ { want = 1; next }
   /action:/ { want = 0; next }
   want && /detail: `/ {
     s = $0; sub(/^[^`]*`/, "", s); sub(/`.*$/, "", s)
-    print ((ts ~ /timestamp: backfillNow,/) ? "BACKSTOP\t" : "OTHER\t") s
+    print s
     want = 0
   }' "$HOOKS")
-BACKSTOP_DETAIL=$(printf '%s\n' "$DETAILS" | sed -n 's/^BACKSTOP\t//p')
-OTHER_DETAILS=$(printf '%s\n' "$DETAILS" | sed -n 's/^OTHER\t//p')
+# An old store's line: the detail of the backfilled root_complete the hook
+# wrote for work with no open goal before it logged untracked_work instead,
+# with its root id filled in. No writer produces it now, and a store written
+# before still carries such lines until they roll off its decision log, so
+# cases (a) and (e) drive the supervisor's reader with it.
+BACKSTOP_DETAIL='Root root-r1 marked complete - backfilled, work already done'
 
 if [ "$RUN_UNITS" = 1 ]; then
 [ -n "$READER_SUBSTR" ] && [ "$(printf '%s\n' "$READER_SUBSTR" | wc -l)" -eq 1 ]
 check "pin: exactly one backfill substring test is found in bin/supervise.sh ('$READER_SUBSTR')" "$?"
-[ -n "$BACKSTOP_DETAIL" ] && [ "$(printf '%s\n' "$BACKSTOP_DETAIL" | wc -l)" -eq 1 ]
-check "pin: exactly one backstop root_complete detail is found in hooks/index.ts ('$BACKSTOP_DETAIL')" "$?"
-[ -n "$OTHER_DETAILS" ]; check "pin: a non-backstop root_complete detail is found in hooks/index.ts" "$?"
+[ -n "$DETAILS" ]; check "pin: a root_complete detail is found in hooks/index.ts" "$?"
 # The awk above pairs a root_complete decision with the backtick detail line
 # inside that same decision. A decision whose detail is written in any other
 # shape yields no pair, so this count is what turns that silence into a
 # failure: it is the check that says every root_complete in the file was
-# actually examined by the pins above, rather than skipped unnoticed.
+# actually examined by the pin below, rather than skipped unnoticed.
 ROOT_COMPLETE_WRITES=$(grep -c 'action: "root_complete",' "$HOOKS")
 DETAIL_COUNT=$(printf '%s\n' "$DETAILS" | grep -c .)
 [ "$ROOT_COMPLETE_WRITES" -gt 0 ] && [ "$DETAIL_COUNT" -eq "$ROOT_COMPLETE_WRITES" ]
 check "pin: every root_complete decision in hooks/index.ts yielded a detail (${DETAIL_COUNT}/${ROOT_COMPLETE_WRITES})" "$?"
-if [ -n "$READER_SUBSTR" ] && [ -n "$BACKSTOP_DETAIL" ]; then
-  case "$BACKSTOP_DETAIL" in *"$READER_SUBSTR"*) R=0 ;; *) R=1 ;; esac
-else
-  R=1
-fi
-check "pin: the reader's substring is inside the backstop's detail" "$R"
 R=1
-if [ -n "$READER_SUBSTR" ] && [ -n "$OTHER_DETAILS" ]; then
+if [ -n "$READER_SUBSTR" ] && [ -n "$DETAILS" ]; then
   R=0
   while IFS= read -r d; do
     case "$d" in *"$READER_SUBSTR"*) R=1 ;; esac
-  done <<< "$OTHER_DETAILS"
+  done <<< "$DETAILS"
 fi
-check "pin: no other root_complete detail carries the reader's substring, so a real completion never reads as backfilled" "$R"
+check "pin: no root_complete detail in hooks/index.ts carries the reader's substring, so a completion the hooks write never reads as backfilled" "$R"
 
 mark backfill-pins
 # --- Unit pins, run before any case drives a supervisor ---
@@ -1190,12 +1185,14 @@ mark stop-child-and-ratelimit
 fi  # end of the unit blocks
 
 # --- The stub child ---
-# ${...} placeholders in the extracted literals become a fixed root id.
+# ${...} placeholders in the extracted literal become a fixed root id. The
+# untracked_work detail is the shape the hook writes, and no reader parses it.
 STUB="$TMP/stub"
 mkdir -p "$STUB" "$TMP/home/.claude/plugins/store"
 printf '{}' > "$TMP/home/.claude/plugins/store/agentic-plugin_agent-persona-natexit.json"
-printf '%s' "${BACKSTOP_DETAIL:-}" | sed 's/\${[^}]*}/root-r1/g' > "$STUB/detail-backfilled"
-printf '%s\n' "${OTHER_DETAILS:-}" | head -n 1 | tr -d '\n' | sed 's/\${[^}]*}/root-r1/g' > "$STUB/detail-real"
+printf '%s' "$BACKSTOP_DETAIL" > "$STUB/detail-backfilled"
+printf '%s\n' "${DETAILS:-}" | head -n 1 | tr -d '\n' | sed 's/\${[^}]*}/root-r1/g' > "$STUB/detail-real"
+printf '%s' 'x1: stub goal' > "$STUB/detail-untracked"
 cat > "$STUB/claude" <<EOF
 #!/usr/bin/env bash
 # Reads its action for this launch from the current case's plan, one line per
@@ -1318,6 +1315,11 @@ case "\$action" in
   backfilled) IFS= read -r _; record root_complete "\$S/detail-backfilled"; exit 0 ;;
   backfilled7) IFS= read -r _; record root_complete "\$S/detail-backfilled"; exit 7 ;;
   real) IFS= read -r _; record root_complete "\$S/detail-real"; exit 0 ;;
+  # Work with no open goal: the hook's untracked_work line, then an exit.
+  untracked) IFS= read -r _; record untracked_work "\$S/detail-untracked"; exit 0 ;;
+  untracked7) IFS= read -r _; record untracked_work "\$S/detail-untracked"; exit 7 ;;
+  # A clean exit that records nothing.
+  clean) IFS= read -r _; exit 0 ;;
   # The coordinator's restart request, written the way fleet_restart writes
   # it: one file in the run directory, with no store fact beside it.
   request) IFS= read -r _; node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ at: Date.now(), by: "coordinator", reason: "stub" }))' "\$CASE_DIR/rd/restart.request"; exit 0 ;;
@@ -1545,6 +1547,42 @@ grep -q 'EXIT child-1 code=7 (natural)' "$LOG"; check "(e) child-1 is recorded a
 ! grep -q 'RESTART_PASSIVE:' "$LOG"; check "(e) no 'RESTART_PASSIVE:' line" "$?"
 [ "$RC" -eq 3 ] && grep -q 'STOP_CRASH_LOOP: 1 crashes' "$LOG"; check "(e) the exit is counted as a crash and ends the run (rc=$RC)" "$?"
 [ "$LAUNCHES" -eq 1 ]; check "(e) no second child launches (stub launches=$LAUNCHES)" "$?"
+
+# --- (uw) untracked_work, exit 0: relaunched unaccounted ---
+# The hook's line for work with no open goal. supervisorMaxRestartsPerHour=1
+# makes an accounted relaunch end the run with STOP_BUDGET, so its absence
+# shows the relaunch was not counted.
+drive uw "untracked,shutdown" 1 --prompt "stub goal"
+[ "$RC" -eq 0 ]; check "(uw) supervisor exits 0 on the second child's shutdown_requested (rc=$RC)" "$?"
+grep -q 'EXIT child-1 code=0 (natural)' "$LOG"; check "(uw) child-1's exit is handled by the natural-exit path with code 0" "$?"
+grep -q 'NOTE: untracked_work at [0-9]* > child start [0-9]* is untracked work' "$LOG"; check "(uw) the NOTE line names the untracked work" "$?"
+grep -q 'PASSIVE: relaunching unaccounted after untracked work' "$LOG"; check "(uw) the PASSIVE line names the unaccounted relaunch" "$?"
+! grep -q 'is backfilled' "$LOG"; check "(uw) no backfilled NOTE line" "$?"
+grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 2 ]; check "(uw) a second child launches (stub launches=$LAUNCHES)" "$?"
+! grep -q 'RESTART_PASSIVE:' "$LOG"; check "(uw) no 'RESTART_PASSIVE:' line anywhere in supervisor.log" "$?"
+! grep -q -e 'STOP_BUDGET' -e 'STOP_CRASH_LOOP' "$LOG"; check "(uw) no STOP_BUDGET or STOP_CRASH_LOOP line, so the relaunch was not accounted" "$?"
+grep -qE 'SWEEP\[natural_exit\] (clean|survivors|survivors_dead|survivors_alive|no_tree|tree_unread|record_behind_tree|record_no_descendant|record_stale|record_unverified):' "$LOG"
+check "(uw) the natural-exit sweep runs ahead of the relaunch and names its verdict" "$?"
+
+# --- (uw2) an untracked_work line older than the child's start is accounted ---
+# Child-1 records untracked_work and relaunches unaccounted as in (uw). Child-2
+# exits 0 recording nothing, so the newest untracked_work predates its start,
+# and its exit is accounted: with a budget of 1 that ends the run at exit 4.
+drive uw2 "untracked,clean" 1 --prompt "stub goal"
+[ "$RC" -eq 4 ] && grep -q 'STOP_BUDGET' "$LOG"; check "(uw2) child-2's clean exit is accounted and ends the run on the budget (rc=$RC)" "$?"
+[ "$(grep -c 'is untracked work' "$LOG")" -eq 1 ]; check "(uw2) exactly one untracked NOTE line, child-1's" "$?"
+[ "$LAUNCHES" -eq 2 ]; check "(uw2) two children launch (stub launches=$LAUNCHES)" "$?"
+
+# --- (uw7) untracked_work with a non-zero exit takes the crash path ---
+# The unaccounted relaunch in (uw) is gated on a clean exit. This case keeps
+# the line and flips the exit code: the run is accounted as a crash, and the
+# NOTE line (uw) asserts is absent here.
+drive uw7 "untracked7" 6 --prompt "stub goal"
+grep -q 'EXIT child-1 code=7 (natural)' "$LOG"; check "(uw7) child-1 is recorded as code=7, natural" "$?"
+! grep -q 'is untracked work' "$LOG"; check "(uw7) no untracked NOTE line, so the unaccounted relaunch was not taken" "$?"
+! grep -q 'RESTART_PASSIVE:' "$LOG"; check "(uw7) no 'RESTART_PASSIVE:' line" "$?"
+[ "$RC" -eq 3 ] && grep -q 'STOP_CRASH_LOOP: 1 crashes' "$LOG"; check "(uw7) the exit is counted as a crash and ends the run (rc=$RC)" "$?"
+[ "$LAUNCHES" -eq 1 ]; check "(uw7) no second child launches (stub launches=$LAUNCHES)" "$?"
 
 # --- (f) a child whose stdin is already gone at launch ---
 # The window between the coproc and the copy of its write fd is too narrow for

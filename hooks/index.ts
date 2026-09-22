@@ -552,14 +552,16 @@ function shouldSuppressReask(
 
 /**
  * Item 2 backstop (Round 28): whether a tool call counts as "did real
- * work" for the turn.complete backstop. Built-in file/shell tools that
- * change state; any MCP tool that is neither this plugin's own (which
- * would have opened a goal itself, making the backstop moot) nor the
+ * work" for the turn.complete backstop, which logs an `untracked_work`
+ * decision for a turn that did work with no open root. Built-in file/shell
+ * tools that change state; any MCP tool that is neither this plugin's own
+ * (which would have opened a goal itself, making the backstop moot) nor the
  * channel's reply tool (a priming turn's only call, which must never look
- * like task work - a channel-attached passive child otherwise backfills
- * a completed goal on its own acknowledgment turn and gets restarted in
- * a loop). Read-only tools (Read, Grep, Glob, ...) do not count: looking
- * at something is not doing the thing the operator asked for.
+ * like task work - a channel-attached passive child's acknowledgment turn
+ * would otherwise log untracked work, which the supervisor reads on a clean
+ * exit as a reason to relaunch). Read-only tools (Read, Grep, Glob, ...) do
+ * not count: looking at something is not doing the thing the operator
+ * asked for.
  */
 function isWorkTool(toolName: string): boolean {
   if (["Write", "Edit", "Bash", "NotebookEdit"].includes(toolName)) return true;
@@ -654,6 +656,14 @@ const sess: {
   // writes and gives the persona up to whatever session the stored entry
   // names, so a stored tree is not a session's to destroy by writing over it.
   stateNotLoaded: string | null;
+  // The one `untracked_work` decision this session keeps in the log: the
+  // timestamp of the line it last pushed, and how many turns that line
+  // counts. Both are unset until the turn.complete backstop first fires in
+  // this session, so a new session pushes its own line and leaves any line
+  // an earlier session wrote where it is. Session memory rather than
+  // persisted state, for that reason.
+  untrackedWorkAt: number | null;
+  untrackedWorkCount: number;
 } = {
   persona: "default",
   mySessionId: "pending",
@@ -676,6 +686,8 @@ const sess: {
   jevPlanHealth: new Map(),
   jevNextSpeakerStampId: null,
   stateNotLoaded: "plugin start-up did not finish, and the debug log's `session.start hook skipped` line names why",
+  untrackedWorkAt: null,
+  untrackedWorkCount: 0,
 };
 
 // The store cause sess.stateNotLoaded takes where session.start's store read
@@ -5687,59 +5699,52 @@ export const register: Register = async (on, options) => {
     const wasChannelOrigin = currentTurnIsChannelOrigin;
     currentTurnIsChannelOrigin = false;
 
-    // Item 2 sub-bullet (f016b69): a turn that did real work with no
-    // active root - the exact shape a cost-conscious model produces when
-    // it reads a one-step request as too small for goal_create, even
-    // after the [NO GOAL] reminder names size explicitly - gets a
-    // synthetic goal record after the fact, so "every request opens a
-    // goal, whatever its size" holds even when the model skipped the
-    // ritual. The condition is "no active root", not "goals.length === 0":
-    // item 4's second conversational request arrives with the first
-    // root still sitting in state, complete but present, so an empty-
-    // array check would silently never fire for that case. Gated off
+    // Item 2 sub-bullet (f016b69): a turn that did real work with no open
+    // root logs one `untracked_work` decision and leaves the goal tree
+    // alone. The tree changes only through a goal tool call that names the
+    // change, so this block builds no root, assigns nothing to goals and
+    // leaves activeGoalId as it is. A complete root can still hold a live
+    // plan that goal_add put under it, and that plan stays.
+    // The session keeps at most one such line. The first firing pushes it
+    // with count 1. Each later firing removes the one entry this session
+    // pushed, matched on action and on the held timestamp so a line an
+    // earlier session wrote stays, and pushes a fresh line at the tail with
+    // the new clock, the raised count and the new prompt excerpt. The log
+    // stays in time order, and the supervisor's clean-exit path reads the
+    // line's clock as newer than the child's start. Where the decision cap
+    // has already dropped the held line, the firing pushes and carries the
+    // count on. The match cannot be "the log's last entry", because turn
+    // starts, cost summaries and the like land between firings.
+    // The condition is "no open root", not "goals.length === 0": a request
+    // after a finished one arrives with that root still in state. Gated off
     // real work only (isWorkTool, Round 28) and off priming/nudge turns
-    // (isPrimingTurn, wasNudged) - a channel-attached passive child's own
-    // acknowledgment turn must never look like task work, or the
-    // supervisor sees a fabricated root_complete and restart-loops it.
+    // (isPrimingTurn, wasNudged), since a channel-attached passive child's
+    // own acknowledgment turn is not task work. The turn's persist below
+    // carries the write.
     const currentRoot = sess.state.goals.find((g) => g.parentId === null);
     const noActiveRoot = !currentRoot || currentRoot.status === "complete" || currentRoot.status === "abandoned";
     if (!skipped && sess.isOwner && !isPrimingTurn && !wasNudged && noActiveRoot && toolCallsThisTurn > 0) {
-      const backfillNow = Date.now();
-      const objective = (currentPrompt || "Untitled request").slice(0, 200);
-      const rootId = `root-${backfillNow.toString(36)}`;
-      const backfillRoot: GoalNode = {
-        id: rootId,
-        parentId: null,
-        kind: "root",
-        title: objective.slice(0, 80),
-        objective,
-        status: "complete",
-        source: "worker",
-        maxRounds: 1,
-        completedRounds: 1,
-        scores: [{ round: 1, result: "complete" }],
-        notes: ["Backfilled: the worker did the work without calling goal_create this turn."],
-        planningRounds: 0,
-        consecutiveBlockedPlannings: 0,
-        consecutivePlanningFailures: 0,
-        planningRound: 0,
-        createdAt: backfillNow,
-        updatedAt: backfillNow,
-      };
-      sess.state.goals = [backfillRoot];
-      sess.state.activeGoalId = null;
+      const untrackedNow = Date.now();
+      const excerpt = (currentPrompt || "Untitled request").slice(0, 80);
+      const heldAt = sess.untrackedWorkAt;
+      if (heldAt !== null) {
+        const decisions = sess.state.decisions;
+        for (let i = decisions.length - 1; i >= 0; i--) {
+          if (decisions[i].action === "untracked_work" && decisions[i].timestamp === heldAt) {
+            decisions.splice(i, 1);
+            break;
+          }
+        }
+      }
+      const count = sess.untrackedWorkCount + 1;
       sess.state.decisions.push({
-        timestamp: backfillNow,
+        timestamp: untrackedNow,
         loop: "goal",
-        action: "create",
-        detail: `Root ${rootId} "${objective.slice(0, 80)}" created (max 1 rounds) - backfilled, no goal_create call this turn`,
+        action: "untracked_work",
+        detail: `x${count}: ${excerpt}`,
       });
-      sess.state.decisions.push({
-        timestamp: backfillNow,
-        loop: "goal",
-        action: "root_complete",
-        detail: `Root ${rootId} marked complete - backfilled, work already done`,
-      });
+      sess.untrackedWorkAt = untrackedNow;
+      sess.untrackedWorkCount = count;
     }
 
     // Item 8.2 (Round 36, extended Round 39): an ask record opens only when

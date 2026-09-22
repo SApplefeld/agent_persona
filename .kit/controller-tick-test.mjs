@@ -3040,13 +3040,16 @@ async function main() {
     await caseD5b_reraiseOnce(clock);
     await caseItem2_noGoalReminderPushesOnSize(clock);
     await caseItem2_noGoalReminder_control(clock);
-    await caseItem2_backfillOnRealWork(clock);
-    await caseItem2_backfillOnRealWork_control(clock);
-    await caseItem2_backfillSkipsPrimingTurn(clock);
-    await caseItem2_backfillSkipsNudgeTurn(clock);
+    await caseItem2_untrackedWorkLogsLineAndBuildsNoRoot(clock);
+    await caseItem2_untrackedWorkExcerptIsBounded(clock);
+    await caseItem2_untrackedWorkNotOnNoToolTurn(clock);
+    await caseItem2_untrackedWorkSkipsPrimingTurn(clock);
+    await caseItem2_untrackedWorkSkipsNudgeTurn(clock);
     await caseChannelBackstop_firesOnChannelOriginNoReply(clock);
     await caseChannelBackstop_skipsKeyboardOrigin(clock);
-    await caseItem2_backfillFiresOnSecondRequest(clock);
+    await caseItem2_untrackedWorkKeepsLivePlanUnderCompleteRoot(clock);
+    await caseItem2_untrackedWorkCollapsesToOneLine(clock);
+    await caseItem2_untrackedWorkCarriesCountPastCap(clock);
     await caseItem8p2_classifier_ask_operator_converts_unconditionally(clock);
     await caseItem8p2_pause_converts_unconditionally(clock);
     await caseItem8p2_worker_states_fork_opens_ask(clock);
@@ -3643,54 +3646,80 @@ async function caseItem2_noGoalReminder_control(clock) {
 }
 
 // ============================================================
-// Item 2 sub-bullet: the turn.complete backstop backfills a goal record
-// when a turn does real tool work with no goal tree at all - the shape a
-// cost-conscious model produces even after the [NO GOAL] reminder (live-
-// confirmed three times, Round 24/26, commit c0e07f5/this section).
+// Item 2 sub-bullet: the turn.complete backstop logs one `untracked_work`
+// decision when a turn does real tool work with no open root, and leaves the
+// goal tree alone. A session keeps one such line, re-pushed at the tail on
+// each firing with a raised count.
 // ============================================================
-async function caseItem2_backfillOnRealWork(clock) {
-  console.log("\n=== Item 2: turn.complete backfills a goal when work happened with no tree ===");
+
+// One working turn: a prompt, a turn, one Write call, a completed answer.
+async function untrackedWorkTurn(h, turnId, text) {
+  await h.handlers["prompt.submit"](h.fake, { text }, async () => ({}));
+  await h.handlers["turn.start"](h.fake, { turnId }, async () => ({ result: "ok" }));
+  await h.handlers["tool.call"](h.fake, { tool: "Write", turnId }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId, answer: "Done.", reason: "completed" }, async () => ({ result: "ok" }));
+}
+
+function untrackedLines(h) {
+  return getDecisions(h).filter(d => d.action === "untracked_work");
+}
+
+async function caseItem2_untrackedWorkLogsLineAndBuildsNoRoot(clock) {
+  console.log("\n=== Item 2: a working turn with no tree logs untracked_work and builds no root ===");
   clock.set(T0);
   const mySid = SESSION_ID;
   const now = T0;
 
-  const h = await createTickHarness({ ...OPTS, caseName: "item2_backfill", stateOpts: { hasActiveLeaf: false } });
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_untracked_no_root", stateOpts: { hasActiveLeaf: false } });
   h.storeMap.set(`commons:${mySid}`, {
     sessionId: mySid,
     lastSeen: now,
     claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
   });
 
-  const submitH = h.handlers["prompt.submit"];
-  await submitH(h.fake, { text: "Write a haiku to ocean.txt." }, async () => ({}));
-
-  const turnStartH = h.handlers["turn.start"];
-  await turnStartH(h.fake, { turnId: "t-backfill" }, async () => ({ result: "ok" }));
-
-  // The model wrote the file directly - a real tool call, no goal_create.
-  const toolCallH = h.handlers["tool.call"];
-  await toolCallH(h.fake, { tool: "Write", turnId: "t-backfill" }, async () => ({ result: "ok" }));
-
-  const turnCompleteH = h.handlers["turn.complete"];
-  await turnCompleteH(h.fake, { turnId: "t-backfill", answer: "Wrote the haiku.", reason: "completed" }, async () => ({ result: "ok" }));
+  await untrackedWorkTurn(h, "t-untracked", "Write a haiku to ocean.txt.");
 
   const state = getState(h);
-  check("item2 backfill: a root node now exists", state.goals.length === 1);
-  check("item2 backfill: root is marked complete", state.goals[0]?.status === "complete");
+  check("item2 untracked: goals stay empty", state.goals.length === 0, state.goals);
+  check("item2 untracked: activeGoalId stays null", state.activeGoalId === null);
+  const lines = untrackedLines(h);
+  check("item2 untracked: exactly one untracked_work decision", lines.length === 1, lines);
+  check("item2 untracked: the line is on the goal loop", lines[0]?.loop === "goal");
+  check("item2 untracked: detail is the count and the prompt excerpt", lines[0]?.detail === "x1: Write a haiku to ocean.txt.", lines[0]?.detail);
   const decisions = state.decisions || [];
-  check("item2 backfill: create decision logged", decisions.some(d => d.action === "create" && d.detail.includes("backfilled")));
-  check("item2 backfill: root_complete decision logged", decisions.some(d => d.action === "root_complete" && d.detail.includes("backfilled")));
+  check("item2 untracked: no create decision", !decisions.some(d => d.action === "create"));
+  check("item2 untracked: no root_complete decision", !decisions.some(d => d.action === "root_complete"));
 }
 
-// Control: the same shape, but the turn used no tool at all (pure chat) -
-// the backstop must not fabricate a goal for a turn that did nothing.
-async function caseItem2_backfillOnRealWork_control(clock) {
-  console.log("\n=== Item 2 control: no backfill when the turn used no tool ===");
+// The excerpt is the prompt's first 80 characters.
+async function caseItem2_untrackedWorkExcerptIsBounded(clock) {
+  console.log("\n=== Item 2: the untracked_work excerpt is the prompt's first 80 characters ===");
   clock.set(T0);
   const mySid = SESSION_ID;
   const now = T0;
 
-  const h = await createTickHarness({ ...OPTS, caseName: "item2_backfill_control", stateOpts: { hasActiveLeaf: false } });
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_untracked_excerpt", stateOpts: { hasActiveLeaf: false } });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  const longPrompt = "a".repeat(80) + "TAIL-NOT-KEPT";
+  await untrackedWorkTurn(h, "t-long", longPrompt);
+  const lines = untrackedLines(h);
+  check("item2 untracked excerpt: detail carries exactly 80 prompt characters", lines.length === 1 && lines[0].detail === `x1: ${"a".repeat(80)}`, lines[0]?.detail);
+}
+
+// Control: the same shape, but the turn used no tool at all (pure chat) -
+// the backstop writes nothing for a turn that did nothing.
+async function caseItem2_untrackedWorkNotOnNoToolTurn(clock) {
+  console.log("\n=== Item 2 control: no untracked_work when the turn used no tool ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_untracked_control", stateOpts: { hasActiveLeaf: false } });
   h.storeMap.set(`commons:${mySid}`, {
     sessionId: mySid,
     lastSeen: now,
@@ -3709,20 +3738,19 @@ async function caseItem2_backfillOnRealWork_control(clock) {
   await turnCompleteH(h.fake, { turnId: "t-nochat", answer: "I like blue.", reason: "completed" }, async () => ({ result: "ok" }));
 
   const state = getState(h);
-  check("item2 backfill control: no goal fabricated for a no-tool turn", state.goals.length === 0);
+  check("item2 untracked control: goals stay empty on a no-tool turn", state.goals.length === 0);
+  check("item2 untracked control: no untracked_work on a no-tool turn", untrackedLines(h).length === 0);
 }
 
-// Round 28: the backstop must never fire on a priming turn (a channel-
-// attached passive child's own acknowledgment, whose only tool call is
-// reply) - the exact shape that would otherwise restart-loop the
-// supervisor on a fabricated root_complete.
-async function caseItem2_backfillSkipsPrimingTurn(clock) {
-  console.log("\n=== Item 2 Round 28: no backfill on a priming turn ===");
+// Round 28: the backstop never fires on a priming turn (a channel-attached
+// passive child's own acknowledgment, whose only tool call is reply).
+async function caseItem2_untrackedWorkSkipsPrimingTurn(clock) {
+  console.log("\n=== Item 2 Round 28: no untracked_work on a priming turn ===");
   clock.set(T0);
   const mySid = SESSION_ID;
   const now = T0;
 
-  const h = await createTickHarness({ ...OPTS, caseName: "item2_backfill_priming", stateOpts: { hasActiveLeaf: false } });
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_untracked_priming", stateOpts: { hasActiveLeaf: false } });
   h.storeMap.set(`commons:${mySid}`, {
     sessionId: mySid,
     lastSeen: now,
@@ -3743,13 +3771,14 @@ async function caseItem2_backfillSkipsPrimingTurn(clock) {
   await turnCompleteH(h.fake, { turnId: "t-priming", answer: "Ready.", reason: "completed" }, async () => ({ result: "ok" }));
 
   const state = getState(h);
-  check("item2 Round28: no goal fabricated on the priming turn", state.goals.length === 0);
+  check("item2 Round28: goals stay empty on the priming turn", state.goals.length === 0);
+  check("item2 Round28: no untracked_work on the priming turn", untrackedLines(h).length === 0);
 }
 
-// Round 28: the backstop must never fire on a nudge turn, even if the
-// nudged turn happens to use a real work tool.
-async function caseItem2_backfillSkipsNudgeTurn(clock) {
-  console.log("\n=== Item 2 Round 28: no backfill on a nudge turn ===");
+// Round 28: the backstop never fires on a nudge turn, even if the nudged
+// turn happens to use a real work tool.
+async function caseItem2_untrackedWorkSkipsNudgeTurn(clock) {
+  console.log("\n=== Item 2 Round 28: no untracked_work on a nudge turn ===");
   clock.set(T0);
   const mySid = SESSION_ID;
   const now = T0;
@@ -3760,7 +3789,7 @@ async function caseItem2_backfillSkipsNudgeTurn(clock) {
   // top of noActiveRoot here, not independently isolable through the
   // production nudge path. This proves the whole path stays quiet across
   // a real nudge-and-answer cycle rather than isolating wasNudged alone.
-  const h = await createTickHarness({ ...OPTS, caseName: "item2_backfill_nudge" });
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_untracked_nudge" });
   h.storeMap.set(`commons:${mySid}`, {
     sessionId: mySid,
     lastSeen: now,
@@ -3780,19 +3809,21 @@ async function caseItem2_backfillSkipsNudgeTurn(clock) {
   await turnCompleteH(h.fake, { turnId: "t-nudge", answer: "Working on it.", reason: "completed" }, async () => ({ result: "ok" }));
 
   const state = getState(h);
-  check("item2 Round28: no extra goal fabricated on the nudge-answering turn", state.goals.length === 2);
+  check("item2 Round28: the tree is unchanged on the nudge-answering turn", state.goals.length === 2);
+  check("item2 Round28: no untracked_work on the nudge-answering turn", untrackedLines(h).length === 0);
 }
 
-// Round 28: the trigger condition is "no active root", not
-// "goals.length === 0" - item 4's second conversational request arrives
-// with the first (completed) root still present in the array.
-async function caseItem2_backfillFiresOnSecondRequest(clock) {
-  console.log("\n=== Item 2 Round 28: backfill fires on a second request after a completed root ===");
+// The loss the operator reported: a plan added under a complete root was
+// deleted by the next working turn. The trigger is "no open root", not
+// "goals.length === 0", so this turn fires the backstop, and every node
+// stays exactly as it was.
+async function caseItem2_untrackedWorkKeepsLivePlanUnderCompleteRoot(clock) {
+  console.log("\n=== Item 2: a live plan under a complete root survives a working turn ===");
   clock.set(T0);
   const mySid = SESSION_ID;
   const now = T0;
 
-  const h = await createTickHarness({ ...OPTS, caseName: "item2_backfill_second_request" });
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_untracked_live_plan" });
   h.storeMap.set(`commons:${mySid}`, {
     sessionId: mySid,
     lastSeen: now,
@@ -3802,6 +3833,8 @@ async function caseItem2_backfillFiresOnSecondRequest(clock) {
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
     { id: "root-1", kind: "root", parentId: null, title: "First goal", objective: "First goal", status: "complete", completedRounds: 1, maxRounds: 1, scores: [], createdAt: now - 20000, updatedAt: now - 10000, children: [], notes: [] },
+    { id: "plan-1", kind: "plan", parentId: "root-1", title: "Live plan", objective: "Live plan", status: "pending", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 5000, updatedAt: now - 5000, children: [], notes: [] },
+    { id: "task-1", kind: "task", parentId: "plan-1", title: "Live task", objective: "Live task", status: "pending", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 4000, updatedAt: now - 4000, children: [], notes: [] },
   ];
   personaState.activeGoalId = null;
   h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: personaState }));
@@ -3809,20 +3842,124 @@ async function caseItem2_backfillFiresOnSecondRequest(clock) {
 
   const startH = h.handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
+  const before = getState(h).goals.map(g => `${g.id}|${g.parentId}|${g.kind}|${g.status}`);
 
-  const submitH = h.handlers["prompt.submit"];
-  await submitH(h.fake, { text: "Now write a limerick to limerick.txt." }, async () => ({}));
-
-  const turnStartH = h.handlers["turn.start"];
-  await turnStartH(h.fake, { turnId: "t-second" }, async () => ({ result: "ok" }));
-  const toolCallH = h.handlers["tool.call"];
-  await toolCallH(h.fake, { tool: "Write", turnId: "t-second" }, async () => ({ result: "ok" }));
-  const turnCompleteH = h.handlers["turn.complete"];
-  await turnCompleteH(h.fake, { turnId: "t-second", answer: "Wrote the limerick.", reason: "completed" }, async () => ({ result: "ok" }));
+  await untrackedWorkTurn(h, "t-second", "Now write a limerick to limerick.txt.");
 
   const state = getState(h);
-  check("item2 Round28: a second root was backfilled (goals.length was 1, not 0, before this turn)",
-    state.goals.length === 1 && state.goals[0].id !== "root-1" && state.goals[0].status === "complete");
+  const after = state.goals.map(g => `${g.id}|${g.parentId}|${g.kind}|${g.status}`);
+  check("item2 live plan: the seeded tree loaded as three nodes (setup sanity)", before.length === 3, before);
+  check("item2 live plan: the backstop fired on this turn", untrackedLines(h).length === 1, untrackedLines(h));
+  check("item2 live plan: every node is in place with its parent, kind and status", JSON.stringify(after) === JSON.stringify(before), { before, after });
+  check("item2 live plan: activeGoalId is left as it was", state.activeGoalId === null);
+  check("item2 live plan: no root_complete decision", !state.decisions.some(d => d.action === "root_complete"));
+}
+
+// The collapse: three firings with other decisions written between them
+// leave one line, at the tail, counting three. A fresh session over the same
+// store pushes its own line and leaves the first, and its own second firing
+// removes only its own line.
+async function caseItem2_untrackedWorkCollapsesToOneLine(clock) {
+  console.log("\n=== Item 2: untracked_work collapses to one line per session ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_untracked_collapse", stateOpts: { hasActiveLeaf: false } });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  await untrackedWorkTurn(h, "t-c1", "first request");
+  const firstAt = untrackedLines(h)[0]?.timestamp;
+  // Two ticks reach the cost_summary cadence (costSummaryEveryNTicks is 2).
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  clock.advance(10_000);
+  await untrackedWorkTurn(h, "t-c2", "second request");
+  clock.advance(10_000);
+  await untrackedWorkTurn(h, "t-c3", "third request");
+
+  const decisions = getDecisions(h);
+  const lines = untrackedLines(h);
+  const last = decisions[decisions.length - 1];
+  check("item2 collapse: exactly one untracked_work line after three firings", lines.length === 1, lines);
+  check("item2 collapse: the line is the tail of the log", last?.action === "untracked_work", last);
+  check("item2 collapse: its detail opens x3: and carries the newest excerpt", last?.detail === "x3: third request", last?.detail);
+  check("item2 collapse: its clock is the third firing's, newer than the first", typeof firstAt === "number" && last?.timestamp > firstAt, { firstAt, last: last?.timestamp });
+  check("item2 collapse: a turn_start was written after the first firing", decisions.some(d => d.action === "turn_start" && d.timestamp > firstAt));
+  check("item2 collapse: a cost_summary was written after the first firing", decisions.some(d => d.action === "cost_summary" && d.timestamp > firstAt));
+  check("item2 collapse: goals stay empty", getState(h).goals.length === 0);
+
+  // A fresh session over the same store: a new module, so nothing is held.
+  const storeAfterFirst = h.fsMap.get(PERSONA_STORE_FILE);
+  clock.advance(10_000);
+  const h2 = await createTickHarness({ ...OPTS, caseName: "item2_untracked_collapse_fresh", stateOpts: { hasActiveLeaf: false } });
+  h2.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: T0 + 50_000,
+    claims: [{ resource: "persona:default", claimedAt: T0 + 48_000 }],
+  });
+  h2.fsMap.set(PERSONA_STORE_FILE, storeAfterFirst);
+  h2.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: mySid, epoch: 1, lastSeen: T0 + 50_000 } }));
+  const startH = h2.handlers["session.start"];
+  if (startH) await startH(h2.fake, {}, () => {});
+  check("item2 collapse fresh: the earlier session's line loaded (setup sanity)", untrackedLines(h2).length === 1 && untrackedLines(h2)[0].detail === "x3: third request", untrackedLines(h2));
+
+  await untrackedWorkTurn(h2, "t-f1", "fresh request");
+  let fresh = untrackedLines(h2);
+  check("item2 collapse fresh: a fresh session pushes a second line", fresh.length === 2, fresh);
+  check("item2 collapse fresh: the earlier session's line stays as written", fresh[0]?.detail === "x3: third request" && fresh[0]?.timestamp === last?.timestamp, fresh[0]);
+  check("item2 collapse fresh: the fresh line counts from one", fresh[1]?.detail === "x1: fresh request", fresh[1]?.detail);
+
+  clock.advance(10_000);
+  await untrackedWorkTurn(h2, "t-f2", "fresh again");
+  fresh = untrackedLines(h2);
+  const tail = getDecisions(h2).at(-1);
+  check("item2 collapse fresh: a second firing removes only this session's own line", fresh.length === 2 && fresh[0]?.detail === "x3: third request" && fresh[1]?.detail === "x2: fresh again", fresh);
+  check("item2 collapse fresh: this session's line is the tail", tail?.action === "untracked_work" && tail?.detail === "x2: fresh again", tail);
+}
+
+// The held line can leave the log before the next firing, because the
+// decision cap rolls the oldest entries off. The next firing then pushes a
+// new line and carries the count on.
+async function caseItem2_untrackedWorkCarriesCountPastCap(clock) {
+  console.log("\n=== Item 2: untracked_work carries its count on after the cap drops the held line ===");
+  clock.set(T0);
+  const mySid = SESSION_ID;
+  const now = T0;
+
+  const h = await createTickHarness({ ...OPTS, caseName: "item2_untracked_cap", stateOpts: { hasActiveLeaf: false } });
+  h.storeMap.set(`commons:${mySid}`, {
+    sessionId: mySid,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+
+  await untrackedWorkTurn(h, "t-cap1", "before the cap");
+  check("item2 cap: the first firing pushed one line (setup sanity)", untrackedLines(h).length === 1);
+
+  // Aborted turns each write a turn_start, which rolls the held line off
+  // the front of the log once DECISIONS_MAX newer entries sit behind it.
+  let turns = 0;
+  while (untrackedLines(h).length > 0 && turns < DECISIONS_MAX + 50) {
+    clock.advance(1_000);
+    await fireTurn(h, `t-roll-${turns}`);
+    turns++;
+  }
+  check("item2 cap: the held line rolled off the log", untrackedLines(h).length === 0, { turns });
+  check("item2 cap: the log sits at the cap", getDecisions(h).length === DECISIONS_MAX, getDecisions(h).length);
+
+  clock.advance(1_000);
+  await untrackedWorkTurn(h, "t-cap2", "after the cap");
+  const lines = untrackedLines(h);
+  check("item2 cap: the next firing pushes one line", lines.length === 1, lines);
+  check("item2 cap: the count carries on from the dropped line", lines[0]?.detail === "x2: after the cap", lines[0]?.detail);
+  check("item2 cap: the line is the tail of the log", getDecisions(h).at(-1)?.action === "untracked_work");
 }
 
 // ============================================================
