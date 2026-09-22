@@ -522,3 +522,7 @@ Delta: SCOTT-CLAUDE, 2026-09-22T19:23Z, worktree as on the Gate line. kit-size e
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 4 - 2026-09-22
+
+All four sections are complete, and the finishing pass is open. The effort's base ref is 1c76df1, the merge-base of goal-tree-curation-build with origin/main. The changeset listing against it names only paths inside a section's Files in scope, plus this plan doc. Origin/main was merged in at db18ba6, bringing the keeper logon change and the direct-lines and no-goal-idle plan specs, none of which touch this branch's files. No dispatch is in flight. The gate baseline is Chapter 4's: seven lanes exit 0, tick 2481 OK and 0 FAIL, SCOTT-CLAUDE 2026-09-22T19:23Z at 3285f89 plus uncommitted close work, before the merge. Next: step 1, the qa-verifier's whole gate over the merged tree; then steps 2 and 3, performance, security and adversarial at fable and high through Workflow; then step 4, the goal read; step 5, docs curation; step 6, close and archive; step 7, the PR, ready and auto-merge armed.
