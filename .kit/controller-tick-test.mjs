@@ -3296,6 +3296,14 @@ async function main() {
     await caseGtc1_refusedBookkeepingDoesNotBreakTheTurnChain(clock);
     await caseGtc1_aNotLoadedReaderDoesNotPromote(clock);
     await caseGtc1_aNonObjectStoreDoesNotRecoverThroughIdentity(clock);
+    await caseGtc3_goalDoneWithNoNodeIdBehavesAsBefore(clock);
+    await caseGtc3_completingByNameNeverMovesTheActiveEntry(clock);
+    await caseGtc3_aTaskCompletedByNameWalksItsPlanToComplete(clock);
+    await caseGtc3_eachRefusalReturnsItsReasonAndChangesNoNode(clock);
+    await caseGtc3_unfinishedChildrenRefusalInBothDirections(clock);
+    await caseGtc3_completingTheActiveEntryByNameMatchesTheCallWithNoNodeId(clock);
+    await caseGtc3_anOpenAskOnTheCompletedEntryIsClosed(clock);
+    await caseGtc3_noActiveEntryActivatesNextUnlessHeld(clock);
     await caseSection6Fleet_unchangedIsSilentAndOneChangeSubmitsOnce(clock);
     await caseSection6Fleet_runningRowsAreNotAllHealthy(clock);
     await caseSection6Fleet_aFirstEverLaunchIsNotStale(clock);
@@ -16398,6 +16406,336 @@ async function caseGtc1_aNonObjectStoreDoesNotRecoverThroughIdentity(clock) {
     const recoveredStatus = await call({ tool: "mcp__agentic-plugin__goal_status" });
     check(`gtc1 identity over ${label} control: and goal_status shows the stored tree`,
       String(recoveredStatus?.result || "").includes("g-real-plan") && !String(recoveredStatus?.result).includes(NOT_LOADED_TOKEN), recoveredStatus);
+  }
+}
+
+// --- Goal tree curation Section 3: goal_done completes an entry by name ---
+
+// The flat tree most by-name cases start from: a pending root with task-1
+// active and task-2 pending under it. `overrides` replaces fields on a node
+// by id, and `extra` appends nodes.
+function gtc3Tree(overrides = {}, extra = []) {
+  const nodes = [
+    makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", title: "Root", createdAt: T0 - 50000 }),
+    makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", title: "Task one", maxRounds: 10, createdAt: T0 - 40000 }),
+    makeGoalNode({ id: "task-2", parentId: "root-1", kind: "task", status: "pending", title: "Task two", maxRounds: 10, createdAt: T0 - 30000 }),
+    ...extra.map((n) => makeGoalNode(n)),
+  ];
+  return nodes.map((n) => (overrides[n.id] ? { ...n, ...overrides[n.id] } : n));
+}
+
+// A started owner session over `goals`. The state is seeded before the one
+// session.start so a pendingAskId rides in the stored state, and the ask
+// record itself is written after it, since an owner's start expires the
+// open asks a prior owner left.
+async function gtc3Harness(caseName, goals, { pendingAsk } = {}) {
+  const h = await createTickHarness({ ...OPTS, caseName, skipSessionStart: true });
+  const state = makeState({ now: T0, goals, activeGoalId: goals.find((g) => g.status === "active")?.id ?? null });
+  if (pendingAsk) state.pendingAskId = pendingAsk.askId;
+  seedPersonaStore(h, state);
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+  });
+  await h.handlers["session.start"](h.fake, {}, () => {});
+  if (pendingAsk) {
+    const key = `ask:default:${pendingAsk.askId}`;
+    h.storeMap.set(key, { id: pendingAsk.askId, key, persona: "default", askId: pendingAsk.askId, at: T0 - 1000, nodeId: pendingAsk.nodeId, question: "Which way?", status: "open" });
+  }
+  return h;
+}
+
+// Calls goal_done with `args` and returns what the call changed: the result,
+// the actions of the decisions it wrote in order, and each node's status,
+// scores and completedRounds from the stored state afterwards.
+async function gtc3Done(h, args) {
+  const beforeCount = getDecisions(h).length;
+  const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", ...args });
+  const state = getState(h);
+  const written = state.decisions.slice(beforeCount);
+  const nodes = {};
+  for (const g of state.goals) nodes[g.id] = { status: g.status, scores: g.scores, completedRounds: g.completedRounds };
+  return {
+    res,
+    written,
+    actions: written.map((d) => d.action),
+    nodes,
+    activeGoalId: state.activeGoalId,
+    pendingAskId: state.pendingAskId,
+    pendingPeriodic: state.monitor.selfReview?.pendingPeriodic,
+  };
+}
+
+// Acceptance, written against the handler before nodeId existed and kept
+// unchanged since: a call with no nodeId on a tree with an active leaf
+// writes score, done and activated in that order, completes the active
+// leaf with its credit, activates the next sibling and names it.
+async function caseGtc3_goalDoneWithNoNodeIdBehavesAsBefore(clock) {
+  console.log("\n=== Goal tree curation 3: goal_done with no nodeId behaves as before ===");
+  clock.set(T0);
+  const h = await gtc3Harness("gtc3_no_node_id", gtc3Tree());
+  const out = await gtc3Done(h, { note: "finished" });
+  check("gtc3 no nodeId: the call is accepted with the existing result text",
+    out.res?.deny === undefined && out.res?.result === 'Complete: "Task one". Next active: task-2 "Task two".', out.res);
+  check("gtc3 no nodeId: the decisions written are score, done, activated in that order",
+    JSON.stringify(out.actions) === JSON.stringify(["score", "done", "activated"]), out.actions);
+  check("gtc3 no nodeId: the done detail names the entry and the note",
+    out.written[1]?.detail === 'task-1 "Task one" marked complete: finished', out.written[1]);
+  check("gtc3 no nodeId: the score detail names the entry and its first round",
+    out.written[0]?.detail === "task-1 Round 1: on-goal (goal_done)", out.written[0]);
+  check("gtc3 no nodeId: root pending, task-1 complete, task-2 active",
+    out.nodes["root-1"].status === "pending" && out.nodes["task-1"].status === "complete" && out.nodes["task-2"].status === "active", out.nodes);
+  check("gtc3 no nodeId: task-1 carries one on-goal score and one completed round",
+    JSON.stringify(out.nodes["task-1"].scores) === JSON.stringify([{ round: 1, result: "on-goal" }]) && out.nodes["task-1"].completedRounds === 1, out.nodes["task-1"]);
+  check("gtc3 no nodeId: task-2 is the active entry", out.activeGoalId === "task-2", out.activeGoalId);
+  check("gtc3 no nodeId: the periodic self-review is flagged", out.pendingPeriodic === true, out.pendingPeriodic);
+}
+
+// Both views of the tree: the stored goals and active id, and the goal_status
+// text, which reads the session's in-memory tree rather than the store.
+async function gtc3TreeViews(h) {
+  const state = getState(h);
+  const status = await callTool(h, { tool: "mcp__agentic-plugin__goal_status" });
+  return { stored: JSON.stringify({ goals: state.goals, activeGoalId: state.activeGoalId }), shown: status?.result };
+}
+
+// The Tests line: completing by name never moves the active entry, since
+// silently pausing live work is the cost of the goal_resume then goal_done
+// workaround. Run for each status a by-name completion accepts besides
+// active. The entry earns no round or score credit, and nothing is
+// activated. The control runs the workaround on the same tree and shows the
+// paused_by_resume predicate speaking.
+async function caseGtc3_completingByNameNeverMovesTheActiveEntry(clock) {
+  console.log("\n=== Goal tree curation 3: completing an entry by name leaves the active entry active ===");
+  for (const status of ["paused", "pending", "blocked"]) {
+    clock.set(T0);
+    const extra = [{ id: "plan-p", parentId: "root-1", kind: "plan", status, title: "Finished plan", blockedReason: status === "pending" ? undefined : "held", scores: [{ round: 1, result: "drift" }], completedRounds: 2, createdAt: T0 - 20000 }];
+    const h = await gtc3Harness(`gtc3_by_name_keeps_active_${status}`, gtc3Tree({}, extra));
+    const out = await gtc3Done(h, { nodeId: "plan-p", note: "shipped" });
+    const all = getDecisions(h);
+    const label = `gtc3 by name keeps active (${status} plan)`;
+    check(`${label}: the call is accepted and says task-1 is still active`,
+      out.res?.deny === undefined && out.res?.result === 'Complete: "Finished plan". task-1 "Task one" is still active.', out.res);
+    check(`${label}: plan-p reads complete`, out.nodes["plan-p"].status === "complete", out.nodes["plan-p"]);
+    check(`${label}: task-1 is still active and still the active entry`, out.nodes["task-1"].status === "active" && out.activeGoalId === "task-1", { nodes: out.nodes, activeGoalId: out.activeGoalId });
+    check(`${label}: task-2 is still pending`, out.nodes["task-2"].status === "pending", out.nodes["task-2"]);
+    check(`${label}: no paused_by_resume decision anywhere in the log`, !all.some((d) => d.action === "paused_by_resume"), all.map((d) => d.action));
+    check(`${label}: the one decision written is done, naming the entry and that it was closed by name`,
+      JSON.stringify(out.actions) === JSON.stringify(["done"]) && out.written[0].detail === 'plan-p "Finished plan" marked complete by name: shipped', out.written);
+    check(`${label}: plan-p's scores and completedRounds are as they were`,
+      JSON.stringify(out.nodes["plan-p"].scores) === JSON.stringify([{ round: 1, result: "drift" }]) && out.nodes["plan-p"].completedRounds === 2, out.nodes["plan-p"]);
+    check(`${label}: task-1's credit is untouched`, out.nodes["task-1"].scores.length === 0 && out.nodes["task-1"].completedRounds === 0, out.nodes["task-1"]);
+    const stored = getState(h).goals.find((g) => g.id === "plan-p");
+    check(`${label}: plan-p's blockedReason and pausedByNudgeCap are cleared`, stored.blockedReason === undefined && !stored.pausedByNudgeCap, stored);
+  }
+
+  // Control: the workaround on the same tree pauses the live entry, and the
+  // predicate above matches its decision.
+  clock.set(T0);
+  const extra = [{ id: "plan-p", parentId: "root-1", kind: "plan", status: "paused", title: "Finished plan", createdAt: T0 - 20000 }];
+  const c = await gtc3Harness("gtc3_by_name_keeps_active_control", gtc3Tree({}, extra));
+  await callTool(c, { tool: "mcp__agentic-plugin__goal_resume", nodeId: "plan-p" });
+  const controlState = getState(c);
+  check("gtc3 by name keeps active control: goal_resume on the same tree writes paused_by_resume and pauses task-1",
+    controlState.decisions.some((d) => d.action === "paused_by_resume") && controlState.goals.find((g) => g.id === "task-1").status === "paused",
+    controlState.decisions.map((d) => d.action));
+}
+
+// A pending task completed by name under a plan whose other children are
+// complete takes the plan to complete through completeLeaf's walk.
+async function caseGtc3_aTaskCompletedByNameWalksItsPlanToComplete(clock) {
+  console.log("\n=== Goal tree curation 3: a task completed by name walks its plan to complete ===");
+  clock.set(T0);
+  const extra = [
+    { id: "plan-p", parentId: "root-1", kind: "plan", status: "pending", title: "Plan", createdAt: T0 - 20000 },
+    { id: "pt-1", parentId: "plan-p", kind: "task", status: "complete", title: "Done task", createdAt: T0 - 19000 },
+    { id: "pt-2", parentId: "plan-p", kind: "task", status: "pending", title: "Last task", createdAt: T0 - 18000 },
+  ];
+  const h = await gtc3Harness("gtc3_walk", gtc3Tree({}, extra));
+  const out = await gtc3Done(h, { nodeId: "pt-2" });
+  check("gtc3 walk: the call is accepted", out.res?.deny === undefined, out.res);
+  check("gtc3 walk: pt-2 is complete", out.nodes["pt-2"].status === "complete", out.nodes);
+  check("gtc3 walk: plan-p is complete through completeLeaf's walk", out.nodes["plan-p"].status === "complete", out.nodes);
+  check("gtc3 walk: the root is untouched and task-1 still active", out.nodes["root-1"].status === "pending" && out.nodes["task-1"].status === "active" && out.activeGoalId === "task-1", { nodes: out.nodes, activeGoalId: out.activeGoalId });
+}
+
+// Each refusal names what refused it and changes no node: not in the tree,
+// the root, already complete, already abandoned, and a child still open.
+// The views are compared before and after. The control is an accepted call
+// on the same harness, where the same comparison speaks.
+async function caseGtc3_eachRefusalReturnsItsReasonAndChangesNoNode(clock) {
+  console.log("\n=== Goal tree curation 3: each by-name refusal returns its reason and changes no node ===");
+  clock.set(T0);
+  const extra = [
+    { id: "task-x", parentId: "root-1", kind: "task", status: "complete", title: "Done", createdAt: T0 - 25000 },
+    { id: "task-y", parentId: "root-1", kind: "task", status: "abandoned", title: "Dropped", createdAt: T0 - 24000 },
+    { id: "plan-q", parentId: "root-1", kind: "plan", status: "pending", title: "Open plan", createdAt: T0 - 20000 },
+    { id: "q-1", parentId: "plan-q", kind: "task", status: "pending", title: "Open child", createdAt: T0 - 19000 },
+  ];
+  const h = await gtc3Harness("gtc3_refusals", gtc3Tree({}, extra));
+  const arms = [
+    ["an id not in the tree", "no-such-node", ['"no-such-node"', "not found"]],
+    ["the root", "root-1", ["root", 'status "pending"']],
+    ["an entry already complete", "task-x", ['"complete"']],
+    ["an entry already abandoned", "task-y", ['"abandoned"']],
+    ["an entry with an open child", "plan-q", ['status is "pending"', "q-1"]],
+  ];
+  for (const [label, nodeId, tokens] of arms) {
+    const before = await gtc3TreeViews(h);
+    const decisionsBefore = getDecisions(h).length;
+    const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", nodeId, note: "should not land" });
+    const after = await gtc3TreeViews(h);
+    check(`gtc3 refusal, ${label}: denied with a reason naming ${tokens.join(" and ")}`,
+      typeof res?.deny === "string" && tokens.every((t) => res.deny.includes(t)), res);
+    check(`gtc3 refusal, ${label}: the stored tree is unchanged`, after.stored === before.stored, { before: before.stored, after: after.stored });
+    check(`gtc3 refusal, ${label}: the session's tree is unchanged`, after.shown === before.shown, { before: before.shown, after: after.shown });
+    check(`gtc3 refusal, ${label}: no decision was written`, getDecisions(h).length === decisionsBefore, getDecisions(h).slice(decisionsBefore));
+  }
+  const before = await gtc3TreeViews(h);
+  const ok = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", nodeId: "q-1" });
+  const after = await gtc3TreeViews(h);
+  check("gtc3 refusal control: an accepted by-name call on the same harness changes both views",
+    ok?.deny === undefined && after.stored !== before.stored && after.shown !== before.shown, { ok, before: before.shown, after: after.shown });
+}
+
+// The Tests line: the unfinished-children refusal in both directions. A plan
+// with a pending child and one with a blocked child are refused. The same
+// plan once its children are complete or abandoned is completed.
+async function caseGtc3_unfinishedChildrenRefusalInBothDirections(clock) {
+  console.log("\n=== Goal tree curation 3: the unfinished-children refusal holds in both directions ===");
+  for (const openStatus of ["pending", "blocked"]) {
+    clock.set(T0);
+    const extra = [
+      { id: "plan-q", parentId: "root-1", kind: "plan", status: "paused", title: "Plan", createdAt: T0 - 20000 },
+      { id: "q-1", parentId: "plan-q", kind: "task", status: openStatus, title: "Open child", createdAt: T0 - 19000 },
+      { id: "q-2", parentId: "plan-q", kind: "task", status: "complete", title: "Done child", createdAt: T0 - 18000 },
+    ];
+    const h = await gtc3Harness(`gtc3_children_${openStatus}`, gtc3Tree({}, extra));
+    const label = `gtc3 children (${openStatus} child)`;
+    const refused = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", nodeId: "plan-q" });
+    check(`${label}: refused while q-1 is ${openStatus}, naming the plan's status and the child`,
+      typeof refused?.deny === "string" && refused.deny.includes('status is "paused"') && refused.deny.includes(`q-1 is "${openStatus}"`), refused);
+    check(`${label}: plan-q is still paused`, getState(h).goals.find((g) => g.id === "plan-q").status === "paused");
+
+    const dropped = await callTool(h, { tool: "mcp__agentic-plugin__goal_edit", nodeId: "q-1", action: "drop", reason: "not needed" });
+    check(`${label}: setup, q-1 dropped to abandoned`, !dropped?.deny && getState(h).goals.find((g) => g.id === "q-1").status === "abandoned", dropped);
+    const accepted = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", nodeId: "plan-q" });
+    const state = getState(h);
+    check(`${label}: accepted once every child is complete or abandoned, and plan-q reads complete`,
+      accepted?.deny === undefined && state.goals.find((g) => g.id === "plan-q").status === "complete", accepted);
+    check(`${label}: task-1 is still the active entry`, state.activeGoalId === "task-1" && state.goals.find((g) => g.id === "task-1").status === "active");
+  }
+}
+
+// Completing the active entry by its own name writes the same decision
+// actions and the same credit as the call with no nodeId, on two harnesses
+// over the same tree. The done detail adds that it was closed by name.
+async function caseGtc3_completingTheActiveEntryByNameMatchesTheCallWithNoNodeId(clock) {
+  console.log("\n=== Goal tree curation 3: the active entry completed by name matches the call with no nodeId ===");
+  clock.set(T0);
+  const plain = await gtc3Done(await gtc3Harness("gtc3_active_plain", gtc3Tree()), { note: "finished" });
+  clock.set(T0);
+  const named = await gtc3Done(await gtc3Harness("gtc3_active_named", gtc3Tree()), { nodeId: "task-1", note: "finished" });
+  check("gtc3 active by name: the same decision actions in the same order",
+    JSON.stringify(named.actions) === JSON.stringify(plain.actions) && plain.actions.includes("score"), { plain: plain.actions, named: named.actions });
+  check("gtc3 active by name: the same score decision", named.written[0]?.detail === plain.written[0]?.detail, { plain: plain.written[0], named: named.written[0] });
+  check("gtc3 active by name: the same node statuses, scores and completedRounds",
+    JSON.stringify(named.nodes) === JSON.stringify(plain.nodes), { plain: plain.nodes, named: named.nodes });
+  check("gtc3 active by name: the same next active entry and result text",
+    named.activeGoalId === plain.activeGoalId && named.res?.result === plain.res?.result, { plain: plain.res, named: named.res });
+  check("gtc3 active by name: the periodic self-review is flagged on both", named.pendingPeriodic === true && plain.pendingPeriodic === true);
+  check("gtc3 active by name: the done detail says it was closed by name",
+    named.written[1]?.detail === 'task-1 "Task one" marked complete by name: finished', named.written[1]);
+}
+
+// An open ask on the entry completed by name is closed as goal_resume closes
+// one. An ask on another entry is left open, with pendingAskId still set.
+async function caseGtc3_anOpenAskOnTheCompletedEntryIsClosed(clock) {
+  console.log("\n=== Goal tree curation 3: an open ask on the entry completed by name is closed ===");
+  clock.set(T0);
+  const extra = [{ id: "task-3", parentId: "root-1", kind: "task", status: "paused", title: "Asked about", blockedReason: "operator input needed", createdAt: T0 - 20000 }];
+  const h = await gtc3Harness("gtc3_ask_closed", gtc3Tree({}, extra), { pendingAsk: { askId: "ask-3", nodeId: "task-3" } });
+  check("gtc3 ask closed setup: pendingAskId is set", getState(h).pendingAskId === "ask-3", getState(h).pendingAskId);
+  const out = await gtc3Done(h, { nodeId: "task-3" });
+  const record = h.storeMap.get("ask:default:ask-3");
+  check("gtc3 ask closed: task-3 is complete", out.nodes["task-3"].status === "complete", out.nodes);
+  check("gtc3 ask closed: pendingAskId is cleared", !out.pendingAskId, out.pendingAskId);
+  check("gtc3 ask closed: the ask record reads resumed", record?.status === "resumed", record);
+  check("gtc3 ask closed: one ask_answered decision says goal_done closed it",
+    out.written.filter((d) => d.action === "ask_answered").length === 1 && out.written.find((d) => d.action === "ask_answered").detail === "ask ask-3 closed by goal_done (status: resumed)", out.written);
+  check("gtc3 ask closed: task-1 is still active", out.nodes["task-1"].status === "active" && out.activeGoalId === "task-1", out.nodes);
+
+  clock.set(T0);
+  const extra2 = [
+    { id: "task-3", parentId: "root-1", kind: "task", status: "paused", title: "Asked about", createdAt: T0 - 20000 },
+    { id: "task-4", parentId: "root-1", kind: "task", status: "paused", title: "Finished", createdAt: T0 - 19000 },
+  ];
+  const o = await gtc3Harness("gtc3_ask_other", gtc3Tree({}, extra2), { pendingAsk: { askId: "ask-3", nodeId: "task-3" } });
+  const other = await gtc3Done(o, { nodeId: "task-4" });
+  check("gtc3 ask on another entry: task-4 is complete", other.nodes["task-4"].status === "complete", other.nodes);
+  check("gtc3 ask on another entry: pendingAskId still names the open ask", other.pendingAskId === "ask-3", other.pendingAskId);
+  check("gtc3 ask on another entry: the ask record is still open", o.storeMap.get("ask:default:ask-3")?.status === "open", o.storeMap.get("ask:default:ask-3"));
+  check("gtc3 ask on another entry: no ask_answered decision", !other.written.some((d) => d.action === "ask_answered"), other.actions);
+
+  // goal_resume shares the ask-closing step, and still closes its own
+  // entry's ask with its own name on the decision.
+  clock.set(T0);
+  const r = await gtc3Harness("gtc3_ask_resume", gtc3Tree({}, extra), { pendingAsk: { askId: "ask-3", nodeId: "task-3" } });
+  const resumeBefore = getDecisions(r).length;
+  await callTool(r, { tool: "mcp__agentic-plugin__goal_resume", nodeId: "task-3" });
+  const resumed = getState(r);
+  const answered = resumed.decisions.slice(resumeBefore).filter((d) => d.action === "ask_answered");
+  check("gtc3 ask closed by goal_resume: pendingAskId cleared, the record resumed, one ask_answered naming goal_resume",
+    !resumed.pendingAskId && r.storeMap.get("ask:default:ask-3")?.status === "resumed" &&
+    answered.length === 1 && answered[0].detail === "ask ask-3 closed by goal_resume (status: resumed)",
+    { pendingAskId: resumed.pendingAskId, record: r.storeMap.get("ask:default:ask-3"), answered });
+}
+
+// With no entry active, completing by name activates the next entry unless
+// an open ask or a nudge cap pause holds the tree. The completed entry's own
+// ask and its own cap flag are not holds, since both clear with it.
+async function caseGtc3_noActiveEntryActivatesNextUnlessHeld(clock) {
+  console.log("\n=== Goal tree curation 3: with no active entry, the next one activates unless a hold applies ===");
+  const noActive = (extraOverrides = {}, extra = []) =>
+    gtc3Tree({ "task-1": { status: "paused", blockedReason: "held", ...extraOverrides } }, extra);
+  const arms = [
+    { label: "no hold", goals: noActive(), ask: null, activated: true },
+    { label: "the completed entry's own cap flag", goals: noActive({ pausedByNudgeCap: true }), ask: null, activated: true },
+    { label: "the completed entry's own open ask", goals: noActive(), ask: { askId: "ask-1", nodeId: "task-1" }, activated: true },
+    {
+      label: "an open ask on another entry",
+      goals: noActive({}, [{ id: "task-3", parentId: "root-1", kind: "task", status: "paused", title: "Asked about", createdAt: T0 - 20000 }]),
+      ask: { askId: "ask-3", nodeId: "task-3" },
+      activated: false,
+      heldText: "an operator ask is open",
+    },
+    {
+      label: "another entry paused by the nudge cap",
+      goals: noActive({}, [{ id: "task-3", parentId: "root-1", kind: "task", status: "paused", title: "Capped", pausedByNudgeCap: true, createdAt: T0 - 20000 }]),
+      ask: null,
+      activated: false,
+      heldText: "an entry is paused by the nudge cap",
+    },
+  ];
+  let i = 0;
+  for (const arm of arms) {
+    clock.set(T0);
+    const h = await gtc3Harness(`gtc3_no_active_${i++}`, arm.goals, arm.ask ? { pendingAsk: arm.ask } : {});
+    check(`gtc3 no active (${arm.label}) setup: no entry is active`, getState(h).activeGoalId === null && !getState(h).goals.some((g) => g.status === "active"));
+    const out = await gtc3Done(h, { nodeId: "task-1" });
+    const label = `gtc3 no active (${arm.label})`;
+    check(`${label}: task-1 is complete`, out.nodes["task-1"].status === "complete", out.nodes);
+    check(`${label}: no score decision and no credit`, !out.actions.includes("score") && out.nodes["task-1"].scores.length === 0, out.actions);
+    if (arm.activated) {
+      check(`${label}: task-2 is activated and named`,
+        out.nodes["task-2"].status === "active" && out.activeGoalId === "task-2" && out.res?.result === 'Complete: "Task one". Next active: task-2 "Task two".', { res: out.res, nodes: out.nodes });
+      check(`${label}: one activated decision naming task-2`, out.written.filter((d) => d.action === "activated").length === 1 && out.written.find((d) => d.action === "activated").detail.startsWith("Node task-2 activated"), out.written);
+    } else {
+      check(`${label}: task-2 stays pending and nothing is active`, out.nodes["task-2"].status === "pending" && out.activeGoalId === null, { nodes: out.nodes, activeGoalId: out.activeGoalId });
+      check(`${label}: no activated or activate_none decision`, !out.actions.includes("activated") && !out.actions.includes("activate_none"), out.actions);
+      check(`${label}: the result names the hold`, out.res?.result === `Complete: "Task one". Nothing was activated: ${arm.heldText}.`, out.res);
+    }
   }
 }
 

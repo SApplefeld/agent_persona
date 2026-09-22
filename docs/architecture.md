@@ -140,14 +140,14 @@ Two files write text into a child session that nobody typed: `bin/supervise.sh` 
 
 ### What is injected, and how large
 
-`.kit/injection-ledger.json` is the committed size baseline, 40 entries totalling 29,183 characters. Ten entries come from `bin/supervise.sh` and total 13,480; thirty come from `hooks/index.ts` and total 15,703, of which the fifteen registered tool descriptions are 11,293.
+`.kit/injection-ledger.json` is the committed size baseline, 40 entries totalling 29,519 characters. Ten entries come from `bin/supervise.sh` and total 13,480; thirty come from `hooks/index.ts` and total 16,039, of which the fifteen registered tool descriptions are 11,629.
 
 | What a launch reads | Characters |
 |---|---|
 | A worker with a channel: skill-load, coordinator steer, reply-tool | 2,474 |
 | The coordinator: those three plus the coordinator role instruction | 7,627 |
 | The architect: reply-tool plus its charter, the other two cleared | 5,908 |
-| The fifteen tool descriptions an owner-tier session registers | 11,293 |
+| The fifteen tool descriptions an owner-tier session registers | 11,629 |
 
 `fleet_status` alone is 3,795 of that last row, because the five health-class definitions live in it and every other surface points there. It registers into every session whatever the persona, including a worker that cannot call it.
 

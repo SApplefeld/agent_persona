@@ -1929,6 +1929,27 @@ export const activate = (dp: any, nextId: string | null, reason: string): void =
   }
 };
 
+// Closes the operator ask pendingAskId names when that ask is open on
+// `nodeId`: the record's status becomes "resumed" and one ask_answered
+// decision names the tool that closed it. Returns whether it closed the ask.
+// pendingAskId itself is the caller's to clear, since goal_resume clears it
+// whatever the record says and goal_done clears it only when this closed it.
+const closeAskOnNode = async (dp: any, nodeId: string, closedBy: string): Promise<boolean> => {
+  const askId = sess.state.pendingAskId;
+  if (!askId) return false;
+  const askRecord = await readAskRecord(commonsStoreOf(dp), sess.persona, askId);
+  if (!askRecord || askRecord.status !== "open" || askRecord.nodeId !== nodeId) return false;
+  askRecord.status = "resumed";
+  await (commonsStoreOf(dp)).set(askKey(sess.persona, askId), askRecord);
+  sess.state.decisions.push({
+    timestamp: Date.now(),
+    loop: "monitor",
+    action: "ask_answered",
+    detail: `ask ${askId} closed by ${closedBy} (status: resumed)`,
+  });
+  return true;
+};
+
 // Section 2 (plan-health-from-the-record): a plan entry is an entry that has
 // a plan by resolvePlanPath's ancestor rule, whatever its kind, so a task a
 // worker adds under its plan node is one too. A plan entry is judged from its
@@ -2444,13 +2465,19 @@ export const register: Register = async (on, options) => {
       name: "goal_done",
       description:
         "Mark the active goal leaf as complete, with an optional one-line note. The controller then activates the next pending plan or fires the planner. " +
-        "The result names the goal that became active where there is one, and that goal is the one to carry on with.",
+        "The result names the goal that became active where there is one, and that goal is the one to carry on with. " +
+        "nodeId completes a named entry instead, once every child it has is complete or abandoned, and leaves the active entry active. " +
+        "Finished work on an entry that is not active is recorded with goal_done and its nodeId, never with a drop.",
       inputSchema: {
         type: "object",
         properties: {
           note: {
             type: "string",
             description: "One-line note about why this is done.",
+          },
+          nodeId: {
+            type: "string",
+            description: "nodeId names the entry to complete, as goal_status lists it.",
           },
         },
       },
@@ -2521,7 +2548,7 @@ export const register: Register = async (on, options) => {
       name: "goal_edit",
       description:
         "Change one node of the goal tree. drop marks a pending, paused or blocked node abandoned, so it is " +
-        "never activated, and refuses any other status; pause holds an active or pending node with a reason, and goal_resume " +
+        "never activated, and refuses any other status; a drop is for work that will not be done. pause holds an active or pending node with a reason, and goal_resume " +
         "continues it; reprioritize moves a pending node ahead of its siblings. Owner only.",
       inputSchema: {
         type: "object",
@@ -6934,7 +6961,12 @@ export const register: Register = async (on, options) => {
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
-    // Serve goal_done (R3: use completeLeaf + activateNext).
+    // Serve goal_done (R3: use completeLeaf + activateNext). With no nodeId it
+    // completes the active leaf. With a nodeId it completes that entry by
+    // name, where the entry is not the root, is not already complete or
+    // abandoned, and has no child still open. An entry that was not the
+    // active one when the call arrived earns no round or score credit and
+    // leaves any active entry active.
     if (e.tool === "mcp__agentic-plugin__goal_done") {
       if (sess.stateNotLoaded !== null) {
         toolErrorsThisTurn++;
@@ -6945,40 +6977,104 @@ export const register: Register = async (on, options) => {
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
       }
       const note = String((e as any).note || "").trim();
+      const byNameId = String((e as any).nodeId || "").trim();
       const active = sess.state.activeGoalId
         ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
         : null;
-      if (!active || active.status !== "active") {
-        toolErrorsThisTurn++;
-        return { deny: "No active goal leaf to complete." };
+      let target: GoalNode;
+      if (byNameId) {
+        const named = sess.state.goals.find((g) => g.id === byNameId);
+        if (!named) {
+          toolErrorsThisTurn++;
+          return { deny: `nodeId "${byNameId}" not found in goal tree.` };
+        }
+        if (named.parentId === null) {
+          toolErrorsThisTurn++;
+          return { deny: `Cannot complete ${byNameId}: it is the root, status "${named.status}". goal_done completes entries under the root, never the root itself.` };
+        }
+        if (named.status === "complete" || named.status === "abandoned") {
+          toolErrorsThisTurn++;
+          return { deny: `Cannot complete ${byNameId}: status is already "${named.status}".` };
+        }
+        const openChild = sess.state.goals.find(
+          (g) => g.parentId === named.id && g.status !== "complete" && g.status !== "abandoned",
+        );
+        if (openChild) {
+          toolErrorsThisTurn++;
+          return { deny: `Cannot complete ${byNameId}: status is "${named.status}" and its child ${openChild.id} is "${openChild.status}". Complete or drop every child first.` };
+        }
+        target = named;
+      } else {
+        if (!active || active.status !== "active") {
+          toolErrorsThisTurn++;
+          return { deny: "No active goal leaf to complete." };
+        }
+        target = active;
       }
-      const completedId = active.id;
-      const completedTitle = active.title;
+      // Which entry was active is read before anything changes, so the
+      // follow-on below keys on the tree as the call found it.
+      const activeOnArrival = active && active.status === "active" ? active : null;
+      const wasActive = active != null && active.status === "active" && active.id === target.id;
+      const completedId = target.id;
+      const completedTitle = target.title;
       completeLeaf(sess.state, completedId, note || "goal_done");
+      if (byNameId) {
+        target.blockedReason = undefined;
+        target.pausedByNudgeCap = false;
+      }
       // E2: health run at completeLeaf site (goal_done).
       await runHealth($, completedId);
-      // M11: credit the round and score in goal_done, not turn.complete.
-      // The score is recorded for every entry; the round is spent on a task
-      // entry only, since a plan entry has no round budget.
-      active.scores.push({ round: active.scores.length + 1, result: "on-goal" });
-      if (!isPlanEntry(sess.state, active)) active.completedRounds += 1;
-      sess.state.decisions.push({
-        timestamp: Date.now(),
-        loop: "goal",
-        action: "score",
-        detail: `${completedId} Round ${active.scores.length}: on-goal (goal_done)`,
-      });
+      if (wasActive) {
+        // M11: credit the round and score in goal_done, not turn.complete.
+        // The score is recorded for every entry; the round is spent on a task
+        // entry only, since a plan entry has no round budget.
+        active.scores.push({ round: active.scores.length + 1, result: "on-goal" });
+        if (!isPlanEntry(sess.state, active)) active.completedRounds += 1;
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "goal",
+          action: "score",
+          detail: `${completedId} Round ${active.scores.length}: on-goal (goal_done)`,
+        });
+      }
       sess.state.decisions.push({
         timestamp: Date.now(),
         loop: "goal",
         action: "done",
-        detail: `${completedId} "${completedTitle.slice(0, 50)}" marked complete${note ? `: ${note.slice(0, 80)}` : ""}`,
+        detail: `${completedId} "${completedTitle.slice(0, 50)}" marked complete${byNameId ? " by name" : ""}${note ? `: ${note.slice(0, 80)}` : ""}`,
       });
-      const nextId = activateNext(sess.state, completedId);
-      activate($, nextId, `${completedId} done`);
+      // An open ask on the entry completed by name closes the way goal_resume
+      // closes one. An ask on another entry stays open and holds activation.
+      if (byNameId && (await closeAskOnNode($, completedId, "goal_done"))) {
+        sess.state.pendingAskId = undefined;
+      }
+
+      // The completed entry was active: activate the next one, as the call
+      // with no nodeId always does. Another entry is active: it stays so.
+      // None is active: activate the next one unless an open ask or a nudge
+      // cap pause holds the tree, the two holds goal_add's no-active-leaf
+      // branch honors.
+      let nextId: string | null = null;
+      let heldBy = "";
+      if (wasActive) {
+        nextId = activateNext(sess.state, completedId);
+        activate($, nextId, `${completedId} done`);
+      } else if (!activeOnArrival) {
+        if (sess.state.pendingAskId) {
+          heldBy = "an operator ask is open";
+        } else if (sess.state.goals.some((g) => g.pausedByNudgeCap === true)) {
+          heldBy = "an entry is paused by the nudge cap";
+        } else {
+          nextId = activateNext(sess.state, completedId);
+          activate($, nextId, `${completedId} done by name`);
+        }
+        // A held tree activates nothing, and activeGoalId never names a
+        // completed entry, the same null activateNext leaves when it finds none.
+        if (heldBy && sess.state.activeGoalId === completedId) sess.state.activeGoalId = null;
+      }
 
       // S9: goal_done sets pendingPeriodic; the tick runs the review.
-      if (sess.state.monitor.selfReview) {
+      if (wasActive && sess.state.monitor.selfReview) {
         sess.state.monitor.selfReview.pendingPeriodic = true;
       }
 
@@ -6997,6 +7093,12 @@ export const register: Register = async (on, options) => {
           return {
             result: `Complete: "${completedTitle}". Next active: ${nextId} "${nextNode.title}".${healthText}`,
           };
+        }
+        if (activeOnArrival && !wasActive) {
+          return { result: `Complete: "${completedTitle}". ${activeOnArrival.id} "${activeOnArrival.title}" is still active.${healthText}` };
+        }
+        if (heldBy) {
+          return { result: `Complete: "${completedTitle}". Nothing was activated: ${heldBy}.${healthText}` };
         }
         return { result: `Complete: "${completedTitle}". No pending goals; planning runs at the next tick.${healthText}` };
       }
@@ -7150,17 +7252,7 @@ export const register: Register = async (on, options) => {
       }
       // AZ4: goal_resume on the ask's node closes the ask with status "resumed"
       if (sess.state.pendingAskId) {
-        const askRecord = await readAskRecord(commonsStoreOf($), sess.persona, sess.state.pendingAskId);
-        if (askRecord && askRecord.status === "open" && askRecord.nodeId === target.id) {
-          askRecord.status = "resumed";
-          await (commonsStoreOf($)).set(askKey(sess.persona, sess.state.pendingAskId), askRecord);
-          sess.state.decisions.push({
-            timestamp: Date.now(),
-            loop: "monitor",
-            action: "ask_answered",
-            detail: `ask ${sess.state.pendingAskId} closed by goal_resume (status: resumed)`,
-          });
-        }
+        await closeAskOnNode($, target.id, "goal_resume");
         sess.state.pendingAskId = undefined;
       }
       sess.state.updatedAt = Date.now();
