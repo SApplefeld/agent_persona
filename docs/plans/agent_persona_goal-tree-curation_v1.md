@@ -203,3 +203,23 @@ Tests: lock both directions of the replace guard, since a guard that also refuse
 None open. The plan carried one question: what the plugin records when a turn does real work and no goal is open. The operator answered it, and the ruling under `## Intent` records his answer. The two options he passed over are the first two lines under "Alternatives refused" in that section.
 
 ## Chapters
+
+### Interim board 1 - 2026-09-22
+
+Section 1, "Start-up survives a refused tool registration", is in flight. It is built, committed at bd192a4 and pushed to origin/goal-tree-curation-build. Review round 1 has returned from all three lenses and is mid-adjudication. No section has closed yet.
+
+Stage. Round 1 ran the adversarial lens, the blind lens and the performance lens, each at fable through the Agent tool. The performance lens rode the round because the delta adds a check on the per-tool-call path. All three returned. One design stop is open: the scope adjudicator is ruling on whether the proposed guard should exist.
+
+Live dispatches. One, the scope adjudicator, asked to rule on a design stop whose add-decision line proposes that persist and the heartbeat's claim-publish refuse to write while the session's state is not loaded. Its brief carries the plan's what, the finding and the first four parts of the add-decision line, and withholds the cost clause.
+
+Gate baseline. Taken on the targeted lane on this branch at bd192a4, worktree clean, 2026-09-22: node .kit/controller-tick-test.mjs exits 0 at 2099 OK and 0 FAIL, against a clean-tree baseline of 2074 OK and 0 FAIL recorded by the section's implementer. tsc --noEmit, .kit/check-loader-rule.mjs, .kit/tool-description-length-test.mjs, .kit/injection-duplicate-test.mjs and .kit/self-review-unit-test.mjs each exit 0 on their own runs. A headless child launched against this checkout logged "hooks module agentic-plugin@inline loaded" and registered all fifteen owner-tier tools with no refusal recorded in its store.
+
+Rulings adopted since the last boundary. None yet.
+
+Findings held. Two Majors, both confirmed against the code by the orchestrator and both traced to the section's own text rather than to a new requirement. First, a session that came up over an unreadable store publishes its built-in default state over the persona's real tree on the first read that parses, while its goal tools keep answering that the stored tree was not changed. Second, the shipped harness case for the unparseable store passes for the wrong reason: the file is byte-identical because persist throws on the garbage, not because any guard held the write back, so the case cannot see the write path the section's Tests line names. The Minor list is at .kit/scratch/goal-tree-curation/minors-section-1.md and the confirmations at .kit/scratch/goal-tree-curation/1/round1-confirmations.md.
+
+Next action. Adopt the adjudicator's ruling, write fix round 1 on it, re-run the targeted lane, then review round 2.
+
+Two facts about the trunk that the spec predates, both carried into the section's dispatch. The owner tier registers fifteen tools rather than the fourteen the spec names, the fleet_restart tool having landed after the spec was written. The trunk already carries .kit/tool-description-length-test.mjs with a 4000-character bound, so Section 1's "only where the trunk lacks one" clause added no cap test.
+
+A note for whoever pushes next. git push hangs on this box, because Git Credential Manager blocks with no terminal. Resetting the helper list and naming the GitHub CLI helper works: git -c credential.helper= -c credential.helper='!gh auth git-credential' push. A bare -c override is not enough, since git appends to the helper list rather than replacing it.
