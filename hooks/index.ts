@@ -1955,8 +1955,9 @@ const closeAskOnNode = async (dp: any, nodeId: string, closedBy: string): Promis
 // place when goal_done later completes the blocked child by name. A parent
 // left blocked is never descended into by activateNext's DFS, so its pending
 // children are stranded. This walks up from the completed entry through each
-// non-root ancestor carrying that reason. A complete ancestor has the reason
-// cleared. A blocked ancestor with no child still blocked returns to pending.
+// non-root ancestor carrying that reason. A complete ancestor has the stale
+// reason cleared, whether the walk completed it in this call or earlier, and
+// the walk goes on above it. A blocked ancestor with no child still blocked returns to pending.
 // A blocked ancestor with a child still blocked stays blocked and ends the
 // walk, as does any other state. Each ancestor changed gets one decision.
 // The walk is bounded by the node count, as isActivationEligible's is.
@@ -1971,6 +1972,7 @@ const clearChildBlockedAncestors = (completedId: string): void => {
     const cause = `goal_done's completion of ${completedId} cleared "Child task blocked"`;
     if (parent.status === "complete") {
       parent.blockedReason = undefined;
+      parent.updatedAt = Date.now();
       sess.state.decisions.push({
         timestamp: Date.now(),
         loop: "goal",
@@ -7068,7 +7070,6 @@ export const register: Register = async (on, options) => {
       const statusBefore = new Map(sess.state.goals.map((g) => [g.id, g.status]));
       completeLeaf(sess.state, completedId, note || "goal_done");
       if (byNameId) {
-        clearChildBlockedAncestors(completedId);
         target.blockedReason = undefined;
         target.pausedByNudgeCap = false;
         target.lead = null;
@@ -7097,8 +7098,11 @@ export const register: Register = async (on, options) => {
       // An open ask on an entry this call completed closes the way
       // goal_resume closes one. Those entries are the one named and any plan
       // completeLeaf's walk took to complete. An ask on any other entry stays
-      // open and holds activation.
+      // open and holds activation. The ancestors the completion freed from
+      // "Child task blocked" are logged after its done line and restored
+      // before any activation below, so activateNext reads them as pending.
       if (byNameId) {
+        clearChildBlockedAncestors(completedId);
         const completedNow = sess.state.goals
           .filter((g) => g.status === "complete" && statusBefore.get(g.id) !== "complete")
           .map((g) => g.id);
@@ -7129,9 +7133,12 @@ export const register: Register = async (on, options) => {
           nextId = activateNext(sess.state, completedId);
           activate($, nextId, `${completedId} done by name`);
         }
-        // A held tree activates nothing, and activeGoalId never names a
-        // completed entry, the same null activateNext leaves when it finds none.
-        if (heldBy && sess.state.activeGoalId === completedId) sess.state.activeGoalId = null;
+      }
+      // activeGoalId never names the entry this call completed. Where it still
+      // does, it moves to the entry that is still active, or to null where
+      // none is, the same pointer a store load's invariant repair would set.
+      if (!wasActive && sess.state.activeGoalId === completedId) {
+        sess.state.activeGoalId = otherActive ? otherActive.id : null;
       }
 
       // S9: goal_done sets pendingPeriodic; the tick runs the review.

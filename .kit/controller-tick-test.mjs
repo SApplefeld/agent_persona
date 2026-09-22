@@ -3310,6 +3310,7 @@ async function main() {
     await caseGtc3_aPlanTheWalkCompletesLosesTheStaleReason(clock);
     await caseGtc3_noActiveEntryUnblocksThePlanAndActivatesTheSibling(clock);
     await caseGtc3_eachAncestorCarryingTheReasonIsUnblocked(clock);
+    await caseGtc3_theWalkGoesOnPastACompletedPlanToABlockedOne(clock);
     await caseSection6Fleet_unchangedIsSilentAndOneChangeSubmitsOnce(clock);
     await caseSection6Fleet_runningRowsAreNotAllHealthy(clock);
     await caseSection6Fleet_aFirstEverLaunchIsNotStale(clock);
@@ -16964,6 +16965,41 @@ async function caseGtc3_eachAncestorCarryingTheReasonIsUnblocked(clock) {
   check(`${label}: two unblocked decisions, plan-p's then plan-o's`,
     unblocked.length === 2 && unblocked[0].detail.startsWith("plan-p") && unblocked[1].detail.startsWith("plan-o"), out.written);
   check(`${label}: task-1 is still active`, out.nodes["task-1"].status === "active" && out.activeGoalId === "task-1", out.nodes);
+}
+
+// The walk goes on past an ancestor completeLeaf's walk completed: pt-1 is
+// plan-p's last open child, so completing it completes plan-p, and plan-o
+// above it holds a pending child po-2. plan-p keeps no stale reason, plan-o
+// returns to pending, and both decisions follow the done line that caused
+// them. Stopped at plan-p, plan-o would stay blocked and po-2 stranded.
+async function caseGtc3_theWalkGoesOnPastACompletedPlanToABlockedOne(clock) {
+  console.log("\n=== Goal tree curation 3: the walk goes on past a completed plan to a blocked one ===");
+  clock.set(T0);
+  const goals = gtc3BlockedPlanTree({
+    overrides: { "task-2": { status: "complete" }, "plan-p": { parentId: "plan-o" }, "pt-2": { status: "complete" } },
+    extra: [
+      { id: "plan-o", parentId: "root-1", kind: "plan", status: "blocked", blockedReason: GTC3_CHILD_BLOCKED, title: "Outer plan", createdAt: T0 - 21000 },
+      { id: "po-2", parentId: "plan-o", kind: "task", status: "pending", title: "Outer task", createdAt: T0 - 17000 },
+    ],
+  });
+  const h = await gtc3Harness("gtc3_unblock_past_complete", goals);
+  const label = "gtc3 unblock past complete";
+  gtc3CheckBlockedSeed(h, label);
+  check(`${label} setup: plan-o is blocked with "${GTC3_CHILD_BLOCKED}", pt-2 complete and po-2 pending`,
+    ["plan-o", "pt-2", "po-2"].map((id) => getState(h).goals.find((g) => g.id === id)?.status).join() === "blocked,complete,pending" &&
+    getState(h).goals.find((g) => g.id === "plan-o")?.blockedReason === GTC3_CHILD_BLOCKED,
+    getState(h).goals.map((g) => ({ id: g.id, status: g.status, blockedReason: g.blockedReason })));
+  const out = await gtc3Done(h, { nodeId: "pt-1" });
+  const state = getState(h);
+  const [inner, outer] = ["plan-p", "plan-o"].map((id) => state.goals.find((g) => g.id === id));
+  check(`${label}: plan-p is complete with no blockedReason`, inner.status === "complete" && inner.blockedReason === undefined, inner);
+  check(`${label}: plan-o is pending with no blockedReason`, outer.status === "pending" && outer.blockedReason === undefined, outer);
+  const at = (action) => out.written.findIndex((d) => d.action === action);
+  check(`${label}: done, then reason_cleared for plan-p, then unblocked for plan-o`,
+    at("done") !== -1 && at("done") < at("reason_cleared") && at("reason_cleared") < at("unblocked") &&
+    out.written[at("reason_cleared")].detail.startsWith("plan-p") && out.written[at("unblocked")].detail.startsWith("plan-o"), out.written);
+  check(`${label}: task-1 is still active and po-2 pending`,
+    out.nodes["task-1"].status === "active" && out.activeGoalId === "task-1" && out.nodes["po-2"].status === "pending", out.nodes);
 }
 
 // The heartbeat file is the supervisor's liveness instrument, and the supervisor
