@@ -296,7 +296,25 @@ One scope fold beyond the Files in scope line, declared. docs/architecture.md ca
 
 Two entries went to docs/backlog.md. The decision-log cap sitting below the ownership guard, ruled pre-existing rather than a regression of this work. And the read-merge-write path that would let a session in this state still request its own restart, which is the residual of guarding the two supervisor tools.
 
-Next action. Review round 3 is dispatched, adversarial and blind, over the four changed files against 0124a48 with the diff captured. Then the Minor close pass, the close gate, memq unstamped and Chapter 1, whose commit carries docs/backlog.md and docs/architecture.md with it.
+The blind lens of review round 3 returned CHANGES_REQUIRED on a finding that goes to the shape rather than to the code, and both of its structural claims are confirmed here.
+
+The recovery sentence this round added is untrue in the state that reaches it. agentic_identity parses the store at 6492 with no try of its own, so on a store that still will not parse it throws before reaching the line at 6499 that clears the field. Naming it as the recovery tells the operator to run a tool that cannot work. And the other state reports nothing at all: heartbeatMs and controllerTickMs both default to 30000 with the heartbeat registered first at 2949, so once the store is repaired the yield takes the persona away before the fleet block could speak, and the controller tick then returns at its owner check.
+
+Taken with the promotion guard this round added, a single-session deployment strands. The session yields, the guard bars it from promoting back, its own stale sidecar stamp names itself so the holder check would bar it anyway, and no further prompt of any kind is submitted. The supervisor sees a live process watching nothing, which is the watcher cost already recorded in docs/backlog.md, now made permanent rather than merely uncovered.
+
+This is the Goal's own promise failing in a new shape. The Goal says a session whose state never loaded says so. Each guard added across three rounds has closed another channel for saying it. The fix is now correct about what it refuses to write and wrong about what it manages to report.
+
+The adversarial lens returned CHANGES_REQUIRED too, with three findings of its own, and it overturned a ruling recorded above.
+
+That ruling said the trimming gap was pre-existing. It is not, and the reasoning behind it was wrong. It argued from the ownership return at 1709, which is a different population. The population that matters is a not-loaded owner, which is new. Before this work such a session still ran the caps on every write, because the store parse that throws sits below them at 1785, while the new guard at 1731 sits above them. So the delta does create unbounded in-memory growth for exactly the session the guard was written for. The backlog entry built on that ruling is corrected to cover only the non-owner population it actually describes.
+
+Two more from the same lens. A not-loaded session whose store is absent, or which parses but holds no entry for this persona, is now permanently bricked where before it self-healed: onDisk stays null at 2957-2964 so the yield never fires, ownership is held forever, and every write throws for the life of the process. Pre-delta that session wrote its entry and lost nothing, there being no stored tree to overwrite. So the guard refuses in the one case where there is no tree to protect. And the reconciliation catch at 3844, 3866 and 3873 carries the same untrue operator sentence the fleet catch was repaired for.
+
+The two lenses disagree on stranding, and the disagreement is about deployment rather than about code. One walked the promotion chain and found it clear, confirming a healthy session does promote. The other reasons about a single-session deployment, where no such session exists. Both readings are right about the case they took.
+
+A reframe is on the table and is what the consult is asked to test. The guard's predicate looks too blunt. The invariant that matters is narrower: do not overwrite a persona's existing stored tree with the built-in default. persist already reads the store at 1785 and computes onDisk at 1788, so moving the guard below that point and predicating it on a stored entry being present would let the caps at 1740 and 1760 run, and would let a store with no entry for this persona self-heal as it did before, while keeping the protection where a real tree is at stake.
+
+Next action. Hold for the consult on that reframe. It is asked to rule on the placement and predicate, whether the reframe owes a design stop, what true sentence can be given an operator whose store will not parse when the named recovery tool cannot run on it either, whether the single-session stranding belongs in this section or stays the recorded watcher cost, and whether a smaller shape meets the Goal than three rounds of guards have produced.
 
 A slip to carry to the close-out. The round 1 implementer deleted the machine's heavy-process claim with rm -f without first re-reading its Session line, so if a peer had replaced the claim in that interval it removed the peer's. The claims directory is empty now, which cannot settle it either way.
 
