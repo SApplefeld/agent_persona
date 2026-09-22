@@ -79,6 +79,10 @@ Untracked work is a log line and nothing else. The block at 5298-5351 stops buil
 
 **The tool description budget.** Two descriptions grow, `goal_done` and `goal_create`. Each stays under 600 characters. `.kit/injection-duplicate-test.mjs` fails on any growth past the committed baseline, so each of Sections 3 and 4 refreshes the baseline with `node .kit/injection-ledger.mjs > .kit/injection-ledger.json`, and updates the two totals `docs/architecture.md:121-128` states. The sections run in numeric order, so Section 4 regenerates the ledger and the totals from the tree Section 3 left.
 
+## Standing Brief Amendments
+
+- A session whose persona state never loaded keeps answering with the not-loaded cause until a tool call that names the load clears it. No tick, timer or other background path loads that state or clears that field. A background path that swapped the session's in-memory tree from the built-in default to the stored one would itself be a tree change with no tool call naming it, which is what this plan exists to stop, and a session that recovered silently stops saying it could not load, which is what the Goal promises it will say.
+
 ## Sections of Work
 
 ### 1. Start-up survives a refused tool registration
@@ -246,6 +250,10 @@ Scope drift recorded here. Section 1's Files in scope line now also names persis
 
 That dispatch returned NEEDS_CONTEXT rather than a ruling, which is a defect in the brief and not an answer. The brief carried the implementer's report verbatim, and that report is the fix narrative the judge's charter refuses as an input: what was tried, what failed, the per-half failure counts, and the options with their costs. It also named the previously approved fix, which is a prior ruling on the same question. The charter's shape is that the add-decision line stands in place of the finding where an implementer's report raised the stop, so the report itself does not ride. One re-dispatch is allowed and goes to a fresh judge, since the first holds the contaminated inputs. A second NEEDS_CONTEXT sends the question to the operator with both returns attached.
 
-Next action. Re-dispatch the design stop on a clean brief carrying the Goal, the Intent record, the Section 1 acceptance bullets, the Out of Scope list, the add-decision line's first four parts and the capture, and nothing else. Then adopt the ruling, write the fix on it, re-run the targeted lane against the bd192a4 baseline, and take review round 2.
+The re-dispatch on a clean brief ruled refuse, on a form ground. Its reading, checked against this document and adopted: the Goal's first sentence says the tree changes only through a tool call that names what it changes, so a tick that silently swaps the session's in-memory tree from the built-in default to the stored one is itself such a change with nothing naming it. The Goal and the Intent record both promise that a session which could not load its tree says so to the worker that asks, and a session that recovered silently stops saying it. The ground is now recorded as the plan's first Standing Brief Amendment, written as a rule rather than as a verdict. A refuse on a form ground closes no finding, so the fix is still owed, written within the form that clause asks for: the guards stand, and recovery stays the agentic_identity tool.
+
+What that leaves open. The form the judge named is the option that silences the fleet prompt, which the judge never weighed because it rules scope and not design. So the fork is now between accepting that silence, dropping the persist guard and accepting the watcher cost with its residual hole, and making the fleet call site read the guard's refusal for what it is rather than as the seat being lost. The third is where this session leans, because that call site already has the right handling on its throw path, but whether it sits inside the approved guard or is a fresh mechanism is exactly the uncertainty a third design stop would cost. A consultant is ruling on the fix shape, with that framing handed over to be tested rather than ratified.
+
+Next action. Adopt the consultant's ruling, write the fix on it, re-run the targeted lane against the bd192a4 baseline, and take review round 2.
 
 A slip to carry to the close-out. The round 1 implementer deleted the machine's heavy-process claim with rm -f without first re-reading its Session line, so if a peer had replaced the claim in that interval it removed the peer's. The claims directory is empty now, which cannot settle it either way.
