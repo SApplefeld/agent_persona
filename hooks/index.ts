@@ -8140,7 +8140,7 @@ export const register: Register = async (on, options) => {
           listed
             .map((g) => `- ${g.status} ${g.kind} ${g.id} | ${g.title.slice(0, 40)}${g.blockedReason ? ` | ${g.blockedReason.slice(0, 60)}` : ""}\n`)
             .join("") +
-          (open.length > listed.length ? `...and ${open.length - listed.length} more open entries.\n` : "");
+          (open.length > listed.length ? `...and ${open.length - listed.length} more open ${open.length - listed.length === 1 ? "entry" : "entries"}.\n` : "");
         const queueClose = hasStartableWork(sess.state)
           ? `The next pending entry starts on the controller's next tick; do not start it by hand.`
           : `Nothing here starts by itself: every open entry is paused or blocked. Resume one with goal_resume, drop one with goal_edit, or ask the operator.`;

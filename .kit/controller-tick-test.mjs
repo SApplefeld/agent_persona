@@ -18227,6 +18227,9 @@ async function caseIq_theHelpersReadTheControllersWalk(clock) {
     { id: "plan-x", parentId: "root-1", kind: "plan", status: "abandoned", title: "Dropped", createdAt: T0 - 38000 },
   ]);
   const state = makeState({ now: T0, goals, activeGoalId: null });
+  // makeState keeps the goals array by reference, so the mutation check
+  // compares against a copy taken before any helper runs.
+  const goalsBefore = JSON.stringify(state.goals);
   const open = AgentState.openGoals?.(state)?.map((n) => n.id);
   check("iq helpers: openGoals is task-u then plan-p by sortKey-or-createdAt, leaving out the root and the abandoned entry",
     JSON.stringify(open) === JSON.stringify(["task-u", "plan-p"]), open);
@@ -18235,7 +18238,7 @@ async function caseIq_theHelpersReadTheControllersWalk(clock) {
     AgentState.hasStartableWork?.(state) === false && AgentState.nextStartableLeaf?.(state) === null && AgentState.activateNext(probe) === null,
     { hasStartableWork: typeof AgentState.hasStartableWork });
   check("iq helpers: the helpers mutate nothing",
-    JSON.stringify(state.goals) === JSON.stringify(goals) && state.activeGoalId === null, state.goals);
+    JSON.stringify(state.goals) === goalsBefore && state.activeGoalId === null, state.goals);
 }
 
 // Thirteen open entries list twelve and a count of one more.
@@ -18253,7 +18256,7 @@ async function caseIq_thirteenOpenEntriesListTwelveAndACount(clock) {
   check("iq thirteen: twelve entry lines, task-01 through task-12 in order",
     entryLines.length === 12 && entryLines.every((l, i) => l.startsWith(`- paused task task-${String(i + 1).padStart(2, "0")} |`)), lines);
   check("iq thirteen: the count line names one more, and the block still ends on its closing sentence",
-    lines[lines.length - 2] === "...and 1 more open entries." && lines[lines.length - 1] === IQ_IDLE_LINE, lines.slice(-2));
+    lines[lines.length - 2] === "...and 1 more open entry." && lines[lines.length - 1] === IQ_IDLE_LINE, lines.slice(-2));
 }
 
 // An empty tree carries [NO GOAL] and no queue block. A tree with an active
