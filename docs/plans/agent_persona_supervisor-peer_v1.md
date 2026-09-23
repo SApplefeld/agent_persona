@@ -1,6 +1,6 @@
 # Supervisor as peer
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-16
 
@@ -328,3 +328,31 @@ Not a Chapter. Section 1 stays part-run where board 1 left it, two measurements 
 **No new kaizen note.** Board 5 filed one against the kit for the cost this lap repeats, an armed queue of chained plans paying a plan read and a board commit per plan on every pass. A second note on the same friction is the duplicate the kaizen bar refuses.
 
 **Next action.** Nothing, until the operator arms execution on their own word. Section 1 then resumes at its three held measurements, with measurement 5 taking its own yes and a quiet fleet, and with the deferral question above settled at arming.
+
+### Chapter 1 - 2026-09-23
+Completed: 1. Measurements the later sections build on
+Implemented By: main session
+Metrics: review rounds 1, closed clean; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations none; consults 0
+Decisions / Surprises:
+- Section 1 open: records measurements 1 and 3 as taken and defers 2, 4 and 5 to the end-run; serves the Section 1 acceptance bullet; adds no mechanism; size one Chapter, about 40 lines of prose; not building it leaves Sections 2 to 5 with no recorded launch form or bound.
+- **Execution is armed on the operator's own word.** On 2026-09-23 the operator answered this session's ask naming this plan, on this session's own relay thread, with "Yes, please proceed on the dispatched plans." That thread is a channel the Dispatch Authorization names. The ordering conjunct was already met at interim board 7. The goal state records the arming invocation as this run's own, so the operator's word is recorded here, where a later session reads it.
+- **The `Status:` header read `Ready` and now reads `In Progress`**, set as part of starting.
+- **Measurement 1, the holder launch shape, is decided: `holder | child &` with no `disown`.** Scripts: `.kit/scratch/supervisor-peer/m1/launcher.sh`, `holder.sh` and `child.sh`, run as `launcher.sh <plain|disown|startb> <dir> <hold|wait>`. The driver that looped over the forms and wrote `m1-output.txt` was not kept, so its lines below are the record. Output, taken 2026-09-18T11:32:31Z on MINGW64_NT-10.0-26200, bash 5.3.15, the stub child exiting 7 on end of input:
+  - plain: `$!` names the child (2624896), the pipeline's last stage. Child and holder alive after the launcher's TERM: yes, yes. `wait` on the saved pid returned 7. Exit marker after the holder kill: 7, and the child logged "child saw end of input".
+  - disown: `$!` names the child. Both alive after TERM: yes, yes. `wait` returned 0. Exit marker 7. So `wait` on a disowned pid reports 0 with nothing on stderr, and a supervisor built on it would read every crash as success.
+  - `start //b`: `$!` names nothing, because the launch is detached. Both alive after TERM. `wait` is unavailable. Exit marker 7.
+  - Teardown: "no holder.sh, child.sh or launcher.sh process remains".
+  Only the plain form meets all three criteria, so Section 5 builds it. The holder's poll redirects its `sleep` to `/dev/null`, because a `sleep` inheriting the holder's stdout keeps the pipe's write end open after the holder dies. Section 5's holder inherits that constraint.
+- **Measurement 3, the transcript instrument, holds the fifteen-minute bound.** Scripts: `.kit/scratch/supervisor-peer/m3/gaps.mjs` and `bracket.mjs`, outputs `m3-output.txt` (taken 2026-09-18T11:35:44Z) and `m3b-output.txt` (taken 11:36:37Z). The rule is the Approach's: the newest timestamp on an `assistant` or `user` record across the session's own transcript and every transcript under `subagents/`, measured over whole files. The anchor session `a581ce96-0b96-49ed-8679-591c4612c5cc`, working when `run/supervisor.log:2458` restarted it as hung, has a longest silence of 10.0 minutes, five under the bound. Nineteen sessions exceed fifteen minutes. `bracket.mjs` classified each of their longest silences from the records on either side, and interim board 1 found none of them working. One of the nineteen needed more than the classifier. That is 139.5 minutes on `2a0f4775-db7e-42cb-b9ce-0cb3d7e4395c`, which `m3b-output.txt` reads as "working-unresolved" with three tool calls open. Board 1 read its bracketing records as its own `BLOCKED:` declaration on the left and the operator's reply on the right. So a blocked session is silent on the transcript for as long as the operator takes to answer. The heartbeat and the process walk are what keep it `alive`, and Section 2 carries a fixture for that case. The default stands unamended.
+- **Measurements 2, 4 and 5 are deferred to the end-run, not measured here.** Each launches a real `claude -p` child in the operator's profile. This plan's first Assumptions entry and `docs/plans/agent_persona_deferred-gate-run_v1.md` line 23 defer "any other check that launches a `claude` child, real or stub" to that plan's run, and line 21 applies the policy to this plan whole. The operator's word arming execution is a general proceed and does not revoke that recorded decision. What each would change, so the end-run knows what to amend:
+  - Measurement 2: whether the heartbeat timer stamps during a long tool call. Either answer changes no section's acceptance, per the Assumptions entry of 2026-09-17.
+  - Measurement 4: the line form a running child accepts for the final ask. Section 3 writes the ask in the stream-json user-turn form the supervisor already writes to the child's input for the priming turn. Where the end-run finds a running child drops or rejects that line, the final ask is amended to reach only a child with no open turn, as Section 1 states.
+  - Measurement 5: what a child does on a usage limit with the pause off. It never gates Section 2 by the plan's own words.
+Assumptions:
+- decided 2026-09-23 (section 1): measurements 2, 4 and 5 run in the end-run under the deferred-gate policy; source: this plan's first Assumptions entry and `docs/plans/agent_persona_deferred-gate-run_v1.md:21-23`.
+- assumed 2026-09-23 (section 1, default): the final ask is written as the stream-json user-turn line the supervisor already writes for the priming turn; reversal: measurement 4 at the end-run, and the amendment Section 1 names where a running child drops the line.
+Review Findings: review: adversarial at fable, Agent tool; blind: no code diff. Findings and dispositions are recorded below this Chapter's heading after the round.
+Stamps: adjudicated in the section's stamp pass.
+Gate: no repository code changed, only this plan document, so no test lane ran and there is no baseline to diff. Measurements 1 and 3 are their own evidence, in the output files named above.
+Next: 2. The liveness instrument
+Commit Model: Branch-and-PR
