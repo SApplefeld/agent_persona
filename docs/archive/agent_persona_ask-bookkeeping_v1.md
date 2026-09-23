@@ -1,6 +1,6 @@
 # Ask bookkeeping cleanup
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-09-22
 
@@ -53,7 +53,9 @@ Alternatives refused:
 - Three plans, one per path. Refused, because the three fixes share one file, one helper and one
   test file, and each is a few lines.
 
-Rulings: none at the write.
+Rulings: none at the write, and one after it.
+
+- Ruling by the architect, 2026-09-22, on the worker's scope question: the reader-answer drain at the D5 close is a fourth path and is fixed here.
 
 Provenance: distilled from DEV-PERSONA's draft of 2026-09-22 at `e12a614` and the architect's read
 of `hooks/index.ts` at `origin/main` `3b1823b` the same day.
@@ -63,7 +65,9 @@ of `hooks/index.ts` at `origin/main` `3b1823b` the same day.
 None open touches these paths. The no-goal-idle plan (archived, PR 73) changed the error-streak
 branch's no-active-node arm and left the active-node arm as it is; this plan changes that arm.
 The goal tree curation plan (archived, PR 71) made `goal_create`'s replacement deliberate and left
-the ask slot untouched.
+the ask slot untouched. The goal levels plan (`../plans/agent_persona_goal-levels_v1.md`, Ready)
+adds a `goal_create` refusal, which has to sit ahead of this plan's ask close, since a refused
+`goal_create` touches the slot on no path.
 
 ## Approach
 
@@ -149,6 +153,9 @@ naming this plan, so this plan owns them and retires nothing further.
    reads `<id> paused (thread reply to ask <askId>)`. It then sets the asked entry `active` and
    `activeGoalId` to it. Where the asked entry is not paused, nothing about the pointer changes, as
    today.
+4. The tick's answer-record close, added by the architect's ruling above, reactivates the asked
+   entry through the same body as item 3, lifted into one helper, with `blockedReason` reading
+   `Paused by answer <recordId> to ask <askId>` and the decision details naming the answer record.
 
 The README's `### Ask wait` section (line 613) states what each path now does, in the present
 tense. The failure-modes row in `docs/architecture.md` (line 223) for `error_streak` decisions with
@@ -178,7 +185,8 @@ and leaves the leaf active, and that the same streak with no ask open still open
 guard is proven in both directions; that a tree-resetting `goal_create` over an open ask leaves the
 record `resumed` and the slot clear, and that a following `goal_add` activates the new entry; that
 a thread reply closing an ask on a paused entry leaves `activeGoalId` naming that entry before any
-store reload, and that another entry active at the time is paused with the reply named as reason.
+store reload, and that another entry active at the time is paused with the reply named as reason;
+and the same for an answer record drained at the tick, with the answer named as reason.
 
 Acceptance:
 - An error streak on an active leaf while an ask is open leaves exactly one open ask record in the
@@ -193,7 +201,7 @@ Acceptance:
 - Each new case was watched red against the unchanged code before the fix, and the Chapter quotes
   each case's failing check line and the exit code from that red run.
 - `node .kit/controller-tick-test.mjs` exits 0, and `npx tsc --noEmit` exits 0.
-- The README's `### Ask wait` section states the three behaviors, and the `S3 (ask lifecycle)`
+- The README's `### Ask wait` section states the three behaviors and the reader-answer path's, and the `S3 (ask lifecycle)`
   bullet under the `### Test coverage` heading at line 633 names each new case, however many the
   Tests line yields. The architecture row at line 223 reads true against the new branch.
 
@@ -249,3 +257,15 @@ Delta: taken 2026-09-23T02:59Z on this box at 14297ea plus the close-pass edits,
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Chapter 2 - 2026-09-23
+Completed: 1. Close or keep the ask on all three paths (finishing pass)
+Implemented By: main session (finishing-work, inline fixes)
+Metrics: finishing review rounds 2 (round 1 performance, security and adversarial at fable/high via Workflow; round 2 adversarial over the fix delta at fable/high via Workflow), closed on Minors only; provenance 1 new-requirement Major (the answer-record path, ruled in scope by the architect), 1 advisory Major (the priming turn, relevance CONFIRM, then refuted on reachability), 1 fix-introduced Major (the priming guard, removed); advisory: 2 findings, 1 fixed, 0 deferred, 1 refused on evidence; goal read 1; escalations 0; consults 0
+Recap: Goal, verbatim: "When this is done, a persona's record of its open operator question always agrees with the goal tree and with the ask records in the store. Three paths break that agreement today, and each leaves a worker stuck behind a question nobody can see or answer, or holding an active entry its own pointer does not name. It matters because a stuck ask stops all new work on the persona until the ask expires. The wait is `askOperatorWaitMs`, 60 minutes by default, and an ask never expires where that option is 0."; What the tree does now: when a worker is already waiting on a question to the operator, a run of failing turns logs itself and leaves that one question standing instead of replacing it with a second one nobody can answer; starting a fresh goal tree closes any question left open on the old tree, so new work is no longer held behind it; and when the operator's answer arrives, whether as a thread reply or as an answer record a reader wrote, the plugin resumes the entry the question was about, pauses anything else running, and points its record of the active entry at the resumed one; Refinements during the run: the answer-record path was added as a fourth path by the architect's ruling of 2026-09-22 on this run's scope question, and fixed through one helper shared with the thread-reply close; a guard against the supervisor's priming turn closing an open ask was added on a confirmed security finding, then removed when the fix-delta review showed an owner start already expires every open ask before that turn lands; Operator-pending: none
+Decisions / Surprises: Base ref 9d0e3176a7f5cc859000cbf612c2b730ed779902 (merge-base with origin/main). QA verifier: PASS on every acceptance bullet and the whole 26-item gate, each exit 0, tick 2588 OK, at 9653ea9. Finishing round 1: performance CLEAR; security returned `threat model: absent` and one Major, that the reply close fires on the supervisor's `[SUPERVISOR-PRIMING]` turn; adversarial APPROVED_WITH_CONCERNS with one Major, that the tick's answer-record drain (`hooks/index.ts`, the D5 close) reactivates the asked entry without setting `activeGoalId` or pausing another active entry. The adversarial Major traced to no bullet; the ask went to the architect, who ruled it in scope as a fourth path under the Goal's "always agrees" (ruling line in the Intent, design item 4 and the Tests line added). The security Major took the relevance ruling, CONFIRM on the Goal and Intent. Fix: `reactivateAskedEntry` lifted from the reply close and called from both closes, preserving the reply close's strings and order byte for byte; the answer path's `activated` detail now reads `reactivated (answer <record id> to ask <ask id>)`, which no caller or test read in its old form. Red run of `caseAbk2_answerRecordSetsThePointer` and the priming case on the unchanged code, exit 7 (`node .kit/controller-tick-test.mjs`, at 9653ea9 plus the test edits), failing checks: "abk2 answer: the asked entry is active and activeGoalId names it", "abk2 answer: the other active entry is paused with the answer named as the reason", "abk2 answer: one paused_by_reply decision naming the other entry, the answer and the ask", and the four priming checks. Round 2 found the priming guard answers a state that cannot occur: owner `session.start` runs `expireOpenAsks` over every open ask before any prompt lands (`hooks/index.ts:3057-3072`), and the reply close acts only on an open record, so the security finding's inferred leg, "an open ask persists across a relaunch", is false. Guard, its case and its README sentence removed; the error was acting on the finding's inferred leg before checking it. Goal read: fixture `title`/`notes` fields refused on the ground that no code reads them, with the judge's own stated condition for accept-and-declare, that the tick gate depends on them, met by Chapter 1's `title.slice` TypeError, so accept-and-declare; the stale-slot clear on `goal_create` and the two backlog entries accept-and-declare; the asked-but-unbuilt note (flip-before-persist and the reply close's leftover fields) is the backlog entry already written. Docs curator: 7 drift items, all deviation, none mistake; D1 met by this Chapter, D2 by the index refresh, D3 and D4 and D5 fixed in `docs/README.md` and `README.md` ("Changing the goal tree" now names the ask close; the Bounded store closed list now names every close), D6 pre-existing on the reply path, D7 the curator's own backlog edit, read and kept; H1 met by a pointer to the goal levels plan under Related plans. Scope: `docs/backlog.md` and `docs/README.md` sit outside Files in scope, declared here. The fix-round capture excludes `docs/plans/` by rule, so the plan's own hunks ride only in git. The section heading keeps "all three paths" because Chapter 1's Completed line matches it exactly.
+Assumptions: none
+Review Findings: `review: performance, security, adversarial at fable/high, Workflow`; `review: adversarial fix delta at fable/high, Workflow`; `goal read at fable, Agent tool`. Minors: 5 fixed (architecture row symptom wording, the backlog stale-slot entry, the plan record of the fourth path, the README priming sentence by removal, the index line), 1 folded into the backlog (the streak guard reads the slot alone), 7 left with the reason in `.kit/scratch/ask-bookkeeping/finishing/minors.md` (the fixed 20 ms settle mirrors the S13 convention; no baseline wall clock on Chapter 1; `parseState` does not normalize `notes`, which no reachable store lacks; the capture excludes the plan doc by rule; whole-string pins on a single-sourced reason; the pointer fallback feeding the helper needs an in-memory stale pointer beside an off-tree ask node; the backlog file's scope, declared above).
+Gate: GATE-PENDING
+Next: none
+Commit Model: Branch-and-PR

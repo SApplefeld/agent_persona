@@ -1956,6 +1956,35 @@ const closeAskOnNode = async (dp: any, nodeId: string, closedBy: string): Promis
   return true;
 };
 
+// Reactivates the paused entry an answered ask named. Every other entry whose
+// status is active is paused first, read by status rather than by
+// activeGoalId, since a stale pointer is the state this must not leave behind;
+// then activeGoalId names the entry. `closedBy` reads "thread reply to ask
+// <id>" or "answer <recordId> to ask <id>" and lands in the reason and details.
+const reactivateAskedEntry = (askedNode: GoalNode, closedBy: string): void => {
+  for (const other of sess.state.goals) {
+    if (other.id === askedNode.id || other.status !== "active") continue;
+    other.status = "paused";
+    other.blockedReason = `Paused by ${closedBy}`;
+    other.updatedAt = Date.now();
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "goal",
+      action: "paused_by_reply",
+      detail: `${other.id} paused (${closedBy})`,
+    });
+  }
+  askedNode.status = "active";
+  sess.state.activeGoalId = askedNode.id;
+  askedNode.updatedAt = Date.now();
+  sess.state.decisions.push({
+    timestamp: Date.now(),
+    loop: "goal",
+    action: "activated",
+    detail: `${askedNode.id}: reactivated (${closedBy})`,
+  });
+};
+
 // completeLeaf's walk marks a plan parent blocked with the reason "Child task
 // blocked" while a child is blocked, and leaves that status and reason in
 // place when goal_done later completes the blocked child by name. A parent
@@ -4104,16 +4133,7 @@ export const register: Register = async (on, options) => {
                 const activeNode = targetNode || (sess.state.activeGoalId
                   ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
                   : null);
-                if (activeNode && activeNode.status === "paused") {
-                  activeNode.status = "active";
-                  activeNode.updatedAt = Date.now();
-                  sess.state.decisions.push({
-                    timestamp: Date.now(),
-                    loop: "goal",
-                    action: "activated",
-                    detail: `${activeNode.id}: reactivated (answer to ask ${askId})`,
-                  });
-                }
+                if (activeNode && activeNode.status === "paused") reactivateAskedEntry(activeNode, `answer ${answer.id} to ask ${askId}`);
                 sess.state.decisions.push({
                   timestamp: Date.now(),
                   loop: "monitor",
@@ -8034,32 +8054,7 @@ export const register: Register = async (on, options) => {
         if (askedNode) {
           askedNode.lastAskQuestion = askRecord.question;
           askedNode.lastAskClosedAt = Date.now();
-          if (askedNode.status === "paused") {
-            // Pause whatever else is active, read by status rather than by
-            // activeGoalId, since a stale pointer is the state this close
-            // must not leave behind; then point activeGoalId at the entry.
-            for (const other of sess.state.goals) {
-              if (other.id === askedNode.id || other.status !== "active") continue;
-              other.status = "paused";
-              other.blockedReason = `Paused by thread reply to ask ${askId}`;
-              other.updatedAt = Date.now();
-              sess.state.decisions.push({
-                timestamp: Date.now(),
-                loop: "goal",
-                action: "paused_by_reply",
-                detail: `${other.id} paused (thread reply to ask ${askId})`,
-              });
-            }
-            askedNode.status = "active";
-            sess.state.activeGoalId = askedNode.id;
-            askedNode.updatedAt = Date.now();
-            sess.state.decisions.push({
-              timestamp: Date.now(),
-              loop: "goal",
-              action: "activated",
-              detail: `${askedNode.id}: reactivated (thread reply to ask ${askId})`,
-            });
-          }
+          if (askedNode.status === "paused") reactivateAskedEntry(askedNode, `thread reply to ask ${askId}`);
         }
         sess.state.decisions.push({
           timestamp: Date.now(),

@@ -3285,6 +3285,7 @@ async function main() {
     await caseAbk1_errorStreakKeepsTheOpenAsk(clock);
     await caseAbk1_goalCreateClosesTheOpenAsk(clock);
     await caseAbk1_threadReplySetsThePointer(clock);
+    await caseAbk2_answerRecordSetsThePointer(clock);
     await caseS13_gitProbe_dirtyCountSampledOnCadence(clock);
     await caseS13_health_redThenGreenAndTheRedReachesTheTurn(clock);
     await caseS13_stall_pendingPlanActivatesFirstAndNothingActivatesAfterRootComplete(clock);
@@ -16000,6 +16001,32 @@ async function caseAbk1_threadReplySetsThePointer(clock) {
   check("abk1 reply lone: the asked entry is active and activeGoalId names it",
     lState.goals.find((g) => g.id === "g-asked")?.status === "active" && lState.activeGoalId === "g-asked", { active: lState.activeGoalId });
   check("abk1 reply lone: no paused_by_reply decision", !lState.decisions.some((d) => d.action === "paused_by_reply"), lState.decisions.map((d) => d.action));
+}
+
+// An answer record drained at the tick closes the ask the same way a thread
+// reply does: other active entries are paused and activeGoalId names the
+// reactivated entry, read from the in-memory state before any reload.
+async function caseAbk2_answerRecordSetsThePointer(clock) {
+  console.log("\n=== Ask bookkeeping 2: an answer record that closes an ask points activeGoalId at the entry it reactivates ===");
+  clock.set(T0);
+  const h = await gtc3Harness("abk2_answer", abkTreeActiveAndAsked(T0), { pendingAsk: { askId: "ask-abk2-a", nodeId: "g-asked" } });
+  const writer = "abk2-answer-writer";
+  const inboxKey = `inbox:default:${writer}:1`;
+  h.storeMap.set(inboxKey, { id: "default-abk2-answer-writer-1", key: inboxKey, from: writer, at: T0 - 500, text: "Take the first branch.", kind: "answer", answers: "ask-abk2-a", status: "pending" });
+  h.storeMap.set(`commons:${writer}`, { sessionId: writer, lastSeen: T0 - 100, claims: [{ resource: "reader:default", claimedAt: T0 - 2000 }] });
+  clock.advance(65_000);
+  await tickAndSettle(h, clock, 50);
+  const state = getState(h);
+  const asked = state.goals.find((g) => g.id === "g-asked");
+  const other = state.goals.find((g) => g.id === "g-active");
+  check("abk2 answer: the ask record is answered", h.storeMap.get("ask:default:ask-abk2-a")?.status === "answered", h.storeMap.get("ask:default:ask-abk2-a"));
+  check("abk2 answer: the asked entry is active and activeGoalId names it",
+    asked?.status === "active" && state.activeGoalId === "g-asked", { goals: state.goals.map((g) => [g.id, g.status]), active: state.activeGoalId });
+  check("abk2 answer: the other active entry is paused with the answer named as the reason",
+    other?.status === "paused" && other.blockedReason === "Paused by answer default-abk2-answer-writer-1 to ask ask-abk2-a", other);
+  const paused = state.decisions.filter((d) => d.action === "paused_by_reply");
+  check("abk2 answer: one paused_by_reply decision naming the other entry, the answer and the ask",
+    paused.length === 1 && paused[0].detail === "g-active paused (answer default-abk2-answer-writer-1 to ask ask-abk2-a)", paused.map((d) => d.detail));
 }
 
 // Git probe: the git probe runs on its cadence, counts the porcelain
