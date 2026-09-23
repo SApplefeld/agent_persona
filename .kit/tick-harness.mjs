@@ -726,6 +726,30 @@ async function fireTurn(harness, turnId = "harness-turn") {
   if (completeH) await completeH(fake, { turnId, aborted: true, reason: "aborted" }, () => {});
 }
 
+// --- Turn openers: a turn left open for the tool calls a case makes in it ---
+
+// Opens a turn the way a genuine external prompt opens one: the plugin's
+// prompt.submit hook sees `text` stamped with `originKind` (no origin at all
+// where it is null), then turn.start opens with that same text. The turn
+// stays open until closeTurn, so a tick fired meanwhile reads it as open.
+async function openPromptTurn(harness, { originKind = "composer", text = "Typed at the keyboard.", turnId = "prompt-turn" } = {}) {
+  const e = originKind === null ? { text } : { text, origin: { kind: originKind } };
+  await harness.handlers["prompt.submit"](harness.fake, e, async () => ({}));
+  await harness.handlers["turn.start"](harness.fake, { turnId, text }, () => {});
+}
+
+// Opens the turn the plugin's oldest queued submit begins, as the engine
+// begins a plugin's turn with the text it submitted. The turn stays open
+// until closeTurn.
+async function openQueuedTurn(harness, turnId = "queued-turn") {
+  await harness.handlers["turn.start"](harness.fake, { turnId }, () => {});
+}
+
+// Completes an open turn by its id, aborted, so nothing is scored.
+async function closeTurn(harness, turnId) {
+  await harness.handlers["turn.complete"](harness.fake, { turnId, aborted: true, reason: "aborted" }, () => {});
+}
+
 // --- Tick driver: fires the controller-tick callback ---
 
 async function fireTick(harness) {
@@ -820,6 +844,9 @@ export {
   makeState,
   makeGoalNode,
   fireTurn,
+  openPromptTurn,
+  openQueuedTurn,
+  closeTurn,
   fireTick,
   fireHeartbeat,
   seedPersonaStore,

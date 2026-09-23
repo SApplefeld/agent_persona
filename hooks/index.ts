@@ -405,7 +405,31 @@ function targetPersonaOf(arg: unknown, own: string): { persona: string } | { den
 // neither key either. Such a delivery's turn reads unaccounted, and its
 // entry then leaves the list at the withheld branch once its record is
 // swept or resolved.
-type ExpectedTurn = { text: string; settledText?: string } & ({ kind: "delivery"; recordId: string } | { kind: "nudge" } | { kind: "plugin" });
+//
+// A delivery entry also carries what the effort gate reads for its turn,
+// fixed when the entry is built: `ground`, the value deliveryGroundIn gave
+// the record, and `seatLead`, whether the record's own text opens with
+// [FINDING] or [PROPOSAL].
+type ExpectedTurn = { text: string; settledText?: string } & ({ kind: "delivery"; recordId: string; ground: string; seatLead: boolean } | { kind: "nudge" } | { kind: "plugin" });
+
+// Whether an inbox record's own text opens with one of the two leads a
+// finding or a proposal carries. A lead counts only as the text's first
+// characters, so one quoted further down does not make the record either.
+function opensWithSeatLead(text: string): boolean {
+  return text.startsWith("[FINDING]") || text.startsWith("[PROPOSAL]");
+}
+
+// The prompt origin kinds the harness stamps on the operator's own turns:
+// the terminal, the Remote Control bridge, a relayed channel message, and
+// the SDK host, which is how the supervisor's launch prompt arrives.
+const OPERATOR_ORIGIN_KINDS: ReadonlySet<string> = new Set(["composer", "bridge", "channel", "sdk"]);
+
+// The one refusal the four acts that start a new effort give outside a turn
+// the operator or the coordinator persona started.
+const EFFORT_REFUSED_TEXT =
+  "Refused: a new effort starts only in a turn the operator or the coordinator persona started, and this turn is neither. " +
+  "Send the idea to the coordinator persona with agentic_say, opening the text with [PROPOSAL].";
+
 type SubmitOutcome = { ok: true } | { ok: false; how: "failed" | "dropped"; reason: string };
 
 // Removes one entry from the expected-turn list by identity, never by
@@ -2228,6 +2252,35 @@ export const register: Register = async (on, options) => {
   // message, captured at turn.start from the flag above so turn.complete
   // can act on it after the flag has already reset for the next prompt.
   let currentTurnIsChannelOrigin = false;
+  // The origin kind the real prompt.submit hook just saw on a genuine
+  // external turn, or null where it saw none. Consumed by the very next
+  // turn.start, the same one-flag handoff as the channel flag above.
+  let lastPromptOriginKind: string | null = null;
+  // What opened the turn now running, captured at turn.start and read by
+  // turnMayStartEffort: the origin kind handed off above ("unclassified"
+  // where the hook saw none), whether the turn is the supervisor's priming
+  // turn, and the expected-turn entry the turn's text matched, if any.
+  // All three reset at turn.complete. A record delivered into the running
+  // turn as tool context changes none of them.
+  let currentTurnOriginKind = "unclassified";
+  let currentTurnIsPriming = false;
+  let currentTurnEntry: ExpectedTurn | null = null;
+  // Whether the turn now running may start a new effort: goal_create,
+  // goal_add of a plan, and goal_longterm's add and drop. A priming turn may
+  // not. A turn that matched an expected turn may only where that entry is a
+  // delivery under the coordinator persona's ground whose record opens with
+  // neither [FINDING] nor [PROPOSAL]. Such a turn's origin kind is ignored,
+  // since the plugin's own submits never pass the prompt.submit hook that
+  // sets it. Any kind that hook handed off belongs to some other prompt,
+  // whose own turn has not opened yet. Any other turn may only where its
+  // origin is one of the operator's kinds.
+  const turnMayStartEffort = (): boolean => {
+    if (currentTurnIsPriming) return false;
+    if (currentTurnEntry !== null) {
+      return currentTurnEntry.kind === "delivery" && currentTurnEntry.ground === COORDINATOR_GROUND && !currentTurnEntry.seatLead;
+    }
+    return OPERATOR_ORIGIN_KINDS.has(currentTurnOriginKind);
+  };
   // Whether the reply tool (channel-relay's mcp__..__reply) was called
   // anywhere during the current turn. Reset at turn.start, set by tool.call.
   let replyCalledThisTurn = false;
@@ -2555,7 +2608,7 @@ export const register: Register = async (on, options) => {
       description:
         "Create a new goal tree for this persona. The root carries the objective; the planner " +
         "creates the plans under it at the next controller tick. A tree whose root is unfinished " +
-        "is replaced only with replace: true.",
+        "is replaced only with replace: true. A call in a turn neither the operator nor the coordinator persona started is refused.",
       inputSchema: {
         type: "object",
         properties: {
@@ -2584,7 +2637,8 @@ export const register: Register = async (on, options) => {
       name: "goal_add",
       description:
         "Add a node to the goal tree under parentId. With parentId omitted the parent is the " +
-        "active leaf where that leaf is a plan, and the active task's parent otherwise.",
+        "active leaf where that leaf is a plan, and the active task's parent otherwise. " +
+        'kind "plan" is refused outside a turn the operator or the coordinator persona started.',
       inputSchema: {
         type: "object",
         properties: {
@@ -4238,7 +4292,7 @@ export const register: Register = async (on, options) => {
                   detail: `ask ${askId} closed by record ${answer.id}`,
                 });
                 const answerText = deliveryText(answerLabel, answer.id, answer.text, { answerTo: askRecord.question });
-                const expectedAnswerTurn = expectTurn({ kind: "delivery", recordId: answer.id, text: answerText });
+                const expectedAnswerTurn = expectTurn({ kind: "delivery", recordId: answer.id, ground: answerLabel, seatLead: opensWithSeatLead(answer.text), text: answerText });
                 const answerOutcome = await submitExpectedTurn($, expectedTurns, expectedAnswerTurn);
                 if (!answerOutcome.ok) recordFailedDelivery(answer, answerOutcome);
                 await persist($);
@@ -4322,7 +4376,7 @@ export const register: Register = async (on, options) => {
             action: "operator_delivered",
             detail: `record ${oldest.id} submitted as ${deliveryPrefix(ground, oldest.id, "plain")}`,
           });
-          const expectedDeliveryTurn = expectTurn({ kind: "delivery", recordId: oldest.id, text: submittedText });
+          const expectedDeliveryTurn = expectTurn({ kind: "delivery", recordId: oldest.id, ground, seatLead: opensWithSeatLead(oldest.text), text: submittedText });
           const deliveryOutcome = await submitExpectedTurn($, expectedTurns, expectedDeliveryTurn);
           if (!deliveryOutcome.ok) recordFailedDelivery(oldest, deliveryOutcome);
           await persist($);
@@ -5845,6 +5899,8 @@ export const register: Register = async (on, options) => {
     lastPromptWasChannelOrigin = false;
     const currentTurnIsExternal = lastPromptWasExternal;
     lastPromptWasExternal = false;
+    currentTurnOriginKind = lastPromptOriginKind ?? "unclassified";
+    lastPromptOriginKind = null;
     replyCalledThisTurn = false;
     // D4: reset backoff skip counter on new turn (activity breaks the skip streak).
     if (costEnabled && sess.state.monitor.cost) {
@@ -5875,6 +5931,12 @@ export const register: Register = async (on, options) => {
     // decides the match; it only names the reason.
     const matched = expectedTurns.find((entry) => e.text !== "" && (entry.text === e.text || entry.settledText === e.text));
     let stampRecordId: string | null = null;
+    // The effort gate reads the matched entry, and for an unmatched turn
+    // whether it is the priming turn: isPrimingTurn carries the last real
+    // prompt's reading forward, so it counts only where that prompt is the
+    // one opening this turn.
+    currentTurnEntry = matched ?? null;
+    currentTurnIsPriming = !matched && currentTurnIsExternal && isPrimingTurn;
     if (matched) {
       unexpectTurn(matched);
       currentTurnKind = matched.kind;
@@ -6033,6 +6095,9 @@ export const register: Register = async (on, options) => {
     // judgment to score.
     const wasDelivery = currentTurnKind === "delivery";
     currentTurnKind = "unaccounted";
+    currentTurnOriginKind = "unclassified";
+    currentTurnIsPriming = false;
+    currentTurnEntry = null;
 
     // C3: error streak fold.
     const toolErrors = toolErrorsThisTurn;
@@ -6958,6 +7023,11 @@ export const register: Register = async (on, options) => {
 
     // Serve goal_create (v3: creates the root node, NO planning in handler: R1).
     if (e.tool === "mcp__agentic-plugin__goal_create") {
+      // A new tree is a new effort, so the turn-origin gate runs first.
+      if (!turnMayStartEffort()) {
+        toolErrorsThisTurn++;
+        return { deny: EFFORT_REFUSED_TEXT };
+      }
       // Before the owner check: a session that never loaded its state is not
       // an owner either, and "held by a live session" would be untrue of it.
       if (sess.stateNotLoaded !== null) {
@@ -7100,6 +7170,13 @@ export const register: Register = async (on, options) => {
         return { deny: "goal_add requires non-empty 'title' and 'objective'." };
       }
       const kind = String((e as any).kind || "task").trim() === "plan" ? "plan" : "task";
+      // A plan is a new effort, so it passes the turn-origin gate once its
+      // kind is known and before anything is written. A task works inside
+      // what the persona already holds and is never gated.
+      if (kind === "plan" && !turnMayStartEffort()) {
+        toolErrorsThisTurn++;
+        return { deny: EFFORT_REFUSED_TEXT };
+      }
       const maxRounds = Math.min(Math.max(parseInt(String((e as any).maxRounds || "10"), 10) || 10, 1), 50);
       const explicitParent = String((e as any).parentId || "").trim();
 
@@ -7400,6 +7477,12 @@ export const register: Register = async (on, options) => {
     // activeGoalId. Each change logs a decision, and a drop's decision
     // carries its reason.
     if (e.tool === "mcp__agentic-plugin__goal_longterm") {
+      // Both actions change what the persona works towards, so the
+      // turn-origin gate runs first.
+      if (!turnMayStartEffort()) {
+        toolErrorsThisTurn++;
+        return { deny: EFFORT_REFUSED_TEXT };
+      }
       if (sess.stateNotLoaded !== null) {
         toolErrorsThisTurn++;
         return { deny: stateNotLoadedText(sess.stateNotLoaded) };
@@ -8366,7 +8449,9 @@ export const register: Register = async (on, options) => {
     // the supervisor's own synthetic priming message.
     isPrimingTurn = e.text.startsWith("[SUPERVISOR-PRIMING]");
     // Steer 68/69: a real Discord message carries e.origin.kind === "channel".
-    lastPromptWasChannelOrigin = (e as { origin?: { kind?: string } }).origin?.kind === "channel";
+    const originKind = (e as { origin?: { kind?: string } }).origin?.kind;
+    lastPromptWasChannelOrigin = originKind === "channel";
+    lastPromptOriginKind = typeof originKind === "string" ? originKind : null;
     lastPromptWasExternal = true;
 
     // D5b (bullet 1): an open ask never silences the worker. This hook fires
@@ -8405,6 +8490,7 @@ export const register: Register = async (on, options) => {
       // A dropped prompt opens no turn, so the one-shot flags set above
       // must not survive to the next turn.start.
       lastPromptWasChannelOrigin = false;
+      lastPromptOriginKind = null;
       lastPromptWasExternal = false;
       return r;
     }

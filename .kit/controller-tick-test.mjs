@@ -19,7 +19,7 @@
 // Usage: node controller-tick-test.mjs
 // Exits 0 on success, 1 on failure.
 
-import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, HARNESS_CWD, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, jevResponseFor, JEV_FAKE_KEY, JOURNAL_MARK, storedGoalTrees } from "./tick-harness.mjs";
+import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, openPromptTurn, openQueuedTurn, closeTurn, SESSION_ID, HARNESS_CWD, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, jevResponseFor, JEV_FAKE_KEY, JOURNAL_MARK, storedGoalTrees } from "./tick-harness.mjs";
 import { DECISIONS_MAX, MEMORY_MAX, PLAN_PATH_PATTERN, PLAN_PATH_TEXT_PATTERN, isActivationEligible, parseState, resolvePlanPath } from "../hooks/agent-state.ts";
 import * as AgentState from "../hooks/agent-state.ts";
 import { FINDING_COOLOFF_MS } from "../hooks/self-review.ts";
@@ -3362,6 +3362,12 @@ async function main() {
     await caseLtg_theListSurvivesATreeReplacementAndARestart(clock);
     await caseLtg_aLongTermGoalIsNeverActiveAndNeverHoldsTheRootOpen(clock);
     await caseLtg_theToolRegistersForAnOwnerAndNeverForAReader(clock);
+    await caseGl4_operatorOriginsAdmitEachAct(clock);
+    await caseGl4_coordinatorDeliveryAdmitsEachAct(clock);
+    await caseGl4_otherTurnsRefuseEachAct(clock);
+    await caseGl4_edgesRefuse(clock);
+    await caseGl4_coordinatorBreakInDoesNotLiftTheRefusal(clock);
+    await caseGl4_descriptionsNameTheRefusal(clock);
     await caseSection6Fleet_unchangedIsSilentAndOneChangeSubmitsOnce(clock);
     await caseSection6Fleet_runningRowsAreNotAllHealthy(clock);
     await caseSection6Fleet_aFirstEverLaunchIsNotStale(clock);
@@ -5823,6 +5829,21 @@ function seedRecordFor(h, persona, writerSid, seq, fields) {
 
 async function callTool(h, args, next = async () => ({ result: "passthrough" })) {
   return h.handlers["tool.call"](h.fake, args, next);
+}
+
+// Opens a delivery turn and leaves it open: a live session holding `claims`
+// writes one record to `persona`, a tick delivers it, and the turn opens with
+// the text that tick submitted. The default claim is the default coordinator
+// persona, so the record is delivered under the COORDINATOR ground. `fields`
+// rides onto the record, so an answer to an open ask goes through the tick's
+// answer step rather than its drain. Returns the record's store key.
+async function openDeliveryTurn(h, persona, { claims = ["persona:coordinator"], text = "Start on the next piece of work.", writer = "coord-open-1", turnId = "delivery-turn", fields = {} } = {}) {
+  const now = Date.now();
+  seedForeignClaims(h, writer, now, claims);
+  const key = seedRecordFor(h, persona, writer, 1, { at: now - 1000, text, ...fields });
+  await fireTick(h);
+  await openQueuedTurn(h, turnId);
+  return key;
 }
 
 // The self-message guard keys on ownership: the coordinator owner is refused
@@ -12090,6 +12111,7 @@ async function caseSection10_goalDoneClosesSameTurnNoTickBetween(clock) {
     caseName: "section10_goal_done_same_turn",
     stateOpts: { now: T0, goals: [rootGoal], activeGoalId: null },
   });
+  await openPromptTurn(h);
 
   const toolCallH = h.handlers["tool.call"];
   const addResult = await toolCallH(h.fake, {
@@ -12223,6 +12245,7 @@ async function caseSection10_competingOlderPendingLeafLoses(clock) {
     caseName: "section10_competing_older_leaf",
     stateOpts: { now: T0, goals: [rootGoal, olderLeaf], activeGoalId: null },
   });
+  await openPromptTurn(h);
 
   const toolCallH = h.handlers["tool.call"];
   const result = await toolCallH(h.fake, {
@@ -12297,6 +12320,9 @@ async function caseSection10_openAskBlocksActivation(clock) {
   const startH = handlers["session.start"];
   if (startH) await startH(h.fake, {}, () => {});
   h.handlers = handlers;
+  // The store holds no ask record under the id, so the operator's prompt
+  // closes nothing and pendingAskId stays set for the call below.
+  await openPromptTurn(h);
 
   // enforceInvariants (agent-state.ts) runs on every session.start load and
   // nulls activeGoalId when no node's status is "active" - the seeded
@@ -12406,6 +12432,7 @@ async function caseSection10FixRound_nudgeCapPauseBlocksActivation(clock) {
     caseName: "section10_nudgecap_pause_blocks",
     stateOpts: { now: T0, goals: [rootGoal, nudgeCapPaused], activeGoalId: null },
   });
+  await openPromptTurn(h);
 
   const decisionsBefore = getDecisions(h).length;
   const toolCallH = h.handlers["tool.call"];
@@ -12493,6 +12520,7 @@ async function caseSection10FixRound_secondPlanAddLandsUnderRoot(clock) {
     caseName: "section10_second_plan_add",
     stateOpts: { now: T0, goals: [rootGoal], activeGoalId: null },
   });
+  await openPromptTurn(h);
 
   const toolCallH = h.handlers["tool.call"];
   const first = await toolCallH(h.fake, {
@@ -12577,6 +12605,7 @@ async function casePlanPath1_validPlanPathOnPlanStored(clock) {
     caseName: "planpath1_valid_stored",
     stateOpts: { now: T0, goals: [rootGoal], activeGoalId: null },
   });
+  await openPromptTurn(h);
 
   const toolCallH = h.handlers["tool.call"];
   const result = await toolCallH(h.fake, {
@@ -12618,6 +12647,7 @@ async function casePlanPath1_patternRefusalCases(clock) {
       caseName: `planpath1_pattern_${nearMisses.indexOf(bad)}`,
       stateOpts: { now: T0, goals: [rootGoal], activeGoalId: null },
     });
+    await openPromptTurn(h);
     const toolCallH = h.handlers["tool.call"];
     const result = await toolCallH(h.fake, {
       tool: "mcp__agentic-plugin__goal_add",
@@ -12716,6 +12746,7 @@ async function casePlanPath1_emptyPlanPathIsRefusedNotIgnored(clock) {
     caseName: "planpath1_empty_on_plan",
     stateOpts: { now: T0, goals: [rootGoal2], activeGoalId: null },
   });
+  await openPromptTurn(hPlan);
   const planResult = await hPlan.handlers["tool.call"](hPlan.fake, {
     tool: "mcp__agentic-plugin__goal_add",
     kind: "plan",
@@ -12742,6 +12773,7 @@ async function casePlanPath1_emptyPlanPathIsRefusedNotIgnored(clock) {
     caseName: "planpath1_absent_on_plan_control",
     stateOpts: { now: T0, goals: [rootGoal3], activeGoalId: null },
   });
+  await openPromptTurn(hAbsent);
   const absentResult = await hAbsent.handlers["tool.call"](hAbsent.fake, {
     tool: "mcp__agentic-plugin__goal_add",
     kind: "plan",
@@ -16359,6 +16391,8 @@ async function caseAbk1_errorStreakKeepsTheOpenAsk(clock) {
 // call that resets the tree closes it as goal_resume would, clears the slot,
 // and a following goal_add then activates the new entry rather than reading
 // the old ask as a hold. A slot naming no record is cleared with no decision.
+// The open-ask calls run in a turn a coordinator persona's record opened,
+// since an operator's own prompt closes an open ask before any tool runs.
 async function caseAbk1_goalCreateClosesTheOpenAsk(clock) {
   console.log("\n=== Ask bookkeeping 1: a tree-resetting goal_create closes the open ask ===");
   clock.set(T0);
@@ -16366,6 +16400,7 @@ async function caseAbk1_goalCreateClosesTheOpenAsk(clock) {
     { id: "plan-1", parentId: "root-1", kind: "plan", status: "paused", blockedReason: "operator input needed", title: "Plan one" },
   ]);
   const h = await gtc3Harness("abk1_create_closes", tree, { pendingAsk: { askId: "ask-abk1-c", nodeId: "plan-1" } });
+  await openDeliveryTurn(h, "default");
   const askKey = "ask:default:ask-abk1-c";
 
   const refused = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "Something new" });
@@ -16392,6 +16427,7 @@ async function caseAbk1_goalCreateClosesTheOpenAsk(clock) {
   clock.set(T0);
   const g = await gtc3Harness("abk1_create_gone", gtc4Tree("complete"), { pendingAsk: { askId: "ask-abk1-gone", nodeId: "root-1" } });
   g.storeMap.delete("ask:default:ask-abk1-gone");
+  await openPromptTurn(g);
   const goneRes = await callTool(g, { tool: "mcp__agentic-plugin__goal_create", objective: "Next thing" });
   const goneState = getState(g);
   check("abk1 create, slot naming no record: accepted, slot cleared, no ask_answered",
@@ -16404,6 +16440,7 @@ async function caseAbk1_goalCreateClosesTheOpenAsk(clock) {
   const a = await gtc3Harness("abk1_create_answered", gtc4Tree("complete"), { pendingAsk: { askId: "ask-abk1-ans", nodeId: "root-1" } });
   const ansKey = "ask:default:ask-abk1-ans";
   a.storeMap.set(ansKey, { ...a.storeMap.get(ansKey), status: "answered" });
+  await openPromptTurn(a);
   const ansRes = await callTool(a, { tool: "mcp__agentic-plugin__goal_create", objective: "Next thing" });
   const ansState = getState(a);
   check("abk1 create, slot naming an answered record: accepted, slot cleared, record left answered, no ask_answered",
@@ -16986,6 +17023,7 @@ async function caseGtc1_anUnparseableStoreSaysSoAndWritesNothing(clock) {
   }
   check("gtc1 unparseable: session.start comes up rather than throwing", startThrew === null, String(startThrew));
   if (h === null) return;
+  await openPromptTurn(h);
   const toolH = h.handlers["tool.call"];
   const status = await toolH(h.fake, { tool: "mcp__agentic-plugin__goal_status" }, async () => ({ result: "passthrough" }));
   check("gtc1 unparseable: goal_status answers that the state never loaded, with the store cause",
@@ -18311,6 +18349,7 @@ async function caseGtc4_theReplaceGuardRefusesAnUnfinishedTree(clock) {
   const h = await gtc3Harness("gtc4_guard_refuses", gtc4Tree("pending", [
     { id: "plan-1", parentId: "root-1", kind: "plan", status: "pending", title: "Plan one" },
   ]));
+  await openPromptTurn(h);
   for (const [label, extra] of [["no replace", {}], ["replace: false", { replace: false }], ['replace: "false"', { replace: "false" }], ["replace: 1", { replace: 1 }]]) {
     const before = await gtc4Views(h);
     const decisionsBefore = getDecisions(h).length;
@@ -18336,6 +18375,7 @@ async function caseGtc4_theReplaceGuardRefusesAnUnfinishedTree(clock) {
     { id: "plan-b", parentId: "root-1", kind: "plan", status: "paused", title: "Plan b" },
     { id: "plan-c", parentId: "root-1", kind: "plan", status: "abandoned", title: "Plan c" },
   ]));
+  await openPromptTurn(wide);
   const wideRes = await callTool(wide, { tool: "mcp__agentic-plugin__goal_create", objective: "Something new" });
   check("gtc4 guard count: the refusal names the root's title and 3 open entries",
     typeof wideRes?.deny === "string" && wideRes.deny.includes('"Ship the widget"') && wideRes.deny.includes("3 entries"), wideRes);
@@ -18344,6 +18384,7 @@ async function caseGtc4_theReplaceGuardRefusesAnUnfinishedTree(clock) {
   // rather than a count of zero open entries.
   clock.set(T0);
   const bare = await gtc3Harness("gtc4_guard_bare_root", gtc4Tree("pending"));
+  await openPromptTurn(bare);
   const bareRes = await callTool(bare, { tool: "mcp__agentic-plugin__goal_create", objective: "Another objective" });
   check("gtc4 guard, a pending root with no entries: refused naming the root's status, not zero entries",
     typeof bareRes?.deny === "string" && bareRes.deny.includes("its root is pending") && !bareRes.deny.includes("0 entries"), bareRes);
@@ -18364,6 +18405,7 @@ async function caseGtc4_replaceTrueReplacesAndKeepsTheOldTree(clock) {
     const h = await gtc3Harness(`gtc4_replace_${label}`, gtc4Tree("pending", [
       { id: "plan-1", parentId: "root-1", kind: "plan", status: "pending", title: "Plan one" },
     ]));
+    await openPromptTurn(h);
     h.fsMap.set(GOAL_HISTORY_FILE, '{"earlier":true}\n');
     const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "Something new", replace: value });
     const state = getState(h);
@@ -18390,6 +18432,7 @@ async function caseGtc4_aFinishedRootNeedsNoReplace(clock) {
   console.log("\n=== Goal tree curation 4: goal_create over a finished root needs no replace ===");
   clock.set(T0);
   const lone = await gtc3Harness("gtc4_finished_lone", gtc4Tree("complete"));
+  await openPromptTurn(lone);
   const loneRes = await callTool(lone, { tool: "mcp__agentic-plugin__goal_create", objective: "Next thing" });
   check("gtc4 finished lone root: accepted with no replace", loneRes?.deny === undefined && getState(lone).goals[0]?.objective === "Next thing", { res: loneRes, goals: getState(lone).goals });
   check("gtc4 finished lone root: no history file was written (the file is absent)", !lone.fsMap.has(GOAL_HISTORY_FILE), lone.fsMap.get(GOAL_HISTORY_FILE));
@@ -18400,6 +18443,7 @@ async function caseGtc4_aFinishedRootNeedsNoReplace(clock) {
       { id: "plan-1", parentId: "root-1", kind: "plan", status: "complete", title: "Plan one" },
       { id: "plan-2", parentId: "root-1", kind: "plan", status: "abandoned", title: "Plan two" },
     ]));
+    await openPromptTurn(h);
     const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "Next thing" });
     const tag = `gtc4 finished (${rootStatus}) root with plans`;
     check(`${tag}: accepted with no replace`, res?.deny === undefined && getState(h).goals.length === 1 && getState(h).goals[0].objective === "Next thing", { res, goals: getState(h).goals });
@@ -18413,6 +18457,7 @@ async function caseGtc4_aFinishedRootNeedsNoReplace(clock) {
   // No tree at all: nothing to replace, nothing to keep.
   clock.set(T0);
   const empty = await gtc3Harness("gtc4_no_tree", []);
+  await openPromptTurn(empty);
   const emptyRes = await callTool(empty, { tool: "mcp__agentic-plugin__goal_create", objective: "First thing" });
   check("gtc4 no tree: accepted, and no history file written", emptyRes?.deny === undefined && !empty.fsMap.has(GOAL_HISTORY_FILE), { res: emptyRes, history: empty.fsMap.get(GOAL_HISTORY_FILE) });
 }
@@ -18442,6 +18487,7 @@ async function caseGtc4_aFailedHistoryWriteStopsTheReplacement(clock) {
     const h = await gtc3Harness(`gtc4_history_fails_${label}`, gtc4Tree("pending", [
       { id: "plan-1", parentId: "root-1", kind: "plan", status: "active", title: "Plan one" },
     ]));
+    await openPromptTurn(h);
     arm(h);
     const before = await gtc4Views(h);
     const stateBefore = getState(h);
@@ -18467,6 +18513,7 @@ async function caseGtc4_aFailedHistoryWriteStopsTheReplacement(clock) {
 
   clock.set(T0);
   const c = await gtc3Harness("gtc4_history_fails_control", gtc4Tree("complete"));
+  await openPromptTurn(c);
   c.setWriteRefusal((p) => p === GOAL_HISTORY_FILE);
   const ok = await callTool(c, { tool: "mcp__agentic-plugin__goal_create", objective: "Next thing", replace: true });
   check("gtc4 history fails control: a lone finished root is replaced under the same refused write, which it never reaches",
@@ -18485,6 +18532,7 @@ async function caseGtc4_goalAddUnderAFinishedRootReopensIt(clock) {
       { id: "plan-old", parentId: "root-1", kind: "plan", status: "complete", title: "Old plan" },
       { id: "plan-gone", parentId: "root-1", kind: "plan", status: "abandoned", title: "Dropped plan" },
     ], { blockedReason: "stale reason" }));
+    await openPromptTurn(h);
     const beforeCount = getDecisions(h).length;
     const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_add", title: "New plan", objective: "Do the next thing", kind: "plan" });
     const state = getState(h);
@@ -18510,6 +18558,7 @@ async function caseGtc4_goalAddUnderAFinishedRootReopensIt(clock) {
   const r = await gtc3Harness("gtc4_reopen_refused", gtc4Tree("complete", [
     { id: "plan-old", parentId: "root-1", kind: "plan", status: "complete", title: "Old plan" },
   ]));
+  await openPromptTurn(r);
   const refusals = [
     ["a parentId not in the tree", { parentId: "no-such-node" }],
     ["a plan under a plan", { kind: "plan", parentId: "plan-old" }],
@@ -18539,6 +18588,7 @@ async function caseGtc4_goalAddUnderAFinishedRootReopensIt(clock) {
   // Control: an add under a live root writes no root_reopened.
   clock.set(T0);
   const live = await gtc3Harness("gtc4_reopen_live_root", gtc4Tree("pending"));
+  await openPromptTurn(live);
   const liveRes = await callTool(live, { tool: "mcp__agentic-plugin__goal_add", title: "New plan", objective: "Do the next thing", kind: "plan" });
   check("gtc4 reopen control, a pending root: accepted and no root_reopened written",
     liveRes?.deny === undefined && !getDecisions(live).some((d) => d.action === "root_reopened"), getDecisions(live).map((d) => d.action));
@@ -19910,6 +19960,7 @@ async function caseLtg_anAddReturnsAnIdAndGoalStatusShowsIt(clock) {
   const h = await ltgHarness("ltg_add_shows", gtc4Tree("pending", [
     { id: "plan-1", parentId: "root-1", kind: "plan", status: "active", title: "Plan one" },
   ]));
+  await openPromptTurn(h);
   const empty = await callTool(h, { tool: "mcp__agentic-plugin__goal_status" });
   const emptyLines = String(empty?.result).split("\n");
   check("ltg add: before any add, the last line under the tree is the heading with (none)",
@@ -19964,6 +20015,7 @@ async function caseLtg_eachRefusalNamesItsRuleAndChangesNothing(clock) {
   clock.set(T0);
   const cap = AgentState.LONG_TERM_GOAL_CAP;
   const h = await ltgHarness("ltg_refusals", gtc4Tree("pending"), []);
+  await openPromptTurn(h);
   const ids = [];
   for (let k = 0; k < cap; k++) {
     clock.advance(1000);
@@ -20003,6 +20055,7 @@ async function caseLtg_aDropRemovesTheEntryAndLogsTheReason(clock) {
   const h = await ltgHarness("ltg_drop", gtc4Tree("pending", [
     { id: "plan-1", parentId: "root-1", kind: "plan", status: "pending", title: "Plan one" },
   ]), [ltgEntry("lt-a", "Alpha"), ltgEntry("lt-b", "Beta")]);
+  await openPromptTurn(h);
   const goalsBefore = JSON.stringify(getState(h).goals);
   const res = await callTool(h, { tool: LTG_TOOL, action: "drop", id: "lt-a", reason: "the operator retired it" });
   const state = getState(h);
@@ -20022,6 +20075,7 @@ async function caseLtg_longTextIsCutAndAMalformedEntryStillPrints(clock) {
   console.log("\n=== Goal levels 3: long text is cut at the planner's lengths, and a malformed entry still prints ===");
   clock.set(T0);
   const h = await ltgHarness("ltg_bounds", gtc4Tree("pending"), []);
+  await openPromptTurn(h);
   const longTitle = "T".repeat(120);
   const longObjective = "O".repeat(700);
   const res = await callTool(h, { tool: LTG_TOOL, action: "add", title: longTitle, objective: longObjective });
@@ -20054,6 +20108,7 @@ async function caseLtg_aNonOwnerIsRefused(clock) {
   for (const args of [{ action: "add", title: "Alpha", objective: "An objective" }, { action: "drop", id: "lt-a", reason: "stale" }]) {
     clock.set(T0);
     const h = await seedReaderHarness(`ltg_reader_${args.action}`, T0, "owner-ltg", {}, { turnStartedAt: null, workdir: HARNESS_CWD });
+    await openPromptTurn(h);
     const storeBefore = h.fsMap.get(PERSONA_STORE_FILE);
     h.fsWrites.length = 0;
     const res = await callTool(h, { tool: LTG_TOOL, ...args });
@@ -20107,6 +20162,7 @@ async function caseLtg_theListSurvivesATreeReplacementAndARestart(clock) {
   ]) {
     clock.set(T0);
     const h = await ltgHarness(`ltg_survives_${label.replace(/\W+/g, "_")}`, goals, two);
+    await openPromptTurn(h);
     const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "Something new", ...extra });
     const state = getState(h);
     const tag = `ltg survives (${label})`;
@@ -20189,4 +20245,267 @@ async function caseLtg_theToolRegistersForAnOwnerAndNeverForAReader(clock) {
   const reader = await createTickHarness({ ...OPTS, arming: "reader", caseName: "ltg_register_reader" });
   check("ltg register: the reader session registered tools, so the predicate read a real list", reader.toolRegisters.length > 0, reader.toolRegisters.length);
   check("ltg register: no reader registration is goal_longterm", !reader.toolRegisters.some(isLtg), reader.toolRegisters.map((t) => t.name));
+}
+
+// ============================================================
+// Goal levels 4: the tools that start an effort refuse outside the
+// operator's and the coordinator persona's turns
+// ============================================================
+
+const GL4_ACTS = ["goal_create", "goal_add plan", "goal_longterm add", "goal_longterm drop"];
+
+// A pending root with an active plan, a paused plan and a pending plan, so
+// each gated act and each ungated goal tool has something to act on.
+function gl4Tree() {
+  return gtc4Tree("pending", [
+    { id: "plan-a", parentId: "root-1", kind: "plan", status: "active", title: "Plan a" },
+    { id: "plan-p", parentId: "root-1", kind: "plan", status: "paused", title: "Plan p", blockedReason: "held by the operator" },
+    { id: "plan-q", parentId: "root-1", kind: "plan", status: "pending", title: "Plan q" },
+  ]);
+}
+
+// A started owner session of `persona` over gl4Tree with one long-term goal,
+// lt-held, and no turn open. `pendingAsk` seeds an open ask as gtc3Harness
+// does, after the session starts.
+async function gl4Harness(caseName, { persona = "default", pendingAsk, extraOpts = {} } = {}) {
+  const h = await createTickHarness({ ...OPTS, ...extraOpts, caseName, persona, skipSessionStart: true });
+  const state = makeState({ now: T0, goals: gl4Tree(), activeGoalId: "plan-a", longTermGoals: [ltgEntry("lt-held", "Held goal")] });
+  state.persona = persona;
+  if (pendingAsk) state.pendingAskId = pendingAsk.askId;
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ [persona]: state }));
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: `persona:${persona}`, claimedAt: T0 - 2000 }],
+  });
+  await h.handlers["session.start"](h.fake, {}, () => {});
+  if (pendingAsk) {
+    const key = `ask:${persona}:${pendingAsk.askId}`;
+    h.storeMap.set(key, { id: pendingAsk.askId, key, persona, askId: pendingAsk.askId, at: T0 - 1000, nodeId: pendingAsk.nodeId, question: "Which way?", status: "open" });
+  }
+  return h;
+}
+
+// Calls one gated act. goal_create replaces the tree, so a case calls it last.
+function gl4Call(h, act) {
+  switch (act) {
+    case "goal_create": return callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "A new effort", replace: true });
+    case "goal_add plan": return callTool(h, { tool: "mcp__agentic-plugin__goal_add", kind: "plan", title: "A new plan", objective: "A new plan done" });
+    case "goal_longterm add": return callTool(h, { tool: LTG_TOOL, action: "add", title: "A new direction", objective: "Somewhere new" });
+    case "goal_longterm drop": return callTool(h, { tool: LTG_TOOL, action: "drop", id: "lt-held", reason: "no longer wanted" });
+  }
+  throw new Error(`unknown act ${act}`);
+}
+
+// Each act in a turn the gate admits is accepted and lands: the plan, the
+// added long-term goal, the dropped one, and the new root.
+async function gl4ExpectAllowed(h, tag, persona = "default") {
+  const results = {};
+  for (const act of ["goal_add plan", "goal_longterm add", "goal_longterm drop", "goal_create"]) results[act] = await gl4Call(h, act);
+  for (const act of GL4_ACTS) check(`${tag}: ${act} is accepted`, results[act]?.deny === undefined && typeof results[act]?.result === "string", results[act]);
+  const state = getStateForPersona(h, persona);
+  const lt = state.longTermGoals.map((g) => g.title);
+  check(`${tag}: the long-term list lost lt-held and gained the new entry`, lt.length === 1 && lt[0] === "A new direction", lt);
+  check(`${tag}: the tree is the new root`, state.goals.length === 1 && state.goals[0].objective === "A new effort", state.goals.map((g) => g.id));
+}
+
+// Each act in a turn the gate refuses is denied with the one refusal, which
+// names agentic_say and [PROPOSAL], and nothing reaches the store. Then the
+// ungated goal tools still work in the same turn, and on close the turn's
+// tool errors are exactly the four denials. `rule` names which of the
+// gate's three rules is the one refusing this turn.
+async function gl4ExpectRefused(h, tag, rule, turnId, persona = "default") {
+  const bytesBefore = h.fsMap.get(PERSONA_STORE_FILE);
+  for (const act of GL4_ACTS) {
+    const res = await gl4Call(h, act);
+    check(`${tag}: ${act} is denied by the ${rule} rule, naming agentic_say and [PROPOSAL]`,
+      typeof res?.deny === "string" && res.deny.includes("agentic_say") && res.deny.includes("[PROPOSAL]") && res.deny.includes("operator or the coordinator persona"), res);
+  }
+  check(`${tag}: nothing reached the store, so the tree and the long-term list are unchanged`, h.fsMap.get(PERSONA_STORE_FILE) === bytesBefore);
+  const stored = getStateForPersona(h, persona);
+  check(`${tag}: the stored tree and list are the seeded ones`,
+    stored.goals.map((g) => g.id).join() === "root-1,plan-a,plan-p,plan-q" && stored.longTermGoals.map((g) => g.id).join() === "lt-held",
+    { goals: stored.goals.map((g) => g.id), lt: stored.longTermGoals });
+
+  // The ungated tools, in the same refused turn.
+  const task = await callTool(h, { tool: "mcp__agentic-plugin__goal_add", kind: "task", parentId: "plan-a", title: "A task", objective: "A task done" });
+  check(`${tag}: goal_add of a task is accepted`, task?.deny === undefined && getStateForPersona(h, persona).goals.some((g) => g.kind === "task" && g.parentId === "plan-a"), task);
+  const edit = await callTool(h, { tool: "mcp__agentic-plugin__goal_edit", nodeId: "plan-q", action: "pause", reason: "waits on the operator" });
+  check(`${tag}: goal_edit is accepted`, edit?.deny === undefined && getStateForPersona(h, persona).goals.find((g) => g.id === "plan-q")?.status === "paused", edit);
+  const resume = await callTool(h, { tool: "mcp__agentic-plugin__goal_resume", nodeId: "plan-p" });
+  check(`${tag}: goal_resume is accepted`, resume?.deny === undefined && getStateForPersona(h, persona).activeGoalId === "plan-p", resume);
+  const done = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", note: "finished" });
+  check(`${tag}: goal_done is accepted`, done?.deny === undefined && getStateForPersona(h, persona).goals.find((g) => g.id === "plan-p")?.status === "complete", done);
+  const status = await callTool(h, { tool: "mcp__agentic-plugin__goal_status" });
+  check(`${tag}: goal_status is accepted and lists the tree`, status?.deny === undefined && String(status?.result).includes("Plan p") && String(status?.result).includes("lt-held"), status);
+
+  await closeTurn(h, turnId);
+  const errors = getStateForPersona(h, persona).monitor.env.errors;
+  check(`${tag}: the turn's tool errors are the four denials`, errors.toolErrorsLastTurn === 4, errors);
+}
+
+// The operator's four origin kinds each admit all four acts, and a turn
+// opened by an operator prompt counts no tool error for them.
+async function caseGl4_operatorOriginsAdmitEachAct(clock) {
+  console.log("\n=== Goal levels 4: each operator origin kind admits the four acts ===");
+  for (const kind of ["composer", "bridge", "channel", "sdk"]) {
+    clock.set(T0);
+    const h = await gl4Harness(`gl4_operator_${kind}`);
+    await openPromptTurn(h, { originKind: kind, turnId: `t-${kind}` });
+    await gl4ExpectAllowed(h, `gl4 operator ${kind}`);
+    await closeTurn(h, `t-${kind}`);
+    check(`gl4 operator ${kind}: the turn counts no tool error`, getState(h).monitor.env.errors.toolErrorsLastTurn === 0, getState(h).monitor.env.errors);
+  }
+}
+
+// A delivery under the COORDINATOR ground admits all four acts, through the
+// drain's entry and through the answer step's entry.
+async function caseGl4_coordinatorDeliveryAdmitsEachAct(clock) {
+  console.log("\n=== Goal levels 4: a COORDINATOR delivery admits the four acts, drain and answer ===");
+  clock.set(T0);
+  const d = await gl4Harness("gl4_coordinator_drain");
+  await openDeliveryTurn(d, "default", { text: "Take on the next effort.", turnId: "t-drain" });
+  check("gl4 coordinator drain setup: the drain submitted the record under the COORDINATOR ground",
+    d.promptSubmits.some((p) => p.startsWith("[COORDINATOR id=default-coord-open-1-1] Take on the next effort.")), d.promptSubmits);
+  await gl4ExpectAllowed(d, "gl4 coordinator drain");
+
+  clock.set(T0);
+  const a = await gl4Harness("gl4_coordinator_answer", { pendingAsk: { askId: "ask-gl4", nodeId: "plan-a" } });
+  await openDeliveryTurn(a, "default", { text: "Start the new effort.", turnId: "t-answer", fields: { kind: "answer", answers: "ask-gl4" } });
+  check("gl4 coordinator answer setup: the answer step submitted the record under the COORDINATOR ground",
+    a.promptSubmits.some((p) => p.startsWith("[COORDINATOR id=default-coord-open-1-1] Answer to Which way?")) &&
+    getState(a).decisions.some((d) => d.action === "ask_answered" && d.detail.includes("ask-gl4")), a.promptSubmits);
+  await gl4ExpectAllowed(a, "gl4 coordinator answer");
+}
+
+// A nudge turn, a plugin turn, and a delivery under a WORKER: or READER:
+// ground each refuse the four acts by the matched-entry rule. The origin
+// kinds that are not the operator's refuse them by the origin rule.
+async function caseGl4_otherTurnsRefuseEachAct(clock) {
+  console.log("\n=== Goal levels 4: every other turn refuses the four acts and leaves the ungated tools alone ===");
+
+  clock.set(T0);
+  const n = await gl4Harness("gl4_refused_nudge");
+  n.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(n, clock, 50);
+  check("gl4 nudge setup: the tick sent a nudge", getState(n).decisions.some((d) => d.action === "nudge_sent"), getState(n).decisions.map((d) => d.action));
+  await openQueuedTurn(n, "t-nudge");
+  await gl4ExpectRefused(n, "gl4 nudge turn", "matched-entry", "t-nudge");
+
+  clock.set(T0);
+  const p = await gl4Harness("gl4_refused_plugin", { pendingAsk: { askId: "ask-gl4p", nodeId: "plan-a" }, extraOpts: { askReraiseWindowMs: 1000 } });
+  // Past the idle gate, which the tick passes before it reads the open ask.
+  clock.advance(130_000);
+  await tickAndSettle(p, clock, 50);
+  check("gl4 plugin setup: the tick queued the ask re-raise, a plugin turn",
+    p.queuedTurnTexts.length === 1 && p.queuedTurnTexts[0].startsWith("[STILL WAITING]"), p.queuedTurnTexts);
+  await openQueuedTurn(p, "t-plugin");
+  await gl4ExpectRefused(p, "gl4 plugin turn", "matched-entry", "t-plugin");
+
+  clock.set(T0);
+  const w = await gl4Harness("gl4_refused_worker", { persona: "coordinator" });
+  await openDeliveryTurn(w, "coordinator", { claims: ["persona:dev"], writer: "worker-dev-1", text: "Build the next thing.", turnId: "t-worker" });
+  check("gl4 worker setup: the drain submitted the record under the WORKER:dev ground",
+    w.promptSubmits.some((s) => s.startsWith("[WORKER:dev id=coordinator-worker-dev-1-1]")), w.promptSubmits);
+  await gl4ExpectRefused(w, "gl4 WORKER delivery", "matched-entry", "t-worker", "coordinator");
+
+  clock.set(T0);
+  const r = await gl4Harness("gl4_refused_reader");
+  await openDeliveryTurn(r, "default", { claims: ["reader:default"], writer: "reader-1", text: "Build the next thing.", turnId: "t-reader" });
+  check("gl4 reader setup: the drain submitted the record under the READER:default ground",
+    r.promptSubmits.some((s) => s.startsWith("[READER:default id=default-reader-1-1]")), r.promptSubmits);
+  await gl4ExpectRefused(r, "gl4 READER delivery", "matched-entry", "t-reader");
+
+  const others = ["task-notification", "scheduled-trigger", "peer", "peer-send-message", "projects-relay", "coordinator", "observer", "observer-activity", "auto-continuation", "unclassified", "slack-ping", "plugin"];
+  for (const kind of others) {
+    clock.set(T0);
+    const o = await gl4Harness(`gl4_refused_origin_${kind}`);
+    await openPromptTurn(o, { originKind: kind, text: `A ${kind} prompt.`, turnId: `t-${kind}` });
+    await gl4ExpectRefused(o, `gl4 origin ${kind} turn`, "origin", `t-${kind}`);
+  }
+
+  // A turn whose prompt the hook never saw and that matches no expected turn.
+  clock.set(T0);
+  const u = await gl4Harness("gl4_refused_unseen");
+  await u.handlers["turn.start"](u.fake, { turnId: "t-unseen", text: "Text no hook saw." }, () => {});
+  await gl4ExpectRefused(u, "gl4 unseen turn", "origin", "t-unseen");
+}
+
+// The three edges the Approach names: the priming turn, a COORDINATOR
+// record that is a finding, and a nudge that opens while the channel flag a
+// channel prompt set still waits for its own turn.
+async function caseGl4_edgesRefuse(clock) {
+  console.log("\n=== Goal levels 4: priming, a coordinator [FINDING], and a nudge after a channel prompt are refused ===");
+
+  // The sdk origin alone is admitted, so the priming rule is what refuses.
+  clock.set(T0);
+  const pr = await gl4Harness("gl4_edge_priming");
+  await openPromptTurn(pr, { originKind: "sdk", text: "[SUPERVISOR-PRIMING] You run as the persona's worker.", turnId: "t-prime" });
+  await gl4ExpectRefused(pr, "gl4 priming turn", "priming", "t-prime");
+
+  // A later COORDINATOR delivery in the same session is admitted, so the
+  // priming reading does not outlive the priming turn.
+  clock.set(T0);
+  const pa = await gl4Harness("gl4_edge_priming_then_coordinator");
+  await openPromptTurn(pa, { originKind: "sdk", text: "[SUPERVISOR-PRIMING] You run as the persona's worker.", turnId: "t-prime2" });
+  await closeTurn(pa, "t-prime2");
+  await openDeliveryTurn(pa, "default", { turnId: "t-after-prime" });
+  await gl4ExpectAllowed(pa, "gl4 coordinator after priming");
+
+  for (const lead of ["[FINDING]", "[PROPOSAL]"]) {
+    clock.set(T0);
+    const f = await gl4Harness(`gl4_edge_coordinator_${lead.slice(1, -1).toLowerCase()}`);
+    await openDeliveryTurn(f, "default", { text: `${lead} dev tree_lag x3\nThe tree lags the commits.`, turnId: "t-lead" });
+    check(`gl4 coordinator ${lead} setup: submitted under the COORDINATOR ground`,
+      f.promptSubmits.some((s) => s.startsWith(`[COORDINATOR id=default-coord-open-1-1] ${lead}`)), f.promptSubmits);
+    await gl4ExpectRefused(f, `gl4 coordinator ${lead} delivery`, "matched-entry", "t-lead");
+  }
+
+  // A lead quoted further down the record is not a lead.
+  clock.set(T0);
+  const q = await gl4Harness("gl4_edge_coordinator_quoted_lead");
+  await openDeliveryTurn(q, "default", { text: "Start this, which a worker sent as\n[PROPOSAL] dev a new tool", turnId: "t-quoted" });
+  await gl4ExpectAllowed(q, "gl4 coordinator quoted lead");
+
+  // The channel prompt's hook fires, then the nudge's turn opens before the
+  // channel turn does, so the handoff still reads channel at its start.
+  clock.set(T0);
+  const c = await gl4Harness("gl4_edge_nudge_after_channel");
+  c.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await c.handlers["prompt.submit"](c.fake, { text: "How is it going?", origin: { kind: "channel" } }, async () => ({}));
+  await tickAndSettle(c, clock, 50);
+  check("gl4 nudge-after-channel setup: the tick sent a nudge", getState(c).decisions.some((d) => d.action === "nudge_sent"), getState(c).decisions.map((d) => d.action));
+  await openQueuedTurn(c, "t-nudge-ch");
+  await gl4ExpectRefused(c, "gl4 nudge after a channel prompt", "matched-entry", "t-nudge-ch");
+}
+
+// A COORDINATOR record that breaks into a running nudge turn is delivered as
+// context on a tool result and leaves the turn a nudge turn.
+async function caseGl4_coordinatorBreakInDoesNotLiftTheRefusal(clock) {
+  console.log("\n=== Goal levels 4: a COORDINATOR record breaking into a nudge turn does not lift the refusal ===");
+  clock.set(T0);
+  const h = await gl4Harness("gl4_breakin");
+  h.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  await openQueuedTurn(h, "t-nudge-bi");
+  seedForeignClaims(h, "coord-bi", Date.now(), ["persona:coordinator"]);
+  seedRecordFor(h, "default", "coord-bi", 1, { at: Date.now() - 1000, text: "Start a new effort now.", urgent: true });
+  const r = await callTool(h, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "a.txt" }, text: "a.txt" }));
+  const ctx = Array.isArray(r.context) ? r.context.join("\n") : "";
+  check("gl4 break-in setup: the coordinator record broke into the nudge turn as COORDINATOR context",
+    ctx.includes("[COORDINATOR id=default-coord-bi-1, urgent] Start a new effort now."), ctx);
+  await gl4ExpectRefused(h, "gl4 nudge turn after a coordinator break-in", "matched-entry", "t-nudge-bi");
+}
+
+// Each description names the refusal.
+async function caseGl4_descriptionsNameTheRefusal(clock) {
+  console.log("\n=== Goal levels 4: goal_create and goal_add name the refusal ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, caseName: "gl4_descriptions" });
+  const desc = (name) => h.toolRegisters.find((t) => t.name === name)?.description || "";
+  check("gl4 descriptions: goal_create names the refusal", desc("goal_create").includes("A call in a turn neither the operator nor the coordinator persona started is refused."), desc("goal_create"));
+  check("gl4 descriptions: goal_add names the refusal for a plan", desc("goal_add").includes('kind "plan" is refused outside a turn the operator or the coordinator persona started.'), desc("goal_add"));
 }
