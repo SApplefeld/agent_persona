@@ -1,0 +1,280 @@
+# Security model document
+
+Status: Ready
+Commit Model: Branch-and-PR
+Created: 2026-09-22
+
+## Goal
+
+When this is done, the project has a `docs/security-model.md` that states what the persona plugin
+and its process keeper trust, what they defend against, what risks the operator has accepted, and
+what each accepted risk rests on. It matters for two reasons. Security reviews of this project have
+no written model to measure against, so the last two finishing reviews ran against the README's
+Trust boundary section and opened with "threat model: absent". And the operator's 2026-09-15
+decision to run the keeper with no permission check lives only in an archived plan, where nobody
+reviewing the code will find it.
+
+## Dispatch Authorization
+
+The operator ruled this backlog candidate a go on 2026-09-22. The coordinator relayed the ruling to
+the architect as coordinator record `ARCHITECT-8d67c288-dd78-478d-a565-e390d50027b0-14`, quoting
+the operator: "I think both are great. I agree with both of those. Please proceed." The candidate
+as approved: the worker drafts the document from the README's Trust boundary section and the
+backlog's security items, and the operator confirms the trust boundaries, since those are theirs
+to state.
+
+Execution waits on the coordinator handing this plan to a worker by name. A worker that finds this
+plan in its own queue has that handoff.
+
+## Intent
+
+The frame, in the operator's words of 2026-09-15: the machine is a dedicated sandbox with isolated
+permissions reached only by them locally, and the keeper's permission check was a best practice
+rather than a requirement. That decision is sound and has no home that outlives the plan it was
+made in.
+
+Done means a reviewer can cite one section of `docs/security-model.md` for every trust decision the
+code makes, the kit's security reviewer finds a `## Threat model` section in the shape it reads,
+and the operator has read and confirmed the boundaries the document states.
+
+Done does not need any code change, any new control, or any live probing of the box. Where writing
+the model shows the code doing something the model cannot accept, that is a backlog entry or a new
+plan, not a change inside this one. The document records what is true, not what ought to be.
+
+Alternatives refused:
+
+- Writing the model as a section of the README. Refused, because the kit's security reviewer reads
+  `docs/security-model.md` by that path, and a section of a 900-line README is not a document a
+  blocking review finding can cite.
+- Copying the open security backlog entries into the model. Refused, because the backlog is their
+  one owner and a copy drifts the day one is retired.
+- Describing the relay broker's allowlist mechanics. Refused, because the broker lives in another
+  repository, and a description here is a claim about code this project cannot pin.
+- Confirming the boundaries at the keyboard. Refused, because the operator is away from it most
+  days, and a plan that waits for a keyboard waits for weeks.
+
+Rulings: none at the write.
+
+Provenance: distilled from DEV-PERSONA's draft of 2026-09-22 at `e12a614` and the architect's read
+of the sources below at `origin/main` `3b1823b` the same day.
+
+## Related plans
+
+None open. The process keeper plan (archived) is where the 2026-09-15 decision was made and
+recorded; this plan gives that decision a home in the curated docs.
+
+## Approach
+
+**Decisions settled at the finalize**, by the architect on 2026-09-22, answering the draft's open
+questions.
+
+- The document opens with a `## Threat model` section in the
+  fixed shape the kit's security reviewer charter reads: the deployment, the assets, the attacker
+  classes in consideration, and the attacker classes out of consideration each with its reason. The
+  draft's Assets part folds into it. The remaining parts follow in the order the Approach gives.
+- The operator confirms through the worker's own ask path,
+  which reaches the operator's phone. The worker's closing text lists one sentence per trust
+  boundary and one per accepted risk, and ends with the one ask line the plugin reads. The plan
+  holds at section 2 until the answer lands, and a boundary the operator changes is edited before
+  the plan closes.
+- The architect seat's outward reach is a known gap in the
+  model, with a pointer to the backlog entry that carries it, because a reviewer of any
+  architect-seat change needs to see it. The gap is that the architect's charter, not any code,
+  is what confines its clones to its own directory and its pushes to the remotes it was handed.
+- The relay broker's one-account allowlist is an assumption the
+  model rests on, stated in the deployment paragraph with a pointer to the discord-channels
+  repository, and its mechanics are not described.
+
+**The sources.** Each was read at `origin/main` `3b1823b` on 2026-09-22.
+
+- `README.md`, the `### Trust boundary` section (line 605). It says which writers may reach a
+  persona's inbox and on which grounds, that the persona store is writable by any plugin-loaded
+  process on the machine, that a peer message reaches the model as the harness delivers it, and how
+  the roster is trusted once `fleetRoster` is set.
+- `docs/architecture.md`, the sections `### Machine state outside the tree` (line 96), `## Injected
+  text and its guard` (line 137) and `### What the guard does not reach` (line 168).
+- `docs/archive/agent_persona_process-keeper_v1.md`, line 74 and line 414. These record the
+  operator's 2026-09-15 decision: the keeper carries no permission check, because the machine is a
+  dedicated sandbox that only the operator reaches, locally.
+- The retired backlog entry "The keeper's boot-time execution surface has no security model
+  document", now in `docs/archive/backlog-2026-Q3.md`. That entry is the origin of this plan. It
+  lists the Password-logon scheduled task, the account's whole DPAPI reach, the password held in
+  the LSA vault, and children launched with `bypassPermissions`.
+- The kit's security reviewer charter, `agents/security-reviewer.md` under the kit plugin root,
+  which on this machine is the newest directory under
+  `~/.claude/plugins/cache/applefeld/claude-kit/`. Its paragraph opening **The threat model.** fixes
+  the section's content and not its headings, in these words: "the deployment (where the code runs
+  and who can reach it), the assets (what is protected and from whom), the attacker classes in
+  consideration, and the attacker classes out of consideration with the reason". Four labelled
+  paragraphs under `## Threat model`, in that order, meet it.
+- `docs/backlog.md`, the open entries the Known gaps part points at. The set is closed at five
+  headings: "The PowerShell watchdog's taskkill is the one kill with no identity guard", "A child's
+  session id reaches a filesystem path unsanitized", "A roster value carrying a glob character
+  reaches bash unquoted", "A provided settings file's persona silently overrides the supervisor's
+  persona argument", which carries the `architectPersona` routing assumption and the architect's
+  open outward direction, and "Findings the direct-lines finishing pass deferred", for the
+  architect charter's missing disposition of a record with no design ask.
+
+**The shape of the document.** Five parts, in this order.
+
+1. **Threat model.** The kit's fixed shape. The deployment: one Windows machine the operator alone
+   reaches, every persona running as the operator's own account under a stored-password scheduled
+   task, the Discord relay admitting one account by the broker's allowlist in the discord-channels
+   repository. The assets: the operator account's credentials and DPAPI reach, the repositories and
+   their push rights, the Discord relay's authority, and the fleet's ability to act as the operator.
+   Attacker classes in consideration, which are kinds of text and never the parties that send it:
+   text that reaches a session as data (tool output, file text, a peer message's body, a channel
+   message from an account the allowlist admits), and a roster or store file written by a process
+   not running under the operator's account. A peer session is a trusted party under part 2, and
+   its message is data under this part; the two statements are about different things. Attacker classes out of
+   consideration, each with its reason: any process under the operator's account, whoever started
+   it and whatever it reads or writes, because the sandbox decision accepts the account as the
+   boundary, and that covers a keyboard session, an operator-run script, a persona acting against
+   another persona, and instruction text loaded from the repository tree or a plugin; a message the
+   broker refused, because the allowlist is the boundary and the model rests on it as an
+   assumption; and a party holding SYSTEM, because the LSA vault is then open by design of the
+   platform. The plugin's grounds, the reasons a writer may reach a persona's inbox that the
+   README's Trust boundary section lists, are labels rather than permissions, and the model says so
+   in this part.
+2. **Trust boundaries.** Who is trusted, and why, each with a pointer to where the README states the
+   mechanics: the operator's Discord account through the relay allowlist, and the operator at the
+   keyboard, who is the local account; the local machine account and any process under it,
+   including every persona, every subagent a persona dispatches, and any script the operator runs,
+   which can write every store and roster file; the roster at `D:/personas/fleet.json`, the env
+   file at `D:/personas/keeper.env` and the repository tree as operator machine state with no
+   permission check; peer sessions, whose provenance label comes from the commons claims, the
+   `persona:<name>` entries a session writes into the machine-global commons store to say which
+   persona it holds; tool output and file text as data. This part names the files a local process
+   could write to take over a persona: the persona store `.agentic-personas.json`, the roster, the
+   env file, and a persona's `restart.request` in its run directory.
+3. **Accepted risks.** Each with the precondition it rests on, as a sentence that could be checked on
+   the box. The 2026-09-15 sandbox decision is the first: its preconditions are that the box is a
+   dedicated sandbox, that only the operator reaches it, and that the account's password is unique
+   to this machine. The DPAPI reach of a Password-logon task is the second, on the same
+   preconditions. Children under `bypassPermissions` is the third, on the precondition that each
+   GitHub repository the fleet pushes to has branch protection with pull-request review on its
+   trunk, checked on GitHub rather than on the box. Part 2 lists each trusted party as its own
+   paragraph and part 3 each accepted risk as its own paragraph, so section 2 can put one sentence
+   per item to the operator.
+4. **Known gaps.** The five backlog headings above, each listed whole as its heading and a pointer
+   to `docs/backlog.md`, with one sentence on what surface it touches. Where only one facet of an
+   entry is a gap, the sentence names the facet. No remedy text is copied.
+5. **What this model does not cover.** The Claude Code harness, the kit plugin, and the Discord
+   relay broker, each owned elsewhere, with the repository named for the broker.
+
+The README's `### Trust boundary` section keeps its mechanics and gains one line pointing at the
+model. The model points back at it for how each boundary is enforced, rather than restating that.
+
+## Sections of Work
+
+The two sections run in order as commits on one work branch cut from `origin/main`, named by the
+worker, with this plan file on it, and finishing-work opens the one pull request.
+
+### 1. Write docs/security-model.md
+Model: opus
+Audience: the kit's security reviewer, an expert reader who cites the document against code; a
+reviewer of an architect-seat or keeper change, an engineer who has read neither the README's
+Trust boundary section nor the keeper plan; the operator, who confirms the boundaries from a phone.
+Voice: none.
+Fact base: the sources listed under Approach, at the paths given there.
+
+Must-answer questions. For the security reviewer: what is the deployment, what are the assets, and
+which attacker classes are in and out of consideration with the reason. For the change reviewer:
+which files a local process could write to take over a persona, and which risks are accepted on
+which preconditions. For the operator: what am I confirming, in one sentence per item.
+
+Write the document in the five-part shape above, from the sources above, with every claim about
+the code carrying a file path and every accepted risk's precondition written as a sentence that
+could be checked on the box, or on GitHub where the precondition is a repository control. The
+prose-register rules apply, since this is a curated document. A sentence that says the code does
+something is checked against the code before it is written, because the kit's security reviewer
+rates a security document that contradicts the code at least Major. A contradiction that cannot
+be resolved by rewording is a new entry in `docs/backlog.md`, the one write this section makes
+outside the model file. The section's review is the document pair the `Audience:` line earns under
+the kit's executing-work skill, a blind reader per persona named and the prose reviewer, which is
+the review the acceptance lines below name.
+
+Acceptance:
+- `docs/security-model.md` exists with the five parts in the order above, the first headed
+  `## Threat model` and carrying the deployment, the assets, the attacker classes in consideration
+  and the classes out of consideration with reasons.
+- It names the sandbox precondition, the password-uniqueness precondition, and the
+  branch-protection precondition of the `bypassPermissions` risk.
+- Part 2 lists each trusted party and part 3 each accepted risk as its own paragraph.
+- Each of the five backlog headings is listed by title as a known gap with a pointer and no copied
+  remedy.
+- Every sentence stating what the code does carries a file path, and the section's review found
+  none that the code contradicts.
+- The blind reader the section's review dispatches, given only the document, can say which files a
+  local process could write to take over a persona.
+
+Files in scope: `docs/security-model.md`, and `docs/backlog.md` only for an entry a found
+contradiction earns.
+
+### 2. Point the README and architecture at it, and get the operator's confirmation
+Model: sonnet
+
+Runs after section 1. The README's `### Trust boundary` section and `docs/architecture.md`'s
+`### Machine state outside the tree` section each gain one line pointing at the model.
+`docs/README.md` lists it under `## Reference` (line 3) beside `architecture.md`. Then the worker
+raises one ask to the operator through its own ask path. The plugin opens an ask from exactly one
+closing line of the form `ASK: <question>? Recommend: <choice>`, and only while no ask is pending
+(`hooks/index.ts`, the `askMarkerMatch` read near line 5894). So the worker's closing text lists
+one sentence per trust boundary and one per accepted risk, each numbered, and ends with one line
+reading `ASK: Do the numbered trust boundaries and accepted risks above stand as written? Recommend:
+yes`. The relay posts that closing text to the operator's thread, and the operator answers with a
+yes or with the numbers to change and the change for each. The README's `### Ask wait` section
+(line 613) states the mechanics: the ask waits `askOperatorWaitMs`, 60 minutes by default, and the
+worker sees an expiry as the `ask_timeout` decision on its tree.
+The plan holds until the answer lands. An ask that expires unanswered is raised once more; a
+second expiry stops the run with BLOCKED naming the unconfirmed boundaries, and the plan does not
+close. A boundary or risk the operator changes is
+edited in the document before the plan closes, and the Chapter records the answer.
+
+Acceptance:
+- Both pointers land on the model, and `docs/README.md` lists it under Reference.
+- The Chapter quotes the operator's confirmation, or names each change they asked for and where it
+  landed in the document.
+
+Files in scope: `README.md`, `docs/architecture.md`, `docs/README.md`, `docs/security-model.md`.
+
+## Out of Scope
+
+- Any code change, including fixes to the known gaps.
+- A penetration test or any live probing of the box.
+- The kit plugin's own security model, and the relay broker's.
+- Backlog entries the Known gaps part does not name. An entry found later that names a trust or
+  execution surface is added to the model's Known gaps by the plan that retires or promotes it.
+
+## Assumptions
+
+- assumed 2026-09-22 (the repository's other plans): the commit model is Branch-and-PR; reversal:
+  one header line.
+- assumed 2026-09-22 (the kit's security reviewer charter): the file name is
+  `docs/security-model.md`, the path that charter reads for a project's threat model; reversal: a
+  rename and three pointers.
+- assumed 2026-09-22 (the architect): the executing worker runs under the kit, whose
+  executing-work skill owns the Chapter and the prose review the section's deliverable takes, and
+  whose prose-register skill owns the register; reversal: a paragraph naming each.
+- assumed 2026-09-22 (the architect): the worker's own ask path reaches the operator's phone, as
+  the README's ask lifecycle and the relay's thread binding state; reversal: the ask goes through
+  the coordinator instead.
+- assumed 2026-09-22 (the kit's convention): a worker's queue is the persona plugin's queue file
+  its priming names; reversal: one line.
+- The plan review ran at fable and effort high and returned READY_WITH_FINDINGS, four Major and
+  three Minor, all applied; the architect's answers to the draft's questions moved from the Intent
+  record's Rulings part, which is the operator's, to the Approach. The blind read returned 6
+  questions and 6 comprehension gaps: 11 answered in the spec, 1 assumed above, 0 asked. The gating litmus: 4 definitions after reconciling, the Known gaps set, the
+  attacker classes, the trust boundaries and section 1's Files in scope; 2 one-sided, the attacker
+  classes and the trust boundaries, which the reader counted and the author did not, and both are
+  parts of the bounded document so the reader's count stands; 0 crossed; 4 unplaced, each placed by
+  rewriting the part's text (an operator-run script and repository-loaded instruction text are out
+  of consideration under the account boundary, a keyboard session and a dispatched subagent are
+  inside the local-account boundary); 0 under-length.
+
+## Operator Verification
+
+- Confirm or change each trust boundary and each accepted risk when section 2's ask arrives, one
+  answer per line.
+
+## Chapters
