@@ -1,5 +1,13 @@
 # Backlog
 
+## Operator checks owed by the keeper-park plan (parked 2026-09-23)
+
+Two live checks only the operator can run, once the keeper-park pull request merges and the fleet relaunches on it. First, run one update window: ask each persona to park, read `fleet_status` and confirm every parked persona reads `held` with a reason naming the park, restart the keepers, and confirm every persona comes back with no `-Release`. A parked persona that stays down, or one that needs a hand release, reopens the work. A persona that came back before the keepers restarted, with an `EXIT ... code=5` line in its `keeper.log`, left a process alive when it parked, which the plan leaves as it is. Second, stop one persona for good through its tool, restart its keeper, and confirm it stays down until released; one that comes back on its own reopens the work. The plan is at `archive/agent_persona_keeper-park_v1.md`.
+
+## The supervisor-peer plan does not know about the park (found 2026-09-23)
+
+`docs/plans/agent_persona_supervisor-peer_v1.md` states a closed list of stops that do not ask the child first, and names `restart_requested` and `shutdown_requested` but not `park_requested`. It was written before the keeper-park plan added `park_requested`, the decide unit's `stop_park` action (`bin/supervise-decide.mjs:114-119`) and exit 6 on both stop paths (`bin/supervise.sh:3279-3297` and `:3466-3490`). Remedy: the run that starts supervisor-peer reads `docs/archive/agent_persona_keeper-park_v1.md` at intake and either adds the park to that list or records why the park takes the mailbox path. The plan itself was left unedited, because it is parked and approved.
+
 ## A park marker the start could not remove reads held over a running persona (found 2026-09-23)
 
 `bin/Start-Persona.ps1` logs an `ERROR` and launches anyway when it cannot remove `keeper.park`. The persona then runs, and relaunches through later crashes, with the marker still in its run directory. The fleet reading's `held` standing outranks a live claim in `fleetActionOf` (`hooks/index.ts`), so that persona reads held, and its running, backing-off or stale state is hidden from the steward until the next keeper start clears the marker. The keeper park plan kept `fleetActionOf` out of scope, so its Section 4 review left this alone. Remedy: under a live claim whose heartbeat is newer than `keeper.json`'s `lastEnd`, let a park-only standing yield to the claim, as the signalled-stop case already does. Proof: a fleet-status case with `keeper.park`, no `keeper.hold`, and a live claim newer than `lastEnd` reads running.
@@ -54,7 +62,7 @@ Nine Minors from the whole-changeset reviews, each real and each marginal or out
 
 ## The generated tool-list mirror does not list fleet_restart (found 2026-09-21)
 
-`.claude/types/claude-code-mcp.d.ts` mirrors the plugin's registered tools and is written by the `/plugin-types` command of an interactive session. The supervisor gaps plan's Section 3 registered `fleet_restart` under the owner tier from a headless session, which cannot run that command. The mirror was last regenerated on 2026-09-12 and lists ten tools of the fifteen the owner tier registers, so it already lacked `agentic_say`, `agentic_inbox`, `fleet_status` and `agentic_resolve`, and it now lacks `fleet_restart` too. Nothing at runtime reads the mirror. Its readers are authors and type checks that consult it for a tool's shape, and they find no entry for the new tool. The file is generated, so it is never edited by hand. Remedy: run `/plugin-types` in an interactive session on this checkout and commit the regenerated file.
+`.claude/types/claude-code-mcp.d.ts` mirrors the plugin's registered tools and is written by the `/plugin-types` command of an interactive session. The supervisor gaps plan's Section 3 registered `fleet_restart` under the owner tier from a headless session, which cannot run that command. The mirror was last regenerated on 2026-09-12 and lists ten tools of the fifteen the owner tier registers, so it already lacked `agentic_say`, `agentic_inbox`, `fleet_status` and `agentic_resolve`, and it now lacks `fleet_restart` too. Nothing at runtime reads the mirror. Its readers are authors and type checks that consult it for a tool's shape, and they find no entry for the new tool. The file is generated. Its `supervisor_shutdown` entry carries a hand edit for the `park` parameter and the tool's current description, which the next regeneration rewrites from the source. Remedy: run `/plugin-types` in an interactive session on this checkout and commit the regenerated file.
 
 ## The poll's rate-limit tail read takes one readSync and decodes the whole buffer (found 2026-09-21)
 
@@ -450,7 +458,7 @@ A session whose store file does not parse at start-up comes up on the built-in d
 
 What the yield costs is the watcher. The session stops owning the persona, so the owner-gated fleet and reconciliation work stops running for the life of that process. Recovery is the `agentic_identity` tool, which loads the persona's entry from a store that parses and clears the not-loaded field.
 
-Nothing recovers it on its own. The supervisor's hung check at `bin/supervise-decide.mjs:145-179` requires a stale heartbeat, a heartbeat session id matching the child, elapsed start-up grace, and no transcript write inside the staleness bound. A yielded session that is still answering turns keeps writing its transcript, so the check reads it as corroborated alive and continues rather than restarting it. So the session sits alive and watcher-less until a worker calls the tool.
+Nothing recovers it on its own. The supervisor's hung check at `bin/supervise-decide.mjs:145-181` requires a stale heartbeat, a heartbeat session id matching the child, elapsed start-up grace, and no transcript write inside the staleness bound. A yielded session that is still answering turns keeps writing its transcript, so the check reads it as corroborated alive and continues rather than restarting it. So the session sits alive and watcher-less until a worker calls the tool.
 
 The goal tools do tell the worker the state was never loaded, and name the cause. They do not name the remedy, so a worker has to know that `agentic_identity` is what clears it.
 
