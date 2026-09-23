@@ -621,7 +621,7 @@ An error streak on an active leaf with no ask open opens an ask, pauses the leaf
 
 When the reader answers the ask, the owner's controller is reactivated (`reactivated (answer to ask)`). A reply in the thread that closes an ask on a paused leaf first pauses any other active entry, logged as `paused_by_reply`, then makes the asked leaf active and points `activeGoalId` at it.
 
-A `goal_create` that replaces the tree closes the open ask the slot names, setting the record `resumed` and logging `ask_answered` naming `goal_create`, and clears `pendingAskId`. The asked entry leaves with the old tree, and an ask left open would hold activation on the new one.
+Every accepted `goal_create` replaces the tree, and it closes the open ask the slot names, setting the record `resumed` and logging `ask_answered` naming `goal_create`. It clears `pendingAskId` whether or not the record it names was still open. The asked entry leaves with the old tree, and an ask left open would hold activation on the new one.
 
 ### Section 6 options (defaults in force)
 

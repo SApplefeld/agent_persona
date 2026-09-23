@@ -15954,6 +15954,19 @@ async function caseAbk1_goalCreateClosesTheOpenAsk(clock) {
   check("abk1 create, slot naming no record: accepted, slot cleared, no ask_answered",
     goneRes?.deny === undefined && goneState.pendingAskId === undefined && !goneState.decisions.some((d) => d.action === "ask_answered"),
     { res: goneRes, slot: goneState.pendingAskId });
+
+  // A slot naming a record that is present but no longer open is cleared the
+  // same way, and the record keeps the status it had.
+  clock.set(T0);
+  const a = await gtc3Harness("abk1_create_answered", gtc4Tree("complete"), { pendingAsk: { askId: "ask-abk1-ans", nodeId: "root-1" } });
+  const ansKey = "ask:default:ask-abk1-ans";
+  a.storeMap.set(ansKey, { ...a.storeMap.get(ansKey), status: "answered" });
+  const ansRes = await callTool(a, { tool: "mcp__agentic-plugin__goal_create", objective: "Next thing" });
+  const ansState = getState(a);
+  check("abk1 create, slot naming an answered record: accepted, slot cleared, record left answered, no ask_answered",
+    ansRes?.deny === undefined && ansState.pendingAskId === undefined && a.storeMap.get(ansKey)?.status === "answered" &&
+    !ansState.decisions.some((d) => d.action === "ask_answered"),
+    { res: ansRes, slot: ansState.pendingAskId, rec: a.storeMap.get(ansKey) });
 }
 
 // Ask bookkeeping 1, the thread reply: a reply closing an ask on a paused
@@ -17343,20 +17356,20 @@ async function caseGtc3_completingByNameNeverMovesTheActiveEntry(clock) {
   // the pointer null for the paused entry), so completing plan-p by name
   // leaves task-1 active, activates nothing, and names it.
   clock.set(T0);
-  const stale = await gtc3Harness("gtc3_by_name_keeps_active_null_id",
+  const stale = await gtc3Harness("gtc3_by_name_keeps_active_after_reply",
     gtc3Tree({ "task-1": { status: "paused", blockedReason: "operator input needed" } }, extra),
     { pendingAsk: { askId: "ask-1", nodeId: "task-1" } });
   await stale.handlers["prompt.submit"](stale.fake, { text: "go with the first option" }, async () => ({}));
-  check("gtc3 by name keeps active (activeGoalId null) setup: the reply set task-1 active, pointed activeGoalId at it and closed the ask",
+  check("gtc3 by name keeps active (after a reply reactivation) setup: the reply set task-1 active, pointed activeGoalId at it and closed the ask",
     getState(stale).activeGoalId === "task-1" && getState(stale).goals.find((g) => g.id === "task-1").status === "active" && !getState(stale).pendingAskId,
     { activeGoalId: getState(stale).activeGoalId, pendingAskId: getState(stale).pendingAskId });
   const staleOut = await gtc3Done(stale, { nodeId: "plan-p" });
-  check("gtc3 by name keeps active (activeGoalId null): plan-p reads complete", staleOut.nodes["plan-p"].status === "complete", staleOut.nodes);
-  check("gtc3 by name keeps active (activeGoalId null): task-1 is still active, task-2 still pending, and nothing was activated",
+  check("gtc3 by name keeps active (after a reply reactivation): plan-p reads complete", staleOut.nodes["plan-p"].status === "complete", staleOut.nodes);
+  check("gtc3 by name keeps active (after a reply reactivation): task-1 is still active, task-2 still pending, and nothing was activated",
     staleOut.nodes["task-1"].status === "active" && staleOut.nodes["task-2"].status === "pending" &&
     !staleOut.actions.includes("activated") && !staleOut.actions.includes("activate_none"),
     { nodes: staleOut.nodes, actions: staleOut.actions });
-  check("gtc3 by name keeps active (activeGoalId null): the result says task-1 is still active",
+  check("gtc3 by name keeps active (after a reply reactivation): the result says task-1 is still active",
     String(staleOut.res?.result).includes("task-1") && String(staleOut.res?.result).includes("is still active"), staleOut.res);
 }
 
