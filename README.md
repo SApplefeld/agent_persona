@@ -614,6 +614,7 @@ When the owner opens an ask (`ask_opened` decision), it sets `pendingAskId` and 
 - Nudges are skipped (the controller does not nudge while waiting for an answer)
 - Classify is skipped (the controller does not spend a model call classifying while waiting)
 - The nudge cap, the cost cap and the error streak **pause** the leaf rather than block it
+- An error streak with no active leaf to pause is logged as `error_streak` and opens no ask
 
 When the reader answers the ask, the owner's controller is reactivated (`reactivated (answer to ask)`).
 

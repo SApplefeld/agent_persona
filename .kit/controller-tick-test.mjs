@@ -3272,6 +3272,9 @@ async function main() {
     await caseS7_reader_does_not_overwrite(clock);
     await caseS13_score_completedTurnRecordsRound(clock);
     await caseS13_errorStreak_threeDeniedTurnsOpenAnAsk(clock);
+    await caseS13_errorStreak_noActiveNode_emptyTree_logsOnlyAndOpensNoAsk(clock);
+    await caseS13_errorStreak_noActiveNode_completeRootOnly_logsOnlyAndOpensNoAsk(clock);
+    await caseS13_errorStreak_noActiveNode_reFireAfterHandled_stillOpensNoAsk(clock);
     await caseS13_gitProbe_dirtyCountSampledOnCadence(clock);
     await caseS13_health_redThenGreenAndTheRedReachesTheTurn(clock);
     await caseS13_stall_pendingPlanActivatesFirstAndNothingActivatesAfterRootComplete(clock);
@@ -15273,6 +15276,134 @@ async function caseS13_errorStreak_threeDeniedTurnsOpenAnAsk(clock) {
   const expected = ["deny", "deny", "deny", "error_streak", "ask_opened", "paused_by_controller", "ask_waiting"];
   check("s13 errorstreak: deny x3, error_streak, ask_opened, paused_by_controller, ask_waiting in order", matchedInOrder(decisions, expected) === expected.length, decisions.map((d) => d.action));
   check("s13 errorstreak: no block (the streak asks, it does not block)", !decisions.some((d) => d.action === "block"));
+}
+
+// Error streak, no active node: three error turns on a persona with no
+// goal tree reach the streak with nothing to pause, so the branch logs
+// error_streak alone and opens no ask. Driven by turn.complete's own reason
+// ("error") rather than a denied tool call, since no active node means no
+// root constraint to deny against.
+async function caseS13_errorStreak_noActiveNode_emptyTree_logsOnlyAndOpensNoAsk(clock) {
+  console.log("\n=== S13 errorstreak (no active node, empty tree): logs error_streak alone, opens no ask ===");
+  clock.set(T0);
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s13_errorstreak_noactive_empty",
+    stateOpts: { now: T0, goals: [], activeGoalId: null },
+  });
+  const startH = h.handlers["turn.start"];
+  const completeH = h.handlers["turn.complete"];
+  for (let i = 1; i <= 3; i++) {
+    const turnId = `t-noactive-${i}`;
+    await startH(h.fake, { turnId }, async () => ({ result: "ok" }));
+    await completeH(h.fake, { turnId, reason: "error" }, async () => ({ result: "ok" }));
+  }
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  // Past the 15-minute re-raise window, so a [STILL WAITING] submit would
+  // have fired here if an ask had been opened.
+  clock.advance(15 * 60_000 + 10_000);
+  await tickAndSettle(h, clock, 20);
+  const decisions = getDecisions(h);
+  check("s13 errorstreak no-active empty: exactly one error_streak decision",
+    countAction(decisions, "error_streak") === 1, decisions.map((d) => d.action));
+  check("s13 errorstreak no-active empty: the detail names no-active-node and no leaf/ask",
+    decisions.find((d) => d.action === "error_streak").detail.includes("no-active-node") &&
+    decisions.find((d) => d.action === "error_streak").detail.includes("no leaf to pause, no ask opened"),
+    decisions.find((d) => d.action === "error_streak").detail);
+  check("s13 errorstreak no-active empty: no ask_opened, ask_waiting or paused_by_controller",
+    !decisions.some((d) => ["ask_opened", "ask_waiting", "paused_by_controller"].includes(d.action)),
+    decisions.map((d) => d.action));
+  const state = getState(h);
+  check("s13 errorstreak no-active empty: pendingAskId unset", state.pendingAskId === undefined, state.pendingAskId);
+  const askKeys = [...h.storeMap.keys()].filter((k) => k.startsWith("ask:"));
+  check("s13 errorstreak no-active empty: no ask record in the store", askKeys.length === 0, askKeys);
+  check("s13 errorstreak no-active empty: no toast", h.uiToasts.length === 0, h.uiToasts);
+  check("s13 errorstreak no-active empty: no [STILL WAITING] submit",
+    !h.promptSubmits.some((p) => p.includes("[STILL WAITING]")), h.promptSubmits);
+}
+
+// Error streak, no active node: the same as above, but the tree carries a
+// backfilled root already complete, since a no-goal persona holds one such
+// root until the goal-tree-curation plan lands. The condition the branch
+// reads is the absence of an active node, not the absence of a root.
+async function caseS13_errorStreak_noActiveNode_completeRootOnly_logsOnlyAndOpensNoAsk(clock) {
+  console.log("\n=== S13 errorstreak (no active node, complete root only): logs error_streak alone, opens no ask ===");
+  clock.set(T0);
+  const goals = [makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "complete", maxRounds: 10, createdAt: T0, updatedAt: T0 })];
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s13_errorstreak_noactive_root",
+    stateOpts: { now: T0, goals, activeGoalId: null },
+  });
+  const startH = h.handlers["turn.start"];
+  const completeH = h.handlers["turn.complete"];
+  for (let i = 1; i <= 3; i++) {
+    const turnId = `t-noactive-root-${i}`;
+    await startH(h.fake, { turnId }, async () => ({ result: "ok" }));
+    await completeH(h.fake, { turnId, reason: "error" }, async () => ({ result: "ok" }));
+  }
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  clock.advance(15 * 60_000 + 10_000);
+  await tickAndSettle(h, clock, 20);
+  const decisions = getDecisions(h);
+  check("s13 errorstreak no-active root: exactly one error_streak decision",
+    countAction(decisions, "error_streak") === 1, decisions.map((d) => d.action));
+  check("s13 errorstreak no-active root: no ask_opened, ask_waiting or paused_by_controller",
+    !decisions.some((d) => ["ask_opened", "ask_waiting", "paused_by_controller"].includes(d.action)),
+    decisions.map((d) => d.action));
+  const state = getState(h);
+  check("s13 errorstreak no-active root: pendingAskId unset", state.pendingAskId === undefined, state.pendingAskId);
+  const askKeys = [...h.storeMap.keys()].filter((k) => k.startsWith("ask:"));
+  check("s13 errorstreak no-active root: no ask record in the store", askKeys.length === 0, askKeys);
+  check("s13 errorstreak no-active root: no toast", h.uiToasts.length === 0, h.uiToasts);
+  check("s13 errorstreak no-active root: no [STILL WAITING] submit",
+    !h.promptSubmits.some((p) => p.includes("[STILL WAITING]")), h.promptSubmits);
+}
+
+// Error streak, no active node, re-fire: after the first streak is handled,
+// a further error turn crosses the streak threshold again and logs a second
+// error_streak line, still opening nothing (the re-fire rule is unchanged).
+async function caseS13_errorStreak_noActiveNode_reFireAfterHandled_stillOpensNoAsk(clock) {
+  console.log("\n=== S13 errorstreak (no active node, re-fire): a second streak logs a second line, still opens nothing ===");
+  clock.set(T0);
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s13_errorstreak_noactive_refire",
+    stateOpts: { now: T0, goals: [], activeGoalId: null },
+  });
+  const startH = h.handlers["turn.start"];
+  const completeH = h.handlers["turn.complete"];
+  for (let i = 1; i <= 3; i++) {
+    const turnId = `t-refire-a-${i}`;
+    await startH(h.fake, { turnId }, async () => ({ result: "ok" }));
+    await completeH(h.fake, { turnId, reason: "error" }, async () => ({ result: "ok" }));
+  }
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  check("s13 errorstreak no-active refire: the first streak logged one error_streak line",
+    countAction(getDecisions(h), "error_streak") === 1, getDecisions(h).map((d) => d.action));
+  // A further error turn after handledAt re-fires the branch. The clock
+  // advances first so this batch's lastErrorAt lands strictly after the
+  // handledAt the first streak just stamped.
+  clock.advance(10_000);
+  for (let i = 1; i <= 3; i++) {
+    const turnId = `t-refire-b-${i}`;
+    await startH(h.fake, { turnId }, async () => ({ result: "ok" }));
+    await completeH(h.fake, { turnId, reason: "error" }, async () => ({ result: "ok" }));
+  }
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  const decisions = getDecisions(h);
+  check("s13 errorstreak no-active refire: a second error_streak line was logged",
+    countAction(decisions, "error_streak") === 2, decisions.map((d) => d.action));
+  check("s13 errorstreak no-active refire: still no ask_opened, ask_waiting or paused_by_controller",
+    !decisions.some((d) => ["ask_opened", "ask_waiting", "paused_by_controller"].includes(d.action)),
+    decisions.map((d) => d.action));
+  const askKeys = [...h.storeMap.keys()].filter((k) => k.startsWith("ask:"));
+  check("s13 errorstreak no-active refire: no ask record in the store", askKeys.length === 0, askKeys);
+  check("s13 errorstreak no-active refire: no toast", h.uiToasts.length === 0, h.uiToasts);
 }
 
 // Git probe: the git probe runs on its cadence, counts the porcelain

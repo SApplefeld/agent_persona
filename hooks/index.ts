@@ -4284,40 +4284,52 @@ export const register: Register = async (on, options) => {
         const streakTs = Date.now();
         const streakReason = `Error streak ${envErrors.consecutiveErrorTurns} turns; escalating`;
         envErrors.handledAt = streakTs;
-        // Look up the active node for the decision detail; if none, still log + toast + handledAt.
+        // Look up the active node; with none to pause, there is nothing for
+        // an ask to resume, so the streak is logged and nothing more.
         const activeForStreak = sess.state.goals.find((n) => n.status === "active");
-        const nodeId = activeForStreak ? activeForStreak.id : "no-active-node";
-        sess.state.decisions.push({
-          timestamp: streakTs,
-          loop: "monitor",
-          action: "error_streak",
-          detail: `${nodeId}: ${streakReason}`,
-        });
-        // D5: write an ask record and set pendingAskId
-        const askId = `ask-${nodeId}-${Date.now()}`;
-        await writeAskRecord(commonsStoreOf($), sess.persona, askId, nodeId, streakReason, sess.mySessionId);
-        sess.state.pendingAskId = askId;
-        sess.state.decisions.push({
-          timestamp: streakTs,
-          loop: "monitor",
-          action: "ask_opened",
-          detail: `${nodeId}: error-streak: ${streakReason} (ask ${askId})`,
-        });
-        try { $.ui.toast(`Agentic: ${streakReason}`); } catch { /* non-fatal */ }
-        if (activeForStreak && activeForStreak.status === "active") {
-          activeForStreak.status = "paused";
-          activeForStreak.blockedReason = streakReason;
-          activeForStreak.updatedAt = streakTs;
+        if (!activeForStreak) {
           sess.state.decisions.push({
             timestamp: streakTs,
-            loop: "goal",
-            action: "paused_by_controller",
+            loop: "monitor",
+            action: "error_streak",
+            detail: `no-active-node: Error streak ${envErrors.consecutiveErrorTurns} turns; no leaf to pause, no ask opened`,
+          });
+          sess.state.updatedAt = streakTs;
+          await persist($);
+        } else {
+          const nodeId = activeForStreak.id;
+          sess.state.decisions.push({
+            timestamp: streakTs,
+            loop: "monitor",
+            action: "error_streak",
             detail: `${nodeId}: ${streakReason}`,
           });
-          try { $.ui.status(""); } catch { /* non-fatal */ }
+          // D5: write an ask record and set pendingAskId
+          const askId = `ask-${nodeId}-${Date.now()}`;
+          await writeAskRecord(commonsStoreOf($), sess.persona, askId, nodeId, streakReason, sess.mySessionId);
+          sess.state.pendingAskId = askId;
+          sess.state.decisions.push({
+            timestamp: streakTs,
+            loop: "monitor",
+            action: "ask_opened",
+            detail: `${nodeId}: error-streak: ${streakReason} (ask ${askId})`,
+          });
+          try { $.ui.toast(`Agentic: ${streakReason}`); } catch { /* non-fatal */ }
+          if (activeForStreak.status === "active") {
+            activeForStreak.status = "paused";
+            activeForStreak.blockedReason = streakReason;
+            activeForStreak.updatedAt = streakTs;
+            sess.state.decisions.push({
+              timestamp: streakTs,
+              loop: "goal",
+              action: "paused_by_controller",
+              detail: `${nodeId}: ${streakReason}`,
+            });
+            try { $.ui.status(""); } catch { /* non-fatal */ }
+          }
+          sess.state.updatedAt = streakTs;
+          await persist($);
         }
-        sess.state.updatedAt = streakTs;
-        await persist($);
       }
 
       // 2a2. Self-review (S9: single execution site in the tick handler).
