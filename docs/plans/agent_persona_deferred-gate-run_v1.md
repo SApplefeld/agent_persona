@@ -35,7 +35,7 @@ The run is one whole gate over the trunk, taken when the box is free, and read s
 ### 1. The run and the ledger
 Model: sonnet
 
-Confirm the trunk carries the merge of every plan the policy covers. Poll the process list for any foreign test runner or build and wait for it. Run `.kit/check-loader-rule.mjs`, then `.kit/supervisor-natural-exit-test.sh`, then `.kit/live-all.sh`, each with its exit code captured to a marker file. Record in the Chapter, per suite: the command, the wall clock, the exit code read from the marker, the pass and fail counts, and every failing case by name, beside the baseline Chapter's counts for the same suite.
+Confirm the trunk carries the merge of every plan the policy covers. Poll the process list for any foreign test runner or build and wait for it. Run `.kit/check-loader-rule.mjs`, then `.kit/supervisor-natural-exit-test.sh`, then `.kit/live-all.sh`, each with its exit code captured to a marker file. Then take the measurements the covered plans deferred to this run, as each plan's own section states them: `docs/plans/agent_persona_supervisor-peer_v1.md` Section 1's measurements 2, 4 and 5. Record each result in the plan that deferred it, as an amendment where it contradicts that plan's assumption. Record in the Chapter, per suite: the command, the wall clock, the exit code read from the marker, the pass and fail counts, and every failing case by name, beside the baseline Chapter's counts for the same suite.
 
 Acceptance: the Chapter carries that table for every deferred suite; the baseline Chapter is named by file and heading; a suite that did not run names the reason.
 
