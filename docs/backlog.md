@@ -1,5 +1,9 @@
 # Backlog
 
+## The supervisor reads the newest root_complete and never a later root_reopened (found 2026-09-23)
+
+`readStoreFacts` in `bin/supervise-poll.mjs` takes the newest `root_complete` decision as the goal-complete fact and reads no `root_reopened`. `goal_add` reopens a complete root and logs `root_reopened` (`hooks/index.ts`, the goal_add handler), so a worker that adds a plan after its root completed keeps working while the supervisor still reads the goal as complete. The goal-levels plan makes a finished root complete on the tick without the planner, so this state is reached whenever a worker ends a turn with every plan done and adds another later. Remedy: treat a `root_reopened` newer than the newest `root_complete` as not complete. Proof: a poll case over a store holding root_complete then root_reopened that reads not complete.
+
 ## The turn.complete scoring path reads turn state that a subagent's completion or a later prompt can change (found 2026-09-23)
 
 The scoring half of the plugin's `turn.complete` handler (`hooks/index.ts`) reads two values that do not belong to the turn it is scoring. The goal-levels plan fixed the same shape for its effort gate and left this path alone.

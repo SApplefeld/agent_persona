@@ -2770,7 +2770,7 @@ export const register: Register = async (on, options) => {
     await registerTool("goal_done", () => $.tool.register({
       name: "goal_done",
       description:
-        "Mark the active goal leaf as complete, with an optional one-line note. The controller then activates the next pending plan. Once every entry under the top goal is complete or abandoned, the top goal completes by itself, unless the planner has planned it before, in which case the planner is asked for more. " +
+        "Mark the active goal leaf as complete, with an optional one-line note. The controller then activates the next pending plan. Once every entry under the top goal is complete or abandoned, with at least one complete, the top goal completes by itself, unless the planner has planned it before, in which case the planner is asked for more. " +
         "A plan left only with a check someone else runs later, such as a validation after release, is complete: finish it with goal_done, name the check in the note, and hand it off, never holding the plan open for it. " +
         "The result names the goal that became active where there is one, and that goal is the one to carry on with. " +
         "nodeId completes a named entry instead, once every child it has is complete or abandoned, and leaves any other active entry active. " +
@@ -5019,7 +5019,10 @@ export const register: Register = async (on, options) => {
       // is complete or abandoned, at least one is complete, and the planner
       // has never broken the root down (isRootFinished). isPlanningDue reads
       // false for such a root, so this is read first and consumes the tick.
-      if (isRootFinished(sess.state)) {
+      // It waits while a planner call is in flight: a tree edited into the
+      // finished shape during that call takes the call's own outcome, and a
+      // root completed under it would receive the call's plans.
+      if (isRootFinished(sess.state) && !planningInFlight) {
         await completeRoot($, root!.id, "every descendant complete or abandoned, no planner call");
         await persist($);
         return;

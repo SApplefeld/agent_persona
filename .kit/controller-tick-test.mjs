@@ -3392,6 +3392,8 @@ async function main() {
     await caseGl6_thePlannerKeepsItsCases(clock);
     await caseGl6_theSupervisorFactReadsTheSameOnBothPaths(clock);
     caseGl6_isRootFinishedUnit();
+    await caseGl6_aFinishedShapeWaitsForAnInFlightPlannerCall(clock);
+    await caseGl6_theGoalDoneDescriptionStatesTheRule(clock);
     await caseSection6Fleet_unchangedIsSilentAndOneChangeSubmitsOnce(clock);
     await caseSection6Fleet_runningRowsAreNotAllHealthy(clock);
     await caseSection6Fleet_aFirstEverLaunchIsNotStale(clock);
@@ -21478,4 +21480,69 @@ function caseGl6_isRootFinishedUnit() {
     check(`gl6 unit (root ${status}): isRootFinished is false`, finishedOf({ goals, activeGoalId: null }) === false);
   }
   check("gl6 unit (no root): isRootFinished is false", finishedOf({ goals: [], activeGoalId: null }) === false);
+}
+
+// A tree edited into the finished shape while a planner call is in flight
+// takes that call's outcome, as at the base commit: the root is not completed
+// under the call, and the call's plan lands and activates. The planner reply
+// is held open by handing the stub a promise it resolves with. The absence
+// predicate is a root_complete decision or a complete root, read on a tick
+// while the call is held; the control is the same edited tree with no call in
+// flight, which completes on the tick.
+async function caseGl6_aFinishedShapeWaitsForAnInFlightPlannerCall(clock) {
+  console.log("\n=== Goal levels 6: a root made finished while the planner is in flight takes the call's outcome ===");
+  const children = [["plan-a", "complete"], ["plan-b", "blocked"]];
+  const dropBlocked = (h) => h.handlers["tool.call"](h.fake, {
+    tool: "mcp__agentic-plugin__goal_edit", nodeId: "plan-b", action: "drop", reason: "no longer needed",
+  }, async () => ({ result: "passthrough" }));
+
+  clock.set(T0);
+  const h = await gl6Harness("gl6_inflight", gl6Tree(children));
+  let release = null;
+  h.setCompleteValue(new Promise((resolve) => { release = () => resolve(GL6_INVENTED_PLAN); }));
+  clock.advance(10_000);
+  // Not awaited: the tick parks on the held planner reply.
+  const planning = fireTick(h);
+  check("gl6 in flight: the planner call is out", await waitUntil(() => h.completeCalls.length === 1), h.completeCalls.length);
+  const dropped = await dropBlocked(h);
+  check("gl6 in flight: the blocked node is dropped", dropped?.deny === undefined, dropped);
+  const edited = getState(h);
+  check("gl6 in flight: the edited tree reads finished before the next tick (the instrument)", AgentState.isRootFinished(edited) === true, edited.goals.map((g) => `${g.id}:${g.status}`));
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 50);
+  let state = getState(h);
+  check("gl6 in flight: no root_complete while the call is in flight",
+    !state.decisions.some((d) => d.action === "root_complete") && state.goals.find((g) => g.id === "g-root")?.status !== "complete", state.decisions.map((d) => d.action));
+
+  release();
+  await planning;
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 50);
+  state = getState(h);
+  check("gl6 in flight: once released, the call's plan is added and active and the root is open",
+    state.goals.some((g) => g.title === "Invented follow-up" && g.status === "active") && state.goals.find((g) => g.id === "g-root")?.status !== "complete", state.goals.map((g) => `${g.id}:${g.status}`));
+  check("gl6 in flight: once released, no root_complete and one planner call", !state.decisions.some((d) => d.action === "root_complete") && h.completeCalls.length === 1, state.decisions.map((d) => d.action));
+
+  // Control: the same edit with no call in flight completes on the tick.
+  clock.set(T0);
+  const c = await gl6Harness("gl6_inflight_control", gl6Tree(children));
+  await dropBlocked(c);
+  clock.advance(10_000);
+  await tickAndSettle(c, clock, 50);
+  const cState = getState(c);
+  check("gl6 in flight control: with no call in flight the edited tree completes on the tick",
+    cState.decisions.some((d) => d.action === "root_complete" && d.detail === GL6_DETAIL) && c.completeCalls.length === 0, cState.decisions.map((d) => d.action));
+}
+
+// The goal_done description states the rule the tick applies: at least one
+// entry complete, and a plan left only with a later check is finished.
+async function caseGl6_theGoalDoneDescriptionStatesTheRule(clock) {
+  console.log("\n=== Goal levels 6: the goal_done description states the finished-root rule and the handoff ===");
+  clock.set(T0);
+  const h = await gl6Harness("gl6_goal_done_desc", gl6Tree([]));
+  const desc = String(h.toolRegisters.find((t) => t.name === "goal_done")?.description);
+  check("gl6 description: names complete or abandoned with at least one complete", desc.includes("complete or abandoned, with at least one complete"), desc);
+  check("gl6 description: says the planner is asked only where it has planned the goal before", desc.includes("unless the planner has planned it before") && !desc.includes("fires the planner"), desc);
+  check("gl6 description: a plan left only with a later check is finished with goal_done and handed off",
+    desc.includes("check someone else runs later") && desc.includes("finish it with goal_done") && desc.includes("hand it off"), desc);
 }
