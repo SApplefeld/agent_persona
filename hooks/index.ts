@@ -1001,18 +1001,21 @@ const writeOwnerHeartbeat = async (dp: any): Promise<void> => {
 const KEEPER_BASE_DELAY_SECONDS = 300;
 
 // One roster persona's line in the fleet report. The keeper half comes from
-// <rundir>/keeper.json and <rundir>/keeper.hold, the commons half from the
-// persona's own commons entry, and `note` carries whatever could not be read,
-// so an unreadable persona costs its own row's detail and not the report.
+// <rundir>/keeper.json and <rundir>/keeper.hold or keeper.park, the commons
+// half from the persona's own commons entry, and `note` carries whatever
+// could not be read, so an unreadable persona costs its own row's detail and
+// not the report.
 type FleetRow = {
   name: string;
   enabled: boolean;
   // Where this persona stands, from the process keeper's marker and state file
-  // qualified by whether a live session holds its commons claim. "held" is the
-  // marker that stops the next start, and it outranks the rest because it
-  // decides what happens next whatever is running now. "stopped" is a signalled
-  // exit (130 or 143), on which bin/keeper-functions.ps1 returns Action 'exit'
-  // and the wrapper leaves without relaunching and without writing a marker.
+  // qualified by whether a live session holds its commons claim. "held" is
+  // either marker deciding the next start, a keeper.hold stopping it or a
+  // keeper.park being cleared so it launches, and it outranks the rest
+  // because it decides what happens next whatever is running now. "stopped"
+  // is a signalled exit (130 or 143), on which bin/keeper-functions.ps1
+  // returns Action 'exit' and the wrapper leaves without relaunching and
+  // without writing a marker.
   // Under a live claim it holds only while that claim's heartbeat is older
   // than the exit, which is the exiting session still standing in the store.
   // "running" is a live claim under no marker and under no exit newer than the
@@ -1087,16 +1090,17 @@ const FLEET_RESTART_MIN_INTERVAL_MS = 15 * 60_000;
 // note for whoever reads that directory, not a record anything replays.
 const FLEET_RESTART_REASON_MAX = 200;
 
-// The keeper half of one row, read from the two files the process keeper
-// leaves in a run directory. keeper.hold decides the standing, because that
-// marker is what stops the next start from launching at all
-// (bin/Start-Persona.ps1 exits on it without running the supervisor);
-// keeper.json carries the ladder value for the next decision, the last
-// supervisor exit and the reason recorded for a hold. Every read is guarded on
-// its own, so a file that is missing or unreadable lands in the row's note and
-// the rest of the row still reports. Both text fields are held to the
-// plugin's free-text bound: a run directory sits inside its persona's own
-// writable tree, so the text in it is a persona's to write.
+// The keeper half of one row, read from the three files the process keeper
+// leaves in a run directory. keeper.hold or keeper.park decides the standing,
+// because either marker is what bin/Start-Persona.ps1's next start reads
+// before it launches anything: a hold stops that start, a park clears itself
+// and lets it go on; keeper.json carries the ladder value for the next
+// decision, the last supervisor exit and the reason recorded for a hold or a
+// park. Every read is guarded on its own, so a file that is missing or
+// unreadable lands in the row's note and the rest of the row still reports.
+// Both text fields are held to the plugin's free-text bound: a run directory
+// sits inside its persona's own writable tree, so the text in it is a
+// persona's to write.
 // What comes back is a standing rather than the row's action: these two files
 // record what the keeper decided at the last supervisor exit and cannot say
 // whether the persona is up now, so fleetActionOf below settles the action
@@ -1130,6 +1134,7 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<KeeperHal
   }
   const statePath = `${rundir}/keeper.json`;
   const holdPath = `${rundir}/keeper.hold`;
+  const parkPath = `${rundir}/keeper.park`;
   const notes: string[] = [];
   // Kept apart from the notes above it, rather than counted among them,
   // because it is the one note the health reduction reads past. It still rides
@@ -1171,6 +1176,33 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<KeeperHal
     }
   }
 
+  // keeper.park is read only where keeper.hold does not exist: a hold already
+  // decides both the standing and the reason, so a park marker sitting beside
+  // it names nothing this row reports. Same three-state guard as the hold
+  // check, and the reason lands in the same holdReason/holdReasonSource pair
+  // bin/Start-Persona.ps1's own next start clears the park marker for, so the
+  // one first-line read below stands for whichever marker is the one in force.
+  let park: "yes" | "no" | "unreadable" = "no";
+  if (hold !== "yes") {
+    try {
+      park = await dp.fs.exists(parkPath) === true ? "yes" : "no";
+    } catch (err) {
+      park = "unreadable";
+      notes.push(`the park marker '${parkPath}' could not be checked: ${safeErrorText(err)}`);
+    }
+    if (park === "yes") {
+      try {
+        const first = String(await dp.fs.read(parkPath)).split(LINE_TERMINATOR)[0].trim();
+        if (first !== "") {
+          holdReason = boundedText(bracketSafeText(first));
+          holdReasonSource = parkPath;
+        }
+      } catch (err) {
+        notes.push(`the park marker '${parkPath}' could not be read: ${safeErrorText(err)}`);
+      }
+    }
+  }
+
   let state: Record<string, unknown> | null = null;
   try {
     if (await dp.fs.exists(statePath)) {
@@ -1199,27 +1231,32 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<KeeperHal
   // will not take, both read as no stamp rather than as a time.
   const parsedEnd = typeof state?.lastEnd === "string" ? Date.parse(state.lastEnd) : Number.NaN;
   const lastEndMs = Number.isNaN(parsedEnd) ? null : parsedEnd;
-  // The marker's first line is the reason the keeper wrote for the operator;
-  // keeper.json's own holdReason stands in when the marker carries no text.
-  if (hold === "yes" && holdReason === null && typeof state?.holdReason === "string" && state.holdReason.trim() !== "") {
+  // The first line of whichever marker fired is the reason the keeper wrote
+  // for the operator; keeper.json's own holdReason stands in when that marker
+  // carries no text.
+  if ((hold === "yes" || park === "yes") && holdReason === null && typeof state?.holdReason === "string" && state.holdReason.trim() !== "") {
     holdReason = boundedText(bracketSafeText(state.holdReason.trim()));
     holdReasonSource = statePath;
   }
-  // The marker is what stops the next start, so it decides over the exit code.
-  // A marker check that threw decides next, because every standing below it is
-  // a statement that no marker is there. That case reaches the reader in the
-  // row's note and not in its action: the standing it produces is "unknown",
-  // which fleetActionOf does not outrank a live claim with, so a persona that
-  // is up reads running and the note names the marker that went unchecked.
+  // Either marker decides the next start, so either one outranks the exit
+  // code: keeper.hold stops it and keeper.park is cleared so it launches, and
+  // the fleet reading has no way to tell an operator that the two differ,
+  // since both read "held" here. A marker check that threw decides next,
+  // because every standing below it is a statement that no marker is there.
+  // That case reaches the reader in the row's note and not in its action: the
+  // standing it produces is "unknown", which fleetActionOf does not outrank a
+  // live claim with, so a persona that is up reads running and the note names
+  // the marker that went unchecked.
   // A signalled exit with no marker is a persona the keeper left down at the
   // moment it was recorded: exit 130 and 143 return Action 'exit' in
   // bin/keeper-functions.ps1, on which the wrapper neither waits nor
-  // relaunches. Everything else is read from the ladder, which climbs above the
-  // base only after a crash-class exit.
+  // relaunches. Short of a marker or a signalled exit, the standing is read
+  // from the ladder, which climbs above the base only after a crash-class
+  // exit.
   const signalled = lastExitCode === 130 || lastExitCode === 143;
-  const standing: KeeperStanding = hold === "yes"
+  const standing: KeeperStanding = hold === "yes" || park === "yes"
     ? "held"
-    : hold === "unreadable"
+    : hold === "unreadable" || park === "unreadable"
       ? "unknown"
       : signalled
         ? "stopped"
@@ -2779,8 +2816,10 @@ export const register: Register = async (on, options) => {
         "enabled is whether the roster enables the persona, lastExitCode is the last supervisor exit code, claimHeld is whether a " +
         "live session holds the persona's commons claim, heartbeatAgeMs is that session's heartbeat age in milliseconds and an age " +
         "past staleAfterMs is a persona nothing live is holding, and turnState is whether that session is inside a turn. " +
-        "action is where the persona stands with its process keeper. held: a marker stops its next start, reported even " +
-        "while a session still holds the persona. stopped: the last supervisor exit was signalled and nothing has come up since, " +
+        "action is where the persona stands with its process keeper. held: a marker in its run directory decides its next " +
+        "start, a hold marker stopping it and a park marker being cleared so the persona launches, and holdReason says " +
+        "which; reported even while a session still holds the persona. " +
+        "stopped: the last supervisor exit was signalled and nothing has come up since, " +
         "so nothing restarts this persona until its scheduled task runs again. running: a live session holds the persona's " +
         "claim under no marker, which outranks the keeper's state file. backing off: the keeper's relaunch delay has " +
         "climbed above the base after a crash. relaunching: that delay still sits at the base. unknown: its keeper state could " +

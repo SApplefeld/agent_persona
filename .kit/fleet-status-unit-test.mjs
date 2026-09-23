@@ -804,6 +804,62 @@ async function caseKeeperHalfBranches() {
 }
 
 // ============================================================
+// A park marker, which decides the next start the way a hold marker does but
+// is cleared rather than left in place
+// ============================================================
+async function caseParkOnly() {
+  console.log("\n=== fleet_status: a park marker with no hold marker reads held ===");
+  const h = await startSession("park_only");
+  h.fsMap.set(ROSTER_PATH, JSON.stringify([
+    { name: "zeta", rundir: "D:/park/zeta/run", enabled: true },
+  ]));
+  h.fsMap.set("D:/park/zeta/run/keeper.json", fixture("fleet-status.keeper-zeta.json"));
+  h.fsMap.set("D:/park/zeta/run/keeper.park", fixture("fleet-status.park-zeta.txt"));
+
+  const report = reportOf(await callFleetStatus(h));
+  const zeta = rowFor(report, "zeta");
+  check("park only: the park marker makes it held", zeta.action === "held", zeta);
+  check("park only: the reason is the park marker's first line", zeta.holdReason === "supervisor exited 6: parked, relaunched at the keeper's next start", zeta);
+  check("park only: the reason names the park marker as its source", zeta.holdReasonSource === "D:/park/zeta/run/keeper.park", zeta);
+  check("park only: the rest of the keeper state still reads", zeta.lastExitCode === 6 && zeta.nextDelaySeconds === 300 && zeta.note === undefined, zeta);
+}
+
+async function caseHoldOutranksPark() {
+  console.log("\n=== fleet_status: a hold marker beside a park marker reads held from the hold, not the park ===");
+  const h = await startSession("hold_and_park");
+  h.fsMap.set(ROSTER_PATH, JSON.stringify([
+    { name: "eta", rundir: "D:/park/eta/run", enabled: true },
+  ]));
+  h.fsMap.set("D:/park/eta/run/keeper.json", fixture("fleet-status.keeper-beta.json"));
+  h.fsMap.set("D:/park/eta/run/keeper.hold", fixture("fleet-status.hold-beta.txt"));
+  h.fsMap.set("D:/park/eta/run/keeper.park", fixture("fleet-status.park-zeta.txt"));
+
+  const report = reportOf(await callFleetStatus(h));
+  const eta = rowFor(report, "eta");
+  check("both markers: held either way", eta.action === "held", eta);
+  check("both markers: the reason and source are the hold marker's, not the park marker's", eta.holdReason === "supervisor exited 0: shutdown honored or stop complete" && eta.holdReasonSource === "D:/park/eta/run/keeper.hold", eta);
+}
+
+async function caseParkCheckUnreadable() {
+  console.log("\n=== fleet_status: a park-marker check that threw is not a persona with no park ===");
+  const h = await startSession("park_unreadable");
+  h.fsMap.set(ROSTER_PATH, JSON.stringify([
+    { name: "theta", rundir: "D:/park/theta/run", enabled: true },
+  ]));
+  h.fsMap.set("D:/park/theta/run/keeper.json", fixture("fleet-status.keeper-gamma.json"));
+  const existsThrough = h.fake.fs.exists.bind(h.fake.fs);
+  h.fake.fs.exists = (p) => p === "D:/park/theta/run/keeper.park"
+    ? Promise.reject(new Error("EPERM: the run directory refused the check"))
+    : existsThrough(p);
+
+  const report = reportOf(await callFleetStatus(h));
+  const theta = rowFor(report, "theta");
+  check("park check threw: the standing is unknown, not one that says there is no park", theta.action === "unknown", theta);
+  check("park check threw: the note names the marker whose check could not be performed", says(theta.note, "D:/park/theta/run/keeper.park") && says(theta.note, "could not be checked"), theta.note);
+  check("park check threw: the rest of the keeper state still reports", theta.nextDelaySeconds === 1200 && theta.lastExitCode === 3, theta);
+}
+
+// ============================================================
 // What the tool says it returns against what it returns
 // ============================================================
 async function caseDescriptionMatchesTheRows() {
@@ -1125,6 +1181,9 @@ async function main() {
     await caseFreeTextIsBracketSafe();
     await caseKeeperHalfBranches();
     await caseHoldCheckUnreadable();
+    await caseParkOnly();
+    await caseHoldOutranksPark();
+    await caseParkCheckUnreadable();
     await caseDescriptionMatchesTheRows();
     await caseWritesNothing();
     caseBaseDelayMatchesTheKeeper();

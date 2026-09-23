@@ -226,8 +226,8 @@
     {
       "name": "fleet_status_description",
       "file": "hooks/index.ts",
-      "chars": 3795,
-      "words": 641
+      "chars": 3928,
+      "words": 664
     },
     {
       "name": "fleet_restart_description",
