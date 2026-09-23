@@ -1,6 +1,6 @@
 # Nudge cap on plan entries
 
-Status: Ready
+Status: Abandoned
 Commit Model: Branch-and-PR
 Created: 2026-09-23
 
@@ -67,7 +67,11 @@ Alternatives refused:
 - Making the tick hold a decision record on every tick it holds. Refused, because the tick runs
   every ten seconds and the pause it holds behind is already logged as `paused_by_controller`.
 
-Rulings made after the spec shipped: none yet.
+Ruling of 2026-09-23, by the operator on the architect's ask: this plan is retired before any
+section ran. The nudge-state plan, drafted the same day, removes the cap pause this plan's hold
+and lift were written to contain, so both would be built and then deleted within days. Its
+reset survives as one of the five reset events that plan states, and that plan retires the two
+backlog entries this one named.
 
 Distilled from the architect session `30d6d808-ccad-45e4-a606-c868636ee4e4` on 2026-09-23, from
 the coordinator's finding, the dev-persona persona's decision log at
@@ -281,3 +285,7 @@ at the close-out.
 None.
 
 ## Chapters
+
+Retired 2026-09-23 before any section ran, on the operator's ruling recorded under Intent. No
+code changed. The nudge-state plan at `docs/plans/agent_persona_nudge-state_v1.md` carries the
+reset and gates on goal-levels alone.
