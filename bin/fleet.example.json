@@ -32,6 +32,7 @@
     "permissionMode": "bypassPermissions",
     "rundir": "D:/personas/aios/run",
     "coordinatorPersona": "steward",
+    "architectPersona": "architect",
     "enabled": true
   },
   {
@@ -40,6 +41,7 @@
     "permissionMode": "bypassPermissions",
     "model": "opus",
     "coordinatorPersona": "steward",
+    "architectPersona": "architect",
     "enabled": true
   }
 ]

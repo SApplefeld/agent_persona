@@ -3221,6 +3221,13 @@ async function main() {
     await caseSection3_personaArgumentShapeIsRefused(clock);
     await caseSection3_coordinatorLegKeysOnTheCommonsWinner(clock);
     await caseSection3_defaultCoordinatorNameDoesNotOpenEveryInbox(clock);
+    await caseDirectLines_namedOwnerReachesTheArchitect(clock);
+    await caseDirectLines_unusableArchitectSettingReadsAsUnset(clock);
+    await caseDirectLines_workerRecordIsDeliveredToTheArchitect(clock);
+    await caseDirectLines_workerLabelToTheArchitectHoldsOverReaderClaimsElsewhere(clock);
+    await caseDirectLines_architectAnswersAWorkerWithAnOpenRecord(clock);
+    await caseDirectLines_architectAnswerIsDeliveredToTheWorker(clock);
+    await caseDirectLines_idleNudgeNamesTheArchitectLine(clock);
     await caseSection4_coordinatorRecordIsLabelledCoordinator(clock);
     await caseSection4_readerLabelNamesTheTargetAmongSeveralReaderClaims(clock);
     await caseSection4_readerClaimWinsOverWorkerAndFirstPersonaNames(clock);
@@ -5750,8 +5757,8 @@ const INBOX = "mcp__agentic-plugin__agentic_inbox";
 // its own, owns it in commons, and treats `coordinatorPersona` as the
 // coordinator's name. The harness store seeds only "default", so a named
 // persona starts fresh at session.start and the tick reads its own slot.
-async function seedNamedOwnerHarness(caseName, now, persona, coordinatorPersona) {
-  const h = await createTickHarness({ ...OPTS, caseName, persona, coordinatorPersona });
+async function seedNamedOwnerHarness(caseName, now, persona, coordinatorPersona, extraOpts = {}) {
+  const h = await createTickHarness({ ...OPTS, caseName, persona, coordinatorPersona, ...extraOpts });
   h.storeMap.set(`commons:${SESSION_ID}`, {
     sessionId: SESSION_ID,
     lastSeen: now,
@@ -6020,6 +6027,437 @@ async function caseSection3_defaultCoordinatorNameDoesNotOpenEveryInbox(clock) {
 }
 
 // ============================================================
+// Direct lines: the worker leg reaches the architect, and the architect
+// answers back
+// ============================================================
+
+const ARCH = { architectPersona: "architect" };
+
+// The worker leg's second seat: a session owning a named persona sends to the
+// architect persona and reads its own records there, once the plugin holds an
+// architect name. Control: the same send with no architect configured is
+// refused with the reason a non-coordinator target has always drawn.
+async function caseDirectLines_namedOwnerReachesTheArchitect(clock) {
+  console.log("\n=== Direct lines: a named persona owner reaches the architect persona only where one is configured ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("direct_lines_worker_send", now, "dev", "coordinator", ARCH);
+  seedForeignClaims(h, "arch-live-001", now, ["persona:architect"]);
+  const sent = await callTool(h, { tool: SAY, text: "Design question: split the store or not?", persona: "architect" });
+  check("direct lines worker send: a dev owner's say to the architect is accepted and written", sent.deny === undefined && readStoreRecord(h, `inbox:architect:${SESSION_ID}:1`)?.status === "pending", sent);
+  check("direct lines worker send: a worker-leg record carries no answer stamp", readStoreRecord(h, `inbox:architect:${SESSION_ID}:1`)?.answersRecord === undefined, readStoreRecord(h, `inbox:architect:${SESSION_ID}:1`));
+  const inbox = await callTool(h, { tool: INBOX, persona: "architect" });
+  const parsed = inbox.result ? JSON.parse(inbox.result) : null;
+  check("direct lines worker send: agentic_inbox on the architect lists the session's own record", parsed?.inbox?.length === 1 && parsed.inbox[0].id === `architect-${SESSION_ID}-1`, inbox);
+
+  const hu = await seedNamedOwnerHarness("direct_lines_worker_send_unset", now, "dev", "coordinator");
+  seedForeignClaims(hu, "arch-live-001", now, ["persona:architect"]);
+  const unset = await callTool(hu, { tool: SAY, text: "Design question with no architect configured.", persona: "architect" });
+  check("direct lines worker send control: with no architect configured the send is refused with today's reason",
+    typeof unset.deny === "string" && unset.deny.includes("cannot reach 'architect'") && unset.deny.endsWith("and 'architect' is not the coordinator persona."), unset);
+  check("direct lines worker send control: no record was written", !hu.storeMap.has(`inbox:architect:${SESSION_ID}:1`));
+  const unsetInbox = await callTool(hu, { tool: INBOX, persona: "architect" });
+  check("direct lines worker send control: agentic_inbox on the architect is refused too", typeof unsetInbox.deny === "string" && unsetInbox.deny.includes("cannot reach 'architect'"), unsetInbox);
+
+  const hd = await seedNamedOwnerHarness("direct_lines_default_send", now, "default", "coordinator", ARCH);
+  const refused = await callTool(hd, { tool: SAY, text: "Hello from a plain chat session.", persona: "architect" });
+  check("direct lines default control: a persona:default holder is refused for the architect by the reach gate",
+    typeof refused.deny === "string" && refused.deny.includes("cannot reach 'architect'") && refused.deny.includes("owns no named persona of its own to push from"), refused);
+  check("direct lines default control: no record was written", !hd.storeMap.has(`inbox:architect:${SESSION_ID}:1`));
+}
+
+// An architect setting the plugin cannot use reads as no architect: one equal
+// to the coordinator name (after trimming), "default", and one that fails the
+// name rule. The refusal a dev owner draws for a third persona is the unset
+// text, which names no architect. Control: a usable setting names the
+// architect in the same refusal, so the text does see the setting.
+async function caseDirectLines_unusableArchitectSettingReadsAsUnset(clock) {
+  console.log("\n=== Direct lines: an architect setting equal to the coordinator, default or malformed reads as unset ===");
+  clock.set(T0);
+  const now = T0;
+  for (const [label, value] of [["equal to the coordinator", " coordinator "], ["default", "default"], ["malformed", "arch:x"]]) {
+    const h = await seedNamedOwnerHarness(`direct_lines_unusable_${label.replace(/\s/g, "_")}`, now, "dev", "coordinator", { architectPersona: value });
+    const r = await callTool(h, { tool: SAY, text: "Take this over.", persona: "worker" });
+    check(`direct lines unusable setting (${label}): the refusal is the unset text and names no architect`,
+      typeof r.deny === "string" && r.deny.endsWith("and 'worker' is not the coordinator persona.") && !r.deny.includes("architect"), r);
+  }
+  const hc = await seedNamedOwnerHarness("direct_lines_unusable_control", now, "dev", "coordinator", ARCH);
+  const rc = await callTool(hc, { tool: SAY, text: "Take this over.", persona: "worker" });
+  check("direct lines unusable setting control: a usable setting names the architect in the refusal",
+    typeof rc.deny === "string" && rc.deny.includes("nor the 'architect' architect persona"), rc);
+
+  // The answer leg under a setting equal to the coordinator name: the session
+  // owning that persona reaches the worker on the coordinator leg, so its
+  // record is labelled COORDINATOR, never WORKER:<architect>.
+  const hs = await seedNamedOwnerHarness("direct_lines_equal_answer", now, "dev", "coordinator", { architectPersona: "coordinator" });
+  seedForeignClaims(hs, "coord-001", now, ["persona:coordinator"]);
+  seedRecordFor(hs, "coordinator", SESSION_ID, 1, { status: "delivered" });
+  const answerKey = seedRecordFor(hs, "dev", "coord-001", 1, { at: now - 3000, text: "Answer from the coordinator seat." });
+  await tickAndSettle(hs, clock, 50);
+  check("direct lines equal setting: the coordinator owner's record is labelled COORDINATOR, the answer leg staying closed",
+    readStoreRecord(hs, answerKey)?.status === "delivered" && (hs.promptSubmits || []).includes("[COORDINATOR id=dev-coord-001-1] Answer from the coordinator seat."), hs.promptSubmits);
+}
+
+// A worker's record to the architect is delivered on the architect's tick,
+// labelled WORKER:<the worker's persona>. Control: the same record under a
+// plugin with no architect configured is skipped by the drain's reach gate,
+// and its skip detail names no architect.
+async function caseDirectLines_workerRecordIsDeliveredToTheArchitect(clock) {
+  console.log("\n=== Direct lines: a worker's record to the architect is delivered labelled WORKER:<persona> ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("direct_lines_worker_delivery", now, "architect", "coordinator", ARCH);
+  seedForeignClaims(h, "worker-dev-001", now, ["persona:dev"]);
+  const key = seedRecordFor(h, "architect", "worker-dev-001", 1, { at: now - 5000, text: "Plan review: is Section 2 sound?" });
+  await tickAndSettle(h, clock, 50);
+  check("direct lines worker delivery: the record is delivered", readStoreRecord(h, key)?.status === "delivered", readStoreRecord(h, key));
+  check("direct lines worker delivery: the submitted text opens [WORKER:dev id=<record id>]",
+    (h.promptSubmits || []).includes("[WORKER:dev id=architect-worker-dev-001-1] Plan review: is Section 2 sound?"), h.promptSubmits);
+
+  const hu = await seedNamedOwnerHarness("direct_lines_worker_delivery_unset", now, "architect", "coordinator");
+  seedForeignClaims(hu, "worker-dev-001", now, ["persona:dev"]);
+  const keyU = seedRecordFor(hu, "architect", "worker-dev-001", 1, { at: now - 5000, text: "Plan review with no architect configured." });
+  // A reader's record beside it, so the tick delivers something and persists
+  // the decision log the checks below read.
+  seedForeignClaims(hu, "rev-002", now, ["reader:architect"]);
+  seedRecordFor(hu, "architect", "rev-002", 1, { at: now - 4000, text: "Reader note." });
+  await tickAndSettle(hu, clock, 50);
+  const decisions = getStateForPersona(hu, "architect")?.decisions || [];
+  const skip = decisions.find((d) => d.action === "operator_skipped_no_claim" && d.detail.includes("worker-dev-001"));
+  check("direct lines worker delivery control: with no architect configured the record is skipped by the drain's reach gate",
+    readStoreRecord(hu, keyU)?.status === "skipped" && skip !== undefined, readStoreRecord(hu, keyU));
+  check("direct lines worker delivery control: the skip detail names no architect", skip !== undefined && !skip.detail.includes("'architect' persona claim answering"), skip);
+}
+
+// A worker that also reads another persona still reaches the architect
+// labelled WORKER:<its own persona>, since the architect works a WORKER record
+// as its own and reads a READER record as information. Controls: the same
+// writer's record to the coordinator keeps the READER:<first persona read>
+// label, and a writer reading the architect persona itself is labelled
+// READER:architect. The answer leg still opens for that worker.
+async function caseDirectLines_workerLabelToTheArchitectHoldsOverReaderClaimsElsewhere(clock) {
+  console.log("\n=== Direct lines: a worker reading another persona reaches the architect labelled WORKER:<persona> ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("direct_lines_worker_label_reads_elsewhere", now, "architect", "coordinator", ARCH);
+  seedForeignClaims(h, "worker-dev-001", now, ["persona:dev", "reader:zed"]);
+  const key = seedRecordFor(h, "architect", "worker-dev-001", 1, { at: now - 5000, text: "Spec gap: which store owns the ledger?" });
+  await tickAndSettle(h, clock, 50);
+  check("direct lines worker label (reads elsewhere): the record to the architect is delivered labelled [WORKER:dev id=<record id>]",
+    readStoreRecord(h, key)?.status === "delivered" && (h.promptSubmits || []).includes("[WORKER:dev id=architect-worker-dev-001-1] Spec gap: which store owns the ledger?"), { rec: readStoreRecord(h, key), submits: h.promptSubmits });
+
+  const hc = await seedNamedOwnerHarness("direct_lines_worker_label_reads_elsewhere_coordinator", now, "coordinator", "coordinator", ARCH);
+  seedForeignClaims(hc, "worker-dev-001", now, ["persona:dev", "reader:zed"]);
+  const keyC = seedRecordFor(hc, "coordinator", "worker-dev-001", 1, { at: now - 5000, text: "Escalation from a worker that also reads." });
+  await tickAndSettle(hc, clock, 50);
+  check("direct lines worker label control: the same writer's record to the coordinator is still labelled [READER:zed id=<record id>]",
+    readStoreRecord(hc, keyC)?.status === "delivered" && (hc.promptSubmits || []).includes("[READER:zed id=coordinator-worker-dev-001-1] Escalation from a worker that also reads."), { rec: readStoreRecord(hc, keyC), submits: hc.promptSubmits });
+
+  const hr = await seedNamedOwnerHarness("direct_lines_worker_label_reads_architect", now, "architect", "coordinator", ARCH);
+  seedForeignClaims(hr, "worker-dev-002", now, ["persona:dev", "reader:architect"]);
+  const keyR = seedRecordFor(hr, "architect", "worker-dev-002", 1, { at: now - 5000, text: "Note from a worker that reads the architect." });
+  await tickAndSettle(hr, clock, 50);
+  check("direct lines worker label control: a writer reading the architect persona itself is labelled [READER:architect id=<record id>]",
+    readStoreRecord(hr, keyR)?.status === "delivered" && (hr.promptSubmits || []).includes("[READER:architect id=architect-worker-dev-002-1] Note from a worker that reads the architect."), { rec: readStoreRecord(hr, keyR), submits: hr.promptSubmits });
+
+  const ha = await seedNamedOwnerHarness("direct_lines_worker_label_reads_elsewhere_answer", now, "architect", "coordinator", ARCH);
+  seedForeignClaims(ha, "worker-dev-001", now, ["persona:dev", "reader:zed"]);
+  seedRecordFor(ha, "architect", "worker-dev-001", 1, { status: "delivered", deliveredAt: now - 4000 });
+  const answer = await callTool(ha, { tool: SAY, text: "Answer: the ledger store.", persona: "dev" });
+  check("direct lines worker label (reads elsewhere): the architect's answer to that worker is admitted on the answer leg and stamped",
+    answer.deny === undefined && readStoreRecord(ha, `inbox:dev:${SESSION_ID}:1`)?.answersRecord === "architect-worker-dev-001-1", { answer, rec: readStoreRecord(ha, `inbox:dev:${SESSION_ID}:1`) });
+}
+
+// The answer leg at the send gate and the inbox read: the architect's owner
+// reaches a worker whose own record to the architect is delivered or
+// answered, and the answer it writes is stamped with that record's id. It is
+// refused once that record is resolved, for a persona whose owner holds no
+// such record, and where no architect is configured. An architect that also
+// reads a third persona is still judged on the answer leg and stamps.
+async function caseDirectLines_architectAnswersAWorkerWithAnOpenRecord(clock) {
+  console.log("\n=== Direct lines: the architect's owner reaches a worker only while that worker's record to it is open ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("direct_lines_answer_send", now, "architect", "coordinator", ARCH);
+  seedForeignClaims(h, "worker-dev-001", now, ["persona:dev"]);
+  seedForeignClaims(h, "worker-ops-002", now, ["persona:ops"]);
+  const askKey = seedRecordFor(h, "architect", "worker-dev-001", 1, { status: "delivered", deliveredAt: now - 4000 });
+
+  const sent = await callTool(h, { tool: SAY, text: "Answer: keep one store.", persona: "dev" });
+  const written = readStoreRecord(h, `inbox:dev:${SESSION_ID}:1`);
+  check("direct lines answer send: with the worker's record delivered the say is accepted and written",
+    sent.deny === undefined && written?.status === "pending", sent);
+  check("direct lines answer send: the written answer is stamped with the id of the worker's record that opened the leg",
+    written?.answersRecord === "architect-worker-dev-001-1", written);
+  const inbox = await callTool(h, { tool: INBOX, persona: "dev" });
+  const parsed = inbox.result ? JSON.parse(inbox.result) : null;
+  check("direct lines answer send: agentic_inbox on the worker lists the architect's own record", parsed?.inbox?.length === 1 && parsed.inbox[0].id === `dev-${SESSION_ID}-1`, inbox);
+
+  h.storeMap.set(askKey, { ...readStoreRecord(h, askKey), status: "answered" });
+  const answered = await callTool(h, { tool: SAY, text: "A follow-up.", persona: "dev" });
+  check("direct lines answer send: with the worker's record answered the say is still accepted and stamped",
+    answered.deny === undefined && readStoreRecord(h, `inbox:dev:${SESSION_ID}:2`)?.answersRecord === "architect-worker-dev-001-1", answered);
+
+  h.storeMap.set(askKey, { ...readStoreRecord(h, askKey), status: "resolved", resolvedAt: now, outcome: "done" });
+  const afterResolve = await callTool(h, { tool: SAY, text: "Too late.", persona: "dev" });
+  check("direct lines answer send: after the architect resolves the record the say is refused by the reach gate",
+    typeof afterResolve.deny === "string" && afterResolve.deny.includes("cannot reach 'dev'") && afterResolve.deny.includes("no live owner of 'dev' has a record to 'architect'"), afterResolve);
+  check("direct lines answer send: no record was written after the resolve", !h.storeMap.has(`inbox:dev:${SESSION_ID}:3`));
+  const inboxAfter = await callTool(h, { tool: INBOX, persona: "dev" });
+  check("direct lines answer send: agentic_inbox on the worker is refused after the resolve", typeof inboxAfter.deny === "string" && inboxAfter.deny.includes("cannot reach 'dev'"), inboxAfter);
+
+  const noRecord = await callTool(h, { tool: SAY, text: "Unasked answer.", persona: "ops" });
+  check("direct lines answer send: a persona whose owner holds no record to the architect is refused",
+    typeof noRecord.deny === "string" && noRecord.deny.includes("cannot reach 'ops'"), noRecord);
+  check("direct lines answer send: no record was written to that persona", !h.storeMap.has(`inbox:ops:${SESSION_ID}:1`));
+
+  // Another session's record to the architect does not open the line to a
+  // persona whose live owner is a different session.
+  seedRecordFor(h, "architect", "worker-dev-old", 1, { status: "delivered" });
+  const staleWriter = await callTool(h, { tool: SAY, text: "Answer to a previous session.", persona: "ops" });
+  check("direct lines answer send: a delivered record from a session that does not own the target opens nothing",
+    typeof staleWriter.deny === "string" && staleWriter.deny.includes("cannot reach 'ops'"), staleWriter);
+
+  const hu = await seedNamedOwnerHarness("direct_lines_answer_send_unset", now, "architect", "coordinator");
+  seedForeignClaims(hu, "worker-dev-001", now, ["persona:dev"]);
+  seedRecordFor(hu, "architect", "worker-dev-001", 1, { status: "delivered" });
+  const unset = await callTool(hu, { tool: SAY, text: "Answer with no architect configured.", persona: "dev" });
+  check("direct lines answer send control: with no architect configured the same send is refused with today's reason",
+    typeof unset.deny === "string" && unset.deny.endsWith("and 'dev' is not the coordinator persona."), unset);
+
+  // An architect owner reading a third persona is admitted on the answer leg,
+  // not on a reader ground, so its answer is stamped like any other.
+  const hr = await seedNamedOwnerHarness("direct_lines_answer_send_reader", now, "architect", "coordinator", ARCH);
+  hr.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:architect", claimedAt: now - 2000 }, { resource: "reader:zed", claimedAt: now - 1500 }],
+  });
+  seedForeignClaims(hr, "worker-dev-001", now, ["persona:dev"]);
+  seedRecordFor(hr, "architect", "worker-dev-001", 1, { status: "delivered" });
+  const readerSend = await callTool(hr, { tool: SAY, text: "Answer from an architect that reads zed.", persona: "dev" });
+  check("direct lines answer send (reader claim elsewhere): the answer is accepted and stamped",
+    readerSend.deny === undefined && readStoreRecord(hr, `inbox:dev:${SESSION_ID}:1`)?.answersRecord === "architect-worker-dev-001-1", { readerSend, rec: readStoreRecord(hr, `inbox:dev:${SESSION_ID}:1`) });
+
+  // An architect owner that also reads the target is labelled READER:<target>
+  // at send, and its answer is still stamped, so the answer leg carries it to
+  // delivery if the reader claim has gone by then.
+  const hrt = await seedNamedOwnerHarness("direct_lines_answer_send_reads_target", now, "architect", "coordinator", ARCH);
+  hrt.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:architect", claimedAt: now - 2000 }, { resource: "reader:dev", claimedAt: now - 1500 }],
+  });
+  seedForeignClaims(hrt, "worker-dev-001", now, ["persona:dev"]);
+  seedRecordFor(hrt, "architect", "worker-dev-001", 1, { status: "delivered" });
+  const readsTargetSend = await callTool(hrt, { tool: SAY, text: "Answer from an architect that reads dev.", persona: "dev" });
+  check("direct lines answer send (reader claim on the target): the answer is accepted and still stamped",
+    readsTargetSend.deny === undefined && readStoreRecord(hrt, `inbox:dev:${SESSION_ID}:1`)?.answersRecord === "architect-worker-dev-001-1", { readsTargetSend, rec: readStoreRecord(hrt, `inbox:dev:${SESSION_ID}:1`) });
+}
+
+// The answer leg at delivery is the send gate's verdict carried on the
+// record: an answer stamped at send is delivered labelled WORKER:<architect>
+// while its writer still owns the architect persona, with no read of the
+// architect's inbox. The stamp is the record agentic_say writes, carried
+// from the architect's harness into the worker's.
+async function caseDirectLines_architectAnswerIsDeliveredToTheWorker(clock) {
+  console.log("\n=== Direct lines: the architect's stamped answer reaches the worker labelled WORKER:<architect> ===");
+  clock.set(T0);
+  const now = T0;
+
+  // The send, in the architect's own harness, while the worker's record is open.
+  const ha = await seedNamedOwnerHarness("direct_lines_answer_sent", now, "architect", "coordinator", ARCH);
+  seedForeignClaims(ha, "worker-dev-001", now, ["persona:dev"]);
+  seedRecordFor(ha, "architect", "worker-dev-001", 1, { status: "delivered" });
+  const sent = await callTool(ha, { tool: SAY, text: "Answer: keep one store.", persona: "dev" });
+  const sentRec = readStoreRecord(ha, `inbox:dev:${SESSION_ID}:1`);
+  check("direct lines answer delivery setup: the architect's send is accepted and stamped", sent.deny === undefined && typeof sentRec?.answersRecord === "string", sentRec);
+
+  // The answer as the worker's store holds it: agentic_say's record, keyed
+  // under the architect session's own id in the worker's harness.
+  function seedAnswer(h, fields = {}) {
+    const key = "inbox:dev:arch-001:1";
+    h.storeMap.set(key, { ...sentRec, id: "dev-arch-001-1", key, from: "arch-001", at: now - 3000, ...fields });
+    return key;
+  }
+  // A reader's record beside the answer, so every scenario's tick persists
+  // the decision log the checks below read.
+  function seedReaderNote(h) {
+    seedForeignClaims(h, "rev-002", now, ["reader:dev"]);
+    seedRecordFor(h, "dev", "rev-002", 1, { at: now - 1000, text: "Reader note." });
+  }
+  async function expectDelivered(label, h, key) {
+    await tickAndSettle(h, clock, 50);
+    check(`direct lines answer delivery (${label}): the answer is delivered labelled [WORKER:architect id=<record id>]`,
+      readStoreRecord(h, key)?.status === "delivered" && (h.promptSubmits || []).includes("[WORKER:architect id=dev-arch-001-1] Answer: keep one store."), { rec: readStoreRecord(h, key), submits: h.promptSubmits });
+  }
+  async function expectSkipped(label, h, key, writer) {
+    await tickAndSettle(h, clock, 50);
+    await tickAndSettle(h, clock, 50);
+    const decisions = getStateForPersona(h, "dev")?.decisions || [];
+    const skip = decisions.find((d) => d.action === "operator_skipped_no_claim" && d.detail.includes(writer));
+    check(`direct lines answer delivery (${label}): the answer is skipped by the drain's reach gate`,
+      readStoreRecord(h, key)?.status === "skipped" && skip !== undefined, readStoreRecord(h, key));
+    check(`direct lines answer delivery (${label}): the answer text was never submitted`, !(h.promptSubmits || []).some((p) => p.includes("keep one store.")));
+    return skip;
+  }
+
+  // Open record, then the architect's inbox loses it: resolved and deleted.
+  const h1 = await seedNamedOwnerHarness("direct_lines_answer_record_gone", now, "dev", "coordinator", ARCH);
+  seedForeignClaims(h1, "arch-001", now, ["persona:architect"]);
+  const key1 = seedAnswer(h1);
+  seedReaderNote(h1);
+  check("direct lines answer delivery (record gone) control: the architect's inbox holds no record at delivery", ![...h1.storeMap.keys()].some((k) => k.startsWith("inbox:architect:")));
+  await expectDelivered("record resolved and gone", h1, key1);
+
+  // The worker persona changed owner between send and delivery: the stamp
+  // names a record from the earlier session, and this session is the owner.
+  const h2 = await seedNamedOwnerHarness("direct_lines_answer_new_owner", now, "dev", "coordinator", ARCH);
+  seedForeignClaims(h2, "arch-001", now, ["persona:architect"]);
+  seedRecordFor(h2, "architect", "worker-dev-001", 1, { status: "delivered" });
+  const key2 = seedAnswer(h2);
+  seedReaderNote(h2);
+  await expectDelivered("owner changed since the send", h2, key2);
+
+  // An architect that also reads a third persona is labelled WORKER:<architect>,
+  // not READER:<that persona>.
+  const h3 = await seedNamedOwnerHarness("direct_lines_answer_reader_elsewhere", now, "dev", "coordinator", ARCH);
+  seedForeignClaims(h3, "arch-001", now, ["persona:architect", "reader:zed"]);
+  seedRecordFor(h3, "architect", SESSION_ID, 1, { status: "delivered" });
+  const key3 = seedAnswer(h3);
+  seedReaderNote(h3);
+  await expectDelivered("reader claim on a third persona", h3, key3);
+
+  // The writer no longer owns the architect persona at delivery.
+  const h4 = await seedNamedOwnerHarness("direct_lines_answer_writer_left", now, "dev", "coordinator", ARCH);
+  seedForeignClaims(h4, "arch-001", now, ["persona:elsewhere"]);
+  seedForeignClaims(h4, "arch-new-003", now, ["persona:architect"]);
+  const key4 = seedAnswer(h4);
+  seedReaderNote(h4);
+  const skip4 = await expectSkipped("writer no longer owns the architect", h4, key4, "arch-001");
+  check("direct lines answer delivery (writer no longer owns the architect): the skip detail names the answer leg",
+    skip4 !== undefined && skip4.detail.includes("no answer stamped at send by the 'architect' persona's owner"), skip4);
+
+  // A forged stamp from a writer that owns a named persona but not the architect.
+  const h5 = await seedNamedOwnerHarness("direct_lines_answer_forged", now, "dev", "coordinator", ARCH);
+  seedForeignClaims(h5, "arch-001", now, ["persona:ops"]);
+  seedForeignClaims(h5, "arch-real-004", now, ["persona:architect"]);
+  const key5 = seedAnswer(h5);
+  seedReaderNote(h5);
+  await expectSkipped("forged stamp", h5, key5, "arch-001");
+
+  // No stamp: an architect record the send gate did not admit on the answer
+  // leg is skipped even while the worker's record is open, since delivery
+  // reads no architect inbox.
+  const h6 = await seedNamedOwnerHarness("direct_lines_answer_unstamped", now, "dev", "coordinator", ARCH);
+  seedForeignClaims(h6, "arch-001", now, ["persona:architect"]);
+  seedRecordFor(h6, "architect", SESSION_ID, 1, { status: "delivered" });
+  const key6 = seedAnswer(h6, { answersRecord: undefined });
+  seedReaderNote(h6);
+  await expectSkipped("no stamp", h6, key6, "arch-001");
+
+  // The urgent break-in takes the same stamp.
+  const hu = await seedNamedOwnerHarness("direct_lines_answer_urgent", now, "dev", "coordinator", ARCH);
+  seedForeignClaims(hu, "arch-001", now, ["persona:architect"]);
+  const urgentKey = seedAnswer(hu, { text: "Urgent answer: stop and keep one store.", urgent: true });
+  await hu.handlers["turn.start"](hu.fake, { turnId: "t-dev" }, async () => ({ result: "ok" }));
+  const r = await callTool(hu, { tool: "Bash", command: "ls" }, async () => ({ result: { stdout: "a.txt" }, text: "a.txt" }));
+  const ctx = Array.isArray(r.context) ? r.context.join("\n") : "";
+  check("direct lines answer urgent: the stamped answer rides the tool result labelled WORKER:architect",
+    r.deny === undefined && ctx.includes("[WORKER:architect id=dev-arch-001-1, urgent] Urgent answer: stop and keep one store.") && readStoreRecord(hu, urgentKey)?.status === "delivered", { ctx, rec: readStoreRecord(hu, urgentKey) });
+
+  // The ask-answer step takes the same stamp: a stamped answer to the
+  // worker's open ask closes it and is delivered labelled WORKER:architect.
+  const hk = await seedNamedOwnerHarness("direct_lines_answer_ask", now, "dev", "coordinator", ARCH);
+  const personaState = buildPersonaState(SESSION_ID, now);
+  personaState.persona = "dev";
+  personaState.goals = [
+    { id: "node-d1", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+  ];
+  personaState.activeGoalId = "node-d1";
+  personaState.pendingAskId = "ask-d1-1";
+  hk.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ dev: personaState }));
+  hk.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ dev: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+  seedForeignClaims(hk, "arch-001", now, ["persona:architect"]);
+  const askAnswerKey = seedAnswer(hk, { kind: "answer", answers: "ask-d1-1", at: now - 500 });
+  const startH = hk.handlers["session.start"];
+  if (startH) await startH(hk.fake, {}, () => {});
+  const askKey = "ask:dev:ask-d1-1";
+  hk.storeMap.set(askKey, { id: "ask-d1-1", ownerSessionId: SESSION_ID, at: now - 1000, nodeId: "node-d1", question: "One store or two?", status: "open" });
+  hk.resetPromptSubmits();
+  clock.advance(65_000);
+  await tickAndSettle(hk, clock, 50);
+  check("direct lines answer ask: the stamped answer closes the worker's ask and is delivered labelled WORKER:architect",
+    readStoreRecord(hk, askKey)?.status === "answered" && readStoreRecord(hk, askAnswerKey)?.status === "delivered"
+      && (hk.promptSubmits || []).some((p) => p.startsWith("[WORKER:architect id=dev-arch-001-1] Answer to One store or two?: Answer: keep one store.")), hk.promptSubmits);
+}
+
+// The idle-gap nudge names the architect line beside its ASK: instruction,
+// only where the plugin holds an architect name and the nudged session owns a
+// named persona, which is what the worker leg of the reach rule admits.
+// Controls: the same named worker with no architect configured, and a
+// default-persona session, the coordinator persona and the architect persona
+// itself with one, each still get the ASK: line and no architect sentence. The ASK: line is the proof each nudge went out, so the
+// absence reads a sent nudge rather than an empty submit list.
+async function caseDirectLines_idleNudgeNamesTheArchitectLine(clock) {
+  console.log("\n=== Direct lines: the idle-gap nudge names the architect line only where an architect is configured ===");
+  const nudgeOf = async (caseName, persona, extraOpts) => {
+    clock.set(T0);
+    const now = T0;
+    const h = await seedNamedOwnerHarness(caseName, now, persona, "coordinator", extraOpts);
+    const personaState = buildPersonaState(SESSION_ID, now);
+    personaState.persona = persona;
+    personaState.goals = [
+      { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
+      { id: "node-001", kind: "leaf", parentId: "root", objective: "Some task", status: "active", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    ];
+    personaState.activeGoalId = "node-001";
+    personaState.monitor.turnCount = 5;
+    personaState.monitor.lastTurnComplete = now - 120_000;
+    personaState.updatedAt = now;
+    h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ [persona]: personaState }));
+    h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ [persona]: { sessionId: SESSION_ID, epoch: 1, lastSeen: now } }));
+    const startH = h.handlers["session.start"];
+    if (startH) await startH(h.fake, {}, () => {});
+    h.setClassifyValue("ask-operator");
+    h.fake.model.complete = async () => "Blocked on a design choice the plan leaves open";
+    clock.advance(130_000);
+    await tickAndSettle(h, clock, 50);
+    clock.advance(130_000);
+    await tickAndSettle(h, clock, 50);
+    return (h.promptSubmits || []).find((t) => t.includes("ASK: <question>? Recommend: <choice>"));
+  };
+
+  const named = await nudgeOf("direct_lines_nudge_named", "dev", ARCH);
+  check("direct lines nudge: a named worker's idle-gap nudge carries the ASK: line", typeof named === "string", named);
+  check("direct lines nudge: with an architect configured it names the architect line by the architect's persona",
+    typeof named === "string" && named.includes("can go to the architect instead: send it with agentic_say, persona set to architect."), named);
+  check("direct lines nudge: the architect line follows the ASK: line",
+    typeof named === "string" && named.indexOf("ASK: <question>?") < named.indexOf("persona set to architect."), named);
+
+  const unset = await nudgeOf("direct_lines_nudge_unset", "dev", {});
+  check("direct lines nudge control: with no architect configured the named worker's nudge still carries the ASK: line", typeof unset === "string", unset);
+  check("direct lines nudge control: and names no architect at all", typeof unset === "string" && !/architect/i.test(unset), unset);
+
+  const plain = await nudgeOf("direct_lines_nudge_default", "default", ARCH);
+  check("direct lines nudge control: a default-persona session's nudge still carries the ASK: line", typeof plain === "string", plain);
+  check("direct lines nudge control: and names no architect, since the reach rule refuses its send there", typeof plain === "string" && !/architect/i.test(plain), plain);
+
+  // The coordinator routes design asks by its own charter clause and takes
+  // none of the worker's architect sentences, so its nudge names no architect
+  // line either.
+  const coord = await nudgeOf("direct_lines_nudge_coordinator", "coordinator", ARCH);
+  check("direct lines nudge control: the coordinator persona's nudge still carries the ASK: line", typeof coord === "string", coord);
+  check("direct lines nudge control: and names no architect line, matching the seats the steer text gates on", typeof coord === "string" && !/architect/i.test(coord), coord);
+
+  // The architect's own session holds the design seat and cannot route a
+  // design question to itself, so its nudge names no architect line.
+  const arch = await nudgeOf("direct_lines_nudge_architect", "architect", ARCH);
+  check("direct lines nudge control: the architect persona's nudge still carries the ASK: line", typeof arch === "string", arch);
+  check("direct lines nudge control: and names no architect line, since that session is the architect", typeof arch === "string" && !arch.includes("can go to the architect instead"), arch);
+}
+
+// ============================================================
 // Section 4: provenance labels and the urgent break-in's loop check
 // ============================================================
 
@@ -6074,7 +6512,7 @@ async function caseSection4_readerLabelNamesTheTargetAmongSeveralReaderClaims(cl
 // the target is not among them; a writer owning two named personas and no
 // reader claim is labelled WORKER, naming the alphabetically first.
 async function caseSection4_readerClaimWinsOverWorkerAndFirstPersonaNames(clock) {
-  console.log("\n=== Section 4: a reader claim anywhere labels READER over WORKER; several claims name the first alphabetically ===");
+  console.log("\n=== Section 4: on a record to the coordinator, a reader claim anywhere labels READER over WORKER; several claims name the first alphabetically ===");
   clock.set(T0);
   const now = T0;
   const h = await seedNamedOwnerHarness("section4_worker_precedence", now, "coordinator", "coordinator");
