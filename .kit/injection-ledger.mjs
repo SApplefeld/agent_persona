@@ -806,6 +806,18 @@ function extractKaizenFrame(src) {
   return record("KAIZEN_FRAME", "hooks/index.ts", literalOfTemplateChain(m[1], "KAIZEN_FRAME"));
 }
 
+// The [PROPOSE] frame, built by proposeFrame: a chain of template-literal
+// pieces joined by `+`, with `goalLines` spliced whole between the first and
+// the rest. The goal lines are per-goal data the persona wrote and are not
+// sized; `${coordinatorPersona}` is an interpolation and is stripped. The
+// capture is bounded by the statement's own semicolon, so a piece added
+// anywhere in the chain is inside it.
+function extractProposeFrame(src) {
+  const m = /const proposeText =\s*([\s\S]*?);\n/.exec(src);
+  if (!m) throw new Error("[PROPOSE] frame not found in hooks/index.ts");
+  return record("PROPOSE_FRAME", "hooks/index.ts", literalOfTemplateChain(m[1], "PROPOSE_FRAME", ["goalLines"]));
+}
+
 // The reply backstop: `[REPLY BACKSTOP] Send this exact text...unchanged:
 // \n${e.answer}`. e.answer is the operator-facing text
 // already composed elsewhere and is excluded as interpolation. The capture
@@ -995,6 +1007,7 @@ const PROMPT_CALL_SITES = [
   { anchor: "expectedAnswerTurn", excludedTextVar: "answerText" },
   { anchor: "expectedDeliveryTurn", excludedTextVar: "submittedText" },
   { anchor: "kaizenText", entries: ["KAIZEN_FRAME"] },
+  { anchor: "expectedProposalTurn", entries: ["PROPOSE_FRAME"] },
   { anchor: "expectedNudgeTurn", entries: ["NUDGE_TEXT_idle_gap_converted", "NUDGE_TEXT_idle_timeout"] },
   { anchor: "backstopText", entries: ["REPLY_BACKSTOP_FRAME"] },
 ];
@@ -1298,6 +1311,7 @@ function buildLedgerFrom(shSrc, tsSrc) {
     extractFleetPromptLineLiterals(tsSrc),
     extractFleetNoteComposedProse(tsSrc),
     extractKaizenFrame(tsSrc),
+    extractProposeFrame(tsSrc),
     extractBackstopFrame(tsSrc),
     ...extractNudgeFrames(tsSrc),
     extractGoalTreeBlock(tsSrc),

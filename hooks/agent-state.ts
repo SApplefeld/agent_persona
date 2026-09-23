@@ -68,10 +68,11 @@ export interface GoalNode {
                               // node, so turn.complete can reactivate it on the worker's
                               // next completed turn that calls a real work tool, without
                               // reactivating a node paused for any other reason.
-  kaizenSignal?: string; // plan item 8.4: set on a plan the self-review loop raised
-                         // from the worker's own record, naming the weakness signal
-                         // it was raised for, so the loop never raises the same
-                         // signal twice while one is open.
+  kaizenSignal?: string; // plan item 8.4: set on a plan an earlier self-review loop
+                         // raised from the worker's own record, naming the weakness
+                         // signal. The loop writes no such node; the tick sends
+                         // an open one to the coordinator persona as a finding and
+                         // abandons it.
   planPath?: string; // Section 1 (plan-health-from-the-record): the plan document's
                       // path, relative to the persona's working directory, in the
                       // form docs/plans/<name>.md. Set on a plan node only, by
@@ -136,6 +137,43 @@ export function envNotable(env: EnvState, now: number): string[] {
   return facts;
 }
 
+export interface SentFinding {
+  signal: string;
+  text: string;
+  sentAt: number;
+  writer: string;
+  seq: number;
+  delivered: boolean;
+}
+
+// The proposal an idle persona sent the coordinator persona inside a proposal
+// turn. `writer` and `seq` key the record in the coordinator persona's inbox,
+// and the entry settles as a finding's does: a record read back as delivered,
+// answered, resolved or absent sets `delivered`, and one read back as skipped
+// is sent again with the same text under a new writer and seq.
+export interface SentProposal {
+  text: string;
+  writer: string;
+  seq: number;
+  delivered: boolean;
+}
+
+// A long-term goal: the idea a persona is working towards. It is held in a
+// list beside the goal tree, not as a node in it, and no tree walker reads
+// that list, so a long-term goal is never activated and never holds a root
+// open. goal_longterm adds and drops entries, and goal_create leaves the list
+// as it is.
+export interface LongTermGoal {
+  id: string;
+  title: string;
+  objective: string;
+  createdAt: number;
+}
+
+// The most long-term goals a persona holds at once. The list is shown in a
+// prompt, so it is kept short, and goal_longterm refuses an add past it.
+export const LONG_TERM_GOAL_CAP = 5;
+
 export interface MonitorState {
   sessionStart: number;
   turnCount: number;
@@ -151,6 +189,21 @@ export interface MonitorState {
     windowStart: number;    // ms; reset count when now - windowStart >= 3600000
     pendingPeriodic: boolean; // set by goal_done, consumed by tick (S9)
     lastInjectAt: number;   // 0 = never; gates lesson_inject (S11)
+    // The finder's ledger of the self-review findings it sent. The inbox
+    // record is only the carrier: a record can be skipped, and a delivered
+    // one is swept, so this list is what the settle step reads back and what
+    // the cool-off counts from. `writer` and `seq` key the record in the
+    // coordinator persona's inbox; an entry announced on the persona's own
+    // thread instead carries an empty writer and a seq of 0.
+    sent: SentFinding[];
+  };
+  // The idle proposal. `askedAt` is the clock at the last [PROPOSE] turn, 0
+  // before the first, and the next ask waits PROPOSAL_EVERY_MS from it.
+  // `sent` is the proposal the persona sent in answer, null where it sent
+  // none; each ask clears it.
+  proposal: {
+    askedAt: number;
+    sent: SentProposal | null;
   };
   cost: {
     classify: { count: number; estTokens: number };
@@ -286,6 +339,7 @@ export interface AgentState {
   memory: MemoryEntry[];
   goals: GoalNode[];
   activeGoalId: string | null;
+  longTermGoals: LongTermGoal[]; // beside the tree, never in it; see LongTermGoal
   monitor: MonitorState;
   nudge: NudgeBudget;
   pendingAskId?: string; // D5: ask-operator wait
@@ -385,6 +439,7 @@ export function createDefaultState(persona: string, sessionId: string): AgentSta
     memory: [],
     goals: [],
     activeGoalId: null,
+    longTermGoals: [],
     monitor: {
       sessionStart: now,
       turnCount: 0,
@@ -395,7 +450,8 @@ export function createDefaultState(persona: string, sessionId: string): AgentSta
         health: null,
         errors: { consecutiveErrorTurns: 0, toolErrorsLastTurn: 0 },
       },
-      selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: false, lastInjectAt: 0 },
+      selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: false, lastInjectAt: 0, sent: [] },
+      proposal: { askedAt: 0, sent: null },
       cost: {
         classify: { count: 0, estTokens: 0 },
         reason: { count: 0, estTokens: 0 },
@@ -574,6 +630,26 @@ function applyPlanRecordOnLoad(state: AgentState): void {
   }
 }
 
+// The idle-proposal record, filled at every load site that fills the
+// long-term goal list, for a store written before it existed, with no
+// version bump. An askedAt that is not a finite number reads as never asked,
+// so a NaN cannot hold the interval check false for good. A stored sent entry
+// is kept only where its text and writer are strings, its seq a finite number
+// and its delivered a boolean; anything else reads as nothing sent.
+function fillProposal(state: AgentState): void {
+  const p = state.monitor.proposal as Partial<MonitorState["proposal"]> | null | undefined;
+  if (!p || typeof p !== "object") {
+    state.monitor.proposal = { askedAt: 0, sent: null };
+    return;
+  }
+  if (!Number.isFinite(p.askedAt)) p.askedAt = 0;
+  const s = p.sent as Partial<SentProposal> | null | undefined;
+  const wellFormed = !!s && typeof s === "object"
+    && typeof s.text === "string" && typeof s.writer === "string"
+    && Number.isFinite(s.seq) && typeof s.delivered === "boolean";
+  if (!wellFormed) p.sent = null;
+}
+
 export function parseState(json: string): AgentState {
   const parsed = JSON.parse(json);
 
@@ -668,6 +744,7 @@ export function parseState(json: string): AgentState {
       memory: old.memory ?? [],
       goals,
       activeGoalId,
+      longTermGoals: [],
       monitor: old.monitor ?? {
         sessionStart: now,
         turnCount: 0,
@@ -680,6 +757,7 @@ export function parseState(json: string): AgentState {
       updatedAt: now,
     };
 
+    fillProposal(state);
     // L10: invariant block runs on both v2 and v3 branches.
     // Section 1: fill/recover runs on every branch's exit; see the function.
     applyPlanRecordOnLoad(state);
@@ -701,6 +779,10 @@ export function parseState(json: string): AgentState {
     if (!state.nudge) {
       state.nudge = { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 };
     }
+    if (!Array.isArray(state.longTermGoals)) {
+      state.longTermGoals = [];
+    }
+    fillProposal(state);
     applyPlanRecordOnLoad(state);
     enforceInvariants(state);
     return state;
@@ -726,12 +808,24 @@ export function parseState(json: string): AgentState {
     };
   }
 
+  // The long-term goal list, filled empty at the E11 site for a store written
+  // before it existed, with no version bump.
+  if (!Array.isArray(state.longTermGoals)) {
+    state.longTermGoals = [];
+  }
+  fillProposal(state);
+
   // S12: fill selfReview with defaults at the E11 site, no version bump.
   if (!state.monitor.selfReview) {
     state.monitor.selfReview = {
       count: 0, lastAt: 0, turnsSince: 0, windowStart: 0,
-      pendingPeriodic: false, lastInjectAt: 0,
+      pendingPeriodic: false, lastInjectAt: 0, sent: [],
     };
+  }
+  // The findings ledger, filled at the same site for a store written before
+  // it existed.
+  if (!Array.isArray(state.monitor.selfReview.sent)) {
+    state.monitor.selfReview.sent = [];
   }
 
   // Cost ledger: fill with defaults at the E11 site, no version bump.
@@ -836,7 +930,8 @@ function enforceInvariants(state: AgentState): void {
 
 // Mark a leaf complete, walk up completing plan-parents whose children are all
 // complete. A plan with any blocked child becomes blocked (H3).
-// The root is never touched (H3: root completion belongs to the planner).
+// The root is never touched (H3): the controller tick completes it, through
+// isRootFinished or the planner.
 export function completeLeaf(state: AgentState, id: string, note: string): void {
   const node = state.goals.find((g) => g.id === id);
   if (!node) return;
@@ -851,7 +946,7 @@ export function completeLeaf(state: AgentState, id: string, note: string): void 
   while (current.parentId) {
     const parent = state.goals.find((g) => g.id === current.parentId);
     if (!parent) break;
-    // H3: Root completion belongs to the planner, not the cascade.
+    // H3: Root completion belongs to the controller tick, not the cascade.
     if (parent.kind === "root") break;
     const children = state.goals.filter((g) => g.parentId === parent.id);
     const hasBlocked = children.some((c) => c.status === "blocked");
@@ -874,7 +969,7 @@ export function completeLeaf(state: AgentState, id: string, note: string): void 
     current = parent;
   }
 
-  // H3: Root completion belongs to the planner, not the cascade.
+  // H3: Root completion belongs to the controller tick, not the cascade.
   // completeLeaf never touches the root.
 }
 
@@ -1031,13 +1126,34 @@ export function activateNext(state: AgentState, completedId?: string): string | 
   return null;
 }
 
+// Whether the root's work is all done and the root completes with no planner
+// call. True when the root is open (not complete, abandoned or blocked), the
+// planner has never broken it down (planningRounds is 0), it has at least one
+// descendant, at least one descendant is complete, and every descendant is
+// complete or abandoned. A root the planner has planned before stays the
+// planner's, since the planner returns to it for the next batch of plans. A
+// root with no descendants, or whose descendants are all abandoned, or with a
+// blocked descendant, is not finished and stays with isPlanningDue.
+export function isRootFinished(state: AgentState): boolean {
+  const root = state.goals.find((g) => g.parentId === null);
+  if (!root) return false;
+  if (root.status === "complete" || root.status === "abandoned" || root.status === "blocked") return false;
+  if ((root.planningRounds || 0) !== 0) return false;
+  const descendants = state.goals.filter((g) => g.parentId !== null);
+  if (descendants.length === 0) return false;
+  if (!descendants.some((g) => g.status === "complete")) return false;
+  return descendants.every((g) => g.status === "complete" || g.status === "abandoned");
+}
+
 // Check whether planning is due (R5).
-// Due when: root exists, not complete/abandoned, and has no
-// pending/active/paused descendants. Blocked counts as no work.
+// Due when: root exists, not complete/abandoned, has no
+// pending/active/paused descendants, and is not finished by isRootFinished.
+// Blocked counts as no work.
 export function isPlanningDue(state: AgentState): boolean {
   const root = state.goals.find((g) => g.parentId === null);
   if (!root) return false;
   if (root.status === "complete" || root.status === "abandoned" || root.status === "blocked") return false;
+  if (isRootFinished(state)) return false;
   const descendants = state.goals.filter((g) => g.parentId !== null);
   const hasWork = descendants.some(
     (g) => g.status === "pending" || g.status === "active" || g.status === "paused"

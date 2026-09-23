@@ -22,14 +22,14 @@
     {
       "name": "COORDINATOR_ROLE_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 6453,
-      "words": 1129
+      "chars": 7605,
+      "words": 1337
     },
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 6464,
-      "words": 1141
+      "chars": 7212,
+      "words": 1275
     },
     {
       "name": "PRIMING_BODY_prompt_pending",
@@ -98,6 +98,12 @@
       "words": 18
     },
     {
+      "name": "PROPOSE_FRAME",
+      "file": "hooks/index.ts",
+      "chars": 420,
+      "words": 75
+    },
+    {
       "name": "REPLY_BACKSTOP_FRAME",
       "file": "hooks/index.ts",
       "chars": 93,
@@ -160,20 +166,20 @@
     {
       "name": "goal_create_description",
       "file": "hooks/index.ts",
-      "chars": 557,
-      "words": 87
+      "chars": 734,
+      "words": 115
     },
     {
       "name": "goal_add_description",
       "file": "hooks/index.ts",
-      "chars": 509,
-      "words": 83
+      "chars": 659,
+      "words": 108
     },
     {
       "name": "goal_done_description",
       "file": "hooks/index.ts",
-      "chars": 590,
-      "words": 105
+      "chars": 991,
+      "words": 179
     },
     {
       "name": "goal_status_description",
@@ -204,6 +210,12 @@
       "file": "hooks/index.ts",
       "chars": 700,
       "words": 124
+    },
+    {
+      "name": "goal_longterm_description",
+      "file": "hooks/index.ts",
+      "chars": 805,
+      "words": 151
     },
     {
       "name": "memory_add_description",

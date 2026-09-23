@@ -33,7 +33,7 @@ declare module 'claude-code' {
       /** Optional path to a roadmap file (project-relative). The planner reads it at every planning event. */
       roadmapPath?: string
     }
-    /** Mark the active goal leaf as complete. The controller activates the next pending plan or fires the planner. Call when the current step is finished. */
+    /** Mark the active goal leaf as complete. The controller then activates the next pending plan. Once every entry under the top goal is complete or abandoned, with at least one complete, the top goal completes by itself, unless the planner has planned it before, in which case the planner is asked for more. Call when the current step is finished. */
     "mcp__agentic-plugin__goal_done": {
       /** One-line note about why this is done. */
       note?: string
@@ -64,6 +64,19 @@ declare module 'claude-code' {
       /** "drop" | "pause" | "reprioritize" */
       action: string
       /** Why (recorded as the node's blockedReason for pause/drop). */
+      reason?: string
+    }
+    /** Hold or let go of a long-term goal: the idea this persona is working towards, kept beside the goal tree and listed by goal_status. A long-term goal is never the active work and never starts by itself. add holds a new one and returns its id; at most 5 are held, and an add past that is refused. drop lets one go by its id and records the reason. An edit is a drop and an add. Refused outside a turn the operator or the coordinator persona started. Owner only. */
+    "mcp__agentic-plugin__goal_longterm": {
+      /** action is "add" or "drop". */
+      action: string
+      /** title is the goal in one line. Required for add. */
+      title?: string
+      /** objective is what the persona is working towards. Required for add. */
+      objective?: string
+      /** id names the long-term goal to drop, as goal_status lists it. Required for drop. */
+      id?: string
+      /** reason says why it is dropped, and is recorded. Required for drop. */
       reason?: string
     }
     /** Add a memory entry to this persona's durable store. Use for facts, preferences, or lessons the worker should remember across sessions. Distill to one clear, self-contained statement. */
