@@ -4323,6 +4323,19 @@ export const register: Register = async (on, options) => {
           });
           sess.state.updatedAt = streakTs;
           await persist($);
+        } else if (sess.state.pendingAskId) {
+          // The slot holds one ask, and the operator already has a question
+          // open. A second ask would strand the first record open, and
+          // pausing the leaf with no ask of its own would leave nothing to
+          // resume it, so the streak is logged and the leaf keeps running.
+          sess.state.decisions.push({
+            timestamp: streakTs,
+            loop: "monitor",
+            action: "error_streak",
+            detail: `${activeForStreak.id}: ${streakHead}; ask ${sess.state.pendingAskId} already open, no second ask`,
+          });
+          sess.state.updatedAt = streakTs;
+          await persist($);
         } else {
           const nodeId = activeForStreak.id;
           const streakReason = `${streakHead}; escalating`;
@@ -6784,6 +6797,26 @@ export const register: Register = async (on, options) => {
         updatedAt: now,
       };
 
+      // An ask the slot names belongs to the tree being replaced, and an open
+      // one would hold goal_add's activation on the new tree. It closes the
+      // way goal_resume closes one; a slot naming no open record is cleared.
+      if (sess.state.pendingAskId) {
+        const askId = sess.state.pendingAskId;
+        const store = commonsStoreOf($);
+        const askRecord = await readAskRecord(store, sess.persona, askId);
+        if (askRecord && askRecord.status === "open") {
+          askRecord.status = "resumed";
+          await store.set(askKey(sess.persona, askId), askRecord);
+          sess.state.decisions.push({
+            timestamp: now,
+            loop: "monitor",
+            action: "ask_answered",
+            detail: `ask ${askId} closed by goal_create (status: resumed)`,
+          });
+        }
+        sess.state.pendingAskId = undefined;
+      }
+
       // Replace any existing tree.
       sess.state.goals = [root];
       sess.state.activeGoalId = null;
@@ -8002,7 +8035,23 @@ export const register: Register = async (on, options) => {
           askedNode.lastAskQuestion = askRecord.question;
           askedNode.lastAskClosedAt = Date.now();
           if (askedNode.status === "paused") {
+            // Pause whatever else is active, read by status rather than by
+            // activeGoalId, since a stale pointer is the state this close
+            // must not leave behind; then point activeGoalId at the entry.
+            for (const other of sess.state.goals) {
+              if (other.id === askedNode.id || other.status !== "active") continue;
+              other.status = "paused";
+              other.blockedReason = `Paused by thread reply to ask ${askId}`;
+              other.updatedAt = Date.now();
+              sess.state.decisions.push({
+                timestamp: Date.now(),
+                loop: "goal",
+                action: "paused_by_reply",
+                detail: `${other.id} paused (thread reply to ask ${askId})`,
+              });
+            }
             askedNode.status = "active";
+            sess.state.activeGoalId = askedNode.id;
             askedNode.updatedAt = Date.now();
             sess.state.decisions.push({
               timestamp: Date.now(),

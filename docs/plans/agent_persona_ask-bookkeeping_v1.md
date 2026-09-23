@@ -1,6 +1,6 @@
 # Ask bookkeeping cleanup
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-22
 
@@ -165,6 +165,7 @@ this plan file on it, and finishing-work opens the one pull request.
 
 ### 1. Close or keep the ask on all three paths
 Model: opus
+Locus: inline
 
 The three design changes above in `hooks/index.ts`, each with a case in
 `.kit/controller-tick-test.mjs` written first and watched red against the unchanged code, then the
