@@ -1956,6 +1956,35 @@ const closeAskOnNode = async (dp: any, nodeId: string, closedBy: string): Promis
   return true;
 };
 
+// Reactivates the paused entry an answered ask named. Every other entry whose
+// status is active is paused first, read by status rather than by
+// activeGoalId, since a stale pointer is the state this must not leave behind;
+// then activeGoalId names the entry. `closedBy` reads "thread reply to ask
+// <id>" or "answer <recordId> to ask <id>" and lands in the reason and details.
+const reactivateAskedEntry = (askedNode: GoalNode, closedBy: string): void => {
+  for (const other of sess.state.goals) {
+    if (other.id === askedNode.id || other.status !== "active") continue;
+    other.status = "paused";
+    other.blockedReason = `Paused by ${closedBy}`;
+    other.updatedAt = Date.now();
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "goal",
+      action: "paused_by_reply",
+      detail: `${other.id} paused (${closedBy})`,
+    });
+  }
+  askedNode.status = "active";
+  sess.state.activeGoalId = askedNode.id;
+  askedNode.updatedAt = Date.now();
+  sess.state.decisions.push({
+    timestamp: Date.now(),
+    loop: "goal",
+    action: "activated",
+    detail: `${askedNode.id}: reactivated (${closedBy})`,
+  });
+};
+
 // completeLeaf's walk marks a plan parent blocked with the reason "Child task
 // blocked" while a child is blocked, and leaves that status and reason in
 // place when goal_done later completes the blocked child by name. A parent
@@ -4104,16 +4133,7 @@ export const register: Register = async (on, options) => {
                 const activeNode = targetNode || (sess.state.activeGoalId
                   ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
                   : null);
-                if (activeNode && activeNode.status === "paused") {
-                  activeNode.status = "active";
-                  activeNode.updatedAt = Date.now();
-                  sess.state.decisions.push({
-                    timestamp: Date.now(),
-                    loop: "goal",
-                    action: "activated",
-                    detail: `${activeNode.id}: reactivated (answer to ask ${askId})`,
-                  });
-                }
+                if (activeNode && activeNode.status === "paused") reactivateAskedEntry(activeNode, `answer ${answer.id} to ask ${askId}`);
                 sess.state.decisions.push({
                   timestamp: Date.now(),
                   loop: "monitor",
@@ -4320,6 +4340,19 @@ export const register: Register = async (on, options) => {
             loop: "monitor",
             action: "error_streak",
             detail: `no-active-node: ${streakHead}; no leaf to pause, no ask opened`,
+          });
+          sess.state.updatedAt = streakTs;
+          await persist($);
+        } else if (sess.state.pendingAskId) {
+          // The slot holds one ask, and the operator already has a question
+          // open. A second ask would strand the first record open, and
+          // pausing the leaf with no ask of its own would leave nothing to
+          // resume it, so the streak is logged and the leaf keeps running.
+          sess.state.decisions.push({
+            timestamp: streakTs,
+            loop: "monitor",
+            action: "error_streak",
+            detail: `${activeForStreak.id}: ${streakHead}; ask ${sess.state.pendingAskId} already open, no second ask`,
           });
           sess.state.updatedAt = streakTs;
           await persist($);
@@ -6784,6 +6817,26 @@ export const register: Register = async (on, options) => {
         updatedAt: now,
       };
 
+      // An ask the slot names belongs to the tree being replaced, and an open
+      // one would hold goal_add's activation on the new tree. It closes the
+      // way goal_resume closes one; a slot naming no open record is cleared.
+      if (sess.state.pendingAskId) {
+        const askId = sess.state.pendingAskId;
+        const store = commonsStoreOf($);
+        const askRecord = await readAskRecord(store, sess.persona, askId);
+        if (askRecord && askRecord.status === "open") {
+          askRecord.status = "resumed";
+          await store.set(askKey(sess.persona, askId), askRecord);
+          sess.state.decisions.push({
+            timestamp: now,
+            loop: "monitor",
+            action: "ask_answered",
+            detail: `ask ${askId} closed by goal_create (status: resumed)`,
+          });
+        }
+        sess.state.pendingAskId = undefined;
+      }
+
       // Replace any existing tree.
       sess.state.goals = [root];
       sess.state.activeGoalId = null;
@@ -8001,16 +8054,7 @@ export const register: Register = async (on, options) => {
         if (askedNode) {
           askedNode.lastAskQuestion = askRecord.question;
           askedNode.lastAskClosedAt = Date.now();
-          if (askedNode.status === "paused") {
-            askedNode.status = "active";
-            askedNode.updatedAt = Date.now();
-            sess.state.decisions.push({
-              timestamp: Date.now(),
-              loop: "goal",
-              action: "activated",
-              detail: `${askedNode.id}: reactivated (thread reply to ask ${askId})`,
-            });
-          }
+          if (askedNode.status === "paused") reactivateAskedEntry(askedNode, `thread reply to ask ${askId}`);
         }
         sess.state.decisions.push({
           timestamp: Date.now(),
