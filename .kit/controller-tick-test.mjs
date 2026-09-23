@@ -23,7 +23,11 @@ import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, f
 import { DECISIONS_MAX, MEMORY_MAX, PLAN_PATH_PATTERN, PLAN_PATH_TEXT_PATTERN, isActivationEligible, parseState, resolvePlanPath } from "../hooks/agent-state.ts";
 import * as AgentState from "../hooks/agent-state.ts";
 import { FINDING_COOLOFF_MS } from "../hooks/self-review.ts";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -3384,6 +3388,10 @@ async function main() {
     await caseGl5_theProposalTurnIsNotScoredAndRefusesTheFourActs(clock);
     await caseGl5_theFrameNeutralizesStoredGoalText(clock);
     await caseGl5_theProposalRecordBackfills();
+    await caseGl6_aFinishedRootCompletesWithNoPlannerCall(clock);
+    await caseGl6_thePlannerKeepsItsCases(clock);
+    await caseGl6_theSupervisorFactReadsTheSameOnBothPaths(clock);
+    caseGl6_isRootFinishedUnit();
     await caseSection6Fleet_unchangedIsSilentAndOneChangeSubmitsOnce(clock);
     await caseSection6Fleet_runningRowsAreNotAllHealthy(clock);
     await caseSection6Fleet_aFirstEverLaunchIsNotStale(clock);
@@ -16608,7 +16616,9 @@ async function caseS13_stall_pendingPlanActivatesFirstAndNothingActivatesAfterRo
   await tickAndSettle(h, clock, 20);
   decisions = getDecisions(h);
   const rootCompleteIdx = decisions.findIndex((d) => d.action === "root_complete");
-  check("s13 stall: planning_fired then root_complete once the plan is done", rootCompleteIdx !== -1 && decisions.slice(0, rootCompleteIdx).some((d) => d.action === "planning_fired"), decisions.map((d) => d.action));
+  // The plan was the worker's and the planner never broke the root down, so
+  // the root completes through isRootFinished with no planner run before it.
+  check("s13 stall: root_complete with no planning_fired once the worker's plan is done", rootCompleteIdx !== -1 && !decisions.slice(0, rootCompleteIdx).some((d) => d.action === "planning_fired"), decisions.map((d) => d.action));
   clock.advance(10_000);
   await tickAndSettle(h, clock, 20);
   clock.advance(10_000);
@@ -21232,4 +21242,240 @@ async function caseGl5_theProposalRecordBackfills() {
     JSON.stringify(parseState(JSON.stringify(held)).monitor.proposal) === JSON.stringify(held.monitor.proposal));
   check("gl5 backfill: a new state starts with askedAt 0 and sent null",
     JSON.stringify(AgentState.createDefaultState("someone", "s-1").monitor.proposal) === JSON.stringify({ askedAt: 0, sent: null }));
+}
+
+// ============================================================
+// Goal levels 6: a finished top goal completes without the planner
+// ============================================================
+
+// The planner stub answers with a plan nobody asked for, so a planner call
+// on any of these trees shows as planning_created and a new node, not only as
+// a call count.
+const GL6_INVENTED_PLAN = JSON.stringify([{ title: "Invented follow-up", objective: "Work nobody asked for", maxRounds: 5 }]);
+const GL6_DETAIL = "every descendant complete or abandoned, no planner call";
+const GL6_POLL_PATH = fileURLToPath(new URL("../bin/supervise-poll.mjs", import.meta.url));
+
+function gl6Tree(children, planningRounds = 0) {
+  return [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 10, planningRounds }),
+    ...children.map(([id, status], i) => makeGoalNode({
+      id, parentId: "g-root", kind: "plan", status, maxRounds: 5, source: "worker", createdAt: T0 + i,
+      ...(status === "blocked" ? { blockedReason: "waiting on the operator" } : {}),
+    })),
+  ];
+}
+
+async function gl6Harness(caseName, tree, completeValue = GL6_INVENTED_PLAN) {
+  return createTickHarness({ ...OPTS, caseName, completeValue, stateOpts: { now: T0, goals: tree, activeGoalId: null } });
+}
+
+// What the planner left behind: calls to $.model.complete over the whole
+// case, the planner's cost ledger as stored, and the planning decisions.
+function gl6PlannerTrace(h) {
+  const state = getState(h);
+  return {
+    calls: h.completeCalls.length,
+    ledger: JSON.stringify(state.monitor.cost.planner),
+    fired: countAction(state.decisions, "planning_fired"),
+    created: countAction(state.decisions, "planning_created"),
+  };
+}
+
+// An idle tick past the nudge idle window and floor, with the classifier
+// answering nudge wherever it is asked about one.
+async function gl6IdleTick(h, clock) {
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+}
+
+// The Acceptance's first and third bullets and the Tests line's floor. A
+// root the worker planned, with two complete plans and one abandoned, and a
+// planner never asked about it, completes on the next tick with the detail
+// the section names. The absence predicates, each over the whole case: no
+// $.model.complete call, the planner's cost ledger byte-equal to its seeded
+// value, no planning_fired, no new node; after completion, over two idle
+// ticks, no activated or activate_none decision, no nudge_sent, no
+// classifier call about a nudge and no submitted prompt. The control is the
+// same tree with planningRounds 1, where the same instruments read a planner
+// call, a ledger entry, a new node activated, and a nudge sent.
+async function caseGl6_aFinishedRootCompletesWithNoPlannerCall(clock) {
+  console.log("\n=== Goal levels 6: a finished root completes with no planner call, and nothing activates or nudges after ===");
+  const children = [["plan-a", "complete"], ["plan-b", "complete"], ["plan-c", "abandoned"]];
+
+  clock.set(T0);
+  const h = await gl6Harness("gl6_finished", gl6Tree(children));
+  const before = gl6PlannerTrace(h);
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 50);
+  let state = getState(h);
+  const after = gl6PlannerTrace(h);
+  const root = state.goals.find((g) => g.id === "g-root");
+  const completes = state.decisions.filter((d) => d.action === "root_complete");
+  check("gl6 finished: the root is complete after one tick", root?.status === "complete", root);
+  check("gl6 finished: one root_complete whose detail names the finished-root path",
+    completes.length === 1 && completes[0].detail === GL6_DETAIL, completes);
+  check("gl6 finished: no $.model.complete call over the case", after.calls === 0, after);
+  check("gl6 finished: the planner's cost ledger is unchanged", after.ledger === before.ledger, { before: before.ledger, after: after.ledger });
+  check("gl6 finished: no planning_fired and no planning_created", after.fired === 0 && after.created === 0, state.decisions.map((d) => d.action));
+  check("gl6 finished: the tree gained no node", state.goals.length === 4, state.goals.map((g) => g.id));
+
+  const completeIdx = state.decisions.findIndex((d) => d.action === "root_complete");
+  const submitsAtComplete = h.promptSubmits.length;
+  h.resetClassifyCalls();
+  await gl6IdleTick(h, clock);
+  await gl6IdleTick(h, clock);
+  state = getState(h);
+  const later = state.decisions.slice(completeIdx + 1).map((d) => d.action);
+  check("gl6 finished: nothing is active after the root completes", state.activeGoalId === null && !state.goals.some((g) => g.status === "active"), state.goals.map((g) => `${g.id}:${g.status}`));
+  check("gl6 finished: no activated or activate_none after root_complete", completeIdx !== -1 && !later.includes("activated") && !later.includes("activate_none"), later);
+  check("gl6 finished: no nudge_sent after root_complete", completeIdx !== -1 && !later.includes("nudge_sent"), later);
+  check("gl6 finished: no classifier call about a nudge after root_complete",
+    !h.classifyCalls.some((c) => Array.isArray(c[1]) && c[1].includes("nudge")), h.classifyCalls.map((c) => c[1]));
+  check("gl6 finished: no prompt submitted after root_complete", completeIdx !== -1 && h.promptSubmits.length === submitsAtComplete, h.promptSubmits.slice(submitsAtComplete));
+  check("gl6 finished: still no planner call after the idle ticks", h.completeCalls.length === 0, h.completeCalls.length);
+
+  // Control: the planner has planned this root before.
+  clock.set(T0);
+  const c = await gl6Harness("gl6_finished_control", gl6Tree(children, 1));
+  const cBefore = gl6PlannerTrace(c);
+  clock.advance(10_000);
+  await tickAndSettle(c, clock, 50);
+  const cAfter = gl6PlannerTrace(c);
+  let cState = getState(c);
+  check("gl6 finished control: the planner is called once", cAfter.calls === 1 && cAfter.fired === 1 && cAfter.created === 1, cAfter);
+  check("gl6 finished control: the planner's cost ledger moves", cAfter.ledger !== cBefore.ledger, { before: cBefore.ledger, after: cAfter.ledger });
+  check("gl6 finished control: the invented plan is added and activated, and the root is not complete",
+    cState.goals.length === 5 && cState.goals.some((g) => g.title === "Invented follow-up" && g.status === "active") && cState.decisions.some((d) => d.action === "activated")
+      && cState.goals.find((g) => g.id === "g-root")?.status !== "complete", cState.goals.map((g) => `${g.id}:${g.status}`));
+  c.resetClassifyCalls();
+  await gl6IdleTick(c, clock);
+  cState = getState(c);
+  check("gl6 finished control: an idle tick over the activated plan asks about a nudge and sends one",
+    c.classifyCalls.some((x) => Array.isArray(x[1]) && x[1].includes("nudge")) && cState.decisions.some((d) => d.action === "nudge_sent"), cState.decisions.map((d) => d.action));
+}
+
+// The Acceptance's second bullet and the Tests line's second clause: each
+// case the planner keeps still fires it. The predicate is a planning_fired
+// decision and one $.model.complete call; a root that completed through the
+// finished-root path instead would read no call and a root_complete with the
+// finished-root detail. A blocked descendant behaves as at the base commit:
+// the planner fires, and at the round cap the root blocks with no call.
+async function caseGl6_thePlannerKeepsItsCases(clock) {
+  console.log("\n=== Goal levels 6: the planner keeps an empty root, a root it planned, an all-abandoned root and a blocked descendant ===");
+  const kept = [
+    ["no descendants", [], 0],
+    ["planningRounds 1, every descendant complete", [["plan-a", "complete"], ["plan-b", "complete"]], 1],
+    ["only abandoned descendants", [["plan-a", "abandoned"], ["plan-b", "abandoned"]], 0],
+    ["a blocked descendant beside a complete one", [["plan-a", "complete"], ["plan-b", "blocked"]], 0],
+  ];
+  for (const [label, children, rounds] of kept) {
+    clock.set(T0);
+    const h = await gl6Harness(`gl6_kept_${label.replace(/\W+/g, "_")}`, gl6Tree(children, rounds));
+    clock.advance(10_000);
+    await tickAndSettle(h, clock, 50);
+    const trace = gl6PlannerTrace(h);
+    const state = getState(h);
+    check(`gl6 kept (${label}): the planner fires and is called once`, trace.fired === 1 && trace.calls === 1, trace);
+    check(`gl6 kept (${label}): no root_complete names the finished-root path`,
+      !state.decisions.some((d) => d.action === "root_complete" && d.detail === GL6_DETAIL), state.decisions.filter((d) => d.action === "root_complete"));
+  }
+
+  // A blocked descendant at the round cap: the root blocks on the cap
+  // reason and the planner is not called, as at the base commit.
+  clock.set(T0);
+  const capped = await gl6Harness("gl6_kept_blocked_at_cap", gl6Tree([["plan-a", "complete"], ["plan-b", "blocked"]], 5));
+  clock.advance(10_000);
+  await tickAndSettle(capped, clock, 50);
+  const cappedRoot = getState(capped).goals.find((g) => g.id === "g-root");
+  check("gl6 kept (a blocked descendant at the round cap): the root blocks on the cap with no planner call",
+    cappedRoot?.status === "blocked" && /Planning cap reached/.test(cappedRoot.blockedReason || "") && capped.completeCalls.length === 0, { root: cappedRoot, calls: capped.completeCalls.length });
+}
+
+// The Acceptance's fifth bullet. The supervisor reads root_complete through
+// bin/supervise-poll.mjs, which runs as its own process and is not
+// importable (it runs on load), so each path's stored persona JSON is handed
+// to it the way bin/supervise.sh hands it the store. The finished-root path
+// and the planner's no-plans path, ticked at the same clock, read the same
+// four lines: restart_passive, with the same reason. The control shows the
+// reader reads the detail text: the same store with the detail naming a
+// backfilled root reads continue.
+async function caseGl6_theSupervisorFactReadsTheSameOnBothPaths(clock) {
+  console.log("\n=== Goal levels 6: the supervisor-facing root_complete fact reads the same on the finished-root path and the planner's no-plans path ===");
+  const children = [["plan-a", "complete"], ["plan-b", "complete"]];
+  const storeOf = async (caseName, rounds) => {
+    clock.set(T0);
+    const h = await gl6Harness(caseName, gl6Tree(children, rounds), "[]");
+    clock.advance(10_000);
+    await tickAndSettle(h, clock, 50);
+    return { h, text: h.fsMap.get(PERSONA_STORE_FILE) };
+  };
+  const finished = await storeOf("gl6_fact_finished", 0);
+  const planned = await storeOf("gl6_fact_planner", 1);
+  const detailOf = (text) => JSON.parse(text).default.decisions.filter((d) => d.action === "root_complete").map((d) => d.detail);
+  check("gl6 fact: the finished-root path completed with no planner call",
+    finished.h.completeCalls.length === 0 && JSON.stringify(detailOf(finished.text)) === JSON.stringify([GL6_DETAIL]), detailOf(finished.text));
+  check("gl6 fact: the planner path completed through the planner's no-plans branch",
+    planned.h.completeCalls.length === 1 && JSON.stringify(detailOf(planned.text)) === JSON.stringify(["Root g-root marked complete"])
+      && getState(planned.h).decisions.some((d) => d.action === "planning_complete"), detailOf(planned.text));
+
+  const dir = mkdtempSync(join(tmpdir(), "gl6-fact-"));
+  const poll = (name, storeText) => {
+    const storePath = join(dir, `${name}.json`);
+    writeFileSync(storePath, storeText);
+    const r = spawnSync(process.execPath, [
+      GL6_POLL_PATH,
+      join(dir, "no-heartbeat.json"), storePath, "default", join(dir, "no-stream.jsonl"), "", "",
+      String(T0), String(T0), "90000", "120000", "6", "0", "0", "3",
+    ], { encoding: "utf8" });
+    return { status: r.status, lines: String(r.stdout).split("\n"), stderr: r.stderr };
+  };
+  const a = poll("finished", finished.text);
+  const b = poll("planner", planned.text);
+  check("gl6 fact: the poll reads restart_passive on the finished-root path", a.status === 0 && a.lines[0] === "restart_passive", a);
+  check("gl6 fact: the poll's lines are the same on both paths", a.status === 0 && b.status === 0 && JSON.stringify(a.lines) === JSON.stringify(b.lines), { finished: a.lines, planner: b.lines });
+  const backfilled = JSON.parse(finished.text);
+  for (const d of backfilled.default.decisions) if (d.action === "root_complete") d.detail = "backfilled root";
+  const ctl = poll("backfilled", JSON.stringify(backfilled));
+  check("gl6 fact control: the same store with a backfilled detail reads continue, so the reader reads the detail", ctl.status === 0 && ctl.lines[0] === "continue", ctl);
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// isRootFinished and isPlanningDue over the tree shapes the section names,
+// pure, with no harness.
+function caseGl6_isRootFinishedUnit() {
+  console.log("\n=== Goal levels 6: isRootFinished and isPlanningDue over each tree shape ===");
+  const shapes = [
+    ["two complete and one abandoned", gl6Tree([["a", "complete"], ["b", "complete"], ["c", "abandoned"]]), true],
+    ["one complete", gl6Tree([["a", "complete"]]), true],
+    ["no descendants", gl6Tree([]), false],
+    ["planningRounds 1, every descendant complete", gl6Tree([["a", "complete"], ["b", "complete"]], 1), false],
+    ["only abandoned descendants", gl6Tree([["a", "abandoned"], ["b", "abandoned"]]), false],
+    ["a blocked descendant", gl6Tree([["a", "complete"], ["b", "blocked"]]), false],
+    ["a pending descendant", gl6Tree([["a", "complete"], ["b", "pending"]]), false],
+    ["an active descendant", gl6Tree([["a", "complete"], ["b", "active"]]), false],
+    ["a paused descendant", gl6Tree([["a", "complete"], ["b", "paused"]]), false],
+  ];
+  check("gl6 unit: isRootFinished is exported", typeof AgentState.isRootFinished === "function", typeof AgentState.isRootFinished);
+  const finishedOf = (state) => typeof AgentState.isRootFinished === "function" ? AgentState.isRootFinished(state) : undefined;
+  for (const [label, goals, finished] of shapes) {
+    const state = { goals, activeGoalId: null };
+    check(`gl6 unit (${label}): isRootFinished is ${finished}`, finishedOf(state) === finished, finishedOf(state));
+    if (finished) check(`gl6 unit (${label}): isPlanningDue is false`, AgentState.isPlanningDue(state) === false);
+  }
+  // Each case the planner keeps that has no open work still reads planning due.
+  for (const [label, goals] of [
+    ["no descendants", gl6Tree([])],
+    ["planningRounds 1, every descendant complete", gl6Tree([["a", "complete"]], 1)],
+    ["only abandoned descendants", gl6Tree([["a", "abandoned"]])],
+    ["a blocked descendant", gl6Tree([["a", "complete"], ["b", "blocked"]])],
+  ]) {
+    check(`gl6 unit (${label}): isPlanningDue is true`, AgentState.isPlanningDue({ goals, activeGoalId: null }) === true);
+  }
+  for (const status of ["complete", "abandoned", "blocked"]) {
+    const goals = gl6Tree([["a", "complete"]]);
+    goals[0].status = status;
+    check(`gl6 unit (root ${status}): isRootFinished is false`, finishedOf({ goals, activeGoalId: null }) === false);
+  }
+  check("gl6 unit (no root): isRootFinished is false", finishedOf({ goals: [], activeGoalId: null }) === false);
 }

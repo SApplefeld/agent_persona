@@ -930,7 +930,8 @@ function enforceInvariants(state: AgentState): void {
 
 // Mark a leaf complete, walk up completing plan-parents whose children are all
 // complete. A plan with any blocked child becomes blocked (H3).
-// The root is never touched (H3: root completion belongs to the planner).
+// The root is never touched (H3): the controller tick completes it, through
+// isRootFinished or the planner.
 export function completeLeaf(state: AgentState, id: string, note: string): void {
   const node = state.goals.find((g) => g.id === id);
   if (!node) return;
@@ -945,7 +946,7 @@ export function completeLeaf(state: AgentState, id: string, note: string): void 
   while (current.parentId) {
     const parent = state.goals.find((g) => g.id === current.parentId);
     if (!parent) break;
-    // H3: Root completion belongs to the planner, not the cascade.
+    // H3: Root completion belongs to the controller tick, not the cascade.
     if (parent.kind === "root") break;
     const children = state.goals.filter((g) => g.parentId === parent.id);
     const hasBlocked = children.some((c) => c.status === "blocked");
@@ -968,7 +969,7 @@ export function completeLeaf(state: AgentState, id: string, note: string): void 
     current = parent;
   }
 
-  // H3: Root completion belongs to the planner, not the cascade.
+  // H3: Root completion belongs to the controller tick, not the cascade.
   // completeLeaf never touches the root.
 }
 
@@ -1125,13 +1126,34 @@ export function activateNext(state: AgentState, completedId?: string): string | 
   return null;
 }
 
+// Whether the root's work is all done and the root completes with no planner
+// call. True when the root is open (not complete, abandoned or blocked), the
+// planner has never broken it down (planningRounds is 0), it has at least one
+// descendant, at least one descendant is complete, and every descendant is
+// complete or abandoned. A root the planner has planned before stays the
+// planner's, since the planner returns to it for the next batch of plans. A
+// root with no descendants, or whose descendants are all abandoned, or with a
+// blocked descendant, is not finished and stays with isPlanningDue.
+export function isRootFinished(state: AgentState): boolean {
+  const root = state.goals.find((g) => g.parentId === null);
+  if (!root) return false;
+  if (root.status === "complete" || root.status === "abandoned" || root.status === "blocked") return false;
+  if ((root.planningRounds || 0) !== 0) return false;
+  const descendants = state.goals.filter((g) => g.parentId !== null);
+  if (descendants.length === 0) return false;
+  if (!descendants.some((g) => g.status === "complete")) return false;
+  return descendants.every((g) => g.status === "complete" || g.status === "abandoned");
+}
+
 // Check whether planning is due (R5).
-// Due when: root exists, not complete/abandoned, and has no
-// pending/active/paused descendants. Blocked counts as no work.
+// Due when: root exists, not complete/abandoned, has no
+// pending/active/paused descendants, and is not finished by isRootFinished.
+// Blocked counts as no work.
 export function isPlanningDue(state: AgentState): boolean {
   const root = state.goals.find((g) => g.parentId === null);
   if (!root) return false;
   if (root.status === "complete" || root.status === "abandoned" || root.status === "blocked") return false;
+  if (isRootFinished(state)) return false;
   const descendants = state.goals.filter((g) => g.parentId !== null);
   const hasWork = descendants.some(
     (g) => g.status === "pending" || g.status === "active" || g.status === "paused"

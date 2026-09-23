@@ -29,6 +29,7 @@ import {
   activateNext,
   isActivationEligible,
   isPlanningDue,
+  isRootFinished,
   previousRoundBlocked,
   planningCapReached,
   applyTurnToErrors,
@@ -2048,6 +2049,29 @@ export const activate = (dp: any, nextId: string | null, reason: string): void =
   }
 };
 
+// The steps that complete the root from the controller tick. The planner's
+// no-plans branch and the isRootFinished path both call it, and the two differ
+// only in the root_complete detail each passes. bin/supervise-poll.mjs reads
+// that decision's timestamp as the supervisor's goal-complete fact. The caller
+// persists.
+const completeRoot = async (dp: any, rootId: string, detail: string): Promise<void> => {
+  const rootNow = sess.state.goals.find((g) => g.id === rootId);
+  if (rootNow && rootNow.status !== "complete" && rootNow.status !== "abandoned") {
+    rootNow.status = "complete";
+    rootNow.updatedAt = Date.now();
+  }
+  sess.state.decisions.push({
+    timestamp: Date.now(),
+    loop: "goal",
+    action: "root_complete",
+    detail,
+  });
+  try { await dp.audio.speak("Goal complete"); } catch { /* no audio */ }
+  sess.consecutiveNudgesWithoutOnGoal = 0;
+  sess.lastNudgeAt = 0;
+  try { dp.ui.status(""); } catch { /* non-fatal */ }
+};
+
 // Closes the operator ask pendingAskId names when that ask is open on
 // `nodeId`: the record's status becomes "resumed" and one ask_answered
 // decision names the tool that closed it. Returns whether it closed the ask.
@@ -2746,7 +2770,8 @@ export const register: Register = async (on, options) => {
     await registerTool("goal_done", () => $.tool.register({
       name: "goal_done",
       description:
-        "Mark the active goal leaf as complete, with an optional one-line note. The controller then activates the next pending plan or fires the planner. " +
+        "Mark the active goal leaf as complete, with an optional one-line note. The controller then activates the next pending plan. Once every entry under the top goal is complete or abandoned, the top goal completes by itself, unless the planner has planned it before, in which case the planner is asked for more. " +
+        "A plan left only with a check someone else runs later, such as a validation after release, is complete: finish it with goal_done, name the check in the note, and hand it off, never holding the plan open for it. " +
         "The result names the goal that became active where there is one, and that goal is the one to carry on with. " +
         "nodeId completes a named entry instead, once every child it has is complete or abandoned, and leaves any other active entry active. " +
         "Finished work on an entry that is not active is recorded with goal_done and its nodeId, never with a drop.",
@@ -4990,9 +5015,19 @@ export const register: Register = async (on, options) => {
         : null;
       const root = sess.state.goals.find((g) => g.parentId === null);
 
+      // 3a. A finished root completes with no planner call: every descendant
+      // is complete or abandoned, at least one is complete, and the planner
+      // has never broken the root down (isRootFinished). isPlanningDue reads
+      // false for such a root, so this is read first and consumes the tick.
+      if (isRootFinished(sess.state)) {
+        await completeRoot($, root!.id, "every descendant complete or abandoned, no planner call");
+        await persist($);
+        return;
+      }
+
       // 3. Planning gate (R1, R5): planning runs here, NOT in a tool handler.
-      // Due when root exists, not complete/abandoned, and no
-      // pending/active/paused descendants.
+      // Due when root exists, not complete/abandoned, no
+      // pending/active/paused descendants, and the root is not finished.
       // M8: reentrancy guard: a planner call slower than one tick must not fire twice.
       if (isPlanningDue(sess.state) && !planningInFlight) {
         planningInFlight = true;
@@ -5160,10 +5195,6 @@ export const register: Register = async (on, options) => {
           if (plans.length === 0) {
             // Objective met or nothing to plan: complete the root.
             const rootNow = sess.state.goals.find((g) => g.id === root!.id);
-            if (rootNow && rootNow.status !== "complete" && rootNow.status !== "abandoned") {
-              rootNow.status = "complete";
-              rootNow.updatedAt = Date.now();
-            }
             // M13: a successful planning round clears the failure streak.
             if (rootNow) rootNow.consecutivePlanningFailures = 0;
             sess.state.decisions.push({
@@ -5172,16 +5203,7 @@ export const register: Register = async (on, options) => {
               action: "planning_complete",
               detail: `Planner returned 0 plans`,
             });
-            sess.state.decisions.push({
-              timestamp: Date.now(),
-              loop: "goal",
-              action: "root_complete",
-              detail: `Root ${root!.id} marked complete`,
-            });
-            try { await $.audio.speak("Goal complete"); } catch { /* no audio */ }
-            sess.consecutiveNudgesWithoutOnGoal = 0;
-            sess.lastNudgeAt = 0;
-            try { $.ui.status(""); } catch { /* non-fatal */ }
+            await completeRoot($, root!.id, `Root ${root!.id} marked complete`);
           } else {
             // Create plan nodes under the root.
             // L9: per-plan maxRounds from the planner, defaulting to root.maxRounds.
