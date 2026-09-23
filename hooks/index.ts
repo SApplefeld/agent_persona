@@ -4308,7 +4308,7 @@ export const register: Register = async (on, options) => {
       const envErrors = sess.state.monitor.env.errors;
       if (envErrors.consecutiveErrorTurns >= 3 && (!envErrors.handledAt || (envErrors.lastErrorAt && envErrors.lastErrorAt > envErrors.handledAt))) {
         const streakTs = Date.now();
-        const streakReason = `Error streak ${envErrors.consecutiveErrorTurns} turns; escalating`;
+        const streakHead = `Error streak ${envErrors.consecutiveErrorTurns} turns`;
         envErrors.handledAt = streakTs;
         // Look up the active node; with none to pause, there is nothing for
         // an ask to resume, so the streak is logged and nothing more. With no
@@ -4319,12 +4319,13 @@ export const register: Register = async (on, options) => {
             timestamp: streakTs,
             loop: "monitor",
             action: "error_streak",
-            detail: `no-active-node: Error streak ${envErrors.consecutiveErrorTurns} turns; no leaf to pause, no ask opened`,
+            detail: `no-active-node: ${streakHead}; no leaf to pause, no ask opened`,
           });
           sess.state.updatedAt = streakTs;
           await persist($);
         } else {
           const nodeId = activeForStreak.id;
+          const streakReason = `${streakHead}; escalating`;
           sess.state.decisions.push({
             timestamp: streakTs,
             loop: "monitor",

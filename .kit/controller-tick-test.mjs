@@ -15745,10 +15745,12 @@ async function caseS13_errorStreak_noActiveNode_emptyTree_logsOnlyAndOpensNoAsk(
   const decisions = getDecisions(h);
   check("s13 errorstreak no-active empty: exactly one error_streak decision",
     countAction(decisions, "error_streak") === 1, decisions.map((d) => d.action));
-  check("s13 errorstreak no-active empty: the detail names no-active-node and no leaf/ask",
-    decisions.find((d) => d.action === "error_streak").detail.includes("no-active-node") &&
-    decisions.find((d) => d.action === "error_streak").detail.includes("no leaf to pause, no ask opened"),
-    decisions.find((d) => d.action === "error_streak").detail);
+  // Stable tokens rather than the detail's whole prose: the node token stays,
+  // and nothing in the line says it escalated or names an ask id.
+  const streakDetail = decisions.find((d) => d.action === "error_streak").detail;
+  check("s13 errorstreak no-active empty: the detail names no-active-node and no escalation or ask",
+    streakDetail.includes("no-active-node") && !streakDetail.includes("escalating") && !streakDetail.includes("ask-"),
+    streakDetail);
   check("s13 errorstreak no-active empty: no ask_opened, ask_waiting or paused_by_controller",
     !decisions.some((d) => ["ask_opened", "ask_waiting", "paused_by_controller"].includes(d.action)),
     decisions.map((d) => d.action));

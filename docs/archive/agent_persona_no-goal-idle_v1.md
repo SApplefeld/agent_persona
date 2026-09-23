@@ -1,6 +1,6 @@
 # No-goal idle
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-09-22
 
@@ -36,9 +36,9 @@ The findings are the other machine's and the operator relayed them verbatim; the
 
 ## Related plans
 
-- `agent_persona_goal-levels_v1.md` (open) stops a self-review finding from becoming a goal node in the finder's tree and routes the nodes already written to the coordinator. That plan owns the kaizen node the findings describe, and this plan leaves that code alone.
-- `agent_persona_goal-tree-curation_v1.md` (open) removes the backfilled root that a no-goal turn writes today, which is the root the kaizen node attached under. This plan leaves that code alone.
-- `../archive/agentic-plugin_env-monitor_v1.md` built the error streak branch and its escalation.
+- `../plans/agent_persona_goal-levels_v1.md` (open) stops a self-review finding from becoming a goal node in the finder's tree and routes the nodes already written to the coordinator. That plan owns the kaizen node the findings describe, and this plan leaves that code alone.
+- `agent_persona_goal-tree-curation_v1.md` removed the backfilled root that a no-goal turn wrote, which is the root the kaizen node attached under. This plan leaves that code alone.
+- `agentic-plugin_env-monitor_v1.md` built the error streak branch and its escalation.
 
 This plan edits only the streak branch of the controller tick and its tests, so it can run before or after either open plan. Whichever lands second takes a textual merge in `hooks/index.ts` and `.kit/controller-tick-test.mjs`.
 
@@ -96,6 +96,7 @@ Files in scope: `hooks/index.ts` (the streak branch only), `.kit/controller-tick
 ## Operator Verification
 
 - On NEO-CLAUDE, the architect's pending kaizen node "Kaizen: asks run out the clock" stays in its tree until the goal-levels plan routes it or you drop it with `goal_edit`. The tick activates a pending plan when no leaf is active, so dropping it before this plan lands is the safe move.
+- Write the threat model. The finishing security review found no `docs/security-model.md` and reviewed against the README's Trust boundary section. `docs/backlog.md` already carries the item as "The keeper's boot-time execution surface has no security model document". This plan adds no surface to it, since it removes a store write and a prompt submission rather than adding one. Done when the document exists.
 
 ## Chapters
 
@@ -117,6 +118,31 @@ Gate: close gate 2026-09-23T00:58:25Z to 00:59:28Z on this machine, branch no-go
 Next: finishing-work
 Commit Model: Branch-and-PR
 Delta: 2026-09-23T01:00Z, this machine, no foreign test runner live
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
+
+### Chapter 2 - 2026-09-23 (finishing pass and close)
+Completed: the finishing pass over Section 1; the plan is Complete.
+Implemented By: main session for the finishing fix, the Minor close pass, the docs edits and the plan close; qa-verifier, adversarial-reviewer, scope-adjudicator and docs-curator dispatched; no tier escalation
+Metrics: finishing review rounds 1; provenance 1 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 1 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; goal read: 1 declared, 0 asked, 0 unbuilt; NEEDS_CONTEXT 0; escalations 0; consults 0
+Recap: The plan's Goal, verbatim: "When this is done, an error streak on a persona that holds no active goal node is logged and nothing more. The controller opens no ask for it, writes no ask record under the placeholder node id `no-active-node`, submits no `[STILL WAITING]` turn for it, and shows no toast saying it is escalating. A persona whose charter gives it no standing goal, the architect among them, therefore sits idle between asks as a healthy state rather than an error streak that escalates to an operator question nobody can act on. A streak on a persona with an active node keeps today's path: the ask opens, the node pauses, and the operator's answer resumes it."; What the tree does now: when a persona has had three or more failing turns in a row and holds no goal it is actively working, the plugin's controller writes one line to its decision log saying so and does nothing else, so no question reaches the operator, no reminder turn is sent and no pop-up appears, and the controller goes on starting any queued work as usual; a persona that is working a goal still gets today's escalation, where the goal pauses and the operator is asked; Refinements during the run: the test harness gained a pop-up recorder so the "no toast" check could be observed, folded into Section 1's file list (Section 1 fold); the re-fire test drives one further failing turn rather than three so it catches a branch that zeroes the counter (Section 1 Minor pass); the log-line check pins stable tokens rather than the sentence (finishing fix); Operator-pending: leave or drop the NEO-CLAUDE kaizen node per the Operator Verification section; write the threat model.
+Decisions / Surprises:
+- base ref (2026-09-23): bdcad4d, the merge-base with origin/main and its head, after merging origin/main (PR #72, direct lines) into the branch at b751643 before the pass; the one conflict, docs/backlog.md, kept both new entries. Scope check against bdcad4d: the changeset is hooks/index.ts, .kit/controller-tick-test.mjs, .kit/tick-harness.mjs, README.md, docs/backlog.md and the plan doc; only docs/backlog.md sits outside the Files in scope line, the entry Chapter 1 records.
+- step 1 (2026-09-23): qa-verifier PASS at b751643. The whole gate ran 26 lanes, all exit 0 from their own markers, 2026-09-23T01:02:30Z to 01:22:49Z: tick 2566 OK and 0 FAIL, higher than Chapter 1's 2507 because the merge brought the direct-lines cases. Contention lane `.kit/live-all.sh` exit 10, refusing beside the live persona:STEWARD claim, as designed. Every acceptance bullet PASS, the red-before-change bullet on the reported evidence Chapter 1 records. Tree unchanged across the round.
+- steps 2 and 3 (2026-09-23): one adversarial dispatch at fable, effort high, through Workflow, carrying the security and performance lenses folded in as a small effort; every assistant turn resolved claude-fable-5-1 (29). Security: "threat model: absent", no findings, Disclosure none. Performance: no findings. Adversarial APPROVED_WITH_CONCERNS with one Major and two Minors. Tree unchanged across the round.
+- finishing fix round 1 (2026-09-23): the empty-tree case's detail check pins tokens rather than the log line's sentence: it keeps `no-active-node` and asserts the detail carries neither "escalating" nor an `ask-` id. Serves Section 1's Tests line, "Lock that three error turns on a persona with an empty tree log error_streak and nothing else the escalation writes" (trace orchestrator-made; the reviewer returned trace: none). Adds mechanism: no. Size: one check, two lines changed. Cost of not building: a reword of the decision detail turns the tick suite red with no defect behind it, against the repo's own stable-token rule at .kit/controller-tick-test.mjs:15679.
+- The fix delta changes a test and moves one constant; it touches no outward action and adds no module, so it owed no round and took an author re-read. A control proved the new check: with the no-node detail rewritten to end "escalating", the tick suite exited 1 on exactly "s13 errorstreak no-active empty: the detail names no-active-node and no escalation or ask"; hooks/index.ts was restored from a pre-probe copy, cmp-identical, porcelain unchanged. After the fix, tsc exit 0 and tick exit 0 at 2566 OK and 0 FAIL, 2026-09-23T01:30:48Z to 01:31:52Z.
+- step 4 goal read (scope adjudicator, fable, Agent tool, charter effort high): ASKED-BUT-UNBUILT none. BUILT-BUT-UNASKED: the docs/backlog.md entry on an active-leaf streak overwriting an open ask, accept-and-declare on the Goal sentence "A streak on a persona with an active node keeps today's path", bound one backlog record and no code. GROUNDS checked: the sentence exists and the entry adds no mechanism. No Standing Brief Amendments block was written for it, since no dispatch follows the close to read one.
+- step 5 docs curator: wrote docs/architecture.md, one failure-modes row for `error_streak` decisions with no ask, toast or paused entry; the diff was read line by line against hooks/index.ts:4305-4359. D1 deviation, the README's Section 13 coverage list did not name the no-active-node cases: fixed. D2 deviation, the README's Ask wait section said an owner with an open ask waits indefinitely, which holds only where `askOperatorWaitMs` is 0 (hooks/index.ts:504-505); pre-change state unread, recorded as an unverified pre-change claim; fixed. D3 deviation, the README's `askOperatorWaitMs` fallback anchor read :502 for :504; fixed. H1, the Related plans line, fixed. H2, the goal-levels plan does not link back to this one: left, since goal-levels is a parked plan whose text above its Chapters is its own approval record. H3 and H4, stale sequencing lines in docs/README.md and a docs/plans/archive/ folder, predate this effort and are named in the close-out.
+- close (2026-09-23): the Operator Verification section gained the threat-model item, pointing at the existing docs/backlog.md entry; no backlog item closed with this plan; no backlog item is older than 90 days, the oldest dated 2026-09-12.
+Assumptions: none
+Review Findings: `review: adversarial with folded security and performance lenses at fable, Workflow, effort high` over bdcad4d..b751643. Correctness Criticals 0; Majors 1, spec-traceable on an orchestrator-made trace, fixed. Advisory 0. goal read: 1 built-but-unasked (0 refused, 1 declared, 0 asked), 0 asked-but-unbuilt. Minors: 2 fixed in the close pass (streakReason moved into the active-node arm with a shared `streakHead` prefix; the Related plans line repointed at the archived goal-tree-curation plan), 0 left.
+Stamps: adjudicated 1, stamped 0; the one operator-tier record read in the window (subagent-can-report-a-documented-past-injection-as-a-live-one) did not bear on this pass.
+Gate: handoff whole gate 2026-09-23T01:37:08Z to 01:57:38Z on this machine, branch no-goal-idle-build at b751643 plus the finishing edits and the plan close, the fleet's resident node processes beside it and no foreign test runner live at start. `bash .kit/scratch/no-goal-idle/gate/run.sh`: 26 lanes, each exit 0 from its own marker; tick 2566 OK and 0 FAIL, channel-reply-instruction 160 OK, fleet-status 201 OK, equal to the step 1 QA run at b751643 (01:02:30Z to 01:22:49Z, 26 lanes exit 0, tick 2566 OK). Contention lane `bash .kit/live-all.sh` exit 10, refusing beside the live persona:STEWARD claim, as designed. Test delta over the pass: 0 added, 0 retired, 2 edited: caseS13_errorStreak_noActiveNode_reFireAfterHandled_stillOpensNoAsk now drives one further error turn, pinning that the re-fire does not rebuild the counter from zero; caseS13_errorStreak_noActiveNode_emptyTree_logsOnlyAndOpensNoAsk's detail check pins the `no-active-node` token and the absence of "escalating" and an `ask-` id rather than the line's sentence. Tests spawning a process: 0. No wall-clock baseline was recorded on this lane.
+Next: none; the plan is complete. The pull request follows.
+Commit Model: Branch-and-PR
+Delta: 2026-09-23T01:58Z, this machine, no foreign test runner live
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
