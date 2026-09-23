@@ -43,6 +43,8 @@ import {
   PLAN_PATH_REQUIRED_FORM,
   resolvePlanPath,
   planHolderOf,
+  openGoals,
+  hasStartableWork,
 } from "./agent-state";
 import { readPlanRecord } from "./plan-record";
 import type { AgentState, FleetHealth, FleetHealthMemo, GoalNode, NudgeBudget, EnvGit, EnvState } from "./agent-state";
@@ -867,6 +869,10 @@ const FREE_TEXT_MAX = 2000;
 // The mark a cut piece of text ends with, so a caller reads a shortened
 // reason as shortened rather than as the whole of it.
 const TEXT_CUT_MARK = " [cut at the bound]";
+
+// The most open entries the [GOAL QUEUE] block lists one per line. It rides
+// every external prompt, so past this many the rest are named by count.
+const GOAL_QUEUE_MAX_LINES = 12;
 
 // A caught error's message as untrusted text: the string carries whatever the
 // filesystem put in it, including a path a persona chose, so it is neutralized
@@ -2652,8 +2658,8 @@ export const register: Register = async (on, options) => {
       name: "goal_edit",
       description:
         "Change one node of the goal tree. drop marks a pending, paused or blocked node abandoned, so it is " +
-        "never activated, and refuses any other status; a drop is for work that will not be done. pause holds an active or pending node with a reason, and goal_resume " +
-        "continues it; reprioritize moves a pending node ahead of its siblings. Owner only.",
+        "never activated, and refuses any other status; a drop is for work that will not be done, or for a plan queued as paused by mistake that is then added again as pending, and it does not reach the node's children. pause holds an active or pending node with a reason, and goal_resume " +
+        "continues it; a pause is for stuck work that waits on someone, and queued work stays pending. reprioritize moves a pending node ahead of its siblings. Owner only.",
       inputSchema: {
         type: "object",
         properties: {
@@ -8077,7 +8083,7 @@ export const register: Register = async (on, options) => {
 
     if (arming === "reader") {
       // Section 6: a reader session owns no goal tree, so no [GOAL TREE],
-      // paused, [NO GOAL], [ENV], [LESSON] or [MEMORY] block is appended -
+      // [GOAL QUEUE], [NO GOAL], [ENV], [LESSON] or [MEMORY] block is appended -
       // the prompt reaches the model exactly as the harness delivered it.
       return r;
     }
@@ -8122,12 +8128,28 @@ export const register: Register = async (on, options) => {
       // L17: log each injected block.
       try { $.ui.log(`Agentic: [GOAL TREE] injected for ${activeNode.id}`); } catch { /* non-fatal */ }
     } else {
-      // M5: when the tree is paused, inject a one-line reminder.
-      const pausedNode = sess.state.goals.find((g) => g.status === "paused");
-      if (pausedNode) {
-        const pausedBlock = `Goal tree paused: ${pausedNode.blockedReason || "paused by controller"}. Call goal_resume to continue or goal_create with replace: true to replace.`;
-        contextBlocks.push(pausedBlock);
-        try { $.ui.log(`Agentic: [GOAL TREE paused] injected`); } catch { /* non-fatal */ }
+      // With no active entry, the [GOAL QUEUE] block lists every open entry
+      // in openGoals order with its status, so the model reads the whole
+      // queue rather than one entry's reason. Its last line says whether the
+      // controller will start anything by itself, which hasStartableWork
+      // decides from the controller's own walk.
+      const open = openGoals(sess.state);
+      if (open.length > 0) {
+        const listed = open.slice(0, GOAL_QUEUE_MAX_LINES);
+        const queueLines =
+          listed
+            .map((g) => `- ${g.status} ${g.kind} ${g.id} | ${g.title.slice(0, 40)}${g.blockedReason ? ` | ${g.blockedReason.slice(0, 60)}` : ""}\n`)
+            .join("") +
+          (open.length > listed.length ? `...and ${open.length - listed.length} more open ${open.length - listed.length === 1 ? "entry" : "entries"}.\n` : "");
+        const queueClose = hasStartableWork(sess.state)
+          ? `The next pending entry starts on the controller's next tick; do not start it by hand.`
+          : `Nothing here starts by itself: every open entry is paused, blocked or out of the controller's reach. Ask the operator or the coordinator which to release. On the operator's or the coordinator's word, resume a paused one with goal_resume or drop one with goal_edit.`;
+        const queueBlock =
+          `[GOAL QUEUE]\n` +
+          queueLines +
+          queueClose;
+        contextBlocks.push(queueBlock);
+        try { $.ui.log(`Agentic: [GOAL QUEUE] injected with ${open.length} open entries`); } catch { /* non-fatal */ }
       } else if (sess.state.goals.length === 0) {
         // Passive-supervisor plan item 2: with no goal at all (never created,
         // or the root already completed), an operator message phrased as a

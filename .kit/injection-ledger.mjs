@@ -867,10 +867,25 @@ function extractGoalTreeBlock(src) {
   return record("GOAL_TREE_BLOCK", "hooks/index.ts", literal);
 }
 
-function extractGoalTreePausedBlock(src) {
-  const m = /const pausedBlock = `([^`]*)`;/.exec(src);
-  if (!m) throw new Error("pausedBlock not found in hooks/index.ts");
-  return record("GOAL_TREE_PAUSED_BLOCK", "hooks/index.ts", m[1]);
+// The [GOAL QUEUE] block. `queueLines` is the entry lines and the count line,
+// per-entry data spliced whole, so it is declared to the chain reader by name
+// and not sized, the way the [GOAL TREE] block's siblingLine is. The closing
+// line is `queueClose`, a ternary declared just above the block whose two arms
+// are each a single template literal. Both arms are read from that
+// declaration and sized with the block, joined by a line break so each stays
+// its own sentence to the duplicate check, although a prompt carries one. A
+// declaration that has moved, or an arm that is not one template literal,
+// refuses.
+function extractGoalQueueBlock(src) {
+  const m = /const queueBlock =\s*\n([\s\S]*?);\n/.exec(src);
+  if (!m) throw new Error("queueBlock not found in hooks/index.ts");
+  const c = /const queueClose = hasStartableWork\(sess\.state\)\s*\n\s*\?\s*(`[^`]*`)\s*\n\s*:\s*(`[^`]*`);\n/.exec(src);
+  if (!c) throw new Error("the [GOAL QUEUE] queueClose ternary was not found in hooks/index.ts in the shape this rule reads");
+  const literal = literalOfTemplateChain(m[1], "GOAL_QUEUE_BLOCK", ["queueLines", "queueClose"])
+    + literalOfTemplateChain(c[1], "GOAL_QUEUE_BLOCK queueClose startable")
+    + "\n"
+    + literalOfTemplateChain(c[2], "GOAL_QUEUE_BLOCK queueClose idle");
+  return record("GOAL_QUEUE_BLOCK", "hooks/index.ts", literal);
 }
 
 // The [NO GOAL] reminder: fully literal, no interpolation at all, written as
@@ -924,7 +939,7 @@ function extractMemoryBlock(src) {
 // the build until a rule sizes it.
 const CONTEXT_BLOCKS = {
   goalBlock: "GOAL_TREE_BLOCK",
-  pausedBlock: "GOAL_TREE_PAUSED_BLOCK",
+  queueBlock: "GOAL_QUEUE_BLOCK",
   idleBlock: "NO_GOAL_BLOCK",
   envBlock: "ENV_BLOCK",
   lessonBlock: "LESSON_BLOCK",
@@ -1286,7 +1301,7 @@ function buildLedgerFrom(shSrc, tsSrc) {
     extractBackstopFrame(tsSrc),
     ...extractNudgeFrames(tsSrc),
     extractGoalTreeBlock(tsSrc),
-    extractGoalTreePausedBlock(tsSrc),
+    extractGoalQueueBlock(tsSrc),
     extractNoGoalBlock(tsSrc),
     extractEnvBlock(tsSrc),
     extractLessonBlock(tsSrc),

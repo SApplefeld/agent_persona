@@ -25,6 +25,24 @@ const HEARTBEAT_FILE = `${HARNESS_CWD}/.agentic-heartbeat.json`;
 const PERSONA_STORE_FILE = `${HARNESS_CWD}/.agentic-personas.json`;
 const YIELD_LOG_FILE = `${HARNESS_CWD}/.agentic-yields.log`;
 
+// Every distinct goal tree a persona store held in this process, whether a
+// case seeded it or the plugin wrote it, keyed by its JSON so each is kept
+// once. The tick suite checks the idle helper against the controller's walk
+// on each of them, so the check covers every fixture the suite builds
+// without each case having to register its tree.
+const storedGoalTrees = new Map();
+function recordStoredGoalTrees(p, text) {
+  if (typeof p !== "string" || !p.endsWith(".agentic-personas.json") || typeof text !== "string") return;
+  let store;
+  try { store = JSON.parse(text); } catch { return; }
+  if (!store || typeof store !== "object") return;
+  for (const state of Object.values(store)) {
+    if (!state || !Array.isArray(state.goals)) continue;
+    const key = JSON.stringify(state.goals);
+    if (!storedGoalTrees.has(key)) storedGoalTrees.set(key, state.goals);
+  }
+}
+
 // The home the decision journal and the question overrides resolve under.
 // Seeded into every fake's environment, because the plugin runs with the
 // seam's default mode and a host that can name no home turns every shadow
@@ -98,6 +116,8 @@ function createFake$(opts = {}) {
   // external turn, a continuation) passes its own `text`.
   const queuedTurnTexts = [];
   const fsMap = new Map();
+  const fsMapSet = fsMap.set.bind(fsMap);
+  fsMap.set = (p, text) => { recordStoredGoalTrees(p, text); return fsMapSet(p, text); };
   const storeMap = new Map();
   let classifyValue = opts.classifyValue || "nudge";
   const classifyCalls = [];
@@ -811,4 +831,5 @@ export {
   HEARTBEAT_FILE,
   PERSONA_STORE_FILE,
   YIELD_LOG_FILE,
+  storedGoalTrees,
 };
