@@ -1,0 +1,1 @@
+supervisor exited 6: parked, relaunched at the keeper's next start

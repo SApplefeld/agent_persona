@@ -40,17 +40,19 @@ $script:KeeperExit1ShortUptimeSeconds = 60
 Decides what the keeper does after one supervisor exit, from the exit code and the run's shape.
 
 .DESCRIPTION
-Implements the policy table: exit 0 holds; exit 1 relaunches after the base delay and holds once
-the consecutive short exit-1 count reaches the hold count; exit 2 relaunches after the base delay
-with the ladder untouched; 130 and 143 exit without relaunching; every other code relaunches after
-the current delay and doubles it up to the cap. A run that lasted the reset uptime or longer puts
-the ladder back at the base before the row is applied, so a persona that ran for an hour and then
-crashed waits the base delay, not whatever the ladder had climbed to.
+Implements the policy table: exit 0 holds; exit 6 parks; exit 1 relaunches after the base delay
+and holds once the consecutive short exit-1 count reaches the hold count; exit 2 relaunches after
+the base delay with the ladder untouched; 130 and 143 exit without relaunching; every other code
+relaunches after the current delay and doubles it up to the cap. A run that lasted the reset uptime
+or longer puts the ladder back at the base before the row is applied, so a persona that ran for an
+hour and then crashed waits the base delay, not whatever the ladder had climbed to.
 
-Returns a hashtable: Action is 'hold', 'relaunch' or 'exit'; DelaySeconds is how long to wait
-before the next launch (0 when not relaunching); NextDelaySeconds is the ladder value to carry into
-the next decision; NextExit1Count is the consecutive short exit-1 count to carry; Reason is one
-line of text with no newline, fit for the DECIDE log line and the hold marker.
+Returns a hashtable: Action is 'hold', 'park', 'relaunch' or 'exit'; DelaySeconds is how long to
+wait before the next launch (0 when not relaunching); NextDelaySeconds is the ladder value to carry
+into the next decision; NextExit1Count is the consecutive short exit-1 count to carry; Reason is one
+line of text with no newline, fit for the DECIDE log line and the hold and park markers. A park
+stops the wrapper as a hold does, and differs in that the wrapper's next start clears it and
+launches, where a hold stops every later start until it is released.
 #>
 function Get-KeeperDecision {
     param(
@@ -68,6 +70,12 @@ function Get-KeeperDecision {
             return @{
                 Action = 'hold'; DelaySeconds = 0; NextDelaySeconds = $delay; NextExit1Count = 0
                 Reason = 'supervisor exited 0: shutdown honored or stop complete'
+            }
+        }
+        6 {
+            return @{
+                Action = 'park'; DelaySeconds = 0; NextDelaySeconds = $delay; NextExit1Count = 0
+                Reason = "supervisor exited 6: parked, relaunched at the keeper's next start"
             }
         }
         1 {
@@ -175,8 +183,8 @@ at /<letter>, so D:/personas/dev/run and /d/personas/dev/run name the same direc
 only the second is absolute to it. Backslashes become forward slashes; a UNC path keeps its leading
 //server/share; a path already in the bash form, and anything with no drive letter, is returned
 with its separators normalized and nothing else changed. This converts arguments only: the wrapper's
-own keeper.log, keeper.hold and supervisor.out keep the Windows spelling the roster carries, which
-is what .NET resolves.
+own keeper.log, keeper.hold, keeper.park and supervisor.out keep the Windows spelling the roster
+carries, which is what .NET resolves.
 #>
 function ConvertTo-BashPath {
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)

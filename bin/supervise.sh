@@ -28,6 +28,8 @@
 #   4 = restart budget exhausted
 #   5 = stopped, but a process from the child is alive or unverifiable
 #       despite every retry
+#   6 = park_requested honored: the keeper's next start launches the persona
+#       again
 
 set -u
 set -o pipefail
@@ -3274,6 +3276,25 @@ while true; do
         fi
         exit 0
         ;;
+      stop_park)
+        log "STOP_PARK: $DECIDE_REASON"
+        stop_child "stop_park"
+        retry_stop_escalation "stop_park" $?
+        STOP_ESCALATION_RESULT=$?
+        wait "$CHILD_LAUNCH_PID"; EXIT_CODE=$?
+        CHILD_LAUNCH_PID=""
+        echo "$EXIT_CODE" > "$EXIT_MARKER"
+        log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
+        # Exit 6 is what the keeper reads as a park, and it launches the
+        # persona again at its next start. A tree that is alive or unverifiable
+        # outranks the park, as it outranks every other decide-path stop, and
+        # reports as exit 5.
+        if [ "${STOP_ESCALATION_RESULT:-0}" -ne 0 ]; then
+          log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable despite every stop retry (STOP_PATH=$STOP_PATH)"
+          exit 5
+        fi
+        exit 6
+        ;;
       stop_crash_loop)
         log "STOP_CRASH_LOOP: $DECIDE_REASON"
         stop_child "stop_crash_loop"
@@ -3440,6 +3461,32 @@ while true; do
       log "NOTE: child-$CHILD_INDEX leaves a process that is alive or a tree that could not be read, and the shutdown the operator asked for is still what this run reports"
     fi
     exit 0
+  fi
+
+  # A park is read next, the same way, and a shutdown read above outranks it.
+  # The child records park_requested and exits on its own, and the answer the
+  # keeper needs from that is exit 6, which is what writes the park marker so
+  # its next start launches the persona again.
+  PARK_REQUESTED_TS=$(get_fact "$WORKDIR" "$PERSONA" "park_requested")
+  if [ -n "$PARK_REQUESTED_TS" ] && [ "$PARK_REQUESTED_TS" -gt "$CHILD_START_TS" ]; then
+    log "STOP_PARK: park_requested at $PARK_REQUESTED_TS > child start $CHILD_START_TS"
+    # Swept here for the same reason the shutdown is: no relaunch follows in
+    # this run. Unlike the shutdown, a process left alive or a tree that could
+    # not be read ends the run at exit 5, as it does on every stop but the
+    # shutdown. The keeper relaunches on that code after its delay, which is
+    # what a park asks for anyway, and the next child meets the survivor at the
+    # pre-launch gate.
+    sweep_child_tree "park"
+    SWEEP_RC=$?
+    if [ "$SWEEP_RC" -eq 1 ] && [ -n "$LAST_STOP_SNAPSHOT" ]; then
+      retry_stop_escalation "park" "$SWEEP_RC"
+      SWEEP_RC=$?
+    fi
+    if [ "$SWEEP_RC" -eq 1 ]; then
+      log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable after every sweep retry"
+      exit 5
+    fi
+    exit 6
   fi
 
   # A child that exits on its own was never stopped, so nothing has looked at

@@ -190,8 +190,8 @@
     {
       "name": "supervisor_shutdown_description",
       "file": "hooks/index.ts",
-      "chars": 354,
-      "words": 62
+      "chars": 580,
+      "words": 102
     },
     {
       "name": "supervisor_restart_description",
@@ -226,8 +226,8 @@
     {
       "name": "fleet_status_description",
       "file": "hooks/index.ts",
-      "chars": 3795,
-      "words": 641
+      "chars": 3934,
+      "words": 664
     },
     {
       "name": "fleet_restart_description",

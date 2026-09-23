@@ -139,6 +139,91 @@ const cases = [
     },
     expected: 'continue',
   },
+  // park_requested newer than start, nothing else: stop_park (the persona
+  // parked for an update window, and the keeper's next start brings it back).
+  {
+    name: 'park_requested, no other signal: stop_park',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: null,
+      shutdownRequestedTs: null,
+      parkRequestedTs: 2000,
+      restartRequestedTs: null,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: null,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'stop_park',
+    expectedReasonIncludes: 'park_requested at 2000 > child start 1000',
+  },
+  // Both shutdown_requested and park_requested newer than start: a stop for
+  // good outranks a park, so the persona stays down.
+  {
+    name: 'shutdown_requested AND park_requested: stop_complete wins',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: null,
+      shutdownRequestedTs: 2000,
+      parkRequestedTs: 2500,
+      restartRequestedTs: null,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: null,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'stop_complete',
+  },
+  // Both park_requested and restart_requested newer than start: stopping the
+  // supervisor outranks relaunching its child, as it does for a shutdown.
+  {
+    name: 'park_requested AND restart_requested: stop_park wins',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: null,
+      shutdownRequestedTs: null,
+      parkRequestedTs: 2000,
+      restartRequestedTs: 2500,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: null,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'stop_park',
+  },
+  // park_requested older than childStartTs (the park an earlier supervisor
+  // honored, still in the decision log): must not park the relaunched child.
+  {
+    name: 'stale park_requested (older than child start): continue',
+    input: {
+      childExitCode: null,
+      rootCompleteTs: null,
+      shutdownRequestedTs: null,
+      parkRequestedTs: 500,
+      restartRequestedTs: null,
+      crashCount: 0,
+      restartCount: 0,
+      childStartTs: 1000,
+      childSessionId: 'sess-1',
+      heartbeatSessionId: 'sess-1',
+      heartbeatLastSeen: null,
+      launchedAt: 900,
+      staleAfterMs: 90000,
+    },
+    expected: 'continue',
+  },
   // Heartbeat lastSeen older than staleAfterMs, heartbeatSessionId = childSessionId, past grace: restart.
   {
     name: 'stale heartbeat, own session, past grace: restart',

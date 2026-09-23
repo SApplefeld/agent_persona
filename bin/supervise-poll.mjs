@@ -84,6 +84,7 @@ export function readStoreFacts(storePath, persona) {
     rootCompleteTs: null,
     rootCompleteBackfilled: false,
     shutdownRequestedTs: null,
+    parkRequestedTs: null,
     restartRequestedTs: null,
   };
   const store = storePath ? readJson(storePath) : null;
@@ -99,6 +100,7 @@ export function readStoreFacts(storePath, persona) {
   facts.rootCompleteTs = ts(root);
   facts.rootCompleteBackfilled = !!(root && typeof root.detail === 'string' && root.detail.includes('backfilled'));
   facts.shutdownRequestedTs = ts(newestDecision(decisions, is('shutdown_requested')));
+  facts.parkRequestedTs = ts(newestDecision(decisions, is('park_requested')));
   facts.restartRequestedTs = ts(newestDecision(decisions, is('restart_requested')));
   return facts;
 }
@@ -206,6 +208,7 @@ export function poll(argv) {
     childExitCode: null,
     rootCompleteTs: facts.rootCompleteTs,
     shutdownRequestedTs: facts.shutdownRequestedTs,
+    parkRequestedTs: facts.parkRequestedTs,
     restartRequestedTs,
     crashCount: intOr(crashCount, 0),
     crashLimit: intOr(crashLimit, 3),

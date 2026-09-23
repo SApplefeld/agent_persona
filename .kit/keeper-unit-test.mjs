@@ -131,6 +131,7 @@ function makeScenario({ codes, entry = {}, envLines, orphanSeconds, rundirName, 
     state: path.join(runDir, 'keeper.json'),
     out: path.join(runDir, 'supervisor.out'),
     hold: path.join(runDir, 'keeper.hold'),
+    park: path.join(runDir, 'keeper.park'),
   };
 }
 
@@ -194,6 +195,8 @@ function test(name, fn) {
 const decisionCases = [
   { name: 'exit 0 holds (row 0)', in: [0, 5, 300, 0], action: 'hold' },
   { name: 'exit 0 holds even after a long run', in: [0, 7200, 4800, 0], action: 'hold' },
+  { name: 'exit 6 parks with no delay, the ladder unchanged and the exit-1 count reset', in: [6, 5, 1200, 2], action: 'park', delay: 0, next: 1200, nextExit1: 0, reasonTokens: [/exited 6:/, /park/, /next start/] },
+  { name: 'exit 6 after a long run still parks rather than relaunching', in: [6, 7200, 4800, 0], action: 'park', delay: 0 },
   { name: 'exit 1 first short run relaunches after 300', in: [1, 5, 300, 0], action: 'relaunch', delay: 300, nextExit1: 1 },
   { name: 'exit 1 second short run relaunches, count 2', in: [1, 5, 300, 1], action: 'relaunch', delay: 300, nextExit1: 2 },
   { name: 'exit 1 third short run holds', in: [1, 59, 300, 2], action: 'hold', nextExit1: 3 },
@@ -239,7 +242,8 @@ const decisionCases = [
       if (c.next !== undefined) assert.equal(r.NextDelaySeconds, c.next, 'next delay');
       if (c.nextExit1 !== undefined) assert.equal(r.NextExit1Count, c.nextExit1, 'next exit-1 count');
       assert.ok(typeof r.Reason === 'string' && r.Reason.length > 0 && !/[\r\n]/.test(r.Reason), 'reason is one line');
-      if (c.action === 'hold') assert.equal(r.DelaySeconds, 0, 'a hold never carries a relaunch delay');
+      if (c.reasonTokens !== undefined) for (const t of c.reasonTokens) assert.match(r.Reason, t, 'reason names ' + t);
+      if (c.action === 'hold' || c.action === 'park') assert.equal(r.DelaySeconds, 0, 'a hold or a park never carries a relaunch delay');
     });
   });
 }
@@ -841,6 +845,129 @@ test('wrapper: a hold marker that cannot be written still exits 0, so the schedu
   assert.equal(decideLines(sc)[0].action, 'hold');
   assert.ok(lines.some((l) => l.startsWith('ERROR ') && l.includes('hold marker')), lines.join('\n'));
   assert.equal(lines.filter((l) => l.startsWith('LAUNCH ')).length, 1, 'no relaunch');
+});
+
+// A park is a hold the next start clears. The start that clears it is the keeper's own start, never
+// a timer, so these cases drive the wrapper twice over one run directory.
+test('wrapper: exit 6 writes keeper.park with the reason alone and exits 0; the next start removes it, logs UNPARK and launches', () => {
+  const sc = makeScenario({ codes: [6, 130] });
+  let r = runWrapper(sc);
+  assert.equal(r.status, 0, r.stderr);
+  const d = decideLines(sc);
+  assert.deepEqual(d.map((x) => [x.exit, x.action, x.delay]), [[6, 'park', 0]]);
+  assert.deepEqual(readText(sc.park).split(/\r?\n/).filter((l) => l.length > 0), [d[0].reason], 'the reason is the only line');
+  assertNoBom(sc.park);
+  const state = JSON.parse(readText(sc.state));
+  assert.equal(state.holdReason, d[0].reason);
+  assert.equal(state.lastExitCode, 6);
+  assert.ok(!fs.existsSync(sc.hold), 'a park writes no hold marker');
+  assert.equal(logLines(sc).filter((l) => l.startsWith('LAUNCH ')).length, 1, 'no relaunch after the park');
+  assert.equal(readText(sc.codesFile), '130\n', 'the stub did not run again');
+
+  // The next start: the park marker is removed and logged, then the stub is launched.
+  r = runWrapper(sc);
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!fs.existsSync(sc.park), 'the start removed the park marker');
+  const lines = logLines(sc);
+  const unparkAt = lines.indexOf('UNPARK ' + sc.park);
+  assert.ok(unparkAt >= 0, lines.join('\n'));
+  assert.ok(!lines.some((l) => l.startsWith('HOLD ')), 'a park marker is never read as a hold');
+  const launches = lines.map((l, i) => [l, i]).filter(([l]) => l.startsWith('LAUNCH '));
+  assert.equal(launches.length, 2, 'launched at the next start');
+  assert.ok(launches[1][1] > unparkAt, 'the launch follows the UNPARK line');
+  assert.equal(readText(sc.codesFile), '', 'the stub consumed its last code');
+});
+
+test('wrapper: a hold marker outranks a park marker, so the start logs HOLD, launches nothing and leaves both', () => {
+  const sc = makeScenario({ codes: [130] });
+  fs.mkdirSync(sc.runDir, { recursive: true });
+  fs.writeFileSync(sc.hold, 'held by the operator\n');
+  fs.writeFileSync(sc.park, 'parked earlier\n');
+  const r = runWrapper(sc);
+  assert.equal(r.status, 0, r.stderr);
+  const lines = logLines(sc);
+  assert.deepEqual(lines, ['HOLD held by the operator'], 'one HOLD line and nothing else');
+  assert.equal(readText(sc.hold), 'held by the operator\n', 'the hold marker is left as it was');
+  assert.equal(readText(sc.park), 'parked earlier\n', 'the park marker is left as it was');
+  assert.equal(readText(sc.codesFile), '130\n', 'the stub never ran');
+});
+
+test('wrapper: -Release removes a hold and a park marker with one RELEASE line each, a park alone with one, and neither as RELEASE none', () => {
+  const sc = makeScenario({ codes: [130] });
+  fs.mkdirSync(sc.runDir, { recursive: true });
+  fs.writeFileSync(sc.hold, 'held\n');
+  fs.writeFileSync(sc.park, 'parked\n');
+  let r = runWrapper(sc, ['-Release']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!fs.existsSync(sc.hold) && !fs.existsSync(sc.park), 'both markers removed');
+  assert.deepEqual(logLines(sc), ['RELEASE ' + sc.hold, 'RELEASE ' + sc.park]);
+
+  fs.writeFileSync(sc.park, 'parked\n');
+  r = runWrapper(sc, ['-Release']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!fs.existsSync(sc.park), 'the park marker removed');
+  assert.deepEqual(logLines(sc).slice(2), ['RELEASE ' + sc.park]);
+
+  r = runWrapper(sc, ['-Release']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(logLines(sc).slice(3), ['RELEASE none']);
+  assert.equal(readText(sc.codesFile), '130\n', 'no -Release launches');
+});
+
+test('wrapper: a park marker that cannot be written still exits 0 without relaunching', () => {
+  const sc = makeScenario({ codes: [6, 130] });
+  fs.mkdirSync(sc.runDir, { recursive: true });
+  // A directory where the marker file goes: the write fails, the decision does not change.
+  fs.mkdirSync(sc.park);
+  const r = runWrapper(sc);
+  assert.equal(r.status, 0, r.stderr);
+  const lines = logLines(sc);
+  assert.equal(decideLines(sc)[0].action, 'park');
+  assert.ok(lines.some((l) => l.startsWith("ERROR park marker '" + sc.park + "' could not be written: ")), lines.join('\n'));
+  assert.equal(lines.filter((l) => l.startsWith('LAUNCH ')).length, 1, 'no relaunch');
+  assert.ok(!fs.existsSync(sc.hold), 'no hold marker in its place');
+});
+
+test('wrapper: a park marker the start cannot remove is logged as an ERROR and the start launches anyway', () => {
+  const sc = makeScenario({ codes: [130] });
+  fs.mkdirSync(sc.runDir, { recursive: true });
+  fs.writeFileSync(sc.park, 'parked earlier\n');
+  // A second process holds the marker open without delete sharing, so Windows refuses its removal
+  // until that handle closes. The holder signals once the handle is open and closes it on request.
+  const ready = path.join(sc.dir, 'lock-ready');
+  const release = path.join(sc.dir, 'lock-release');
+  const closed = path.join(sc.dir, 'lock-closed');
+  const locker = path.join(sc.dir, 'lock.ps1');
+  fs.writeFileSync(locker, [
+    "$f = [System.IO.File]::Open('" + sc.park + "', 'Open', 'Read', 'Read')",
+    'try {',
+    "  [System.IO.File]::WriteAllText('" + ready + "', 'ready')",
+    "  for ($i = 0; $i -lt 600 -and -not (Test-Path -LiteralPath '" + release + "'); $i++) { Start-Sleep -Milliseconds 100 }",
+    '} finally { $f.Dispose() }',
+    "[System.IO.File]::WriteAllText('" + closed + "', 'closed')",
+    '',
+  ].join('\n'));
+  const holder = spawn('powershell.exe', [...psArgs, '-File', locker], { stdio: 'ignore' });
+  try {
+    waitForMarkers([ready]);
+    const r = runWrapper(sc);
+    assert.equal(r.status, 0, r.stderr);
+    const lines = logLines(sc);
+    assert.ok(lines.some((l) => l.startsWith("ERROR park marker '" + sc.park + "' could not be removed: ")), lines.join('\n'));
+    assert.ok(!lines.some((l) => l.startsWith('UNPARK ')), 'no UNPARK for a marker still there');
+    assert.ok(fs.existsSync(sc.park), 'the marker is still there, so the removal really failed');
+    assert.equal(lines.filter((l) => l.startsWith('LAUNCH ')).length, 1, 'launched anyway');
+    assert.equal(readText(sc.codesFile), '', 'the stub ran');
+  } finally {
+    fs.writeFileSync(release, 'go');
+    try {
+      waitForMarkers([closed]);
+    } finally {
+      let alive = true;
+      try { process.kill(holder.pid, 0); } catch { alive = false; }
+      if (alive) spawnSync('taskkill', ['/T', '/F', '/PID', String(holder.pid)]);
+    }
+  }
 });
 
 test('wrapper: a KEEPER_BASH_EXE written inside quotes launches, and the log says the quotes were taken off', () => {

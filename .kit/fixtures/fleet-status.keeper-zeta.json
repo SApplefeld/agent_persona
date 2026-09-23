@@ -1,0 +1,9 @@
+{
+  "persona": "zeta",
+  "launchCount": 5,
+  "lastStart": "2026-09-21T09:00:00.0000000Z",
+  "lastEnd": "2026-09-21T09:04:12.0000000Z",
+  "lastExitCode": 6,
+  "currentDelay": 300,
+  "holdReason": "supervisor exited 6: parked, relaunched at the keeper's next start"
+}

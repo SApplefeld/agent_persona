@@ -1007,18 +1007,21 @@ const writeOwnerHeartbeat = async (dp: any): Promise<void> => {
 const KEEPER_BASE_DELAY_SECONDS = 300;
 
 // One roster persona's line in the fleet report. The keeper half comes from
-// <rundir>/keeper.json and <rundir>/keeper.hold, the commons half from the
-// persona's own commons entry, and `note` carries whatever could not be read,
-// so an unreadable persona costs its own row's detail and not the report.
+// <rundir>/keeper.json and <rundir>/keeper.hold or keeper.park, the commons
+// half from the persona's own commons entry, and `note` carries whatever
+// could not be read, so an unreadable persona costs its own row's detail and
+// not the report.
 type FleetRow = {
   name: string;
   enabled: boolean;
   // Where this persona stands, from the process keeper's marker and state file
-  // qualified by whether a live session holds its commons claim. "held" is the
-  // marker that stops the next start, and it outranks the rest because it
-  // decides what happens next whatever is running now. "stopped" is a signalled
-  // exit (130 or 143), on which bin/keeper-functions.ps1 returns Action 'exit'
-  // and the wrapper leaves without relaunching and without writing a marker.
+  // qualified by whether a live session holds its commons claim. "held" is
+  // either marker deciding the next start, a keeper.hold stopping it or a
+  // keeper.park being cleared so it launches, and it outranks the rest
+  // because it decides what happens next whatever is running now. "stopped"
+  // is a signalled exit (130 or 143), on which bin/keeper-functions.ps1
+  // returns Action 'exit' and the wrapper leaves without relaunching and
+  // without writing a marker.
   // Under a live claim it holds only while that claim's heartbeat is older
   // than the exit, which is the exiting session still standing in the store.
   // "running" is a live claim under no marker and under no exit newer than the
@@ -1093,20 +1096,21 @@ const FLEET_RESTART_MIN_INTERVAL_MS = 15 * 60_000;
 // note for whoever reads that directory, not a record anything replays.
 const FLEET_RESTART_REASON_MAX = 200;
 
-// The keeper half of one row, read from the two files the process keeper
-// leaves in a run directory. keeper.hold decides the standing, because that
-// marker is what stops the next start from launching at all
-// (bin/Start-Persona.ps1 exits on it without running the supervisor);
-// keeper.json carries the ladder value for the next decision, the last
-// supervisor exit and the reason recorded for a hold. Every read is guarded on
-// its own, so a file that is missing or unreadable lands in the row's note and
-// the rest of the row still reports. Both text fields are held to the
-// plugin's free-text bound: a run directory sits inside its persona's own
-// writable tree, so the text in it is a persona's to write.
-// What comes back is a standing rather than the row's action: these two files
-// record what the keeper decided at the last supervisor exit and cannot say
-// whether the persona is up now, so fleetActionOf below settles the action
-// against the commons half.
+// The keeper half of one row, read from the three files the process keeper
+// leaves in a run directory. keeper.hold or keeper.park decides the standing,
+// because either marker is what bin/Start-Persona.ps1's next start reads
+// before it launches anything: a hold stops that start, a park clears itself
+// and lets it go on; keeper.json carries the ladder value for the next
+// decision, the last supervisor exit and the reason recorded for a hold or a
+// park. Every read is guarded on its own, so a file that is missing or
+// unreadable lands in the row's note and the rest of the row still reports.
+// Both text fields are held to the plugin's free-text bound: a run directory
+// sits inside its persona's own writable tree, so the text in it is a
+// persona's to write.
+// What comes back is a standing rather than the row's action: these three
+// files record what the keeper decided at the last supervisor exit and cannot
+// say whether the persona is up now, so fleetActionOf below settles the
+// action against the commons half.
 // lastEndMs rides with the standing because a signalled exit under a live
 // claim is settled against it: it is the epoch time of keeper.json's lastEnd,
 // the moment the last supervisor exit was recorded, and null when the file
@@ -1136,6 +1140,7 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<KeeperHal
   }
   const statePath = `${rundir}/keeper.json`;
   const holdPath = `${rundir}/keeper.hold`;
+  const parkPath = `${rundir}/keeper.park`;
   const notes: string[] = [];
   // Kept apart from the notes above it, rather than counted among them,
   // because it is the one note the health reduction reads past. It still rides
@@ -1177,6 +1182,35 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<KeeperHal
     }
   }
 
+  // keeper.park is checked and read only where hold reads "no": a confirmed
+  // hold marker already decides both the standing and the reason, and a hold
+  // check that threw already decides the standing as unknown, with its own
+  // note naming the marker that went unchecked, so a park marker sitting
+  // beside either one names nothing this row reports. Same three-state guard
+  // as the hold check. The park's first line fills the same
+  // holdReason/holdReasonSource pair the hold marker does, read only where no
+  // hold marker exists.
+  let park: "yes" | "no" | "unreadable" = "no";
+  if (hold === "no") {
+    try {
+      park = await dp.fs.exists(parkPath) === true ? "yes" : "no";
+    } catch (err) {
+      park = "unreadable";
+      notes.push(`the park marker '${parkPath}' could not be checked: ${safeErrorText(err)}`);
+    }
+    if (park === "yes") {
+      try {
+        const first = String(await dp.fs.read(parkPath)).split(LINE_TERMINATOR)[0].trim();
+        if (first !== "") {
+          holdReason = boundedText(bracketSafeText(first));
+          holdReasonSource = parkPath;
+        }
+      } catch (err) {
+        notes.push(`the park marker '${parkPath}' could not be read: ${safeErrorText(err)}`);
+      }
+    }
+  }
+
   let state: Record<string, unknown> | null = null;
   try {
     if (await dp.fs.exists(statePath)) {
@@ -1188,9 +1222,10 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<KeeperHal
       }
     } else {
       // Read before the push: the absence is the whole of this row's note only
-      // where nothing above it went unread. A hold marker whose check threw is
-      // the one reading that can stand beside it, and a persona whose marker
-      // went unchecked is one nobody can place whatever the state file says.
+      // where nothing above it went unread. A hold or park marker whose check
+      // or read failed is a reading that can stand beside it, and a persona
+      // whose marker went unchecked or unread is one nobody can place
+      // whatever the state file says.
       stateUnwritten = notes.length === 0;
       notes.push(`there is no keeper.json under '${rundir}': the process keeper has written no state for this persona`);
     }
@@ -1205,27 +1240,35 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<KeeperHal
   // will not take, both read as no stamp rather than as a time.
   const parsedEnd = typeof state?.lastEnd === "string" ? Date.parse(state.lastEnd) : Number.NaN;
   const lastEndMs = Number.isNaN(parsedEnd) ? null : parsedEnd;
-  // The marker's first line is the reason the keeper wrote for the operator;
-  // keeper.json's own holdReason stands in when the marker carries no text.
-  if (hold === "yes" && holdReason === null && typeof state?.holdReason === "string" && state.holdReason.trim() !== "") {
+  // The first line of whichever marker fired is the reason the keeper wrote
+  // for the operator; keeper.json's own holdReason stands in when that marker
+  // carries no text.
+  if ((hold === "yes" || park === "yes") && holdReason === null && typeof state?.holdReason === "string" && state.holdReason.trim() !== "") {
     holdReason = boundedText(bracketSafeText(state.holdReason.trim()));
     holdReasonSource = statePath;
   }
-  // The marker is what stops the next start, so it decides over the exit code.
-  // A marker check that threw decides next, because every standing below it is
-  // a statement that no marker is there. That case reaches the reader in the
-  // row's note and not in its action: the standing it produces is "unknown",
-  // which fleetActionOf does not outrank a live claim with, so a persona that
-  // is up reads running and the note names the marker that went unchecked.
+  // Either marker decides the next start, so either one outranks the exit
+  // code: keeper.hold stops it and keeper.park is cleared so it launches, and
+  // both read "held" here. holdReasonSource still names which file fed the
+  // reason, keeper.hold or keeper.park, and the keeper's own reason text
+  // names a park where one is in force; on the keeper.json fallback the
+  // source reads keeper.json either way. A marker check that threw decides
+  // next, because every standing below it is a statement that no marker is
+  // there.
+  // That case reaches the reader in the row's note and not in its action: the
+  // standing it produces is "unknown", which fleetActionOf does not outrank a
+  // live claim with, so a persona that is up reads running and the note names
+  // the marker that went unchecked.
   // A signalled exit with no marker is a persona the keeper left down at the
   // moment it was recorded: exit 130 and 143 return Action 'exit' in
   // bin/keeper-functions.ps1, on which the wrapper neither waits nor
-  // relaunches. Everything else is read from the ladder, which climbs above the
-  // base only after a crash-class exit.
+  // relaunches. Short of a marker or a signalled exit, the standing is read
+  // from the ladder, which climbs above the base only after a crash-class
+  // exit.
   const signalled = lastExitCode === 130 || lastExitCode === 143;
-  const standing: KeeperStanding = hold === "yes"
+  const standing: KeeperStanding = hold === "yes" || park === "yes"
     ? "held"
-    : hold === "unreadable"
+    : hold === "unreadable" || park === "unreadable"
       ? "unknown"
       : signalled
         ? "stopped"
@@ -1322,9 +1365,10 @@ function fleetCommonsOf(
 // healthy persona as backing off indefinitely. A live claim therefore reads as
 // running, whatever ladder that file records. "held" outranks the claim all
 // the same, because the marker is a statement about what happens next rather
-// than about what is running now: the keeper will not start this persona
-// again, and a session still holding the claim under it is the session that is
-// going away.
+// than about what is running now: a keeper.hold means the keeper will not
+// start this persona again, a keeper.park means the next start clears it and
+// launches the persona anyway, and either way a session still holding the
+// claim under it is the session that is going away.
 // A signalled exit is settled against the clock, because that same file is
 // written at an exit and never at a launch: lastExitCode 143 stands in
 // keeper.json for the whole of the next run, so treating it as outranking the
@@ -1518,7 +1562,7 @@ const readFleetRows = async (
 // persona whose relaunch ladder has climbed and one whose keeper state could
 // not be read both read running there and would both reduce to healthy. This
 // reads nextDelaySeconds and note beside action for that reason.
-// The order settles a row that satisfies more than one class. The hold marker
+// The order settles a row that satisfies more than one class. A marker
 // decides first, because it says what happens next whatever is running now.
 // The ladder decides next, above the base being a keeper that has escalated,
 // except on the one exit the keeper never relaunches from. Then what the
@@ -2622,15 +2666,20 @@ export const register: Register = async (on, options) => {
       name: "supervisor_shutdown",
       description:
         "Stop the supervisor itself, not just the current goal: the child exits by the graceful " +
-        "EOF path once this turn ends. Call it only on the operator's explicit ask to stop for " +
-        "good. A finished goal needs no call here: goal_done already returns the supervisor to " +
-        "its passive waiting state. Owner only.",
+        "EOF path once this turn ends. park: true parks for an update window and the keeper's next " +
+        "start brings the persona back; without it the call stops for good and is made only on the " +
+        "operator's explicit ask. A finished goal needs no call here: goal_done already returns the supervisor " +
+        "to its passive waiting state. Owner only.",
       inputSchema: {
         type: "object",
         properties: {
           reason: {
             type: "string",
             description: "reason is optional: why the operator asked to shut down.",
+          },
+          park: {
+            type: "boolean",
+            description: "park: true parks for a restart: the supervisor exits on the park code and the keeper's next start relaunches it.",
           },
         },
       },
@@ -2780,8 +2829,10 @@ export const register: Register = async (on, options) => {
         "enabled is whether the roster enables the persona, lastExitCode is the last supervisor exit code, claimHeld is whether a " +
         "live session holds the persona's commons claim, heartbeatAgeMs is that session's heartbeat age in milliseconds and an age " +
         "past staleAfterMs is a persona nothing live is holding, and turnState is whether that session is inside a turn. " +
-        "action is where the persona stands with its process keeper. held: a marker stops its next start, reported even " +
-        "while a session still holds the persona. stopped: the last supervisor exit was signalled and nothing has come up since, " +
+        "action is where the persona stands with its process keeper. held: a marker in its run directory decides its next " +
+        "start, a hold marker stopping it and a park marker being cleared so the persona launches, and holdReasonSource says " +
+        "which; reported even while a session still holds the persona. " +
+        "stopped: the last supervisor exit was signalled and nothing has come up since, " +
         "so nothing restarts this persona until its scheduled task runs again. running: a live session holds the persona's " +
         "claim under no marker, which outranks the keeper's state file. backing off: the keeper's relaunch delay has " +
         "climbed above the base after a crash. relaunching: that delay still sits at the base. unknown: its keeper state could " +
@@ -7348,21 +7399,31 @@ export const register: Register = async (on, options) => {
 
     // Serve supervisor_shutdown (plan item 4: distinct from root_complete;
     // supervise.sh's decide unit only exits the whole loop on this signal).
+    // park: true writes park_requested in place of shutdown_requested, so the
+    // supervisor exits on the park code and the keeper's next start launches
+    // the persona again rather than holding it for a hand release.
     if (e.tool === "mcp__agentic-plugin__supervisor_shutdown") {
       if (!sess.isOwner) {
         toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
       }
-      const reason = String((e as any).reason || "").trim() || "operator requested shutdown";
+      // Arguments can arrive stringified, so the string "true" counts. Any
+      // other value is a stop.
+      const rawPark = (e as any).park;
+      const park = rawPark === true || rawPark === "true";
+      const reason = String((e as any).reason || "").trim() || (park ? "operator requested park" : "operator requested shutdown");
       const now = Date.now();
       sess.state.decisions.push({
         timestamp: now,
         loop: "monitor",
-        action: "shutdown_requested",
+        action: park ? "park_requested" : "shutdown_requested",
         detail: reason,
       });
       const writeOk = await persist($);
       if (writeOk) {
+        if (park) {
+          return { result: `Park requested: ${reason}. The supervisor will stop after this turn ends, and the keeper's next start launches this persona again.` };
+        }
         return { result: `Shutdown requested: ${reason}. The supervisor will stop after this turn ends.` };
       }
       toolErrorsThisTurn++;
