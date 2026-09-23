@@ -190,8 +190,8 @@
     {
       "name": "supervisor_shutdown_description",
       "file": "hooks/index.ts",
-      "chars": 596,
-      "words": 105
+      "chars": 580,
+      "words": 102
     },
     {
       "name": "supervisor_restart_description",

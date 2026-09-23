@@ -2617,8 +2617,8 @@ export const register: Register = async (on, options) => {
       description:
         "Stop the supervisor itself, not just the current goal: the child exits by the graceful " +
         "EOF path once this turn ends. park: true parks for an update window and the keeper's next " +
-        "start brings the persona back; without it the call stops for good and needs the operator's " +
-        "explicit ask. A finished goal needs no call here: goal_done already returns the supervisor " +
+        "start brings the persona back; without it the call stops for good and is made only on the " +
+        "operator's explicit ask. A finished goal needs no call here: goal_done already returns the supervisor " +
         "to its passive waiting state. Owner only.",
       inputSchema: {
         type: "object",
@@ -2629,7 +2629,7 @@ export const register: Register = async (on, options) => {
           },
           park: {
             type: "boolean",
-            description: "park: true parks for a restart: the supervisor exits on the park code and the keeper's next start relaunches it. Omit it to stop for good.",
+            description: "park: true parks for a restart: the supervisor exits on the park code and the keeper's next start relaunches it.",
           },
         },
       },
