@@ -6,18 +6,21 @@
 # The wrapper reads the persona's roster entry, applies the env file's allowlisted keys to its own
 # process, launches bin/supervise.sh through the bash the env file names, and loops on
 # Get-KeeperDecision (bin/keeper-functions.ps1) over the supervisor's exit code: relaunch after a
-# delay, hold, or exit. Before each launch it looks for a supervisor already running for the
+# delay, hold, park, or exit. Before each launch it looks for a supervisor already running for the
 # persona, and where it finds one it waits on that one instead of launching (ADOPT in keeper.log).
 # State the operator can read lives under the entry's run directory:
 # keeper.log (one line per event, rotated at 5 MB keeping keeper.log.1), keeper.json (the last
-# run's facts), supervisor.out (the supervisor's own stdout and stderr, appended per launched run) and
-# keeper.hold (present while the persona is held; -Release removes it). A refusal that happens
-# before the roster has named a run directory goes to keeper-refused.log beside the roster file,
-# the only place known at that point, because a scheduled task has no console for stderr to reach.
+# run's facts), supervisor.out (the supervisor's own stdout and stderr, appended per launched run),
+# keeper.hold (present while the persona is held; -Release removes it) and keeper.park (present
+# while the persona is parked; the next start removes it, logs UNPARK and launches, and -Release
+# removes it too). A hold marker outranks a park marker: a start that finds both logs HOLD, leaves
+# both in place and launches nothing. A refusal that happens before the roster has named a run
+# directory goes to keeper-refused.log beside the roster file, the only place known at that point,
+# because a scheduled task has no console for stderr to reach.
 #
-# Exit codes of the wrapper itself: 0 when the policy said hold or exit, or when -Release ran, or
-# when a hold marker was already present; 1 on a fault of the wrapper's own (an unknown flag, a
-# roster or env file that cannot be read, a supervisor that cannot be launched). Task
+# Exit codes of the wrapper itself: 0 when the policy said hold, park or exit, or when -Release
+# ran, or when a hold marker was already present; 1 on a fault of the wrapper's own (an unknown
+# flag, a roster or env file that cannot be read, a supervisor that cannot be launched). Task
 # Scheduler's restart-on-failure setting is the backstop for the 1s.
 #
 # [CmdletBinding()] is what makes an unknown switch a binding error (exit 1) rather than a value
@@ -30,7 +33,7 @@ param(
     [string]$Name,
     [string]$Roster = 'D:/personas/fleet.json',
     [string]$EnvFile = 'D:/personas/keeper.env',
-    # Removes the hold marker and exits without launching.
+    # Removes the hold and park markers and exits without launching.
     [switch]$Release,
     # Multiplies every sleep between relaunches. The DECIDE line still records the unscaled delay.
     # Exists so the unit test can walk the doubling ladder in seconds; a task never passes it. A
@@ -610,23 +613,30 @@ try {
 }
 $script:LogPath = Join-Path $runDir 'keeper.log'
 $holdPath = Join-Path $runDir 'keeper.hold'
+$parkPath = Join-Path $runDir 'keeper.park'
 $statePath = Join-Path $runDir 'keeper.json'
 $outputPath = Join-Path $runDir 'supervisor.out'
 
 if ($Release) {
-    if (Test-Path -LiteralPath $holdPath -PathType Leaf) {
+    # The hold marker first, then the park marker, one RELEASE line for each file removed. A marker
+    # that cannot be removed is a fault of the wrapper's own and ends the release there.
+    $released = 0
+    foreach ($marker in @(@{ Path = $holdPath; Kind = 'hold' }, @{ Path = $parkPath; Kind = 'park' })) {
+        if (-not (Test-Path -LiteralPath $marker.Path -PathType Leaf)) { continue }
         try {
-            Remove-Item -LiteralPath $holdPath -Force -ErrorAction Stop
+            Remove-Item -LiteralPath $marker.Path -Force -ErrorAction Stop
         } catch {
-            Stop-KeeperWithError "hold marker '$holdPath' could not be removed: $($_.Exception.Message)"
+            Stop-KeeperWithError "$($marker.Kind) marker '$($marker.Path)' could not be removed: $($_.Exception.Message)"
         }
-        Write-KeeperLog "RELEASE $holdPath"
-    } else {
-        Write-KeeperLog 'RELEASE none'
+        Write-KeeperLog "RELEASE $($marker.Path)"
+        $released++
     }
+    if ($released -eq 0) { Write-KeeperLog 'RELEASE none' }
     exit 0
 }
 
+# A hold marker is read first and stops the start whether or not a park marker stands beside it, so
+# a persona the operator stopped never comes back because it was also parked.
 if (Test-Path -LiteralPath $holdPath -PathType Leaf) {
     $reason = 'unreadable'
     try {
@@ -637,6 +647,18 @@ if (Test-Path -LiteralPath $holdPath -PathType Leaf) {
     }
     Write-KeeperLog "HOLD $reason"
     exit 0
+}
+
+# A park marker is cleared by the start and never stops it. One that cannot be removed is logged
+# and the start launches anyway, because the next park or hold overwrites or outranks it.
+if (Test-Path -LiteralPath $parkPath -PathType Leaf) {
+    try {
+        Remove-Item -LiteralPath $parkPath -Force -ErrorAction Stop
+        Write-KeeperLog "UNPARK $parkPath"
+    } catch {
+        Write-KeeperLog "ERROR park marker '$parkPath' could not be removed: $($_.Exception.Message)"
+        [Console]::Error.WriteLine("Start-Persona: park marker '$parkPath' could not be removed: $($_.Exception.Message)")
+    }
 }
 
 # The env file is the source of KEEPER_BASH_EXE. When it is absent, a value already on the process
@@ -709,8 +731,10 @@ while ($true) {
     }
 
     $decision = Get-KeeperDecision -ExitCode $run.ExitCode -UptimeSeconds $run.UptimeSeconds -PreviousDelaySeconds $delay -ConsecutiveExit1Count $exit1Count
+    # A park records its reason in the same field a hold does, so a reader of keeper.json finds why
+    # the persona is down in one place whichever marker the decision writes.
     $holdReason = $null
-    if ($decision.Action -eq 'hold') { $holdReason = $decision.Reason }
+    if ($decision.Action -eq 'hold' -or $decision.Action -eq 'park') { $holdReason = $decision.Reason }
     Write-KeeperState -Path $statePath -State @{
         persona = $personaName
         launchCount = $launchCount
@@ -744,6 +768,20 @@ while ($true) {
                 # without the marker the next start launches again.
                 Write-KeeperLog "ERROR hold marker '$holdPath' could not be written: $($_.Exception.Message)"
                 [Console]::Error.WriteLine("Start-Persona: hold marker '$holdPath' could not be written: $($_.Exception.Message)")
+            }
+            exit 0
+        }
+        'park' {
+            # The reason is the only line. The marker stops nothing: the next start removes it and
+            # launches, so it exists to tell that start, and the fleet reading, that the persona
+            # parked rather than stopped.
+            try {
+                [System.IO.File]::WriteAllLines($parkPath, [string[]]@($decision.Reason), $script:Utf8NoBom)
+            } catch {
+                # Exit 0 for the reason a hold marker that cannot be written exits 0. Without the
+                # marker the next start launches, which is what a park asks for anyway.
+                Write-KeeperLog "ERROR park marker '$parkPath' could not be written: $($_.Exception.Message)"
+                [Console]::Error.WriteLine("Start-Persona: park marker '$parkPath' could not be written: $($_.Exception.Message)")
             }
             exit 0
         }
