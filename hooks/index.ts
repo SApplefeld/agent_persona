@@ -8143,7 +8143,7 @@ export const register: Register = async (on, options) => {
           (open.length > listed.length ? `...and ${open.length - listed.length} more open ${open.length - listed.length === 1 ? "entry" : "entries"}.\n` : "");
         const queueClose = hasStartableWork(sess.state)
           ? `The next pending entry starts on the controller's next tick; do not start it by hand.`
-          : `Nothing here starts by itself: every open entry is paused or blocked. Resume one with goal_resume, drop one with goal_edit, or ask the operator.`;
+          : `Nothing here starts by itself: every open entry is paused or blocked, or waits under one that is. Resume one with goal_resume, drop one with goal_edit, or ask the operator.`;
         const queueBlock =
           `[GOAL QUEUE]\n` +
           queueLines +

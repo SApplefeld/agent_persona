@@ -18151,7 +18151,7 @@ async function caseGtc4_thePausedReminderNamesReplaceTrue(clock) {
 // The two closing sentences the queue block ends on, written out here rather
 // than read from the plugin, so a drift in either is a failure.
 const IQ_STARTABLE_LINE = "The next pending entry starts on the controller's next tick; do not start it by hand.";
-const IQ_IDLE_LINE = "Nothing here starts by itself: every open entry is paused or blocked. Resume one with goal_resume, drop one with goal_edit, or ask the operator.";
+const IQ_IDLE_LINE = "Nothing here starts by itself: every open entry is paused or blocked, or waits under one that is. Resume one with goal_resume, drop one with goal_edit, or ask the operator.";
 
 // The context blocks one external prompt carries.
 async function iqPromptBlocks(h) {
