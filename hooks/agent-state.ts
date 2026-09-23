@@ -632,16 +632,22 @@ function applyPlanRecordOnLoad(state: AgentState): void {
 
 // The idle-proposal record, filled at every load site that fills the
 // long-term goal list, for a store written before it existed, with no
-// version bump. A field of the wrong type reads as never asked and nothing
-// sent.
+// version bump. An askedAt that is not a finite number reads as never asked,
+// so a NaN cannot hold the interval check false for good. A stored sent entry
+// is kept only where its text and writer are strings, its seq a finite number
+// and its delivered a boolean; anything else reads as nothing sent.
 function fillProposal(state: AgentState): void {
   const p = state.monitor.proposal as Partial<MonitorState["proposal"]> | null | undefined;
   if (!p || typeof p !== "object") {
     state.monitor.proposal = { askedAt: 0, sent: null };
     return;
   }
-  if (typeof p.askedAt !== "number") p.askedAt = 0;
-  if (!p.sent || typeof p.sent !== "object") p.sent = null;
+  if (!Number.isFinite(p.askedAt)) p.askedAt = 0;
+  const s = p.sent as Partial<SentProposal> | null | undefined;
+  const wellFormed = !!s && typeof s === "object"
+    && typeof s.text === "string" && typeof s.writer === "string"
+    && Number.isFinite(s.seq) && typeof s.delivered === "boolean";
+  if (!wellFormed) p.sent = null;
 }
 
 export function parseState(json: string): AgentState {

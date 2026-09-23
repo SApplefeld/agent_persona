@@ -420,6 +420,15 @@ type ExpectedTurn = { text: string; settledText?: string } & ({ kind: "delivery"
 // [PROPOSE] turns, counted from monitor.proposal.askedAt.
 export const PROPOSAL_EVERY_MS = 24 * 3_600_000;
 
+// One line of the [KAIZEN] thread message. The text comes out of the
+// persona's store, so its line breaks are folded and it passes through
+// bracketSafeText, which turns '[' and ']' into '(' and ')' so the text
+// cannot forge a delivery label. The fleet report and the fleet prompt apply
+// the same helper to the text they carry.
+function kaizenLine(text: string): string {
+  return bracketSafeText(text.split(LINE_TERMINATOR).join(" "));
+}
+
 // The [PROPOSE] frame. Each long-term goal's title and objective is text the
 // persona wrote, so each is folded onto one line, cut at the lengths
 // goal_longterm stores, and passed through bracketSafeText, so a stored goal
@@ -2234,6 +2243,17 @@ export const register: Register = async (on, options) => {
   const expectedTurns: ExpectedTurn[] = [];
   const expectTurn = (entry: ExpectedTurn): ExpectedTurn => { expectedTurns.push(entry); return entry; };
   const unexpectTurn = (entry: ExpectedTurn): void => removeExpectedTurn(expectedTurns, entry);
+  // Submits the [KAIZEN] thread message, one plugin turn carrying each line
+  // kaizenLine made, for what has no coordinator persona to reach: the
+  // self-review's unroutable findings and the idle proposal's unroutable
+  // resend. A refused announcement is non-fatal: the decision log still
+  // carries each line's cause, and its ledger entry reads delivered.
+  const submitKaizen = async (dp: any, announced: string[]): Promise<void> => {
+    const kaizenText =
+      `[KAIZEN] Send each line below to the operator through the reply tool as written, then continue your work:\n` +
+      announced.map((line) => `- ${line}`).join("\n");
+    await submitExpectedTurn(dp, expectedTurns, expectTurn({ kind: "plugin", text: kaizenText }));
+  };
   // What the turn now running opened as, set at turn.start from the entry
   // its text matched ("unaccounted" for one that matched none, whether
   // external, a continuation or unknown) and read at turn.complete.
@@ -4608,16 +4628,11 @@ export const register: Register = async (on, options) => {
         const now = Date.now();
 
         // Lines for the [KAIZEN] thread message, which carries only the
-        // findings that have no coordinator persona to reach. The body of a
-        // routed node or of a ledger entry is text out of the persona's store,
-        // so every line has its line breaks folded and passes through
-        // bracketSafeText, which turns '[' and ']' into '(' and ')' so the text
-        // cannot forge a delivery label. The fleet report and the fleet prompt
-        // apply the same helper to the text they carry. No line names a node
-        // id.
+        // findings that have no coordinator persona to reach. Each line is
+        // made safe by kaizenLine. No line names a node id.
         const announced: string[] = [];
         const announce = (line: string, signal: string): void => {
-          announced.push(bracketSafeText(`${line} (${signal})`.split(LINE_TERMINATOR).join(" ")));
+          announced.push(kaizenLine(`${line} (${signal})`));
         };
         // A finding's text below its [FINDING] line, for an announcement made
         // from a ledger entry.
@@ -4901,14 +4916,7 @@ export const register: Register = async (on, options) => {
           await persist($);
         }
 
-        if (announced.length > 0) {
-          const kaizenText =
-            `[KAIZEN] Send each line below to the operator through the reply tool as written, then continue your work:\n` +
-            announced.map((line) => `- ${line}`).join("\n");
-          // A refused announcement is non-fatal: the decision log still
-          // carries each finding, and its ledger entry reads delivered.
-          await submitExpectedTurn($, expectedTurns, expectTurn({ kind: "plugin", text: kaizenText }));
-        }
+        if (announced.length > 0) await submitKaizen($, announced);
       }
 
       // 2b. Git probe (E4, C6): time-based cadence, fire-and-forget.
@@ -5266,9 +5274,19 @@ export const register: Register = async (on, options) => {
         // its goals, which it sends to the coordinator persona as a
         // [PROPOSAL] record and does not start. The coordinator persona is
         // never asked, since a session cannot message the persona it owns. A
-        // reader session never reaches this line: the tick's owner check
-        // returns first.
-        if (sess.persona === coordinatorPersona) return;
+        // session on the default persona is never asked either: it has no
+        // road to a coordinator persona, and it is refused here as the
+        // finding path refuses it, so it is not asked every day for a message
+        // it cannot send. A reader session never reaches this line: the
+        // tick's owner check returns first.
+        if (sess.persona === coordinatorPersona || sess.persona === "default") return;
+        // The open-turn reading is taken again here rather than trusted from
+        // the top of the tick, as the self-review block does before its settle
+        // step. The awaits above leave room for a turn to open, and an
+        // agentic_say in it and a resend below each read the highest sequence
+        // and then write under this session's id, so the two could take one
+        // sequence number. The settle and the ask wait for the next quiet tick.
+        if (turnIsOpen()) return;
         const proposal = sess.state.monitor.proposal;
         const proposalNow = Date.now();
         let proposalChanged = false;
@@ -5279,8 +5297,15 @@ export const register: Register = async (on, options) => {
         // 24-hour rule: a record that reads delivered, answered, resolved or
         // absent settles the entry, and one that reads skipped is sent again
         // with the same text under this session, taking the new writer and
-        // seq.
+        // seq. A resend the reach rule refuses has no road, so the entry is
+        // settled once in the finding's unroutable form, an empty writer and
+        // a seq of 0, proposal_unroutable is logged, and the proposal is
+        // announced on this persona's own thread through the [KAIZEN] frame,
+        // as an unroutable finding is. A resend whose reach check or store
+        // write throws leaves the entry as it was, and the next tick that
+        // reaches this line tries again.
         const sentProposal = proposal.sent;
+        let unroutableLine: string | null = null;
         if (sentProposal && !sentProposal.delivered) {
           const rec = await readInboxRecord(commonsStoreOf($), coordinatorPersona, sentProposal.writer, sentProposal.seq);
           if (rec === null || rec.status === "delivered" || rec.status === "answered" || rec.status === "resolved") {
@@ -5290,20 +5315,37 @@ export const register: Register = async (on, options) => {
             proposalChanged = true;
             try {
               if (!await mayReachPersona(commonsStoreOf($), coordinatorPersona, sess.mySessionId, coordinatorPersona, architectPersona, sess.staleAfterMs)) {
-                throw new Error(`the reach rule refuses this session's write to '${coordinatorPersona}'`);
+                sentProposal.writer = "";
+                sentProposal.seq = 0;
+                sentProposal.delivered = true;
+                unroutableLine = kaizenLine(sentProposal.text);
+                sess.state.decisions.push({
+                  timestamp: proposalNow,
+                  loop: "monitor",
+                  action: "proposal_unroutable",
+                  detail: `record ${rec.id} to '${coordinatorPersona}' was skipped and is not sent again: the reach rule refuses this session's write to '${coordinatorPersona}'; announced on this persona's own thread`,
+                });
+              } else {
+                // The open-turn reading is taken once more, since a turn can
+                // have opened under the record read and the reach check. A
+                // turn that opens after this line and writes before the resend
+                // does is the race docs/backlog.md files under two writers
+                // taking one inbox sequence number.
+                if (turnIsOpen()) return;
+                const again = await sendPluginRecord(commonsStoreOf($), coordinatorPersona, sess.mySessionId, sentProposal.text);
+                sentProposal.writer = again.writer;
+                sentProposal.seq = again.seq;
+                sess.state.decisions.push({
+                  timestamp: proposalNow,
+                  loop: "monitor",
+                  action: "proposal_sent",
+                  detail: `record ${again.id} to '${coordinatorPersona}' (sent again, the earlier record was skipped)`,
+                });
               }
-              const again = await sendPluginRecord(commonsStoreOf($), coordinatorPersona, sess.mySessionId, sentProposal.text);
-              sentProposal.writer = again.writer;
-              sentProposal.seq = again.seq;
-              sess.state.decisions.push({
-                timestamp: proposalNow,
-                loop: "monitor",
-                action: "proposal_sent",
-                detail: `record ${again.id} to '${coordinatorPersona}' (sent again, the earlier record was skipped)`,
-              });
             } catch (err) {
-              // The entry is left as it was, so the next tick that reaches
-              // this line reads the skipped record and tries again.
+              // A thrown reach check or store write: the entry is left as it
+              // was, so the next tick that reaches this line reads the skipped
+              // record and tries again.
               sess.state.decisions.push({
                 timestamp: proposalNow,
                 loop: "monitor",
@@ -5312,6 +5354,13 @@ export const register: Register = async (on, options) => {
               });
             }
           }
+        }
+        // The settled entry is written before the announcement is submitted,
+        // since the submit does not resolve until the session is next idle.
+        if (unroutableLine !== null) {
+          sess.state.updatedAt = Date.now();
+          await persist($);
+          await submitKaizen($, [unroutableLine]);
         }
 
         // The ask. askedAt is stamped before the submit, for the reason the

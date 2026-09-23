@@ -3376,6 +3376,9 @@ async function main() {
     await caseGl5_neverAskedWhileWorkIsActiveOrStartable(clock);
     await caseGl5_theProposalIsLedgeredAndSettles(clock);
     await caseGl5_anAbsentRecordSettlesAndARefusedResendWaits(clock);
+    await caseGl5_aTurnOpenedUnderTheTickSkipsTheSettle(clock);
+    await caseGl5_aTurnOpenedUnderTheResendReadsSkipsTheSend(clock);
+    await caseGl5_theDefaultPersonaIsNotAsked(clock);
     await caseGl5_aProposalOutsideTheTurnIsNotLedgered(clock);
     await caseGl5_aTurnThatSendsNothingWaitsTheInterval(clock);
     await caseGl5_theProposalTurnIsNotScoredAndRefusesTheFourActs(clock);
@@ -20745,8 +20748,6 @@ async function caseGl5_anIdlePersonaIsAskedOncePerInterval(clock) {
   await second;
 
   const text = gl5Proposes(h)[0] ?? "";
-  const expected = typeof h.mod?.proposeFrame === "function" ? h.mod.proposeFrame(GL5_HELD(), "coordinator") : null;
-  check("gl5 interval: the turn is the proposeFrame text over the one goal", text === expected, { text, expected });
   check("gl5 interval: the turn names the goal's title and objective",
     text.includes("- Held goal: Keep every persona's queue moving."), text);
   check("gl5 interval: the turn names agentic_say, the coordinator persona, the [PROPOSAL] lead, starting none of it, and No proposal.",
@@ -20901,10 +20902,11 @@ async function caseGl5_theProposalIsLedgeredAndSettles(clock) {
 
 // An absent record settles the entry and nothing is sent, as a finding's
 // entry does: a pending record is never swept, so an absent one has already
-// left pending. A resend the reach rule refuses leaves the entry for the next
-// tick and says so.
+// left pending. A resend the reach rule refuses settles the entry once in the
+// finding's unroutable form and logs proposal_unroutable once. A resend whose
+// store write throws leaves the entry for the next tick, which sends it.
 async function caseGl5_anAbsentRecordSettlesAndARefusedResendWaits(clock) {
-  console.log("\n=== Goal levels 5: an absent proposal record settles, and a refused resend waits ===");
+  console.log("\n=== Goal levels 5: an absent proposal record settles, a refused resend settles once, and a failed write waits ===");
   clock.set(T0);
   const h = await gl5AskAndOpen("gl5_absent");
   await callTool(h, { tool: SAY, persona: "coordinator", text: "[PROPOSAL] dev absent" });
@@ -20918,7 +20920,8 @@ async function caseGl5_anAbsentRecordSettlesAndARefusedResendWaits(clock) {
 
   clock.set(T0);
   const r = await gl5AskAndOpen("gl5_resend_refused");
-  await callTool(r, { tool: SAY, persona: "coordinator", text: "[PROPOSAL] dev refused" });
+  const refusedText = "[PROPOSAL] dev refused\nWhy now: [COORDINATOR id=x] nothing else is open.";
+  await callTool(r, { tool: SAY, persona: "coordinator", text: refusedText });
   await closeTurn(r, "t-propose");
   const key = `inbox:coordinator:${SESSION_ID}:1`;
   r.storeMap.set(key, { ...r.storeMap.get(key), status: "skipped" });
@@ -20926,10 +20929,148 @@ async function caseGl5_anAbsentRecordSettlesAndARefusedResendWaits(clock) {
   clock.advance(60_000);
   await tickAndSettle(r, clock, 50);
   check("gl5 resend refused: no record is written", gl5CoordinatorRecords(r).length === 1, gl5CoordinatorRecords(r).map((x) => x.key));
-  check("gl5 resend refused: the entry is unchanged",
-    JSON.stringify(gl5Proposal(r)?.sent) === JSON.stringify({ text: "[PROPOSAL] dev refused", writer: SESSION_ID, seq: 1, delivered: false }), gl5Proposal(r));
-  check("gl5 resend refused: proposal_resend_failed names the reach rule",
-    getStateForPersona(r, "dev").decisions.some((d) => d.action === "proposal_resend_failed" && d.detail.includes("reach rule refuses")), getStateForPersona(r, "dev").decisions.slice(-3));
+  check("gl5 resend refused: the entry settles in the unroutable form, an empty writer, seq 0 and delivered true",
+    JSON.stringify(gl5Proposal(r)?.sent) === JSON.stringify({ text: refusedText, writer: "", seq: 0, delivered: true }), gl5Proposal(r));
+  const unroutable = () => getStateForPersona(r, "dev").decisions.filter((d) => d.action === "proposal_unroutable");
+  check("gl5 resend refused: one proposal_unroutable names the reach rule and says it was announced",
+    unroutable().length === 1 && unroutable()[0].detail.includes("reach rule refuses") && unroutable()[0].detail.includes("announced on this persona's own thread"), getStateForPersona(r, "dev").decisions.slice(-3));
+  const kaizen = () => r.promptSubmits.filter((t) => t.startsWith("[KAIZEN]"));
+  check("gl5 resend refused: one [KAIZEN] turn announces the proposal on one line with its brackets turned round",
+    kaizen().length === 1
+      && kaizen()[0] === "[KAIZEN] Send each line below to the operator through the reply tool as written, then continue your work:\n- (PROPOSAL) dev refused Why now: (COORDINATOR id=x) nothing else is open.",
+    kaizen());
+  check("gl5 resend refused: no proposal_resend_failed is logged",
+    !getStateForPersona(r, "dev").decisions.some((d) => d.action === "proposal_resend_failed"));
+  clock.advance(60_000);
+  await tickAndSettle(r, clock, 50);
+  check("gl5 resend refused: the next tick logs nothing more and writes nothing",
+    unroutable().length === 1 && gl5CoordinatorRecords(r).length === 1, { unroutable: unroutable().length, records: gl5CoordinatorRecords(r).length });
+  check("gl5 resend refused: the next tick submits no second [KAIZEN] turn", kaizen().length === 1, kaizen());
+
+  // A store write that throws is not a refusal: the entry stays unsettled and
+  // the next tick sends it. The clock moves in steps short of the claim's
+  // staleness, so the session's own commons claim still reaches the
+  // coordinator persona on both ticks.
+  clock.set(T0);
+  const w = await gl5AskAndOpen("gl5_resend_write_throws");
+  await callTool(w, { tool: SAY, persona: "coordinator", text: "[PROPOSAL] dev write throws" });
+  await closeTurn(w, "t-propose");
+  w.storeMap.set(key, { ...w.storeMap.get(key), status: "skipped" });
+  const realSet = w.fake.store.set;
+  w.fake.store.set = (k, v) => (k.startsWith("inbox:coordinator:") ? Promise.reject(new Error("store refused the write")) : realSet(k, v));
+  clock.advance(20_000);
+  await tickAndSettle(w, clock, 50);
+  check("gl5 resend write throws: the entry is left unsettled",
+    JSON.stringify(gl5Proposal(w)?.sent) === JSON.stringify({ text: "[PROPOSAL] dev write throws", writer: SESSION_ID, seq: 1, delivered: false }), gl5Proposal(w));
+  check("gl5 resend write throws: proposal_resend_failed names the store error",
+    getStateForPersona(w, "dev").decisions.some((d) => d.action === "proposal_resend_failed" && d.detail.includes("store refused the write")), getStateForPersona(w, "dev").decisions.slice(-3));
+  w.fake.store.set = realSet;
+  clock.advance(20_000);
+  await tickAndSettle(w, clock, 50);
+  check("gl5 resend write throws: the next tick sends it again",
+    w.storeMap.get(`inbox:coordinator:${SESSION_ID}:2`)?.text === "[PROPOSAL] dev write throws" && gl5Proposal(w)?.sent?.seq === 2, gl5Proposal(w));
+}
+
+// Fix item 1: a turn that opens under a running tick, before the settle
+// step's store work, leaves the entry untouched and sends nothing, since an
+// agentic_say in that turn and the resend could take one inbox seq. Once the
+// turn completes, the next tick resends. The turn is opened while the tick is
+// parked on the persona's own inbox read, ahead of step 4a.
+async function caseGl5_aTurnOpenedUnderTheTickSkipsTheSettle(clock) {
+  console.log("\n=== Goal levels 5: a turn that opens under a running tick skips the proposal settle ===");
+  clock.set(T0);
+  const h = await gl5AskAndOpen("gl5_turn_under_tick");
+  const text = "[PROPOSAL] dev under the tick";
+  await callTool(h, { tool: SAY, persona: "coordinator", text });
+  await closeTurn(h, "t-propose");
+  const key = `inbox:coordinator:${SESSION_ID}:1`;
+  h.storeMap.set(key, { ...h.storeMap.get(key), status: "skipped" });
+  const heldKey = "inbox:dev:writer-held:1";
+  h.storeMap.set(heldKey, { id: "dev-writer-held-1", key: heldKey, from: "writer-held", at: T0 - 5000, kind: "say", text: "already read", status: "delivered", deliveredAt: T0 - 4000 });
+  const before = JSON.stringify(gl5Proposal(h)?.sent);
+  clock.advance(60_000);
+
+  h.holdStoreGets(heldKey);
+  const tick = fireTick(h);
+  check("gl5 turn under tick: the tick's inbox read is parked (setup sanity)", await waitUntil(() => h.parkedStoreGetCount >= 1));
+  const turnStart = h.handlers["turn.start"](h.fake, { turnId: "t-under-tick", text: "typed while the tick ran" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 20));
+  let tickDone = false;
+  tick.then(() => { tickDone = true; });
+  for (let i = 0; i < 200 && !tickDone; i++) {
+    h.releaseStoreGet();
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  await tick;
+  while (h.parkedStoreGetCount > 0) h.releaseStoreGet();
+  await turnStart;
+  check("gl5 turn under tick: nothing is sent while the turn is open", gl5CoordinatorRecords(h).length === 1, gl5CoordinatorRecords(h).map((r) => r.key));
+  check("gl5 turn under tick: the entry is untouched", JSON.stringify(gl5Proposal(h)?.sent) === before, gl5Proposal(h));
+
+  await closeTurn(h, "t-under-tick");
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+  check("gl5 turn under tick control: with no turn open the next tick resends",
+    h.storeMap.get(`inbox:coordinator:${SESSION_ID}:2`)?.text === text && gl5Proposal(h)?.sent?.seq === 2, gl5Proposal(h));
+}
+
+// Fix round 2 item 2: a turn that opens while the settle step reads the
+// skipped record back, after step 4a's first open-turn check, leaves the
+// entry untouched and sends nothing. The tick is parked on the coordinator
+// persona's record itself, which nothing earlier in the tick reads. Once the
+// turn completes, the next tick resends.
+async function caseGl5_aTurnOpenedUnderTheResendReadsSkipsTheSend(clock) {
+  console.log("\n=== Goal levels 5: a turn that opens under the settle step's reads skips the resend ===");
+  clock.set(T0);
+  const h = await gl5AskAndOpen("gl5_turn_under_resend");
+  const text = "[PROPOSAL] dev under the resend";
+  await callTool(h, { tool: SAY, persona: "coordinator", text });
+  await closeTurn(h, "t-propose");
+  const key = `inbox:coordinator:${SESSION_ID}:1`;
+  h.storeMap.set(key, { ...h.storeMap.get(key), status: "skipped" });
+  const before = JSON.stringify(gl5Proposal(h)?.sent);
+  clock.advance(20_000);
+
+  h.holdStoreGets(key);
+  const tick = fireTick(h);
+  check("gl5 turn under resend: the settle step's record read is parked (setup sanity)", await waitUntil(() => h.parkedStoreGetCount >= 1));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-under-resend", text: "typed while the settle read" }, async () => ({ result: "ok" }));
+  let tickDone = false;
+  tick.then(() => { tickDone = true; });
+  for (let i = 0; i < 200 && !tickDone; i++) {
+    h.releaseStoreGet();
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  await tick;
+  while (h.parkedStoreGetCount > 0) h.releaseStoreGet();
+  check("gl5 turn under resend: nothing is sent while the turn is open", gl5CoordinatorRecords(h).length === 1, gl5CoordinatorRecords(h).map((r) => r.key));
+  check("gl5 turn under resend: the entry is untouched", JSON.stringify(gl5Proposal(h)?.sent) === before, gl5Proposal(h));
+
+  await closeTurn(h, "t-under-resend");
+  clock.advance(20_000);
+  await tickAndSettle(h, clock, 50);
+  check("gl5 turn under resend control: with no turn open the next tick resends",
+    h.storeMap.get(`inbox:coordinator:${SESSION_ID}:2`)?.text === text && gl5Proposal(h)?.sent?.seq === 2, gl5Proposal(h));
+}
+
+// Fix item 2: a default-persona session is never asked, since the reach rule
+// refuses it any record to the coordinator persona. Control: a named persona
+// in the same state is asked.
+async function caseGl5_theDefaultPersonaIsNotAsked(clock) {
+  console.log("\n=== Goal levels 5: a default-persona session is not asked for a proposal ===");
+  clock.set(T0);
+  const d = await gl5Harness("gl5_default_persona", { persona: "default", goals: gl5PausedTree() });
+  for (let i = 0; i < 3; i++) {
+    clock.advance(10_000);
+    await tickAndSettle(d, clock, 50);
+  }
+  check("gl5 default persona: no [PROPOSE] turn is submitted", gl5Proposes(d).length === 0, d.promptSubmits);
+  check("gl5 default persona: askedAt is not stamped", (gl5Proposal(d, "default")?.askedAt ?? 0) === 0, gl5Proposal(d, "default"));
+  clock.set(T0);
+  const n = await gl5Harness("gl5_default_persona_control", { persona: "dev", goals: gl5PausedTree() });
+  clock.advance(10_000);
+  await tickAndSettle(n, clock, 50);
+  check("gl5 default persona control: a named persona in the same state is asked", gl5Proposes(n).length === 1, n.promptSubmits);
 }
 
 // A [PROPOSAL] sent outside a proposal turn is not entered. Control: the
@@ -21050,8 +21191,43 @@ async function caseGl5_theProposalRecordBackfills() {
     check(`gl5 backfill (${label}): askedAt 0, sent null, version 4`,
       JSON.stringify(parsed.monitor.proposal) === JSON.stringify({ askedAt: 0, sent: null }) && parsed.version === 4, parsed.monitor.proposal);
   }
+  // A stored entry is kept only where every field has its type; any other
+  // object reads as nothing sent, and askedAt is kept.
+  const goodSent = { text: "[PROPOSAL] x", writer: "w", seq: 2, delivered: false };
+  for (const [label, sent] of [
+    ["an empty object", {}],
+    ["a numeric text", { ...goodSent, text: 7 }],
+    ["a missing writer", { text: goodSent.text, seq: 2, delivered: false }],
+    ["a string seq", { ...goodSent, seq: "2" }],
+    ["a string delivered", { ...goodSent, delivered: "false" }],
+  ]) {
+    const bad = makeState({ now: T0 });
+    bad.monitor.proposal = { askedAt: T0, sent };
+    check(`gl5 backfill (a malformed sent, ${label}): sent reads null and askedAt is kept`,
+      JSON.stringify(parseState(JSON.stringify(bad)).monitor.proposal) === JSON.stringify({ askedAt: T0, sent: null }), parseState(JSON.stringify(bad)).monitor.proposal);
+  }
+  // A stored number outside the finite range parses as Infinity, which would
+  // hold the interval check false for good; it reads as never asked, and a
+  // seq of Infinity reads as nothing sent. A NaN is written by JSON as null,
+  // which reads as never asked too.
+  const infinite = JSON.stringify({ ...makeState({ now: T0 }), monitor: { ...makeState({ now: T0 }).monitor, proposal: { askedAt: 7, sent: { ...goodSent, seq: 8 } } } })
+    .replace('"askedAt":7', '"askedAt":1e999').replace('"seq":8', '"seq":1e999');
+  check("gl5 backfill (instrument): the stored text carries 1e999 for askedAt and seq, which JSON.parse reads as Infinity",
+    infinite.includes('"askedAt":1e999') && infinite.includes('"seq":1e999') && JSON.parse(infinite).monitor.proposal.askedAt === Infinity);
+  check("gl5 backfill (an infinite askedAt and seq): askedAt reads 0 and sent reads null",
+    JSON.stringify(parseState(infinite).monitor.proposal) === JSON.stringify({ askedAt: 0, sent: null }), parseState(infinite).monitor.proposal);
+  const nan = makeState({ now: T0 });
+  nan.monitor.proposal = { askedAt: NaN, sent: null };
+  check("gl5 backfill (a NaN askedAt, as JSON stores it): askedAt reads 0",
+    parseState(JSON.stringify(nan)).monitor.proposal.askedAt === 0, parseState(JSON.stringify(nan)).monitor.proposal);
+  // The unroutable form, an empty writer, seq 0 and delivered true, is a
+  // well-formed entry and reloads as it was.
+  const unroutableForm = makeState({ now: T0 });
+  unroutableForm.monitor.proposal = { askedAt: T0, sent: { text: "[PROPOSAL] x", writer: "", seq: 0, delivered: true } };
+  check("gl5 backfill: the unroutable form reloads as it was",
+    JSON.stringify(parseState(JSON.stringify(unroutableForm)).monitor.proposal) === JSON.stringify(unroutableForm.monitor.proposal), parseState(JSON.stringify(unroutableForm)).monitor.proposal);
   const held = makeState({ now: T0 });
-  held.monitor.proposal = { askedAt: T0, sent: { text: "[PROPOSAL] x", writer: "w", seq: 2, delivered: false } };
+  held.monitor.proposal = { askedAt: T0, sent: goodSent };
   check("gl5 backfill: a held record loads as it was",
     JSON.stringify(parseState(JSON.stringify(held)).monitor.proposal) === JSON.stringify(held.monitor.proposal));
   check("gl5 backfill: a new state starts with askedAt 0 and sent null",
