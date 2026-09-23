@@ -116,7 +116,7 @@ The steward polls nothing. The controller tick starts no turn on a persona holdi
 
 - **Modules** (Memory, Monitor, Goal scorer) observe at hook boundaries and write to `AgentState`. They **never** steer, redirect, or actuate.
 - **Controller** is the sole actor. It runs on `$.clock.every`, applies the idle gate, builds a compressed summary of shared state, sends it to `$.model.classify` for the decision (classify *cannot* return anything else : this is the architectural enforcement), optionally calls `$.model.complete` for a reason (only when the decision is not `nudge`), logs it, **then** actuates.
-- **Exactly three actuators**, controller-only: context injection (always on, free), `$.prompt.submit` nudge (floor + cap gated), `$.ui.toast` ask-operator.
+- **Exactly three actuators**, controller-only: context injection (always on, free; it carries the goal blocks, `[GOAL QUEUE]` among them), `$.prompt.submit` nudge (floor + cap gated), `$.ui.toast` ask-operator.
 
 ### Controller decision
 
@@ -183,6 +183,8 @@ Three goal tools do more than their descriptions state, and this section is for 
 **`goal_add`.** A node whose parent is a complete or abandoned root reopens that root. The root returns to pending with its blocked reason cleared, and one `root_reopened` decision is logged before the node is added. A refused add reopens nothing, and no other node changes. A node added under a plan leaves the root as it is, so a task added under a finished plan stays pending and out of reach. The supervisor reads no `root_reopened`, and `docs/backlog.md` records what that costs.
 
 **`goal_done`.** With no `nodeId` it completes the active leaf. With a `nodeId` it completes that entry by name. It refuses an id not in the tree, the root, an entry already complete or abandoned, and an entry with a child that is neither. Otherwise it completes the entry through `completeLeaf`, clears the entry's blocked reason, nudge-cap pause and lead, and logs a `done` decision marked "by name". The round and score credit go only to an entry that was the active one when the call arrived. Where it was, the next entry is activated as the call with no `nodeId` activates one. Another active entry stays active. Where no entry was active, the next one is activated unless an open operator ask or a nudge-cap pause holds the tree. An open ask on any entry the call completed, the named one or a plan `completeLeaf`'s walk finished above it, closes with status `resumed`, as `goal_resume` closes one. Each ancestor above the entry carrying the reason `Child task blocked` is freed in turn. A complete one loses the reason, with a `reason_cleared` decision. A blocked one with no child still blocked returns to pending, with an `unblocked` decision. The walk stops below the root, and at the first ancestor it leaves unchanged. The tool's own description is the caller's contract.
+
+**Queued work stays pending.** An entry queued behind the current one is added as `pending` and ordered with `goal_edit`'s `reprioritize`. The plugin starts the next pending entry by itself once the current one completes. `pause` is for an entry that cannot proceed until someone acts, and a paused entry starts again only on `goal_resume`. When no entry is active, the `[GOAL QUEUE]` block lists every open entry in order and says whether anything will start without a word from anyone. Its last line reads "Nothing here starts by itself" when every open entry is paused or blocked.
 
 ### C4: Clock is enough
 

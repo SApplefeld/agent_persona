@@ -2659,7 +2659,7 @@ export const register: Register = async (on, options) => {
       description:
         "Change one node of the goal tree. drop marks a pending, paused or blocked node abandoned, so it is " +
         "never activated, and refuses any other status; a drop is for work that will not be done. pause holds an active or pending node with a reason, and goal_resume " +
-        "continues it; reprioritize moves a pending node ahead of its siblings. Owner only.",
+        "continues it; a pause is for stuck work that waits on someone, and queued work stays pending. reprioritize moves a pending node ahead of its siblings. Owner only.",
       inputSchema: {
         type: "object",
         properties: {

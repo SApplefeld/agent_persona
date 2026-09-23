@@ -22,8 +22,8 @@
     {
       "name": "COORDINATOR_ROLE_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 5528,
-      "words": 967
+      "chars": 5939,
+      "words": 1039
     },
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
@@ -40,14 +40,14 @@
     {
       "name": "PRIMING_BODY_channel_wait",
       "file": "bin/supervise.sh",
-      "chars": 226,
-      "words": 40
+      "chars": 258,
+      "words": 46
     },
     {
       "name": "PRIMING_BODY_no_channel_wait",
       "file": "bin/supervise.sh",
-      "chars": 253,
-      "words": 44
+      "chars": 285,
+      "words": 50
     },
     {
       "name": "GOAL_PROMPT_FRAMING",
@@ -202,8 +202,8 @@
     {
       "name": "goal_edit_description",
       "file": "hooks/index.ts",
-      "chars": 498,
-      "words": 85
+      "chars": 578,
+      "words": 100
     },
     {
       "name": "memory_add_description",
