@@ -146,6 +146,22 @@ export interface SentFinding {
   delivered: boolean;
 }
 
+// A long-term goal: the idea a persona is working towards. It is held in a
+// list beside the goal tree, not as a node in it, and no tree walker reads
+// that list, so a long-term goal is never activated and never holds a root
+// open. goal_longterm adds and drops entries, and goal_create leaves the list
+// as it is.
+export interface LongTermGoal {
+  id: string;
+  title: string;
+  objective: string;
+  createdAt: number;
+}
+
+// The most long-term goals a persona holds at once. The list is shown in a
+// prompt, so it is kept short, and goal_longterm refuses an add past it.
+export const LONG_TERM_GOAL_CAP = 5;
+
 export interface MonitorState {
   sessionStart: number;
   turnCount: number;
@@ -303,6 +319,7 @@ export interface AgentState {
   memory: MemoryEntry[];
   goals: GoalNode[];
   activeGoalId: string | null;
+  longTermGoals: LongTermGoal[]; // beside the tree, never in it; see LongTermGoal
   monitor: MonitorState;
   nudge: NudgeBudget;
   pendingAskId?: string; // D5: ask-operator wait
@@ -402,6 +419,7 @@ export function createDefaultState(persona: string, sessionId: string): AgentSta
     memory: [],
     goals: [],
     activeGoalId: null,
+    longTermGoals: [],
     monitor: {
       sessionStart: now,
       turnCount: 0,
@@ -685,6 +703,7 @@ export function parseState(json: string): AgentState {
       memory: old.memory ?? [],
       goals,
       activeGoalId,
+      longTermGoals: [],
       monitor: old.monitor ?? {
         sessionStart: now,
         turnCount: 0,
@@ -718,6 +737,9 @@ export function parseState(json: string): AgentState {
     if (!state.nudge) {
       state.nudge = { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 };
     }
+    if (!Array.isArray(state.longTermGoals)) {
+      state.longTermGoals = [];
+    }
     applyPlanRecordOnLoad(state);
     enforceInvariants(state);
     return state;
@@ -741,6 +763,12 @@ export function parseState(json: string): AgentState {
       health: null,
       errors: { consecutiveErrorTurns: 0, toolErrorsLastTurn: 0 },
     };
+  }
+
+  // The long-term goal list, filled empty at the E11 site for a store written
+  // before it existed, with no version bump.
+  if (!Array.isArray(state.longTermGoals)) {
+    state.longTermGoals = [];
   }
 
   // S12: fill selfReview with defaults at the E11 site, no version bump.

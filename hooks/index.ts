@@ -45,9 +45,10 @@ import {
   planHolderOf,
   openGoals,
   hasStartableWork,
+  LONG_TERM_GOAL_CAP,
 } from "./agent-state";
 import { readPlanRecord } from "./plan-record";
-import type { AgentState, FleetHealth, FleetHealthMemo, GoalNode, NudgeBudget, EnvGit, EnvState, SentFinding } from "./agent-state";
+import type { AgentState, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding } from "./agent-state";
 import {
   claimResource,
   readAllClaims,
@@ -2729,6 +2730,42 @@ export const register: Register = async (on, options) => {
           },
         },
         required: ["nodeId", "action"],
+      },
+    }));
+
+    await registerTool("goal_longterm", () => $.tool.register({
+      name: "goal_longterm",
+      description:
+        "Hold or let go of a long-term goal: the idea this persona is working towards, kept beside the goal tree and " +
+        "listed by goal_status. A long-term goal is never the active work and never starts by itself. " +
+        "add holds a new one and returns its id; at most 5 are held, and an add past that is refused. " +
+        "drop lets one go by its id and records the reason. An edit is a drop and an add. " +
+        "Refused outside a turn the operator or the coordinator persona started. Owner only.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            description: 'action is "add" or "drop".',
+          },
+          title: {
+            type: "string",
+            description: "title is the goal in one line. Required for add.",
+          },
+          objective: {
+            type: "string",
+            description: "objective is what the persona is working towards. Required for add.",
+          },
+          id: {
+            type: "string",
+            description: "id names the long-term goal to drop, as goal_status lists it. Required for drop.",
+          },
+          reason: {
+            type: "string",
+            description: "reason says why it is dropped, and is recorded. Required for drop.",
+          },
+        },
+        required: ["action"],
       },
     }));
 
@@ -7338,6 +7375,94 @@ export const register: Register = async (on, options) => {
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
+    // Serve goal_longterm: add or drop one entry of the long-term goal list.
+    // The list sits beside the tree, so nothing here reads or writes goals or
+    // activeGoalId. Each change logs a decision, and a drop's decision
+    // carries its reason.
+    if (e.tool === "mcp__agentic-plugin__goal_longterm") {
+      if (sess.stateNotLoaded !== null) {
+        toolErrorsThisTurn++;
+        return { deny: stateNotLoadedText(sess.stateNotLoaded) };
+      }
+      if (!sess.isOwner) {
+        toolErrorsThisTurn++;
+        return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+      }
+      const action = String((e as any).action || "").trim();
+      if (action !== "add" && action !== "drop") {
+        toolErrorsThisTurn++;
+        return { deny: 'goal_longterm requires action "add" or "drop".' };
+      }
+      const list = sess.state.longTermGoals;
+      const now = Date.now();
+      let resultText: string;
+
+      if (action === "add") {
+        const title = String((e as any).title || "").trim();
+        const objective = String((e as any).objective || "").trim();
+        if (!title || !objective) {
+          toolErrorsThisTurn++;
+          return { deny: "goal_longterm add requires non-empty 'title' and 'objective'." };
+        }
+        if (list.length >= LONG_TERM_GOAL_CAP) {
+          toolErrorsThisTurn++;
+          return {
+            deny:
+              `goal_longterm add refused: ${list.length} long-term goals are held and the cap is ${LONG_TERM_GOAL_CAP}. ` +
+              `Drop one with goal_longterm drop first.`,
+          };
+        }
+        // The node id form with its own prefix, so a long-term id never reads
+        // as a root, plan or task id.
+        const entry: LongTermGoal = {
+          id: `lt-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+          title,
+          objective,
+          createdAt: now,
+        };
+        list.push(entry);
+        sess.state.decisions.push({
+          timestamp: now,
+          loop: "goal",
+          action: "longterm_added",
+          detail: `${entry.id} "${title}"`,
+        });
+        resultText = `Long-term goal added: ${entry.id} "${title}".`;
+      } else {
+        const id = String((e as any).id || "").trim();
+        const reason = String((e as any).reason || "").trim();
+        const index = id ? list.findIndex((g) => g.id === id) : -1;
+        if (index === -1) {
+          toolErrorsThisTurn++;
+          const held = list.length > 0 ? list.map((g) => g.id).join(", ") : "none";
+          return {
+            deny:
+              `goal_longterm drop needs the id of a held long-term goal, and ` +
+              `${id ? `"${id.slice(0, 50)}" is not one` : "no id was given"}. Held: ${held}.`,
+          };
+        }
+        if (!reason) {
+          toolErrorsThisTurn++;
+          return { deny: "goal_longterm drop requires a non-empty 'reason', which is recorded." };
+        }
+        const [dropped] = list.splice(index, 1);
+        sess.state.decisions.push({
+          timestamp: now,
+          loop: "goal",
+          action: "longterm_dropped",
+          detail: `${dropped.id} "${dropped.title}": ${reason}`,
+        });
+        resultText = `Long-term goal dropped: ${dropped.id} "${dropped.title}".`;
+      }
+
+      const writeOk = await persist($);
+      if (writeOk) {
+        return { result: resultText };
+      }
+      toolErrorsThisTurn++;
+      return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+    }
+
     // Serve goal_done (R3: use completeLeaf + activateNext). With no nodeId it
     // completes the active leaf. With a nodeId it completes that entry by
     // name, where the entry is not the root, is not already complete or
@@ -7570,8 +7695,16 @@ export const register: Register = async (on, options) => {
         return { result: stateNotLoadedText(sess.stateNotLoaded) };
       }
       const root = sess.state.goals.find((g) => g.parentId === null);
+      // The long-term goals print one line each, so any line break a title or
+      // objective carries is joined into a space.
+      const oneLine = (text: string) => text.split(LINE_TERMINATOR).join(" ");
+      const longTerm = sess.state.longTermGoals;
+      const longTermLines = longTerm.length === 0
+        ? ["Long-term goals: (none)"]
+        : ["Long-term goals:", ...longTerm.map((g) => `  ${g.id} "${oneLine(g.title)}": ${oneLine(g.objective)}`)];
       if (!root) {
-        return { result: "No goal tree exists." };
+        // With no tree, the list is shown only where it holds an entry.
+        return { result: longTerm.length === 0 ? "No goal tree exists." : ["No goal tree exists.", ...longTermLines].join("\n") };
       }
       const lines: string[] = [];
       const statusOf = (id: string) => {
@@ -7589,6 +7722,7 @@ export const register: Register = async (on, options) => {
         }
       };
       render(root.id, "  ");
+      lines.push(...longTermLines);
       return { result: lines.join("\n") };
     }
 

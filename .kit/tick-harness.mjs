@@ -704,6 +704,11 @@ function makeState(opts = {}) {
   if (opts.selfReview) {
     state.monitor.selfReview = opts.selfReview;
   }
+  // The long-term goal list, set only where a case passes one, so the
+  // default state keeps the shape of a store written before the list existed.
+  if (opts.longTermGoals) {
+    state.longTermGoals = opts.longTermGoals;
+  }
   return state;
 }
 

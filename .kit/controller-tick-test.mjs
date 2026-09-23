@@ -23,6 +23,7 @@ import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, f
 import { DECISIONS_MAX, MEMORY_MAX, PLAN_PATH_PATTERN, PLAN_PATH_TEXT_PATTERN, isActivationEligible, parseState, resolvePlanPath } from "../hooks/agent-state.ts";
 import * as AgentState from "../hooks/agent-state.ts";
 import { FINDING_COOLOFF_MS } from "../hooks/self-review.ts";
+import { readFileSync } from "node:fs";
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -3350,6 +3351,15 @@ async function main() {
     await caseKeeperPark1_noParkWritesShutdownRequested(clock);
     await caseKeeperPark1_parkFromANonOwnerIsRefused(clock);
     await caseKeeperPark1_aRefusedPersistDeniesThePark(clock);
+    await caseLtg_anAddReturnsAnIdAndGoalStatusShowsIt(clock);
+    await caseLtg_goalStatusWithNoTree(clock);
+    await caseLtg_eachRefusalNamesItsRuleAndChangesNothing(clock);
+    await caseLtg_aDropRemovesTheEntryAndLogsTheReason(clock);
+    await caseLtg_aNonOwnerIsRefused(clock);
+    await caseLtg_aStoreWrittenBeforeTheListLoadsEmpty();
+    await caseLtg_theListSurvivesATreeReplacementAndARestart(clock);
+    await caseLtg_aLongTermGoalIsNeverActiveAndNeverHoldsTheRootOpen(clock);
+    await caseLtg_theToolRegistersForAnOwnerAndNeverForAReader(clock);
     await caseSection6Fleet_unchangedIsSilentAndOneChangeSubmitsOnce(clock);
     await caseSection6Fleet_runningRowsAreNotAllHealthy(clock);
     await caseSection6Fleet_aFirstEverLaunchIsNotStale(clock);
@@ -16705,7 +16715,7 @@ async function caseSection6_owner_matchesTheFullExistingShape(clock) {
   console.log("\n=== Section 6 owner control: every tool and both clock timers still register, matching today ===");
   clock.set(T0);
   const h = await createTickHarness({ ...OPTS, arming: "owner", caseName: "s6_owner_control" });
-  check("s6 owner: fifteen tools registered", h.toolRegisters.length === 15, h.toolRegisters.map((t) => t.name));
+  check("s6 owner: sixteen tools registered", h.toolRegisters.length === 16, h.toolRegisters.map((t) => t.name));
   check("s6 owner: two clock callbacks (heartbeat, controller tick)", h.clockEveryCallbacks.length === 2, h.clockEveryCallbacks.length);
   const entry = h.storeMap.get(`commons:${SESSION_ID}`);
   check("s6 owner: commons entry holds persona:default (ownership taken)", !!entry && entry.claims.some((c) => c.resource === "persona:default"), entry);
@@ -16715,7 +16725,7 @@ async function caseSection6_owner_matchesTheFullExistingShape(clock) {
 // the caller reads for it, so a description trimmed or renamed past its
 // schema is caught rather than shipped as a tool the session cannot call.
 // The pin is structural over whatever the owner tier registers: the names
-// come from each tool's own inputSchema.properties, so a fifteenth tool, or
+// come from each tool's own inputSchema.properties, so a new tool, or
 // a new parameter on an existing one, is covered the moment it registers and
 // nothing here enumerates a name by hand.
 //
@@ -19798,4 +19808,288 @@ async function casePlanHealth_hungRequestCannotDelayTheTurnEnd(clock) {
   check("s5 hung turn: the fake clock did not move", clock.get() === clockBefore, { before: clockBefore, after: clock.get() });
   check("s5 hung turn: the lead was set as on any turn",
     getState(h).goals.find((g) => g.id === "plan-1").lead?.state === "blocked", getState(h).goals.find((g) => g.id === "plan-1").lead);
+}
+
+// --- Goal levels Section 3: the long-term goal is a list beside the tree ---
+
+const LTG_TOOL = "mcp__agentic-plugin__goal_longterm";
+
+// One stored long-term goal, the shape goal_longterm writes.
+function ltgEntry(id, title, objective = `${title}, as the operator put it`) {
+  return { id, title, objective, createdAt: T0 - 60000 };
+}
+
+// A started owner session over `goals`, with `longTermGoals` in the stored
+// state where the case passes a list. Passing none seeds a store written
+// before the list existed.
+async function ltgHarness(caseName, goals, longTermGoals) {
+  const h = await createTickHarness({ ...OPTS, caseName, skipSessionStart: true });
+  const state = makeState({ now: T0, goals, activeGoalId: goals.find((g) => g.status === "active")?.id ?? null, longTermGoals });
+  seedPersonaStore(h, state);
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+  });
+  await h.handlers["session.start"](h.fake, {}, () => {});
+  return h;
+}
+
+// The Acceptance's first bullet: an add with a title and an objective returns
+// an id, and goal_status shows the entry under the heading, after the tree.
+// Before any add the heading reads (none) under a tree. The store the session
+// started from was written before the list existed, so this also runs the
+// load backfill through a real session. The add changes no tree node and
+// leaves the active entry where it was.
+async function caseLtg_anAddReturnsAnIdAndGoalStatusShowsIt(clock) {
+  console.log("\n=== Goal levels 3: goal_longterm add returns an id and goal_status shows it ===");
+  clock.set(T0);
+  const h = await ltgHarness("ltg_add_shows", gtc4Tree("pending", [
+    { id: "plan-1", parentId: "root-1", kind: "plan", status: "active", title: "Plan one" },
+  ]));
+  const empty = await callTool(h, { tool: "mcp__agentic-plugin__goal_status" });
+  const emptyLines = String(empty?.result).split("\n");
+  check("ltg add: before any add, the last line under the tree is the heading with (none)",
+    emptyLines.length === 3 && emptyLines[2] === "Long-term goals: (none)", emptyLines);
+  const treeBefore = JSON.stringify({ goals: getState(h).goals, activeGoalId: getState(h).activeGoalId });
+
+  const res = await callTool(h, { tool: LTG_TOOL, action: "add", title: "A fleet that runs itself", objective: "Every persona keeps its own queue moving." });
+  const id = /\b(lt-[a-z0-9]+-[a-z0-9]+)\b/.exec(String(res?.result))?.[1];
+  check("ltg add: accepted, and the result names an id with the lt- prefix", res?.deny === undefined && typeof id === "string", res);
+  const state = getState(h);
+  check("ltg add: the stored list holds the one entry with its id, title, objective and the clock",
+    JSON.stringify(state.longTermGoals) === JSON.stringify([{ id, title: "A fleet that runs itself", objective: "Every persona keeps its own queue moving.", createdAt: T0 }]), state.longTermGoals);
+  check("ltg add: the id is no goal node's id and carries no node prefix",
+    !state.goals.some((g) => g.id === id) && !/^(root|plan|task)-/.test(String(id)), { id, goals: state.goals.map((g) => g.id) });
+  check("ltg add: the tree and the active entry are unchanged",
+    JSON.stringify({ goals: state.goals, activeGoalId: state.activeGoalId }) === treeBefore, state.goals);
+  const added = state.decisions.filter((d) => d.action === "longterm_added");
+  check("ltg add: one longterm_added decision naming the id and the title",
+    added.length === 1 && added[0].loop === "goal" && added[0].detail.includes(id) && added[0].detail.includes("A fleet that runs itself"), added);
+
+  const shown = await callTool(h, { tool: "mcp__agentic-plugin__goal_status" });
+  const lines = String(shown?.result).split("\n");
+  check("ltg add: goal_status prints the tree, then the heading, then the entry on one line",
+    lines.length === 4 && lines[0].includes("root-1") && lines[1].includes("plan-1") &&
+    lines[2] === "Long-term goals:" && lines[3] === `  ${id} "A fleet that runs itself": Every persona keeps its own queue moving.`, lines);
+}
+
+// goal_status with no tree keeps its existing text where the list is empty,
+// and adds the list under it where the list holds an entry. An entry's text
+// is printed on one line whatever line breaks it carries.
+async function caseLtg_goalStatusWithNoTree(clock) {
+  console.log("\n=== Goal levels 3: goal_status with no tree ===");
+  clock.set(T0);
+  const bare = await ltgHarness("ltg_status_no_tree", [], []);
+  const bareRes = await callTool(bare, { tool: "mcp__agentic-plugin__goal_status" });
+  check("ltg no tree, empty list: the existing text and nothing else", bareRes?.result === "No goal tree exists.", bareRes);
+
+  clock.set(T0);
+  const held = await ltgHarness("ltg_status_no_tree_held", [], [ltgEntry("lt-a", "Alpha", "first\nsecond\r\nthird")]);
+  const heldRes = await callTool(held, { tool: "mcp__agentic-plugin__goal_status" });
+  check("ltg no tree, one held: the existing text, then the heading and the entry on one line",
+    heldRes?.result === 'No goal tree exists.\nLong-term goals:\n  lt-a "Alpha": first second third', heldRes);
+}
+
+// The Acceptance's refusals, each read by the rule that refused it: a sixth
+// add names the cap, a drop of an unknown id lists the held ids, a drop with
+// no reason names the reason, and the action and add-field rules name
+// themselves. Every refusal leaves the store byte-identical. The sixth add is
+// driven through five real adds first.
+async function caseLtg_eachRefusalNamesItsRuleAndChangesNothing(clock) {
+  console.log("\n=== Goal levels 3: each goal_longterm refusal names its rule and changes nothing ===");
+  clock.set(T0);
+  const h = await ltgHarness("ltg_refusals", gtc4Tree("pending"), []);
+  const ids = [];
+  for (const k of ["a", "b", "c", "d", "e"]) {
+    clock.advance(1000);
+    const r = await callTool(h, { tool: LTG_TOOL, action: "add", title: `Goal ${k}`, objective: `Objective ${k}` });
+    ids.push(/\b(lt-[a-z0-9]+-[a-z0-9]+)\b/.exec(String(r?.result))?.[1]);
+  }
+  check("ltg refusals: five adds are accepted", ids.every((i) => typeof i === "string") && getState(h).longTermGoals?.length === 5, { ids, list: getState(h).longTermGoals });
+  check("ltg refusals: the cap constant is 5", AgentState.LONG_TERM_GOAL_CAP === 5, AgentState.LONG_TERM_GOAL_CAP);
+
+  const listsEveryId = (d) => ids.every((i) => typeof i === "string" && d.includes(i));
+  const cases = [
+    ["a sixth add", { action: "add", title: "Goal f", objective: "One too many" }, (d) => d.includes("the cap is 5") && d.includes("5 long-term goals are held")],
+    ["a drop of an unknown id", { action: "drop", id: "lt-zzz", reason: "stale" }, (d) => d.includes('"lt-zzz" is not one') && listsEveryId(d)],
+    ["a drop with no id", { action: "drop", reason: "stale" }, (d) => d.includes("no id was given") && listsEveryId(d)],
+    ["a drop without a reason", { action: "drop", id: ids[1] }, (d) => d.includes("requires a non-empty 'reason'")],
+    ["a drop with a blank reason", { action: "drop", id: ids[1], reason: "   " }, (d) => d.includes("requires a non-empty 'reason'")],
+    ["an action outside add and drop", { action: "edit", id: ids[1] }, (d) => d.includes('action "add" or "drop"')],
+    ["no action", {}, (d) => d.includes('action "add" or "drop"')],
+    ["an add without an objective", { action: "add", title: "Goal f" }, (d) => d.includes("'title' and 'objective'")],
+    ["an add without a title", { action: "add", objective: "Objective f" }, (d) => d.includes("'title' and 'objective'")],
+  ];
+  for (const [label, args, rule] of cases) {
+    const storeBefore = h.fsMap.get(PERSONA_STORE_FILE);
+    const res = await callTool(h, { tool: LTG_TOOL, ...args });
+    const tag = `ltg refusal (${label})`;
+    check(`${tag}: denied by its own rule`, typeof res?.deny === "string" && rule(res.deny) && res?.result === undefined, res);
+    check(`${tag}: the store file is byte-identical`, h.fsMap.get(PERSONA_STORE_FILE) === storeBefore);
+  }
+  check("ltg refusals: the list still holds the five, in order", JSON.stringify((getState(h).longTermGoals ?? []).map((g) => g.id)) === JSON.stringify(ids), getState(h).longTermGoals);
+}
+
+// A drop removes the named entry, keeps the rest, and records its reason in
+// a decision. The tree is not touched.
+async function caseLtg_aDropRemovesTheEntryAndLogsTheReason(clock) {
+  console.log("\n=== Goal levels 3: goal_longterm drop removes the entry and logs the reason ===");
+  clock.set(T0);
+  const h = await ltgHarness("ltg_drop", gtc4Tree("pending", [
+    { id: "plan-1", parentId: "root-1", kind: "plan", status: "pending", title: "Plan one" },
+  ]), [ltgEntry("lt-a", "Alpha"), ltgEntry("lt-b", "Beta")]);
+  const goalsBefore = JSON.stringify(getState(h).goals);
+  const res = await callTool(h, { tool: LTG_TOOL, action: "drop", id: "lt-a", reason: "the operator retired it" });
+  const state = getState(h);
+  check("ltg drop: accepted, naming the dropped entry", res?.deny === undefined && String(res?.result).includes("lt-a"), res);
+  check("ltg drop: the list holds only the other entry", JSON.stringify(state.longTermGoals) === JSON.stringify([ltgEntry("lt-b", "Beta")]), state.longTermGoals);
+  const dropped = state.decisions.filter((d) => d.action === "longterm_dropped");
+  check("ltg drop: one longterm_dropped decision naming the id, the title and the reason",
+    dropped.length === 1 && dropped[0].loop === "goal" && dropped[0].detail.includes("lt-a") && dropped[0].detail.includes("Alpha") && dropped[0].detail.includes("the operator retired it"), dropped);
+  check("ltg drop: the tree is unchanged", JSON.stringify(state.goals) === goalsBefore, state.goals);
+}
+
+// Owner only, as goal_add and goal_edit are: a session reading the persona
+// is refused with the held text and writes nothing, for either action.
+async function caseLtg_aNonOwnerIsRefused(clock) {
+  console.log("\n=== Goal levels 3: goal_longterm from a non-owner is refused ===");
+  for (const args of [{ action: "add", title: "Alpha", objective: "An objective" }, { action: "drop", id: "lt-a", reason: "stale" }]) {
+    clock.set(T0);
+    const h = await seedReaderHarness(`ltg_reader_${args.action}`, T0, "owner-ltg", {}, { turnStartedAt: null, workdir: HARNESS_CWD });
+    const storeBefore = h.fsMap.get(PERSONA_STORE_FILE);
+    h.fsWrites.length = 0;
+    const res = await callTool(h, { tool: LTG_TOOL, ...args });
+    const tag = `ltg non-owner (${args.action})`;
+    check(`${tag}: refused with the held deny text`, res?.deny === SHUTDOWN_HELD_DENY && res?.result === undefined, res);
+    check(`${tag}: no write reached any file`, h.fsWrites.length === 0, h.fsWrites.map((w) => w.path));
+    check(`${tag}: the store file is byte-identical`, h.fsMap.get(PERSONA_STORE_FILE) === storeBefore);
+  }
+}
+
+// The Acceptance's second bullet, first half: a store written before the
+// list existed loads with an empty list and stays at version 4. That holds
+// for a v4 store, a v3 store, both committed v4 fixtures, and a stored value
+// that is not a list. A held list loads as it was, and a new state starts
+// empty.
+async function caseLtg_aStoreWrittenBeforeTheListLoadsEmpty() {
+  console.log("\n=== Goal levels 3: a store written before the list loads with an empty list ===");
+  const v4 = makeState({ now: T0 });
+  check("ltg load: the seeded v4 state carries no list (the instrument)", !("longTermGoals" in v4), Object.keys(v4));
+  const fromV4 = parseState(JSON.stringify(v4));
+  check("ltg load, v4: an empty list and version 4", Array.isArray(fromV4.longTermGoals) && fromV4.longTermGoals.length === 0 && fromV4.version === 4, { list: fromV4.longTermGoals, version: fromV4.version });
+  const fromV3 = parseState(JSON.stringify({ ...makeState({ now: T0 }), version: 3 }));
+  check("ltg load, v3: an empty list and version 4", Array.isArray(fromV3.longTermGoals) && fromV3.longTermGoals.length === 0 && fromV3.version === 4, { list: fromV3.longTermGoals, version: fromV3.version });
+  for (const name of ["state-v4-no-cost.json", "state-v4-cost-no-hash.json"]) {
+    const text = readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
+    const parsed = parseState(text);
+    check(`ltg load, fixture ${name}: an empty list and version 4`,
+      !text.includes("longTermGoals") && Array.isArray(parsed.longTermGoals) && parsed.longTermGoals.length === 0 && parsed.version === 4, { list: parsed.longTermGoals, version: parsed.version });
+  }
+  const fromNull = parseState(JSON.stringify({ ...makeState({ now: T0 }), longTermGoals: null }));
+  check("ltg load: a stored value that is not a list reads as an empty list", Array.isArray(fromNull.longTermGoals) && fromNull.longTermGoals.length === 0, fromNull.longTermGoals);
+  const two = [ltgEntry("lt-a", "Alpha"), ltgEntry("lt-b", "Beta")];
+  const fromHeld = parseState(JSON.stringify(makeState({ now: T0, longTermGoals: two })));
+  check("ltg load: a held list loads as it was", JSON.stringify(fromHeld.longTermGoals) === JSON.stringify(two), fromHeld.longTermGoals);
+  const fresh = AgentState.createDefaultState("someone", "s-1");
+  check("ltg load: a new state starts with an empty list", Array.isArray(fresh.longTermGoals) && fresh.longTermGoals.length === 0, fresh.longTermGoals);
+}
+
+// The Tests line: the list survives a tree replacement. goal_create leaves
+// it as it was whether it replaces an unfinished tree, replaces a finished
+// one, or creates the first tree. A session started afterwards over the
+// store it left shows both entries, which is the restart half of the bullet.
+async function caseLtg_theListSurvivesATreeReplacementAndARestart(clock) {
+  console.log("\n=== Goal levels 3: the list survives goal_create and a restart ===");
+  const two = [ltgEntry("lt-a", "Alpha"), ltgEntry("lt-b", "Beta")];
+  let replacedStore = null;
+  for (const [label, goals, extra] of [
+    ["replacing an unfinished tree", gtc4Tree("pending", [{ id: "plan-1", parentId: "root-1", kind: "plan", status: "active", title: "Plan one" }]), { replace: true }],
+    ["replacing a finished tree", gtc4Tree("complete"), {}],
+    ["creating the first tree", [], {}],
+  ]) {
+    clock.set(T0);
+    const h = await ltgHarness(`ltg_survives_${label.replace(/\W+/g, "_")}`, goals, two);
+    const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "Something new", ...extra });
+    const state = getState(h);
+    const tag = `ltg survives (${label})`;
+    check(`${tag}: goal_create is accepted and the tree is the new root`,
+      res?.deny === undefined && state.goals.length === 1 && state.goals[0].objective === "Something new", { res, goals: state.goals });
+    check(`${tag}: the stored list holds both entries as they were`, JSON.stringify(state.longTermGoals) === JSON.stringify(two), state.longTermGoals);
+    if (replacedStore === null) replacedStore = state;
+  }
+
+  clock.set(T0 + 60_000);
+  const restarted = await createTickHarness({ ...OPTS, caseName: "ltg_survives_restart", skipSessionStart: true });
+  seedPersonaStore(restarted, replacedStore);
+  restarted.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0 + 60_000,
+    claims: [{ resource: "persona:default", claimedAt: T0 + 58_000 }],
+  });
+  await restarted.handlers["session.start"](restarted.fake, {}, () => {});
+  const shown = String((await callTool(restarted, { tool: "mcp__agentic-plugin__goal_status" }))?.result).split("\n");
+  check("ltg survives restart: goal_status in the new session shows both entries under the heading",
+    shown.includes("Long-term goals:") && shown.includes('  lt-a "Alpha": Alpha, as the operator put it') && shown.includes('  lt-b "Beta": Beta, as the operator put it'), shown);
+}
+
+// The Tests line and the Acceptance's third bullet: with long-term goals held
+// and a tree holding one pending plan, the tick activates the plan, and once
+// it is done the root completes. No tick activates a long-term goal, since a
+// long-term goal taking the active slot, or holding the root open, would
+// stall the worker with nothing said.
+async function caseLtg_aLongTermGoalIsNeverActiveAndNeverHoldsTheRootOpen(clock) {
+  console.log("\n=== Goal levels 3: a long-term goal is never active and never holds the root open ===");
+  clock.set(T0);
+  const two = [ltgEntry("lt-a", "Alpha"), ltgEntry("lt-b", "Beta")];
+  const goals = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 10 }),
+    makeGoalNode({ id: "g-added", parentId: "g-root", kind: "plan", status: "pending", maxRounds: 5, source: "worker" }),
+  ];
+  const h = await createTickHarness({ ...OPTS, caseName: "ltg_never_active", completeValue: "[]", stateOpts: { now: T0, goals, activeGoalId: null, longTermGoals: two } });
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  let state = getState(h);
+  check("ltg never active: the tick activates the pending plan", state.activeGoalId === "g-added" && state.goals.find((g) => g.id === "g-added")?.status === "active", { activeGoalId: state.activeGoalId, goals: state.goals });
+  check("ltg never active: the tree holds its two nodes and no long-term id", state.goals.length === 2 && !state.goals.some((g) => g.id.startsWith("lt-")), state.goals.map((g) => g.id));
+
+  await callTool(h, { tool: "mcp__agentic-plugin__goal_done", note: "done" });
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  state = getState(h);
+  const actions = state.decisions.map((d) => d.action);
+  const rootCompleteIdx = actions.indexOf("root_complete");
+  check("ltg never active: the root completes once the plan is done", rootCompleteIdx !== -1 && state.goals.find((g) => g.id === "g-root")?.status === "complete", { actions, goals: state.goals });
+  check("ltg never active: nothing is active after the root completes", state.activeGoalId === null && !actions.slice(rootCompleteIdx + 1).includes("activated"), { activeGoalId: state.activeGoalId, after: actions.slice(rootCompleteIdx + 1) });
+  check("ltg never active: every activated decision named the plan", state.decisions.filter((d) => d.action === "activated").every((d) => d.detail.includes("g-added") && !d.detail.includes("lt-")), state.decisions.filter((d) => d.action === "activated"));
+  check("ltg never active: the list is as it was", JSON.stringify(state.longTermGoals) === JSON.stringify(two), state.longTermGoals);
+}
+
+// The Acceptance's fourth bullet: the tool never registers in a reader-armed
+// session. The predicate is a registered name equal to goal_longterm, over
+// every registration the session made; the owner session is the control that
+// shows the same predicate matching. The owner's registration also carries
+// the description the section names: the cap, that a long-term goal is never
+// the active work, and the turns the tool is refused outside.
+async function caseLtg_theToolRegistersForAnOwnerAndNeverForAReader(clock) {
+  console.log("\n=== Goal levels 3: goal_longterm registers for an owner and never for a reader ===");
+  clock.set(T0);
+  const isLtg = (t) => t.name === "goal_longterm";
+  const owner = await createTickHarness({ ...OPTS, arming: "owner", caseName: "ltg_register_owner" });
+  const def = owner.toolRegisters.find(isLtg);
+  check("ltg register control: the owner session registers goal_longterm", owner.toolRegisters.filter(isLtg).length === 1, owner.toolRegisters.map((t) => t.name));
+  const desc = String(def?.description);
+  check("ltg register: the description names the cap from LONG_TERM_GOAL_CAP", typeof AgentState.LONG_TERM_GOAL_CAP === "number" && desc.includes(`at most ${AgentState.LONG_TERM_GOAL_CAP}`), desc);
+  check("ltg register: the description says a long-term goal is never the active work", desc.includes("never the active work"), desc);
+  check("ltg register: the description names the operator's and the coordinator persona's turns", desc.includes("operator") && desc.includes("coordinator persona"), desc);
+  check("ltg register: the schema declares action, title, objective, id and reason, and requires action",
+    JSON.stringify(Object.keys(def?.inputSchema?.properties ?? {})) === JSON.stringify(["action", "title", "objective", "id", "reason"]) &&
+    JSON.stringify(def?.inputSchema?.required) === JSON.stringify(["action"]), def?.inputSchema);
+
+  clock.set(T0);
+  const reader = await createTickHarness({ ...OPTS, arming: "reader", caseName: "ltg_register_reader" });
+  check("ltg register: the reader session registered tools, so the predicate read a real list", reader.toolRegisters.length > 0, reader.toolRegisters.length);
+  check("ltg register: no reader registration is goal_longterm", !reader.toolRegisters.some(isLtg), reader.toolRegisters.map((t) => t.name));
 }

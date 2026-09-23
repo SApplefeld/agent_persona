@@ -206,6 +206,12 @@
       "words": 124
     },
     {
+      "name": "goal_longterm_description",
+      "file": "hooks/index.ts",
+      "chars": 750,
+      "words": 142
+    },
+    {
       "name": "memory_add_description",
       "file": "hooks/index.ts",
       "chars": 243,
