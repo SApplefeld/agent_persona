@@ -384,3 +384,14 @@ Gate: targeted lane at section close, 2026-09-23 16:17 local, this machine, work
 Next: none; finishing-work
 Commit Model: Branch-and-PR
 Delta: 2026-09-23 16:17 local, this machine, worktree goal-levels-build at 286267d with fix rounds 1 and 2 unstaged
+
+### Interim board 2 - 2026-09-23
+Finishing pass in flight, base ref 4e3078f (merge-base with origin/main; origin/main has since advanced by the nudge-cap plan and a backlog entry). All seven sections closed at 75aa2b2.
+Step 1, QA: every acceptance bullet of all seven sections PASS on named evidence; the whole gate (`.kit/scratch/goal-levels/gate.sh`, 25 lanes) read gate.exit 1 on one lane, `check-loader-rule`: `submitKaizen`, extracted in Section 5's second fix round, was declared inside `register()` and handed `$`, a shape the real loader refuses silently. No targeted lane after Section 5 ran the loader rule. Fixed uncommitted: `submitKaizen` is a top-level function taking the expected-turn list, its entry named `kaizenTextTurn` so the ledger's call-site row still sizes it. Re-run: 25 lanes, every exit 0, gate.exit 0, tick 3284 OK; the regenerated ledger byte-identical. Operator Verification's three steps are operator-only.
+Steps 2 and 3, one wave at fable high through Workflow (security, performance, adversarial, prose); the tree bracket read clean across it.
+- Performance: CLEAR, three Minors.
+- Security: ADVISORY, one Major: `goal_add` of kind task under the root is ungated and starts top-level work in refused turns. Relevance ruling dispatched to the scope adjudicator (first dispatch returned NEEDS_CONTEXT on an Approach quote in the brief; re-dispatched clean). Two Minors.
+- Adversarial: APPROVED_WITH_CONCERNS, four Minors.
+- Prose: one Major, architecture.md's injection-ledger figures stale after four regenerations (fix: retake from the ledger); fourteen Minors.
+Step 4, goal read: dispatched.
+Dispositions pending the two rulings are listed in `.kit/scratch/goal-levels/finishing/reviews.txt`; the fix list is written once the rulings return.
