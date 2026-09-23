@@ -198,7 +198,14 @@ DESIGN_ARCHITECT_OPERATOR_RELAY_CONTROL="where the ask was the operator's own, t
 # and where the plugin refuses that send the answer comes to the coordinator
 # instead. Without this leg that answer reaches the coordinator with no
 # instruction to pass it on, and the worker never hears it.
-DESIGN_ARCHITECT_REFUSED_RELAY_CONTROL="because its direct send to that worker was refused, and you relay that answer to the worker as a coordinator record"
+DESIGN_ARCHITECT_REFUSED_RELAY_CONTROL="because its direct send to that worker was refused. You relay it to that worker as a coordinator record"
+# What that relay record says of itself. A coordinator record otherwise carries
+# the operator's delegated authority, and the architect answers rather than
+# steers, so the record opens by naming itself as the architect's answer to the
+# worker's own question, quotes the worker's record id, and disclaims a steer.
+DESIGN_ARCHITECT_REFUSED_OPENS_CONTROL="that opens by saying it relays the architect's answer to the worker's own question"
+DESIGN_ARCHITECT_REFUSED_QUOTES_CONTROL="quotes that worker's record id"
+DESIGN_ARCHITECT_REFUSED_NO_STEER_CONTROL="states that it carries no coordinator steer"
 # What the coordinator recognises that answer by: the worker's persona and the
 # worker's record id, both of which the architect's fallback answer carries.
 # Keyed on the persona as well as the id, since the id alone does not say which
@@ -395,6 +402,34 @@ STEER_ARCH_URGENT_CONTROL="[WORKER:<architect persona> id=<record id>, urgent]"
 # the operator first.
 STEER_ARCH_INPUT_CONTROL="input you use within your own approved plan"
 STEER_ARCH_PLAN_BOUND_CONTROL="An act the answer asks for that falls outside your approved plan still goes to the operator before you take it"
+# The coordinator's relay of an architect answer the plugin refused at the
+# worker arrives as a coordinator record, which otherwise carries the
+# operator's delegated authority. The worker keys its recognition on the
+# relay's own disclaimer as well as its claim to relay, reads such a record as
+# the answer, bounded to the plan as a direct one is, and still closes it as a
+# coordinator record. The disclaimer is worded "says it carries" here, apart
+# from the coordinator's "states that it carries", so the coordinator-only
+# DESIGN_ sweep stays silent on a worker launch.
+STEER_ARCH_RELAYED_CONTROL="A coordinator record that says it relays the architect's answer to your question and says it carries no coordinator steer is that answer"
+STEER_ARCH_RELAYED_INPUT_CONTROL="input you use within your own approved plan exactly as a direct answer is, and not a steer"
+STEER_ARCH_RELAYED_BOUND_CONTROL="An act it asks for outside your approved plan still goes to the operator before you take it"
+STEER_ARCH_RELAYED_RESOLVE_CONTROL="you close it with agentic_resolve like any coordinator record"
+# The worker cannot read fleet state, so its own inbox read at the architect is
+# its only sign of an absent architect, and that sign is only persistence. A
+# live architect takes one pending record per controller tick, only between
+# turns, and a record carries the deferred flag only while the owner is inside
+# a turn, so a fresh record reads pending with no flag on a live, idle
+# architect for a tick or more. The sentence therefore asks for reads at least
+# five minutes apart, names the likely causes rather than a certainty, and
+# falls back to the coordinator, which can see liveness, quoting the id. The
+# reason is worded apart from the coordinator's own liveness duty literal,
+# DESIGN_FLEET_CARVEOUT_CONTROL, so that sweep stays silent on a worker launch.
+STEER_ARCH_UNTAKEN_SIGNAL_CONTROL="Where your own record to the architect still reads pending, with no deferred flag,"
+STEER_ARCH_UNTAKEN_READ_CONTROL="on two agentic_inbox reads with the persona argument naming the architect taken at least five minutes apart"
+STEER_ARCH_UNTAKEN_MEANING_CONTROL="most likely no live architect is behind it or it sits behind a long queue"
+STEER_ARCH_UNTAKEN_CADENCE_CONTROL="a live architect takes one record per controller tick, thirty seconds by default"
+STEER_ARCH_UNTAKEN_FALLBACK_CONTROL="send the question to the coordinator as an escalation, quoting that record id"
+STEER_ARCH_UNTAKEN_WHY_CONTROL="because the coordinator can see whether an architect session is running"
 
 failed=0
 check() {
@@ -1086,6 +1121,13 @@ case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$DESIGN_ARCHITECT_REFUSED_KEY_CONTROL"*"$DESIGN_ARCHITECT_REFUSED_RELAY_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the refused-answer relay keys on a worker persona and that worker's record id" 0 ;;
   *) check "persona matches COORDINATOR_PERSONA: the refused-answer relay keys on a worker persona and that worker's record id" 1 ;;
 esac
+# The relay record names itself as the architect's answer, quotes the worker's
+# record id and disclaims a steer, in that order after the relay it describes,
+# so the third leg carries no coordinator steering standing to the worker.
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$DESIGN_ARCHITECT_REFUSED_RELAY_CONTROL"*"$DESIGN_ARCHITECT_REFUSED_OPENS_CONTROL"*"$DESIGN_ARCHITECT_REFUSED_QUOTES_CONTROL"*"$DESIGN_ARCHITECT_REFUSED_NO_STEER_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the refused-answer relay record says it relays the architect's answer, quotes the record id and carries no steer" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the refused-answer relay record says it relays the architect's answer, quotes the record id and carries no steer" 1 ;;
+esac
 # Every fragment of the design clause, read as a class on the launch that does
 # build it. This is the control for the absence sweep on the no-architect
 # launch below: the same class read runs against an instance known to hold the
@@ -1236,6 +1278,21 @@ esac
 case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *"$STEER_ARCH_INPUT_CONTROL"*"$STEER_ARCH_NOT_OPERATOR_CONTROL"*"$STEER_ARCH_PLAN_BOUND_CONTROL"*) check "named worker, ARCHITECT_PERSONA set: the answer is input inside the approved plan, and an act outside that plan still goes to the operator" 0 ;;
   *) check "named worker, ARCHITECT_PERSONA set: the answer is input inside the approved plan, and an act outside that plan still goes to the operator" 1 ;;
+esac
+# The coordinator's relay of the architect's answer, recognised by its claim to
+# relay and its steer disclaimer, is read as that answer and not as a steer,
+# after the steer rules it narrows, bounded to the approved plan as the direct
+# answer is, and closed with agentic_resolve.
+case "${COORDINATOR_STEER_INSTRUCTION:-}" in
+  *"$STEER_UNVERIFIED_ACT_CONTROL"*"$STEER_ARCH_RELAYED_CONTROL"*"$STEER_ARCH_RELAYED_INPUT_CONTROL"*"$STEER_ARCH_RELAYED_BOUND_CONTROL"*"$STEER_ARCH_RELAYED_RESOLVE_CONTROL"*) check "named worker, ARCHITECT_PERSONA set: a coordinator record relaying the architect's answer and disclaiming a steer is that answer, bounded to the plan, closed with agentic_resolve" 0 ;;
+  *) check "named worker, ARCHITECT_PERSONA set: a coordinator record relaying the architect's answer and disclaiming a steer is that answer, bounded to the plan, closed with agentic_resolve" 1 ;;
+esac
+# The unanswered-silence signal reads the worker's own record at the architect
+# over five minutes, names the likely causes and the tick cadence behind them,
+# and falls back to the coordinator with the record id, in that order.
+case "${COORDINATOR_STEER_INSTRUCTION:-}" in
+  *"$STEER_ARCH_UNTAKEN_SIGNAL_CONTROL"*"$STEER_ARCH_UNTAKEN_READ_CONTROL"*"$STEER_ARCH_UNTAKEN_MEANING_CONTROL"*"$STEER_ARCH_UNTAKEN_CADENCE_CONTROL"*"$STEER_ARCH_UNTAKEN_FALLBACK_CONTROL"*"$STEER_ARCH_UNTAKEN_WHY_CONTROL"*) check "named worker, ARCHITECT_PERSONA set: a record at the architect still pending with no deferred flag on reads five minutes apart goes to the coordinator, quoting its id" 0 ;;
+  *) check "named worker, ARCHITECT_PERSONA set: a record at the architect still pending with no deferred flag on reads five minutes apart goes to the coordinator, quoting its id" 1 ;;
 esac
 check_spliced_names "named worker, ARCHITECT_PERSONA set: every persona name in the priming write comes from the settings"
 check_no_removed_routing "named worker, ARCHITECT_PERSONA set: no retired routing phrase reaches the priming write" "$(priming_concat)"

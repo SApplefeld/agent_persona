@@ -10,8 +10,8 @@
     {
       "name": "COORDINATOR_STEER_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 2796,
-      "words": 477
+      "chars": 3700,
+      "words": 631
     },
     {
       "name": "CHANNEL_REPLY_INSTRUCTION",
@@ -22,8 +22,8 @@
     {
       "name": "COORDINATOR_ROLE_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 5376,
-      "words": 942
+      "chars": 5528,
+      "words": 967
     },
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
