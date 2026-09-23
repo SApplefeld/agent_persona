@@ -23,16 +23,16 @@ for four turns in ten.
 
 ## Dispatch Authorization
 
-This plan starts only after two other plans have merged to the trunk, because they edit the same
-regions. `docs/plans/agent_persona_goal-levels_v1.md` edits the tick's no-active-leaf branch and
-the goal tools. `docs/plans/agent_persona_nudge-cap_v1.md` edits the cap branch, the scoring skip
-branches, the `goal_add` and `goal_done` holds and `hasStartableWork`, and this plan retires the
-hold half of that change and keeps its reset. The trunk is `origin/main`, read after a fetch. The
-check: `git ls-tree --name-only origin/main docs/plans/` lists neither file, and each is on the
-trunk under `docs/archive/` or `docs/plans/archive/` with `Status: Complete` in its header. A
-worker that finds either still listed stops with a `BLOCKED:` lead naming it. The work runs on one
-branch cut from that fetched trunk and lands as one pull request for the whole plan. Execution
-waits on the coordinator handing this plan to a worker by name.
+This plan starts only after `docs/plans/agent_persona_goal-levels_v1.md` has merged to the
+trunk, because that plan edits the tick's no-active-leaf branch and the goal tools, which this
+plan edits too. The nudge-cap plan that once stood between them was retired unrun on 2026-09-23,
+under the ruling recorded below in Intent, so nothing else gates this plan. The trunk is
+`origin/main`, read after a fetch. The check: `git ls-tree --name-only origin/main docs/plans/`
+does not list the goal-levels file, and it is on the trunk under `docs/archive/` or
+`docs/plans/archive/` with `Status: Complete` in its header. A worker that finds it still listed
+stops with a `BLOCKED:` lead naming it. The work runs on one branch cut from that fetched trunk
+and lands as one pull request for the whole plan. Execution waits on the coordinator handing this
+plan to a worker by name.
 
 ## Intent
 
@@ -69,7 +69,16 @@ Alternatives refused:
 - Walking on to the next pending entry when an ask times out, as today. Refused, because it is the
   silent reassignment the operator named.
 
-**Rulings.** None made after the spec shipped.
+**Rulings.** Ruled 2026-09-23 by the operator, on the architect's ask: the nudge-cap plan,
+`docs/archive/agent_persona_nudge-cap_v1.md`, is retired before any of it ran, and this plan
+carries the one thing it would have built that survives here. That thing is its reset, a turn
+that calls a work tool clearing the count, which is the second of the five reset events under
+"The status line and the count". The rest of that plan, the hold that kept the tick from starting
+a sibling behind a cap pause and the lift that reactivated the paused entry across a relaunch,
+is not built, because under this plan the cap never pauses the entry and there is nothing to
+hold behind or lift. So this plan gates on goal-levels alone, and its Section 5 retires the two
+backlog entries the nudge-cap plan would have retired, the nudge-cap entry of 2026-09-23 and the
+README nudge-counter entry of 2026-09-21.
 
 Provenance: distilled from the architect session of 2026-09-23 on the operator's thread, four
 messages from the operator between the nudge-cap plan's merge and this plan's draft.
@@ -107,11 +116,9 @@ hold, leaves the entry active, and activates nothing. The next nudge on that ent
 expired ask in one sentence. `pausedByNudgeCap` is removed from `GoalNode`, and every reader of it
 goes: the `goal_add` hold (`7113`), the `goal_done` hold (`7353`), the `reactivated_by_work`
 branch (`6251-6267`), the `goal_done` clear (`7296-7298`), the `goal_resume` clear (`7526-7528`),
-and the exported cap-held helper in `hooks/agent-state.ts` that the nudge-cap plan's Section 1
-adds, found by its reader sites since that plan names no symbol for it, together with the third
-`[GOAL QUEUE]` close text that plan adds for a cap-held tree: that text, its ledger entry and the
-branch in `hooks/index.ts` that chooses it are deleted, and the two earlier close texts stay. `hasStartableWork` returns to reading statuses
-alone. The load-time repair at the E11 site (`hooks/agent-state.ts:720`) takes every entry with status
+and the `goal_add` handler's activation refusal that reads it beside `goal_done`'s (`7113`,
+`7353`). `hasStartableWork` (`hooks/agent-state.ts:988`) is unchanged, since it reads statuses
+alone today and nothing this plan adds is a status. The load-time repair at the E11 site (`hooks/agent-state.ts:720`) takes every entry with status
 `paused` and `pausedByNudgeCap` true: where no entry is active, the one with the latest
 `updatedAt` becomes `active` and the rest `pending`; where one is, all become `pending`. It drops
 the field and writes one decision per entry repaired, so the two dev-persona entries paused
@@ -180,8 +187,8 @@ at `4193`, `5022-5039`, `6251`, `7113`, `7174`, `7353`, `7500-7503`, `8124`, `82
 `caseIq_*`; `README.md` at 121, 140-154, 173, 175, 187, 189, 628-632, 650, 686, 771, 878;
 `docs/architecture.md` at 18, 278, 284; `hooks/question-catalog.ts` at 84-86, 98-99, 115, 119,
 205-239; `hooks/decision-journal.ts:114-115`; the outcome writers at `5995`, `6165`, `6420`,
-`6436-6438`, `6463`. Line numbers are the trunk's at `a923263` and move once the two plans ahead
-merge, so the worker finds each site by the symbol named beside it.
+`6436-6438`, `6463`. Line numbers are the trunk's at `a923263` and move once the goal-levels plan
+merges, so the worker finds each site by the symbol named beside it.
 
 ## Sections of Work
 
@@ -237,9 +244,9 @@ Acceptance:
   this plan leaves alone passes unchanged.
 
 Files in scope: `hooks/index.ts`, `hooks/agent-state.ts`, `.kit/controller-tick-test.mjs`,
-`.kit/injection-ledger.json` and `.kit/injection-ledger.mjs` (the third `[GOAL QUEUE]` close
-text is deleted with its entry, and the block at `8202-8207` keeps the two earlier texts),
-`README.md` (the "Cap" bullet at 151, 628-632).
+`.kit/injection-ledger.json` and `.kit/injection-ledger.mjs` (regenerated where the nudge
+sentence naming an expired ask changes an injected text; the `[GOAL QUEUE]` block at `8202-8207`
+keeps its two close texts), `README.md` (the "Cap" bullet at 151, 628-632).
 Tests: lock both directions of every hold reason, since a hold that never lifts is the frozen
 tree of 2026-09-23 and one that never holds is a nudge into an open ask. Lock the load repair
 against a store with two cap-paused entries and no active one, the dev-persona shape.
@@ -249,7 +256,8 @@ Model: opus
 
 The change under "The status line and the count". Opus because the count's reset sites span the
 scorer, the turn-end lead read, the tool-call handler, the channel-origin read and `activate`,
-and each has an exact sibling in the nudge-cap plan's reset.
+and each has a sibling in the code: the waiting-lead clear and the `reactivated_by_work`
+branch (`6251-6267`) both read `toolCallsThisTurn` at the same handler for the same question.
 
 Acceptance:
 - A nudged turn opening with `WORKING:`, `WAITING:` or `BLOCKED:` resets the count; one opening
@@ -298,13 +306,17 @@ count's reset list, the fixed ask, the open-turn reading, and the shadow questio
 `docs/backlog.md` retires the open-turn guard entry of 2026-09-13 to
 `docs/archive/backlog-2026-Q3.md`, and narrows the ask-close entry of 2026-09-22 to its
 persist-ordering half, since its other half, the reactivation that leaves the paused reason on an
-active entry, is removed here. `docs/README.md` gains this plan's row.
+active entry, is removed here. It also retires two entries the retired nudge-cap plan would have
+retired, the nudge-cap entry of 2026-09-23 and the README nudge-counter entry of 2026-09-21, to
+the same quarter archive, since the count's reset list this plan writes into `README.md` is the
+closed list of five and the cap no longer pauses anything. `docs/README.md` gains this plan's
+row.
 
 Acceptance:
 - No sentence in either document says the controller pauses an entry on its own reading of a
   count or of the worker's text, escalates the cap to an ask-operator verdict, or reads
   `turn.start` alone.
-- The two backlog edits are made and the retired entry sits in the quarter archive.
+- The four backlog edits are made and the three retired entries sit in the quarter archive.
 
 Files in scope: `README.md`, `docs/architecture.md`, `docs/backlog.md`,
 `docs/archive/backlog-2026-Q3.md`, `docs/README.md`.
