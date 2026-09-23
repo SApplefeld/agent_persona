@@ -219,7 +219,7 @@ export interface OwnRecordFinding {
   signal: KaizenSignal;
   count: number;
   title: string;
-  objective: string; // carries the "Proof:" line
+  objective: string; // carries the "Proof:" line on the three goal-raising signals
   rationale: string; // one line for the operator's thread
   configFix?: { knob: "selfReviewEveryTurns"; from: number; to: number };
 }
