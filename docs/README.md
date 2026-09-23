@@ -13,6 +13,7 @@
 - `plans/agent_persona_security-model_v1.md`: Security model document (a `docs/security-model.md` stating what the plugin and process keeper trust, the risks the operator accepted with the preconditions each rests on, and the known gaps, confirmed by the operator). Ready.
 - `plans/agent_persona_idle-queue_v1.md`: Idle queue (queued work is a `pending` plan the controller starts by itself, `paused` means stuck, a prompt with no active entry lists the whole open queue with each entry's state, and one helper says whether a tree holds anything that starts on its own, which the goal-levels idle proposal reads). Ready, no gate, runs before goal-levels.
 - `plans/agent_persona_autonomy-dial_v1.md`: Autonomy dial (a per-persona level, closed at propose, plan and ask, and plan and start, set only in the operator's own turn, read by the gate on adding a plan entry and printed in a standing per-prompt block that states the idle order and names the goal tree as the queue). Ready, runs after goal-levels and idle-queue.
+- `plans/agent_persona_kaizen-signals_v1.md`: Kaizen signals (the own-record self-review drops its tree-lag signal, whose premise counts ordinary section commits as a lag, and keeps only the cadence half of its long-turns signal, so no goal is raised from either). Ready.
 
 ## Archived plans
 
