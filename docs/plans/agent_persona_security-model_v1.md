@@ -278,3 +278,12 @@ Files in scope: `README.md`, `docs/architecture.md`, `docs/README.md`, `docs/sec
   answer per line.
 
 ## Chapters
+
+### Interim board 1 - 2026-09-23
+
+- Section 1 stage: document written inline on branch `security-model-build` (worktree `D:/agent_persona-security`, cut from origin/main at 57f0224), first-green commit d159c56. Header normalized from `Ready` to `In Progress` at that commit. Round 1 (three blind readers, one per Audience persona, and the prose reviewer, all fable via the Agent tool) adjudicated; the document is rewritten over every finding that held, uncommitted in the worktree. Findings and dispositions: `.kit/scratch/security-model/round1-findings.md` in the main checkout.
+- Live dispatches: round 2, the prose reviewer alone at opus/high via Workflow, over the rewrite; added by choice, since a prose-only delta owes no round, because the acceptance asks that the review find no sentence the code contradicts.
+- Gate baseline: none on a lane; the section changes documents only.
+- Rulings adopted since the last boundary: none.
+- Round 1 facts found: a provided `settings.json` is completed on every launch (`bin/supervise.sh`, the provided-file branch), so the "never rewrites it" sentence was false and is fixed. The hand launchers `docs/architecture.md` names under `D:/personas` do not exist there, which section 2 corrects in the same section it points at the model. This repository's `protect-main` ruleset requires one approving review, and the fleet pushes as a GitHub account separate from the approver.
+- Next action: adjudicate round 2, close section 1 with its Chapter, then section 2.
