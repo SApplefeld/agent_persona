@@ -1101,10 +1101,10 @@ const FLEET_RESTART_REASON_MAX = 200;
 // Both text fields are held to the plugin's free-text bound: a run directory
 // sits inside its persona's own writable tree, so the text in it is a
 // persona's to write.
-// What comes back is a standing rather than the row's action: these two files
-// record what the keeper decided at the last supervisor exit and cannot say
-// whether the persona is up now, so fleetActionOf below settles the action
-// against the commons half.
+// What comes back is a standing rather than the row's action: these three
+// files record what the keeper decided at the last supervisor exit and cannot
+// say whether the persona is up now, so fleetActionOf below settles the
+// action against the commons half.
 // lastEndMs rides with the standing because a signalled exit under a live
 // claim is settled against it: it is the epoch time of keeper.json's lastEnd,
 // the moment the last supervisor exit was recorded, and null when the file
@@ -1176,14 +1176,16 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<KeeperHal
     }
   }
 
-  // keeper.park is read only where keeper.hold does not exist: a hold already
-  // decides both the standing and the reason, so a park marker sitting beside
-  // it names nothing this row reports. Same three-state guard as the hold
-  // check, and the reason lands in the same holdReason/holdReasonSource pair
-  // bin/Start-Persona.ps1's own next start clears the park marker for, so the
-  // one first-line read below stands for whichever marker is the one in force.
+  // keeper.park is checked and read only where hold reads "no": a confirmed
+  // hold marker already decides both the standing and the reason, and a hold
+  // check that threw already decides the standing as unknown, with its own
+  // note naming the marker that went unchecked, so a park marker sitting
+  // beside either one names nothing this row reports. Same three-state guard
+  // as the hold check. The park's first line fills the same
+  // holdReason/holdReasonSource pair the hold marker does, read only where no
+  // hold marker exists.
   let park: "yes" | "no" | "unreadable" = "no";
-  if (hold !== "yes") {
+  if (hold === "no") {
     try {
       park = await dp.fs.exists(parkPath) === true ? "yes" : "no";
     } catch (err) {
@@ -1214,9 +1216,10 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<KeeperHal
       }
     } else {
       // Read before the push: the absence is the whole of this row's note only
-      // where nothing above it went unread. A hold marker whose check threw is
-      // the one reading that can stand beside it, and a persona whose marker
-      // went unchecked is one nobody can place whatever the state file says.
+      // where nothing above it went unread. A hold or park marker whose check
+      // or read failed is a reading that can stand beside it, and a persona
+      // whose marker went unchecked or unread is one nobody can place
+      // whatever the state file says.
       stateUnwritten = notes.length === 0;
       notes.push(`there is no keeper.json under '${rundir}': the process keeper has written no state for this persona`);
     }
@@ -1240,9 +1243,12 @@ const readKeeperHalf = async (dp: any, rundir: string | null): Promise<KeeperHal
   }
   // Either marker decides the next start, so either one outranks the exit
   // code: keeper.hold stops it and keeper.park is cleared so it launches, and
-  // the fleet reading has no way to tell an operator that the two differ,
-  // since both read "held" here. A marker check that threw decides next,
-  // because every standing below it is a statement that no marker is there.
+  // both read "held" here. holdReasonSource still names which file fed the
+  // reason, keeper.hold or keeper.park, and the keeper's own reason text
+  // names a park where one is in force; on the keeper.json fallback the
+  // source reads keeper.json either way. A marker check that threw decides
+  // next, because every standing below it is a statement that no marker is
+  // there.
   // That case reaches the reader in the row's note and not in its action: the
   // standing it produces is "unknown", which fleetActionOf does not outrank a
   // live claim with, so a persona that is up reads running and the note names
@@ -1353,9 +1359,10 @@ function fleetCommonsOf(
 // healthy persona as backing off indefinitely. A live claim therefore reads as
 // running, whatever ladder that file records. "held" outranks the claim all
 // the same, because the marker is a statement about what happens next rather
-// than about what is running now: the keeper will not start this persona
-// again, and a session still holding the claim under it is the session that is
-// going away.
+// than about what is running now: a keeper.hold means the keeper will not
+// start this persona again, a keeper.park means the next start clears it and
+// launches the persona anyway, and either way a session still holding the
+// claim under it is the session that is going away.
 // A signalled exit is settled against the clock, because that same file is
 // written at an exit and never at a launch: lastExitCode 143 stands in
 // keeper.json for the whole of the next run, so treating it as outranking the
@@ -1549,7 +1556,7 @@ const readFleetRows = async (
 // persona whose relaunch ladder has climbed and one whose keeper state could
 // not be read both read running there and would both reduce to healthy. This
 // reads nextDelaySeconds and note beside action for that reason.
-// The order settles a row that satisfies more than one class. The hold marker
+// The order settles a row that satisfies more than one class. A marker
 // decides first, because it says what happens next whatever is running now.
 // The ladder decides next, above the base being a keeper that has escalated,
 // except on the one exit the keeper never relaunches from. Then what the
