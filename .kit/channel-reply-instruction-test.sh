@@ -628,7 +628,7 @@ check "withheld numbers control: and is silent on a string carrying all of them"
 # persona name is indistinguishable from an ordinary word. What keeps the
 # enumeration honest is check_splice_site_count below, which counts the
 # interpolations in the source instead. A name reaches the priming write only by
-# interpolating one of the two persona variables, so a fourth shape is a fifth
+# interpolating one of the two persona variables, so a fourth shape is a sixth
 # interpolation, and the count reds when one appears in a shape this sweep does
 # not read.
 check_spliced_names() {  # <label>
