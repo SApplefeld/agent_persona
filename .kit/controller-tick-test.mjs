@@ -19,8 +19,9 @@
 // Usage: node controller-tick-test.mjs
 // Exits 0 on success, 1 on failure.
 
-import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, HARNESS_CWD, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, jevResponseFor, JEV_FAKE_KEY, JOURNAL_MARK } from "./tick-harness.mjs";
+import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, HARNESS_CWD, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, jevResponseFor, JEV_FAKE_KEY, JOURNAL_MARK, storedGoalTrees } from "./tick-harness.mjs";
 import { DECISIONS_MAX, MEMORY_MAX, PLAN_PATH_PATTERN, PLAN_PATH_TEXT_PATTERN, isActivationEligible, parseState, resolvePlanPath } from "../hooks/agent-state.ts";
+import * as AgentState from "../hooks/agent-state.ts";
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -3332,7 +3333,12 @@ async function main() {
     await caseGtc4_aFinishedRootNeedsNoReplace(clock);
     await caseGtc4_aFailedHistoryWriteStopsTheReplacement(clock);
     await caseGtc4_goalAddUnderAFinishedRootReopensIt(clock);
-    await caseGtc4_thePausedReminderNamesReplaceTrue(clock);
+    await caseGtc4_aPausedOnlyTreeReadsTheQueueBlocksIdleLine(clock);
+    await caseIq_theQueueBlockListsEveryOpenEntryInActivationOrder(clock);
+    await caseIq_theDevPluginShapeIsIdleUntilOneIsResumed(clock);
+    await caseIq_theHelpersReadTheControllersWalk(clock);
+    await caseIq_thirteenOpenEntriesListTwelveAndACount(clock);
+    await caseIq_theEmptyAndActiveTreesKeepTheirBlocks(clock);
     await caseKeeperPark1_parkTrueWritesParkRequested(clock);
     await caseKeeperPark1_noParkWritesShutdownRequested(clock);
     await caseKeeperPark1_parkFromANonOwnerIsRefused(clock);
@@ -3449,6 +3455,9 @@ async function main() {
   await caseHeartbeatPathAnchoredToLaunchDirectory(clock);
   await caseHeartbeatPathFallsBackWhenLaunchDirectoryIsUnknown(clock);
   await caseWorkdirPathHandlesAWindowsRootWithATrailingSeparator(clock);
+
+  // Reads every tree the cases above stored, so it runs last.
+  await caseIq_theHelperAgreesWithActivateNextOnEveryStoredTree();
 
   console.log(`\n${failures === 0 ? "PASS" : "FAIL"}: ${failures} failure(s)`);
   process.exit(failures);
@@ -18126,18 +18135,192 @@ async function caseGtc4_goalAddUnderAFinishedRootReopensIt(clock) {
     liveRes?.deny === undefined && !getDecisions(live).some((d) => d.action === "root_reopened"), getDecisions(live).map((d) => d.action));
 }
 
-// The paused reminder names the way to replace the tree.
-async function caseGtc4_thePausedReminderNamesReplaceTrue(clock) {
-  console.log("\n=== Goal tree curation 4: the paused reminder names goal_create with replace: true ===");
+// A tree whose only open entry is paused reads the queue block, whose last
+// line says nothing there starts by itself and names the ways through.
+async function caseGtc4_aPausedOnlyTreeReadsTheQueueBlocksIdleLine(clock) {
+  console.log("\n=== Goal tree curation 4: a paused-only tree reads the queue block's all-paused last line ===");
   clock.set(T0);
-  const h = await gtc3Harness("gtc4_paused_reminder", gtc4Tree("pending", [
+  const h = await gtc3Harness("gtc4_paused_only_queue_idle_line", gtc4Tree("pending", [
     { id: "plan-1", parentId: "root-1", kind: "plan", status: "paused", title: "Plan one", blockedReason: "paused by operator" },
   ]));
+  const blocks = await iqPromptBlocks(h);
+  const queue = blocks.find((b) => b.startsWith("[GOAL QUEUE]"));
+  const lines = queue ? queue.split("\n") : [];
+  check("gtc4 paused-only tree: the queue block is injected and its last line is the all-paused sentence",
+    !!queue && lines[lines.length - 1] === IQ_IDLE_LINE, blocks);
+}
+
+// --- Idle queue: the [GOAL QUEUE] block and the idle helper ---
+
+// The two closing sentences the queue block ends on, written out here rather
+// than read from the plugin, so a drift in either is a failure.
+const IQ_STARTABLE_LINE = "The next pending entry starts on the controller's next tick; do not start it by hand.";
+const IQ_IDLE_LINE = "Nothing here starts by itself: every open entry is paused, blocked or out of the controller's reach. Ask the operator or the coordinator which to release. On the operator's or the coordinator's word, resume a paused one with goal_resume or drop one with goal_edit.";
+
+// The context blocks one external prompt carries.
+async function iqPromptBlocks(h) {
   const out = await h.handlers["prompt.submit"](h.fake, { text: "hello" }, async () => ({}));
-  const blocks = (out?.context ?? []).map(String);
-  const paused = blocks.find((b) => b.startsWith("Goal tree paused"));
-  check("gtc4 paused reminder: the block is injected and names goal_create with replace: true",
-    !!paused && paused.includes("goal_create with replace: true"), blocks);
+  return (out?.context ?? []).map(String);
+}
+
+// The blocks the goal-tree branch owns, counted by their openers, so a case
+// can say which of the three a prompt carried and that it carried one.
+function iqGoalBlocks(blocks) {
+  return {
+    tree: blocks.filter((b) => b.startsWith("[GOAL TREE]")),
+    queue: blocks.filter((b) => b.startsWith("[GOAL QUEUE]")),
+    noGoal: blocks.filter((b) => b.startsWith("No goal is active.")),
+    oldPaused: blocks.filter((b) => b.startsWith("Goal tree paused")),
+  };
+}
+
+// Three open entries whose sortKeys run against their createdAt order, one
+// complete entry the block leaves out, a title past 40 characters and a
+// reason past 60. The block lists the three in sortKey order, each opening
+// with its status, then the kind, id, cut title and cut reason, and ends on
+// the startable sentence because task-b is a pending leaf the walk reaches.
+async function caseIq_theQueueBlockListsEveryOpenEntryInActivationOrder(clock) {
+  console.log("\n=== Idle queue: the queue block lists every open entry in sortKey order with its status ===");
+  clock.set(T0);
+  const longTitle = "Memory record provenance across every store the fleet reads";
+  const longReason = "Queued paused on the coordinator's word after PR 79; starts after plan 8 merges";
+  const h = await gtc3Harness("iq_three_open", gtc4Tree("pending", [
+    { id: "plan-a", parentId: "root-1", kind: "plan", status: "paused", title: longTitle, blockedReason: longReason, createdAt: T0 - 45000, sortKey: T0 - 10000 },
+    { id: "task-b", parentId: "root-1", kind: "task", status: "pending", title: "Task bee", createdAt: T0 - 30000, sortKey: T0 - 30000 },
+    { id: "plan-c", parentId: "root-1", kind: "plan", status: "blocked", title: "Plan sea", blockedReason: "Max rounds reached", createdAt: T0 - 44000, sortKey: T0 - 20000 },
+    { id: "plan-d", parentId: "root-1", kind: "plan", status: "complete", title: "Plan done", createdAt: T0 - 46000 },
+  ]));
+  const blocks = await iqPromptBlocks(h);
+  const g = iqGoalBlocks(blocks);
+  check("iq three open: exactly one [GOAL QUEUE] block, and no [GOAL TREE], [NO GOAL] or old paused block",
+    g.queue.length === 1 && g.tree.length === 0 && g.noGoal.length === 0 && g.oldPaused.length === 0, blocks);
+  const lines = g.queue.length === 1 ? g.queue[0].split("\n") : [];
+  const expected = [
+    "[GOAL QUEUE]",
+    "- pending task task-b | Task bee",
+    "- blocked plan plan-c | Plan sea | Max rounds reached",
+    `- paused plan plan-a | ${longTitle.slice(0, 40)} | ${longReason.slice(0, 60)}`,
+    IQ_STARTABLE_LINE,
+  ];
+  check("iq three open: three entry lines in sortKey order, each opening with its status, the title cut to 40 and the reason to 60",
+    JSON.stringify(lines) === JSON.stringify(expected), { lines, expected });
+  check("iq three open: the complete entry and the root are not listed",
+    !lines.some((l) => l.includes("plan-d") || l.includes("root-1")), lines);
+}
+
+// The DEV-PLUGIN shape: a complete plan beside paused ones and no pending
+// leaf. Nothing starts by itself, so the helper is false and the block ends
+// on the all-paused sentence. goal_resume on one of them makes it true, and
+// the next prompt carries [GOAL TREE] rather than the queue.
+async function caseIq_theDevPluginShapeIsIdleUntilOneIsResumed(clock) {
+  console.log("\n=== Idle queue: a complete plan beside paused ones is idle until one is resumed ===");
+  clock.set(T0);
+  const tree = gtc4Tree("pending", [
+    { id: "plan-8", parentId: "root-1", kind: "plan", status: "complete", title: "Plan eight", createdAt: T0 - 40000 },
+    { id: "plan-9", parentId: "root-1", kind: "plan", status: "paused", title: "Memory record provenance", blockedReason: "Queued paused on the coordinator's word after PR 79; starts after plan 8", createdAt: T0 - 39000 },
+    { id: "plan-10", parentId: "root-1", kind: "plan", status: "paused", title: "Plan ten", blockedReason: "Queued paused", createdAt: T0 - 38000 },
+    { id: "plan-11", parentId: "root-1", kind: "plan", status: "paused", title: "Plan eleven", blockedReason: "Queued paused", createdAt: T0 - 37000 },
+  ]);
+  const idle = makeState({ now: T0, goals: structuredClone(tree), activeGoalId: null });
+  check("iq dev-plugin: hasStartableWork is false and nextStartableLeaf is null",
+    AgentState.hasStartableWork(idle) === false && AgentState.nextStartableLeaf(idle) === null,
+    { hasStartableWork: typeof AgentState.hasStartableWork, nextStartableLeaf: typeof AgentState.nextStartableLeaf });
+  const h = await gtc3Harness("iq_dev_plugin", tree);
+  const g = iqGoalBlocks(await iqPromptBlocks(h));
+  const lines = g.queue.length === 1 ? g.queue[0].split("\n") : [];
+  check("iq dev-plugin: the queue block lists the three paused plans and ends on the all-paused sentence",
+    lines.length === 5 && lines.slice(1, 4).every((l) => l.startsWith("- paused plan ")) && lines[4] === IQ_IDLE_LINE, lines);
+  const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_resume", nodeId: "plan-9" });
+  const resumed = getState(h);
+  check("iq dev-plugin: after goal_resume of plan-9, hasStartableWork is true",
+    res?.deny === undefined && AgentState.hasStartableWork(resumed) === true, { res, goals: resumed.goals.map((n) => [n.id, n.status]) });
+  const after = iqGoalBlocks(await iqPromptBlocks(h));
+  check("iq dev-plugin: the next prompt carries [GOAL TREE] and no queue block",
+    after.tree.length === 1 && after.queue.length === 0, after);
+}
+
+// A pending leaf under a paused plan is not startable, for the helper and the
+// controller alike, and openGoals is one flat sortKey order over every open
+// non-root entry rather than the controller's level walk.
+async function caseIq_theHelpersReadTheControllersWalk(clock) {
+  console.log("\n=== Idle queue: the helpers read the controller's walk, and openGoals is one flat order ===");
+  clock.set(T0);
+  const goals = gtc4Tree("pending", [
+    { id: "plan-p", parentId: "root-1", kind: "plan", status: "paused", title: "Paused plan", createdAt: T0 - 40000, sortKey: T0 - 5000 },
+    { id: "task-u", parentId: "plan-p", kind: "task", status: "pending", title: "Under paused", createdAt: T0 - 39000 },
+    { id: "plan-x", parentId: "root-1", kind: "plan", status: "abandoned", title: "Dropped", createdAt: T0 - 38000 },
+  ]);
+  const state = makeState({ now: T0, goals, activeGoalId: null });
+  // makeState keeps the goals array by reference, so the mutation check
+  // compares against a copy taken before any helper runs.
+  const goalsBefore = JSON.stringify(state.goals);
+  const open = AgentState.openGoals?.(state)?.map((n) => n.id);
+  check("iq helpers: openGoals is task-u then plan-p by sortKey-or-createdAt, leaving out the root and the abandoned entry",
+    JSON.stringify(open) === JSON.stringify(["task-u", "plan-p"]), open);
+  const probe = structuredClone(state);
+  check("iq helpers: a pending leaf under a paused plan is not startable, and activateNext activates nothing there either",
+    AgentState.hasStartableWork(state) === false && AgentState.nextStartableLeaf(state) === null && AgentState.activateNext(probe) === null,
+    { hasStartableWork: typeof AgentState.hasStartableWork });
+  check("iq helpers: the helpers mutate nothing",
+    JSON.stringify(state.goals) === goalsBefore && state.activeGoalId === null, state.goals);
+}
+
+// Thirteen open entries list twelve and a count of one more.
+async function caseIq_thirteenOpenEntriesListTwelveAndACount(clock) {
+  console.log("\n=== Idle queue: thirteen open entries list twelve and a count of one more ===");
+  clock.set(T0);
+  const tasks = [];
+  for (let i = 1; i <= 13; i++) {
+    tasks.push({ id: `task-${String(i).padStart(2, "0")}`, parentId: "root-1", kind: "task", status: "paused", title: `Task ${i}`, blockedReason: "held", createdAt: T0 - 40000 + i });
+  }
+  const h = await gtc3Harness("iq_thirteen", gtc4Tree("pending", tasks));
+  const g = iqGoalBlocks(await iqPromptBlocks(h));
+  const lines = g.queue.length === 1 ? g.queue[0].split("\n") : [];
+  const entryLines = lines.filter((l) => l.startsWith("- "));
+  check("iq thirteen: twelve entry lines, task-01 through task-12 in order",
+    entryLines.length === 12 && entryLines.every((l, i) => l.startsWith(`- paused task task-${String(i + 1).padStart(2, "0")} |`)), lines);
+  check("iq thirteen: the count line names one more, and the block still ends on its closing sentence",
+    lines[lines.length - 2] === "...and 1 more open entry." && lines[lines.length - 1] === IQ_IDLE_LINE, lines.slice(-2));
+}
+
+// An empty tree carries [NO GOAL] and no queue block. A tree with an active
+// entry carries [GOAL TREE] and neither of the others.
+async function caseIq_theEmptyAndActiveTreesKeepTheirBlocks(clock) {
+  console.log("\n=== Idle queue: an empty tree keeps [NO GOAL], an active tree keeps [GOAL TREE] ===");
+  clock.set(T0);
+  const empty = iqGoalBlocks(await iqPromptBlocks(await gtc3Harness("iq_empty", [])));
+  check("iq empty: one [NO GOAL] block and no [GOAL QUEUE] or [GOAL TREE] block",
+    empty.noGoal.length === 1 && empty.queue.length === 0 && empty.tree.length === 0, empty);
+  const active = iqGoalBlocks(await iqPromptBlocks(await gtc3Harness("iq_active", gtc3Tree())));
+  check("iq active: one [GOAL TREE] block and no [GOAL QUEUE] or [NO GOAL] block",
+    active.tree.length === 1 && active.queue.length === 0 && active.noGoal.length === 0, active);
+}
+
+// Every goal tree any persona store in this run held, the fixtures the cases
+// seeded and the trees the plugin wrote from them, is checked: where no node
+// is active, hasStartableWork is true exactly where activateNext with no
+// completedId activates a node. activateNext runs on a clone, since it
+// mutates the state it is handed. Runs last, so it reads every case's trees.
+async function caseIq_theHelperAgreesWithActivateNextOnEveryStoredTree() {
+  console.log("\n=== Idle queue: hasStartableWork agrees with activateNext on every stored tree with no active node ===");
+  let compared = 0;
+  let startable = 0;
+  const disagreements = [];
+  for (const goals of storedGoalTrees.values()) {
+    if (goals.some((n) => n.status === "active")) continue;
+    compared++;
+    const probe = { goals: structuredClone(goals), activeGoalId: null };
+    const helper = AgentState.hasStartableWork({ goals: structuredClone(goals), activeGoalId: null });
+    const activated = AgentState.activateNext(probe) !== null;
+    if (activated) startable++;
+    if (helper !== activated) disagreements.push({ helper, activated, goals: goals.map((n) => [n.id, n.parentId, n.status]) });
+  }
+  check(`iq sweep: hasStartableWork matches activateNext on all ${compared} stored trees with no active node`,
+    compared > 0 && disagreements.length === 0, disagreements.slice(0, 3));
+  // The sweep proves agreement only if it saw both answers, so a tree set of
+  // one kind cannot pass it silently.
+  check(`iq sweep: the trees include both kinds, ${startable} startable and ${compared - startable} idle`,
+    startable > 0 && compared - startable > 0, { compared, startable });
 }
 
 // The deny text supervisor_shutdown returns for a non-owner and for a refused
