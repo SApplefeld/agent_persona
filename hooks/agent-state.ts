@@ -984,7 +984,7 @@ export function openGoals(state: AgentState): GoalNode[] {
 
 // Whether the tree holds work the controller will run on its own: an active
 // node, or a leaf its walk from the root would activate. False means every
-// open entry is paused, blocked or below one, which is the idle tree.
+// open entry is paused, blocked or out of the walk's reach, which is the idle tree.
 export function hasStartableWork(state: AgentState): boolean {
   if (state.goals.some((g) => g.status === "active")) return true;
   return nextStartableLeaf(state) !== null;

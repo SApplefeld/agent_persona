@@ -158,7 +158,7 @@ move as other plans merge, so find each site by the names and comment text given
    where one is set. Past twelve lines it prints the count of the rest. Its last line
    depends on `hasStartableWork`. Where true: "The next pending entry starts on the controller's
    next tick; do not start it by hand." Where false: "Nothing here starts by itself: every open
-   entry is paused or blocked. Resume one with goal_resume, drop one with goal_edit, or ask the
+   entry is paused, blocked or out of the controller's reach. Resume one with goal_resume, drop one with goal_edit, or ask the
    operator." The `[NO GOAL]` block keeps firing only on an empty tree. The ledger entry
    `GOAL_TREE_PAUSED_BLOCK` is replaced by `GOAL_QUEUE_BLOCK`. The block is built as a template
    chain whose entry lines and count line are one named part, and the extractor sizes it with
@@ -167,11 +167,14 @@ move as other plans merge, so find each site by the names and comment text given
 3. The coordinator's instruction gains three sentences. Future work is queued as a `pending` plan
    with `goal_add`, ordered with `goal_edit reprioritize`, and the plugin starts the next pending
    plan by itself when the current one completes. `paused` is for an entry that cannot proceed
-   until someone acts, and a paused entry starts again only on `goal_resume`. An entry that reads
+   until someone acts, and the controller never starts a paused entry from the queue. An entry that reads
    `paused` with a release condition in its reason is a queue mistake, and the coordinator has the
-   worker resume it in `sortKey` order.
-4. The priming line reads "If a goal tree exists, resume it from goal_status, whether or not an
-   entry is active" in both `PRIMING_BODY` forms, and `goal_edit`'s description says a pause is for
+   worker drop it with `goal_edit` and `goal_add` it again as `pending` with the same `planPath`,
+   never resume it, since `goal_resume` pauses whatever entry is active. A drop does not reach a
+   node's children, so any open task under the entry is dropped first, after a pause if it is active.
+4. The priming line reads "If a goal tree holds open entries, resume the tree from goal_status
+   whether or not an entry is active, and leave a paused entry for the operator or the coordinator
+   to release" in both `PRIMING_BODY` forms, and `goal_edit`'s description says a pause is for
    stuck work and queued work stays pending.
 
 ## Sections of Work
@@ -220,6 +223,7 @@ Files in scope: `hooks/agent-state.ts` (the two helpers and the walk lifted out 
 
 ### 2. The coordinator queues pending, and the priming names the whole tree
 Model: sonnet
+Locus: inline
 
 The coordinator's instruction, the two priming lines and the `goal_edit` description gain the text
 the design states, each written to the register of the text around it. `README.md` states the
@@ -245,7 +249,10 @@ Acceptance:
   actuator list, `docs/architecture.md` carries the row, and no em dash is in the new text.
 
 Files in scope: `bin/supervise.sh` (the coordinator instruction and the two priming lines),
-`hooks/index.ts` (the `goal_edit` description), `.kit/injection-ledger.json`,
+`hooks/index.ts` (the `goal_edit` description, and the queue block's closing line, folded in
+review), `.kit/controller-tick-test.mjs` (that line's pin, folded in review),
+`hooks/agent-state.ts` (the `hasStartableWork` comment, folded in review),
+`.kit/injection-ledger.json`,
 `.kit/injection-ledger.mjs` where an anchor moves, `README.md`, `docs/architecture.md`.
 
 ## Out of Scope
@@ -318,6 +325,32 @@ Gate: targeted lane at close, on the worktree at 25b5746 plus the close-pass edi
 Next: 2. The coordinator queues pending, and the priming names the whole tree
 Commit Model: Branch-and-PR
 Delta: taken 2026-09-23 on SCOTT-CLAUDE in D:/agent_persona-idle;
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
+
+### Chapter 2 - 2026-09-23
+Completed: 2. The coordinator queues pending, and the priming names the whole tree
+Implemented By: main session (Locus: inline, recorded under the section's Model line, since the section writes under docs/)
+Metrics: review rounds 3, closed major-closed; provenance 2 spec-traceable, 2 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+  - Section 2 open: changes the coordinator instruction, both PRIMING_BODY lines and the goal_edit description to say queued work stays pending, plus a README rule, an actuator-list mention and an architecture failure-modes row; serves Design points 3 and 4 and the section's acceptance bullets; adds no mechanism (text only); size about 6 sentences of injected text and 3 doc passages; not building it leaves coordinators queuing plans as paused, the DEV-PLUGIN plan 9 shape.
+  - Round 1 blind Major (resume in sortKey order displaces the active plan): changes the coordinator instruction's last queue sentence to have the worker drop the wrongly paused entry and goal_add it again as pending, in sortKey order; serves acceptance bullet 1 ("what to do with a paused entry carrying a release condition"); adds no mechanism (text only, goal_edit drop and goal_add already exist); size one sentence, about 30 words; not building it has coordinators tell workers to goal_resume a queued plan, which pauses the running plan with a release-shaped reason.
+  - Round 2 Major (drop leaves a plan's open tasks orphaned): adds one sentence to the coordinator instruction, the README paragraph and the architecture row saying a drop does not reach children, so open tasks are dropped first; serves acceptance bullet 1; adds no mechanism (text only, no cascade built); size one sentence per surface, about 20 words each; not building it has a re-queued plan leave tasks open forever, listed in the queue and holding the planner off.
+  - Round 2 Major (goal_edit description says a drop is only for work that will not be done): widens that clause to name the re-queue case and the children limit; serves acceptance bullet 3; adds no mechanism; size about 25 words; not building it has a worker's tool contract contradict the coordinator's steer.
+  - The design's own repair was wrong. Design point 3 told the coordinator to have a worker resume a wrongly paused plan in order, but `goal_resume` pauses whatever entry is active (`hooks/index.ts:7449-7461`), so it would swap the running plan out. Both round 1 lenses found it independently. The shipped repair drops the entry and adds it again as `pending` with the same `planPath`, dropping its open tasks first because a drop does not reach children (`hooks/index.ts:7117-7135`). `goal_add` sets no sort key (`hooks/index.ts:6979-6998`), so re-adding in the old order keeps the queue order. Approach points 2 to 4 are updated to the shipped wording; design intent is unchanged.
+  - The priming line now reads "If a goal tree holds open entries, resume the tree from goal_status whether or not an entry is active, and leave a paused entry for the operator or the coordinator to release". The design's "exists" also named a finished tree, and "resume it" read as a call to `goal_resume` on stuck work, which the Intent refuses.
+  - The queue block's idle line from section 1 now reads "every open entry is paused, blocked or out of the controller's reach". The old "paused or blocked" was false for a pending entry under a paused parent or a pending plan whose tasks are all abandoned.
+  - Folds widened the Files in scope line: `hooks/index.ts` for that closing line, `.kit/controller-tick-test.mjs` for its pin, and `hooks/agent-state.ts` for the `hasStartableWork` comment. This is approval drift above `## Chapters`, recorded here.
+  - Riding outside the section: `docs/security-model.md` lost three sentences on the relay's confirm-first instruction, on the operator's word on 2026-09-23, in its own commit d0f7f88. The five-repositories backlog entry records the operator's 2026-09-23 decision to add the review rule later. The "No goal verb returns a paused entry to pending" entry now names the drop-and-re-add workaround and its cost.
+  - main was merged in (a201bd1) to bring PR 80's security model onto the branch; the one conflict, `docs/backlog.md`, kept both sides' live entries and dropped the retired tree-lag entry. That merge took the whole gate: 25 of 25 lanes exit 0, gate.exit 0, SCOTT-CLAUDE at 2026-09-23T11:20Z, clean worktree at a201bd1.
+Assumptions: none
+Review Findings: review: code pair at fable, Agent tool (round 1); review: adversarial at opus, Workflow high (rounds 2 and 3). No Critical in any round. Round 1 Major (resume swaps the active plan) fixed in de25c8b, spec-traceable, the blind copy traced by the orchestrator to acceptance bullet 1. Round 2 Majors: drop orphans open tasks, and the goal_edit description contradicts the repair, both fix-introduced and fixed in f807fde. Round 2's third Major, that the section-1 string changed without an amendment record, states no failure scenario and was downgraded to a Minor claim; it is dispositioned by the fold record above. Round 3 Major (priming "resume it" invites a blind goal_resume) is spec-traceable to the Intent's refused blind resume, fixed at close. Minors: 9 fixed (1 in round 1's fix, 4 in round 2's, 4 at close), 1 upgraded to round 3's Major, 2 left with the reason. README's "says whether anything will start" is true at prompt time, because prompt.submit closes an open ask and reactivates its entry before the block is built (`hooks/index.ts:8051-8072`). reprioritize sorting ahead of finished siblings is harmless for activation and outside this plan, whose Out of Scope keeps activateNext's behavior. The close delta (one clause per surface) owed no round under the fix-delta bar: no outward action, no new module, and the ledger and duplicate tests read the text. The orchestrator re-read it as author, not as a round.
+Stamps: adjudicated 1, stamped 0 (pr-ready-mark-is-the-reviewers-after-verification was read and changed nothing built here)
+Gate: targeted lane at close: tsc, check-loader-rule, channel-reply-instruction-test.sh, supervisor-model-test.sh, injection-duplicate-test.mjs, tool-description-length-test.mjs, controller-tick-test.mjs, each exit 0, 93 s wall, SCOTT-CLAUDE at 2026-09-23T12:05Z on the idle-queue worktree at f807fde plus the close delta, no foreign suite running. Baseline on the same lane before the section: all exit 0, so no change. Test delta: 0 added, 0 retired, 1 edited (the tick suite's `IQ_IDLE_LINE` pin, twice, following the queue block's closing line, pinning the all-paused block's exact text). Ledger refreshed and byte-fresh against `node .kit/injection-ledger.mjs`.
+Next: finishing-work
+Commit Model: Branch-and-PR
+Delta: SCOTT-CLAUDE, 2026-09-23T12:07Z, idle-queue worktree before the close commit
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
