@@ -76,7 +76,7 @@ Acceptance:
 - The `README.md` sentence is present and states the behaviour with no change-narrative.
 - `node .kit/injection-duplicate-test.mjs` exits 0 and `node .kit/injection-ledger.mjs` output matches `.kit/injection-ledger.json`, since no prompt text or tool description changes.
 
-Files in scope: `hooks/index.ts` (the streak branch only), `.kit/controller-tick-test.mjs`, `README.md`.
+Files in scope: `hooks/index.ts` (the streak branch only), `.kit/controller-tick-test.mjs`, `.kit/tick-harness.mjs` (toast capture only), `README.md`.
 
 ## Out of Scope
 
@@ -98,3 +98,25 @@ Files in scope: `hooks/index.ts` (the streak branch only), `.kit/controller-tick
 - On NEO-CLAUDE, the architect's pending kaizen node "Kaizen: asks run out the clock" stays in its tree until the goal-levels plan routes it or you drop it with `goal_edit`. The tick activates a pending plan when no leaf is active, so dropping it before this plan lands is the safe move.
 
 ## Chapters
+
+### Chapter 1 - 2026-09-22
+Completed: 1. The streak branch opens no ask without an active node
+Implemented By: implementer-sonnet; the Minor close pass inline in the main session; no tier escalation
+Metrics: review rounds 1, closed claim-exit; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+- section open (2026-09-22): Section 1 makes the controller tick's error-streak branch in hooks/index.ts log one error_streak decision and set handledAt, and nothing more, when no goal node is active; with an active node it runs as today. Serves the Goal's "an error streak on a persona that holds no active goal node is logged and nothing more" and design points 1 to 3. Adds mechanism: no, it narrows an existing branch to its decision line. Size: about 10 lines in the branch, three or four tick cases, one README sentence, and a toast recorder in .kit/tick-harness.mjs so the "no toast" check can be observed. Cost of not building: a no-goal persona, the architect among them, keeps escalating an ask nobody can act on.
+- The plan header read `Status: Ready` at the run's start and now reads `Status: In Progress`, the executing-work start normalization.
+- Fold: `.kit/tick-harness.mjs` gained a toast recorder (`uiToasts`), since the harness's `toast` was a no-op and the Tests line's "no toast" lock could not be observed without it. It sits in the same directory as the test file, needs no new acceptance and is covered by the tick suite, so it was folded and the section's Files in scope line now names it. That line sits above Chapters, so the widening is recorded here as approval drift.
+- Related plans is stale: `agent_persona_goal-tree-curation_v1.md` merged as PR #71 and is archived, so its line no longer describes an open plan. The branch was cut from origin/main 4b61108, which carries it. Left for the finishing docs pass.
+- The branch was cut from origin/main 4b61108 as `no-goal-idle-build`; first-green commit b0df017.
+- With no ask open, step 4 of the tick now activates pending work during a no-active-node streak, where before the placeholder ask held it back. That is the tick's ordinary no-leaf behaviour and the plan's Operator Verification relies on it; the branch comment and the README say so.
+Assumptions: none
+Review Findings: `review: adversarial and blind at opus, Workflow, effort high` over 4b61108..b0df017, every assistant turn resolved claude-opus-5-5 (23 and 23). Critical 0, Major 0 from either lens. Minors: 7 as printed (5 adversarial, 3 blind, the README placement reported by both); 6 fixed in the close pass (the re-fire case now drives one further error turn instead of three, the README sentence moved out of the "While pendingAskId is set" list, the block header comment scoped to the active-node arm, the always-true status guard dropped, the branch comment names that pending work still activates, and the harness file named in Files in scope); 1 carried to docs/backlog.md (an active-leaf streak overwriting an open ask, which predates this plan). The close pass's delta took an author re-read, not a round: it changes no outward action and adds no module, and a control proved the strengthened case: with `envErrors.consecutiveErrorTurns = 0` inserted in the no-node arm the tick suite exited 1 on exactly "s13 errorstreak no-active refire: a second error_streak line was logged", then hooks/index.ts was restored from a pre-probe copy, cmp-identical, porcelain unchanged.
+Stamps: adjudicated 3, stamped 1 (pr-ready-mark-is-the-reviewers-after-verification, which governs the pull request step ahead); the two operator-tier records read in the window did not bear on this section.
+Gate: close gate 2026-09-23T00:58:25Z to 00:59:28Z on this machine, branch no-goal-idle-build at b0df017 plus the close-pass edits, the fleet's resident node processes running beside it and no foreign test runner or build. `npx tsc --noEmit` exit 0. `node .kit/controller-tick-test.mjs` exit 0, 2507 OK and 0 FAIL, against the section-open baseline of 2489 OK and 0 FAIL on the same command (+18 checks, all from the three new cases). `node .kit/injection-duplicate-test.mjs` exit 0. `node .kit/injection-ledger.mjs` output equals `.kit/injection-ledger.json` with line endings normalized (diff exit 0; a raw cmp differs only on CRLF against LF). Test delta: 3 added, 0 retired, 0 edited: caseS13_errorStreak_noActiveNode_emptyTree_logsOnlyAndOpensNoAsk pins that a streak with an empty tree opens no ask, record, toast or re-raise; caseS13_errorStreak_noActiveNode_completeRootOnly_logsOnlyAndOpensNoAsk pins the same with only a complete root; caseS13_errorStreak_noActiveNode_reFireAfterHandled_stillOpensNoAsk pins that one further error turn logs a second line and still opens nothing. Tests spawning a process: 0, the tick harness runs in-process (inferred from the harness's fake host). The red-before-change run is the implementer's report of 14 failing checks, which the adversarial reviewer's check-by-check count reproduced by reading; the control above is this session's own red. No wall-clock baseline was recorded on this lane.
+Next: finishing-work
+Commit Model: Branch-and-PR
+Delta: 2026-09-23T01:00Z, this machine, no foreign test runner live
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```

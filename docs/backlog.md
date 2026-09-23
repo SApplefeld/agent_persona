@@ -1,5 +1,9 @@
 # Backlog
 
+## An error streak on an active leaf overwrites an open ask without closing it (found 2026-09-22)
+
+The controller tick's error-streak branch in `hooks/index.ts`, on its active-node arm, sets `pendingAskId` to a new ask whether or not one is already open. A leaf can stay active while an ask is open, since the ASK-marker path pauses only the node it names. In that state the first ask record stays `open` in the store and no answer can match it. The behaviour predates the no-goal-idle plan, whose section 1 review surfaced it. Remedy: skip opening a second ask while `pendingAskId` is set, or close the old record as superseded before writing the new one. Proof: a tick case with an open ask and an active leaf reaching a streak shows one open ask record afterwards.
+
 ## README calls the guarded write the only store write path, and counts three claim sites where there are four (found 2026-09-22)
 
 `README.md` under the store's write paths says the only store write path is the guarded write, and its account of `writeClaimDirect` says it is shared across all three claim sites. The code writes the store outside `persist` through `writeClaimDirect` at four call sites in `hooks/index.ts`, and the comment beside the fourth still says three. Both statements predate the goal tree curation plan, whose docs pass found them. Remedy: name the claim write beside the guarded write in that README passage, and count the sites from `grep -n "await writeClaimDirect(" hooks/index.ts` at the time of the edit.

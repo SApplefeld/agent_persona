@@ -4277,7 +4277,7 @@ export const register: Register = async (on, options) => {
       }
 
       // 2a. C3: error streak branch (before the idle gate; H1: move out of the classify path).
-      // F6: route through the ask-operator path (paused, not blocked).
+      // F6: with an active node, route through the ask-operator path (paused, not blocked).
       // Re-fire rule: only when a new error occurred after handledAt.
       const envErrors = sess.state.monitor.env.errors;
       if (envErrors.consecutiveErrorTurns >= 3 && (!envErrors.handledAt || (envErrors.lastErrorAt && envErrors.lastErrorAt > envErrors.handledAt))) {
@@ -4285,7 +4285,8 @@ export const register: Register = async (on, options) => {
         const streakReason = `Error streak ${envErrors.consecutiveErrorTurns} turns; escalating`;
         envErrors.handledAt = streakTs;
         // Look up the active node; with none to pause, there is nothing for
-        // an ask to resume, so the streak is logged and nothing more.
+        // an ask to resume, so the streak is logged and nothing more. With no
+        // ask open, step 4 below still activates pending work on this tick.
         const activeForStreak = sess.state.goals.find((n) => n.status === "active");
         if (!activeForStreak) {
           sess.state.decisions.push({
@@ -4315,18 +4316,16 @@ export const register: Register = async (on, options) => {
             detail: `${nodeId}: error-streak: ${streakReason} (ask ${askId})`,
           });
           try { $.ui.toast(`Agentic: ${streakReason}`); } catch { /* non-fatal */ }
-          if (activeForStreak.status === "active") {
-            activeForStreak.status = "paused";
-            activeForStreak.blockedReason = streakReason;
-            activeForStreak.updatedAt = streakTs;
-            sess.state.decisions.push({
-              timestamp: streakTs,
-              loop: "goal",
-              action: "paused_by_controller",
-              detail: `${nodeId}: ${streakReason}`,
-            });
-            try { $.ui.status(""); } catch { /* non-fatal */ }
-          }
+          activeForStreak.status = "paused";
+          activeForStreak.blockedReason = streakReason;
+          activeForStreak.updatedAt = streakTs;
+          sess.state.decisions.push({
+            timestamp: streakTs,
+            loop: "goal",
+            action: "paused_by_controller",
+            detail: `${nodeId}: ${streakReason}`,
+          });
+          try { $.ui.status(""); } catch { /* non-fatal */ }
           sess.state.updatedAt = streakTs;
           await persist($);
         }

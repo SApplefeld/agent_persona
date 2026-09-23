@@ -15363,7 +15363,7 @@ async function caseS13_errorStreak_noActiveNode_completeRootOnly_logsOnlyAndOpen
 }
 
 // Error streak, no active node, re-fire: after the first streak is handled,
-// a further error turn crosses the streak threshold again and logs a second
+// one further error turn re-fires the branch and logs a second
 // error_streak line, still opening nothing (the re-fire rule is unchanged).
 async function caseS13_errorStreak_noActiveNode_reFireAfterHandled_stillOpensNoAsk(clock) {
   console.log("\n=== S13 errorstreak (no active node, re-fire): a second streak logs a second line, still opens nothing ===");
@@ -15384,15 +15384,14 @@ async function caseS13_errorStreak_noActiveNode_reFireAfterHandled_stillOpensNoA
   await tickAndSettle(h, clock, 20);
   check("s13 errorstreak no-active refire: the first streak logged one error_streak line",
     countAction(getDecisions(h), "error_streak") === 1, getDecisions(h).map((d) => d.action));
-  // A further error turn after handledAt re-fires the branch. The clock
-  // advances first so this batch's lastErrorAt lands strictly after the
-  // handledAt the first streak just stamped.
+  // One further error turn after handledAt re-fires the branch: the counter
+  // still stands at three and this turn takes it to four. The clock advances
+  // first so this turn's lastErrorAt lands strictly after the handledAt the
+  // first streak just stamped. One turn rather than three is what catches a
+  // branch that zeroes the counter.
   clock.advance(10_000);
-  for (let i = 1; i <= 3; i++) {
-    const turnId = `t-refire-b-${i}`;
-    await startH(h.fake, { turnId }, async () => ({ result: "ok" }));
-    await completeH(h.fake, { turnId, reason: "error" }, async () => ({ result: "ok" }));
-  }
+  await startH(h.fake, { turnId: "t-refire-b-1" }, async () => ({ result: "ok" }));
+  await completeH(h.fake, { turnId: "t-refire-b-1", reason: "error" }, async () => ({ result: "ok" }));
   clock.advance(10_000);
   await tickAndSettle(h, clock, 20);
   const decisions = getDecisions(h);
