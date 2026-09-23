@@ -68,10 +68,11 @@ export interface GoalNode {
                               // node, so turn.complete can reactivate it on the worker's
                               // next completed turn that calls a real work tool, without
                               // reactivating a node paused for any other reason.
-  kaizenSignal?: string; // plan item 8.4: set on a plan the self-review loop raised
-                         // from the worker's own record, naming the weakness signal
-                         // it was raised for, so the loop never raises the same
-                         // signal twice while one is open.
+  kaizenSignal?: string; // plan item 8.4: set on a plan an earlier self-review loop
+                         // raised from the worker's own record, naming the weakness
+                         // signal. The loop writes no such node now; the tick sends
+                         // an open one to the coordinator persona as a finding and
+                         // abandons it.
   planPath?: string; // Section 1 (plan-health-from-the-record): the plan document's
                       // path, relative to the persona's working directory, in the
                       // form docs/plans/<name>.md. Set on a plan node only, by
@@ -136,6 +137,15 @@ export function envNotable(env: EnvState, now: number): string[] {
   return facts;
 }
 
+export interface SentFinding {
+  signal: string;
+  text: string;
+  sentAt: number;
+  writer: string;
+  seq: number;
+  delivered: boolean;
+}
+
 export interface MonitorState {
   sessionStart: number;
   turnCount: number;
@@ -151,6 +161,13 @@ export interface MonitorState {
     windowStart: number;    // ms; reset count when now - windowStart >= 3600000
     pendingPeriodic: boolean; // set by goal_done, consumed by tick (S9)
     lastInjectAt: number;   // 0 = never; gates lesson_inject (S11)
+    // The finder's ledger of the self-review findings it sent. The inbox
+    // record is only the carrier: a record can be skipped, and a delivered
+    // one is swept, so this list is what the settle step reads back and what
+    // the cool-off counts from. `writer` and `seq` key the record in the
+    // coordinator persona's inbox; an entry announced on the persona's own
+    // thread instead carries an empty writer and a seq of 0.
+    sent: SentFinding[];
   };
   cost: {
     classify: { count: number; estTokens: number };
@@ -395,7 +412,7 @@ export function createDefaultState(persona: string, sessionId: string): AgentSta
         health: null,
         errors: { consecutiveErrorTurns: 0, toolErrorsLastTurn: 0 },
       },
-      selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: false, lastInjectAt: 0 },
+      selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: false, lastInjectAt: 0, sent: [] },
       cost: {
         classify: { count: 0, estTokens: 0 },
         reason: { count: 0, estTokens: 0 },
@@ -730,8 +747,13 @@ export function parseState(json: string): AgentState {
   if (!state.monitor.selfReview) {
     state.monitor.selfReview = {
       count: 0, lastAt: 0, turnsSince: 0, windowStart: 0,
-      pendingPeriodic: false, lastInjectAt: 0,
+      pendingPeriodic: false, lastInjectAt: 0, sent: [],
     };
+  }
+  // The findings ledger, filled at the same site for a store written before
+  // it existed.
+  if (!Array.isArray(state.monitor.selfReview.sent)) {
+    state.monitor.selfReview.sent = [];
   }
 
   // Cost ledger: fill with defaults at the E11 site, no version bump.

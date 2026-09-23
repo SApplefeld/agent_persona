@@ -47,7 +47,7 @@ import {
   hasStartableWork,
 } from "./agent-state";
 import { readPlanRecord } from "./plan-record";
-import type { AgentState, FleetHealth, FleetHealthMemo, GoalNode, NudgeBudget, EnvGit, EnvState } from "./agent-state";
+import type { AgentState, FleetHealth, FleetHealthMemo, GoalNode, NudgeBudget, EnvGit, EnvState, SentFinding } from "./agent-state";
 import {
   claimResource,
   readAllClaims,
@@ -82,6 +82,8 @@ import {
   writeInboxRecord,
   getHighestInboxSeq,
   listInboxRecords,
+  readInboxRecord,
+  sendPluginRecord,
   readReplyRecord,
   writeReplyRecord,
   listAskRecords,
@@ -97,7 +99,8 @@ import {
   evictSelfReview,
   isSelfScoringLesson,
   reviewOwnRecord,
-  kaizenSortKey,
+  FINDING_COOLOFF_MS,
+  FINDING_UNROUTABLE_AFTER_MS,
   KAIZEN_LONG_TURN_MS,
   KAIZEN_MESSAGE_WAIT_MS,
 } from "./self-review";
@@ -4453,6 +4456,141 @@ export const register: Register = async (on, options) => {
         const sr = sess.state.monitor.selfReview;
         const now = Date.now();
 
+        // Lines for the [KAIZEN] thread message, which carries only the
+        // findings that have no coordinator persona to reach. The body of a
+        // routed node or of a ledger entry is text out of the persona's store,
+        // so every line has its line breaks folded and passes through the
+        // delivery bracket neutralizer. No line names a node id.
+        const announced: string[] = [];
+        const announce = (line: string, signal: string): void => {
+          announced.push(bracketSafeText(`${line} (${signal})`.split(LINE_TERMINATOR).join(" ")));
+        };
+        // A finding's text below its [FINDING] line, for an announcement made
+        // from a ledger entry.
+        const findingBody = (text: string): string => text.split(LINE_TERMINATOR).slice(1).join(" ") || text;
+
+        // Sends one finding to the coordinator persona as a [FINDING] record
+        // and enters it in the ledger, or, given `resend`, sends that entry's
+        // text again and replaces its writer and seq while keeping its sentAt.
+        // A session on the default persona, a write the reach rule refuses,
+        // and a store that throws have no road: the finding is logged as
+        // finding_unroutable, announced on this persona's own thread, and
+        // entered as delivered with an empty writer and a seq of 0, so it is
+        // never read back or retried and still starts the cool-off. Returns
+        // the record id, or null on that path.
+        const sendFinding = async (signal: string, text: string, announceLine: string, resend?: SentFinding): Promise<string | null> => {
+          let problem: string;
+          try {
+            if (sess.persona === "default") {
+              problem = "the session is on the default persona, which has no road to a coordinator persona";
+            } else if (!await mayReachPersona(commonsStoreOf($), coordinatorPersona, sess.mySessionId, coordinatorPersona, architectPersona, sess.staleAfterMs)) {
+              problem = `the reach rule refuses this session's write to '${coordinatorPersona}'`;
+            } else {
+              const sent = await sendPluginRecord(commonsStoreOf($), coordinatorPersona, sess.mySessionId, text);
+              if (resend) {
+                resend.writer = sent.writer;
+                resend.seq = sent.seq;
+              } else {
+                sr.sent.push({ signal, text, sentAt: now, writer: sent.writer, seq: sent.seq, delivered: false });
+              }
+              sess.state.decisions.push({
+                timestamp: now,
+                loop: "monitor",
+                action: "finding_sent",
+                detail: `${signal}: record ${sent.id} to '${coordinatorPersona}'${resend ? " (sent again, the earlier record was skipped)" : ""}`,
+              });
+              return sent.id;
+            }
+          } catch (err) {
+            problem = `the write to '${coordinatorPersona}' failed: ${err instanceof Error ? err.message : String(err)}`;
+          }
+          if (resend) {
+            resend.writer = "";
+            resend.seq = 0;
+            resend.delivered = true;
+          } else {
+            sr.sent.push({ signal, text, sentAt: now, writer: "", seq: 0, delivered: true });
+          }
+          sess.state.decisions.push({
+            timestamp: now,
+            loop: "monitor",
+            action: "finding_unroutable",
+            detail: `${signal}: ${problem}; announced on this persona's own thread`,
+          });
+          announce(announceLine, signal);
+          return null;
+        };
+
+        // The settle step, on every tick that reaches this block and not only
+        // on one where a review is due: a persona with little to do takes few
+        // turns, and a lost record would otherwise go unnoticed for days. Each
+        // entry not yet delivered is read back. A record that reads delivered,
+        // answered or resolved settles the entry, and so does an absent one,
+        // since a pending record is never swept and an absent record has
+        // therefore already left pending. A skipped record is sent again. A
+        // record still pending FINDING_UNROUTABLE_AFTER_MS after the send has
+        // no coordinator persona to take it: the finding is announced here and
+        // the record is left in the store.
+        const ledgerBefore = JSON.stringify(sr.sent);
+        for (const entry of sr.sent) {
+          if (entry.delivered) continue;
+          const rec = await readInboxRecord(commonsStoreOf($), coordinatorPersona, entry.writer, entry.seq);
+          if (rec === null || rec.status === "delivered" || rec.status === "answered" || rec.status === "resolved") {
+            entry.delivered = true;
+          } else if (rec.status === "skipped") {
+            await sendFinding(entry.signal, entry.text, findingBody(entry.text), entry);
+          } else if (now - entry.sentAt >= FINDING_UNROUTABLE_AFTER_MS) {
+            entry.delivered = true;
+            sess.state.decisions.push({
+              timestamp: now,
+              loop: "monitor",
+              action: "finding_unroutable",
+              detail: `${entry.signal}: record ${rec.id} to '${coordinatorPersona}' still pending after ${Math.round(FINDING_UNROUTABLE_AFTER_MS / 3_600_000)}h; announced on this persona's own thread, record left in the store`,
+            });
+            announce(findingBody(entry.text), entry.signal);
+          }
+        }
+        // A delivered entry past the cool-off is dropped to keep the list
+        // short, except where it is its signal's latest: the review counts only
+        // the events after a signal's latest sentAt, so that entry is kept.
+        // The list holds at most one such entry per signal, plus the entries
+        // still inside the cool-off.
+        sr.sent = sr.sent.filter((e) => !(e.delivered && now - e.sentAt > FINDING_COOLOFF_MS
+          && sr.sent.some((later) => later.signal === e.signal && later.sentAt > e.sentAt)));
+
+        // A goal node an earlier self-review wrote, still open, is sent as a
+        // finding and abandoned, so the signal is in the ledger before the
+        // review below reads it and the node never holds the active slot.
+        let routedAny = false;
+        for (const node of sess.state.goals) {
+          if (typeof node.kaizenSignal !== "string") continue;
+          if (node.status !== "pending" && node.status !== "active" && node.status !== "paused" && node.status !== "blocked") continue;
+          const signal = node.kaizenSignal;
+          const recordId = await sendFinding(signal, `[FINDING] ${sess.persona} ${signal}\n${node.objective}`, node.objective);
+          const wasActive = node.status === "active" || sess.state.activeGoalId === node.id;
+          node.status = "abandoned";
+          node.updatedAt = now;
+          node.notes = [...(node.notes ?? []), recordId !== null
+            ? `Sent to the '${coordinatorPersona}' persona as finding record ${recordId}.`
+            : "The finding was announced on this persona's own thread."];
+          if (sess.state.activeGoalId === node.id) sess.state.activeGoalId = null;
+          sess.state.decisions.push({
+            timestamp: now,
+            loop: "goal",
+            action: "kaizen_node_routed",
+            detail: `${node.id} -> ${recordId ?? "announced on this persona's own thread"}`,
+          });
+          if (wasActive) {
+            const nextId = activateNext(sess.state);
+            activate($, nextId, `${node.id} routed as a finding`);
+          }
+          routedAny = true;
+        }
+        if (routedAny || JSON.stringify(sr.sent) !== ledgerBefore) {
+          sess.state.updatedAt = now;
+          await persist($);
+        }
+
         // S10: reset the hourly cap when the window has expired.
         if (sr.windowStart > 0 && now - sr.windowStart >= 3600000) {
           sr.count = 0;
@@ -4476,19 +4614,18 @@ export const register: Register = async (on, options) => {
           try {
             // Plan item 8.4: before asking the model for a lesson, read the
             // worker's own record mechanically. A repeated weakness becomes a
-            // kaizen goal (a plan under the root with a proof line, announced
-            // to the operator's thread in one line), or, where the loop can
-            // answer it by changing its own configuration, a change applied
-            // here and reported. When either happens the review is spent on
-            // it and no model lesson is written: a finding about the worker's
-            // own record is exactly the class item 8.2 keeps out of memory.
+            // finding sent to the coordinator persona, and where the loop can
+            // answer it by changing its own configuration, that change is
+            // applied here as well. When a finding is made the review is spent
+            // on it and no model lesson is written: a finding about the
+            // worker's own record is exactly the class item 8.2 keeps out of
+            // memory. A finding writes no goal node and leaves activeGoalId
+            // alone.
             const inboxForReview = sess.isOwner ? await listInboxRecords(commonsStoreOf($), sess.persona) : [];
             const findings = reviewOwnRecord(
-              { decisions: sess.state.decisions, memory: sess.state.memory, goals: sess.state.goals, inbox: inboxForReview },
-              { selfReviewEveryTurns, selfReviewDebounceTurns },
+              { decisions: sess.state.decisions, memory: sess.state.memory, inbox: inboxForReview, sent: sr.sent.map((e) => ({ signal: e.signal, sentAt: e.sentAt })) },
+              { selfReviewEveryTurns, selfReviewDebounceTurns, now },
             );
-            const root = sess.state.goals.find((g) => g.parentId === null);
-            const announced: string[] = [];
             for (const f of findings) {
               if (f.configFix) {
                 selfReviewEveryTurns = f.configFix.to;
@@ -4498,48 +4635,16 @@ export const register: Register = async (on, options) => {
                   action: "kaizen_config_adjusted",
                   detail: `${f.signal} x${f.count}: ${f.configFix.knob} ${f.configFix.from} -> ${f.configFix.to}`,
                 });
-                announced.push(f.rationale);
-                continue;
               }
-              // A goal needs a tree to live in; with no root the finding waits
-              // for the next review, when one may exist.
-              if (!root) continue;
-              const node: GoalNode = {
-                id: `plan-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-                parentId: root.id,
-                kind: "plan",
-                title: f.title.slice(0, 80),
-                objective: f.objective.slice(0, 500),
-                status: "pending",
-                source: "controller",
-                planningRounds: 0,
-                consecutiveBlockedPlannings: 0,
-                consecutivePlanningFailures: 0,
-                planningRound: 0,
-                maxRounds: 10,
-                completedRounds: 0,
-                scores: [],
-                notes: [],
-                createdAt: now,
-                updatedAt: now,
-                sortKey: kaizenSortKey(sess.state.goals, root.id, now),
-                kaizenSignal: f.signal,
-              };
-              sess.state.goals.push(node);
-              sess.state.decisions.push({
-                timestamp: now,
-                loop: "goal",
-                action: "kaizen_goal_proposed",
-                detail: `${node.id} (${f.signal} x${f.count}): "${f.title.slice(0, 50)}"`,
-              });
-              announced.push(`${f.rationale} (${f.signal}, node ${node.id})`);
+              const text = `[FINDING] ${sess.persona} ${f.signal} x${f.count}\n${f.configFix ? f.rationale : f.objective}`;
+              await sendFinding(f.signal, text, f.rationale);
             }
-            if (announced.length > 0) {
+            if (findings.length > 0) {
               sess.state.decisions.push({
                 timestamp: now,
                 loop: "monitor",
                 action: "self-review",
-                detail: `${trigger}: own record -> ${announced.length} kaizen finding(s), no lesson`,
+                detail: `${trigger}: own record -> ${findings.length} finding(s), no lesson`,
               });
               sr.count += 1;
               if (sr.windowStart === 0) sr.windowStart = now;
@@ -4548,14 +4653,8 @@ export const register: Register = async (on, options) => {
               sr.pendingPeriodic = false;
               sess.state.updatedAt = now;
               await persist($);
-              const kaizenText =
-                `[KAIZEN] Send each line below to the operator through the reply tool as written, then continue your work:\n` +
-                announced.map((line) => `- ${line}`).join("\n");
-              // A refused announcement is non-fatal: the decision log still
-              // carries the finding, and its entry has left the list.
-              await submitExpectedTurn($, expectedTurns, expectTurn({ kind: "plugin", text: kaizenText }));
             }
-            if (announced.length === 0) {
+            if (findings.length === 0) {
               const input = buildSelfReviewInput(
                 { monitor: sess.state.monitor, decisions: sess.state.decisions, memory: sess.state.memory, goals: sess.state.goals, activeGoalId: sess.state.activeGoalId },
                 now,
@@ -4639,6 +4738,15 @@ export const register: Register = async (on, options) => {
           }
           sess.state.updatedAt = now;
           await persist($);
+        }
+
+        if (announced.length > 0) {
+          const kaizenText =
+            `[KAIZEN] Send each line below to the operator through the reply tool as written, then continue your work:\n` +
+            announced.map((line) => `- ${line}`).join("\n");
+          // A refused announcement is non-fatal: the decision log still
+          // carries each finding, and its ledger entry reads delivered.
+          await submitExpectedTurn($, expectedTurns, expectTurn({ kind: "plugin", text: kaizenText }));
         }
       }
 

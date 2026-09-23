@@ -10,8 +10,8 @@ const {
   dedupeSelfReview,
   evictSelfReview,
   reviewOwnRecord,
-  kaizenSortKey,
   KAIZEN_MESSAGE_WAIT_MS,
+  FINDING_COOLOFF_MS,
 } = await import("../hooks/self-review.ts");
 
 let failed = 0;
@@ -220,9 +220,8 @@ function makeState(overrides = {}) {
 // --- Test 12: reviewOwnRecord counts each signal from the worker's own record (item 8.4) ---
 {
   const T = 1_700_000_000_000;
-  const srOpts = { selfReviewEveryTurns: 20, selfReviewDebounceTurns: 5 };
+  const srOpts = { selfReviewEveryTurns: 20, selfReviewDebounceTurns: 5, now: T + 1000 };
   const lesson = (id, text, createdAt) => ({ id, kind: "lesson", text, confidence: 0.5, source: "self-review", createdAt, lastAccessed: createdAt, accountCount: 0, pinned: false });
-  const root = { id: "root", status: "pending", kind: "root", parentId: null, createdAt: T - 100, updatedAt: T - 100 };
 
   // 12a: the retired tree-lag signal - worktree-cleared samples with no tree write between them
   // are the ordinary shape of section-by-section work under one plan node, so they raise nothing.
@@ -234,7 +233,7 @@ function makeState(overrides = {}) {
     { timestamp: T + 5, loop: "monitor", action: "env_git", detail: "env_git dirty=0 (was 4) branch b...origin/b" },
     { timestamp: T + 6, loop: "monitor", action: "env_git", detail: "env_git dirty=0 (was 0) branch b...origin/b" },
   ];
-  const treeLag = reviewOwnRecord({ decisions: treeLagDecisions, memory: [], goals: [root], inbox: [] }, srOpts);
+  const treeLag = reviewOwnRecord({ decisions: treeLagDecisions, memory: [], inbox: [], sent: [] }, srOpts);
   check("Test 12a: cleared worktree samples with no tree write between them yield no finding",
     treeLag.length === 0);
 
@@ -244,7 +243,7 @@ function makeState(overrides = {}) {
     lesson("m2", "When a reader claim is missing, investigate the root cause before retrying. No live reader.", T + 2),
     lesson("m3", "Run the harness before the live suite so a loader failure shows first.", T + 3),
   ];
-  const mem = reviewOwnRecord({ decisions: [], memory, goals: [root], inbox: [] }, srOpts);
+  const mem = reviewOwnRecord({ decisions: [], memory, inbox: [], sent: [] }, srOpts);
   check("Test 12b: memory_quality counts the duplicate pair (2) and not the distinct lesson",
     mem.length === 1 && mem[0].signal === "memory_quality" && mem[0].count === 2 && /Proof:/.test(mem[0].objective));
 
@@ -255,49 +254,61 @@ function makeState(overrides = {}) {
     { at: T, deliveredAt: T + 5000 },
     { at: T },
   ];
-  const wait = reviewOwnRecord({ decisions: [], memory: [], goals: [root], inbox }, srOpts);
+  const wait = reviewOwnRecord({ decisions: [], memory: [], inbox, sent: [] }, { ...srOpts, now: T + KAIZEN_MESSAGE_WAIT_MS + 1000 });
   check("Test 12c: message_wait counts the two records at or past the bound", wait.length === 1 && wait[0].signal === "message_wait" && wait[0].count === 2);
 
-  // 12d: a closed kaizen node for a signal hides the events before it; only newer ones count.
-  const closedKaizen = { id: "k1", status: "complete", kind: "plan", parentId: "root", createdAt: T + 1, updatedAt: T + 5, kaizenSignal: "asks_unresolved" };
+  // 12d: the cool-off, both directions. A signal sent within FINDING_COOLOFF_MS of `now` yields
+  // nothing, whatever events came after the send. Past the cool-off only events after the
+  // signal's latest sentAt count toward the next finding.
+  const sentAt = T + 10;
   const askDecisions = [
     { timestamp: T + 2, loop: "monitor", action: "ask_timeout", detail: "old" },
     { timestamp: T + 3, loop: "monitor", action: "ask_reraised", detail: "old" },
-    { timestamp: T + 6, loop: "monitor", action: "ask_timeout", detail: "new" },
+    { timestamp: T + 20, loop: "monitor", action: "ask_timeout", detail: "new 1" },
+    { timestamp: T + 30, loop: "monitor", action: "ask_reraised", detail: "new 2" },
+    { timestamp: T + 40, loop: "monitor", action: "ask_timeout", detail: "new 3" },
   ];
-  const sinceClosed = reviewOwnRecord({ decisions: askDecisions, memory: [], goals: [root, closedKaizen], inbox: [] }, srOpts);
-  check("Test 12d: events before a closed kaizen node do not count (1 new event, no finding)", sinceClosed.length === 0);
-  const noPrior = reviewOwnRecord({ decisions: askDecisions, memory: [], goals: [root], inbox: [] }, srOpts);
-  check("Test 12d control: with no prior node all three events count", noPrior.length === 1 && noPrior[0].count === 3);
+  const sentAsks = [{ signal: "asks_unresolved", sentAt }];
+  const insideCoolOff = reviewOwnRecord({ decisions: askDecisions, memory: [], inbox: [], sent: sentAsks }, { ...srOpts, now: sentAt + FINDING_COOLOFF_MS - 1 });
+  check("Test 12d: inside the cool-off three events after sentAt yield no finding", insideCoolOff.length === 0);
+  const pastCoolOff = reviewOwnRecord({ decisions: askDecisions, memory: [], inbox: [], sent: sentAsks }, { ...srOpts, now: sentAt + FINDING_COOLOFF_MS });
+  check("Test 12d: past the cool-off only the three events after sentAt count",
+    pastCoolOff.length === 1 && pastCoolOff[0].signal === "asks_unresolved" && pastCoolOff[0].count === 3);
+  const oneAfter = reviewOwnRecord({ decisions: askDecisions.slice(0, 3), memory: [], inbox: [], sent: sentAsks }, { ...srOpts, now: sentAt + FINDING_COOLOFF_MS });
+  check("Test 12d: past the cool-off one event after sentAt is not repeated (the two before it do not count)", oneAfter.length === 0);
+  const latestSend = reviewOwnRecord({ decisions: askDecisions, memory: [], inbox: [], sent: [...sentAsks, { signal: "asks_unresolved", sentAt: T + 25 }] }, { ...srOpts, now: T + 25 + FINDING_COOLOFF_MS });
+  check("Test 12d: the signal's latest sentAt is the one counted from (two events after T+25, not three after T+10)",
+    latestSend.length === 1 && latestSend[0].count === 2);
+  const otherSignal = reviewOwnRecord({ decisions: askDecisions, memory: [], inbox: [], sent: [{ signal: "message_wait", sentAt }] }, { ...srOpts, now: sentAt + 1 });
+  check("Test 12d control: a send for another signal leaves this one's five events counting", otherSignal.length === 1 && otherSignal[0].count === 5);
 
   // 12e: long turns carry a config fix halving the cadence, floored at the debounce; at the floor they yield nothing.
   const longTurns = [
     { timestamp: T + 1, loop: "monitor", action: "turn_over_hour", detail: "Turn 1 ran 3700s" },
     { timestamp: T + 2, loop: "monitor", action: "turn_over_hour", detail: "Turn 2 ran 3800s" },
   ];
-  const fix = reviewOwnRecord({ decisions: longTurns, memory: [], goals: [root], inbox: [] }, srOpts);
+  const fix = reviewOwnRecord({ decisions: longTurns, memory: [], inbox: [], sent: [] }, srOpts);
   check("Test 12e: long_turns carries configFix selfReviewEveryTurns 20 -> 10",
     fix.length === 1 && fix[0].configFix && fix[0].configFix.from === 20 && fix[0].configFix.to === 10);
-  const atFloor = reviewOwnRecord({ decisions: longTurns, memory: [], goals: [root], inbox: [] }, { selfReviewEveryTurns: 5, selfReviewDebounceTurns: 5 });
+  const atFloor = reviewOwnRecord({ decisions: longTurns, memory: [], inbox: [], sent: [] }, { selfReviewEveryTurns: 5, selfReviewDebounceTurns: 5, now: T + 1000 });
   check("Test 12e control: at the floor two long turns yield no finding", atFloor.length === 0);
   check("Test 12e text: the long_turns finding proposes no goal and carries no Proof: line",
     fix.length === 1 && !/Proof:/.test(fix[0].objective) && !/\bgoal\b/i.test(fix[0].title)
       && !/\bgoal\b/i.test(fix[0].objective.replace(/\([^)]*\)/, "")) && !/\bgoal\b/i.test(fix[0].rationale));
 
-  // 12f: kaizenSortKey interleaves after the (k+1)th pending roadmap plan; past the end it is `now`.
-  const plans = [
-    root,
-    { id: "p1", status: "pending", kind: "plan", parentId: "root", createdAt: T + 10, updatedAt: T + 10 },
-    { id: "p2", status: "pending", kind: "plan", parentId: "root", createdAt: T + 20, updatedAt: T + 20 },
-    { id: "p0", status: "complete", kind: "plan", parentId: "root", createdAt: T + 5, updatedAt: T + 5 },
+  // 12f: none of the four rationales says a goal or a node was raised, since a finding now
+  // leaves the finder as a record and writes no node.
+  const allFour = [
+    ...reviewOwnRecord({ decisions: askDecisions, memory: [], inbox: [], sent: [] }, srOpts),
+    ...mem,
+    ...wait,
+    ...fix,
   ];
-  const k0 = kaizenSortKey(plans, "root", T + 1000);
-  check("Test 12f: first kaizen sorts between the first and second pending roadmap plans", k0 > T + 10 && k0 < T + 20);
-  const withOne = [...plans, { id: "k", status: "pending", kind: "plan", parentId: "root", createdAt: T + 30, updatedAt: T + 30, sortKey: k0, kaizenSignal: "asks_unresolved" }];
-  const k1 = kaizenSortKey(withOne, "root", T + 1000);
-  check("Test 12f: second kaizen sorts after the second pending roadmap plan", k1 > T + 20 && k1 < T + 1000);
-  const k2 = kaizenSortKey([...withOne, { id: "k2", status: "pending", kind: "plan", parentId: "root", createdAt: T + 31, updatedAt: T + 31, sortKey: k1, kaizenSignal: "message_wait" }], "root", T + 1000);
-  check("Test 12f: past the pending roadmap list the kaizen sorts at now", k2 === T + 1000);
+  check("Test 12f: one finding for each of the four signals",
+    JSON.stringify(allFour.map((f) => f.signal).sort()) === JSON.stringify(["asks_unresolved", "long_turns", "memory_quality", "message_wait"]));
+  for (const f of allFour) {
+    check(`Test 12f: the ${f.signal} rationale names no goal or node`, !/\b(goal|node)s?\b/i.test(f.rationale));
+  }
 }
 
 // --- Summary ---

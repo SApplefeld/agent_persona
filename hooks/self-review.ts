@@ -181,9 +181,10 @@ export function isSelfScoringLesson(text: string): boolean {
 
 // --- reviewOwnRecord ---
 // Plan item 8.4: the loop reads the worker's own record and turns a repeated
-// weakness into a kaizen goal (a tree node with a proof line) instead of a
-// memory lesson about itself. Four signals, each counted as discrete events
-// from data the worker already keeps:
+// weakness into a finding instead of a memory lesson about itself. The tick
+// sends each finding to the coordinator persona as a [FINDING] inbox record,
+// so a finding never becomes a node in the finder's own tree. Four signals,
+// each counted as discrete events from data the worker already keeps:
 //   asks_unresolved  an ask that ran out its wait (ask_timeout) or had to be
 //                    re-raised into the thread (ask_reraised)
 //   memory_quality   a self-review lesson whose first six normalized words
@@ -194,25 +195,34 @@ export function isSelfScoringLesson(text: string): boolean {
 //   long_turns       a turn that ran KAIZEN_LONG_TURN_MS or longer
 //                    (turn_over_hour, recorded at turn.complete)
 // A weakness is repeated when one signal has at least KAIZEN_REPEAT_MIN
-// events newer than the last kaizen node raised for that signal (all events
-// when none was). An open kaizen node for a signal suppresses a second one.
-// long_turns carries a configuration change only: a cadence counted in turns
+// events newer than the latest time a finding for that signal was sent (all
+// events when none was). A signal sent within FINDING_COOLOFF_MS of `now`
+// yields nothing: the finder cannot see when a finding is acted on, since the
+// record may be swept first, so a fixed window is the rule that needs no
+// answer to come back.
+// long_turns carries a configuration change: a cadence counted in turns
 // reviews too rarely when turns run for hours, so the finding carries a
-// configFix (halve selfReviewEveryTurns, floored at the debounce) and never a
-// goal. Once the cadence is at the floor it yields no finding, and the review
-// falls through to the model lesson.
+// configFix (halve selfReviewEveryTurns, floored at the debounce). Once the
+// cadence is at the floor it yields no finding, and the review falls through
+// to the model lesson.
 
 export const KAIZEN_REPEAT_MIN = 2;
 export const KAIZEN_MESSAGE_WAIT_MS = 10 * 60_000;
 export const KAIZEN_LONG_TURN_MS = 60 * 60_000;
+// How long a sent signal stays quiet, counted from the send.
+export const FINDING_COOLOFF_MS = 7 * 24 * 60 * 60_000;
+// How long a sent finding's record may stay pending before the finder reads
+// it as having no coordinator persona to take it and announces it itself.
+export const FINDING_UNROUTABLE_AFTER_MS = 24 * 60 * 60_000;
 
 export type KaizenSignal = "asks_unresolved" | "memory_quality" | "message_wait" | "long_turns";
 
 export interface OwnRecordInput {
   decisions: Array<{ timestamp: number; loop: string; action: string; detail: string }>;
   memory: MemoryEntry[];
-  goals: Array<{ id: string; status: string; kind: string; parentId: string | null; createdAt: number; updatedAt: number; sortKey?: number; kaizenSignal?: string }>;
   inbox: Array<{ at: number; deliveredAt?: number }>;
+  // One entry per finding sent, from the finder's own ledger.
+  sent: Array<{ signal: string; sentAt: number }>;
 }
 
 export interface OwnRecordFinding {
@@ -225,8 +235,6 @@ export interface OwnRecordFinding {
 }
 
 interface KaizenEvent { at: number; note: string }
-
-const OPEN_STATUSES = new Set(["pending", "active", "paused", "blocked"]);
 
 function normalizedLead(text: string, words = 6): string {
   return text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean).slice(0, words).join(" ");
@@ -272,19 +280,19 @@ function describe(signal: KaizenSignal, count: number, events: KaizenEvent[]): {
       return {
         title: "Kaizen: asks run out the clock",
         objective: `${count} asks timed out or had to be re-raised before an answer came (${sample}). Find why the asks the worker opens wait unanswered (wrong channel, too generic, opened on a node the operator already parked) and change how they are opened. Proof: a harness case where the same ask shape resolves without a re-raise, and one day's decision log with no ask_timeout.`,
-        rationale: `${count} asks timed out or were re-raised unanswered; raising a kaizen goal to change how asks are opened.`,
+        rationale: `${count} asks timed out or were re-raised unanswered; the finding asks for a change to how asks are opened.`,
       };
     case "memory_quality":
       return {
         title: "Kaizen: self-review lessons repeat or self-score",
         objective: `${count} self-review lessons were paraphrases of one another or were refused as self-scoring (${sample}). Dedupe lessons on meaning rather than exact text and ground each in a proof or an operator correction. Proof: a harness case where a paraphrased lesson is refused as a duplicate and a distinct proof-backed one is kept, and a memory store with no two lessons sharing a lead.`,
-        rationale: `${count} stored self-review lessons duplicate or self-score; raising a kaizen goal to dedupe on meaning.`,
+        rationale: `${count} stored self-review lessons duplicate or self-score; the finding asks for lessons to be deduped on meaning.`,
       };
     case "message_wait":
       return {
         title: "Kaizen: messages wait too long",
         objective: `${count} inbox records waited ${Math.round(KAIZEN_MESSAGE_WAIT_MS / 60_000)} minutes or more before delivery (${sample}). Find what held them (a long turn, a quiet tick, a claim gap) and shorten the path. Proof: a harness case where a record sent mid-turn is delivered inside the wait bound, and one day's inbox with no record over the bound.`,
-        rationale: `${count} messages waited ${Math.round(KAIZEN_MESSAGE_WAIT_MS / 60_000)}+ minutes for delivery; raising a kaizen goal to shorten the path.`,
+        rationale: `${count} messages waited ${Math.round(KAIZEN_MESSAGE_WAIT_MS / 60_000)}+ minutes for delivery; the finding asks for the delivery path to be shortened.`,
       };
     case "long_turns":
       return {
@@ -299,14 +307,15 @@ function describe(signal: KaizenSignal, count: number, events: KaizenEvent[]): {
 
 export function reviewOwnRecord(
   input: OwnRecordInput,
-  opts: { selfReviewEveryTurns: number; selfReviewDebounceTurns: number },
+  opts: { selfReviewEveryTurns: number; selfReviewDebounceTurns: number; now: number },
 ): OwnRecordFinding[] {
   const events = collectEvents(input);
   const findings: OwnRecordFinding[] = [];
   for (const signal of Object.keys(events) as KaizenSignal[]) {
-    const priorNodes = input.goals.filter((g) => g.kaizenSignal === signal);
-    if (priorNodes.some((g) => OPEN_STATUSES.has(g.status))) continue;
-    const since = priorNodes.reduce((max, g) => Math.max(max, g.updatedAt), -Infinity);
+    const since = input.sent
+      .filter((e) => e.signal === signal)
+      .reduce((max, e) => Math.max(max, e.sentAt), -Infinity);
+    if (opts.now - since < FINDING_COOLOFF_MS) continue;
     const fresh = events[signal].filter((e) => e.at > since).sort((a, b) => a.at - b.at);
     if (fresh.length < KAIZEN_REPEAT_MIN) continue;
     const text = describe(signal, fresh.length, fresh);
@@ -320,26 +329,6 @@ export function reviewOwnRecord(
     findings.push(finding);
   }
   return findings;
-}
-
-// --- kaizenSortKey ---
-// A kaizen goal is taken in the interleaved order item 8 names: after the
-// next roadmap unit, not before it and not after all of them. With k kaizen
-// plans already pending, the new one sorts just after the (k+1)th pending
-// roadmap plan; past the end of the pending list it sorts at `now`.
-export function kaizenSortKey(
-  goals: Array<{ kind: string; status: string; parentId: string | null; createdAt: number; sortKey?: number; kaizenSignal?: string }>,
-  rootId: string,
-  now: number,
-): number {
-  const key = (g: { createdAt: number; sortKey?: number }): number => g.sortKey ?? g.createdAt;
-  const pendingPlans = goals.filter((g) => g.parentId === rootId && g.kind === "plan" && g.status === "pending");
-  const roadmap = pendingPlans.filter((g) => !g.kaizenSignal).sort((a, b) => key(a) - key(b));
-  const k = pendingPlans.filter((g) => !!g.kaizenSignal).length;
-  if (k >= roadmap.length) return now;
-  const anchor = key(roadmap[k]);
-  const next = roadmap[k + 1] ? key(roadmap[k + 1]) : anchor + 2;
-  return anchor + (next - anchor) / 2;
 }
 
 // --- evictSelfReview ---

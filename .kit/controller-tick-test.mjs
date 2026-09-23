@@ -22,6 +22,7 @@
 import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireTurn, SESSION_ID, HARNESS_CWD, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, jevResponseFor, JEV_FAKE_KEY, JOURNAL_MARK, storedGoalTrees } from "./tick-harness.mjs";
 import { DECISIONS_MAX, MEMORY_MAX, PLAN_PATH_PATTERN, PLAN_PATH_TEXT_PATTERN, isActivationEligible, parseState, resolvePlanPath } from "../hooks/agent-state.ts";
 import * as AgentState from "../hooks/agent-state.ts";
+import { FINDING_COOLOFF_MS } from "../hooks/self-review.ts";
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -3253,11 +3254,17 @@ async function main() {
     await caseBreakIn_theConfiguredBoundIsClamped(clock);
     await caseBreakIn_anUndeliverableAgedRecordDoesNotHoldTheSlot(clock);
     await caseReply_oneMalformedRecordDoesNotCostTheOthersTheirReplies(clock);
-    await caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock);
+    await caseItem8p4_repeatedWeaknessBecomesAFindingRecord(clock);
+    await caseItem8p4_findingCoolOff(clock);
+    await caseItem8p4_ledgerDropKeepsEachSignalsLatest(clock);
     await caseItem8p4_control_singleEventProducesNeither(clock);
-    await caseItem8p4_openKaizenGoalNotDuplicated(clock);
-    await caseItem8p4_longTurnsAdjustConfigNotGoal(clock);
+    await caseItem8p4_longTurnsAdjustConfigAndSendRationale(clock);
     await caseItem8p4_longTurnsAtFloorRaiseNothing(clock);
+    await caseItem8p4_settleStepReadsEachEntryBack(clock);
+    await caseItem8p4_unroutableFindingIsAnnouncedNotWritten(clock);
+    await caseItem8p4_openKaizenNodesAreRoutedAsFindings(clock);
+    await caseItem8p4_openKaizenNodeUnroutableIsStillAbandoned(clock);
+    caseItem8p4_parseStateBackfillsTheLedger();
     await caseItem8p4_turnOverHourRecorded(clock);
     await caseSection9_unmatchedCompletionLeavesTheStampOnAnOpenTurn(clock);
     await caseSection9_completingOneOfTwoLeavesTheEarlierTurnsStamp(clock);
@@ -7457,12 +7464,6 @@ async function caseBreakIn_everyRecordInTheScanGetsTheTurnsAnswer(clock) {
 // Item 8.4: the worker finds the next three itself
 // ============================================================
 
-// A kaizen node is a plan under the root carrying the signal it was raised
-// for; the harness reads it back from the persisted store.
-function findKaizenNodes(h, signal) {
-  return getState(h).goals.filter(g => g.kaizenSignal === signal);
-}
-
 // Runs one periodic self-review over a seeded decision log and memory. The
 // model stub returns a proof-backed lesson, so if the model path runs at all
 // it would be kept as a memory entry; the assertions below distinguish the
@@ -7506,39 +7507,410 @@ async function runOwnRecordReview(clock, caseName, seededDecisions, extra = {}) 
   return h;
 }
 
-// Proof line, half one: a seeded log with a repeated weakness (two asks
-// that ran out the clock) produces a kaizen goal node with a proof line, a
-// one-line rationale posted to the thread, and no memory lesson.
-async function caseItem8p4_repeatedWeaknessBecomesKaizenGoal(clock) {
-  console.log("\n=== Item 8.4: a repeated weakness becomes a kaizen goal, not a memory lesson ===");
-  const seeded = [
-    { timestamp: T0 - 9000, loop: "monitor", action: "ask_opened", detail: "plan-a: ASK: which base? Recommend: main" },
-    { timestamp: T0 - 8000, loop: "monitor", action: "ask_timeout", detail: "plan-a: ask ask-1 expired after 3600s" },
-    { timestamp: T0 - 7000, loop: "monitor", action: "ask_opened", detail: "plan-a: ASK: which suite? Recommend: live-all" },
-    { timestamp: T0 - 6000, loop: "monitor", action: "ask_timeout", detail: "plan-a: ask ask-2 expired after 3600s" },
-  ];
-  const h = await runOwnRecordReview(clock, "item8p4_repeated", seeded);
+// The coordinator persona every finding case names, and the finder's own.
+const FINDING_COORDINATOR = "coordinator";
+const FINDER = "dev";
+
+// Two asks that ran out the clock: a repeated asks_unresolved weakness.
+const TWO_ASK_TIMEOUTS = [
+  { timestamp: T0 - 8000, loop: "monitor", action: "ask_timeout", detail: "plan-a: ask ask-1 expired after 3600s" },
+  { timestamp: T0 - 6000, loop: "monitor", action: "ask_timeout", detail: "plan-a: ask ask-2 expired after 3600s" },
+];
+
+// Every inbox record addressed to the coordinator persona, read out of the
+// plugin store, with its key.
+function coordinatorRecords(h) {
+  return [...h.storeMap.entries()]
+    .filter(([key]) => key.startsWith(`inbox:${FINDING_COORDINATOR}:`))
+    .map(([key, value]) => ({ ...(typeof value === "string" ? JSON.parse(value) : value), key }));
+}
+
+// A goal node in the shape the tree holds, under the root.
+function findingPlanNode(id, fields = {}) {
+  return {
+    id, parentId: "root-goal", kind: "plan", title: id, objective: id, status: "pending", source: "operator",
+    maxRounds: 10, completedRounds: 0, scores: [], notes: [], planningRounds: 0, consecutiveBlockedPlannings: 0,
+    consecutivePlanningFailures: 0, planningRound: 0, createdAt: T0 - 19000, updatedAt: T0 - 19000, ...fields,
+  };
+}
+
+// Rewrites the finder's persisted state through `mutate` and reloads it
+// through session.start, the way the running module reads its own file. The
+// session's commons entry is written afterwards, so the persona claim it
+// holds is the one this case names and is live at the clock's current time.
+async function reseedFinder(h, persona, mutate) {
+  const raw = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE));
+  const state = raw[persona];
+  mutate(state);
+  raw[persona] = state;
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify(raw));
+  await h.handlers["session.start"](h.fake, {}, () => {});
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: Date.now(),
+    claims: [{ resource: `persona:${persona}`, claimedAt: Date.now() - 2000 }],
+  });
+}
+
+// An owner harness for `persona` with `coordinator` as the coordinator
+// persona's name, a root and two roadmap plans, and the state `fill` writes.
+// The model stub answers NONE and counts its calls, so a case can tell the
+// model path from a finding.
+async function seedFindingHarness(clock, caseName, persona, fill) {
+  clock.set(T0);
+  const root = {
+    id: "root-goal", parentId: null, kind: "root", title: "Roadmap", objective: "Roadmap",
+    status: "pending", source: "operator", maxRounds: 0, completedRounds: 0, scores: [], notes: [],
+    planningRounds: 1, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0, planningRound: 0,
+    createdAt: T0 - 20000, updatedAt: T0 - 20000,
+  };
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName,
+    coordinatorPersona: FINDING_COORDINATOR,
+    ...(persona === "default" ? {} : { persona }),
+    stateOpts: { now: T0, goals: [root, findingPlanNode("plan-a"), findingPlanNode("plan-b", { createdAt: T0 - 18000 })], activeGoalId: null },
+    classifyValue: "NONE",
+  });
+  // A named persona's slot holds the fresh state session.start built for it,
+  // so the seeded tree under "default" is copied into it first.
+  const raw = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE));
+  raw[persona] = { ...structuredClone(raw.default), persona };
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify(raw));
+  await reseedFinder(h, persona, fill);
+  h.fake.model.complete = async () => {
+    h.completeCalls.push(1);
+    return "NONE";
+  };
+  return h;
+}
+
+// The review is due on the next tick: a periodic pass with nothing holding it.
+function reviewDue(state) {
+  state.monitor.selfReview = { ...state.monitor.selfReview, pendingPeriodic: true, turnsSince: 100 };
+}
+
+// plan-a is the active leaf, so a case can read that the finding left the
+// active slot where it was.
+function activePlanA(state) {
+  state.goals.find((g) => g.id === "plan-a").status = "active";
+  state.activeGoalId = "plan-a";
+}
+
+// A repeated weakness on a named persona leaves the finder as one pending
+// `say` record in the coordinator persona's inbox. The tree gains no node,
+// the active slot does not move, and nothing is posted to the thread.
+async function caseItem8p4_repeatedWeaknessBecomesAFindingRecord(clock) {
+  console.log("\n=== Item 8.4: a repeated weakness becomes a [FINDING] record to the coordinator persona, not a goal node ===");
+  const h = await seedFindingHarness(clock, "item8p4_finding_record", FINDER, (state) => {
+    activePlanA(state);
+    reviewDue(state);
+    state.decisions = [...TWO_ASK_TIMEOUTS];
+  });
+  const goalsBefore = getStateForPersona(h, FINDER).goals.length;
+  await tickAndSettle(h, clock, 100);
+  const state = getStateForPersona(h, FINDER);
+  const records = coordinatorRecords(h);
+  check("item8.4 finding: exactly one record in the coordinator persona's inbox", records.length === 1, records);
+  const rec = records[0];
+  check("item8.4 finding: the record is a pending say from this session",
+    !!rec && rec.kind === "say" && rec.status === "pending" && rec.from === SESSION_ID && rec.key === `inbox:${FINDING_COORDINATOR}:${SESSION_ID}:1`, rec);
+  check("item8.4 finding: the text opens with [FINDING] and names the persona, the signal and the count",
+    !!rec && rec.text.startsWith(`[FINDING] ${FINDER} asks_unresolved x2\n`) && /Proof:/.test(rec.text), rec?.text);
+  check("item8.4 finding: the tree gains no node", state.goals.length === goalsBefore, state.goals.map((g) => g.id));
+  check("item8.4 finding: no node carries a kaizenSignal", !state.goals.some((g) => g.kaizenSignal));
+  check("item8.4 finding: activeGoalId does not move", state.activeGoalId === "plan-a", state.activeGoalId);
+  check("item8.4 finding: no [KAIZEN] turn is submitted", !h.promptSubmits.some((t) => t.includes("[KAIZEN]")), h.promptSubmits);
+  check("item8.4 finding: finding_sent names the record id",
+    state.decisions.some((d) => d.action === "finding_sent" && d.detail.includes(rec?.id)), state.decisions.slice(-6));
+  check("item8.4 finding: the ledger holds one undelivered entry keyed to the record",
+    state.monitor.selfReview.sent.length === 1 && state.monitor.selfReview.sent[0].writer === SESSION_ID
+      && state.monitor.selfReview.sent[0].seq === 1 && state.monitor.selfReview.sent[0].delivered === false
+      && state.monitor.selfReview.sent[0].text === rec?.text && state.monitor.selfReview.sent[0].sentAt === T0,
+    state.monitor.selfReview.sent);
+  check("item8.4 finding: no memory lesson written and the model call was skipped",
+    !state.memory.some((m) => m.source === "self-review") && h.completeCalls.length === 0);
+  check("item8.4 finding: the review counted against the cap and reset its counters",
+    state.monitor.selfReview.count === 1 && state.monitor.selfReview.lastAt === T0 && state.monitor.selfReview.turnsSince === 0
+      && state.monitor.selfReview.pendingPeriodic === false && state.monitor.selfReview.windowStart === T0,
+    state.monitor.selfReview);
+  check("item8.4 finding: the self-review decision names the finding",
+    state.decisions.some((d) => d.action === "self-review" && d.detail.includes("1 finding(s), no lesson")));
+}
+
+// The cool-off both ways. A second pass inside it, with more events for the
+// same signal, writes nothing; the review still runs, down the model path. A
+// pass after it, with two events after sentAt, writes a second record.
+async function caseItem8p4_findingCoolOff(clock) {
+  console.log("\n=== Item 8.4: a sent signal is quiet for the cool-off and raised again after it ===");
+  const h = await seedFindingHarness(clock, "item8p4_finding_cooloff", FINDER, (state) => {
+    activePlanA(state);
+    reviewDue(state);
+    state.decisions = [...TWO_ASK_TIMEOUTS];
+  });
+  await tickAndSettle(h, clock, 100);
+  check("item8.4 cool-off: the first pass writes one record", coordinatorRecords(h).length === 1);
+
+  clock.set(T0 + 3_600_000);
+  await reseedFinder(h, FINDER, (state) => {
+    reviewDue(state);
+    state.decisions.push(
+      { timestamp: T0 + 1000, loop: "monitor", action: "ask_timeout", detail: "plan-a: ask ask-3 expired after 3600s" },
+      { timestamp: T0 + 2000, loop: "monitor", action: "ask_reraised", detail: "plan-a: ask ask-4 re-raised" },
+    );
+  });
+  await tickAndSettle(h, clock, 100);
+  check("item8.4 cool-off: inside the cool-off more events write no second record", coordinatorRecords(h).length === 1, coordinatorRecords(h));
+  check("item8.4 cool-off: the review still ran, down the model path", h.completeCalls.length === 1, h.completeCalls.length);
+
+  // The coordinator persona took the first record, so the settle step marks
+  // its entry delivered rather than reading it as unroutable.
+  const firstKey = `inbox:${FINDING_COORDINATOR}:${SESSION_ID}:1`;
+  h.storeMap.set(firstKey, { ...h.storeMap.get(firstKey), status: "delivered", deliveredAt: T0 + 60_000 });
+  clock.set(T0 + FINDING_COOLOFF_MS + 3_600_000);
+  await reseedFinder(h, FINDER, (state) => { reviewDue(state); });
+  await tickAndSettle(h, clock, 100);
+  const records = coordinatorRecords(h);
+  check("item8.4 cool-off: after the cool-off, with two events after sentAt, a second record is written",
+    records.length === 2 && records.some((r) => r.key === `inbox:${FINDING_COORDINATOR}:${SESSION_ID}:2`), records.map((r) => [r.key, r.text.split("\n")[0]]));
+  // The two events before sentAt are still in the decision log. The settle
+  // step keeps the signal's only ledger entry past the cool-off, so the count
+  // runs from its sentAt and those two are not counted again.
+  check("item8.4 cool-off: the second record counts only the two events after sentAt (x2, not x4)",
+    records.some((r) => r.key === `inbox:${FINDING_COORDINATOR}:${SESSION_ID}:2`
+      && r.text.startsWith(`[FINDING] ${FINDER} asks_unresolved x2\n`)), records.map((r) => [r.key, r.text.split("\n")[0]]));
+}
+
+// The settle step's drop keeps each signal's latest ledger entry. A delivered
+// entry past the cool-off is kept when it is its signal's only entry, and
+// dropped when a later entry for the same signal exists.
+async function caseItem8p4_ledgerDropKeepsEachSignalsLatest(clock) {
+  console.log("\n=== Item 8.4: the ledger drop keeps each signal's latest entry past the cool-off ===");
+  const old = (signal, sentAt) => ({ signal, text: `[FINDING] ${FINDER} ${signal} x2\n${signal} body`, sentAt, writer: "", seq: 0, delivered: true });
+  const h = await seedFindingHarness(clock, "item8p4_ledger_drop", FINDER, (state) => {
+    activePlanA(state);
+    state.monitor.selfReview.sent = [
+      old("asks_unresolved", T0 - FINDING_COOLOFF_MS - 3_600_000),
+      old("message_wait", T0 - FINDING_COOLOFF_MS - 7_200_000),
+      old("message_wait", T0 - FINDING_COOLOFF_MS - 3_600_000),
+    ];
+  });
+  await tickAndSettle(h, clock, 100);
+  const sent = getStateForPersona(h, FINDER).monitor.selfReview.sent;
+  check("item8.4 ledger drop: a delivered entry past the cool-off is kept when it is its signal's only entry",
+    sent.some((e) => e.signal === "asks_unresolved" && e.sentAt === T0 - FINDING_COOLOFF_MS - 3_600_000), sent);
+  check("item8.4 ledger drop: the older of two delivered entries past the cool-off for one signal is dropped, the later kept",
+    sent.filter((e) => e.signal === "message_wait").length === 1
+      && sent.some((e) => e.signal === "message_wait" && e.sentAt === T0 - FINDING_COOLOFF_MS - 3_600_000), sent);
+}
+
+// A long_turns finding still changes the cadence and logs the change, and
+// its rationale rides in the record rather than in a thread message.
+async function caseItem8p4_longTurnsAdjustConfigAndSendRationale(clock) {
+  console.log("\n=== Item 8.4: repeated long turns adjust selfReviewEveryTurns and send the rationale as a record ===");
+  const h = await seedFindingHarness(clock, "item8p4_config_fix", FINDER, (state) => {
+    activePlanA(state);
+    reviewDue(state);
+    state.decisions = [
+      { timestamp: T0 - 8000, loop: "monitor", action: "turn_over_hour", detail: "Turn 3 ran 3720s" },
+      { timestamp: T0 - 6000, loop: "monitor", action: "turn_over_hour", detail: "Turn 5 ran 4100s" },
+    ];
+  });
+  await tickAndSettle(h, clock, 100);
+  const state = getStateForPersona(h, FINDER);
+  check("item8.4 config: kaizen_config_adjusted decision recorded",
+    state.decisions.some((d) => d.action === "kaizen_config_adjusted" && d.detail.includes("selfReviewEveryTurns")));
+  const records = coordinatorRecords(h);
+  check("item8.4 config: the record carries the rationale naming the cadence change",
+    records.length === 1 && records[0].text.startsWith(`[FINDING] ${FINDER} long_turns x2\n`)
+      && records[0].text.includes("selfReviewEveryTurns") && records[0].text.includes("changed and in effect"), records.map((r) => r.text));
+  check("item8.4 config: no node carries a kaizenSignal", !state.goals.some((g) => g.kaizenSignal));
+  check("item8.4 config: no [KAIZEN] turn is submitted", !h.promptSubmits.some((t) => t.includes("[KAIZEN]")));
+  check("item8.4 config: no memory lesson written", !state.memory.some((m) => m.source === "self-review"));
+}
+
+// The settle step, on a tick where no review is due. Each ledger entry's
+// record is read back: a skipped one is sent again, an absent one and a
+// delivered one settle, a young pending one is left alone, and one pending
+// past a day is announced on the finder's own thread with its record left.
+async function caseItem8p4_settleStepReadsEachEntryBack(clock) {
+  console.log("\n=== Item 8.4: the settle step resends a skipped record and settles the rest ===");
+  const OLD = "old-session";
+  const entry = (seq, sentAt, body) => ({
+    signal: "asks_unresolved", text: `[FINDING] ${FINDER} asks_unresolved x2\n${body}`, sentAt, writer: OLD, seq, delivered: false,
+  });
+  const h = await seedFindingHarness(clock, "item8p4_settle", FINDER, (state) => {
+    activePlanA(state);
+    state.monitor.selfReview.sent = [
+      entry(1, T0 - 1000, "skipped body"),
+      entry(2, T0 - 2000, "absent body"),
+      entry(3, T0 - 3_600_000, "young pending body"),
+      entry(4, T0 - 25 * 3_600_000, "old pending body"),
+      entry(5, T0 - 4000, "delivered body"),
+    ];
+  });
+  const seedOld = (seq, status) => {
+    const key = `inbox:${FINDING_COORDINATOR}:${OLD}:${seq}`;
+    h.storeMap.set(key, { id: `${FINDING_COORDINATOR}-${OLD}-${seq}`, key, from: OLD, at: T0 - 5000, kind: "say", text: `old ${seq}`, status });
+  };
+  seedOld(1, "skipped");
+  seedOld(3, "pending");
+  seedOld(4, "pending");
+  seedOld(5, "delivered");
+  await tickAndSettle(h, clock, 100);
+  const state = getStateForPersona(h, FINDER);
+  const sent = state.monitor.selfReview.sent;
+  const bySeqText = (body) => sent.find((e) => e.text.endsWith(body));
+  const mine = coordinatorRecords(h).filter((r) => r.from === SESSION_ID);
+  check("item8.4 settle: no review ran on this tick", h.completeCalls.length === 0
+    && !state.decisions.some((d) => d.action === "self-review"), state.decisions.slice(-6));
+  check("item8.4 settle: exactly one record is sent under this session, the skipped entry's text",
+    mine.length === 1 && mine[0].text === entry(1, 0, "skipped body").text && mine[0].status === "pending" && mine[0].kind === "say", mine);
+  const skipped = bySeqText("skipped body");
+  check("item8.4 settle: the skipped entry takes the new writer and seq and keeps its sentAt",
+    !!skipped && skipped.writer === SESSION_ID && skipped.seq === 1 && skipped.sentAt === T0 - 1000 && skipped.delivered === false, skipped);
+  check("item8.4 settle: the absent entry is marked delivered and nothing is sent for it",
+    bySeqText("absent body")?.delivered === true && !coordinatorRecords(h).some((r) => r.text.endsWith("absent body")), bySeqText("absent body"));
+  check("item8.4 settle: the young pending entry is left alone",
+    JSON.stringify(bySeqText("young pending body")) === JSON.stringify(entry(3, T0 - 3_600_000, "young pending body")), bySeqText("young pending body"));
+  check("item8.4 settle: the entry pending past a day is marked delivered", bySeqText("old pending body")?.delivered === true);
+  check("item8.4 settle: that entry's record is left in the store, still pending",
+    h.storeMap.get(`inbox:${FINDING_COORDINATOR}:${OLD}:4`)?.status === "pending");
+  const kaizen = h.promptSubmits.filter((t) => t.startsWith("[KAIZEN]"));
+  check("item8.4 settle: one [KAIZEN] turn announces that finding with its signal",
+    kaizen.length === 1 && kaizen[0].includes("old pending body (asks_unresolved)") && !kaizen[0].includes("young pending body"), kaizen);
+  check("item8.4 settle: finding_unroutable names the record left pending",
+    state.decisions.some((d) => d.action === "finding_unroutable" && d.detail.includes(`${FINDING_COORDINATOR}-${OLD}-4`)));
+  check("item8.4 settle: the delivered entry is marked delivered", bySeqText("delivered body")?.delivered === true);
+  check("item8.4 settle: the active slot does not move", state.activeGoalId === "plan-a", state.activeGoalId);
+
+  // A delivered entry is not read again: its record turning skipped later
+  // sends nothing more.
+  h.storeMap.set(`inbox:${FINDING_COORDINATOR}:${OLD}:5`, { ...h.storeMap.get(`inbox:${FINDING_COORDINATOR}:${OLD}:5`), status: "skipped" });
+  await tickAndSettle(h, clock, 100);
+  check("item8.4 settle: a delivered entry is not read again (no second record under this session)",
+    coordinatorRecords(h).filter((r) => r.from === SESSION_ID).length === 1);
+}
+
+// Where there is no road to the coordinator persona, the finder announces the
+// finding on its own thread through the [KAIZEN] frame and writes neither a
+// node nor a record. Two causes: the default persona, and a write the reach
+// rule refuses (here, no live claim of this session's in commons).
+async function caseItem8p4_unroutableFindingIsAnnouncedNotWritten(clock) {
+  console.log("\n=== Item 8.4: a finding with no road to the coordinator persona is announced on the persona's own thread ===");
+  for (const [label, persona, beforeTick, rule] of [
+    ["default persona", "default", () => {}, "the session is on the default persona"],
+    ["reach refused", FINDER, (h) => h.storeMap.delete(`commons:${SESSION_ID}`), `the reach rule refuses this session's write to '${FINDING_COORDINATOR}'`],
+  ]) {
+    const h = await seedFindingHarness(clock, `item8p4_unroutable_${persona}`, persona, (state) => {
+      activePlanA(state);
+      reviewDue(state);
+      state.decisions = [...TWO_ASK_TIMEOUTS];
+    });
+    const goalsBefore = getStateForPersona(h, persona).goals.length;
+    beforeTick(h);
+    await tickAndSettle(h, clock, 100);
+    const state = getStateForPersona(h, persona);
+    check(`item8.4 unroutable (${label}): finding_unroutable logged, naming the rule that refused`,
+      state.decisions.some((d) => d.action === "finding_unroutable" && d.detail.startsWith(`asks_unresolved: ${rule}`)), state.decisions.slice(-6));
+    check(`item8.4 unroutable (${label}): no inbox record is written anywhere`,
+      ![...h.storeMap.keys()].some((k) => k.startsWith("inbox:")), [...h.storeMap.keys()]);
+    check(`item8.4 unroutable (${label}): the tree gains no node and the active slot does not move`,
+      state.goals.length === goalsBefore && !state.goals.some((g) => g.kaizenSignal) && state.activeGoalId === "plan-a");
+    const kaizen = h.promptSubmits.filter((t) => t.startsWith("[KAIZEN] Send each line below to the operator through the reply tool as written, then continue your work:\n"));
+    check(`item8.4 unroutable (${label}): one [KAIZEN] turn carries the rationale and the signal`,
+      kaizen.length === 1 && kaizen[0].includes("the finding asks for a change to how asks are opened. (asks_unresolved)"), h.promptSubmits);
+    check(`item8.4 unroutable (${label}): no line of that turn names a node, a node id or a goal`,
+      kaizen.length === 1 && !/\b(node|goal|plan-[a-z0-9]+)\b/i.test(kaizen[0]), kaizen);
+    const sent = state.monitor.selfReview.sent;
+    check(`item8.4 unroutable (${label}): the ledger entry is delivered with an empty writer and seq 0`,
+      sent.length === 1 && sent[0].delivered === true && sent[0].writer === "" && sent[0].seq === 0 && sent[0].sentAt === T0, sent);
+  }
+}
+
+// A goal node an earlier self-review wrote is routed on the first tick after
+// the upgrade, whether or not a review is due: sent as a finding, abandoned
+// with a note naming the record, and logged. The active one is replaced on
+// that pass. Closed ones are not touched.
+async function caseItem8p4_openKaizenNodesAreRoutedAsFindings(clock) {
+  console.log("\n=== Item 8.4: open kaizen nodes from an earlier build are sent as findings and abandoned ===");
+  const kaizenNode = (id, status, signal) => findingPlanNode(id, {
+    title: `Kaizen: ${signal}`, objective: `2 events for ${signal}. Proof: a harness case.`, status, source: "controller",
+    kaizenSignal: signal, createdAt: T0 - 15000, updatedAt: T0 - 15000, sortKey: T0 - 18500,
+  });
+  const h = await seedFindingHarness(clock, "item8p4_route_nodes", FINDER, (state) => {
+    state.goals.push(
+      kaizenNode("plan-kaizen-active", "active", "asks_unresolved"),
+      kaizenNode("plan-kaizen-paused", "paused", "message_wait"),
+      kaizenNode("plan-kaizen-complete", "complete", "memory_quality"),
+      kaizenNode("plan-kaizen-abandoned", "abandoned", "tree_lag"),
+    );
+    state.activeGoalId = "plan-kaizen-active";
+  });
+  await tickAndSettle(h, clock, 100);
+  const state = getStateForPersona(h, FINDER);
+  const node = (id) => state.goals.find((g) => g.id === id);
+  const records = coordinatorRecords(h);
+  check("item8.4 route: no review ran on this tick", h.completeCalls.length === 0 && !state.decisions.some((d) => d.action === "self-review"));
+  check("item8.4 route: two records sent, one per open kaizen node, text [FINDING] <persona> <signal> then the objective",
+    records.length === 2
+      && records.some((r) => r.text === `[FINDING] ${FINDER} asks_unresolved\n2 events for asks_unresolved. Proof: a harness case.`)
+      && records.some((r) => r.text === `[FINDING] ${FINDER} message_wait\n2 events for message_wait. Proof: a harness case.`),
+    records.map((r) => r.text));
+  for (const [id, signal] of [["plan-kaizen-active", "asks_unresolved"], ["plan-kaizen-paused", "message_wait"]]) {
+    const rec = records.find((r) => r.text.startsWith(`[FINDING] ${FINDER} ${signal}\n`));
+    check(`item8.4 route: ${id} is abandoned with a note naming its record`,
+      node(id)?.status === "abandoned" && !!rec && node(id).notes.some((n) => n.includes(rec.id)), node(id));
+    check(`item8.4 route: kaizen_node_routed reads ${id} -> <record id>`,
+      !!rec && state.decisions.some((d) => d.action === "kaizen_node_routed" && d.detail === `${id} -> ${rec.id}`));
+  }
+  check("item8.4 route: another eligible node became active on that pass",
+    state.activeGoalId === "plan-a" && node("plan-a")?.status === "active"
+      && state.decisions.some((d) => d.action === "activated" && d.detail.includes("plan-kaizen-active routed as a finding")), state.activeGoalId);
+  check("item8.4 route: the complete and abandoned kaizen nodes are not touched",
+    node("plan-kaizen-complete")?.status === "complete" && node("plan-kaizen-complete").notes.length === 0
+      && node("plan-kaizen-abandoned")?.status === "abandoned" && node("plan-kaizen-abandoned").notes.length === 0
+      && !records.some((r) => r.text.includes("memory_quality") || r.text.includes("tree_lag")));
+  check("item8.4 route: both routed signals are in the ledger", JSON.stringify(state.monitor.selfReview.sent.map((e) => e.signal).sort()) === JSON.stringify(["asks_unresolved", "message_wait"]));
+  check("item8.4 route: no [KAIZEN] turn on the routable path", !h.promptSubmits.some((t) => t.includes("[KAIZEN]")));
+}
+
+// The same routing on the unroutable path: the node is still abandoned, and
+// its note says the finding was announced on the persona's own thread.
+async function caseItem8p4_openKaizenNodeUnroutableIsStillAbandoned(clock) {
+  console.log("\n=== Item 8.4: an open kaizen node with no road is announced and still abandoned ===");
+  const h = await seedFindingHarness(clock, "item8p4_route_unroutable", "default", (state) => {
+    state.goals.push(findingPlanNode("plan-kaizen-open", {
+      title: "Kaizen: asks run out the clock", objective: "2 asks timed out. Proof: a harness case.", source: "controller",
+      kaizenSignal: "asks_unresolved",
+    }));
+  });
+  await tickAndSettle(h, clock, 100);
   const state = getState(h);
-  const nodes = findKaizenNodes(h, "asks_unresolved");
-  check("item8.4 goal: exactly one kaizen node raised for asks_unresolved", nodes.length === 1);
-  const node = nodes[0];
-  check("item8.4 goal: the node is a plan under the root", !!node && node.kind === "plan" && node.parentId === "root-goal");
-  check("item8.4 goal: the node is interleaved after the next roadmap plan (sortKey between plan-a and plan-b)",
-    !!node && typeof node.sortKey === "number" && node.sortKey > (T0 - 19000) && node.sortKey < (T0 - 18000));
-  check("item8.4 goal: kaizen_goal_proposed decision names the signal",
-    state.decisions.some(d => d.action === "kaizen_goal_proposed" && d.detail.includes("asks_unresolved")));
-  check("item8.4 goal: one-line rationale posted to the thread ([KAIZEN] prompt submitted)",
-    h.promptSubmits.some(t => t.includes("[KAIZEN]") && t.includes("asks_unresolved")));
-  check("item8.4 goal: no memory lesson written (no self-review memory entry)",
-    !state.memory.some(m => m.source === "self-review"));
-  check("item8.4 goal: the model lesson call was skipped for this review", h.completeCalls.length === 0);
-  check("item8.4 goal: the review still counted against the cap (selfReview.count 1)", state.monitor.selfReview.count === 1);
+  const routed = state.goals.find((g) => g.id === "plan-kaizen-open");
+  check("item8.4 route unroutable: the node is abandoned", routed?.status === "abandoned", routed);
+  check("item8.4 route unroutable: its note says the finding was announced on the persona's own thread",
+    !!routed && routed.notes.some((n) => n.includes("announced on this persona's own thread")), routed?.notes);
+  check("item8.4 route unroutable: no inbox record is written", ![...h.storeMap.keys()].some((k) => k.startsWith("inbox:")));
+  const kaizen = h.promptSubmits.filter((t) => t.startsWith("[KAIZEN]"));
+  check("item8.4 route unroutable: a [KAIZEN] turn carries the objective and the signal, and no node id",
+    kaizen.length === 1 && kaizen[0].includes("2 asks timed out. Proof: a harness case. (asks_unresolved)") && !kaizen[0].includes("plan-kaizen-open"), kaizen);
+}
+
+// A store written before the ledger existed loads with an empty ledger.
+function caseItem8p4_parseStateBackfillsTheLedger() {
+  console.log("\n=== Item 8.4: parseState fills an absent findings ledger with an empty list ===");
+  const stored = makeState({ now: T0 });
+  delete stored.monitor.selfReview.sent;
+  const loaded = parseState(JSON.stringify(stored));
+  check("item8.4 ledger backfill: an absent sent list loads as []",
+    Array.isArray(loaded.monitor.selfReview.sent) && loaded.monitor.selfReview.sent.length === 0, loaded.monitor.selfReview);
 }
 
 // Proof line, half two (control): a log with the same weakness once produces
-// neither a kaizen node nor a memory lesson; the model path runs and says NONE.
+// neither a finding nor a memory lesson; the model path runs and says NONE.
 async function caseItem8p4_control_singleEventProducesNeither(clock) {
-  console.log("\n=== Item 8.4 control: one event is not repeated; neither goal nor lesson ===");
+  console.log("\n=== Item 8.4 control: one event is not repeated; neither finding nor lesson ===");
   const seeded = [
     { timestamp: T0 - 9000, loop: "monitor", action: "ask_opened", detail: "plan-a: ASK: which base? Recommend: main" },
     { timestamp: T0 - 8000, loop: "monitor", action: "ask_timeout", detail: "plan-a: ask ask-1 expired after 3600s" },
@@ -7548,47 +7920,11 @@ async function caseItem8p4_control_singleEventProducesNeither(clock) {
   const h = await runOwnRecordReview(clock, "item8p4_control", seeded, { lesson: "NONE" });
   const state = getState(h);
   check("item8.4 control: no kaizen node", !state.goals.some(g => g.kaizenSignal));
-  check("item8.4 control: no kaizen_goal_proposed decision", !state.decisions.some(d => d.action === "kaizen_goal_proposed"));
+  check("item8.4 control: no finding sent or announced", !state.decisions.some(d => d.action === "finding_sent" || d.action === "finding_unroutable"));
   check("item8.4 control: no memory lesson", !state.memory.some(m => m.source === "self-review"));
   check("item8.4 control: the model path ran and the review was recorded",
     h.completeCalls.length === 1 && state.decisions.some(d => d.action === "self-review"));
   check("item8.4 control: nothing posted to the thread", !h.promptSubmits.some(t => t.includes("[KAIZEN]")));
-}
-
-// An open kaizen goal for a signal is not raised twice while it is open.
-async function caseItem8p4_openKaizenGoalNotDuplicated(clock) {
-  console.log("\n=== Item 8.4: an open kaizen goal suppresses a second one for the same signal ===");
-  const seeded = [
-    { timestamp: T0 - 8000, loop: "monitor", action: "ask_timeout", detail: "plan-a: ask ask-1 expired after 3600s" },
-    { timestamp: T0 - 6000, loop: "monitor", action: "ask_timeout", detail: "plan-a: ask ask-2 expired after 3600s" },
-  ];
-  const existing = {
-    id: "plan-kaizen-open", parentId: "root-goal", kind: "plan", title: "Kaizen: asks run out the clock", objective: "Proof: ...",
-    status: "pending", source: "controller", maxRounds: 10, completedRounds: 0, scores: [], notes: [],
-    planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0, planningRound: 0,
-    createdAt: T0 - 10000, updatedAt: T0 - 10000, kaizenSignal: "asks_unresolved",
-  };
-  const h = await runOwnRecordReview(clock, "item8p4_open_dedupe", seeded, { goals: [existing], lesson: "NONE" });
-  check("item8.4 dedupe: still exactly one kaizen node for asks_unresolved", findKaizenNodes(h, "asks_unresolved").length === 1);
-  check("item8.4 dedupe: no kaizen_goal_proposed decision", !getDecisions(h).some(d => d.action === "kaizen_goal_proposed"));
-}
-
-// A weakness the loop can fix by changing its own configuration is fixed and
-// reported, not proposed: repeated turns past an hour halve the periodic
-// review cadence (turn-counted) and post the change, with no goal node.
-async function caseItem8p4_longTurnsAdjustConfigNotGoal(clock) {
-  console.log("\n=== Item 8.4: repeated long turns adjust selfReviewEveryTurns and report, no goal ===");
-  const seeded = [
-    { timestamp: T0 - 8000, loop: "monitor", action: "turn_over_hour", detail: "Turn 3 ran 3720s" },
-    { timestamp: T0 - 6000, loop: "monitor", action: "turn_over_hour", detail: "Turn 5 ran 4100s" },
-  ];
-  const h = await runOwnRecordReview(clock, "item8p4_config_fix", seeded);
-  const state = getState(h);
-  check("item8.4 config: kaizen_config_adjusted decision recorded",
-    state.decisions.some(d => d.action === "kaizen_config_adjusted"));
-  check("item8.4 config: no kaizen node for long_turns", findKaizenNodes(h, "long_turns").length === 0);
-  check("item8.4 config: the change is reported to the thread", h.promptSubmits.some(t => t.includes("[KAIZEN]") && t.includes("selfReviewEveryTurns")));
-  check("item8.4 config: no memory lesson written", !state.memory.some(m => m.source === "self-review"));
 }
 
 // With the cadence already at its floor, repeated long turns have no

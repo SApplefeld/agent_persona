@@ -885,3 +885,22 @@ export async function getHighestInboxSeq(
   }
   return maxSeq;
 }
+
+/**
+ * Write a `say` record the plugin composed, rather than one a tool call
+ * carried, to `target`'s inbox from `writerSessionId`, under the next
+ * sequence number that writer holds for that persona. Returns the record id,
+ * the writer and the sequence number, which is what a caller needs to read
+ * the record back with readInboxRecord. The reach rule is the caller's to
+ * apply before the call, the way agentic_say applies it before its own write.
+ */
+export async function sendPluginRecord(
+  store: CommonsStore,
+  target: string,
+  writerSessionId: string,
+  text: string,
+): Promise<{ id: string; writer: string; seq: number }> {
+  const seq = await getHighestInboxSeq(store, target, writerSessionId) + 1;
+  const id = await writeInboxRecord(store, target, writerSessionId, seq, text, "say");
+  return { id, writer: writerSessionId, seq };
+}
