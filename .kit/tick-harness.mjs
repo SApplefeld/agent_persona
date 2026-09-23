@@ -104,6 +104,10 @@ function createFake$(opts = {}) {
   const completeCalls = [];
   let completeValue = opts.completeValue ?? "[]";
   const uiLogs = [];
+  // Every $.ui.toast call, in order, as the message string. A case pinning
+  // that an escalation shows no toast reads this rather than a log line,
+  // since toast and log are two different surfaces the plugin writes.
+  const uiToasts = [];
   // Every $.http.fetch call, in order, as { url, init }. The decision seam's
   // kill switch is pinned by this list staying empty, which is a stronger
   // reading than any assertion on what a request would have carried.
@@ -215,7 +219,7 @@ function createFake$(opts = {}) {
     ui: {
       log(msg) { uiLogs.push(String(msg)); },
       status() {},
-      toast() {},
+      toast(msg) { uiToasts.push(String(msg)); },
     },
     // A Map keyed on the raw path string, relative or absolute, with no
     // directory model: a write to an absolute path under a directory nothing
@@ -375,6 +379,7 @@ function createFake$(opts = {}) {
   fake.promptSubmits = promptSubmits;
   fake.toolCalls = toolCalls;
   fake.uiLogs = uiLogs;
+  fake.uiToasts = uiToasts;
   fake.httpCalls = httpCalls;
   fake.envGets = envGets;
 
@@ -391,6 +396,7 @@ function createFake$(opts = {}) {
     classifyCalls,
     completeCalls,
     uiLogs,
+    uiToasts,
     httpCalls,
     envGets,
     sleeps,

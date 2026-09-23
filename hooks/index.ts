@@ -4303,34 +4303,46 @@ export const register: Register = async (on, options) => {
       }
 
       // 2a. C3: error streak branch (before the idle gate; H1: move out of the classify path).
-      // F6: route through the ask-operator path (paused, not blocked).
+      // F6: with an active node, route through the ask-operator path (paused, not blocked).
       // Re-fire rule: only when a new error occurred after handledAt.
       const envErrors = sess.state.monitor.env.errors;
       if (envErrors.consecutiveErrorTurns >= 3 && (!envErrors.handledAt || (envErrors.lastErrorAt && envErrors.lastErrorAt > envErrors.handledAt))) {
         const streakTs = Date.now();
-        const streakReason = `Error streak ${envErrors.consecutiveErrorTurns} turns; escalating`;
+        const streakHead = `Error streak ${envErrors.consecutiveErrorTurns} turns`;
         envErrors.handledAt = streakTs;
-        // Look up the active node for the decision detail; if none, still log + toast + handledAt.
+        // Look up the active node; with none to pause, there is nothing for
+        // an ask to resume, so the streak is logged and nothing more. With no
+        // ask open, step 4 below still activates pending work on this tick.
         const activeForStreak = sess.state.goals.find((n) => n.status === "active");
-        const nodeId = activeForStreak ? activeForStreak.id : "no-active-node";
-        sess.state.decisions.push({
-          timestamp: streakTs,
-          loop: "monitor",
-          action: "error_streak",
-          detail: `${nodeId}: ${streakReason}`,
-        });
-        // D5: write an ask record and set pendingAskId
-        const askId = `ask-${nodeId}-${Date.now()}`;
-        await writeAskRecord(commonsStoreOf($), sess.persona, askId, nodeId, streakReason, sess.mySessionId);
-        sess.state.pendingAskId = askId;
-        sess.state.decisions.push({
-          timestamp: streakTs,
-          loop: "monitor",
-          action: "ask_opened",
-          detail: `${nodeId}: error-streak: ${streakReason} (ask ${askId})`,
-        });
-        try { $.ui.toast(`Agentic: ${streakReason}`); } catch { /* non-fatal */ }
-        if (activeForStreak && activeForStreak.status === "active") {
+        if (!activeForStreak) {
+          sess.state.decisions.push({
+            timestamp: streakTs,
+            loop: "monitor",
+            action: "error_streak",
+            detail: `no-active-node: ${streakHead}; no leaf to pause, no ask opened`,
+          });
+          sess.state.updatedAt = streakTs;
+          await persist($);
+        } else {
+          const nodeId = activeForStreak.id;
+          const streakReason = `${streakHead}; escalating`;
+          sess.state.decisions.push({
+            timestamp: streakTs,
+            loop: "monitor",
+            action: "error_streak",
+            detail: `${nodeId}: ${streakReason}`,
+          });
+          // D5: write an ask record and set pendingAskId
+          const askId = `ask-${nodeId}-${Date.now()}`;
+          await writeAskRecord(commonsStoreOf($), sess.persona, askId, nodeId, streakReason, sess.mySessionId);
+          sess.state.pendingAskId = askId;
+          sess.state.decisions.push({
+            timestamp: streakTs,
+            loop: "monitor",
+            action: "ask_opened",
+            detail: `${nodeId}: error-streak: ${streakReason} (ask ${askId})`,
+          });
+          try { $.ui.toast(`Agentic: ${streakReason}`); } catch { /* non-fatal */ }
           activeForStreak.status = "paused";
           activeForStreak.blockedReason = streakReason;
           activeForStreak.updatedAt = streakTs;
@@ -4341,9 +4353,9 @@ export const register: Register = async (on, options) => {
             detail: `${nodeId}: ${streakReason}`,
           });
           try { $.ui.status(""); } catch { /* non-fatal */ }
+          sess.state.updatedAt = streakTs;
+          await persist($);
         }
-        sess.state.updatedAt = streakTs;
-        await persist($);
       }
 
       // 2a2. Self-review (S9: single execution site in the tick handler).
