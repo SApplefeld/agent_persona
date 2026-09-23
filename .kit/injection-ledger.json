@@ -22,14 +22,14 @@
     {
       "name": "COORDINATOR_ROLE_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 6453,
-      "words": 1129
+      "chars": 6990,
+      "words": 1226
     },
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 6464,
-      "words": 1141
+      "chars": 6995,
+      "words": 1236
     },
     {
       "name": "PRIMING_BODY_prompt_pending",
