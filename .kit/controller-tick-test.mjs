@@ -3258,6 +3258,7 @@ async function main() {
     await caseItem8p4_repeatedWeaknessBecomesAFindingRecord(clock);
     await caseItem8p4_findingCoolOff(clock);
     await caseItem8p4_ledgerDropKeepsEachSignalsLatest(clock);
+    await caseItem8p4_turnOpenedUnderTheTickSkipsTheBlock(clock);
     await caseItem8p4_control_singleEventProducesNeither(clock);
     await caseItem8p4_longTurnsAdjustConfigAndSendRationale(clock);
     await caseItem8p4_longTurnsAtFloorRaiseNothing(clock);
@@ -7703,6 +7704,8 @@ async function caseItem8p4_ledgerDropKeepsEachSignalsLatest(clock) {
       old("asks_unresolved", T0 - FINDING_COOLOFF_MS - 3_600_000),
       old("message_wait", T0 - FINDING_COOLOFF_MS - 7_200_000),
       old("message_wait", T0 - FINDING_COOLOFF_MS - 3_600_000),
+      old("memory_quality", T0 - FINDING_COOLOFF_MS - 3_600_000),
+      old("memory_quality", T0 - FINDING_COOLOFF_MS - 3_600_000),
     ];
   });
   await tickAndSettle(h, clock, 100);
@@ -7712,6 +7715,65 @@ async function caseItem8p4_ledgerDropKeepsEachSignalsLatest(clock) {
   check("item8.4 ledger drop: the older of two delivered entries past the cool-off for one signal is dropped, the later kept",
     sent.filter((e) => e.signal === "message_wait").length === 1
       && sent.some((e) => e.signal === "message_wait" && e.sentAt === T0 - FINDING_COOLOFF_MS - 3_600_000), sent);
+  check("item8.4 ledger drop: of two entries with one sentAt for one signal, the one later in the list is kept and the other dropped",
+    sent.filter((e) => e.signal === "memory_quality").length === 1, sent);
+}
+
+// The self-review block takes the open-turn reading again rather than
+// trusting the top of the tick. A turn that opens while the tick is parked
+// earlier in its body leaves the whole block for the next quiet tick: nothing
+// is sent, and neither the ledger nor the counters move. Once the turn
+// completes, the next tick sends.
+async function caseItem8p4_turnOpenedUnderTheTickSkipsTheBlock(clock) {
+  console.log("\n=== Item 8.4: a turn that opens under a running tick skips the self-review block for that tick ===");
+  const OLD = "old-session";
+  const resendText = `[FINDING] ${FINDER} message_wait x2\nresend body`;
+  const h = await seedFindingHarness(clock, "item8p4_turn_under_tick", FINDER, (state) => {
+    activePlanA(state);
+    reviewDue(state);
+    state.decisions = [...TWO_ASK_TIMEOUTS];
+    state.monitor.selfReview.sent = [{ signal: "message_wait", text: resendText, sentAt: T0 - 1000, writer: OLD, seq: 1, delivered: false }];
+  });
+  const skippedKey = `inbox:${FINDING_COORDINATOR}:${OLD}:1`;
+  h.storeMap.set(skippedKey, { id: `${FINDING_COORDINATOR}-${OLD}-1`, key: skippedKey, from: OLD, at: T0 - 1000, kind: "say", text: resendText, status: "skipped" });
+  // A record the finder's own inbox drain reads and leaves alone, since it is
+  // not pending. Holding its read parks the tick ahead of the block.
+  const heldKey = `inbox:${FINDER}:writer-held:1`;
+  h.storeMap.set(heldKey, { id: `${FINDER}-writer-held-1`, key: heldKey, from: "writer-held", at: T0 - 5000, kind: "say", text: "already read", status: "delivered", deliveredAt: T0 - 4000 });
+  const before = getStateForPersona(h, FINDER).monitor.selfReview;
+
+  h.holdStoreGets(heldKey);
+  const tick = fireTick(h);
+  check("item8.4 turn under tick: the tick's inbox read is parked (setup sanity)", await waitUntil(() => h.parkedStoreGetCount >= 1));
+  const turnStart = h.handlers["turn.start"](h.fake, { turnId: "t-under-tick", text: "typed while the tick ran" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 20));
+  let tickDone = false;
+  tick.then(() => { tickDone = true; });
+  for (let i = 0; i < 200 && !tickDone; i++) {
+    h.releaseStoreGet();
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  await tick;
+  while (h.parkedStoreGetCount > 0) h.releaseStoreGet();
+  await turnStart;
+  const during = getStateForPersona(h, FINDER).monitor.selfReview;
+  check("item8.4 turn under tick: no record is written while the turn is open",
+    !coordinatorRecords(h).some((r) => r.from === SESSION_ID), coordinatorRecords(h).map((r) => r.key));
+  check("item8.4 turn under tick: the ledger is unchanged", JSON.stringify(during.sent) === JSON.stringify(before.sent), during.sent);
+  check("item8.4 turn under tick: the review counters are unchanged",
+    during.count === before.count && during.lastAt === before.lastAt && during.pendingPeriodic === true && during.windowStart === before.windowStart,
+    during);
+  check("item8.4 turn under tick: no finding decision is logged",
+    !getStateForPersona(h, FINDER).decisions.some((d) => d.action === "finding_sent" || d.action === "finding_unroutable"));
+
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-under-tick", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+  clock.advance(30_000);
+  await reseedFinder(h, FINDER, (state) => { reviewDue(state); });
+  await tickAndSettle(h, clock, 100);
+  const mine = coordinatorRecords(h).filter((r) => r.from === SESSION_ID);
+  check("item8.4 turn under tick: after the turn completes the next tick resends the skipped entry and sends the finding",
+    mine.length === 2 && mine.some((r) => r.text === resendText) && mine.some((r) => r.text.startsWith(`[FINDING] ${FINDER} asks_unresolved x2\n`)),
+    mine.map((r) => [r.key, r.text.split("\n")[0]]));
 }
 
 // A long_turns finding still changes the cadence and logs the change, and

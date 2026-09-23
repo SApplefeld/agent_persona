@@ -70,7 +70,7 @@ export interface GoalNode {
                               // reactivating a node paused for any other reason.
   kaizenSignal?: string; // plan item 8.4: set on a plan an earlier self-review loop
                          // raised from the worker's own record, naming the weakness
-                         // signal. The loop writes no such node now; the tick sends
+                         // signal. The loop writes no such node; the tick sends
                          // an open one to the coordinator persona as a finding and
                          // abandons it.
   planPath?: string; // Section 1 (plan-health-from-the-record): the plan document's

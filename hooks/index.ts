@@ -4489,15 +4489,28 @@ export const register: Register = async (on, options) => {
       }
 
       // 2a2. Self-review (S9: single execution site in the tick handler).
-      if (sess.state.monitor.selfReview) {
+      // The open-turn reading is taken again here rather than trusted from the
+      // top of the tick. The blocks above await store reads and submits, so a
+      // turn can have opened underneath them by the time this line runs, and
+      // an agentic_say in that turn writes to the coordinator persona's inbox
+      // under this session's id. sendPluginRecord and the agentic_say handler
+      // each read the highest sequence and then write under the same writer
+      // id, so the two could take one sequence number and one would overwrite
+      // the other's record. Skipping leaves the settle step, the routing and
+      // the review to the next quiet tick, which costs one tick and loses
+      // nothing.
+      if (sess.state.monitor.selfReview && !turnIsOpen()) {
         const sr = sess.state.monitor.selfReview;
         const now = Date.now();
 
         // Lines for the [KAIZEN] thread message, which carries only the
         // findings that have no coordinator persona to reach. The body of a
         // routed node or of a ledger entry is text out of the persona's store,
-        // so every line has its line breaks folded and passes through the
-        // delivery bracket neutralizer. No line names a node id.
+        // so every line has its line breaks folded and passes through
+        // bracketSafeText, which turns '[' and ']' into '(' and ')' so the text
+        // cannot forge a delivery label. The fleet report and the fleet prompt
+        // apply the same helper to the text they carry. No line names a node
+        // id.
         const announced: string[] = [];
         const announce = (line: string, signal: string): void => {
           announced.push(bracketSafeText(`${line} (${signal})`.split(LINE_TERMINATOR).join(" ")));
@@ -4564,7 +4577,10 @@ export const register: Register = async (on, options) => {
         // entry not yet delivered is read back. A record that reads delivered,
         // answered or resolved settles the entry, and so does an absent one,
         // since a pending record is never swept and an absent record has
-        // therefore already left pending. A skipped record is sent again. A
+        // therefore already left pending. A record that was skipped and then
+        // swept before this tick also reads absent and is not sent again,
+        // which the plan accepts: it needs the finder down for longer than the
+        // record survives. A skipped record is sent again. A
         // record still pending FINDING_UNROUTABLE_AFTER_MS after the send has
         // no coordinator persona to take it: the finding is announced here and
         // the record is left in the store.
@@ -4591,9 +4607,11 @@ export const register: Register = async (on, options) => {
         // short, except where it is its signal's latest: the review counts only
         // the events after a signal's latest sentAt, so that entry is kept.
         // The list holds at most one such entry per signal, plus the entries
-        // still inside the cool-off.
-        sr.sent = sr.sent.filter((e) => !(e.delivered && now - e.sentAt > FINDING_COOLOFF_MS
-          && sr.sent.some((later) => later.signal === e.signal && later.sentAt > e.sentAt)));
+        // still inside the cool-off. Two entries with one sentAt are ordered
+        // by their place in the list, the later one counting as later.
+        sr.sent = sr.sent.filter((e, i) => !(e.delivered && now - e.sentAt > FINDING_COOLOFF_MS
+          && sr.sent.some((later, j) => later.signal === e.signal
+            && (later.sentAt > e.sentAt || (later.sentAt === e.sentAt && j > i)))));
 
         // A goal node an earlier self-review wrote, still open, is sent as a
         // finding and abandoned, so the signal is in the ledger before the
@@ -4603,14 +4621,16 @@ export const register: Register = async (on, options) => {
           if (typeof node.kaizenSignal !== "string") continue;
           if (node.status !== "pending" && node.status !== "active" && node.status !== "paused" && node.status !== "blocked") continue;
           const signal = node.kaizenSignal;
-          const recordId = await sendFinding(signal, `[FINDING] ${sess.persona} ${signal}\n${node.objective}`, node.objective);
           const wasActive = node.status === "active" || sess.state.activeGoalId === node.id;
+          // The node is closed before the send is awaited, so a tick that
+          // overlaps this one finds it abandoned and does not route it again.
           node.status = "abandoned";
           node.updatedAt = now;
+          if (sess.state.activeGoalId === node.id) sess.state.activeGoalId = null;
+          const recordId = await sendFinding(signal, `[FINDING] ${sess.persona} ${signal}\n${node.objective}`, node.objective);
           node.notes = [...(node.notes ?? []), recordId !== null
             ? `Sent to the '${coordinatorPersona}' persona as finding record ${recordId}.`
             : "The finding was announced on this persona's own thread."];
-          if (sess.state.activeGoalId === node.id) sess.state.activeGoalId = null;
           sess.state.decisions.push({
             timestamp: now,
             loop: "goal",
