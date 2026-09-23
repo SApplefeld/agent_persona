@@ -333,3 +333,10 @@ Delta: measured 2026-09-23 on SCOTT-CLAUDE at 94305d4 plus this section's close 
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 5 - 2026-09-23
+Section 2 stage: pointer edits committed as 83846ba (README.md Trust boundary pointer and the logon sentence at line 613, docs/README.md Reference line, docs/architecture.md machine-state list corrected against D:/personas and the six AgentPersona tasks). Prose-only, so it is treated as trivial under step 3: author re-read, with no review round.
+Live dispatches: none.
+Gate baseline: unchanged from Chapter 1. No code changed since then.
+Pending: the operator confirmation ask, sent on the relay 2026-09-23 with trust boundaries 1-6 and accepted risks 7-9 numbered. The turn closing text carries the plugin ASK marker line.
+Next: on a yes, write Chapter 2 quoting the answer; on changes, edit docs/security-model.md for each numbered item, then Chapter 2. First expiry re-raises once; second expiry is BLOCKED naming the unconfirmed items.
