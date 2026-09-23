@@ -2616,15 +2616,20 @@ export const register: Register = async (on, options) => {
       name: "supervisor_shutdown",
       description:
         "Stop the supervisor itself, not just the current goal: the child exits by the graceful " +
-        "EOF path once this turn ends. Call it only on the operator's explicit ask to stop for " +
-        "good. A finished goal needs no call here: goal_done already returns the supervisor to " +
-        "its passive waiting state. Owner only.",
+        "EOF path once this turn ends. park: true parks for an update window and the keeper's next " +
+        "start brings the persona back; without it the call stops for good and needs the operator's " +
+        "explicit ask. A finished goal needs no call here: goal_done already returns the supervisor " +
+        "to its passive waiting state. Owner only.",
       inputSchema: {
         type: "object",
         properties: {
           reason: {
             type: "string",
             description: "reason is optional: why the operator asked to shut down.",
+          },
+          park: {
+            type: "boolean",
+            description: "park: true parks for a restart: the supervisor exits on the park code and the keeper's next start relaunches it. Omit it to stop for good.",
           },
         },
       },
@@ -7342,21 +7347,31 @@ export const register: Register = async (on, options) => {
 
     // Serve supervisor_shutdown (plan item 4: distinct from root_complete;
     // supervise.sh's decide unit only exits the whole loop on this signal).
+    // park: true writes park_requested in place of shutdown_requested, so the
+    // supervisor exits on the park code and the keeper's next start launches
+    // the persona again rather than holding it for a hand release.
     if (e.tool === "mcp__agentic-plugin__supervisor_shutdown") {
       if (!sess.isOwner) {
         toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
       }
-      const reason = String((e as any).reason || "").trim() || "operator requested shutdown";
+      // Arguments can arrive stringified, so the string "true" counts. Any
+      // other value is a stop.
+      const rawPark = (e as any).park;
+      const park = rawPark === true || rawPark === "true";
+      const reason = String((e as any).reason || "").trim() || (park ? "operator requested park" : "operator requested shutdown");
       const now = Date.now();
       sess.state.decisions.push({
         timestamp: now,
         loop: "monitor",
-        action: "shutdown_requested",
+        action: park ? "park_requested" : "shutdown_requested",
         detail: reason,
       });
       const writeOk = await persist($);
       if (writeOk) {
+        if (park) {
+          return { result: `Park requested: ${reason}. The supervisor will stop after this turn ends, and the keeper's next start launches this persona again.` };
+        }
         return { result: `Shutdown requested: ${reason}. The supervisor will stop after this turn ends.` };
       }
       toolErrorsThisTurn++;

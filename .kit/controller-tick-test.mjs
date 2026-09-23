@@ -3333,6 +3333,10 @@ async function main() {
     await caseGtc4_aFailedHistoryWriteStopsTheReplacement(clock);
     await caseGtc4_goalAddUnderAFinishedRootReopensIt(clock);
     await caseGtc4_thePausedReminderNamesReplaceTrue(clock);
+    await caseKeeperPark1_parkTrueWritesParkRequested(clock);
+    await caseKeeperPark1_noParkWritesShutdownRequested(clock);
+    await caseKeeperPark1_parkFromANonOwnerIsRefused(clock);
+    await caseKeeperPark1_aRefusedPersistDeniesThePark(clock);
     await caseSection6Fleet_unchangedIsSilentAndOneChangeSubmitsOnce(clock);
     await caseSection6Fleet_runningRowsAreNotAllHealthy(clock);
     await caseSection6Fleet_aFirstEverLaunchIsNotStale(clock);
@@ -18134,6 +18138,112 @@ async function caseGtc4_thePausedReminderNamesReplaceTrue(clock) {
   const paused = blocks.find((b) => b.startsWith("Goal tree paused"));
   check("gtc4 paused reminder: the block is injected and names goal_create with replace: true",
     !!paused && paused.includes("goal_create with replace: true"), blocks);
+}
+
+// The deny text supervisor_shutdown returns for a non-owner and for a refused
+// persist, on both its stop and its park branch.
+const SHUTDOWN_HELD_DENY = "persona 'default' is held by a live session; this write was not saved.";
+
+// Calls supervisor_shutdown with `args` and returns the result and the
+// decisions the call left in the stored state.
+async function parkCall(h, args) {
+  const beforeCount = getDecisions(h).length;
+  const res = await callTool(h, { tool: "mcp__agentic-plugin__supervisor_shutdown", ...args });
+  const written = getDecisions(h).slice(beforeCount);
+  return { res, written };
+}
+
+// Keeper park 1, the park branch: park: true writes one park_requested
+// decision carrying the reason, and no shutdown_requested, because a park
+// recorded as a stop is a persona the keeper holds until a hand release. The
+// string "true" reads the same as the boolean, and a park with no reason
+// carries the park default rather than the shutdown one.
+async function caseKeeperPark1_parkTrueWritesParkRequested(clock) {
+  console.log("\n=== Keeper park 1: supervisor_shutdown with park: true writes park_requested ===");
+  for (const [label, value] of [["boolean", true], ["string", "true"]]) {
+    clock.set(T0);
+    const h = await gtc3Harness(`kp1_park_${label}`, gtc4Tree("pending"));
+    const { res, written } = await parkCall(h, { park: value, reason: "update window" });
+    const tag = `kp1 park (${label} true)`;
+    check(`${tag}: the result names the park and the keeper's next start`,
+      res?.result === "Park requested: update window. The supervisor will stop after this turn ends, and the keeper's next start launches this persona again.", res);
+    check(`${tag}: exactly one new decision, park_requested, with the reason as detail`,
+      written.length === 1 && written[0].action === "park_requested" && written[0].detail === "update window" && written[0].timestamp === T0,
+      written);
+    check(`${tag}: no shutdown_requested anywhere in the stored decisions`,
+      countAction(getDecisions(h), "shutdown_requested") === 0, getDecisions(h).map((d) => d.action));
+  }
+
+  clock.set(T0);
+  const d = await gtc3Harness("kp1_park_default_reason", gtc4Tree("pending"));
+  const { res, written } = await parkCall(d, { park: true });
+  check("kp1 park, no reason: the decision and the result carry the park default reason",
+    written.length === 1 && written[0].action === "park_requested" && written[0].detail === "operator requested park" &&
+    res?.result === "Park requested: operator requested park. The supervisor will stop after this turn ends, and the keeper's next start launches this persona again.",
+    { res, written });
+}
+
+// Keeper park 1, the control: a call with no park, or with a park value other
+// than true or "true", writes one shutdown_requested with the reason and no
+// park_requested, and returns the stop line as before.
+async function caseKeeperPark1_noParkWritesShutdownRequested(clock) {
+  console.log("\n=== Keeper park 1: supervisor_shutdown without park writes shutdown_requested ===");
+  for (const [label, extra] of [["no park", {}], ["park: false", { park: false }], ['park: "false"', { park: "false" }], ["park: 1", { park: 1 }]]) {
+    clock.set(T0);
+    const h = await gtc3Harness(`kp1_stop_${label.replace(/\W+/g, "_")}`, gtc4Tree("pending"));
+    const { res, written } = await parkCall(h, { reason: "operator said stop", ...extra });
+    const tag = `kp1 stop (${label})`;
+    check(`${tag}: the result is the stop line`,
+      res?.result === "Shutdown requested: operator said stop. The supervisor will stop after this turn ends.", res);
+    check(`${tag}: exactly one new decision, shutdown_requested, with the reason as detail`,
+      written.length === 1 && written[0].action === "shutdown_requested" && written[0].detail === "operator said stop", written);
+    check(`${tag}: no park_requested anywhere in the stored decisions`,
+      countAction(getDecisions(h), "park_requested") === 0, getDecisions(h).map((d) => d.action));
+  }
+
+  clock.set(T0);
+  const d = await gtc3Harness("kp1_stop_default_reason", gtc4Tree("pending"));
+  const { written } = await parkCall(d, {});
+  check("kp1 stop, no reason: the decision carries the shutdown default reason",
+    written.length === 1 && written[0].action === "shutdown_requested" && written[0].detail === "operator requested shutdown", written);
+}
+
+// Keeper park 1, the owner-only refusal on the park branch: a session that
+// does not own the persona is refused with the held deny, and no write
+// reaches any file. The same call without park is refused the same way.
+async function caseKeeperPark1_parkFromANonOwnerIsRefused(clock) {
+  console.log("\n=== Keeper park 1: supervisor_shutdown with park: true from a non-owner is refused ===");
+  for (const [label, extra] of [["park: true", { park: true }], ["no park", {}]]) {
+    clock.set(T0);
+    const h = await seedReaderHarness(`kp1_reader_${label.replace(/\W+/g, "_")}`, T0, "owner-kp1", {}, { turnStartedAt: null, workdir: HARNESS_CWD });
+    const storeBefore = h.fsMap.get(PERSONA_STORE_FILE);
+    h.fsWrites.length = 0;
+    const res = await callTool(h, { tool: "mcp__agentic-plugin__supervisor_shutdown", reason: "update window", ...extra });
+    const tag = `kp1 reader (${label})`;
+    check(`${tag}: refused with the held deny text`, res?.deny === SHUTDOWN_HELD_DENY && res?.result === undefined, res);
+    check(`${tag}: no write reached any file`, h.fsWrites.length === 0, h.fsWrites.map((w) => w.path));
+    check(`${tag}: the store file is byte-identical`, h.fsMap.get(PERSONA_STORE_FILE) === storeBefore);
+    const stored = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE)).default.decisions;
+    check(`${tag}: the store holds neither park_requested nor shutdown_requested`,
+      countAction(stored, "park_requested") === 0 && countAction(stored, "shutdown_requested") === 0, stored.map((d) => d.action));
+  }
+}
+
+// Keeper park 1, a refused persist on the park branch: where another session
+// has taken the persona on disk, persist yields and the park call is denied
+// with the held text, and the stored state carries no park_requested.
+async function caseKeeperPark1_aRefusedPersistDeniesThePark(clock) {
+  console.log("\n=== Keeper park 1: a refused persist denies the park ===");
+  clock.set(T0);
+  const h = await gtc3Harness("kp1_persist_refused", gtc4Tree("pending"));
+  const store = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE));
+  store.default.activeSessionId = "taker-kp1";
+  store.default.epoch = (store.default.epoch ?? 1) + 1;
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify(store));
+  const res = await callTool(h, { tool: "mcp__agentic-plugin__supervisor_shutdown", park: true, reason: "update window" });
+  check("kp1 persist refused: denied with the held deny text", res?.deny === SHUTDOWN_HELD_DENY && res?.result === undefined, res);
+  const stored = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE)).default.decisions;
+  check("kp1 persist refused: the store holds no park_requested", countAction(stored, "park_requested") === 0, stored.map((d) => d.action));
 }
 
 // The heartbeat file is the supervisor's liveness instrument, and the supervisor

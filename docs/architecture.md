@@ -166,14 +166,14 @@ Two files write text into a child session that nobody typed: `bin/supervise.sh` 
 
 ### What is injected, and how large
 
-`.kit/injection-ledger.json` is the committed size baseline, 40 entries totalling 34,385 characters. Ten entries come from `bin/supervise.sh` and total 17,467; thirty come from `hooks/index.ts` and total 16,918, of which the fifteen registered tool descriptions are 12,313.
+`.kit/injection-ledger.json` is the committed size baseline, 40 entries totalling 34,627 characters. Ten entries come from `bin/supervise.sh` and total 17,467; thirty come from `hooks/index.ts` and total 17,160, of which the fifteen registered tool descriptions are 12,555.
 
 | What a launch reads | Characters |
 |---|---|
 | A worker with a channel: skill-load, coordinator steer, reply-tool | 4,754 |
 | The coordinator: those three plus the coordinator role instruction | 10,282 |
 | The architect: reply-tool plus its charter, the other two cleared | 7,240 |
-| The fifteen tool descriptions an owner-tier session registers | 12,313 |
+| The fifteen tool descriptions an owner-tier session registers | 12,555 |
 
 The worker and coordinator rows are upper bounds. They sum each instruction variable whole, while a launch takes only the clauses its persona's guards admit: the coordinator's launch reads none of the steer instruction's worker-only clauses, and a worker reads the architect sentences only where its own settings file names an architect.
 
