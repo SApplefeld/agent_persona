@@ -297,3 +297,15 @@ Files in scope: `README.md`, `docs/architecture.md`, `docs/README.md`, `docs/sec
 - Gate baseline: none on a lane; the section changes documents only.
 - Rulings adopted since the last boundary: none.
 - Next action: dispatch round 5, adjudicate it, then close section 1 or declare the backstop.
+
+### Interim board 3 - 2026-09-23
+
+Written at round 5's adjudication, where the review-round backstop fired.
+
+- **Section 1 stage: stopped at the backstop, ladder at the opening bound, round count 5.** Round 5 ran the full roster (three blind readers and the prose reviewer, all at fable, Agent tool). The tree bracket read no delta. The blind readers returned no Critical. The prose reviewer returned one accuracy Critical, confirmed on the machine: the document said the tasks log on with a stored password, while `Get-ScheduledTask` on SCOTT-CLAUDE lists all six `AgentPersona-*` tasks at LogonType S4U, RunLevel Limited. `bin/Register-PersonaTasks.ps1:328` registers the Password logon, and only ASR-CLAUDE was re-registered to it (`docs/archive/agent_persona_task-password-logon_v1.md`). Interim board 2's machine fact "the task is Password logon" was read off the code, not the scheduler, and is wrong for this host.
+- **Critical fixed before the declaration.** The deployment paragraph, the DPAPI asset line, the SYSTEM entry and the credential-reach risk now state the S4U logon on SCOTT-CLAUDE and what it denies. The fix is prose only.
+- **Owed and unrun: the re-raised round 6 at round 1's roster.** A surviving correctness Critical re-raises the next round. The backstop opens no round, so round 6 is taken first on the operator's answer, before anything else in the section.
+- **Frozen, unfixed: round 5's Majors and Minors.** Majors: the instruction-text sentence under Trust boundaries omits the architect's case; the third attacker class does not name its residual members; the Discord-account class is trusted and defended at once; the gate's real reach is not stated; the five-repository decision names no options; the per-ground enumeration restates the README and leaves `default` undefined; a non-trunk workflow's access to secrets is unstated; the document reads as one host while the fleet also runs on NEO-CLAUDE and ASR-CLAUDE. Checked facts for their fixes: the SSH key authenticates as `neo-claude`; with `keeper.env` absent, `bin/Start-Persona.ps1:646-649` logs and continues.
+- **Pre-BLOCKED steps.** Journal entry `kit.review.cap fail` logged. No expert seat is on the roster. The consultant is dispatched on what the declaration recommends.
+- Gate baseline: documents only, no suite.
+- Next action: adopt the consult ruling, declare the backstop, notify the coordinator, then act on the operator's answer, starting with round 6.
