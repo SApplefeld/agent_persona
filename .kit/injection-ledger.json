@@ -22,8 +22,8 @@
     {
       "name": "COORDINATOR_ROLE_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 6250,
-      "words": 1095
+      "chars": 6453,
+      "words": 1129
     },
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
@@ -124,8 +124,8 @@
     {
       "name": "GOAL_QUEUE_BLOCK",
       "file": "hooks/index.ts",
-      "chars": 274,
-      "words": 47
+      "chars": 363,
+      "words": 62
     },
     {
       "name": "NO_GOAL_BLOCK",

@@ -166,14 +166,14 @@ Two files write text into a child session that nobody typed: `bin/supervise.sh` 
 
 ### What is injected, and how large
 
-`.kit/injection-ledger.json` is the committed size baseline, 40 entries totalling 34,385 characters. Ten entries come from `bin/supervise.sh` and total 17,467; thirty come from `hooks/index.ts` and total 16,918, of which the fifteen registered tool descriptions are 12,313.
+`.kit/injection-ledger.json` is the committed size baseline, 40 entries totalling 36,025 characters. Ten entries come from `bin/supervise.sh` and total 18,636; thirty come from `hooks/index.ts` and total 17,389, of which the fifteen registered tool descriptions are 12,515.
 
 | What a launch reads | Characters |
 |---|---|
 | A worker with a channel: skill-load, coordinator steer, reply-tool | 4,754 |
-| The coordinator: those three plus the coordinator role instruction | 10,282 |
+| The coordinator: those three plus the coordinator role instruction | 11,207 |
 | The architect: reply-tool plus its charter, the other two cleared | 7,240 |
-| The fifteen tool descriptions an owner-tier session registers | 12,313 |
+| The fifteen tool descriptions an owner-tier session registers | 12,515 |
 
 The worker and coordinator rows are upper bounds. They sum each instruction variable whole, while a launch takes only the clauses its persona's guards admit: the coordinator's launch reads none of the steer instruction's worker-only clauses, and a worker reads the architect sentences only where its own settings file names an architect.
 
@@ -252,7 +252,7 @@ The hung check corroborates a stale heartbeat against the harness transcript's o
 | A tool the persona should have is missing from the session | `tool_register_refused` decisions in `<workdir>/.agentic-personas.json`, and the engine's debug log | the engine refused that one registration, a description over 4,096 characters being the known cause; the rest of the session runs |
 | A persona whose turns run past an hour never has its review cadence halved | `goal_status` for a node whose `kaizenSignal` reads `long_turns`, and `turn_over_hour` and `kaizen_config_adjusted` decisions in `<workdir>/.agentic-personas.json` | an open `long_turns` node from before that signal lost its goal half suppresses the signal, `paused` included; or the cadence already sits at `selfReviewDebounceTurns`. The section on the own-record self-review states both |
 | `goal_create` is refused because the goal tree is unfinished | the root's status in `goal_status` | the root is neither complete nor abandoned; `replace: true` replaces it, after the old tree is copied to `.agentic-goal-history.jsonl` |
-| A persona sits idle over a goal tree that still has open entries | the `[GOAL QUEUE]` block's last line in the persona's prompt, then `goal_status` | no open entry can start, and the last line reads "Nothing here starts by itself". A plan queued as `paused` with a release condition in its reason is the usual cause, since queued work belongs in `pending`. Drop that entry with `goal_edit`, and any open task under it first, pausing an active one, since a drop does not reach a node's children, then add it again as `pending` with the same `planPath`. `goal_resume` is for an entry that was stuck, and it pauses whatever entry is active |
+| A persona sits idle over a goal tree that still has open entries | the `[GOAL QUEUE]` block's last line in the persona's prompt, then `goal_status` | no open entry can start, and the last line reads "Nothing here starts by itself". `hasStartableWork` in `hooks/agent-state.ts` decides that line from `nextStartableLeaf`, the same walk `activateNext` takes, so a pending entry under a paused parent counts as unable to start. A plan queued as `paused` with a release condition in its reason is the usual cause, since queued work belongs in `pending`. Drop that entry with `goal_edit`, and any open task under it first, pausing an active one, since a drop does not reach a node's children, then add it again as `pending` with the same `planPath`. A re-added entry sorts behind every pending sibling, and `reprioritize` moves an entry to the front of its level, so several are moved last-wanted first. `goal_resume` is for an entry that was stuck: it starts the entry at once and pauses whatever entry is active |
 | Every `call` line reads `result` `no_key` | the `result` and `detail` columns of the day's journal file | `TYPESAFE_API_KEY` is absent from the child's environment, or is shorter than 16 characters once trimmed. It is not a settings option, not a roster field, and not in the keeper env file's allowlist, so only the environment the supervisor's child inherits can carry it |
 
 Whether `Stop-ScheduledTask` ends the whole process tree under a scheduled task is not measured on this machine, and the wrapper has no stop path of its own. `README.md` under Process keeper states the stop options that are known to work.

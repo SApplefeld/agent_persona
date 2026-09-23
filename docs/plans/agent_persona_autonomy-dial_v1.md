@@ -22,12 +22,12 @@ The operator agreed to every item in the brief at
 channel, and asked that it go to the architect through the coordinator. The coordinator relayed it
 as record `ARCHITECT-8d67c288-dd78-478d-a565-e390d50027b0-15`, quoting the operator: "Please
 proceed. Send everything to Steward for architect. Let's get this in action." This plan carries
-the brief's items 4, 5 and 6. Items 1 to 3 are `docs/plans/agent_persona_idle-queue_v1.md`.
+the brief's items 4, 5 and 6. Items 1 to 3 are `docs/archive/agent_persona_idle-queue_v1.md`.
 
 Execution waits on the coordinator handing this plan to a worker by name. A worker that finds this
 plan in its own queue has that handoff. This plan starts only after two plans have merged to
 `origin/main`, read after a fetch: `docs/plans/agent_persona_goal-levels_v1.md`, whose turn-origin
-gate and idle proposal this plan extends, and `docs/plans/agent_persona_idle-queue_v1.md`, whose
+gate and idle proposal this plan extends, and `docs/archive/agent_persona_idle-queue_v1.md`, whose
 helper the standing block reads. The check has two halves, both read at `origin/main` after a
 fetch: `git ls-tree --name-only origin/main docs/plans/` lists neither file, and each file is
 present under `docs/archive/` or `docs/plans/archive/` with a `Status: Complete` header line,
@@ -85,7 +85,7 @@ Provenance: distilled from the operator's brief of 2026-09-22 and the architect'
   turn-origin capture and `turnMayStartEffort`, which this plan's section 2 extends, and section 5
   builds the idle proposal, whose frame this plan's section 3 branches on the level. Section 3
   builds `goal_longterm` beside which the dial tool registers.
-- `docs/plans/agent_persona_idle-queue_v1.md` (Ready). Its `hasStartableWork` is what the standing
+- `docs/archive/agent_persona_idle-queue_v1.md` (Complete, archived). Its `hasStartableWork` is what the standing
   block reads to choose its idle sentence.
 - `docs/plans/agent_persona_security-model_v1.md` (Ready). The dial is a store field, and the
   persona store is writable by any process under the operator's account, which that model

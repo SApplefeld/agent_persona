@@ -1,6 +1,6 @@
 # Idle queue
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-09-22
 
@@ -79,7 +79,7 @@ same day, with the DEV-PLUGIN store at `D:\claude-kit\.agentic-personas.json` as
 - `docs/plans/agent_persona_autonomy-dial_v1.md` (Ready, runs after goal-levels and after this
   plan). It carries the standing per-prompt block and the autonomy setting. This plan's queue
   block and helper are what that block reads.
-- `docs/plans/agent_persona_ask-bookkeeping_v1.md` (Ready). It changes the thread-reply close and
+- `docs/archive/agent_persona_ask-bookkeeping_v1.md` (archived). It changes the thread-reply close and
   the error-streak arm in `hooks/index.ts`, neither of which this plan touches.
 
 ## Approach
@@ -158,19 +158,19 @@ move as other plans merge, so find each site by the names and comment text given
    where one is set. Past twelve lines it prints the count of the rest. Its last line
    depends on `hasStartableWork`. Where true: "The next pending entry starts on the controller's
    next tick; do not start it by hand." Where false: "Nothing here starts by itself: every open
-   entry is paused, blocked or out of the controller's reach. Resume one with goal_resume, drop one with goal_edit, or ask the
-   operator." The `[NO GOAL]` block keeps firing only on an empty tree. The ledger entry
+   entry is paused, blocked or out of the controller's reach. Ask the operator or the coordinator which to release. On the operator's or the coordinator's word, resume
+   a paused one with goal_resume or drop one with goal_edit." The `[NO GOAL]` block keeps firing only on an empty tree. The ledger entry
    `GOAL_TREE_PAUSED_BLOCK` is replaced by `GOAL_QUEUE_BLOCK`. The block is built as a template
    chain whose entry lines and count line are one named part, and the extractor sizes it with
    that part left out, the way `GOAL_TREE_BLOCK` leaves out `siblingLine` and `lastNote`. Both
    closing sentences are in the sized text.
-3. The coordinator's instruction gains three sentences. Future work is queued as a `pending` plan
+3. The coordinator's instruction gains the queue rule. Future work is queued as a `pending` plan
    with `goal_add`, ordered with `goal_edit reprioritize`, and the plugin starts the next pending
    plan by itself when the current one completes. `paused` is for an entry that cannot proceed
    until someone acts, and the controller never starts a paused entry from the queue. An entry that reads
    `paused` with a release condition in its reason is a queue mistake, and the coordinator has the
    worker drop it with `goal_edit` and `goal_add` it again as `pending` with the same `planPath`,
-   never resume it, since `goal_resume` pauses whatever entry is active. A drop does not reach a
+   never resume it, since `goal_resume` starts the entry at once and pauses whatever entry is active. A re-added entry sorts behind every pending sibling, and `reprioritize` moves an entry to the front of its level, so several are moved last-wanted first. A drop does not reach a
    node's children, so any open task under the entry is dropped first, after a pause if it is active.
 4. The priming line reads "If a goal tree holds open entries, resume the tree from goal_status
    whether or not an entry is active, and leave a paused entry for the operator or the coordinator
@@ -203,7 +203,7 @@ Acceptance:
   `hooks/agent-state.ts`, `activateNext` calls `nextStartableLeaf` for its walk from the root, and
   on every tick-suite fixture with no active node `hasStartableWork` is true exactly where
   `activateNext(state)` called with no `completedId` activates a node. Every existing tick-suite
-  case passes unchanged except `caseGtc4_thePausedReminderNamesReplaceTrue`, which pins the old
+  case passes unchanged except `caseGtc4_thePausedReminderNamesReplaceTrue` (renamed at finishing to `caseGtc4_aPausedOnlyTreeReadsTheQueueBlocksIdleLine`), which pins the old
   paused text and is rewritten to pin the queue block's all-paused last line.
 - An external prompt on a tree with no active entry and three open entries carries one
   `[GOAL QUEUE]` block with three entry lines in `sortKey` order, each opening with the entry's
@@ -354,3 +354,33 @@ Delta: SCOTT-CLAUDE, 2026-09-23T12:07Z, idle-queue worktree before the close com
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 1 - 2026-09-23
+Finishing pass, base ref 2d01e8b, the merge-base with main and main's tip. QA verifier: PASS on every acceptance bullet in both sections; the live-fleet check is operator-only. Whole gate over 5c74020: 25 of 25 lanes exit 0, gate-final.exit 0.
+Finishing review round 1, Workflow at fable and high, all three agents resolved `claude-fable-5-1`, tree unchanged across the round:
+  - Adversarial Major, spec-traceable to the Intent ("the operator's word is what unsticks"): the queue block's idle line named goal_resume first while the section 2 priming says to leave a paused entry for the operator or the coordinator. Add-decision: changes the idle line to "Ask the operator which to release. On the operator's or the coordinator's word, resume one with goal_resume or drop one with goal_edit."; serves the Intent sentence above and section 2's acceptance bullet 1; adds no mechanism (text only); size one sentence, GOAL_QUEUE_BLOCK 274 to 335 characters; not building it has a persona read "leave it" at launch and "resume one" on its first prompt. Design point 2 updated to the shipped wording.
+  - Adversarial Minors, all fixed: README's tick-suite catalog named the retired paused reminder; the coordinator text implied a re-add restores queue order, where goal_add sets no sort key, so it now says to reprioritize (also README and the architecture row); the ban on resuming a queued entry now holds only while an entry is active (also README and the architecture row); the gtc4 case renamed to what it pins; the optional calls left from the red-first phase dropped. The 243-character size Chapter 1 records became 274 in section 2 and is 335 now; the final Chapter records it.
+  - Security (advisory, verdict CLEAR, threat model present): the idle-line Minor is the Major above, fixed. The relay thread-sender class left with no stated control is refused: the operator cut those sentences on 2026-09-23 and the doc understates rather than overstates a control. goal_edit's unbounded reason is deferred to `docs/backlog.md`: it predates this plan and sits in goal_edit's arms.
+  - Performance (advisory, verdict CLEAR): the tick-harness recorder's cost is refused, because it is test-only and no requirement bounds it; the gate's tick lane ran 64 s after the fix. The double walk per idle prompt is refused on the reviewer's own recommendation.
+Targeted lane after the fix: tsc, injection-duplicate, tool-description-length, supervisor-model, channel-reply-instruction and the tick suite (2612 OK, 0 FAIL, 64 s), each exit 0; ledger refreshed.
+
+### Chapter 3 - 2026-09-23
+Completed: Finishing pass
+Implemented By: main session, with fable reviewers through Workflow at high effort, a qa-verifier, a scope-adjudicator at fable and a docs-curator
+Metrics: finishing review rounds 3, closed major-closed; provenance 1 spec-traceable, 2 fix-introduced, 0 new-requirement; goal read ruled (2 refused, 2 declared, 0 asked by the judge; 1 asked-but-unbuilt routed); advisory: 5 findings, 1 fixed, 1 deferred, 3 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Recap: Goal, verbatim: "When this is done, a persona with queued work starts it without being told, and a persona whose tree holds only paused or blocked work reads that queue in every prompt and counts as idle rather than as busy. It matters because on 2026-09-22 the DEV-PLUGIN persona sat idle for about three hours after its plan merged, with four open plans queued as paused, while its per-prompt reminder showed one stale reason from a fifth plan and nothing in the plugin would ever start the next one."; What the tree does now: when a persona has no active goal entry, every operator prompt now shows it a queue block listing up to twelve open entries in the order the plugin would start them, each with its state and reason, and a last line saying either that the next one starts by itself or that nothing will start until the operator or the coordinator says which to release. One shared check, the same walk the plugin uses to start work, decides that last line and is what a later plan's idle proposal will read. The coordinator persona is now told to queue future plans as pending, which the plugin starts in turn, to reserve paused for work stuck on someone, and to repair a plan wrongly queued as paused by dropping it and adding it again as pending, never by resuming it, because a resume starts the entry at once and pauses whatever is running. Every persona's launch prompt now tells it to pick up any tree with open entries and leave paused ones for the operator or the coordinator; Refinements during the run: design point 3's resume-in-order repair was replaced by drop-and-re-add, because goal_resume pauses the active entry (section 2, round 1); drops take open child tasks first, because a drop does not reach children (section 2, round 2); the priming line was reworded so it no longer invites a blind goal_resume (section 2, round 3); the queue block's idle line was reworded twice at finishing, to route release through the operator or the coordinator and to name paused entries only; the coordinator text states that reprioritize moves an entry to the front of its level, so several go last-wanted first (finishing); three security-model sentences on the relay's confirm-first instruction were cut on the operator's word of 2026-09-23; Operator-pending: after the pull request merges and the installed plugin copy updates, confirm the next plan the coordinator queues reads pending and starts on the tick after the current plan completes.
+Decisions / Surprises:
+  - Base ref 2d01e8b, the merge-base with main and main's tip at the start of the pass; the changeset listing matched the scope lines except docs/backlog.md and docs/security-model.md, both recorded in Chapter 2.
+  - The finishing round's Major (idle line naming goal_resume first against the priming's "leave a paused entry for the operator or the coordinator") was fixed. The first fix introduced two Majors of its own: it described reprioritize as positional, and it narrowed the resume ban to "while no entry is active", which an open ask breaks because the tick returns before activateNext (hooks/index.ts:4933-4935). The second fix states the front-of-level move and restores the outright ban. That reverses Interim board 1's narrowed ban and its refusal-free record of the "ban over-restricts" Minor, which is now refused: the coordinator reads the store, not the worker's prompt, so the only safe guard it can apply is the ban, and the drop-and-re-add cost is already in docs/backlog.md.
+  - GOAL_QUEUE_BLOCK is 363 characters in the ledger: 94 for the old paused reminder, 243 at section 1, 274 after section 2, 363 now. Interim board 1's 335 is superseded.
+  - Goal read: the security-model cut and the five-repositories backlog note were ruled unasked. Both are the operator's own directions from 2026-09-23 on this branch, which the judge could not see, so they stay and ride in the pull request under their own commit and paragraph; the operator can ask for them to move. The backlog records and the goal_edit description's drop clause were declared. The Intent's third leg, "then the backlog", is unbuilt here and owned by docs/plans/agent_persona_autonomy-dial_v1.md, whose standing-duty sentence carries it.
+  - Drift, all deviations: README's tick-suite catalog now lists the section 1 cases; design point 3 no longer counts sentences; the backlog entry on paused-to-pending no longer says queued work can only be paused; the ask-bookkeeping cross-reference points at the archive. The curator refreshed docs/architecture.md's ledger totals and failure-modes row and the goal_resume backlog entry. The autonomy-dial plan's line 106 still says the queue block tells a persona to resume one; that plan's own run owns the correction, since it is Ready and the sentence justifies its awaitingYes flag, which still holds on goal_resume being ungated. docs/plans/archive/ holding two plans beside docs/archive/ predates this effort and is left.
+Assumptions:
+- assumed 2026-09-23 (the orchestrator, section 1): the entry line reads `- <status> <kind> <id> | <title cut to 40>`, with ` | <reason cut to 60>` where a reason is set, and the overflow line reads `...and <n> more open entries.`, with "entry" for one; reversal: the template in the `prompt.submit` handler and its pins.
+- assumed 2026-09-23 (the orchestrator, section 1): `hasStartableWork` counts any node reading `active` literally, as design point 1 states; reversal: one line in `hooks/agent-state.ts`.
+Review Findings: review: security, performance and adversarial at fable, Workflow high, all three resolving claude-fable-5-1; fix reads 1 and 2: adversarial at fable, Workflow high; goal read: scope-adjudicator at fable, Agent tool, RULED. QA verifier PASS on every acceptance bullet, the live-fleet check operator-only. Round 1: adversarial 1 Major fixed, 5 Minors fixed; security CLEAR with 3 Minors (1 folded into the Major, 1 refused on the operator's word, 1 deferred to docs/backlog.md); performance CLEAR with 2 Minors refused (test-only harness cost with no requirement; a second tree walk the reviewer itself advised keeping). Fix read 1: 2 fix-introduced Majors fixed, 3 Minors fixed. Fix read 2: APPROVED, 3 Minors fixed in the Minor pass (a test label, "resume a paused one" since goal_resume takes paused nodes only, and this Chapter's record of the reversal and the size). Tree state unchanged across every bracketed round.
+Stamps: adjudicated 2, stamped 0 (pr-ready-mark-is-the-reviewers-after-verification read and not applied, since finishing-work owns the ready mark; kit-memory-database-host surfaced by a hook and not used)
+Gate: whole offline gate over the finished tree (archive, prune and index refresh done), SCOTT-CLAUDE at 2026-09-23T12:48Z on the idle-queue worktree at 5c74020 plus the finishing changes, after waiting out two foreign kit-repo test runs: 25 of 25 lanes exit 0, gate-handoff.exit 0, tick suite 2612 OK and 0 FAIL. Baseline on the same lane at 5c74020 before the finishing fixes: 25 of 25 exit 0, 2612 OK, so no change. The repository defines no contention lane. Test delta: 0 added, 0 retired, 1 renamed (caseGtc4_aPausedOnlyTreeReadsTheQueueBlocksIdleLine), IQ_IDLE_LINE edited twice.
+Next: none; plan complete
+Commit Model: Branch-and-PR
+Delta: SCOTT-CLAUDE, 2026-09-23T12:45Z, idle-queue worktree before the finishing commit; kit-size measured no file under its roots, so the corpus is empty and there is no reading to report

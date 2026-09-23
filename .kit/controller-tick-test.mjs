@@ -3333,7 +3333,7 @@ async function main() {
     await caseGtc4_aFinishedRootNeedsNoReplace(clock);
     await caseGtc4_aFailedHistoryWriteStopsTheReplacement(clock);
     await caseGtc4_goalAddUnderAFinishedRootReopensIt(clock);
-    await caseGtc4_thePausedReminderNamesReplaceTrue(clock);
+    await caseGtc4_aPausedOnlyTreeReadsTheQueueBlocksIdleLine(clock);
     await caseIq_theQueueBlockListsEveryOpenEntryInActivationOrder(clock);
     await caseIq_theDevPluginShapeIsIdleUntilOneIsResumed(clock);
     await caseIq_theHelpersReadTheControllersWalk(clock);
@@ -18133,16 +18133,16 @@ async function caseGtc4_goalAddUnderAFinishedRootReopensIt(clock) {
 
 // A tree whose only open entry is paused reads the queue block, whose last
 // line says nothing there starts by itself and names the ways through.
-async function caseGtc4_thePausedReminderNamesReplaceTrue(clock) {
+async function caseGtc4_aPausedOnlyTreeReadsTheQueueBlocksIdleLine(clock) {
   console.log("\n=== Goal tree curation 4: a paused-only tree reads the queue block's all-paused last line ===");
   clock.set(T0);
-  const h = await gtc3Harness("gtc4_paused_reminder", gtc4Tree("pending", [
+  const h = await gtc3Harness("gtc4_paused_only_queue_idle_line", gtc4Tree("pending", [
     { id: "plan-1", parentId: "root-1", kind: "plan", status: "paused", title: "Plan one", blockedReason: "paused by operator" },
   ]));
   const blocks = await iqPromptBlocks(h);
   const queue = blocks.find((b) => b.startsWith("[GOAL QUEUE]"));
   const lines = queue ? queue.split("\n") : [];
-  check("gtc4 paused reminder: the queue block is injected and its last line is the all-paused sentence",
+  check("gtc4 paused-only tree: the queue block is injected and its last line is the all-paused sentence",
     !!queue && lines[lines.length - 1] === IQ_IDLE_LINE, blocks);
 }
 
@@ -18151,7 +18151,7 @@ async function caseGtc4_thePausedReminderNamesReplaceTrue(clock) {
 // The two closing sentences the queue block ends on, written out here rather
 // than read from the plugin, so a drift in either is a failure.
 const IQ_STARTABLE_LINE = "The next pending entry starts on the controller's next tick; do not start it by hand.";
-const IQ_IDLE_LINE = "Nothing here starts by itself: every open entry is paused, blocked or out of the controller's reach. Resume one with goal_resume, drop one with goal_edit, or ask the operator.";
+const IQ_IDLE_LINE = "Nothing here starts by itself: every open entry is paused, blocked or out of the controller's reach. Ask the operator or the coordinator which to release. On the operator's or the coordinator's word, resume a paused one with goal_resume or drop one with goal_edit.";
 
 // The context blocks one external prompt carries.
 async function iqPromptBlocks(h) {
@@ -18219,7 +18219,7 @@ async function caseIq_theDevPluginShapeIsIdleUntilOneIsResumed(clock) {
   ]);
   const idle = makeState({ now: T0, goals: structuredClone(tree), activeGoalId: null });
   check("iq dev-plugin: hasStartableWork is false and nextStartableLeaf is null",
-    AgentState.hasStartableWork?.(idle) === false && AgentState.nextStartableLeaf?.(idle) === null,
+    AgentState.hasStartableWork(idle) === false && AgentState.nextStartableLeaf(idle) === null,
     { hasStartableWork: typeof AgentState.hasStartableWork, nextStartableLeaf: typeof AgentState.nextStartableLeaf });
   const h = await gtc3Harness("iq_dev_plugin", tree);
   const g = iqGoalBlocks(await iqPromptBlocks(h));
@@ -18229,7 +18229,7 @@ async function caseIq_theDevPluginShapeIsIdleUntilOneIsResumed(clock) {
   const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_resume", nodeId: "plan-9" });
   const resumed = getState(h);
   check("iq dev-plugin: after goal_resume of plan-9, hasStartableWork is true",
-    res?.deny === undefined && AgentState.hasStartableWork?.(resumed) === true, { res, goals: resumed.goals.map((n) => [n.id, n.status]) });
+    res?.deny === undefined && AgentState.hasStartableWork(resumed) === true, { res, goals: resumed.goals.map((n) => [n.id, n.status]) });
   const after = iqGoalBlocks(await iqPromptBlocks(h));
   check("iq dev-plugin: the next prompt carries [GOAL TREE] and no queue block",
     after.tree.length === 1 && after.queue.length === 0, after);
@@ -18255,7 +18255,7 @@ async function caseIq_theHelpersReadTheControllersWalk(clock) {
     JSON.stringify(open) === JSON.stringify(["task-u", "plan-p"]), open);
   const probe = structuredClone(state);
   check("iq helpers: a pending leaf under a paused plan is not startable, and activateNext activates nothing there either",
-    AgentState.hasStartableWork?.(state) === false && AgentState.nextStartableLeaf?.(state) === null && AgentState.activateNext(probe) === null,
+    AgentState.hasStartableWork(state) === false && AgentState.nextStartableLeaf(state) === null && AgentState.activateNext(probe) === null,
     { hasStartableWork: typeof AgentState.hasStartableWork });
   check("iq helpers: the helpers mutate nothing",
     JSON.stringify(state.goals) === goalsBefore && state.activeGoalId === null, state.goals);
@@ -18306,7 +18306,7 @@ async function caseIq_theHelperAgreesWithActivateNextOnEveryStoredTree() {
     if (goals.some((n) => n.status === "active")) continue;
     compared++;
     const probe = { goals: structuredClone(goals), activeGoalId: null };
-    const helper = AgentState.hasStartableWork?.({ goals: structuredClone(goals), activeGoalId: null });
+    const helper = AgentState.hasStartableWork({ goals: structuredClone(goals), activeGoalId: null });
     const activated = AgentState.activateNext(probe) !== null;
     if (activated) startable++;
     if (helper !== activated) disagreements.push({ helper, activated, goals: goals.map((n) => [n.id, n.parentId, n.status]) });
