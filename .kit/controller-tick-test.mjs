@@ -921,8 +921,8 @@ async function caseS3_no_walk_while_open(clock) {
   // Seed persona store: active goal + pending goal + open ask
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
-    { id: "node-001", kind: "leaf", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
-    { id: "node-002", kind: "leaf", objective: "Goal 2", status: "pending", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 9000, updatedAt: now - 5000, children: [] },
+    { id: "node-001", kind: "leaf", title: "Goal 1", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-002", kind: "leaf", title: "Goal 2", objective: "Goal 2", status: "pending", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 9000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
   personaState.pendingAskId = "ask-no-walk-1";
@@ -1002,7 +1002,7 @@ async function caseS3_answer_reactivates(clock) {
   // Seed persona store: paused goal + open ask
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
-    { id: "node-001", kind: "leaf", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-001", kind: "leaf", title: "Goal 1", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
   personaState.pendingAskId = "ask-answer-1";
@@ -1100,7 +1100,7 @@ async function caseS3_say_leaves_ask_open(clock) {
   // Seed persona store: paused goal + open ask
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
-    { id: "node-001", kind: "leaf", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-001", kind: "leaf", title: "Goal 1", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
   personaState.pendingAskId = "ask-say-1";
@@ -1189,9 +1189,9 @@ async function caseS3_timeout_walks_on(clock) {
   // Seed persona store: root + paused goal + pending goal + open ask
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
-    { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001", "node-002"] },
-    { id: "node-001", kind: "leaf", parentId: "root", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
-    { id: "node-002", kind: "leaf", parentId: "root", objective: "Goal 2", status: "pending", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 9000, updatedAt: now - 5000, children: [] },
+    { id: "root", kind: "goal", parentId: null, title: "Root plan", objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], notes: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001", "node-002"] },
+    { id: "node-001", kind: "leaf", parentId: "root", title: "Goal 1", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-002", kind: "leaf", parentId: "root", title: "Goal 2", objective: "Goal 2", status: "pending", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 9000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
   personaState.pendingAskId = "ask-timeout-1";
@@ -1271,9 +1271,9 @@ async function caseS3_timeout_walks_on_default(clock) {
 
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
-    { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001", "node-002"] },
-    { id: "node-001", kind: "leaf", parentId: "root", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
-    { id: "node-002", kind: "leaf", parentId: "root", objective: "Goal 2", status: "pending", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 9000, updatedAt: now - 5000, children: [] },
+    { id: "root", kind: "goal", parentId: null, title: "Root plan", objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], notes: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001", "node-002"] },
+    { id: "node-001", kind: "leaf", parentId: "root", title: "Goal 1", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-002", kind: "leaf", parentId: "root", title: "Goal 2", objective: "Goal 2", status: "pending", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 9000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
   personaState.pendingAskId = "ask-timeout-default-1";
@@ -1337,8 +1337,8 @@ async function caseItem8p2_classifier_ask_operator_converts_unconditionally(cloc
 
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
-    { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
-    { id: "node-001", kind: "leaf", parentId: "root", objective: "Some task", status: "active", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "root", kind: "goal", parentId: null, title: "Root plan", objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], notes: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
+    { id: "node-001", kind: "leaf", parentId: "root", title: "Some task", objective: "Some task", status: "active", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
   personaState.monitor.turnCount = 5;
@@ -1403,8 +1403,8 @@ async function caseItem8p2_pause_converts_unconditionally(clock) {
 
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
-    { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
-    { id: "node-001", kind: "leaf", parentId: "root", objective: "Some task", status: "active", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "root", kind: "goal", parentId: null, title: "Root plan", objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], notes: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
+    { id: "node-001", kind: "leaf", parentId: "root", title: "Some task", objective: "Some task", status: "active", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
   personaState.monitor.turnCount = 5;
@@ -1462,8 +1462,8 @@ async function caseItem8p2_worker_states_fork_opens_ask(clock) {
 
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
-    { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
-    { id: "node-001", kind: "leaf", parentId: "root", objective: "Some task", status: "active", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "root", kind: "goal", parentId: null, title: "Root plan", objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], notes: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
+    { id: "node-001", kind: "leaf", parentId: "root", title: "Some task", objective: "Some task", status: "active", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
   personaState.updatedAt = now;
@@ -1533,8 +1533,8 @@ async function caseItem8p2_placeholder_marker_refused(clock) {
 
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
-    { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
-    { id: "node-001", kind: "leaf", parentId: "root", objective: "Some task", status: "active", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "root", kind: "goal", parentId: null, title: "Root plan", objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], notes: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
+    { id: "node-001", kind: "leaf", parentId: "root", title: "Some task", objective: "Some task", status: "active", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
   personaState.updatedAt = now;
@@ -3282,6 +3282,10 @@ async function main() {
     await caseS13_errorStreak_noActiveNode_emptyTree_logsOnlyAndOpensNoAsk(clock);
     await caseS13_errorStreak_noActiveNode_completeRootOnly_logsOnlyAndOpensNoAsk(clock);
     await caseS13_errorStreak_noActiveNode_reFireAfterHandled_stillOpensNoAsk(clock);
+    await caseAbk1_errorStreakKeepsTheOpenAsk(clock);
+    await caseAbk1_goalCreateClosesTheOpenAsk(clock);
+    await caseAbk1_threadReplySetsThePointer(clock);
+    await caseAbk2_answerRecordSetsThePointer(clock);
     await caseS13_gitProbe_dirtyCountSampledOnCadence(clock);
     await caseS13_health_redThenGreenAndTheRedReachesTheTurn(clock);
     await caseS13_stall_pendingPlanActivatesFirstAndNothingActivatesAfterRootComplete(clock);
@@ -3464,7 +3468,7 @@ async function caseD5b_replyClosesAsk(clock) {
 
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
-    { id: "node-001", kind: "leaf", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-001", kind: "leaf", title: "Goal 1", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
   personaState.pendingAskId = "ask-reply-1";
@@ -3515,7 +3519,7 @@ async function caseD5b_reaskSuppressed(clock) {
   const question = "Should we keep going on this branch? Recommend: yes, continue.";
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
-    { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
+    { id: "root", kind: "goal", parentId: null, title: "Root plan", objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], notes: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
     {
       id: "node-001", kind: "leaf", parentId: "root", objective: "Goal 1", status: "active",
       completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [],
@@ -3581,7 +3585,7 @@ async function caseD5b_reraiseOnce(clock) {
 
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
-    { id: "node-001", kind: "leaf", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-001", kind: "leaf", title: "Goal 1", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
   personaState.pendingAskId = "ask-reraise-1";
@@ -4874,7 +4878,7 @@ async function caseSection12_7_ownTurnStillTakesTheStamp_control(clock) {
   });
   const personaState = buildPersonaState(SESSION_ID, now);
   personaState.goals = [
-    { id: "node-s12", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-s12", kind: "leaf", title: "Goal", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-s12";
   personaState.pendingAskId = "ask-s12-1";
@@ -5090,7 +5094,7 @@ async function caseSection12_G3_failedAskAnswerSubmitLeavesTheAskClosed(clock) {
   });
   const personaState = buildPersonaState(SESSION_ID, now);
   personaState.goals = [
-    { id: "node-g3", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-g3", kind: "leaf", title: "Goal", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-g3";
   personaState.pendingAskId = "ask-g3-1";
@@ -5139,7 +5143,7 @@ async function caseSection12_6_pluginTurnDoesNotTakeTheStamp(clock) {
   });
   const personaState = buildPersonaState(SESSION_ID, now);
   personaState.goals = [
-    { id: "node-g4", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-g4", kind: "leaf", title: "Goal", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-g4";
   personaState.pendingAskId = "ask-g4-1";
@@ -5228,7 +5232,7 @@ async function caseSection12_H1_parkedPluginTurnAfterAnExternalTurnTakesNoStamp(
   });
   const personaState = buildPersonaState(SESSION_ID, now);
   personaState.goals = [
-    { id: "node-h1b", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-h1b", kind: "leaf", title: "Goal", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-h1b";
   personaState.pendingAskId = "ask-h1b-1";
@@ -5409,7 +5413,7 @@ async function caseSection12_K1_droppedAskAnswerSubmitLeavesTheAskClosed(clock) 
   });
   const personaState = buildPersonaState(SESSION_ID, now);
   personaState.goals = [
-    { id: "node-k1b", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-k1b", kind: "leaf", title: "Goal", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-k1b";
   personaState.pendingAskId = "ask-k1b-1";
@@ -5917,7 +5921,7 @@ async function caseSection3_workerAnswerReachesTheCoordinatorsAsk(clock) {
   const personaState = buildPersonaState(SESSION_ID, now);
   personaState.persona = "coordinator";
   personaState.goals = [
-    { id: "node-c1", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-c1", kind: "leaf", title: "Goal", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-c1";
   personaState.pendingAskId = "ask-c1-1";
@@ -6372,7 +6376,7 @@ async function caseDirectLines_architectAnswerIsDeliveredToTheWorker(clock) {
   const personaState = buildPersonaState(SESSION_ID, now);
   personaState.persona = "dev";
   personaState.goals = [
-    { id: "node-d1", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-d1", kind: "leaf", title: "Goal", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-d1";
   personaState.pendingAskId = "ask-d1-1";
@@ -6408,8 +6412,8 @@ async function caseDirectLines_idleNudgeNamesTheArchitectLine(clock) {
     const personaState = buildPersonaState(SESSION_ID, now);
     personaState.persona = persona;
     personaState.goals = [
-      { id: "root", kind: "goal", parentId: null, objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
-      { id: "node-001", kind: "leaf", parentId: "root", objective: "Some task", status: "active", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+      { id: "root", kind: "goal", parentId: null, title: "Root plan", objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], notes: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001"] },
+      { id: "node-001", kind: "leaf", parentId: "root", title: "Some task", objective: "Some task", status: "active", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
     ];
     personaState.activeGoalId = "node-001";
     personaState.monitor.turnCount = 5;
@@ -6580,7 +6584,7 @@ async function caseSection4_badRecordIdIsRefusedByItsOwnRule(clock) {
   const personaState = buildPersonaState(SESSION_ID, now);
   personaState.persona = "dev";
   personaState.goals = [
-    { id: "node-b1", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-b1", kind: "leaf", title: "Goal", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-b1";
   personaState.pendingAskId = "ask-b1-1";
@@ -6759,7 +6763,7 @@ async function caseSection4_badNameAtTheAskStepAndTheUrgentSite(clock) {
   const personaState = buildPersonaState(SESSION_ID, now);
   personaState.persona = "coordinator";
   personaState.goals = [
-    { id: "node-n1", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-n1", kind: "leaf", title: "Goal", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-n1";
   personaState.pendingAskId = "ask-n1-1";
@@ -6804,7 +6808,7 @@ async function caseSection4_quotingCoversTheQuestionAndEveryTerminator(clock) {
   const personaState = buildPersonaState(SESSION_ID, now);
   personaState.persona = "dev";
   personaState.goals = [
-    { id: "node-q1", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-q1", kind: "leaf", title: "Goal", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-q1";
   personaState.pendingAskId = "ask-q1-1";
@@ -6837,7 +6841,7 @@ async function caseSection4_quotingCoversTheQuestionAndEveryTerminator(clock) {
   hr.storeMap.set(`commons:${SESSION_ID}`, { sessionId: SESSION_ID, lastSeen: now, claims: [{ resource: "persona:default", claimedAt: now - 2000 }] });
   const reraiseState = buildPersonaState(SESSION_ID, now);
   reraiseState.goals = [
-    { id: "node-r1", kind: "leaf", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-r1", kind: "leaf", title: "Goal", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   reraiseState.activeGoalId = "node-r1";
   reraiseState.pendingAskId = "ask-r1-1";
@@ -15845,6 +15849,186 @@ async function caseS13_errorStreak_noActiveNode_reFireAfterHandled_stillOpensNoA
   check("s13 errorstreak no-active refire: no toast", h.uiToasts.length === 0, h.uiToasts);
 }
 
+// Ask bookkeeping 1: a tree with an active plan and a second plan paused on
+// an open ask, the state the ASK-marker path leaves since it pauses only the
+// node it names.
+function abkTreeActiveAndAsked(now) {
+  return [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 10, createdAt: now, updatedAt: now }),
+    makeGoalNode({ id: "g-active", parentId: "g-root", kind: "plan", status: "active", maxRounds: 5, createdAt: now, updatedAt: now }),
+    makeGoalNode({ id: "g-asked", parentId: "g-root", kind: "plan", status: "paused", blockedReason: "operator input needed", maxRounds: 5, createdAt: now, updatedAt: now }),
+  ];
+}
+
+// Drives three error turns and two ticks, the shape the no-active-node
+// streak cases use.
+async function abkDriveStreak(h, clock, prefix) {
+  const startH = h.handlers["turn.start"];
+  const completeH = h.handlers["turn.complete"];
+  for (let i = 1; i <= 3; i++) {
+    const turnId = `${prefix}-${i}`;
+    await startH(h.fake, { turnId }, async () => ({ result: "ok" }));
+    await completeH(h.fake, { turnId, reason: "error" }, async () => ({ result: "ok" }));
+  }
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+}
+
+// Ask bookkeeping 1, the error streak: with an ask already open, a streak on
+// the active leaf keeps that ask as the one open ask, leaves the leaf running
+// and names the open ask in its decision. The control drives the same streak
+// over the same tree with no ask open, and it still opens one, so the guard
+// is proven in both directions.
+async function caseAbk1_errorStreakKeepsTheOpenAsk(clock) {
+  console.log("\n=== Ask bookkeeping 1: an error streak with an ask already open keeps that ask and the leaf running ===");
+  clock.set(T0);
+  const h = await gtc3Harness("abk1_streak_ask_open", abkTreeActiveAndAsked(T0), { pendingAsk: { askId: "ask-abk1-1", nodeId: "g-asked" } });
+  await abkDriveStreak(h, clock, "t-abk1");
+  const decisions = getDecisions(h);
+  const state = getState(h);
+  const askKeys = [...h.storeMap.keys()].filter((k) => k.startsWith("ask:"));
+  check("abk1 streak ask open: exactly one ask record in the store, still open",
+    askKeys.length === 1 && h.storeMap.get(askKeys[0])?.status === "open", askKeys.map((k) => [k, h.storeMap.get(k)?.status]));
+  check("abk1 streak ask open: pendingAskId still names the first ask", state.pendingAskId === "ask-abk1-1", state.pendingAskId);
+  check("abk1 streak ask open: the active leaf is still active",
+    state.goals.find((g) => g.id === "g-active")?.status === "active", state.goals.map((g) => [g.id, g.status]));
+  const streaks = decisions.filter((d) => d.action === "error_streak");
+  check("abk1 streak ask open: one error_streak decision naming the leaf and the open ask",
+    streaks.length === 1 && streaks[0].detail.startsWith("g-active:") && streaks[0].detail.includes("ask-abk1-1") && streaks[0].detail.includes("already open"),
+    streaks.map((d) => d.detail));
+  check("abk1 streak ask open: no ask_opened or paused_by_controller",
+    !decisions.some((d) => ["ask_opened", "paused_by_controller"].includes(d.action)), decisions.map((d) => d.action));
+  check("abk1 streak ask open: no toast", h.uiToasts.length === 0, h.uiToasts);
+
+  // Control: the same tree and streak with no ask open opens one.
+  clock.set(T0);
+  const c = await gtc3Harness("abk1_streak_control", abkTreeActiveAndAsked(T0));
+  await abkDriveStreak(c, clock, "t-abk1c");
+  const cDecisions = getDecisions(c);
+  const cAskKeys = [...c.storeMap.keys()].filter((k) => k.startsWith("ask:"));
+  check("abk1 streak control: with no ask open the streak opens one ask and pauses the leaf",
+    cAskKeys.length === 1 && cDecisions.some((d) => d.action === "ask_opened") &&
+    getState(c).goals.find((g) => g.id === "g-active")?.status === "paused", { keys: cAskKeys, actions: cDecisions.map((d) => d.action) });
+}
+
+// Ask bookkeeping 1, goal_create: a refused call leaves the open ask alone; a
+// call that resets the tree closes it as goal_resume would, clears the slot,
+// and a following goal_add then activates the new entry rather than reading
+// the old ask as a hold. A slot naming no record is cleared with no decision.
+async function caseAbk1_goalCreateClosesTheOpenAsk(clock) {
+  console.log("\n=== Ask bookkeeping 1: a tree-resetting goal_create closes the open ask ===");
+  clock.set(T0);
+  const tree = gtc4Tree("pending", [
+    { id: "plan-1", parentId: "root-1", kind: "plan", status: "paused", blockedReason: "operator input needed", title: "Plan one" },
+  ]);
+  const h = await gtc3Harness("abk1_create_closes", tree, { pendingAsk: { askId: "ask-abk1-c", nodeId: "plan-1" } });
+  const askKey = "ask:default:ask-abk1-c";
+
+  const refused = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "Something new" });
+  check("abk1 create refused: the call is refused by the replace guard", typeof refused?.deny === "string" && refused.deny.includes("replace: true"), refused);
+  check("abk1 create refused: the ask record stays open and the slot still names it",
+    h.storeMap.get(askKey)?.status === "open" && getState(h).pendingAskId === "ask-abk1-c", { rec: h.storeMap.get(askKey), slot: getState(h).pendingAskId });
+
+  const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "Something new", replace: true });
+  const state = getState(h);
+  check("abk1 create: the call is accepted", res?.deny === undefined, res);
+  check("abk1 create: the ask record is resumed", h.storeMap.get(askKey)?.status === "resumed", h.storeMap.get(askKey));
+  check("abk1 create: pendingAskId is unset", state.pendingAskId === undefined, state.pendingAskId);
+  const answered = state.decisions.filter((d) => d.action === "ask_answered");
+  check("abk1 create: one ask_answered decision naming goal_create",
+    answered.length === 1 && answered[0].detail === "ask ask-abk1-c closed by goal_create (status: resumed)", answered.map((d) => d.detail));
+
+  const added = await callTool(h, { tool: "mcp__agentic-plugin__goal_add", kind: "plan", title: "New plan", objective: "New plan done" });
+  const after = getState(h);
+  const newPlan = after.goals.find((g) => g.title === "New plan");
+  check("abk1 create then add: the new entry is activated",
+    !!newPlan && newPlan.status === "active" && after.activeGoalId === newPlan.id, { added, goals: after.goals.map((g) => [g.id, g.status]), active: after.activeGoalId });
+
+  // A slot naming a record that is not in the store is cleared with no decision.
+  clock.set(T0);
+  const g = await gtc3Harness("abk1_create_gone", gtc4Tree("complete"), { pendingAsk: { askId: "ask-abk1-gone", nodeId: "root-1" } });
+  g.storeMap.delete("ask:default:ask-abk1-gone");
+  const goneRes = await callTool(g, { tool: "mcp__agentic-plugin__goal_create", objective: "Next thing" });
+  const goneState = getState(g);
+  check("abk1 create, slot naming no record: accepted, slot cleared, no ask_answered",
+    goneRes?.deny === undefined && goneState.pendingAskId === undefined && !goneState.decisions.some((d) => d.action === "ask_answered"),
+    { res: goneRes, slot: goneState.pendingAskId });
+
+  // A slot naming a record that is present but no longer open is cleared the
+  // same way, and the record keeps the status it had.
+  clock.set(T0);
+  const a = await gtc3Harness("abk1_create_answered", gtc4Tree("complete"), { pendingAsk: { askId: "ask-abk1-ans", nodeId: "root-1" } });
+  const ansKey = "ask:default:ask-abk1-ans";
+  a.storeMap.set(ansKey, { ...a.storeMap.get(ansKey), status: "answered" });
+  const ansRes = await callTool(a, { tool: "mcp__agentic-plugin__goal_create", objective: "Next thing" });
+  const ansState = getState(a);
+  check("abk1 create, slot naming an answered record: accepted, slot cleared, record left answered, no ask_answered",
+    ansRes?.deny === undefined && ansState.pendingAskId === undefined && a.storeMap.get(ansKey)?.status === "answered" &&
+    !ansState.decisions.some((d) => d.action === "ask_answered"),
+    { res: ansRes, slot: ansState.pendingAskId, rec: a.storeMap.get(ansKey) });
+}
+
+// Ask bookkeeping 1, the thread reply: a reply closing an ask on a paused
+// entry reactivates it and points activeGoalId at it, read from the store the
+// handler wrote with no reload. Where another entry was active, that entry is
+// paused first with the reply named as the reason.
+async function caseAbk1_threadReplySetsThePointer(clock) {
+  console.log("\n=== Ask bookkeeping 1: a thread reply that closes an ask points activeGoalId at the entry it reactivates ===");
+  clock.set(T0);
+  const h = await gtc3Harness("abk1_reply_other_active", abkTreeActiveAndAsked(T0), { pendingAsk: { askId: "ask-abk1-r", nodeId: "g-asked" } });
+  await h.handlers["prompt.submit"](h.fake, { text: "use the passive-supervisor branch" }, async () => ({}));
+  const state = getState(h);
+  const asked = state.goals.find((g) => g.id === "g-asked");
+  const other = state.goals.find((g) => g.id === "g-active");
+  check("abk1 reply: the asked entry is active and activeGoalId names it",
+    asked?.status === "active" && state.activeGoalId === "g-asked", { goals: state.goals.map((g) => [g.id, g.status]), active: state.activeGoalId });
+  check("abk1 reply: the other active entry is paused with the reply named as the reason",
+    other?.status === "paused" && other.blockedReason === "Paused by thread reply to ask ask-abk1-r", other);
+  const paused = state.decisions.filter((d) => d.action === "paused_by_reply");
+  check("abk1 reply: one paused_by_reply decision naming the other entry and the ask",
+    paused.length === 1 && paused[0].detail === "g-active paused (thread reply to ask ask-abk1-r)", paused.map((d) => d.detail));
+
+  // With no other entry active, the pointer that session.start left null is
+  // set to the reactivated entry.
+  clock.set(T0);
+  const lone = abkTreeActiveAndAsked(T0).filter((g) => g.id !== "g-active");
+  const l = await gtc3Harness("abk1_reply_lone", lone, { pendingAsk: { askId: "ask-abk1-l", nodeId: "g-asked" } });
+  check("abk1 reply lone: activeGoalId starts null", getState(l).activeGoalId === null, getState(l).activeGoalId);
+  await l.handlers["prompt.submit"](l.fake, { text: "go ahead" }, async () => ({}));
+  const lState = getState(l);
+  check("abk1 reply lone: the asked entry is active and activeGoalId names it",
+    lState.goals.find((g) => g.id === "g-asked")?.status === "active" && lState.activeGoalId === "g-asked", { active: lState.activeGoalId });
+  check("abk1 reply lone: no paused_by_reply decision", !lState.decisions.some((d) => d.action === "paused_by_reply"), lState.decisions.map((d) => d.action));
+}
+
+// An answer record drained at the tick closes the ask the same way a thread
+// reply does: other active entries are paused and activeGoalId names the
+// reactivated entry, read from the in-memory state before any reload.
+async function caseAbk2_answerRecordSetsThePointer(clock) {
+  console.log("\n=== Ask bookkeeping 2: an answer record that closes an ask points activeGoalId at the entry it reactivates ===");
+  clock.set(T0);
+  const h = await gtc3Harness("abk2_answer", abkTreeActiveAndAsked(T0), { pendingAsk: { askId: "ask-abk2-a", nodeId: "g-asked" } });
+  const writer = "abk2-answer-writer";
+  const inboxKey = `inbox:default:${writer}:1`;
+  h.storeMap.set(inboxKey, { id: "default-abk2-answer-writer-1", key: inboxKey, from: writer, at: T0 - 500, text: "Take the first branch.", kind: "answer", answers: "ask-abk2-a", status: "pending" });
+  h.storeMap.set(`commons:${writer}`, { sessionId: writer, lastSeen: T0 - 100, claims: [{ resource: "reader:default", claimedAt: T0 - 2000 }] });
+  clock.advance(65_000);
+  await tickAndSettle(h, clock, 50);
+  const state = getState(h);
+  const asked = state.goals.find((g) => g.id === "g-asked");
+  const other = state.goals.find((g) => g.id === "g-active");
+  check("abk2 answer: the ask record is answered", h.storeMap.get("ask:default:ask-abk2-a")?.status === "answered", h.storeMap.get("ask:default:ask-abk2-a"));
+  check("abk2 answer: the asked entry is active and activeGoalId names it",
+    asked?.status === "active" && state.activeGoalId === "g-asked", { goals: state.goals.map((g) => [g.id, g.status]), active: state.activeGoalId });
+  check("abk2 answer: the other active entry is paused with the answer named as the reason",
+    other?.status === "paused" && other.blockedReason === "Paused by answer default-abk2-answer-writer-1 to ask ask-abk2-a", other);
+  const paused = state.decisions.filter((d) => d.action === "paused_by_reply");
+  check("abk2 answer: one paused_by_reply decision naming the other entry, the answer and the ask",
+    paused.length === 1 && paused[0].detail === "g-active paused (answer default-abk2-answer-writer-1 to ask ask-abk2-a)", paused.map((d) => d.detail));
+}
+
 // Git probe: the git probe runs on its cadence, counts the porcelain
 // lines that are not the branch line, and logs env_git when the count moves.
 // The probe is fire-and-forget and the tick persists only on its own paths,
@@ -17194,26 +17378,25 @@ async function caseGtc3_completingByNameNeverMovesTheActiveEntry(clock) {
     controlState.decisions.some((d) => d.action === "paused_by_resume") && controlState.goals.find((g) => g.id === "task-1").status === "paused",
     controlState.decisions.map((d) => d.action));
 
-  // activeGoalId null while task-1's status is active. An operator reply to
-  // an open ask sets the asked entry active and leaves activeGoalId as it
-  // was, which is null for an entry the ask paused. task-1 is the active
-  // entry all the same, so completing plan-p by name leaves it active,
-  // activates nothing, and names it.
+  // task-1 reactivated by an operator reply to an open ask. The reply sets
+  // the asked entry active and points activeGoalId at it (session.start left
+  // the pointer null for the paused entry), so completing plan-p by name
+  // leaves task-1 active, activates nothing, and names it.
   clock.set(T0);
-  const stale = await gtc3Harness("gtc3_by_name_keeps_active_null_id",
+  const stale = await gtc3Harness("gtc3_by_name_keeps_active_after_reply",
     gtc3Tree({ "task-1": { status: "paused", blockedReason: "operator input needed" } }, extra),
     { pendingAsk: { askId: "ask-1", nodeId: "task-1" } });
   await stale.handlers["prompt.submit"](stale.fake, { text: "go with the first option" }, async () => ({}));
-  check("gtc3 by name keeps active (activeGoalId null) setup: the reply set task-1 active, left activeGoalId null and closed the ask",
-    getState(stale).activeGoalId === null && getState(stale).goals.find((g) => g.id === "task-1").status === "active" && !getState(stale).pendingAskId,
+  check("gtc3 by name keeps active (after a reply reactivation) setup: the reply set task-1 active, pointed activeGoalId at it and closed the ask",
+    getState(stale).activeGoalId === "task-1" && getState(stale).goals.find((g) => g.id === "task-1").status === "active" && !getState(stale).pendingAskId,
     { activeGoalId: getState(stale).activeGoalId, pendingAskId: getState(stale).pendingAskId });
   const staleOut = await gtc3Done(stale, { nodeId: "plan-p" });
-  check("gtc3 by name keeps active (activeGoalId null): plan-p reads complete", staleOut.nodes["plan-p"].status === "complete", staleOut.nodes);
-  check("gtc3 by name keeps active (activeGoalId null): task-1 is still active, task-2 still pending, and nothing was activated",
+  check("gtc3 by name keeps active (after a reply reactivation): plan-p reads complete", staleOut.nodes["plan-p"].status === "complete", staleOut.nodes);
+  check("gtc3 by name keeps active (after a reply reactivation): task-1 is still active, task-2 still pending, and nothing was activated",
     staleOut.nodes["task-1"].status === "active" && staleOut.nodes["task-2"].status === "pending" &&
     !staleOut.actions.includes("activated") && !staleOut.actions.includes("activate_none"),
     { nodes: staleOut.nodes, actions: staleOut.actions });
-  check("gtc3 by name keeps active (activeGoalId null): the result says task-1 is still active",
+  check("gtc3 by name keeps active (after a reply reactivation): the result says task-1 is still active",
     String(staleOut.res?.result).includes("task-1") && String(staleOut.res?.result).includes("is still active"), staleOut.res);
 }
 
