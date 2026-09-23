@@ -224,8 +224,8 @@ function makeState(overrides = {}) {
   const lesson = (id, text, createdAt) => ({ id, kind: "lesson", text, confidence: 0.5, source: "self-review", createdAt, lastAccessed: createdAt, accountCount: 0, pinned: false });
   const root = { id: "root", status: "pending", kind: "root", parentId: null, createdAt: T - 100, updatedAt: T - 100 };
 
-  // 12a: tree lag - two worktree-cleared samples with no tree write between them is one event,
-  // a third with a `done` in between is not; two events fire.
+  // 12a: the retired tree-lag signal - worktree-cleared samples with no tree write between them
+  // are the ordinary shape of section-by-section work under one plan node, so they raise nothing.
   const treeLagDecisions = [
     { timestamp: T + 1, loop: "monitor", action: "env_git", detail: "env_git dirty=0 (was 3) branch b...origin/b" },
     { timestamp: T + 2, loop: "monitor", action: "env_git", detail: "env_git dirty=0 (was 2) branch b...origin/b" },
@@ -235,8 +235,8 @@ function makeState(overrides = {}) {
     { timestamp: T + 6, loop: "monitor", action: "env_git", detail: "env_git dirty=0 (was 0) branch b...origin/b" },
   ];
   const treeLag = reviewOwnRecord({ decisions: treeLagDecisions, memory: [], goals: [root], inbox: [] }, srOpts);
-  check("Test 12a: tree_lag counts cleared samples with no tree write since the previous one (2), skips the one after `done`",
-    treeLag.length === 1 && treeLag[0].signal === "tree_lag" && treeLag[0].count === 2);
+  check("Test 12a: cleared worktree samples with no tree write between them yield no finding",
+    treeLag.length === 0);
 
   // 12b: memory quality - two lessons sharing their first six words count as two events; a distinct third does not.
   const memory = [
@@ -270,7 +270,7 @@ function makeState(overrides = {}) {
   const noPrior = reviewOwnRecord({ decisions: askDecisions, memory: [], goals: [root], inbox: [] }, srOpts);
   check("Test 12d control: with no prior node all three events count", noPrior.length === 1 && noPrior[0].count === 3);
 
-  // 12e: long turns carry a config fix halving the cadence, floored at the debounce; at the floor they propose a goal instead.
+  // 12e: long turns carry a config fix halving the cadence, floored at the debounce; at the floor they yield nothing.
   const longTurns = [
     { timestamp: T + 1, loop: "monitor", action: "turn_over_hour", detail: "Turn 1 ran 3700s" },
     { timestamp: T + 2, loop: "monitor", action: "turn_over_hour", detail: "Turn 2 ran 3800s" },
@@ -279,7 +279,9 @@ function makeState(overrides = {}) {
   check("Test 12e: long_turns carries configFix selfReviewEveryTurns 20 -> 10",
     fix.length === 1 && fix[0].configFix && fix[0].configFix.from === 20 && fix[0].configFix.to === 10);
   const atFloor = reviewOwnRecord({ decisions: longTurns, memory: [], goals: [root], inbox: [] }, { selfReviewEveryTurns: 5, selfReviewDebounceTurns: 5 });
-  check("Test 12e control: at the floor there is no configFix and the finding proposes a goal", atFloor.length === 1 && !atFloor[0].configFix);
+  check("Test 12e control: at the floor two long turns yield no finding", atFloor.length === 0);
+  check("Test 12e text: the long_turns finding proposes no goal and carries no Proof: line",
+    fix.length === 1 && !/Proof:/.test(fix[0].objective) && !/goal/i.test(fix[0].objective) && !/goal/i.test(fix[0].title));
 
   // 12f: kaizenSortKey interleaves after the (k+1)th pending roadmap plan; past the end it is `now`.
   const plans = [
@@ -293,7 +295,7 @@ function makeState(overrides = {}) {
   const withOne = [...plans, { id: "k", status: "pending", kind: "plan", parentId: "root", createdAt: T + 30, updatedAt: T + 30, sortKey: k0, kaizenSignal: "asks_unresolved" }];
   const k1 = kaizenSortKey(withOne, "root", T + 1000);
   check("Test 12f: second kaizen sorts after the second pending roadmap plan", k1 > T + 20 && k1 < T + 1000);
-  const k2 = kaizenSortKey([...withOne, { id: "k2", status: "pending", kind: "plan", parentId: "root", createdAt: T + 31, updatedAt: T + 31, sortKey: k1, kaizenSignal: "tree_lag" }], "root", T + 1000);
+  const k2 = kaizenSortKey([...withOne, { id: "k2", status: "pending", kind: "plan", parentId: "root", createdAt: T + 31, updatedAt: T + 31, sortKey: k1, kaizenSignal: "message_wait" }], "root", T + 1000);
   check("Test 12f: past the pending roadmap list the kaizen sorts at now", k2 === T + 1000);
 }
 
