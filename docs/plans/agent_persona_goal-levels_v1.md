@@ -41,7 +41,7 @@ This plan starts only after five other plans have merged to the trunk, because t
 
 **Amendment by the architect, 2026-09-22, on the operator's brief at `D:\personas\ASSISTANT\briefs\persona-idle-queue-and-autonomy.md`, relayed by the coordinator.** The operator's item 3 there: a tree whose open entries are all paused or blocked, with nothing the controller will start by itself, counts as idle for the idle proposal. So Section 5's condition reads the `hasStartableWork` helper the idle-queue plan adds rather than the four statuses, and this plan waits on that plan. The same brief adds a per-persona autonomy level that widens Section 4's gate for `goal_add` with kind `plan`; that is `docs/plans/agent_persona_autonomy-dial_v1.md`, which runs after this plan and changes nothing here.
 
-**Amendment by the architect, 2026-09-23.** The kaizen-signals plan retires `tree_lag` and the goal half of `long_turns` ahead of this plan, so the finder has four signals and a `long_turns` finding always carries a `configFix`.
+**Amendment by the architect, 2026-09-23:** the kaizen-signals plan retires `tree_lag` and the goal half of `long_turns` ahead of this plan, so the finder has four signals and a `long_turns` finding always carries a `configFix`.
 
 **Provenance.** Distilled from the architect persona's session `d5b91e27` on 2026-09-21, whose working record is `D:/personas/architect/.kit/goal-tree/STATE.md`, outside this repository.
 
@@ -236,7 +236,7 @@ Files in scope: `README.md`, `docs/architecture.md`, `docs/backlog.md` (the one 
 - assumed 2026-09-21 (default): a `pending` record 24 hours old means no coordinator persona is there to take it, so the finder announces the finding itself and leaves the record; reversal: where a coordinator appears later the operator hears of that finding twice.
 - assumed 2026-09-21 (default): a record that was skipped and rolled out of the store before the finder ticked again is not sent again; reversal: a second ledger field and a resend that cannot tell a lost record from a delivered one.
 - assumed 2026-09-21 (default): a worker-planned root larger than the nodes written under it reads complete early under Section 6, and the missing piece is added in a turn the operator or the coordinator persona starts; reversal: the planner's later rounds return, with a model deciding what is built.
-- assumed 2026-09-21 (default): one plan, Branch-and-PR, built by the dev persona after the five plans the Dispatch Authorization names; reversal: a rebase over whichever of them merges later.
+- assumed 2026-09-21 (default): one plan, Branch-and-PR, built by the dev persona after the plans the Dispatch Authorization names; reversal: a rebase over whichever of them merges later.
 
 ## Operator Verification
 

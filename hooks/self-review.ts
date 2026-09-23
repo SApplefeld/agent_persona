@@ -290,6 +290,8 @@ function describe(signal: KaizenSignal, count: number, events: KaizenEvent[]): {
       return {
         title: "Kaizen: turns run past an hour",
         objective: `${count} turns ran ${Math.round(KAIZEN_LONG_TURN_MS / 60_000)} minutes or longer (${sample}). A review cadence counted in turns runs too rarely when turns run this long.`,
+        // reviewOwnRecord replaces this with the configFix rationale on every
+        // long_turns finding it emits.
         rationale: `${count} turns ran past an hour.`,
       };
   }

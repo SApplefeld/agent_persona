@@ -1,6 +1,6 @@
 # Kaizen signals
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-09-23
 
@@ -133,6 +133,11 @@ its harness beside it. The helper records every model lesson call in the harness
 - The `describe` case for `long_turns` stays rather than being inlined, so goal-levels' Section 1,
   which reads `objective` and `rationale` off every finding, meets the same shape on all four.
 
+## Standing Brief Amendments
+
+- `docs/plans/agent_persona_goal-levels_v1.md` counts the plans gated ahead of it consistently wherever it counts them, the coverage-sweep paragraph and the one-plan assumption included.
+- The tick suite's `runOwnRecordReview` forwards a case's register options, so a case can set the review cadence it runs at.
+
 ## Sections of Work
 
 ### 1. Retire the tree-lag signal and the goal half of long-turns
@@ -231,3 +236,17 @@ Delta: 2026-09-23 on SCOTT-CLAUDE, worktree D:/agent_persona-kaizen, no contenti
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Chapter 2 - 2026-09-23
+Completed: finishing-work
+Implemented By: main session; qa-verifier, performance, security and adversarial reviewers, scope adjudicator and docs-curator dispatched
+Metrics: finishing review rounds 1, closed clean; provenance 1 spec-traceable (the backlog retirement, delivered at the prune), 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Recap: Goal: When this is done, the persona plugin's own-record self-review raises no goal from a signal whose premise is false. The tree-lag signal is gone, and the long-turns signal yields its cadence adjustment and nothing else. It matters because each of those signals wrote a goal node, a plan entry in the DEV-PLUGIN persona's goal tree, that scored as off-goal on every round it ran, and the goal-levels plan, which sends such nodes to the coordinator as findings and retires them, leaves the signals to write the same finding again on the next two commits or the next two long turns. The tree-lag premise is false because the controller already completes a plan node when its plan document reads Complete, so a commit that closes no node is the ordinary shape of work.; What the tree does now: the plugin's self-review of its own decision log watches four signals instead of five. Two ordinary commits with no goal-tree change no longer count as a weakness. When turns keep running past an hour, the review halves how many turns pass between self-reviews, down to a floor, and reports the change; at the floor it raises nothing and the review writes its ordinary model lesson instead of proposing a goal to bound turn length; Refinements during the run: the goal-levels plan also counts its gated plans as five in its coverage-sweep paragraph and drops the count from its one-plan assumption; the tick suite's review helper forwards a case's register options; both declared under Standing Brief Amendments by the finishing goal read; Operator-pending: update the installed plugin copy and relaunch each persona's supervisor after the merge, then check over a day that no decision log carries kaizen_goal_proposed naming tree_lag or long_turns; drop the paused long_turns node in the DEV-PLUGIN persona's store with goal_edit, or let the goal-levels plan route it, since while it stays open the cadence half never runs
+Decisions / Surprises: add-decision (finishing): tighten the 12e pin, comment the unreachable long_turns rationale, keep the goal-levels Intent line's quoted words verbatim, drop the count from goal-levels' dated assumption; serves Section 1 acceptance; adds no mechanism; size 8 lines; not building it leaves a pin that passes a goal-proposing rewording. The docs curator added an "own-record self-review" section and a failure-modes row to docs/architecture.md; its report carried four drift items, all deviation, none stopping the run: D1 and D2, goal-levels line cites into hooks/self-review.ts and hooks/index.ts that no longer land (that plan's coverage paragraph states its line numbers move and the worker finds each site by symbol); D3, an open legacy long_turns node suppresses the cadence half, now documented; D4, long_turns re-halves after a relaunch, now documented and justified in Chapter 1. Library hygiene: the index line is refreshed; the two archived plans Out of Scope names are left unnamed, since which two is inferred rather than confirmed.
+Assumptions: none
+Review Findings: review: performance, security, adversarial at fable-5-1, Workflow, high effort (resolved model read from the run's progress record); performance CLEAR, security CLEAR with threat model absent in this worktree (docs/security-model.md lands with the security-model plan), adversarial APPROVED_WITH_CONCERNS: its Major (backlog entries not yet retired) delivered at the prune; Minors: 4 fixed in the close pass, 2 left with the reason (restart replay justified in Chapter 1; the advisory tally counts advisory lenses only). goal read: 2 built-but-unasked (0 refused, 2 declared, 0 asked), 1 asked-but-unbuilt (the backlog retirement, delivered at the prune). QA verifier PASS on every acceptance bullet with the retirement pending, whole gate 25 lanes exit 0 at 9886522 with no contention. Tree unchanged across each bracketed round.
+Stamps: adjudicated 0, stamped 0 (the finishing window holds no read the section boundary left unadjudicated)
+Gate: handoff whole gate 2026-09-23 on SCOTT-CLAUDE, worktree D:/agent_persona-kaizen at 9886522 plus the finishing edits (archive, prune, index, docs curation, close-pass fixes), a foreign claude-kit node --test run live beside it: 25 lanes (every .kit/*-test.mjs and *-test.sh except live-*-test.sh and supervisor-natural-exit-test.sh, plus tsc --noEmit, injection-ledger and check-loader-rule), 25 exit 0, gate exit 0; controller-tick 2596 OK, self-review unit 27 OK. Baseline on this lane: the QA verifier's run at 9886522, 25 lanes exit 0, no delta. Contention lane: this repository defines none. Test delta over the effort: added 1 tick case and 1 unit check, edited 12a, the 12e control and the 12f literal, retired none; none spawns a process.
+Next: none; the plan is complete
+Commit Model: Branch-and-PR
+Base ref: e154b09

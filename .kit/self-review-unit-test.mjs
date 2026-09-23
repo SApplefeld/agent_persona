@@ -281,7 +281,8 @@ function makeState(overrides = {}) {
   const atFloor = reviewOwnRecord({ decisions: longTurns, memory: [], goals: [root], inbox: [] }, { selfReviewEveryTurns: 5, selfReviewDebounceTurns: 5 });
   check("Test 12e control: at the floor two long turns yield no finding", atFloor.length === 0);
   check("Test 12e text: the long_turns finding proposes no goal and carries no Proof: line",
-    fix.length === 1 && !/Proof:/.test(fix[0].objective) && !/kaizen goal/i.test(fix[0].objective) && !/kaizen goal/i.test(fix[0].rationale));
+    fix.length === 1 && !/Proof:/.test(fix[0].objective) && !/\bgoal\b/i.test(fix[0].title)
+      && !/\bgoal\b/i.test(fix[0].objective.replace(/\([^)]*\)/, "")) && !/\bgoal\b/i.test(fix[0].rationale));
 
   // 12f: kaizenSortKey interleaves after the (k+1)th pending roadmap plan; past the end it is `now`.
   const plans = [
