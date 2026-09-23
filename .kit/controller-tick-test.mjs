@@ -3356,6 +3356,7 @@ async function main() {
     await caseLtg_goalStatusWithNoTree(clock);
     await caseLtg_eachRefusalNamesItsRuleAndChangesNothing(clock);
     await caseLtg_aDropRemovesTheEntryAndLogsTheReason(clock);
+    await caseLtg_longTextIsCutAndAMalformedEntryStillPrints(clock);
     await caseLtg_aNonOwnerIsRefused(clock);
     await caseLtg_aStoreWrittenBeforeTheListLoadsEmpty();
     await caseLtg_theListSurvivesATreeReplacementAndARestart(clock);
@@ -19956,24 +19957,25 @@ async function caseLtg_goalStatusWithNoTree(clock) {
 // The Acceptance's refusals, each read by the rule that refused it: a sixth
 // add names the cap, a drop of an unknown id lists the held ids, a drop with
 // no reason names the reason, and the action and add-field rules name
-// themselves. Every refusal leaves the store byte-identical. The sixth add is
-// driven through five real adds first.
+// themselves. Every refusal leaves the store byte-identical. The add past the
+// cap is driven through LONG_TERM_GOAL_CAP real adds first.
 async function caseLtg_eachRefusalNamesItsRuleAndChangesNothing(clock) {
   console.log("\n=== Goal levels 3: each goal_longterm refusal names its rule and changes nothing ===");
   clock.set(T0);
+  const cap = AgentState.LONG_TERM_GOAL_CAP;
   const h = await ltgHarness("ltg_refusals", gtc4Tree("pending"), []);
   const ids = [];
-  for (const k of ["a", "b", "c", "d", "e"]) {
+  for (let k = 0; k < cap; k++) {
     clock.advance(1000);
     const r = await callTool(h, { tool: LTG_TOOL, action: "add", title: `Goal ${k}`, objective: `Objective ${k}` });
     ids.push(/\b(lt-[a-z0-9]+-[a-z0-9]+)\b/.exec(String(r?.result))?.[1]);
   }
-  check("ltg refusals: five adds are accepted", ids.every((i) => typeof i === "string") && getState(h).longTermGoals?.length === 5, { ids, list: getState(h).longTermGoals });
-  check("ltg refusals: the cap constant is 5", AgentState.LONG_TERM_GOAL_CAP === 5, AgentState.LONG_TERM_GOAL_CAP);
+  check("ltg refusals: adds up to the cap are accepted",
+    typeof cap === "number" && cap > 0 && ids.length === cap && ids.every((i) => typeof i === "string") && getState(h).longTermGoals?.length === cap, { cap, ids, list: getState(h).longTermGoals });
 
   const listsEveryId = (d) => ids.every((i) => typeof i === "string" && d.includes(i));
   const cases = [
-    ["a sixth add", { action: "add", title: "Goal f", objective: "One too many" }, (d) => d.includes("the cap is 5") && d.includes("5 long-term goals are held")],
+    ["an add past the cap", { action: "add", title: "Goal over", objective: "One too many" }, (d) => d.includes(`the cap is ${cap}`) && d.includes(`${cap} long-term goals are held`)],
     ["a drop of an unknown id", { action: "drop", id: "lt-zzz", reason: "stale" }, (d) => d.includes('"lt-zzz" is not one') && listsEveryId(d)],
     ["a drop with no id", { action: "drop", reason: "stale" }, (d) => d.includes("no id was given") && listsEveryId(d)],
     ["a drop without a reason", { action: "drop", id: ids[1] }, (d) => d.includes("requires a non-empty 'reason'")],
@@ -19990,7 +19992,7 @@ async function caseLtg_eachRefusalNamesItsRuleAndChangesNothing(clock) {
     check(`${tag}: denied by its own rule`, typeof res?.deny === "string" && rule(res.deny) && res?.result === undefined, res);
     check(`${tag}: the store file is byte-identical`, h.fsMap.get(PERSONA_STORE_FILE) === storeBefore);
   }
-  check("ltg refusals: the list still holds the five, in order", JSON.stringify((getState(h).longTermGoals ?? []).map((g) => g.id)) === JSON.stringify(ids), getState(h).longTermGoals);
+  check("ltg refusals: the list still holds the same entries, in order", JSON.stringify((getState(h).longTermGoals ?? []).map((g) => g.id)) === JSON.stringify(ids), getState(h).longTermGoals);
 }
 
 // A drop removes the named entry, keeps the rest, and records its reason in
@@ -20010,6 +20012,39 @@ async function caseLtg_aDropRemovesTheEntryAndLogsTheReason(clock) {
   check("ltg drop: one longterm_dropped decision naming the id, the title and the reason",
     dropped.length === 1 && dropped[0].loop === "goal" && dropped[0].detail.includes("lt-a") && dropped[0].detail.includes("Alpha") && dropped[0].detail.includes("the operator retired it"), dropped);
   check("ltg drop: the tree is unchanged", JSON.stringify(state.goals) === goalsBefore, state.goals);
+}
+
+// An over-long title and objective are cut to the planner's plan lengths, 80
+// and 500, rather than refused, and the decision details are cut as
+// goal_add's and goal_done's are: a title at 50, a drop reason at 80. A
+// malformed stored entry prints as blanks and does not throw goal_status.
+async function caseLtg_longTextIsCutAndAMalformedEntryStillPrints(clock) {
+  console.log("\n=== Goal levels 3: long text is cut at the planner's lengths, and a malformed entry still prints ===");
+  clock.set(T0);
+  const h = await ltgHarness("ltg_bounds", gtc4Tree("pending"), []);
+  const longTitle = "T".repeat(120);
+  const longObjective = "O".repeat(700);
+  const res = await callTool(h, { tool: LTG_TOOL, action: "add", title: longTitle, objective: longObjective });
+  const entry = getState(h).longTermGoals?.[0];
+  check("ltg bounds: an over-long add is accepted, not refused", res?.deny === undefined && !!entry, res);
+  check("ltg bounds: the title is cut to 80 and the objective to 500",
+    entry?.title === longTitle.slice(0, 80) && entry?.objective === longObjective.slice(0, 500), { title: entry?.title?.length, objective: entry?.objective?.length });
+  const added = getState(h).decisions.find((d) => d.action === "longterm_added");
+  check("ltg bounds: the longterm_added detail carries the title cut at 50",
+    added?.detail === `${entry?.id} "${longTitle.slice(0, 50)}"`, added);
+  await callTool(h, { tool: LTG_TOOL, action: "drop", id: entry?.id, reason: "R".repeat(200) });
+  const dropped = getState(h).decisions.find((d) => d.action === "longterm_dropped");
+  check("ltg bounds: the longterm_dropped detail carries the title at 50 and the reason at 80",
+    dropped?.detail === `${entry?.id} "${longTitle.slice(0, 50)}": ${"R".repeat(80)}`, dropped);
+
+  clock.set(T0);
+  const bad = await ltgHarness("ltg_malformed", gtc4Tree("pending"), [{ id: "lt-bad", title: null, objective: 7 }, ltgEntry("lt-b", "Beta")]);
+  let shown;
+  let thrown = null;
+  try { shown = await callTool(bad, { tool: "mcp__agentic-plugin__goal_status" }); } catch (err) { thrown = String(err); }
+  const lines = String(shown?.result).split("\n");
+  check("ltg malformed: goal_status does not throw and prints both entries",
+    thrown === null && lines.includes('  lt-bad "": 7') && lines.includes('  lt-b "Beta": Beta, as the operator put it'), { thrown, lines });
 }
 
 // Owner only, as goal_add and goal_edit are: a session reading the persona

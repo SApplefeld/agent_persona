@@ -7433,11 +7433,13 @@ export const register: Register = async (on, options) => {
           };
         }
         // The node id form with its own prefix, so a long-term id never reads
-        // as a root, plan or task id.
+        // as a root, plan or task id. The title and objective are cut to the
+        // lengths the planner cuts a plan's to, since the list is shown in a
+        // prompt as plans are.
         const entry: LongTermGoal = {
           id: `lt-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-          title,
-          objective,
+          title: title.slice(0, 80),
+          objective: objective.slice(0, 500),
           createdAt: now,
         };
         list.push(entry);
@@ -7445,9 +7447,9 @@ export const register: Register = async (on, options) => {
           timestamp: now,
           loop: "goal",
           action: "longterm_added",
-          detail: `${entry.id} "${title}"`,
+          detail: `${entry.id} "${entry.title.slice(0, 50)}"`,
         });
-        resultText = `Long-term goal added: ${entry.id} "${title}".`;
+        resultText = `Long-term goal added: ${entry.id} "${entry.title}".`;
       } else {
         const id = String((e as any).id || "").trim();
         const reason = String((e as any).reason || "").trim();
@@ -7470,9 +7472,9 @@ export const register: Register = async (on, options) => {
           timestamp: now,
           loop: "goal",
           action: "longterm_dropped",
-          detail: `${dropped.id} "${dropped.title}": ${reason}`,
+          detail: `${dropped.id} "${String(dropped.title ?? "").slice(0, 50)}": ${reason.slice(0, 80)}`,
         });
-        resultText = `Long-term goal dropped: ${dropped.id} "${dropped.title}".`;
+        resultText = `Long-term goal dropped: ${dropped.id} "${String(dropped.title ?? "")}".`;
       }
 
       const writeOk = await persist($);
@@ -7716,12 +7718,15 @@ export const register: Register = async (on, options) => {
       }
       const root = sess.state.goals.find((g) => g.parentId === null);
       // The long-term goals print one line each, so any line break a title or
-      // objective carries is joined into a space.
+      // objective carries is joined into a space. Each field is read through
+      // String, so a malformed stored entry prints as blanks rather than
+      // throwing goal_status for the whole persona.
       const oneLine = (text: string) => text.split(LINE_TERMINATOR).join(" ");
       const longTerm = sess.state.longTermGoals;
       const longTermLines = longTerm.length === 0
         ? ["Long-term goals: (none)"]
-        : ["Long-term goals:", ...longTerm.map((g) => `  ${g.id} "${oneLine(g.title)}": ${oneLine(g.objective)}`)];
+        : ["Long-term goals:", ...longTerm.map((g) =>
+          `  ${String(g?.id ?? "")} "${oneLine(String(g?.title ?? ""))}": ${oneLine(String(g?.objective ?? ""))}`)];
       if (!root) {
         // With no tree, the list is shown only where it holds an entry.
         return { result: longTerm.length === 0 ? "No goal tree exists." : ["No goal tree exists.", ...longTermLines].join("\n") };
