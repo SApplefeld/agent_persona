@@ -1,5 +1,9 @@
 # Backlog
 
+## A park marker the start could not remove reads held over a running persona (found 2026-09-23)
+
+`bin/Start-Persona.ps1` logs an `ERROR` and launches anyway when it cannot remove `keeper.park`. The persona then runs, and relaunches through later crashes, with the marker still in its run directory. The fleet reading's `held` standing outranks a live claim in `fleetActionOf` (`hooks/index.ts`), so that persona reads held, and its running, backing-off or stale state is hidden from the steward until the next keeper start clears the marker. The keeper park plan kept `fleetActionOf` out of scope, so its Section 4 review left this alone. Remedy: under a live claim whose heartbeat is newer than `keeper.json`'s `lastEnd`, let a park-only standing yield to the claim, as the signalled-stop case already does. Proof: a fleet-status case with `keeper.park`, no `keeper.hold`, and a live claim newer than `lastEnd` reads running.
+
 ## A refused persist leaves the shutdown or park decision in memory (found 2026-09-23)
 
 The `supervisor_shutdown` handler in `hooks/index.ts` pushes its `shutdown_requested` or `park_requested` decision onto `sess.state.decisions` before `persist($)` runs, and passes no rollback. Where persist refuses because ownership was lost, the tool denies as it should and the store on disk carries nothing, but the in-memory list keeps the decision. A later persist that succeeds writes it out. The supervisor compares its timestamp against the child's start, so a stale one mostly reads as `continue`, and the shape is older than the park option, which the keeper park plan's Section 1 review found and left alone. Remedy: pass a rollback to `persist` that pops the pushed decision on both branches. Proof: a tick case whose persist yields, followed by a successful persist, leaves no `park_requested` or `shutdown_requested` in the store.

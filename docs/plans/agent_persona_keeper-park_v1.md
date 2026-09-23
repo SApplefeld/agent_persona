@@ -64,6 +64,10 @@ Provenance: distilled from the architect persona's sessions of 2026-09-21 on its
 - Descriptions and pins: `hooks/index.ts:2212-2246`; `.kit/injection-ledger.json:191-202`; `.kit/injection-ledger.mjs`; `.kit/injection-duplicate-test.mjs`; `docs/architecture.md:139-150`; `.kit/controller-tick-test.mjs:12625` (the tool-count pin, which this plan does not move); `.claude-plugin/plugin.json` (no mention).
 - Prose on stopping and restarting: `README.md:38-40` (Quickstart, "Stop it." and "Restart it without stopping it."), `README.md:414-418`, the two tool descriptions. The supervisor's priming text names none of it. The persona charters and the steward's instructions name none of it.
 
+## Standing Brief Amendments
+
+- A parked persona reads `held` in the fleet reading whatever a live claim beside it says. A park yielding to a live claim, a park standing or health class of its own, and any other change to `fleetActionOf`, `fleetHealthOf` or the `[FLEET]` prompt text stay outside this plan, per `## Out of Scope` and the alternative `## Intent` refused.
+
 ## Sections of Work
 
 ### 1. The shutdown tool takes a park option
