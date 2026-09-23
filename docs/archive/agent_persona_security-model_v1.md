@@ -1,6 +1,6 @@
 # Security model document
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-09-22
 
@@ -164,6 +164,11 @@ questions.
 
 The README's `### Trust boundary` section keeps its mechanics and gains one line pointing at the
 model. The model points back at it for how each boundary is enforced, rather than restating that.
+
+## Standing Brief Amendments
+
+- The document records the deployment facts it rests on as measured on SCOTT-CLAUDE, each a read of existing state with the command that reads it, and never a change to that state.
+- `README.md` and `docs/architecture.md` state the machine's launch state consistently with the model: no hand launchers under `D:/personas`, and no logon type asserted for every task.
 
 ## Sections of Work
 
@@ -355,3 +360,17 @@ Stamps: adjudicated 0, stamped 0 (none surfaced in the 2h window; the two reads 
 Gate: no code changed in this section (docs/ and README.md only); no lane runs over prose here, and the whole gate runs at the finishing pass.
 Next: finishing-work
 Commit Model: Branch-and-PR
+
+### Chapter 3 - 2026-09-23
+Completed: finishing-work
+Implemented By: main session; qa-verifier, prose-reviewer and docs work in the main thread
+Metrics: finishing review rounds 1, closed major-closed; provenance not read, the document pair sitting outside the provenance read; rulings (0 refused, 0 declared, 0 asked); advisory: skipped under the prose-only waiver; NEEDS_CONTEXT 0; escalations 0; consults 0
+Recap: Goal: When this is done, the project has a `docs/security-model.md` that states what the persona plugin and its process keeper trust, what they defend against, what risks the operator has accepted, and what each accepted risk rests on. It matters for two reasons. Security reviews of this project have no written model to measure against, so the last two finishing reviews ran against the README's Trust boundary section and opened with "threat model: absent". And the operator's 2026-09-15 decision to run the keeper with no permission check lives only in an archived plan, where nobody reviewing the code will find it.; What the tree does now: docs/security-model.md states what the persona plugin and its process keeper trust, the six trust boundaries, the three risks the operator accepted with the preconditions each rests on and the commands that check them on SCOTT-CLAUDE, the files a local process could write to take over a persona, and the five known gaps with their backlog entries; the README, the architecture doc and the docs index point at it, and the architecture doc and README no longer describe hand launchers that do not exist; Refinements during the run: the deployment was measured rather than read from the registration code, so the document scopes its facts to SCOTT-CLAUDE and records the S4U logon; the takeover-file list runs past the spec's four named files; the review-round backstop fired at round 5 and the operator chose continue (Interim boards 3 and 4); Operator-pending: decide for the five repositories whose review rule is unmet or unreadable (ai-os, claude-memory, knowledge-base, llm-wiki, Tabletop-Adventure-Simulator) whether to accept the risk, add the review rule, or take each out of the fleet account's reach
+Decisions / Surprises: add-decision (finishing): fix the three prose Majors and the Minors that hold, prose only; serves Section 1's acceptance that no sentence the code contradicts ships; adds no mechanism; size 12 lines changed in docs/security-model.md, 4 in README.md; not fixing it ships two false sentences. Main was merged into the branch before the gate (ce5da64, no conflict). The finishing prose review ran against the document set whole. The step 2 advisory reviews were skipped under the waiver: every changed file is markdown with no machine-read frontmatter, and every Audience persona is internal (the kit's security reviewer, an engineer reviewing a change, the operator). The docs-curator step ran in the main thread: the deliverable is the documentation itself, and the finishing prose review read it against the code and the machine.
+Assumptions: none
+Review Findings: review: prose-reviewer at fable-5-1, Workflow, high effort. Major, the label rule: a named persona writing to the coordinator while it reads any persona is labelled READER with the first persona it reads (hooks/operator.ts 705-707); fixed with a sentence stating that case. Major, the profile ACL: C:/Users/Public grants modify to INTERACTIVE, SERVICE and BATCH (icacls), so the sentence is scoped to C:/Users/LocalAdmin, whose ACL holds only SYSTEM, Administrators and LocalAdmin. Major, stale launchers: README.md said the steward and architect keep hand launchers under D:/personas; none exist, so the fleet-example paragraph, the cutover step and the COORDINATOR_PERSONA paragraph now state the present fact; a sweep for launch.sh, relaunch.sh and launcher wording over README.md and docs/architecture.md left one match, the architecture failure-modes row naming a hand launcher as one possible cause, which stays true in general (control: the same pattern matched 3 lines in README.md at e154b09). Minors fixed: file paths on the default-claim and relaunch sentences; rule-then-reason splits; the SendMessage sentence split; the opening tell under Trust boundaries deleted; the fleet reading and hold reasons introduced; icacls given its path; the S4U sentence restated as a present property; the architect answer window tightened to the send; the README roster-ACL warning joined to the model's acceptance. Minors left with the reason: the triadic cadence (the sets are real); the four-ground restatement (the change-reviewer persona has read no README). The fix delta is prose only, so it owes no round; it took the author re-read, with the three new factual sentences checked against operator.ts, icacls and hooks/index.ts. goal read: 3 built-but-unasked (0 refused, 2 declared, 1 asked), 0 asked-but-unbuilt. The two declares (the measured SCOTT-CLAUDE facts; the README and architecture launch-state corrections) are recorded under Standing Brief Amendments. The judge refused the sentences describing the relay's confirmation instruction, on the plan's refused alternative "describing the relay broker's allowlist mechanics"; that ground names allowlist mechanics and does not reach a sentence about the instruction text every session receives, so the GROUNDS check fails on this surface and the item goes to the operator in the close-out as an ask, holding nothing. The judge's fifth-part item carries no bucket; the QA verifier confirmed the five parts in order. QA verifier PASS on every bullet of both sections, whole gate 25 lanes exit 0 at ce5da64 with no contention. Tree unchanged across each bracketed round.
+Stamps: adjudicated 0, stamped 0
+Gate: handoff whole gate 2026-09-23 on SCOTT-CLAUDE, worktree D:/agent_persona-security at ce5da64 plus the finishing edits (prose fixes, archive, index, backlog), two foreign node --test runs live beside it: 25 lanes (every .kit/*-test.mjs and *-test.sh except live-*-test.sh and supervisor-natural-exit-test.sh, plus tsc --noEmit, injection-ledger and check-loader-rule), 25 exit 0, gate exit 0. Baseline on this lane: the QA verifier's run at ce5da64, 25 lanes exit 0, no delta. Contention lane: this repository defines none. Test delta: none; the changeset is documents only.
+Next: none; the plan is complete
+Commit Model: Branch-and-PR
+Base ref: e154b09 (merge-base with origin/main after the merge of main)
