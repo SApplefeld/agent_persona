@@ -2390,6 +2390,22 @@ wait_for_result_line() {
   return 1
 }
 
+# --- Helper: the goal prompt as the one stream-json line the child reads ---
+# Usage: goal_prompt_json <prompt_file> <framing> >&"$CHILD_IN"
+# Prints the framing line and the prompt file's text as a single user message.
+# Both goal-prompt writes use it: the one right after the priming turn closes
+# inside its wait, and the poll loop's held write for a priming turn that
+# outran the wait.
+goal_prompt_json() {
+  node -e "
+    const fs = require('fs');
+    const p = fs.readFileSync(process.argv[1], 'utf8');
+    const framing = process.argv[2] || '';
+    const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:framing + p}]}});
+    process.stdout.write(json + '\n');
+  " "$1" "$2"
+}
+
 # --- Helper: read a fact from .agentic-personas.json ---
 # Usage: get_fact <workdir> <persona> <fact>
 # Prints the timestamp of the newest matching decision, or empty.
@@ -3120,15 +3136,21 @@ while true; do
     " "$SKILL_LOAD_INSTRUCTION$COORDINATOR_STEER_INSTRUCTION$COORDINATOR_ROLE_INSTRUCTION$ARCHITECT_ROLE_INSTRUCTION$CHANNEL_REPLY_INSTRUCTION" "$PRIMING_BODY" >&"$CHILD_IN"
   fi
 
+  # Set to 1 below where this child's goal prompt waits on its priming turn,
+  # and back to 0 once the poll loop has written it. Each child starts clear.
+  GOAL_PROMPT_HELD=0
   if [ -n "$CHILD_IN" ] && [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
     # A prompt written while the priming turn is still open joins that turn
     # rather than opening its own, which would put the goal prompt back
     # behind the skill-load sentence and reproduce the very shape this
-    # split exists to avoid. So wait for the priming turn's own `result`
-    # line before writing. Startup alone runs 45-60 seconds, so the bound
-    # is generous; on a timeout the goal prompt is written anyway, since a
-    # child that never receives its task is worse than one that receives
-    # it late, and the NOTE line says which happened.
+    # split exists to avoid. It would also open the goal inside the
+    # priming turn, a turn the plugin's effort gate refuses, so goal_create
+    # would be denied. So wait for the priming turn's own `result` line
+    # before writing. Startup alone runs 45-60 seconds, so the bound is
+    # generous. On a timeout with the child alive the goal prompt is held
+    # rather than written, and the poll loop below writes it on the first
+    # poll that finds the priming turn's result line. A NOTE line marks the
+    # hold and another marks the write.
     GOAL_WRITE_OK=1
     if wait_for_result_line "$OUT" "$SUPERVISOR_PRIMING_WAIT_S" "$CHILD_LAUNCH_PID"; then
       log "NOTE: child-$CHILD_INDEX priming turn completed; sending the goal prompt as its own turn"
@@ -3139,16 +3161,12 @@ while true; do
       log "NOTE: child-$CHILD_INDEX died before completing its priming turn; not sending the goal prompt"
       GOAL_WRITE_OK=0
     else
-      log "NOTE: child-$CHILD_INDEX priming turn produced no result line within ${SUPERVISOR_PRIMING_WAIT_S}s; sending the goal prompt anyway"
+      log "NOTE: child-$CHILD_INDEX priming turn produced no result line within ${SUPERVISOR_PRIMING_WAIT_S}s; goal prompt held until the priming turn closes"
+      GOAL_WRITE_OK=0
+      GOAL_PROMPT_HELD=1
     fi
     if [ "$GOAL_WRITE_OK" -eq 1 ]; then
-      node -e "
-        const fs = require('fs');
-        const p = fs.readFileSync(process.argv[1], 'utf8');
-        const framing = process.argv[2] || '';
-        const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:framing + p}]}});
-        process.stdout.write(json + '\n');
-      " "$PROMPT_FILE" "$GOAL_PROMPT_FRAMING" >&"$CHILD_IN"
+      goal_prompt_json "$PROMPT_FILE" "$GOAL_PROMPT_FRAMING" >&"$CHILD_IN"
     fi
   fi
   PROMPT=""
@@ -3182,6 +3200,20 @@ while true; do
   while kill -0 "$CHILD_LAUNCH_PID" 2>/dev/null; do
     sleep $((SUPERVISOR_POLL_MS / 1000))
     POLL_COUNT=$((POLL_COUNT + 1))
+
+    # A goal prompt held past the priming wait goes to the child on the
+    # first poll that finds the priming turn's result line, so it opens a
+    # turn of its own rather than joining the priming turn. The child can
+    # exit during the sleep above, so liveness is read again at the write.
+    if [ "$GOAL_PROMPT_HELD" -eq 1 ] && [ -f "$OUT" ] && grep -q '"type":"result"' "$OUT"; then
+      GOAL_PROMPT_HELD=0
+      if kill -0 "$CHILD_LAUNCH_PID" 2>/dev/null; then
+        goal_prompt_json "$PROMPT_FILE" "$GOAL_PROMPT_FRAMING" >&"$CHILD_IN"
+        log "NOTE: child-$CHILD_INDEX priming turn completed after the wait; sending the held goal prompt as its own turn"
+      else
+        log "NOTE: child-$CHILD_INDEX exited after its priming turn completed; the held goal prompt was not sent"
+      fi
+    fi
 
     # The child's own processes, recorded while they can still be read. A
     # `claude.exe` appears under the wrapper a few seconds after the launch,

@@ -3368,6 +3368,10 @@ async function main() {
     await caseGl4_edgesRefuse(clock);
     await caseGl4_coordinatorBreakInDoesNotLiftTheRefusal(clock);
     await caseGl4_descriptionsNameTheRefusal(clock);
+    await caseGl4_aForeignCompletionLeavesTheGateAlone(clock);
+    await caseGl4_eachReadingBindsToItsPromptText(clock);
+    await caseGl4_aMatchedEntryIgnoresAPendingOperatorReading(clock);
+    await caseGl4_notLoadedComesBeforeTheGate(clock);
     await caseSection6Fleet_unchangedIsSilentAndOneChangeSubmitsOnce(clock);
     await caseSection6Fleet_runningRowsAreNotAllHealthy(clock);
     await caseSection6Fleet_aFirstEverLaunchIsNotStale(clock);
@@ -20502,10 +20506,148 @@ async function caseGl4_coordinatorBreakInDoesNotLiftTheRefusal(clock) {
 
 // Each description names the refusal.
 async function caseGl4_descriptionsNameTheRefusal(clock) {
-  console.log("\n=== Goal levels 4: goal_create and goal_add name the refusal ===");
+  console.log("\n=== Goal levels 4: the three gated tools' descriptions name the refusal ===");
   clock.set(T0);
   const h = await createTickHarness({ ...OPTS, caseName: "gl4_descriptions" });
   const desc = (name) => h.toolRegisters.find((t) => t.name === name)?.description || "";
-  check("gl4 descriptions: goal_create names the refusal", desc("goal_create").includes("A call in a turn neither the operator nor the coordinator persona started is refused."), desc("goal_create"));
-  check("gl4 descriptions: goal_add names the refusal for a plan", desc("goal_add").includes('kind "plan" is refused outside a turn the operator or the coordinator persona started.'), desc("goal_add"));
+  // The tokens a reader acts on, not one sentence: the refusal, the two
+  // parties whose turns are admitted, and the two leads that do not count.
+  for (const name of ["goal_create", "goal_add", "goal_longterm"]) {
+    const d = desc(name);
+    check(`gl4 descriptions: ${name} names the refusal, the operator and the coordinator persona`,
+      /refused/i.test(d) && d.includes("operator") && d.includes("coordinator persona"), d);
+    check(`gl4 descriptions: ${name} says a [FINDING] or [PROPOSAL] record does not count`,
+      d.includes("[FINDING]") && d.includes("[PROPOSAL]"), d);
+  }
+  check("gl4 descriptions: goal_add ties the refusal to a plan", desc("goal_add").includes('kind "plan"'), desc("goal_add"));
+}
+
+// A gated call in the turn now open, returning whether it was admitted. A
+// goal_longterm add is used because it lands without replacing the tree.
+async function gl4Admitted(h, title = "Probe") {
+  const res = await callTool(h, { tool: LTG_TOOL, action: "add", title, objective: `${title} objective` });
+  return res?.deny === undefined;
+}
+
+// Fires the plugin's prompt.submit hook as a genuine external prompt, with
+// `settled` as the text the chain beneath resolved to, where given.
+async function gl4Submit(h, text, originKind, settled) {
+  const e = originKind === null ? { text } : { text, origin: { kind: originKind } };
+  await h.handlers["prompt.submit"](h.fake, e, async () => (settled === undefined ? {} : { text: settled }));
+}
+
+async function gl4Start(h, turnId, text) {
+  await h.handlers["turn.start"](h.fake, text === undefined ? { turnId } : { turnId, text }, () => {});
+}
+
+// Fix item 1: a turn.complete carrying another turn's id, which a background
+// subagent's completion delivers inside the persona's own open turn, neither
+// resets an admitted turn nor lifts a refused one. The turn's own completion
+// ends its reading.
+async function caseGl4_aForeignCompletionLeavesTheGateAlone(clock) {
+  console.log("\n=== Goal levels 4: a completion for another turn id leaves the open turn's gate reading ===");
+  clock.set(T0);
+  const h = await gl4Harness("gl4_foreign_complete_operator");
+  await openPromptTurn(h, { originKind: "sdk", text: "Start the launch goal.", turnId: "op" });
+  await closeTurn(h, "foreign");
+  const created = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "A new effort", replace: true });
+  check("gl4 foreign complete: goal_create is still accepted in the operator turn after a foreign completion", created?.deny === undefined, created);
+  await closeTurn(h, "op");
+  check("gl4 foreign complete: after the operator turn's own completion a fresh gated call is refused", !(await gl4Admitted(h)));
+  const starts = getState(h).decisions.filter((d) => d.action === "turn_start");
+  check("gl4 foreign complete: the turn_start decision carries the turn id", starts.some((d) => d.detail.endsWith(" id op")), starts.map((d) => d.detail));
+
+  clock.set(T0);
+  const n = await gl4Harness("gl4_foreign_complete_nudge");
+  n.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(n, clock, 50);
+  await openQueuedTurn(n, "t-nudge");
+  check("gl4 foreign complete nudge: the nudge turn is refused", !(await gl4Admitted(n, "Before")));
+  await closeTurn(n, "foreign");
+  check("gl4 foreign complete nudge: a foreign completion does not lift the refusal", !(await gl4Admitted(n, "After")));
+}
+
+// Fix item 2: each origin reading is bound to its own prompt's text, so a
+// turn that opens between a prompt's submit and its own turn neither takes
+// that prompt's reading nor leaves the prompt's own turn unclassified.
+async function caseGl4_eachReadingBindsToItsPromptText(clock) {
+  console.log("\n=== Goal levels 4: an origin reading is taken only by the turn that opens with its prompt's text ===");
+
+  // (a) A matched plugin turn opens between the operator's submit and turn.
+  clock.set(T0);
+  const a = await gl4Harness("gl4_reading_matched_between");
+  a.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(a, clock, 50);
+  check("gl4 reading (a) setup: a nudge is queued", a.queuedTurnTexts.length === 1, a.queuedTurnTexts);
+  await gl4Submit(a, "Operator words.", "composer");
+  await gl4Start(a, "t-nudge");
+  check("gl4 reading (a): the nudge turn between is refused", !(await gl4Admitted(a, "In nudge")));
+  await closeTurn(a, "t-nudge");
+  await gl4Start(a, "t-op", "Operator words.");
+  check("gl4 reading (a): the operator's own turn after it is admitted", await gl4Admitted(a, "In operator"));
+
+  // (b) An unmatched turn whose text matches no reading opens between.
+  clock.set(T0);
+  const b = await gl4Harness("gl4_reading_unmatched_between");
+  await gl4Submit(b, "Operator words.", "composer");
+  await gl4Start(b, "t-other", "[SOMETHING ELSE] no reading carries this text");
+  check("gl4 reading (b): the turn whose text matches no reading is refused", !(await gl4Admitted(b, "In other")));
+  await closeTurn(b, "t-other");
+  await gl4Start(b, "t-op", "Operator words.");
+  check("gl4 reading (b): the operator's own turn after it is admitted", await gl4Admitted(b, "In operator"));
+
+  // (c) Priming and operator prompts both submitted before either opens.
+  clock.set(T0);
+  const c = await gl4Harness("gl4_reading_priming_then_operator");
+  await gl4Submit(c, "[SUPERVISOR-PRIMING] You run as the persona's worker.", "sdk");
+  await gl4Submit(c, "Operator words.", "composer");
+  await gl4Start(c, "t-prime", "[SUPERVISOR-PRIMING] You run as the persona's worker.");
+  check("gl4 reading (c): the priming turn is refused", !(await gl4Admitted(c, "In priming")));
+  await closeTurn(c, "t-prime");
+  await gl4Start(c, "t-op", "Operator words.");
+  check("gl4 reading (c): the operator turn after it is admitted", await gl4Admitted(c, "In operator"));
+
+  // (d) A reading matched on the text the chain beneath settled to.
+  clock.set(T0);
+  const d = await gl4Harness("gl4_reading_settled_text");
+  await gl4Submit(d, "Operator words.", "composer", "Operator words, rewritten beneath.");
+  await gl4Start(d, "t-op", "Operator words, rewritten beneath.");
+  check("gl4 reading (d): a turn opening with the settled text takes the operator's reading", await gl4Admitted(d, "In settled"));
+
+  // A dropped prompt leaves no reading behind for a later turn with its text.
+  clock.set(T0);
+  const x = await gl4Harness("gl4_reading_dropped");
+  await x.handlers["prompt.submit"](x.fake, { text: "Dropped words.", origin: { kind: "composer" } }, async () => ({ drop: "refused beneath" }));
+  await gl4Start(x, "t-dropped", "Dropped words.");
+  check("gl4 reading dropped: a turn with a dropped prompt's text is refused", !(await gl4Admitted(x, "In dropped")));
+}
+
+// Fix item 4: the entry rule decides a matched delivery even while an
+// operator reading waits, so a WORKER delivery that opens before the
+// operator's channel turn is refused rather than read as the channel turn.
+async function caseGl4_aMatchedEntryIgnoresAPendingOperatorReading(clock) {
+  console.log("\n=== Goal levels 4: a WORKER delivery is refused while a channel reading waits ===");
+  clock.set(T0);
+  const w = await gl4Harness("gl4_worker_over_channel_reading", { persona: "coordinator" });
+  await gl4Submit(w, "Operator on the thread.", "channel");
+  await openDeliveryTurn(w, "coordinator", { claims: ["persona:dev"], writer: "worker-dev-2", text: "Build the next thing.", turnId: "t-worker" });
+  check("gl4 worker over channel: the WORKER delivery turn is refused", !(await gl4Admitted(w)));
+}
+
+// Fix item 4: the not-loaded refusal comes before the effort gate in
+// goal_create and goal_longterm, as it does in goal_add, so a session over
+// an unreadable store says so whatever turn is open.
+async function caseGl4_notLoadedComesBeforeTheGate(clock) {
+  console.log("\n=== Goal levels 4: a store that did not load is named before the gate refuses ===");
+  clock.set(T0);
+  const opts = { ...OPTS, caseName: "gl4_not_loaded_first" };
+  const seeded = { fsMap: new Map(), storeMap: new Map() };
+  seeded.fsMap.set(PERSONA_STORE_FILE, "{ not a store");
+  const h = await relaunchStewardHarness("gl4_not_loaded_first", seeded, opts);
+  const created = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "An effort" });
+  check("gl4 not loaded: goal_create with no turn open names the unread store", readsAsNotLoaded(created?.deny, NOT_LOADED_STORE_CAUSE_TOKEN), created);
+  const lt = await callTool(h, { tool: LTG_TOOL, action: "add", title: "A goal", objective: "An objective" });
+  check("gl4 not loaded: goal_longterm with no turn open names the unread store", readsAsNotLoaded(lt?.deny, NOT_LOADED_STORE_CAUSE_TOKEN), lt);
 }

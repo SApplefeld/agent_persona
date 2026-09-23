@@ -1,5 +1,15 @@
 # Backlog
 
+## The turn.complete scoring path reads turn state that a subagent's completion or a later prompt can change (found 2026-09-23)
+
+The scoring half of the plugin's `turn.complete` handler (`hooks/index.ts`) reads two values that do not belong to the turn it is scoring. The goal-levels plan fixed the same shape for its effort gate and left this path alone.
+
+`currentTurnKind` is reset whatever id the completion carries. A background subagent's completion reaches the hook while the persona's own turn is still open. So when the persona's turn later completes, a nudge turn scores as unaccounted and a delivery turn loses its delivery reading.
+
+`isPrimingTurn` is the last prompt's reading rather than the turn's own. Where a prompt is submitted before the previous turn completes, that turn is scored with the newer prompt's priming value.
+
+Remedy: reset `currentTurnKind` only at the completion carrying the id turn.start recorded, and read the turn's own priming value, as the effort gate's `currentTurnIsPriming` does. Proof: a tick case that opens a nudge turn, completes a foreign id, then completes the nudge turn and finds it scored as a nudge.
+
 ## Two writers under one session can take the same inbox sequence number (found 2026-09-23)
 
 `agentic_say` (`hooks/index.ts`, the handler's write) and `sendPluginRecord` (`hooks/operator.ts`) each read `getHighestInboxSeq` and then call `writeInboxRecord` after an awaited round trip, under the same writer session id. `writeInboxRecord` is an unconditional `store.set`, and the commons store offers no exclusive create (`hooks/commons.ts`, `get/set/delete/keys` only). So two writes that interleave take one key, and the later one silently replaces the earlier record. Two parallel `agentic_say` calls to one persona in one tool batch can already do this, since the harness may run a batch's tool calls concurrently. The goal-levels plan narrowed its own case by having the self-review block skip a tick while a turn is open, and it accepts the small residual that remains. Remedy: one per-process promise chain, keyed on target and writer, that both writers take around the read-then-write, about fourteen lines. Proof: a tick case that runs two sends to one persona concurrently and finds two records.
@@ -189,18 +199,13 @@ The outward direction is open as well, and the paragraphs above close none of it
 
 Coordinator v2 Section 8 adds one more consumer of the same assumption: the coordinator-role priming instruction fires when the supervisor's persona argument equals the coordinator name, and a provided file naming a different `persona` primes the wrong session or leaves the right one unprimed. The refuse form, when this entry is taken up, resolves the file's `persona` under the plugin's own rule, where a missing or invalid key resolves to `default`, and refuses when that value differs from the argument; a missing key is a mismatch, never a match, since the launcher refuses an empty argument. That fix reverses the pin in `.kit/settings-plugin-key-test.sh` that drives a differing file persona through to the pre-launch gate, so it takes its own plan line rather than a fix round.
 
-## The harness delivers far more turn completions than turn starts, so the open-turn guard is blind for most turns (found 2026-09-13)
+## The extra turn completions are subagents finishing inside an open turn; which turn id they carry is unconfirmed (2026-09-23, parked 2026-09-13)
 
-Cheap first step, not yet done: neither event is logged with its turn id, so nobody can tell whether the extra completions are unpaired turns or repeated deliveries of the same one. Log `e.turnId` on both `turn.start` and `turn.complete`, run a worker for a while, and read the pairing off a live log. Section 9 leans on that pairing: it derives the published deferral stamp from the open-turn map, so a start whose completion never arrives now pins the stamp instead of being cleared by the next completion, and the claim that this cannot happen is inferred from the map being in-process rather than confirmed from a log.
+The surplus of `turn.complete` over `turn.start` in child debug logs is explained. Every turn the persona opens delivers a start. In each `run/child-*/claude-debug.log` the start count equals external `prompt.submit ... settled` lines plus the plugin's own `prompt.submit skipped: re-entry` lines, minus prompts delivered into a running turn, which get no start of their own. child-1 reads 28 + 26 - 4 = 50. The surplus completions line up with `[Stall] agent_completion` lines, so they are background subagents finishing while the persona's own turn is still open. The 2026-09-13 counts of 9 starts against 34 completes predate that reading.
 
-`run/child-1/claude-debug.log` carries 9 `turn.start` lines against 34 `turn.complete` lines. `run/child-2/claude-debug.log` carries 5 and 5, so the asymmetry is intermittent rather than constant. Counted on a live log while the fleet was running, so the exact numbers move; the ratio is the finding.
+The open-turn map that `turnIsOpen()` reads is unaffected, since it closes a turn only by its own id. What a subagent's completion does reach is any per-turn state reset unconditionally at `turn.complete`. The goal-levels plan fixed its effort gate that way and filed `currentTurnKind` separately. `lastTurnComplete` also moves on a subagent's completion, which makes the idle reading look more recent, never less.
 
-Section 11 bounds the goal nudge with an open-turn map keyed by turn id. That map can only hold a turn whose `turn.start` was delivered. On a session in the state above, `turnIsOpen()` reads false while real turns are running, and the controller tick is free to nudge into live work. Section 11 satisfies its own acceptance criterion as written and the guard is still blind for most turns in practice.
-
-Not root-caused. The open question is why `turn.start` goes undelivered while `turn.complete` does not, which is a harness event-delivery question rather than a plugin one. Worth answering before the coordinator leans on the in-flight reading across many workers, since a blind guard there means a coordinator nudging into live turns on every worker at once.
-
-Section 9 deliberately does not fix this. Its own change leaves the absorber in place: `lastTurnComplete` keeps updating on every completion, matched or not, which is what has kept the idle reading roughly honest through this all along.
-
+Still inferred: that a subagent's completion carries the subagent's turn id rather than the parent's. The `turn_start` decision now carries the turn id. Remedy: read one live worker log where a reviewer completes inside a turn and confirm the two ids differ. If they match, the id checks do nothing and the fault is the harness's to raise upstream.
 ## A promoted owner inherits the dead owner's idle anchor and can be nudge-eligible on its first tick (found 2026-09-13)
 
 A second, separate defect on the same heartbeat surface: `writeClaimDirect` in `hooks/index.ts` writes the owner's heartbeat entry with `sessionId`, `epoch` and `lastSeen` and no `turnStartedAt`, while the comment above the shared writer claims every owner write site goes through the helper that carries the stamp. A promotion taken mid-turn therefore drops the published stamp until the next tick, and a reader in another session reports no turn running while one is. Pre-existing, and it matters more now that Section 9 makes that stamp the authoritative answer to how long a record has waited.

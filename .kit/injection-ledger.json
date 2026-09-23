@@ -160,14 +160,14 @@
     {
       "name": "goal_create_description",
       "file": "hooks/index.ts",
-      "chars": 643,
-      "words": 102
+      "chars": 734,
+      "words": 115
     },
     {
       "name": "goal_add_description",
       "file": "hooks/index.ts",
-      "chars": 596,
-      "words": 97
+      "chars": 659,
+      "words": 108
     },
     {
       "name": "goal_done_description",
@@ -208,8 +208,8 @@
     {
       "name": "goal_longterm_description",
       "file": "hooks/index.ts",
-      "chars": 750,
-      "words": 142
+      "chars": 805,
+      "words": 151
     },
     {
       "name": "memory_add_description",

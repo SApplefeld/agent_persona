@@ -1768,6 +1768,70 @@ if [ -n "$FLEET_HEADER_LINE" ]; then check "fleet header: the plugin's [FLEET] h
 holds_parity "$FLEET_HEADER_LINE"
 check "fleet header: the prompt the coordinator's duty points at states the carried-line rule" "$?"
 
+# The goal prompt held past the priming wait. On the timeout with the child
+# alive the launch block writes nothing and marks the prompt held, and the
+# poll loop's held write, run out of the real script, writes it once and only
+# once the priming turn's result line is in the child's stdout.
+HELD_BRANCH=$(printf '%s\n' "$SNIPPET" | grep -A2 'produced no result line within')
+case "$HELD_BRANCH" in
+  *"goal prompt held"*"GOAL_WRITE_OK=0"*"GOAL_PROMPT_HELD=1"*) check "priming wait timeout: the goal prompt is held, not written, and marked for the poll loop" 0 ;;
+  *) check "priming wait timeout: the goal prompt is held, not written, and marked for the poll loop" 1 ;;
+esac
+HELD_BLOCK=$(sed -n '/^    # A goal prompt held past the priming wait/,/^    fi$/p' "$SCRIPT")
+GOAL_FN=$(sed -n '/^goal_prompt_json() {$/,/^}$/p' "$SCRIPT")
+HELD_DIR=$(mktemp -d)
+printf 'Do the goal.' > "$HELD_DIR/prompt.txt"
+: > "$HELD_DIR/out.jsonl"
+: > "$HELD_DIR/stdin.jsonl"
+(
+  eval "$GOAL_FN"
+  log() { printf '%s\n' "$1" >> "$HELD_DIR/log"; }
+  OUT="$HELD_DIR/out.jsonl"; PROMPT_FILE="$HELD_DIR/prompt.txt"; GOAL_PROMPT_FRAMING="FRAME: "; CHILD_INDEX=7
+  CHILD_LAUNCH_PID=$$
+  exec 9>>"$HELD_DIR/stdin.jsonl"
+  CHILD_IN=9
+  GOAL_PROMPT_HELD=1
+  eval "$HELD_BLOCK"
+  printf '%s %s\n' "$GOAL_PROMPT_HELD" "$(wc -l < "$HELD_DIR/stdin.jsonl" | tr -d ' ')" > "$HELD_DIR/poll1"
+  printf '{"duration_api_ms":1,"type":"result"}\n' >> "$OUT"
+  eval "$HELD_BLOCK"
+  printf '%s %s\n' "$GOAL_PROMPT_HELD" "$(wc -l < "$HELD_DIR/stdin.jsonl" | tr -d ' ')" > "$HELD_DIR/poll2"
+  eval "$HELD_BLOCK"
+  printf '%s %s\n' "$GOAL_PROMPT_HELD" "$(wc -l < "$HELD_DIR/stdin.jsonl" | tr -d ' ')" > "$HELD_DIR/poll3"
+)
+[ -n "$HELD_BLOCK" ] && [ -n "$GOAL_FN" ]
+check "held goal prompt: the poll loop's held write and the writer were read out of bin/supervise.sh" $?
+[ "$(cat "$HELD_DIR/poll1" 2>/dev/null)" = "1 0" ]
+check "held goal prompt: a poll before the priming turn's result line writes nothing and keeps it held" $?
+[ "$(cat "$HELD_DIR/poll2" 2>/dev/null)" = "0 1" ] && grep -q '"text":"FRAME: Do the goal."' "$HELD_DIR/stdin.jsonl"
+check "held goal prompt: the first poll after the result line writes the framed prompt once and clears the hold" $?
+[ "$(cat "$HELD_DIR/poll3" 2>/dev/null)" = "0 1" ]
+check "held goal prompt: a later poll writes it no second time" $?
+grep -q "NOTE: child-7 priming turn completed after the wait; sending the held goal prompt" "$HELD_DIR/log" 2>/dev/null
+check "held goal prompt: the write logs its NOTE" $?
+# A child that exited between the loop's liveness check and the write gets
+# no write, and the log says the held prompt was not sent.
+HELD_DEAD_DIR=$(mktemp -d)
+printf 'Do the goal.' > "$HELD_DEAD_DIR/prompt.txt"
+printf '{"duration_api_ms":1,"type":"result"}\n' > "$HELD_DEAD_DIR/out.jsonl"
+: > "$HELD_DEAD_DIR/stdin.jsonl"
+sleep 0 & HELD_DEAD_PID=$!; wait "$HELD_DEAD_PID"
+(
+  eval "$GOAL_FN"
+  log() { printf '%s\n' "$1" >> "$HELD_DEAD_DIR/log"; }
+  OUT="$HELD_DEAD_DIR/out.jsonl"; PROMPT_FILE="$HELD_DEAD_DIR/prompt.txt"; GOAL_PROMPT_FRAMING="FRAME: "; CHILD_INDEX=7
+  CHILD_LAUNCH_PID=$HELD_DEAD_PID
+  exec 9>>"$HELD_DEAD_DIR/stdin.jsonl"
+  CHILD_IN=9
+  GOAL_PROMPT_HELD=1
+  eval "$HELD_BLOCK"
+  printf '%s %s\n' "$GOAL_PROMPT_HELD" "$(wc -l < "$HELD_DEAD_DIR/stdin.jsonl" | tr -d ' ')" > "$HELD_DEAD_DIR/poll1"
+)
+[ "$(cat "$HELD_DEAD_DIR/poll1" 2>/dev/null)" = "0 0" ] && grep -q "NOTE: child-7 exited after its priming turn completed; the held goal prompt was not sent" "$HELD_DEAD_DIR/log"
+check "held goal prompt: a child gone at the write gets no write, clears the hold and logs that it was not sent" $?
+rm -rf "$HELD_DEAD_DIR"
+rm -rf "$HELD_DIR"
+
 echo
 if [ "$failed" = "0" ]; then
   echo "All tests passed"

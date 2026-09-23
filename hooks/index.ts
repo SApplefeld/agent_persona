@@ -2252,28 +2252,45 @@ export const register: Register = async (on, options) => {
   // message, captured at turn.start from the flag above so turn.complete
   // can act on it after the flag has already reset for the next prompt.
   let currentTurnIsChannelOrigin = false;
-  // The origin kind the real prompt.submit hook just saw on a genuine
-  // external turn, or null where it saw none. Consumed by the very next
-  // turn.start, the same one-flag handoff as the channel flag above.
-  let lastPromptOriginKind: string | null = null;
+  // What the real prompt.submit hook saw on each genuine external prompt
+  // whose turn has not opened yet: the prompt's text, the text the hook
+  // chain beneath settled it to where it reported one, its origin kind
+  // ("unclassified" where it carried none) and whether it is the
+  // supervisor's priming prompt. turn.start takes the reading whose text
+  // its own text equals on either key, the two-key rule the expected-turn
+  // list uses, so a turn that opens between a prompt's submit and that
+  // prompt's own turn never takes the prompt's reading. A dropped prompt
+  // removes its reading. The list keeps the newest 8 and drops the oldest
+  // past that: 8 prompts queued with none of their turns opened is past
+  // any queue the engine builds, so a reading dropped there belongs to a
+  // prompt whose turn never came.
+  type OriginReading = { text: string; settledText?: string; kind: string; priming: boolean };
+  const ORIGIN_READINGS_CAP = 8;
+  const originReadings: OriginReading[] = [];
   // What opened the turn now running, captured at turn.start and read by
-  // turnMayStartEffort: the origin kind handed off above ("unclassified"
-  // where the hook saw none), whether the turn is the supervisor's priming
-  // turn, and the expected-turn entry the turn's text matched, if any.
-  // All three reset at turn.complete. A record delivered into the running
-  // turn as tool context changes none of them.
+  // turnMayStartEffort: the origin kind of the reading the turn took
+  // ("unclassified" where it took none), whether that reading is the
+  // supervisor's priming prompt, and the expected-turn entry the turn's text
+  // matched, if any. currentGateTurnId is the id that turn.start carried.
+  // Every turn.start overwrites all four. A turn.complete resets them only
+  // when it carries that same id, the closing-by-id rule openTurns uses,
+  // since a background subagent's completion reaches turn.complete while
+  // the persona's own turn is still open. A subagent's turn.start is not
+  // delivered to this hook: in the child debug logs the start count
+  // reconciles with the persona's own prompts. A record delivered into the
+  // running turn as tool context changes none of them.
   let currentTurnOriginKind = "unclassified";
   let currentTurnIsPriming = false;
   let currentTurnEntry: ExpectedTurn | null = null;
+  let currentGateTurnId: string | null = null;
   // Whether the turn now running may start a new effort: goal_create,
   // goal_add of a plan, and goal_longterm's add and drop. A priming turn may
   // not. A turn that matched an expected turn may only where that entry is a
   // delivery under the coordinator persona's ground whose record opens with
-  // neither [FINDING] nor [PROPOSAL]. Such a turn's origin kind is ignored,
+  // neither [FINDING] nor [PROPOSAL]. Such a turn takes no origin reading,
   // since the plugin's own submits never pass the prompt.submit hook that
-  // sets it. Any kind that hook handed off belongs to some other prompt,
-  // whose own turn has not opened yet. Any other turn may only where its
-  // origin is one of the operator's kinds.
+  // records one. Any other turn may only where the reading it took carries
+  // one of the operator's kinds.
   const turnMayStartEffort = (): boolean => {
     if (currentTurnIsPriming) return false;
     if (currentTurnEntry !== null) {
@@ -2608,7 +2625,8 @@ export const register: Register = async (on, options) => {
       description:
         "Create a new goal tree for this persona. The root carries the objective; the planner " +
         "creates the plans under it at the next controller tick. A tree whose root is unfinished " +
-        "is replaced only with replace: true. A call in a turn neither the operator nor the coordinator persona started is refused.",
+        "is replaced only with replace: true. A call in a turn neither the operator nor the coordinator persona started is refused. " +
+        "A delivered [FINDING] or [PROPOSAL] record never counts as the coordinator persona's turn.",
       inputSchema: {
         type: "object",
         properties: {
@@ -2638,7 +2656,7 @@ export const register: Register = async (on, options) => {
       description:
         "Add a node to the goal tree under parentId. With parentId omitted the parent is the " +
         "active leaf where that leaf is a plan, and the active task's parent otherwise. " +
-        'kind "plan" is refused outside a turn the operator or the coordinator persona started.',
+        'kind "plan" is refused outside a turn the operator or the coordinator persona started, and a [FINDING] or [PROPOSAL] record never starts such a turn.',
       inputSchema: {
         type: "object",
         properties: {
@@ -2794,7 +2812,7 @@ export const register: Register = async (on, options) => {
         "listed by goal_status. A long-term goal is never the active work and never starts by itself. " +
         "add holds a new one and returns its id; at most 5 are held, and an add past that is refused. " +
         "drop lets one go by its id and records the reason. An edit is a drop and an add. " +
-        "Refused outside a turn the operator or the coordinator persona started. Owner only.",
+        "Refused outside a turn the operator or the coordinator persona started, where a [FINDING] or [PROPOSAL] record does not count. Owner only.",
       inputSchema: {
         type: "object",
         properties: {
@@ -5899,8 +5917,6 @@ export const register: Register = async (on, options) => {
     lastPromptWasChannelOrigin = false;
     const currentTurnIsExternal = lastPromptWasExternal;
     lastPromptWasExternal = false;
-    currentTurnOriginKind = lastPromptOriginKind ?? "unclassified";
-    lastPromptOriginKind = null;
     replyCalledThisTurn = false;
     // D4: reset backoff skip counter on new turn (activity breaks the skip streak).
     if (costEnabled && sess.state.monitor.cost) {
@@ -5910,7 +5926,7 @@ export const register: Register = async (on, options) => {
       timestamp: Date.now(),
       loop: "monitor",
       action: "turn_start",
-      detail: `Turn ${sess.state.monitor.turnCount} leaf ${turnLeafId || "none"}`,
+      detail: `Turn ${sess.state.monitor.turnCount} leaf ${turnLeafId || "none"} id ${e.turnId}`,
     });
 
     // AS3: which turn is this? The text it begins with says: e.text is
@@ -5931,12 +5947,21 @@ export const register: Register = async (on, options) => {
     // decides the match; it only names the reason.
     const matched = expectedTurns.find((entry) => e.text !== "" && (entry.text === e.text || entry.settledText === e.text));
     let stampRecordId: string | null = null;
-    // The effort gate reads the matched entry, and for an unmatched turn
-    // whether it is the priming turn: isPrimingTurn carries the last real
-    // prompt's reading forward, so it counts only where that prompt is the
-    // one opening this turn.
+    // The effort gate reads the matched entry. An unmatched turn instead
+    // takes the origin reading whose prompt text it opens with, and reads
+    // unclassified and not priming where none carries that text.
+    currentGateTurnId = e.turnId;
     currentTurnEntry = matched ?? null;
-    currentTurnIsPriming = !matched && currentTurnIsExternal && isPrimingTurn;
+    currentTurnOriginKind = "unclassified";
+    currentTurnIsPriming = false;
+    if (!matched) {
+      const reading = originReadings.find((r) => e.text !== "" && (r.text === e.text || r.settledText === e.text));
+      if (reading) {
+        originReadings.splice(originReadings.indexOf(reading), 1);
+        currentTurnOriginKind = reading.kind;
+        currentTurnIsPriming = reading.priming;
+      }
+    }
     if (matched) {
       unexpectTurn(matched);
       currentTurnKind = matched.kind;
@@ -6095,9 +6120,12 @@ export const register: Register = async (on, options) => {
     // judgment to score.
     const wasDelivery = currentTurnKind === "delivery";
     currentTurnKind = "unaccounted";
-    currentTurnOriginKind = "unclassified";
-    currentTurnIsPriming = false;
-    currentTurnEntry = null;
+    if (e.turnId === currentGateTurnId) {
+      currentTurnOriginKind = "unclassified";
+      currentTurnIsPriming = false;
+      currentTurnEntry = null;
+      currentGateTurnId = null;
+    }
 
     // C3: error streak fold.
     const toolErrors = toolErrorsThisTurn;
@@ -7023,16 +7051,17 @@ export const register: Register = async (on, options) => {
 
     // Serve goal_create (v3: creates the root node, NO planning in handler: R1).
     if (e.tool === "mcp__agentic-plugin__goal_create") {
-      // A new tree is a new effort, so the turn-origin gate runs first.
-      if (!turnMayStartEffort()) {
-        toolErrorsThisTurn++;
-        return { deny: EFFORT_REFUSED_TEXT };
-      }
       // Before the owner check: a session that never loaded its state is not
       // an owner either, and "held by a live session" would be untrue of it.
       if (sess.stateNotLoaded !== null) {
         toolErrorsThisTurn++;
         return { deny: stateNotLoadedText(sess.stateNotLoaded) };
+      }
+      // A new tree is a new effort, so the turn-origin gate runs before any
+      // argument is read.
+      if (!turnMayStartEffort()) {
+        toolErrorsThisTurn++;
+        return { deny: EFFORT_REFUSED_TEXT };
       }
       if (!sess.isOwner) {
         toolErrorsThisTurn++;
@@ -7477,15 +7506,15 @@ export const register: Register = async (on, options) => {
     // activeGoalId. Each change logs a decision, and a drop's decision
     // carries its reason.
     if (e.tool === "mcp__agentic-plugin__goal_longterm") {
-      // Both actions change what the persona works towards, so the
-      // turn-origin gate runs first.
-      if (!turnMayStartEffort()) {
-        toolErrorsThisTurn++;
-        return { deny: EFFORT_REFUSED_TEXT };
-      }
       if (sess.stateNotLoaded !== null) {
         toolErrorsThisTurn++;
         return { deny: stateNotLoadedText(sess.stateNotLoaded) };
+      }
+      // Both actions change what the persona works towards, so the
+      // turn-origin gate runs before any argument is read.
+      if (!turnMayStartEffort()) {
+        toolErrorsThisTurn++;
+        return { deny: EFFORT_REFUSED_TEXT };
       }
       if (!sess.isOwner) {
         toolErrorsThisTurn++;
@@ -8451,8 +8480,17 @@ export const register: Register = async (on, options) => {
     // Steer 68/69: a real Discord message carries e.origin.kind === "channel".
     const originKind = (e as { origin?: { kind?: string } }).origin?.kind;
     lastPromptWasChannelOrigin = originKind === "channel";
-    lastPromptOriginKind = typeof originKind === "string" ? originKind : null;
     lastPromptWasExternal = true;
+    // The effort gate's reading of this prompt, taken by the turn that opens
+    // with its text. Its settled text is filled in below once the chain
+    // beneath has answered.
+    const originReading: OriginReading = {
+      text: e.text,
+      kind: typeof originKind === "string" ? originKind : "unclassified",
+      priming: e.text.startsWith("[SUPERVISOR-PRIMING]"),
+    };
+    originReadings.push(originReading);
+    if (originReadings.length > ORIGIN_READINGS_CAP) originReadings.shift();
 
     // D5b (bullet 1): an open ask never silences the worker. This hook fires
     // only for a genuine external turn - the controller's own $.prompt.submit
@@ -8490,10 +8528,12 @@ export const register: Register = async (on, options) => {
       // A dropped prompt opens no turn, so the one-shot flags set above
       // must not survive to the next turn.start.
       lastPromptWasChannelOrigin = false;
-      lastPromptOriginKind = null;
       lastPromptWasExternal = false;
+      const i = originReadings.indexOf(originReading);
+      if (i >= 0) originReadings.splice(i, 1);
       return r;
     }
+    if (typeof r.text === "string") originReading.settledText = r.text;
 
     if (arming === "reader") {
       // Section 6: a reader session owns no goal tree, so no [GOAL TREE],
