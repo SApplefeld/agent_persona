@@ -8,6 +8,7 @@
  * @property {number|null} [rootCompleteTs] - Timestamp of the newest root_complete decision, or null.
  * @property {boolean} [rootCompleteBackfilled] - True when that root_complete's own detail text names it a backfilled root (the worker did real work with no active goal tree; item 2 of the v1 plan). A backfilled root_complete is not a real completion signal and must never trigger restart_passive (it does not suppress a genuine restart trigger below it, e.g. a hung child).
  * @property {number|null} [shutdownRequestedTs] - Timestamp of the newest shutdown_requested decision, or null.
+ * @property {number|null} [parkRequestedTs] - Timestamp of the newest park_requested decision, or null.
  * @property {number|null} [restartRequestedTs] - Timestamp of the newest restart_requested decision, or null.
  * @property {number} [crashCount] - Number of consecutive non-zero exits within minRunMs.
  * @property {number} [crashLimit] - The supervisor's crash-loop limit (supervisorCrashLimit); crashCount at or past it stops the run.
@@ -26,7 +27,7 @@
 
 /**
  * @typedef {Object} DecideOutput
- * @property {string} action - 'restart' | 'restart_passive' | 'stop_complete' | 'stop_crash_loop' | 'stop_budget' | 'continue'
+ * @property {string} action - 'restart' | 'restart_passive' | 'stop_complete' | 'stop_park' | 'stop_crash_loop' | 'stop_budget' | 'continue'
  * @property {string} reason - Human-readable explanation.
  */
 
@@ -39,6 +40,12 @@
  * 3. stop_complete - an explicit shutdown_requested decision newer than child start
  *    (plan item 4: distinct from root_complete - the operator asked the
  *    supervisor itself to stop, not just the current goal)
+ * 3a. stop_park - an explicit park_requested decision newer than child start:
+ *    the persona parked for an update window. The supervisor stops as it does
+ *    for a shutdown and exits on the park code, so the keeper's next start
+ *    launches the persona again. Sits below shutdown, since a stop for good
+ *    outranks a park, and above both restart_passive rows, since stopping the
+ *    supervisor outranks relaunching its child
  * 4. restart_passive - a restart_requested decision newer than child start
  *    (plan item 8.3: a reader asked for the child to be relaunched, the usual
  *    reason being a pulled runtime update): the child is stopped by the EOF
@@ -66,6 +73,7 @@ export function decide(input) {
     childExitCode,
     rootCompleteTs,
     shutdownRequestedTs,
+    parkRequestedTs,
     restartRequestedTs,
     crashCount = 0,
     crashLimit = 3,
@@ -103,14 +111,21 @@ export function decide(input) {
     return { action: 'stop_complete', reason: `shutdown_requested at ${shutdownRequestedTs} > child start ${childStartTs}` };
   }
 
-  // 3a. An explicit restart request newer than child start: relaunch the
+  // 3a. An explicit park request newer than child start: the persona asked to
+  // stop for an update window and come back at the keeper's next start. Stop,
+  // on a code of its own. Below the shutdown, so a stop for good wins.
+  if (parkRequestedTs !== null && parkRequestedTs !== undefined && parkRequestedTs > childStartTs) {
+    return { action: 'stop_park', reason: `park_requested at ${parkRequestedTs} > child start ${childStartTs}` };
+  }
+
+  // 3b. An explicit restart request newer than child start: relaunch the
   // child with the goal tree kept (plan item 8.3). Same action as root_complete
   // below, so supervise.sh takes one relaunch path for both.
   if (restartRequestedTs !== null && restartRequestedTs !== undefined && restartRequestedTs > childStartTs) {
     return { action: 'restart_passive', reason: `restart_requested at ${restartRequestedTs} > child start ${childStartTs}` };
   }
 
-  // 3b. root_complete newer than child start, with no shutdown requested:
+  // 3c. root_complete newer than child start, with no shutdown requested:
   // the goal is done, but the supervisor stays up for a second goal (plan
   // item 4) - restart the child passively instead of exiting. Skipped when
   // the root was backfilled (v2 Section 0 item 1): that is real tool work

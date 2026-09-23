@@ -11,10 +11,10 @@
 # holding an empty installed-mode commons store (so the pre-launch gate
 # passes), a stub `claude` first on PATH, and a temp workdir and rundir per
 # case. The stub reads a per-case plan, one action per launch, and each plan
-# ends the supervisor on its own: a shutdown_requested decision, or the crash
-# limit set to 1.
+# ends the supervisor on its own: a shutdown_requested decision, a
+# park_requested decision, or the crash limit set to 1.
 #
-# Cases (a), (b), (b2), (e), (uw), (uw2) and (uw7) launch with --prompt. The supervisor then waits for the
+# Cases (a), (b), (b2), (e), (uw), (uw2), (uw7) and (pk) launch with --prompt. The supervisor then waits for the
 # priming turn's result line, and a child that exits without writing one is
 # seen dead before the poll loop starts, so the exit is handled by the
 # natural-exit path and never by a decide-unit read of the same store.
@@ -1328,6 +1328,11 @@ case "\$action" in
   # until the supervisor's EOF stop closes it.
   real_live) IFS= read -r _; record root_complete "\$S/detail-real"; while IFS= read -r _; do :; done; exit 0 ;;
   shutdown) IFS= read -r _; record shutdown_requested ""; exit 0 ;;
+  # The persona's own park for an update window, then an exit.
+  park) IFS= read -r _; record park_requested ""; exit 0 ;;
+  # The same park with the child still alive, so the decide path acts on it.
+  # The loop blocks on stdin until the supervisor's EOF stop closes it.
+  park_live) IFS= read -r _; record park_requested ""; while IFS= read -r _; do :; done; exit 0 ;;
   # A process left running when this child exits: the shape a \`claude.exe\`
   # outliving its wrapper takes. The child then stays up across two polls, the
   # way a real one does, since the supervisor records a child's process tree
@@ -1359,6 +1364,14 @@ case "\$action" in
     # while the child still runs takes the decide path's own stop instead.
     wait_for_log_line "TAILWINDOW" 90
     record shutdown_requested ""
+    exit 0
+    ;;
+  # The same held survivor with a park recorded in place of the shutdown.
+  survivor_park_held)
+    IFS= read -r _
+    leave_survivor
+    wait_for_log_line "TAILWINDOW" 90
+    record park_requested ""
     exit 0
     ;;
   # A child that runs for two polls and exits on its own, leaving nothing
@@ -1527,6 +1540,38 @@ G_EXIT1=$(grep -n 'EXIT child-1 code=' "$LOG" | head -n 1 | cut -d: -f1)
 [ -n "$G_RP" ] && [ -n "$G_EXIT1" ] && [ "$G_RP" -lt "$G_EXIT1" ]; check "(g) child-1's EXIT line follows the RESTART_PASSIVE line, so the stop was the decide path's (lines $G_RP < $G_EXIT1)" "$?"
 ! grep -q 'EXIT child-1 code=[0-9]* (natural)' "$LOG"; check "(g) no natural-exit EXIT line for child-1" "$?"
 grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 2 ]; check "(g) a second child launches (stub launches=$LAUNCHES)" "$?"
+
+# --- (pk) a recorded park, then the child's own exit: the supervisor exits 6 ---
+# The persona parks for an update window: the child records park_requested and
+# exits on its own. The keeper reads exit 6 as a park and launches the persona
+# again at its next start, where exit 0 would hold it down until a hand
+# release. Launched with --prompt, so the natural-exit path handles the exit.
+# The plan holds one launch and the restart budget is 1, so a supervisor that
+# reads no park counts the exit against that budget and ends at exit 4.
+drive pk "park" 1 --prompt "stub goal"
+[ "$RC" -eq 6 ]; check "(pk) supervisor exits 6 on the child's park_requested (rc=$RC)" "$?"
+grep -q 'EXIT child-1 code=0 (natural)' "$LOG"; check "(pk) child-1's exit is handled by the natural-exit path with code 0" "$?"
+grep -q 'STOP_PARK: park_requested at [0-9]* > child start [0-9]*' "$LOG"; check "(pk) the log names the park the child recorded" "$?"
+grep -qE 'SWEEP\[park\] (clean|survivors|survivors_dead|survivors_alive|no_tree|tree_unread|record_behind_tree|record_no_descendant|record_stale|record_unverified):' "$LOG"
+check "(pk) the park sweeps the child's tree under its own label and names its verdict" "$?"
+! grep -q 'SWEEP\[natural_exit\]' "$LOG"; check "(pk) the natural-exit sweep does not also run once the park is read" "$?"
+! grep -q 'STOP_COMPLETE' "$LOG"; check "(pk) no STOP_COMPLETE line, so the park is not reported as a shutdown" "$?"
+[ "$LAUNCHES" -eq 1 ]; check "(pk) no second child launches (stub launches=$LAUNCHES)" "$?"
+
+# --- (pkd) a recorded park while the child is still alive: the decide path ---
+# Case (g)'s shape with a park in place of the root_complete: no --prompt, and
+# the stub stays alive, so the decide unit maps the newer park_requested to
+# stop_park and the supervisor stops child-1 through stop_child. The decide
+# path's STOP_PARK line comes ahead of child-1's EXIT line, and that EXIT line
+# names the stop path rather than a natural exit.
+drive pkd "park_live" 6
+[ "$RC" -eq 6 ]; check "(pkd) supervisor exits 6 on the decide path's park (rc=$RC)" "$?"
+grep -q 'STOP_PARK: park_requested at [0-9]* > child start [0-9]*' "$LOG"; check "(pkd) the decide path's STOP_PARK line is present" "$?"
+PKD_SP=$(grep -n 'STOP_PARK: park_requested' "$LOG" | head -n 1 | cut -d: -f1)
+PKD_EXIT1=$(grep -n 'EXIT child-1 code=' "$LOG" | head -n 1 | cut -d: -f1)
+[ -n "$PKD_SP" ] && [ -n "$PKD_EXIT1" ] && [ "$PKD_SP" -lt "$PKD_EXIT1" ]; check "(pkd) child-1's EXIT line follows the STOP_PARK line, so the stop was the decide path's (lines $PKD_SP < $PKD_EXIT1)" "$?"
+! grep -q 'EXIT child-1 code=[0-9]* (natural)' "$LOG"; check "(pkd) no natural-exit EXIT line for child-1" "$?"
+[ "$LAUNCHES" -eq 1 ]; check "(pkd) no second child launches (stub launches=$LAUNCHES)" "$?"
 
 # --- (c) a child exiting 7 during the poll loop: recorded and counted ---
 # supervisorCrashLimit=1, so one counted crash ends the run with exit 3.
@@ -1879,6 +1924,29 @@ if [ "$KILL_ANCHORS" -eq 1 ]; then
   [ "$RC" -eq 0 ]; check "(u) the supervisor reports the requested shutdown as exit 0 (rc=$RC)" "$?"
   ! grep -q 'SWEEP\[natural_exit\]' "$LOG"; check "(u) the natural-exit sweep does not also run once the shutdown is read" "$?"
   [ "$LAUNCHES" -eq 1 ]; check "(u) no second child launches (stub launches=$LAUNCHES)" "$?"
+
+  # --- (pku) a park that leaves a survivor exits 5, not 6 ---
+  # Case (u) with a park recorded in place of the shutdown, against the same
+  # injected kill failure and the same held tail window. A park is not a stop
+  # for good, so a survivor it cannot clear ends the run at exit 5, as it does
+  # on every other stop. The survivors tokens under the park's own label say
+  # the case reached the park's sweep, which is what separates this exit 5 from
+  # the one the natural-exit sweep gives a supervisor that reads no park.
+  SUP_OVERRIDE="$TMP/injectkilltail/bin/supervise.sh"
+  drive pku "survivor_park_held" 6
+  SUP_OVERRIDE=""
+  PKU_PAIR=$(grep -E '^[0-9]+,[0-9]+$' "$TMP/pku/survivor.snapshot" 2>/dev/null | head -1)
+  [ -n "$PKU_PAIR" ]; check "(pku) setup: the stub left a process behind and recorded it as pid and start ticks (${PKU_PAIR:-none})" "$?"
+  grep -q 'EXIT child-1 code=0 (natural)' "$LOG"; check "(pku) child-1's exit is handled by the natural-exit path" "$?"
+  grep -q 'STOP_PARK: park_requested' "$LOG"; check "(pku) the log names the park the child recorded" "$?"
+  grep -q 'SWEEP\[park\] survivors: processes from child-1 outlived it' "$LOG"
+  check "(pku) the park sweep reads the tree a poll recorded and names the surviving process" "$?"
+  grep -q 'SWEEP\[park\] survivors_alive:' "$LOG"
+  check "(pku) the injected kill leaves that survivor alive, so the exit code below turns on the park's own sweep" "$?"
+  [ "$RC" -eq 5 ]; check "(pku) the supervisor exits 5 rather than reporting the park as honored (rc=$RC)" "$?"
+  grep -q 'alive or unverifiable after every sweep retry' "$LOG"; check "(pku) the exit line names what the sweep could not clear" "$?"
+  ! grep -q 'SWEEP\[natural_exit\]' "$LOG"; check "(pku) the natural-exit sweep does not also run once the park is read" "$?"
+  [ "$LAUNCHES" -eq 1 ]; check "(pku) no second child launches (stub launches=$LAUNCHES)" "$?"
 
 fi
 

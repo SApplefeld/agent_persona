@@ -111,6 +111,22 @@ const cases = [
     const r = run('shutdown-old', { store: store(decision('shutdown_requested', START - 5)) });
     assert.equal(r.action, 'continue');
   }],
+  ['park_requested newer than the child start: stop_park', () => {
+    const r = run('park-req', { store: store(decision('park_requested', START + 5, 'update window')) });
+    assert.equal(r.action, 'stop_park');
+    assert.match(r.reason, /^park_requested at /);
+  }],
+  ['park_requested older than the child start: continue', () => {
+    const r = run('park-req-old', { store: store(decision('park_requested', START - 5, 'update window')) });
+    assert.equal(r.action, 'continue');
+  }],
+  ['a malformed store entry beside a park costs no other fact: park_requested still parks', () => {
+    const r = run('park-bad-entry', { store: store(
+      null,
+      decision('nudge_sent', START + 1, 42),
+      decision('park_requested', START + 5, 'update window')) });
+    assert.equal(r.action, 'stop_park');
+  }],
   ['a fact under another persona is not this persona\'s fact', () => {
     const r = run('other-persona', { store: { other: { decisions: [decision('shutdown_requested', START + 5)] } } });
     assert.equal(r.action, 'continue');
