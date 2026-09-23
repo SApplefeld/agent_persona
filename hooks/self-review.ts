@@ -182,13 +182,10 @@ export function isSelfScoringLesson(text: string): boolean {
 // --- reviewOwnRecord ---
 // Plan item 8.4: the loop reads the worker's own record and turns a repeated
 // weakness into a kaizen goal (a tree node with a proof line) instead of a
-// memory lesson about itself. Five signals, each counted as discrete events
+// memory lesson about itself. Four signals, each counted as discrete events
 // from data the worker already keeps:
 //   asks_unresolved  an ask that ran out its wait (ask_timeout) or had to be
 //                    re-raised into the thread (ask_reraised)
-//   tree_lag         a worktree-cleared git sample (dirty went from >0 to 0,
-//                    a commit or a reset) with no goal-tree write since the
-//                    previous such sample: the tree lagged at least one commit
 //   memory_quality   a self-review lesson whose first six normalized words
 //                    match another's (a paraphrase the exact-match dedupe let
 //                    through), plus a lesson the self-scoring gate refused
@@ -199,17 +196,17 @@ export function isSelfScoringLesson(text: string): boolean {
 // A weakness is repeated when one signal has at least KAIZEN_REPEAT_MIN
 // events newer than the last kaizen node raised for that signal (all events
 // when none was). An open kaizen node for a signal suppresses a second one.
-// long_turns is the signal the loop can answer by changing its own
-// configuration: a cadence counted in turns reviews too rarely when turns run
-// for hours, so the finding carries a configFix (halve selfReviewEveryTurns,
-// floored at the debounce) rather than a goal; once at the floor it proposes
-// a goal like the others.
+// long_turns carries a configuration change only: a cadence counted in turns
+// reviews too rarely when turns run for hours, so the finding carries a
+// configFix (halve selfReviewEveryTurns, floored at the debounce) and never a
+// goal. Once the cadence is at the floor it yields no finding, and the review
+// falls through to the model lesson.
 
 export const KAIZEN_REPEAT_MIN = 2;
 export const KAIZEN_MESSAGE_WAIT_MS = 10 * 60_000;
 export const KAIZEN_LONG_TURN_MS = 60 * 60_000;
 
-export type KaizenSignal = "asks_unresolved" | "tree_lag" | "memory_quality" | "message_wait" | "long_turns";
+export type KaizenSignal = "asks_unresolved" | "memory_quality" | "message_wait" | "long_turns";
 
 export interface OwnRecordInput {
   decisions: Array<{ timestamp: number; loop: string; action: string; detail: string }>;
@@ -222,7 +219,7 @@ export interface OwnRecordFinding {
   signal: KaizenSignal;
   count: number;
   title: string;
-  objective: string; // carries the "Proof:" line
+  objective: string; // carries the "Proof:" line on the three goal-raising signals
   rationale: string; // one line for the operator's thread
   configFix?: { knob: "selfReviewEveryTurns"; from: number; to: number };
 }
@@ -230,7 +227,6 @@ export interface OwnRecordFinding {
 interface KaizenEvent { at: number; note: string }
 
 const OPEN_STATUSES = new Set(["pending", "active", "paused", "blocked"]);
-const TREE_WRITE_ACTIONS = new Set(["create", "add", "done", "complete", "completed_by_controller", "drop"]);
 
 function normalizedLead(text: string, words = 6): string {
   return text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean).slice(0, words).join(" ");
@@ -238,10 +234,9 @@ function normalizedLead(text: string, words = 6): string {
 
 function collectEvents(input: OwnRecordInput): Record<KaizenSignal, KaizenEvent[]> {
   const out: Record<KaizenSignal, KaizenEvent[]> = {
-    asks_unresolved: [], tree_lag: [], memory_quality: [], message_wait: [], long_turns: [],
+    asks_unresolved: [], memory_quality: [], message_wait: [], long_turns: [],
   };
   const decisions = [...input.decisions].sort((a, b) => a.timestamp - b.timestamp);
-  let lastClearedAt = -Infinity;
   for (const d of decisions) {
     if (d.action === "ask_timeout" || d.action === "ask_reraised") {
       out.asks_unresolved.push({ at: d.timestamp, note: d.detail.slice(0, 80) });
@@ -249,15 +244,6 @@ function collectEvents(input: OwnRecordInput): Record<KaizenSignal, KaizenEvent[
       out.long_turns.push({ at: d.timestamp, note: d.detail.slice(0, 80) });
     } else if (d.action === "memory_lesson_refused") {
       out.memory_quality.push({ at: d.timestamp, note: d.detail.slice(0, 80) });
-    } else if (d.action === "env_git") {
-      const m = /dirty=0 \(was (\d+)\)/.exec(d.detail);
-      if (m && parseInt(m[1], 10) > 0) {
-        const wroteTree = decisions.some((w) => TREE_WRITE_ACTIONS.has(w.action) && w.timestamp > lastClearedAt && w.timestamp <= d.timestamp);
-        if (lastClearedAt !== -Infinity && !wroteTree) {
-          out.tree_lag.push({ at: d.timestamp, note: "worktree cleared with no tree write since the previous one" });
-        }
-        lastClearedAt = d.timestamp;
-      }
     }
   }
   const lessons = input.memory.filter((m) => m.source === "self-review" && m.kind === "lesson");
@@ -288,12 +274,6 @@ function describe(signal: KaizenSignal, count: number, events: KaizenEvent[]): {
         objective: `${count} asks timed out or had to be re-raised before an answer came (${sample}). Find why the asks the worker opens wait unanswered (wrong channel, too generic, opened on a node the operator already parked) and change how they are opened. Proof: a harness case where the same ask shape resolves without a re-raise, and one day's decision log with no ask_timeout.`,
         rationale: `${count} asks timed out or were re-raised unanswered; raising a kaizen goal to change how asks are opened.`,
       };
-    case "tree_lag":
-      return {
-        title: "Kaizen: the tree lags the commits",
-        objective: `${count} times the worktree was cleared (a commit landed) with no goal-tree write since the previous one (${sample}). Make the node that a commit closes complete within one controller tick of it. Proof: a harness case where a worktree-cleared sample after a completing commit closes the node, and one roadmap unit whose Chapter names the node closed in the same tick.`,
-        rationale: `${count} commits landed with no goal-tree write between them; raising a kaizen goal so the tree tracks the commits.`,
-      };
     case "memory_quality":
       return {
         title: "Kaizen: self-review lessons repeat or self-score",
@@ -309,8 +289,10 @@ function describe(signal: KaizenSignal, count: number, events: KaizenEvent[]): {
     case "long_turns":
       return {
         title: "Kaizen: turns run past an hour",
-        objective: `${count} turns ran ${Math.round(KAIZEN_LONG_TURN_MS / 60_000)} minutes or longer (${sample}). Split the work into turns the operator can steer between. Proof: a harness case where a bounded turn plan is injected once a turn runs long, and one day's decision log with no turn_over_hour.`,
-        rationale: `${count} turns ran past an hour; raising a kaizen goal to bound turn length.`,
+        objective: `${count} turns ran ${Math.round(KAIZEN_LONG_TURN_MS / 60_000)} minutes or longer (${sample}). A review cadence counted in turns runs too rarely when turns run this long.`,
+        // reviewOwnRecord replaces this with the configFix rationale on every
+        // long_turns finding it emits.
+        rationale: `${count} turns ran past an hour.`,
       };
   }
 }
@@ -331,10 +313,9 @@ export function reviewOwnRecord(
     const finding: OwnRecordFinding = { signal, count: fresh.length, ...text };
     if (signal === "long_turns") {
       const to = Math.max(opts.selfReviewDebounceTurns, Math.floor(opts.selfReviewEveryTurns / 2));
-      if (to < opts.selfReviewEveryTurns) {
-        finding.configFix = { knob: "selfReviewEveryTurns", from: opts.selfReviewEveryTurns, to };
-        finding.rationale = `${fresh.length} turns ran past an hour, so a review cadence counted in turns ran too rarely; selfReviewEveryTurns ${opts.selfReviewEveryTurns} -> ${to}, changed and in effect.`;
-      }
+      if (to >= opts.selfReviewEveryTurns) continue;
+      finding.configFix = { knob: "selfReviewEveryTurns", from: opts.selfReviewEveryTurns, to };
+      finding.rationale = `${fresh.length} turns ran past an hour, so a review cadence counted in turns ran too rarely; selfReviewEveryTurns ${opts.selfReviewEveryTurns} -> ${to}, changed and in effect.`;
     }
     findings.push(finding);
   }

@@ -133,6 +133,33 @@ A row's `action` and its health class are two vocabularies. `action` is the keep
 
 `held` means the same in both vocabularies, a hold marker being what sets it either way. `backing off` does not. Once a claim is live the action reads `running` for every keeper standing but `held`, and but a stop the clock settles against the claim, while the health class still reads `nextDelaySeconds` against the base. So a row whose action reads `running` carries the `backing off` class wherever that delay has climbed.
 
+## The own-record self-review
+
+Before the plugin asks the model for a self-review lesson, it reads the persona's own record for a repeated weakness. `reviewOwnRecord` in `hooks/self-review.ts` counts four signals from data the plugin already keeps. The self-review block of the controller tick in `hooks/index.ts` acts on what it returns. The pass runs on the self-review's own trigger, a reactive error streak or the periodic cadence, and only a pass that yields no finding goes on to the model lesson.
+
+| Signal | What counts as one event? | What does a finding do? |
+|---|---|---|
+| `asks_unresolved` | an `ask_timeout` or `ask_reraised` decision | writes a kaizen goal node |
+| `memory_quality` | a `memory_lesson_refused` decision, or a self-review lesson whose first six normalized words match another lesson's | writes a kaizen goal node |
+| `message_wait` | an inbox record delivered `KAIZEN_MESSAGE_WAIT_MS` (10 minutes) or more after it was sent | writes a kaizen goal node |
+| `long_turns` | a `turn_over_hour` decision, which `turn.complete` records for a turn of `KAIZEN_LONG_TURN_MS` (60 minutes) or longer | halves `selfReviewEveryTurns` and never writes a goal |
+
+A signal yields a finding when it holds at least `KAIZEN_REPEAT_MIN` (2) events newer than the last update of any goal node carrying that signal in its `kaizenSignal` field. Where no such node exists, every event counts. A node for the signal that is `pending`, `active`, `paused` or `blocked` suppresses the signal for the whole pass.
+
+The three goal-raising signals each become a `plan` node under the root. The node takes the finding's title and objective, whose last sentence is a `Proof:` line, and carries the signal in `kaizenSignal`. The tick logs `kaizen_goal_proposed` for it. Where the tree has no root, the finding writes nothing and waits for a later review.
+
+`long_turns` carries a configuration change only. The new cadence is `max(selfReviewDebounceTurns, floor(selfReviewEveryTurns / 2))`, and the finding is built only where that value is below the current cadence. The tick sets the cadence and logs `kaizen_config_adjusted` with the old and new values. Once the cadence sits at the floor, the signal yields no finding and the review falls through to the model lesson. At the defaults of 20 and 5, two reviews take the cadence from 20 to 10 and then to 5.
+
+Any finding spends the review. The tick logs a `self-review` decision reading `own record -> <n> kaizen finding(s), no lesson`, then submits one `[KAIZEN]` turn that asks the model to send each finding's rationale line to the operator through the reply tool. No model lesson is written on that pass.
+
+### Boundaries of the self-review
+
+- The halved cadence lives in session memory. A relaunch returns it to the configured `selfReviewEveryTurns`. `long_turns` writes no node, so its events have no newer-than boundary. The same `turn_over_hour` decisions, while they remain among the last `DECISIONS_MAX` (200) decisions, halve the cadence again on the next reviews and announce each halving again.
+- A store written before the tree-lag signal was retired can hold a node whose `kaizenSignal` reads `tree_lag`. The field is typed as a string, so the store loads. The finder never matches that value, so such a node suppresses nothing, and it stays in the tree until `goal_edit` drops it or `goal_done` completes it.
+- A store can hold a `long_turns` node the finder wrote at the floor before that signal lost its goal half. While that node is open, `paused` included, it suppresses `long_turns`, so the cadence is never halved. Dropping it with `goal_edit` restores the halving, counting only turns recorded after the drop.
+
+`selfReviewEveryTurns` (default 20) and `selfReviewDebounceTurns` (default 5) arrive through the settings file's plugin options. `.kit/self-review-unit-test.mjs` pins the finder under its Test 12 cases, and `.kit/controller-tick-test.mjs` pins the tick's handling under its `item8.4` cases.
+
 ## Injected text and its guard
 
 Two files write text into a child session that nobody typed: `bin/supervise.sh` at priming, and `hooks/index.ts` on every recurring prompt and at every tool registration. Each such string carries the meaning of the label at its head, the one thing to do with that prompt, and a pointer to the surface that owns the rest. The owners are `CLAUDE.md` for writing and channel conduct, the kit's skills for a seat's duties, and a tool's own description for that tool's contract. A sentence with an owner does not ride a second copy in a prompt, and the guard below is what keeps it that way rather than an eye.
@@ -223,6 +250,7 @@ The hung check corroborates a stale heartbeat against the harness transcript's o
 | A plan entry stays active after its document reads `Status: Complete` | `plan_record_unreadable` and `plan_record_failed` decisions | the document is absent from `planPath` and all three archive places, is over 256 KiB, or its stored `planPath` fails the shape check; or the `Status:` line sits below the first `##` heading or carries markup around the key |
 | Every goal tool answers that this session never loaded its persona's state | the cause that sentence names, then `<workdir>/.agentic-personas.json`, or the debug log's `session.start hook skipped` line | `session.start` did not finish, or the store file did not parse as an object of persona entries. Once the file reads, `agentic_identity` loads the persona's entry and the goal tools answer from it |
 | A tool the persona should have is missing from the session | `tool_register_refused` decisions in `<workdir>/.agentic-personas.json`, and the engine's debug log | the engine refused that one registration, a description over 4,096 characters being the known cause; the rest of the session runs |
+| A persona whose turns run past an hour never has its review cadence halved | `goal_status` for a node whose `kaizenSignal` reads `long_turns`, and `turn_over_hour` and `kaizen_config_adjusted` decisions in `<workdir>/.agentic-personas.json` | an open `long_turns` node from before that signal lost its goal half suppresses the signal, `paused` included; or the cadence already sits at `selfReviewDebounceTurns`. The section on the own-record self-review states both |
 | `goal_create` is refused because the goal tree is unfinished | the root's status in `goal_status` | the root is neither complete nor abandoned; `replace: true` replaces it, after the old tree is copied to `.agentic-goal-history.jsonl` |
 | Every `call` line reads `result` `no_key` | the `result` and `detail` columns of the day's journal file | `TYPESAFE_API_KEY` is absent from the child's environment, or is shorter than 16 characters once trimmed. It is not a settings option, not a roster field, and not in the keeper env file's allowlist, so only the environment the supervisor's child inherits can carry it |
 
