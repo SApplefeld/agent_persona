@@ -146,10 +146,9 @@ export function buildSelfReviewInput(
 }
 
 // --- dedupeSelfReview ---
-// Dedupe on meaning (item 8.4's own kaizen goal, node memory_quality): a
-// paraphrase that leads with the same six normalized words as a stored
-// lesson is refused, the same comparison collectEvents already used to spot
-// the pair after the fact. Case-insensitive exact match is kept as the
+// Dedupe on meaning: a paraphrase that leads with the same six normalized
+// words as a stored lesson is refused, the same comparison collectEvents
+// uses to count the pair under memory_quality after the fact. Case-insensitive exact match is kept as the
 // narrower case the lead comparison already subsumes for same-length text.
 export function dedupeSelfReview(memory: MemoryEntry[], text: string): boolean {
   const lower = text.toLowerCase().trim();

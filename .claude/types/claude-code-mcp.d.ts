@@ -33,7 +33,7 @@ declare module 'claude-code' {
       /** Optional path to a roadmap file (project-relative). The planner reads it at every planning event. */
       roadmapPath?: string
     }
-    /** Mark the active goal leaf as complete. The controller activates the next pending plan or fires the planner. Call when the current step is finished. */
+    /** Mark the active goal leaf as complete. The controller then activates the next pending plan. Once every entry under the top goal is complete or abandoned, with at least one complete, the top goal completes by itself, unless the planner has planned it before, in which case the planner is asked for more. Call when the current step is finished. */
     "mcp__agentic-plugin__goal_done": {
       /** One-line note about why this is done. */
       note?: string

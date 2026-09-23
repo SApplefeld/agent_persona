@@ -3382,6 +3382,7 @@ async function main() {
     await caseGl5_anAbsentRecordSettlesAndARefusedResendWaits(clock);
     await caseGl5_aTurnOpenedUnderTheTickSkipsTheSettle(clock);
     await caseGl5_aTurnOpenedUnderTheResendReadsSkipsTheSend(clock);
+    await caseItem8p4_aTurnOpenedUnderTheFindingResendReadsSkipsTheSend(clock);
     await caseGl5_theDefaultPersonaIsNotAsked(clock);
     await caseGl5_aProposalOutsideTheTurnIsNotLedgered(clock);
     await caseGl5_aTurnThatSendsNothingWaitsTheInterval(clock);
@@ -21063,6 +21064,49 @@ async function caseGl5_aTurnOpenedUnderTheResendReadsSkipsTheSend(clock) {
   await tickAndSettle(h, clock, 50);
   check("gl5 turn under resend control: with no turn open the next tick resends",
     h.storeMap.get(`inbox:coordinator:${SESSION_ID}:2`)?.text === text && gl5Proposal(h)?.sent?.seq === 2, gl5Proposal(h));
+}
+
+// The findings ledger's settle step takes the open-turn reading again right
+// before a resend's write, as the proposal resend above does. A turn that
+// opens while the settle step reads a skipped entry's record back leaves the
+// entry untouched and sends nothing. Control: with no turn open, the next
+// tick resends.
+async function caseItem8p4_aTurnOpenedUnderTheFindingResendReadsSkipsTheSend(clock) {
+  console.log("\n=== Item 8.4: a turn that opens under the settle step's reads skips the finding resend ===");
+  const OLD = "old-session";
+  const text = `[FINDING] ${FINDER} message_wait x2\nresend body`;
+  const h = await seedFindingHarness(clock, "item8p4_turn_under_resend", FINDER, (state) => {
+    activePlanA(state);
+    state.monitor.selfReview.sent = [{ signal: "message_wait", text, sentAt: T0 - 1000, writer: OLD, seq: 1, delivered: false }];
+  });
+  const key = `inbox:${FINDING_COORDINATOR}:${OLD}:1`;
+  h.storeMap.set(key, { id: `${FINDING_COORDINATOR}-${OLD}-1`, key, from: OLD, at: T0 - 1000, kind: "say", text, status: "skipped" });
+  const before = JSON.stringify(getStateForPersona(h, FINDER).monitor.selfReview.sent);
+  clock.advance(20_000);
+
+  h.holdStoreGets(key);
+  const tick = fireTick(h);
+  check("item8.4 turn under resend: the settle step's record read is parked (setup sanity)", await waitUntil(() => h.parkedStoreGetCount >= 1));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-under-resend", text: "typed while the settle read" }, async () => ({ result: "ok" }));
+  let tickDone = false;
+  tick.then(() => { tickDone = true; });
+  for (let i = 0; i < 200 && !tickDone; i++) {
+    h.releaseStoreGet();
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  await tick;
+  while (h.parkedStoreGetCount > 0) h.releaseStoreGet();
+  check("item8.4 turn under resend: nothing is sent while the turn is open",
+    !coordinatorRecords(h).some((r) => r.from === SESSION_ID), coordinatorRecords(h).map((r) => r.key));
+  check("item8.4 turn under resend: the entry is untouched",
+    JSON.stringify(getStateForPersona(h, FINDER).monitor.selfReview.sent) === before, getStateForPersona(h, FINDER).monitor.selfReview.sent);
+
+  await closeTurn(h, "t-under-resend");
+  clock.advance(20_000);
+  await tickAndSettle(h, clock, 100);
+  const entry = getStateForPersona(h, FINDER).monitor.selfReview.sent[0];
+  check("item8.4 turn under resend control: with no turn open the next tick resends",
+    h.storeMap.get(`inbox:${FINDING_COORDINATOR}:${SESSION_ID}:1`)?.text === text && entry?.writer === SESSION_ID && entry?.seq === 1, entry);
 }
 
 // Fix item 2: a default-persona session is never asked, since the reach rule

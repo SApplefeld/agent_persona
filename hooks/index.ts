@@ -464,7 +464,8 @@ const OPERATOR_ORIGIN_KINDS: ReadonlySet<string> = new Set(["composer", "bridge"
 // the operator or the coordinator persona started.
 const EFFORT_REFUSED_TEXT =
   "Refused: a new effort starts only in a turn the operator or the coordinator persona started, and this turn is neither. " +
-  "Send the idea to the coordinator persona with agentic_say, opening the text with [PROPOSAL].";
+  "An act the operator or the coordinator persona directed is retried in a turn one of them opens, not proposed. " +
+  "Send any other idea to the coordinator persona with agentic_say, opening the text with [PROPOSAL].";
 
 type SubmitOutcome = { ok: true } | { ok: false; how: "failed" | "dropped"; reason: string };
 
@@ -473,6 +474,22 @@ type SubmitOutcome = { ok: true } | { ok: false; how: "failed" | "dropped"; reas
 function removeExpectedTurn(expectedTurns: ExpectedTurn[], entry: ExpectedTurn): void {
   const i = expectedTurns.indexOf(entry);
   if (i >= 0) expectedTurns.splice(i, 1);
+}
+
+// Submits the [KAIZEN] thread message, one plugin turn carrying each line
+// kaizenLine made, for what has no coordinator persona to reach: the
+// self-review's unroutable findings and the idle proposal's unroutable
+// resend. It enters the turn in the expected-turn list first, as
+// register()'s expectTurn does. A refused announcement is non-fatal: the
+// decision log still carries each line's cause, and its ledger entry reads
+// delivered. Top level because it takes `dp`.
+async function submitKaizen(dp: any, expectedTurns: ExpectedTurn[], announced: string[]): Promise<void> {
+  const kaizenText =
+    `[KAIZEN] Send each line below to the operator through the reply tool as written, then continue your work:\n` +
+    announced.map((line) => `- ${line}`).join("\n");
+  const kaizenTextTurn: ExpectedTurn = { kind: "plugin", text: kaizenText };
+  expectedTurns.push(kaizenTextTurn);
+  await submitExpectedTurn(dp, expectedTurns, kaizenTextTurn);
 }
 
 // Runs one queued entry's $.prompt.submit and reads its result. A rejection
@@ -2267,17 +2284,6 @@ export const register: Register = async (on, options) => {
   const expectedTurns: ExpectedTurn[] = [];
   const expectTurn = (entry: ExpectedTurn): ExpectedTurn => { expectedTurns.push(entry); return entry; };
   const unexpectTurn = (entry: ExpectedTurn): void => removeExpectedTurn(expectedTurns, entry);
-  // Submits the [KAIZEN] thread message, one plugin turn carrying each line
-  // kaizenLine made, for what has no coordinator persona to reach: the
-  // self-review's unroutable findings and the idle proposal's unroutable
-  // resend. A refused announcement is non-fatal: the decision log still
-  // carries each line's cause, and its ledger entry reads delivered.
-  const submitKaizen = async (dp: any, announced: string[]): Promise<void> => {
-    const kaizenText =
-      `[KAIZEN] Send each line below to the operator through the reply tool as written, then continue your work:\n` +
-      announced.map((line) => `- ${line}`).join("\n");
-    await submitExpectedTurn(dp, expectedTurns, expectTurn({ kind: "plugin", text: kaizenText }));
-  };
   // What the turn now running opened as, set at turn.start from the entry
   // its text matched ("unaccounted" for one that matched none, whether
   // external, a continuation or unknown) and read at turn.complete.
@@ -4670,8 +4676,11 @@ export const register: Register = async (on, options) => {
         // and a store that throws have no road: the finding is logged as
         // finding_unroutable, announced on this persona's own thread, and
         // entered as delivered with an empty writer and a seq of 0, so it is
-        // never read back or retried and still starts the cool-off. Returns
-        // the record id, or null on that path.
+        // never read back or retried and still starts the cool-off. A resend
+        // takes the open-turn reading once more right before its write, as
+        // the proposal resend does, and a turn open by then leaves the entry
+        // untouched for the next quiet tick. Returns the record id, or null
+        // on the unroutable path and on a resend left for a later tick.
         const sendFinding = async (signal: string, text: string, announceLine: string, resend?: SentFinding): Promise<string | null> => {
           let problem: string;
           try {
@@ -4680,6 +4689,10 @@ export const register: Register = async (on, options) => {
             } else if (!await mayReachPersona(commonsStoreOf($), coordinatorPersona, sess.mySessionId, coordinatorPersona, architectPersona, sess.staleAfterMs)) {
               problem = `the reach rule refuses this session's write to '${coordinatorPersona}'`;
             } else {
+              // A turn can have opened under the settle step's record read and
+              // the reach check, and an agentic_say in it takes the highest
+              // sequence under this session's id exactly as the write below does.
+              if (resend && turnIsOpen()) return null;
               const sent = await sendPluginRecord(commonsStoreOf($), coordinatorPersona, sess.mySessionId, text);
               if (resend) {
                 resend.writer = sent.writer;
@@ -4941,7 +4954,7 @@ export const register: Register = async (on, options) => {
           await persist($);
         }
 
-        if (announced.length > 0) await submitKaizen($, announced);
+        if (announced.length > 0) await submitKaizen($, expectedTurns, announced);
       }
 
       // 2b. Git probe (E4, C6): time-based cadence, fire-and-forget.
@@ -5385,7 +5398,7 @@ export const register: Register = async (on, options) => {
         if (unroutableLine !== null) {
           sess.state.updatedAt = Date.now();
           await persist($);
-          await submitKaizen($, [unroutableLine]);
+          await submitKaizen($, expectedTurns, [unroutableLine]);
         }
 
         // The ask. askedAt is stamped before the submit, for the reason the

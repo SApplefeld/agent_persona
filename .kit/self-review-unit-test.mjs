@@ -163,8 +163,7 @@ function makeState(overrides = {}) {
   const memory = [
     { id: "mem-1", kind: "lesson", text: "Use the Bash tool carefully", confidence: 0.5, source: "self-review", createdAt: 1, lastAccessed: 1, accessCount: 0, pinned: false },
   ];
-  // Meaning dedupe (item 8.4's memory_quality kaizen goal): a paraphrase
-  // sharing the stored lesson's first six normalized words is a duplicate,
+  // Meaning dedupe: a paraphrase sharing the stored lesson's first six normalized words is a duplicate,
   // and a distinct proof-backed lesson is kept.
   const memoryWithLongLesson = [
     ...memory,
