@@ -3257,6 +3257,7 @@ async function main() {
     await caseItem8p4_control_singleEventProducesNeither(clock);
     await caseItem8p4_openKaizenGoalNotDuplicated(clock);
     await caseItem8p4_longTurnsAdjustConfigNotGoal(clock);
+    await caseItem8p4_longTurnsAtFloorRaiseNothing(clock);
     await caseItem8p4_turnOverHourRecorded(clock);
     await caseSection9_unmatchedCompletionLeavesTheStampOnAnOpenTurn(clock);
     await caseSection9_completingOneOfTwoLeavesTheEarlierTurnsStamp(clock);
@@ -7475,6 +7476,7 @@ async function runOwnRecordReview(clock, caseName, seededDecisions, extra = {}) 
   const goals = [root, planA, planB, ...(extra.goals || [])];
   const h = await createTickHarness({
     ...OPTS,
+    ...(extra.opts || {}),
     caseName,
     stateOpts: {
       now: T0,
@@ -7583,6 +7585,24 @@ async function caseItem8p4_longTurnsAdjustConfigNotGoal(clock) {
   check("item8.4 config: no kaizen node for long_turns", findKaizenNodes(h, "long_turns").length === 0);
   check("item8.4 config: the change is reported to the thread", h.promptSubmits.some(t => t.includes("[KAIZEN]") && t.includes("selfReviewEveryTurns")));
   check("item8.4 config: no memory lesson written", !state.memory.some(m => m.source === "self-review"));
+}
+
+// With the cadence already at its floor, repeated long turns have no
+// configuration left to change and raise nothing: no goal node, no config
+// decision, no thread post, and the review falls through to the model lesson.
+async function caseItem8p4_longTurnsAtFloorRaiseNothing(clock) {
+  console.log("\n=== Item 8.4: repeated long turns at the cadence floor raise nothing; the lesson path runs ===");
+  const seeded = [
+    { timestamp: T0 - 8000, loop: "monitor", action: "turn_over_hour", detail: "Turn 3 ran 3720s" },
+    { timestamp: T0 - 6000, loop: "monitor", action: "turn_over_hour", detail: "Turn 5 ran 4100s" },
+  ];
+  const h = await runOwnRecordReview(clock, "item8p4_long_turns_floor", seeded,
+    { opts: { selfReviewEveryTurns: 5, selfReviewDebounceTurns: 5 } });
+  const state = getState(h);
+  check("item8.4 floor: no node carries a kaizenSignal", !state.goals.some(g => g.kaizenSignal));
+  check("item8.4 floor: no kaizen_config_adjusted decision", !state.decisions.some(d => d.action === "kaizen_config_adjusted"));
+  check("item8.4 floor: no [KAIZEN] submit", !h.promptSubmits.some(t => t.includes("[KAIZEN]")));
+  check("item8.4 floor: the model lesson call ran", h.completeCalls.length === 1);
 }
 
 // turn.complete records a turn that ran past an hour as a decision, so the
