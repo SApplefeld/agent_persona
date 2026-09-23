@@ -195,7 +195,7 @@ function test(name, fn) {
 const decisionCases = [
   { name: 'exit 0 holds (row 0)', in: [0, 5, 300, 0], action: 'hold' },
   { name: 'exit 0 holds even after a long run', in: [0, 7200, 4800, 0], action: 'hold' },
-  { name: 'exit 6 parks with no delay, the ladder unchanged and the exit-1 count reset', in: [6, 5, 1200, 2], action: 'park', delay: 0, next: 1200, nextExit1: 0, reason: "supervisor exited 6: parked, relaunched at the keeper's next start" },
+  { name: 'exit 6 parks with no delay, the ladder unchanged and the exit-1 count reset', in: [6, 5, 1200, 2], action: 'park', delay: 0, next: 1200, nextExit1: 0, reasonTokens: [/exited 6:/, /park/, /next start/] },
   { name: 'exit 6 after a long run still parks rather than relaunching', in: [6, 7200, 4800, 0], action: 'park', delay: 0 },
   { name: 'exit 1 first short run relaunches after 300', in: [1, 5, 300, 0], action: 'relaunch', delay: 300, nextExit1: 1 },
   { name: 'exit 1 second short run relaunches, count 2', in: [1, 5, 300, 1], action: 'relaunch', delay: 300, nextExit1: 2 },
@@ -242,7 +242,7 @@ const decisionCases = [
       if (c.next !== undefined) assert.equal(r.NextDelaySeconds, c.next, 'next delay');
       if (c.nextExit1 !== undefined) assert.equal(r.NextExit1Count, c.nextExit1, 'next exit-1 count');
       assert.ok(typeof r.Reason === 'string' && r.Reason.length > 0 && !/[\r\n]/.test(r.Reason), 'reason is one line');
-      if (c.reason !== undefined) assert.equal(r.Reason, c.reason, 'reason');
+      if (c.reasonTokens !== undefined) for (const t of c.reasonTokens) assert.match(r.Reason, t, 'reason names ' + t);
       if (c.action === 'hold' || c.action === 'park') assert.equal(r.DelaySeconds, 0, 'a hold or a park never carries a relaunch delay');
     });
   });

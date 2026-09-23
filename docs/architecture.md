@@ -168,18 +168,18 @@ Two files write text into a child session that nobody typed: `bin/supervise.sh` 
 
 ### What is injected, and how large
 
-`.kit/injection-ledger.json` is the committed size baseline, 40 entries totalling 34,744 characters. Ten entries come from `bin/supervise.sh` and total 17,467; thirty come from `hooks/index.ts` and total 17,277, of which the fifteen registered tool descriptions are 12,672.
+`.kit/injection-ledger.json` is the committed size baseline, 40 entries totalling 34,750 characters. Ten entries come from `bin/supervise.sh` and total 17,467; thirty come from `hooks/index.ts` and total 17,283, of which the fifteen registered tool descriptions are 12,678.
 
 | What a launch reads | Characters |
 |---|---|
 | A worker with a channel: skill-load, coordinator steer, reply-tool | 4,754 |
 | The coordinator: those three plus the coordinator role instruction | 10,282 |
 | The architect: reply-tool plus its charter, the other two cleared | 7,240 |
-| The fifteen tool descriptions an owner-tier session registers | 12,672 |
+| The fifteen tool descriptions an owner-tier session registers | 12,678 |
 
 The worker and coordinator rows are upper bounds. They sum each instruction variable whole, while a launch takes only the clauses its persona's guards admit: the coordinator's launch reads none of the steer instruction's worker-only clauses, and a worker reads the architect sentences only where its own settings file names an architect.
 
-`fleet_status` alone is 3,928 of that last row, because the five health-class definitions live in it and every other surface points there. It registers into every session whatever the persona, including a worker that cannot call it.
+`fleet_status` alone is 3,934 of that last row, because the five health-class definitions live in it and every other surface points there. It registers into every session whatever the persona, including a worker that cannot call it.
 
 The startup message is assembled at one `node -e` call (`bin/supervise.sh:3101-3108`) from `SKILL_LOAD_INSTRUCTION`, `COORDINATOR_STEER_INSTRUCTION`, `COORDINATOR_ROLE_INSTRUCTION`, `ARCHITECT_ROLE_INSTRUCTION`, `CHANNEL_REPLY_INSTRUCTION` and the priming body. Each is empty for the launch shapes it does not apply to. The reply-tool instruction is built only with a channel attached, and it states the operator-writing rules inline rather than by pointer alone: four of the five persona launch directories hold no `CLAUDE.md`, so a pointer at that file reaches one persona of five. Its closing sentence points there for the rules the kit doctrine carries, where the child's own working directory holds the file.
 

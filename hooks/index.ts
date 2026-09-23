@@ -2824,7 +2824,7 @@ export const register: Register = async (on, options) => {
         "live session holds the persona's commons claim, heartbeatAgeMs is that session's heartbeat age in milliseconds and an age " +
         "past staleAfterMs is a persona nothing live is holding, and turnState is whether that session is inside a turn. " +
         "action is where the persona stands with its process keeper. held: a marker in its run directory decides its next " +
-        "start, a hold marker stopping it and a park marker being cleared so the persona launches, and holdReason says " +
+        "start, a hold marker stopping it and a park marker being cleared so the persona launches, and holdReasonSource says " +
         "which; reported even while a session still holds the persona. " +
         "stopped: the last supervisor exit was signalled and nothing has come up since, " +
         "so nothing restarts this persona until its scheduled task runs again. running: a live session holds the persona's " +
