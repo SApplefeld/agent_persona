@@ -254,6 +254,17 @@ async function caseDeniedToAWorker() {
   check("deny worker: no rows leak through the deny", result.result === undefined, result);
 }
 
+// The architect persona's owner holds a WORKER ground on the coordinator
+// persona, whose label names the architect, and that ground reads no fleet.
+async function caseDeniedToTheArchitect() {
+  console.log("\n=== fleet_status: denied to the session that owns the architect persona ===");
+  const h = await startSession("deny_architect", { persona: "architect", architectPersona: "architect" });
+  seedFleet(h);
+  const result = await callFleetStatus(h);
+  check("deny architect: the call is denied", typeof result?.deny === "string" && result.result === undefined, result);
+  check("deny architect: the deny names the WORKER:architect ground and says that ground is refused", says(result?.deny, "'WORKER:architect'") && says(result?.deny, "WORKER ground"), result?.deny);
+}
+
 async function caseDeniedToAReaderOfAnotherPersona() {
   console.log("\n=== fleet_status: denied to a reader of some other persona ===");
   const h = await startSession("deny_other_reader", { persona: "worker-a" });
@@ -989,6 +1000,7 @@ async function caseRestartDeniedOffTheCoordinatorGround() {
   const callers = [
     ["reader of the coordinator persona", "restart_deny_reader", { arming: "reader" }, "'READER:coordinator'"],
     ["worker", "restart_deny_worker", { persona: "worker-a" }, "'WORKER:worker-a'"],
+    ["architect", "restart_deny_architect", { persona: "architect", architectPersona: "architect" }, "'WORKER:architect'"],
     ["session with no claim", "restart_deny_noclaim", { persona: "default" }, "no ground"],
   ];
   for (const [label, caseName, overrides, groundToken] of callers) {
@@ -1099,6 +1111,7 @@ async function main() {
   try {
     await caseRows();
     await caseDeniedToAWorker();
+    await caseDeniedToTheArchitect();
     await caseDeniedToAReaderOfAnotherPersona();
     await caseAllowedToAReaderOfTheCoordinatorPersona();
     await caseRosterUnreadable();

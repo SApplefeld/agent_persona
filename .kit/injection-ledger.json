@@ -10,8 +10,8 @@
     {
       "name": "COORDINATOR_STEER_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 1420,
-      "words": 241
+      "chars": 3700,
+      "words": 631
     },
     {
       "name": "CHANNEL_REPLY_INSTRUCTION",
@@ -22,14 +22,14 @@
     {
       "name": "COORDINATOR_ROLE_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 5153,
-      "words": 901
+      "chars": 5528,
+      "words": 967
     },
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
       "file": "bin/supervise.sh",
-      "chars": 5132,
-      "words": 921
+      "chars": 6464,
+      "words": 1141
     },
     {
       "name": "PRIMING_BODY_prompt_pending",
@@ -106,8 +106,8 @@
     {
       "name": "NUDGE_TEXT_idle_gap_converted",
       "file": "hooks/index.ts",
-      "chars": 521,
-      "words": 88
+      "chars": 697,
+      "words": 120
     },
     {
       "name": "NUDGE_TEXT_idle_timeout",
@@ -214,14 +214,14 @@
     {
       "name": "agentic_say_description",
       "file": "hooks/index.ts",
-      "chars": 1183,
-      "words": 196
+      "chars": 1526,
+      "words": 249
     },
     {
       "name": "agentic_inbox_description",
       "file": "hooks/index.ts",
-      "chars": 1267,
-      "words": 203
+      "chars": 1421,
+      "words": 228
     },
     {
       "name": "fleet_status_description",
