@@ -2658,7 +2658,7 @@ export const register: Register = async (on, options) => {
       name: "goal_edit",
       description:
         "Change one node of the goal tree. drop marks a pending, paused or blocked node abandoned, so it is " +
-        "never activated, and refuses any other status; a drop is for work that will not be done. pause holds an active or pending node with a reason, and goal_resume " +
+        "never activated, and refuses any other status; a drop is for work that will not be done, or for a plan queued as paused by mistake that is then added again as pending, and it does not reach the node's children. pause holds an active or pending node with a reason, and goal_resume " +
         "continues it; a pause is for stuck work that waits on someone, and queued work stays pending. reprioritize moves a pending node ahead of its siblings. Owner only.",
       inputSchema: {
         type: "object",
@@ -8143,7 +8143,7 @@ export const register: Register = async (on, options) => {
           (open.length > listed.length ? `...and ${open.length - listed.length} more open ${open.length - listed.length === 1 ? "entry" : "entries"}.\n` : "");
         const queueClose = hasStartableWork(sess.state)
           ? `The next pending entry starts on the controller's next tick; do not start it by hand.`
-          : `Nothing here starts by itself: every open entry is paused or blocked, or waits under one that is. Resume one with goal_resume, drop one with goal_edit, or ask the operator.`;
+          : `Nothing here starts by itself: every open entry is paused, blocked or out of the controller's reach. Resume one with goal_resume, drop one with goal_edit, or ask the operator.`;
         const queueBlock =
           `[GOAL QUEUE]\n` +
           queueLines +
