@@ -12,6 +12,8 @@
 - `plans/agent_persona_deferred-gate-run_v1.md`: Deferred gate run (the runs that hold the box, the live suites and the driven supervisor suite, are deferred from every queued plan to one whole gate after the last of them merges, with each red traced to its plan and fixed or filed; it owns the gate policy the four plans cite). Ready, parked last.
 - `plans/agent_persona_ask-bookkeeping_v1.md`: Ask bookkeeping cleanup (an error streak no longer overwrites an open ask, a replacing `goal_create` closes an ask left on the old tree, and a thread reply that closes an ask points `activeGoalId` at the entry it reactivates). Ready.
 - `plans/agent_persona_security-model_v1.md`: Security model document (a `docs/security-model.md` stating what the plugin and process keeper trust, the risks the operator accepted with the preconditions each rests on, and the known gaps, confirmed by the operator). Ready.
+- `plans/agent_persona_idle-queue_v1.md`: Idle queue (queued work is a `pending` plan the controller starts by itself, `paused` means stuck, a prompt with no active entry lists the whole open queue with each entry's state, and one helper says whether a tree holds anything that starts on its own, which the goal-levels idle proposal reads). Ready, no gate, runs before goal-levels.
+- `plans/agent_persona_autonomy-dial_v1.md`: Autonomy dial (a per-persona level, closed at propose, plan and ask, and plan and start, set only in the operator's own turn, read by the gate on adding a plan entry and printed in a standing per-prompt block that states the idle order and names the goal tree as the queue). Ready, runs after goal-levels and idle-queue.
 
 ## Archived plans
 
