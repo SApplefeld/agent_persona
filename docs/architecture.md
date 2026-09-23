@@ -97,10 +97,9 @@ The keeper reads no file permissions. No script reads an access control list, an
 
 - `D:/personas/fleet.json`: the real roster, and the one the keeper reads by default. It is the machine's own, so its entries need not match `bin/fleet.example.json`.
 - `D:/personas/keeper.env`: the real env file, carrying all eight allowlisted keys at this machine's values.
-- `D:/personas/steward/launch.sh`, `D:/personas/architect/launch.sh`: the hand launchers for the two seats, each matching its roster entry field for field, and the manual fallback for them.
-- `D:/personas/dev/relaunch.sh`: the `dev` worker's hand launcher, and the only worker launcher on this machine. It predates the roster's per-entry settings and carries no coordinator name of its own.
-- `D:/personas/coordinator/launch.sh.retired`: the retired coordinator persona's launcher, renamed so it is not run out of habit for a persona the roster no longer names.
-- The `AgentPersona-*` tasks, once an elevated operator runs the registration. `README.md` holds the cutover steps, under the heading on cutting over to a roster that renames or retires a persona.
+- `D:/personas/<name>/`: one directory per roster persona, holding that persona's run directory. None of them holds a hand launcher, so each persona starts from its keeper task.
+- The `AgentPersona-*` tasks, one per roster persona. `README.md` holds the cutover steps, under the heading on cutting over to a roster that renames or retires a persona.
+- `docs/security-model.md` states why the keeper trusts these files as the operator's own, and which files let a local process take over a persona.
 
 ## The fleet reading
 

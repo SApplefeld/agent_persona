@@ -3,6 +3,7 @@
 ## Reference
 
 - `architecture.md`: how the plugin, the supervisor and the process keeper fit together: each layer's process, what it owns, reads and writes, the plan document a queue entry names among the plugin's reads, the boot-time data flow, the keeper's roster, env file, policy and state files, the fleet reading the coordinator persona's plugin runs over the keeper's own state files and the restart request it writes into another persona's run directory, the supervisor self-heal paths the keeper depends on, the text those layers inject into a child session with the ledger and duplicate test that guard its size, the external integrations, and the failure modes by layer. `README.md` at the repository root is the operator-facing reference each section points back to.
+- `security-model.md`: what the plugin and the process keeper trust and defend against, the trust boundaries, the risks the operator accepted with the preconditions each rests on, the files that let a local process take over a persona, and the known gaps with their backlog entries.
 
 ## Active plans
 
