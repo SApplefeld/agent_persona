@@ -343,3 +343,15 @@ Next: on a yes, write Chapter 2 quoting the answer; on changes, edit docs/securi
 
 ### Interim board 6 - 2026-09-23
 The confirmation ask expired once unanswered. It was re-raised on the relay 2026-09-23, the one re-raise the plan allows. A second expiry is BLOCKED naming items 1-9 as unconfirmed.
+
+### Chapter 2 - 2026-09-23
+Completed: 2. Point the README and architecture at it, and get the operator's confirmation
+Implemented By: main session (Locus: inline, since the section writes under docs/; tier sonnet as planned)
+Metrics: review rounds 0, closed clean; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: add-decision (section open): add one pointer line each to the README Trust boundary section, the architecture machine-state list and the docs index, and correct two false statements met on the way; serves Section 2 acceptance; adds no mechanism; size 6 lines added, 4 removed; not building it leaves the model unreachable from the reference docs. The architecture machine-state list named hand launchers and a retired coordinator launcher that no longer exist; it now names one directory and one AgentPersona task per roster persona, checked live against D:/personas and Get-ScheduledTask (six each). README.md:613 said every persona runs under a stored-password logon; the tasks on SCOTT-CLAUDE are S4U, so the sentence now reads whatever logon type its task uses. Both are corrections inside Files in scope. The confirmation ask expired once and was re-raised once, as the section provides.
+Assumptions: none
+Review Findings: review: none (prose-only section, trivial under step 3: two pointer lines, an index line, a corrected list and one sentence); author re-read of the diff against the live machine instead. The finishing pass reviews the whole changeset. Operator confirmation, received on the relay thread 2026-09-23: "Yes, good on the prose review for security model document." That answers the ask over trust boundaries 1-6 and accepted risks 7-9 as sent; no item changes. Per the ask's own terms, a yes leaves the five-repository choice under accepted risk 9 (accept, add the review rule, or remove from reach for ai-os, claude-memory, knowledge-base, llm-wiki and Tabletop-Adventure-Simulator) open for the operator, as the document already states.
+Stamps: adjudicated 0, stamped 0 (none surfaced in the 2h window; the two reads in it were stamped at the kaizen-signals boundary)
+Gate: no code changed in this section (docs/ and README.md only); no lane runs over prose here, and the whole gate runs at the finishing pass.
+Next: finishing-work
+Commit Model: Branch-and-PR
