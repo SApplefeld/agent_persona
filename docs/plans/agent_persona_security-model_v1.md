@@ -340,3 +340,6 @@ Live dispatches: none.
 Gate baseline: unchanged from Chapter 1. No code changed since then.
 Pending: the operator confirmation ask, sent on the relay 2026-09-23 with trust boundaries 1-6 and accepted risks 7-9 numbered. The turn closing text carries the plugin ASK marker line.
 Next: on a yes, write Chapter 2 quoting the answer; on changes, edit docs/security-model.md for each numbered item, then Chapter 2. First expiry re-raises once; second expiry is BLOCKED naming the unconfirmed items.
+
+### Interim board 6 - 2026-09-23
+The confirmation ask expired once unanswered. It was re-raised on the relay 2026-09-23, the one re-raise the plan allows. A second expiry is BLOCKED naming items 1-9 as unconfirmed.
