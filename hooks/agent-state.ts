@@ -146,6 +146,18 @@ export interface SentFinding {
   delivered: boolean;
 }
 
+// The proposal an idle persona sent the coordinator persona inside a proposal
+// turn. `writer` and `seq` key the record in the coordinator persona's inbox,
+// and the entry settles as a finding's does: a record read back as delivered,
+// answered, resolved or absent sets `delivered`, and one read back as skipped
+// is sent again with the same text under a new writer and seq.
+export interface SentProposal {
+  text: string;
+  writer: string;
+  seq: number;
+  delivered: boolean;
+}
+
 // A long-term goal: the idea a persona is working towards. It is held in a
 // list beside the goal tree, not as a node in it, and no tree walker reads
 // that list, so a long-term goal is never activated and never holds a root
@@ -184,6 +196,14 @@ export interface MonitorState {
     // coordinator persona's inbox; an entry announced on the persona's own
     // thread instead carries an empty writer and a seq of 0.
     sent: SentFinding[];
+  };
+  // The idle proposal. `askedAt` is the clock at the last [PROPOSE] turn, 0
+  // before the first, and the next ask waits PROPOSAL_EVERY_MS from it.
+  // `sent` is the proposal the persona sent in answer, null where it sent
+  // none; each ask clears it.
+  proposal: {
+    askedAt: number;
+    sent: SentProposal | null;
   };
   cost: {
     classify: { count: number; estTokens: number };
@@ -431,6 +451,7 @@ export function createDefaultState(persona: string, sessionId: string): AgentSta
         errors: { consecutiveErrorTurns: 0, toolErrorsLastTurn: 0 },
       },
       selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: false, lastInjectAt: 0, sent: [] },
+      proposal: { askedAt: 0, sent: null },
       cost: {
         classify: { count: 0, estTokens: 0 },
         reason: { count: 0, estTokens: 0 },
@@ -609,6 +630,20 @@ function applyPlanRecordOnLoad(state: AgentState): void {
   }
 }
 
+// The idle-proposal record, filled at every load site that fills the
+// long-term goal list, for a store written before it existed, with no
+// version bump. A field of the wrong type reads as never asked and nothing
+// sent.
+function fillProposal(state: AgentState): void {
+  const p = state.monitor.proposal as Partial<MonitorState["proposal"]> | null | undefined;
+  if (!p || typeof p !== "object") {
+    state.monitor.proposal = { askedAt: 0, sent: null };
+    return;
+  }
+  if (typeof p.askedAt !== "number") p.askedAt = 0;
+  if (!p.sent || typeof p.sent !== "object") p.sent = null;
+}
+
 export function parseState(json: string): AgentState {
   const parsed = JSON.parse(json);
 
@@ -716,6 +751,7 @@ export function parseState(json: string): AgentState {
       updatedAt: now,
     };
 
+    fillProposal(state);
     // L10: invariant block runs on both v2 and v3 branches.
     // Section 1: fill/recover runs on every branch's exit; see the function.
     applyPlanRecordOnLoad(state);
@@ -740,6 +776,7 @@ export function parseState(json: string): AgentState {
     if (!Array.isArray(state.longTermGoals)) {
       state.longTermGoals = [];
     }
+    fillProposal(state);
     applyPlanRecordOnLoad(state);
     enforceInvariants(state);
     return state;
@@ -770,6 +807,7 @@ export function parseState(json: string): AgentState {
   if (!Array.isArray(state.longTermGoals)) {
     state.longTermGoals = [];
   }
+  fillProposal(state);
 
   // S12: fill selfReview with defaults at the E11 site, no version bump.
   if (!state.monitor.selfReview) {

@@ -98,6 +98,12 @@
       "words": 18
     },
     {
+      "name": "PROPOSE_FRAME",
+      "file": "hooks/index.ts",
+      "chars": 420,
+      "words": 75
+    },
+    {
       "name": "REPLY_BACKSTOP_FRAME",
       "file": "hooks/index.ts",
       "chars": 93,

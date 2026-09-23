@@ -3372,6 +3372,15 @@ async function main() {
     await caseGl4_eachReadingBindsToItsPromptText(clock);
     await caseGl4_aMatchedEntryIgnoresAPendingOperatorReading(clock);
     await caseGl4_notLoadedComesBeforeTheGate(clock);
+    await caseGl5_anIdlePersonaIsAskedOncePerInterval(clock);
+    await caseGl5_neverAskedWhileWorkIsActiveOrStartable(clock);
+    await caseGl5_theProposalIsLedgeredAndSettles(clock);
+    await caseGl5_anAbsentRecordSettlesAndARefusedResendWaits(clock);
+    await caseGl5_aProposalOutsideTheTurnIsNotLedgered(clock);
+    await caseGl5_aTurnThatSendsNothingWaitsTheInterval(clock);
+    await caseGl5_theProposalTurnIsNotScoredAndRefusesTheFourActs(clock);
+    await caseGl5_theFrameNeutralizesStoredGoalText(clock);
+    await caseGl5_theProposalRecordBackfills();
     await caseSection6Fleet_unchangedIsSilentAndOneChangeSubmitsOnce(clock);
     await caseSection6Fleet_runningRowsAreNotAllHealthy(clock);
     await caseSection6Fleet_aFirstEverLaunchIsNotStale(clock);
@@ -20650,4 +20659,401 @@ async function caseGl4_notLoadedComesBeforeTheGate(clock) {
   check("gl4 not loaded: goal_create with no turn open names the unread store", readsAsNotLoaded(created?.deny, NOT_LOADED_STORE_CAUSE_TOKEN), created);
   const lt = await callTool(h, { tool: LTG_TOOL, action: "add", title: "A goal", objective: "An objective" });
   check("gl4 not loaded: goal_longterm with no turn open names the unread store", readsAsNotLoaded(lt?.deny, NOT_LOADED_STORE_CAUSE_TOKEN), lt);
+}
+
+// ============================================================
+// Goal levels 5: an idle persona proposes toward a long-term goal
+// ============================================================
+
+const GL5_EVERY_FALLBACK = 24 * 3_600_000;
+
+// The [PROPOSE] turns the harness saw submitted, attempted or not.
+function gl5Proposes(h) {
+  return h.promptSubmits.filter((p) => p.startsWith("[PROPOSE]"));
+}
+
+// The records in the default coordinator persona's inbox.
+function gl5CoordinatorRecords(h) {
+  return [...h.storeMap.entries()].filter(([k]) => k.startsWith("inbox:coordinator:")).map(([, v]) => v);
+}
+
+// A root with one paused plan and one blocked plan: every open node is
+// paused or blocked, so nothing is startable. Neither plan has a plan
+// document, so each is scored and spends rounds when it is the active leaf.
+function gl5PausedTree() {
+  return gtc4Tree("pending", [
+    { id: "plan-a", parentId: "root-1", kind: "plan", status: "paused", title: "Plan a", maxRounds: 10, blockedReason: "held by the operator" },
+    { id: "plan-b", parentId: "root-1", kind: "plan", status: "blocked", title: "Plan b", maxRounds: 10, blockedReason: "waits on a fix" },
+  ]);
+}
+
+const GL5_HELD = () => [ltgEntry("lt-held", "Held goal", "Keep every persona's queue moving.")];
+
+// A started owner session of `persona` over `goals` with `longTermGoals`, and
+// no turn open. The default coordinator persona is "coordinator". The loaded
+// module rides on the harness, for the section's exports.
+async function gl5Harness(caseName, { persona = "dev", goals = [], longTermGoals = GL5_HELD(), extraOpts = {} } = {}) {
+  const h = await createTickHarness({ ...OPTS, ...extraOpts, caseName, persona, skipSessionStart: true });
+  const state = makeState({ now: T0, goals, activeGoalId: goals.find((g) => g.status === "active")?.id ?? null, longTermGoals });
+  state.persona = persona;
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ [persona]: state }));
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: `persona:${persona}`, claimedAt: T0 - 2000 }],
+  });
+  await h.handlers["session.start"](h.fake, {}, () => {});
+  h.mod = await loadModule(caseName);
+  return h;
+}
+
+function gl5Every(h) {
+  return typeof h.mod?.PROPOSAL_EVERY_MS === "number" ? h.mod.PROPOSAL_EVERY_MS : GL5_EVERY_FALLBACK;
+}
+
+function gl5Proposal(h, persona = "dev") {
+  return getStateForPersona(h, persona)?.monitor?.proposal;
+}
+
+// The Acceptance's first bullet and the Tests line's floor. With one
+// long-term goal, no open node and no open turn, the tick submits one
+// [PROPOSE] turn naming the goal. The submit is held open, as the real submit
+// parks until the session is next idle, and askedAt already reads the tick's
+// clock in the stored state while it parks. A second tick while it still
+// parks submits nothing. A tick just short of PROPOSAL_EVERY_MS later submits
+// nothing, and one at the interval submits again.
+async function caseGl5_anIdlePersonaIsAskedOncePerInterval(clock) {
+  console.log("\n=== Goal levels 5: an idle persona with a long-term goal is asked once per interval ===");
+  clock.set(T0);
+  const h = await gl5Harness("gl5_once_per_interval");
+  const every = gl5Every(h);
+  check("gl5 interval: PROPOSAL_EVERY_MS is exported and is 24 hours", h.mod?.PROPOSAL_EVERY_MS === 24 * 3_600_000, h.mod?.PROPOSAL_EVERY_MS);
+
+  h.holdPromptSubmits();
+  const first = fireTick(h);
+  check("gl5 interval: the tick submits one [PROPOSE] turn", await waitUntil(() => gl5Proposes(h).length === 1), h.promptSubmits);
+  check("gl5 interval: askedAt is stamped and stored while the submit still parks", gl5Proposal(h)?.askedAt === T0, gl5Proposal(h));
+
+  // The second tick is not awaited before the check: where it did submit, it
+  // would park on the same hold, and awaiting it would never return.
+  clock.advance(30_000);
+  const second = fireTick(h);
+  await new Promise((r) => setTimeout(r, 50));
+  check("gl5 interval: a second tick while the first submit parks submits nothing", gl5Proposes(h).length === 1, gl5Proposes(h).length);
+  h.releasePromptSubmits();
+  await first;
+  await second;
+
+  const text = gl5Proposes(h)[0] ?? "";
+  const expected = typeof h.mod?.proposeFrame === "function" ? h.mod.proposeFrame(GL5_HELD(), "coordinator") : null;
+  check("gl5 interval: the turn is the proposeFrame text over the one goal", text === expected, { text, expected });
+  check("gl5 interval: the turn names the goal's title and objective",
+    text.includes("- Held goal: Keep every persona's queue moving."), text);
+  check("gl5 interval: the turn names agentic_say, the coordinator persona, the [PROPOSAL] lead, starting none of it, and No proposal.",
+    text.includes("agentic_say") && text.includes("persona set to coordinator") && text.includes("[PROPOSAL]")
+      && text.includes("Start none of it") && text.includes('"No proposal."'), text);
+  const asked = getStateForPersona(h, "dev").decisions.filter((d) => d.action === "proposal_asked");
+  check("gl5 interval: one proposal_asked decision", asked.length === 1, asked);
+
+  clock.set(T0 + every - 1);
+  await tickAndSettle(h, clock, 50);
+  check("gl5 interval: a tick just short of the interval submits nothing", gl5Proposes(h).length === 1, gl5Proposes(h).length);
+  clock.set(T0 + every);
+  await tickAndSettle(h, clock, 50);
+  check("gl5 interval: a tick at the interval submits a second [PROPOSE] turn", gl5Proposes(h).length === 2, gl5Proposes(h).length);
+  check("gl5 interval: askedAt moves to that tick's clock", gl5Proposal(h)?.askedAt === T0 + every, gl5Proposal(h));
+}
+
+// Each blocking condition of the Acceptance's second bullet, against a
+// control that is the same harness with that one condition removed. The
+// absence predicate is a submitted text opening with [PROPOSE], over every
+// submit the harness saw, together with askedAt still 0.
+async function caseGl5_neverAskedWhileWorkIsActiveOrStartable(clock) {
+  console.log("\n=== Goal levels 5: no ask while work is active or startable, with no goal, on the coordinator or a reader; an all-paused tree is asked ===");
+  const run = async (caseName, opts, ticks = 1) => {
+    clock.set(T0);
+    const h = await gl5Harness(caseName, opts);
+    for (let i = 0; i < ticks; i++) {
+      clock.advance(10_000);
+      await tickAndSettle(h, clock, 50);
+    }
+    return h;
+  };
+  const expectNone = (h, tag, persona = "dev") => {
+    check(`${tag}: no [PROPOSE] turn is submitted`, gl5Proposes(h).length === 0, h.promptSubmits);
+    check(`${tag}: askedAt is not stamped`, (gl5Proposal(h, persona)?.askedAt ?? 0) === 0, gl5Proposal(h, persona));
+  };
+  const expectOne = (h, tag, persona = "dev") => {
+    check(`${tag}: one [PROPOSE] turn is submitted`, gl5Proposes(h).length === 1, h.promptSubmits);
+    check(`${tag}: askedAt is stamped`, gl5Proposal(h, persona)?.askedAt > 0, gl5Proposal(h, persona));
+  };
+
+  // The Tests line's positive half: every open node paused or blocked.
+  expectOne(await run("gl5_all_paused", { goals: gl5PausedTree() }), "gl5 all paused or blocked");
+  // With no tree at all.
+  expectOne(await run("gl5_no_tree", { goals: [] }), "gl5 no tree");
+
+  // A node active. Control: the same tree with that node paused.
+  const activeTree = gtc4Tree("pending", [{ id: "plan-a", parentId: "root-1", kind: "plan", status: "active", title: "Plan a", maxRounds: 10 }]);
+  const pausedOne = gtc4Tree("pending", [{ id: "plan-a", parentId: "root-1", kind: "plan", status: "paused", title: "Plan a", maxRounds: 10, blockedReason: "held" }]);
+  expectNone(await run("gl5_active", { goals: activeTree }, 3), "gl5 a node active");
+  expectOne(await run("gl5_active_control", { goals: pausedOne }), "gl5 a node active, control with it paused");
+
+  // A pending node the controller would activate: the tick activates it and
+  // the ticks after find it active. Control: the paused tree above.
+  const pendingTree = gtc4Tree("pending", [{ id: "plan-a", parentId: "root-1", kind: "plan", status: "pending", title: "Plan a", maxRounds: 10 }]);
+  const startable = await run("gl5_startable", { goals: pendingTree }, 3);
+  check("gl5 startable setup: the tick activated the pending node", getStateForPersona(startable, "dev").activeGoalId === "plan-a", getStateForPersona(startable, "dev").activeGoalId);
+  expectNone(startable, "gl5 a startable pending node");
+
+  // An empty list. Control: the all-paused case above holds one goal.
+  expectNone(await run("gl5_empty_list", { goals: gl5PausedTree(), longTermGoals: [] }, 3), "gl5 an empty list");
+
+  // The coordinator persona's own session. Control: the all-paused case
+  // above is the same state on a worker persona.
+  expectNone(await run("gl5_coordinator", { persona: "coordinator", goals: gl5PausedTree() }, 3), "gl5 the coordinator persona's session", "coordinator");
+
+  // A reader session: another session holds the persona live, so this one
+  // reads it and the tick's owner check returns. Control: the same store
+  // with the holder's heartbeat stale and no claim, where this session takes
+  // the persona.
+  const readerRun = async (caseName, holderLive) => {
+    clock.set(T0);
+    const h = await createTickHarness({ ...OPTS, caseName, persona: "dev", skipSessionStart: true });
+    const state = makeState({ now: T0, goals: gl5PausedTree(), activeGoalId: null, longTermGoals: GL5_HELD() });
+    state.persona = "dev";
+    state.activeSessionId = "holder-1";
+    h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ dev: state }));
+    h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ dev: { sessionId: "holder-1", epoch: 1, lastSeen: holderLive ? T0 : 1_000_000_000_000 } }));
+    h.storeMap.delete(`commons:${SESSION_ID}`);
+    if (holderLive) seedForeignClaims(h, "holder-1", T0, ["persona:dev"]);
+    await h.handlers["session.start"](h.fake, {}, () => {});
+    for (let i = 0; i < 3; i++) {
+      clock.advance(10_000);
+      if (holderLive) seedForeignClaims(h, "holder-1", Date.now(), ["persona:dev"]);
+      await tickAndSettle(h, clock, 50);
+    }
+    return h;
+  };
+  const reader = await readerRun("gl5_reader", true);
+  check("gl5 reader setup: this session did not take the persona", JSON.parse(reader.fsMap.get(PERSONA_STORE_FILE)).dev.activeSessionId === "holder-1",
+    JSON.parse(reader.fsMap.get(PERSONA_STORE_FILE)).dev.activeSessionId);
+  expectNone(reader, "gl5 a reader session");
+  const readerControl = await readerRun("gl5_reader_control", false);
+  check("gl5 reader control setup: this session took the persona", JSON.parse(readerControl.fsMap.get(PERSONA_STORE_FILE)).dev.activeSessionId === SESSION_ID,
+    JSON.parse(readerControl.fsMap.get(PERSONA_STORE_FILE)).dev.activeSessionId);
+  expectOne(readerControl, "gl5 reader control, the holder stale");
+}
+
+// Opens the [PROPOSE] turn a tick queued, over an all-paused tree.
+async function gl5AskAndOpen(caseName, turnId = "t-propose") {
+  const h = await gl5Harness(caseName, { goals: gl5PausedTree() });
+  await fireTick(h);
+  await openQueuedTurn(h, turnId);
+  return h;
+}
+
+// The Acceptance's third bullet. Inside the proposal turn the first
+// agentic_say to the coordinator persona is entered in monitor.proposal.sent
+// with its writer and seq, and a second one is not. The record reading
+// skipped is sent again with the same text under this session; reading
+// delivered settles the entry, which is then not read again.
+async function caseGl5_theProposalIsLedgeredAndSettles(clock) {
+  console.log("\n=== Goal levels 5: the proposal sent in the proposal turn is ledgered and settles ===");
+  clock.set(T0);
+  const h = await gl5AskAndOpen("gl5_ledger");
+  check("gl5 ledger setup: one [PROPOSE] turn was submitted", gl5Proposes(h).length === 1, h.promptSubmits);
+  const text1 = "[PROPOSAL] dev a queue view\nWhat: a view of the queue. Why now: nothing else is open. Repository: agent_persona.";
+  const say1 = await callTool(h, { tool: SAY, persona: "coordinator", text: text1 });
+  check("gl5 ledger: the say is accepted", say1?.deny === undefined && String(say1?.result).includes("Message sent"), say1);
+  const expected1 = { text: text1, writer: SESSION_ID, seq: 1, delivered: false };
+  check("gl5 ledger: sent holds the text, this session as writer, the record's seq, and delivered false",
+    JSON.stringify(gl5Proposal(h)?.sent) === JSON.stringify(expected1), gl5Proposal(h));
+  const say2 = await callTool(h, { tool: SAY, persona: "coordinator", text: "[PROPOSAL] dev a second thought" });
+  check("gl5 ledger: a second say in the same turn is accepted", say2?.deny === undefined, say2);
+  check("gl5 ledger: only the first say in the turn is entered", JSON.stringify(gl5Proposal(h)?.sent) === JSON.stringify(expected1), gl5Proposal(h));
+  await closeTurn(h, "t-propose");
+
+  const key1 = `inbox:coordinator:${SESSION_ID}:1`;
+  h.storeMap.set(key1, { ...h.storeMap.get(key1), status: "skipped" });
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+  const resent = h.storeMap.get(`inbox:coordinator:${SESSION_ID}:3`);
+  check("gl5 ledger: the skipped record is sent again with the same text under this session",
+    !!resent && resent.text === text1 && resent.status === "pending" && resent.kind === "say" && resent.from === SESSION_ID, resent);
+  check("gl5 ledger: the entry takes the new seq and keeps its text and delivered false",
+    JSON.stringify(gl5Proposal(h)?.sent) === JSON.stringify({ ...expected1, seq: 3 }), gl5Proposal(h));
+  check("gl5 ledger: proposal_sent names the new record",
+    getStateForPersona(h, "dev").decisions.some((d) => d.action === "proposal_sent" && d.detail.includes(`coordinator-${SESSION_ID}-3`)), getStateForPersona(h, "dev").decisions.slice(-4));
+  check("gl5 ledger: the settle tick submits no second [PROPOSE] turn", gl5Proposes(h).length === 1, gl5Proposes(h).length);
+
+  const key3 = `inbox:coordinator:${SESSION_ID}:3`;
+  h.storeMap.set(key3, { ...h.storeMap.get(key3), status: "delivered", deliveredAt: Date.now() });
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+  check("gl5 ledger: a record read delivered settles the entry", gl5Proposal(h)?.sent?.delivered === true, gl5Proposal(h));
+  h.storeMap.set(key3, { ...h.storeMap.get(key3), status: "skipped" });
+  const before = gl5CoordinatorRecords(h).length;
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+  check("gl5 ledger: a settled entry is not read again", gl5CoordinatorRecords(h).length === before, gl5CoordinatorRecords(h).map((r) => r.key));
+}
+
+// An absent record settles the entry and nothing is sent, as a finding's
+// entry does: a pending record is never swept, so an absent one has already
+// left pending. A resend the reach rule refuses leaves the entry for the next
+// tick and says so.
+async function caseGl5_anAbsentRecordSettlesAndARefusedResendWaits(clock) {
+  console.log("\n=== Goal levels 5: an absent proposal record settles, and a refused resend waits ===");
+  clock.set(T0);
+  const h = await gl5AskAndOpen("gl5_absent");
+  await callTool(h, { tool: SAY, persona: "coordinator", text: "[PROPOSAL] dev absent" });
+  await closeTurn(h, "t-propose");
+  check("gl5 absent setup: the entry was written", gl5Proposal(h)?.sent?.seq === 1, gl5Proposal(h));
+  h.storeMap.delete(`inbox:coordinator:${SESSION_ID}:1`);
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+  check("gl5 absent: the entry is marked delivered", gl5Proposal(h)?.sent?.delivered === true, gl5Proposal(h));
+  check("gl5 absent: nothing is sent for it", gl5CoordinatorRecords(h).length === 0, gl5CoordinatorRecords(h));
+
+  clock.set(T0);
+  const r = await gl5AskAndOpen("gl5_resend_refused");
+  await callTool(r, { tool: SAY, persona: "coordinator", text: "[PROPOSAL] dev refused" });
+  await closeTurn(r, "t-propose");
+  const key = `inbox:coordinator:${SESSION_ID}:1`;
+  r.storeMap.set(key, { ...r.storeMap.get(key), status: "skipped" });
+  r.storeMap.delete(`commons:${SESSION_ID}`);
+  clock.advance(60_000);
+  await tickAndSettle(r, clock, 50);
+  check("gl5 resend refused: no record is written", gl5CoordinatorRecords(r).length === 1, gl5CoordinatorRecords(r).map((x) => x.key));
+  check("gl5 resend refused: the entry is unchanged",
+    JSON.stringify(gl5Proposal(r)?.sent) === JSON.stringify({ text: "[PROPOSAL] dev refused", writer: SESSION_ID, seq: 1, delivered: false }), gl5Proposal(r));
+  check("gl5 resend refused: proposal_resend_failed names the reach rule",
+    getStateForPersona(r, "dev").decisions.some((d) => d.action === "proposal_resend_failed" && d.detail.includes("reach rule refuses")), getStateForPersona(r, "dev").decisions.slice(-3));
+}
+
+// A [PROPOSAL] sent outside a proposal turn is not entered. Control: the
+// ledger case above, the same say inside the proposal turn.
+async function caseGl5_aProposalOutsideTheTurnIsNotLedgered(clock) {
+  console.log("\n=== Goal levels 5: a [PROPOSAL] sent outside the proposal turn is not ledgered ===");
+  clock.set(T0);
+  const h = await gl5Harness("gl5_outside", { goals: gl5PausedTree(), longTermGoals: [] });
+  await openPromptTurn(h, { originKind: "composer", turnId: "t-op" });
+  const say = await callTool(h, { tool: SAY, persona: "coordinator", text: "[PROPOSAL] dev from an operator turn" });
+  check("gl5 outside: the say is accepted and writes its record", say?.deny === undefined && gl5CoordinatorRecords(h).length === 1, say);
+  check("gl5 outside: sent stays unset", gl5Proposal(h)?.sent === null, gl5Proposal(h));
+}
+
+// The Acceptance's fourth bullet. A proposal turn in which the persona sends
+// nothing leaves sent unset, and the next ask waits the full interval. A
+// proposal that never read delivered is cleared by the next ask, which logs
+// proposal_dropped.
+async function caseGl5_aTurnThatSendsNothingWaitsTheInterval(clock) {
+  console.log("\n=== Goal levels 5: a proposal turn that sends nothing leaves sent unset and the next ask waits ===");
+  clock.set(T0);
+  const h = await gl5AskAndOpen("gl5_nothing");
+  const every = gl5Every(h);
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-propose", answer: "No proposal.", reason: "completed" }, () => {});
+  check("gl5 nothing: sent is unset after the turn", gl5Proposal(h)?.sent === null, gl5Proposal(h));
+  for (const at of [T0 + 3_600_000, T0 + every - 1]) {
+    clock.set(at);
+    await tickAndSettle(h, clock, 50);
+  }
+  check("gl5 nothing: no ask before the interval has passed", gl5Proposes(h).length === 1, gl5Proposes(h).length);
+  clock.set(T0 + every);
+  await tickAndSettle(h, clock, 50);
+  check("gl5 nothing: the next ask comes at the full interval", gl5Proposes(h).length === 2, gl5Proposes(h).length);
+  check("gl5 nothing: no proposal_dropped, since nothing was sent", !getStateForPersona(h, "dev").decisions.some((d) => d.action === "proposal_dropped"));
+
+  clock.set(T0);
+  const d = await gl5AskAndOpen("gl5_dropped");
+  await callTool(d, { tool: SAY, persona: "coordinator", text: "[PROPOSAL] dev never delivered" });
+  await closeTurn(d, "t-propose");
+  clock.set(T0 + gl5Every(d));
+  await tickAndSettle(d, clock, 50);
+  check("gl5 dropped: the next ask is submitted", gl5Proposes(d).length === 2, gl5Proposes(d).length);
+  check("gl5 dropped: the next ask clears sent", gl5Proposal(d)?.sent === null, gl5Proposal(d));
+  check("gl5 dropped: proposal_dropped names the undelivered record",
+    getStateForPersona(d, "dev").decisions.some((x) => x.action === "proposal_dropped" && x.detail.includes(`writer ${SESSION_ID} seq 1`)), getStateForPersona(d, "dev").decisions.slice(-4));
+  check("gl5 dropped: the record itself is left in the store", d.storeMap.get(`inbox:coordinator:${SESSION_ID}:1`)?.status === "pending");
+}
+
+// The Acceptance's fifth bullet. Each of Section 4's four gated acts is
+// denied inside the proposal turn by the matched-entry rule. A node resumed
+// between the ask and the turn is the active leaf at turn start, and the
+// proposal turn is still not scored and spends no round on it.
+async function caseGl5_theProposalTurnIsNotScoredAndRefusesTheFourActs(clock) {
+  console.log("\n=== Goal levels 5: the proposal turn is not scored, spends no round, and refuses the four acts ===");
+  clock.set(T0);
+  const h = await gl5Harness("gl5_turn_rules", { goals: gl5PausedTree() });
+  await tickAndSettle(h, clock, 50);
+  check("gl5 turn rules setup: one [PROPOSE] turn was submitted", gl5Proposes(h).length === 1, h.promptSubmits);
+  const resume = await callTool(h, { tool: "mcp__agentic-plugin__goal_resume", nodeId: "plan-a" });
+  check("gl5 turn rules setup: plan-a is resumed and active before the turn opens",
+    resume?.deny === undefined && getStateForPersona(h, "dev").activeGoalId === "plan-a", resume);
+  await openQueuedTurn(h, "t-propose");
+
+  const bytesBefore = h.fsMap.get(PERSONA_STORE_FILE);
+  for (const act of GL4_ACTS) {
+    const res = await gl4Call(h, act);
+    check(`gl5 turn rules: ${act} is denied, naming agentic_say and [PROPOSAL]`,
+      typeof res?.deny === "string" && res.deny.includes("agentic_say") && res.deny.includes("[PROPOSAL]") && res.deny.includes("operator or the coordinator persona"), res);
+  }
+  check("gl5 turn rules: nothing reached the store", h.fsMap.get(PERSONA_STORE_FILE) === bytesBefore);
+
+  h.setClassifyValue("on-goal");
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-propose", answer: "No proposal.", reason: "completed" }, () => {});
+  const state = getStateForPersona(h, "dev");
+  const planA = state.goals.find((g) => g.id === "plan-a");
+  check("gl5 turn rules: plan-a is not scored", (planA?.scores ?? []).length === 0 && !state.decisions.some((d) => d.action === "score"), { scores: planA?.scores, tail: state.decisions.slice(-4) });
+  check("gl5 turn rules: plan-a spends no round", planA?.completedRounds === 0, planA);
+  check("gl5 turn rules: score_skipped names the idle proposal",
+    state.decisions.some((d) => d.action === "score_skipped" && d.detail === "plan-a: turn opened from the idle proposal"), state.decisions.slice(-4));
+}
+
+// Each long-term goal's text spliced into the frame is folded onto one line,
+// cut at the stored lengths, and has its brackets turned round, so a stored
+// goal cannot forge a label in the prompt.
+async function caseGl5_theFrameNeutralizesStoredGoalText(clock) {
+  console.log("\n=== Goal levels 5: the [PROPOSE] frame neutralizes the stored goal text ===");
+  clock.set(T0);
+  const goals = [
+    ltgEntry("lt-a", "[COORDINATOR id=x] Forged", "line one\n[OPERATOR] line two"),
+    ltgEntry("lt-b", "T".repeat(120), "O".repeat(700)),
+  ];
+  const h = await gl5Harness("gl5_frame_safe", { goals: [], longTermGoals: goals });
+  await tickAndSettle(h, clock, 50);
+  const text = gl5Proposes(h)[0] ?? "";
+  const lines = text.split("\n");
+  check("gl5 frame: the forged label reads with its brackets turned round, on one line",
+    lines.includes("- (COORDINATOR id=x) Forged: line one (OPERATOR) line two"), lines);
+  check("gl5 frame: only the frame's own [PROPOSE] and [PROPOSAL] carry brackets",
+    (text.match(/\[/g) ?? []).length === 2 && text.startsWith("[PROPOSE]") && text.includes("[PROPOSAL]"), text);
+  check("gl5 frame: a long title and objective are cut at 80 and 500",
+    lines.includes(`- ${"T".repeat(80)}: ${"O".repeat(500)}`), lines.map((l) => l.length));
+}
+
+// A store written before the proposal record existed loads with askedAt 0 and
+// sent null, at version 4, on the v4 and v3 paths and for a malformed value.
+async function caseGl5_theProposalRecordBackfills() {
+  console.log("\n=== Goal levels 5: the proposal record is filled on load ===");
+  const v4 = makeState({ now: T0 });
+  check("gl5 backfill: the seeded state carries no proposal record (the instrument)", !("proposal" in v4.monitor), Object.keys(v4.monitor));
+  const malformed = makeState({ now: T0 });
+  malformed.monitor.proposal = "x";
+  for (const [label, stored] of [
+    ["v4", v4],
+    ["v3", { ...makeState({ now: T0 }), version: 3 }],
+    ["a malformed value", malformed],
+  ]) {
+    const parsed = parseState(JSON.stringify(stored));
+    check(`gl5 backfill (${label}): askedAt 0, sent null, version 4`,
+      JSON.stringify(parsed.monitor.proposal) === JSON.stringify({ askedAt: 0, sent: null }) && parsed.version === 4, parsed.monitor.proposal);
+  }
+  const held = makeState({ now: T0 });
+  held.monitor.proposal = { askedAt: T0, sent: { text: "[PROPOSAL] x", writer: "w", seq: 2, delivered: false } };
+  check("gl5 backfill: a held record loads as it was",
+    JSON.stringify(parseState(JSON.stringify(held)).monitor.proposal) === JSON.stringify(held.monitor.proposal));
+  check("gl5 backfill: a new state starts with askedAt 0 and sent null",
+    JSON.stringify(AgentState.createDefaultState("someone", "s-1").monitor.proposal) === JSON.stringify({ askedAt: 0, sent: null }));
 }
