@@ -3287,8 +3287,8 @@ while true; do
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         # Exit 6 is what the keeper reads as a park, and it launches the
         # persona again at its next start. A tree that is alive or unverifiable
-        # outranks the park, as it outranks every other stop, and reports as
-        # exit 5.
+        # outranks the park, as it outranks every other decide-path stop, and
+        # reports as exit 5.
         if [ "${STOP_ESCALATION_RESULT:-0}" -ne 0 ]; then
           log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable despite every stop retry (STOP_PATH=$STOP_PATH)"
           exit 5
@@ -3472,9 +3472,10 @@ while true; do
     log "STOP_PARK: park_requested at $PARK_REQUESTED_TS > child start $CHILD_START_TS"
     # Swept here for the same reason the shutdown is: no relaunch follows in
     # this run. Unlike the shutdown, a process left alive or a tree that could
-    # not be read ends the run at exit 5, as it does on every other stop. The
-    # keeper relaunches on that code after its delay, which is what a park asks
-    # for anyway, and the next child meets the survivor at the pre-launch gate.
+    # not be read ends the run at exit 5, as it does on every stop but the
+    # shutdown. The keeper relaunches on that code after its delay, which is
+    # what a park asks for anyway, and the next child meets the survivor at the
+    # pre-launch gate.
     sweep_child_tree "park"
     SWEEP_RC=$?
     if [ "$SWEEP_RC" -eq 1 ] && [ -n "$LAST_STOP_SNAPSHOT" ]; then

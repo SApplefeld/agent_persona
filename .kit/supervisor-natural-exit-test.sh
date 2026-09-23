@@ -1374,6 +1374,17 @@ case "\$action" in
     record park_requested ""
     exit 0
     ;;
+  # The same held survivor and park with the child still alive after it, so
+  # the decide path's stop_park stops it. The loop blocks on stdin until the
+  # supervisor's EOF stop closes it.
+  survivor_park_live)
+    IFS= read -r _
+    leave_survivor
+    wait_for_log_line "TAILWINDOW" 90
+    record park_requested ""
+    while IFS= read -r _; do :; done
+    exit 0
+    ;;
   # A child that runs for two polls and exits on its own, leaving nothing
   # behind. Paired with a supervisor whose poll body is slow, it is the shape a
   # loaded box produces: every poll confirmed the tree, and the wall clock
@@ -1947,6 +1958,26 @@ if [ "$KILL_ANCHORS" -eq 1 ]; then
   grep -q 'alive or unverifiable after every sweep retry' "$LOG"; check "(pku) the exit line names what the sweep could not clear" "$?"
   ! grep -q 'SWEEP\[natural_exit\]' "$LOG"; check "(pku) the natural-exit sweep does not also run once the park is read" "$?"
   [ "$LAUNCHES" -eq 1 ]; check "(pku) no second child launches (stub launches=$LAUNCHES)" "$?"
+
+  # --- (pkdu) a decide-path park that leaves a survivor exits 5, not 6 ---
+  # Case (pkd)'s decide-path park against the kill failure (pku) uses. The
+  # child leaves a process behind, holds past a poll so the tree record names
+  # it, records the park and stays alive, so the next poll's stop_park stops
+  # it. The injected kill leaves the survivor alive through every stop retry,
+  # and a tree still alive outranks the park.
+  SUP_OVERRIDE="$TMP/injectkilltail/bin/supervise.sh"
+  drive pkdu "survivor_park_live" 6
+  SUP_OVERRIDE=""
+  PKDU_PAIR=$(grep -E '^[0-9]+,[0-9]+$' "$TMP/pkdu/survivor.snapshot" 2>/dev/null | head -1)
+  [ -n "$PKDU_PAIR" ]; check "(pkdu) setup: the stub left a process behind and recorded it as pid and start ticks (${PKDU_PAIR:-none})" "$?"
+  grep -q 'injected kill failure' "$LOG"; check "(pkdu) setup: the injected kill ran and reported failure" "$?"
+  PKDU_SP=$(grep -n 'STOP_PARK: park_requested' "$LOG" | head -n 1 | cut -d: -f1)
+  PKDU_EXIT1=$(grep -n 'EXIT child-1 code=' "$LOG" | head -n 1 | cut -d: -f1)
+  [ -n "$PKDU_SP" ] && [ -n "$PKDU_EXIT1" ] && [ "$PKDU_SP" -lt "$PKDU_EXIT1" ]; check "(pkdu) child-1's EXIT line follows the STOP_PARK line, so the stop was the decide path's (lines $PKDU_SP < $PKDU_EXIT1)" "$?"
+  ! grep -q 'EXIT child-1 code=[0-9]* (natural)' "$LOG"; check "(pkdu) no natural-exit EXIT line for child-1" "$?"
+  grep -q 'EXIT child-1: a process from this child is alive or unverifiable despite every stop retry' "$LOG"; check "(pkdu) the exit line names what the stop could not clear" "$?"
+  [ "$RC" -eq 5 ]; check "(pkdu) the supervisor exits 5 rather than reporting the park as honored (rc=$RC)" "$?"
+  [ "$LAUNCHES" -eq 1 ]; check "(pkdu) no second child launches (stub launches=$LAUNCHES)" "$?"
 
 fi
 
