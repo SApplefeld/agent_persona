@@ -122,10 +122,10 @@
       "words": 37
     },
     {
-      "name": "GOAL_TREE_PAUSED_BLOCK",
+      "name": "GOAL_QUEUE_BLOCK",
       "file": "hooks/index.ts",
-      "chars": 94,
-      "words": 15
+      "chars": 243,
+      "words": 42
     },
     {
       "name": "NO_GOAL_BLOCK",

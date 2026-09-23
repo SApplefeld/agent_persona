@@ -934,16 +934,68 @@ export function planHolderOf(state: AgentState, node: GoalNode): GoalNode | unde
   return undefined;
 }
 
+// Plan item 3 (reprioritize): sortKey overrides createdAt for activation
+// order when set; absent sortKey falls back to createdAt, so an untouched
+// node's order is unaffected. The controller's walk and the open-entry list
+// both order by this one key.
+const orderKey = (g: GoalNode): number => g.sortKey ?? g.createdAt;
+
+// The leaf the controller activates when it walks from the root: depth-first,
+// each level filtered on "pending" and ordered by orderKey, returning the
+// first leaf isActivationEligible accepts. A pending leaf under a paused,
+// blocked or complete parent is never reached. Pure: it reads the tree and
+// changes nothing. activateNext calls this for its walk, so the controller
+// and hasStartableWork share one walk and cannot disagree.
+export function nextStartableLeaf(state: AgentState): GoalNode | null {
+  const root = state.goals.find((g) => g.parentId === null);
+  if (!root) return null;
+  const dfs = (parentId: string): GoalNode | null => {
+    const candidates = state.goals
+      .filter((g) => g.parentId === parentId && g.status === "pending")
+      .sort((a, b) => orderKey(a) - orderKey(b));
+    for (const c of candidates) {
+      // Every candidate here already descends through an all-pending
+      // ancestor chain (the level-by-level status filter above), so the
+      // eligibility predicate's ancestor test is trivially satisfied and
+      // this reduces to the leaf check - reusing it rather than repeating
+      // "no children" inline.
+      if (isActivationEligible(state, c)) return c;
+      // Has children: descend.
+      const child = dfs(c.id);
+      if (child) return child;
+    }
+    return null;
+  };
+  return dfs(root.id);
+}
+
+// Every non-root entry still open (pending, active, paused or blocked), in
+// one flat orderKey sort across the whole tree rather than the controller's
+// level-by-level walk. This is the list the [GOAL QUEUE] block prints.
+export function openGoals(state: AgentState): GoalNode[] {
+  return state.goals
+    .filter(
+      (g) =>
+        g.parentId !== null &&
+        (g.status === "pending" || g.status === "active" || g.status === "paused" || g.status === "blocked")
+    )
+    .sort((a, b) => orderKey(a) - orderKey(b));
+}
+
+// Whether the tree holds work the controller will run on its own: an active
+// node, or a leaf its walk from the root would activate. False means every
+// open entry is paused, blocked or below one, which is the idle tree.
+export function hasStartableWork(state: AgentState): boolean {
+  if (state.goals.some((g) => g.status === "active")) return true;
+  return nextStartableLeaf(state) !== null;
+}
+
 // M6: Activate the next pending leaf (a node with no children).
-// Depth-first walk in createdAt order. Prefers the completed node's siblings.
-// Only activates nodes that have no children (leaf invariant).
+// Prefers the completed node's siblings, then nextStartableLeaf's walk from
+// the root. Only activates nodes that have no children (leaf invariant).
 export function activateNext(state: AgentState, completedId?: string): string | null {
   const hasChildren = (id: string): boolean =>
     state.goals.some((g) => g.parentId === id);
-  // Plan item 3 (reprioritize): sortKey overrides createdAt for activation
-  // order when set; absent sortKey falls back to createdAt, so an untouched
-  // node's order is unaffected.
-  const orderKey = (g: GoalNode): number => g.sortKey ?? g.createdAt;
 
   const activate = (g: GoalNode): string => {
     g.status = "active";
@@ -970,29 +1022,9 @@ export function activateNext(state: AgentState, completedId?: string): string | 
     }
   }
 
-  // 2. DFS from the root: first pending leaf in createdAt order.
-  const root = state.goals.find((g) => g.parentId === null);
-  if (root) {
-    const dfs = (parentId: string): GoalNode | null => {
-      const candidates = state.goals
-        .filter((g) => g.parentId === parentId && g.status === "pending")
-        .sort((a, b) => orderKey(a) - orderKey(b));
-      for (const c of candidates) {
-        // Every candidate here already descends through an all-pending
-        // ancestor chain (the level-by-level status filter above), so the
-        // eligibility predicate's ancestor test is trivially satisfied and
-        // this reduces to the leaf check - reusing it rather than repeating
-        // "no children" inline.
-        if (isActivationEligible(state, c)) return c;
-        // Has children: descend.
-        const child = dfs(c.id);
-        if (child) return child;
-      }
-      return null;
-    };
-    const leaf = dfs(root.id);
-    if (leaf) return activate(leaf);
-  }
+  // 2. The walk from the root: first pending leaf in orderKey order.
+  const leaf = nextStartableLeaf(state);
+  if (leaf) return activate(leaf);
 
   // Nothing to activate.
   state.activeGoalId = null;
