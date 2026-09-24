@@ -1259,13 +1259,7 @@ async function drainSupervisorMailbox(
     const shutdownText = `[SUPERVISOR id=${rec.id}] ${quoteContinuationLines(rec.text)}`;
     const shutdownEntry: ExpectedTurn = { kind: "plugin", text: shutdownText };
     expectedTurns.push(shutdownEntry);
-    let shutdownOutcome: SubmitOutcome;
-    try {
-      shutdownOutcome = await submitExpectedTurn(dp, expectedTurns, shutdownEntry);
-    } catch (err) {
-      removeExpectedTurn(expectedTurns, shutdownEntry);
-      shutdownOutcome = { ok: false, how: "failed", reason: err instanceof Error ? err.message : String(err) };
-    }
+    const shutdownOutcome = await submitExpectedTurn(dp, expectedTurns, shutdownEntry);
     // A submit that opened no turn keeps its delivered line, which is what
     // keeps the record from being submitted again, and gains a failed line
     // beside it, so the ack file does not claim a delivery that never reached
@@ -3505,6 +3499,16 @@ export const register: Register = async (on, options) => {
           action: "persona_create",
           detail: `Created persona '${sess.persona}'`,
         });
+        // The claim goes to the store and the sidecar now, as the claim on an
+        // existing entry does, rather than only once the persist below runs,
+        // so a reader whose sidecar entry is absent does not read this persona
+        // as held by nobody for the length of the start. A store that would
+        // not read takes the catch above instead: nothing is written into it,
+        // and the heartbeat tick publishes the claim at the first read that
+        // parses.
+        if (startStoreProblem === null) {
+          try { await writeClaimDirect($); } catch { /* the store refused; the persist below and the first heartbeat carry the claim */ }
+        }
       }
     }
 
@@ -3761,14 +3765,18 @@ export const register: Register = async (on, options) => {
                     detail: `Deferring promotion: live commons claim by ${commonsWinner.holder}`,
                   });
                   // Persist the decision to disk (reader path, so persist() won't work).
-                  // Merge, never replace: read existing slot, push decision onto it, write back.
+                  // Merge into an existing slot only: read it, push the decision
+                  // onto it, write back. Where the store holds no slot for the
+                  // persona, nothing is written. A slot built here from this
+                  // reader's own state would name the reader as the holder, and
+                  // a live owner whose own slot is missing would read it at its
+                  // next persist and yield to a session that owns nothing.
                   try {
                     const store: Record<string, unknown> = await $.fs.exists(sess.storePath)
                       ? (JSON.parse(await $.fs.read(sess.storePath)) as Record<string, unknown>)
                       : {};
                     const existing = store[sess.persona] as AgentState | undefined;
                     if (existing) {
-                      // Push the new decision onto the existing slot's decisions
                       const existingDecisions = existing.decisions ?? [];
                       existingDecisions.push({
                         timestamp: now,
@@ -3779,18 +3787,20 @@ export const register: Register = async (on, options) => {
                       existing.decisions = existingDecisions;
                       existing.updatedAt = now;
                       store[sess.persona] = existing;
-                    } else {
-                      // No existing slot; use current state but preserve its decisions
-                      sess.state.updatedAt = now;
-                      store[sess.persona] = sess.state;
+                      await $.fs.write(sess.storePath, JSON.stringify(store, null, 2));
                     }
-                    const jsonStr = JSON.stringify(store, null, 2);
-                    await $.fs.write(sess.storePath, jsonStr);
                   } catch { /* non-fatal */ }
                 }
                 return;
               }
-            } catch { /* commons check failed; proceed with local-only promotion */ }
+            } catch {
+              // The commons check failed. A stale sidecar entry proceeds with
+              // a local-only promotion, as it always has. An absent entry does
+              // not: that reader joined on a live commons claim, so the commons
+              // read is the only evidence the holder has gone, and without it
+              // nothing is promoted.
+              if (holderHb === null) return;
+            }
             const store: Record<string, unknown> = await $.fs.exists(sess.storePath)
               ? (JSON.parse(await $.fs.read(sess.storePath)) as Record<string, unknown>)
               : {};

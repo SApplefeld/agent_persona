@@ -3503,6 +3503,10 @@ async function main() {
     await caseSupervisorAskLeavesAnOpenAskOpen(clock);
     await caseReaderWithNoSidecarEntryPromotesOnceCommonsGoesStale(clock);
     await caseNoStoreEntryClaimConsultsCommons(clock);
+    await caseDeferralWritesNoStoreSlot(clock);
+    await casePromotionOnAFailedCommonsRead(clock);
+    await caseUnreadableSidecarPromotesNothing(clock);
+    await caseNoStoreClaimIsWrittenBeforeItsPersist(clock);
     await caseMailbox_failedShutdownSubmitRecordsFailure(clock);
     await caseMailbox_partialLastLineIsLeftForTheNextTick(clock);
     await casePin_probeAckRoundTripThroughTheRealPoll(clock);
@@ -21965,6 +21969,138 @@ async function caseNoStoreEntryClaimConsultsCommons(clock) {
   check("no store entry: the reader writes no store entry of its own", live.storeHasEntry === false, live);
   const none = await start("nostore_commons_none", false);
   check("no store entry control: with no commons claim the persona is created and claimed", none.resources.includes("persona:default") && none.storeHasEntry === true, none);
+}
+
+// A reader that joined through the no-store-entry branch, held off by a live
+// commons claim across several ticks, writes no store slot: the deferral's
+// store write merges into an existing slot only, since a slot built from the
+// reader's own state names the reader as the holder. The control has an
+// existing slot naming another session, which gains the deferral decision and
+// keeps its holder.
+async function caseDeferralWritesNoStoreSlot(clock) {
+  console.log("\n=== Promotion deferral: no store slot is planted, an existing one is merged ===");
+  const run = async (caseName, slotHolder) => {
+    clock.set(T0);
+    const h = await createTickHarness({ ...OPTS, caseName, skipSessionStart: true });
+    if (slotHolder === null) {
+      h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({}));
+    } else {
+      const state = makeState({});
+      state.activeSessionId = slotHolder;
+      h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: state }));
+    }
+    h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({}));
+    const seedClaim = () => h.storeMap.set("commons:other-live", { sessionId: "other-live", lastSeen: Date.now(), claims: [{ resource: "persona:default", claimedAt: Date.now() - 1000 }] });
+    seedClaim();
+    await fireSessionStart(h);
+    for (let i = 0; i < 3; i += 1) {
+      clock.advance(30_000);
+      seedClaim();
+      await fireHeartbeat(h);
+    }
+    return JSON.parse(h.fsMap.get(PERSONA_STORE_FILE));
+  };
+  const bare = await run("deferral_no_slot", null);
+  check("deferral: a reader held off on a live commons claim writes no store slot", bare.default === undefined, bare);
+  const slotted = await run("deferral_existing_slot", "other-live");
+  check("deferral control: an existing slot gains the deferral decision",
+    (slotted.default?.decisions ?? []).some((d) => d.action === "promotion_deferred_commons"), (slotted.default?.decisions ?? []).map((d) => d.action));
+  check("deferral control: the existing slot keeps its holder", slotted.default?.activeSessionId === "other-live", slotted.default?.activeSessionId);
+}
+
+// A reader whose sidecar entry is absent promotes nothing where the commons
+// read fails, since that reader joined on a live commons claim and the commons
+// read is the only evidence the holder has gone. A reader whose entry is stale
+// keeps its local-only promotion on the same failure.
+async function casePromotionOnAFailedCommonsRead(clock) {
+  console.log("\n=== Promotion on a failed commons read: an absent entry promotes nothing, a stale one still does ===");
+  clock.set(T0);
+  const a = await createTickHarness({ ...OPTS, caseName: "promo_commons_throws_absent", skipSessionStart: true });
+  a.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({}));
+  a.fsMap.set(HEARTBEAT_FILE, JSON.stringify({}));
+  a.storeMap.set("commons:other-live", { sessionId: "other-live", lastSeen: T0, claims: [{ resource: "persona:default", claimedAt: T0 - 1000 }] });
+  await fireSessionStart(a);
+  a.fake.store.keys = () => Promise.reject(new Error("commons unreadable"));
+  clock.advance(100_000);
+  await fireHeartbeat(a);
+  const aStore = JSON.parse(a.fsMap.get(PERSONA_STORE_FILE));
+  check("failed commons read, absent entry: no promotion (no store slot written)", aStore.default === undefined, aStore);
+
+  clock.set(T0);
+  const s = await createTickHarness({ ...OPTS, caseName: "promo_commons_throws_stale", skipSessionStart: true });
+  s.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: "live-holder", epoch: 1, lastSeen: T0 } }));
+  await fireSessionStart(s);
+  const sEpochBefore = JSON.parse(s.fsMap.get(PERSONA_STORE_FILE)).default.epoch;
+  s.fake.store.keys = () => Promise.reject(new Error("commons unreadable"));
+  clock.advance(100_000);
+  await fireHeartbeat(s);
+  const sStore = JSON.parse(s.fsMap.get(PERSONA_STORE_FILE));
+  check("failed commons read control, stale entry: the local-only promotion still runs", sEpochBefore === 1 && sStore.default.epoch === 2 && sStore.default.activeSessionId === SESSION_ID, { before: sEpochBefore, after: sStore.default });
+}
+
+// A sidecar that cannot be parsed promotes nothing, even for a reader whose
+// entry would otherwise read absent and whose commons claim has gone stale.
+// The control is the same reader over a sidecar that parses, which promotes.
+async function caseUnreadableSidecarPromotesNothing(clock) {
+  console.log("\n=== Promotion: an unparseable sidecar promotes nothing ===");
+  const run = async (caseName, sidecarText) => {
+    clock.set(T0);
+    const h = await createTickHarness({ ...OPTS, caseName, skipSessionStart: true });
+    h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({}));
+    h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({}));
+    h.storeMap.set("commons:other-live", { sessionId: "other-live", lastSeen: T0, claims: [{ resource: "persona:default", claimedAt: T0 - 1000 }] });
+    await fireSessionStart(h);
+    h.fsMap.set(HEARTBEAT_FILE, sidecarText);
+    clock.advance(100_000);
+    await fireHeartbeat(h);
+    return JSON.parse(h.fsMap.get(PERSONA_STORE_FILE)).default;
+  };
+  const torn = await run("promo_sidecar_torn", '{"default": {"sessionId": "live-own');
+  check("unreadable sidecar: a torn sidecar promotes nothing", torn === undefined, torn);
+  const whole = await run("promo_sidecar_whole", JSON.stringify({}));
+  check("unreadable sidecar control: the same reader over a sidecar that parses promotes", whole?.activeSessionId === SESSION_ID, whole);
+}
+
+// The no-store-entry claim writes its store slot and sidecar entry before its
+// persist, as the claim on an existing entry does. The case interleaves: a
+// second session (the newcomer) shares the first one's files and commons store,
+// and the first, a reader with no sidecar entry whose holder's commons claim
+// has gone stale, runs its heartbeat tick at the moment the newcomer's
+// session.start persists. That reader must find the newcomer's fresh sidecar
+// entry and not promote. The persist is found by its own frame in the write's
+// stack.
+async function caseNoStoreClaimIsWrittenBeforeItsPersist(clock) {
+  console.log("\n=== No-store claim: the sidecar entry lands before the persist a reader can tick inside ===");
+  clock.set(T0);
+  const reader = await createTickHarness({ ...OPTS, caseName: "nostore_order_reader", skipSessionStart: true });
+  reader.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({}));
+  reader.fsMap.set(HEARTBEAT_FILE, JSON.stringify({}));
+  reader.storeMap.set("commons:other-live", { sessionId: "other-live", lastSeen: T0, claims: [{ resource: "persona:default", claimedAt: T0 - 1000 }] });
+  await fireSessionStart(reader);
+  clock.advance(100_000);
+
+  const newcomer = await createTickHarness({ ...OPTS, caseName: "nostore_order_newcomer", skipSessionStart: true });
+  newcomer.fake.fs = reader.fake.fs;
+  newcomer.fake.store = reader.fake.store;
+  newcomer.fake.session.id = () => Promise.resolve("newcomer-session");
+  const realWrite = reader.fake.fs.write;
+  let interleaved = false;
+  reader.fake.fs.write = async (p, content) => {
+    const stack = String(new Error().stack);
+    if (!interleaved && p === PERSONA_STORE_FILE && /\bpersist\b/.test(stack) && !/writeClaimDirect/.test(stack)) {
+      interleaved = true;
+      await fireHeartbeat(reader);
+    }
+    return realWrite(p, content);
+  };
+  await fireSessionStart(newcomer);
+  reader.fake.fs.write = realWrite;
+  const readerStores = reader.fsWrites
+    .filter((w) => w.path === PERSONA_STORE_FILE)
+    .map((w) => { try { return JSON.parse(w.content).default?.activeSessionId; } catch { return undefined; } });
+  check("no-store order: the reader's tick ran inside the newcomer's persist (the instrument)", interleaved);
+  check("no-store order: the reader wrote no store naming itself", !readerStores.includes(SESSION_ID), readerStores);
+  check("no-store order: the newcomer holds the persona", JSON.parse(reader.fsMap.get(PERSONA_STORE_FILE)).default?.activeSessionId === "newcomer-session", reader.fsMap.get(PERSONA_STORE_FILE));
 }
 
 // A shutdown whose submit opens no turn keeps its delivered line, which is what
