@@ -14,6 +14,7 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 HOLDER="$HERE/../bin/supervise-holder.sh"
+SCRIPT="$HERE/../bin/supervise.sh"
 
 TMP="$(mktemp -d)"
 CHILD_PIDS=""
@@ -54,6 +55,54 @@ process.exit(o.type === "user" && o.message.content[0].text.startsWith("[SUPERVI
 ' "$1" 2>/dev/null
 }
 
+# The real final ask, as bin/supervise.sh writes it: final_ask_json and the
+# SUPERVISOR_ASK_TEXT it reads are extracted from the supervisor and run, so
+# every ask this suite drops in the ask-request file is the writer's own
+# output rather than a fixture typed here. holder_ask_valid is the holder's own
+# reader, extracted the same way, so the writer and the reader meet directly
+# below as well as through the running holder's relay.
+ASK_FN=$(sed -n '/^final_ask_json() {$/,/^}$/p' "$SCRIPT" | tr -d '\r')
+ASK_TEXT_LINE=$(grep -m1 '^SUPERVISOR_ASK_TEXT="' "$SCRIPT" | tr -d '\r')
+VALID_FN=$(sed -n '/^holder_ask_valid() {/,/^}$/p' "$HOLDER" | tr -d '\r')
+[ -n "$ASK_FN" ] && [ -n "$ASK_TEXT_LINE" ] && [ -n "$VALID_FN" ]
+check "final_ask_json, SUPERVISOR_ASK_TEXT and holder_ask_valid are found in their scripts" "$?"
+eval "$ASK_TEXT_LINE"
+eval "$ASK_FN"
+eval "$VALID_FN"
+ASK_LINE=$(final_ask_json 9)
+printf '%s' "$ASK_LINE" | node -e 'const o = JSON.parse(require("fs").readFileSync(0, "utf8")); process.exit(o.message.content[0].text.startsWith("[SUPERVISOR-ASK id=9] ") ? 0 : 1)' 2>/dev/null
+check "the real final_ask_json output is one JSON line whose text opens [SUPERVISOR-ASK id=9]" "$?"
+
+# One deviation from the real ask, applied by name, so each refusal below is
+# for exactly the reason its label states and every fixture is the writer's
+# own line with one thing changed. Prints the mutated line with a newline
+# unless the mutation is the newline's own absence.
+mutate_ask() {  # <mutation>
+  node -e '
+const o = JSON.parse(process.argv[1]);
+const m = process.argv[2];
+let out;
+switch (m) {
+  case "foreign_text": o.message.content[0].text = "[COORDINATOR id=1] not an ask"; break;
+  case "two_blocks": o.message.content.push({ type: "text", text: "second block" }); break;
+  case "image_block": o.message.content[0].type = "image"; break;
+  case "block_extra_key": o.message.content[0].extra = 1; break;
+  case "envelope_extra_key": o.extra = 1; break;
+  case "envelope_no_role": delete o.role; break;
+  case "envelope_role_assistant": o.role = "assistant"; break;
+  case "message_extra_key": o.message.extra = 1; break;
+  case "message_role_assistant": o.message.role = "assistant"; break;
+  case "message_no_role": delete o.message.role; break;
+  case "trailing_line": out = JSON.stringify(o) + "\nextra line\n"; break;
+  case "partial": out = JSON.stringify(o).slice(0, -12); break;
+  case "not_json": out = "not json at all\n"; break;
+  default: process.exit(2);
+}
+if (out === undefined) out = JSON.stringify(o) + "\n";
+process.stdout.write(out);
+' "$ASK_LINE" "$1"
+}
+
 # --- Case 1: priming, the goal held until the result line, the ask relay, and
 #     exit on the child's death ---
 D="$TMP/c1"; mkdir -p "$D"
@@ -90,46 +139,61 @@ process.exit(o.message.content[0].text.includes("do the operator task") ? 0 : 1)
 ' "$D/stdout" 2>/dev/null
 check "the holder writes the goal as its own turn once the result line appears" "$?"
 
+# The writer and the reader, directly: the real final_ask_json line passes the
+# real holder_ask_valid, and the envelope it carries is the one the holder's
+# own priming and goal writers produce, read off the two turns the running
+# holder wrote above. So the validator accepts exactly the envelope every
+# writer of this pipe produces, and nothing typed here stands in for one.
+holder_ask_valid "$ASK_LINE"; check "writer-reader: the real final_ask_json output passes the real holder_ask_valid" "$?"
+printf '%s\n' "$ASK_LINE" > "$D/ask.line"
+node -e '
+const fs = require("fs");
+const lines = fs.readFileSync(process.argv[1], "utf8").trim().split("\n").filter(Boolean);
+const ask = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const keys = (o) => JSON.stringify({ top: Object.keys(o).sort(), type: o.type, role: o.role, message: Object.keys(o.message).sort(), messageRole: o.message.role, blocks: o.message.content.map((c) => [Object.keys(c).sort(), c.type]) });
+process.exit(lines.length >= 2 && keys(JSON.parse(lines[0])) === keys(ask) && keys(JSON.parse(lines[1])) === keys(ask) ? 0 : 1);
+' "$D/stdout" "$D/ask.line" 2>/dev/null
+check "writer-reader: the priming turn and the goal turn the holder wrote carry the same envelope keys, roles and block shape as the real final ask" "$?"
+
 # The final ask the supervisor drops in the ask-request file is relayed to the
 # pipe and the file removed.
-printf '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[SUPERVISOR-ASK id=9] status?"}]}}\n' > "$D/ask.request"
+printf '%s\n' "$ASK_LINE" > "$D/ask.request"
 wait_for 60 grep -q 'SUPERVISOR-ASK id=9' "$D/stdout"
-check "the holder relays the final ask from the ask-request file to the pipe" "$([ "$(grep -c 'SUPERVISOR-ASK id=9' "$D/stdout")" -ge 1 ] && echo 0 || echo 1)"
+check "the holder relays the real final ask from the ask-request file to the pipe, end to end" "$([ "$(grep -c 'SUPERVISOR-ASK id=9' "$D/stdout")" -ge 1 ] && echo 0 || echo 1)"
 wait_for 30 test ! -e "$D/ask.request"
 check "the holder removes the ask-request file after relaying it" "$([ ! -e "$D/ask.request" ] && echo 0 || echo 1)"
+[ "$(grep -Fc "$ASK_LINE" "$D/stdout")" -eq 1 ]; check "the relayed line is the writer's line byte for byte" "$?"
 
-# A file that is not one whole [SUPERVISOR-ASK id=] user turn is never relayed:
-# a partial write (no terminating newline), a line that is not JSON, and a JSON
-# user turn whose text does not open with the marker are each logged and
-# removed unrelayed. The valid ask above stays relayed exactly once.
-printf '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[SUPERVISOR-ASK id=partial] cut' > "$D/ask.request"
-wait_for 30 test ! -e "$D/ask.request"
-printf 'not json at all\n' > "$D/ask.request"
-wait_for 30 test ! -e "$D/ask.request"
-printf '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[COORDINATOR id=1] not an ask"}]}}\n' > "$D/ask.request"
-wait_for 30 test ! -e "$D/ask.request"
-# The shape the model fixes is exactly one text block: a second block, a block
-# of another type, and bytes after the first line are each refused.
-printf '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[SUPERVISOR-ASK id=two] a"},{"type":"text","text":"second block"}]}}\n' > "$D/ask.request"
-wait_for 30 test ! -e "$D/ask.request"
-printf '{"type":"user","message":{"role":"user","content":[{"type":"image","text":"[SUPERVISOR-ASK id=img] not text"}]}}\n' > "$D/ask.request"
-wait_for 30 test ! -e "$D/ask.request"
-printf '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[SUPERVISOR-ASK id=trailing] first"}]}}\nextra line\n' > "$D/ask.request"
-wait_for 30 test ! -e "$D/ask.request"
-# The envelope is exactly the supervisor's: a key beyond type and message, a
-# key beyond role and content, a role that is not user, and a missing role
-# are each refused.
-printf '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[SUPERVISOR-ASK id=envkey] a"}]},"extra":1}\n' > "$D/ask.request"
-wait_for 30 test ! -e "$D/ask.request"
-printf '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[SUPERVISOR-ASK id=msgkey] a"}],"extra":1}}\n' > "$D/ask.request"
-wait_for 30 test ! -e "$D/ask.request"
-printf '{"type":"user","message":{"role":"assistant","content":[{"type":"text","text":"[SUPERVISOR-ASK id=role] a"}]}}\n' > "$D/ask.request"
-wait_for 30 test ! -e "$D/ask.request"
-printf '{"type":"user","message":{"content":[{"type":"text","text":"[SUPERVISOR-ASK id=norole] a"}]}}\n' > "$D/ask.request"
-wait_for 30 test ! -e "$D/ask.request"
+# A file that is not one whole [SUPERVISOR-ASK id=] user turn is never relayed.
+# Each fixture is the real ask with one deviation: a partial write (no
+# terminating newline), a line that is not JSON, a text that does not open
+# with the marker, a second block, a block of another type, a block with a key
+# beyond type and text, bytes after the first line, a key beyond type, role and
+# message on the envelope, an envelope with no role or a role that is not
+# user, a key beyond role and content on the message, and a message role that
+# is not user or is missing. Each is refused by the validator directly and by
+# the running holder, which logs and removes it unrelayed. The valid ask above
+# stays relayed exactly once.
+REFUSALS=0
+for mutation in partial not_json foreign_text two_blocks image_block block_extra_key trailing_line envelope_extra_key envelope_no_role envelope_role_assistant message_extra_key message_role_assistant message_no_role; do
+  REFUSALS=$((REFUSALS + 1))
+  mutate_ask "$mutation" > "$D/mutated"
+  # The validator sees the first line as the holder reads it; the two
+  # mutations the file-whole check refuses (partial, trailing_line) still
+  # carry a valid first line where they have one, so they are pinned on the
+  # running holder alone.
+  case "$mutation" in
+    partial|trailing_line) : ;;
+    *) ! holder_ask_valid "$(head -n 1 "$D/mutated")"; check "holder_ask_valid refuses the real ask with the deviation $mutation" "$?" ;;
+  esac
+  cp "$D/mutated" "$D/ask.request"
+  wait_for 30 test ! -e "$D/ask.request"
+done
 [ ! -e "$D/ask.request" ]; check "the holder removes an ask-request file it will not relay" "$?"
-! grep -q 'id=partial\|not json at all\|not an ask\|id=two\|id=img\|id=trailing\|second block\|extra line\|id=envkey\|id=msgkey\|id=role\|id=norole' "$D/stdout"; check "a partial, non-JSON, foreign, two-block, non-text, trailing-line, extra-key, non-user-role or missing-role ask-request file is not relayed to the pipe" "$?"
-[ "$(grep -c 'removed it unrelayed' "$D/err")" -eq 10 ]; CHECK_RC=$?; check "each refused ask-request file is named in the holder's log (refusals=$(grep -c 'removed it unrelayed' "$D/err"))" "$CHECK_RC"
+# The priming turn names [SUPERVISOR-ASK id=<id>] in its own text, so the
+# count keys on the real ask's id, which every deviation of it carries too.
+! grep -q 'not json at all\|not an ask\|second block\|extra line\|"extra"\|"image"\|"assistant"' "$D/stdout" && [ "$(grep -c 'SUPERVISOR-ASK id=9' "$D/stdout")" -eq 1 ]; check "no deviated ask-request file is relayed to the pipe" "$?"
+[ "$(grep -c 'removed it unrelayed' "$D/err")" -eq "$REFUSALS" ]; CHECK_RC=$?; check "each refused ask-request file is named in the holder's log (refusals=$(grep -c 'removed it unrelayed' "$D/err") of $REFUSALS)" "$CHECK_RC"
 [ "$(grep -c 'SUPERVISOR-ASK id=9' "$D/stdout")" -eq 1 ]; check "the valid ask was relayed exactly once" "$?"
 
 # The child's pid disappears; the holder exits within a few seconds.

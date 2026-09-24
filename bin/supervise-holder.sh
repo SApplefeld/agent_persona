@@ -93,19 +93,22 @@ holder_ask_valid() {  # <line>
   node -e '
 let o;
 try { o = JSON.parse(process.argv[1]); } catch (e) { process.exit(1); }
-// Exactly the envelope the supervisor writes and nothing more: a user turn
-// whose only keys are type and message, and a message whose only keys are
-// role (user) and content. A key beyond those is a line the supervisor did
-// not write, and is refused rather than relayed.
+// Exactly the envelope the supervisor writes and nothing more, which is the
+// envelope this file writes for the priming turn and the goal: a user turn
+// whose only keys are type, role and message, with type and role both user;
+// a message whose only keys are role (user) and content; and a block whose
+// only keys are type (text) and text. A key beyond those, or the envelope
+// with role left off, is a line no writer of this pipe produces, and is
+// refused rather than relayed.
 const sameKeys = (obj, keys) => obj && typeof obj === "object" && !Array.isArray(obj)
   && Object.keys(obj).length === keys.length && keys.every((k) => k in obj);
-if (!sameKeys(o, ["type", "message"]) || o.type !== "user") process.exit(1);
+if (!sameKeys(o, ["type", "role", "message"]) || o.type !== "user" || o.role !== "user") process.exit(1);
 const m = o.message;
 if (!sameKeys(m, ["role", "content"]) || m.role !== "user") process.exit(1);
 const content = m.content;
 if (!Array.isArray(content) || content.length !== 1) process.exit(1);
 const block = content[0];
-const ok = block && typeof block === "object" && block.type === "text"
+const ok = sameKeys(block, ["type", "text"]) && block.type === "text"
   && typeof block.text === "string" && block.text.startsWith("[SUPERVISOR-ASK id=");
 process.exit(ok ? 0 : 1);
 ' "$1" 2>/dev/null
