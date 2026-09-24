@@ -1444,6 +1444,10 @@ case "\$action" in
   # supervisor that restarts it instead closes this stdin first, so the case
   # ends either way.
   alive_transcript) IFS= read -r _; emit_init; write_child_heartbeat; wait_for_probe 180; wait_for_poll_line 18 300; record shutdown_requested ""; exit 0 ;;
+  # A child whose plugin never writes its own heartbeat file. It holds until
+  # the supervisor has named the missing file and then taken eighteen polls,
+  # each of which reads the file absent, then ends the run itself.
+  no_heartbeat) IFS= read -r _; emit_init; wait_for_log_line "HEARTBEAT_ABSENT child-1" 180; wait_for_poll_line 18 300; record shutdown_requested ""; exit 0 ;;
   # The same stamped-once heartbeat with a stream that grows once the final ask
   # is logged. The child holds until the ask is cleared, then ends the run.
   frozen_answers) IFS= read -r _; emit_init; write_child_heartbeat; wait_for_log_line "FINAL_ASK child-1:" 180; emit_work; wait_for_log_line "FINAL_ASK_CLEARED child-1" 120; record shutdown_requested ""; exit 0 ;;
@@ -1910,6 +1914,23 @@ grep -q 'LIVENESS child-1: alive transcript_unreadable' "$LOG"; check "(ac) the 
 ! grep -q -e 'FINAL_ASK' -e 'RESTART:' "$LOG"; check "(ac) a child with no readable transcript is neither asked nor restarted" "$?"
 [ "$RC" -eq 0 ]; check "(ac) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"
 [ "$LAUNCHES" -eq 1 ]; check "(ac) no second child launches (stub launches=$LAUNCHES)" "$?"
+
+# --- (ha) a heartbeat file never written is named once ---
+# Past the startup grace, every poll reads the child's own heartbeat file
+# absent, and the supervisor names that once per child rather than on each of
+# those polls. The file never written is not silent, so the child is neither
+# asked nor restarted.
+mkdir -p "$TMP/ha/wd" "$TMP/ha/profile"
+DRIVE_ENV=("${LIVENESS_ENV[@]}" USERPROFILE="$TMP/ha/profile")
+drive ha "no_heartbeat" 6
+DRIVE_ENV=()
+[ ! -e "$TMP/ha/rd/heartbeat.json" ]; check "(ha) setup: no heartbeat file was ever written" "$?"
+grep -q '(poll 18)$' "$LOG"; check "(ha) setup: the supervisor ran eighteen polls, most of them past the grace" "$?"
+HA_LINES=$(grep -c 'HEARTBEAT_ABSENT child-1' "$LOG" 2>/dev/null); HA_LINES=${HA_LINES:-0}
+[ "$HA_LINES" -eq 1 ]; check "(ha) HEARTBEAT_ABSENT is named once across every poll that read the file absent (lines=$HA_LINES)" "$?"
+! grep -q -e 'FINAL_ASK' -e 'RESTART:' "$LOG"; check "(ha) a child whose heartbeat file was never written is neither asked nor restarted" "$?"
+[ "$RC" -eq 0 ]; check "(ha) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"
+[ "$LAUNCHES" -eq 1 ]; check "(ha) no second child launches (stub launches=$LAUNCHES)" "$?"
 
 # --- (r) a survivor that cannot be killed stops the run instead of relaunching ---
 # The stub leaves the same native Windows process behind that case (h) uses,

@@ -1457,6 +1457,12 @@ refresh_child_tree() {
     # nothing about the processes under it, and a live one that did not resolve
     # is a survivor nothing here can name. An MSYS pid reused by an unrelated
     # process reads as running too, which keeps this a failed read.
+    #
+    # For the liveness verdict, only a closure whose members are all confirmed
+    # exited is a walk that found nothing. An empty closure under a launch pid
+    # that still answers is a process table this poll could not read, since a
+    # live launch pid is always its own closure's first member, so it reads as
+    # a walk that did not complete.
     CHILD_TREE_POLL_WALK="none"
     if [ -n "$msys_pids" ]; then
       for one in $msys_pids; do
@@ -1466,6 +1472,8 @@ refresh_child_tree() {
           break
         fi
       done
+    elif kill -0 "$pid" 2>/dev/null; then
+      CHILD_TREE_POLL_WALK="failed"
     fi
     CHILD_TREE_FAILED_CONFIRMS=$(( ${CHILD_TREE_FAILED_CONFIRMS:-0} + 1 ))
     return 0
@@ -2649,6 +2657,32 @@ record_restart_in_hour() {
   RESTART_COUNT=${#RESTART_TIMES[@]}
 }
 
+# --- Helper: carry one poll's liveness state to the next, and log it ---
+# The poll process is fresh every poll, so the stream's size and the moment it
+# last changed, and the final ask's time, come back from it as the POLL_*
+# values and are held here for the next poll to hand in. A cleared ask is
+# named, since it is a frozen child a signal showed alive. A heartbeat file
+# the child never wrote is named once per child, however many polls read it
+# absent, and the liveness reading is named whenever it changes. The caller
+# runs this only for a poll that ran: a failed one says nothing about the
+# stream or the ask, so the last reading of each stands.
+note_liveness_poll() {
+  STREAM_SEEN_SIZE="$POLL_STREAM_SIZE"
+  STREAM_CHANGED_AT="$POLL_STREAM_CHANGED_AT"
+  if [ -n "$FINAL_ASK_AT" ] && [ -z "$POLL_FINAL_ASK_AT" ]; then
+    log "FINAL_ASK_CLEARED child-$CHILD_INDEX: a signal moved inside the final ask's window (liveness: $POLL_LIVENESS)"
+  fi
+  FINAL_ASK_AT="$POLL_FINAL_ASK_AT"
+  if [ "$POLL_HEARTBEAT_NOTE" = "HEARTBEAT_ABSENT" ] && [ -z "$HEARTBEAT_ABSENT_LOGGED" ]; then
+    log "HEARTBEAT_ABSENT child-$CHILD_INDEX: $CHILD_HEARTBEAT has not been written past the startup grace, so the heartbeat reads as not silent for this child"
+    HEARTBEAT_ABSENT_LOGGED=1
+  fi
+  if [ -n "$POLL_LIVENESS" ] && [ "$POLL_LIVENESS" != "$LIVENESS_LOGGED" ]; then
+    log "LIVENESS child-$CHILD_INDEX: $POLL_LIVENESS"
+    LIVENESS_LOGGED="$POLL_LIVENESS"
+  fi
+}
+
 # --- Main loop ---
 CHILD_INDEX=0
 RESTART_COUNT=0
@@ -3287,23 +3321,9 @@ while true; do
 
     # The liveness state carried to the next poll, taken only from a poll that
     # ran: a failed one says nothing about the stream or the ask, so the last
-    # reading of each stands. The ask's time is cleared by any alive reading,
-    # and a cleared ask is named, since it is a frozen child that answered.
+    # reading of each stands.
     if [ -n "$DECIDE_ACTION" ] && [ $DECIDE_ERR -eq 0 ]; then
-      STREAM_SEEN_SIZE="$POLL_STREAM_SIZE"
-      STREAM_CHANGED_AT="$POLL_STREAM_CHANGED_AT"
-      if [ -n "$FINAL_ASK_AT" ] && [ -z "$POLL_FINAL_ASK_AT" ]; then
-        log "FINAL_ASK_CLEARED child-$CHILD_INDEX: a signal moved inside the final ask's window (liveness: $POLL_LIVENESS)"
-      fi
-      FINAL_ASK_AT="$POLL_FINAL_ASK_AT"
-      if [ "$POLL_HEARTBEAT_NOTE" = "HEARTBEAT_ABSENT" ] && [ -z "$HEARTBEAT_ABSENT_LOGGED" ]; then
-        log "HEARTBEAT_ABSENT child-$CHILD_INDEX: $CHILD_HEARTBEAT has not been written past the startup grace, so the heartbeat reads as not silent for this child"
-        HEARTBEAT_ABSENT_LOGGED=1
-      fi
-      if [ -n "$POLL_LIVENESS" ] && [ "$POLL_LIVENESS" != "$LIVENESS_LOGGED" ]; then
-        log "LIVENESS child-$CHILD_INDEX: $POLL_LIVENESS"
-        LIVENESS_LOGGED="$POLL_LIVENESS"
-      fi
+      note_liveness_poll
     fi
 
     # The child's session id, off the init line of its stream.
@@ -3517,19 +3537,35 @@ while true; do
         # Every signal is silent and the walk found no live process. The tree
         # the child was last recorded as is swept, and the relaunch is
         # accounted exactly as a restart is, so the restart budget still bounds
-        # a persona that keeps dying. A sweep that cannot clear the tree ends
-        # the run at exit 5, as every relaunch path does, since a relaunch
-        # beside a survivor puts two children on one persona claim.
+        # a persona that keeps dying. A sweep that cannot clear the tree takes
+        # the retry backstop the restart branch takes, which re-snapshots once
+        # where the sweep left no record to retry, and a backstop that fails
+        # ends the run at exit 5, since a relaunch beside a survivor puts two
+        # children on one persona claim.
         log "SWEEP_RELAUNCH: $DECIDE_REASON"
         sweep_child_tree "sweep_relaunch"
         SWEEP_RC=$?
         if [ "$SWEEP_RC" -eq 1 ]; then
-          if [ -n "$LAST_STOP_SNAPSHOT" ]; then
-            retry_stop_escalation "sweep_relaunch" "$SWEEP_RC"
-            SWEEP_RC=$?
-          fi
+          retry_stop_escalation "sweep_relaunch" "$SWEEP_RC"
+          SWEEP_RC=$?
           if [ "$SWEEP_RC" -ne 0 ]; then
             log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable after every sweep retry"
+            exit 5
+          fi
+        fi
+        # The walk read the child gone, but the wrapper can outlive that
+        # reading: a walk that raced the wrapper's own exit, or a sweep with
+        # nothing to kill. A wait on a live wrapper would block this loop for
+        # as long as the child lives, so a wrapper still running takes the
+        # ordinary stop phases first, and its failure ends the run at exit 5
+        # as it does on the restart branch.
+        if [ -n "$CHILD_LAUNCH_PID" ] && kill -0 "$CHILD_LAUNCH_PID" 2>/dev/null; then
+          log "SWEEP_RELAUNCH: child-$CHILD_INDEX's wrapper is still running after the sweep, so it is stopped before the relaunch"
+          stop_child "sweep_relaunch"
+          retry_stop_escalation "sweep_relaunch" $?
+          STOP_ESCALATION_RESULT=$?
+          if [ "${STOP_ESCALATION_RESULT:-0}" -ne 0 ]; then
+            log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable despite every stop retry (STOP_PATH=$STOP_PATH)"
             exit 5
           fi
         fi

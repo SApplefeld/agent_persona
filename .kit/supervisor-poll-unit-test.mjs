@@ -380,6 +380,35 @@ const cases = [
     assert.equal(r.action, 'continue');
     assert.equal(r.finalAskAt, '');
   }],
+  // Only a reading alive on evidence clears the ask. One alive because a read
+  // failed carries the ask's time unchanged, so a walk that fails once inside
+  // each window cannot keep a frozen child's window open forever.
+  ['a walk that did not complete inside the window reads alive but carries the ask\'s time unchanged', () => {
+    const askAt = Date.now() - MIN;
+    const r = run('ask-walk-failed', SILENT_FILES(), { ...SILENT_ARGS(), walk: 'failed', finalAskAt: askAt });
+    assert.equal(r.liveness, 'alive walk_incomplete');
+    assert.equal(r.action, 'continue');
+    assert.equal(r.finalAskAt, String(askAt));
+  }],
+  ['an unreadable transcript inside the window carries the ask\'s time unchanged', () => {
+    const askAt = Date.now() - MIN;
+    const { transcript, ...files } = SILENT_FILES();
+    const r = run('ask-transcript-gone', files, { ...SILENT_ARGS(), finalAskAt: askAt });
+    assert.equal(r.liveness, 'alive transcript_unreadable');
+    assert.equal(r.finalAskAt, String(askAt));
+  }],
+  ['the stream moving inside the window clears the ask\'s time', () => {
+    const r = run('ask-stream-moved', SILENT_FILES(),
+      { ...SILENT_ARGS(), streamSeenSize: 3, streamChangedAt: Date.now() - 20 * MIN, finalAskAt: Date.now() - MIN });
+    assert.equal(r.liveness, 'alive signal');
+    assert.equal(r.finalAskAt, '');
+  }],
+  ['a usage limit newest in the stream inside the window clears the ask\'s time', () => {
+    const retry = JSON.stringify({ type: 'system', subtype: 'api_retry', error_status: 429, retry_delay_ms: 60000 }) + '\n';
+    const r = run('ask-usage', { ...SILENT_FILES(), stream: initLine('sess-1') + retry }, { ...SILENT_ARGS(), finalAskAt: Date.now() - MIN });
+    assert.equal(r.liveness, 'alive usage_limit');
+    assert.equal(r.finalAskAt, '');
+  }],
   ['a window that closes with every signal silent: restart, naming the ask and the five signals', () => {
     const askAt = Date.now() - 11 * MIN - 1000;
     const r = run('ask-closed', SILENT_FILES(), { ...SILENT_ARGS(), finalAskAt: askAt });

@@ -107,7 +107,6 @@ So this risk stands accepted for the four repositories that meet the preconditio
 Each gap is an open entry in `docs/backlog.md`, listed by its heading. The backlog entry carries the detail and the remedy.
 
 - **The PowerShell watchdog's taskkill is the one kill with no identity guard.** A bounded PowerShell call in `bin/supervise.sh` can kill whatever process has reused a dead process's id.
-- **A child's session id reaches a filesystem path unsanitized.** A value a child writes reaches a file-modification-time read in `bin/supervise.sh`.
 - **A roster value carrying a glob character reaches bash unquoted.** A roster value can split into several supervisor arguments in `bin/Start-Persona.ps1`.
 - **A provided settings file's persona silently overrides the supervisor's persona argument.** A run directory's `settings.json` decides which persona a child claims. For the architect seat the same entry records that only its charter confines where it clones and pushes, and the charter is instruction text rather than code.
 - **Findings the direct-lines finishing pass deferred.** The direct lines are the paths that let a worker and the architect message each other. The architect's charter, `ARCHITECT_ROLE_INSTRUCTION` in `bin/supervise.sh`, states no handling for a worker's record that carries no design question.

@@ -657,6 +657,44 @@ const livenessCases = [
     assert.equal(isUsageLimitRecord({ type: 'assistant', message: { content: [] } }), false);
     assert.equal(isUsageLimitRecord(null), false);
   }],
+  // The result-text fallback matches the harness's own copy for this state,
+  // and not the other "limit reached" errors a turn can end on.
+  ['isUsageLimitRecord: the harness copy "You\'ve hit your limit" and "Usage limit reached" count', () => {
+    assert.equal(isUsageLimitRecord({ type: 'result', is_error: true, result: "You've hit your limit · resets 3pm" }), true);
+    assert.equal(isUsageLimitRecord({ type: 'result', is_error: true, result: 'Usage limit reached' }), true);
+  }],
+  ['isUsageLimitRecord: "Context limit reached", "Budget limit reached" and "spend limit reached" do not count', () => {
+    for (const text of ['Context limit reached', 'Budget limit reached', 'Monthly spend limit reached']) {
+      assert.equal(isUsageLimitRecord({ type: 'result', is_error: true, result: text }), false, text);
+    }
+  }],
+
+  // A subagent transcript last modified before the silence bound began is
+  // not read at all, since nothing written before then can read as not
+  // silent. The fixture's old-mtime file holds a fresh record anyway, which
+  // is what shows it was skipped rather than read and found old.
+  ['a subagent transcript modified before the bound is not read, even holding a fresh record: frozen', () => {
+    const paths = session('sub-old-mtime', [turn('assistant', NOW - 20 * MIN)], { 'agent-a.jsonl': [turn('assistant', NOW - MIN)] });
+    const old = new Date(NOW - 16 * MIN);
+    fs.utimesSync(join(paths.subagentsDir, 'agent-a.jsonl'), old, old);
+    const r = read(paths);
+    assert.equal(r.verdict, 'frozen');
+    assert.doesNotMatch(r.detail, /subagent/);
+  }],
+  ['control: the same subagent transcript modified inside the bound is read: alive', () => {
+    const paths = session('sub-fresh-mtime', [turn('assistant', NOW - 20 * MIN)], { 'agent-a.jsonl': [turn('assistant', NOW - MIN)] });
+    const fresh = new Date(NOW - 14 * MIN);
+    fs.utimesSync(join(paths.subagentsDir, 'agent-a.jsonl'), fresh, fresh);
+    const r = read(paths);
+    assert.equal(r.verdict, 'alive');
+    assert.match(r.detail, /\(subagent\)/);
+  }],
+  ['the session\'s own transcript is read whatever its modification time', () => {
+    const paths = session('own-old-mtime', [turn('assistant', NOW - MIN)]);
+    const old = new Date(NOW - 60 * MIN);
+    fs.utimesSync(paths.transcriptPath, old, old);
+    assert.equal(read(paths).verdict, 'alive');
+  }],
 ];
 
 for (const [name, body] of livenessCases) {

@@ -50,7 +50,6 @@
 //     startup grace is over, or "-"
 
 import fs from 'node:fs';
-import path from 'node:path';
 import { decide } from './supervise-decide.mjs';
 import { readRestartRequest } from './supervise-restart-request.mjs';
 import { liveness, transcriptPathsFor, isUsageLimitRecord } from './supervise-liveness.mjs';
@@ -134,7 +133,12 @@ export function readStoreFacts(storePath, persona) {
 
 // The complete records in the tail of the child's stream, oldest first, or
 // null where the stream cannot be read. Both stream readings below take their
-// records from here, so they parse the same lines the same way.
+// records from here, so they parse the same lines, but they read different
+// records as the newest. The usage-limit reading passes over rate_limit_event
+// records, which are quota reports written beside ordinary turns and can
+// follow the record a limit ended a turn on. The rate-limit reset reads the
+// last record of any type, as get_rate_limit_reset in bin/supervise.sh does,
+// so the log names a park only while the retry is the last thing written.
 export function readStreamRecords(streamPath) {
   const SCAN_BYTES = 262144;
   let text = '';
@@ -361,10 +365,15 @@ export function poll(argv) {
   });
 
   // The final ask's time for the next poll: set by the poll that asks, and
-  // cleared by any reading that is alive, so a signal that moves inside the
-  // window ends the ask and a later silence earns a fresh one.
+  // cleared only by a reading alive on evidence, a signal that moved or a
+  // usage limit, so a later silence earns a fresh ask. A reading alive only
+  // because it could not read something, an unreadable or future transcript
+  // or a walk that did not complete, carries the ask's time unchanged: no
+  // signal moved, and clearing there would let one failed read inside each
+  // window restart a frozen child's window indefinitely.
+  const clearsAsk = reading.verdict === 'alive' && (reading.reason === 'signal' || reading.reason === 'usage_limit');
   const nextAskAt = result.action === 'final_ask' ? now
-    : reading.verdict === 'alive' ? null
+    : clearsAsk ? null
       : askAt;
   const heartbeatNote = heartbeat === null && now - launched >= silenceMs ? 'HEARTBEAT_ABSENT' : '-';
 

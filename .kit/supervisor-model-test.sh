@@ -180,6 +180,74 @@ for pair in SUPERVISOR_SILENCE_BOUND_MS:supervisorSilenceBoundMs:900000 SUPERVIS
   check "$setting defaults to $want in its assignment to $var" "$?"
 done
 
+# --- Two liveness helpers, extracted and driven in one process each ---
+# This suite is the one that runs at every section close and already drives
+# bin/supervise.sh's own function bodies, so the two liveness helpers whose
+# behavior a driven supervisor run is needed to reach otherwise are pinned
+# here. An empty extraction means the function was renamed or removed.
+#
+# refresh_child_tree's walk result for the liveness verdict. A process table
+# that names nothing under a launch pid still answering is a read that failed,
+# since a live launch pid is always its own closure's first member, and must
+# never read as a child with no live process, which is the gone verdict.
+REFRESH_SNIPPET=$(sed -n '/^refresh_child_tree() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+[ -n "$REFRESH_SNIPPET" ]; check "refresh_child_tree is found in bin/supervise.sh" "$?"
+if [ -n "$REFRESH_SNIPPET" ]; then
+  # The table stub prints a header only, or a header and one row naming the
+  # root, which is the empty closure and the one-member closure. Windows pids
+  # resolve as 9 followed by the MSYS pid.
+  printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$REFRESH_SNIPPET" '
+TABLE_ROW="${TABLE_ROW:-}"
+ps() { echo "      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND"; [ -n "$TABLE_ROW" ] && echo "$TABLE_ROW"; return 0; }
+resolve_windows_pid() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null && echo "9$1"; return 0; }
+walk_msys_process_tree() { echo "$2,111"; return 0; }
+log() { :; }
+CHILD_LAUNCH_PID="$1"; CHILD_INDEX=1; CHILD_TREE_WINPIDS=""; CHILD_TREE_FAILED_CONFIRMS=0
+refresh_child_tree
+echo "WALK=$CHILD_TREE_POLL_WALK"' > "$TMP/refresh.sh"
+  sleep 60 &
+  LIVE_ROOT=$!
+  ( exit 0 ) &
+  DEAD_ROOT=$!
+  wait "$DEAD_ROOT"
+  OUT=$(bash "$TMP/refresh.sh" "$LIVE_ROOT" 2>&1)
+  [ "$OUT" = "WALK=failed" ]; check "an empty process table under a launch pid that still answers reads as a walk that did not complete (got $OUT)" "$?"
+  OUT=$(bash "$TMP/refresh.sh" "$DEAD_ROOT" 2>&1)
+  [ "$OUT" = "WALK=none" ]; check "control: an empty process table under a launch pid that has exited reads as a walk that found nothing (got $OUT)" "$?"
+  OUT=$(TABLE_ROW="$(printf '%9s %7s %7s %10s  pty0     197609 12:00:00 /usr/bin/sleep' "$LIVE_ROOT" 1 "$LIVE_ROOT" "9$LIVE_ROOT")" bash "$TMP/refresh.sh" "$LIVE_ROOT" 2>&1)
+  [ "$OUT" = "WALK=live" ]; check "control: a table naming the live launch pid reads as a walk that found a live process (got $OUT)" "$?"
+  kill "$LIVE_ROOT" 2>/dev/null
+  wait "$LIVE_ROOT" 2>/dev/null
+fi
+
+# note_liveness_poll, which carries a poll's liveness state to the next and
+# logs it. HEARTBEAT_ABSENT is named once per child however many polls read the
+# file absent, and FINAL_ASK_CLEARED only on the poll that clears the ask.
+NOTE_SNIPPET=$(sed -n '/^note_liveness_poll() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+[ -n "$NOTE_SNIPPET" ]; check "note_liveness_poll is found in bin/supervise.sh" "$?"
+if [ -n "$NOTE_SNIPPET" ]; then
+  printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$NOTE_SNIPPET" '
+log() { echo "$*"; }
+CHILD_INDEX=1; CHILD_HEARTBEAT=/rd/heartbeat.json
+FINAL_ASK_AT=""; HEARTBEAT_ABSENT_LOGGED=""; LIVENESS_LOGGED=""
+POLL_STREAM_SIZE=10; POLL_STREAM_CHANGED_AT=5; POLL_LIVENESS="alive signal"; POLL_HEARTBEAT_NOTE=HEARTBEAT_ABSENT
+# Four polls reading the heartbeat absent, the second of which asks and the
+# third of which carries the ask unchanged, and the fourth clears it.
+POLL_FINAL_ASK_AT=""; note_liveness_poll
+POLL_FINAL_ASK_AT=100; note_liveness_poll
+POLL_FINAL_ASK_AT=100; note_liveness_poll
+POLL_FINAL_ASK_AT=""; note_liveness_poll
+echo "STATE=$STREAM_SEEN_SIZE:$STREAM_CHANGED_AT:[$FINAL_ASK_AT]"' > "$TMP/note.sh"
+  OUT=$(bash "$TMP/note.sh" 2>&1)
+  N=$(printf '%s\n' "$OUT" | grep -c 'HEARTBEAT_ABSENT child-1')
+  [ "$N" -eq 1 ]; check "HEARTBEAT_ABSENT is logged once across four polls that read the file absent (lines=$N)" "$?"
+  N=$(printf '%s\n' "$OUT" | grep -c 'FINAL_ASK_CLEARED child-1')
+  [ "$N" -eq 1 ]; check "FINAL_ASK_CLEARED is logged once, on the poll that clears the ask, not on the poll that carries it (lines=$N)" "$?"
+  N=$(printf '%s\n' "$OUT" | grep -c 'LIVENESS child-1: alive signal')
+  [ "$N" -eq 1 ]; check "an unchanged liveness reading is named once (lines=$N)" "$?"
+  printf '%s\n' "$OUT" | grep -qx 'STATE=10:5:\[\]'; check "the stream state and the cleared ask are carried to the next poll" "$?"
+fi
+
 # supervisorPsBoundS is the one setting on this rule that falls back to 30
 # rather than refusing, so its resolution is read by running the script's own
 # lines, from the assignment up to the next setting, in a separate process.

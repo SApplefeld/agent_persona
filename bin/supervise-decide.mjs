@@ -148,10 +148,12 @@ export function decide(input) {
     return { action: 'sweep_relaunch', reason: `gone: every signal is silent and the walk found no live process (${detail})` };
   }
   if (verdict === 'frozen') {
-    // One final ask per silence, never on a cadence, since it costs the child
-    // a model turn. The window it opens is the harness's tool-call cap plus a
-    // margin, and any signal moving inside it reads alive, which clears the
-    // ask's time before the next poll hands it in.
+    // One final ask per silence, never on a cadence. The poll loop logs it
+    // and opens a window of finalAskMs, the harness's tool-call cap plus a
+    // margin; it writes nothing to the child, so the window is a timed wait.
+    // A signal that moves inside it reads alive, which clears the ask's time
+    // before the next poll hands it in, and a window that closes with every
+    // signal silent restarts.
     if (finalAskAt === null || finalAskAt === undefined) {
       return { action: 'final_ask', reason: `frozen: every signal is silent and the walk found a live process (${detail})` };
     }

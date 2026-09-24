@@ -202,11 +202,19 @@ function transcriptsUnder(dir) {
  * The newest turn-record timestamp across the session's own transcript and
  * every transcript under its subagents/ directory. Null where the session's
  * own transcript cannot be read, or where no tail holds a turn record.
+ *
+ * The session's own transcript is always read. A subagent transcript is read
+ * only where its modification time is at or after minSubagentMtimeMs: a file
+ * last written before that holds no record that could read as not silent, and
+ * a long session accumulates many finished dispatches whose tails would
+ * otherwise be read on every poll. A subagent file that cannot be stat'ed
+ * contributes nothing, as one that cannot be read does.
  * @param {string} transcriptPath
  * @param {string} subagentsDir
+ * @param {number} [minSubagentMtimeMs] - Subagent transcripts modified before this are not read.
  * @returns {{ts: number|null, source: string}}
  */
-export function readNewestTurnTs(transcriptPath, subagentsDir) {
+export function readNewestTurnTs(transcriptPath, subagentsDir, minSubagentMtimeMs = -Infinity) {
   if (!transcriptPath) return { ts: null, source: 'none' };
   try {
     fs.accessSync(transcriptPath, fs.constants.R_OK);
@@ -216,6 +224,9 @@ export function readNewestTurnTs(transcriptPath, subagentsDir) {
   let ts = newestTurnTsIn(transcriptPath);
   let source = ts === null ? 'none' : 'own';
   for (const file of transcriptsUnder(subagentsDir)) {
+    let mtimeMs;
+    try { mtimeMs = fs.statSync(file).mtimeMs; } catch (e) { continue; }
+    if (!(mtimeMs >= minSubagentMtimeMs)) continue;
     const sub = newestTurnTsIn(file);
     if (sub !== null && (ts === null || sub > ts)) {
       ts = sub;
@@ -244,7 +255,7 @@ export function isUsageLimitRecord(record, lastAssistant = null) {
   if (record.type === 'result' && record.is_error === true) {
     if (lastAssistant && typeof lastAssistant === 'object' && lastAssistant.error === 'rate_limit') return true;
     const text = typeof record.result === 'string' ? record.result : '';
-    return /usage limit|out of (extra )?usage|limit reached/i.test(text);
+    return /usage limit|hit your limit|out of (extra )?usage/i.test(text);
   }
   return false;
 }
@@ -297,7 +308,7 @@ export function liveness(input) {
     now,
   } = input || {};
 
-  const turn = readNewestTurnTs(transcriptPath, subagentsDir);
+  const turn = readNewestTurnTs(transcriptPath, subagentsDir, now - silenceBoundMs);
   let transcriptAge = turn.ts === null ? null : now - turn.ts;
   const ahead = transcriptAge !== null && transcriptAge < -AHEAD_TOLERANCE_MS;
   if (transcriptAge !== null && transcriptAge < 0 && !ahead) transcriptAge = 0;

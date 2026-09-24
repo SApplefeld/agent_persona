@@ -248,12 +248,26 @@ check "ensure_settings_arming exits 0 on an armed file with no autoContinue" "$?
 R=$(inspect "$TMP/armed-noauto.json")
 case "$R" in *"AUTO_CONTINUE=false;"*) check "provided: an already-armed file gains autoContinue false" 0 ;; *) check "provided: an already-armed file gains autoContinue false (out=$R)" 1 ;; esac
 
-# A value the caller wrote is left as written, as every other option is.
-printf '%s' '{"autoContinue":true,"pluginConfigs":{"agentic-plugin":{"options":{"arming":"owner"}},"agentic-plugin@agent-persona":{"options":{"arming":"owner"}}}}' > "$TMP/auto-true.json"
-BEFORE=$(cat "$TMP/auto-true.json")
-run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_arming "$2"' _ "$ROOT" "$TMP/auto-true.json"
-check "ensure_settings_arming exits 0 on a file that carries autoContinue" "$?"
-[ "$(cat "$TMP/auto-true.json")" = "$BEFORE" ]; check "provided: an autoContinue the caller wrote is left byte for byte" "$?"
+# A provided autoContinue other than false is refused, not honored, the way
+# another arming tier is: a supervised child always runs with the pause off.
+# true and a string that reads like false are both refused, and the refused
+# file is left byte for byte.
+for bad in 'true' '"false"'; do
+  printf '%s' '{"autoContinue":'"$bad"',"pluginConfigs":{"agentic-plugin":{"options":{"arming":"owner"}},"agentic-plugin@agent-persona":{"options":{"arming":"owner"}}}}' > "$TMP/auto-bad.json"
+  BEFORE=$(cat "$TMP/auto-bad.json")
+  ERR=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_arming "$2"' _ "$ROOT" "$TMP/auto-bad.json" 2>&1)
+  RC=$?
+  case "$RC:$ERR" in 1:*"ERROR: ensure_settings_arming: "*"carries autoContinue $bad; a supervised child always runs with autoContinue false"*) check "ensure_settings_arming refuses a provided autoContinue $bad" 0 ;; *) check "ensure_settings_arming refuses a provided autoContinue $bad (rc=$RC, err=$ERR)" 1 ;; esac
+  [ "$(cat "$TMP/auto-bad.json")" = "$BEFORE" ]; check "a refused autoContinue $bad leaves the file byte for byte unchanged" "$?"
+done
+
+# A provided false is the value the launch wants, so the file is left byte
+# for byte and the call exits 0.
+printf '%s' '{"autoContinue":false,"pluginConfigs":{"agentic-plugin":{"options":{"arming":"owner"}},"agentic-plugin@agent-persona":{"options":{"arming":"owner"}}}}' > "$TMP/auto-false.json"
+BEFORE=$(cat "$TMP/auto-false.json")
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_arming "$2"' _ "$ROOT" "$TMP/auto-false.json"
+check "ensure_settings_arming exits 0 on a file that carries autoContinue false" "$?"
+[ "$(cat "$TMP/auto-false.json")" = "$BEFORE" ]; check "provided: an autoContinue false the caller wrote is left byte for byte" "$?"
 
 # A provided arming value naming another tier is refused, not honored: a
 # supervisor launch always drives a goal tree as an owner.

@@ -284,12 +284,13 @@ try {
 # supervisor launch always drives a goal tree as an owner, so a settings
 # file naming another tier is a mistake to refuse rather than a value to
 # honor. The same pass sets the harness's top-level autoContinue to false
-# where the file omits it, as emit_settings_json writes it, and leaves a value
-# the caller wrote as written. The file is replaced by rename, same as
-# ensure_settings_plugin_ids, so an interrupted write never leaves it
-# truncated. Returns 1 on the same conditions that function does, with the
-# same error-line shape, plus the arming refusal above; exits 0 when nothing
-# needed changing.
+# where the file omits it, as emit_settings_json writes it, and refuses any
+# other value the same way it refuses another arming tier, since a
+# supervised child always runs with the usage-limit pause off. The file is
+# replaced by rename, same as ensure_settings_plugin_ids, so an interrupted
+# write never leaves it truncated. Returns 1 on the same conditions that
+# function does, with the same error-line shape, plus the arming and
+# autoContinue refusals above; exits 0 when nothing needed changing.
 ensure_settings_arming() {
   node -e '
 const fs = require("fs");
@@ -313,6 +314,7 @@ for (const id of [devId, installedId]) {
   else if (opts.arming !== "owner") fail("carries arming '"'"'" + opts.arming + "'"'"' under " + id + "; a supervisor launch is always owner");
 }
 if (s.autoContinue === undefined) { s.autoContinue = false; changed = true; }
+else if (s.autoContinue !== false) fail("carries autoContinue " + JSON.stringify(s.autoContinue) + "; a supervised child always runs with autoContinue false");
 if (!changed) process.exit(0);
 const tmp = file + ".tmp-" + process.pid;
 try {
