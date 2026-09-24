@@ -1460,6 +1460,16 @@ case "\$action" in
   # The same, with the child exiting non-zero when its stdin closes, so the
   # decide path's frozen restart counts as a crash.
   hung_quiet7) IFS= read -r _; emit_init; write_child_heartbeat; while IFS= read -r _; do :; done; exit 7 ;;
+  # The operator's shutdown request, written into the run directory once this
+  # child runs, the way the operator or a keeper writes it. The child answers
+  # the ask the supervisor logs by recording shutdown_requested, then blocks on
+  # stdin until the supervisor's EOF stop closes it.
+  ask_honors) IFS= read -r _; emit_init; : > "\$CASE_DIR/rd/shutdown.request"; wait_for_log_line 'ASK\[shutdown\] id=' 180; record shutdown_requested ""; while IFS= read -r _; do :; done; exit 0 ;;
+  # The same request with a child that never answers and outlives its input
+  # closing, so the stop runs past the EOF phase to the TERM that ends it.
+  ask_ignores) IFS= read -r _; emit_init; : > "\$CASE_DIR/rd/shutdown.request"; wait_for_log_line 'ASK\[shutdown\] id=' 180; while IFS= read -r _; do :; done; exec sleep 300 ;;
+  # The same request with a child that crashes inside the open grace.
+  ask_crash7) IFS= read -r _; emit_init; : > "\$CASE_DIR/rd/shutdown.request"; wait_for_log_line 'ASK\[shutdown\] id=' 180; exit 7 ;;
   *) exit 1 ;;
 esac
 EOF
@@ -1949,6 +1959,71 @@ check "(ha) a never-written heartbeat beside a readable, silent transcript reads
 ! grep -q -e 'FINAL_ASK' -e 'RESTART:' "$LOG"; check "(ha) a child whose heartbeat file was never written is neither asked nor restarted" "$?"
 [ "$RC" -eq 0 ]; check "(ha) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"
 [ "$LAUNCHES" -eq 1 ]; check "(ha) no second child launches (stub launches=$LAUNCHES)" "$?"
+
+# --- (sa) a shutdown request the child honors inside the grace ---
+# The request file appears while the child runs. The supervisor writes one
+# shutdown record to the mailbox and logs the ask, the child records
+# shutdown_requested, and the decide path's stop_complete stops it through the
+# EOF path with no TERM. supervisorAskGraceMs is left unset, so the ask names
+# the twenty-minute default.
+drive sa "ask_honors" 6
+SA_ASK=$(grep -n 'ASK\[shutdown\] id=' "$LOG" | head -n 1 | cut -d: -f1)
+SA_STOP=$(grep -n 'STOP_COMPLETE: ' "$LOG" | head -n 1 | cut -d: -f1)
+[ -n "$SA_ASK" ] && [ -n "$SA_STOP" ] && [ "$SA_ASK" -lt "$SA_STOP" ]; check "(sa) ASK[shutdown] comes before STOP_COMPLETE (lines ${SA_ASK:-none} < ${SA_STOP:-none})" "$?"
+grep -q 'STOP_COMPLETE: .*(the shutdown ask id=[^ ]* is honored)' "$LOG"; check "(sa) the STOP_COMPLETE line names the ask honored" "$?"
+[ "$RC" -eq 0 ]; check "(sa) supervisor exits 0 (rc=$RC)" "$?"
+! grep -q 'sending TERM' "$LOG"; check "(sa) no TERM line on the honored path" "$?"
+SA_RECORDS=$(grep -c . "$TMP/sa/rd/mailbox.jsonl" 2>/dev/null); SA_RECORDS=${SA_RECORDS:-0}
+[ "$SA_RECORDS" -eq 1 ] && grep -q '"kind":"shutdown"' "$TMP/sa/rd/mailbox.jsonl"; check "(sa) exactly one record in the mailbox, the shutdown ask (records=$SA_RECORDS)" "$?"
+[ ! -e "$TMP/sa/rd/shutdown.request" ]; check "(sa) the request file is removed" "$?"
+grep -q 'ASK\[shutdown\] id=.* has 1200000ms' "$LOG"; check "(sa) supervisorAskGraceMs absent takes the twenty-minute default" "$?"
+[ "$LAUNCHES" -eq 1 ]; check "(sa) no second child launches (stub launches=$LAUNCHES)" "$?"
+
+# --- (sb) a shutdown request the child never answers, past a two-second grace ---
+# The ask times out and the stop runs through the existing phases in their
+# order: the input closed, the EOF grace, then TERM, under the ask_timeout
+# label. The stop grace is two seconds so the TERM comes quickly.
+DRIVE_ENV=(supervisorAskGraceMs=2000 supervisorStopGraceMs=2000)
+drive sb "ask_ignores" 6
+DRIVE_ENV=()
+SB_ASK=$(grep -n 'ASK\[shutdown\] id=' "$LOG" | head -n 1 | cut -d: -f1)
+SB_TIMEOUT=$(grep -n 'ASK TIMEOUT id=' "$LOG" | head -n 1 | cut -d: -f1)
+SB_EOF=$(grep -n 'STOP\[ask_timeout\]: input closed' "$LOG" | head -n 1 | cut -d: -f1)
+SB_TERM=$(grep -n 'STOP\[ask_timeout\]: EOF grace expired, sending TERM' "$LOG" | head -n 1 | cut -d: -f1)
+[ -n "$SB_ASK" ] && [ -n "$SB_TIMEOUT" ] && [ "$SB_ASK" -lt "$SB_TIMEOUT" ]; check "(sb) ASK[shutdown] comes before ASK TIMEOUT (lines ${SB_ASK:-none} < ${SB_TIMEOUT:-none})" "$?"
+[ -n "$SB_TIMEOUT" ] && [ -n "$SB_EOF" ] && [ -n "$SB_TERM" ] && [ "$SB_TIMEOUT" -lt "$SB_EOF" ] && [ "$SB_EOF" -lt "$SB_TERM" ]
+check "(sb) the stop phases follow the timeout in their existing order: input closed, then TERM (lines ${SB_TIMEOUT:-none} < ${SB_EOF:-none} < ${SB_TERM:-none})" "$?"
+[ "$RC" -eq 0 ]; check "(sb) supervisor exits 0 after the timed-out stop (rc=$RC)" "$?"
+! grep -q 'STOP_COMPLETE' "$LOG"; check "(sb) no STOP_COMPLETE line, so the timeout is not reported as honored" "$?"
+[ ! -e "$TMP/sb/rd/shutdown.request" ]; check "(sb) the request file is removed" "$?"
+[ "$LAUNCHES" -eq 1 ]; check "(sb) no second child launches (stub launches=$LAUNCHES)" "$?"
+
+# --- (sc) a shutdown request present at launch, with no handle on disk ---
+# No child is running to ask, so the run ends at exit 0 before the gate's wait
+# and before any launch, with the request removed.
+mkdir -p "$TMP/sc/rd"
+printf 'stop\n' > "$TMP/sc/rd/shutdown.request"
+drive sc "clean" 6
+[ "$RC" -eq 0 ]; check "(sc) supervisor exits 0 on a request present at launch (rc=$RC)" "$?"
+! grep -q 'LAUNCH child-' "$LOG" && [ "$LAUNCHES" -eq 0 ]; check "(sc) no LAUNCH line and no child launched (stub launches=$LAUNCHES)" "$?"
+! grep -q 'GATE' "$LOG"; check "(sc) the run ends before the gate" "$?"
+[ ! -e "$TMP/sc/rd/shutdown.request" ]; check "(sc) the request file is removed" "$?"
+
+# --- (sd) a crash inside an open grace ---
+# The child exits 7 while the ask is open. The poll loop sees the exit on the
+# poll that finds it and takes the crash path: the natural exit is recorded
+# and accounted. The crash limit is 2, so the run goes on to the next launch,
+# where the request still present ends the run at exit 0 with no second child.
+DRIVE_CRASH_LIMIT=2
+drive sd "ask_crash7,clean" 6
+DRIVE_CRASH_LIMIT=1
+SD_ASK=$(grep -n 'ASK\[shutdown\] id=' "$LOG" | head -n 1 | cut -d: -f1)
+SD_EXIT=$(grep -n 'EXIT child-1 code=7 (natural)' "$LOG" | head -n 1 | cut -d: -f1)
+[ -n "$SD_ASK" ] && [ -n "$SD_EXIT" ] && [ "$SD_ASK" -lt "$SD_EXIT" ]; check "(sd) the crash inside the open grace takes the natural-exit crash path (lines ${SD_ASK:-none} < ${SD_EXIT:-none})" "$?"
+! grep -q -e 'ASK TIMEOUT' -e 'STOP_COMPLETE' "$LOG"; check "(sd) no ASK TIMEOUT and no STOP_COMPLETE line" "$?"
+grep -q 'SHUTDOWN_REQUEST: .*present at launch' "$LOG"; check "(sd) the next launch reads the request still present" "$?"
+[ "$RC" -eq 0 ] && [ "$LAUNCHES" -eq 1 ]; check "(sd) the run ends at exit 0 with no second child (rc=$RC, stub launches=$LAUNCHES)" "$?"
+[ ! -e "$TMP/sd/rd/shutdown.request" ]; check "(sd) the request file is removed" "$?"
 
 # --- (r) a survivor that cannot be killed stops the run instead of relaunching ---
 # The stub leaves the same native Windows process behind that case (h) uses,

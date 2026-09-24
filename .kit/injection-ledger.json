@@ -74,6 +74,12 @@
       "words": 23
     },
     {
+      "name": "SUPERVISOR_SHUTDOWN_TEXT",
+      "file": "bin/supervise.sh",
+      "chars": 151,
+      "words": 26
+    },
+    {
       "name": "RECONCILE_TEXT",
       "file": "hooks/index.ts",
       "chars": 167,

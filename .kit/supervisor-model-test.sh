@@ -171,14 +171,52 @@ refused_by "supervisorSilenceBoundMs 'abc' is refused at its own call site" "ERR
 refused_by "supervisorProbeMs '0' is refused at its own call site" "ERROR: supervisorProbeMs '0'" supervisorProbeMs=0
 refused_by "supervisorFinalAskMs '0660000' is refused at its own call site" "ERROR: supervisorFinalAskMs '0660000'" supervisorFinalAskMs=0660000
 refused_by "controllerTickMs 'abc' is refused at its own call site" "ERROR: controllerTickMs 'abc'" controllerTickMs=abc
-# The three defaults, read out of the assignments themselves: fifteen minutes,
-# two minutes and eleven minutes. A changed default reds here rather than
-# passing every startup check.
-for pair in SUPERVISOR_SILENCE_BOUND_MS:supervisorSilenceBoundMs:900000 SUPERVISOR_PROBE_MS:supervisorProbeMs:120000 SUPERVISOR_FINAL_ASK_MS:supervisorFinalAskMs:660000; do
+# The shutdown ask's grace, read from the supervisor's own environment and
+# refused at its own call site.
+refused_by "supervisorAskGraceMs '0' is refused at its own call site" "ERROR: supervisorAskGraceMs '0'" supervisorAskGraceMs=0
+# The four defaults, read out of the assignments themselves: fifteen minutes,
+# two minutes, eleven minutes and twenty minutes. A changed default reds here
+# rather than passing every startup check.
+for pair in SUPERVISOR_SILENCE_BOUND_MS:supervisorSilenceBoundMs:900000 SUPERVISOR_PROBE_MS:supervisorProbeMs:120000 SUPERVISOR_FINAL_ASK_MS:supervisorFinalAskMs:660000 SUPERVISOR_ASK_GRACE_MS:supervisorAskGraceMs:1200000; do
   IFS=: read -r var setting want <<< "$pair"
   grep -q "^$var=\"\\\${$setting:-$want}\"" "$SCRIPT"
   check "$setting defaults to $want in its assignment to $var" "$?"
 done
+# Every reader of the grace is handed it: the poll receives the setting as an
+# argument and passes it to the decide unit, and a reader never handed it
+# would take its own default silently.
+grep -q '"\$SUPERVISOR_ASK_GRACE_MS" "\$SHUTDOWN_ASK_ID" "\$SHUTDOWN_ASK_AT" "\$SUPERVISOR_SHUTDOWN_TEXT"' "$SCRIPT"
+check "bin/supervise.sh hands supervisorAskGraceMs, the carried ask and the shutdown text to the poll" "$?"
+grep -q 'askGraceMs: intOr(askGraceMs, 1200000)' "$HERE/../bin/supervise-poll.mjs"
+check "bin/supervise-poll.mjs hands the grace it receives to the decide unit" "$?"
+
+# --- A shutdown request present at launch ends the run before the gate ---
+# Driven through the real bin/supervise.sh with the empty HOME the refusal
+# cases use, where a run that reached the gate would exit 2 with GATE FAIL. A
+# request in the run directory ends the run at exit 0 first, with the file
+# removed and no launch. The control is accepted() above: the same drive with
+# no request reaches the gate.
+RD_REQ=$(mktemp -d "$TMP/rd-req.XXXXXX")
+printf 'stop\n' > "$RD_REQ/shutdown.request"
+rm -f "$TMP/stub/launched"
+OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" bash "$SCRIPT" "$TMP/wd" modelprobe default --rundir "$RD_REQ" --no-channel 2>&1)
+RC=$?
+[ "$RC" -eq 0 ]; check "a shutdown request present at launch ends the run at exit 0 (rc=$RC)" "$?"
+[ ! -e "$TMP/stub/launched" ] && ! grep -q 'LAUNCH child-' "$RD_REQ/supervisor.log" 2>/dev/null
+check "a shutdown request present at launch launches no child and logs no LAUNCH line" "$?"
+! grep -q -e 'GATE' "$RD_REQ/supervisor.log" 2>/dev/null
+check "a shutdown request present at launch ends the run before the gate" "$?"
+grep -q 'SHUTDOWN_REQUEST: .*shutdown.request is present at launch' "$RD_REQ/supervisor.log" 2>/dev/null
+check "the log names the request found at launch" "$?"
+[ ! -e "$RD_REQ/shutdown.request" ]; check "the request found at launch is removed" "$?"
+# A directory under the request's name is not a request, which the poll
+# reads the same way, so the same drive reaches the gate.
+RD_DIR=$(mktemp -d "$TMP/rd-reqdir.XXXXXX")
+mkdir "$RD_DIR/shutdown.request"
+OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" bash "$SCRIPT" "$TMP/wd" modelprobe default --rundir "$RD_DIR" --no-channel 2>&1)
+RC=$?
+[ "$RC" -eq 2 ] && case "$OUT" in *"GATE FAIL"*) true ;; *) false ;; esac
+check "a directory named shutdown.request is not a request: the run reaches the gate (rc=$RC)" "$?"
 
 # --- Two liveness helpers, extracted and driven in one process each ---
 # This suite is the one that runs at every section close and already drives
@@ -338,6 +376,70 @@ echo "STATE=$STREAM_SEEN_SIZE:$STREAM_CHANGED_AT:[$FINAL_ASK_AT]"' > "$TMP/note.
   N=$(printf '%s\n' "$OUT" | grep -c 'LIVENESS child-1: alive signal')
   [ "$N" -eq 1 ]; check "an unchanged liveness reading is named once (lines=$N)" "$?"
   printf '%s\n' "$OUT" | grep -qx 'STATE=10:5:\[\]'; check "the stream state and the cleared ask are carried to the next poll" "$?"
+fi
+
+# note_shutdown_ask, which carries the shutdown ask the poll wrote to the next
+# poll and names it once, on the poll that wrote it.
+ASKNOTE_SNIPPET=$(sed -n '/^note_shutdown_ask() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+[ -n "$ASKNOTE_SNIPPET" ]; check "note_shutdown_ask is found in bin/supervise.sh" "$?"
+if [ -n "$ASKNOTE_SNIPPET" ]; then
+  printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$ASKNOTE_SNIPPET" '
+log() { echo "$*"; }
+CHILD_INDEX=1; SHUTDOWN_REQUEST_FILE=/rd/shutdown.request; SUPERVISOR_ASK_GRACE_MS=1200000
+SHUTDOWN_ASK_ID=""; SHUTDOWN_ASK_AT=""
+# A poll with no ask, the poll that writes one, and two that carry it.
+POLL_SHUTDOWN_ASK_ID=""; POLL_SHUTDOWN_ASK_AT=""; note_shutdown_ask
+POLL_SHUTDOWN_ASK_ID=17-3; POLL_SHUTDOWN_ASK_AT=500; note_shutdown_ask
+POLL_SHUTDOWN_ASK_ID=17-3; POLL_SHUTDOWN_ASK_AT=500; note_shutdown_ask
+POLL_SHUTDOWN_ASK_ID=17-3; POLL_SHUTDOWN_ASK_AT=500; note_shutdown_ask
+echo "STATE=$SHUTDOWN_ASK_ID:$SHUTDOWN_ASK_AT"' > "$TMP/asknote.sh"
+  OUT=$(bash "$TMP/asknote.sh" 2>&1)
+  N=$(printf '%s\n' "$OUT" | grep -c '^ASK\[shutdown\] id=17-3 child-1: .* has 1200000ms to bank its state')
+  [ "$N" -eq 1 ]; check "ASK[shutdown] is logged once, naming the id and the grace, across the poll that writes the ask and two that carry it (lines=$N)" "$?"
+  N=$(printf '%s\n' "$OUT" | grep -c 'ASK\[shutdown\]')
+  [ "$N" -eq 1 ]; check "no other ASK[shutdown] line is logged, so the poll with no ask named nothing (ASK lines=$N)" "$?"
+  printf '%s\n' "$OUT" | grep -qx 'STATE=17-3:500'; check "the ask's id and time are carried to the next poll" "$?"
+fi
+
+# ask_timeout_stop, the ask_timeout branch's body, with clear_shutdown_request
+# beside it. Every function it calls is stubbed and records its call, and the
+# wrapper is a real process that has exited, so the `wait` it reaches is a
+# real wait. Past the grace the child is stopped through the stop phases
+# under the ask_timeout label and the run exits 0 with the request removed;
+# a stop that leaves a process alive or unverifiable exits 5 and keeps the
+# request for the next start.
+TIMEOUT_SNIPPET=$(sed -n '/^ask_timeout_stop() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+CLEAR_SNIPPET=$(sed -n '/^clear_shutdown_request() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+[ -n "$TIMEOUT_SNIPPET" ] && [ -n "$CLEAR_SNIPPET" ]; check "ask_timeout_stop and clear_shutdown_request are found in bin/supervise.sh" "$?"
+if [ -n "$TIMEOUT_SNIPPET" ] && [ -n "$CLEAR_SNIPPET" ]; then
+  printf '%s\n%s\n%s\n%s\n' "$STUB_OPTIONS" "$CLEAR_SNIPPET" "$TIMEOUT_SNIPPET" '
+log() { echo "$*"; }
+stop_child() { echo "CALL stop_child $1"; STOP_PATH=eof; return 0; }
+retry_stop_escalation() { echo "CALL retry_stop_escalation $1 $2"; return "${RETRY_RC_STUB:-0}"; }
+( exit 0 ) &
+CHILD_LAUNCH_PID=$!
+sleep 1
+CHILD_INDEX=1; SHUTDOWN_ASK_ID=17-3; DECIDE_REASON="the shutdown ask at 5 went unanswered past 2000ms"
+EXIT_MARKER="$1/.exit"; SHUTDOWN_REQUEST_FILE="$1/shutdown.request"
+ask_timeout_stop
+echo "RETURNED"' > "$TMP/timeout.sh"
+  timeout_run() {  # <state dir> env assignments...
+    local dir="$1"; shift
+    rm -rf "$dir"; mkdir -p "$dir"; printf 'stop\n' > "$dir/shutdown.request"
+    env "$@" timeout 60 bash "$TMP/timeout.sh" "$dir" 2>&1
+  }
+  OUT=$(timeout_run "$TMP/timeout-ok"); RC=$?
+  ASK_LINE=$(printf '%s\n' "$OUT" | grep -n '^ASK TIMEOUT id=17-3 child-1: the shutdown ask at 5 went unanswered' | head -n 1 | cut -d: -f1)
+  STOP_LINE=$(printf '%s\n' "$OUT" | grep -n '^CALL stop_child ask_timeout$' | head -n 1 | cut -d: -f1)
+  [ "$RC" -eq 0 ] && [ -n "$ASK_LINE" ] && [ -n "$STOP_LINE" ] && [ "$ASK_LINE" -lt "$STOP_LINE" ] \
+    && printf '%s\n' "$OUT" | grep -qx 'EXIT child-1 code=0 (eof)' && ! printf '%s\n' "$OUT" | grep -q '^RETURNED'
+  R=$?
+  check "past the grace: ASK TIMEOUT, then stop_child under the ask_timeout label, then exit 0 (rc=$RC, out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$R"
+  [ ! -e "$TMP/timeout-ok/shutdown.request" ]; check "the exit 0 after an ask timeout removes the shutdown request" "$?"
+  OUT=$(timeout_run "$TMP/timeout-alive" RETRY_RC_STUB=1); RC=$?
+  [ "$RC" -eq 5 ] && printf '%s\n' "$OUT" | grep -q 'alive or unverifiable despite every stop retry'
+  check "an ask timeout whose stop leaves a process alive or unverifiable exits 5 (rc=$RC)" "$?"
+  [ -e "$TMP/timeout-alive/shutdown.request" ]; check "the exit 5 keeps the shutdown request for the next start" "$?"
 fi
 
 # supervisorPsBoundS is the one setting on this rule that falls back to 30

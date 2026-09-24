@@ -525,6 +525,21 @@ function extractShellInstructions(src) {
   if (!askMarkerMatch) throw new Error("the [SUPERVISOR-ASK id=<id>] marker of final_ask_json not found in bin/supervise.sh");
   results.push(record("SUPERVISOR_ASK_TEXT", "bin/supervise.sh", askMarkerMatch[1] + askMarkerMatch[2] + askTextMatch[1]));
 
+  // The shutdown ask's text: SUPERVISOR_SHUTDOWN_TEXT, a single-line
+  // assignment the poll is handed and writes into the mailbox record the
+  // plugin submits after its [SUPERVISOR id=<id>] label. The label is sized in
+  // hooks/index.ts as SUPERVISOR_SHUTDOWN_FRAME, so this entry is the text
+  // alone. Both anchors are required: the assignment, and the variable handed
+  // to the poll, so a text the poll no longer receives fails here rather than
+  // recording prose nothing injects.
+  const shutdownTextRe = /^SUPERVISOR_SHUTDOWN_TEXT="([^\n"]*)"\s*$/m;
+  const shutdownTextMatch = shutdownTextRe.exec(src);
+  if (!shutdownTextMatch) throw new Error("SUPERVISOR_SHUTDOWN_TEXT not found in bin/supervise.sh as a single-line assignment");
+  if (!/supervise-poll\.mjs"[^\n]*(?:\\\n[^\n]*)*"\$SUPERVISOR_SHUTDOWN_TEXT"/.test(src)) {
+    throw new Error("SUPERVISOR_SHUTDOWN_TEXT is not handed to bin/supervise-poll.mjs in bin/supervise.sh's poll call");
+  }
+  results.push(record("SUPERVISOR_SHUTDOWN_TEXT", "bin/supervise.sh", shutdownTextMatch[1]));
+
   return results;
 }
 

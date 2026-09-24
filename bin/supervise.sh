@@ -214,6 +214,11 @@ SUPERVISOR_POLL_MS="${supervisorPollMs:-10000}"
 SUPERVISOR_SILENCE_BOUND_MS="${supervisorSilenceBoundMs:-900000}"
 SUPERVISOR_PROBE_MS="${supervisorProbeMs:-120000}"
 SUPERVISOR_FINAL_ASK_MS="${supervisorFinalAskMs:-660000}"
+# How long a shutdown ask waits for the child to bank its state and record
+# shutdown_requested before the stop proceeds through the stop phases: twenty
+# minutes, a child's longest single turn plus a controller tick. Read by the
+# decide unit through the poll, and never written to the plugin's options.
+SUPERVISOR_ASK_GRACE_MS="${supervisorAskGraceMs:-1200000}"
 # v2 spec Section 0 item 3 Part B (operator decision, DISCUSSION.md Round
 # 136 addendum): the worker's own main thread - where PR #17's kill path
 # was actually written - defaults to opus at medium effort, not sonnet.
@@ -325,6 +330,10 @@ if ! positive_number "$SUPERVISOR_FINAL_ASK_MS"; then
   echo "ERROR: supervisorFinalAskMs '$SUPERVISOR_FINAL_ASK_MS' is not a whole number of milliseconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
   exit 1
 fi
+if ! positive_number "$SUPERVISOR_ASK_GRACE_MS"; then
+  echo "ERROR: supervisorAskGraceMs '$SUPERVISOR_ASK_GRACE_MS' is not a whole number of milliseconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
+  exit 1
+fi
 
 # --- Plugin values (single-sourced, emitted to settings JSON) ---
 HEARTBEAT_MS="${heartbeatMs:-30000}"
@@ -359,6 +368,11 @@ SETTINGS_FILE="$RUNDIR/settings.json"
 CHILD_HEARTBEAT="$RUNDIR/heartbeat.json"
 MAILBOX_FILE="$RUNDIR/mailbox.jsonl"
 MAILBOX_ACK_FILE="$RUNDIR/mailbox.ack.jsonl"
+# The file that stops this persona on purpose. The operator or a keeper writes
+# it; the poll reads it and asks the child to stop, and a launch that finds it
+# ends the run without launching. Whatever it contains, a present file is the
+# request, and each exit 0 the request leads to removes it.
+SHUTDOWN_REQUEST_FILE="$RUNDIR/shutdown.request"
 # The three paths the child's plugin is handed in the settings file, exported
 # once here so both settings branches below write them: the mailbox it drains,
 # the workdir sidecar the pre-launch gate reads, and the heartbeat file only
@@ -2497,6 +2511,13 @@ final_ask_json() {
   " "$1" "$SUPERVISOR_ASK_TEXT"
 }
 
+# --- The shutdown ask's text ---
+# The text of the shutdown record the poll writes to the mailbox once a
+# shutdown request is present. The child's plugin submits it as a turn opening
+# [SUPERVISOR id=<id>], and the priming turn says what such a prompt carries.
+# Held here and handed to the poll, so the injection ledger sizes it.
+SUPERVISOR_SHUTDOWN_TEXT="The launcher is ending this session. Bank your state now, with the plan doc, the goal tree and any owed message on disk, then call supervisor_shutdown."
+
 # --- Helper: read a fact from .agentic-personas.json ---
 # Usage: get_fact <workdir> <persona> <fact>
 # Prints the timestamp of the newest matching decision, or empty.
@@ -2775,6 +2796,57 @@ note_liveness_poll() {
   fi
 }
 
+# --- Helper: carry the shutdown ask from one poll to the next, and log it ---
+# The poll writes the ask once, where a shutdown request is present and no ask
+# to this child is open, and hands its id and time back as the POLL_SHUTDOWN_*
+# values. They are held here for the next poll to hand in, which is what keeps
+# a second record from being written while one is open and what the grace is
+# measured from. The ask is named on the poll that writes it. The caller runs
+# this only for a poll that ran.
+note_shutdown_ask() {
+  if [ -n "$POLL_SHUTDOWN_ASK_ID" ] && [ "$POLL_SHUTDOWN_ASK_ID" != "$SHUTDOWN_ASK_ID" ]; then
+    log "ASK[shutdown] id=$POLL_SHUTDOWN_ASK_ID child-$CHILD_INDEX: $SHUTDOWN_REQUEST_FILE asks this persona to stop, and the child has ${SUPERVISOR_ASK_GRACE_MS}ms to bank its state and call supervisor_shutdown"
+  fi
+  SHUTDOWN_ASK_ID="$POLL_SHUTDOWN_ASK_ID"
+  SHUTDOWN_ASK_AT="$POLL_SHUTDOWN_ASK_AT"
+}
+
+# --- Helper: remove the shutdown request once the stop it asked for is done ---
+# Run before each exit 0 a shutdown leads to, so the next start in this run
+# directory launches rather than reading the request again. A request that
+# cannot be removed is named, since that next start will exit 0 on it.
+clear_shutdown_request() {
+  [ -f "$SHUTDOWN_REQUEST_FILE" ] || return 0
+  rm -f "$SHUTDOWN_REQUEST_FILE" 2>/dev/null
+  if [ -f "$SHUTDOWN_REQUEST_FILE" ]; then
+    log "NOTE: $SHUTDOWN_REQUEST_FILE could not be removed, so the next start in this run directory reads it again and exits 0 without launching"
+  fi
+}
+
+# --- Helper: stop a child that did not honor the shutdown ask ---
+# The grace has passed with no shutdown_requested from the child, so the stop
+# proceeds through the stop phases as every decide-path stop does, under a
+# label of its own, and the run ends at exit 0, which the keeper reads as the
+# shutdown done. A process from the child left alive or unverifiable outranks
+# that and ends the run at exit 5, as it does on every other stop, and the
+# request stays in place for the next start.
+ask_timeout_stop() {
+  log "ASK TIMEOUT id=$SHUTDOWN_ASK_ID child-$CHILD_INDEX: $DECIDE_REASON"
+  stop_child "ask_timeout"
+  retry_stop_escalation "ask_timeout" $?
+  STOP_ESCALATION_RESULT=$?
+  wait "$CHILD_LAUNCH_PID"; EXIT_CODE=$?
+  CHILD_LAUNCH_PID=""
+  echo "$EXIT_CODE" > "$EXIT_MARKER"
+  log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
+  if [ "${STOP_ESCALATION_RESULT:-0}" -ne 0 ]; then
+    log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable despite every stop retry (STOP_PATH=$STOP_PATH)"
+    exit 5
+  fi
+  clear_shutdown_request
+  exit 0
+}
+
 # --- Main loop ---
 CHILD_INDEX=0
 RESTART_COUNT=0
@@ -2823,6 +2895,16 @@ while true; do
   rm -f "$EXIT_MARKER"
 
   # --- D3: Pre-launch gate (AD2: check both commons AND heartbeat) ---
+  # A shutdown request found at a launch has no child to ask: the run ends at
+  # exit 0 with the request removed, before the gate's wait and before any
+  # launch, so a persona still held by another session cannot turn the request
+  # into a gate timeout the keeper retries. Read at every launch, so a child
+  # that ends inside an open ask is not relaunched.
+  if [ -f "$SHUTDOWN_REQUEST_FILE" ]; then
+    log "SHUTDOWN_REQUEST: $SHUTDOWN_REQUEST_FILE is present at launch and no child is running to ask, so the run ends without launching child-$CHILD_INDEX"
+    clear_shutdown_request
+    exit 0
+  fi
   GLOBAL_STORE=$(find_global_store "$DEV_MODE")
   if [ -z "$GLOBAL_STORE" ]; then
     log "GATE FAIL: no global commons store found"
@@ -3350,6 +3432,11 @@ while true; do
   # heartbeat file has been named.
   LIVENESS_LOGGED=""
   HEARTBEAT_ABSENT_LOGGED=""
+  # The shutdown ask to this child, its id and when it was written, carried
+  # poll to poll. Both start empty for each child, since the mailbox was
+  # truncated at its launch.
+  SHUTDOWN_ASK_ID=""
+  SHUTDOWN_ASK_AT=""
 
   if [ -z "$CHILD_LAUNCH_PID" ]; then
     log "ERROR: CHILD_LAUNCH_PID not set after coproc launch"
@@ -3385,7 +3472,8 @@ while true; do
     # so every fact off it describes the same moment. A process launch costs
     # tenths of a second on a loaded box, and a poll that launches one per
     # reading runs longer than the interval it sleeps. The same process writes
-    # a probe to the mailbox where the heartbeat is stale.
+    # a probe to the mailbox where the heartbeat is stale, and the shutdown ask
+    # where a shutdown request is present and no ask to this child is open.
     POLL_RESULT=$(node "$PLUGIN_DIR/bin/supervise-poll.mjs" \
       "$CHILD_HEARTBEAT" "$STORE" "$PERSONA" "$OUT" "$PROFILE_ROOT" "${CHILD_SESSION_ID:-}" \
       "$CHILD_START_TS" "$LAUNCHED_AT" "$STALE_AFTER_MS" "$SUPERVISOR_MIN_RUN_MS" \
@@ -3395,10 +3483,12 @@ while true; do
       "$SUPERVISOR_SILENCE_BOUND_MS" "$SUPERVISOR_PROBE_MS" "$PROBE_WINDOW_MS" \
       "$SUPERVISOR_FINAL_ASK_MS" "$FINAL_ASK_AT" "$SUPERVISOR_START_MS" \
       "$MAILBOX_FILE" "$MAILBOX_ACK_FILE" \
+      "$SUPERVISOR_ASK_GRACE_MS" "$SHUTDOWN_ASK_ID" "$SHUTDOWN_ASK_AT" "$SUPERVISOR_SHUTDOWN_TEXT" \
       2>> "$RUNDIR/supervisor.err")
     DECIDE_ERR=$?
     DECIDE_ACTION=""; DECIDE_REASON=""; POLL_RATE_LIMIT=""; POLL_SESSION_ID=""
     POLL_LIVENESS=""; POLL_STREAM_SIZE=""; POLL_STREAM_CHANGED_AT=""; POLL_FINAL_ASK_AT=""; POLL_HEARTBEAT_NOTE=""
+    POLL_SHUTDOWN_ASK_ID=""; POLL_SHUTDOWN_ASK_AT=""
     {
       IFS= read -r DECIDE_ACTION
       IFS= read -r DECIDE_REASON
@@ -3409,6 +3499,8 @@ while true; do
       IFS= read -r POLL_STREAM_CHANGED_AT
       IFS= read -r POLL_FINAL_ASK_AT
       IFS= read -r POLL_HEARTBEAT_NOTE
+      IFS= read -r POLL_SHUTDOWN_ASK_ID
+      IFS= read -r POLL_SHUTDOWN_ASK_AT
     } <<< "$POLL_RESULT"
     DECIDE_ACTION="${DECIDE_ACTION%$'\r'}"
     DECIDE_REASON="${DECIDE_REASON%$'\r'}"
@@ -3419,12 +3511,15 @@ while true; do
     POLL_STREAM_CHANGED_AT="${POLL_STREAM_CHANGED_AT%$'\r'}"
     POLL_FINAL_ASK_AT="${POLL_FINAL_ASK_AT%$'\r'}"
     POLL_HEARTBEAT_NOTE="${POLL_HEARTBEAT_NOTE%$'\r'}"
+    POLL_SHUTDOWN_ASK_ID="${POLL_SHUTDOWN_ASK_ID%$'\r'}"
+    POLL_SHUTDOWN_ASK_AT="${POLL_SHUTDOWN_ASK_AT%$'\r'}"
 
-    # The liveness state carried to the next poll, taken only from a poll that
-    # ran: a failed one says nothing about the stream or the ask, so the last
-    # reading of each stands.
+    # The liveness state and the shutdown ask carried to the next poll, taken
+    # only from a poll that ran: a failed one says nothing about the stream or
+    # either ask, so the last reading of each stands.
     if [ -n "$DECIDE_ACTION" ] && [ $DECIDE_ERR -eq 0 ]; then
       note_liveness_poll
+      note_shutdown_ask
     fi
 
     # The child's session id, off the init line of its stream.
@@ -3479,7 +3574,13 @@ while true; do
 
     case "$DECIDE_ACTION" in
       stop_complete)
-        log "STOP_COMPLETE: $DECIDE_REASON"
+        # A shutdown the child recorded while the shutdown ask was open is
+        # that ask honored, and the log says so.
+        if [ -n "$SHUTDOWN_ASK_ID" ]; then
+          log "STOP_COMPLETE: $DECIDE_REASON (the shutdown ask id=$SHUTDOWN_ASK_ID is honored)"
+        else
+          log "STOP_COMPLETE: $DECIDE_REASON"
+        fi
         stop_child "stop_complete"
         retry_stop_escalation "stop_complete" $?
         STOP_ESCALATION_RESULT=$?
@@ -3495,7 +3596,11 @@ while true; do
           log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable despite every stop retry (STOP_PATH=$STOP_PATH)"
           exit 5
         fi
+        clear_shutdown_request
         exit 0
+        ;;
+      ask_timeout)
+        ask_timeout_stop
         ;;
       stop_park)
         log "STOP_PARK: $DECIDE_REASON"
@@ -3669,7 +3774,11 @@ while true; do
   # a code that relaunches instead.
   SHUTDOWN_REQUESTED_TS=$(get_fact "$WORKDIR" "$PERSONA" "shutdown_requested")
   if [ -n "$SHUTDOWN_REQUESTED_TS" ] && [ "$SHUTDOWN_REQUESTED_TS" -gt "$CHILD_START_TS" ]; then
-    log "STOP_COMPLETE: shutdown_requested at $SHUTDOWN_REQUESTED_TS > child start $CHILD_START_TS"
+    if [ -n "$SHUTDOWN_ASK_ID" ]; then
+      log "STOP_COMPLETE: shutdown_requested at $SHUTDOWN_REQUESTED_TS > child start $CHILD_START_TS (the shutdown ask id=$SHUTDOWN_ASK_ID is honored)"
+    else
+      log "STOP_COMPLETE: shutdown_requested at $SHUTDOWN_REQUESTED_TS > child start $CHILD_START_TS"
+    fi
     # The run ends here whatever the sweep finds, since exit 0 is what the
     # keeper reads as the shutdown being honored and any other code brings the
     # persona back. The sweep still runs, because nothing downstream ever
@@ -3685,6 +3794,7 @@ while true; do
     if [ "$SWEEP_RC" -eq 1 ]; then
       log "NOTE: child-$CHILD_INDEX leaves a process that is alive or a tree that could not be read, and the shutdown the operator asked for is still what this run reports"
     fi
+    clear_shutdown_request
     exit 0
   fi
 

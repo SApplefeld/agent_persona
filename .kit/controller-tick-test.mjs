@@ -3510,6 +3510,7 @@ async function main() {
     await caseMailbox_partialLastLineIsLeftForTheNextTick(clock);
     await casePin_probeAckRoundTripThroughTheRealPoll(clock);
     await casePin_heartbeatFileReadFreshByTheRealPoll(clock);
+    await casePin_shutdownRecordDeliveredOnceByThePlugin(clock);
   } finally {
     clock.restore();
   }
@@ -22138,8 +22139,8 @@ function pinRunDir(name) {
   };
 }
 
-// One poll over a pin's run directory, with all twenty-seven arguments.
-function pinPoll(run, { sessionId = SESSION_ID, probeWindowMs = 30000 } = {}) {
+// One poll over a pin's run directory, with all thirty-one arguments.
+function pinPoll(run, { sessionId = SESSION_ID, probeWindowMs = 30000, shutdownText = "" } = {}) {
   const now = realNowMs();
   const r = spawnSync(process.execPath, [
     GL6_POLL_PATH,
@@ -22147,9 +22148,10 @@ function pinPoll(run, { sessionId = SESSION_ID, probeWindowMs = 30000 } = {}) {
     String(now - 3_600_000), String(now - 3_600_000), "90000", "120000", "6", "0", "0", "3",
     join(run.dir, "run"), PIN_WORKDIR, "live", "", "", "900000", "120000", String(probeWindowMs), "660000", "",
     String(PIN_SUPERVISOR_START), run.mailbox, run.ack,
+    "1200000", "", "", shutdownText,
   ], { encoding: "utf8" });
   const lines = String(r.stdout).split("\n");
-  return { status: r.status, action: lines[0], liveness: lines[4], heartbeatNote: lines[8], stderr: r.stderr };
+  return { status: r.status, action: lines[0], liveness: lines[4], heartbeatNote: lines[8], shutdownAskId: lines[9], stderr: r.stderr };
 }
 
 // The file names the plugin writes and the poll reads are the names
@@ -22239,4 +22241,56 @@ async function casePin_heartbeatFileReadFreshByTheRealPoll(clock) {
   check("pin heartbeat control: the same file stamped years back reads frozen", staleRead.status === 0 && staleRead.liveness === "frozen all_silent", staleRead);
   const other = pollOver("other", fresh, { sessionId: "another-session" });
   check("pin heartbeat control: read for another session id, the file is never written", other.status === 0 && other.heartbeatNote === "HEARTBEAT_ABSENT", other);
+}
+
+// The shutdown pin: a shutdown.request in the run directory makes the real
+// poll write one shutdown record through the mailbox writer the probe uses,
+// carrying the shutdown text bin/supervise.sh holds, and the plugin's tick
+// reads those exact bytes and delivers the record once across three ticks as
+// a turn opening [SUPERVISOR id=<id>], with the id the poll handed back. The
+// plugin leaves a last line with no newline for its next tick, so the record
+// must end in one: the control hands the tick the same bytes without it and
+// nothing is delivered.
+async function casePin_shutdownRecordDeliveredOnceByThePlugin(clock) {
+  console.log("\n=== Pin: a shutdown record the poll writes is delivered once by the plugin ===");
+  const sh = readFileSync(fileURLToPath(new URL("../bin/supervise.sh", import.meta.url)), "utf8").replace(/\r\n/g, "\n");
+  check("pin shutdown names: bin/supervise.sh names shutdown.request in the run directory", sh.includes('SHUTDOWN_REQUEST_FILE="$RUNDIR/shutdown.request"'));
+  const textMatch = /^SUPERVISOR_SHUTDOWN_TEXT="([^\n"]*)"$/m.exec(sh);
+  check("pin shutdown: bin/supervise.sh holds the shutdown text as a single-line SUPERVISOR_SHUTDOWN_TEXT", textMatch !== null);
+  const shutdownText = textMatch ? textMatch[1] : "";
+  const run = pinRunDir("shutdown");
+  writeFileSync(join(run.dir, "run", "shutdown.request"), "");
+  const polled = pinPoll(run, { shutdownText });
+  let bytes = "";
+  try { bytes = readFileSync(run.mailbox, "utf8"); } catch { /* no record written; the checks below report it */ }
+  rmSync(run.dir, { recursive: true, force: true });
+  const lines = bytes.split("\n").filter((l) => l !== "");
+  let rec = null;
+  try { rec = JSON.parse(lines[0]); } catch { /* reported below */ }
+  check("pin shutdown: the poll wrote exactly one record, a shutdown, and handed back its id",
+    polled.status === 0 && lines.length === 1 && rec !== null && rec.kind === "shutdown" && rec.id === polled.shutdownAskId, { polled, bytes });
+  check("pin shutdown: the record the poll wrote ends in a newline", bytes.endsWith("\n"), JSON.stringify(bytes));
+
+  const deliver = async (name, mailboxBytes) => {
+    clock.set(T0);
+    const h = await createTickHarness({ ...OPTS, caseName: `pin_shutdown_${name}`, supervisorMailbox: MBX_FILE });
+    h.fsMap.set(MBX_FILE, mailboxBytes);
+    for (let i = 0; i < 3; i += 1) {
+      clock.advance(10_000);
+      await tickAndSettle(h, clock, 50);
+    }
+    return {
+      shutdowns: h.promptSubmits.filter((t) => t.startsWith("[SUPERVISOR id=")),
+      acks: mailboxAcks(h),
+      skipped: getDecisions(h).filter((d) => d.action === "supervisor_mailbox_line_skipped"),
+    };
+  };
+  const whole = await deliver("whole", bytes);
+  check("pin shutdown: the plugin delivers the poll's record exactly once across three ticks", whole.shutdowns.length === 1, whole.shutdowns);
+  check("pin shutdown: the turn is the label with the poll's id, followed by the shutdown text bin/supervise.sh holds",
+    rec !== null && whole.shutdowns[0] === `[SUPERVISOR id=${rec.id}] ${shutdownText}`, whole.shutdowns[0]);
+  check("pin shutdown: one delivered line names the poll's id", whole.acks.length === 1 && rec !== null && whole.acks[0].id === rec.id && whole.acks[0].action === "delivered", whole.acks);
+  check("pin shutdown: the plugin read the record as well formed", whole.skipped.length === 0, whole.skipped.map((d) => d.detail));
+  const unterminated = await deliver("unterminated", bytes.replace(/\n$/, ""));
+  check("pin shutdown control: the same record without its newline is not delivered", unterminated.shutdowns.length === 0 && unterminated.acks.length === 0, unterminated);
 }

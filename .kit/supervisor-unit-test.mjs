@@ -360,6 +360,88 @@ const cases = [
     expected: 'restart',
     expectedReasonIncludes: 'child exited with code 1',
   },
+
+  // The shutdown ask's grace. A grace that never expires is a persona that
+  // cannot be stopped, and a grace that is skipped is a kill that gives the
+  // child no chance to bank its state, so the boundary is locked both sides.
+  {
+    name: 'shutdown ask exactly askGraceMs old: continue, the grace is still open',
+    input: { ...QUIET, shutdownAskAt: 5000000 - 1200000, askGraceMs: 1200000, now: 5000000 },
+    expected: 'continue',
+  },
+  {
+    name: 'shutdown ask one ms past askGraceMs: ask_timeout, naming the ask and the grace',
+    input: { ...QUIET, shutdownAskAt: 5000000 - 1200001, askGraceMs: 1200000, now: 5000000 },
+    expected: 'ask_timeout',
+    expectedReasonIncludes: 'the shutdown ask at 3799999 went unanswered past 1200000ms',
+  },
+  {
+    name: 'shutdown ask just written: continue',
+    input: { ...QUIET, shutdownAskAt: 5000000, askGraceMs: 1200000, now: 5000000 },
+    expected: 'continue',
+  },
+  {
+    name: 'no shutdown ask, however late: continue',
+    input: { ...QUIET, shutdownAskAt: null, askGraceMs: 1200000, now: 999999999 },
+    expected: 'continue',
+  },
+  // An absent askGraceMs takes the twenty-minute default, the value
+  // bin/supervise.sh defaults supervisorAskGraceMs to.
+  {
+    name: 'askGraceMs absent: the grace defaults to twenty minutes, still open at exactly 1200000 ms',
+    input: { ...QUIET, shutdownAskAt: 5000000 - 1200000, now: 5000000 },
+    expected: 'continue',
+  },
+  {
+    name: 'askGraceMs absent: one ms past twenty minutes is ask_timeout',
+    input: { ...QUIET, shutdownAskAt: 5000000 - 1200001, now: 5000000 },
+    expected: 'ask_timeout',
+  },
+  // The honored path: the child's own shutdown_requested is stop_complete
+  // inside the grace, and still stop_complete past it, since the answer
+  // outranks the timeout.
+  {
+    name: 'shutdown ask open, shutdown_requested inside the grace: stop_complete',
+    input: { ...QUIET, shutdownRequestedTs: 4500000, shutdownAskAt: 4000000, askGraceMs: 1200000, now: 4600000 },
+    expected: 'stop_complete',
+  },
+  {
+    name: 'shutdown ask past the grace beside a newer shutdown_requested: stop_complete outranks ask_timeout',
+    input: { ...QUIET, shutdownRequestedTs: 4500000, shutdownAskAt: 1000000, askGraceMs: 1200000, now: 5000000 },
+    expected: 'stop_complete',
+  },
+  // Inside the grace, what the child does is seen on the poll that finds it.
+  {
+    name: 'shutdown ask inside the grace, the child wrote restart_requested: restart_passive',
+    input: { ...QUIET, restartRequestedTs: 4500000, shutdownAskAt: 4000000, askGraceMs: 1200000, now: 4600000 },
+    expected: 'restart_passive',
+  },
+  {
+    name: 'shutdown ask inside the grace, the child wrote park_requested: stop_park',
+    input: { ...QUIET, parkRequestedTs: 4500000, shutdownAskAt: 4000000, askGraceMs: 1200000, now: 4600000 },
+    expected: 'stop_park',
+  },
+  {
+    name: 'shutdown ask inside the grace, a frozen reading: final_ask',
+    input: { ...QUIET, liveness: FROZEN, shutdownAskAt: 4000000, askGraceMs: 1200000, now: 4600000 },
+    expected: 'final_ask',
+  },
+  {
+    name: 'shutdown ask inside the grace, a gone reading: sweep_relaunch',
+    input: { ...QUIET, liveness: GONE, shutdownAskAt: 4000000, askGraceMs: 1200000, now: 4600000 },
+    expected: 'sweep_relaunch',
+  },
+  // Past the grace the stop outranks every row below stop_complete.
+  {
+    name: 'shutdown ask past the grace beside park_requested, restart_requested and a frozen reading: ask_timeout',
+    input: { ...QUIET, parkRequestedTs: 4500000, restartRequestedTs: 4500000, liveness: FROZEN, finalAskAt: 1000, shutdownAskAt: 1000000, askGraceMs: 1200000, now: 5000000 },
+    expected: 'ask_timeout',
+  },
+  {
+    name: 'the restart budget exhausted outranks a shutdown ask past the grace: stop_budget',
+    input: { ...QUIET, restartCount: 6, maxRestartsPerHour: 6, shutdownAskAt: 1000000, askGraceMs: 1200000, now: 5000000 },
+    expected: 'stop_budget',
+  },
 ];
 
 let pass = 0, fail = 0;

@@ -17,6 +17,8 @@
  * @property {{verdict: string, reason: string, detail: string}|null} [liveness] - The reading bin/supervise-liveness.mjs returned for this poll. Null or absent reads as alive: no liveness restart is ever taken without a reading.
  * @property {number|null} [finalAskAt] - When the final ask for the current silence was written, in epoch ms, or null where none has been. The poll loop clears it whenever a reading is alive.
  * @property {number} [finalAskMs] - supervisorFinalAskMs: how long a final ask waits for any signal to move before a frozen child restarts.
+ * @property {number|null} [shutdownAskAt] - When the shutdown ask to the current child was written to the mailbox, in epoch ms, or null where none has been. The poll loop carries it from poll to poll for as long as that child lives.
+ * @property {number} [askGraceMs] - supervisorAskGraceMs: how long a shutdown ask waits for the child's own shutdown_requested before the stop proceeds through the stop phases.
  * @property {number} [now] - Current time (for the final ask's window).
  * @property {number} [minRunMs] - Minimum run time before crash-loop counting.
  * @property {number} [maxRestartsPerHour] - Restart budget per hour.
@@ -24,7 +26,7 @@
 
 /**
  * @typedef {Object} DecideOutput
- * @property {string} action - 'restart' | 'restart_passive' | 'final_ask' | 'sweep_relaunch' | 'stop_complete' | 'stop_park' | 'stop_crash_loop' | 'stop_budget' | 'continue'
+ * @property {string} action - 'restart' | 'restart_passive' | 'final_ask' | 'sweep_relaunch' | 'stop_complete' | 'ask_timeout' | 'stop_park' | 'stop_crash_loop' | 'stop_budget' | 'continue'
  * @property {string} reason - Human-readable explanation.
  */
 
@@ -37,6 +39,11 @@
  * 3. stop_complete - an explicit shutdown_requested decision newer than child start
  *    (plan item 4: distinct from root_complete - the operator asked the
  *    supervisor itself to stop, not just the current goal)
+ * 3-. ask_timeout - a shutdown ask older than askGraceMs: the child was asked
+ *    to bank its state and call supervisor_shutdown, and has not, so the stop
+ *    proceeds through the stop phases. Below stop_complete, so a shutdown the
+ *    child records past the grace is still honored, and above every row
+ *    below, so past the grace nothing else the child does keeps it running
  * 3a. stop_park - an explicit park_requested decision newer than child start:
  *    the persona parked for an update window. The supervisor stops as it does
  *    for a shutdown and exits on the park code, so the keeper's next start
@@ -81,6 +88,8 @@ export function decide(input) {
     liveness = null,
     finalAskAt = null,
     finalAskMs = 660000,
+    shutdownAskAt = null,
+    askGraceMs = 1200000,
     now,
     minRunMs = 120000,
     maxRestartsPerHour = 6,
@@ -105,6 +114,15 @@ export function decide(input) {
   // asked the supervisor itself to stop, not just the current goal. Stop.
   if (shutdownRequestedTs !== null && shutdownRequestedTs !== undefined && shutdownRequestedTs > childStartTs) {
     return { action: 'stop_complete', reason: `shutdown_requested at ${shutdownRequestedTs} > child start ${childStartTs}` };
+  }
+
+  // 3-. A shutdown ask the child has not honored inside the grace. Its answer
+  // is a shutdown_requested newer than the child start, which 3 above takes.
+  // Inside the grace every row below is read as it always is, so a crash, a
+  // request the child wrote or a liveness verdict is seen on the poll that
+  // finds it. The window test is the final ask's: strictly past the grace.
+  if (shutdownAskAt !== null && shutdownAskAt !== undefined && now - shutdownAskAt > askGraceMs) {
+    return { action: 'ask_timeout', reason: `the shutdown ask at ${shutdownAskAt} went unanswered past ${askGraceMs}ms` };
   }
 
   // 3a. An explicit park request newer than child start: the persona asked to

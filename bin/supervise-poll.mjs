@@ -10,10 +10,12 @@
 // Git for Windows costs tenths of a second on a loaded box, so a poll that
 // launches one process per reading spends longer reading than it sleeps.
 //
-// It writes one thing: a probe record appended to the mailbox
-// where the child's heartbeat is stale and no probe has been written inside
-// supervisorProbeMs. The record is built with JSON.stringify, since the
-// plugin parses that file.
+// It writes to one file, the mailbox, through one writer (appendMailboxRecord):
+// a probe where the child's heartbeat is stale and no probe has been written
+// inside supervisorProbeMs, and the shutdown ask where <rundir>/shutdown.request
+// is present and no ask to this child is open. Each record is built with
+// JSON.stringify and ends in a newline, since the plugin parses that file and
+// leaves a line with no newline yet for its next tick.
 //
 // Arguments, all positional so the MSYS launcher converts each path:
 //   1 the child's own heartbeat file, <rundir>/heartbeat.json
@@ -34,10 +36,16 @@
 //  25 the supervisor's start time, epoch ms, which prefixes every probe id
 //  26 the mailbox, <rundir>/mailbox.jsonl
 //  27 the plugin's ack file, <rundir>/mailbox.ack.jsonl
+//  28 supervisorAskGraceMs
+//  29 the open shutdown ask's id ('' if none)
+//  30 when that ask was written, epoch ms ('' if none)
+//  31 the shutdown ask's text, which bin/supervise.sh holds as
+//     SUPERVISOR_SHUTDOWN_TEXT
 // A caller passing only the first fifteen gets a walk read as incomplete,
 // which reads alive: no liveness restart without the readings that earn it.
+// A caller passing no mailbox writes no record of either kind.
 //
-// Prints nine lines:
+// Prints eleven lines:
 //   action
 //   reason
 //   <rate-limit reset epoch ms> <ISO 8601>, or "- -" where the child is not parked
@@ -48,8 +56,11 @@
 //   the final ask's time for the next poll to hand in, or an empty line
 //   HEARTBEAT_ABSENT where the heartbeat file was never written and the
 //     startup grace is over, or "-"
+//   the open shutdown ask's id for the next poll to hand in, or an empty line
+//   that ask's time, or an empty line
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { decide } from './supervise-decide.mjs';
 import { readRestartRequest } from './supervise-restart-request.mjs';
 import { liveness, transcriptPathsFor, isUsageLimitRecord } from './supervise-liveness.mjs';
@@ -267,26 +278,61 @@ export function readProbeState(mailbox, ack) {
   const acks = (ack ? readJsonLines(ack) : [])
     .filter((r) => r.action === 'ack' && typeof r.id === 'string')
     .map((r) => ({ id: r.id }));
-  return { probes, acks, count: records.length };
+  return { probes, acks };
+}
+
+// The one writer of the mailbox. Appends one record { id, kind, at, text },
+// built with JSON.stringify and ending in a newline, and returns its id and
+// time. The id is the supervisor's start time and one more than the number of
+// records already in the mailbox, so ids stay unique across supervisors
+// sharing a run directory and across both kinds, and an adopting
+// supervisor's first record never matches an id already in the ack file.
+export function appendMailboxRecord(mailbox, kind, text, now, supervisorStartMs) {
+  const record = {
+    id: supervisorStartMs + '-' + (readJsonLines(mailbox).length + 1),
+    kind,
+    at: now,
+    text,
+  };
+  fs.appendFileSync(mailbox, JSON.stringify(record) + '\n');
+  return { id: record.id, at: record.at };
 }
 
 // Appends one probe to the mailbox where the child's heartbeat is stale and no
-// probe has been written inside probeMs. The id is the supervisor's start
-// time and a counter, so an adopting supervisor's first probe never matches
-// an id already in the ack file. Returns the probe written, or null.
+// probe has been written inside probeMs. Returns the probe written, or null.
 export function writeProbeIfDue(mailbox, state, heartbeat, now, staleAfterMs, probeMs, supervisorStartMs) {
   if (!mailbox || supervisorStartMs === null || !heartbeat) return null;
   if (now - heartbeat.lastSeen <= staleAfterMs) return null;
   const newest = state.probes.reduce((a, p) => (a === null || p.at > a ? p.at : a), null);
   if (newest !== null && now - newest < probeMs) return null;
-  const probe = {
-    id: supervisorStartMs + '-' + (state.count + 1),
-    kind: 'probe',
-    at: now,
-    text: 'liveness probe from the supervisor, acknowledged by the controller tick and never answered as a turn',
-  };
-  fs.appendFileSync(mailbox, JSON.stringify(probe) + '\n');
-  return { id: probe.id, at: probe.at };
+  return appendMailboxRecord(mailbox, 'probe',
+    'liveness probe from the supervisor, acknowledged by the controller tick and never answered as a turn',
+    now, supervisorStartMs);
+}
+
+// Whether the run directory holds a shutdown request: a regular file named
+// shutdown.request, whatever it contains, which is how the operator or a
+// keeper stops a persona on purpose. bin/supervise.sh reads the same file
+// with `[ -f ]` at each launch. Never throws.
+export function shutdownRequestPresent(runDir) {
+  if (!runDir) return false;
+  try {
+    return fs.statSync(path.join(runDir, 'shutdown.request')).isFile();
+  } catch (e) {
+    return false;
+  }
+}
+
+// Asks the child to end its session at a boundary: one shutdown record in the
+// mailbox, written where a shutdown request is present and no ask to this
+// child is open yet, so an open ask is never written twice. The plugin
+// delivers it as a turn opening [SUPERVISOR id=<id>]. Returns the ask
+// written, or null.
+export function writeShutdownAskIfDue(runDir, mailbox, openAskId, text, now, supervisorStartMs) {
+  if (!mailbox || supervisorStartMs === null || openAskId) return null;
+  if (typeof text !== 'string' || text === '') return null;
+  if (!shutdownRequestPresent(runDir)) return null;
+  return appendMailboxRecord(mailbox, 'shutdown', text, now, supervisorStartMs);
 }
 
 export function poll(argv) {
@@ -295,7 +341,7 @@ export function poll(argv) {
     crashCount, restartCount, crashLimit, runDir,
     workdirWindows, walk, streamSeenSize, streamSeenChangedAt,
     silenceBoundMs, probeMs, probeWindowMs, finalAskMs, finalAskAt, supervisorStartMs,
-    mailboxPath, ackPath] = argv;
+    mailboxPath, ackPath, askGraceMs, shutdownAskId, shutdownAskAt, shutdownText] = argv;
 
   // Each reading fails on its own. One the reader cannot make reads as absent
   // and the rest still reach the decide unit, so a malformed store entry
@@ -322,10 +368,17 @@ export function poll(argv) {
   const launched = intOr(launchedAt, 0);
   const heartbeat = safe(() => readChildHeartbeat(heartbeatPath, childSessionId), null);
   const stream = safe(() => readStreamAge(streamPath, streamSeenSize, streamSeenChangedAt, now), { size: null, changedAt: null, ageMs: null });
-  const probeState = safe(() => readProbeState(mailboxPath, ackPath), { probes: [], acks: [], count: 0 });
+  const probeState = safe(() => readProbeState(mailboxPath, ackPath), { probes: [], acks: [] });
   const written = safe(() => writeProbeIfDue(mailboxPath, probeState, heartbeat, now, staleMs,
     intOr(probeMs, 120000), intOrNull(supervisorStartMs)), null);
   if (written) probeState.probes.push(written);
+  // The shutdown ask: written once per child, then carried by the poll loop
+  // as an id and a time until the child is stopped or honors it.
+  const carriedAskId = shutdownAskId ? String(shutdownAskId) : '';
+  const asked = safe(() => writeShutdownAskIfDue(runDir, mailboxPath, carriedAskId, shutdownText,
+    now, intOrNull(supervisorStartMs)), null);
+  const askId = asked ? asked.id : carriedAskId;
+  const askAtMs = asked ? asked.at : (carriedAskId ? intOrNull(shutdownAskAt) : null);
   const { transcriptPath, subagentsDir } = safe(() => transcriptPathsFor(profileRoot, workdirWindows, childSessionId),
     { transcriptPath: '', subagentsDir: '' });
   const reading = safe(() => liveness({
@@ -358,6 +411,8 @@ export function poll(argv) {
     liveness: reading,
     finalAskAt: askAt,
     finalAskMs: intOr(finalAskMs, 660000),
+    shutdownAskAt: askAtMs,
+    askGraceMs: intOr(askGraceMs, 1200000),
     now,
     minRunMs: intOr(minRunMs, 120000),
     maxRestartsPerHour: intOr(maxRestartsPerHour, 6),
@@ -390,6 +445,8 @@ export function poll(argv) {
     oneLine(stream.changedAt),
     oneLine(nextAskAt),
     heartbeatNote,
+    oneLine(askId),
+    oneLine(askAtMs),
   ];
 }
 

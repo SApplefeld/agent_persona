@@ -44,9 +44,14 @@ const KEY = 'C--fixture-agent-persona';
 const SUPERVISOR_START = 1700000000000;
 const MIN = 60000;
 
+// The shutdown ask's text a case hands the poll, as bin/supervise.sh hands it
+// SUPERVISOR_SHUTDOWN_TEXT.
+const SHUTDOWN_TEXT = 'bank your state, then call supervisor_shutdown';
+const GRACE = 20 * 60000;
+
 // Writes whichever of the files a case names and runs the reader as the
-// supervisor does, as its own process, returning its nine printed lines.
-// bin/supervise.sh passes all twenty-seven arguments; a case marked short
+// supervisor does, as its own process, returning its eleven printed lines.
+// bin/supervise.sh passes all thirty-one arguments; a case marked short
 // passes the fourteen an older caller passes, or fifteen where it seeds a
 // restart request, so that shape stays exercised.
 function run(name, files, overrides = {}, { short = false } = {}) {
@@ -64,6 +69,7 @@ function run(name, files, overrides = {}, { short = false } = {}) {
     request: join(dir, 'run', 'restart.request'),
     mailbox: join(dir, 'run', 'mailbox.jsonl'),
     ack: join(dir, 'run', 'mailbox.ack.jsonl'),
+    shutdown: join(dir, 'run', 'shutdown.request'),
   };
   fs.mkdirSync(join(project, 'sess-1', 'subagents'), { recursive: true });
   fs.mkdirSync(join(dir, 'run'), { recursive: true });
@@ -96,6 +102,10 @@ function run(name, files, overrides = {}, { short = false } = {}) {
     probeWindowMs: 30000,
     finalAskMs: 11 * MIN,
     finalAskAt: '',
+    askGraceMs: GRACE,
+    shutdownAskId: '',
+    shutdownAskAt: '',
+    shutdownText: SHUTDOWN_TEXT,
     ...overrides,
   };
   const argv = [pollPath,
@@ -106,15 +116,17 @@ function run(name, files, overrides = {}, { short = false } = {}) {
   if (!short) {
     argv.push(WORKDIR, args.walk, args.streamSeenSize, args.streamChangedAt,
       args.silenceBoundMs, args.probeMs, args.probeWindowMs, args.finalAskMs, args.finalAskAt,
-      SUPERVISOR_START, paths.mailbox, paths.ack);
+      SUPERVISOR_START, paths.mailbox, paths.ack,
+      args.askGraceMs, args.shutdownAskId, args.shutdownAskAt, args.shutdownText);
   }
   const r = spawnSync(process.execPath, argv.map(String), { encoding: 'utf8' });
   assert.equal(r.status, 0, 'reader exited ' + r.status + ': ' + r.stderr);
   const lines = r.stdout.split('\n');
-  assert.equal(lines.length, 10, 'nine lines and a trailing newline, got ' + JSON.stringify(r.stdout));
+  assert.equal(lines.length, 12, 'eleven lines and a trailing newline, got ' + JSON.stringify(r.stdout));
   return {
     action: lines[0], reason: lines[1], rateLimit: lines[2], sessionId: lines[3],
     liveness: lines[4], streamSize: lines[5], streamChangedAt: lines[6], finalAskAt: lines[7], heartbeatNote: lines[8],
+    shutdownAskId: lines[9], shutdownAskAt: lines[10],
     paths,
   };
 }
@@ -497,6 +509,96 @@ const cases = [
       request: { at: START - 5, by: 'coordinator', reason: 'stuck' },
     });
     assert.equal(r.action, 'restart_passive');
+  }],
+
+  // The shutdown ask: a shutdown.request in the run directory asks the child
+  // once, through the mailbox writer the probe uses, and the ask is carried
+  // by the poll loop from then on.
+  ['a shutdown request with no ask open writes one shutdown record, built as JSON and ending in a newline, and hands back its id and time', () => {
+    const before = Date.now();
+    const r = run('ask-write', { shutdown: '' });
+    const text = fs.readFileSync(r.paths.mailbox, 'utf8');
+    assert.ok(text.endsWith('\n'), 'the record ends in a newline: ' + JSON.stringify(text));
+    const lines = text.split('\n').filter(Boolean);
+    assert.equal(lines.length, 1);
+    const rec = JSON.parse(lines[0]);
+    assert.deepEqual(Object.keys(rec).sort(), ['at', 'id', 'kind', 'text']);
+    assert.equal(rec.kind, 'shutdown');
+    assert.equal(rec.id, SUPERVISOR_START + '-1');
+    assert.equal(rec.text, SHUTDOWN_TEXT);
+    assert.ok(rec.at >= before && rec.at <= Date.now(), 'at=' + rec.at);
+    assert.equal(r.shutdownAskId, rec.id);
+    assert.equal(r.shutdownAskAt, String(rec.at));
+    assert.equal(r.action, 'continue');
+  }],
+  ['control: no shutdown request writes no shutdown record and hands back no ask', () => {
+    const r = run('ask-none', { heartbeat: childHeartbeat('sess-1', 5000), stream: initLine('sess-1') });
+    assert.equal(fs.existsSync(r.paths.mailbox) ? fs.readFileSync(r.paths.mailbox, 'utf8') : '', '');
+    assert.equal(r.shutdownAskId, '');
+    assert.equal(r.shutdownAskAt, '');
+  }],
+  ['a shutdown request whose content is anything at all is still a request', () => {
+    const r = run('ask-content', { shutdown: '{"not":"read"}' });
+    assert.equal(fs.readFileSync(r.paths.mailbox, 'utf8').split('\n').filter(Boolean).length, 1);
+  }],
+  ['a directory named shutdown.request is not a request', () => {
+    const dir = join(root, 'ask-directory', 'run', 'shutdown.request');
+    fs.mkdirSync(dir, { recursive: true });
+    const r = run('ask-directory', {});
+    assert.equal(fs.existsSync(r.paths.mailbox) ? fs.readFileSync(r.paths.mailbox, 'utf8') : '', '');
+    assert.equal(r.shutdownAskId, '');
+  }],
+  ['an ask already open is carried, and no second record is written while it is', () => {
+    const askAt = Date.now() - 60000;
+    const open = JSON.stringify({ id: SUPERVISOR_START + '-1', kind: 'shutdown', at: askAt, text: SHUTDOWN_TEXT }) + '\n';
+    const r = run('ask-carried', { shutdown: '', mailbox: open }, { shutdownAskId: SUPERVISOR_START + '-1', shutdownAskAt: askAt });
+    assert.equal(fs.readFileSync(r.paths.mailbox, 'utf8'), open);
+    assert.equal(r.shutdownAskId, SUPERVISOR_START + '-1');
+    assert.equal(r.shutdownAskAt, String(askAt));
+    assert.equal(r.action, 'continue');
+  }],
+  ['a probe and a shutdown ask written in one poll share the writer\'s id scheme: -1 then -2', () => {
+    const { mailbox, ...files } = SILENT_FILES();
+    const r = run('ask-and-probe', { ...files, shutdown: '' }, SILENT_ARGS());
+    const recs = fs.readFileSync(r.paths.mailbox, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    assert.deepEqual(recs.map((x) => x.kind + ' ' + x.id), ['probe ' + SUPERVISOR_START + '-1', 'shutdown ' + SUPERVISOR_START + '-2']);
+    assert.equal(r.shutdownAskId, SUPERVISOR_START + '-2');
+  }],
+  ['a shutdown ask is numbered after every record already in the mailbox', () => {
+    const r = run('ask-numbered', { shutdown: '', mailbox: probeLine(SUPERVISOR_START + '-1', 5000) + probeLine(SUPERVISOR_START + '-2', 4000) });
+    const recs = fs.readFileSync(r.paths.mailbox, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    assert.equal(recs.length, 3);
+    assert.equal(recs[2].id, SUPERVISOR_START + '-3');
+  }],
+  ['an older caller passing no mailbox writes no shutdown record however a request sits in the run directory', () => {
+    const r = run('ask-short', { shutdown: '', request: { at: START - 5, by: 'coordinator', reason: 'stuck' } }, {}, { short: true });
+    assert.equal(fs.existsSync(r.paths.mailbox), false);
+    assert.equal(r.shutdownAskId, '');
+  }],
+  // The grace, through the real poll: the carried ask's time and the grace
+  // handed in reach the decide unit.
+  ['an open ask past the grace: ask_timeout', () => {
+    const askAt = Date.now() - GRACE - 60000;
+    const r = run('ask-timeout', { shutdown: '' }, { shutdownAskId: SUPERVISOR_START + '-1', shutdownAskAt: askAt });
+    assert.equal(r.action, 'ask_timeout');
+    assert.match(r.reason, /^the shutdown ask at \d+ went unanswered past 1200000ms$/);
+  }],
+  ['an open ask inside the grace: continue', () => {
+    const askAt = Date.now() - GRACE + 60000;
+    const r = run('ask-inside', { shutdown: '' }, { shutdownAskId: SUPERVISOR_START + '-1', shutdownAskAt: askAt });
+    assert.equal(r.action, 'continue');
+  }],
+  ['the grace handed in is the one read: the same ask past a two-second grace is ask_timeout', () => {
+    const askAt = Date.now() - 60000;
+    const r = run('ask-short-grace', { shutdown: '' }, { shutdownAskId: SUPERVISOR_START + '-1', shutdownAskAt: askAt, askGraceMs: 2000 });
+    assert.equal(r.action, 'ask_timeout');
+    assert.match(r.reason, /past 2000ms$/);
+  }],
+  ['an open ask answered by the child\'s shutdown_requested: stop_complete, the ask honored', () => {
+    const askAt = Date.now() - 60000;
+    const r = run('ask-honored', { shutdown: '', store: store(decision('shutdown_requested', START + 5)) },
+      { shutdownAskId: SUPERVISOR_START + '-1', shutdownAskAt: askAt });
+    assert.equal(r.action, 'stop_complete');
   }],
 
   // The parser alone. Each null case is a file the supervisor must read as
