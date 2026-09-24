@@ -1912,6 +1912,98 @@ RP_STOP_LINE=$(grep -n 'STOP_COMPLETE: shutdown_requested at' "$RP_DIR/superviso
 [ "$RP_ENDED" -eq 0 ] && [ "$RP_RC" -eq 0 ] && [ -n "$RP_RESTART_LINE" ] && [ -n "$RP_STOP_LINE" ] && [ "$RP_RESTART_LINE" -lt "$RP_STOP_LINE" ] && [ "$(grep -c 'LAUNCH child-' "$RP_DIR/supervisor.log" 2>/dev/null)" -eq 1 ]; CHECK_RC=$?
 check "loop-head shutdown: a shutdown_requested recorded during a restart_passive stop is honored at the loop head, exit 0 with STOP_COMPLETE after RESTART_PASSIVE and no second launch (ended=$RP_ENDED rc=$RP_RC launches=$(grep -c 'LAUNCH child-' "$RP_DIR/supervisor.log" 2>/dev/null))" "$CHECK_RC"
 
+# --- A signal to a relaunched child routes on that child's own liveness
+# --- reading, never on the reading the swept child earned ---
+# The real bin/supervise.sh launches a stub claude that names a session id on
+# its first line and then waits on its input, which the holder holds open,
+# until a marker file ends it. The child reads frozen on real fixtures: the
+# transcript the suite seeds under the profile is years old, the child's
+# heartbeat file is stamped at epoch 1000, the silence bound is three seconds
+# and the probe's window four, so the second poll writes the final ask. The
+# marker then ends the stub inside the next poll's three second sleep, so that
+# poll's walk completes and finds nothing while every signal stays silent: the
+# reading is gone, the loop sweeps child-1 and launches child-2. The run is
+# signaled once child-2's handle is written and before its first poll. The
+# trap routes on the liveness reading, and with no reading yet for child-2 it
+# reads alive and detaches; a trap still carrying child-1's gone reading stops
+# child-2 instead. The control signals after child-2's first poll, where the
+# trap reads that poll's verdict. Both drives leave the stub and its holder
+# running, and end them by the marker and the pid files the launch wrote,
+# never by name.
+mkdir -p "$TMP/stub-relaunch" "$TMP/wd-relaunch" "$TMP/home-relaunch/.claude/plugins/store"
+printf '{}' > "$TMP/home-relaunch/.claude/plugins/store/agentic-plugin_agent-persona-modelprobe.json"
+RL_DIE="$TMP/relaunch-die"
+# The stub reads its input with a timeout rather than sleeping, so it spawns
+# no process of its own and the child's tree record holds still across polls.
+# End of input ends it too, which is the pipe-close stop the unfixed code takes.
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "{\\"type\\":\\"system\\",\\"subtype\\":\\"init\\",\\"session_id\\":\\"sess-relaunch\\"}"\nwhile [ ! -f "%s" ]; do read -r -t 0.2 line; rc=$?; [ "$rc" -gt 128 ] || [ "$rc" -eq 0 ] || exit 0; done\nexit 0\n' "$RL_DIE" > "$TMP/stub-relaunch/claude"
+chmod +x "$TMP/stub-relaunch/claude"
+RL_KEY=$(node --input-type=module -e "import { pathToFileURL } from 'node:url'; const m = await import(pathToFileURL(process.argv[1]).href); console.log(m.projectKey(process.argv[2]));" "$HERE/../bin/supervise-liveness.mjs" "$(cygpath -w "$TMP/wd-relaunch")" 2>/dev/null)
+mkdir -p "$TMP/home-relaunch/.claude/projects/$RL_KEY"
+printf '{"type":"assistant","timestamp":"2020-01-01T00:00:00.000Z"}\n' > "$TMP/home-relaunch/.claude/projects/$RL_KEY/sess-relaunch.jsonl"
+# Usage: wait_for_file <path> <max tenths of a second>
+wait_for_file() {
+  local i=0
+  while [ "$i" -lt "$2" ]; do
+    [ -f "$1" ] && return 0
+    sleep 0.1; i=$((i + 1))
+  done
+  return 1
+}
+# Usage: relaunch_drive <rundir> <before|after>, the moment the TERM is sent
+# relative to child-2's first poll. Sets RL_FROZEN, RL_DIED, RL_RELAUNCHED,
+# RL_READY (each 0 where the wait it names landed), RL_RC (the run's exit
+# code), RL_ALIVE (0 where child-2's launch pid still answers after the run
+# ended) and RL_LOG.
+relaunch_drive() {
+  local rd="$1" when="$2" f p
+  rm -f "$RL_DIE"
+  mkdir -p "$rd"
+  RL_LOG="$rd/supervisor.log"
+  printf '{"sessionId":"sess-relaunch","lastSeen":1000}' > "$rd/heartbeat.json"
+  env -i PATH="$TMP/stub-relaunch:$PATH" HOME="$TMP/home-relaunch" supervisorPollMs=3000 controllerTickMs=500 supervisorSilenceBoundMs=3000 supervisorProbeMs=60000 supervisorStopGraceMs=1000 supervisorStopBusyCapMs=1000 supervisorGateWaitS=3 \
+    bash "$SCRIPT" "$TMP/wd-relaunch" modelprobe default --rundir "$rd" --no-channel > "$rd/drive.out" 2>&1 &
+  RL_SUP=$!
+  wait_for_line "$RL_LOG" 'FINAL_ASK child-1' 600; RL_FROZEN=$?
+  # The poll that asked returns to the loop head and sleeps three seconds; the
+  # stub ends about a second and a half in, so the next poll's walk finds it
+  # gone. The marker is cleared once the wrapper has written the exit marker,
+  # before child-2 can launch and read it.
+  sleep 1.5
+  : > "$RL_DIE"
+  wait_for_file "$rd/child-1/.exit" 100; RL_DIED=$?
+  rm -f "$RL_DIE"
+  wait_for_line "$RL_LOG" 'LAUNCH child-2' 600; RL_RELAUNCHED=$?
+  if [ "$when" = before ]; then
+    wait_for_file "$rd/child-2/handle.json" 300; RL_READY=$?
+  else
+    wait_for_line "$RL_LOG" 'LIVENESS child-2:' 300; RL_READY=$?
+  fi
+  kill -TERM "$RL_SUP" 2>/dev/null
+  wait "$RL_SUP" 2>/dev/null; RL_RC=$?
+  p=$(tr -d '\r\n' < "$rd/child-2/child.pid" 2>/dev/null)
+  case "$p" in *[!0-9]*|'') RL_ALIVE=2 ;; *) if kill -0 "$p" 2>/dev/null; then RL_ALIVE=0; else RL_ALIVE=1; fi ;; esac
+  : > "$RL_DIE"
+  # The stub polls the marker on a 0.2 s read timeout, and the next drive
+  # removes the marker first, so the stub is given time to see it and exit.
+  sleep 0.5
+  for f in "$rd"/child-*/child.pid "$rd"/child-*/holder.pid; do
+    p=$(tr -d '\r\n' < "$f" 2>/dev/null)
+    case "$p" in *[!0-9]*|'') ;; *) kill -9 "$p" 2>/dev/null ;; esac
+  done
+}
+relaunch_drive "$(mktemp -d "$TMP/rd-relaunch.XXXXXX")" before
+[ "$RL_FROZEN" -eq 0 ] && [ "$RL_DIED" -eq 0 ] && [ "$RL_RELAUNCHED" -eq 0 ] && grep -q 'LIVENESS child-1: gone' "$RL_LOG" && grep -q 'EXIT child-1 code=0 (sweep_relaunch)' "$RL_LOG"; CHECK_RC=$?
+check "relaunch signal control: child-1 read frozen on real fixtures, the marker ended it inside a poll's sleep, that poll read it gone, and the loop swept it and launched child-2 (frozen=$RL_FROZEN died=$RL_DIED relaunched=$RL_RELAUNCHED, log=$(tr '\n' '|' < "$RL_LOG" 2>/dev/null | tail -c 1500))" "$CHECK_RC"
+[ "$RL_READY" -eq 0 ] && [ "$RL_RC" -eq 143 ] && grep -q 'DETACH child-2' "$RL_LOG" && ! grep -q 'CLEANUP: stopping child-2' "$RL_LOG" && ! grep -q 'LIVENESS child-2:' "$RL_LOG" && [ "$RL_ALIVE" -eq 0 ]; CHECK_RC=$?
+check "relaunch signal: a TERM after child-2's handle is written and before its first poll detaches at 143 and leaves child-2 running, rather than stopping it on child-1's gone reading (ready=$RL_READY rc=$RL_RC alive=$RL_ALIVE, log=$(tr '\n' '|' < "$RL_LOG" 2>/dev/null | tail -c 1500))" "$CHECK_RC"
+relaunch_drive "$(mktemp -d "$TMP/rd-relaunch.XXXXXX")" after
+RL_VERDICT=$(sed -n 's/.*LIVENESS child-2: \([a-z]*\) .*/\1/p' "$RL_LOG" 2>/dev/null | head -1)
+RL_LIVE_LINE=$(grep -n 'LIVENESS child-2:' "$RL_LOG" 2>/dev/null | head -1 | cut -d: -f1)
+RL_DETACH_LINE=$(grep -n 'DETACH child-2' "$RL_LOG" 2>/dev/null | head -1 | cut -d: -f1)
+[ "$RL_RELAUNCHED" -eq 0 ] && grep -q 'EXIT child-1 code=0 (sweep_relaunch)' "$RL_LOG" && [ "$RL_READY" -eq 0 ] && [ "$RL_RC" -eq 143 ] && [ -n "$RL_VERDICT" ] && [ -n "$RL_LIVE_LINE" ] && [ -n "$RL_DETACH_LINE" ] && [ "$RL_LIVE_LINE" -lt "$RL_DETACH_LINE" ] && grep -q "DETACH child-2: .*(verdict $RL_VERDICT)" "$RL_LOG" && ! grep -q 'CLEANUP: stopping child-2' "$RL_LOG" && [ "$RL_ALIVE" -eq 0 ]; CHECK_RC=$?
+check "relaunch signal control: after the same sweep and relaunch, a TERM after child-2's first poll detaches on child-2's own reading, the verdict the DETACH line names being the one its LIVENESS line logged (verdict=${RL_VERDICT:-none} ready=$RL_READY rc=$RL_RC alive=$RL_ALIVE, log=$(tr '\n' '|' < "$RL_LOG" 2>/dev/null | tail -c 1500))" "$CHECK_RC"
+
 echo
 if [ "$failed" = "0" ]; then
   echo "All tests passed"

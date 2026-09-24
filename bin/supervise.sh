@@ -552,8 +552,10 @@ CHILD_ADOPTED=""
 # the mismatch is logged once per child rather than on every poll.
 CHILD_ROOT_MISMATCH_LOGGED=""
 # The last poll's liveness reading, which the cleanup trap routes on. Empty
-# until the first poll, and the trap reads empty as alive, since a child that
-# answers kill -0 with no reading yet is inside the startup grace.
+# until the child's first poll, reset at each launch and at the gate's handle
+# read so no child carries an earlier child's reading, and the trap reads
+# empty as alive, since a child that answers kill -0 with no reading yet is
+# inside the startup grace.
 POLL_LIVENESS=""
 # The live child's own processes, recorded while it runs by refresh_child_tree:
 # the MSYS pids of its process tree, the Windows pids those map to, and a
@@ -4191,6 +4193,12 @@ while true; do
     # the launch block that can end the iteration.
     LAST_STOP_SNAPSHOT=""
     STOP_TREE_MOVED=""
+    # The previous child's last liveness reading goes with it. The cleanup trap
+    # routes a signal on this reading and reads an empty one as alive, so a
+    # signal between this launch and the new child's first poll detaches from
+    # the new child rather than stopping it on the gone reading a swept child
+    # earned, which is the one reading the trap stops a handled child on.
+    POLL_LIVENESS=""
     CHILD_TREE_MSYS_PIDS=""
     CHILD_TREE_WINPIDS=""
     CHILD_TREE_SEEN_WINPIDS=""
