@@ -428,7 +428,7 @@ STEER_ARCH_RELAYED_RESOLVE_CONTROL="you close it with agentic_resolve like any c
 STEER_ARCH_UNTAKEN_SIGNAL_CONTROL="Where your own record to the architect still reads pending, with no deferred flag,"
 STEER_ARCH_UNTAKEN_READ_CONTROL="on two agentic_inbox reads with the persona argument naming the architect taken at least five minutes apart"
 STEER_ARCH_UNTAKEN_MEANING_CONTROL="most likely no live architect is behind it or it sits behind a long queue"
-STEER_ARCH_UNTAKEN_CADENCE_CONTROL="a live architect takes one record per controller tick, thirty seconds by default"
+STEER_ARCH_UNTAKEN_CADENCE_CONTROL="a live architect takes one record per controller tick"
 STEER_ARCH_UNTAKEN_FALLBACK_CONTROL="send the question to the coordinator as an escalation, quoting that record id"
 STEER_ARCH_UNTAKEN_WHY_CONTROL="because the coordinator can see whether an architect session is running"
 

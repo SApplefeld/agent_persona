@@ -1839,9 +1839,10 @@ env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home-adopt" supervisorPollMs=1000 super
   bash "$SCRIPT" "$TMP/wd" modelprobe default --rundir "$FA_DIR" --no-channel --prompt "a goal the adopted child never receives" > "$FA_DIR/drive.out" 2>&1 &
 FA_SUP=$!
 # The window the ask is pinned once across: the adoption, then six polls of
-# the loop, which is the first WAITING line.
+# the loop, which is the first WAITING line and follows the adoption within
+# about ten seconds at the one second poll.
 wait_for_line "$FA_DIR/supervisor.log" 'ADOPT child-1' 900; FA_ADOPTED=$?
-wait_for_line "$FA_DIR/supervisor.log" 'WAITING: child-1 alive' 900; FA_POLLED=$?
+wait_for_line "$FA_DIR/supervisor.log" 'WAITING: child-1 alive' 300; FA_POLLED=$?
 kill -TERM "$FA_SUP" 2>/dev/null
 wait "$FA_SUP" 2>/dev/null; FA_RC=$?
 kill "$FA_PID" 2>/dev/null; wait "$FA_PID" 2>/dev/null
@@ -1868,9 +1869,9 @@ OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home-free" supervisorCrashLimit=1
 RC=$?
 P2_IDX=$(sed -n 's/.*LAUNCH child-\([0-9]*\) (start_ts=.*/\1/p' "$P2_DIR/supervisor.log" 2>/dev/null | head -1)
 [ "$RC" -eq 3 ] && [ -e "$TMP/stub/launched" ] && grep -q 'SWEEP_RELAUNCH: child-1 read gone at the gate' "$P2_DIR/supervisor.log" && [ "${P2_IDX:-1}" -ge 2 ] && grep -q "LAUNCH child-$P2_IDX (start_ts=[0-9]*, prompt=set)" "$P2_DIR/supervisor.log"; CHECK_RC=$?
-check "first launch child-2 control: the sweep raised the index, the first launch is child-${P2_IDX:-?} with prompt=set, and the run ends at the crash limit (rc=$RC)" "$CHECK_RC"
+check "first launch child-2 or later, control: the sweep raised the index, the first launch is child-${P2_IDX:-?} with prompt=set, and the run ends at the crash limit (rc=$RC)" "$CHECK_RC"
 [ -n "$P2_IDX" ] && [ "$(cat "$P2_DIR/child-$P2_IDX.prompt" 2>/dev/null)" = "the goal for the first launch" ]; CHECK_RC=$?
-check "first launch child-2: the prompt file is written for the child the LAUNCH line names, child-${P2_IDX:-?}, with the prompt's text (files: $(ls "$P2_DIR"/child-*.prompt 2>/dev/null | tr '\n' ' '))" "$CHECK_RC"
+check "first launch child-2 or later: the prompt file is written for the child the LAUNCH line names, child-${P2_IDX:-?}, with the prompt's text (files: $(ls "$P2_DIR"/child-*.prompt 2>/dev/null | tr '\n' ' '))" "$CHECK_RC"
 
 # --- A shutdown the child records while a restart_passive stop is stopping it
 # --- is honored at the loop head, before any launch ---
@@ -1891,14 +1892,18 @@ env -i PATH="$TMP/stub-hold:$PATH" HOME="$TMP/home-free" supervisorPollMs=1000 s
   bash "$SCRIPT" "$TMP/wd-hold" modelprobe default --rundir "$RP_DIR" --no-channel > "$RP_DIR/drive.out" 2>&1 &
 RP_SUP=$!
 wait_for_line "$RP_DIR/supervisor.log" 'LAUNCH child-1' 600; RP_LAUNCHED=$?
-printf '{"at":%s,"by":"suite","reason":"restart"}' "$(node -e "console.log(Date.now())")" > "$RP_DIR/restart.request"
+# Both timestamps come off the shell's own date, as the stop's clock does,
+# rather than a node spawn, so the store write lands well inside the three
+# second cap the patient wait runs to.
+printf '{"at":%s,"by":"suite","reason":"restart"}' "$(date +%s%3N)" > "$RP_DIR/restart.request"
 wait_for_line "$RP_DIR/supervisor.log" 'STOP\[restart_passive\]: the child is inside a turn' 600; RP_WAITING=$?
-printf '{"modelprobe":{"decisions":[{"action":"shutdown_requested","timestamp":%s,"detail":"the child banked its state during the stop"}]}}' "$(node -e "console.log(Date.now())")" > "$TMP/wd-hold/.agentic-personas.json"
+printf '{"modelprobe":{"decisions":[{"action":"shutdown_requested","timestamp":%s,"detail":"the child banked its state during the stop"}]}}' "$(date +%s%3N)" > "$TMP/wd-hold/.agentic-personas.json"
 wait_for_exit "$RP_SUP" 900; RP_ENDED=$?
 if [ "$RP_ENDED" -ne 0 ]; then kill -TERM "$RP_SUP" 2>/dev/null; fi
 wait "$RP_SUP" 2>/dev/null; RP_RC=$?
 for f in "$RP_DIR"/child-*/child.pid "$RP_DIR"/child-*/holder.pid; do
-  [ -f "$f" ] && kill -9 "$(cat "$f" 2>/dev/null)" 2>/dev/null
+  RP_PID=$(cat "$f" 2>/dev/null | tr -d '\r\n')
+  case "$RP_PID" in *[!0-9]*|'') ;; *) kill -9 "$RP_PID" 2>/dev/null ;; esac
 done
 [ "$RP_LAUNCHED" -eq 0 ] && [ "$RP_WAITING" -eq 0 ] && grep -q 'RESTART_PASSIVE: restart_requested at' "$RP_DIR/supervisor.log" && grep -q 'wait_ended=cap' "$RP_DIR/supervisor.log"; CHECK_RC=$?
 check "loop-head shutdown control: the request took restart_passive and its stop ran the patient wait to the cap while the store gained the shutdown (launched=$RP_LAUNCHED waiting=$RP_WAITING, log=$(tr '\n' '|' < "$RP_DIR/supervisor.log" 2>/dev/null | tail -c 1500))" "$CHECK_RC"

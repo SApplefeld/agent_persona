@@ -284,7 +284,7 @@ fi
 # The settings that end the run on a bad value, each checked against the one
 # rule positive_number states. A bad value here is always a typo in the
 # settings file or in an exported override, and the symptom it produces is
-# remote from its cause: the priming wait bounds an arithmetic comparison,
+# remote from its cause:
 # the stop grace sizes both of stop_child's grace loops so a zero-iteration
 # loop skips EOF and TERM and goes straight to KILL, the minimum run time
 # decides what counts as a crash, the crash limit and the restart budget
@@ -3959,7 +3959,12 @@ while true; do
   # takes a start newer than it and no poll would fire on it again. The first
   # pass of the loop has no stopped child and skips this. The exit is the
   # stop_complete exit, 0, which the keeper reads as the shutdown honored,
-  # with the request file removed where one is present.
+  # with the request file removed where one is present. On the natural-exit
+  # route this repeats that path's own read of the same fact, one extra store
+  # read per such relaunch, and honors a shutdown recorded between the two.
+  # An adopted child whose handle carried no launchedAt has the gate's reading
+  # moment as CHILD_START_TS, so a shutdown recorded before the adoption
+  # reads older here, as it does at the natural-exit read.
   if [ -n "${CHILD_START_TS:-}" ]; then
     SHUTDOWN_REQUESTED_TS=$(get_fact "$WORKDIR" "$PERSONA" "shutdown_requested")
     if [ -n "$SHUTDOWN_REQUESTED_TS" ] && [ "$SHUTDOWN_REQUESTED_TS" -gt "$CHILD_START_TS" ]; then
@@ -4022,7 +4027,7 @@ while true; do
       # ask, so a --prompt given to this run has no launch to ride and is
       # named as dropped rather than cleared in silence below.
       if [ -n "$PROMPT" ]; then
-        log "PROMPT_DROPPED child-$CHILD_INDEX: --prompt was given, but this run adopted a live child rather than launching one, so the prompt is not sent"
+        log "PROMPT_DROPPED child-$CHILD_INDEX: --prompt was given, but this run adopted a live child rather than launching one, so the prompt is not sent to this child or to any later launch in this run"
       fi
       # The gate's own poll is this child's first reading: its stream state,
       # final-ask time and session id carry into the loop rather than resetting.
