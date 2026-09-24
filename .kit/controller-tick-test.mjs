@@ -3501,6 +3501,10 @@ async function main() {
     await caseSidecarLostUpdateIsWrittenAgain(clock);
     await caseSessionStartClaimConsultsCommons(clock);
     await caseSupervisorAskLeavesAnOpenAskOpen(clock);
+    await caseReaderWithNoSidecarEntryPromotesOnceCommonsGoesStale(clock);
+    await caseNoStoreEntryClaimConsultsCommons(clock);
+    await caseMailbox_failedShutdownSubmitRecordsFailure(clock);
+    await caseMailbox_partialLastLineIsLeftForTheNextTick(clock);
     await casePin_probeAckRoundTripThroughTheRealPoll(clock);
     await casePin_heartbeatFileReadFreshByTheRealPoll(clock);
   } finally {
@@ -21864,12 +21868,16 @@ async function caseSessionStartClaimConsultsCommons(clock) {
   check("session start control: a stale commons claim does not block the claim", stale.epoch === 2 && stale.resources.includes("persona:default"), { epoch: stale.epoch, resources: stale.resources });
 }
 
-// A turn opening [SUPERVISOR-ASK leaves an open operator ask open and does no
-// untracked-work bookkeeping, as the priming turn does not. The control is the
-// same turn without the marker, which answers the ask and logs the work.
+// A turn opening [SUPERVISOR-ASK that arrives on the sdk origin, which is how
+// the supervisor's write to the child's input arrives, leaves an open operator
+// ask open and does no untracked-work bookkeeping, as the priming turn does
+// not. Two controls: the same turn without the marker, and the same marked
+// text arriving from the channel, each of which is the operator's turn and
+// answers the ask.
 async function caseSupervisorAskLeavesAnOpenAskOpen(clock) {
   console.log("\n=== [SUPERVISOR-ASK: an open operator ask stays open and nothing is backfilled ===");
-  const run = async (caseName, text) => {
+  const ASK_TEXT = "[SUPERVISOR-ASK id=1700-ask-1] Every liveness signal from this session reads silent to the launcher. Reply with one line saying what you are doing now.";
+  const run = async (caseName, text, originKind = "sdk") => {
     clock.set(T0);
     const now = T0;
     const h = await createTickHarness({ ...OPTS, caseName });
@@ -21885,20 +21893,119 @@ async function caseSupervisorAskLeavesAnOpenAskOpen(clock) {
     await h.handlers["session.start"](h.fake, {}, () => {});
     const askKey = "ask:default:ask-sv-1";
     h.storeMap.set(askKey, { id: "ask-sv-1", key: askKey, persona: "default", askId: "ask-sv-1", at: now, nodeId: "node-001", question: "Which branch?", status: "open" });
-    await h.handlers["prompt.submit"](h.fake, { text }, async () => ({}));
+    await h.handlers["prompt.submit"](h.fake, { text, origin: { kind: originKind } }, async () => ({}));
     await h.handlers["turn.start"](h.fake, { turnId: "t-ask", text }, async () => ({}));
     await h.handlers["tool.call"](h.fake, { tool: "Write", turnId: "t-ask" }, async () => ({ result: "ok" }));
     await h.handlers["turn.complete"](h.fake, { turnId: "t-ask", answer: "Idle, waiting on the operator.", reason: "completed" }, async () => ({}));
     const state = getState(h);
     return { ask: h.storeMap.get(askKey), state };
   };
-  const asked = await run("sv_ask_marker", "[SUPERVISOR-ASK id=1700-ask-1] Every liveness signal from this session reads silent to the launcher. Reply with one line saying what you are doing now.");
+  const asked = await run("sv_ask_marker", ASK_TEXT);
   check("supervisor ask: the open ask stays open", asked.ask?.status === "open" && asked.state.pendingAskId === "ask-sv-1", { ask: asked.ask, pending: asked.state.pendingAskId });
   check("supervisor ask: no ask_answered_by_reply", !asked.state.decisions.some((d) => d.action === "ask_answered_by_reply"));
   check("supervisor ask: no untracked_work backfill", !asked.state.decisions.some((d) => d.action === "untracked_work"), asked.state.decisions.map((d) => d.action));
   const plain = await run("sv_ask_control", "Which one is it, then?");
   check("supervisor ask control: an unmarked turn answers the ask", plain.ask?.status === "answered" && plain.state.decisions.some((d) => d.action === "ask_answered_by_reply"), plain.ask);
   check("supervisor ask control: an unmarked working turn logs untracked_work", plain.state.decisions.some((d) => d.action === "untracked_work"), plain.state.decisions.map((d) => d.action));
+  const relayed = await run("sv_ask_channel", ASK_TEXT, "channel");
+  check("supervisor ask control: the marked text from the channel answers the ask", relayed.ask?.status === "answered" && relayed.state.decisions.some((d) => d.action === "ask_answered_by_reply"), relayed.ask);
+  check("supervisor ask control: the marked text from the channel takes no priming flag, so its work is logged", relayed.state.decisions.some((d) => d.action === "untracked_work"), relayed.state.decisions.map((d) => d.action));
+}
+
+// A session that joined as a reader on a live commons claim with no sidecar
+// entry behind it promotes once that claim goes stale, the commons check
+// still guarding the promotion while it is live. The control keeps the claim
+// live across the same ticks and stays a reader. The seeded persona carries
+// epoch 1, and a promotion raises it.
+async function caseReaderWithNoSidecarEntryPromotesOnceCommonsGoesStale(clock) {
+  console.log("\n=== Reader with no sidecar entry: promotes once the commons claim goes stale ===");
+  const run = async (caseName, keepClaimLive) => {
+    clock.set(T0);
+    const h = await createTickHarness({ ...OPTS, caseName, skipSessionStart: true });
+    h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({}));
+    const seedClaim = (at) => h.storeMap.set("commons:other-live", { sessionId: "other-live", lastSeen: at, claims: [{ resource: "persona:default", claimedAt: at - 1000 }] });
+    seedClaim(T0);
+    await fireSessionStart(h);
+    const claimsOf = () => (h.storeMap.get(`commons:${SESSION_ID}`)?.claims ?? []).map((c) => c.resource);
+    const startedReader = claimsOf().includes("reader:default") && !claimsOf().includes("persona:default");
+    clock.advance(30_000);
+    await fireHeartbeat(h);
+    const epochWhileLive = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE)).default.epoch;
+    clock.advance(100_000);
+    if (keepClaimLive) seedClaim(Date.now());
+    await fireHeartbeat(h);
+    return { startedReader, epochWhileLive, epochAfter: JSON.parse(h.fsMap.get(PERSONA_STORE_FILE)).default.epoch };
+  };
+  const aged = await run("reader_nosidecar_aged", false);
+  check("no-sidecar reader: session start joins as a reader on the live commons claim", aged.startedReader);
+  check("no-sidecar reader: stays a reader while the commons claim is live", aged.epochWhileLive === 1, aged.epochWhileLive);
+  check("no-sidecar reader: promotes once the claim ages past staleAfterMs", aged.epochAfter === 2, aged.epochAfter);
+  const live = await run("reader_nosidecar_live", true);
+  check("no-sidecar reader control: with the claim kept live it stays a reader", live.startedReader && live.epochAfter === 1, live);
+}
+
+// The session-start branch for a persona the store does not name runs the same
+// commons check: a live claim by another session makes the newcomer a reader
+// rather than the creator of a fresh persona; with no claim it creates the
+// persona as before.
+async function caseNoStoreEntryClaimConsultsCommons(clock) {
+  console.log("\n=== Session start with no store entry: a live commons claim makes a reader ===");
+  const start = async (caseName, withClaim) => {
+    clock.set(T0);
+    const h = await createTickHarness({ ...OPTS, caseName, skipSessionStart: true });
+    h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({}));
+    if (withClaim) h.storeMap.set("commons:other-live", { sessionId: "other-live", lastSeen: T0, claims: [{ resource: "persona:default", claimedAt: T0 - 1000 }] });
+    await fireSessionStart(h);
+    const resources = (h.storeMap.get(`commons:${SESSION_ID}`)?.claims ?? []).map((c) => c.resource);
+    const store = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE));
+    return { resources, storeHasEntry: store.default !== undefined };
+  };
+  const live = await start("nostore_commons_live", true);
+  check("no store entry: a live commons claim makes the newcomer a reader", live.resources.includes("reader:default") && !live.resources.includes("persona:default"), live.resources);
+  check("no store entry: the reader writes no store entry of its own", live.storeHasEntry === false, live);
+  const none = await start("nostore_commons_none", false);
+  check("no store entry control: with no commons claim the persona is created and claimed", none.resources.includes("persona:default") && none.storeHasEntry === true, none);
+}
+
+// A shutdown whose submit opens no turn keeps its delivered line, which is what
+// keeps it from being submitted again, and gains a failed line beside it with
+// the reason. Three ticks submit once.
+async function caseMailbox_failedShutdownSubmitRecordsFailure(clock) {
+  console.log("\n=== Mailbox: a failed shutdown submit records a failed line and is not retried ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, caseName: "mbx_shutdown_failed", supervisorMailbox: MBX_FILE });
+  h.failPromptSubmits(new Error("host refused the submit"));
+  h.fsMap.set(MBX_FILE, mailboxLine({ id: "1700-9", kind: "shutdown", at: T0, text: "stop" }));
+  for (let i = 0; i < 3; i += 1) {
+    clock.advance(10_000);
+    await tickAndSettle(h, clock, 50);
+  }
+  const acks = mailboxAcks(h);
+  check("mailbox failed submit: one submit attempt across three ticks", h.promptSubmits.filter((t) => t.startsWith("[SUPERVISOR id=")).length === 1, h.promptSubmits);
+  check("mailbox failed submit: a delivered line then a failed line naming the reason",
+    acks.length === 2 && acks[0].id === "1700-9" && acks[0].action === "delivered" && acks[1].id === "1700-9" && acks[1].action === "failed" && String(acks[1].reason).includes("host refused the submit"), acks);
+  check("mailbox failed submit: the decision log names the failure", getDecisions(h).some((d) => d.action === "supervisor_shutdown_failed"), getDecisions(h).map((d) => d.action));
+}
+
+// A mailbox whose last line has no newline yet is mid-append: that line is
+// neither acknowledged nor logged as malformed, and is read whole once its
+// newline lands. The complete line before it is acknowledged on the first tick.
+async function caseMailbox_partialLastLineIsLeftForTheNextTick(clock) {
+  console.log("\n=== Mailbox: a line still being appended is left for the next tick ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, caseName: "mbx_partial", supervisorMailbox: MBX_FILE });
+  const whole = mailboxLine({ id: "p-1", kind: "probe", at: T0, text: "x" });
+  const second = mailboxLine({ id: "p-2", kind: "probe", at: T0, text: "x" });
+  h.fsMap.set(MBX_FILE, whole + second.slice(0, 20));
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 50);
+  check("mailbox partial: the complete line is acknowledged", mailboxAcks(h).map((a) => a.id).join(",") === "p-1", mailboxAcks(h));
+  check("mailbox partial: the partial line is not logged as malformed", !getDecisions(h).some((d) => d.action === "supervisor_mailbox_line_skipped"), getDecisions(h).map((d) => d.detail));
+  h.fsMap.set(MBX_FILE, whole + second);
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 50);
+  check("mailbox partial: once its newline lands the line is read whole and acknowledged", mailboxAcks(h).map((a) => a.id).join(",") === "p-1,p-2", mailboxAcks(h));
+  check("mailbox partial: still no malformed-line decision", !getDecisions(h).some((d) => d.action === "supervisor_mailbox_line_skipped"), getDecisions(h).map((d) => d.detail));
 }
 
 // --- Cross-component pins: the plugin's bytes read by the supervisor's reader ---
@@ -21980,12 +22087,18 @@ async function casePin_probeAckRoundTripThroughTheRealPoll(clock) {
     const first = pinPoll(run, { probeWindowMs: 1 });
     let probes = "";
     try { probes = readFileSync(run.mailbox, "utf8"); } catch { /* no probe written; the check below reports it */ }
-    if (pluginAnswers) {
+    if (pluginAnswers === true) {
       h.fsMap.set(MBX_FILE, probes);
       clock.advance(10_000);
       await tickAndSettle(h, clock, 50);
       const ack = h.fsMap.get(MBX_ACK_FILE);
       if (ack !== undefined) writeFileSync(run.ack, ack);
+    } else if (pluginAnswers === "delivered-and-failed") {
+      // The two other lines the plugin writes into the ack file, naming the
+      // probe's own id: the poll counts only ack lines, so neither answers it.
+      const ids = probes.trim().split("\n").filter(Boolean).map((l) => JSON.parse(l).id);
+      writeFileSync(run.ack, ids.map((id) => JSON.stringify({ id, at: realNowMs(), action: "delivered" }) + "\n"
+        + JSON.stringify({ id, at: realNowMs(), action: "failed", reason: "failed: refused" }) + "\n").join(""));
     }
     await new Promise((r) => setTimeout(r, 20));
     const second = pinPoll(run, { probeWindowMs: 1 });
@@ -21998,6 +22111,8 @@ async function casePin_probeAckRoundTripThroughTheRealPoll(clock) {
   check("pin probe: acknowledging the probe submitted no prompt", answered.promptCount === 0, answered.promptCount);
   const unanswered = await roundTrip("unanswered", false);
   check("pin probe control: with no ack the same run reads frozen", unanswered.second.status === 0 && unanswered.second.liveness === "frozen all_silent", unanswered.second);
+  const otherLines = await roundTrip("delivered_failed", "delivered-and-failed");
+  check("pin probe: delivered and failed lines naming the probe's id do not answer it, so the poll reads frozen", otherLines.second.status === 0 && otherLines.second.liveness === "frozen all_silent", otherLines.second);
 }
 
 // The heartbeat pin: the plugin's heartbeat file, stamped at the poll's own

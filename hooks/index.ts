@@ -1109,6 +1109,23 @@ const writeOwnerHeartbeat = async (dp: any): Promise<void> => {
   await dp.fs.write(heartbeatPath, JSON.stringify(after, null, 2));
 };
 
+// The session holding a live commons claim on this session's persona, other
+// than this session, or null where none does. The session-start claim consults
+// it before taking a persona whose sidecar entry is stale or absent, or which
+// the store does not name, as the heartbeat tick's promotion consults commons
+// before it promotes. A commons read that fails reads as null, which leaves
+// the claim to the sidecar and the store, as the promotion does. Top level
+// because it takes `dp`.
+const liveCommonsHolderOf = async (dp: any, staleAfterMs: number): Promise<string | null> => {
+  try {
+    const claims = await readAllClaims(commonsStoreOf(dp), staleAfterMs);
+    const live = claims.find((c) => c.resource === `persona:${sess.persona}` && c.holder !== sess.mySessionId);
+    return live ? live.holder : null;
+  } catch {
+    return null;
+  }
+};
+
 // The heartbeat file only this session writes, at the path the
 // supervisorHeartbeatPath option names: { sessionId, lastSeen, turnStartedAt }.
 // bin/supervise-poll.mjs reads exactly those field names and checks sessionId
@@ -1160,10 +1177,11 @@ function parseSupervisorMailboxLine(line: string): SupervisorMailboxRecord | { p
 // delivers at most one shutdown. The ack line is written before the submit,
 // and a pass that cannot read or write the ack file acts on nothing, so a
 // record can never be delivered without the line that keeps it from being
-// delivered again. A line that is not a record is never acknowledged, and is
-// logged once per session under the key `skipped` holds. A missing or
-// unreadable mailbox is a pass that does nothing. Nothing here throws. Top
-// level because it takes `dp`.
+// delivered again; a submit that opens no turn adds a failed line beside it.
+// A line that is not a record is never acknowledged, and is logged once per
+// session under the key `skipped` holds. A missing, empty or unreadable
+// mailbox is a pass that does nothing. Nothing here throws. Top level because
+// it takes `dp`.
 async function drainSupervisorMailbox(
   dp: any,
   mailboxPath: string,
@@ -1177,6 +1195,8 @@ async function drainSupervisorMailbox(
   try {
     if (!(await dp.fs.exists(mailboxPath))) return outcome;
     mailboxText = String(await dp.fs.read(mailboxPath));
+    // An empty mailbox is the healthy steady state, and needs no ack read.
+    if (mailboxText.trim() === "") return outcome;
     if (await dp.fs.exists(ackPath)) ackText = String(await dp.fs.read(ackPath));
   } catch {
     return outcome;
@@ -1189,18 +1209,27 @@ async function drainSupervisorMailbox(
       if (a !== null && typeof a === "object" && typeof (a as { id?: unknown }).id === "string") handled.add((a as { id: string }).id);
     } catch { /* a line this plugin did not write whole acknowledges nothing */ }
   }
+  // New ack lines are appended through appendLines, the one JSONL append rule
+  // the plugin's logs share, which reads the file again immediately before its
+  // write, so a line already in the file is kept however stale this pass's
+  // own reading is. $.fs has no append of its own, so the write is still the
+  // whole file.
   const newAcks: string[] = [];
   const writeAcks = async (): Promise<boolean> => {
     if (newAcks.length === 0) return true;
-    const base = ackText === "" || ackText.endsWith("\n") ? ackText : `${ackText}\n`;
     try {
-      await dp.fs.write(ackPath, `${base}${newAcks.join("\n")}\n`);
+      await appendLines(dp, ackPath, newAcks.splice(0));
       return true;
     } catch {
       return false;
     }
   };
+  // The supervisor appends each record whole with its newline, so a mailbox
+  // that does not end in one has its last line still being written. That line
+  // is left for the next pass, which reads it whole, rather than read here as
+  // a malformed record.
   const lines = mailboxText.split("\n");
+  if (!mailboxText.endsWith("\n")) lines.pop();
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     if (line.trim() === "") continue;
@@ -1230,7 +1259,21 @@ async function drainSupervisorMailbox(
     const shutdownText = `[SUPERVISOR id=${rec.id}] ${quoteContinuationLines(rec.text)}`;
     const shutdownEntry: ExpectedTurn = { kind: "plugin", text: shutdownText };
     expectedTurns.push(shutdownEntry);
-    const shutdownOutcome = await submitExpectedTurn(dp, expectedTurns, shutdownEntry);
+    let shutdownOutcome: SubmitOutcome;
+    try {
+      shutdownOutcome = await submitExpectedTurn(dp, expectedTurns, shutdownEntry);
+    } catch (err) {
+      removeExpectedTurn(expectedTurns, shutdownEntry);
+      shutdownOutcome = { ok: false, how: "failed", reason: err instanceof Error ? err.message : String(err) };
+    }
+    // A submit that opened no turn keeps its delivered line, which is what
+    // keeps the record from being submitted again, and gains a failed line
+    // beside it, so the ack file does not claim a delivery that never reached
+    // the session. The supervisor's probe reading counts only ack lines.
+    if (!shutdownOutcome.ok) {
+      newAcks.push(JSON.stringify({ id: rec.id, at: Date.now(), action: "failed", reason: `${shutdownOutcome.how}: ${shutdownOutcome.reason}`.slice(0, 200) }));
+      await writeAcks();
+    }
     sess.state.decisions.push(shutdownOutcome.ok
       ? {
         timestamp: Date.now(),
@@ -3395,14 +3438,7 @@ export const register: Register = async (on, options) => {
       // heartbeat tick's promotion consults it, and a live claim on the
       // persona by another session makes this one a reader. A commons read
       // that fails leaves the claim to the sidecar alone, as it does there.
-      let commonsHolder: string | null = null;
-      if (!holderAlive) {
-        try {
-          const claims = await readAllClaims(commonsStoreOf($), staleAfterMs);
-          const live = claims.find((c) => c.resource === `persona:${sess.persona}` && c.holder !== sess.mySessionId);
-          if (live) commonsHolder = live.holder;
-        } catch { /* commons read failed; the claim proceeds on the sidecar alone */ }
-      }
+      const commonsHolder = holderAlive ? null : await liveCommonsHolderOf($, staleAfterMs);
 
       if (!holderAlive && commonsHolder !== null) {
         sess.isOwner = false;
@@ -3444,15 +3480,32 @@ export const register: Register = async (on, options) => {
         await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId, Date.now(), commonsMeta());
       }
     } else {
+      // A persona the store does not name yet is taken on the store alone only
+      // where no live commons claim holds it: a store read before another
+      // session's first write, or a store that lost its entry, is no proof the
+      // persona is free, and the commons claim is what says who holds it.
       sess.state = createDefaultState(sess.persona, sess.mySessionId);
-      sess.isOwner = true;
-      sess.myEpoch = sess.state.epoch;
-      sess.state.decisions.push({
-        timestamp: Date.now(),
-        loop: "monitor",
-        action: "persona_create",
-        detail: `Created persona '${sess.persona}'`,
-      });
+      const commonsHolder = await liveCommonsHolderOf($, staleAfterMs);
+      if (commonsHolder !== null) {
+        sess.isOwner = false;
+        sess.myEpoch = sess.state.epoch;
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "passive_reader",
+          detail: `Joining '${sess.persona}' as reader (live commons claim by ${commonsHolder}, no store entry)`,
+        });
+        await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId, Date.now(), commonsMeta());
+      } else {
+        sess.isOwner = true;
+        sess.myEpoch = sess.state.epoch;
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "persona_create",
+          detail: `Created persona '${sess.persona}'`,
+        });
+      }
     }
 
     // The state above came from the store where that read parsed, a persona
@@ -3670,15 +3723,22 @@ export const register: Register = async (on, options) => {
         // alike, and a healthy session promotes in this one's place.
         if (!sess.isOwner && arming !== "reader" && sess.stateNotLoaded === null) {
           let holderHb: HeartbeatEntry | null = null;
+          let sidecarRead = false;
           try {
             if (await $.fs.exists(heartbeatPathOf())) {
               const hb = JSON.parse(await $.fs.read(heartbeatPathOf())) as Record<string, HeartbeatEntry>;
               holderHb = hb[sess.persona] ?? null;
             }
+            sidecarRead = true;
           } catch { /* heartbeat read failed */ }
 
           const now = Date.now();
-          const holderIsStale = holderHb && (now - holderHb.lastSeen) > staleAfterMs;
+          // An absent entry is promotable as a stale one is: a session that
+          // joined as a reader on a live commons claim with no sidecar entry
+          // behind it would otherwise stay a reader forever. The commons check
+          // below still guards the promotion, so it waits until that claim
+          // goes stale. A sidecar that could not be read promotes nothing.
+          const holderIsStale = sidecarRead && (holderHb === null || (now - holderHb.lastSeen) > staleAfterMs);
           const holderIsSelf = holderHb?.sessionId === sess.mySessionId;
           if (holderIsStale && !holderIsSelf) {
             // BE1: check commons before promoting. If a live claim exists
@@ -3749,7 +3809,9 @@ export const register: Register = async (on, options) => {
               timestamp: now,
               loop: "monitor",
               action: "reader_promoted",
-              detail: `Promoted from reader to owner (prev ${holderHb?.sessionId ?? "unknown"}, stale after ${now - (holderHb?.lastSeen ?? now)}ms)`,
+              detail: holderHb === null
+                ? `Promoted from reader to owner (no sidecar entry, no live commons claim)`
+                : `Promoted from reader to owner (prev ${holderHb.sessionId ?? "unknown"}, stale after ${now - holderHb.lastSeen}ms)`,
             });
             // AD1: Write the stale-takeover claim directly to the store so that
             // the subsequent persist() call finds the new holder, not the dead one.
@@ -8945,13 +9007,15 @@ export const register: Register = async (on, options) => {
     currentPrompt = e.text;
     // Item 2 backstop safety: mark whether this genuine external turn is
     // the supervisor's own synthetic priming message.
-    // A [SUPERVISOR-ASK prompt is the supervisor's status check on a session
-    // it reads as silent, and takes the same flag: it is not task work, and it
-    // is not the operator.
-    const supervisorAskTurn = e.text.startsWith("[SUPERVISOR-ASK");
-    isPrimingTurn = e.text.startsWith("[SUPERVISOR-PRIMING]") || supervisorAskTurn;
     // Steer 68/69: a real Discord message carries e.origin.kind === "channel".
     const originKind = (e as { origin?: { kind?: string } }).origin?.kind;
+    // A [SUPERVISOR-ASK prompt is the supervisor's status check on a session
+    // it reads as silent, and takes the same flag: it is not task work, and it
+    // is not the operator. Only the supervisor's own write to the child's
+    // input carries it, and that arrives as the sdk origin, so the same text
+    // typed at the keyboard or relayed from a channel is the operator's turn.
+    const supervisorAskTurn = e.text.startsWith("[SUPERVISOR-ASK") && originKind === "sdk";
+    isPrimingTurn = e.text.startsWith("[SUPERVISOR-PRIMING]") || supervisorAskTurn;
     lastPromptWasChannelOrigin = originKind === "channel";
     lastPromptWasExternal = true;
     // The effort gate's reading of this prompt, taken by the turn that opens
