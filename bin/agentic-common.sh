@@ -924,6 +924,55 @@ if (!entry) {
   done
 }
 
+# --- newest_handle ---
+# The pre-launch gate's handle branch. Prints the path of the newest
+# <rundir>/child-*/handle.json, newest by the launchedAt timestamp inside it
+# rather than by file mtime, since child directories are reused across
+# supervisor runs. Prints nothing where no readable handle exists. Never
+# throws: an unreadable or malformed handle is skipped.
+# Usage: newest_handle <rundir>
+newest_handle() {
+  local rundir="$1"
+  [ -n "$rundir" ] || return 0
+  node -e '
+const fs = require("fs");
+const path = require("path");
+const rundir = process.argv[1];
+let best = null;
+let bestAt = -Infinity;
+let entries = [];
+try { entries = fs.readdirSync(rundir); } catch (e) { process.exit(0); }
+for (const name of entries) {
+  if (!/^child-\d+$/.test(name)) continue;
+  const p = path.join(rundir, name, "handle.json");
+  let h;
+  try { h = JSON.parse(fs.readFileSync(p, "utf8")); } catch (e) { continue; }
+  const at = Number(h.launchedAt);
+  if (!Number.isFinite(at)) continue;
+  if (at > bestAt) { bestAt = at; best = p; }
+}
+if (best) console.log(best);
+' "$rundir" 2>/dev/null
+}
+
+# --- handle_field ---
+# One top-level field of a handle.json, read through a JSON parser rather than a
+# grep so a value carrying JSON is data. Prints the value, or nothing where the
+# handle is unreadable or the field is absent or null.
+# Usage: handle_field <handle-file> <field>
+handle_field() {
+  local file="$1" field="$2"
+  [ -f "$file" ] || return 0
+  node -e '
+const fs = require("fs");
+try {
+  const h = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  const v = h[process.argv[2]];
+  if (v !== undefined && v !== null) console.log(v);
+} catch (e) {}
+' "$file" "$field" 2>/dev/null
+}
+
 # --- poll_decisions ---
 # Read the decision log from .agentic-personas.json for a given persona key.
 # W2: a read error returns "ERROR" and no decisions (treat as not-ready).

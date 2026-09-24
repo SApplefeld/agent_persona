@@ -19,6 +19,7 @@
 !/plan-record-unit-test.mjs
 !/channel-reply-instruction-test.sh
 !/supervisor-model-test.sh
+!/supervisor-holder-test.sh
 !/live-stopprocesstree-test.sh
 !/fixtures/
 !/settings-plugin-key-test.sh

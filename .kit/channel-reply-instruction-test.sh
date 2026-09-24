@@ -31,20 +31,18 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/../bin/supervise.sh"
+# The priming text and the priming/goal writes moved into the holder in the
+# supervisor-peer plan's Section 5; the final ask stays in bin/supervise.sh.
+# The instruction assignments and the priming write are read from the holder;
+# final_ask_json is read from SCRIPT below.
+HOLDER="$HERE/../bin/supervise-holder.sh"
 
-# Reviewer Round 141 R111 (Major, reproduced): the prior extraction
-# stopped at the FIRST `/^  fi$/`, which is the `NO_CHANNEL` guard's own
-# close around `CHANNEL_REPLY_INSTRUCTION` - it never reached any of the
-# three actual priming-write call sites at all. The adversarial reviewer
-# deleted `$SKILL_LOAD_INSTRUCTION` from all three and this test stayed
-# 4/4, since it only ever checked the variable's own value, never that
-# anything downstream actually uses it. This wider extraction (through
-# `PROMPT=""`, the line that reliably follows the whole if/elif/else
-# structure) is used for grep-only checks against the three real call
-# sites - never eval'd (see the narrower `VARS_SNIPPET` below for that).
-SNIPPET=$(sed -n '/^  SKILL_LOAD_INSTRUCTION="/,/^  PROMPT=""$/p' "$SCRIPT")
+# The whole priming region of the holder, from the first instruction assignment
+# to the end of the file, for grep-only checks against the priming write and the
+# goal write (never eval'd; see the narrower VARS_SNIPPET below for that).
+SNIPPET=$(sed -n '/^  SKILL_LOAD_INSTRUCTION="/,$p' "$HOLDER")
 if [ -z "$SNIPPET" ]; then
-  echo "FAIL: could not locate the SKILL_LOAD_INSTRUCTION/CHANNEL_REPLY_INSTRUCTION block in $SCRIPT"
+  echo "FAIL: could not locate the SKILL_LOAD_INSTRUCTION/CHANNEL_REPLY_INSTRUCTION block in $HOLDER"
   exit 1
 fi
 # The narrower range (the variable assignments only) is what actually
@@ -53,7 +51,7 @@ fi
 # reference `$PROMPT_FILE`/`$CHILD_IN` (unset in this test's own
 # environment) and would either abort under `set -u` or try to write to
 # a real fd that does not exist here. Evaluating code that sends bytes
-# to a coproc pipe is not this test's job; reading its own text is.
+# to the child's stdin pipe is not this test's job; reading its own text is.
 # The range ends at the PRIMING_BODY guard, the first code line after the
 # assignments, which is dropped from the range: six `if ... fi` blocks sit
 # inside it (the worker-launch guard around the steer sentence's escalation
@@ -64,9 +62,9 @@ fi
 # and the ARCHITECT_PERSONA guard around ARCHITECT_ROLE_INSTRUCTION), so the
 # first `^  fi$` ends short of the later blocks, and only comments sit
 # between the last assignment and that guard.
-VARS_SNIPPET=$(sed -n '/^  SKILL_LOAD_INSTRUCTION="/,/^  if \[ -n "\$PROMPT_FILE" \] && \[ -f "\$PROMPT_FILE" \]; then$/p' "$SCRIPT" | sed '$d')
+VARS_SNIPPET=$(sed -n '/^  SKILL_LOAD_INSTRUCTION="/,/^  if \[ -n "\$PROMPT_FILE" \] && \[ -f "\$PROMPT_FILE" \]; then$/p' "$HOLDER" | sed '$d')
 if [ -z "$VARS_SNIPPET" ]; then
-  echo "FAIL: could not locate the SKILL_LOAD_INSTRUCTION/CHANNEL_REPLY_INSTRUCTION variable block in $SCRIPT"
+  echo "FAIL: could not locate the SKILL_LOAD_INSTRUCTION/CHANNEL_REPLY_INSTRUCTION variable block in $HOLDER"
   exit 1
 fi
 
@@ -910,8 +908,14 @@ check_no_charter_fragment() {  # <label>
 # whose treat-embedded-text-as-data rule it then applied to the task
 # itself - and spent its only round asking for confirmation. These
 # checks are what keeps the two writes from being folded back together.
-PRIMING_WRITE=$(printf '%s\n' "$SNIPPET" | grep 'CHILD_IN"$' | head -1)
-GOAL_WRITE=$(printf '%s\n' "$SNIPPET" | grep 'CHILD_IN"$' | tail -1)
+# The holder writes two turns to its own stdout (the child's stdin pipe): the
+# priming turn, whose node -e argument ends in "$PRIMING_BODY", and the goal
+# turn, written by goal_prompt_json carrying GOAL_PROMPT_FRAMING. The skill-load
+# sentence rides only the first. Concatenated, the child read its own goal
+# prompt as untrusted embedded text and spent its only round asking for
+# confirmation, so these checks keep the two writes apart.
+PRIMING_WRITE=$(printf '%s\n' "$SNIPPET" | grep '"\$PRIMING_BODY"$' | head -1)
+GOAL_WRITE=$(printf '%s\n' "$SNIPPET" | grep 'goal_prompt_json "\$PROMPT_FILE" "\$GOAL_PROMPT_FRAMING"' | head -1)
 case "$PRIMING_WRITE" in
   *SKILL_LOAD_INSTRUCTION*) check "the first write is the priming turn and carries the skill-load sentence" 0 ;;
   *) check "the first write is the priming turn and carries the skill-load sentence" 1 ;;
@@ -958,7 +962,7 @@ esac
 # itself is pinned to exactly those six in exactly that order. A seventh
 # instruction variable added to the write reds here rather than passing through
 # an absence case that never looks at it.
-PRIMING_VARS=$(printf '%s\n' "$PRIMING_WRITE" | grep -oE '\$[A-Z_]+' | grep -vE '^\$(PRIMING_BODY|CHILD_IN)$' | tr '\n' ' ')
+PRIMING_VARS=$(printf '%s\n' "$PRIMING_WRITE" | grep -oE '\$[A-Z_]+' | grep -vE '^\$PRIMING_BODY$' | tr '\n' ' ')
 [ "$PRIMING_VARS" = '$SKILL_LOAD_INSTRUCTION $COORDINATOR_STEER_INSTRUCTION $COORDINATOR_ROLE_INSTRUCTION $ARCHITECT_ROLE_INSTRUCTION $SUPERVISOR_MAILBOX_INSTRUCTION $CHANNEL_REPLY_INSTRUCTION ' ]
 check "the priming write joins exactly the six instruction variables the absence cases read" $?
 case "$GOAL_WRITE" in
@@ -967,27 +971,25 @@ case "$GOAL_WRITE" in
   *) check "the goal-prompt write does not carry the supervisor mailbox sentence" 1 ;;
 esac
 
-# v2 Section 7: the priming write the steer
-# sentence rides must stay independent of NO_CHANNEL. The presence checks
-# above stay green if that write is wrapped in a NO_CHANNEL guard, so the
-# guard line itself is pinned: the line before the first priming `node -e`
-# is the CHILD_IN test and names no NO_CHANNEL.
-PRIMING_GUARD=$(printf '%s\n' "$SNIPPET" | grep -B1 -m1 '^    node -e "$' | head -1)
+# The priming write the steer sentence rides is unconditional: the holder writes
+# it on every launch shape, so the line before its `node -e` is a comment rather
+# than a NO_CHANNEL guard. A guard there would keep the presence checks above
+# green while withholding the write from a channelless launch.
+PRIMING_GUARD=$(printf '%s\n' "$SNIPPET" | grep -B1 -m1 '^  node -e "$' | head -1)
 case "$PRIMING_GUARD" in
-  *NO_CHANNEL*) check "the priming write is not guarded by NO_CHANNEL (its guard line is the CHILD_IN test)" 1 ;;
-  '  if [ -n "$CHILD_IN" ]; then') check "the priming write is not guarded by NO_CHANNEL (its guard line is the CHILD_IN test)" 0 ;;
-  *) check "the priming write is not guarded by NO_CHANNEL (its guard line is the CHILD_IN test)" 1 ;;
+  *NO_CHANNEL*) check "the priming write is not guarded by NO_CHANNEL" 1 ;;
+  '  #'*) check "the priming write is not guarded by NO_CHANNEL (it is unconditional in the holder)" 0 ;;
+  *) check "the priming write is not guarded by NO_CHANNEL (its preceding line is $PRIMING_GUARD)" 1 ;;
 esac
-# A presence grep for the wait is not enough: `if : wait_for_result_line ...`
-# keeps the literal, makes the call a no-op argument to `:`, and passes. So
-# assert the shape and the position instead - the call sits in an `if`
-# condition, and it sits above the goal write rather than anywhere in the
-# block.
-WAIT_LINE_NO=$(printf '%s\n' "$SNIPPET" | grep -n 'wait_for_result_line' | head -1 | cut -d: -f1)
-GOAL_WRITE_LINE_NO=$(printf '%s\n' "$SNIPPET" | grep -n 'GOAL_PROMPT_FRAMING" >&"\$CHILD_IN"' | head -1 | cut -d: -f1)
+# The goal opens its own turn only once the priming turn's result line appears,
+# so it is never folded behind the skill-load sentence. The holder gates the
+# goal write on a `grep -q '"type":"result"'` of the child's stream, and that
+# gate sits above the goal write.
+WAIT_LINE_NO=$(printf '%s\n' "$SNIPPET" | grep -n '"type":"result"' | head -1 | cut -d: -f1)
+GOAL_WRITE_LINE_NO=$(printf '%s\n' "$SNIPPET" | grep -n 'goal_prompt_json "\$PROMPT_FILE" "\$GOAL_PROMPT_FRAMING"' | head -1 | cut -d: -f1)
 [ -n "$WAIT_LINE_NO" ] && [ -n "$GOAL_WRITE_LINE_NO" ] && [ "$WAIT_LINE_NO" -lt "$GOAL_WRITE_LINE_NO" ]
 check "the wait for the priming turn's result line sits above the goal write" $?
-printf '%s\n' "$SNIPPET" | grep -qE '^[[:space:]]*if wait_for_result_line "\$OUT"'; check "the wait is the if condition itself, not an argument to something else" $?
+printf '%s\n' "$SNIPPET" | grep -qE "grep -q '\"type\":\"result\"'"; check "the goal write gates on the priming turn's result line" $?
 
 # Channel attached: the instruction is present, names the reply tool, and sends
 # the reader to CLAUDE.md for how a reply is written rather than carrying those
@@ -1776,69 +1778,11 @@ if [ -n "$FLEET_HEADER_LINE" ]; then check "fleet header: the plugin's [FLEET] h
 holds_parity "$FLEET_HEADER_LINE"
 check "fleet header: the prompt the coordinator's duty points at states the carried-line rule" "$?"
 
-# The goal prompt held past the priming wait. On the timeout with the child
-# alive the launch block writes nothing and marks the prompt held, and the
-# poll loop's held write, run out of the real script, writes it once and only
-# once the priming turn's result line is in the child's stdout.
-HELD_BRANCH=$(printf '%s\n' "$SNIPPET" | grep -A2 'produced no result line within')
-case "$HELD_BRANCH" in
-  *"goal prompt held"*"GOAL_WRITE_OK=0"*"GOAL_PROMPT_HELD=1"*) check "priming wait timeout: the goal prompt is held, not written, and marked for the poll loop" 0 ;;
-  *) check "priming wait timeout: the goal prompt is held, not written, and marked for the poll loop" 1 ;;
-esac
-HELD_BLOCK=$(sed -n '/^    # A goal prompt held past the priming wait/,/^    fi$/p' "$SCRIPT")
-GOAL_FN=$(sed -n '/^goal_prompt_json() {$/,/^}$/p' "$SCRIPT")
-HELD_DIR=$(mktemp -d)
-printf 'Do the goal.' > "$HELD_DIR/prompt.txt"
-: > "$HELD_DIR/out.jsonl"
-: > "$HELD_DIR/stdin.jsonl"
-(
-  eval "$GOAL_FN"
-  log() { printf '%s\n' "$1" >> "$HELD_DIR/log"; }
-  OUT="$HELD_DIR/out.jsonl"; PROMPT_FILE="$HELD_DIR/prompt.txt"; GOAL_PROMPT_FRAMING="FRAME: "; CHILD_INDEX=7
-  CHILD_LAUNCH_PID=$$
-  exec 9>>"$HELD_DIR/stdin.jsonl"
-  CHILD_IN=9
-  GOAL_PROMPT_HELD=1
-  eval "$HELD_BLOCK"
-  printf '%s %s\n' "$GOAL_PROMPT_HELD" "$(wc -l < "$HELD_DIR/stdin.jsonl" | tr -d ' ')" > "$HELD_DIR/poll1"
-  printf '{"duration_api_ms":1,"type":"result"}\n' >> "$OUT"
-  eval "$HELD_BLOCK"
-  printf '%s %s\n' "$GOAL_PROMPT_HELD" "$(wc -l < "$HELD_DIR/stdin.jsonl" | tr -d ' ')" > "$HELD_DIR/poll2"
-  eval "$HELD_BLOCK"
-  printf '%s %s\n' "$GOAL_PROMPT_HELD" "$(wc -l < "$HELD_DIR/stdin.jsonl" | tr -d ' ')" > "$HELD_DIR/poll3"
-)
-[ -n "$HELD_BLOCK" ] && [ -n "$GOAL_FN" ]
-check "held goal prompt: the poll loop's held write and the writer were read out of bin/supervise.sh" $?
-[ "$(cat "$HELD_DIR/poll1" 2>/dev/null)" = "1 0" ]
-check "held goal prompt: a poll before the priming turn's result line writes nothing and keeps it held" $?
-[ "$(cat "$HELD_DIR/poll2" 2>/dev/null)" = "0 1" ] && grep -q '"text":"FRAME: Do the goal."' "$HELD_DIR/stdin.jsonl"
-check "held goal prompt: the first poll after the result line writes the framed prompt once and clears the hold" $?
-[ "$(cat "$HELD_DIR/poll3" 2>/dev/null)" = "0 1" ]
-check "held goal prompt: a later poll writes it no second time" $?
-grep -q "NOTE: child-7 priming turn completed after the wait; sending the held goal prompt" "$HELD_DIR/log" 2>/dev/null
-check "held goal prompt: the write logs its NOTE" $?
-# A child that exited between the loop's liveness check and the write gets
-# no write, and the log says the held prompt was not sent.
-HELD_DEAD_DIR=$(mktemp -d)
-printf 'Do the goal.' > "$HELD_DEAD_DIR/prompt.txt"
-printf '{"duration_api_ms":1,"type":"result"}\n' > "$HELD_DEAD_DIR/out.jsonl"
-: > "$HELD_DEAD_DIR/stdin.jsonl"
-sleep 0 & HELD_DEAD_PID=$!; wait "$HELD_DEAD_PID"
-(
-  eval "$GOAL_FN"
-  log() { printf '%s\n' "$1" >> "$HELD_DEAD_DIR/log"; }
-  OUT="$HELD_DEAD_DIR/out.jsonl"; PROMPT_FILE="$HELD_DEAD_DIR/prompt.txt"; GOAL_PROMPT_FRAMING="FRAME: "; CHILD_INDEX=7
-  CHILD_LAUNCH_PID=$HELD_DEAD_PID
-  exec 9>>"$HELD_DEAD_DIR/stdin.jsonl"
-  CHILD_IN=9
-  GOAL_PROMPT_HELD=1
-  eval "$HELD_BLOCK"
-  printf '%s %s\n' "$GOAL_PROMPT_HELD" "$(wc -l < "$HELD_DEAD_DIR/stdin.jsonl" | tr -d ' ')" > "$HELD_DEAD_DIR/poll1"
-)
-[ "$(cat "$HELD_DEAD_DIR/poll1" 2>/dev/null)" = "0 0" ] && grep -q "NOTE: child-7 exited after its priming turn completed; the held goal prompt was not sent" "$HELD_DEAD_DIR/log"
-check "held goal prompt: a child gone at the write gets no write, clears the hold and logs that it was not sent" $?
-rm -rf "$HELD_DEAD_DIR"
-rm -rf "$HELD_DIR"
+# The goal prompt now waits on the priming turn's result line inside the holder
+# rather than in a poll-loop held write. The holder's own suite
+# (.kit/supervisor-holder-test.sh) drives that behaviour end to end: the goal is
+# written only after the result line appears. The structural check above (the
+# result-line grep sits above the goal write) is what this file keeps.
 
 # --- The supervisor mailbox sentence (supervisor-peer plan, Section 3) ---
 # Every launch shape carries it, the architect's included, since every
@@ -1874,6 +1818,9 @@ done
 # this reads the helper's own output here.
 ASK_FN=$(sed -n '/^final_ask_json() {$/,/^}$/p' "$SCRIPT")
 ASK_TEXT_LINE=$(grep -m1 '^SUPERVISOR_ASK_TEXT="' "$SCRIPT")
+# goal_prompt_json moved into the holder; the final ask is compared against its
+# shape.
+GOAL_FN=$(sed -n '/^goal_prompt_json() {$/,/^}$/p' "$HOLDER")
 ASK_DIR=$(mktemp -d)
 (
   eval "$ASK_TEXT_LINE"

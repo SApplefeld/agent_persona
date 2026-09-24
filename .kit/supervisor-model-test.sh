@@ -295,10 +295,18 @@ sweep_child_tree() { echo "CALL sweep_child_tree $1"; return "${SWEEP_RC_STUB:-0
 retry_stop_escalation() { echo "CALL retry_stop_escalation $1 $2"; return "${RETRY_RC_STUB:-0}"; }
 stop_child() { echo "CALL stop_child $1"; kill "$CHILD_LAUNCH_PID" 2>/dev/null; return "${STOP_RC_STUB:-0}"; }
 record_restart_in_hour() { echo "CALL record_restart_in_hour"; RESTART_COUNT="${RESTART_COUNT_STUB:-1}"; }
+# The launch shape, not sweep_gone_child, writes the child exit into the marker;
+# the driver stands in for it. read_exit_marker, clear_handle and kill_holder
+# are the real helpers sweep_gone_child calls, stubbed here since the driver
+# extracts only sweep_gone_child.
+read_exit_marker() { local v; v=$(cat "$1" 2>/dev/null); case "$v" in ""|*[!0-9]*) echo 0 ;; *) echo "$v" ;; esac; }
+clear_handle() { :; }
+kill_holder() { :; }
 if [ "${WRAPPER:-dead}" = live ]; then sleep 30 & else ( exit 7 ) & fi
 CHILD_LAUNCH_PID=$!
 [ "${WRAPPER:-dead}" = live ] || sleep 1
 CHILD_INDEX=1; DECIDE_REASON="gone: test"; EXIT_MARKER="$1"; STOP_PATH=eof
+echo "${MARKER_CODE:-7}" > "$EXIT_MARKER"
 LAUNCHED_AT=$(node -e "console.log(Date.now())"); SUPERVISOR_MIN_RUN_MS=120000
 CRASH_COUNT="${CRASH_COUNT_START:-0}"; RESTART_COUNT=0; SUPERVISOR_MAX_RESTARTS_PER_HOUR=6; SUPERVISOR_CRASH_LIMIT=3
 sweep_gone_child
@@ -418,11 +426,15 @@ if [ -n "$TIMEOUT_SNIPPET" ] && [ -n "$CLEAR_SNIPPET" ]; then
 log() { echo "$*"; }
 stop_child() { echo "CALL stop_child $1"; STOP_PATH=eof; return 0; }
 retry_stop_escalation() { echo "CALL retry_stop_escalation $1 $2"; return "${RETRY_RC_STUB:-0}"; }
+# The launch shape writes the exit marker; the driver stands in for it, and
+# read_exit_marker is the real helper ask_timeout_stop reads it with.
+read_exit_marker() { local v; v=$(cat "$1" 2>/dev/null); case "$v" in ""|*[!0-9]*) echo 0 ;; *) echo "$v" ;; esac; }
 ( exit 0 ) &
 CHILD_LAUNCH_PID=$!
 sleep 1
 CHILD_INDEX=1; SHUTDOWN_ASK_ID=17-3; DECIDE_REASON="the shutdown ask at 5 went unanswered past 2000ms"
 EXIT_MARKER="$1/.exit"; SHUTDOWN_REQUEST_FILE="$1/shutdown.request"
+echo 0 > "$EXIT_MARKER"
 ask_timeout_stop
 echo "RETURNED"' > "$TMP/timeout.sh"
   timeout_run() {  # <state dir> env assignments...
@@ -518,6 +530,47 @@ check "the settings, the checked names and the emitted names all read out of the
 check "every numeric setting is named in a positive_number call, or is emitted and never read by the supervisor itself (unchecked:${UNCHECKED:- none})" "$?"
 [ -n "$SELF_READ_EMITTED" ]
 check "the narrowing has a subject: an emitted setting the supervisor also reads for itself (${SELF_READ_EMITTED# })" "$?"
+
+# --- The pre-launch gate's adoption routing and the trap's detach routing ---
+# handle_gate_route and handle_trap_route are pure, so each is extracted and
+# driven in one process, every branch both ways. An empty extraction means the
+# function was renamed or removed.
+GATE_ROUTE_SNIPPET=$(sed -n '/^handle_gate_route() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+[ -n "$GATE_ROUTE_SNIPPET" ]; check "handle_gate_route is found in bin/supervise.sh" "$?"
+if [ -n "$GATE_ROUTE_SNIPPET" ]; then
+  printf '%s\n%s\nhandle_gate_route "$@"\n' "$STUB_OPTIONS" "$GATE_ROUTE_SNIPPET" > "$TMP/gate.sh"
+  route() { bash "$TMP/gate.sh" "$@"; }
+  [ "$(route 0 0 alive)" = WAIT ]; check "gate route: an unreadable handle falls to today's wait" "$?"
+  [ "$(route 1 1 alive)" = WAIT ]; check "gate route: a handle whose writer is still running waits, so a double launch times out" "$?"
+  [ "$(route 1 0 alive)" = ADOPT ]; check "gate route: a dead-writer handle read alive is adopted" "$?"
+  [ "$(route 1 0 frozen)" = ADOPT ]; check "gate route: a dead-writer handle read frozen is adopted" "$?"
+  [ "$(route 1 0 gone)" = SWEEP_LAUNCH ]; check "gate route: a dead-writer handle read gone is swept then launched" "$?"
+  [ "$(route 1 0 reading_failed)" = WAIT ]; check "gate route: a dead-writer handle whose verdict is neither alive, frozen nor gone waits" "$?"
+fi
+TRAP_ROUTE_SNIPPET=$(sed -n '/^handle_trap_route() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+[ -n "$TRAP_ROUTE_SNIPPET" ]; check "handle_trap_route is found in bin/supervise.sh" "$?"
+if [ -n "$TRAP_ROUTE_SNIPPET" ]; then
+  printf '%s\n%s\nhandle_trap_route "$@"\n' "$STUB_OPTIONS" "$TRAP_ROUTE_SNIPPET" > "$TMP/trap.sh"
+  trap_route() { bash "$TMP/trap.sh" "$@"; }
+  [ "$(trap_route 1 alive)" = DETACH ]; check "trap route: a signal to a live handled child read alive detaches" "$?"
+  [ "$(trap_route 1 frozen)" = DETACH ]; check "trap route: a signal to a live handled child read frozen detaches" "$?"
+  [ "$(trap_route 0 alive)" = STOP ]; check "trap route: a signal to a child with no readable handle keeps today's stop" "$?"
+  [ "$(trap_route 1 gone)" = STOP ]; check "trap route: a signal to a handled child read gone keeps today's stop" "$?"
+fi
+
+# --- The handle is removed once its child is accounted for ---
+# clear_handle removes the current child's handle, so a handle on disk always
+# names a child nobody has yet accounted for.
+CLEARH_SNIPPET=$(sed -n '/^clear_handle() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+[ -n "$CLEARH_SNIPPET" ]; check "clear_handle is found in bin/supervise.sh" "$?"
+if [ -n "$CLEARH_SNIPPET" ]; then
+  CH_DIR=$(mktemp -d "$TMP/clearh.XXXXXX"); echo '{}' > "$CH_DIR/handle.json"
+  printf '%s\nHANDLE_FILE="%s/handle.json"\n%s\nclear_handle\n' "$STUB_OPTIONS" "$CH_DIR" "$CLEARH_SNIPPET" > "$TMP/clearh.sh"
+  bash "$TMP/clearh.sh"
+  [ ! -e "$CH_DIR/handle.json" ]; check "clear_handle removes the current child's handle" "$?"
+  printf '%s\nHANDLE_FILE=""\n%s\nclear_handle; echo rc=$?\n' "$STUB_OPTIONS" "$CLEARH_SNIPPET" > "$TMP/clearh2.sh"
+  [ "$(bash "$TMP/clearh2.sh")" = "rc=0" ]; check "clear_handle with no handle set is a no-op" "$?"
+fi
 
 echo
 if [ "$failed" = "0" ]; then
