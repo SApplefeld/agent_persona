@@ -449,3 +449,12 @@ Delta: taken 2026-09-23 on this box against HEAD fdf910d, worktree clean:
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 8 - 2026-09-24
+Section 5 at the review-round backstop.
+Section 5 took five review rounds (commits a17dc35, 3eabaab, 2007acf, ec2e415, 5ffb8c2) and round 5's adjudication left the terminal condition unmet, so the section stopped for the operator's decision rather than opening fix round 5. Backstop stage: opening bound reached, round count 5.
+Round 5: no Critical from any lens. Three owed correctness Majors, fixes unwritten: the holder-ticks retry can record a recycled Windows pid's ticks (fix-introduced); the stop snapshot builder still resolves and walks an adopted child's MSYS pid on the stop-retry path (spec-traceable, invisible to the stubbed driver); an adopted child whose entry walk fails has no kill rung (fix-introduced).
+Owed and unrun: the fix round for those three Majors and the review round its delta owes under the fix-delta bar (it changes which processes are killed, on a path the model driver stubs). Taken first on the re-arm.
+Advisory: the grace loops count iterations rather than time (relevance ruling ASK, deferred to the backlog with the judge's lean to relevant); the kill_holder comment overstating its guard (honesty route, a prose fix at the close).
+Records: .kit/scratch/supervisor-peer/s5-adjudication.md, advisory-section-5.md, minors-section-5.md, add-decisions-section-5.md.
+Consult (fable) before the declaration: continue, amended to a fix round carrying the three Majors only, with Minors and code takes left to the close pass, and every pin stubbing only at the PowerShell and kill leaves, never at build_stop_snapshot or stop_child, pin first and watched red. Ship-with-adoption-off and replan both refused on facts: detach without adoption loops in GATE TIMEOUT, and the premise was ruled sound after round 3 with no contrary finding since.
