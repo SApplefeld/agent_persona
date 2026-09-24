@@ -940,6 +940,7 @@ const path = require("path");
 const rundir = process.argv[1];
 let best = null;
 let bestAt = -Infinity;
+const seen = [];
 let entries = [];
 try { entries = fs.readdirSync(rundir); } catch (e) { process.exit(0); }
 for (const name of entries) {
@@ -949,10 +950,27 @@ for (const name of entries) {
   try { h = JSON.parse(fs.readFileSync(p, "utf8")); } catch (e) { continue; }
   const at = Number(h.launchedAt);
   if (!Number.isFinite(at)) continue;
+  seen.push({ name, p, at });
   if (at > bestAt) { bestAt = at; best = p; }
 }
+// Every older handle passed over is named on stderr, one per line, so the
+// caller can log which child directories still hold a handle nobody has
+// accounted for.
+for (const s of seen) { if (s.p !== best) console.error("OLDER " + s.name); }
 if (best) console.log(best);
-' "$rundir" 2>/dev/null
+' "$rundir"
+}
+
+# --- handle_num_field ---
+# handle_field narrowed to a non-negative integer: prints the value only where
+# it is all digits, and nothing otherwise, so a pid, an index or a timestamp
+# read from a handle is refused before it reaches kill, the walk or a path.
+# Usage: handle_num_field <handle-file> <field>
+handle_num_field() {
+  local v
+  v=$(handle_field "$1" "$2")
+  case "$v" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s\n' "$v"
 }
 
 # --- handle_field ---

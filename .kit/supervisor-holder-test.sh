@@ -61,7 +61,7 @@ sleep 30 & C1_CHILD=$!; CHILD_PIDS="$CHILD_PIDS $C1_CHILD"
 echo "$C1_CHILD" > "$D/child.pid"
 printf 'do the operator task' > "$D/goal"
 PERSONA=default NO_CHANNEL=1 COORDINATOR_PERSONA=coord ARCHITECT_PERSONA="" CHILD_INDEX=1 SUPERVISOR_HOLDER_POLL_S=1 \
-  bash "$HOLDER" "$D/holder.pid" "$D/out.jsonl" "$D/child.pid" "$D/ask.request" "$D/goal" 5 \
+  bash "$HOLDER" "$D/holder.pid" "$D/out.jsonl" "$D/child.pid" "$D/ask.request" "$D/goal" \
   > "$D/stdout" 2> "$D/err" &
 C1_HOLDER=$!; HOLDER_PIDS="$HOLDER_PIDS $C1_HOLDER"
 
@@ -98,6 +98,21 @@ check "the holder relays the final ask from the ask-request file to the pipe" "$
 wait_for 30 test ! -e "$D/ask.request"
 check "the holder removes the ask-request file after relaying it" "$([ ! -e "$D/ask.request" ] && echo 0 || echo 1)"
 
+# A file that is not one whole [SUPERVISOR-ASK id=] user turn is never relayed:
+# a partial write (no terminating newline), a line that is not JSON, and a JSON
+# user turn whose text does not open with the marker are each logged and
+# removed unrelayed. The valid ask above stays relayed exactly once.
+printf '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[SUPERVISOR-ASK id=partial] cut' > "$D/ask.request"
+wait_for 30 test ! -e "$D/ask.request"
+printf 'not json at all\n' > "$D/ask.request"
+wait_for 30 test ! -e "$D/ask.request"
+printf '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[COORDINATOR id=1] not an ask"}]}}\n' > "$D/ask.request"
+wait_for 30 test ! -e "$D/ask.request"
+[ ! -e "$D/ask.request" ]; check "the holder removes an ask-request file it will not relay" "$?"
+! grep -q 'id=partial\|not json at all\|not an ask' "$D/stdout"; check "a partial, non-JSON or foreign ask-request line is not relayed to the pipe" "$?"
+[ "$(grep -c 'removed it unrelayed' "$D/err")" -eq 3 ]; check "each refused ask-request file is named in the holder's log (refusals=$(grep -c 'removed it unrelayed' "$D/err"))" "$?"
+[ "$(grep -c 'SUPERVISOR-ASK id=9' "$D/stdout")" -eq 1 ]; check "the valid ask was relayed exactly once" "$?"
+
 # The child's pid disappears; the holder exits within a few seconds.
 kill "$C1_CHILD" 2>/dev/null
 wait_for 60 sh -c "! kill -0 $C1_HOLDER 2>/dev/null"
@@ -108,7 +123,7 @@ D="$TMP/c2"; mkdir -p "$D"
 sleep 30 & C2_CHILD=$!; CHILD_PIDS="$CHILD_PIDS $C2_CHILD"
 echo "$C2_CHILD" > "$D/child.pid"
 PERSONA=default NO_CHANNEL=1 COORDINATOR_PERSONA=coord ARCHITECT_PERSONA="" CHILD_INDEX=1 SUPERVISOR_HOLDER_POLL_S=1 \
-  bash "$HOLDER" "$D/holder.pid" "$D/out.jsonl" "$D/child.pid" "$D/ask.request" "" 5 \
+  bash "$HOLDER" "$D/holder.pid" "$D/out.jsonl" "$D/child.pid" "$D/ask.request" "" \
   > "$D/stdout" 2> "$D/err" &
 C2_HOLDER=$!; HOLDER_PIDS="$HOLDER_PIDS $C2_HOLDER"
 wait_for 50 test -s "$D/stdout"
@@ -128,7 +143,7 @@ sleep 60 & C3_CHILD=$!; CHILD_PIDS="$CHILD_PIDS $C3_CHILD"
 echo "$C3_CHILD" > "$D/child.pid"
 (
   PERSONA=default NO_CHANNEL=1 COORDINATOR_PERSONA=coord ARCHITECT_PERSONA="" CHILD_INDEX=1 SUPERVISOR_HOLDER_POLL_S=30 \
-    bash "$HOLDER" "$D/holder.pid" "$D/out.jsonl" "$D/child.pid" "$D/ask.request" "" 5 2> "$D/err" \
+    bash "$HOLDER" "$D/holder.pid" "$D/out.jsonl" "$D/child.pid" "$D/ask.request" "" 2> "$D/err" \
   | { cat > "$D/piped"; echo done > "$D/reader.done"; }
 ) &
 C3_GROUP=$!; HOLDER_PIDS="$HOLDER_PIDS $C3_GROUP"

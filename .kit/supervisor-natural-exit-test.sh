@@ -1475,6 +1475,9 @@ case "\$action" in
   # the holder is killed (end of input), then exits 0. The moving signal that
   # keeps it read alive is a transcript the case appends to.
   holds) IFS= read -r _; emit_init; write_child_heartbeat; while IFS= read -r _; do :; done; exit 0 ;;
+  # The same child, keeping any [SUPERVISOR-ASK line that reaches its input in
+  # ask-line, so a case can show the final ask arrived through the holder.
+  holds_ask) IFS= read -r _; emit_init; write_child_heartbeat; while IFS= read -r line; do case "\$line" in *SUPERVISOR-ASK*) printf '%s\n' "\$line" > "\$CASE_DIR/ask-line" ;; esac; done; exit 0 ;;
   *) exit 1 ;;
 esac
 EOF
@@ -2292,21 +2295,32 @@ if want na; then
   { [ -n "$NA_HOLDER" ] && kill -0 "$NA_HOLDER" 2>/dev/null; }; check "(na) the holder is still alive after the detach" "$?"
 
   if want nb; then
-    # A second supervisor on the same rundir adopts the detached child.
+    # A second supervisor on the same rundir adopts the detached child. The ask
+    # grace is two seconds, so the stop below does not run the twenty-minute
+    # default against a stub that never answers.
+    DRIVE_ENV=("${LIVENESS_ENV[@]}" USERPROFILE="$NA/profile" supervisorAskGraceMs=2000)
     sup_bg "$NA"
     NA_SUP2=$SUP_BG_PID
     wait_log "$NA/rd/supervisor.log" 'ADOPT child-1' 120
     grep -q 'ADOPT child-1' "$NA/rd/supervisor.log"; check "(nb) the second supervisor adopts child-1" "$?"
     # The adoption launched no new child.
     [ ! -d "$NA/rd/child-2" ]; check "(nb) the adopting supervisor launches no new child (no child-2)" "$?"
-    # Both supervisors named the same session id.
-    [ "$(grep -c 'stub-sess-1' "$NA/rd/supervisor.log")" -ge 1 ]; check "(nb) the adopted child keeps its session id" "$?"
-    # Stop the adopted child with a shutdown request; the child honors it and the
-    # stop ends on the eof path (the holder killed, the child reads end of input).
+    # The same session id in both supervisors' records: the first supervisor's
+    # handle line names the session it read, and the handle the second
+    # supervisor rewrote at adoption names it too.
+    NB_SESS1=$(grep -o "child-1's handle now names session [^ ]*" "$NA/rd/supervisor.log" | head -1 | sed 's/.* //')
+    NB_SESS2=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).sessionId||"")' "$NA/rd/child-1/handle.json" 2>/dev/null)
+    [ -n "$NB_SESS1" ] && [ "$NB_SESS1" = "$NB_SESS2" ]; check "(nb) both supervisors name the same session id (${NB_SESS1:-none} = ${NB_SESS2:-none})" "$?"
+    # Stop the adopted child with a shutdown request. The stub never answers, so
+    # the ask times out after two seconds and the stop runs: the holder is
+    # killed, the child reads end of input, and the exit is on the eof path.
     : > "$NA/rd/shutdown.request"
-    printf '%s\n' "holds" >> "$NA/plan"
-    wait_log "$NA/rd/supervisor.log" 'STOP_PATH=eof\|STOP_COMPLETE' 120 || true
-    kill -TERM "$NA_SUP2" 2>/dev/null; wait "$NA_SUP2" 2>/dev/null
+    wait_log "$NA/rd/supervisor.log" 'EXIT child-1 code=[0-9]* (eof)' 120
+    grep -q 'EXIT child-1 code=[0-9]* (eof)' "$NA/rd/supervisor.log"; check "(nb) the adopting supervisor's stop of the adopted child ends on the eof path" "$?"
+    nb_w=0
+    while kill -0 "$NA_SUP2" 2>/dev/null && [ "$nb_w" -lt 120 ]; do sleep 1; nb_w=$((nb_w + 1)); done
+    kill -TERM "$NA_SUP2" 2>/dev/null; wait "$NA_SUP2" 2>/dev/null; NB_RC2=$?
+    [ "$NB_RC2" -eq 0 ]; check "(nb) the adopting supervisor's run ends at exit 0 once the adopted child is stopped (rc=$NB_RC2)" "$?"
   fi
   : > "$NA/touch-stop"; wait "$NA_TOUCHER" 2>/dev/null
   DRIVE_ENV=(); DRIVE_CRASH_LIMIT=1
@@ -2337,14 +2351,22 @@ fi
 # launches a fresh child.
 if want nc; then
   NC="$TMP/nc"; mkdir -p "$NC/wd" "$NC/rd/child-1"
-  # A handle whose child and holder pids are already dead, and whose writing
-  # supervisor pid is dead, so the gate reads writer-dead and the walk finds no
-  # live process (verdict gone).
+  # A handle whose writing supervisor, child and holder all name one real
+  # Windows process that has since died: its pid and start ticks are recorded
+  # while it lives (through the supervisor's own snapshot helper), then it is
+  # killed. The gate reads the writer dead by that pair, the child's identity
+  # gone by the same pair, and sweeps then launches. A null pair would read as a
+  # running writer and wait instead.
   ( exit 0 ) & NC_DEAD=$!; wait "$NC_DEAD" 2>/dev/null
-  node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ sessionId:"stub-sess-old", holderPid:Number(process.argv[2]), holderWinPid:null, holderTicks:null, childPid:Number(process.argv[2]), childWinPid:null, childTicks:null, supervisorWinPid:null, supervisorTicks:null, launchedAt:Date.now()-1000, childIndex:1 }))' "$NC/rd/child-1/handle.json" "$NC_DEAD"
+  powershell.exe -NoProfile -Command "Start-Sleep -Seconds 60" & NC_SP=$!
+  sleep 1
+  NC_WIN=$(tr -d '\r\n' < "/proc/$NC_SP/winpid" 2>/dev/null)
+  NC_PAIR=$(snapshot_process_tree "$NC_WIN" 2>/dev/null | grep -E "^${NC_WIN},[0-9]+$" | head -1)
+  kill_process_snapshot "$NC_PAIR" > /dev/null 2>&1
+  NC_TICKS="${NC_PAIR#*,}"
+  [ -n "$NC_WIN" ] && [ -n "$NC_TICKS" ]; check "(nc) setup: a real Windows pid and start ticks were recorded for the dead writer (${NC_WIN:-none},${NC_TICKS:-none})" "$?"
+  node -e 'const [f, pid, win, ticks] = process.argv.slice(1); require("fs").writeFileSync(f, JSON.stringify({ sessionId:"stub-sess-old", holderPid:Number(pid), holderWinPid:Number(win), holderTicks:Number(ticks), childPid:Number(pid), childWinPid:Number(win), childTicks:Number(ticks), supervisorWinPid:Number(win), supervisorTicks:Number(ticks), launchedAt:Date.now()-1000, childIndex:1 }))' "$NC/rd/child-1/handle.json" "$NC_DEAD" "$NC_WIN" "$NC_TICKS"
   printf '%s\n' "clean" > "$NC/plan"; printf '%s' "$NC" > "$STUB/case"
-  # A dead writer with a null supervisor pid reads writer-not-running, and a
-  # dead child pid with no live process reads gone; the gate sweeps and launches.
   drive nc "clean,shutdown" 6
   grep -q 'SWEEP_RELAUNCH: child-1 read gone at the gate' "$NC/rd/supervisor.log" 2>/dev/null; check "(nc) a handle naming a gone child is swept at the gate" "$?"
   grep -q 'LAUNCH child-' "$NC/rd/supervisor.log" 2>/dev/null; check "(nc) a fresh child launches after the sweep" "$?"
@@ -2388,7 +2410,9 @@ if want ng; then
   NG_TX=$(transcript_path "$NG/wd" "$NG/profile" "stub-sess-1")
   ( until [ -f "$NG/touch-stop" ]; do write_turn_aged "$NG_TX" 0; sleep 1; done ) &
   NG_TOUCHER=$!
-  DRIVE_ENV=("${LIVENESS_ENV[@]}" USERPROFILE="$NG/profile")
+  # The ask grace is two seconds, so a stub that never answers the ask is
+  # stopped inside the case rather than after the twenty-minute default.
+  DRIVE_ENV=("${LIVENESS_ENV[@]}" USERPROFILE="$NG/profile" supervisorAskGraceMs=2000)
   printf '%s\n%s\n' "holds" "holds" > "$NG/plan"; printf '%s' "$NG" > "$STUB/case"
   DRIVE_CRASH_LIMIT=6
   sup_bg "$NG"
@@ -2410,6 +2434,9 @@ if want ng; then
   grep -q 'ADOPT child-1' "$NG/rd/supervisor.log"; check "(ng) a supervisor adopts a detached live child beside a shutdown request" "$?"
   wait_log "$NG/rd/supervisor.log" 'ASK\[shutdown\]' 120
   grep -q 'ASK\[shutdown\]' "$NG/rd/supervisor.log"; check "(ng) the adopting supervisor asks the adopted child to stop" "$?"
+  ng_w=0
+  while kill -0 "$NG_SUP2" 2>/dev/null && [ "$ng_w" -lt 120 ]; do sleep 1; ng_w=$((ng_w + 1)); done
+  kill -TERM "$NG_SUP2" 2>/dev/null
   wait "$NG_SUP2" 2>/dev/null; NG_RC2=$?
   [ "$NG_RC2" -eq 0 ]; check "(ng) the run ends at exit 0 once the adopted child stops (rc=$NG_RC2)" "$?"
   : > "$NG/touch-stop"; wait "$NG_TOUCHER" 2>/dev/null
@@ -2449,26 +2476,43 @@ fi
 if want nd; then
   ND="$TMP/nd"; mkdir -p "$ND/wd" "$ND/profile"
   write_turn_aged "$(transcript_path "$ND/wd" "$ND/profile" "stub-sess-1")" 3600
-  DRIVE_ENV=("${LIVENESS_ENV[@]}" USERPROFILE="$ND/profile" supervisorFinalAskMs=2000)
-  printf '%s\n' "holds" > "$ND/plan"; printf '%s' "$ND" > "$STUB/case"
+  DRIVE_ENV=("${LIVENESS_ENV[@]}" USERPROFILE="$ND/profile" supervisorFinalAskMs=2000 supervisorAskGraceMs=2000)
+  printf '%s\n' "holds_ask" > "$ND/plan"; printf '%s' "$ND" > "$STUB/case"
   DRIVE_CRASH_LIMIT=6
   sup_bg "$ND"
   ND_SUP1=$SUP_BG_PID
-  waited=0
-  until grep -q '"sessionId":"stub-sess-1"' "$ND/rd/child-1/handle.json" 2>/dev/null; do
-    [ "$waited" -ge 120 ] && break
-    kill -0 "$ND_SUP1" 2>/dev/null || break
-    sleep 1; waited=$((waited + 1))
-  done
-  # Detach the first supervisor at once, before its own window closes.
+  # The first supervisor is detached on its LAUNCH line, as soon as the handle
+  # it writes right after the launch exists, before its own frozen reading can
+  # restart the child.
+  wait_log "$ND/rd/supervisor.log" 'LAUNCH child-1' 60
+  nd_w=0
+  until [ -f "$ND/rd/child-1/handle.json" ] || [ "$nd_w" -ge 30 ]; do sleep 1; nd_w=$((nd_w + 1)); done
   kill -TERM "$ND_SUP1" 2>/dev/null; wait "$ND_SUP1" 2>/dev/null
+  grep -q 'DETACH child-1' "$ND/rd/supervisor.log"; check "(nd) the first supervisor detaches from the child on its signal" "$?"
   sup_bg "$ND"
   ND_SUP2=$SUP_BG_PID
   wait_log "$ND/rd/supervisor.log" 'ADOPT child-1' 120
   grep -q 'ADOPT child-1' "$ND/rd/supervisor.log"; check "(nd) a frozen handled child is adopted" "$?"
   wait_log "$ND/rd/supervisor.log" 'FINAL_ASK child-1' 120
   grep -q 'FINAL_ASK child-1' "$ND/rd/supervisor.log"; check "(nd) the adopting supervisor puts the final ask to the adopted child" "$?"
-  wait_log "$ND/rd/supervisor.log" 'RESTART: frozen\|STOP\[' 120 || true
+  # The ask reaches the stub's input through the holder: the stub keeps the
+  # line, and it is a user turn opening the ask marker.
+  nd_w=0
+  until [ -s "$ND/ask-line" ] || [ "$nd_w" -ge 60 ]; do sleep 1; nd_w=$((nd_w + 1)); done
+  node -e '
+const line = require("fs").readFileSync(process.argv[1], "utf8").trim();
+const o = JSON.parse(line);
+process.exit(o.type === "user" && o.message.content[0].text.startsWith("[SUPERVISOR-ASK id=") ? 0 : 1);
+' "$ND/ask-line" 2>/dev/null
+  check "(nd) the final ask arrives on the adopted stub's input through the holder as a [SUPERVISOR-ASK id=<id>] user turn" "$?"
+  # The window closes silent (the stub answers nothing), so the frozen restart
+  # runs the stop phases: the input is closed under the restart label.
+  wait_log "$ND/rd/supervisor.log" 'RESTART: frozen' 120
+  grep -q 'RESTART: frozen' "$ND/rd/supervisor.log"; check "(nd) the window closing silent takes the frozen restart" "$?"
+  wait_log "$ND/rd/supervisor.log" 'STOP\[restart\]: input closed' 60
+  grep -q 'STOP\[restart\]: input closed' "$ND/rd/supervisor.log"; check "(nd) the stop phases run after the window, opening with the input closed" "$?"
+  nd_w=0
+  while kill -0 "$ND_SUP2" 2>/dev/null && [ "$nd_w" -lt 120 ]; do sleep 1; nd_w=$((nd_w + 1)); done
   kill -TERM "$ND_SUP2" 2>/dev/null; wait "$ND_SUP2" 2>/dev/null
   DRIVE_ENV=(); DRIVE_CRASH_LIMIT=1
 fi

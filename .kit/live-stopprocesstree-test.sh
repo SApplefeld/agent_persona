@@ -578,8 +578,11 @@ start_stub() {
   local i=0
   while [ "$i" -lt 50 ]; do [ -s "$hp" ] && break; sleep 0.1; i=$((i + 1)); done
   HOLDER_LAUNCH_PID=$(cat "$hp" 2>/dev/null)
+  # No ticks are recorded for this stand-in holder, and it is this shell's own
+  # launch, which is the one case kill_holder reaches with an MSYS signal.
   HOLDER_WINPID=""
   HOLDER_TICKS=""
+  HOLDER_OWN_LAUNCH=1
   CHILD_IN=""
   disown "$CHILD_LAUNCH_PID" 2>/dev/null
   STUB_NAME="$name"
@@ -756,6 +759,7 @@ while [ "$rebuild_i" -lt 50 ]; do [ -s "$PATIENT_DIR/rebuild-fails.holderpid" ] 
 HOLDER_LAUNCH_PID=$(cat "$PATIENT_DIR/rebuild-fails.holderpid" 2>/dev/null)
 HOLDER_WINPID=""
 HOLDER_TICKS=""
+HOLDER_OWN_LAUNCH=1
 CHILD_IN=""
 disown "$CHILD_LAUNCH_PID" 2>/dev/null
 STUB_NAME="rebuild-fails"

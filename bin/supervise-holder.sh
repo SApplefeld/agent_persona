@@ -41,10 +41,6 @@ OUT="$2"
 CHILD_PID_FILE="$3"
 ASK_REQUEST_FILE="$4"
 PROMPT_FILE="$5"
-# The priming wait is accepted for call-shape parity with the launcher and is
-# not a schedule: this process waits on the result line, watching the child's
-# liveness, rather than on a fixed number of seconds.
-SUPERVISOR_PRIMING_WAIT_S="${6:-180}"
 
 # Record this process's own MSYS pid at once. The launching pipeline's `$!` is
 # the child, the pipeline's last stage, so the supervisor cannot read this
@@ -80,10 +76,25 @@ goal_prompt_json() {
 # file. Empty until then, so the hold loop below waits rather than reading an
 # unwritten file as a dead child.
 holder_child_pid() {
-  local p
-  p=$(cat "$CHILD_PID_FILE" 2>/dev/null)
+  local p=""
+  IFS= read -r p 2>/dev/null < "$CHILD_PID_FILE" || true
+  p="${p%$'\r'}"
   case "$p" in ''|*[!0-9]*) return 1 ;; esac
   printf '%s' "$p"
+}
+
+# Whether one line is a final ask this holder may relay: a stream-json user
+# message whose text opens [SUPERVISOR-ASK id=. Anything else in the
+# ask-request file is logged and removed unrelayed, so a partial or foreign
+# line never reaches the child's input.
+holder_ask_valid() {  # <line>
+  node -e '
+let o;
+try { o = JSON.parse(process.argv[1]); } catch (e) { process.exit(1); }
+const text = o && o.type === "user" && o.message && Array.isArray(o.message.content)
+  && o.message.content[0] && o.message.content[0].text;
+process.exit(typeof text === "string" && text.startsWith("[SUPERVISOR-ASK id=") ? 0 : 1);
+' "$1" 2>/dev/null
 }
 
   SKILL_LOAD_INSTRUCTION="Before your first tool call on any plan work, invoke the Skill tool for claude-kit:operating-instructions, then claude-kit:executing-work; when a plan reaches its last section, claude-kit:finishing-work. Those skills own how a section, its review rounds and its fix rounds run. "
@@ -437,9 +448,18 @@ while true; do
     GOAL_PENDING=0
   fi
   if [ -f "$ASK_REQUEST_FILE" ]; then
-    cat "$ASK_REQUEST_FILE"
+    # One whole line is relayed: `read -r` returns non-zero on a line with no
+    # terminating newline, which is a file still being written, and the line
+    # must parse as a [SUPERVISOR-ASK id=...] user turn. The supervisor writes
+    # the file whole and moves it into place, so a relayed ask is exactly one.
+    ask_line=""
+    if IFS= read -r ask_line 2>/dev/null < "$ASK_REQUEST_FILE" && holder_ask_valid "$ask_line"; then
+      printf '%s\n' "$ask_line"
+      log "relayed a final ask from the ask-request file"
+    else
+      log "the ask-request file did not hold one whole [SUPERVISOR-ASK id=] user turn; removed it unrelayed"
+    fi
     rm -f "$ASK_REQUEST_FILE"
-    log "relayed a final ask from the ask-request file"
   fi
   holder_watched_pid=$(holder_child_pid) || holder_watched_pid=""
   if [ -n "$holder_watched_pid" ] && ! kill -0 "$holder_watched_pid" 2>/dev/null; then
