@@ -79,6 +79,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolve(__dirname, "..");
 const shPath = join(repoRoot, "bin", "supervise.sh");
+const holderPath = join(repoRoot, "bin", "supervise-holder.sh");
 const tsPath = join(repoRoot, "hooks", "index.ts");
 
 function readNormalized(path) {
@@ -356,10 +357,11 @@ const INSTRUCTION_ASSIGNMENT_COUNTS = {
   CHANNEL_REPLY_INSTRUCTION: 2,
   COORDINATOR_ROLE_INSTRUCTION: 5,
   ARCHITECT_ROLE_INSTRUCTION: 2,
+  SUPERVISOR_MAILBOX_INSTRUCTION: 1,
 };
 const INSTRUCTION_NAMES = Object.keys(INSTRUCTION_ASSIGNMENT_COUNTS);
 
-function extractShellInstructions(src) {
+function extractHolderInstructions(src) {
   const results = [];
   const lines = src.split("\n");
   const tableNames = new Set(INSTRUCTION_NAMES);
@@ -378,7 +380,7 @@ function extractShellInstructions(src) {
   const tableNotDeclared = setDifference(tableNames, declared);
   if (declaredNotInTable.length > 0 || tableNotDeclared.length > 0) {
     throw new Error(
-      `[instruction-set] bin/supervise.sh assigns *_INSTRUCTION variables INSTRUCTION_ASSIGNMENT_COUNTS does not name (${declaredNotInTable.join(", ") || "none"}) or no longer assigns ones it does (${tableNotDeclared.join(", ") || "none"}); add each new variable to that table with its assignment-line count, or retire the missing one from it, in the same commit`,
+      `[instruction-set] bin/supervise-holder.sh assigns *_INSTRUCTION variables INSTRUCTION_ASSIGNMENT_COUNTS does not name (${declaredNotInTable.join(", ") || "none"}) or no longer assigns ones it does (${tableNotDeclared.join(", ") || "none"}); add each new variable to that table with its assignment-line count, or retire the missing one from it, in the same commit`,
     );
   }
 
@@ -386,11 +388,13 @@ function extractShellInstructions(src) {
   // the child's first turn, read off the write's own argument. A variable
   // written to the child under a name that does not end in _INSTRUCTION
   // fails here, where leg one cannot see it.
-  const writeRe = /"\s+"((?:\$[A-Za-z_][A-Za-z0-9_]*)+)"\s+"\$PRIMING_BODY"\s+>&"\$CHILD_IN"/;
+  // The holder writes the priming turn to its own stdout, which is the child's
+  // stdin pipe, so the write ends in "$PRIMING_BODY" with no fd redirect.
+  const writeRe = /"\s+"((?:\$[A-Za-z_][A-Za-z0-9_]*)+)"\s+"\$PRIMING_BODY"/;
   const writeMatch = writeRe.exec(src);
   if (!writeMatch) {
     throw new Error(
-      `[priming-write] the priming write ("$A$B..." "$PRIMING_BODY" >&"$CHILD_IN") was not found in bin/supervise.sh; the write's shape changed and this rule must follow it in the same commit`,
+      `[priming-write] the priming write ("$A$B..." "$PRIMING_BODY") was not found in bin/supervise-holder.sh; the write's shape changed and this rule must follow it in the same commit`,
     );
   }
   const written = new Set(writeMatch[1].split("$").filter(Boolean));
@@ -398,7 +402,7 @@ function extractShellInstructions(src) {
   const tableNotWritten = setDifference(tableNames, written);
   if (writtenNotInTable.length > 0 || tableNotWritten.length > 0) {
     throw new Error(
-      `[priming-write] the priming write in bin/supervise.sh splices variables the ledger does not size (${writtenNotInTable.join(", ") || "none"}) or omits ones it does (${tableNotWritten.join(", ") || "none"}); every variable written to the child's first turn is sized here, so add a rule and a table row for the new one, or retire the row for the dropped one, in the same commit`,
+      `[priming-write] the priming write in bin/supervise-holder.sh splices variables the ledger does not size (${writtenNotInTable.join(", ") || "none"}) or omits ones it does (${tableNotWritten.join(", ") || "none"}); every variable written to the child's first turn is sized here, so add a rule and a table row for the new one, or retire the row for the dropped one, in the same commit`,
     );
   }
 
@@ -427,7 +431,7 @@ function extractShellInstructions(src) {
     const priorText = collected.get(name).filter((c) => c !== "").length;
     if (plus !== "+" && content !== "" && priorText > 0) {
       throw new Error(
-        `[instruction-reassign] ${name} in bin/supervise.sh line ${i + 1}: this line carries text under the bare shape NAME="..." and ${priorText} earlier assignment(s) of that name already carry text, so it replaces the variable where the ledger's sum reads it as appending and the recorded size would not move if a clause were carried across; expected NAME+="..." for a clause that adds to the shapes before it, or the empty NAME="" for an init or for a launch shape that withholds the variable. Write the line as NAME+="..." where it appends, and where the variable really is replaced for one launch shape, give this name its own extraction rule that sizes each shape rather than their sum, in the same commit.`,
+        `[instruction-reassign] ${name} in bin/supervise-holder.sh line ${i + 1}: this line carries text under the bare shape NAME="..." and ${priorText} earlier assignment(s) of that name already carry text, so it replaces the variable where the ledger's sum reads it as appending and the recorded size would not move if a clause were carried across; expected NAME+="..." for a clause that adds to the shapes before it, or the empty NAME="" for an init or for a launch shape that withholds the variable. Write the line as NAME+="..." where it appends, and where the variable really is replaced for one launch shape, give this name its own extraction rule that sizes each shape rather than their sum, in the same commit.`,
       );
     }
     collected.get(name).push(content);
@@ -448,11 +452,11 @@ function extractShellInstructions(src) {
     const expected = INSTRUCTION_ASSIGNMENT_COUNTS[name];
     if (assignments.length !== expected) {
       throw new Error(
-        `[instruction-count] ${name} in bin/supervise.sh: expected ${expected} single-line assignment(s) of the shape NAME="..." or NAME+="...", found ${assignments.length}; a clause was wrapped onto more than one line, gained an internal quote, or was added or removed, and the ledger cannot sum what it did not match; restore the single-line shape or set the count in INSTRUCTION_ASSIGNMENT_COUNTS in the same commit`,
+        `[instruction-count] ${name} in bin/supervise-holder.sh: expected ${expected} single-line assignment(s) of the shape NAME="..." or NAME+="...", found ${assignments.length}; a clause was wrapped onto more than one line, gained an internal quote, or was added or removed, and the ledger cannot sum what it did not match; restore the single-line shape or set the count in INSTRUCTION_ASSIGNMENT_COUNTS in the same commit`,
       );
     }
     const text = assignments.join("");
-    results.push(record(name, "bin/supervise.sh", text));
+    results.push(record(name, "bin/supervise-holder.sh", text));
   }
 
   // The three priming bodies: PRIMING_BODY is assigned once per branch of a
@@ -488,11 +492,11 @@ function extractShellInstructions(src) {
   }
   if (primingMatches.length !== primingLabels.length) {
     throw new Error(
-      `expected ${primingLabels.length} PRIMING_BODY assignments in bin/supervise.sh, found ${primingMatches.length}`,
+      `expected ${primingLabels.length} PRIMING_BODY assignments in bin/supervise-holder.sh, found ${primingMatches.length}`,
     );
   }
   primingMatches.forEach((text, idx) => {
-    results.push(record(primingLabels[idx], "bin/supervise.sh", text));
+    results.push(record(primingLabels[idx], "bin/supervise-holder.sh", text));
   });
 
   // The goal-prompt framing line: the one line the goal-prompt turn opens
@@ -502,14 +506,51 @@ function extractShellInstructions(src) {
   // than the single-line NAME="..." table above.
   const framingRe = /GOAL_PROMPT_FRAMING="([^\n]*)"\$'((?:\\.)*)'/;
   const framingMatch = framingRe.exec(src);
-  if (!framingMatch) throw new Error("GOAL_PROMPT_FRAMING not found in bin/supervise.sh");
-  results.push(record("GOAL_PROMPT_FRAMING", "bin/supervise.sh", framingMatch[1] + framingMatch[2]));
+  if (!framingMatch) throw new Error("GOAL_PROMPT_FRAMING not found in bin/supervise-holder.sh");
+  results.push(record("GOAL_PROMPT_FRAMING", "bin/supervise-holder.sh", framingMatch[1] + framingMatch[2]));
 
   // The [SUPERVISOR-PRIMING] marker, prepended to every priming write.
   const primingMarkerRe = /'(\[SUPERVISOR-PRIMING\] )' \+ prefix \+ body/;
   const primingMarkerMatch = primingMarkerRe.exec(src);
-  if (!primingMarkerMatch) throw new Error("SUPERVISOR-PRIMING marker not found in bin/supervise.sh");
-  results.push(record("SUPERVISOR_PRIMING_MARKER", "bin/supervise.sh", primingMarkerMatch[1]));
+  if (!primingMarkerMatch) throw new Error("SUPERVISOR-PRIMING marker not found in bin/supervise-holder.sh");
+  results.push(record("SUPERVISOR_PRIMING_MARKER", "bin/supervise-holder.sh", primingMarkerMatch[1]));
+
+  return results;
+}
+
+// The two ask texts, which stay in bin/supervise.sh: the final ask the
+// supervisor writes to the child-N ask-request file, and the shutdown ask it
+// hands the poll. The priming text moved into the holder, so it is sized by
+// extractHolderInstructions above; these two are read from the supervisor.
+function extractSupervisorAskTexts(src) {
+  const results = [];
+  // The final ask: final_ask_json writes '[SUPERVISOR-ASK id=' + id + '] ' +
+  // text, where text is SUPERVISOR_ASK_TEXT, a single-line assignment. The
+  // entry is the marker's two literal halves and the text, the id being data
+  // the supervisor mints. Both anchors are required, so a reworded marker or a
+  // text moved out of the variable fails here rather than recording short.
+  const askTextRe = /^SUPERVISOR_ASK_TEXT="([^\n"]*)"\s*$/m;
+  const askTextMatch = askTextRe.exec(src);
+  if (!askTextMatch) throw new Error("SUPERVISOR_ASK_TEXT not found in bin/supervise.sh as a single-line assignment");
+  const askMarkerRe = /'(\[SUPERVISOR-ASK id=)' \+ id \+ '(\] )' \+ text/;
+  const askMarkerMatch = askMarkerRe.exec(src);
+  if (!askMarkerMatch) throw new Error("the [SUPERVISOR-ASK id=<id>] marker of final_ask_json not found in bin/supervise.sh");
+  results.push(record("SUPERVISOR_ASK_TEXT", "bin/supervise.sh", askMarkerMatch[1] + askMarkerMatch[2] + askTextMatch[1]));
+
+  // The shutdown ask's text: SUPERVISOR_SHUTDOWN_TEXT, a single-line
+  // assignment the poll is handed and writes into the mailbox record the
+  // plugin submits after its [SUPERVISOR id=<id>] label. The label is sized in
+  // hooks/index.ts as SUPERVISOR_SHUTDOWN_FRAME, so this entry is the text
+  // alone. Both anchors are required: the assignment, and the variable handed
+  // to the poll, so a text the poll no longer receives fails here rather than
+  // recording prose nothing injects.
+  const shutdownTextRe = /^SUPERVISOR_SHUTDOWN_TEXT="([^\n"]*)"\s*$/m;
+  const shutdownTextMatch = shutdownTextRe.exec(src);
+  if (!shutdownTextMatch) throw new Error("SUPERVISOR_SHUTDOWN_TEXT not found in bin/supervise.sh as a single-line assignment");
+  if (!/supervise-poll\.mjs"[^\n]*(?:\\\n[^\n]*)*"\$SUPERVISOR_SHUTDOWN_TEXT"/.test(src)) {
+    throw new Error("SUPERVISOR_SHUTDOWN_TEXT is not handed to bin/supervise-poll.mjs in bin/supervise.sh's poll call");
+  }
+  results.push(record("SUPERVISOR_SHUTDOWN_TEXT", "bin/supervise.sh", shutdownTextMatch[1]));
 
   return results;
 }
@@ -828,6 +869,16 @@ function extractBackstopFrame(src) {
   return record("REPLY_BACKSTOP_FRAME", "hooks/index.ts", literalOfTemplateChain(m[1], "REPLY_BACKSTOP_FRAME"));
 }
 
+// The supervisor's shutdown delivery: `[SUPERVISOR id=${rec.id}] ${...}`,
+// where the id and the quoted record text are mailbox data and are stripped as
+// interpolation, leaving the label's literal frame. The capture is bounded by
+// the statement's own semicolon for the reason above.
+function extractShutdownFrame(src) {
+  const m = /const shutdownText = ([\s\S]*?);\n/.exec(src);
+  if (!m) throw new Error("supervisor shutdown frame not found in hooks/index.ts");
+  return record("SUPERVISOR_SHUTDOWN_FRAME", "hooks/index.ts", literalOfTemplateChain(m[1], "SUPERVISOR_SHUTDOWN_FRAME"));
+}
+
 // The two idle-nudge frames (nudgeText's ternary): each is a chain of plain
 // template-literal pieces joined by `+`, with `${g.objective}` and
 // `${idleDisplay}` as the only interpolations, both per-goal data and
@@ -1010,6 +1061,7 @@ const PROMPT_CALL_SITES = [
   { anchor: "expectedProposalTurn", entries: ["PROPOSE_FRAME"] },
   { anchor: "expectedNudgeTurn", entries: ["NUDGE_TEXT_idle_gap_converted", "NUDGE_TEXT_idle_timeout"] },
   { anchor: "backstopText", entries: ["REPLY_BACKSTOP_FRAME"] },
+  { anchor: "shutdownEntry", entries: ["SUPERVISOR_SHUTDOWN_FRAME"] },
 ];
 
 // The exclusions above in a public shape, so the duplicate test can pin the
@@ -1302,9 +1354,10 @@ function extractToolDescriptions(src) {
 // The ledger over two source texts, already LF-normalized. Separated from
 // the file reads so the duplicate test's controls can hand it a mutated
 // copy of the real source and watch a guard fire without touching the tree.
-function buildLedgerFrom(shSrc, tsSrc) {
+function buildLedgerFrom(shSrc, holderSrc, tsSrc) {
   const entries = [
-    ...extractShellInstructions(shSrc),
+    ...extractHolderInstructions(holderSrc),
+    ...extractSupervisorAskTexts(shSrc),
     extractReconcileText(tsSrc),
     extractStillWaitingReraise(tsSrc),
     extractFleetPromptFrame(tsSrc),
@@ -1313,6 +1366,7 @@ function buildLedgerFrom(shSrc, tsSrc) {
     extractKaizenFrame(tsSrc),
     extractProposeFrame(tsSrc),
     extractBackstopFrame(tsSrc),
+    extractShutdownFrame(tsSrc),
     ...extractNudgeFrames(tsSrc),
     extractGoalTreeBlock(tsSrc),
     extractGoalQueueBlock(tsSrc),
@@ -1330,7 +1384,7 @@ function buildLedgerFrom(shSrc, tsSrc) {
 }
 
 function buildLedger() {
-  return buildLedgerFrom(readNormalized(shPath), readNormalized(tsPath));
+  return buildLedgerFrom(readNormalized(shPath), readNormalized(holderPath), readNormalized(tsPath));
 }
 
 // The basis every recorded size and every duplicate-check comparison rests

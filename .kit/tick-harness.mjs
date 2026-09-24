@@ -768,6 +768,17 @@ async function fireHeartbeat(harness) {
   await fn();
 }
 
+// --- Session-start driver: fires session.start once, as the engine does ---
+
+// For a harness built with skipSessionStart, after the case has seeded what
+// the start reads. The start registers the heartbeat and controller-tick
+// callbacks, so heartbeatTick and controllerTick resolve after it.
+async function fireSessionStart(harness) {
+  const startH = harness.handlers["session.start"];
+  if (!startH) throw new Error("session.start handler not registered");
+  await startH(harness.fake, {}, () => {});
+}
+
 // --- Seed the fake fs with persona store + stale heartbeat ---
 
 function seedPersonaStore(harness, state) {
@@ -824,8 +835,10 @@ async function createTickHarness(options = {}) {
   // A real session starts exactly once, and the engine fires that start
   // itself. `skipSessionStart` builds the session the engine leaves behind
   // when that hook never finished: the module is registered, every other
-  // hook is installed, and the persona state is the built-in default. No
-  // case fires session.start on such a harness afterwards.
+  // hook is installed, and the persona state is the built-in default. It is
+  // also how a case seeds state the start reads, such as a commons claim,
+  // before the start runs: such a case fires it once through
+  // fireSessionStart.
   const startH = handlers["session.start"];
   if (startH && !options.skipSessionStart) {
     await startH(h.fake, {}, () => {});
@@ -849,6 +862,7 @@ export {
   closeTurn,
   fireTick,
   fireHeartbeat,
+  fireSessionStart,
   seedPersonaStore,
   loadModule,
   journalLines,

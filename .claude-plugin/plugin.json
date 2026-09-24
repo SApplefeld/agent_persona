@@ -109,6 +109,24 @@
       "default": 14400000,
       "title": "Reconciliation cadence (ms)",
       "description": "How long between the [RECONCILE] prompts the coordinator persona's controller tick submits, which are the only trigger for the kit Coordinator seat's reconciliation pass. Default 4 hours, that seat's own cadence: the claim probe's window is one full cadence and the registry prune's staleness test is twice it, so a shorter run of either could fire nothing a four-hourly run misses. A value at or below zero takes the default, since it would otherwise be satisfied by every tick."
+    },
+    "supervisorMailbox": {
+      "type": "string",
+      "default": "",
+      "title": "Supervisor mailbox path",
+      "description": "The mailbox file the supervisor that launched this session writes, <rundir>/mailbox.jsonl. The controller tick reads it and writes mailbox.ack.jsonl beside it: a probe is acknowledged with no turn spent, and a shutdown request is delivered once as a turn opening [SUPERVISOR id=<id>]. The supervisor writes this; left unset, as in an interactive session, the tick reads no mailbox."
+    },
+    "heartbeatPath": {
+      "type": "string",
+      "default": "",
+      "title": "Heartbeat sidecar path",
+      "description": "The absolute path of the working directory's heartbeat sidecar, the record of which session holds each persona. The supervisor writes the same path it reads, so the session stamps that file wherever its shell has moved. Left unset, the session stamps .agentic-heartbeat.json in the directory it was launched in."
+    },
+    "supervisorHeartbeatPath": {
+      "type": "string",
+      "default": "",
+      "title": "Own heartbeat file path",
+      "description": "The heartbeat file only this session writes, <rundir>/heartbeat.json, stamped with its session id, lastSeen and turnStartedAt on every heartbeat tick. It is the heartbeat the supervisor's liveness verdict reads. The supervisor writes this; left unset, no such file is written."
     }
   }
 }

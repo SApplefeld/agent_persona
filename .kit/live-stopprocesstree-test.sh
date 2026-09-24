@@ -109,6 +109,12 @@ log_diag() { echo "[log_diag] $*" >&2; }
 # `set -u` a bare expansion of one that was never assigned aborts this suite,
 # and CHILD_INDEX names the child in every line sweep_child_tree logs.
 CHILD_INDEX="${CHILD_INDEX:-0}"
+# The holder pids stop_child's pipe-close phase (kill_holder) reads. Empty for
+# the cases that drive stop_child against a bare wrapper; set by start_stub for
+# the patient-stop cases.
+HOLDER_LAUNCH_PID="${HOLDER_LAUNCH_PID:-}"
+HOLDER_WINPID="${HOLDER_WINPID:-}"
+HOLDER_TICKS="${HOLDER_TICKS:-}"
 CHILD_TREE_WALKED="${CHILD_TREE_WALKED:-}"
 CHILD_TREE_SEEN_WINPIDS="${CHILD_TREE_SEEN_WINPIDS:-}"
 CHILD_TREE_WINPIDS="${CHILD_TREE_WINPIDS:-}"
@@ -346,7 +352,6 @@ fi
 # --- This is the shape the spec's own acceptance criterion asks for: a
 # child whose claude.exe outlives its wrapper is still fully stopped by
 # stop_child, end to end.
-CHILD_IN=""  # stop_child checks this; empty means Phase 1's EOF close is a no-op
 SUPERVISOR_STOP_GRACE_MS=2000  # short grace so this test doesn't wait a full minute per phase
 STOP_PATH=""
 ( powershell.exe -NoProfile -Command "Start-Sleep -Seconds 90" & echo $! > "$RUNDIR/child.pid"; wait ) &
@@ -383,7 +388,6 @@ fi
 # `Stop-Process` and the per-pid survivor probe both take a snapshot built
 # from `snapshot_process_tree`'s own output - exactly the path that broke
 # on an unstripped `\r` when this was reproduced live.
-CHILD_IN=""
 SUPERVISOR_STOP_GRACE_MS=2000
 STOP_PATH=""
 ( trap '' TERM; powershell.exe -NoProfile -Command "Start-Sleep -Seconds 90" & echo $! > "$RUNDIR/child3.pid"; wait ) &
@@ -525,11 +529,12 @@ fi
 # sees. The stream the reader consults is a scratch stdout.jsonl under
 # SUITE_DIR, named through OUT exactly as the poll loop names the child's.
 #
-# The stub is a coproc, which is what production launches: CHILD_IN holds the
-# coproc's write fd so stop_child's own `exec $CHILD_IN>&-` is the EOF. The
-# stub records the moment it saw end of input, and the log stub below stamps
-# each line, so the time from the EOF close to a TERM is read off the run
-# itself rather than off a clock started before stop_child's snapshot walk.
+# The stub is fed through a holder pipe, which is what production launches:
+# stop_child's pipe-close phase kills the holder by its recorded pid, and the
+# stub reads that as end of input. The stub records the moment it saw end of
+# input, and the log stub below stamps each line, so the time from the pipe
+# close to a TERM is read off the run itself rather than off a clock started
+# before stop_child's snapshot walk.
 patient_log() { echo "[log] $(date +%s%3N) $*"; }
 eval "$(declare -f log | sed '1s/^log/_plain_log_before_patient/')"
 eval "$(declare -f patient_log | sed '1s/^patient_log/log/')"
@@ -550,7 +555,7 @@ stale_assistant_text() {
   printf '{"type":"assistant","timestamp":"%s","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}' "$ts"
 }
 # Usage: start_stub <name> <seconds to live after end of input>
-# Sets CHILD_LAUNCH_PID and CHILD_IN, and records the stub's EOF moment in
+# Sets CHILD_LAUNCH_PID and HOLDER_LAUNCH_PID, and records the stub's EOF moment in
 # $PATIENT_DIR/<name>.eof once the stub sees it. The sleeper that keeps the
 # stub alive past its EOF starts only after the stop's entry snapshot was
 # built, exactly as a tool call the child runs during the wait does, and its
@@ -558,11 +563,24 @@ stale_assistant_text() {
 # kill reached it.
 start_stub() {
   local name="$1" live_s="$2"
-  rm -f "$PATIENT_DIR/$name.eof" "$PATIENT_DIR/$name.sleeper"
-  coproc PATIENT_STUB { cat > /dev/null; date +%s%3N > "$PATIENT_DIR/$name.eof"; sleep "$live_s" & echo $! > "$PATIENT_DIR/$name.sleeper"; wait; }
-  CHILD_LAUNCH_PID="$PATIENT_STUB_PID"
-  CHILD_IN="${PATIENT_STUB[1]}"
-  eval "exec ${PATIENT_STUB[0]}<&-"
+  rm -f "$PATIENT_DIR/$name.eof" "$PATIENT_DIR/$name.sleeper" "$PATIENT_DIR/$name.holderpid"
+  local hp="$PATIENT_DIR/$name.holderpid"
+  # A holder holds the stub's stdin pipe open until it is killed, standing in
+  # for bin/supervise-holder.sh: stop_child's pipe-close phase kills the holder
+  # by its recorded pid, which closes the pipe and gives the stub end of input.
+  # The stub reads to end of input, records the moment, then lives on for
+  # live_s seconds so the patient wait has a busy child to wait on.
+  bash -c 'echo $$ > "$1"; exec sleep 3600' _ "$hp" \
+    | { cat > /dev/null; date +%s%3N > "$PATIENT_DIR/$name.eof"; sleep "$live_s" & echo $! > "$PATIENT_DIR/$name.sleeper"; wait; } &
+  CHILD_LAUNCH_PID=$!
+  local i=0
+  while [ "$i" -lt 50 ]; do [ -s "$hp" ] && break; sleep 0.1; i=$((i + 1)); done
+  HOLDER_LAUNCH_PID=$(cat "$hp" 2>/dev/null)
+  # No ticks are recorded for this stand-in holder, and it is this shell's own
+  # launch, which is the one case kill_holder reaches with an MSYS signal.
+  HOLDER_WINPID=""
+  HOLDER_TICKS=""
+  HOLDER_OWN_LAUNCH=1
   disown "$CHILD_LAUNCH_PID" 2>/dev/null
   STUB_NAME="$name"
   sleep 2
@@ -581,9 +599,9 @@ sleeper_alive() {
 end_stub() {
   local sp
   sp=$(cat "$PATIENT_DIR/$STUB_NAME.sleeper" 2>/dev/null)
-  kill -9 "$CHILD_LAUNCH_PID" ${sp:+"$sp"} 2>/dev/null
+  kill -9 "$CHILD_LAUNCH_PID" ${sp:+"$sp"} ${HOLDER_LAUNCH_PID:+"$HOLDER_LAUNCH_PID"} 2>/dev/null
   CHILD_LAUNCH_PID=""
-  CHILD_IN=""
+  HOLDER_LAUNCH_PID=""
   OUT=""
 }
 
@@ -729,10 +747,15 @@ $2"
     _real_rbpc_for_rebuildfail "$1" "$2"
   fi
 }
-coproc PATIENT_STUB { sleep 180 & echo $! > "$PATIENT_DIR/rebuild-fails.entry"; cat > /dev/null; date +%s%3N > "$PATIENT_DIR/rebuild-fails.eof"; sleep 180 & echo $! > "$PATIENT_DIR/rebuild-fails.sleeper"; wait; }
-CHILD_LAUNCH_PID="$PATIENT_STUB_PID"
-CHILD_IN="${PATIENT_STUB[1]}"
-eval "exec ${PATIENT_STUB[0]}<&-"
+bash -c 'echo $$ > "$1"; exec sleep 3600' _ "$PATIENT_DIR/rebuild-fails.holderpid" \
+  | { sleep 180 & echo $! > "$PATIENT_DIR/rebuild-fails.entry"; cat > /dev/null; date +%s%3N > "$PATIENT_DIR/rebuild-fails.eof"; sleep 180 & echo $! > "$PATIENT_DIR/rebuild-fails.sleeper"; wait; } &
+CHILD_LAUNCH_PID=$!
+rebuild_i=0
+while [ "$rebuild_i" -lt 50 ]; do [ -s "$PATIENT_DIR/rebuild-fails.holderpid" ] && break; sleep 0.1; rebuild_i=$((rebuild_i + 1)); done
+HOLDER_LAUNCH_PID=$(cat "$PATIENT_DIR/rebuild-fails.holderpid" 2>/dev/null)
+HOLDER_WINPID=""
+HOLDER_TICKS=""
+HOLDER_OWN_LAUNCH=1
 disown "$CHILD_LAUNCH_PID" 2>/dev/null
 STUB_NAME="rebuild-fails"
 sleep 2

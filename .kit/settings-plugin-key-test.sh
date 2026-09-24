@@ -33,6 +33,11 @@ try { s = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) { console.log("
 const pc = s.pluginConfigs || {};
 const dev = pc[name] && pc[name].options;
 const inst = pc[name + "@" + market] && pc[name + "@" + market].options;
+// autoContinue is a top-level key the harness itself reads, so it is read off the file
+// itself and never off the options under an id, where the harness would not see it.
+// JSON.stringify keeps false, absent and a string apart.
+console.log("AUTO_CONTINUE=" + JSON.stringify(s.autoContinue) + ";");
+console.log("AUTO_CONTINUE_IN_OPTIONS=" + ((dev && dev.autoContinue !== undefined) || (inst && inst.autoContinue !== undefined) ? 1 : 0) + ";");
 console.log("DEV_KEY=" + (dev ? 1 : 0));
 console.log("INSTALLED_KEY=" + (inst ? 1 : 0));
 console.log("SAME_OPTIONS=" + (dev && inst && JSON.stringify(dev) === JSON.stringify(inst) ? 1 : 0));
@@ -64,6 +69,14 @@ console.log("JEV_DEV_PRESENT=" + (!dev ? "noid" : dev.jevMode !== undefined ? 1 
 console.log("JEV_INSTALLED_PRESENT=" + (!inst ? "noid" : inst.jevMode !== undefined ? 1 : 0) + ";");
 console.log("JEV_DEV=" + (dev && dev.jevMode !== undefined ? dev.jevMode : "") + ";");
 console.log("JEV_INSTALLED=" + (inst && inst.jevMode !== undefined ? inst.jevMode : "") + ";");
+// The three supervisor paths, each read the three-state way: an
+// id with no options, a key absent, or the key and its value.
+for (const [label, key] of [["MBX", "supervisorMailbox"], ["HBP", "heartbeatPath"], ["SHB", "supervisorHeartbeatPath"]]) {
+  console.log(label + "_DEV_PRESENT=" + (!dev ? "noid" : dev[key] !== undefined ? 1 : 0) + ";");
+  console.log(label + "_INSTALLED_PRESENT=" + (!inst ? "noid" : inst[key] !== undefined ? 1 : 0) + ";");
+  console.log(label + "_DEV=" + (dev && dev[key] !== undefined ? dev[key] : "") + ";");
+  console.log(label + "_INSTALLED=" + (inst && inst[key] !== undefined ? inst[key] : "") + ";");
+}
 ' "$ROOT" "$1"
 }
 
@@ -90,6 +103,11 @@ case "$R" in *"ARCH_DEV_PRESENT=0;"*"ARCH_INSTALLED_PRESENT=0;"*) check "emitted
 # value assertions below pass against a file emitting "jevMode":"", which is a
 # present non-shadow string and so disables the seam everywhere.
 case "$R" in *"JEV_DEV_PRESENT=0;"*"JEV_INSTALLED_PRESENT=0;"*) check "emitted: JEV_MODE unset leaves jevMode out of both ids" 0 ;; *) check "emitted: JEV_MODE unset leaves jevMode out of both ids (out=$R)" 1 ;; esac
+# The supervisor-peer plan's Section 2: a supervised child runs with the
+# harness's usage-limit pause off, at the top level where the harness reads
+# it, so a child that trips a limit ends its turn rather than parking for
+# hours. The liveness verdict's usage-limit reading lands beside it.
+case "$R" in *"AUTO_CONTINUE=false;"*"AUTO_CONTINUE_IN_OPTIONS=0;"*) check "emitted: autoContinue false at the top level, not under a plugin id" 0 ;; *) check "emitted: autoContinue false at the top level, not under a plugin id (out=$R)" 1 ;; esac
 
 # --- Section 4: emit_settings_json writes JEV_MODE=off under both ids ---
 run_lib PERSONA="keyprobe" JEV_MODE="off" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevoff.json"
@@ -226,6 +244,38 @@ run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids
 check "ensure_settings_arming exits 0 on a file with no arming key" "$?"
 R=$(inspect "$TMP/noarm.json")
 case "$R" in *"PERSONA_DEV=noarm;"*"ARMING_DEV=owner;"*"ARMING_INSTALLED=owner;"*"TICK_DEV=11;"*) check "a missing arming key gains owner under both ids, other options unchanged" 0 ;; *) check "a missing arming key gains owner under both ids, other options unchanged (out=$R)" 1 ;; esac
+# A provided file is what every relaunched persona runs on, so the pause
+# setting is ensured there in the same pass that ensures the arming key.
+case "$R" in *"AUTO_CONTINUE=false;"*"AUTO_CONTINUE_IN_OPTIONS=0;"*) check "provided: a file with no autoContinue gains false at the top level" 0 ;; *) check "provided: a file with no autoContinue gains false at the top level (out=$R)" 1 ;; esac
+
+# A provided file that already carries arming owner under both ids, and no
+# autoContinue, still gains the setting: the key alone is a change to write.
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"arming":"owner"}},"agentic-plugin@agent-persona":{"options":{"arming":"owner"}}}}' > "$TMP/armed-noauto.json"
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_arming "$2"' _ "$ROOT" "$TMP/armed-noauto.json"
+check "ensure_settings_arming exits 0 on an armed file with no autoContinue" "$?"
+R=$(inspect "$TMP/armed-noauto.json")
+case "$R" in *"AUTO_CONTINUE=false;"*) check "provided: an already-armed file gains autoContinue false" 0 ;; *) check "provided: an already-armed file gains autoContinue false (out=$R)" 1 ;; esac
+
+# A provided autoContinue other than false is refused, not honored, the way
+# another arming tier is: a supervised child always runs with the pause off.
+# true and a string that reads like false are both refused, and the refused
+# file is left byte for byte.
+for bad in 'true' '"false"'; do
+  printf '%s' '{"autoContinue":'"$bad"',"pluginConfigs":{"agentic-plugin":{"options":{"arming":"owner"}},"agentic-plugin@agent-persona":{"options":{"arming":"owner"}}}}' > "$TMP/auto-bad.json"
+  BEFORE=$(cat "$TMP/auto-bad.json")
+  ERR=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_arming "$2"' _ "$ROOT" "$TMP/auto-bad.json" 2>&1)
+  RC=$?
+  case "$RC:$ERR" in 1:*"ERROR: ensure_settings_arming: "*"carries autoContinue $bad; a supervised child always runs with autoContinue false"*) check "ensure_settings_arming refuses a provided autoContinue $bad" 0 ;; *) check "ensure_settings_arming refuses a provided autoContinue $bad (rc=$RC, err=$ERR)" 1 ;; esac
+  [ "$(cat "$TMP/auto-bad.json")" = "$BEFORE" ]; check "a refused autoContinue $bad leaves the file byte for byte unchanged" "$?"
+done
+
+# A provided false is the value the launch wants, so the file is left byte
+# for byte and the call exits 0.
+printf '%s' '{"autoContinue":false,"pluginConfigs":{"agentic-plugin":{"options":{"arming":"owner"}},"agentic-plugin@agent-persona":{"options":{"arming":"owner"}}}}' > "$TMP/auto-false.json"
+BEFORE=$(cat "$TMP/auto-false.json")
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_arming "$2"' _ "$ROOT" "$TMP/auto-false.json"
+check "ensure_settings_arming exits 0 on a file that carries autoContinue false" "$?"
+[ "$(cat "$TMP/auto-false.json")" = "$BEFORE" ]; check "provided: an autoContinue false the caller wrote is left byte for byte" "$?"
 
 # A provided arming value naming another tier is refused, not honored: a
 # supervisor launch always drives a goal tree as an owner.
@@ -739,6 +789,72 @@ OUT=$(read_roster "$TMP/rr-trip.json" 0)
 [ "$OUT" = "D:/withheld/tureen.json" ]; check "round trip: read_settings_fleet_roster reads back the emitted roster under the installed id (out=$OUT)" "$?"
 OUT=$(read_roster "$TMP/roster-none.json" 1)
 [ -z "$OUT" ]; check "round trip: an emitted file naming no roster reads back as no roster (out=$OUT)" "$?"
+
+# --- The supervisor-peer plan's Section 3: the mailbox and the two heartbeat paths ---
+# bin/supervise.sh exports SUPERVISOR_MAILBOX, HEARTBEAT_PATH and
+# SUPERVISOR_HEARTBEAT_PATH before either settings branch runs, and both
+# branches carry them under both plugin ids: a key written on the emit path
+# alone reaches no persona that has launched before. Each path below is
+# withheld from every literal the library carries, so a value that arrives is
+# one that travelled.
+SP_MBX="D:/withheld/runbox/mailbox.jsonl"
+SP_HBP="D:/withheld/launchdir/.agentic-heartbeat.json"
+SP_SHB="D:/withheld/runbox/heartbeat.json"
+run_lib PERSONA="keyprobe" SUPERVISOR_MAILBOX="$SP_MBX" HEARTBEAT_PATH="$SP_HBP" SUPERVISOR_HEARTBEAT_PATH="$SP_SHB" \
+  bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/sp-emit.json"
+check "emit_settings_json exits 0 with the three supervisor paths set" "$?"
+R=$(inspect "$TMP/sp-emit.json")
+case "$R" in *"SAME_OPTIONS=1"*"MBX_DEV=$SP_MBX;"*"MBX_INSTALLED=$SP_MBX;"*"HBP_DEV=$SP_HBP;"*"HBP_INSTALLED=$SP_HBP;"*"SHB_DEV=$SP_SHB;"*"SHB_INSTALLED=$SP_SHB;"*) check "emitted: both ids carry supervisorMailbox, heartbeatPath and supervisorHeartbeatPath" 0 ;; *) check "emitted: both ids carry supervisorMailbox, heartbeatPath and supervisorHeartbeatPath (out=$R)" 1 ;; esac
+
+# The absence leg, read off a file that was produced and holds both ids.
+run_lib PERSONA="keyprobe" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/sp-emit-none.json"
+check "emit_settings_json exits 0 with no supervisor path set" "$?"
+R=$(inspect "$TMP/sp-emit-none.json")
+case "$R" in *"DEV_KEY=1"*"INSTALLED_KEY=1"*"MBX_DEV_PRESENT=0;"*"MBX_INSTALLED_PRESENT=0;"*"HBP_DEV_PRESENT=0;"*"HBP_INSTALLED_PRESENT=0;"*"SHB_DEV_PRESENT=0;"*"SHB_INSTALLED_PRESENT=0;"*) check "emitted: unset supervisor paths leave all three keys out of both ids" 0 ;; *) check "emitted: unset supervisor paths leave all three keys out of both ids (out=$R)" 1 ;; esac
+
+# A path goes through the same guard the roster path does: a double quote is
+# refused with the variable named, and no file is left behind.
+refused "emit_settings_json refuses a mailbox path carrying a quote" "SUPERVISOR_MAILBOX 'x" "$TMP/sp-inj.json" PERSONA="ok" SUPERVISOR_MAILBOX='x"}}},"hooks":{"a":1'
+refused "emit_settings_json refuses a heartbeat path carrying a control character" "HEARTBEAT_PATH must not hold a control character" "$TMP/sp-inj2.json" PERSONA="ok" HEARTBEAT_PATH="$(printf 'a\tb')"
+
+# A provided file gains all three under both ids, beside arming.
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":11,"persona":"sp"}}}}' > "$TMP/sp-provided.json"
+run_lib SUPERVISOR_MAILBOX="$SP_MBX" HEARTBEAT_PATH="$SP_HBP" SUPERVISOR_HEARTBEAT_PATH="$SP_SHB" \
+  bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids "$2" && ensure_settings_arming "$2"' _ "$ROOT" "$TMP/sp-provided.json"
+check "ensure_settings_arming exits 0 with the three supervisor paths set" "$?"
+R=$(inspect "$TMP/sp-provided.json")
+case "$R" in *"PERSONA_DEV=sp;"*"ARMING_DEV=owner;"*"MBX_DEV=$SP_MBX;"*"MBX_INSTALLED=$SP_MBX;"*"HBP_DEV=$SP_HBP;"*"HBP_INSTALLED=$SP_HBP;"*"SHB_DEV=$SP_SHB;"*"SHB_INSTALLED=$SP_SHB;"*) check "provided: a file gains the three supervisor paths under both ids, other options unchanged" 0 ;; *) check "provided: a file gains the three supervisor paths under both ids (out=$R)" 1 ;; esac
+
+# A differing value is overwritten rather than kept: the supervisor reads its
+# own paths, so a stale one in the file would have the child write where
+# nothing reads. The prior value here differs from the new one on every key.
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"arming":"owner","supervisorMailbox":"D:/old/mailbox.jsonl","heartbeatPath":"D:/old/.agentic-heartbeat.json","supervisorHeartbeatPath":"D:/old/heartbeat.json"}},"agentic-plugin@agent-persona":{"options":{"arming":"owner","supervisorMailbox":"D:/old/mailbox.jsonl","heartbeatPath":"D:/old/.agentic-heartbeat.json","supervisorHeartbeatPath":"D:/old/heartbeat.json"}}},"autoContinue":false}' > "$TMP/sp-differ.json"
+run_lib SUPERVISOR_MAILBOX="$SP_MBX" HEARTBEAT_PATH="$SP_HBP" SUPERVISOR_HEARTBEAT_PATH="$SP_SHB" \
+  bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_arming "$2"' _ "$ROOT" "$TMP/sp-differ.json"
+check "ensure_settings_arming exits 0 over differing supervisor paths" "$?"
+R=$(inspect "$TMP/sp-differ.json")
+case "$R" in *"MBX_DEV=$SP_MBX;"*"MBX_INSTALLED=$SP_MBX;"*"HBP_DEV=$SP_HBP;"*"HBP_INSTALLED=$SP_HBP;"*"SHB_DEV=$SP_SHB;"*"SHB_INSTALLED=$SP_SHB;"*) check "provided: differing supervisor paths are overwritten under both ids" 0 ;; *) check "provided: differing supervisor paths are overwritten under both ids (out=$R)" 1 ;; esac
+
+# Unset variables leave the file's own values, byte for byte.
+BEFORE=$(cat "$TMP/sp-differ.json")
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_arming "$2"' _ "$ROOT" "$TMP/sp-differ.json"
+check "ensure_settings_arming exits 0 with no supervisor path set" "$?"
+[ "$BEFORE" = "$(cat "$TMP/sp-differ.json")" ]; check "provided: unset supervisor paths leave the file byte-identical" "$?"
+
+# bin/supervise.sh, driven, writes all three in absolute mixed form (D:/...),
+# which the Windows child resolves, on the emit branch and on the provided one.
+mkdir -p "$TMP/rd-sp-emit" "$TMP/rd-sp-provided"
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"controllerTickMs":7}}}}' > "$TMP/rd-sp-provided/settings.json"
+for rd in rd-sp-emit rd-sp-provided; do
+  OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" bash "$SUP" "$TMP/wd" tester default --rundir "$TMP/$rd" --no-channel 2>&1)
+  RC=$?
+  [ "$RC" -eq 2 ]; check "driven supervise.sh on $rd stops at the gate (rc=$RC)" "$?"
+  EXP_MBX=$(cygpath -m -a "$TMP/$rd/mailbox.jsonl")
+  EXP_SHB=$(cygpath -m -a "$TMP/$rd/heartbeat.json")
+  EXP_HBP=$(cygpath -m -a "$TMP/wd/.agentic-heartbeat.json")
+  R=$(inspect "$TMP/$rd/settings.json")
+  case "$R" in *"MBX_DEV=$EXP_MBX;"*"MBX_INSTALLED=$EXP_MBX;"*"HBP_DEV=$EXP_HBP;"*"HBP_INSTALLED=$EXP_HBP;"*"SHB_DEV=$EXP_SHB;"*"SHB_INSTALLED=$EXP_SHB;"*) check "supervise.sh writes the three paths on $rd under both ids, absolute mixed form" 0 ;; *) check "supervise.sh writes the three paths on $rd under both ids (expected $EXP_MBX $EXP_HBP $EXP_SHB; out=$R)" 1 ;; esac
+done
 if [ "$failed" -eq 0 ]; then
   echo "settings-plugin-key-test.sh: PASS"
   exit 0

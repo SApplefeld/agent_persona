@@ -3,63 +3,81 @@
   "entries": [
     {
       "name": "SKILL_LOAD_INSTRUCTION",
-      "file": "bin/supervise.sh",
+      "file": "bin/supervise-holder.sh",
       "chars": 278,
       "words": 39
     },
     {
       "name": "COORDINATOR_STEER_INSTRUCTION",
-      "file": "bin/supervise.sh",
-      "chars": 3700,
-      "words": 631
+      "file": "bin/supervise-holder.sh",
+      "chars": 3673,
+      "words": 627
     },
     {
       "name": "CHANNEL_REPLY_INSTRUCTION",
-      "file": "bin/supervise.sh",
+      "file": "bin/supervise-holder.sh",
       "chars": 776,
       "words": 130
     },
     {
       "name": "COORDINATOR_ROLE_INSTRUCTION",
-      "file": "bin/supervise.sh",
+      "file": "bin/supervise-holder.sh",
       "chars": 7605,
       "words": 1337
     },
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
-      "file": "bin/supervise.sh",
+      "file": "bin/supervise-holder.sh",
       "chars": 7212,
       "words": 1275
     },
     {
+      "name": "SUPERVISOR_MAILBOX_INSTRUCTION",
+      "file": "bin/supervise-holder.sh",
+      "chars": 459,
+      "words": 80
+    },
+    {
       "name": "PRIMING_BODY_prompt_pending",
-      "file": "bin/supervise.sh",
+      "file": "bin/supervise-holder.sh",
       "chars": 147,
       "words": 27
     },
     {
       "name": "PRIMING_BODY_channel_wait",
-      "file": "bin/supervise.sh",
+      "file": "bin/supervise-holder.sh",
       "chars": 348,
       "words": 62
     },
     {
       "name": "PRIMING_BODY_no_channel_wait",
-      "file": "bin/supervise.sh",
+      "file": "bin/supervise-holder.sh",
       "chars": 375,
       "words": 66
     },
     {
       "name": "GOAL_PROMPT_FRAMING",
-      "file": "bin/supervise.sh",
+      "file": "bin/supervise-holder.sh",
       "chars": 74,
       "words": 15
     },
     {
       "name": "SUPERVISOR_PRIMING_MARKER",
-      "file": "bin/supervise.sh",
+      "file": "bin/supervise-holder.sh",
       "chars": 21,
       "words": 1
+    },
+    {
+      "name": "SUPERVISOR_ASK_TEXT",
+      "file": "bin/supervise.sh",
+      "chars": 141,
+      "words": 23
+    },
+    {
+      "name": "SUPERVISOR_SHUTDOWN_TEXT",
+      "file": "bin/supervise.sh",
+      "chars": 151,
+      "words": 26
     },
     {
       "name": "RECONCILE_TEXT",
@@ -108,6 +126,12 @@
       "file": "hooks/index.ts",
       "chars": 93,
       "words": 15
+    },
+    {
+      "name": "SUPERVISOR_SHUTDOWN_FRAME",
+      "file": "hooks/index.ts",
+      "chars": 17,
+      "words": 2
     },
     {
       "name": "NUDGE_TEXT_idle_gap_converted",

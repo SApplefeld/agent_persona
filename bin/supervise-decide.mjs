@@ -6,7 +6,7 @@
  * @typedef {Object} DecideInput
  * @property {number|null} [childExitCode] - Exit code of the current child, or null if still running.
  * @property {number|null} [rootCompleteTs] - Timestamp of the newest root_complete decision, or null.
- * @property {boolean} [rootCompleteBackfilled] - True when that root_complete's own detail text names it a backfilled root (the worker did real work with no active goal tree; item 2 of the v1 plan). A backfilled root_complete is not a real completion signal and must never trigger restart_passive (it does not suppress a genuine restart trigger below it, e.g. a hung child).
+ * @property {boolean} [rootCompleteBackfilled] - True when that root_complete's own detail text names it a backfilled root (the worker did real work with no active goal tree; item 2 of the v1 plan). A backfilled root_complete is not a real completion signal and must never trigger restart_passive (it does not suppress a genuine restart trigger below it, e.g. a frozen child).
  * @property {number|null} [shutdownRequestedTs] - Timestamp of the newest shutdown_requested decision, or null.
  * @property {number|null} [parkRequestedTs] - Timestamp of the newest park_requested decision, or null.
  * @property {number|null} [restartRequestedTs] - Timestamp of the newest restart_requested decision, or null.
@@ -14,20 +14,19 @@
  * @property {number} [crashLimit] - The supervisor's crash-loop limit (supervisorCrashLimit); crashCount at or past it stops the run.
  * @property {number} [restartCount] - Number of restarts in the current hour window.
  * @property {number} [childStartTs] - Supervisor's clock at launch (before the launch call).
- * @property {string} [childSessionId] - The child's session id from the stream-json init line.
- * @property {string} [heartbeatSessionId] - The sessionId in the heartbeat sidecar.
- * @property {number|null} [heartbeatLastSeen] - The lastSeen timestamp in the heartbeat sidecar.
- * @property {number|null} [transcriptLastWriteTs] - When the harness last appended to the child session's transcript, in epoch milliseconds, or null where no transcript could be read. The harness writes that file on every turn, and it sits at a path the child's own working directory never moves, so it corroborates a stale heartbeat. Null is the fail-safe value: the hung check then runs on the heartbeat alone.
- * @property {number} [now] - Current time (for hung check).
- * @property {number} [launchedAt] - Timestamp when the child was launched.
- * @property {number} [staleAfterMs] - Plugin's staleAfterMs setting.
+ * @property {{verdict: string, reason: string, detail: string}|null} [liveness] - The reading bin/supervise-liveness.mjs returned for this poll. Null or absent reads as alive: no liveness restart is ever taken without a reading.
+ * @property {number|null} [finalAskAt] - When the final ask for the current silence was written, in epoch ms, or null where none has been. The poll loop clears it whenever a reading is alive.
+ * @property {number} [finalAskMs] - supervisorFinalAskMs: how long a final ask waits for any signal to move before a frozen child restarts.
+ * @property {number|null} [shutdownAskAt] - When the shutdown ask to the current child was written to the mailbox, in epoch ms, or null where none has been. The poll loop carries it from poll to poll for as long as that child lives.
+ * @property {number} [askGraceMs] - supervisorAskGraceMs: how long a shutdown ask waits for the child's own shutdown_requested before the stop proceeds through the stop phases.
+ * @property {number} [now] - Current time (for the final ask's window).
  * @property {number} [minRunMs] - Minimum run time before crash-loop counting.
  * @property {number} [maxRestartsPerHour] - Restart budget per hour.
  */
 
 /**
  * @typedef {Object} DecideOutput
- * @property {string} action - 'restart' | 'restart_passive' | 'stop_complete' | 'stop_park' | 'stop_crash_loop' | 'stop_budget' | 'continue'
+ * @property {string} action - 'restart' | 'restart_passive' | 'final_ask' | 'sweep_relaunch' | 'stop_complete' | 'ask_timeout' | 'stop_park' | 'stop_crash_loop' | 'stop_budget' | 'continue'
  * @property {string} reason - Human-readable explanation.
  */
 
@@ -40,6 +39,11 @@
  * 3. stop_complete - an explicit shutdown_requested decision newer than child start
  *    (plan item 4: distinct from root_complete - the operator asked the
  *    supervisor itself to stop, not just the current goal)
+ * 3-. ask_timeout - a shutdown ask older than askGraceMs: the child was asked
+ *    to bank its state and call supervisor_shutdown, and has not, so the stop
+ *    proceeds through the stop phases. Below stop_complete, so a shutdown the
+ *    child records past the grace is still honored, and above every row
+ *    below, so past the grace nothing else the child does keeps it running
  * 3a. stop_park - an explicit park_requested decision newer than child start:
  *    the persona parked for an update window. The supervisor stops as it does
  *    for a shutdown and exits on the park code, so the keeper's next start
@@ -60,9 +64,11 @@
  *    backfilled root_complete means the worker did real work with no active
  *    goal tree, not that a real goal actually finished, and restarting on it
  *    kills a child that was never done with anything.
- * 6. restart - child exited non-zero, or hung (stale + own session + past
- *    grace, and no transcript write inside the staleness bound to corroborate
- *    the heartbeat)
+ * 6. restart - child exited non-zero
+ * 6a. the liveness verdict: frozen returns final_ask while no final ask has
+ *    been written for the current silence, continue while that ask is inside
+ *    finalAskMs, and restart once it is older and still unanswered; gone
+ *    returns sweep_relaunch; alive falls through
  * 7. continue - none of the above
  *
  * @param {DecideInput} input
@@ -79,13 +85,12 @@ export function decide(input) {
     crashLimit = 3,
     restartCount = 0,
     childStartTs,
-    childSessionId,
-    heartbeatSessionId,
-    heartbeatLastSeen,
-    transcriptLastWriteTs = null,
+    liveness = null,
+    finalAskAt = null,
+    finalAskMs = 660000,
+    shutdownAskAt = null,
+    askGraceMs = 1200000,
     now,
-    launchedAt,
-    staleAfterMs = 90000,
     minRunMs = 120000,
     maxRestartsPerHour = 6,
     rootCompleteBackfilled = false,
@@ -111,6 +116,15 @@ export function decide(input) {
     return { action: 'stop_complete', reason: `shutdown_requested at ${shutdownRequestedTs} > child start ${childStartTs}` };
   }
 
+  // 3-. A shutdown ask the child has not honored inside the grace. Its answer
+  // is a shutdown_requested newer than the child start, which 3 above takes.
+  // Inside the grace every row below is read as it always is, so a crash, a
+  // request the child wrote or a liveness verdict is seen on the poll that
+  // finds it. The window test is the final ask's: strictly past the grace.
+  if (shutdownAskAt !== null && shutdownAskAt !== undefined && now - shutdownAskAt > askGraceMs) {
+    return { action: 'ask_timeout', reason: `the shutdown ask at ${shutdownAskAt} went unanswered past ${askGraceMs}ms` };
+  }
+
   // 3a. An explicit park request newer than child start: the persona asked to
   // stop for an update window and come back at the keeper's next start. Stop,
   // on a code of its own. Below the shutdown, so a stop for good wins.
@@ -131,7 +145,7 @@ export function decide(input) {
   // the root was backfilled (v2 Section 0 item 1): that is real tool work
   // with no goal tree, not a real completion, and restarting on it kills a
   // child mid-work. A backfilled root ignores only this one completion
-  // signal; it never pre-empts 4a (child exit) or 4b (hung check) below -
+  // signal; it never pre-empts 4a (child exit) or 4b (the liveness verdict) below -
   // a goal-less child stays restartable for either of those other reasons.
   if (rootCompleteTs !== null && rootCompleteTs > childStartTs && !rootCompleteBackfilled) {
     return { action: 'restart_passive', reason: `root_complete at ${rootCompleteTs} > child start ${childStartTs}` };
@@ -142,42 +156,30 @@ export function decide(input) {
     return { action: 'restart', reason: `child exited with code ${childExitCode}` };
   }
 
-  // 4b. Hung check: stale + own session + past grace: restart.
-  // Identity key: the heartbeat sidecar's sessionId must equal the child's session id.
-  // Startup grace: the hung check does not run within staleAfterMs of launch.
-  if (
-    heartbeatLastSeen !== null &&
-    now !== null &&
-    (now - heartbeatLastSeen) > staleAfterMs &&
-    heartbeatSessionId !== null &&
-    heartbeatSessionId === childSessionId &&
-    launchedAt !== null &&
-    (now - launchedAt) > staleAfterMs
-  ) {
-    // Corroboration, ahead of the restart. The heartbeat sidecar is written
-    // relative to the child's own working directory, while this unit is handed
-    // the one the supervisor watches, so a child working out of a subdirectory
-    // stamps a file nobody reads and looks hung from here. The harness
-    // transcript is the second instrument: the child never writes it, it sits
-    // at a path fixed by the launch directory, and the harness appends to it on
-    // every turn. A transcript written inside the same staleness bound is
-    // positive evidence the child is alive, so the restart is withheld.
-    // Evidence only ever suppresses: a null transcript reading leaves the hung
-    // check exactly as it was, so a genuinely wedged child still restarts.
-    // The bound is symmetric. The write time and this poll's clock come from
-    // two readers, so a stamp slightly ahead is skew and still corroborates,
-    // while a stamp further ahead than the bound is a future write time or a
-    // backward clock step and says nothing about whether the child is alive.
-    if (transcriptLastWriteTs !== null && transcriptLastWriteTs !== undefined && Math.abs(now - transcriptLastWriteTs) <= staleAfterMs) {
-      return {
-        action: 'continue',
-        reason: `hung_corroborated: heartbeat lastSeen ${heartbeatLastSeen} is older than ${staleAfterMs}ms, but the harness transcript was last written at ${transcriptLastWriteTs}, inside ${staleAfterMs}ms of the clock this poll read at ${now}, so the child is alive and its heartbeat is being stamped somewhere this supervisor does not read`,
-      };
+  // 4b. The liveness verdict. bin/supervise-liveness.mjs reads frozen or gone
+  // only where every signal is silent past its bound at once, and alive on
+  // every fail-closed case, so alive, an absent reading and any value outside
+  // the closed set all fall through to continue.
+  const verdict = liveness && typeof liveness === 'object' ? liveness.verdict : null;
+  const detail = liveness && typeof liveness === 'object' ? String(liveness.detail || '') : '';
+  if (verdict === 'gone') {
+    return { action: 'sweep_relaunch', reason: `gone: every signal is silent and the walk found no live process (${detail})` };
+  }
+  if (verdict === 'frozen') {
+    // One final ask per silence, never on a cadence. The poll loop logs it
+    // and opens a window of finalAskMs, the harness's tool-call cap plus a
+    // margin; the loop writes the ask to ask.request for the holder to relay
+    // to the child, and the window times the child's answer.
+    // A signal that moves inside it reads alive, which clears the ask's time
+    // before the next poll hands it in, and a window that closes with every
+    // signal silent restarts.
+    if (finalAskAt === null || finalAskAt === undefined) {
+      return { action: 'final_ask', reason: `frozen: every signal is silent and the walk found a live process (${detail})` };
     }
-    return {
-      action: 'restart',
-      reason: `hung: heartbeat lastSeen ${heartbeatLastSeen} older than ${staleAfterMs}ms, sessionId ${heartbeatSessionId} matches child, past grace (${now - launchedAt}ms > ${staleAfterMs}ms)`,
-    };
+    if (now - finalAskAt > finalAskMs) {
+      return { action: 'restart', reason: `frozen: the final ask at ${finalAskAt} went unanswered past ${finalAskMs}ms (${detail})` };
+    }
+    return { action: 'continue', reason: `final_ask_window: the final ask at ${finalAskAt} is inside ${finalAskMs}ms (${detail})` };
   }
 
   // 5. Continue: no restart trigger.

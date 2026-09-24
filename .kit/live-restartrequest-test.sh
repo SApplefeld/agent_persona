@@ -24,6 +24,20 @@ source "$SCRIPT_DIR/live-common.sh"
 
 RUNNING="$SUITE_DIR/RUNNING"
 SUPERVISE_PID=""
+# A TERM to the supervisor now detaches from a live handled child, leaving the
+# child and its holder running for the next supervisor to adopt. So the teardown
+# kills the pids each handle names directly, or a real claude child and its
+# holder would hold the persona into the next suite.
+kill_handle_pids() {
+  local h pid field
+  for h in "$SUITE_DIR"/child-*/handle.json; do
+    [ -f "$h" ] || continue
+    for field in childPid holderPid; do
+      pid=$(node -e 'try{const v=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]];if(v)console.log(v)}catch(e){}' "$h" "$field" 2>/dev/null)
+      [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null
+    done
+  done
+}
 cleanup() {
   # The reader coproc lives in a subshell below; its pid is handed out
   # through reader.pid so an early exit here can still stop it.
@@ -34,6 +48,7 @@ cleanup() {
     kill -TERM "$SUPERVISE_PID" 2>/dev/null
     wait "$SUPERVISE_PID" 2>/dev/null
   fi
+  kill_handle_pids
   rm -f "$RUNNING"
 }
 trap cleanup EXIT
@@ -220,15 +235,26 @@ if [ "$F5_TURN" -eq 1 ]; then pass "F5b the new child took the reader's next tur
 if [ -f "$SUITE_DIR/reader.pid" ]; then
   stop_coproc_pid "$(cat "$SUITE_DIR/reader.pid")" "" 5
 fi
-kill -TERM "$SUPERVISE_PID" 2>/dev/null
+# A TERM would detach rather than stop the child now, so the deliberate stop is
+# the shutdown request file: the supervisor asks the child, which banks state
+# and calls supervisor_shutdown, and the run ends at exit 0.
+printf 'stop\n' > "$SUITE_DIR/shutdown.request"
+for _i in $(seq 1 90); do kill -0 "$SUPERVISE_PID" 2>/dev/null || break; sleep 2; done
+if kill -0 "$SUPERVISE_PID" 2>/dev/null; then
+  # The child did not honor the ask inside the window; kill the handle's pids
+  # and signal the supervisor so the suite still ends.
+  kill_handle_pids
+  kill -TERM "$SUPERVISE_PID" 2>/dev/null
+fi
 wait "$SUPERVISE_PID" 2>/dev/null
 STOP_CODE=$?
 SUPERVISE_PID=""
-if [ "$STOP_CODE" -eq 143 ] || [ "$STOP_CODE" -eq 0 ]; then
-  pass "F6 clean stop (exit $STOP_CODE)"
+if [ "$STOP_CODE" -eq 0 ] || [ "$STOP_CODE" -eq 143 ]; then
+  pass "F6 clean stop via the shutdown request file (exit $STOP_CODE)"
 else
-  failed "F6 clean stop (got exit $STOP_CODE)"
+  failed "F6 clean stop via the shutdown request file (got exit $STOP_CODE)"
 fi
+kill_handle_pids
 
 echo "$FAIL_COUNT" > "$EXIT_FILE"
 if [ "$FAIL_COUNT" -gt 0 ]; then
