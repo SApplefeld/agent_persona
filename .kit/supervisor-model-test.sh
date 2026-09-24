@@ -249,15 +249,18 @@ if [ -n "$SWEEP_SNIPPET" ]; then
 # SWEEP_RC_STUB is what the sweep returns, WRAPPER is live or dead.
 log() { echo "$*"; }
 sweep_child_tree() { echo "CALL sweep_child_tree $1"; return "${SWEEP_RC_STUB:-0}"; }
-retry_stop_escalation() { echo "CALL retry_stop_escalation $1 $2"; return 0; }
-stop_child() { echo "CALL stop_child $1"; kill "$CHILD_LAUNCH_PID" 2>/dev/null; return 0; }
-record_restart_in_hour() { echo "CALL record_restart_in_hour"; RESTART_COUNT=1; }
+# RETRY_RC_STUB and STOP_RC_STUB are what the backstop and the stop return,
+# RESTART_COUNT_STUB is the count record_restart_in_hour leaves, and
+# CRASH_COUNT_START is the crash count the child is accounted from.
+retry_stop_escalation() { echo "CALL retry_stop_escalation $1 $2"; return "${RETRY_RC_STUB:-0}"; }
+stop_child() { echo "CALL stop_child $1"; kill "$CHILD_LAUNCH_PID" 2>/dev/null; return "${STOP_RC_STUB:-0}"; }
+record_restart_in_hour() { echo "CALL record_restart_in_hour"; RESTART_COUNT="${RESTART_COUNT_STUB:-1}"; }
 if [ "${WRAPPER:-dead}" = live ]; then sleep 30 & else ( exit 7 ) & fi
 CHILD_LAUNCH_PID=$!
 [ "${WRAPPER:-dead}" = live ] || sleep 1
 CHILD_INDEX=1; DECIDE_REASON="gone: test"; EXIT_MARKER="$1"; STOP_PATH=eof
 LAUNCHED_AT=$(node -e "console.log(Date.now())"); SUPERVISOR_MIN_RUN_MS=120000
-CRASH_COUNT=0; RESTART_COUNT=0; SUPERVISOR_MAX_RESTARTS_PER_HOUR=6; SUPERVISOR_CRASH_LIMIT=3
+CRASH_COUNT="${CRASH_COUNT_START:-0}"; RESTART_COUNT=0; SUPERVISOR_MAX_RESTARTS_PER_HOUR=6; SUPERVISOR_CRASH_LIMIT=3
 sweep_gone_child
 echo "RETURNED crash=$CRASH_COUNT restarts=$RESTART_COUNT marker=$(cat "$1")"' > "$TMP/sweep.sh"
   sweep_run() { timeout 60 bash "$TMP/sweep.sh" "$TMP/sweep.exit" 2>&1; }
@@ -284,6 +287,29 @@ echo "RETURNED crash=$CRASH_COUNT restarts=$RESTART_COUNT marker=$(cat "$1")"' >
     && printf '%s\n' "$OUT" | grep -qx 'RETURNED crash=1 restarts=1 marker=7'
   R=$?
   check "a dead wrapper is waited on and accounted as a restart (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$R"
+  # Each stop the function makes ends the run on its own code, before the
+  # function returns: a sweep the backstop cannot clear and a live wrapper
+  # the stop cannot clear exit 5, the restart budget reached exits 4, and the
+  # crash limit reached exits 3.
+  sweep_exits() {  # <label> <expected code> <expected line> env assignments...
+    local label="$1" want="$2" line="$3" out rc
+    shift 3
+    out=$(env "$@" timeout 60 bash "$TMP/sweep.sh" "$TMP/sweep.exit" 2>&1)
+    rc=$?
+    if [ "$rc" -eq "$want" ] && ! printf '%s\n' "$out" | grep -q '^RETURNED ' && printf '%s\n' "$out" | grep -q "$line"; then
+      check "$label" 0
+    else
+      check "$label (rc=$rc, out=$(printf '%s' "$out" | tr '\n' '|'))" 1
+    fi
+  }
+  sweep_exits "a sweep the retry backstop cannot clear exits 5 before any relaunch" 5 \
+    'alive or unverifiable after every sweep retry' SWEEP_RC_STUB=1 RETRY_RC_STUB=1 WRAPPER=dead
+  sweep_exits "a live wrapper whose stop cannot be cleared exits 5 before any relaunch" 5 \
+    'alive or unverifiable despite every stop retry' SWEEP_RC_STUB=2 STOP_RC_STUB=1 RETRY_RC_STUB=1 WRAPPER=live
+  sweep_exits "a relaunch that reaches the restart budget exits 4" 4 \
+    'STOP_BUDGET: 6/6 restarts in the hour' RESTART_COUNT_STUB=6 WRAPPER=dead
+  sweep_exits "a non-zero exit inside the minimum run that reaches the crash limit exits 3" 3 \
+    'STOP_CRASH_LOOP: 3 crashes' CRASH_COUNT_START=2 WRAPPER=dead
 fi
 
 # note_liveness_poll, which carries a poll's liveness state to the next and

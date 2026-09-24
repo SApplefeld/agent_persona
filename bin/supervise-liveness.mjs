@@ -236,32 +236,53 @@ export function readNewestTurnTs(transcriptPath, subagentsDir, minSubagentMtimeM
   return { ts, source };
 }
 
+// The openings of the messages the harness writes when a usage limit ends a
+// turn, copied from the harness's own recognizer for this state, which
+// matches a message that starts with one of them. The middle dot in the two
+// org messages is U+00B7, as the harness writes it.
+const USAGE_LIMIT_PREFIXES = Object.freeze([
+  "You've hit your",
+  "You've reached your",
+  "You're out of usage credits",
+  "Your org is out of usage \u00B7 add funds to continue",
+  "Your org is out of usage \u00B7 contact your admin",
+  "Your seat type doesn't include usage credits",
+  "Your seat type doesn't include usage",
+  "Your usage allocation has been disabled by your admin",
+  "Your group's usage limit is set to $0",
+  "Fable 5 requires usage credits",
+  "You're out of extra usage",
+  "Your seat type doesn't include extra usage",
+]);
+// The one pattern the harness adds beside that list, for a model that needs
+// usage credits.
+const USAGE_LIMIT_PATTERNS = Object.freeze([/^Fable(?: [^\u00B7\n]{1,40})? requires usage credits\./]);
+// The assistant errors a usage limit ends a turn on. The harness reports
+// rate_limit as rate limited and billing_error as a usage limit reached, and
+// in both the cause is the API, which a restart cannot change.
+const USAGE_LIMIT_ERRORS = Object.freeze(['rate_limit', 'billing_error']);
+
 /**
  * Whether a stream record is one a usage limit leaves as the child's newest
- * word. Two count: the engine's api_retry carrying error_status 429, and the
- * no-usage error a turn ends on, which is an assistant record whose error is
- * rate_limit or the result record closing that turn. The result is matched on
- * its is_error flag with either the turn's own assistant record carrying
- * rate_limit, handed in as the second argument, or a result text naming a
- * usage limit. The text match takes the openings the harness builds this
- * state's messages from, "You've hit your" (a session, weekly, model or
- * spend limit, or a shared budget), "You've reached your" and "You're out
- * of usage credits", with a straight or curly apostrophe, and the plain
- * phrases "usage limit" and "out of usage" or "out of extra usage".
+ * word. Two kinds count: the engine's api_retry carrying error_status 429,
+ * and the no-usage error a turn ends on, which is an assistant record whose
+ * error is rate_limit or billing_error, or the result record closing that
+ * turn. The result is matched on its is_error flag with either the turn's
+ * own assistant record carrying one of those errors, handed in as the second
+ * argument, or a result text that starts, once trimmed, with one of the
+ * harness's limit-message openings or matches its model-credit pattern.
  * @param {object|null} record
  * @param {object|null} [lastAssistant]
  * @returns {boolean}
  */
-const USAGE_LIMIT_TEXT = /you['\u2019]ve hit your|you['\u2019]ve reached your|you['\u2019]re out of usage credits|usage limit|out of (extra )?usage/i;
-
 export function isUsageLimitRecord(record, lastAssistant = null) {
   if (!record || typeof record !== 'object') return false;
   if (record.type === 'system' && record.subtype === 'api_retry' && Number(record.error_status) === 429) return true;
-  if (record.type === 'assistant' && record.error === 'rate_limit') return true;
+  if (record.type === 'assistant' && USAGE_LIMIT_ERRORS.includes(record.error)) return true;
   if (record.type === 'result' && record.is_error === true) {
-    if (lastAssistant && typeof lastAssistant === 'object' && lastAssistant.error === 'rate_limit') return true;
-    const text = typeof record.result === 'string' ? record.result : '';
-    return USAGE_LIMIT_TEXT.test(text);
+    if (lastAssistant && typeof lastAssistant === 'object' && USAGE_LIMIT_ERRORS.includes(lastAssistant.error)) return true;
+    const text = typeof record.result === 'string' ? record.result.trim() : '';
+    return USAGE_LIMIT_PREFIXES.some((p) => text.startsWith(p)) || USAGE_LIMIT_PATTERNS.some((re) => re.test(text));
   }
   return false;
 }

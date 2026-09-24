@@ -657,22 +657,47 @@ const livenessCases = [
     assert.equal(isUsageLimitRecord({ type: 'assistant', message: { content: [] } }), false);
     assert.equal(isUsageLimitRecord(null), false);
   }],
-  // The result-text fallback matches the copy the harness writes for this
-  // state, which opens "You've hit your", "You've reached your" or "You're
-  // out of usage credits", with either apostrophe, and not the other
-  // "limit reached" errors a turn can end on.
-  ['isUsageLimitRecord: the harness copy for a usage limit counts, with a straight or a curly apostrophe', () => {
-    for (const text of [
-      "You've hit your session limit · resets 3pm",
-      "You've hit your monthly spend limit.",
-      "You've hit your team's shared budget.",
-      "You're out of usage credits. Run /usage",
-      "You've reached your Fable limit.",
-      'You\u2019ve hit your weekly limit',
-      'Usage limit reached',
-    ]) {
+  // The result-text fallback matches a message that starts with one of the
+  // harness's own limit-message openings, or its model-credit pattern, and
+  // not the other "limit reached" errors a turn can end on. Each opening is
+  // its own case, written as the start of a message the harness completes.
+  ...[
+    "You've hit your session limit " + '\u00B7' + " resets 3pm",
+    "You've reached your Fable limit.",
+    "You're out of usage credits. Run /usage",
+    'Your org is out of usage \u00B7 add funds to continue',
+    'Your org is out of usage \u00B7 contact your admin',
+    "Your seat type doesn't include usage credits.",
+    "Your seat type doesn't include usage.",
+    'Your usage allocation has been disabled by your admin.',
+    "Your group's usage limit is set to $0.",
+    'Fable 5 requires usage credits.',
+    "You're out of extra usage " + '\u00B7' + ' resets 3pm',
+    "Your seat type doesn't include extra usage.",
+  ].map((text) => ['isUsageLimitRecord: the harness opening counts: ' + text, () => {
+    assert.equal(isUsageLimitRecord({ type: 'result', is_error: true, result: text }), true, text);
+    assert.equal(isUsageLimitRecord({ type: 'result', is_error: true, result: '  ' + text + '\n' }), true, 'trimmed: ' + text);
+  }]),
+  ['isUsageLimitRecord: the harness model-credit pattern counts, and its near misses do not', () => {
+    for (const text of ['Fable requires usage credits.', 'Fable 6 Max requires usage credits. Add credits']) {
       assert.equal(isUsageLimitRecord({ type: 'result', is_error: true, result: text }), true, text);
     }
+    for (const text of ['Fable requires usage credits', 'Fable 5 \u00B7 requires usage credits.', 'The Fable model requires usage credits.']) {
+      assert.equal(isUsageLimitRecord({ type: 'result', is_error: true, result: text }), false, text);
+    }
+  }],
+  // An opening matched anywhere but the start is not the harness's message.
+  ['isUsageLimitRecord: an opening that is not at the start of the text does not count', () => {
+    assert.equal(isUsageLimitRecord({ type: 'result', is_error: true, result: "Tool said: You've hit your limit" }), false);
+  }],
+  // billing_error is the harness's usage limit reached, and like rate_limit
+  // its cause is the API.
+  ['isUsageLimitRecord: billing_error counts, as the assistant record and as the result closing its turn', () => {
+    const assistant = { type: 'assistant', error: 'billing_error', message: { content: [{ type: 'text', text: 'x' }] } };
+    assert.equal(isUsageLimitRecord(assistant), true);
+    assert.equal(isUsageLimitRecord({ type: 'result', is_error: true, result: 'x' }, assistant), true);
+    assert.equal(isUsageLimitRecord({ type: 'assistant', error: 'overloaded' }), false);
+    assert.equal(isUsageLimitRecord({ type: 'result', is_error: true, result: 'x' }, { type: 'assistant', error: 'server_error' }), false);
   }],
   ['isUsageLimitRecord: "Context limit reached" and "Budget limit reached" do not count', () => {
     for (const text of ['Context limit reached', 'Budget limit reached']) {

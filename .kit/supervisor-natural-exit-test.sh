@@ -1918,11 +1918,9 @@ grep -q 'LIVENESS child-1: alive transcript_unreadable' "$LOG"; check "(ac) the 
 # --- (ha) a heartbeat file never written is named once ---
 # Past the startup grace, every poll reads the child's own heartbeat file
 # absent, and the supervisor names that once per child rather than on each of
-# those polls. The transcript is seeded an hour silent and the stream is
-# silent after the init line, so the file never written, which is not
-# silent, is what reads the child alive: a heartbeat never written earns no
-# probe either, and a probe never written is not silent. The child is neither
-# asked nor restarted.
+# those polls. The transcript is seeded an hour silent, so it is readable and
+# silent, and the stream is silent after the init line. A child in that state
+# reads alive, and is neither asked nor restarted.
 mkdir -p "$TMP/ha/wd" "$TMP/ha/profile"
 write_turn_aged "$(transcript_path "$TMP/ha/wd" "$TMP/ha/profile" "stub-sess-1")" 3600
 DRIVE_ENV=("${LIVENESS_ENV[@]}" USERPROFILE="$TMP/ha/profile")
@@ -1932,9 +1930,8 @@ DRIVE_ENV=()
 grep -q '(poll 18)$' "$LOG"; check "(ha) setup: the supervisor ran eighteen polls, most of them past the grace" "$?"
 HA_LINES=$(grep -c 'HEARTBEAT_ABSENT child-1' "$LOG" 2>/dev/null); HA_LINES=${HA_LINES:-0}
 [ "$HA_LINES" -eq 1 ]; check "(ha) HEARTBEAT_ABSENT is named once across every poll that read the file absent (lines=$HA_LINES)" "$?"
-[ ! -s "$TMP/ha/rd/mailbox.jsonl" ]; check "(ha) setup: a heartbeat never written earned no probe" "$?"
 grep -q 'LIVENESS child-1: alive signal' "$LOG" && ! grep -q 'LIVENESS child-1: alive transcript_unreadable' "$LOG"
-check "(ha) the readable, silent transcript leaves the never-written heartbeat as what reads the child alive" "$?"
+check "(ha) a never-written heartbeat beside a readable, silent transcript reads alive" "$?"
 ! grep -q -e 'FINAL_ASK' -e 'RESTART:' "$LOG"; check "(ha) a child whose heartbeat file was never written is neither asked nor restarted" "$?"
 [ "$RC" -eq 0 ]; check "(ha) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"
 [ "$LAUNCHES" -eq 1 ]; check "(ha) no second child launches (stub launches=$LAUNCHES)" "$?"

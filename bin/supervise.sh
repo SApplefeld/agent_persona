@@ -1458,12 +1458,10 @@ refresh_child_tree() {
     # is a survivor nothing here can name. An MSYS pid reused by an unrelated
     # process reads as running too, which keeps this a failed read.
     #
-    # For the liveness verdict, only a closure whose members are all confirmed
-    # exited, the launch pid among them, is a walk that found nothing. A launch
-    # pid that still answers is always its own closure's first member, so a
-    # closure that is empty or names other members without it is a process
-    # table this poll could not read, and it reads as a walk that did not
-    # complete whatever the named members show.
+    # For the liveness verdict, this poll's walk reads none only where every
+    # member of the closure and the launch pid itself have exited. A member or
+    # a launch pid that still answers makes it failed, a walk that did not
+    # complete, so a live child is never read as gone.
     CHILD_TREE_POLL_WALK="none"
     if [ -n "$msys_pids" ]; then
       for one in $msys_pids; do
