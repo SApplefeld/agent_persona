@@ -30,7 +30,7 @@
 # text from this file.
 #
 # Usage: supervise-holder.sh <holder-pid-file> <child-stdout> <child-pid-file>
-#                            <ask-request-file> <goal-prompt-file|""> <priming-wait-s>
+#                            <ask-request-file> <goal-prompt-file|"">
 # The supervisor exports PERSONA, NO_CHANNEL, COORDINATOR_PERSONA,
 # ARCHITECT_PERSONA and CHILD_INDEX for the priming text and the log lines, and
 # SUPERVISOR_HOLDER_POLL_S for the hold cadence.
@@ -84,17 +84,34 @@ holder_child_pid() {
 }
 
 # Whether one line is a final ask this holder may relay: a stream-json user
-# message whose text opens [SUPERVISOR-ASK id=. Anything else in the
-# ask-request file is logged and removed unrelayed, so a partial or foreign
+# message carrying exactly one content block, of type text, whose text opens
+# [SUPERVISOR-ASK id=. That is the whole of what final_ask_json writes, so a
+# second block, a block of another type or any other shape is refused.
+# Anything refused is logged and removed unrelayed, so a partial or foreign
 # line never reaches the child's input.
 holder_ask_valid() {  # <line>
   node -e '
 let o;
 try { o = JSON.parse(process.argv[1]); } catch (e) { process.exit(1); }
-const text = o && o.type === "user" && o.message && Array.isArray(o.message.content)
-  && o.message.content[0] && o.message.content[0].text;
-process.exit(typeof text === "string" && text.startsWith("[SUPERVISOR-ASK id=") ? 0 : 1);
+const content = o && o.type === "user" && o.message && o.message.content;
+if (!Array.isArray(content) || content.length !== 1) process.exit(1);
+const block = content[0];
+const ok = block && typeof block === "object" && block.type === "text"
+  && typeof block.text === "string" && block.text.startsWith("[SUPERVISOR-ASK id=");
+process.exit(ok ? 0 : 1);
 ' "$1" 2>/dev/null
+}
+
+# Whether the ask-request file holds exactly its first line and nothing after
+# it. The supervisor writes the file whole and moves it into place, so a file
+# with bytes past its first newline, or with no newline at all, is malformed
+# rather than in flight, and is refused. Byte lengths are compared under the C
+# locale so a multibyte character cannot make the two disagree.
+holder_ask_file_whole() {  # <file> <first line as read>
+  local bytes line_bytes
+  bytes=$(wc -c < "$1" 2>/dev/null) || return 1
+  line_bytes=$(LC_ALL=C printf '%s' "$2" | wc -c)
+  [ "$bytes" -eq $((line_bytes + 1)) ]
 }
 
   SKILL_LOAD_INSTRUCTION="Before your first tool call on any plan work, invoke the Skill tool for claude-kit:operating-instructions, then claude-kit:executing-work; when a plan reaches its last section, claude-kit:finishing-work. Those skills own how a section, its review rounds and its fix rounds run. "
@@ -448,12 +465,13 @@ while true; do
     GOAL_PENDING=0
   fi
   if [ -f "$ASK_REQUEST_FILE" ]; then
-    # One whole line is relayed: `read -r` returns non-zero on a line with no
-    # terminating newline, which is a file still being written, and the line
-    # must parse as a [SUPERVISOR-ASK id=...] user turn. The supervisor writes
-    # the file whole and moves it into place, so a relayed ask is exactly one.
+    # One whole line is relayed. The supervisor writes the file whole and moves
+    # it into place, so a line with no terminating newline (`read -r` returns
+    # non-zero) or a file with bytes after its first line is malformed rather
+    # than in flight, and is refused with the line that does not parse as a
+    # [SUPERVISOR-ASK id=...] user turn. A relayed ask is exactly one.
     ask_line=""
-    if IFS= read -r ask_line 2>/dev/null < "$ASK_REQUEST_FILE" && holder_ask_valid "$ask_line"; then
+    if IFS= read -r ask_line 2>/dev/null < "$ASK_REQUEST_FILE" && holder_ask_file_whole "$ASK_REQUEST_FILE" "$ask_line" && holder_ask_valid "$ask_line"; then
       printf '%s\n' "$ask_line"
       log "relayed a final ask from the ask-request file"
     else

@@ -222,6 +222,11 @@ SUPERVISOR_FINAL_ASK_MS="${supervisorFinalAskMs:-660000}"
 # outlasts the window is stopped through the phases. Read by the decide unit
 # through the poll, and never written to the plugin's options.
 SUPERVISOR_ASK_GRACE_MS="${supervisorAskGraceMs:-1200000}"
+# How long the pre-launch gate waits for the persona to come free, and how long
+# it holds on a handle it may not take (one whose writer is running or cannot
+# be ruled out), before ending the run at GATE TIMEOUT. Two minutes, the
+# gate's standing bound; a suite shortens it.
+SUPERVISOR_GATE_WAIT_S="${supervisorGateWaitS:-120}"
 # v2 spec Section 0 item 3 Part B (operator decision, DISCUSSION.md Round
 # 136 addendum): the worker's own main thread - where PR #17's kill path
 # was actually written - defaults to opus at medium effort, not sonnet.
@@ -327,6 +332,10 @@ if ! positive_number "$SUPERVISOR_FINAL_ASK_MS"; then
 fi
 if ! positive_number "$SUPERVISOR_ASK_GRACE_MS"; then
   echo "ERROR: supervisorAskGraceMs '$SUPERVISOR_ASK_GRACE_MS' is not a whole number of milliseconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
+  exit 1
+fi
+if ! positive_number "$SUPERVISOR_GATE_WAIT_S"; then
+  echo "ERROR: supervisorGateWaitS '$SUPERVISOR_GATE_WAIT_S' is not a whole number of seconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
   exit 1
 fi
 
@@ -532,6 +541,10 @@ HOLDER_OWN_LAUNCH=""
 # The current child's handle path, for clear_handle and the cleanup trap's
 # detach route. Set per child at launch or adoption.
 HANDLE_FILE=""
+# 1 while the current child was adopted rather than launched: its exit marker
+# is written by a wrapper this supervisor cannot `wait` on, and its walk is
+# checked against the Windows pid its handle recorded.
+CHILD_ADOPTED=""
 # The last poll's liveness reading, which the cleanup trap routes on. Empty
 # until the first poll, and the trap reads empty as alive, since a child that
 # answers kill -0 with no reading yet is inside the startup grace.
@@ -1458,6 +1471,15 @@ refresh_child_tree() {
     fi
   done
   winpids="${winpids# }"
+  # An adopted child's launch pid is trusted only while it runs as the Windows
+  # pid its handle recorded. A different pid under it is a process the handle
+  # never named, so this poll's walk is read as not completed.
+  if [ "${CHILD_ADOPTED:-}" = "1" ] && [ -n "${CHILD_WINPID:-}" ] && [ -n "$root_winpid" ] && [ "$root_winpid" != "$CHILD_WINPID" ]; then
+    log "CHILDTREE: child-$CHILD_INDEX's launch pid $pid runs as Windows pid $root_winpid, not the $CHILD_WINPID its handle recorded, so this poll's walk is read as not completed"
+    CHILD_TREE_READ_FAILED=1
+    CHILD_TREE_FAILED_CONFIRMS=$(( ${CHILD_TREE_FAILED_CONFIRMS:-0} + 1 ))
+    return 0
+  fi
   # This list is what a later sweep kills, so the supervisor's own Windows pid
   # is refused outright rather than trusted to be absent. The closure is rooted
   # at the launch pid, which is this process's child, so a self entry can only come
@@ -2723,12 +2745,13 @@ sweep_gone_child() {
   kill_holder
   wait "$CHILD_LAUNCH_PID" 2>/dev/null
   CHILD_LAUNCH_PID=""
-  EXIT_CODE=$(read_exit_marker "$EXIT_MARKER")
+  EXIT_CODE=$(child_exit_code)
   clear_handle
   log "EXIT child-$CHILD_INDEX code=$EXIT_CODE (sweep_relaunch)"
 
-  CHILD_RUN_MS=$(( ( $(node -e "console.log(Date.now())") - LAUNCHED_AT ) ))
-  if [ $EXIT_CODE -ne 0 ] && [ $CHILD_RUN_MS -lt $SUPERVISOR_MIN_RUN_MS ]; then
+  CHILD_RUN_MS=""
+  if [ -n "${LAUNCHED_AT:-}" ]; then CHILD_RUN_MS=$(( ( $(node -e "console.log(Date.now())") - LAUNCHED_AT ) )); fi
+  if [ $EXIT_CODE -ne 0 ] && [ -n "$CHILD_RUN_MS" ] && [ $CHILD_RUN_MS -lt $SUPERVISOR_MIN_RUN_MS ]; then
     CRASH_COUNT=$((CRASH_COUNT + 1))
   else
     CRASH_COUNT=0
@@ -2812,7 +2835,7 @@ ask_timeout_stop() {
   STOP_ESCALATION_RESULT=$?
   wait "$CHILD_LAUNCH_PID" 2>/dev/null
   CHILD_LAUNCH_PID=""
-  EXIT_CODE=$(read_exit_marker "$EXIT_MARKER")
+  EXIT_CODE=$(child_exit_code)
   clear_handle
   log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
   if [ "${STOP_ESCALATION_RESULT:-0}" -ne 0 ]; then
@@ -2865,9 +2888,12 @@ read_exit_marker() {
 child_wrapper() {
   local marker="$1"
   shift
+  # The trap is installed before the fork, so a TERM landing in the instant
+  # between the two is not lost; it reads the pid at signal time.
+  local inner=""
+  trap 'kill -TERM "${inner:-}" 2>/dev/null' TERM
   "$@" <&0 &
-  local inner=$!
-  trap 'kill -TERM "$inner" 2>/dev/null' TERM
+  inner=$!
   wait "$inner"
   local rc=$?
   while kill -0 "$inner" 2>/dev/null; do
@@ -2889,12 +2915,23 @@ child_wrapper() {
 # carries no reuse risk. A holder read from a handle with no recorded ticks is
 # left alone and named, never signalled by an unverified pid.
 kill_holder() {
-  if [ -n "${HOLDER_WINPID:-}" ] && [ -n "${HOLDER_TICKS:-}" ]; then
-    kill_process_snapshot "$HOLDER_WINPID,$HOLDER_TICKS" || true
+  # A holder whose MSYS pid no longer answers is already gone: nothing is
+  # killed and no PowerShell is spent, which is the natural exit's case, since
+  # the holder leaves on its own a poll after the child dies.
+  if [ -n "${HOLDER_LAUNCH_PID:-}" ] && ! kill -0 "$HOLDER_LAUNCH_PID" 2>/dev/null; then
+    log "HOLDER: holder pid $HOLDER_LAUNCH_PID is already gone, so nothing is killed"
     return 0
   fi
-  if [ "${HOLDER_OWN_LAUNCH:-}" = "1" ] && [ -n "${HOLDER_LAUNCH_PID:-}" ] && kill -0 "$HOLDER_LAUNCH_PID" 2>/dev/null; then
+  # This supervisor's own launch, still running: a live child in its own job
+  # table, so the MSYS signal carries no reuse risk and costs no PowerShell.
+  if [ "${HOLDER_OWN_LAUNCH:-}" = "1" ] && [ -n "${HOLDER_LAUNCH_PID:-}" ]; then
     kill -TERM "$HOLDER_LAUNCH_PID" 2>/dev/null || true
+    return 0
+  fi
+  # Every other live holder (adopted, or one whose MSYS pid is unknown) is
+  # killed only through its recorded Windows pid and start ticks.
+  if [ -n "${HOLDER_WINPID:-}" ] && [ -n "${HOLDER_TICKS:-}" ]; then
+    kill_process_snapshot "$HOLDER_WINPID,$HOLDER_TICKS" || true
     return 0
   fi
   if [ -n "${HOLDER_LAUNCH_PID:-}" ]; then
@@ -2914,10 +2951,36 @@ SELF_TICKS=""
 SELF_TICKS_DONE=""
 ensure_self_ticks() {
   [ -n "$SELF_TICKS_DONE" ] && return 0
-  SELF_TICKS_DONE=1
   SELF_WINPID="$(resolve_windows_pid "$$")"
   if [ -n "$SELF_WINPID" ]; then
     SELF_TICKS="$(resolve_windows_start_ticks "$SELF_WINPID")"
+  fi
+  # The read is cached only once it returned a pair. A miss (a bounded
+  # PowerShell read that did not complete) leaves it uncached, so the next
+  # handle write retries rather than recording a null pair for the whole run,
+  # which would read as a running writer forever and make the child
+  # unadoptable after a detach.
+  if [ -n "$SELF_WINPID" ] && [ -n "$SELF_TICKS" ]; then
+    SELF_TICKS_DONE=1
+  fi
+  return 0
+}
+
+# --- Helper: the child's start ticks, retried until they land ---
+# The launch reads the wrapper's start ticks once, bounded; a miss would leave
+# the child unadoptable for its run, since an adopting supervisor checks that
+# pair before it counts the child live. So a launched child whose ticks are
+# still empty is retried on each poll, the handle is rewritten when the pair
+# lands, and a HANDLE: line names the gap while it stays empty.
+ensure_child_ticks() {
+  [ -n "${CHILD_TICKS:-}" ] && return 0
+  [ -n "${CHILD_WINPID:-}" ] || return 0
+  CHILD_TICKS=$(resolve_windows_start_ticks "$CHILD_WINPID")
+  if [ -n "$CHILD_TICKS" ]; then
+    write_handle "$CHILD_SESSION_ID"
+    log "HANDLE: child-$CHILD_INDEX's start ticks landed on a later read ($CHILD_WINPID,$CHILD_TICKS); the handle now records them"
+  else
+    log "HANDLE: child-$CHILD_INDEX's start ticks are still unread for Windows pid $CHILD_WINPID, so the handle cannot yet be adopted; retrying next poll"
   fi
   return 0
 }
@@ -2951,10 +3014,15 @@ resolve_windows_start_ticks() {
 write_handle() {
   local sess="$1"
   ensure_self_ticks
+  if [ -z "${SELF_WINPID:-}" ] || [ -z "${SELF_TICKS:-}" ]; then
+    log "HANDLE: writing child-$CHILD_INDEX's handle with no supervisor pid and ticks pair (pid ${SELF_WINPID:-none}, ticks ${SELF_TICKS:-none}); a reader treats that as a running writer until a later write records the pair"
+  fi
   node -e '
 const fs = require("fs");
 const [file, sessionId, holderPid, holderWinPid, holderTicks, childPid, childWinPid, childTicks, supWinPid, supTicks, launchedAt, childIndex] = process.argv.slice(1);
-const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+// An empty argument is an unread value and is recorded as null, never as the
+// 0 that Number("") yields, since 0 is a real Windows pid.
+const num = (v) => { if (v === undefined || v === "") return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
 const h = {
   sessionId: sessionId || "",
   holderPid: num(holderPid), holderWinPid: num(holderWinPid), holderTicks: num(holderTicks),
@@ -3046,24 +3114,21 @@ handle_child_identity() {
 }
 
 # --- Helper: the next child index this supervisor may allocate ---
-# Starts one past the current index and skips any child directory whose handle
-# names a supervisor that is still running, so a launch that follows a gate
-# wait never reuses, and never touches the files of, a child another supervisor
-# holds. Notes go through log_diag, since the index is what a caller captures.
+# Starts one past the current index and skips any child directory that holds a
+# handle.json at all: every accounted handle is cleared by clear_handle, so a
+# handle on disk names a child nobody has accounted for, whose writer may be
+# dead while the child still lives. A launch that follows a gate wait therefore
+# never reuses, and never touches the files of, such a child. Notes go through
+# log_diag, since the index is what a caller captures.
 # Usage: next_child_index <rundir> <current index>
 next_child_index() {
-  local rundir="$1" n h
+  local rundir="$1" n
   n=$(( $2 + 1 ))
-  while :; do
-    h="$rundir/child-$n/handle.json"
-    if [ -f "$h" ] && [ "$(handle_writer_running "$h")" = "1" ]; then
-      log_diag "HANDLE: child-$n is held by a supervisor that is still running, so this launch skips that index"
-      n=$((n + 1))
-      continue
-    fi
-    echo "$n"
-    return 0
+  while [ -f "$rundir/child-$n/handle.json" ]; do
+    log_diag "HANDLE: child-$n still holds a handle nobody has accounted for, so this launch skips that index"
+    n=$((n + 1))
   done
+  echo "$n"
 }
 
 # --- Helper: record the child's session id in its handle, once ---
@@ -3125,32 +3190,109 @@ run_child_poll() {
     POLL_SHUTDOWN_ASK_AT="${POLL_SHUTDOWN_ASK_AT%$'\r'}"
 }
 
+# --- Helper: is the handle's claim this supervisor's ---
+# The claim is a plain rewrite of the handle, so two supervisors that both read
+# the writer dead could both write it. After a claim, and again after the gate
+# poll, the supervisor pair is read back and must be this supervisor's own; a
+# pair that is not, or an own pair this supervisor could not read, is a claim
+# it cannot prove and routes to the running-writer hold.
+# Usage: claim_is_ours <handle-file>
+claim_is_ours() {
+  local key val win="" tick=""
+  [ -n "${SELF_WINPID:-}" ] && [ -n "${SELF_TICKS:-}" ] || return 1
+  while IFS=$'\t' read -r key val; do
+    case "$key" in
+      supervisorWinPid) win="$val" ;;
+      supervisorTicks) tick="$val" ;;
+    esac
+  done < <(read_handle_fields "$1")
+  [ "$win" = "$SELF_WINPID" ] && [ "$tick" = "$SELF_TICKS" ]
+}
+
+# --- Helper: hold on a handle this supervisor may not take ---
+# A handle whose writer is running, or one the gate could not settle (an
+# unverifiable child pair, a claim it could not prove, a gate poll that
+# failed), is routed here rather than to a launch: the gate waits its bound for
+# the handle to be accounted for by whoever holds it, and ends the run at
+# GATE TIMEOUT otherwise, so no second child ever launches beside one another
+# supervisor may still hold. Returns only where the handle went away.
+# Usage: gate_hold_on_handle <child directory name>
+gate_hold_on_handle() {
+  local name="$1" waited=0
+  while [ -f "$RUNDIR/$name/handle.json" ]; do
+    if [ "$waited" -ge "$SUPERVISOR_GATE_WAIT_S" ]; then
+      log "GATE TIMEOUT: $name still holds a handle this supervisor may not take after ${SUPERVISOR_GATE_WAIT_S}s, so no child is launched beside it"
+      exit 2
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  log "GATE: $name's handle was accounted for by its holder while this supervisor waited, so the gate goes on"
+  return 0
+}
+
+# --- Helper: the child's exit code, for a launched or an adopted child ---
+# An adopted child's wrapper writes the marker in the instant after the child
+# exits, which can be after the poll that saw the child gone, so the read
+# waits briefly for the marker before reading it. A launched child's marker is
+# written before `wait` returns, so no wait is needed.
+child_exit_code() {
+  local i=0
+  if [ "${CHILD_ADOPTED:-}" = "1" ]; then
+    while [ ! -f "$EXIT_MARKER" ] && [ "$i" -lt 50 ]; do
+      sleep 0.1 >/dev/null 2>&1
+      i=$((i + 1))
+    done
+  fi
+  read_exit_marker "$EXIT_MARKER"
+}
+
 # --- Helper: read a handle whose writer is dead, claim it, and route the gate ---
-# Sets the per-child globals from the handle, whose child index is the number
-# in its own directory name, with every pid, index and timestamp refused unless
-# it is all digits. The handle is rewritten with this supervisor's own Windows
-# pid and start ticks before anything else, so a second supervisor starting
-# inside the window reads a running writer and waits. The child's recorded
-# Windows pid and start ticks must then match a live process before its MSYS
-# pid counts as live: a mismatch reads as gone, and the sweep that follows
-# kills only ticks-matched pids. Only a live identity earns the walk and the
-# instrument's verdict; a gate poll that fails routes WAIT rather than an
-# adoption. Sets GATE_ROUTE (ADOPT, SWEEP_LAUNCH or WAIT) and VERDICT.
-# Usage: gate_read_handle <handle path>
+# Takes the child directory's name, which newest_handle prints, and builds the
+# handle's path in bash: the child index is the number in that name, refused
+# unless it is all digits, and every pid and timestamp read from the handle is
+# refused the same way. Every field is read in one call. The child's recorded
+# Windows pid and start ticks must match a live process before anything else:
+# a pair that cannot be checked holds the gate, and a mismatch reads as gone
+# with the sweep that follows killing only ticks-matched pids. Only a live
+# identity earns the claim, which is then read back and must be this
+# supervisor's own, before the walk and the instrument's verdict; a gate poll
+# that fails holds the gate, and the claim is read back once more after it.
+# Sets GATE_ROUTE (ADOPT, SWEEP_LAUNCH, HOLD or WAIT) and VERDICT.
+# Usage: gate_read_handle <child directory name>
 gate_read_handle() {
-  local h="$1" dir idx ident
+  local name="$1" idx h key val ident
+  local f_session="" f_holderPid="" f_holderWinPid="" f_holderTicks="" f_childPid="" f_childWinPid="" f_childTicks="" f_launchedAt=""
   GATE_ROUTE="WAIT"
   VERDICT=""
-  dir=$(dirname "$h")
-  idx="${dir##*/child-}"
+  case "$name" in
+    child-*) idx="${name#child-}" ;;
+    *) idx="" ;;
+  esac
   case "$idx" in
     ''|*[!0-9]*)
-      log "HANDLE: $h does not sit in a child-<n> directory, so it is not read"
+      log "HANDLE: '$name' is not a child-<n> directory name, so it is not read"
       return 0
       ;;
   esac
+  h="$RUNDIR/$name/handle.json"
+  while IFS=$'\t' read -r key val; do
+    case "$key" in
+      sessionId) f_session="$val"; continue ;;
+    esac
+    case "$val" in ''|*[!0-9]*) val="" ;; esac
+    case "$key" in
+      holderPid) f_holderPid="$val" ;;
+      holderWinPid) f_holderWinPid="$val" ;;
+      holderTicks) f_holderTicks="$val" ;;
+      childPid) f_childPid="$val" ;;
+      childWinPid) f_childWinPid="$val" ;;
+      childTicks) f_childTicks="$val" ;;
+      launchedAt) f_launchedAt="$val" ;;
+    esac
+  done < <(read_handle_fields "$h")
   CHILD_INDEX="$idx"
-  CHILD_DIR="$dir"
+  CHILD_DIR="$RUNDIR/$name"
   OUT="$CHILD_DIR/stdout.jsonl"
   ERR="$CHILD_DIR/stderr.log"
   DEBUG="$CHILD_DIR/claude-debug.log"
@@ -3159,43 +3301,59 @@ gate_read_handle() {
   HOLDER_PID_FILE="$CHILD_DIR/holder.pid"
   CHILD_PID_FILE="$CHILD_DIR/child.pid"
   ASK_REQUEST_FILE="$CHILD_DIR/ask.request"
-  CHILD_LAUNCH_PID=$(handle_num_field "$h" childPid)
-  CHILD_WINPID=$(handle_num_field "$h" childWinPid)
-  CHILD_TICKS=$(handle_num_field "$h" childTicks)
-  HOLDER_LAUNCH_PID=$(handle_num_field "$h" holderPid)
-  HOLDER_WINPID=$(handle_num_field "$h" holderWinPid)
-  HOLDER_TICKS=$(handle_num_field "$h" holderTicks)
+  CHILD_LAUNCH_PID="$f_childPid"
+  CHILD_WINPID="$f_childWinPid"
+  CHILD_TICKS="$f_childTicks"
+  HOLDER_LAUNCH_PID="$f_holderPid"
+  HOLDER_WINPID="$f_holderWinPid"
+  HOLDER_TICKS="$f_holderTicks"
   HOLDER_OWN_LAUNCH=""
-  CHILD_SESSION_ID=$(handle_field "$h" sessionId)
-  LAUNCHED_AT=$(handle_num_field "$h" launchedAt)
-  [ -n "$LAUNCHED_AT" ] || LAUNCHED_AT=$(node -e "console.log(Date.now())")
-  CHILD_START_TS="$LAUNCHED_AT"
+  CHILD_ADOPTED=1
+  CHILD_SESSION_ID="$f_session"
+  # A handle with no launch timestamp leaves LAUNCHED_AT unknown, and the
+  # minimum-run crash rule is skipped for that child; the start the store's
+  # facts are compared against is then this reading's own moment, so an old
+  # request in the store cannot stop the child on the spot.
+  LAUNCHED_AT="$f_launchedAt"
+  CHILD_START_TS="${LAUNCHED_AT:-$(node -e "console.log(Date.now())")}"
   LAST_STOP_SNAPSHOT=""; STOP_TREE_MOVED=""
   CHILD_TREE_MSYS_PIDS=""; CHILD_TREE_WINPIDS=""; CHILD_TREE_SEEN_WINPIDS=""
   CHILD_TREE_SEEN_PAIRS=""; CHILD_TREE_SNAPSHOT=""; CHILD_TREE_WALKED=""
   CHILD_TREE_READ_FAILED=""; CHILD_TREE_DESCENDANT_SEEN=""; CHILD_TREE_CONFIRMED_AT=""
   CHILD_TREE_FAILED_CONFIRMS=0
   STREAM_SEEN_SIZE=""; STREAM_CHANGED_AT=""; FINAL_ASK_AT=""
-  # The claim, before any reading that takes time.
-  write_handle "$CHILD_SESSION_ID"
   ident=$(handle_child_identity "$CHILD_WINPID" "$CHILD_TICKS")
   case "$ident" in
     unverified)
-      log "HANDLE: child-$CHILD_INDEX's recorded Windows pid ${CHILD_WINPID:-none} and start ticks ${CHILD_TICKS:-none} could not be checked against a live process, so the gate waits"
+      log "HANDLE: child-$CHILD_INDEX's recorded Windows pid ${CHILD_WINPID:-none} and start ticks ${CHILD_TICKS:-none} could not be checked against a live process, so the gate holds rather than launching beside it"
+      GATE_ROUTE="HOLD"
       return 0
       ;;
     gone)
-      log "HANDLE: child-$CHILD_INDEX's recorded Windows pid $CHILD_WINPID no longer holds the process it named, so the child reads gone"
+      log "HANDLE: child-$CHILD_INDEX's recorded Windows pid $CHILD_WINPID no longer holds the process it named, so the child reads gone; its tree is not walked from that pid, so a native process that outlived the wrapper under it is unswept beyond the recorded pair $CHILD_WINPID,$CHILD_TICKS"
       VERDICT="gone"
       CHILD_LAUNCH_PID=""
       GATE_ROUTE=$(handle_gate_route 1 0 "$VERDICT")
       return 0
       ;;
   esac
+  # The claim, once the child is known live, read back at once.
+  write_handle "$CHILD_SESSION_ID"
+  if ! claim_is_ours "$h"; then
+    log "HANDLE: child-$CHILD_INDEX's handle does not carry this supervisor's own pid and ticks after the claim, so another supervisor claimed it or this one's pair is unknown; the gate holds"
+    GATE_ROUTE="HOLD"
+    return 0
+  fi
   refresh_child_tree
   run_child_poll
   if [ -z "$DECIDE_ACTION" ] || [ "$DECIDE_ERR" -ne 0 ]; then
-    log "HANDLE: the gate's poll of child-$CHILD_INDEX failed (rc $DECIDE_ERR), so the gate waits rather than adopting on no reading"
+    log "HANDLE: the gate's poll of child-$CHILD_INDEX failed (rc $DECIDE_ERR), so the gate holds rather than adopting on no reading"
+    GATE_ROUTE="HOLD"
+    return 0
+  fi
+  if ! claim_is_ours "$h"; then
+    log "HANDLE: child-$CHILD_INDEX's handle was rewritten by another supervisor during the gate's poll, so the gate holds"
+    GATE_ROUTE="HOLD"
     return 0
   fi
   VERDICT="${POLL_LIVENESS%% *}"
@@ -3255,21 +3413,32 @@ while true; do
   ADOPTED=0
   GATE_ROUTE="WAIT"
   VERDICT=""
-  HANDLE_NOTES="$RUNDIR/.handle-notes"
-  HANDLE_FOUND=$(newest_handle "$RUNDIR" 2>"$HANDLE_NOTES")
+  CHILD_ADOPTED=""
+  # This supervisor's own pair is read before any handle is, so a claim it
+  # writes can carry and be checked against it without a PowerShell read inside
+  # the claim window. The notes file is per process, since supervisors share the
+  # run directory.
+  ensure_self_ticks
+  HANDLE_NOTES="$RUNDIR/.handle-notes.$$"
+  HANDLE_NAME=$(newest_handle "$RUNDIR" 2>"$HANDLE_NOTES")
   while IFS= read -r handle_note; do
     case "$handle_note" in
       OLDER\ *) log "HANDLE: passing over an older handle in ${handle_note#OLDER }, which still names a child nobody has accounted for" ;;
     esac
   done < "$HANDLE_NOTES"
   rm -f "$HANDLE_NOTES"
+  HANDLE_FOUND=""
+  case "$HANDLE_NAME" in
+    child-[0-9]*) HANDLE_FOUND="$RUNDIR/$HANDLE_NAME/handle.json" ;;
+  esac
   if [ -n "$HANDLE_FOUND" ]; then
     if [ "$(handle_writer_running "$HANDLE_FOUND")" = "1" ]; then
-      log "HANDLE: $HANDLE_FOUND names a supervisor that is still running (or one that cannot be ruled out), so the gate waits"
+      log "HANDLE: $HANDLE_NAME names a supervisor that is still running (or one that cannot be ruled out), so the gate holds"
+      GATE_ROUTE="HOLD"
     else
       # The mailbox is not truncated here: adoption is not a launch, and an
       # open shutdown ask in it is this child's.
-      gate_read_handle "$HANDLE_FOUND"
+      gate_read_handle "$HANDLE_NAME"
     fi
   fi
 
@@ -3294,6 +3463,13 @@ while true; do
       fi
       sweep_child_tree "gate_gone" || true
       clear_handle
+      CHILD_ADOPTED=""
+      ;;
+    HOLD)
+      # Returns only once the handle is gone; otherwise the run ends in GATE
+      # TIMEOUT here, with no claim written and no launch.
+      gate_hold_on_handle "$HANDLE_NAME"
+      CHILD_ADOPTED=""
       ;;
     WAIT) : ;;
   esac
@@ -3317,8 +3493,8 @@ while true; do
       log "GATE FAIL: no global commons store found"
       exit 2
     fi
-    if ! wait_persona_free_both "$WORKDIR" "$PERSONA" 120 "$STALE_AFTER_MS" "$GLOBAL_STORE" 2>&1 | tee -a "$LOG"; then
-      log "GATE TIMEOUT: persona not free after 120s"
+    if ! wait_persona_free_both "$WORKDIR" "$PERSONA" "$SUPERVISOR_GATE_WAIT_S" "$STALE_AFTER_MS" "$GLOBAL_STORE" 2>&1 | tee -a "$LOG"; then
+      log "GATE TIMEOUT: persona not free after ${SUPERVISOR_GATE_WAIT_S}s"
       exit 2
     fi
     log "GATE PASSED: no live persona claims (commons and heartbeat both free)"
@@ -3394,7 +3570,7 @@ while true; do
     fi
 
     HOLDER_LAUNCH_PID=""; HOLDER_WINPID=""; HOLDER_TICKS=""; HOLDER_OWN_LAUNCH=""
-    CHILD_WINPID=""; CHILD_TICKS=""
+    CHILD_WINPID=""; CHILD_TICKS=""; CHILD_ADOPTED=""
     # The child stage is child_wrapper, so a TERM to `$!` reaches `claude` and
     # the marker records the child's real exit code.
     PERSONA="$PERSONA" NO_CHANNEL="$NO_CHANNEL" \
@@ -3532,8 +3708,12 @@ while true; do
     fi
 
     # The child's session id, off the init line of its stream, recorded in the
-    # handle on the poll that first reads it.
+    # handle on the poll that first reads it; and, for a launched child whose
+    # start ticks the launch could not read, the ticks retried until they land.
     note_child_session_id
+    if [ "${HOLDER_OWN_LAUNCH:-}" = "1" ]; then
+      ensure_child_ticks
+    fi
 
     # How much longer this child is parked on a rate limit, read off the newest
     # record in its stream. A reading with no park prints "-" in the first
@@ -3594,7 +3774,7 @@ while true; do
         STOP_ESCALATION_RESULT=$?
         wait "$CHILD_LAUNCH_PID" 2>/dev/null
         CHILD_LAUNCH_PID=""
-        EXIT_CODE=$(read_exit_marker "$EXIT_MARKER")
+        EXIT_CODE=$(child_exit_code)
         clear_handle
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         # Exiting 0 here when a process from the child is alive, or when no
@@ -3618,7 +3798,7 @@ while true; do
         STOP_ESCALATION_RESULT=$?
         wait "$CHILD_LAUNCH_PID" 2>/dev/null
         CHILD_LAUNCH_PID=""
-        EXIT_CODE=$(read_exit_marker "$EXIT_MARKER")
+        EXIT_CODE=$(child_exit_code)
         clear_handle
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         # Exit 6 is what the keeper reads as a park, and it launches the
@@ -3638,7 +3818,7 @@ while true; do
         STOP_ESCALATION_RESULT=$?
         wait "$CHILD_LAUNCH_PID" 2>/dev/null
         CHILD_LAUNCH_PID=""
-        EXIT_CODE=$(read_exit_marker "$EXIT_MARKER")
+        EXIT_CODE=$(child_exit_code)
         clear_handle
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         # A tree that is alive or unverifiable outranks the crash loop this
@@ -3657,7 +3837,7 @@ while true; do
         STOP_ESCALATION_RESULT=$?
         wait "$CHILD_LAUNCH_PID" 2>/dev/null
         CHILD_LAUNCH_PID=""
-        EXIT_CODE=$(read_exit_marker "$EXIT_MARKER")
+        EXIT_CODE=$(child_exit_code)
         clear_handle
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         # A tree that is alive or unverifiable outranks the restart budget
@@ -3681,7 +3861,7 @@ while true; do
         STOP_ESCALATION_RESULT=$?
         wait "$CHILD_LAUNCH_PID" 2>/dev/null
         CHILD_LAUNCH_PID=""
-        EXIT_CODE=$(read_exit_marker "$EXIT_MARKER")
+        EXIT_CODE=$(child_exit_code)
         clear_handle
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         # Launching the next child beside a process this one left running puts
@@ -3709,7 +3889,7 @@ while true; do
         STOP_ESCALATION_RESULT=$?
         wait "$CHILD_LAUNCH_PID" 2>/dev/null
         CHILD_LAUNCH_PID=""
-        EXIT_CODE=$(read_exit_marker "$EXIT_MARKER")
+        EXIT_CODE=$(child_exit_code)
         clear_handle
         log "EXIT child-$CHILD_INDEX code=$EXIT_CODE ($STOP_PATH)"
         # A tree from this child that is alive or unverifiable is one terminal
@@ -3722,8 +3902,9 @@ while true; do
         fi
 
         # Update crash counter.
-        CHILD_RUN_MS=$(( ( $(node -e "console.log(Date.now())") - LAUNCHED_AT ) ))
-        if [ $EXIT_CODE -ne 0 ] && [ $CHILD_RUN_MS -lt $SUPERVISOR_MIN_RUN_MS ]; then
+        CHILD_RUN_MS=""
+        if [ -n "${LAUNCHED_AT:-}" ]; then CHILD_RUN_MS=$(( ( $(node -e "console.log(Date.now())") - LAUNCHED_AT ) )); fi
+        if [ $EXIT_CODE -ne 0 ] && [ -n "$CHILD_RUN_MS" ] && [ $CHILD_RUN_MS -lt $SUPERVISOR_MIN_RUN_MS ]; then
           CRASH_COUNT=$((CRASH_COUNT + 1))
         else
           CRASH_COUNT=0
@@ -3787,7 +3968,7 @@ while true; do
   kill_holder
   wait "$CHILD_LAUNCH_PID" 2>/dev/null
   CHILD_LAUNCH_PID=""
-  EXIT_CODE=$(read_exit_marker "$EXIT_MARKER")
+  EXIT_CODE=$(child_exit_code)
   clear_handle
 
   log "EXIT child-$CHILD_INDEX code=$EXIT_CODE (natural)"
@@ -3932,8 +4113,9 @@ while true; do
   fi
 
   # Update crash counter.
-  CHILD_RUN_MS=$(( ( $(node -e "console.log(Date.now())") - LAUNCHED_AT ) ))
-  if [ $EXIT_CODE -ne 0 ] && [ $CHILD_RUN_MS -lt $SUPERVISOR_MIN_RUN_MS ]; then
+  CHILD_RUN_MS=""
+  if [ -n "${LAUNCHED_AT:-}" ]; then CHILD_RUN_MS=$(( ( $(node -e "console.log(Date.now())") - LAUNCHED_AT ) )); fi
+  if [ $EXIT_CODE -ne 0 ] && [ -n "$CHILD_RUN_MS" ] && [ $CHILD_RUN_MS -lt $SUPERVISOR_MIN_RUN_MS ]; then
     CRASH_COUNT=$((CRASH_COUNT + 1))
   else
     CRASH_COUNT=0

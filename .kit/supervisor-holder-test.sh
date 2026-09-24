@@ -108,9 +108,17 @@ printf 'not json at all\n' > "$D/ask.request"
 wait_for 30 test ! -e "$D/ask.request"
 printf '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[COORDINATOR id=1] not an ask"}]}}\n' > "$D/ask.request"
 wait_for 30 test ! -e "$D/ask.request"
+# The shape the model fixes is exactly one text block: a second block, a block
+# of another type, and bytes after the first line are each refused.
+printf '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[SUPERVISOR-ASK id=two] a"},{"type":"text","text":"second block"}]}}\n' > "$D/ask.request"
+wait_for 30 test ! -e "$D/ask.request"
+printf '{"type":"user","message":{"role":"user","content":[{"type":"image","text":"[SUPERVISOR-ASK id=img] not text"}]}}\n' > "$D/ask.request"
+wait_for 30 test ! -e "$D/ask.request"
+printf '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[SUPERVISOR-ASK id=trailing] first"}]}}\nextra line\n' > "$D/ask.request"
+wait_for 30 test ! -e "$D/ask.request"
 [ ! -e "$D/ask.request" ]; check "the holder removes an ask-request file it will not relay" "$?"
-! grep -q 'id=partial\|not json at all\|not an ask' "$D/stdout"; check "a partial, non-JSON or foreign ask-request line is not relayed to the pipe" "$?"
-[ "$(grep -c 'removed it unrelayed' "$D/err")" -eq 3 ]; check "each refused ask-request file is named in the holder's log (refusals=$(grep -c 'removed it unrelayed' "$D/err"))" "$?"
+! grep -q 'id=partial\|not json at all\|not an ask\|id=two\|id=img\|id=trailing\|second block\|extra line' "$D/stdout"; check "a partial, non-JSON, foreign, two-block, non-text or trailing-line ask-request file is not relayed to the pipe" "$?"
+[ "$(grep -c 'removed it unrelayed' "$D/err")" -eq 6 ]; CHECK_RC=$?; check "each refused ask-request file is named in the holder's log (refusals=$(grep -c 'removed it unrelayed' "$D/err"))" "$CHECK_RC"
 [ "$(grep -c 'SUPERVISOR-ASK id=9' "$D/stdout")" -eq 1 ]; check "the valid ask was relayed exactly once" "$?"
 
 # The child's pid disappears; the holder exits within a few seconds.
@@ -162,6 +170,11 @@ if [ -n "$C3_HOLDER" ]; then
   check "killing the holder closes the pipe at once: the reader sees end of input without waiting out the sleep" "$([ -e "$D/reader.done" ] && echo 0 || echo 1)"
 fi
 kill "$C3_CHILD" 2>/dev/null
+
+# The usage header names the five arguments the holder takes and no sixth:
+# the priming wait is read from the child's stdout, never passed in.
+grep -q '^# Usage: supervise-holder.sh <holder-pid-file> <child-stdout> <child-pid-file>$' "$HOLDER" && grep -q '^#                            <ask-request-file> <goal-prompt-file|"">$' "$HOLDER" && ! grep -q 'priming-wait-s' "$HOLDER"
+check "the holder's usage header names its five arguments and no removed sixth" "$?"
 
 echo
 if [ "$failed" = "0" ]; then

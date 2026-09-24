@@ -925,11 +925,14 @@ if (!entry) {
 }
 
 # --- newest_handle ---
-# The pre-launch gate's handle branch. Prints the path of the newest
-# <rundir>/child-*/handle.json, newest by the launchedAt timestamp inside it
-# rather than by file mtime, since child directories are reused across
-# supervisor runs. Prints nothing where no readable handle exists. Never
-# throws: an unreadable or malformed handle is skipped.
+# The pre-launch gate's handle branch. Prints the name of the child directory
+# (child-<n>) holding the newest <rundir>/child-*/handle.json, newest by the
+# launchedAt timestamp inside it rather than by file mtime, since child
+# directories are reused across supervisor runs. The name and not the path,
+# because node on this box prints a joined path with backslashes, which no
+# POSIX parameter expansion parses; the caller builds the path in bash. Prints
+# nothing where no readable handle exists. Never throws: an unreadable or
+# malformed handle is skipped.
 # Usage: newest_handle <rundir>
 newest_handle() {
   local rundir="$1"
@@ -950,15 +953,36 @@ for (const name of entries) {
   try { h = JSON.parse(fs.readFileSync(p, "utf8")); } catch (e) { continue; }
   const at = Number(h.launchedAt);
   if (!Number.isFinite(at)) continue;
-  seen.push({ name, p, at });
-  if (at > bestAt) { bestAt = at; best = p; }
+  seen.push({ name, at });
+  if (at > bestAt) { bestAt = at; best = name; }
 }
 // Every older handle passed over is named on stderr, one per line, so the
 // caller can log which child directories still hold a handle nobody has
 // accounted for.
-for (const s of seen) { if (s.p !== best) console.error("OLDER " + s.name); }
+for (const s of seen) { if (s.name !== best) console.error("OLDER " + s.name); }
 if (best) console.log(best);
 ' "$rundir"
+}
+
+# --- read_handle_fields ---
+# Every field of a handle.json in one read, printed as `key<TAB>value` lines,
+# so a gate that reads a handle reads one moment of it rather than one file
+# read per field with room for a rewrite between them. A field that is absent
+# or null prints an empty value. Never throws: an unreadable handle prints
+# nothing.
+# Usage: read_handle_fields <handle-file>
+read_handle_fields() {
+  [ -f "$1" ] || return 0
+  node -e '
+const fs = require("fs");
+let h;
+try { h = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch (e) { process.exit(0); }
+const keys = ["sessionId", "holderPid", "holderWinPid", "holderTicks", "childPid", "childWinPid", "childTicks", "supervisorWinPid", "supervisorTicks", "launchedAt"];
+for (const k of keys) {
+  const v = h[k];
+  process.stdout.write(k + "\t" + (v === undefined || v === null ? "" : String(v)).replace(/[\r\n\t]/g, " ") + "\n");
+}
+' "$1" 2>/dev/null
 }
 
 # --- handle_num_field ---
