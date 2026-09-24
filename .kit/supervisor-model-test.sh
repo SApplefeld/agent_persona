@@ -1371,7 +1371,8 @@ fi
 # function that asked. A world of files stands in for the box: the MSYS table,
 # the MSYS pids that answer `kill -0`, the live Windows pids with their start
 # ticks, and each Windows pid's walked descendants. Every Stop-Process pair is
-# recorded, and a pair whose pid is live under the same ticks dies.
+# recorded, and a pair whose pid is live under the same ticks dies alone, since
+# Stop-Process ends the one process it names and Windows kills no tree with it.
 : > "$TMP/astop.fn"
 for fn in $(SUPERVISOR_CLOSURE_STUBS="log log_diag run_bounded_powershell_capture run_bounded_native" supervisor_fn_closure "$SCRIPT" stop_child retry_stop_escalation refresh_child_tree child_present); do
   supervisor_extract_fn "$SCRIPT" "$fn" "$TMP/astop.fn" || true
@@ -1390,7 +1391,7 @@ if [ "$AS_HAVE" = 1 ]; then
 log() { echo "LOG $*"; }
 log_diag() { :; }
 sleep() { :; }
-W="$1"; CALLS="$W/calls"; : > "$CALLS"; rm -f "$W"/walkfail.*
+W="$1"; CALLS="$W/calls"; : > "$CALLS"; rm -f "$W"/walkfail.* "$W/refused"
 T_CHILD=639012345678901237; T_CLAUDE=639012345678901300; T_HOLDER=639012345678901180
 T_F=639012345678902001; T_F2=639012345678902002; T_OTHER=639012345678903001; T_X=639012345678903002
 ( exit 0 ) & P=$!; wait "$P"
@@ -1421,8 +1422,8 @@ kill() {
 run_bounded_native() { echo "NATIVE $*" >> "$CALLS"; return 0; }
 ticks_of() { awk -v p="$1" '$1 == p { print $2; exit }' "$W/alive"; }
 drop_alive() { grep -v "^$1 " "$W/alive" > "$W/alive.n"; mv "$W/alive.n" "$W/alive"; }
-# The child ends: the wrapper and claude are gone from both tables. Where the
-# input closed, the wrapper wrote its marker. REUSE_MSYS hands the wrapper's
+# The child ends on its own: the wrapper and claude are gone from both tables.
+# Where the input closed, the wrapper wrote its marker. REUSE_MSYS hands the wrapper's
 # MSYS pid to a foreign process running as Windows pid 48000, with a Windows
 # child of its own; REUSE_WIN hands the wrapper's Windows pid to a foreign
 # process with a Windows child of its own.
@@ -1439,6 +1440,16 @@ child_ends() {
     printf '%s\n' "35124 $T_OTHER" "35300 $T_X" >> "$W/alive"; echo "35124 35300 $T_X" >> "$W/desc"
   fi
 }
+# A killed process leaves the MSYS table too: the row running as that Windows
+# pid goes, and its MSYS pid stops answering `kill -0`. Windows ends the one
+# process Stop-Process names and nothing under it, so every other row stays.
+msys_ends() {
+  local m
+  m=$(awk -v w="$1" '$4 == w { print $1 }' "$W/table")
+  awk -v w="$1" '$4 != w' "$W/table" > "$W/table.n"; mv "$W/table.n" "$W/table"
+  if [ -n "$m" ]; then grep -vx "$m" "$W/msys" > "$W/msys.n"; mv "$W/msys.n" "$W/msys"; fi
+}
+alive_ids() { awk '{ print $1 }' "$W/alive" | sort -n | tr '\n' ' '; }
 pairs_in() { printf '%s' "$1" | grep -o '@{Id=[0-9]*;Ticks=[0-9]*}' | sed 's/@{Id=\([0-9]*\);Ticks=\([0-9]*\)}/\1,\2/'; }
 run_bounded_powershell_capture() {
   local script="$2" id t pair
@@ -1449,9 +1460,15 @@ run_bounded_powershell_capture() {
         [ -n "${STUBBORN:-}" ] && continue
         id="${pair%%,*}"; t=$(ticks_of "$id")
         [ -n "$t" ] && [ "$t" = "${pair#*,}" ] || continue
+        # REFUSE names a pid whose first REFUSE_N kills (every kill, with no
+        # REFUSE_N) leave it running.
+        if [ "$id" = "${REFUSE:-}" ]; then
+          echo "$id" >> "$W/refused"
+          [ "$(grep -c . "$W/refused")" -le "${REFUSE_N:-999999}" ] && continue
+        fi
         drop_alive "$id"
         if [ "$id" = 35088 ] && [ -n "${EOF_ENDS:-}" ]; then child_ends eof; fi
-        if [ "$id" = 35124 ] && [ -n "${KILL_ENDS:-}" ]; then child_ends; fi
+        if [ -n "${KILL_ENDS:-}" ]; then msys_ends "$id"; fi
       done
       ;;
     *Get-CimInstance*)
@@ -1496,7 +1513,9 @@ echo "POLL WALK=$CHILD_TREE_POLL_WALK TREE=[$(printf '%s' "$CHILD_TREE_SNAPSHOT"
 [ -n "${WALKFAIL:-}" ] && : > "$W/walkfail.35124"
 stop_child stop_complete; rc=$?
 echo "STOP RC=$rc PATH=$STOP_PATH"
+echo "ALIVE STOP=[$(alive_ids)]"
 if [ -n "${RETRY:-}" ]; then retry_stop_escalation stop_complete "$rc"; echo "RETRY RC=$?"; fi
+echo "ALIVE END=[$(alive_ids)]"
 echo "MSYS P=$P C=$C"
 DRIVER
   as() { env "$@" timeout 60 bash "$TMP/astop.sh" "$AS_DIR" 2>&1; }
@@ -1533,9 +1552,25 @@ DRIVER
   OUT=$(as WALKFAIL=1 STUBBORN=1)
   printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && [ "$(grep -c '^KILL 35124,639012345678901237$' "$AS_DIR/calls")" -eq 2 ] && [ -z "$(as_foreign_kills)" ] && printf '%s\n' "$OUT" | grep -q 'tree not verified' && printf '%s\n' "$OUT" | grep -q 'TERM grace expired for adopted child-1' && ! grep -q '^SIGNAL \|^NATIVE ' "$AS_DIR/calls"; CHECK_RC=$?; check "adopted stop, failed entry walk: the TERM and KILL rungs both kill the recorded pair ticks-matched, no MSYS signal or taskkill is sent, and the stop logs the tree unverified (calls: $(tr '\n' '|' < "$AS_DIR/calls"); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
   # The TERM rung's kill ends the child: the stop still reports unverified
-  # rather than a confirmed stop, since no walk ever completed.
+  # rather than a confirmed stop, since no walk ever completed. Each kill ends
+  # only the pid it names, so the child ends at that rung only where the rung
+  # names claude as well as the wrapper, and no KILL rung follows.
   OUT=$(as WALKFAIL=1 KILL_ENDS=1)
-  printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && [ "$(grep -c '^KILL 35124,639012345678901237$' "$AS_DIR/calls")" -ge 1 ] && ! grep -q '^SIGNAL \|^NATIVE ' "$AS_DIR/calls"; CHECK_RC=$?; check "adopted stop, failed entry walk: a child the TERM rung's ticks-matched kill ends is reported unverified, not stopped (calls: $(tr '\n' '|' < "$AS_DIR/calls"); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && [ "$(grep -c '^KILL 35124,639012345678901237$' "$AS_DIR/calls")" -ge 1 ] && printf '%s\n' "$OUT" | grep -qx 'ALIVE STOP=\[35088 \]' && ! printf '%s\n' "$OUT" | grep -q 'TERM grace expired for adopted child-1' && ! grep -q '^SIGNAL \|^NATIVE ' "$AS_DIR/calls"; CHECK_RC=$?; check "adopted stop, failed entry walk: a child the TERM rung's ticks-matched kill ends is reported unverified, not stopped (calls: $(tr '\n' '|' < "$AS_DIR/calls"); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # The failed entry walk leaves the tree record whole, so both rungs kill the
+  # claude pair it names beside the recorded wrapper pair. Claude refuses every
+  # kill here, so both rungs run and each names it.
+  OUT=$(as WALKFAIL=1 KILL_ENDS=1 REFUSE=35200)
+  printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && [ "$(grep -c '^KILL 35200,639012345678901300$' "$AS_DIR/calls")" -eq 2 ] && [ "$(grep -c '^KILL 35124,639012345678901237$' "$AS_DIR/calls")" -eq 2 ] && [ -z "$(as_foreign_kills)" ] && printf '%s\n' "$OUT" | grep -q 'TERM grace expired for adopted child-1' && ! grep -q '^SIGNAL \|^NATIVE ' "$AS_DIR/calls"; CHECK_RC=$?; check "adopted stop, failed entry walk: both rungs kill the claude pair from the whole tree record as well as the wrapper pair, ticks-matched, and the stop reports unverified (calls: $(tr '\n' '|' < "$AS_DIR/calls"); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # Claude outlives both rungs and the walk from the dead wrapper still does not
+  # complete, so the retry cannot verify its re-snapshot. It kills the record
+  # and the recorded pair before it fails closed, and claude is dead when it
+  # returns.
+  OUT=$(as WALKFAIL=1 KILL_ENDS=1 REFUSE=35200 REFUSE_N=2 RETRY=1)
+  printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && printf '%s\n' "$OUT" | grep -qx 'RETRY RC=1' && printf '%s\n' "$OUT" | grep -qx 'ALIVE END=\[35088 \]' && [ "$(grep -c '^KILL 35200,639012345678901300$' "$AS_DIR/calls")" -eq 3 ] && [ -z "$(as_foreign_kills)" ] && ! grep -q '^SIGNAL \|^NATIVE ' "$AS_DIR/calls"; CHECK_RC=$?; check "adopted retry, dead recorded wrapper: the unverified re-snapshot kills the claude pair the rungs left alive, ticks-matched, before it fails closed (calls: $(tr '\n' '|' < "$AS_DIR/calls"); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # The instrument speaks: claude was alive when the stop returned, and the
+  # wrapper was not, so the retry above met the survivor it is pinned to end.
+  printf '%s\n' "$OUT" | grep -qx 'ALIVE STOP=\[35088 35200 \]'; CHECK_RC=$?; check "control: claude survived both rungs and the wrapper did not, before the retry ran (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
   # Control: the same stubborn child under a walk that completes reaches both
   # rungs and fails as kill_failed, with no unverified line.
   OUT=$(as STUBBORN=1)

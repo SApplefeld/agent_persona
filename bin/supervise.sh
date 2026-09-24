@@ -2095,7 +2095,25 @@ retry_stop_escalation() {
     # unverified build fails fast, since sleeping out the budget cannot make it
     # verifiable, and a verified empty build means nothing of the child is left
     # to retry against.
+    #
+    # An adopted child's unverified build is the one exception to failing with
+    # nothing killed. Its walk runs from the recorded wrapper, which the stop's
+    # own rungs may have killed, and a kill ends only the process it names, so
+    # the `claude.exe` under that wrapper can still be running with no walk
+    # able to reach it. So before failing, the retry kills the list `stop_child`
+    # kills in the same case, ticks-matched: the tree record where it reads
+    # whole, and the recorded pair. That kill is never read as a verdict, and
+    # the retry still fails, since no build it could verify agrees.
     if [ "$resnap_rc" -ne 0 ]; then
+      if [ "${CHILD_ADOPTED:-}" = "1" ] && [ -n "${CHILD_WINPID:-}" ] && [ -n "${CHILD_TICKS:-}" ]; then
+        local adopted_list=""
+        if [ "$(child_tree_record_state)" = "whole" ]; then
+          adopted_list="$CHILD_TREE_SNAPSHOT"
+        fi
+        adopted_list=$(printf '%s\n%s,%s\n' "$adopted_list" "$CHILD_WINPID" "$CHILD_TICKS" | grep -v '^$' | sort -u)
+        log "STOP[$label]: re-snapshot of adopted child-$CHILD_INDEX could not be verified - killing its tree record and recorded pair, ticks-matched, before failing"
+        kill_process_snapshot "$adopted_list" || true
+      fi
       log "STOP[$label]: re-snapshot could not verify the child's tree (rc=$resnap_rc; no child pid, a record that is not whole, a walk that did not complete, or a self pid it could not clear) - failing fast rather than sleeping out the budget"
       return 1
     fi
@@ -2251,8 +2269,11 @@ stop_child() {
   # handle recorded, checked against a live process before the adoption and on
   # every walk since, so that recorded pair joins the snapshot outright, even
   # where the walk did not complete, and no MSYS pid of the child is resolved.
-  # A snapshot the build could not verify is still not left for the retry, so
-  # the retry takes its own re-snapshot rather than confirming the pair alone.
+  # Where the walk did not complete, the tree record joins it too while the
+  # record reads whole: a kill ends only the process it names, so a list of the
+  # wrapper pair alone leaves the `claude.exe` under it running. A snapshot the
+  # build could not verify is still not left for the retry, so the retry takes
+  # its own re-snapshot rather than confirming this list.
   local snapshot_winpid=""
   if [ "${CHILD_ADOPTED:-}" = "1" ]; then
     snapshot_winpid="${CHILD_WINPID:-}"
@@ -2267,6 +2288,9 @@ stop_child() {
   snap_rc=$?
   snapshot="$STOP_SNAPSHOT_BUILT"
   if [ "${CHILD_ADOPTED:-}" = "1" ] && [ -n "${CHILD_WINPID:-}" ] && [ -n "${CHILD_TICKS:-}" ]; then
+    if [ "$snap_rc" -ne 0 ] && [ "$(child_tree_record_state)" = "whole" ]; then
+      snapshot="$CHILD_TREE_SNAPSHOT"
+    fi
     snapshot=$(printf '%s\n%s,%s\n' "$snapshot" "$CHILD_WINPID" "$CHILD_TICKS" | grep -v '^$' | sort -u)
   fi
   # A failed resolve or a non-zero `snap_rc` (the PowerShell walk timed
@@ -2307,7 +2331,8 @@ stop_child() {
   # entry list. That list is killed, ticks-matched, so nothing it names
   # outlives the stop, while the verdict stays unverified because nothing
   # the child started during the wait is on it. An adopted child's unverified
-  # list also holds its recorded pair, which is killed here the same way.
+  # list also holds its recorded pair and, where the record reads whole, the
+  # tree record, which are killed here the same way.
   # Every other unverified case holds an empty list and this does nothing.
   kill_stale_entry_list() {
     if [ -n "$snapshot" ]; then
@@ -2458,10 +2483,11 @@ stop_child() {
   # holds, which carries the recorded child pair and the walked tree: the
   # first rung kills and waits the grace, and the second kills again and
   # reads the result as the stop's verdict. An unverified snapshot still holds
-  # the recorded pair, and the entry list where the patient wait's rebuild
-  # failed, so both rungs kill what it names while the stop reports the tree
-  # unverified and fails closed for the retry, as the launched path does. Only
-  # a snapshot with nothing in it leaves no rung.
+  # the recorded pair, the tree record where it reads whole, and the entry list
+  # where the patient wait's rebuild failed, so both rungs kill what it names
+  # while the stop reports the tree unverified and fails closed for the retry,
+  # as the launched path does. Only a snapshot with nothing in it leaves no
+  # rung.
   if [ "${CHILD_ADOPTED:-}" = "1" ]; then
     log "STOP[$label]: EOF grace expired for adopted child-$CHILD_INDEX; its launch pid $pid is not signalled, the recorded pair and walked tree under Windows pid ${snapshot_winpid:-none} are killed ticks-matched instead"
     if [ -z "$snapshot" ]; then
