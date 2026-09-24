@@ -352,6 +352,22 @@ echo "code=$(cat "$1/code") sleeps=$SLEEPS"' > "$TMP/cec.sh"
   [ "$OUT" = "code=1 sleeps=50" ]; check "child_exit_code: an adopted child's marker that never lands is read as absent after a bounded wait (got $OUT)" "$?"
 fi
 
+# read_holder_pid, extracted and driven on real files. Its value reaches
+# kill -0 and kill -TERM, where a negative number names a process group, so
+# anything but digits must read as no pid.
+HPID_SNIPPET=$(sed -n '/^read_holder_pid() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+[ -n "$HPID_SNIPPET" ]; check "read_holder_pid is found in bin/supervise.sh" "$?"
+grep -q 'HOLDER_LAUNCH_PID=$(read_holder_pid "$HOLDER_PID_FILE")' "$SCRIPT"; check "the launch reads holder.pid through read_holder_pid" "$?"
+if [ -n "$HPID_SNIPPET" ]; then
+  HPID_DIR=$(mktemp -d "$TMP/hpid.XXXXXX")
+  printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$HPID_SNIPPET" '
+for f in "$1"/*; do printf "%s=[%s]\n" "${f##*/}" "$(read_holder_pid "$f")"; done' > "$TMP/hpid.sh"
+  printf -- '-1\n' > "$HPID_DIR/neg"; printf '12x\n' > "$HPID_DIR/mixed"; : > "$HPID_DIR/empty"; printf '4242\n' > "$HPID_DIR/good"
+  OUT=$(bash "$TMP/hpid.sh" "$HPID_DIR")
+  printf '%s\n' "$OUT" | grep -qx 'neg=\[\]' && printf '%s\n' "$OUT" | grep -qx 'mixed=\[\]' && printf '%s\n' "$OUT" | grep -qx 'empty=\[\]'; CHECK_RC=$?; check "read_holder_pid: a holder.pid holding -1, 12x or nothing reads as no pid, so no process group is signalled (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  printf '%s\n' "$OUT" | grep -qx 'good=\[4242\]'; CHECK_RC=$?; check "control: read_holder_pid reads a holder.pid holding 4242 as 4242 (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+fi
+
 # sweep_gone_child, the sweep_relaunch branch's body. Every function it calls
 # is stubbed and records its call, and the wrapper is a real process the
 # driver starts, so the `wait` it reaches is a real wait on a real child. A

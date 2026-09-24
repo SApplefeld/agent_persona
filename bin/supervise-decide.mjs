@@ -168,7 +168,8 @@ export function decide(input) {
   if (verdict === 'frozen') {
     // One final ask per silence, never on a cadence. The poll loop logs it
     // and opens a window of finalAskMs, the harness's tool-call cap plus a
-    // margin; it writes nothing to the child, so the window is a timed wait.
+    // margin; the loop writes the ask to ask.request for the holder to relay
+    // to the child, and the window times the child's answer.
     // A signal that moves inside it reads alive, which clears the ask's time
     // before the next poll hands it in, and a window that closes with every
     // signal silent restarts.

@@ -985,18 +985,6 @@ for (const k of keys) {
 ' "$1" 2>/dev/null
 }
 
-# --- handle_num_field ---
-# handle_field narrowed to a non-negative integer: prints the value only where
-# it is all digits, and nothing otherwise, so a pid, an index or a timestamp
-# read from a handle is refused before it reaches kill, the walk or a path.
-# Usage: handle_num_field <handle-file> <field>
-handle_num_field() {
-  local v
-  v=$(handle_field "$1" "$2")
-  case "$v" in ''|*[!0-9]*) return 0 ;; esac
-  printf '%s\n' "$v"
-}
-
 # --- handle_field ---
 # One top-level field of a handle.json, read through a JSON parser rather than a
 # grep so a value carrying JSON is data. Prints the value, or nothing where the

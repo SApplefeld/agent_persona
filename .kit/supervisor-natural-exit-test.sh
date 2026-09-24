@@ -498,7 +498,7 @@ printf '%s\n' "$SW" | grep -qE 'SWEEP\[unit\] clean:.*confirmed [0-9]+s ago'
 check "unit: the clean line names how long ago a poll confirmed the record it was read off" "$?"
 # A record naming only the process the launch pid itself runs as has never
 # held anything that ran under the wrapper. The first refresh takes one in the
-# instant after the coproc starts, before the agent process exists, so a child
+# instant after the holder pipeline starts, before the agent process exists, so a child
 # that dies inside its first poll interval is swept against exactly that. The
 # walk completed and named nothing, so there is nothing to sweep, which is the
 # no-tree answer rather than a tree no reading could account for.
@@ -631,7 +631,7 @@ mark ps-column-and-closure
 # --- What stop_child verifies and kills, against the live launch shape ---
 # The real launch runs `claude.exe` under `env.exe`, and `env.exe`'s Windows
 # parent is a Cygwin fork intermediate that has already exited. A Windows walk
-# from the coproc wrapper therefore reaches the wrapper alone. These drivers run
+# from the holder pipeline's child wrapper therefore reaches the wrapper alone. These drivers run
 # the real stop_child with every process read, walk, survivor check, kill and
 # signal stubbed over files in a state directory, so nothing real is signaled:
 # a Windows pid is alive while its "pid,ticks" line is in win-alive, and an
@@ -672,7 +672,6 @@ FN_FILE="$1"; ST="$2"; MODE="${3:-plain}"
 . "$FN_FILE"
 SUPERVISOR_POLL_MS=10000
 SUPERVISOR_STOP_GRACE_MS=2000
-CHILD_IN=""
 ps() {
   local table="$ST/ps-table"
   if [ -f "$ST/armed" ] && [ -f "$ST/ps-table-stop" ]; then table="$ST/ps-table-stop"; fi
@@ -2048,7 +2047,7 @@ if [ "$KILL_ANCHORS" -eq 1 ]; then
   # happened to succeed. The child is held across a poll and launched with
   # no --prompt, so a poll records the tree the survivor is in: a child that
   # dies inside its first poll interval is swept against the record taken in
-  # the instant after the coproc started, which names the wrapper alone and
+  # the instant after the holder pipeline started, which names the wrapper alone and
   # leaves the sweep nothing to find. The survivors token is what says this
   # case reached the leg it is about, so it is read before the exit code.
   #

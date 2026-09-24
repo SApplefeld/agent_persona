@@ -246,6 +246,31 @@ if [ -n "$C3_HOLDER" ]; then
 fi
 kill "$C3_CHILD" 2>/dev/null
 
+# --- Case 4: the hold cadence the holder resolves from SUPERVISOR_HOLDER_POLL_S ---
+# A `sleep` first on the holder's PATH records the interval it is handed and
+# then runs the real sleep, so the recorded value is the cadence the holder
+# resolved. A value that is not a positive number would make every `sleep` fail
+# at once and the loop spin, so it resolves to 2; a positive one is kept.
+REAL_SLEEP=$(command -v sleep)
+for C4_CASE in abc:2 0:2 1:1 0.5:0.5; do
+  C4_IN="${C4_CASE%%:*}"; C4_WANT="${C4_CASE#*:}"
+  D="$TMP/c4-$C4_IN"; mkdir -p "$D/bin"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$1" >> "%s"\nexec "%s" "$@"\n' "$D/sleeps" "$REAL_SLEEP" > "$D/bin/sleep"
+  chmod +x "$D/bin/sleep"
+  sleep 30 & C4_CHILD=$!; CHILD_PIDS="$CHILD_PIDS $C4_CHILD"
+  echo "$C4_CHILD" > "$D/child.pid"
+  PATH="$D/bin:$PATH" PERSONA=default NO_CHANNEL=1 COORDINATOR_PERSONA=coord ARCHITECT_PERSONA="" CHILD_INDEX=1 SUPERVISOR_HOLDER_POLL_S="$C4_IN" \
+    bash "$HOLDER" "$D/holder.pid" "$D/out.jsonl" "$D/child.pid" "$D/ask.request" "" \
+    > "$D/stdout" 2> "$D/err" &
+  C4_HOLDER=$!; HOLDER_PIDS="$HOLDER_PIDS $C4_HOLDER"
+  wait_for 80 test -s "$D/sleeps"
+  kill -TERM "$C4_HOLDER" 2>/dev/null
+  kill "$C4_CHILD" 2>/dev/null
+  C4_GOT=$(head -1 "$D/sleeps" 2>/dev/null)
+  [ "$C4_GOT" = "$C4_WANT" ]; CHECK_RC=$?
+  check "SUPERVISOR_HOLDER_POLL_S=$C4_IN: the holder's poll sleeps $C4_WANT seconds (got ${C4_GOT:-none})" "$CHECK_RC"
+done
+
 echo
 if [ "$failed" = "0" ]; then
   echo "supervisor-holder-test.sh: PASS"

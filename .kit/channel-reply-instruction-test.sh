@@ -48,9 +48,9 @@ fi
 # The narrower range (the variable assignments only) is what actually
 # gets eval'd for the value checks below - the wider $SNIPPET above
 # includes the three priming-write `node -e` calls themselves, which
-# reference `$PROMPT_FILE`/`$CHILD_IN` (unset in this test's own
-# environment) and would either abort under `set -u` or try to write to
-# a real fd that does not exist here. Evaluating code that sends bytes
+# reference `$PROMPT_FILE` (unset in this test's own environment) and
+# would either abort under `set -u` or write to this test's own stdout,
+# which in the holder is the child's input pipe. Evaluating code that sends bytes
 # to the child's stdin pipe is not this test's job; reading its own text is.
 # The range ends at the PRIMING_BODY guard, the first code line after the
 # assignments, which is dropped from the range: six `if ... fi` blocks sit

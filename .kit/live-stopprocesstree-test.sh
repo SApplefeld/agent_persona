@@ -352,7 +352,6 @@ fi
 # --- This is the shape the spec's own acceptance criterion asks for: a
 # child whose claude.exe outlives its wrapper is still fully stopped by
 # stop_child, end to end.
-CHILD_IN=""  # stop_child checks this; empty means Phase 1's EOF close is a no-op
 SUPERVISOR_STOP_GRACE_MS=2000  # short grace so this test doesn't wait a full minute per phase
 STOP_PATH=""
 ( powershell.exe -NoProfile -Command "Start-Sleep -Seconds 90" & echo $! > "$RUNDIR/child.pid"; wait ) &
@@ -389,7 +388,6 @@ fi
 # `Stop-Process` and the per-pid survivor probe both take a snapshot built
 # from `snapshot_process_tree`'s own output - exactly the path that broke
 # on an unstripped `\r` when this was reproduced live.
-CHILD_IN=""
 SUPERVISOR_STOP_GRACE_MS=2000
 STOP_PATH=""
 ( trap '' TERM; powershell.exe -NoProfile -Command "Start-Sleep -Seconds 90" & echo $! > "$RUNDIR/child3.pid"; wait ) &
@@ -557,7 +555,7 @@ stale_assistant_text() {
   printf '{"type":"assistant","timestamp":"%s","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}' "$ts"
 }
 # Usage: start_stub <name> <seconds to live after end of input>
-# Sets CHILD_LAUNCH_PID and CHILD_IN, and records the stub's EOF moment in
+# Sets CHILD_LAUNCH_PID and HOLDER_LAUNCH_PID, and records the stub's EOF moment in
 # $PATIENT_DIR/<name>.eof once the stub sees it. The sleeper that keeps the
 # stub alive past its EOF starts only after the stop's entry snapshot was
 # built, exactly as a tool call the child runs during the wait does, and its
@@ -583,7 +581,6 @@ start_stub() {
   HOLDER_WINPID=""
   HOLDER_TICKS=""
   HOLDER_OWN_LAUNCH=1
-  CHILD_IN=""
   disown "$CHILD_LAUNCH_PID" 2>/dev/null
   STUB_NAME="$name"
   sleep 2
@@ -605,7 +602,6 @@ end_stub() {
   kill -9 "$CHILD_LAUNCH_PID" ${sp:+"$sp"} ${HOLDER_LAUNCH_PID:+"$HOLDER_LAUNCH_PID"} 2>/dev/null
   CHILD_LAUNCH_PID=""
   HOLDER_LAUNCH_PID=""
-  CHILD_IN=""
   OUT=""
 }
 
@@ -760,7 +756,6 @@ HOLDER_LAUNCH_PID=$(cat "$PATIENT_DIR/rebuild-fails.holderpid" 2>/dev/null)
 HOLDER_WINPID=""
 HOLDER_TICKS=""
 HOLDER_OWN_LAUNCH=1
-CHILD_IN=""
 disown "$CHILD_LAUNCH_PID" 2>/dev/null
 STUB_NAME="rebuild-fails"
 sleep 2

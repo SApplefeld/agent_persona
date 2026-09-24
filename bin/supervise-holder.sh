@@ -48,6 +48,14 @@ PROMPT_FILE="$5"
 echo "$$" > "$HOLDER_PID_FILE"
 
 HOLDER_POLL_S="${SUPERVISOR_HOLDER_POLL_S:-2}"
+# A value that is not a positive number of seconds makes every poll's `sleep`
+# fail at once, so the loop below would spin; such a value falls back to 2,
+# and the refusal is logged once `log` is defined below.
+HOLDER_POLL_REFUSED=""
+if ! [[ "$HOLDER_POLL_S" =~ ^([0-9]+(\.[0-9]*)?|\.[0-9]+)$ ]] || ! [[ "$HOLDER_POLL_S" == *[1-9]* ]]; then
+  HOLDER_POLL_REFUSED="$HOLDER_POLL_S"
+  HOLDER_POLL_S=2
+fi
 CHILD_INDEX="${CHILD_INDEX:-0}"
 PERSONA="${PERSONA:-default}"
 NO_CHANNEL="${NO_CHANNEL:-0}"
@@ -58,6 +66,7 @@ ARCHITECT_PERSONA="${ARCHITECT_PERSONA:-}"
 # This process never writes to supervisor.log, and its stdout is the child's
 # own input, so nothing but the turns it sends may reach stdout.
 log() { echo "supervise-holder child-$CHILD_INDEX: $*" >&2; }
+[ -n "$HOLDER_POLL_REFUSED" ] && log "SUPERVISOR_HOLDER_POLL_S=$HOLDER_POLL_REFUSED is not a positive number of seconds; polling every 2 s"
 
 # --- Helper: the goal prompt as the one stream-json line the child reads ---
 # The same line the launcher used to write, moved here with the priming write.

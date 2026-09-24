@@ -3,7 +3,7 @@
 #
 # Usage: bin/supervise.sh <workdir> <persona> <permission-mode> [--prompt TEXT] [--rundir DIR] [--dev] [--no-channel] [--channel-name NAME]
 #
-# The priming turn's skill-load instruction (SKILL_LOAD_INSTRUCTION below)
+# The priming turn's skill-load instruction (SKILL_LOAD_INSTRUCTION in bin/supervise-holder.sh)
 # assumes the claude-kit plugin is installed globally on the host running
 # this script, since it names claude-kit:operating-instructions and
 # claude-kit:executing-work by their plugin-qualified skill names.
@@ -3082,6 +3082,21 @@ ask_timeout_stop() {
   exit 0
 }
 
+# --- Helper: read the holder's pid from holder.pid ---
+# The value reaches kill -0 and kill -TERM, where bash reads a negative
+# number as a process group, so a file holding anything but digits reads as
+# no holder pid recorded and prints nothing.
+# Usage: read_holder_pid <holder-pid-path>
+read_holder_pid() {
+  local v
+  v=$(cat "$1" 2>/dev/null)
+  v="${v%$'\r'}"
+  case "$v" in
+    ''|*[!0-9]*) ;;
+    *) echo "$v" ;;
+  esac
+}
+
 # --- Helper: read the child's exit code from the .exit marker ---
 # The launch shape writes the child's own exit code into the marker, so both
 # the launching supervisor and one that adopted a child it did not launch read
@@ -3190,9 +3205,11 @@ kill_holder() {
 
 # --- Helper: this supervisor's own Windows pid and start ticks, computed once ---
 # Recorded into every handle: the pair an adopting supervisor checks to decide
-# whether this supervisor is still running. Computed lazily and cached, so a run
-# that never writes a handle (a request-at-launch exit, a GATE FAIL) pays no
-# PowerShell for it. snapshot_process_tree refuses this process's own pid, so
+# whether this supervisor is still running. Cached once a read returns a pair.
+# The main loop reads it at its head before any handle is read, so every run
+# whose own Windows pid resolves pays one PowerShell read for it, a
+# request-at-launch exit and a GATE FAIL included.
+# snapshot_process_tree refuses this process's own pid, so
 # the ticks are read directly.
 SELF_WINPID=""
 SELF_TICKS=""
@@ -4218,7 +4235,7 @@ while true; do
     HOLDER_LAUNCH_PID=""
     holder_wait_i=0
     while [ "$holder_wait_i" -lt 100 ]; do
-      if [ -s "$HOLDER_PID_FILE" ]; then HOLDER_LAUNCH_PID=$(cat "$HOLDER_PID_FILE" 2>/dev/null); break; fi
+      if [ -s "$HOLDER_PID_FILE" ]; then HOLDER_LAUNCH_PID=$(read_holder_pid "$HOLDER_PID_FILE"); break; fi
       kill -0 "$CHILD_LAUNCH_PID" 2>/dev/null || break
       sleep 0.1 >/dev/null 2>&1
       holder_wait_i=$((holder_wait_i + 1))
