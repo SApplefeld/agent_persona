@@ -2102,22 +2102,27 @@ retry_stop_escalation() {
     # the `claude.exe` under that wrapper can still be running with no walk
     # able to reach it. So before failing, the retry kills the list `stop_child`
     # kills in the same case, ticks-matched: whatever the tree record names,
-    # whatever state that record reads, and the recorded pair. A record that
-    # reads stale or behind still names real pid and ticks pairs, and the kill
-    # matches each on its ticks, as the sweep's kill of a behind record does.
-    # That kill is never read as a verdict, and the retry still fails, since
-    # no build it could verify agrees. The line names what the list holds, so
-    # a list of the pair alone is not reported as the record.
+    # whenever it names anything, and the recorded pair. The record's state is
+    # not consulted, only whether it has entries: a record that reads stale or
+    # behind still names real pid and ticks pairs, and the kill matches each
+    # on its ticks, as the sweep's kill of a behind record does. That kill is
+    # never read as a verdict, and the retry still fails, since no build it
+    # could verify agrees. The line leads with the token
+    # `adopted_unverified_kill:` and a `record=` field carrying the record's
+    # state and entry count, or `record=empty`, so a reader can tell a list of
+    # the pair alone from one that carried the record.
     if [ "$resnap_rc" -ne 0 ]; then
       if [ "${CHILD_ADOPTED:-}" = "1" ] && [ -n "${CHILD_WINPID:-}" ] && [ -n "${CHILD_TICKS:-}" ]; then
-        local adopted_list="${CHILD_TREE_SNAPSHOT:-}" adopted_held
+        local adopted_list="${CHILD_TREE_SNAPSHOT:-}" adopted_record adopted_held
         if [ -n "$adopted_list" ]; then
-          adopted_held="its tree record ($(child_tree_record_state), $(printf '%s\n' "$adopted_list" | grep -c .) entries) and recorded pair"
+          adopted_record="record=$(child_tree_record_state) entries=$(printf '%s\n' "$adopted_list" | grep -c .)"
+          adopted_held="its tree record and recorded pair"
         else
+          adopted_record="record=empty"
           adopted_held="its recorded pair alone, since its tree record is empty"
         fi
         adopted_list=$(printf '%s\n%s,%s\n' "$adopted_list" "$CHILD_WINPID" "$CHILD_TICKS" | grep -v '^$' | sort -u)
-        log "STOP[$label]: re-snapshot of adopted child-$CHILD_INDEX could not be verified - killing $adopted_held, ticks-matched, before failing"
+        log "STOP[$label]: adopted_unverified_kill: $adopted_record - re-snapshot of adopted child-$CHILD_INDEX could not be verified, killing $adopted_held, ticks-matched, before failing"
         kill_process_snapshot "$adopted_list" || true
       fi
       log "STOP[$label]: re-snapshot could not verify the child's tree (rc=$resnap_rc; no child pid, a record that is not whole, a walk that did not complete, or a self pid it could not clear) - failing fast rather than sleeping out the budget"
@@ -2276,7 +2281,7 @@ stop_child() {
   # every walk since, so that recorded pair joins the snapshot outright, even
   # where the walk did not complete, and no MSYS pid of the child is resolved.
   # Where the walk did not complete, the tree record joins it too whenever it
-  # names anything, whatever state the record reads: a kill ends only the
+  # names anything, and its state is not consulted: a kill ends only the
   # process it names, so a list of the wrapper pair alone leaves the
   # `claude.exe` under it running, and a record that reads stale or behind
   # still names real pid and ticks pairs that the kill matches on their ticks.
@@ -2307,7 +2312,11 @@ stop_child() {
   # looked at. Named explicitly so the operator can tell the two apart in
   # the log, rather than a silent, indistinguishable clean report.
   if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
-    log "STOP[$label]: tree not verified (no snapshot resolved for pid $pid, or the walk did not complete, rc=$snap_rc) - stop relies on the child's own launch pid alone"
+    if [ "${CHILD_ADOPTED:-}" = "1" ] && [ -n "${CHILD_WINPID:-}" ] && [ -n "${CHILD_TICKS:-}" ]; then
+      log "STOP[$label]: tree not verified (the walk from adopted child-$CHILD_INDEX's recorded Windows pid did not complete, or its tree record is not whole, rc=$snap_rc) - the stop kills the recorded pair, and the tree record where it names anything, ticks-matched"
+    else
+      log "STOP[$label]: tree not verified (no snapshot resolved for pid $pid, or the walk did not complete, rc=$snap_rc) - stop relies on the child's own launch pid alone"
+    fi
     LAST_STOP_SNAPSHOT=""
   else
     LAST_STOP_SNAPSHOT="$snapshot"
@@ -3123,9 +3132,14 @@ child_wrapper() {
 # own holder that no longer answers is already gone, since it leaves on its
 # own a poll after the child dies, and nothing is killed. It never licenses a
 # signal. The MSYS TERM survives only for an own-launched holder whose ticks
-# were never read: that pid is a live child in this supervisor's own job
-# table, so it carries no reuse risk. An adopted holder with no recorded ticks
-# is left alone and named, never signalled by an unverified pid.
+# were never read. Its one guard is the `kill -0` at entry, which proves the
+# pid answered a moment before the signal and nothing more: a holder that
+# exits and is reaped between that check and the TERM can hand its pid to
+# another process inside that window, and the signal then reaches whatever
+# holds it. The window is the few lines between the check and the signal, and
+# it stays open only while the launch's ticks read, which ensure_holder_ticks
+# retries, has not landed. An adopted holder with no recorded ticks is left
+# alone and named, never signalled by an unverified pid.
 kill_holder() {
   if [ "${HOLDER_OWN_LAUNCH:-}" = "1" ] && [ -n "${HOLDER_LAUNCH_PID:-}" ] && ! kill -0 "$HOLDER_LAUNCH_PID" 2>/dev/null; then
     log "HOLDER: holder pid $HOLDER_LAUNCH_PID is already gone, so nothing is killed"

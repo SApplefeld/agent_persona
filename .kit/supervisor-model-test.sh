@@ -711,6 +711,12 @@ if [ -n "$WRAP_SNIPPET" ]; then
   kill -TERM "$WR_PID" 2>/dev/null
   wait "$WR_PID" 2>/dev/null; WR_RC=$?
   [ "$(cat "$WR_DIR/marker" 2>/dev/null)" = "143" ]; CHECK_RC=$?; check "child_wrapper: TERM to the wrapper ends the inner process and the marker records 143 (marker=$(cat "$WR_DIR/marker" 2>/dev/null), rc=$WR_RC)" "$CHECK_RC"
+  # The marker the real wrapper wrote is read back through the real reader,
+  # so the writer and the reader are joined on a file neither test typed.
+  if [ -f "$TMP/exitm.sh" ]; then
+    OUT=$(bash "$TMP/exitm.sh" "$WR_DIR/marker" 2>/dev/null)
+    [ "$OUT" = "143" ]; check "child_wrapper and read_exit_marker: the marker the wrapper wrote reads back as 143 through read_exit_marker (got $OUT)" "$?"
+  fi
   wr_i=0
   while [ -n "$WR_INNER" ] && kill -0 "$WR_INNER" 2>/dev/null && [ "$wr_i" -lt 20 ]; do sleep 0.5; wr_i=$((wr_i + 1)); done
   [ -n "$WR_INNER" ] && ! kill -0 "$WR_INNER" 2>/dev/null; check "child_wrapper: the inner process (pid ${WR_INNER:-unknown}) is gone within a few seconds of the wrapper's TERM" "$?"
@@ -719,11 +725,6 @@ if [ -n "$WRAP_SNIPPET" ]; then
   printf '%s\n%s\nchild_wrapper "$1" bash -c '"'"'IFS= read -r l; printf "%%s" "$l" > "$1"'"'"' _ "$2"\n' "$STUB_OPTIONS" "$WRAP_SNIPPET" > "$TMP/wrap2.sh"
   printf 'from-the-pipe\n' | bash "$TMP/wrap2.sh" "$WR_DIR/marker2" "$WR_DIR/seen"
   [ "$(cat "$WR_DIR/seen" 2>/dev/null)" = "from-the-pipe" ] && [ "$(cat "$WR_DIR/marker2" 2>/dev/null)" = "0" ]; check "child_wrapper: the inner process reads the pipeline's stdin and a clean exit records 0" "$?"
-  # The TERM trap is installed before the fork, so a signal landing between
-  # the two is not lost: the trap's line precedes the fork's in the body.
-  WR_TRAP_LINE=$(printf '%s\n' "$WRAP_SNIPPET" | grep -n "^  trap '" | head -1 | cut -d: -f1)
-  WR_FORK_LINE=$(printf '%s\n' "$WRAP_SNIPPET" | grep -n '^  "\$@" <&0 &$' | head -1 | cut -d: -f1)
-  [ -n "$WR_TRAP_LINE" ] && [ -n "$WR_FORK_LINE" ] && [ "$WR_TRAP_LINE" -lt "$WR_FORK_LINE" ]; check "child_wrapper: the TERM trap is installed before the child is forked (trap line ${WR_TRAP_LINE:-none} < fork line ${WR_FORK_LINE:-none})" "$?"
   # A TERM never reaches the launching shell's own last background job. The
   # driver starts a sentinel job before the wrapper, so `$!` names it in the
   # window before the fork, and lands the TERM in one of two places. Before
@@ -1289,8 +1290,7 @@ check_snapshot_survivors() { printf ""; return 0; }
 sweep_child_tree() { echo "CALL sweep $1"; return 0; }
 WALK_NOW="${WALK:-live}"
 refresh_child_tree() { CHILD_TREE_POLL_WALK="$WALK_NOW"; }
-# An unverified build leaves an empty snapshot, as the real build does.
-build_stop_snapshot() { STOP_SNAPSHOT_BUILT="${TREE-777,639012345678901300}"; STOP_SNAPSHOT_WRAPPER_WINPID="${SNAP_WINPID:-}"; return "${SNAP_RC:-0}"; }
+build_stop_snapshot() { STOP_SNAPSHOT_BUILT="777,639012345678901300"; STOP_SNAPSHOT_WRAPPER_WINPID="${SNAP_WINPID:-}"; return 0; }
 ( exit 0 ) & DEAD=$!; wait "$DEAD"
 CHILD_LAUNCH_PID="$DEAD"; CHILD_ADOPTED="${ADOPTED-1}"; CHILD_INDEX=1
 CHILD_WINPID=35124; CHILD_TICKS=639012345678901237; EXIT_MARKER="$1/.exit"; rm -f "$EXIT_MARKER"
@@ -1320,14 +1320,11 @@ stop_child "$2"; echo "RC=$? PATH=$STOP_PATH PID=$CHILD_LAUNCH_PID"' > "$TMP/sto
     if ! { printf '%s\n' "$OUT" | grep -q '^RC=0 PATH=gone ' && printf '%s\n' "$OUT" | grep -q "^CALL sweep $SC_LABEL$" && ! printf '%s\n' "$OUT" | grep -q '^CALL kill \|^CALL native\|^CALL taskkill\|^CALL snapshot\|^CALL kill_holder' && ! grep -q 'CALL resolve' "$SC_DIR/err" 2>/dev/null; }; then
       SC_FAILED=1; echo "  detail [$SC_LABEL marker]: $(printf '%s' "$OUT" | tr '\n' '|')"
     fi
-    # An unverified snapshot still holds the recorded pair: both rungs kill it
-    # ticks-matched, and the stop fails closed for the retry with no signal.
-    OUT=$(sc SNAP_RC=1 TREE=)
-    if ! { printf '%s\n' "$OUT" | grep -q '^RC=1 PATH=unverified ' && ! printf '%s\n' "$OUT" | grep -q '^CALL kill \|^CALL native\|^CALL taskkill' && [ "$(printf '%s\n' "$OUT" | grep -c '^CALL snapshot \[35124,639012345678901237\]$')" -eq 2 ]; }; then
-      SC_FAILED=1; echo "  detail [$SC_LABEL unverified]: $(printf '%s' "$OUT" | tr '\n' '|')"
-    fi
+    # The unverified build is pinned below through the real build and retry,
+    # where the kill is read at the Stop-Process leaf; a stubbed builder
+    # cannot stand in for it.
   done
-  check "adopted stop: on every stop label, with the child present through both graces, ended by the first snapshot kill, accounted by its marker at entry, or under an unverified snapshot, stop_child sends no MSYS signal and no taskkill to the child pid, never resolves it, closes the pipe through kill_holder, and kills the recorded pair ticks-matched" "$SC_FAILED"
+  check "adopted stop: on every stop label, with the child present through both graces, ended by the first snapshot kill, or accounted by its marker at entry, stop_child sends no MSYS signal and no taskkill to the child pid, never resolves it, closes the pipe through kill_holder, and kills the recorded pair ticks-matched" "$SC_FAILED"
   # The patient wait on restart_passive keys on the same reading: a busy child
   # that the cap ends is then killed ticks-matched, never signalled.
   SC_LABEL=restart_passive; OUT=$(sc TURN=busy)
@@ -1448,6 +1445,9 @@ child_ends() {
 msys_ends() {
   local m o one
   m=$(awk -v w="$1" '$4 == w { print $1 }' "$W/table")
+  # WALK_CLEARS: a walk from the ended process's Windows pid now completes and
+  # names nothing, rather than failing, since the process is gone.
+  [ -n "${WALK_CLEARS:-}" ] && rm -f "$W/walkfail.$1"
   awk -v w="$1" '$4 != w' "$W/table" > "$W/table.n"; mv "$W/table.n" "$W/table"
   if [ -n "$m" ]; then grep -vx "$m" "$W/msys" > "$W/msys.n"; mv "$W/msys.n" "$W/msys"; fi
   # ORPHANS_UNLISTED: the MSYS table lists nothing under the ended process
@@ -1610,11 +1610,14 @@ DRIVER
     # the same record, and it kills what the record names plus the recorded
     # pair before it fails closed, naming the record's state in its line.
     OUT=$(as "$AS_REC" WALKFAIL=1 REFUSE=35200 REFUSE_N=2 RETRY=1)
-    printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && printf '%s\n' "$OUT" | grep -qx 'RETRY RC=1' && printf '%s\n' "$OUT" | grep -qx 'ALIVE STOP=\[35088 35200 [0-9 ]*\]' && ! printf '%s\n' "$OUT" | grep -q '^ALIVE END=\[[0-9 ]*35200' && [ "$(grep -c '^KILL 35200,639012345678901300$' "$AS_DIR/calls")" -eq 3 ] && [ -z "$(as_foreign_kills)" ] && printf '%s\n' "$OUT" | grep -q "killing its tree record ($rec, 2 entries) and recorded pair" && ! grep -q '^SIGNAL \|^NATIVE ' "$AS_DIR/calls"; CHECK_RC=$?; check "adopted retry, $rec record: the unverified re-snapshot kills the claude pair the rungs left alive, ticks-matched, before it fails closed, and its line names the record's state (calls: $(tr '\n' '|' < "$AS_DIR/calls"); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+    printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && printf '%s\n' "$OUT" | grep -qx 'RETRY RC=1' && printf '%s\n' "$OUT" | grep -qx 'ALIVE STOP=\[35088 35200 [0-9 ]*\]' && ! printf '%s\n' "$OUT" | grep -q '^ALIVE END=\[[0-9 ]*35200' && [ "$(grep -c '^KILL 35200,639012345678901300$' "$AS_DIR/calls")" -eq 3 ] && [ -z "$(as_foreign_kills)" ] && printf '%s\n' "$OUT" | grep -q "adopted_unverified_kill: record=$rec entries=2" && ! grep -q '^SIGNAL \|^NATIVE ' "$AS_DIR/calls"; CHECK_RC=$?; check "adopted retry, $rec record: the unverified re-snapshot kills the claude pair the rungs left alive, ticks-matched, before it fails closed, and its line names the record's state (calls: $(tr '\n' '|' < "$AS_DIR/calls"); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+    # The instrument speaks: the behind record's pid set moved to a process
+    # the record never named, and that process is neither killed nor read as
+    # dead. Read inside the behind iteration, so its subject is that run.
+    if [ "$rec" = behind ]; then
+      printf '%s\n' "$OUT" | grep -qx 'ALIVE END=\[35088 35300 \]' && ! grep -q '^KILL 35300,' "$AS_DIR/calls"; CHECK_RC=$?; check "control: the process the behind record never named is left alive and never killed (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+    fi
   done
-  # The instrument speaks: the behind record's pid set moved to a process the
-  # record never named, and that process is neither killed nor read as dead.
-  printf '%s\n' "$OUT" | grep -qx 'ALIVE END=\[35088 35300 \]' && ! grep -q '^KILL 35300,' "$AS_DIR/calls"; CHECK_RC=$?; check "control: the process the behind record never named is left alive and never killed (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
   # The record is whole at the stop's entry and the TERM rung's kill ends the
   # wrapper, after which the MSYS table lists nothing under it. The refresh
   # inside the rung's grace, the one after it and the retry's own each read an
@@ -1622,12 +1625,21 @@ DRIVER
   # Claude outlived the one rung that ran, and the retry's kill still reaches
   # it through the record.
   OUT=$(as WALKFAIL=1 KILL_ENDS=1 ORPHANS_UNLISTED=1 REFUSE=35200 REFUSE_N=1 RETRY=1)
-  printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && printf '%s\n' "$OUT" | grep -qx 'RETRY RC=1' && printf '%s\n' "$OUT" | grep -qx 'ALIVE STOP=\[35088 35200 \]' && printf '%s\n' "$OUT" | grep -qx 'ALIVE END=\[35088 \]' && [ "$(grep -c '^KILL 35200,639012345678901300$' "$AS_DIR/calls")" -eq 2 ] && [ "$(printf '%s\n' "$OUT" | grep -c 'tree_record_stale:')" -eq 1 ] && [ -z "$(as_foreign_kills)" ] && printf '%s\n' "$OUT" | grep -q 'killing its tree record (stale, 2 entries) and recorded pair' && ! grep -q '^SIGNAL \|^NATIVE ' "$AS_DIR/calls"; CHECK_RC=$?; check "adopted retry, wrapper killed by the TERM rung and nothing listed under it: the record turns stale through the three refreshes before the retry's read, and the retry still kills the claude pair the record names (calls: $(tr '\n' '|' < "$AS_DIR/calls"); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && printf '%s\n' "$OUT" | grep -qx 'RETRY RC=1' && printf '%s\n' "$OUT" | grep -qx 'ALIVE STOP=\[35088 35200 \]' && printf '%s\n' "$OUT" | grep -qx 'ALIVE END=\[35088 \]' && [ "$(grep -c '^KILL 35200,639012345678901300$' "$AS_DIR/calls")" -eq 2 ] && [ "$(printf '%s\n' "$OUT" | grep -c 'tree_record_stale:')" -eq 1 ] && [ -z "$(as_foreign_kills)" ] && printf '%s\n' "$OUT" | grep -q 'adopted_unverified_kill: record=stale entries=2' && ! grep -q '^SIGNAL \|^NATIVE ' "$AS_DIR/calls"; CHECK_RC=$?; check "adopted retry, wrapper killed by the TERM rung and nothing listed under it: the record turns stale through the three refreshes before the retry's read, and the retry still kills the claude pair the record names (calls: $(tr '\n' '|' < "$AS_DIR/calls"); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # The wrapper the TERM rung kills leaves the MSYS table, and this time the
+  # walk from its dead Windows pid completes and names nothing rather than
+  # failing. The grace refreshes re-walk the closure that is left, claude
+  # alone, so the record is whole with that one entry when the retry builds.
+  # The retry's build then verifies on the record, the recorded pair and the
+  # empty walk, its kill ends the claude the rungs left alive, and it returns
+  # 0 with no unverified kill.
+  OUT=$(as WALKFAIL=1 KILL_ENDS=1 WALK_CLEARS=1 REFUSE=35200 REFUSE_N=2 RETRY=1)
+  printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && printf '%s\n' "$OUT" | grep -qx 'RETRY RC=0' && printf '%s\n' "$OUT" | grep -qx 'ALIVE STOP=\[35088 35200 \]' && printf '%s\n' "$OUT" | grep -qx 'ALIVE END=\[35088 \]' && printf '%s\n' "$OUT" | grep -q 'retry succeeded' && ! printf '%s\n' "$OUT" | grep -q 'adopted_unverified_kill:' && [ "$(grep -c '^KILL 35200,639012345678901300$' "$AS_DIR/calls")" -eq 3 ] && [ -z "$(as_foreign_kills)" ] && ! grep -q '^SIGNAL \|^NATIVE ' "$AS_DIR/calls"; CHECK_RC=$?; check "adopted retry, wrapper killed by the TERM rung and its walk completing empty: the retry's build verifies on the record and the recorded pair, its kill ends the claude pair the rungs left alive, and it returns 0 with no unverified kill (calls: $(tr '\n' '|' < "$AS_DIR/calls"); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
   # The record is the only place the claude pair comes from: with no record at
   # all, the same stop kills the wrapper pair alone and the retry's line says
   # so rather than naming a record.
   OUT=$(as NORECORD=1 WALKFAIL=1 REFUSE=35200 REFUSE_N=2 RETRY=1)
-  printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && printf '%s\n' "$OUT" | grep -qx 'RETRY RC=1' && ! grep -q '^KILL 35200,' "$AS_DIR/calls" && [ "$(grep -c '^KILL 35124,639012345678901237$' "$AS_DIR/calls")" -eq 3 ] && printf '%s\n' "$OUT" | grep -q 'killing its recorded pair alone, since its tree record is empty'; CHECK_RC=$?; check "control: with an empty tree record the adopted stop and its retry kill the recorded pair alone, and the retry's line reports the pair rather than a record (calls: $(tr '\n' '|' < "$AS_DIR/calls"); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && printf '%s\n' "$OUT" | grep -qx 'RETRY RC=1' && ! grep -q '^KILL 35200,' "$AS_DIR/calls" && [ "$(grep -c '^KILL 35124,639012345678901237$' "$AS_DIR/calls")" -eq 3 ] && printf '%s\n' "$OUT" | grep -q 'adopted_unverified_kill: record=empty'; CHECK_RC=$?; check "control: with an empty tree record the adopted stop and its retry kill the recorded pair alone, and the retry's line reports the pair rather than a record (calls: $(tr '\n' '|' < "$AS_DIR/calls"); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
 fi
 
 # --- The cleanup trap with no poll reading yet ---
