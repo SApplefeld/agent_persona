@@ -1394,8 +1394,10 @@ sleep() { :; }
 W="$1"; CALLS="$W/calls"; : > "$CALLS"; rm -f "$W"/walkfail.* "$W/refused"
 T_CHILD=639012345678901237; T_CLAUDE=639012345678901300; T_HOLDER=639012345678901180
 T_F=639012345678902001; T_F2=639012345678902002; T_OTHER=639012345678903001; T_X=639012345678903002
+T_NODE=639012345678901400
 ( exit 0 ) & P=$!; wait "$P"
 ( exit 0 ) & C=$!; wait "$C"
+( exit 0 ) & H=$!; wait "$H"
 row() { printf '%9s %7s %7s %10s  pty0     197609 12:00:00 %s\n' "$1" "$2" "$1" "$3" "$4"; }
 { row "$P" 1 35124 /usr/bin/bash; row "$C" "$P" 35200 /usr/bin/claude; } > "$W/table"
 printf '%s\n' "$P" "$C" > "$W/msys"
@@ -1444,10 +1446,18 @@ child_ends() {
 # pid goes, and its MSYS pid stops answering `kill -0`. Windows ends the one
 # process Stop-Process names and nothing under it, so every other row stays.
 msys_ends() {
-  local m
+  local m o one
   m=$(awk -v w="$1" '$4 == w { print $1 }' "$W/table")
   awk -v w="$1" '$4 != w' "$W/table" > "$W/table.n"; mv "$W/table.n" "$W/table"
   if [ -n "$m" ]; then grep -vx "$m" "$W/msys" > "$W/msys.n"; mv "$W/msys.n" "$W/msys"; fi
+  # ORPHANS_UNLISTED: the MSYS table lists nothing under the ended process
+  # either, so the closure from a dead wrapper reads empty while the Windows
+  # process under it still runs.
+  if [ -n "$m" ] && [ -n "${ORPHANS_UNLISTED:-}" ]; then
+    o=$(awk -v p="$m" '$2 == p { print $1 }' "$W/table")
+    awk -v p="$m" '$2 != p' "$W/table" > "$W/table.n"; mv "$W/table.n" "$W/table"
+    for one in $o; do grep -vx "$one" "$W/msys" > "$W/msys.n"; mv "$W/msys.n" "$W/msys"; done
+  fi
 }
 alive_ids() { awk '{ print $1 }' "$W/alive" | sort -n | tr '\n' ' '; }
 pairs_in() { printf '%s' "$1" | grep -o '@{Id=[0-9]*;Ticks=[0-9]*}' | sed 's/@{Id=\([0-9]*\);Ticks=\([0-9]*\)}/\1,\2/'; }
@@ -1506,11 +1516,24 @@ CHILD_TREE_SNAPSHOT=""; CHILD_TREE_WALKED=""; CHILD_TREE_READ_FAILED=""; CHILD_T
 CHILD_TREE_CONFIRMED_AT=""; CHILD_TREE_FAILED_CONFIRMS=0; CHILD_TREE_POLL_WALK=failed; CHILD_ROOT_MISMATCH_LOGGED=""
 STOP_SNAPSHOT_BUILT=""; STOP_SNAPSHOT_WRAPPER_WINPID=""; STOP_TREE_MOVED=""; LAST_STOP_SNAPSHOT=""; STOP_PATH=""; OUT=""
 # The poll that recorded the tree, before the stop. Only the stop's own calls
-# are asserted, so the record is cleared of the poll's.
-refresh_child_tree
+# are asserted, so the record is cleared of the poll's. NORECORD skips that
+# poll, so the stop meets a child no walk has recorded a tree for.
+[ -n "${NORECORD:-}" ] || refresh_child_tree
 echo "POLL WALK=$CHILD_TREE_POLL_WALK TREE=[$(printf '%s' "$CHILD_TREE_SNAPSHOT" | tr '\n' '|')]"
 : > "$CALLS"
 [ -n "${WALKFAIL:-}" ] && : > "$W/walkfail.35124"
+# STALE_POLLS empties the MSYS table, so every poll from here reads a closure
+# that names nothing while the launch pid still answers, and runs that many
+# polls before the stop. Each one fails to confirm the record and counts
+# toward the stale bound through the refresh's own counting, so the stop's
+# entry refresh is the third and reads the record stale.
+if [ -n "${STALE_POLLS:-}" ]; then : > "$W/table"; fi
+for ((i = 0; i < ${STALE_POLLS:-0}; i++)); do refresh_child_tree; done
+# BEHIND puts a third MSYS process under claude after the record was walked,
+# running as Windows pid 35300, so the child's pid set has moved past the
+# record and the stop's entry refresh reads the record behind the tree.
+if [ -n "${BEHIND:-}" ]; then row "$H" "$C" 35300 /usr/bin/node >> "$W/table"; echo "$H" >> "$W/msys"; echo "35300 $T_NODE" >> "$W/alive"; fi
+: > "$CALLS"
 stop_child stop_complete; rc=$?
 echo "STOP RC=$rc PATH=$STOP_PATH"
 echo "ALIVE STOP=[$(alive_ids)]"
@@ -1575,6 +1598,36 @@ DRIVER
   # rungs and fails as kill_failed, with no unverified line.
   OUT=$(as STUBBORN=1)
   printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=kill_failed' && [ "$(grep -c '^KILL 35124,639012345678901237$' "$AS_DIR/calls")" -eq 2 ] && ! printf '%s\n' "$OUT" | grep -q 'tree not verified'; CHECK_RC=$?; check "control: a stubborn adopted child under a walk that completes takes both rungs and fails as kill_failed, with no unverified line (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # A record that is not whole still names the claude pair, and every kill is
+  # ticks-matched, so the rungs kill it whatever the record's state. Two polls
+  # under the failed walk and the stop's own entry refresh are the three that
+  # read the record stale, through the refresh's own count.
+  for rec in stale behind; do
+    if [ "$rec" = stale ]; then AS_REC="STALE_POLLS=2"; else AS_REC="BEHIND=1"; fi
+    OUT=$(as "$AS_REC" WALKFAIL=1 REFUSE=35200)
+    printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && printf '%s\n' "$OUT" | grep -q "tree_record_$rec:" && [ "$(grep -c '^KILL 35200,639012345678901300$' "$AS_DIR/calls")" -eq 2 ] && [ "$(grep -c '^KILL 35124,639012345678901237$' "$AS_DIR/calls")" -eq 2 ] && [ -z "$(as_foreign_kills)" ] && printf '%s\n' "$OUT" | grep -q 'TERM grace expired for adopted child-1' && ! grep -q '^SIGNAL \|^NATIVE ' "$AS_DIR/calls"; CHECK_RC=$?; check "adopted stop, failed entry walk, $rec record: both rungs kill the claude pair the record names as well as the wrapper pair, ticks-matched, nothing outside the record, and the stop reports unverified (calls: $(tr '\n' '|' < "$AS_DIR/calls"); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+    # Claude outlives both rungs. The retry's re-snapshot cannot verify under
+    # the same record, and it kills what the record names plus the recorded
+    # pair before it fails closed, naming the record's state in its line.
+    OUT=$(as "$AS_REC" WALKFAIL=1 REFUSE=35200 REFUSE_N=2 RETRY=1)
+    printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && printf '%s\n' "$OUT" | grep -qx 'RETRY RC=1' && printf '%s\n' "$OUT" | grep -qx 'ALIVE STOP=\[35088 35200 [0-9 ]*\]' && ! printf '%s\n' "$OUT" | grep -q '^ALIVE END=\[[0-9 ]*35200' && [ "$(grep -c '^KILL 35200,639012345678901300$' "$AS_DIR/calls")" -eq 3 ] && [ -z "$(as_foreign_kills)" ] && printf '%s\n' "$OUT" | grep -q "killing its tree record ($rec, 2 entries) and recorded pair" && ! grep -q '^SIGNAL \|^NATIVE ' "$AS_DIR/calls"; CHECK_RC=$?; check "adopted retry, $rec record: the unverified re-snapshot kills the claude pair the rungs left alive, ticks-matched, before it fails closed, and its line names the record's state (calls: $(tr '\n' '|' < "$AS_DIR/calls"); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  done
+  # The instrument speaks: the behind record's pid set moved to a process the
+  # record never named, and that process is neither killed nor read as dead.
+  printf '%s\n' "$OUT" | grep -qx 'ALIVE END=\[35088 35300 \]' && ! grep -q '^KILL 35300,' "$AS_DIR/calls"; CHECK_RC=$?; check "control: the process the behind record never named is left alive and never killed (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # The record is whole at the stop's entry and the TERM rung's kill ends the
+  # wrapper, after which the MSYS table lists nothing under it. The refresh
+  # inside the rung's grace, the one after it and the retry's own each read an
+  # empty closure and count against the record, so the retry reads it stale.
+  # Claude outlived the one rung that ran, and the retry's kill still reaches
+  # it through the record.
+  OUT=$(as WALKFAIL=1 KILL_ENDS=1 ORPHANS_UNLISTED=1 REFUSE=35200 REFUSE_N=1 RETRY=1)
+  printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && printf '%s\n' "$OUT" | grep -qx 'RETRY RC=1' && printf '%s\n' "$OUT" | grep -qx 'ALIVE STOP=\[35088 35200 \]' && printf '%s\n' "$OUT" | grep -qx 'ALIVE END=\[35088 \]' && [ "$(grep -c '^KILL 35200,639012345678901300$' "$AS_DIR/calls")" -eq 2 ] && [ "$(printf '%s\n' "$OUT" | grep -c 'tree_record_stale:')" -eq 1 ] && [ -z "$(as_foreign_kills)" ] && printf '%s\n' "$OUT" | grep -q 'killing its tree record (stale, 2 entries) and recorded pair' && ! grep -q '^SIGNAL \|^NATIVE ' "$AS_DIR/calls"; CHECK_RC=$?; check "adopted retry, wrapper killed by the TERM rung and nothing listed under it: the record turns stale through the three refreshes before the retry's read, and the retry still kills the claude pair the record names (calls: $(tr '\n' '|' < "$AS_DIR/calls"); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # The record is the only place the claude pair comes from: with no record at
+  # all, the same stop kills the wrapper pair alone and the retry's line says
+  # so rather than naming a record.
+  OUT=$(as NORECORD=1 WALKFAIL=1 REFUSE=35200 REFUSE_N=2 RETRY=1)
+  printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && printf '%s\n' "$OUT" | grep -qx 'RETRY RC=1' && ! grep -q '^KILL 35200,' "$AS_DIR/calls" && [ "$(grep -c '^KILL 35124,639012345678901237$' "$AS_DIR/calls")" -eq 3 ] && printf '%s\n' "$OUT" | grep -q 'killing its recorded pair alone, since its tree record is empty'; CHECK_RC=$?; check "control: with an empty tree record the adopted stop and its retry kill the recorded pair alone, and the retry's line reports the pair rather than a record (calls: $(tr '\n' '|' < "$AS_DIR/calls"); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
 fi
 
 # --- The cleanup trap with no poll reading yet ---
