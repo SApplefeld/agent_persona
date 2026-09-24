@@ -538,6 +538,9 @@ HOLDER_TICKS=""
 # case kill_holder may reach with an MSYS signal when no ticks are recorded.
 # Cleared at adoption.
 HOLDER_OWN_LAUNCH=""
+# 1 once ensure_holder_ticks found this child's own holder gone, so that is
+# logged once per child rather than on every poll.
+HOLDER_GONE_LOGGED=""
 # The current child's handle path, for clear_handle and the cleanup trap's
 # detach route. Set per child at launch or adoption.
 HANDLE_FILE=""
@@ -1894,7 +1897,9 @@ sweep_child_tree() {
 # wrapper alone. The snapshot is therefore the union of three readings: the
 # wrapper's own walk, a walk from the Windows pid of every process in the
 # MSYS closure the latest refresh read, and the tree record, which must be
-# `whole`. Lines are deduplicated on pid and start ticks together, so a pid
+# `whole`. An adopted child's snapshot is the record, the Windows pid and start
+# ticks its handle recorded, and the walk from that Windows pid, with no MSYS
+# pid resolved or walked. Lines are deduplicated on pid and start ticks together, so a pid
 # recorded under two different processes keeps both lines and each is
 # matched against its own start time.
 #
@@ -1932,20 +1937,62 @@ build_stop_snapshot() {
     log "STOP[$label]: tree_record_$record_state: child-$CHILD_INDEX's tree record is not whole, so no snapshot built on it can confirm the tree dead"
     return 1
   fi
-  local union="$CHILD_TREE_SNAPSHOT" walk_pairs="" pair walked walk_rc wrapper_winpid=""
-  if [ -n "$pid" ]; then
-    wrapper_winpid=$(resolve_windows_pid "$pid")
+  local union="$CHILD_TREE_SNAPSHOT" walk_pairs="" pair walked walk_rc wrapper_winpid="" root_line
+  if [ "${CHILD_ADOPTED:-}" = "1" ]; then
+    # An adopted child's MSYS pids are numbers this supervisor never held, and
+    # a reused one resolves to a foreign process whose tree a walk would add
+    # here under that process's own start ticks. So no MSYS pid is resolved or
+    # walked for an adopted child. The build is the record, the Windows pid and
+    # start ticks the handle recorded, and the walk from that Windows pid,
+    # which is kept only while its root still carries the recorded ticks.
+    STOP_SNAPSHOT_WRAPPER_WINPID="${CHILD_WINPID:-}"
+    if [ -z "${CHILD_WINPID:-}" ] || [ -z "${CHILD_TICKS:-}" ]; then
+      log "STOP[$label]: adopted child-$CHILD_INDEX has no recorded Windows pid and start ticks to build its snapshot from"
+      return 1
+    fi
+    union="$union
+$CHILD_WINPID,$CHILD_TICKS"
+    walked=$(snapshot_process_tree "$CHILD_WINPID")
+    walk_rc=$?
+    if [ "$walk_rc" -ne 0 ]; then
+      log "STOP[$label]: the walk under adopted child-$CHILD_INDEX's recorded Windows pid $CHILD_WINPID did not complete (rc=$walk_rc)"
+      return "$walk_rc"
+    fi
+    # A walk names its own root where a process holds the pid. No root line is
+    # a recorded child that has exited, with nothing under it to add. A root
+    # under other start ticks is a process that reused the pid, so its tree is
+    # no part of the child's. A root whose start time could not be read cannot
+    # be told apart from either, so the build is unverified.
+    root_line=$(printf '%s\n' "$walked" | grep "^$CHILD_WINPID," | head -1)
+    case "$root_line" in
+      "") ;;
+      "$CHILD_WINPID,$CHILD_TICKS")
+        union="$union
+$walked"
+        ;;
+      "$CHILD_WINPID,"*[!0-9]*)
+        log "STOP[$label]: the walk under adopted child-$CHILD_INDEX's recorded Windows pid $CHILD_WINPID could not read that root's start time, so it cannot be told from a process that reused the pid"
+        return 1
+        ;;
+      *)
+        log "STOP[$label]: adopted child-$CHILD_INDEX's recorded Windows pid $CHILD_WINPID is held by a process under other start ticks, so its walk is no part of the child's tree and is left out"
+        ;;
+    esac
+  else
+    if [ -n "$pid" ]; then
+      wrapper_winpid=$(resolve_windows_pid "$pid")
+    fi
+    # The wrapper's Windows pid this build walked from, for a caller that
+    # compares a later resolve against the pid its list was walked from.
+    STOP_SNAPSHOT_WRAPPER_WINPID="$wrapper_winpid"
+    if [ -n "$wrapper_winpid" ]; then
+      walk_pairs="$pid:$wrapper_winpid"
+    fi
+    for pair in ${CHILD_TREE_SEEN_PAIRS:-}; do
+      case " $walk_pairs " in *" $pair "*) continue ;; esac
+      walk_pairs="$walk_pairs $pair"
+    done
   fi
-  # The wrapper's Windows pid this build walked from, for a caller that
-  # compares a later resolve against the pid its list was walked from.
-  STOP_SNAPSHOT_WRAPPER_WINPID="$wrapper_winpid"
-  if [ -n "$wrapper_winpid" ]; then
-    walk_pairs="$pid:$wrapper_winpid"
-  fi
-  for pair in ${CHILD_TREE_SEEN_PAIRS:-}; do
-    case " $walk_pairs " in *" $pair "*) continue ;; esac
-    walk_pairs="$walk_pairs $pair"
-  done
   for pair in $walk_pairs; do
     walked=$(walk_msys_process_tree "${pair%%:*}" "${pair#*:}")
     walk_rc=$?
@@ -2202,8 +2249,10 @@ stop_child() {
   # is the merged one `build_stop_snapshot` builds from the record the refresh
   # at entry took. An adopted child's wrapper pid is the Windows pid its
   # handle recorded, checked against a live process before the adoption and on
-  # every walk since, so that recorded pair joins the snapshot outright and
-  # the MSYS pid is resolved for nothing.
+  # every walk since, so that recorded pair joins the snapshot outright, even
+  # where the walk did not complete, and no MSYS pid of the child is resolved.
+  # A snapshot the build could not verify is still not left for the retry, so
+  # the retry takes its own re-snapshot rather than confirming the pair alone.
   local snapshot_winpid=""
   if [ "${CHILD_ADOPTED:-}" = "1" ]; then
     snapshot_winpid="${CHILD_WINPID:-}"
@@ -2217,7 +2266,7 @@ stop_child() {
   build_stop_snapshot "$label"
   snap_rc=$?
   snapshot="$STOP_SNAPSHOT_BUILT"
-  if [ "${CHILD_ADOPTED:-}" = "1" ] && [ "$snap_rc" -eq 0 ] && [ -n "${CHILD_WINPID:-}" ] && [ -n "${CHILD_TICKS:-}" ]; then
+  if [ "${CHILD_ADOPTED:-}" = "1" ] && [ -n "${CHILD_WINPID:-}" ] && [ -n "${CHILD_TICKS:-}" ]; then
     snapshot=$(printf '%s\n%s,%s\n' "$snapshot" "$CHILD_WINPID" "$CHILD_TICKS" | grep -v '^$' | sort -u)
   fi
   # A failed resolve or a non-zero `snap_rc` (the PowerShell walk timed
@@ -2227,8 +2276,10 @@ stop_child() {
   # the log, rather than a silent, indistinguishable clean report.
   if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
     log "STOP[$label]: tree not verified (no snapshot resolved for pid $pid, or the walk did not complete, rc=$snap_rc) - stop relies on the child's own launch pid alone"
+    LAST_STOP_SNAPSHOT=""
+  else
+    LAST_STOP_SNAPSHOT="$snapshot"
   fi
-  LAST_STOP_SNAPSHOT="$snapshot"
 
   # Usage: verify_snapshot_dead - returns 0 if every process in $snapshot
   # is confirmed gone (matched by pid AND start time - a recycled pid
@@ -2255,8 +2306,9 @@ stop_child() {
   # a verified list: the patient wait's rebuild failed and `snapshot` is the
   # entry list. That list is killed, ticks-matched, so nothing it names
   # outlives the stop, while the verdict stays unverified because nothing
-  # the child started during the wait is on it. Every other unverified case
-  # holds an empty list and this does nothing.
+  # the child started during the wait is on it. An adopted child's unverified
+  # list also holds its recorded pair, which is killed here the same way.
+  # Every other unverified case holds an empty list and this does nothing.
   kill_stale_entry_list() {
     if [ -n "$snapshot" ]; then
       if kill_process_snapshot "$snapshot"; then
@@ -2405,13 +2457,14 @@ stop_child() {
   # are the ticks-matched kill_process_snapshot over the snapshot this stop
   # holds, which carries the recorded child pair and the walked tree: the
   # first rung kills and waits the grace, and the second kills again and
-  # reads the result as the stop's verdict. An unverified snapshot leaves
-  # nothing this stop may kill by identity, so it kills the entry list where
-  # one exists and fails closed for the retry, as the launched path does.
+  # reads the result as the stop's verdict. An unverified snapshot still holds
+  # the recorded pair, and the entry list where the patient wait's rebuild
+  # failed, so both rungs kill what it names while the stop reports the tree
+  # unverified and fails closed for the retry, as the launched path does. Only
+  # a snapshot with nothing in it leaves no rung.
   if [ "${CHILD_ADOPTED:-}" = "1" ]; then
     log "STOP[$label]: EOF grace expired for adopted child-$CHILD_INDEX; its launch pid $pid is not signalled, the recorded pair and walked tree under Windows pid ${snapshot_winpid:-none} are killed ticks-matched instead"
-    if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
-      kill_stale_entry_list
+    if [ -z "$snapshot" ]; then
       log "STOP[$label]: no verified snapshot covers this stop (the entry resolve or walk failed, or the post-wait rebuild did) - not confirming dead on an unverified read"
       STOP_PATH="unverified"
       return 1
@@ -2428,12 +2481,23 @@ stop_child() {
         LAST_STOP_SNAPSHOT=""
         return 0
       fi
-      log "STOP[$label]: a snapshot survivor could not be killed after the TERM path"
-      STOP_PATH="term_kill_failed"
+      if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
+        STOP_PATH="unverified"
+      else
+        log "STOP[$label]: a snapshot survivor could not be killed after the TERM path"
+        STOP_PATH="term_kill_failed"
+      fi
       return 1
     fi
     log "STOP[$label]: TERM grace expired for adopted child-$CHILD_INDEX, killing its snapshot again, ticks-matched"
-    if kill_process_snapshot "$snapshot"; then
+    local adopted_kill_rc=0
+    kill_process_snapshot "$snapshot" || adopted_kill_rc=$?
+    if [ "$snap_attempted" -eq 0 ] || [ "$snap_rc" -ne 0 ]; then
+      log "STOP[$label]: no verified snapshot covers this stop (the entry resolve or walk failed, or the post-wait rebuild did) - not confirming dead on an unverified read"
+      STOP_PATH="unverified"
+      return 1
+    fi
+    if [ "$adopted_kill_rc" -eq 0 ]; then
       STOP_PATH="kill"
       LAST_STOP_SNAPSHOT=""
       return 0
@@ -3128,11 +3192,22 @@ ensure_child_ticks() {
 # rewritten when the pair lands, and a HANDLE: line names the gap while it
 # stays empty. Runs for a holder this supervisor launched only: an adopted
 # holder's pair is what its handle recorded, and ticks read fresh for a
-# recorded Windows pid could bind to a process that reused it.
+# recorded Windows pid could bind to a process that reused it. The same holds
+# for an own holder that has exited, so the read is made only while the
+# holder's launch pid still answers `kill -0`, the one MSYS check an own
+# launch allows. A gone holder is logged once and never read, and the handle
+# keeps its holder ticks null.
 ensure_holder_ticks() {
   [ "${HOLDER_OWN_LAUNCH:-}" = "1" ] || return 0
   [ -n "${HOLDER_TICKS:-}" ] && return 0
   [ -n "${HOLDER_WINPID:-}" ] || return 0
+  if [ -z "${HOLDER_LAUNCH_PID:-}" ] || ! kill -0 "$HOLDER_LAUNCH_PID" 2>/dev/null; then
+    if [ -z "${HOLDER_GONE_LOGGED:-}" ]; then
+      log "HANDLE: child-$CHILD_INDEX's holder pid ${HOLDER_LAUNCH_PID:-none} no longer answers, so its start ticks are not read: Windows may have handed pid $HOLDER_WINPID to another process"
+      HOLDER_GONE_LOGGED=1
+    fi
+    return 0
+  fi
   ticks_retry_due HOLDER_TICKS || return 0
   HOLDER_TICKS=$(resolve_windows_start_ticks "$HOLDER_WINPID")
   if [ -n "$HOLDER_TICKS" ]; then
@@ -3961,7 +4036,7 @@ while true; do
       CHANNEL_ENV+=(CHANNEL_SESSION="$CHANNEL_NAME" CHANNEL_PROCESS_TOKEN="$CHILD_PROCESS_TOKEN" CHANNEL_SESSION_MIRROR=off)
     fi
 
-    HOLDER_LAUNCH_PID=""; HOLDER_WINPID=""; HOLDER_TICKS=""; HOLDER_OWN_LAUNCH=""
+    HOLDER_LAUNCH_PID=""; HOLDER_WINPID=""; HOLDER_TICKS=""; HOLDER_OWN_LAUNCH=""; HOLDER_GONE_LOGGED=""
     CHILD_WINPID=""; CHILD_TICKS=""; CHILD_ADOPTED=""; CHILD_ROOT_MISMATCH_LOGGED=""
     # The three retried reads start their gaps afresh for each child, each
     # seeded on its own poll. A retry falls due on its seed, then on its seed

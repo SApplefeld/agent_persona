@@ -1149,6 +1149,8 @@ write_handle() { echo "CALL write_handle $1"; }
 READS_FILE="$1"; echo 0 > "$READS_FILE"
 resolve_windows_start_ticks() { local n; n=$(( $(cat "$READS_FILE") + 1 )); echo "$n" > "$READS_FILE"; echo "READ on poll $POLL_COUNT" >&2; if [ "$n" -ge 3 ]; then echo 639012345678901180; fi; }
 CHILD_INDEX=1; HOLDER_WINPID="${HW-35088}"; HOLDER_TICKS=""; HOLDER_OWN_LAUNCH="${OWN-1}"; CHILD_SESSION_ID=sess-1
+# The holder is still running: this driver itself stands in for it.
+HOLDER_LAUNCH_PID=$$
 for POLL_COUNT in 1 2 3 4 5 6 7 8; do ensure_holder_ticks; done
 echo "reads=$(cat "$READS_FILE") ticks=[$HOLDER_TICKS]"' > "$TMP/hlt.sh"
   OUT=$(bash "$TMP/hlt.sh" "$TMP/hlt.reads" 2>&1)
@@ -1181,6 +1183,54 @@ echo "shared=$SHARED child=$C self=$S holder=$H"' > "$TMP/seeds.sh"
   esac
   OUT=$(ALIKE=1 bash "$TMP/seeds.sh" 2>&1)
   case "$OUT" in "shared=0 "*) check "control: seeded alike, the three retries share polls (got $OUT)" 1 ;; "shared="*) check "control: seeded alike, the three retries share polls (got $OUT)" 0 ;; *) check "control: seeded alike, the three retries share polls (got $OUT)" 1 ;; esac
+fi
+
+# --- An own holder that is gone never has a stranger's ticks recorded ---
+# ensure_holder_ticks and everything it calls run as written: the retry gap,
+# the ticks read, this supervisor's own pair and the handle write through node.
+# Only the PowerShell leaf is stubbed, and it answers a ticks read for the
+# holder's Windows pid, as it would where Windows had handed that pid to
+# another process. The holder's launch pid is a real process of this suite's:
+# one that has exited, or, for the control, one still running.
+: > "$TMP/hlt-real.fn"
+for fn in $(SUPERVISOR_CLOSURE_STUBS="log log_diag run_bounded_powershell_capture" supervisor_fn_closure "$SCRIPT" ensure_holder_ticks); do
+  supervisor_extract_fn "$SCRIPT" "$fn" "$TMP/hlt-real.fn" || true
+done
+HLT_REAL="$(grep -m1 '^TICKS_RETRY_GAP_MAX=' "$SCRIPT" | tr -d '\r')
+$(tr -d '\r' < "$TMP/hlt-real.fn")"
+printf '%s\n' "$HLT_REAL" | grep -q '^TICKS_RETRY_GAP_MAX=[0-9]*$' && printf '%s\n' "$HLT_REAL" | grep -q '^write_handle() {$' && printf '%s\n' "$HLT_REAL" | grep -q '^resolve_windows_start_ticks() {$' && ! printf '%s\n' "$HLT_REAL" | grep -q '^run_bounded_powershell_capture() {$'; check "ensure_holder_ticks's real closure carries write_handle and the ticks read, and not the PowerShell leaf it stubs" "$?"
+if [ -n "$HLT_REAL" ]; then
+  HLR_DIR=$(mktemp -d "$TMP/hltreal.XXXXXX")
+  printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$HLT_REAL" '
+log() { echo "LOG $*"; }
+log_diag() { :; }
+READS="$1/reads"; : > "$READS"
+run_bounded_powershell_capture() {
+  local id
+  id=$(printf "%s\n" "$2" | sed -n "s/.*Get-Process -Id \([0-9]*\) -ErrorAction.*/\1/p" | head -1)
+  echo "TICKS_READ $id" >> "$READS"
+  if [ "$id" = 35088 ]; then echo 639012345678901180; else echo 639012345678999999; fi
+  echo "$STOP_PS_SENTINEL"
+}
+SUPERVISOR_PS_BOUND_S=30; STOP_PS_SENTINEL=___SUPERVISOR_PS_DONE___
+RUNDIR="$1"; HANDLE_FILE="$1/handle.json"; rm -f "$HANDLE_FILE"; CHILD_INDEX=1; LAUNCHED_AT=1000; CHILD_SESSION_ID=sess-1
+SELF_WINPID=""; SELF_TICKS=""; SELF_TICKS_DONE=""; HANDLE_HAS_SELF_PAIR=""
+( exit 0 ) & DEAD=$!; wait "$DEAD"
+command sleep 30 & LIVE=$!
+if [ "${HOLDER_ALIVE:-}" = 1 ]; then HOLDER_LAUNCH_PID="$LIVE"; else HOLDER_LAUNCH_PID="$DEAD"; fi
+HOLDER_OWN_LAUNCH=1; HOLDER_WINPID=35088; HOLDER_TICKS=""
+CHILD_LAUNCH_PID=41236; CHILD_WINPID=35124; CHILD_TICKS=639012345678901237
+HOLDER_TICKS_RETRY_NEXT=1; HOLDER_TICKS_RETRY_GAP=1
+write_handle "$CHILD_SESSION_ID"
+for POLL_COUNT in 1 2 3 4 5 6 7 8; do ensure_holder_ticks; done
+builtin kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null
+echo "HOLDER_TICKS=[$HOLDER_TICKS]"
+echo "HANDLE $(node -e "const h = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")); console.log(h.holderWinPid + \",\" + h.holderTicks)" "$HANDLE_FILE")"
+echo "HOLDER_READS=$(grep -c "^TICKS_READ 35088$" "$READS")"' > "$TMP/hltreal.sh"
+  OUT=$(timeout 60 bash "$TMP/hltreal.sh" "$HLR_DIR" 2>&1)
+  printf '%s\n' "$OUT" | grep -qx 'HOLDER_TICKS=\[\]' && printf '%s\n' "$OUT" | grep -qx 'HANDLE 35088,null' && printf '%s\n' "$OUT" | grep -qx 'HOLDER_READS=0' && [ "$(printf '%s\n' "$OUT" | grep -c 'no longer answers')" -eq 1 ]; CHECK_RC=$?; check "ensure_holder_ticks: an own holder whose launch pid no longer answers has no ticks read for its Windows pid over eight polls, the handle keeps holderTicks null, and the gone holder is logged once (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  OUT=$(HOLDER_ALIVE=1 timeout 60 bash "$TMP/hltreal.sh" "$HLR_DIR" 2>&1)
+  printf '%s\n' "$OUT" | grep -qx 'HOLDER_TICKS=\[639012345678901180\]' && printf '%s\n' "$OUT" | grep -qx 'HANDLE 35088,639012345678901180' && printf '%s\n' "$OUT" | grep -qx 'HOLDER_READS=1' && ! printf '%s\n' "$OUT" | grep -q 'no longer answers'; CHECK_RC=$?; check "control: an own holder still running has its ticks read once and recorded in the handle (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
 fi
 
 # --- kill_holder's identity guard ---
@@ -1270,10 +1320,10 @@ stop_child "$2"; echo "RC=$? PATH=$STOP_PATH PID=$CHILD_LAUNCH_PID"' > "$TMP/sto
     if ! { printf '%s\n' "$OUT" | grep -q '^RC=0 PATH=gone ' && printf '%s\n' "$OUT" | grep -q "^CALL sweep $SC_LABEL$" && ! printf '%s\n' "$OUT" | grep -q '^CALL kill \|^CALL native\|^CALL taskkill\|^CALL snapshot\|^CALL kill_holder' && ! grep -q 'CALL resolve' "$SC_DIR/err" 2>/dev/null; }; then
       SC_FAILED=1; echo "  detail [$SC_LABEL marker]: $(printf '%s' "$OUT" | tr '\n' '|')"
     fi
-    # An unverified snapshot leaves nothing to kill by identity: the stop
-    # fails closed for the retry with no signal.
+    # An unverified snapshot still holds the recorded pair: both rungs kill it
+    # ticks-matched, and the stop fails closed for the retry with no signal.
     OUT=$(sc SNAP_RC=1 TREE=)
-    if ! { printf '%s\n' "$OUT" | grep -q '^RC=1 PATH=unverified ' && ! printf '%s\n' "$OUT" | grep -q '^CALL kill \|^CALL native\|^CALL taskkill\|^CALL snapshot'; }; then
+    if ! { printf '%s\n' "$OUT" | grep -q '^RC=1 PATH=unverified ' && ! printf '%s\n' "$OUT" | grep -q '^CALL kill \|^CALL native\|^CALL taskkill' && [ "$(printf '%s\n' "$OUT" | grep -c '^CALL snapshot \[35124,639012345678901237\]$')" -eq 2 ]; }; then
       SC_FAILED=1; echo "  detail [$SC_LABEL unverified]: $(printf '%s' "$OUT" | tr '\n' '|')"
     fi
   done
@@ -1308,6 +1358,188 @@ stop_child stop_complete; echo "RC=$? PATH=$STOP_PATH"
 builtin kill -9 "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null; true' > "$TMP/stopc-own.sh"
   OUT=$(timeout 60 bash "$TMP/stopc-own.sh" "$SC_DIR" 2>&1)
   printf '%s\n' "$OUT" | grep -q '^CALL kill -TERM [0-9]*$' && printf '%s\n' "$OUT" | grep -q '^CALL native 5 taskkill //F //PID 9[0-9]*$' && printf '%s\n' "$OUT" | grep -q '^CALL kill -9 [0-9]*$' && printf '%s\n' "$OUT" | grep -q '^RC=0 PATH=kill$'; CHECK_RC=$?; check "control: this supervisor's own launched child still takes the TERM, the guarded taskkill and the KILL on its own live job (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+fi
+
+# --- An adopted child's stop through the real stop_child, build and retry ---
+# stop_child, build_stop_snapshot, retry_stop_escalation, refresh_child_tree and
+# everything they call run as written. Only the leaves are stubbed: the MSYS
+# process table (`ps`, which resolve_windows_pid falls back to for a pid /proc
+# does not list), the PowerShell call (the walk, the survivor read and the
+# Stop-Process kill), the MSYS `kill` and the native taskkill. The child's MSYS
+# pids are real pids of this suite that have exited, so /proc has no entry for
+# them and every resolve of one reaches the `ps` leaf, which records the
+# function that asked. A world of files stands in for the box: the MSYS table,
+# the MSYS pids that answer `kill -0`, the live Windows pids with their start
+# ticks, and each Windows pid's walked descendants. Every Stop-Process pair is
+# recorded, and a pair whose pid is live under the same ticks dies.
+: > "$TMP/astop.fn"
+for fn in $(SUPERVISOR_CLOSURE_STUBS="log log_diag run_bounded_powershell_capture run_bounded_native" supervisor_fn_closure "$SCRIPT" stop_child retry_stop_escalation refresh_child_tree child_present); do
+  supervisor_extract_fn "$SCRIPT" "$fn" "$TMP/astop.fn" || true
+done
+ASTOP_REAL=$(tr -d '\r' < "$TMP/astop.fn")
+AS_HAVE=1
+for fn in stop_child build_stop_snapshot retry_stop_escalation refresh_child_tree walk_msys_process_tree snapshot_process_tree check_snapshot_survivors kill_process_snapshot resolve_windows_pid kill_holder; do
+  printf '%s\n' "$ASTOP_REAL" | grep -q "^$fn() {\$" || AS_HAVE=0
+done
+printf '%s\n' "$ASTOP_REAL" | grep -q '^run_bounded_powershell_capture() {$' && AS_HAVE=0
+[ "$AS_HAVE" = 1 ]; check "the adopted stop's real closure carries the stop, the build, the retry, the refresh, the walks, the kill and the resolve, and not the leaves it stubs" "$?"
+if [ "$AS_HAVE" = 1 ]; then
+  AS_DIR=$(mktemp -d "$TMP/astop.XXXXXX")
+  printf '%s\n%s\n' "$STUB_OPTIONS" "$ASTOP_REAL" > "$TMP/astop.sh"
+  cat >> "$TMP/astop.sh" <<'DRIVER'
+log() { echo "LOG $*"; }
+log_diag() { :; }
+sleep() { :; }
+W="$1"; CALLS="$W/calls"; : > "$CALLS"; rm -f "$W"/walkfail.*
+T_CHILD=639012345678901237; T_CLAUDE=639012345678901300; T_HOLDER=639012345678901180
+T_F=639012345678902001; T_F2=639012345678902002; T_OTHER=639012345678903001; T_X=639012345678903002
+( exit 0 ) & P=$!; wait "$P"
+( exit 0 ) & C=$!; wait "$C"
+row() { printf '%9s %7s %7s %10s  pty0     197609 12:00:00 %s\n' "$1" "$2" "$1" "$3" "$4"; }
+{ row "$P" 1 35124 /usr/bin/bash; row "$C" "$P" 35200 /usr/bin/claude; } > "$W/table"
+printf '%s\n' "$P" "$C" > "$W/msys"
+printf '%s\n' "35124 $T_CHILD" "35200 $T_CLAUDE" "35088 $T_HOLDER" > "$W/alive"
+: > "$W/desc"
+ps() {
+  echo "      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND"
+  if [ "${1:-}" = "-p" ]; then
+    echo "RESOLVE $2 ${FUNCNAME[*]:1}" >> "$CALLS"
+    awk -v p="$2" '$1 == p' "$W/table"
+    return 0
+  fi
+  cat "$W/table"
+}
+kill() {
+  if [ "$1" = "-0" ]; then
+    grep -qx "$2" "$W/msys" && return 0
+    builtin kill -0 "$2" 2>/dev/null
+    return $?
+  fi
+  echo "SIGNAL $*" >> "$CALLS"
+  return 0
+}
+run_bounded_native() { echo "NATIVE $*" >> "$CALLS"; return 0; }
+ticks_of() { awk -v p="$1" '$1 == p { print $2; exit }' "$W/alive"; }
+drop_alive() { grep -v "^$1 " "$W/alive" > "$W/alive.n"; mv "$W/alive.n" "$W/alive"; }
+# The child ends: the wrapper and claude are gone from both tables. Where the
+# input closed, the wrapper wrote its marker. REUSE_MSYS hands the wrapper's
+# MSYS pid to a foreign process running as Windows pid 48000, with a Windows
+# child of its own; REUSE_WIN hands the wrapper's Windows pid to a foreign
+# process with a Windows child of its own.
+child_ends() {
+  drop_alive 35124; drop_alive 35200
+  rm -f "$W/walkfail.35124"
+  : > "$W/table"; : > "$W/msys"; : > "$W/desc"
+  [ "${1:-}" = eof ] && echo 0 > "$EXIT_MARKER"
+  if [ -n "${REUSE_MSYS:-}" ]; then
+    row "$P" 1 48000 /usr/bin/foreign > "$W/table"; echo "$P" > "$W/msys"
+    printf '%s\n' "48000 $T_F" "48001 $T_F2" >> "$W/alive"; echo "48000 48001 $T_F2" >> "$W/desc"
+  fi
+  if [ -n "${REUSE_WIN:-}" ]; then
+    printf '%s\n' "35124 $T_OTHER" "35300 $T_X" >> "$W/alive"; echo "35124 35300 $T_X" >> "$W/desc"
+  fi
+}
+pairs_in() { printf '%s' "$1" | grep -o '@{Id=[0-9]*;Ticks=[0-9]*}' | sed 's/@{Id=\([0-9]*\);Ticks=\([0-9]*\)}/\1,\2/'; }
+run_bounded_powershell_capture() {
+  local script="$2" id t pair
+  case "$script" in
+    *Stop-Process*)
+      for pair in $(pairs_in "$script"); do
+        echo "KILL $pair" >> "$CALLS"
+        [ -n "${STUBBORN:-}" ] && continue
+        id="${pair%%,*}"; t=$(ticks_of "$id")
+        [ -n "$t" ] && [ "$t" = "${pair#*,}" ] || continue
+        drop_alive "$id"
+        if [ "$id" = 35088 ] && [ -n "${EOF_ENDS:-}" ]; then child_ends eof; fi
+        if [ "$id" = 35124 ] && [ -n "${KILL_ENDS:-}" ]; then child_ends; fi
+      done
+      ;;
+    *Get-CimInstance*)
+      id=$(printf '%s\n' "$script" | sed -n 's/.*Select-ProcessTree [^ ]* \([0-9][0-9]*\).*/\1/p' | head -1)
+      echo "WALK $id" >> "$CALLS"
+      [ -f "$W/walkfail.$id" ] && return 1
+      t=$(ticks_of "$id")
+      if [ -n "$t" ]; then
+        echo "$id,$t"
+        awk -v r="$id" '$1 == r { print $2 "," $3 }' "$W/desc"
+      fi
+      ;;
+    *'Write-Output $e.Id'*)
+      for pair in $(pairs_in "$script"); do
+        id="${pair%%,*}"; t=$(ticks_of "$id")
+        [ -n "$t" ] && [ "$t" = "${pair#*,}" ] && echo "$id"
+      done
+      ;;
+    *)
+      id=$(printf '%s\n' "$script" | sed -n 's/.*Get-Process -Id \([0-9]*\) -ErrorAction.*/\1/p' | head -1)
+      t=$(ticks_of "$id"); [ -n "$t" ] && echo "$t"
+      ;;
+  esac
+  echo "$STOP_PS_SENTINEL"
+  return 0
+}
+EXIT_MARKER="$W/.exit"; rm -f "$EXIT_MARKER"
+SUPERVISOR_PS_BOUND_S=30; STOP_PS_SENTINEL=___SUPERVISOR_PS_DONE___; RUNDIR="$W"; PLUGIN_DIR="$W"
+SUPERVISOR_STOP_GRACE_MS=2000; SUPERVISOR_STOP_BUSY_CAP_MS=1000; SUPERVISOR_POLL_MS=10000
+CHILD_INDEX=1; CHILD_LAUNCH_PID="$P"; CHILD_ADOPTED="${ADOPTED-1}"; CHILD_WINPID=35124; CHILD_TICKS="$T_CHILD"
+HOLDER_LAUNCH_PID=""; HOLDER_WINPID=""; HOLDER_TICKS=""; HOLDER_OWN_LAUNCH=""
+if [ -n "${EOF_ENDS:-}" ]; then HOLDER_LAUNCH_PID=41180; HOLDER_WINPID=35088; HOLDER_TICKS="$T_HOLDER"; fi
+CHILD_TREE_MSYS_PIDS=""; CHILD_TREE_WINPIDS=""; CHILD_TREE_SEEN_WINPIDS=""; CHILD_TREE_SEEN_PAIRS=""
+CHILD_TREE_SNAPSHOT=""; CHILD_TREE_WALKED=""; CHILD_TREE_READ_FAILED=""; CHILD_TREE_DESCENDANT_SEEN=""
+CHILD_TREE_CONFIRMED_AT=""; CHILD_TREE_FAILED_CONFIRMS=0; CHILD_TREE_POLL_WALK=failed; CHILD_ROOT_MISMATCH_LOGGED=""
+STOP_SNAPSHOT_BUILT=""; STOP_SNAPSHOT_WRAPPER_WINPID=""; STOP_TREE_MOVED=""; LAST_STOP_SNAPSHOT=""; STOP_PATH=""; OUT=""
+# The poll that recorded the tree, before the stop. Only the stop's own calls
+# are asserted, so the record is cleared of the poll's.
+refresh_child_tree
+echo "POLL WALK=$CHILD_TREE_POLL_WALK TREE=[$(printf '%s' "$CHILD_TREE_SNAPSHOT" | tr '\n' '|')]"
+: > "$CALLS"
+[ -n "${WALKFAIL:-}" ] && : > "$W/walkfail.35124"
+stop_child stop_complete; rc=$?
+echo "STOP RC=$rc PATH=$STOP_PATH"
+if [ -n "${RETRY:-}" ]; then retry_stop_escalation stop_complete "$rc"; echo "RETRY RC=$?"; fi
+echo "MSYS P=$P C=$C"
+DRIVER
+  as() { env "$@" timeout 60 bash "$TMP/astop.sh" "$AS_DIR" 2>&1; }
+  # Every Stop-Process pair outside the recorded holder, the recorded child
+  # pair and the recorded tree, and every resolve of the child's MSYS pids by
+  # anything but the refresh's identity check against the recorded Windows pid.
+  as_foreign_kills() { grep '^KILL ' "$AS_DIR/calls" | grep -vx -e 'KILL 35088,639012345678901180' -e 'KILL 35124,639012345678901237' -e 'KILL 35200,639012345678901300'; }
+  as_stray_resolves() { local p c; p=$(printf '%s\n' "$OUT" | sed -n 's/^MSYS P=\([0-9]*\) C=.*/\1/p'); c=$(printf '%s\n' "$OUT" | sed -n 's/^MSYS P=[0-9]* C=\([0-9]*\)$/\1/p'); grep -E "^RESOLVE ($p|$c) " "$AS_DIR/calls" | grep -v "^RESOLVE [0-9]* resolve_windows_pid refresh_child_tree "; }
+  # The stop's walk does not complete, the input close ends the child, and
+  # before the retry re-snapshots, the wrapper's MSYS pid is running again as a
+  # foreign process under Windows pid 48000. The retry builds from the recorded
+  # pair and the walk from its Windows pid: no MSYS pid is resolved outside the
+  # refresh's identity check, and nothing foreign is killed.
+  OUT=$(as WALKFAIL=1 EOF_ENDS=1 REUSE_MSYS=1 RETRY=1)
+  printf '%s\n' "$OUT" | grep -qx 'POLL WALK=live TREE=\[35124,639012345678901237|35200,639012345678901300\]' && printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && printf '%s\n' "$OUT" | grep -qx 'RETRY RC=0' && [ -z "$(as_foreign_kills)" ] && [ -z "$(as_stray_resolves)" ] && grep -q '^KILL 35124,639012345678901237$' "$AS_DIR/calls" && ! grep -q '^SIGNAL \|^NATIVE ' "$AS_DIR/calls"; CHECK_RC=$?; check "adopted stop, real build and retry: a wrapper MSYS pid reused by a foreign process before the retry is never resolved outside the refresh's identity check, and every kill names only the recorded holder, child pair and tree (foreign kills: $(as_foreign_kills | tr '\n' ' '); stray resolves: $(as_stray_resolves | tr '\n' ' '); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # The instrument speaks: the refresh's identity check did resolve the reused
+  # MSYS pid to the foreign Windows pid during the retry, so an empty stray
+  # list above is the build not asking rather than a leaf nobody reached.
+  P_NOW=$(printf '%s\n' "$OUT" | sed -n 's/^MSYS P=\([0-9]*\) C=.*/\1/p')
+  grep -q "^RESOLVE $P_NOW resolve_windows_pid refresh_child_tree retry_stop_escalation" "$AS_DIR/calls" && grep -q 'not the 35124 its handle recorded' <<< "$OUT"; CHECK_RC=$?; check "control: the retry's refresh resolved the reused MSYS pid through the ps leaf and read it as a process the handle never named (calls: $(tr '\n' '|' < "$AS_DIR/calls"))" "$CHECK_RC"
+  # The same, with the wrapper's Windows pid also handed to a foreign process:
+  # the walk from the recorded Windows pid names a root under other start ticks
+  # and a foreign child, and neither is killed.
+  OUT=$(as WALKFAIL=1 EOF_ENDS=1 REUSE_MSYS=1 REUSE_WIN=1 RETRY=1)
+  printf '%s\n' "$OUT" | grep -qx 'RETRY RC=0' && [ -z "$(as_foreign_kills)" ] && [ -z "$(as_stray_resolves)" ] && grep -q '^WALK 35124$' "$AS_DIR/calls"; CHECK_RC=$?; check "adopted stop, real build and retry: a recorded Windows pid now held under other start ticks is walked, and neither it nor its foreign child is killed (foreign kills: $(as_foreign_kills | tr '\n' ' '); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # Control: this supervisor's own launch still resolves its wrapper's MSYS pid
+  # in the build, and the ps leaf records that the build asked.
+  OUT=$(as ADOPTED= WALKFAIL=1)
+  P_NOW=$(printf '%s\n' "$OUT" | sed -n 's/^MSYS P=\([0-9]*\) C=.*/\1/p')
+  grep -q "^RESOLVE $P_NOW resolve_windows_pid build_stop_snapshot " "$AS_DIR/calls"; CHECK_RC=$?; check "control: an own-launch stop's build resolves the wrapper's MSYS pid, and the ps leaf names build_stop_snapshot as the caller (calls: $(tr '\n' '|' < "$AS_DIR/calls"))" "$CHECK_RC"
+  # A walk that does not complete leaves the adopted stop its kill rungs: the
+  # recorded pair joins the snapshot, the TERM rung and the KILL rung each kill
+  # it ticks-matched, and the stop reports the tree unverified.
+  OUT=$(as WALKFAIL=1 STUBBORN=1)
+  printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && [ "$(grep -c '^KILL 35124,639012345678901237$' "$AS_DIR/calls")" -eq 2 ] && [ -z "$(as_foreign_kills)" ] && printf '%s\n' "$OUT" | grep -q 'tree not verified' && printf '%s\n' "$OUT" | grep -q 'TERM grace expired for adopted child-1' && ! grep -q '^SIGNAL \|^NATIVE ' "$AS_DIR/calls"; CHECK_RC=$?; check "adopted stop, failed entry walk: the TERM and KILL rungs both kill the recorded pair ticks-matched, no MSYS signal or taskkill is sent, and the stop logs the tree unverified (calls: $(tr '\n' '|' < "$AS_DIR/calls"); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # The TERM rung's kill ends the child: the stop still reports unverified
+  # rather than a confirmed stop, since no walk ever completed.
+  OUT=$(as WALKFAIL=1 KILL_ENDS=1)
+  printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=unverified' && [ "$(grep -c '^KILL 35124,639012345678901237$' "$AS_DIR/calls")" -ge 1 ] && ! grep -q '^SIGNAL \|^NATIVE ' "$AS_DIR/calls"; CHECK_RC=$?; check "adopted stop, failed entry walk: a child the TERM rung's ticks-matched kill ends is reported unverified, not stopped (calls: $(tr '\n' '|' < "$AS_DIR/calls"); out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # Control: the same stubborn child under a walk that completes reaches both
+  # rungs and fails as kill_failed, with no unverified line.
+  OUT=$(as STUBBORN=1)
+  printf '%s\n' "$OUT" | grep -qx 'STOP RC=1 PATH=kill_failed' && [ "$(grep -c '^KILL 35124,639012345678901237$' "$AS_DIR/calls")" -eq 2 ] && ! printf '%s\n' "$OUT" | grep -q 'tree not verified'; CHECK_RC=$?; check "control: a stubborn adopted child under a walk that completes takes both rungs and fails as kill_failed, with no unverified line (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
 fi
 
 # --- The cleanup trap with no poll reading yet ---
