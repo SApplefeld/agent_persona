@@ -93,7 +93,16 @@ holder_ask_valid() {  # <line>
   node -e '
 let o;
 try { o = JSON.parse(process.argv[1]); } catch (e) { process.exit(1); }
-const content = o && o.type === "user" && o.message && o.message.content;
+// Exactly the envelope the supervisor writes and nothing more: a user turn
+// whose only keys are type and message, and a message whose only keys are
+// role (user) and content. A key beyond those is a line the supervisor did
+// not write, and is refused rather than relayed.
+const sameKeys = (obj, keys) => obj && typeof obj === "object" && !Array.isArray(obj)
+  && Object.keys(obj).length === keys.length && keys.every((k) => k in obj);
+if (!sameKeys(o, ["type", "message"]) || o.type !== "user") process.exit(1);
+const m = o.message;
+if (!sameKeys(m, ["role", "content"]) || m.role !== "user") process.exit(1);
+const content = m.content;
 if (!Array.isArray(content) || content.length !== 1) process.exit(1);
 const block = content[0];
 const ok = block && typeof block === "object" && block.type === "text"

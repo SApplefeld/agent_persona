@@ -244,9 +244,10 @@ TABLE_ROW="${TABLE_ROW:-}"
 ps() { echo "      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND"; [ -n "$TABLE_ROW" ] && echo "$TABLE_ROW"; return 0; }
 resolve_windows_pid() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null && echo "9$1"; return 0; }
 walk_msys_process_tree() { [ "${WALK_RC:-0}" = 3 ] && return 3; echo "$2,111"; return 0; }
-log() { :; }
-CHILD_LAUNCH_PID="$1"; CHILD_INDEX=1; CHILD_TREE_WINPIDS=""; CHILD_TREE_FAILED_CONFIRMS=0
+log() { [ -n "${LOG_ON:-}" ] && echo "$*"; return 0; }
+CHILD_LAUNCH_PID="$1"; CHILD_INDEX=1; CHILD_TREE_WINPIDS=""; CHILD_TREE_FAILED_CONFIRMS=0; CHILD_ROOT_MISMATCH_LOGGED=""
 refresh_child_tree
+[ -n "${TWICE:-}" ] && refresh_child_tree
 echo "WALK=$CHILD_TREE_POLL_WALK"' > "$TMP/refresh.sh"
   sleep 60 &
   LIVE_ROOT=$!
@@ -276,17 +277,55 @@ echo "WALK=$CHILD_TREE_POLL_WALK"' > "$TMP/refresh.sh"
   OUT=$(WALK_RC=3 TABLE_ROW="$(printf '%9s %7s %7s %10s  pty0     197609 12:00:00 /usr/bin/sleep' "$LIVE_ROOT" 1 "$LIVE_ROOT" "9$LIVE_ROOT")" bash "$TMP/refresh.sh" "$LIVE_ROOT" 2>&1)
   [ "$OUT" = "WALK=failed" ]; check "every member exiting inside its walk under a launch pid that still answers reads as a walk that did not complete (got $OUT)" "$?"
   # An adopted child's launch pid is trusted only while it runs as the Windows
-  # pid its handle recorded: a root resolving to another pid is a walk that
-  # did not complete, and the recorded pid itself is a walk that found it.
+  # pid its handle recorded: a root resolving to another pid is a process the
+  # handle never named, so the child reads gone (a walk that found nothing),
+  # logged once across polls, and the recorded pid itself is a walk that found
+  # it.
   LIVE_ROW="$(printf '%9s %7s %7s %10s  pty0     197609 12:00:00 /usr/bin/sleep' "$LIVE_ROOT" 1 "$LIVE_ROOT" "9$LIVE_ROOT")"
-  OUT=$(CHILD_ADOPTED=1 CHILD_WINPID=555 TABLE_ROW="$LIVE_ROW" bash "$TMP/refresh.sh" "$LIVE_ROOT" 2>&1)
-  [ "$OUT" = "WALK=failed" ]; check "an adopted child whose launch pid runs as a Windows pid other than the one its handle recorded reads as a walk that did not complete (got $OUT)" "$?"
+  OUT=$(CHILD_ADOPTED=1 CHILD_WINPID=555 TABLE_ROW="$LIVE_ROW" LOG_ON=1 TWICE=1 bash "$TMP/refresh.sh" "$LIVE_ROOT" 2>&1)
+  printf '%s\n' "$OUT" | grep -qx 'WALK=none' && [ "$(printf '%s\n' "$OUT" | grep -c 'not the 555 its handle recorded, so the recorded child is no longer under that pid and reads gone')" -eq 1 ]; CHECK_RC=$?; check "an adopted child whose launch pid runs as a Windows pid other than the one its handle recorded reads gone, logged once across two polls (got $(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
   OUT=$(CHILD_ADOPTED=1 CHILD_WINPID="9$LIVE_ROOT" TABLE_ROW="$LIVE_ROW" bash "$TMP/refresh.sh" "$LIVE_ROOT" 2>&1)
   [ "$OUT" = "WALK=live" ]; check "control: an adopted child whose launch pid runs as the recorded Windows pid reads as a walk that found it (got $OUT)" "$?"
   OUT=$(CHILD_ADOPTED= CHILD_WINPID=555 TABLE_ROW="$LIVE_ROW" bash "$TMP/refresh.sh" "$LIVE_ROOT" 2>&1)
   [ "$OUT" = "WALK=live" ]; check "control: a launched child's walk is not checked against a recorded Windows pid (got $OUT)" "$?"
   kill "$LIVE_ROOT" 2>/dev/null
   wait "$LIVE_ROOT" 2>/dev/null
+fi
+
+# child_present, the one liveness reading the poll loop, the trap and the
+# gone sweep key on. A launched child answers `kill -0` on its launch pid. An
+# adopted child's launch pid is an MSYS pid this supervisor never held, so its
+# liveness never keys on `kill -0`: it is present while its marker is absent
+# and the walk did not complete finding nothing. The stand-in adopted pid here
+# has exited, so `kill -0` on it answers no; the adopted readings must ignore
+# that.
+PRESENT_SNIPPET=$(sed -n '/^child_present() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+[ -n "$PRESENT_SNIPPET" ]; check "child_present is found in bin/supervise.sh" "$?"
+if [ -n "$PRESENT_SNIPPET" ]; then
+  CP_DIR=$(mktemp -d "$TMP/present.XXXXXX")
+  printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$PRESENT_SNIPPET" '
+( exit 0 ) & DEAD=$!; wait "$DEAD"
+sleep 30 & LIVE=$!
+EXIT_MARKER="$1/.exit"; rm -f "$EXIT_MARKER"
+CHILD_ADOPTED=1; CHILD_LAUNCH_PID=$DEAD
+CHILD_TREE_POLL_WALK=live; child_present; echo "adopted dead-msys-pid walk-live present=$?"
+CHILD_TREE_POLL_WALK=failed; child_present; echo "adopted dead-msys-pid walk-failed present=$?"
+CHILD_TREE_POLL_WALK=none; child_present; echo "adopted walk-none present=$?"
+CHILD_TREE_POLL_WALK=live; echo 0 > "$EXIT_MARKER"; child_present; echo "adopted marker present=$?"
+rm -f "$EXIT_MARKER"; CHILD_ADOPTED=""; CHILD_LAUNCH_PID=$DEAD; CHILD_TREE_POLL_WALK=live; child_present; echo "launched dead-pid present=$?"
+CHILD_LAUNCH_PID=$LIVE; CHILD_TREE_POLL_WALK=none; child_present; echo "launched live-pid walk-none present=$?"
+CHILD_LAUNCH_PID=""; child_present; echo "no pid present=$?"
+kill "$LIVE" 2>/dev/null' > "$TMP/present.sh"
+  OUT=$(bash "$TMP/present.sh" "$CP_DIR" 2>&1)
+  printf '%s\n' "$OUT" | grep -qx 'adopted dead-msys-pid walk-live present=0' && printf '%s\n' "$OUT" | grep -qx 'adopted dead-msys-pid walk-failed present=0'; CHECK_RC=$?; check "adopted liveness: a stand-in MSYS pid that does not answer kill -0 still reads present while the walk reads live or did not complete, so the poll loop does not end on it (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  printf '%s\n' "$OUT" | grep -qx 'adopted walk-none present=1' && printf '%s\n' "$OUT" | grep -qx 'adopted marker present=1'; check "adopted liveness: the child reads gone on the walk finding nothing or on the marker, which is what ends the poll loop" "$?"
+  printf '%s\n' "$OUT" | grep -qx 'launched dead-pid present=1' && printf '%s\n' "$OUT" | grep -qx 'launched live-pid walk-none present=0' && printf '%s\n' "$OUT" | grep -qx 'no pid present=1'; check "control: a launched child keys on kill -0 of its own launch pid and not on the walk, and no pid is never present" "$?"
+  # The poll loop, the trap and the gone sweep all read the child through this
+  # helper, and the only `kill -0` lines left on the launch pid are the
+  # helper's own launched-child reading and the own-launch wait for the
+  # holder's pid file: two sites, neither reached for an adopted child.
+  KILL0_SITES=$(grep -c 'kill -0 "\$CHILD_LAUNCH_PID"' "$SCRIPT")
+  grep -q '^  while child_present; do$' "$SCRIPT" && [ "$(grep -c 'if child_present; then' "$SCRIPT")" -eq 2 ] && [ "$KILL0_SITES" -eq 2 ]; CHECK_RC=$?; check "the poll loop, cleanup and sweep_gone_child key on child_present, and the kill -0 lines left on the launch pid are child_present's own-launch reading and the own-launch holder-pid wait (sites: $KILL0_SITES)" "$CHECK_RC"
 fi
 
 # read_exit_marker, extracted once for every driver below that reads the
@@ -345,17 +384,34 @@ record_restart_in_hour() { echo "CALL record_restart_in_hour"; RESTART_COUNT="${
 log_diag() { echo "$*" >&2; }
 clear_handle() { :; }
 kill_holder() { :; }
+refresh_child_tree() { echo "CALL refresh"; CHILD_TREE_POLL_WALK="${WALK_STUB:-failed}"; }
 '"$EXITM_SNIPPET"'
-if [ "${WRAPPER:-dead}" = live ]; then sleep 30 & else ( exit 7 ) & fi
-CHILD_LAUNCH_PID=$!
-[ "${WRAPPER:-dead}" = live ] || sleep 1
+'"$PRESENT_SNIPPET"'
+# An adopted stand-in is a process this driver did not launch (started under a
+# subshell that has exited), so `wait` on it returns at once as it does for a
+# real adopted child, while `kill -0` on it still answers.
+case "${WRAPPER:-dead}" in
+  live) sleep 30 & CHILD_LAUNCH_PID=$! ;;
+  foreign) CHILD_LAUNCH_PID=$( (sleep 30 >/dev/null 2>&1 & echo $!) ) ;;
+  *) ( exit 7 ) & CHILD_LAUNCH_PID=$! ;;
+esac
+[ "${WRAPPER:-dead}" = dead ] && sleep 1
+CHILD_ADOPTED="${ADOPTED_STUB:-}"; CHILD_TREE_POLL_WALK="failed"
 CHILD_INDEX=1; DECIDE_REASON="gone: test"; EXIT_MARKER="$1"; STOP_PATH=eof
 echo "${MARKER_CODE:-7}" > "$EXIT_MARKER"
 LAUNCHED_AT="${LAUNCHED_AT_STUB-$(node -e "console.log(Date.now())")}"; SUPERVISOR_MIN_RUN_MS=120000
 CRASH_COUNT="${CRASH_COUNT_START:-0}"; RESTART_COUNT=0; SUPERVISOR_MAX_RESTARTS_PER_HOUR=6; SUPERVISOR_CRASH_LIMIT=3
 sweep_gone_child
-echo "RETURNED crash=$CRASH_COUNT restarts=$RESTART_COUNT marker=$(cat "$1")"' > "$TMP/sweep.sh"
+echo "RETURNED crash=$CRASH_COUNT restarts=$RESTART_COUNT marker=$(cat "$1")"
+[ "${WRAPPER:-dead}" = foreign ] && kill "$CHILD_LAUNCH_PID" 2>/dev/null; true' > "$TMP/sweep.sh"
   sweep_run() { timeout 60 bash "$TMP/sweep.sh" "$TMP/sweep.exit" 2>&1; }
+  # An adopted child whose MSYS pid still answers `kill -0` is not stopped on
+  # that answer: with the marker present and a fresh walk reading none, it is
+  # accounted at once, with no stop_child and no blocking wait.
+  OUT=$(SWEEP_RC_STUB=0 WRAPPER=foreign ADOPTED_STUB=1 WALK_STUB=none sweep_run)
+  printf '%s\n' "$OUT" | grep -qx 'CALL refresh' && ! printf '%s\n' "$OUT" | grep -q '^CALL stop_child' && printf '%s\n' "$OUT" | grep -qx 'EXIT child-1 code=7 (sweep_relaunch)' && printf '%s\n' "$OUT" | grep -q '^RETURNED '
+  R=$?
+  check "an adopted child is re-walked after the sweep and, with its marker present and the walk reading none, accounted with no stop on its MSYS pid answering kill -0 (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$R"
   # A sweep returning 1 takes the retry backstop before anything else.
   OUT=$(SWEEP_RC_STUB=1 WRAPPER=dead sweep_run)
   printf '%s\n' "$OUT" | grep -qx 'CALL retry_stop_escalation sweep_relaunch 1'
@@ -677,42 +733,48 @@ if [ -n "$WRAP_SNIPPET" ]; then
 fi
 
 # --- The writer-running and child-identity checks ---
-# Each is extracted and driven with handle_field and check_snapshot_survivors
-# stubbed from the environment. A writer pair that is absent or not numeric
-# reads as running, so the gate waits; a child pair that is absent or not
-# numeric reads unverified, so the gate waits rather than adopting.
+# Each is extracted and driven with read_handle_fields and
+# check_snapshot_survivors stubbed from the environment. A writer pair that is
+# absent or not numeric reads as running, so the gate waits; a child pair that
+# is absent or not numeric reads unverified, so the gate waits rather than
+# adopting. The pair reaches the survivor check as the 18-digit string it was
+# read as.
 WRITER_SNIPPET=$(sed -n '/^handle_writer_running() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
 IDENT_SNIPPET=$(sed -n '/^handle_child_identity() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
 [ -n "$WRITER_SNIPPET" ] && [ -n "$IDENT_SNIPPET" ]; check "handle_writer_running and handle_child_identity are found in bin/supervise.sh" "$?"
 if [ -n "$WRITER_SNIPPET" ] && [ -n "$IDENT_SNIPPET" ]; then
   printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$WRITER_SNIPPET" '
-handle_field() { case "$2" in supervisorWinPid) printf "%s" "${WIN:-}" ;; supervisorTicks) printf "%s" "${TICK:-}" ;; esac; }
-check_snapshot_survivors() { printf "%s" "${SURV_OUT:-}"; return "${SURV_RC:-0}"; }
+read_handle_fields() { echo "READ" >&2; printf "sessionId\ts\nsupervisorWinPid\t%s\nsupervisorTicks\t%s\n" "${WIN:-}" "${TICK:-}"; }
+handle_field() { echo "NEVER handle_field" >&2; }
+check_snapshot_survivors() { printf "CHECK(%s)\n" "$1" >&2; printf "%s" "${SURV_OUT:-}"; return "${SURV_RC:-0}"; }
 handle_writer_running /any' > "$TMP/writer.sh"
-  wr() { env "$@" bash "$TMP/writer.sh"; }
+  wr() { env "$@" bash "$TMP/writer.sh" 2>"$TMP/writer.err"; }
   [ "$(wr WIN= TICK=)" = 1 ]; check "writer-running: an absent supervisor pair reads as running" "$?"
-  [ "$(wr WIN=x TICK=5)" = 1 ]; check "writer-running: a non-numeric supervisor pid reads as running" "$?"
-  [ "$(wr WIN=4 TICK=5 SURV_OUT= SURV_RC=0)" = 0 ]; check "writer-running: a numeric pair with no survivor reads as dead" "$?"
-  [ "$(wr WIN=4 TICK=5 SURV_OUT=4 SURV_RC=0)" = 1 ]; check "writer-running: a numeric pair still live reads as running" "$?"
-  [ "$(wr WIN=4 TICK=5 SURV_OUT= SURV_RC=1)" = 1 ]; check "writer-running: an unverifiable check reads as running" "$?"
+  [ "$(wr WIN=x TICK=639012345678900011)" = 1 ]; check "writer-running: a non-numeric supervisor pid reads as running" "$?"
+  [ "$(wr WIN=34870 TICK=639012345678900011 SURV_OUT= SURV_RC=0)" = 0 ] && grep -q 'CHECK(34870,639012345678900011)' "$TMP/writer.err" && [ "$(grep -c '^READ$' "$TMP/writer.err")" -eq 1 ] && ! grep -q NEVER "$TMP/writer.err"; check "writer-running: a numeric pair with no survivor reads as dead, checked as the exact 18-digit string off one read_handle_fields call and no handle_field call" "$?"
+  [ "$(wr WIN=34870 TICK=639012345678900011 SURV_OUT=34870 SURV_RC=0)" = 1 ]; check "writer-running: a numeric pair still live reads as running" "$?"
+  [ "$(wr WIN=34870 TICK=639012345678900011 SURV_OUT= SURV_RC=1)" = 1 ]; check "writer-running: an unverifiable check reads as running" "$?"
   printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$IDENT_SNIPPET" '
-check_snapshot_survivors() { printf "%s" "${SURV_OUT:-}"; return "${SURV_RC:-0}"; }
+check_snapshot_survivors() { printf "CHECK(%s)\n" "$1" >&2; printf "%s" "${SURV_OUT:-}"; return "${SURV_RC:-0}"; }
 handle_child_identity "${WIN:-}" "${TICK:-}"' > "$TMP/ident.sh"
-  id() { env "$@" bash "$TMP/ident.sh"; }
+  id() { env "$@" bash "$TMP/ident.sh" 2>"$TMP/ident.err"; }
   [ "$(id WIN= TICK=)" = unverified ]; check "child identity: an absent pair reads unverified" "$?"
-  [ "$(id WIN=4 TICK=5 SURV_RC=1)" = unverified ]; check "child identity: a check that did not complete reads unverified" "$?"
-  [ "$(id WIN=4 TICK=5 SURV_OUT=)" = gone ]; check "child identity: a pair no live process holds reads gone" "$?"
-  [ "$(id WIN=4 TICK=5 SURV_OUT=4)" = live ]; check "child identity: a pair a live process holds reads live" "$?"
+  [ "$(id WIN=35124 TICK=639012345678901237 SURV_RC=1)" = unverified ]; check "child identity: a check that did not complete reads unverified" "$?"
+  [ "$(id WIN=35124 TICK=639012345678901237 SURV_OUT=)" = gone ]; check "child identity: a pair no live process holds reads gone" "$?"
+  [ "$(id WIN=35124 TICK=639012345678901237 SURV_OUT=35124)" = live ] && grep -q 'CHECK(35124,639012345678901237)' "$TMP/ident.err"; check "child identity: a pair a live process holds reads live, checked as the exact 18-digit string" "$?"
 fi
 
 # --- The gate's handle read, driven with the path shape production produces ---
 # newest_handle is the real function from bin/agentic-common.sh, run over a
-# real directory: node prints a joined path with backslashes on this box, so
-# the function prints the child directory's name alone and the gate builds the
-# path in bash. gate_read_handle is then driven on that name with the real
-# read_handle_fields over a real handle.json; identity, the claim, the walk
-# and the poll are stubbed. The claim is written only once the identity reads
-# live, is read back, and is read back again after the gate poll.
+# real directory through the native node on this box, which prints a joined
+# path with backslashes: the function prints the child directory's name alone
+# and the gate builds the path in bash. gate_read_handle is then driven on that
+# name with the real read_handle_fields over a real handle.json, and the real
+# staging, dropping and pair helpers; identity, the writer check, the claim,
+# the walk and the poll are stubbed. Every fixture carries the shape
+# production writes: pids and ticks as digit strings, ticks 18 digits wide.
+# Each case prints the route, what was written, and every per-child global,
+# so each row of the function's state table is read off one run.
 # Both node scripts close a loop with a brace at column 0, so each is
 # extracted through the shared brace-aware extractor rather than a sed range
 # that ends at the first bare brace.
@@ -722,108 +784,241 @@ NH_SNIPPET=$(tr -d '\r' < "$TMP/nh.fn")
 : > "$TMP/rhf.fn"; supervisor_extract_fn "$COMMON" read_handle_fields "$TMP/rhf.fn" || true
 RHF_SNIPPET=$(tr -d '\r' < "$TMP/rhf.fn")
 GATEREAD_SNIPPET=$(sed -n '/^gate_read_handle() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
-[ -n "$GATEREAD_SNIPPET" ] && [ -n "$NH_SNIPPET" ] && [ -n "$RHF_SNIPPET" ]; check "gate_read_handle, newest_handle and read_handle_fields are found in their scripts" "$?"
-if [ -n "$GATEREAD_SNIPPET" ] && [ -n "$NH_SNIPPET" ] && [ -n "$RHF_SNIPPET" ] && [ -n "$GATE_ROUTE_SNIPPET" ]; then
-  GR_DIR=$(mktemp -d "$TMP/gateread.XXXXXX"); mkdir -p "$GR_DIR/child-1" "$GR_DIR/child-2" "$GR_DIR/child-3" "$GR_DIR/notachild"
-  printf '{"sessionId":"sess-old","childPid":1,"childWinPid":1,"childTicks":1,"holderPid":1,"holderWinPid":1,"holderTicks":1,"supervisorWinPid":1,"supervisorTicks":1,"launchedAt":1000}' > "$GR_DIR/child-1/handle.json"
-  printf '{"sessionId":"sess-1","childPid":77,"childWinPid":4,"childTicks":5,"holderPid":88,"holderWinPid":6,"holderTicks":7,"supervisorWinPid":9,"supervisorTicks":9,"launchedAt":2000}' > "$GR_DIR/child-2/handle.json"
-  printf '{"sessionId":"sess-3","childPid":"x77","childWinPid":4,"childTicks":5}' > "$GR_DIR/child-3/handle.json"
+STAGE_SNIPPET=$(sed -n '/^gate_stage_child() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+DROP_SNIPPET=$(sed -n '/^gate_drop_child_globals() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+PAIRS_SNIPPET=$(sed -n '/^gate_sweep_pairs() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+CLEANUP_SNIPPET=$(sed -n '/^cleanup() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+[ -n "$GATEREAD_SNIPPET" ] && [ -n "$NH_SNIPPET" ] && [ -n "$RHF_SNIPPET" ] && [ -n "$STAGE_SNIPPET" ] && [ -n "$DROP_SNIPPET" ] && [ -n "$PAIRS_SNIPPET" ]; check "gate_read_handle, its staging, dropping and pair helpers, newest_handle and read_handle_fields are found in their scripts" "$?"
+# The 18-digit ticks and five-digit Windows pids every handle fixture below
+# carries, at or above the width production records.
+T_CHILD=639012345678901237; T_HOLDER=639012345678901180; T_SUP=639012345678900011; T_SELF=639012345678999999
+W_CHILD=35124; W_HOLDER=35088; W_SUP=34870; W_SELF=34999
+if [ -n "$GATEREAD_SNIPPET" ] && [ -n "$NH_SNIPPET" ] && [ -n "$RHF_SNIPPET" ] && [ -n "$GATE_ROUTE_SNIPPET" ] && [ -n "$STAGE_SNIPPET" ] && [ -n "$DROP_SNIPPET" ] && [ -n "$PAIRS_SNIPPET" ] && [ -n "$PRESENT_SNIPPET" ] && [ -n "$TRAP_ROUTE_SNIPPET" ] && [ -n "$CLEANUP_SNIPPET" ]; then
+  GR_DIR=$(mktemp -d "$TMP/gateread.XXXXXX"); mkdir -p "$GR_DIR/child-1" "$GR_DIR/child-2" "$GR_DIR/child-3" "$GR_DIR/child-4" "$GR_DIR/notachild"
+  printf '{"sessionId":"sess-old","holderPid":"40011","holderWinPid":"30011","holderTicks":"639012345678900100","childPid":"40012","childWinPid":"30012","childTicks":"639012345678900101","supervisorWinPid":"30010","supervisorTicks":"639012345678900001","launchedAt":1000,"childIndex":1}' > "$GR_DIR/child-1/handle.json"
+  H2_JSON='{"sessionId":"sess-1","holderPid":"41180","holderWinPid":"'$W_HOLDER'","holderTicks":"'$T_HOLDER'","childPid":"41236","childWinPid":"'$W_CHILD'","childTicks":"'$T_CHILD'","supervisorWinPid":"'$W_SUP'","supervisorTicks":"'$T_SUP'","launchedAt":2000,"childIndex":2}'
+  printf '%s' "$H2_JSON" > "$GR_DIR/child-2/handle.json"
+  # child-3: a dead writer whose child pid is not a pid at all; child-4: a
+  # handle that cannot be read. Neither is newer than child-2.
+  H3_JSON='{"sessionId":"sess-3","childPid":"x77","childWinPid":"'$W_CHILD'","childTicks":"'$T_CHILD'","supervisorWinPid":"'$W_SUP'","supervisorTicks":"'$T_SUP'","launchedAt":1500}'
+  printf '%s' "$H3_JSON" > "$GR_DIR/child-3/handle.json"
+  : > "$GR_DIR/child-4/handle.json"
   : > "$GR_DIR/notachild/handle.json"
   printf '%s\n%s\nnewest_handle "$1"\n' "$STUB_OPTIONS" "$NH_SNIPPET" > "$TMP/nh.sh"
   NH_NAME=$(bash "$TMP/nh.sh" "$GR_DIR" 2>"$TMP/nh.err")
-  [ "$NH_NAME" = "child-2" ]; check "newest_handle over a real directory prints the newest child directory's name and nothing of the path (got '$NH_NAME')" "$?"
-  grep -qx 'OLDER child-1' "$TMP/nh.err"; check "newest_handle names the older handle it passed over" "$?"
-  printf '%s\n%s\n%s\n%s\n%s\n' "$STUB_OPTIONS" "$GATE_ROUTE_SNIPPET" "$RHF_SNIPPET" "$GATEREAD_SNIPPET" '
+  [ "$NH_NAME" = "child-2" ]; check "newest_handle over a real directory, through the native node, prints the newest child directory's name and nothing of the backslash path (got '$NH_NAME')" "$?"
+  grep -qx 'OLDER child-1' "$TMP/nh.err" && grep -qx 'OLDER child-3' "$TMP/nh.err"; check "newest_handle names each older handle it passed over" "$?"
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$STUB_OPTIONS" "$GATE_ROUTE_SNIPPET" "$RHF_SNIPPET" "$PRESENT_SNIPPET" "$TRAP_ROUTE_SNIPPET" "$CLEANUP_SNIPPET" "$STAGE_SNIPPET" "$DROP_SNIPPET" "$PAIRS_SNIPPET" "$GATEREAD_SNIPPET" '
 log() { echo "LOG $*"; }
-write_handle() { echo "CALL write_handle sess=$1"; }
+log_diag() { echo "DIAG $*"; }
+WRITES=0
+write_handle() { WRITES=$((WRITES + 1)); echo "CALL write_handle sess=$1"; }
 CLAIMS=0
 claim_is_ours() { CLAIMS=$((CLAIMS + 1)); if [ "$CLAIMS" -eq 2 ] && [ "${CLAIM2:-1}" = 0 ]; then return 1; fi; [ "${CLAIM:-1}" = 1 ]; }
 handle_child_identity() { echo "IDENT($1,$2)" >&2; echo "${IDENT:-live}"; }
-refresh_child_tree() { echo "CALL refresh"; }
+handle_writer_running() { echo "CALL writer_check" >&2; echo "${WRITER:-0}"; }
+ensure_self_ticks() { :; }
+refresh_child_tree() { echo "CALL refresh"; CHILD_TREE_POLL_WALK="${WALK:-live}"; CHILD_TREE_SNAPSHOT="${TREE:-}"; }
 run_child_poll() { echo "CALL poll"; DECIDE_ACTION="continue"; DECIDE_ERR="${POLL_ERR:-0}"; POLL_LIVENESS="${LIVE:-alive signal}"; }
-RUNDIR="$1"; CHILD_LAUNCH_PID=""; CHILD_INDEX=0
+stop_child() { echo "CALL stop_child $1"; return 0; }
+retry_stop_escalation() { echo "CALL retry $1 $2"; return 0; }
+kill_process_snapshot() { echo "CALL snapshot $1"; return 0; }
+kill() { echo "CALL kill $*"; return 1; }
+SELF_WINPID="${SW-'$W_SELF'}"; SELF_TICKS="${ST-'$T_SELF'}"; SELF_TICKS_DONE="${SD-1}"
+RUNDIR="$1"; CHILD_LAUNCH_PID=""; CHILD_INDEX=0; CHILD_ADOPTED=""; HANDLE_FILE=""; EXIT_MARKER=""
+HOLDER_LAUNCH_PID=""; HOLDER_WINPID=""; HOLDER_TICKS=""; CHILD_WINPID=""; CHILD_TICKS=""; CHILD_SESSION_ID=""; LAUNCHED_AT=""
+# A stale reading and snapshot from an earlier child, which every pass must clear.
+POLL_LIVENESS="gone stale"; LAST_STOP_SNAPSHOT="1,2"; CHILD_TREE_POLL_WALK="failed"
 gate_read_handle "$2"
-echo "ROUTE=$GATE_ROUTE VERDICT=$VERDICT INDEX=$CHILD_INDEX PID=[$CHILD_LAUNCH_PID] HANDLE=${HANDLE_FILE:-} LAUNCHED=[${LAUNCHED_AT:-}] CLAIMS=$CLAIMS"' > "$TMP/gateread.sh"
+echo "ROUTE=$GATE_ROUTE VERDICT=$VERDICT INDEX=$CHILD_INDEX PID=[$CHILD_LAUNCH_PID] HANDLE=${HANDLE_FILE:-} LAUNCHED=[${LAUNCHED_AT:-}] CLAIMS=$CLAIMS WRITES=$WRITES"
+echo "GLOBALS ADOPTED=[$CHILD_ADOPTED] HP=[$HOLDER_LAUNCH_PID] HW=[$HOLDER_WINPID] HT=[$HOLDER_TICKS] CW=[$CHILD_WINPID] CT=[$CHILD_TICKS] SESS=[$CHILD_SESSION_ID] MARKER=[${EXIT_MARKER:-}] LIVENESS=[$POLL_LIVENESS] SNAP=[$LAST_STOP_SNAPSHOT]"
+echo "SWEEP PAIRS=[$(printf "%s" "$GATE_SWEEP_PAIRS" | tr "\n" "|")] HANDLE=[$GATE_SWEEP_HANDLE]"
+if [ "${RUN_CLEANUP:-}" = 1 ]; then trap cleanup EXIT; exit 0; fi' > "$TMP/gateread.sh"
   gr() { env "$@" bash "$TMP/gateread.sh" "$GR_DIR" "$NH_NAME" 2>&1; }
+  NO_GLOBALS='GLOBALS ADOPTED=\[\] HP=\[\] HW=\[\] HT=\[\] CW=\[\] CT=\[\] SESS=\[\] MARKER=\[\] LIVENESS=\[\] SNAP=\[\]'
+  NO_SWEEP='SWEEP PAIRS=\[\] HANDLE=\[\]'
+  # Row: alive or frozen. The claim is written, every per-child global is
+  # committed, and the route is ADOPT.
   OUT=$(gr IDENT=live LIVE="alive signal")
-  printf '%s\n' "$OUT" | grep -q 'ROUTE=ADOPT VERDICT=alive INDEX=2 PID=\[77\] HANDLE=.*/child-2/handle.json LAUNCHED=\[2000\] CLAIMS=2'; CHECK_RC=$?; check "gate read on the name newest_handle printed: a live identity and an alive verdict adopt, with the index from the name, the fields from one read, and the claim read back twice (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
-  printf '%s\n' "$OUT" | grep -q 'IDENT(4,5)'; check "gate read: the identity check runs on the child pair the handle records" "$?"
+  printf '%s\n' "$OUT" | grep -q "ROUTE=ADOPT VERDICT=alive INDEX=2 PID=\[41236\] HANDLE=.*/child-2/handle.json LAUNCHED=\[2000\] CLAIMS=2 WRITES=1" \
+    && printf '%s\n' "$OUT" | grep -q "GLOBALS ADOPTED=\[1\] HP=\[41180\] HW=\[$W_HOLDER\] HT=\[$T_HOLDER\] CW=\[$W_CHILD\] CT=\[$T_CHILD\] SESS=\[sess-1\] MARKER=\[.*/child-2/.exit\] LIVENESS=\[alive signal\] SNAP=\[\]" \
+    && printf '%s\n' "$OUT" | grep -q "$NO_SWEEP"; CHECK_RC=$?
+  check "row alive: on the name newest_handle printed, a live identity and an alive verdict write the claim once, commit every per-child global with the 18-digit pair byte-equal, and adopt (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  printf '%s\n' "$OUT" | grep -q "IDENT($W_CHILD,$T_CHILD)"; check "gate read: the identity check runs on the exact 18-digit child pair the handle records" "$?"
   I_LINE=$(printf '%s\n' "$OUT" | grep -n 'IDENT(' | head -1 | cut -d: -f1)
   W_LINE=$(printf '%s\n' "$OUT" | grep -n '^CALL write_handle' | head -1 | cut -d: -f1)
   P_LINE=$(printf '%s\n' "$OUT" | grep -n '^CALL poll' | head -1 | cut -d: -f1)
-  [ -n "$I_LINE" ] && [ -n "$W_LINE" ] && [ -n "$P_LINE" ] && [ "$I_LINE" -lt "$W_LINE" ] && [ "$W_LINE" -lt "$P_LINE" ]; check "gate read: the claim is written after the identity reads live and before the verdict poll (lines $I_LINE < $W_LINE < $P_LINE)" "$?"
-  OUT=$(gr IDENT=live LIVE="frozen x"); printf '%s\n' "$OUT" | grep -q 'ROUTE=ADOPT VERDICT=frozen'; check "gate read: a frozen verdict adopts" "$?"
-  OUT=$(gr IDENT=gone); printf '%s\n' "$OUT" | grep -q 'ROUTE=SWEEP_LAUNCH VERDICT=gone INDEX=2 PID=\[\]' && ! printf '%s\n' "$OUT" | grep -q '^CALL poll\|^CALL write_handle' && printf '%s\n' "$OUT" | grep -q 'unswept beyond the recorded pair 4,5'; CHECK_RC=$?; check "gate read: a gone identity clears the trusted pid, routes to the sweep with no claim and no poll, and names the unswept pair (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
-  OUT=$(gr IDENT=unverified); printf '%s\n' "$OUT" | grep -q 'ROUTE=HOLD' && ! printf '%s\n' "$OUT" | grep -q '^CALL poll\|^CALL write_handle'; CHECK_RC=$?; check "gate read: an unverifiable child pair holds the gate with no claim and no poll (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
-  OUT=$(gr IDENT=live POLL_ERR=1); printf '%s\n' "$OUT" | grep -q 'ROUTE=HOLD'; check "gate read: a gate poll that fails holds the gate, not an adoption" "$?"
-  OUT=$(gr IDENT=live CLAIM=0); printf '%s\n' "$OUT" | grep -q 'ROUTE=HOLD' && ! printf '%s\n' "$OUT" | grep -q '^CALL poll' && printf '%s\n' "$OUT" | grep -q 'another supervisor claimed it'; CHECK_RC=$?; check "gate read: a claim that reads back as not this supervisor's holds the gate before any poll (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
-  OUT=$(gr IDENT=live CLAIM2=0); printf '%s\n' "$OUT" | grep -q 'ROUTE=HOLD' && printf '%s\n' "$OUT" | grep -q '^CALL poll' && printf '%s\n' "$OUT" | grep -q 'rewritten by another supervisor during the gate'; CHECK_RC=$?; check "gate read: a claim overwritten during the gate poll holds the gate after it (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
-  OUT=$(env IDENT=live bash "$TMP/gateread.sh" "$GR_DIR" child-3 2>&1); printf '%s\n' "$OUT" | grep -q 'ROUTE=ADOPT VERDICT=alive INDEX=3 PID=\[\] .*LAUNCHED=\[\]'; CHECK_RC=$?; check "gate read: a non-numeric pid and an absent launchedAt are read as empty rather than trusted (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
-  OUT=$(bash "$TMP/gateread.sh" "$GR_DIR" notachild 2>&1); printf '%s\n' "$OUT" | grep -q 'ROUTE=WAIT VERDICT= INDEX=0' && ! printf '%s\n' "$OUT" | grep -q '^CALL write_handle'; CHECK_RC=$?; check "gate read: a name that is not child-<n> is not read and not claimed (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  C_LINE=$(printf '%s\n' "$OUT" | grep -n '^CALL writer_check' | head -1 | cut -d: -f1)
+  [ -n "$C_LINE" ] && [ -n "$I_LINE" ] && [ -n "$W_LINE" ] && [ -n "$P_LINE" ] && [ "$C_LINE" -lt "$I_LINE" ] && [ "$I_LINE" -lt "$W_LINE" ] && [ "$W_LINE" -lt "$P_LINE" ]; check "gate read: the writer check, the identity check, the claim and the verdict poll run in that order (lines ${C_LINE:-none} < ${I_LINE:-none} < ${W_LINE:-none} < ${P_LINE:-none})" "$?"
+  OUT=$(gr IDENT=live LIVE="frozen x"); printf '%s\n' "$OUT" | grep -q 'ROUTE=ADOPT VERDICT=frozen' && printf '%s\n' "$OUT" | grep -q 'GLOBALS ADOPTED=\[1\]'; check "row frozen: a frozen verdict adopts with the globals committed" "$?"
+  # Row: writer running. Nothing is written, no identity check runs, no
+  # global is set, and the route is HOLD.
+  OUT=$(gr WRITER=1)
+  printf '%s\n' "$OUT" | grep -q 'ROUTE=HOLD VERDICT= INDEX=0 PID=\[\] HANDLE= LAUNCHED=\[\] CLAIMS=0 WRITES=0' && ! printf '%s\n' "$OUT" | grep -q 'IDENT(\|^CALL poll' && printf '%s\n' "$OUT" | grep -q "$NO_GLOBALS" && printf '%s\n' "$OUT" | grep -q 'still running (or one that cannot be ruled out)'; CHECK_RC=$?
+  check "row writer running: no claim, no identity check, no poll, no global set, the stale reading cleared, route HOLD (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # A handle carrying this supervisor's own pair is its claim from an earlier
+  # pass: the writer check is skipped and the pass goes on to ADOPT, which is
+  # what lets a hold that claimed and then failed its poll re-read to ADOPT.
+  OUT=$(gr WRITER=1 SW="$W_SUP" ST="$T_SUP")
+  printf '%s\n' "$OUT" | grep -q 'ROUTE=ADOPT VERDICT=alive' && ! printf '%s\n' "$OUT" | grep -q '^CALL writer_check' && printf '%s\n' "$OUT" | grep -q 'own claim from an earlier pass'; CHECK_RC=$?
+  check "gate read: a handle carrying this supervisor's own pair skips the writer check as its own earlier claim and goes on to adopt (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # Row: gone (identity). No claim, no poll, no global; the sweep is handed
+  # the holder's and the child's pairs and the handle, and the route is
+  # SWEEP_LAUNCH.
+  OUT=$(gr IDENT=gone)
+  printf '%s\n' "$OUT" | grep -q 'ROUTE=SWEEP_LAUNCH VERDICT=gone INDEX=0 PID=\[\] HANDLE= LAUNCHED=\[\] CLAIMS=0 WRITES=0' && ! printf '%s\n' "$OUT" | grep -q '^CALL poll\|^CALL write_handle' && printf '%s\n' "$OUT" | grep -q "unswept beyond the recorded pair $W_CHILD,$T_CHILD" && printf '%s\n' "$OUT" | grep -q "$NO_GLOBALS" && printf '%s\n' "$OUT" | grep -q "SWEEP PAIRS=\[$W_HOLDER,$T_HOLDER|$W_CHILD,$T_CHILD\] HANDLE=\[.*/child-2/handle.json\]"; CHECK_RC=$?
+  check "row gone (identity): no claim, no poll, no global set; the sweep is handed the holder's and the child's ticks-matched pairs and the handle, and the unswept pair is named (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # Row: gone (verdict). The claim was written; the sweep is handed the pairs
+  # and the walked tree, and every other global is dropped.
+  OUT=$(gr IDENT=live LIVE="gone silent" TREE="777,639012345678901300")
+  printf '%s\n' "$OUT" | grep -q 'ROUTE=SWEEP_LAUNCH VERDICT=gone INDEX=0 PID=\[\] HANDLE= LAUNCHED=\[\] CLAIMS=2 WRITES=1' && printf '%s\n' "$OUT" | grep -q "$NO_GLOBALS" && printf '%s\n' "$OUT" | grep -q "SWEEP PAIRS=\[$W_HOLDER,$T_HOLDER|$W_CHILD,$T_CHILD|777,639012345678901300\] HANDLE=\[.*/child-2/handle.json\]"; CHECK_RC=$?
+  check "row gone (verdict): the claim was written, the sweep is handed the pairs plus the walked tree, and every other global is dropped (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # Row: unverified. Nothing written, nothing set, HOLD.
+  OUT=$(gr IDENT=unverified); printf '%s\n' "$OUT" | grep -q 'ROUTE=HOLD .*CLAIMS=0 WRITES=0' && ! printf '%s\n' "$OUT" | grep -q '^CALL poll\|^CALL write_handle' && printf '%s\n' "$OUT" | grep -q "$NO_GLOBALS"; CHECK_RC=$?; check "row unverified: an unverifiable child pair holds the gate with no claim, no poll and no global set (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # Row: poll failed. The claim was written, then every global dropped.
+  OUT=$(gr IDENT=live POLL_ERR=1); printf '%s\n' "$OUT" | grep -q 'ROUTE=HOLD VERDICT= INDEX=0 PID=\[\] HANDLE= LAUNCHED=\[\] CLAIMS=1 WRITES=1' && printf '%s\n' "$OUT" | grep -q "$NO_GLOBALS"; CHECK_RC=$?; check "row poll failed: the claim was written, the gate holds, and every per-child global is dropped (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # Row: claim read-back foreign, at once and after the poll.
+  OUT=$(gr IDENT=live CLAIM=0); printf '%s\n' "$OUT" | grep -q 'ROUTE=HOLD .*CLAIMS=1 WRITES=1' && ! printf '%s\n' "$OUT" | grep -q '^CALL poll' && printf '%s\n' "$OUT" | grep -q 'another supervisor claimed it' && printf '%s\n' "$OUT" | grep -q "$NO_GLOBALS"; CHECK_RC=$?; check "row claim foreign at once: the gate holds before any poll and drops every global (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  OUT=$(gr IDENT=live CLAIM2=0); printf '%s\n' "$OUT" | grep -q 'ROUTE=HOLD .*CLAIMS=2 WRITES=1' && printf '%s\n' "$OUT" | grep -q '^CALL poll' && printf '%s\n' "$OUT" | grep -q 'rewritten by another supervisor during the gate' && printf '%s\n' "$OUT" | grep -q "$NO_GLOBALS"; CHECK_RC=$?; check "row claim foreign after the poll: the gate holds after it and drops every global (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # Row: verdict not recognized. The claim was written; HOLD, globals dropped.
+  OUT=$(gr IDENT=live LIVE="odd reading"); printf '%s\n' "$OUT" | grep -q 'ROUTE=HOLD VERDICT=odd .*CLAIMS=2 WRITES=1' && printf '%s\n' "$OUT" | grep -q "$NO_GLOBALS" && printf '%s\n' "$OUT" | grep -q 'verdict it does not route on'; CHECK_RC=$?; check "row verdict not recognized: the gate holds rather than launching beside a claimed child, and drops every global (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # Row: own pair unknown. No claim is written and the route is HOLD, with
+  # the reason logged.
+  OUT=$(gr IDENT=live SW= ST= SD=); printf '%s\n' "$OUT" | grep -q 'ROUTE=HOLD .*CLAIMS=0 WRITES=0' && ! printf '%s\n' "$OUT" | grep -q '^CALL poll' && printf '%s\n' "$OUT" | grep -q 'no claim is written' && printf '%s\n' "$OUT" | grep -q "$NO_GLOBALS"; CHECK_RC=$?; check "row own pair unknown: no claim is written, no poll runs, no global is set, and the gate holds naming why (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # Row: dead writer, no child pid. The handle is cleared, the directory
+  # named, nothing set, and the route is today's gate (WAIT).
+  OUT=$(env IDENT=live bash "$TMP/gateread.sh" "$GR_DIR" child-3 2>&1)
+  printf '%s\n' "$OUT" | grep -q 'ROUTE=WAIT VERDICT= INDEX=0 PID=\[\] HANDLE= LAUNCHED=\[\] CLAIMS=0 WRITES=0' && ! printf '%s\n' "$OUT" | grep -q 'IDENT(\|^CALL poll' && printf '%s\n' "$OUT" | grep -q "names nothing to adopt or sweep; the handle in $GR_DIR/child-3 is cleared" && [ ! -e "$GR_DIR/child-3/handle.json" ] && printf '%s\n' "$OUT" | grep -q "$NO_GLOBALS"; CHECK_RC=$?
+  check "row dead writer with no child pid: the handle is cleared, the log names its directory, nothing is set, and the gate falls to today's wait (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  printf '%s' "$H3_JSON" > "$GR_DIR/child-3/handle.json"
+  # Row: unreadable. Nothing written, nothing set, WAIT.
+  OUT=$(bash "$TMP/gateread.sh" "$GR_DIR" child-4 2>&1); printf '%s\n' "$OUT" | grep -q 'ROUTE=WAIT VERDICT= INDEX=0 .*CLAIMS=0 WRITES=0' && printf '%s\n' "$OUT" | grep -q 'cannot be read' && printf '%s\n' "$OUT" | grep -q "$NO_GLOBALS" && [ -e "$GR_DIR/child-4/handle.json" ]; CHECK_RC=$?; check "row unreadable: a handle that cannot be read is not claimed, not cleared, sets nothing, and falls to today's wait (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # Row: name not child-<n>.
+  OUT=$(bash "$TMP/gateread.sh" "$GR_DIR" notachild 2>&1); printf '%s\n' "$OUT" | grep -q 'ROUTE=WAIT VERDICT= INDEX=0 .*WRITES=0' && printf '%s\n' "$OUT" | grep -q "$NO_GLOBALS"; CHECK_RC=$?; check "row name not child-<n>: the handle is not read, not claimed, and nothing is set (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # After any HOLD route, the real cleanup trap sends no signal to the
+  # handle's pids: no stop, no kill, no snapshot kill.
+  for hold_case in "WRITER=1" "IDENT=unverified" "IDENT=live POLL_ERR=1" "IDENT=live CLAIM=0" "IDENT=live CLAIM2=0" "IDENT=live SW= ST= SD="; do
+    # shellcheck disable=SC2086
+    OUT=$(gr $hold_case RUN_CLEANUP=1); RC=$?
+    printf '%s\n' "$OUT" | grep -q 'ROUTE=HOLD' && ! printf '%s\n' "$OUT" | grep -q '^CALL stop_child\|^CALL kill\|^CALL snapshot\|^CALL retry\|DETACH\|CLEANUP:' && [ "$RC" -eq 0 ]; CHECK_RC=$?
+    check "HOLD then cleanup ($hold_case): the trap stops, signals and kills nothing of the foreign pids (rc=$RC, out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  done
 
   # claim_is_ours, real, over a real handle: this supervisor's pair passes,
-  # another's or an unknown own pair is refused.
+  # another's or an unknown own pair is refused, and a pair differing in the
+  # last digit of 18 is another's.
   CLAIM_SNIPPET=$(sed -n '/^claim_is_ours() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
   printf '%s\n%s\n%s\nSELF_WINPID="${SW:-}"; SELF_TICKS="${ST:-}"\nclaim_is_ours "$1"; echo "rc=$?"\n' "$STUB_OPTIONS" "$RHF_SNIPPET" "$CLAIM_SNIPPET" > "$TMP/claim.sh"
-  [ "$(SW=9 ST=9 bash "$TMP/claim.sh" "$GR_DIR/child-2/handle.json")" = "rc=0" ]; check "claim_is_ours: a handle carrying this supervisor's pair is its claim" "$?"
-  [ "$(SW=8 ST=9 bash "$TMP/claim.sh" "$GR_DIR/child-2/handle.json")" = "rc=1" ]; check "claim_is_ours: a handle carrying another pair is not (the refusal: the pair is not this supervisor's)" "$?"
+  [ "$(SW=$W_SUP ST=$T_SUP bash "$TMP/claim.sh" "$GR_DIR/child-2/handle.json")" = "rc=0" ]; check "claim_is_ours: a handle carrying this supervisor's exact 18-digit pair is its claim" "$?"
+  [ "$(SW=$W_SUP ST=639012345678900010 bash "$TMP/claim.sh" "$GR_DIR/child-2/handle.json")" = "rc=1" ]; check "claim_is_ours: a pair differing only in the last digit is not (the refusal: the pair is not this supervisor's)" "$?"
   [ "$(SW= ST= bash "$TMP/claim.sh" "$GR_DIR/child-2/handle.json")" = "rc=1" ]; check "claim_is_ours: an own pair this supervisor could not read proves no claim" "$?"
 
-  # gate_hold_on_handle: a handle that stays ends the run at GATE TIMEOUT after
-  # the bound; one its holder accounts for while the gate waits lets it go on.
+  # gate_hold_on_handle: each pass sleeps at most five seconds and re-runs the
+  # gate read inside the bound, so a handle that turns adoptable during the
+  # hold reaches ADOPT before the bound; one that stays held ends the run at
+  # GATE TIMEOUT; one its holder accounts for lets the gate go on.
   HOLD_SNIPPET=$(sed -n '/^gate_hold_on_handle() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
   HD_DIR=$(mktemp -d "$TMP/hold.XXXXXX"); mkdir -p "$HD_DIR/child-1"
   printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$HOLD_SNIPPET" '
 log() { echo "LOG $*"; }
-SLEEPS=0
-sleep() { SLEEPS=$((SLEEPS + 1)); if [ "$SLEEPS" -ge "${CLEAR_AT:-999}" ]; then rm -f "$RUNDIR/child-1/handle.json"; fi; }
-RUNDIR="$1"; SUPERVISOR_GATE_WAIT_S=10
-gate_hold_on_handle child-1; echo "RETURNED"' > "$TMP/hold.sh"
+SLEEPS=0; READS=0
+sleep() { SLEEPS=$((SLEEPS + 1)); echo "SLEEP $1"; if [ "$SLEEPS" -ge "${CLEAR_AT:-999}" ]; then rm -f "$RUNDIR/child-1/handle.json"; fi; }
+gate_read_handle() { READS=$((READS + 1)); if [ "$READS" -ge "${ADOPT_AT:-999}" ]; then GATE_ROUTE=ADOPT; else GATE_ROUTE=HOLD; fi; }
+RUNDIR="$1"; SUPERVISOR_GATE_WAIT_S="${BOUND:-10}"; GATE_ROUTE=HOLD
+gate_hold_on_handle child-1; echo "RETURNED route=$GATE_ROUTE sleeps=$SLEEPS reads=$READS"' > "$TMP/hold.sh"
   : > "$HD_DIR/child-1/handle.json"
   OUT=$(bash "$TMP/hold.sh" "$HD_DIR" 2>&1); HD_RC=$?
-  [ "$HD_RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -q 'GATE TIMEOUT: child-1 still holds a handle this supervisor may not take' && ! printf '%s\n' "$OUT" | grep -q RETURNED; check "gate hold: a handle that stays past the bound ends the run at GATE TIMEOUT with no launch (rc=$HD_RC)" "$?"
+  [ "$HD_RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -q 'GATE TIMEOUT: child-1 still holds a handle this supervisor may not take' && ! printf '%s\n' "$OUT" | grep -q RETURNED && [ "$(printf '%s\n' "$OUT" | grep -c '^SLEEP 5$')" -eq 2 ]; CHECK_RC=$?; check "gate hold: a handle that stays held on every re-read ends the run at GATE TIMEOUT after the bound (rc=$HD_RC, out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
   : > "$HD_DIR/child-1/handle.json"
   OUT=$(CLEAR_AT=1 bash "$TMP/hold.sh" "$HD_DIR" 2>&1); HD_RC=$?
-  [ "$HD_RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -q RETURNED; check "gate hold: a handle its holder accounts for while the gate waits lets the gate go on (rc=$HD_RC)" "$?"
-  # The gate's notes file is per process, since supervisors share the run
-  # directory and two starting together would otherwise write one file.
-  grep -q '^  HANDLE_NOTES="\$RUNDIR/.handle-notes.\$\$"$' "$SCRIPT"; check "the gate's handle notes file is named per supervisor process" "$?"
+  [ "$HD_RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -q 'RETURNED route=WAIT sleeps=1 reads=0'; check "gate hold: a handle its holder accounts for while the gate waits lets the gate go on with no re-read (rc=$HD_RC)" "$?"
+  : > "$HD_DIR/child-1/handle.json"
+  OUT=$(ADOPT_AT=2 BOUND=30 bash "$TMP/hold.sh" "$HD_DIR" 2>&1); HD_RC=$?
+  [ "$HD_RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -q 'RETURNED route=ADOPT sleeps=2 reads=2' && printf '%s\n' "$OUT" | grep -q 'routes ADOPT on a re-read'; CHECK_RC=$?; check "gate hold: a handle that turns adoptable during the hold reaches ADOPT on the re-read that finds it, before the bound (rc=$HD_RC, out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  OUT=$(BOUND=7 bash "$TMP/hold.sh" "$HD_DIR" 2>&1); HD_RC=$?
+  [ "$HD_RC" -eq 2 ] && [ "$(printf '%s\n' "$OUT" | grep '^SLEEP' | tr '\n' ' ')" = "SLEEP 5 SLEEP 2 " ]; CHECK_RC=$?; check "gate hold: each pass sleeps min(5, remaining), so a 7s bound sleeps 5 then 2 (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
 
   # ensure_self_ticks caches the pair only once it read one; write_handle
-  # names a write made with no pair.
+  # names a write made with no pair and records whether the pair was written.
   SELFT_SNIPPET=$(sed -n '/^ensure_self_ticks() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
   printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$SELFT_SNIPPET" '
 SELF_WINPID=""; SELF_TICKS=""; SELF_TICKS_DONE=""; READS_FILE="$1"; echo 0 > "$READS_FILE"
-resolve_windows_pid() { echo 4; }
-resolve_windows_start_ticks() { local n; n=$(( $(cat "$READS_FILE") + 1 )); echo "$n" > "$READS_FILE"; if [ "$n" -ge 2 ]; then echo 5; fi; }
+resolve_windows_pid() { echo 34999; }
+resolve_windows_start_ticks() { local n; n=$(( $(cat "$READS_FILE") + 1 )); echo "$n" > "$READS_FILE"; if [ "$n" -ge 2 ]; then echo 639012345678999999; fi; }
 ensure_self_ticks; echo "after1 done=[$SELF_TICKS_DONE] ticks=[$SELF_TICKS]"
 ensure_self_ticks; echo "after2 done=[$SELF_TICKS_DONE] ticks=[$SELF_TICKS]"
 ensure_self_ticks; echo "reads=$(cat "$READS_FILE")"' > "$TMP/selft.sh"
   OUT=$(bash "$TMP/selft.sh" "$TMP/selft.reads")
-  printf '%s\n' "$OUT" | grep -q '^after1 done=\[\] ticks=\[\]$' && printf '%s\n' "$OUT" | grep -q '^after2 done=\[1\] ticks=\[5\]$' && printf '%s\n' "$OUT" | grep -q '^reads=2$'; CHECK_RC=$?; check "ensure_self_ticks: an empty read is not cached, the next call retries and caches a pair it read, and no call follows (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  printf '%s\n' "$OUT" | grep -q '^after1 done=\[\] ticks=\[\]$' && printf '%s\n' "$OUT" | grep -q '^after2 done=\[1\] ticks=\[639012345678999999\]$' && printf '%s\n' "$OUT" | grep -q '^reads=2$'; CHECK_RC=$?; check "ensure_self_ticks: an empty read is not cached, the next call retries and caches a pair it read, and no call follows (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
   WH_SNIPPET=$(sed -n '/^write_handle() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
   WH_DIR=$(mktemp -d "$TMP/wh.XXXXXX")
   printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$WH_SNIPPET" '
 log() { echo "LOG $*"; }
 ensure_self_ticks() { :; }
-SELF_WINPID=""; SELF_TICKS=""; RUNDIR="$1"; HANDLE_FILE="$1/handle.json"; CHILD_INDEX=1; LAUNCHED_AT=1000
-write_handle sess-1' > "$TMP/wh.sh"
+SELF_WINPID="${SW:-}"; SELF_TICKS="${ST:-}"; RUNDIR="$1"; HANDLE_FILE="$1/handle.json"; CHILD_INDEX=1; LAUNCHED_AT=1000
+HOLDER_LAUNCH_PID="${HP:-}"; HOLDER_WINPID="${HW:-}"; HOLDER_TICKS="${HT:-}"; CHILD_LAUNCH_PID="${CP:-}"; CHILD_WINPID="${CW:-}"; CHILD_TICKS="${CT:-}"
+write_handle sess-1; echo "HAS_SELF_PAIR=[${HANDLE_HAS_SELF_PAIR:-}]"' > "$TMP/wh.sh"
   OUT=$(bash "$TMP/wh.sh" "$WH_DIR" 2>&1)
-  printf '%s\n' "$OUT" | grep -q 'no supervisor pid and ticks pair' && grep -q '"supervisorTicks":null' "$WH_DIR/handle.json"; CHECK_RC=$?; check "write_handle: a write with no supervisor pair is named in the log (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  printf '%s\n' "$OUT" | grep -q 'no supervisor pid and ticks pair' && grep -q '"supervisorTicks":null' "$WH_DIR/handle.json" && printf '%s\n' "$OUT" | grep -q '^HAS_SELF_PAIR=\[\]$'; CHECK_RC=$?; check "write_handle: a write with no supervisor pair is named in the log and recorded as carrying no pair (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # Precision: the 18-digit pair and the pids reach the file as the digit
+  # strings they arrived as, and read back byte-equal through the real reader.
+  OUT=$(SW=$W_SELF ST=$T_SELF HP=41180 HW=$W_HOLDER HT=$T_HOLDER CP=41236 CW=$W_CHILD CT=$T_CHILD bash "$TMP/wh.sh" "$WH_DIR" 2>&1)
+  grep -q "\"childTicks\":\"$T_CHILD\"" "$WH_DIR/handle.json" && grep -q "\"supervisorTicks\":\"$T_SELF\"" "$WH_DIR/handle.json" && grep -q "\"holderTicks\":\"$T_HOLDER\"" "$WH_DIR/handle.json" && grep -q "\"childWinPid\":\"$W_CHILD\"" "$WH_DIR/handle.json" && grep -q '"launchedAt":1000' "$WH_DIR/handle.json" && printf '%s\n' "$OUT" | grep -q '^HAS_SELF_PAIR=\[1\]$'; CHECK_RC=$?
+  check "precision: write_handle records every pid and start ticks as the digit string it was given, 18 digits intact, and the launch timestamp as a number (file=$(cat "$WH_DIR/handle.json" 2>/dev/null))" "$CHECK_RC"
+  printf '%s\n%s\nread_handle_fields "$1"\n' "$STUB_OPTIONS" "$RHF_SNIPPET" > "$TMP/rhf.sh"
+  OUT=$(bash "$TMP/rhf.sh" "$WH_DIR/handle.json" | tr '\t' '=' | tr '\n' ' ')
+  case "$OUT" in
+    *"childTicks=$T_CHILD "*"supervisorWinPid=$W_SELF "*"supervisorTicks=$T_SELF "*) check "precision: read_handle_fields returns the written pair byte-equal (got $OUT)" 0 ;;
+    *) check "precision: read_handle_fields returns the written pair byte-equal (got $OUT)" 1 ;;
+  esac
+  # A pair that lost its last digit, which is what Number(v) does to an
+  # 18-digit tick, is a different pair to the reader.
+  ! printf '%s' "$OUT" | grep -q "childTicks=${T_CHILD%??}00 "; check "precision: the read-back does not carry the Number-rounded value ${T_CHILD%??}00" "$?"
 
-  # ensure_child_ticks retries the child's ticks each poll until they land,
-  # names the gap while empty, and rewrites the handle once.
+  # ticks_retry_due: a read is due on a doubling gap of polls, capped, so a
+  # persistent miss costs a bounded number of spawns rather than one per poll.
+  RETRY_SNIPPET=$(sed -n '/^TICKS_RETRY_GAP_MAX=/,/^}$/p' "$SCRIPT" | tr -d '\r')
+  [ -n "$RETRY_SNIPPET" ]; check "ticks_retry_due is found in bin/supervise.sh" "$?"
+  printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$RETRY_SNIPPET" '
+DUE=""
+for POLL_COUNT in $(seq 1 200); do if ticks_retry_due X; then DUE="$DUE $POLL_COUNT"; fi; done
+echo "DUE=${DUE# }"' > "$TMP/retry.sh"
+  OUT=$(bash "$TMP/retry.sh")
+  [ "$OUT" = "DUE=1 2 4 8 16 32 64 128 192" ]; check "ticks_retry_due: due on polls 1, 2, 4, ... doubling to a 64-poll gap, so 200 polls cost 9 reads rather than 200 (got $OUT)" "$?"
+
+  # ensure_child_ticks retries the child's ticks on the polls the gap names
+  # until they land, names the gap while empty, and rewrites the handle once.
   CHT_SNIPPET=$(sed -n '/^ensure_child_ticks() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
-  printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$CHT_SNIPPET" '
+  printf '%s\n%s\n%s\n%s\n' "$STUB_OPTIONS" "$RETRY_SNIPPET" "$CHT_SNIPPET" '
 log() { echo "LOG $*"; }
 write_handle() { echo "CALL write_handle $1"; }
 READS_FILE="$1"; echo 0 > "$READS_FILE"
-resolve_windows_start_ticks() { local n; n=$(( $(cat "$READS_FILE") + 1 )); echo "$n" > "$READS_FILE"; if [ "$n" -ge 2 ]; then echo 5; fi; }
-CHILD_INDEX=1; CHILD_WINPID=4; CHILD_TICKS=""; CHILD_SESSION_ID=sess-1
-ensure_child_ticks; ensure_child_ticks; ensure_child_ticks
+resolve_windows_start_ticks() { local n; n=$(( $(cat "$READS_FILE") + 1 )); echo "$n" > "$READS_FILE"; echo "READ on poll $POLL_COUNT" >&2; if [ "$n" -ge 3 ]; then echo 639012345678901237; fi; }
+CHILD_INDEX=1; CHILD_WINPID=35124; CHILD_TICKS=""; CHILD_SESSION_ID=sess-1
+for POLL_COUNT in 1 2 3 4 5 6 7 8; do ensure_child_ticks; done
 echo "reads=$(cat "$READS_FILE") ticks=[$CHILD_TICKS]"' > "$TMP/cht.sh"
-  OUT=$(bash "$TMP/cht.sh" "$TMP/cht.reads")
-  [ "$(printf '%s\n' "$OUT" | grep -c 'still unread')" -eq 1 ] && [ "$(printf '%s\n' "$OUT" | grep -c '^CALL write_handle sess-1$')" -eq 1 ] && printf '%s\n' "$OUT" | grep -q 'landed on a later read' && printf '%s\n' "$OUT" | grep -q '^reads=2 ticks=\[5\]$'; CHECK_RC=$?; check "ensure_child_ticks: the gap is named while empty, the pair is retried until it lands, the handle is rewritten once, and no read follows (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  OUT=$(bash "$TMP/cht.sh" "$TMP/cht.reads" 2>&1)
+  [ "$(printf '%s\n' "$OUT" | grep -c 'still unread')" -eq 2 ] && [ "$(printf '%s\n' "$OUT" | grep -c '^CALL write_handle sess-1$')" -eq 1 ] && printf '%s\n' "$OUT" | grep -q 'landed on a later read' && printf '%s\n' "$OUT" | grep -q 'retrying on poll 2' && printf '%s\n' "$OUT" | grep -q 'retrying on poll 4' && printf '%s\n' "$OUT" | grep -q '^reads=3 ticks=\[639012345678901237\]$'; CHECK_RC=$?; check "ensure_child_ticks: retried on polls 1, 2 and 4 with the gap named, the 18-digit pair kept whole when it lands, the handle rewritten once, and no read after (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # ensure_self_pair_recorded retries the own pair the same way for a handle
+  # written without it, and rewrites the handle once it lands.
+  SPR_SNIPPET=$(sed -n '/^ensure_self_pair_recorded() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+  [ -n "$SPR_SNIPPET" ]; check "ensure_self_pair_recorded is found in bin/supervise.sh" "$?"
+  printf '%s\n%s\n%s\n%s\n' "$STUB_OPTIONS" "$RETRY_SNIPPET" "$SPR_SNIPPET" '
+log() { echo "LOG $*"; }
+CALLS=0
+ensure_self_ticks() { CALLS=$((CALLS + 1)); echo "CALL ensure_self_ticks on poll $POLL_COUNT"; if [ "$CALLS" -ge 3 ]; then SELF_WINPID=34999; SELF_TICKS=639012345678999999; SELF_TICKS_DONE=1; fi; }
+write_handle() { echo "CALL write_handle $1"; HANDLE_HAS_SELF_PAIR=1; }
+SELF_WINPID=""; SELF_TICKS=""; SELF_TICKS_DONE=""; HANDLE_HAS_SELF_PAIR=""; HANDLE_FILE=/rd/child-1/handle.json; CHILD_INDEX=1; CHILD_SESSION_ID=sess-1
+for POLL_COUNT in 1 2 3 4 5 6 7 8; do ensure_self_pair_recorded; done
+echo "calls=$CALLS has=[$HANDLE_HAS_SELF_PAIR]"' > "$TMP/spr.sh"
+  OUT=$(bash "$TMP/spr.sh" 2>&1)
+  [ "$(printf '%s\n' "$OUT" | grep -c 'still unread')" -eq 2 ] && [ "$(printf '%s\n' "$OUT" | grep -c '^CALL write_handle sess-1$')" -eq 1 ] && printf '%s\n' "$OUT" | grep -q 'own pid and start ticks landed on a later read (34999,639012345678999999)' && printf '%s\n' "$OUT" | grep -q '^calls=3 has=\[1\]$'; CHECK_RC=$?; check "ensure_self_pair_recorded: the own pair is retried on polls 1, 2 and 4 with the gap named, the handle rewritten once it lands, and no read after (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  printf '%s\n%s\n%s\n%s\n' "$STUB_OPTIONS" "$RETRY_SNIPPET" "$SPR_SNIPPET" '
+ensure_self_ticks() { echo "NEVER"; }
+write_handle() { echo "NEVER"; }
+HANDLE_HAS_SELF_PAIR=1; HANDLE_FILE=/rd/child-1/handle.json; CHILD_INDEX=1; CHILD_SESSION_ID=sess-1; POLL_COUNT=1
+ensure_self_pair_recorded; echo "done"' > "$TMP/spr2.sh"
+  [ "$(bash "$TMP/spr2.sh" 2>&1)" = "done" ]; check "ensure_self_pair_recorded: control: a handle already carrying the pair spends no read" "$?"
 fi
 
 # --- kill_holder's identity guard ---
@@ -837,10 +1032,16 @@ kill() { case "$1" in -0) [ "${ALIVE:-1}" = 1 ] && return 0 || return 1 ;; esac;
 HOLDER_LAUNCH_PID="${HP:-}"; HOLDER_WINPID="${HW:-}"; HOLDER_TICKS="${HT:-}"; HOLDER_OWN_LAUNCH="${OWN:-}"
 kill_holder' > "$TMP/killh.sh"
   kh() { env "$@" bash "$TMP/killh.sh"; }
-  OUT=$(kh HP=9 HW=4 HT=5 OWN=1 ALIVE=1); printf '%s\n' "$OUT" | grep -q '^CALL kill -TERM 9$' && ! printf '%s\n' "$OUT" | grep -q 'CALL snapshot'; check "kill_holder: this supervisor's own live holder takes the MSYS signal first, with no PowerShell (out=$OUT)" "$?"
-  OUT=$(kh HP=9 HW=4 HT=5 OWN= ALIVE=1); printf '%s\n' "$OUT" | grep -q '^CALL snapshot 4,5$' && ! printf '%s\n' "$OUT" | grep -q 'CALL kill -TERM'; check "kill_holder: an adopted live holder is killed ticks-matched only (out=$OUT)" "$?"
-  OUT=$(kh HP=9 HW=4 HT=5 OWN=1 ALIVE=0); ! printf '%s\n' "$OUT" | grep -q 'CALL' && printf '%s\n' "$OUT" | grep -q 'already gone, so nothing is killed'; check "kill_holder: a holder already gone is not killed at all, so a natural exit spends no PowerShell (out=$OUT)" "$?"
-  OUT=$(kh HP=9 OWN= ALIVE=1); ! printf '%s\n' "$OUT" | grep -q 'CALL' && printf '%s\n' "$OUT" | grep -q 'not signalled on an unverified pid'; check "kill_holder: an adopted holder with no recorded pair is not signalled, and the refusal is named (out=$OUT)" "$?"
+  # Ticks-first for every holder with a recorded pair, own-launched included;
+  # `kill -0` is only an own-launch skip; the MSYS TERM survives only for an
+  # own holder with no ticks; an adopted holder with no ticks is left alone.
+  OUT=$(kh HP=41180 HW=35088 HT=639012345678901180 OWN=1 ALIVE=1); printf '%s\n' "$OUT" | grep -q '^CALL snapshot 35088,639012345678901180$' && ! printf '%s\n' "$OUT" | grep -q 'CALL kill -TERM'; check "kill_holder: this supervisor's own live holder with ticks goes to the ticks-matched kill, not the MSYS signal (out=$OUT)" "$?"
+  OUT=$(kh HP=41180 HW=35088 HT=639012345678901180 OWN=1 ALIVE=0); ! printf '%s\n' "$OUT" | grep -q 'CALL' && printf '%s\n' "$OUT" | grep -q 'already gone, so nothing is killed'; check "kill_holder: an own holder that no longer answers is skipped, not killed, so a natural exit spends no PowerShell (out=$OUT)" "$?"
+  OUT=$(kh HP=41180 OWN=1 ALIVE=1); printf '%s\n' "$OUT" | grep -q '^CALL kill -TERM 41180$' && ! printf '%s\n' "$OUT" | grep -q 'CALL snapshot'; check "kill_holder: an own holder whose ticks were never read gets the MSYS TERM, the one case that signal survives for (out=$OUT)" "$?"
+  OUT=$(kh HP=41180 HW=35088 HT=639012345678901180 OWN= ALIVE=0); printf '%s\n' "$OUT" | grep -q '^CALL snapshot 35088,639012345678901180$' && ! printf '%s\n' "$OUT" | grep -q 'CALL kill -TERM\|already gone'; check "kill_holder: an adopted holder with ticks goes to the ticks-matched kill even where its MSYS pid does not answer kill -0 (out=$OUT)" "$?"
+  OUT=$(kh HP=41180 HW=35088 HT=639012345678901180 OWN= ALIVE=1); printf '%s\n' "$OUT" | grep -q '^CALL snapshot 35088,639012345678901180$' && ! printf '%s\n' "$OUT" | grep -q 'CALL kill -TERM'; check "kill_holder: an adopted live holder is killed ticks-matched only (out=$OUT)" "$?"
+  OUT=$(kh HP=41180 OWN= ALIVE=1); ! printf '%s\n' "$OUT" | grep -q 'CALL' && printf '%s\n' "$OUT" | grep -q 'not signalled on an unverified pid'; check "kill_holder: an adopted holder with no recorded pair is left alone, and the refusal is named (out=$OUT)" "$?"
+  OUT=$(kh HP=41180 OWN= ALIVE=0); ! printf '%s\n' "$OUT" | grep -q 'CALL\|already gone' && printf '%s\n' "$OUT" | grep -q 'not signalled on an unverified pid'; check "kill_holder: an adopted holder with no pair whose MSYS pid does not answer is still left alone, never read as gone off that pid (out=$OUT)" "$?"
 fi
 
 # --- The cleanup trap with no poll reading yet ---
@@ -851,14 +1052,14 @@ CLEANUP_SNIPPET=$(sed -n '/^cleanup() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
 [ -n "$CLEANUP_SNIPPET" ]; check "cleanup is found in bin/supervise.sh" "$?"
 if [ -n "$CLEANUP_SNIPPET" ] && [ -n "$TRAP_ROUTE_SNIPPET" ]; then
   CU_DIR=$(mktemp -d "$TMP/cleanup.XXXXXX"); : > "$CU_DIR/handle.json"
-  printf '%s\n%s\n%s\n%s\n' "$STUB_OPTIONS" "$TRAP_ROUTE_SNIPPET" "$CLEANUP_SNIPPET" '
+  printf '%s\n%s\n%s\n%s\n%s\n' "$STUB_OPTIONS" "$TRAP_ROUTE_SNIPPET" "$PRESENT_SNIPPET" "$CLEANUP_SNIPPET" '
 log() { echo "LOG $*"; }
 stop_child() { echo "CALL stop_child $1"; return 0; }
 retry_stop_escalation() { echo "CALL retry $1 $2"; return 0; }
 kill_process_snapshot() { return 0; }
-sleep 30 & CHILD_LAUNCH_PID=$!
+if [ "${DEAD_PID:-}" = 1 ]; then ( exit 0 ) & CHILD_LAUNCH_PID=$!; wait "$CHILD_LAUNCH_PID"; else sleep 30 & CHILD_LAUNCH_PID=$!; fi
 printf "%s" "$CHILD_LAUNCH_PID" > "${PIDF}"
-CHILD_INDEX=1; LAST_STOP_SNAPSHOT=""; HANDLE_FILE="${HF:-}"
+CHILD_INDEX=1; LAST_STOP_SNAPSHOT=""; HANDLE_FILE="${HF:-}"; CHILD_ADOPTED="${ADOPTED:-}"; CHILD_TREE_POLL_WALK="${WALK:-failed}"; EXIT_MARKER="${MARKER:-}"
 trap cleanup EXIT
 exit 143' > "$TMP/cleanup.sh"
   # Each run's stand-in child is killed by the pid it recorded, never by a
@@ -869,6 +1070,13 @@ exit 143' > "$TMP/cleanup.sh"
   OUT=$(HF="$CU_DIR/absent.json" PIDF="$CU_DIR/pid2" bash "$TMP/cleanup.sh" 2>&1); CU_RC=$?
   kill -9 "$(cat "$CU_DIR/pid2" 2>/dev/null)" 2>/dev/null
   printf '%s\n' "$OUT" | grep -q 'CALL stop_child cleanup' && ! printf '%s\n' "$OUT" | grep -q 'DETACH'; CHECK_RC=$?; check "cleanup: with no handle, the same signal takes today's stop (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  # An adopted child whose MSYS pid does not answer kill -0 is still a live
+  # handled child while the walk reads it live: the trap detaches from it,
+  # and with the walk reading none it has nothing to stop or detach from.
+  OUT=$(HF="$CU_DIR/handle.json" PIDF="$CU_DIR/pid3" ADOPTED=1 DEAD_PID=1 WALK=live MARKER="$CU_DIR/.exit" bash "$TMP/cleanup.sh" 2>&1); CU_RC=$?
+  [ "$CU_RC" -eq 143 ] && printf '%s\n' "$OUT" | grep -q 'DETACH child-1' && ! printf '%s\n' "$OUT" | grep -q 'CALL stop_child'; CHECK_RC=$?; check "cleanup: an adopted child whose MSYS pid does not answer kill -0 is detached from on the walk reading live, never stopped off that pid (rc=$CU_RC, out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  OUT=$(HF="$CU_DIR/handle.json" PIDF="$CU_DIR/pid4" ADOPTED=1 DEAD_PID=1 WALK=none MARKER="$CU_DIR/.exit" bash "$TMP/cleanup.sh" 2>&1); CU_RC=$?
+  [ "$CU_RC" -eq 143 ] && ! printf '%s\n' "$OUT" | grep -q 'DETACH\|CALL stop_child'; CHECK_RC=$?; check "cleanup: an adopted child the walk read gone is neither detached from nor stopped (rc=$CU_RC, out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
 fi
 
 # --- The session id is recorded in the handle once ---
@@ -912,16 +1120,55 @@ fi
 # handle, pid files and ask.request are exactly as they were. This is the real
 # bin/supervise.sh, driven through its own gate.
 RD_LIVE=$(mktemp -d "$TMP/rd-live.XXXXXX"); mkdir -p "$RD_LIVE/child-1"
-printf '{"sessionId":"s","holderPid":1,"holderWinPid":1,"holderTicks":1,"childPid":1,"childWinPid":1,"childTicks":1,"supervisorWinPid":"x","supervisorTicks":"x","launchedAt":1000,"childIndex":1}' > "$RD_LIVE/child-1/handle.json"
-printf '11\n' > "$RD_LIVE/child-1/holder.pid"; printf '12\n' > "$RD_LIVE/child-1/child.pid"; printf 'ask\n' > "$RD_LIVE/child-1/ask.request"
+printf '{"sessionId":"s","holderPid":"41180","holderWinPid":"35088","holderTicks":"639012345678901180","childPid":"41236","childWinPid":"35124","childTicks":"639012345678901237","supervisorWinPid":"x","supervisorTicks":"x","launchedAt":1000,"childIndex":1}' > "$RD_LIVE/child-1/handle.json"
+printf '41180\n' > "$RD_LIVE/child-1/holder.pid"; printf '41236\n' > "$RD_LIVE/child-1/child.pid"; printf 'ask\n' > "$RD_LIVE/child-1/ask.request"
 rm -f "$TMP/stub/launched"
 OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" supervisorGateWaitS=3 bash "$SCRIPT" "$TMP/wd" modelprobe default --rundir "$RD_LIVE" --no-channel 2>&1)
 RC=$?
 [ "$RC" -eq 2 ] && case "$OUT" in *"GATE TIMEOUT"*) true ;; *) false ;; esac; check "held handle: a handle whose writer cannot be ruled out ends the run at GATE TIMEOUT (rc=$RC)" "$?"
 grep -q 'still running' "$RD_LIVE/supervisor.log" && grep -q 'may not take' "$RD_LIVE/supervisor.log"; check "held handle: the log names the handle held and the timeout's reason" "$?"
-[ "$(cat "$RD_LIVE/child-1/holder.pid")" = 11 ] && [ "$(cat "$RD_LIVE/child-1/child.pid")" = 12 ] && [ "$(cat "$RD_LIVE/child-1/ask.request")" = ask ] && grep -q '"supervisorWinPid":"x"' "$RD_LIVE/child-1/handle.json"
+[ "$(cat "$RD_LIVE/child-1/holder.pid")" = 41180 ] && [ "$(cat "$RD_LIVE/child-1/child.pid")" = 41236 ] && [ "$(cat "$RD_LIVE/child-1/ask.request")" = ask ] && grep -q '"supervisorWinPid":"x"' "$RD_LIVE/child-1/handle.json"
 check "held handle: the live child's handle, pid files and ask.request are untouched, so no claim was written" "$?"
 ! grep -q 'ADOPT\|LAUNCH child-' "$RD_LIVE/supervisor.log" && [ ! -e "$TMP/stub/launched" ] && [ ! -d "$RD_LIVE/child-2" ]; check "held handle: nothing is adopted and no child is launched beside it" "$?"
+
+# --- Precision through the real chain: write, read back, identity on a live process ---
+# A real process of this suite's own, its Windows pid off /proc and its start
+# ticks off one PowerShell read, go through the real write_handle, the real
+# read_handle_fields, and the real handle_child_identity with its real
+# survivor check. The exact 18-digit pair reads live; the pair differing only
+# in its last digit reads gone. A pair rounded through Number would fail the
+# first, since 2^53 sits below every current tick value.
+: > "$TMP/identreal.fn"
+for fn in $(SUPERVISOR_CLOSURE_STUBS="log log_diag" supervisor_fn_closure "$SCRIPT" handle_child_identity); do
+  supervisor_extract_fn "$SCRIPT" "$fn" "$TMP/identreal.fn" || true
+done
+IDENT_REAL=$(tr -d '\r' < "$TMP/identreal.fn")
+[ -n "$IDENT_REAL" ] && [ -n "${WH_SNIPPET:-}" ] && [ -n "${RHF_SNIPPET:-}" ]; check "handle_child_identity's real closure, write_handle and read_handle_fields are found for the precision chain" "$?"
+if [ -n "$IDENT_REAL" ] && [ -n "${WH_SNIPPET:-}" ] && [ -n "${RHF_SNIPPET:-}" ]; then
+  PR_DIR=$(mktemp -d "$TMP/prec.XXXXXX")
+  sleep 90 & PR_PID=$!
+  PR_WIN=$(tr -d '\r\n' < "/proc/$PR_PID/winpid" 2>/dev/null)
+  PR_TICKS=$(powershell -NoProfile -Command "(Get-Process -Id $PR_WIN).StartTime.Ticks" 2>/dev/null | tr -d '\r\n')
+  case "$PR_TICKS" in *[!0-9]*|'') PR_TICKS="" ;; esac
+  [ -n "$PR_WIN" ] && [ "${#PR_TICKS}" -ge 18 ] && [ "$PR_TICKS" -ge 639012345678901237 ]; check "precision setup: a live process's Windows pid and 18-digit start ticks were read (${PR_WIN:-none},${PR_TICKS:-none})" "$?"
+  PR_LAST="${PR_TICKS: -1}"; PR_OTHER="${PR_TICKS%?}$(( (PR_LAST + 1) % 10 ))"
+  printf '%s\n%s\n%s\n%s\n' "$STUB_OPTIONS" "$WH_SNIPPET" "$RHF_SNIPPET" "$IDENT_REAL" '
+log() { :; }; log_diag() { :; }; ensure_self_ticks() { :; }
+SUPERVISOR_PS_BOUND_S=30; STOP_PS_SENTINEL=___SUPERVISOR_PS_DONE___
+RUNDIR="$1"; HANDLE_FILE="$1/handle.json"; CHILD_INDEX=1; LAUNCHED_AT=1000
+SELF_WINPID="$2"; SELF_TICKS="$3"; HOLDER_LAUNCH_PID=41180; HOLDER_WINPID="$2"; HOLDER_TICKS="$3"; CHILD_LAUNCH_PID=41236; CHILD_WINPID="$2"; CHILD_TICKS="$3"
+write_handle sess-p
+win=""; tick=""
+while IFS=$'"'"'\t'"'"' read -r key val; do case "$key" in childWinPid) win="$val" ;; childTicks) tick="$val" ;; esac; done < <(read_handle_fields "$HANDLE_FILE")
+echo "READBACK $win,$tick"
+echo "EXACT $(handle_child_identity "$win" "$tick")"
+echo "LASTDIGIT $(handle_child_identity "$win" "$4")"' > "$TMP/prec.sh"
+  OUT=$(timeout 200 bash "$TMP/prec.sh" "$PR_DIR" "$PR_WIN" "$PR_TICKS" "$PR_OTHER" 2>&1)
+  printf '%s\n' "$OUT" | grep -qx "READBACK $PR_WIN,$PR_TICKS"; CHECK_RC=$?; check "precision chain: the live pair written through write_handle reads back byte-equal through read_handle_fields (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  printf '%s\n' "$OUT" | grep -qx 'EXACT live'; check "precision chain: the exact 18-digit pair, read back off the handle, passes the real identity check as live" "$?"
+  printf '%s\n' "$OUT" | grep -qx 'LASTDIGIT gone'; check "precision chain: the pair differing only in its last digit ($PR_OTHER) fails the real identity check as gone" "$?"
+  kill "$PR_PID" 2>/dev/null; wait "$PR_PID" 2>/dev/null
+fi
 
 echo
 if [ "$failed" = "0" ]; then

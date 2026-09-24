@@ -2365,7 +2365,10 @@ if want nc; then
   kill_process_snapshot "$NC_PAIR" > /dev/null 2>&1
   NC_TICKS="${NC_PAIR#*,}"
   [ -n "$NC_WIN" ] && [ -n "$NC_TICKS" ]; check "(nc) setup: a real Windows pid and start ticks were recorded for the dead writer (${NC_WIN:-none},${NC_TICKS:-none})" "$?"
-  node -e 'const [f, pid, win, ticks] = process.argv.slice(1); require("fs").writeFileSync(f, JSON.stringify({ sessionId:"stub-sess-old", holderPid:Number(pid), holderWinPid:Number(win), holderTicks:Number(ticks), childPid:Number(pid), childWinPid:Number(win), childTicks:Number(ticks), supervisorWinPid:Number(win), supervisorTicks:Number(ticks), launchedAt:Date.now()-1000, childIndex:1 }))' "$NC/rd/child-1/handle.json" "$NC_DEAD" "$NC_WIN" "$NC_TICKS"
+  # Pids and ticks are written as the digit strings write_handle records, since
+  # start ticks are past the precision Number keeps and a pair that lost a
+  # digit matches no live process.
+  node -e 'const [f, pid, win, ticks] = process.argv.slice(1); require("fs").writeFileSync(f, JSON.stringify({ sessionId:"stub-sess-old", holderPid:pid, holderWinPid:win, holderTicks:ticks, childPid:pid, childWinPid:win, childTicks:ticks, supervisorWinPid:win, supervisorTicks:ticks, launchedAt:Date.now()-1000, childIndex:1 }))' "$NC/rd/child-1/handle.json" "$NC_DEAD" "$NC_WIN" "$NC_TICKS"
   printf '%s\n' "clean" > "$NC/plan"; printf '%s' "$NC" > "$STUB/case"
   drive nc "clean,shutdown" 6
   grep -q 'SWEEP_RELAUNCH: child-1 read gone at the gate' "$NC/rd/supervisor.log" 2>/dev/null; check "(nc) a handle naming a gone child is swept at the gate" "$?"
