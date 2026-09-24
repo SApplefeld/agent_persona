@@ -200,7 +200,7 @@ if [ -n "$REFRESH_SNIPPET" ]; then
 TABLE_ROW="${TABLE_ROW:-}"
 ps() { echo "      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND"; [ -n "$TABLE_ROW" ] && echo "$TABLE_ROW"; return 0; }
 resolve_windows_pid() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null && echo "9$1"; return 0; }
-walk_msys_process_tree() { echo "$2,111"; return 0; }
+walk_msys_process_tree() { [ "${WALK_RC:-0}" = 3 ] && return 3; echo "$2,111"; return 0; }
 log() { :; }
 CHILD_LAUNCH_PID="$1"; CHILD_INDEX=1; CHILD_TREE_WINPIDS=""; CHILD_TREE_FAILED_CONFIRMS=0
 refresh_child_tree
@@ -216,8 +216,74 @@ echo "WALK=$CHILD_TREE_POLL_WALK"' > "$TMP/refresh.sh"
   [ "$OUT" = "WALK=none" ]; check "control: an empty process table under a launch pid that has exited reads as a walk that found nothing (got $OUT)" "$?"
   OUT=$(TABLE_ROW="$(printf '%9s %7s %7s %10s  pty0     197609 12:00:00 /usr/bin/sleep' "$LIVE_ROOT" 1 "$LIVE_ROOT" "9$LIVE_ROOT")" bash "$TMP/refresh.sh" "$LIVE_ROOT" 2>&1)
   [ "$OUT" = "WALK=live" ]; check "control: a table naming the live launch pid reads as a walk that found a live process (got $OUT)" "$?"
+  # A closure naming a member that has exited, but not the launch pid, while
+  # the launch pid still answers: every named member is gone, and the table
+  # still could not be read whole, so the walk did not complete.
+  ( exit 0 ) &
+  DEAD_MEMBER=$!
+  wait "$DEAD_MEMBER"
+  MEMBER_ROW="$(printf '%9s %7s %7s %10s  pty0     197609 12:00:00 /usr/bin/node' "$DEAD_MEMBER" "$LIVE_ROOT" "$LIVE_ROOT" "9$DEAD_MEMBER")"
+  OUT=$(TABLE_ROW="$MEMBER_ROW" bash "$TMP/refresh.sh" "$LIVE_ROOT" 2>&1)
+  [ "$OUT" = "WALK=failed" ]; check "a closure naming only exited members under a launch pid that still answers reads as a walk that did not complete (got $OUT)" "$?"
+  MEMBER_ROW="$(printf '%9s %7s %7s %10s  pty0     197609 12:00:00 /usr/bin/node' "$DEAD_MEMBER" "$DEAD_ROOT" "$DEAD_ROOT" "9$DEAD_MEMBER")"
+  OUT=$(TABLE_ROW="$MEMBER_ROW" bash "$TMP/refresh.sh" "$DEAD_ROOT" 2>&1)
+  [ "$OUT" = "WALK=none" ]; check "control: the same closure under a launch pid that has exited reads as a walk that found nothing (got $OUT)" "$?"
+  # Every member exiting inside its own walk, under a launch pid that still
+  # answers, is the same unread closure.
+  OUT=$(WALK_RC=3 TABLE_ROW="$(printf '%9s %7s %7s %10s  pty0     197609 12:00:00 /usr/bin/sleep' "$LIVE_ROOT" 1 "$LIVE_ROOT" "9$LIVE_ROOT")" bash "$TMP/refresh.sh" "$LIVE_ROOT" 2>&1)
+  [ "$OUT" = "WALK=failed" ]; check "every member exiting inside its walk under a launch pid that still answers reads as a walk that did not complete (got $OUT)" "$?"
   kill "$LIVE_ROOT" 2>/dev/null
   wait "$LIVE_ROOT" 2>/dev/null
+fi
+
+# sweep_gone_child, the sweep_relaunch branch's body. Every function it calls
+# is stubbed and records its call, and the wrapper is a real process the
+# driver starts, so the `wait` it reaches is a real wait on a real child. A
+# sweep that cannot clear the tree takes the retry backstop, a wrapper still
+# running after a sweep that killed nothing is stopped before any wait, and a
+# dead wrapper is waited on and accounted as a restart.
+SWEEP_SNIPPET=$(sed -n '/^sweep_gone_child() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+[ -n "$SWEEP_SNIPPET" ]; check "sweep_gone_child is found in bin/supervise.sh" "$?"
+if [ -n "$SWEEP_SNIPPET" ]; then
+  printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$SWEEP_SNIPPET" '
+# SWEEP_RC_STUB is what the sweep returns, WRAPPER is live or dead.
+log() { echo "$*"; }
+sweep_child_tree() { echo "CALL sweep_child_tree $1"; return "${SWEEP_RC_STUB:-0}"; }
+retry_stop_escalation() { echo "CALL retry_stop_escalation $1 $2"; return 0; }
+stop_child() { echo "CALL stop_child $1"; kill "$CHILD_LAUNCH_PID" 2>/dev/null; return 0; }
+record_restart_in_hour() { echo "CALL record_restart_in_hour"; RESTART_COUNT=1; }
+if [ "${WRAPPER:-dead}" = live ]; then sleep 30 & else ( exit 7 ) & fi
+CHILD_LAUNCH_PID=$!
+[ "${WRAPPER:-dead}" = live ] || sleep 1
+CHILD_INDEX=1; DECIDE_REASON="gone: test"; EXIT_MARKER="$1"; STOP_PATH=eof
+LAUNCHED_AT=$(node -e "console.log(Date.now())"); SUPERVISOR_MIN_RUN_MS=120000
+CRASH_COUNT=0; RESTART_COUNT=0; SUPERVISOR_MAX_RESTARTS_PER_HOUR=6; SUPERVISOR_CRASH_LIMIT=3
+sweep_gone_child
+echo "RETURNED crash=$CRASH_COUNT restarts=$RESTART_COUNT marker=$(cat "$1")"' > "$TMP/sweep.sh"
+  sweep_run() { timeout 60 bash "$TMP/sweep.sh" "$TMP/sweep.exit" 2>&1; }
+  # A sweep returning 1 takes the retry backstop before anything else.
+  OUT=$(SWEEP_RC_STUB=1 WRAPPER=dead sweep_run)
+  printf '%s\n' "$OUT" | grep -qx 'CALL retry_stop_escalation sweep_relaunch 1'
+  R=$?
+  check "a sweep that cannot clear the tree takes retry_stop_escalation (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$R"
+  # A wrapper still running after a sweep that killed nothing is stopped
+  # before the wait, so the wait returns rather than blocking on it.
+  OUT=$(SWEEP_RC_STUB=2 WRAPPER=live sweep_run)
+  STOP_LINE=$(printf '%s\n' "$OUT" | grep -n '^CALL stop_child sweep_relaunch$' | head -n 1 | cut -d: -f1)
+  EXIT_LINE=$(printf '%s\n' "$OUT" | grep -n '^EXIT child-1 code=' | head -n 1 | cut -d: -f1)
+  [ -n "$STOP_LINE" ] && [ -n "$EXIT_LINE" ] && [ "$STOP_LINE" -lt "$EXIT_LINE" ] && printf '%s\n' "$OUT" | grep -q '^RETURNED '
+  R=$?
+  check "a wrapper still running after a sweep that killed nothing takes stop_child before any wait (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$R"
+  # A dead wrapper is waited on for its real exit code, and accounted as a
+  # restart: a non-zero exit inside the minimum run is a crash, and the
+  # relaunch counts against the restart budget.
+  OUT=$(SWEEP_RC_STUB=0 WRAPPER=dead sweep_run)
+  printf '%s\n' "$OUT" | grep -qx 'EXIT child-1 code=7 (sweep_relaunch)' \
+    && ! printf '%s\n' "$OUT" | grep -q '^CALL stop_child' \
+    && printf '%s\n' "$OUT" | grep -qx 'CALL record_restart_in_hour' \
+    && printf '%s\n' "$OUT" | grep -qx 'RETURNED crash=1 restarts=1 marker=7'
+  R=$?
+  check "a dead wrapper is waited on and accounted as a restart (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$R"
 fi
 
 # note_liveness_poll, which carries a poll's liveness state to the next and

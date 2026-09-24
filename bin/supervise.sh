@@ -1459,10 +1459,11 @@ refresh_child_tree() {
     # process reads as running too, which keeps this a failed read.
     #
     # For the liveness verdict, only a closure whose members are all confirmed
-    # exited is a walk that found nothing. An empty closure under a launch pid
-    # that still answers is a process table this poll could not read, since a
-    # live launch pid is always its own closure's first member, so it reads as
-    # a walk that did not complete.
+    # exited, the launch pid among them, is a walk that found nothing. A launch
+    # pid that still answers is always its own closure's first member, so a
+    # closure that is empty or names other members without it is a process
+    # table this poll could not read, and it reads as a walk that did not
+    # complete whatever the named members show.
     CHILD_TREE_POLL_WALK="none"
     if [ -n "$msys_pids" ]; then
       for one in $msys_pids; do
@@ -1472,7 +1473,8 @@ refresh_child_tree() {
           break
         fi
       done
-    elif kill -0 "$pid" 2>/dev/null; then
+    fi
+    if [ "$CHILD_TREE_POLL_WALK" = "none" ] && kill -0 "$pid" 2>/dev/null; then
       CHILD_TREE_POLL_WALK="failed"
     fi
     CHILD_TREE_FAILED_CONFIRMS=$(( ${CHILD_TREE_FAILED_CONFIRMS:-0} + 1 ))
@@ -1540,7 +1542,12 @@ refresh_child_tree() {
     # the pid set seen under the child both stand as they were.
     log "CHILDTREE: every process in child-$CHILD_INDEX's closure exited inside its own walk on this poll, so this poll records nothing"
     CHILD_TREE_FAILED_CONFIRMS=$(( ${CHILD_TREE_FAILED_CONFIRMS:-0} + 1 ))
+    # Every member exited inside its walk. A launch pid that still answers is
+    # a closure this poll could not read whole, not a child with nothing live.
     CHILD_TREE_POLL_WALK="none"
+    if kill -0 "$pid" 2>/dev/null; then
+      CHILD_TREE_POLL_WALK="failed"
+    fi
     return 0
   fi
   # `snapshot_process_tree` refuses this supervisor's own Windows pid inside
@@ -2657,6 +2664,67 @@ record_restart_in_hour() {
   RESTART_COUNT=${#RESTART_TIMES[@]}
 }
 
+# --- Helper: sweep a child the liveness verdict read gone, and account it ---
+# Every signal is silent and the walk found no live process. The tree the
+# child was last recorded as is swept, and the relaunch is accounted exactly
+# as a restart is, so the restart budget still bounds a persona that keeps
+# dying. A sweep that cannot clear the tree takes the retry backstop the
+# restart branch takes, which re-snapshots once where the sweep left no
+# record to retry, and a backstop that fails ends the run at exit 5, since a
+# relaunch beside a survivor puts two children on one persona claim. Returns
+# once the child is accounted and the run goes on; every stop the budget, the
+# crash limit or a survivor calls for exits from here.
+sweep_gone_child() {
+  log "SWEEP_RELAUNCH: $DECIDE_REASON"
+  sweep_child_tree "sweep_relaunch"
+  SWEEP_RC=$?
+  if [ "$SWEEP_RC" -eq 1 ]; then
+    retry_stop_escalation "sweep_relaunch" "$SWEEP_RC"
+    SWEEP_RC=$?
+    if [ "$SWEEP_RC" -ne 0 ]; then
+      log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable after every sweep retry"
+      exit 5
+    fi
+  fi
+  # The walk read the child gone, but the wrapper can outlive that
+  # reading: a walk that raced the wrapper's own exit, or a sweep with
+  # nothing to kill. A wait on a live wrapper would block this loop for
+  # as long as the child lives, so a wrapper still running takes the
+  # ordinary stop phases first, and its failure ends the run at exit 5
+  # as it does on the restart branch.
+  if [ -n "$CHILD_LAUNCH_PID" ] && kill -0 "$CHILD_LAUNCH_PID" 2>/dev/null; then
+    log "SWEEP_RELAUNCH: child-$CHILD_INDEX's wrapper is still running after the sweep, so it is stopped before the relaunch"
+    stop_child "sweep_relaunch"
+    retry_stop_escalation "sweep_relaunch" $?
+    STOP_ESCALATION_RESULT=$?
+    if [ "${STOP_ESCALATION_RESULT:-0}" -ne 0 ]; then
+      log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable despite every stop retry (STOP_PATH=$STOP_PATH)"
+      exit 5
+    fi
+  fi
+  wait "$CHILD_LAUNCH_PID"; EXIT_CODE=$?
+  CHILD_LAUNCH_PID=""
+  echo "$EXIT_CODE" > "$EXIT_MARKER"
+  log "EXIT child-$CHILD_INDEX code=$EXIT_CODE (sweep_relaunch)"
+
+  CHILD_RUN_MS=$(( ( $(node -e "console.log(Date.now())") - LAUNCHED_AT ) ))
+  if [ $EXIT_CODE -ne 0 ] && [ $CHILD_RUN_MS -lt $SUPERVISOR_MIN_RUN_MS ]; then
+    CRASH_COUNT=$((CRASH_COUNT + 1))
+  else
+    CRASH_COUNT=0
+  fi
+  record_restart_in_hour
+
+  if [ $RESTART_COUNT -ge $SUPERVISOR_MAX_RESTARTS_PER_HOUR ]; then
+    log "STOP_BUDGET: $RESTART_COUNT/$SUPERVISOR_MAX_RESTARTS_PER_HOUR restarts in the hour"
+    exit 4
+  fi
+  if [ $CRASH_COUNT -ge $SUPERVISOR_CRASH_LIMIT ]; then
+    log "STOP_CRASH_LOOP: $CRASH_COUNT crashes within $SUPERVISOR_MIN_RUN_MS ms"
+    exit 3
+  fi
+}
+
 # --- Helper: carry one poll's liveness state to the next, and log it ---
 # The poll process is fresh every poll, so the stream's size and the moment it
 # last changed, and the final ask's time, come back from it as the POLL_*
@@ -3534,62 +3602,7 @@ while true; do
         log "FINAL_ASK child-$CHILD_INDEX: $DECIDE_REASON"
         ;;
       sweep_relaunch)
-        # Every signal is silent and the walk found no live process. The tree
-        # the child was last recorded as is swept, and the relaunch is
-        # accounted exactly as a restart is, so the restart budget still bounds
-        # a persona that keeps dying. A sweep that cannot clear the tree takes
-        # the retry backstop the restart branch takes, which re-snapshots once
-        # where the sweep left no record to retry, and a backstop that fails
-        # ends the run at exit 5, since a relaunch beside a survivor puts two
-        # children on one persona claim.
-        log "SWEEP_RELAUNCH: $DECIDE_REASON"
-        sweep_child_tree "sweep_relaunch"
-        SWEEP_RC=$?
-        if [ "$SWEEP_RC" -eq 1 ]; then
-          retry_stop_escalation "sweep_relaunch" "$SWEEP_RC"
-          SWEEP_RC=$?
-          if [ "$SWEEP_RC" -ne 0 ]; then
-            log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable after every sweep retry"
-            exit 5
-          fi
-        fi
-        # The walk read the child gone, but the wrapper can outlive that
-        # reading: a walk that raced the wrapper's own exit, or a sweep with
-        # nothing to kill. A wait on a live wrapper would block this loop for
-        # as long as the child lives, so a wrapper still running takes the
-        # ordinary stop phases first, and its failure ends the run at exit 5
-        # as it does on the restart branch.
-        if [ -n "$CHILD_LAUNCH_PID" ] && kill -0 "$CHILD_LAUNCH_PID" 2>/dev/null; then
-          log "SWEEP_RELAUNCH: child-$CHILD_INDEX's wrapper is still running after the sweep, so it is stopped before the relaunch"
-          stop_child "sweep_relaunch"
-          retry_stop_escalation "sweep_relaunch" $?
-          STOP_ESCALATION_RESULT=$?
-          if [ "${STOP_ESCALATION_RESULT:-0}" -ne 0 ]; then
-            log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable despite every stop retry (STOP_PATH=$STOP_PATH)"
-            exit 5
-          fi
-        fi
-        wait "$CHILD_LAUNCH_PID"; EXIT_CODE=$?
-        CHILD_LAUNCH_PID=""
-        echo "$EXIT_CODE" > "$EXIT_MARKER"
-        log "EXIT child-$CHILD_INDEX code=$EXIT_CODE (sweep_relaunch)"
-
-        CHILD_RUN_MS=$(( ( $(node -e "console.log(Date.now())") - LAUNCHED_AT ) ))
-        if [ $EXIT_CODE -ne 0 ] && [ $CHILD_RUN_MS -lt $SUPERVISOR_MIN_RUN_MS ]; then
-          CRASH_COUNT=$((CRASH_COUNT + 1))
-        else
-          CRASH_COUNT=0
-        fi
-        record_restart_in_hour
-
-        if [ $RESTART_COUNT -ge $SUPERVISOR_MAX_RESTARTS_PER_HOUR ]; then
-          log "STOP_BUDGET: $RESTART_COUNT/$SUPERVISOR_MAX_RESTARTS_PER_HOUR restarts in the hour"
-          exit 4
-        fi
-        if [ $CRASH_COUNT -ge $SUPERVISOR_CRASH_LIMIT ]; then
-          log "STOP_CRASH_LOOP: $CRASH_COUNT crashes within $SUPERVISOR_MIN_RUN_MS ms"
-          exit 3
-        fi
+        sweep_gone_child
         continue 2  # break out of the poll loop and go to the next child
         ;;
       continue)

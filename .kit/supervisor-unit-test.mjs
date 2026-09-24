@@ -657,14 +657,25 @@ const livenessCases = [
     assert.equal(isUsageLimitRecord({ type: 'assistant', message: { content: [] } }), false);
     assert.equal(isUsageLimitRecord(null), false);
   }],
-  // The result-text fallback matches the harness's own copy for this state,
-  // and not the other "limit reached" errors a turn can end on.
-  ['isUsageLimitRecord: the harness copy "You\'ve hit your limit" and "Usage limit reached" count', () => {
-    assert.equal(isUsageLimitRecord({ type: 'result', is_error: true, result: "You've hit your limit · resets 3pm" }), true);
-    assert.equal(isUsageLimitRecord({ type: 'result', is_error: true, result: 'Usage limit reached' }), true);
+  // The result-text fallback matches the copy the harness writes for this
+  // state, which opens "You've hit your", "You've reached your" or "You're
+  // out of usage credits", with either apostrophe, and not the other
+  // "limit reached" errors a turn can end on.
+  ['isUsageLimitRecord: the harness copy for a usage limit counts, with a straight or a curly apostrophe', () => {
+    for (const text of [
+      "You've hit your session limit · resets 3pm",
+      "You've hit your monthly spend limit.",
+      "You've hit your team's shared budget.",
+      "You're out of usage credits. Run /usage",
+      "You've reached your Fable limit.",
+      'You\u2019ve hit your weekly limit',
+      'Usage limit reached',
+    ]) {
+      assert.equal(isUsageLimitRecord({ type: 'result', is_error: true, result: text }), true, text);
+    }
   }],
-  ['isUsageLimitRecord: "Context limit reached", "Budget limit reached" and "spend limit reached" do not count', () => {
-    for (const text of ['Context limit reached', 'Budget limit reached', 'Monthly spend limit reached']) {
+  ['isUsageLimitRecord: "Context limit reached" and "Budget limit reached" do not count', () => {
+    for (const text of ['Context limit reached', 'Budget limit reached']) {
       assert.equal(isUsageLimitRecord({ type: 'result', is_error: true, result: text }), false, text);
     }
   }],

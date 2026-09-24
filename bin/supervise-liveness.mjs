@@ -243,11 +243,17 @@ export function readNewestTurnTs(transcriptPath, subagentsDir, minSubagentMtimeM
  * rate_limit or the result record closing that turn. The result is matched on
  * its is_error flag with either the turn's own assistant record carrying
  * rate_limit, handed in as the second argument, or a result text naming a
- * usage limit.
+ * usage limit. The text match takes the openings the harness builds this
+ * state's messages from, "You've hit your" (a session, weekly, model or
+ * spend limit, or a shared budget), "You've reached your" and "You're out
+ * of usage credits", with a straight or curly apostrophe, and the plain
+ * phrases "usage limit" and "out of usage" or "out of extra usage".
  * @param {object|null} record
  * @param {object|null} [lastAssistant]
  * @returns {boolean}
  */
+const USAGE_LIMIT_TEXT = /you['\u2019]ve hit your|you['\u2019]ve reached your|you['\u2019]re out of usage credits|usage limit|out of (extra )?usage/i;
+
 export function isUsageLimitRecord(record, lastAssistant = null) {
   if (!record || typeof record !== 'object') return false;
   if (record.type === 'system' && record.subtype === 'api_retry' && Number(record.error_status) === 429) return true;
@@ -255,7 +261,7 @@ export function isUsageLimitRecord(record, lastAssistant = null) {
   if (record.type === 'result' && record.is_error === true) {
     if (lastAssistant && typeof lastAssistant === 'object' && lastAssistant.error === 'rate_limit') return true;
     const text = typeof record.result === 'string' ? record.result : '';
-    return /usage limit|hit your limit|out of (extra )?usage/i.test(text);
+    return USAGE_LIMIT_TEXT.test(text);
   }
   return false;
 }
