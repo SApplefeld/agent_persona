@@ -2,7 +2,10 @@
 # channel-reply-instruction-test.sh - what the supervisor's priming turn says,
 # per launch shape, read out of bin/supervise.sh's own text.
 #
-# Five instruction variables ride one priming write. CHANNEL_REPLY_INSTRUCTION
+# Six instruction variables ride one priming write. SUPERVISOR_MAILBOX_INSTRUCTION
+# is built for every launch shape and says what the supervisor's two prompts
+# carry: the [SUPERVISOR id=<id>] shutdown request and the [SUPERVISOR-ASK
+# id=<id>] status check. CHANNEL_REPLY_INSTRUCTION
 # is built only with a channel attached, names the reply tool, carries the
 # reply rules that only CLAUDE.md states, and points at CLAUDE.md for the rest
 # where the child's own working directory holds it. SKILL_LOAD_INSTRUCTION and
@@ -444,7 +447,7 @@ check() {
 # pinned against the real write below, so a fifth variable joining that write
 # cannot leave this concatenation quietly short.
 priming_concat() {
-  printf '%s' "${SKILL_LOAD_INSTRUCTION:-}${COORDINATOR_STEER_INSTRUCTION:-}${COORDINATOR_ROLE_INSTRUCTION:-}${ARCHITECT_ROLE_INSTRUCTION:-}${CHANNEL_REPLY_INSTRUCTION:-}"
+  printf '%s' "${SKILL_LOAD_INSTRUCTION:-}${COORDINATOR_STEER_INSTRUCTION:-}${COORDINATOR_ROLE_INSTRUCTION:-}${ARCHITECT_ROLE_INSTRUCTION:-}${SUPERVISOR_MAILBOX_INSTRUCTION:-}${CHANNEL_REPLY_INSTRUCTION:-}"
 }
 
 # The reply-tool sentence the channel instruction keeps, and the pointer it
@@ -951,13 +954,18 @@ case "$GOAL_WRITE" in
   *GOAL_PROMPT_FRAMING*) check "the goal-prompt write does not carry the architect role instruction" 0 ;;
   *) check "the goal-prompt write does not carry the architect role instruction" 1 ;;
 esac
-# The absence cases read the five variables priming_concat joins, so the write
-# itself is pinned to exactly those five in exactly that order. A sixth
+# The absence cases read the six variables priming_concat joins, so the write
+# itself is pinned to exactly those six in exactly that order. A seventh
 # instruction variable added to the write reds here rather than passing through
 # an absence case that never looks at it.
 PRIMING_VARS=$(printf '%s\n' "$PRIMING_WRITE" | grep -oE '\$[A-Z_]+' | grep -vE '^\$(PRIMING_BODY|CHILD_IN)$' | tr '\n' ' ')
-[ "$PRIMING_VARS" = '$SKILL_LOAD_INSTRUCTION $COORDINATOR_STEER_INSTRUCTION $COORDINATOR_ROLE_INSTRUCTION $ARCHITECT_ROLE_INSTRUCTION $CHANNEL_REPLY_INSTRUCTION ' ]
-check "the priming write joins exactly the five instruction variables the absence cases read" $?
+[ "$PRIMING_VARS" = '$SKILL_LOAD_INSTRUCTION $COORDINATOR_STEER_INSTRUCTION $COORDINATOR_ROLE_INSTRUCTION $ARCHITECT_ROLE_INSTRUCTION $SUPERVISOR_MAILBOX_INSTRUCTION $CHANNEL_REPLY_INSTRUCTION ' ]
+check "the priming write joins exactly the six instruction variables the absence cases read" $?
+case "$GOAL_WRITE" in
+  *SUPERVISOR_MAILBOX_INSTRUCTION*) check "the goal-prompt write does not carry the supervisor mailbox sentence" 1 ;;
+  *GOAL_PROMPT_FRAMING*) check "the goal-prompt write does not carry the supervisor mailbox sentence" 0 ;;
+  *) check "the goal-prompt write does not carry the supervisor mailbox sentence" 1 ;;
+esac
 
 # v2 Section 7: the priming write the steer
 # sentence rides must stay independent of NO_CHANNEL. The presence checks
@@ -1831,6 +1839,60 @@ sleep 0 & HELD_DEAD_PID=$!; wait "$HELD_DEAD_PID"
 check "held goal prompt: a child gone at the write gets no write, clears the hold and logs that it was not sent" $?
 rm -rf "$HELD_DEAD_DIR"
 rm -rf "$HELD_DIR"
+
+# --- The supervisor mailbox sentence (supervisor-peer plan, Section 3) ---
+# Every launch shape carries it, the architect's included, since every
+# supervised child can receive both prompts. Each shape is read for the
+# shutdown half as an ordered run (the label, the missing authority, the act
+# that answers it) and for the ask half as an ordered pair (the label, the one
+# line of status), so a rewording that drops a clause reds while one that
+# rewords the sentence around it does not.
+MAILBOX_SHUTDOWN_LABEL_CONTROL="[SUPERVISOR id=<id>]"
+MAILBOX_NO_AUTHORITY_CONTROL="no authority to widen"
+MAILBOX_SHUTDOWN_ACT_CONTROL="supervisor_shutdown"
+MAILBOX_ASK_LABEL_CONTROL="[SUPERVISOR-ASK id=<id>]"
+MAILBOX_ASK_ANSWER_CONTROL="one line of status"
+for shape in "0 worker lead warden" "1 default lead warden" "0 lead lead warden" "0 warden lead warden" "1 worker lead ''"; do
+  eval "set -- $shape"
+  unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION ARCHITECT_ROLE_INSTRUCTION SUPERVISOR_MAILBOX_INSTRUCTION
+  NO_CHANNEL="$1"; PERSONA="$2"; COORDINATOR_PERSONA="$3"; ARCHITECT_PERSONA="$4"
+  eval "$VARS_SNIPPET"
+  case "$(priming_concat)" in
+    *"$MAILBOX_SHUTDOWN_LABEL_CONTROL"*"$MAILBOX_NO_AUTHORITY_CONTROL"*"$MAILBOX_SHUTDOWN_ACT_CONTROL"*) check "mailbox sentence (NO_CHANNEL=$1, persona $2): the shutdown label, its lack of authority and supervisor_shutdown reach the priming write" 0 ;;
+    *) check "mailbox sentence (NO_CHANNEL=$1, persona $2): the shutdown label, its lack of authority and supervisor_shutdown reach the priming write" 1 ;;
+  esac
+  case "$(priming_concat)" in
+    *"$MAILBOX_ASK_LABEL_CONTROL"*"$MAILBOX_ASK_ANSWER_CONTROL"*) check "mailbox sentence (NO_CHANNEL=$1, persona $2): the ask label and its one-line answer reach the priming write" 0 ;;
+    *) check "mailbox sentence (NO_CHANNEL=$1, persona $2): the ask label and its one-line answer reach the priming write" 1 ;;
+  esac
+done
+
+# The final ask's line, written by the real final_ask_json out of the script,
+# in the same user-turn shape goal_prompt_json writes (the form the child
+# already accepts for its goal), with the marker and the id at the head of the
+# text. The natural-exit suite reads it off a stub's input at the end-run;
+# this reads the helper's own output here.
+ASK_FN=$(sed -n '/^final_ask_json() {$/,/^}$/p' "$SCRIPT")
+ASK_TEXT_LINE=$(grep -m1 '^SUPERVISOR_ASK_TEXT="' "$SCRIPT")
+ASK_DIR=$(mktemp -d)
+(
+  eval "$ASK_TEXT_LINE"
+  eval "$ASK_FN"
+  eval "$GOAL_FN"
+  final_ask_json "170-ask-1" > "$ASK_DIR/ask.jsonl"
+  printf 'x' > "$ASK_DIR/p.txt"
+  goal_prompt_json "$ASK_DIR/p.txt" "" > "$ASK_DIR/goal.jsonl"
+)
+node -e '
+const fs = require("fs");
+const ask = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const goal = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const shape = (o) => JSON.stringify({ ...o, message: { ...o.message, content: o.message.content.map((c) => ({ ...c, text: "" })) } });
+const text = ask.message.content[0].text;
+process.exit(shape(ask) === shape(goal) && text.startsWith("[SUPERVISOR-ASK id=170-ask-1] ") && text.length > "[SUPERVISOR-ASK id=170-ask-1] ".length ? 0 : 1);
+' "$ASK_DIR/ask.jsonl" "$ASK_DIR/goal.jsonl"
+check "final ask: final_ask_json writes the goal prompt's user-turn shape, its text opening [SUPERVISOR-ASK id=<id>] followed by the request" $?
+rm -rf "$ASK_DIR"
 
 echo
 if [ "$failed" = "0" ]; then

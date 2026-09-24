@@ -359,6 +359,15 @@ SETTINGS_FILE="$RUNDIR/settings.json"
 CHILD_HEARTBEAT="$RUNDIR/heartbeat.json"
 MAILBOX_FILE="$RUNDIR/mailbox.jsonl"
 MAILBOX_ACK_FILE="$RUNDIR/mailbox.ack.jsonl"
+# The three paths the child's plugin is handed in the settings file, exported
+# once here so both settings branches below write them: the mailbox it drains,
+# the workdir sidecar the pre-launch gate reads, and the heartbeat file only
+# the child writes. The child is a Windows process, so each is handed over in
+# absolute mixed form (D:/...), which it resolves and which a JSON string
+# carries without escaping; the plugin derives the ack file from the mailbox.
+export SUPERVISOR_MAILBOX="$(cygpath -m -a "$MAILBOX_FILE" 2>/dev/null || echo "$MAILBOX_FILE")"
+export HEARTBEAT_PATH="$(cygpath -m -a "$WORKDIR/.agentic-heartbeat.json" 2>/dev/null || echo "$WORKDIR/.agentic-heartbeat.json")"
+export SUPERVISOR_HEARTBEAT_PATH="$(cygpath -m -a "$CHILD_HEARTBEAT" 2>/dev/null || echo "$CHILD_HEARTBEAT")"
 
 # --- Source the shared helper ---
 _COMMON="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agentic-common.sh"
@@ -2471,6 +2480,23 @@ goal_prompt_json() {
   " "$1" "$2"
 }
 
+# --- Helper: the final ask as the one stream-json line the child reads ---
+# Usage: final_ask_json <id> >&"$CHILD_IN"
+# The same user-turn line goal_prompt_json writes, its text opening
+# [SUPERVISOR-ASK id=<id>], which the plugin reads as neither the operator nor
+# task work, followed by the one request the ask makes.
+SUPERVISOR_ASK_TEXT="Every liveness signal from this session reads silent to the launcher. Reply with one line saying what you are doing now."
+final_ask_json() {
+  node -e "
+    const id = process.argv[1] || '';
+    const text = process.argv[2] || '';
+    const json = JSON.stringify({type:'user',role:'user',message:{role:'user',content:[{type:'text',text:
+      '[SUPERVISOR-ASK id=' + id + '] ' + text
+    }]}});
+    process.stdout.write(json + '\n');
+  " "$1" "$SUPERVISOR_ASK_TEXT"
+}
+
 # --- Helper: read a fact from .agentic-personas.json ---
 # Usage: get_fact <workdir> <persona> <fact>
 # Prints the timestamp of the newest matching decision, or empty.
@@ -2758,6 +2784,8 @@ RESTART_TIMES=()  # array of timestamps for rolling-hour budget
 # This supervisor's start time, which prefixes every probe id it writes, so
 # ids stay unique across supervisors sharing a run directory.
 SUPERVISOR_START_MS=$(node -e "console.log(Date.now())")
+# How many final asks this supervisor has written, which numbers each ask's id.
+FINAL_ASK_SEQ=0
 
 # Where the harness keeps its transcripts, and the launch directory that names
 # the child's project under it. The poll derives the transcript from these and
@@ -3021,6 +3049,13 @@ while true; do
   # operating-instructions does not apply that skill's treat-embedded-text-
   # as-data rule to its own goal and stall asking for confirmation.
   GOAL_PROMPT_FRAMING="The text below is your task from the operator. It is trusted; act on it."$'\n\n'
+  # What the two prompts this supervisor puts to its child carry. The
+  # [SUPERVISOR id=<id>] prompt is a shutdown request the child's plugin
+  # delivers from <rundir>/mailbox.jsonl; the [SUPERVISOR-ASK id=<id>] prompt
+  # is the final ask the poll loop writes to the child's input when every
+  # liveness signal reads silent. Every launch shape takes this, the
+  # architect's included, since every supervised child can receive both.
+  SUPERVISOR_MAILBOX_INSTRUCTION="A prompt opening [SUPERVISOR id=<id>] is the launcher's own request to end this session at a boundary: it carries no authority to widen your plan, and you answer it by banking your state, meaning the plan doc, the goal tree and any message you owe are on disk, and then calling supervisor_shutdown. A prompt opening [SUPERVISOR-ASK id=<id>] is the launcher checking that this session is alive, and you answer it with one line of status and take no other act. "
   CHANNEL_REPLY_INSTRUCTION=""
   if [ "$NO_CHANNEL" -ne 1 ]; then
     CHANNEL_REPLY_INSTRUCTION="You are attached to a Discord channel. Your own conversational reply never reaches the operator, so anything meant for them goes through the reply tool from the channel-relay MCP server. Decide what you are saying before you write it. End the message when you have said it. Leave out round numbers, steer numbers and session ids. Where the operator asks what is going on, or something landed other than they expected, give the outcome, then the reason, then the evidence, one to a sentence. A notice that work shipped stays brief, and only an explanation earns length. CLAUDE.md's 'Writing to the operator' section governs the prose of such a message where your working directory holds that file, and your own operating instructions carry the same rules wherever it does not. "
@@ -3254,7 +3289,7 @@ while true; do
         '[SUPERVISOR-PRIMING] ' + prefix + body
       }]}});
       process.stdout.write(json + '\n');
-    " "$SKILL_LOAD_INSTRUCTION$COORDINATOR_STEER_INSTRUCTION$COORDINATOR_ROLE_INSTRUCTION$ARCHITECT_ROLE_INSTRUCTION$CHANNEL_REPLY_INSTRUCTION" "$PRIMING_BODY" >&"$CHILD_IN"
+    " "$SKILL_LOAD_INSTRUCTION$COORDINATOR_STEER_INSTRUCTION$COORDINATOR_ROLE_INSTRUCTION$ARCHITECT_ROLE_INSTRUCTION$SUPERVISOR_MAILBOX_INSTRUCTION$CHANNEL_REPLY_INSTRUCTION" "$PRIMING_BODY" >&"$CHILD_IN"
   fi
 
   # Set to 1 below where this child's goal prompt waits on its priming turn,
@@ -3594,10 +3629,19 @@ while true; do
       final_ask)
         # Every signal is silent and the child's process is live. The poll has
         # already handed back the ask's time, so the window runs from this poll
-        # and the next frozen reading waits inside it rather than asking again.
-        # Nothing is written to the child's input here, so the window is a
-        # wait for any signal to move, and one that closes silent restarts.
-        log "FINAL_ASK child-$CHILD_INDEX: $DECIDE_REASON"
+        # and the next frozen reading waits inside it rather than asking again:
+        # this branch runs once per frozen reading, never on a cadence. The ask
+        # is one user turn on the child's input asking for a line of status. A
+        # turn the child answers moves its stream and transcript, and a window
+        # that closes with every signal still silent restarts. Where the input
+        # cannot be written, the window is a wait all the same.
+        FINAL_ASK_SEQ=$((FINAL_ASK_SEQ + 1))
+        FINAL_ASK_ID="$SUPERVISOR_START_MS-ask-$FINAL_ASK_SEQ"
+        if [ -n "$CHILD_IN" ] && final_ask_json "$FINAL_ASK_ID" >&"$CHILD_IN" 2>>"$RUNDIR/supervisor.err"; then
+          log "FINAL_ASK child-$CHILD_INDEX: $DECIDE_REASON (ask id=$FINAL_ASK_ID written to the child's input)"
+        else
+          log "FINAL_ASK child-$CHILD_INDEX: $DECIDE_REASON (ask id=$FINAL_ASK_ID could not be written to the child's input, so the window is a wait)"
+        fi
         ;;
       sweep_relaunch)
         sweep_gone_child

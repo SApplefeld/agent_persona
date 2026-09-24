@@ -749,6 +749,10 @@ const sess: {
   // persisted state, for that reason.
   untrackedWorkAt: number | null;
   untrackedWorkCount: number;
+  // The heartbeatPath option: the absolute path of the workdir sidecar the
+  // supervisor that launched this session reads, or "" where no such option
+  // was set. heartbeatPathOf reads it.
+  heartbeatPath: string;
 } = {
   persona: "default",
   mySessionId: "pending",
@@ -773,6 +777,7 @@ const sess: {
   stateNotLoaded: "plugin start-up did not finish, and the debug log's `session.start hook skipped` line names why",
   untrackedWorkAt: null,
   untrackedWorkCount: 0,
+  heartbeatPath: "",
 };
 
 // The store cause sess.stateNotLoaded takes where session.start's store read
@@ -807,26 +812,31 @@ const commonsMeta = () => ({ turnStartedAt: sess.turnStartedAt, workdir: sess.wo
 // the resolver that anchors them to the directory the session was launched in
 // rather than to wherever the working directory has since moved.
 //
-// bin/supervise.sh resolves all three once, against the absolute WORKDIR it was
-// launched with, and never resolves them again: the heartbeat and the persona
-// store at :2881-2882, the latter handed to bin/supervise-poll.mjs, whose
-// readStoreFacts harvests root_complete, shutdown_requested and
-// restart_requested out of it. A session that resolved the bare names against a
-// working directory a tool call had moved would write all three where nothing
-// reads them.
+// bin/supervise.sh resolves these files once, against the absolute WORKDIR it
+// was launched with, and never resolves them again: the persona store is
+// handed to bin/supervise-poll.mjs, whose readStoreFacts harvests
+// root_complete, shutdown_requested and restart_requested out of it, and the
+// heartbeat sidecar is what its pre-launch gate reads to tell whether the
+// persona is held. A session that resolved the bare names against a working
+// directory a tool call had moved would write them where nothing reads them.
 //
-// For the heartbeat that showed up as a session restarted while it was stamping
-// on time: the watched file went still, and ninety seconds later the supervisor
-// called it hung. The transcript corroboration in bin/supervise-decide.mjs
-// withholds that restart only while the session is taking turns, so an idle
-// session in a subdirectory or a worktree was killed outright.
+// The sidecar is the record of who holds a persona. It is not the supervisor's
+// liveness signal: every persona launched in one directory rewrites it whole,
+// so one session's entry can read stale while it stamps on time. A supervised
+// child also stamps a heartbeat file only it writes, named by the
+// supervisorHeartbeatPath option, and that file is what the supervisor's
+// liveness verdict in bin/supervise-liveness.mjs reads.
 //
-// The store is the reason all three move together rather than the heartbeat
+// The store is the reason these files move together rather than the heartbeat
 // alone. Anchoring the heartbeat by itself would leave a displaced session
-// looking healthy to the supervisor while its shutdown request, its restart
-// request and its goal completion were written somewhere the supervisor never
-// reads, turning a loud ninety-second kill into a session that runs on with its
-// signals invisible.
+// holding its persona while its shutdown request, its restart request and its
+// goal completion were written somewhere the supervisor never reads.
+//
+// A supervised child is also handed the sidecar's absolute path as the
+// heartbeatPath option, from the same launcher that reads it, so the writer and
+// the reader hold one path whatever the session's working directory. Where that
+// option is set, heartbeatPathOf returns it; every heartbeat read and write in
+// this module goes through heartbeatPathOf.
 //
 // sess.workdir is captured at session.start from the launch cwd, before any
 // tool call can move it. For a supervisor-launched child that is the same
@@ -851,7 +861,7 @@ const workdirPathOf = (filename: string): string => {
   if (!root) return filename;
   return `${root.replace(/[/\\]+$/, "")}/${filename}`;
 };
-const heartbeatPathOf = (): string => workdirPathOf(HEARTBEAT_FILENAME);
+const heartbeatPathOf = (): string => sess.heartbeatPath !== "" ? sess.heartbeatPath : workdirPathOf(HEARTBEAT_FILENAME);
 // Reentrancy flag for the git probe (E4).
 let gitProbeInFlight = false;
 
@@ -1067,15 +1077,180 @@ const writeClaimDirect = async (dp: any): Promise<void> => {
 // that gap is recorded in docs/backlog.md rather than fixed here. Declared at the top of the file, as
 // writeClaimDirect and persist are, because the hooks loader only lets $
 // be passed to a function declared here.
+//
+// The sidecar has no lock, and every persona launched in one working directory
+// reads the whole file, sets its own entry and writes the whole file back. Two
+// such writes landing together each revert the other's entry. So the write is
+// read back, and where this session's entry is missing, or still names this
+// session with a lastSeen other than the one just written, it is written once
+// more over what the read returned. That recovers the lost update, and the
+// second write lands later than the colliding one did. An entry naming another
+// session is left alone: that is a takeover, and the heartbeat tick's
+// ownership check is what answers it.
 const writeOwnerHeartbeat = async (dp: any): Promise<void> => {
   const heartbeatPath = heartbeatPathOf();
   const hb: Record<string, HeartbeatEntry> =
     await dp.fs.exists(heartbeatPath)
       ? (JSON.parse(await dp.fs.read(heartbeatPath)) as Record<string, HeartbeatEntry>)
       : {};
-  hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now(), turnStartedAt: sess.turnStartedAt };
+  const stamp = Date.now();
+  hb[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: stamp, turnStartedAt: sess.turnStartedAt };
   await dp.fs.write(heartbeatPath, JSON.stringify(hb, null, 2));
+  let after: Record<string, HeartbeatEntry> | null = null;
+  try {
+    const parsed: unknown = await dp.fs.exists(heartbeatPath) ? JSON.parse(await dp.fs.read(heartbeatPath)) : {};
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) after = parsed as Record<string, HeartbeatEntry>;
+  } catch { /* the read-back failed; the write above stands */ }
+  if (after === null) return;
+  const mine = after[sess.persona];
+  const lost = mine === undefined || mine === null || (mine.sessionId === sess.mySessionId && mine.lastSeen !== stamp);
+  if (!lost) return;
+  after[sess.persona] = { sessionId: sess.mySessionId, epoch: sess.myEpoch, lastSeen: Date.now(), turnStartedAt: sess.turnStartedAt };
+  await dp.fs.write(heartbeatPath, JSON.stringify(after, null, 2));
 };
+
+// The heartbeat file only this session writes, at the path the
+// supervisorHeartbeatPath option names: { sessionId, lastSeen, turnStartedAt }.
+// bin/supervise-poll.mjs reads exactly those field names and checks sessionId
+// against the child it launched. The file has one writer, so it is written
+// whole with no read, merge or lock. Top level because it takes `dp`.
+const writeSupervisorHeartbeat = async (dp: any, path: string): Promise<void> => {
+  await dp.fs.write(path, JSON.stringify({ sessionId: sess.mySessionId, lastSeen: Date.now(), turnStartedAt: sess.turnStartedAt }));
+};
+
+// --- The supervisor mailbox ---
+//
+// bin/supervise.sh names one mailbox per run directory, <rundir>/mailbox.jsonl,
+// and the ack file beside it, <rundir>/mailbox.ack.jsonl, and hands the first
+// to this plugin as the supervisorMailbox option. The supervisor is the
+// mailbox's only writer and this plugin the ack file's. Each mailbox line is
+// one JSON object { id, kind, at, text } with kind probe or shutdown.
+
+// The ack file beside a mailbox: mailbox.jsonl reads mailbox.ack.jsonl.
+function supervisorAckPathOf(mailboxPath: string): string {
+  return `${mailboxPath.replace(/\.jsonl$/, "")}.ack.jsonl`;
+}
+
+type SupervisorMailboxRecord = { id: string; kind: "probe" | "shutdown"; at: number; text: string };
+
+// One mailbox line read as a record, or the reason it is not one. The id and
+// the text are held to the rule the inbox drain holds a record to
+// (deliveryRecordProblem), since the id is spliced into the [SUPERVISOR id=]
+// label and the text is submitted as a turn.
+function parseSupervisorMailboxLine(line: string): SupervisorMailboxRecord | { problem: string } {
+  let parsed: unknown;
+  try { parsed = JSON.parse(line); } catch { return { problem: "is not JSON" }; }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return { problem: "is not a JSON object" };
+  const o = parsed as Record<string, unknown>;
+  for (const field of ["id", "kind", "at", "text"]) {
+    if (!(field in o)) return { problem: `lacks the ${field} field` };
+  }
+  if (o.kind !== "probe" && o.kind !== "shutdown") return { problem: `has kind ${JSON.stringify(o.kind).slice(0, 40)}, outside probe and shutdown` };
+  if (typeof o.at !== "number" || !Number.isFinite(o.at)) return { problem: "has an at that is not a number" };
+  const recordProblem = deliveryRecordProblem({ id: o.id, text: o.text });
+  if (recordProblem !== null) return { problem: recordProblem };
+  return { id: o.id as string, kind: o.kind, at: o.at, text: o.text as string };
+}
+
+// One controller tick's pass over the mailbox. A line whose id is already in
+// the ack file is passed over, so no record is acted on twice. A probe gets an
+// ack line and spends no turn. The first shutdown gets a delivered line, and
+// then one turn opening [SUPERVISOR id=<id>] followed by the record's text,
+// submitted through the expected-turn path; the pass ends there, so one tick
+// delivers at most one shutdown. The ack line is written before the submit,
+// and a pass that cannot read or write the ack file acts on nothing, so a
+// record can never be delivered without the line that keeps it from being
+// delivered again. A line that is not a record is never acknowledged, and is
+// logged once per session under the key `skipped` holds. A missing or
+// unreadable mailbox is a pass that does nothing. Nothing here throws. Top
+// level because it takes `dp`.
+async function drainSupervisorMailbox(
+  dp: any,
+  mailboxPath: string,
+  expectedTurns: ExpectedTurn[],
+  skipped: Set<string>,
+): Promise<{ delivered: boolean; logged: boolean }> {
+  const outcome = { delivered: false, logged: false };
+  let mailboxText: string;
+  let ackText = "";
+  const ackPath = supervisorAckPathOf(mailboxPath);
+  try {
+    if (!(await dp.fs.exists(mailboxPath))) return outcome;
+    mailboxText = String(await dp.fs.read(mailboxPath));
+    if (await dp.fs.exists(ackPath)) ackText = String(await dp.fs.read(ackPath));
+  } catch {
+    return outcome;
+  }
+  const handled = new Set<string>();
+  for (const ackLine of ackText.split("\n")) {
+    if (ackLine.trim() === "") continue;
+    try {
+      const a: unknown = JSON.parse(ackLine);
+      if (a !== null && typeof a === "object" && typeof (a as { id?: unknown }).id === "string") handled.add((a as { id: string }).id);
+    } catch { /* a line this plugin did not write whole acknowledges nothing */ }
+  }
+  const newAcks: string[] = [];
+  const writeAcks = async (): Promise<boolean> => {
+    if (newAcks.length === 0) return true;
+    const base = ackText === "" || ackText.endsWith("\n") ? ackText : `${ackText}\n`;
+    try {
+      await dp.fs.write(ackPath, `${base}${newAcks.join("\n")}\n`);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const lines = mailboxText.split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.trim() === "") continue;
+    const rec = parseSupervisorMailboxLine(line);
+    if ("problem" in rec) {
+      const key = `${index}:${line}`;
+      if (!skipped.has(key)) {
+        skipped.add(key);
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "supervisor_mailbox_line_skipped",
+          detail: `mailbox line ${index + 1} ${rec.problem}; skipped and not acknowledged`.slice(0, 200),
+        });
+        outcome.logged = true;
+      }
+      continue;
+    }
+    if (handled.has(rec.id)) continue;
+    handled.add(rec.id);
+    if (rec.kind === "probe") {
+      newAcks.push(JSON.stringify({ id: rec.id, at: Date.now(), action: "ack" }));
+      continue;
+    }
+    newAcks.push(JSON.stringify({ id: rec.id, at: Date.now(), action: "delivered" }));
+    if (!(await writeAcks())) return outcome;
+    const shutdownText = `[SUPERVISOR id=${rec.id}] ${quoteContinuationLines(rec.text)}`;
+    const shutdownEntry: ExpectedTurn = { kind: "plugin", text: shutdownText };
+    expectedTurns.push(shutdownEntry);
+    const shutdownOutcome = await submitExpectedTurn(dp, expectedTurns, shutdownEntry);
+    sess.state.decisions.push(shutdownOutcome.ok
+      ? {
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "supervisor_shutdown_delivered",
+        detail: `mailbox record ${rec.id} submitted as [SUPERVISOR id=${rec.id}]`,
+      }
+      : {
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "supervisor_shutdown_failed",
+        detail: `mailbox record ${rec.id} submit ${shutdownOutcome.how}; left delivered: ${shutdownOutcome.reason}`.slice(0, 200),
+      });
+    outcome.delivered = true;
+    outcome.logged = true;
+    return outcome;
+  }
+  await writeAcks();
+  return outcome;
+}
 
 // --- Fleet status: one row per roster persona, for the fleet_status tool ---
 
@@ -2477,6 +2652,20 @@ export const register: Register = async (on, options) => {
   // entries. An unset or blank setting leaves the tool with no fleet to read,
   // which it reports in place of rows, and leaves the watcher silent.
   const fleetRoster = typeof cfg.fleetRoster === "string" ? cfg.fleetRoster.trim() : "";
+  // The three paths a supervised child is handed by the launcher that reads
+  // them, each read the way fleetRoster is and "" where unset. An interactive
+  // session carries none of them, so its heartbeat stays the anchored sidecar,
+  // it writes no heartbeat file of its own and its tick reads no mailbox.
+  // supervisorMailbox is the mailbox the controller tick drains, with its ack
+  // file beside it; heartbeatPath is the workdir sidecar's absolute path;
+  // supervisorHeartbeatPath is the heartbeat file only this session writes.
+  const supervisorMailbox = typeof cfg.supervisorMailbox === "string" ? cfg.supervisorMailbox.trim() : "";
+  sess.heartbeatPath = typeof cfg.heartbeatPath === "string" ? cfg.heartbeatPath.trim() : "";
+  const supervisorHeartbeatPath = typeof cfg.supervisorHeartbeatPath === "string" ? cfg.supervisorHeartbeatPath.trim() : "";
+  // The malformed mailbox lines this session has already logged, keyed by
+  // line number and text, so each costs one decision rather than one per tick.
+  // Session memory: the supervisor truncates the mailbox at each launch.
+  const supervisorMailboxSkipped = new Set<string>();
   // How long between the [RECONCILE] prompts that drive the kit Coordinator
   // seat's reconciliation pass. Four hours, which is that seat's own cadence:
   // the claim probe's window is one full cadence and the registry prune's
@@ -3199,8 +3388,33 @@ export const register: Register = async (on, options) => {
       const holderAlive = holderHb
         && holderHb.sessionId !== sess.mySessionId
         && (now - holderHb.lastSeen) <= staleAfterMs;
-
+      // A sidecar entry that is stale or absent is not proof the holder is
+      // gone: every persona launched in one directory rewrites the sidecar
+      // whole, so one lost round can leave a live owner's entry stale. So the
+      // commons claim is consulted before the persona is taken, as the
+      // heartbeat tick's promotion consults it, and a live claim on the
+      // persona by another session makes this one a reader. A commons read
+      // that fails leaves the claim to the sidecar alone, as it does there.
+      let commonsHolder: string | null = null;
       if (!holderAlive) {
+        try {
+          const claims = await readAllClaims(commonsStoreOf($), staleAfterMs);
+          const live = claims.find((c) => c.resource === `persona:${sess.persona}` && c.holder !== sess.mySessionId);
+          if (live) commonsHolder = live.holder;
+        } catch { /* commons read failed; the claim proceeds on the sidecar alone */ }
+      }
+
+      if (!holderAlive && commonsHolder !== null) {
+        sess.isOwner = false;
+        sess.myEpoch = existingPersona.epoch;
+        sess.state.decisions.push({
+          timestamp: now,
+          loop: "monitor",
+          action: "passive_reader",
+          detail: `Joining '${sess.persona}' as reader (live commons claim by ${commonsHolder}, sidecar entry ${holderHb ? "stale" : "absent"}, epoch ${existingPersona.epoch})`,
+        });
+        await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId, Date.now(), commonsMeta());
+      } else if (!holderAlive) {
         // Claim: stale holder, no heartbeat, or already ours.
         sess.state.activeSessionId = sess.mySessionId;
         sess.state.epoch += 1;
@@ -3334,6 +3548,12 @@ export const register: Register = async (on, options) => {
     // staleness and (b) make its own promotion check compare the holder id to
     // itself and never fire.
     $.clock.every(heartbeatMs, async () => {
+        // The child's own heartbeat file, stamped on every tick whether or not
+        // this session still owns the persona: a child that yielded is still
+        // the child its supervisor launched and is watching.
+        if (supervisorHeartbeatPath !== "") {
+          try { await writeSupervisorHeartbeat($, supervisorHeartbeatPath); } catch { /* heartbeat file write failed; non-fatal */ }
+        }
         // The heartbeat tick verifies ownership BEFORE stamping.
         // If the store's (sessionId, epoch) no longer matches this session,
         // another session has claimed the persona and this one must yield
@@ -3567,6 +3787,18 @@ export const register: Register = async (on, options) => {
       if (!sess.isOwner) return;
       // 2. In-flight check.
       if (turnIsOpen()) return;
+
+      // The supervisor's mailbox, where the launcher set one: a probe is
+      // acknowledged with no turn spent, and a shutdown is delivered once as a
+      // labelled turn, after which the tick ends as the inbox drain's does, so
+      // nothing else queues behind a session that has been asked to leave.
+      if (supervisorMailbox !== "") {
+        const mailbox = await drainSupervisorMailbox($, supervisorMailbox, expectedTurns, supervisorMailboxSkipped);
+        if (mailbox.logged) {
+          try { await persist($); } catch { /* the store refused; the lines above wait in memory */ }
+        }
+        if (mailbox.delivered) return;
+      }
 
       // Section 6: the fleet wake. The steward is woken by this block rather
       // than by a cadence written into its own standing instruction. A duty
@@ -8713,7 +8945,11 @@ export const register: Register = async (on, options) => {
     currentPrompt = e.text;
     // Item 2 backstop safety: mark whether this genuine external turn is
     // the supervisor's own synthetic priming message.
-    isPrimingTurn = e.text.startsWith("[SUPERVISOR-PRIMING]");
+    // A [SUPERVISOR-ASK prompt is the supervisor's status check on a session
+    // it reads as silent, and takes the same flag: it is not task work, and it
+    // is not the operator.
+    const supervisorAskTurn = e.text.startsWith("[SUPERVISOR-ASK");
+    isPrimingTurn = e.text.startsWith("[SUPERVISOR-PRIMING]") || supervisorAskTurn;
     // Steer 68/69: a real Discord message carries e.origin.kind === "channel".
     const originKind = (e as { origin?: { kind?: string } }).origin?.kind;
     lastPromptWasChannelOrigin = originKind === "channel";
@@ -8724,7 +8960,7 @@ export const register: Register = async (on, options) => {
     const originReading: OriginReading = {
       text: e.text,
       kind: typeof originKind === "string" ? originKind : "unclassified",
-      priming: e.text.startsWith("[SUPERVISOR-PRIMING]"),
+      priming: e.text.startsWith("[SUPERVISOR-PRIMING]") || supervisorAskTurn,
     };
     originReadings.push(originReading);
     if (originReadings.length > ORIGIN_READINGS_CAP) originReadings.shift();
@@ -8736,7 +8972,9 @@ export const register: Register = async (on, options) => {
     // here while an ask is open is the operator answering it, whether it
     // came from the keyboard or a Discord thread reply, and whether or not
     // it carries the ask id: close the ask and reactivate the paused node.
-    if (sess.isOwner && sess.state.pendingAskId) {
+    // A [SUPERVISOR-ASK prompt is the one external turn that is not the
+    // operator, so it leaves an open ask open.
+    if (sess.isOwner && sess.state.pendingAskId && !supervisorAskTurn) {
       const askId = sess.state.pendingAskId;
       const store = commonsStoreOf($);
       const askRecord = await readAskRecord(store, sess.persona, askId);

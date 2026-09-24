@@ -1450,7 +1450,10 @@ case "\$action" in
   no_heartbeat) IFS= read -r _; emit_init; wait_for_log_line "HEARTBEAT_ABSENT child-1" 180; wait_for_poll_line 18 300; record shutdown_requested ""; exit 0 ;;
   # The same stamped-once heartbeat with a stream that grows once the final ask
   # is logged. The child holds until the ask is cleared, then ends the run.
-  frozen_answers) IFS= read -r _; emit_init; write_child_heartbeat; wait_for_log_line "FINAL_ASK child-1:" 180; emit_work; wait_for_log_line "FINAL_ASK_CLEARED child-1" 120; record shutdown_requested ""; exit 0 ;;
+  # The line after the priming turn on its stdin is the final ask, kept in
+  # ask-line for the case to read; a bounded read, so an ask that never
+  # arrives leaves the file empty rather than holding the child forever.
+  frozen_answers) IFS= read -r _; emit_init; write_child_heartbeat; wait_for_log_line "FINAL_ASK child-1:" 180; IFS= read -r -t 60 ask_line; printf '%s\n' "\${ask_line:-}" > "\$CASE_DIR/ask-line"; emit_work; wait_for_log_line "FINAL_ASK_CLEARED child-1" 120; record shutdown_requested ""; exit 0 ;;
   # The same stamped-once heartbeat with every other signal silent too. The
   # child blocks until the supervisor's frozen restart closes its stdin.
   hung_quiet) IFS= read -r _; emit_init; write_child_heartbeat; while IFS= read -r _; do :; done; exit 0 ;;
@@ -1894,6 +1897,17 @@ DRIVE_ENV=()
 grep -q 'FINAL_ASK child-1: frozen: every signal is silent and the walk found a live process' "$LOG"; check "(ab) every signal silent with a live process reads frozen and takes the final ask" "$?"
 AB_ASKS=$(asks_before 'FINAL_ASK_CLEARED child-1')
 [ "$AB_ASKS" -eq 1 ]; check "(ab) the final ask is written once, not on every frozen poll inside the window (asks=$AB_ASKS)" "$?"
+# The ask itself arrives on the child's input as one stream-json user turn
+# whose text opens with the marker the plugin exempts from answering an
+# operator ask, carrying the id the log line names.
+AB_ASK_ID=$(grep -o 'FINAL_ASK child-1: .*(ask id=[^ ]* written' "$LOG" | head -1 | sed 's/.*ask id=\([^ ]*\) written/\1/')
+node -e '
+const line = require("fs").readFileSync(process.argv[1], "utf8").trim();
+const o = JSON.parse(line);
+const text = o.message.content[0].text;
+process.exit(o.type === "user" && text.startsWith("[SUPERVISOR-ASK id=" + process.argv[2] + "] ") ? 0 : 1);
+' "$TMP/ab/ask-line" "$AB_ASK_ID" 2>/dev/null
+check "(ab) the ask's line arrives on the stub's input as a user turn opening [SUPERVISOR-ASK id=$AB_ASK_ID]" "$?"
 grep -q 'FINAL_ASK_CLEARED child-1: a signal moved inside the final ask' "$LOG"; check "(ab) the stream moving inside the window returns the child to alive and clears the ask" "$?"
 ! grep -q 'RESTART:' "$LOG"; check "(ab) a frozen child that answered inside the window is not restarted" "$?"
 [ "$RC" -eq 0 ]; check "(ab) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"

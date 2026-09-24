@@ -356,6 +356,7 @@ const INSTRUCTION_ASSIGNMENT_COUNTS = {
   CHANNEL_REPLY_INSTRUCTION: 2,
   COORDINATOR_ROLE_INSTRUCTION: 5,
   ARCHITECT_ROLE_INSTRUCTION: 2,
+  SUPERVISOR_MAILBOX_INSTRUCTION: 1,
 };
 const INSTRUCTION_NAMES = Object.keys(INSTRUCTION_ASSIGNMENT_COUNTS);
 
@@ -510,6 +511,19 @@ function extractShellInstructions(src) {
   const primingMarkerMatch = primingMarkerRe.exec(src);
   if (!primingMarkerMatch) throw new Error("SUPERVISOR-PRIMING marker not found in bin/supervise.sh");
   results.push(record("SUPERVISOR_PRIMING_MARKER", "bin/supervise.sh", primingMarkerMatch[1]));
+
+  // The final ask: final_ask_json writes '[SUPERVISOR-ASK id=' + id + '] ' +
+  // text, where text is SUPERVISOR_ASK_TEXT, a single-line assignment. The
+  // entry is the marker's two literal halves and the text, the id being data
+  // the supervisor mints. Both anchors are required, so a reworded marker or a
+  // text moved out of the variable fails here rather than recording short.
+  const askTextRe = /^SUPERVISOR_ASK_TEXT="([^\n"]*)"\s*$/m;
+  const askTextMatch = askTextRe.exec(src);
+  if (!askTextMatch) throw new Error("SUPERVISOR_ASK_TEXT not found in bin/supervise.sh as a single-line assignment");
+  const askMarkerRe = /'(\[SUPERVISOR-ASK id=)' \+ id \+ '(\] )' \+ text/;
+  const askMarkerMatch = askMarkerRe.exec(src);
+  if (!askMarkerMatch) throw new Error("the [SUPERVISOR-ASK id=<id>] marker of final_ask_json not found in bin/supervise.sh");
+  results.push(record("SUPERVISOR_ASK_TEXT", "bin/supervise.sh", askMarkerMatch[1] + askMarkerMatch[2] + askTextMatch[1]));
 
   return results;
 }
@@ -828,6 +842,16 @@ function extractBackstopFrame(src) {
   return record("REPLY_BACKSTOP_FRAME", "hooks/index.ts", literalOfTemplateChain(m[1], "REPLY_BACKSTOP_FRAME"));
 }
 
+// The supervisor's shutdown delivery: `[SUPERVISOR id=${rec.id}] ${...}`,
+// where the id and the quoted record text are mailbox data and are stripped as
+// interpolation, leaving the label's literal frame. The capture is bounded by
+// the statement's own semicolon for the reason above.
+function extractShutdownFrame(src) {
+  const m = /const shutdownText = ([\s\S]*?);\n/.exec(src);
+  if (!m) throw new Error("supervisor shutdown frame not found in hooks/index.ts");
+  return record("SUPERVISOR_SHUTDOWN_FRAME", "hooks/index.ts", literalOfTemplateChain(m[1], "SUPERVISOR_SHUTDOWN_FRAME"));
+}
+
 // The two idle-nudge frames (nudgeText's ternary): each is a chain of plain
 // template-literal pieces joined by `+`, with `${g.objective}` and
 // `${idleDisplay}` as the only interpolations, both per-goal data and
@@ -1010,6 +1034,7 @@ const PROMPT_CALL_SITES = [
   { anchor: "expectedProposalTurn", entries: ["PROPOSE_FRAME"] },
   { anchor: "expectedNudgeTurn", entries: ["NUDGE_TEXT_idle_gap_converted", "NUDGE_TEXT_idle_timeout"] },
   { anchor: "backstopText", entries: ["REPLY_BACKSTOP_FRAME"] },
+  { anchor: "shutdownEntry", entries: ["SUPERVISOR_SHUTDOWN_FRAME"] },
 ];
 
 // The exclusions above in a public shape, so the duplicate test can pin the
@@ -1313,6 +1338,7 @@ function buildLedgerFrom(shSrc, tsSrc) {
     extractKaizenFrame(tsSrc),
     extractProposeFrame(tsSrc),
     extractBackstopFrame(tsSrc),
+    extractShutdownFrame(tsSrc),
     ...extractNudgeFrames(tsSrc),
     extractGoalTreeBlock(tsSrc),
     extractGoalQueueBlock(tsSrc),
