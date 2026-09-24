@@ -570,6 +570,34 @@ const cases = [
     assert.equal(recs.length, 3);
     assert.equal(recs[2].id, SUPERVISOR_START + '-3');
   }],
+  // A poll loop that lost its carried id finds this child's ask in the
+  // mailbox, which is truncated at each launch, and hands it back rather than
+  // writing a second one. Its grace runs from the record's own time.
+  ['a mailbox already holding a shutdown record and no carried id: no second record, and that ask handed back', () => {
+    const askAt = Date.now() - 60000;
+    const open = JSON.stringify({ id: SUPERVISOR_START + '-1', kind: 'shutdown', at: askAt, text: SHUTDOWN_TEXT }) + '\n';
+    const r = run('ask-lost-id', { shutdown: '', mailbox: open });
+    assert.equal(fs.readFileSync(r.paths.mailbox, 'utf8'), open);
+    assert.equal(r.shutdownAskId, SUPERVISOR_START + '-1');
+    assert.equal(r.shutdownAskAt, String(askAt));
+    assert.equal(r.action, 'continue');
+  }],
+  ['a lost carried id whose ask in the mailbox is past the grace: ask_timeout', () => {
+    const askAt = Date.now() - GRACE - 60000;
+    const open = JSON.stringify({ id: SUPERVISOR_START + '-1', kind: 'shutdown', at: askAt, text: SHUTDOWN_TEXT }) + '\n';
+    const r = run('ask-lost-id-late', { shutdown: '', mailbox: open });
+    assert.equal(fs.readFileSync(r.paths.mailbox, 'utf8'), open);
+    assert.equal(r.action, 'ask_timeout');
+  }],
+  // A carried id whose time does not parse starts its grace at this poll, so
+  // the ask can still time out.
+  ['a carried ask whose time does not parse: its grace starts now, handed back as this poll\'s time', () => {
+    const before = Date.now();
+    const r = run('ask-bad-time', { shutdown: '' }, { shutdownAskId: SUPERVISOR_START + '-1', shutdownAskAt: 'not-a-time' });
+    assert.equal(r.shutdownAskId, SUPERVISOR_START + '-1');
+    assert.ok(Number(r.shutdownAskAt) >= before && Number(r.shutdownAskAt) <= Date.now(), 'shutdownAskAt=' + r.shutdownAskAt);
+    assert.equal(r.action, 'continue');
+  }],
   ['an older caller passing no mailbox writes no shutdown record however a request sits in the run directory', () => {
     const r = run('ask-short', { shutdown: '', request: { at: START - 5, by: 'coordinator', reason: 'stuck' } }, {}, { short: true });
     assert.equal(fs.existsSync(r.paths.mailbox), false);

@@ -326,12 +326,21 @@ export function shutdownRequestPresent(runDir) {
 // Asks the child to end its session at a boundary: one shutdown record in the
 // mailbox, written where a shutdown request is present and no ask to this
 // child is open yet, so an open ask is never written twice. The plugin
-// delivers it as a turn opening [SUPERVISOR id=<id>]. Returns the ask
-// written, or null.
+// delivers it as a turn opening [SUPERVISOR id=<id>]. The mailbox is
+// truncated at each launch, so a shutdown record already in it is this
+// child's ask: where the poll loop lost its carried id, that record is handed
+// back as the open ask rather than a second one written, and its grace runs
+// from its own time. Returns the ask written or found, or null.
 export function writeShutdownAskIfDue(runDir, mailbox, openAskId, text, now, supervisorStartMs) {
   if (!mailbox || supervisorStartMs === null || openAskId) return null;
   if (typeof text !== 'string' || text === '') return null;
   if (!shutdownRequestPresent(runDir)) return null;
+  const earlier = readJsonLines(mailbox).filter((r) => r.kind === 'shutdown' && typeof r.id === 'string');
+  if (earlier.length > 0) {
+    const r = earlier[earlier.length - 1];
+    const at = Number(r.at);
+    return { id: r.id, at: Number.isFinite(at) ? at : now };
+  }
   return appendMailboxRecord(mailbox, 'shutdown', text, now, supervisorStartMs);
 }
 
@@ -378,7 +387,10 @@ export function poll(argv) {
   const asked = safe(() => writeShutdownAskIfDue(runDir, mailboxPath, carriedAskId, shutdownText,
     now, intOrNull(supervisorStartMs)), null);
   const askId = asked ? asked.id : carriedAskId;
-  const askAtMs = asked ? asked.at : (carriedAskId ? intOrNull(shutdownAskAt) : null);
+  // A carried id whose time does not parse starts its grace at this poll, so
+  // the ask can still time out rather than stay open forever.
+  const carriedAskAt = intOrNull(shutdownAskAt);
+  const askAtMs = asked ? asked.at : (carriedAskId ? (carriedAskAt === null ? now : carriedAskAt) : null);
   const { transcriptPath, subagentsDir } = safe(() => transcriptPathsFor(profileRoot, workdirWindows, childSessionId),
     { transcriptPath: '', subagentsDir: '' });
   const reading = safe(() => liveness({

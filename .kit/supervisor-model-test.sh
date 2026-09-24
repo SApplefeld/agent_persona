@@ -183,12 +183,11 @@ for pair in SUPERVISOR_SILENCE_BOUND_MS:supervisorSilenceBoundMs:900000 SUPERVIS
   check "$setting defaults to $want in its assignment to $var" "$?"
 done
 # Every reader of the grace is handed it: the poll receives the setting as an
-# argument and passes it to the decide unit, and a reader never handed it
-# would take its own default silently.
+# argument, and a reader never handed it would take its own default silently.
+# That the poll passes the grace it receives on to the decide unit is pinned
+# by the poll suite's case "the grace handed in is the one read".
 grep -q '"\$SUPERVISOR_ASK_GRACE_MS" "\$SHUTDOWN_ASK_ID" "\$SHUTDOWN_ASK_AT" "\$SUPERVISOR_SHUTDOWN_TEXT"' "$SCRIPT"
 check "bin/supervise.sh hands supervisorAskGraceMs, the carried ask and the shutdown text to the poll" "$?"
-grep -q 'askGraceMs: intOr(askGraceMs, 1200000)' "$HERE/../bin/supervise-poll.mjs"
-check "bin/supervise-poll.mjs hands the grace it receives to the decide unit" "$?"
 
 # --- A shutdown request present at launch ends the run before the gate ---
 # Driven through the real bin/supervise.sh with the empty HOME the refusal
@@ -209,6 +208,9 @@ check "a shutdown request present at launch ends the run before the gate" "$?"
 grep -q 'SHUTDOWN_REQUEST: .*shutdown.request is present at launch' "$RD_REQ/supervisor.log" 2>/dev/null
 check "the log names the request found at launch" "$?"
 [ ! -e "$RD_REQ/shutdown.request" ]; check "the request found at launch is removed" "$?"
+[ ! -e "$RD_REQ/child-1" ]; check "the run ends before the first child's directory is made, so no empty child-1 is left" "$?"
+grep -q 'no child was launched to ask' "$RD_REQ/supervisor.log" 2>/dev/null
+check "the log says no child was launched to ask, rather than that none is running" "$?"
 # A directory under the request's name is not a request, which the poll
 # reads the same way, so the same drive reaches the gate.
 RD_DIR=$(mktemp -d "$TMP/rd-reqdir.XXXXXX")

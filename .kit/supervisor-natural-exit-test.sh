@@ -2008,6 +2008,7 @@ drive sc "clean" 6
 ! grep -q 'LAUNCH child-' "$LOG" && [ "$LAUNCHES" -eq 0 ]; check "(sc) no LAUNCH line and no child launched (stub launches=$LAUNCHES)" "$?"
 ! grep -q 'GATE' "$LOG"; check "(sc) the run ends before the gate" "$?"
 [ ! -e "$TMP/sc/rd/shutdown.request" ]; check "(sc) the request file is removed" "$?"
+[ ! -e "$TMP/sc/rd/child-1" ]; check "(sc) no child-1 directory is made for a launch that never happens" "$?"
 
 # --- (sd) a crash inside an open grace ---
 # The child exits 7 while the ask is open. The poll loop sees the exit on the
@@ -2024,6 +2025,7 @@ SD_EXIT=$(grep -n 'EXIT child-1 code=7 (natural)' "$LOG" | head -n 1 | cut -d: -
 grep -q 'SHUTDOWN_REQUEST: .*present at launch' "$LOG"; check "(sd) the next launch reads the request still present" "$?"
 [ "$RC" -eq 0 ] && [ "$LAUNCHES" -eq 1 ]; check "(sd) the run ends at exit 0 with no second child (rc=$RC, stub launches=$LAUNCHES)" "$?"
 [ ! -e "$TMP/sd/rd/shutdown.request" ]; check "(sd) the request file is removed" "$?"
+[ ! -e "$TMP/sd/rd/child-2" ]; check "(sd) no child-2 directory is made for the relaunch the request refused" "$?"
 
 # --- (r) a survivor that cannot be killed stops the run instead of relaunching ---
 # The stub leaves the same native Windows process behind that case (h) uses,

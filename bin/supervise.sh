@@ -216,8 +216,11 @@ SUPERVISOR_PROBE_MS="${supervisorProbeMs:-120000}"
 SUPERVISOR_FINAL_ASK_MS="${supervisorFinalAskMs:-660000}"
 # How long a shutdown ask waits for the child to bank its state and record
 # shutdown_requested before the stop proceeds through the stop phases: twenty
-# minutes, a child's longest single turn plus a controller tick. Read by the
-# decide unit through the poll, and never written to the plugin's options.
+# minutes, run from the moment the ask is written. The plugin delivers the ask
+# from a controller tick that finds the session idle, so a child that is idle
+# inside the window banks its state and stops itself, and one whose turn
+# outlasts the window is stopped through the phases. Read by the decide unit
+# through the poll, and never written to the plugin's options.
 SUPERVISOR_ASK_GRACE_MS="${supervisorAskGraceMs:-1200000}"
 # v2 spec Section 0 item 3 Part B (operator decision, DISCUSSION.md Round
 # 136 addendum): the worker's own main thread - where PR #17's kill path
@@ -368,8 +371,9 @@ SETTINGS_FILE="$RUNDIR/settings.json"
 CHILD_HEARTBEAT="$RUNDIR/heartbeat.json"
 MAILBOX_FILE="$RUNDIR/mailbox.jsonl"
 MAILBOX_ACK_FILE="$RUNDIR/mailbox.ack.jsonl"
-# The file that stops this persona on purpose. The operator or a keeper writes
-# it; the poll reads it and asks the child to stop, and a launch that finds it
+# The file that stops this persona on purpose. The operator writes it, and a
+# keeper that writes it is a follow-on; the poll reads it and asks the child
+# to stop, and a launch that finds it
 # ends the run without launching. Whatever it contains, a present file is the
 # request, and each exit 0 the request leads to removes it.
 SHUTDOWN_REQUEST_FILE="$RUNDIR/shutdown.request"
@@ -2884,6 +2888,18 @@ fi
 ALIVE_LOG_EVERY_N_POLLS=6
 
 while true; do
+  # A shutdown request found at a launch has no child launched to ask: the run
+  # ends at exit 0 with the request removed, before the next child's directory
+  # is made, before the gate's wait and before any launch, so a persona still
+  # held by another session cannot turn the request into a gate timeout the
+  # keeper retries. Read at every launch, so a child that ends inside an open
+  # ask is not relaunched.
+  if [ -f "$SHUTDOWN_REQUEST_FILE" ]; then
+    log "SHUTDOWN_REQUEST: $SHUTDOWN_REQUEST_FILE is present at launch and no child was launched to ask, so the run ends without launching one; a child an earlier stop left running, if any, is not asked"
+    clear_shutdown_request
+    exit 0
+  fi
+
   CHILD_INDEX=$((CHILD_INDEX + 1))
   CHILD_DIR="$RUNDIR/child-$CHILD_INDEX"
   mkdir -p "$CHILD_DIR"
@@ -2895,16 +2911,6 @@ while true; do
   rm -f "$EXIT_MARKER"
 
   # --- D3: Pre-launch gate (AD2: check both commons AND heartbeat) ---
-  # A shutdown request found at a launch has no child to ask: the run ends at
-  # exit 0 with the request removed, before the gate's wait and before any
-  # launch, so a persona still held by another session cannot turn the request
-  # into a gate timeout the keeper retries. Read at every launch, so a child
-  # that ends inside an open ask is not relaunched.
-  if [ -f "$SHUTDOWN_REQUEST_FILE" ]; then
-    log "SHUTDOWN_REQUEST: $SHUTDOWN_REQUEST_FILE is present at launch and no child is running to ask, so the run ends without launching child-$CHILD_INDEX"
-    clear_shutdown_request
-    exit 0
-  fi
   GLOBAL_STORE=$(find_global_store "$DEV_MODE")
   if [ -z "$GLOBAL_STORE" ]; then
     log "GATE FAIL: no global commons store found"
