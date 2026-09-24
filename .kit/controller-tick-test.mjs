@@ -3506,7 +3506,6 @@ async function main() {
     await caseDeferralWritesNoStoreSlot(clock);
     await casePromotionOnAFailedCommonsRead(clock);
     await caseUnreadableSidecarPromotesNothing(clock);
-    await caseNoStoreClaimIsWrittenBeforeItsPersist(clock);
     await caseMailbox_failedShutdownSubmitRecordsFailure(clock);
     await caseMailbox_partialLastLineIsLeftForTheNextTick(clock);
     await casePin_probeAckRoundTripThroughTheRealPoll(clock);
@@ -22059,48 +22058,6 @@ async function caseUnreadableSidecarPromotesNothing(clock) {
   check("unreadable sidecar: a torn sidecar promotes nothing", torn === undefined, torn);
   const whole = await run("promo_sidecar_whole", JSON.stringify({}));
   check("unreadable sidecar control: the same reader over a sidecar that parses promotes", whole?.activeSessionId === SESSION_ID, whole);
-}
-
-// The no-store-entry claim writes its store slot and sidecar entry before its
-// persist, as the claim on an existing entry does. The case interleaves: a
-// second session (the newcomer) shares the first one's files and commons store,
-// and the first, a reader with no sidecar entry whose holder's commons claim
-// has gone stale, runs its heartbeat tick at the moment the newcomer's
-// session.start persists. That reader must find the newcomer's fresh sidecar
-// entry and not promote. The persist is found by its own frame in the write's
-// stack.
-async function caseNoStoreClaimIsWrittenBeforeItsPersist(clock) {
-  console.log("\n=== No-store claim: the sidecar entry lands before the persist a reader can tick inside ===");
-  clock.set(T0);
-  const reader = await createTickHarness({ ...OPTS, caseName: "nostore_order_reader", skipSessionStart: true });
-  reader.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({}));
-  reader.fsMap.set(HEARTBEAT_FILE, JSON.stringify({}));
-  reader.storeMap.set("commons:other-live", { sessionId: "other-live", lastSeen: T0, claims: [{ resource: "persona:default", claimedAt: T0 - 1000 }] });
-  await fireSessionStart(reader);
-  clock.advance(100_000);
-
-  const newcomer = await createTickHarness({ ...OPTS, caseName: "nostore_order_newcomer", skipSessionStart: true });
-  newcomer.fake.fs = reader.fake.fs;
-  newcomer.fake.store = reader.fake.store;
-  newcomer.fake.session.id = () => Promise.resolve("newcomer-session");
-  const realWrite = reader.fake.fs.write;
-  let interleaved = false;
-  reader.fake.fs.write = async (p, content) => {
-    const stack = String(new Error().stack);
-    if (!interleaved && p === PERSONA_STORE_FILE && /\bpersist\b/.test(stack) && !/writeClaimDirect/.test(stack)) {
-      interleaved = true;
-      await fireHeartbeat(reader);
-    }
-    return realWrite(p, content);
-  };
-  await fireSessionStart(newcomer);
-  reader.fake.fs.write = realWrite;
-  const readerStores = reader.fsWrites
-    .filter((w) => w.path === PERSONA_STORE_FILE)
-    .map((w) => { try { return JSON.parse(w.content).default?.activeSessionId; } catch { return undefined; } });
-  check("no-store order: the reader's tick ran inside the newcomer's persist (the instrument)", interleaved);
-  check("no-store order: the reader wrote no store naming itself", !readerStores.includes(SESSION_ID), readerStores);
-  check("no-store order: the newcomer holds the persona", JSON.parse(reader.fsMap.get(PERSONA_STORE_FILE)).default?.activeSessionId === "newcomer-session", reader.fsMap.get(PERSONA_STORE_FILE));
 }
 
 // A shutdown whose submit opens no turn keeps its delivered line, which is what

@@ -3499,16 +3499,6 @@ export const register: Register = async (on, options) => {
           action: "persona_create",
           detail: `Created persona '${sess.persona}'`,
         });
-        // The claim goes to the store and the sidecar now, as the claim on an
-        // existing entry does, rather than only once the persist below runs,
-        // so a reader whose sidecar entry is absent does not read this persona
-        // as held by nobody for the length of the start. A store that would
-        // not read takes the catch above instead: nothing is written into it,
-        // and the heartbeat tick publishes the claim at the first read that
-        // parses.
-        if (startStoreProblem === null) {
-          try { await writeClaimDirect($); } catch { /* the store refused; the persist below and the first heartbeat carry the claim */ }
-        }
       }
     }
 
