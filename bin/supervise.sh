@@ -3001,6 +3001,33 @@ note_liveness_poll() {
   fi
 }
 
+# --- Helper: write the final ask for the frozen reading a poll decided ---
+# Run on the one poll that decided final_ask, whether the poll loop's own or
+# the gate's poll that adopted a frozen child, so an adopted child is asked
+# exactly as a launched one is. That poll has already handed back the ask's
+# time, so the window runs from it and the next frozen reading waits inside
+# the window rather than deciding final_ask again: this runs once per frozen
+# reading, never on a cadence. The ask is one user turn on the child's input
+# asking for a line of status. A turn the child answers moves its stream and
+# transcript, and a window that closes with every signal still silent
+# restarts. The ask is written to the child-N ask-request file, which the
+# holder's poll writes into the pipe and removes. Writing it there rather
+# than straight to the pipe is what lets a supervisor that adopted this child
+# reach its input, since only the holder holds the pipe. The file is written
+# to a temporary name and moved into place, so the holder never reads a file
+# node is still writing. Where the file cannot be written, the window is a
+# wait all the same. Reads DECIDE_REASON from the poll that decided it.
+write_final_ask() {
+  FINAL_ASK_SEQ=$((FINAL_ASK_SEQ + 1))
+  FINAL_ASK_ID="$SUPERVISOR_START_MS-ask-$FINAL_ASK_SEQ"
+  if final_ask_json "$FINAL_ASK_ID" > "$ASK_REQUEST_FILE.tmp" 2>>"$RUNDIR/supervisor.err" \
+     && mv -f "$ASK_REQUEST_FILE.tmp" "$ASK_REQUEST_FILE" 2>>"$RUNDIR/supervisor.err"; then
+    log "FINAL_ASK child-$CHILD_INDEX: $DECIDE_REASON (ask id=$FINAL_ASK_ID written to $ASK_REQUEST_FILE for the holder to relay)"
+  else
+    log "FINAL_ASK child-$CHILD_INDEX: $DECIDE_REASON (ask id=$FINAL_ASK_ID could not be written to $ASK_REQUEST_FILE, so the window is a wait)"
+  fi
+}
+
 # --- Helper: carry the shutdown ask from one poll to the next, and log it ---
 # The poll writes the ask once, where a shutdown request is present and no ask
 # to this child is open, and hands its id and time back as the POLL_SHUTDOWN_*
@@ -3911,8 +3938,9 @@ WORKDIR_WINDOWS="$(cygpath -w "$WORKDIR" 2>/dev/null || echo "$WORKDIR")"
 STORE="$WORKDIR/.agentic-personas.json"
 
 # Whether the FIRST child got no --prompt at all (passive start, plan item 1).
-# Captured before the loop, since PROMPT is cleared after it is sent to
-# child 1 and every restart afterward launches with an empty PROMPT anyway.
+# Captured before the loop, since PROMPT is cleared after the run's first
+# launch or adoption and every restart afterward launches with an empty
+# PROMPT anyway.
 if [ -z "$PROMPT" ]; then
   log "PASSIVE: no prompt given at start; child will idle with its persona claimed and heartbeating, waiting for a goal delivered by chat"
 fi
@@ -3923,6 +3951,28 @@ fi
 ALIVE_LOG_EVERY_N_POLLS=6
 
 while true; do
+  # --- A shutdown recorded while the last child was being stopped ---
+  # No poll runs inside a stop, so a shutdown_requested the child records
+  # during one, with a restart_passive stop's patient wait as the long case,
+  # is first readable here. It is read against the stopped child's start
+  # before any handle is read or any child launched, because the next launch
+  # takes a start newer than it and no poll would fire on it again. The first
+  # pass of the loop has no stopped child and skips this. The exit is the
+  # stop_complete exit, 0, which the keeper reads as the shutdown honored,
+  # with the request file removed where one is present.
+  if [ -n "${CHILD_START_TS:-}" ]; then
+    SHUTDOWN_REQUESTED_TS=$(get_fact "$WORKDIR" "$PERSONA" "shutdown_requested")
+    if [ -n "$SHUTDOWN_REQUESTED_TS" ] && [ "$SHUTDOWN_REQUESTED_TS" -gt "$CHILD_START_TS" ]; then
+      if [ -n "${SHUTDOWN_ASK_ID:-}" ]; then
+        log "STOP_COMPLETE: shutdown_requested at $SHUTDOWN_REQUESTED_TS > child start $CHILD_START_TS, recorded while child-$CHILD_INDEX was being stopped, so the run ends before any launch (the shutdown ask id=$SHUTDOWN_ASK_ID is honored)"
+      else
+        log "STOP_COMPLETE: shutdown_requested at $SHUTDOWN_REQUESTED_TS > child start $CHILD_START_TS, recorded while child-$CHILD_INDEX was being stopped, so the run ends before any launch"
+      fi
+      clear_shutdown_request
+      exit 0
+    fi
+  fi
+
   # --- Pre-launch adoption on the newest handle ---
   # The gate reads the newest handle before its held check and before the
   # request-at-launch check below, so a request beside a detached live child
@@ -3967,12 +4017,27 @@ while true; do
   case "$GATE_ROUTE" in
     ADOPT)
       log "ADOPT child-$CHILD_INDEX: adopting a live handled child of this persona (verdict $VERDICT), entering the poll loop with no launch"
+      # An adopted child took its goal from the supervisor that launched it,
+      # and nothing here writes to a running session's input but the final
+      # ask, so a --prompt given to this run has no launch to ride and is
+      # named as dropped rather than cleared in silence below.
+      if [ -n "$PROMPT" ]; then
+        log "PROMPT_DROPPED child-$CHILD_INDEX: --prompt was given, but this run adopted a live child rather than launching one, so the prompt is not sent"
+      fi
       # The gate's own poll is this child's first reading: its stream state,
       # final-ask time and session id carry into the loop rather than resetting.
       LIVENESS_LOGGED=""
       HEARTBEAT_ABSENT_LOGGED=""
       note_liveness_poll
       note_child_session_id
+      # A child adopted frozen was read frozen by the gate's poll, which is the
+      # poll that decided final_ask and handed back the ask's time. The loop's
+      # polls then wait inside that window and never decide final_ask again,
+      # so the ask is written here, through the same writer the loop uses, and
+      # the adopted child is asked before its window can close on it.
+      if [ "$DECIDE_ACTION" = "final_ask" ]; then
+        write_final_ask
+      fi
       ADOPTED=1
       ;;
     SWEEP_LAUNCH)
@@ -4046,10 +4111,14 @@ while true; do
     : > "$MAILBOX_FILE"
     : > "$MAILBOX_ACK_FILE"
 
-    # Write the prompt to a file if child 1 and PROMPT is set.
+    # The operator's --prompt goes to the run's first launch, whatever index
+    # the gate's sweep or a handle nobody accounted for left it at. PROMPT is
+    # cleared once a child has been launched or adopted, so a value here is
+    # the prompt not yet sent. The file is named for the child it is for, and
+    # the holder is handed its path below.
     PROMPT_FILE=""
-    if [ -n "$PROMPT" ] && [ "$CHILD_INDEX" -eq 1 ]; then
-      PROMPT_FILE="$RUNDIR/child-1.prompt"
+    if [ -n "$PROMPT" ]; then
+      PROMPT_FILE="$RUNDIR/child-$CHILD_INDEX.prompt"
       printf '%s' "$PROMPT" > "$PROMPT_FILE"
     fi
 
@@ -4160,6 +4229,8 @@ while true; do
     write_handle ""
   fi
 
+  # Sent with the first launch or named dropped at an adoption above, and
+  # never handed to a later child.
   PROMPT=""
 
   # --- Poll loop ---
@@ -4455,28 +4526,10 @@ while true; do
         continue 2  # break out of the poll loop and go to the next child
         ;;
       final_ask)
-        # Every signal is silent and the child's process is live. The poll has
-        # already handed back the ask's time, so the window runs from this poll
-        # and the next frozen reading waits inside it rather than asking again:
-        # this branch runs once per frozen reading, never on a cadence. The ask
-        # is one user turn on the child's input asking for a line of status. A
-        # turn the child answers moves its stream and transcript, and a window
-        # that closes with every signal still silent restarts. Where the input
-        # cannot be written, the window is a wait all the same.
-        FINAL_ASK_SEQ=$((FINAL_ASK_SEQ + 1))
-        FINAL_ASK_ID="$SUPERVISOR_START_MS-ask-$FINAL_ASK_SEQ"
-        # The ask is written to the child-N ask-request file, which the holder's
-        # poll writes into the pipe and removes. Writing it there rather than
-        # straight to the pipe is what lets a supervisor that adopted this child
-        # reach its input, since only the holder holds the pipe. The file is
-        # written to a temporary name and moved into place, so the holder never
-        # reads a file node is still writing.
-        if final_ask_json "$FINAL_ASK_ID" > "$ASK_REQUEST_FILE.tmp" 2>>"$RUNDIR/supervisor.err" \
-           && mv -f "$ASK_REQUEST_FILE.tmp" "$ASK_REQUEST_FILE" 2>>"$RUNDIR/supervisor.err"; then
-          log "FINAL_ASK child-$CHILD_INDEX: $DECIDE_REASON (ask id=$FINAL_ASK_ID written to $ASK_REQUEST_FILE for the holder to relay)"
-        else
-          log "FINAL_ASK child-$CHILD_INDEX: $DECIDE_REASON (ask id=$FINAL_ASK_ID could not be written to $ASK_REQUEST_FILE, so the window is a wait)"
-        fi
+        # Every signal is silent and the child's process is live. The one
+        # writer of the ask, shared with the gate's adoption of a frozen
+        # child, writes it and opens the window.
+        write_final_ask
         ;;
       sweep_relaunch)
         sweep_gone_child

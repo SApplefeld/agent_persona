@@ -1785,6 +1785,128 @@ echo "LASTDIGIT $(handle_child_identity "$win" "$4")"' > "$TMP/prec.sh"
   kill "$PR_PID" 2>/dev/null; wait "$PR_PID" 2>/dev/null
 fi
 
+# --- Waiting on a marker in a file, bounded, never a fixed sleep ---
+# Usage: wait_for_line <file> <grep pattern> <max tenths of a second>
+wait_for_line() {
+  local i=0
+  while [ "$i" -lt "$3" ]; do
+    grep -q -e "$2" "$1" 2>/dev/null && return 0
+    sleep 0.1; i=$((i + 1))
+  done
+  return 1
+}
+# Usage: wait_for_exit <pid> <max tenths of a second>
+wait_for_exit() {
+  local i=0
+  while [ "$i" -lt "$2" ]; do
+    kill -0 "$1" 2>/dev/null || return 0
+    sleep 0.1; i=$((i + 1))
+  done
+  return 1
+}
+
+# --- A frozen child the gate adopts receives the final ask, and a prompt an
+# --- ADOPT start cannot send is logged dropped ---
+# The real bin/supervise.sh, driven through its own gate onto a handle whose
+# writer pair names no process and whose child pair names a live process of
+# this suite's own: a sleep, its Windows pid off /proc and its start ticks off
+# one PowerShell read, as the precision chain reads them. The gate's poll
+# reads that child frozen on real fixtures rather than a stubbed verdict: the
+# transcript's newest turn record and the stream's modification time are
+# years old, the child's heartbeat file is stamped at epoch 1000, the mailbox
+# holds an unacknowledged probe from epoch 1000, and the real walk finds the
+# sleep live. The run is then signaled, which detaches from the child (the
+# handle is readable and the verdict is not gone) at exit 143, so the sleep is
+# still this suite's to kill and nothing the ask wrote is removed.
+FA_DIR=$(mktemp -d "$TMP/rd-frozenadopt.XXXXXX"); mkdir -p "$FA_DIR/child-1" "$TMP/home-adopt"
+sleep 120 & FA_PID=$!
+FA_WIN=$(tr -d '\r\n' < "/proc/$FA_PID/winpid" 2>/dev/null)
+FA_TICKS=$(powershell -NoProfile -Command "(Get-Process -Id $FA_WIN).StartTime.Ticks" 2>/dev/null | tr -d '\r\n')
+case "$FA_TICKS" in *[!0-9]*|'') FA_TICKS="" ;; esac
+[ -n "$FA_WIN" ] && [ "${#FA_TICKS}" -ge 18 ]; check "frozen adopt setup: a live sleep's Windows pid and 18-digit start ticks were read (${FA_WIN:-none},${FA_TICKS:-none})" "$?"
+printf '{"sessionId":"sess-frozen","holderPid":"41180","holderWinPid":"35088","holderTicks":"639012345678901180","childPid":"%s","childWinPid":"%s","childTicks":"%s","supervisorWinPid":"34870","supervisorTicks":"639012345678900011","launchedAt":1000,"childIndex":1}' "$FA_PID" "$FA_WIN" "$FA_TICKS" > "$FA_DIR/child-1/handle.json"
+: > "$FA_DIR/child-1/stdout.jsonl"; touch -d '2020-01-01 00:00:00' "$FA_DIR/child-1/stdout.jsonl"
+printf '{"sessionId":"sess-frozen","lastSeen":1000}' > "$FA_DIR/heartbeat.json"
+printf '{"id":"1-1","kind":"probe","at":1000,"text":"probe"}\n' > "$FA_DIR/mailbox.jsonl"
+# The transcript sits where the real reader derives it: under the profile the
+# run is handed as HOME, keyed by the workdir's Windows path through the real
+# projectKey, named by the session id the handle carries.
+FA_KEY=$(node --input-type=module -e "import { pathToFileURL } from 'node:url'; const m = await import(pathToFileURL(process.argv[1]).href); console.log(m.projectKey(process.argv[2]));" "$HERE/../bin/supervise-liveness.mjs" "$(cygpath -w "$TMP/wd")" 2>/dev/null)
+mkdir -p "$TMP/home-adopt/.claude/projects/$FA_KEY"
+printf '{"type":"assistant","timestamp":"2020-01-01T00:00:00.000Z"}\n' > "$TMP/home-adopt/.claude/projects/$FA_KEY/sess-frozen.jsonl"
+rm -f "$TMP/stub/launched"
+env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home-adopt" supervisorPollMs=1000 supervisorGateWaitS=3 \
+  bash "$SCRIPT" "$TMP/wd" modelprobe default --rundir "$FA_DIR" --no-channel --prompt "a goal the adopted child never receives" > "$FA_DIR/drive.out" 2>&1 &
+FA_SUP=$!
+# The window the ask is pinned once across: the adoption, then six polls of
+# the loop, which is the first WAITING line.
+wait_for_line "$FA_DIR/supervisor.log" 'ADOPT child-1' 900; FA_ADOPTED=$?
+wait_for_line "$FA_DIR/supervisor.log" 'WAITING: child-1 alive' 900; FA_POLLED=$?
+kill -TERM "$FA_SUP" 2>/dev/null
+wait "$FA_SUP" 2>/dev/null; FA_RC=$?
+kill "$FA_PID" 2>/dev/null; wait "$FA_PID" 2>/dev/null
+[ "$FA_ADOPTED" -eq 0 ] && [ "$FA_POLLED" -eq 0 ] && grep -q 'ADOPT child-1: .*verdict frozen' "$FA_DIR/supervisor.log" && [ "$FA_RC" -eq 143 ] && grep -q 'DETACH child-1' "$FA_DIR/supervisor.log"; CHECK_RC=$?
+check "frozen adopt control: the gate adopted the sleep as child-1 on a frozen verdict, the loop polled it six times, and the signal detached at 143 (adopted=$FA_ADOPTED polled=$FA_POLLED rc=$FA_RC, log=$(tr '\n' '|' < "$FA_DIR/supervisor.log" 2>/dev/null | tail -c 1500))" "$CHECK_RC"
+FA_ASK_ID=$(sed -n 's/.*FINAL_ASK child-1: .*(ask id=\([^ ]*\) written to .*/\1/p' "$FA_DIR/supervisor.log" 2>/dev/null | head -1)
+[ "$(grep -c 'FINAL_ASK child-1' "$FA_DIR/supervisor.log" 2>/dev/null)" -eq 1 ] && [ -n "$FA_ASK_ID" ] && [ "$(wc -l < "$FA_DIR/child-1/ask.request" 2>/dev/null | tr -d ' ')" = 1 ] && grep -q "\[SUPERVISOR-ASK id=$FA_ASK_ID\]" "$FA_DIR/child-1/ask.request" 2>/dev/null; CHECK_RC=$?
+check "frozen adopt: the ADOPT of a frozen child logs FINAL_ASK once across six polls and writes ask.request once, carrying the logged id in the [SUPERVISOR-ASK id=] marker (ask lines: $(grep -c 'FINAL_ASK child-1' "$FA_DIR/supervisor.log" 2>/dev/null), id=${FA_ASK_ID:-none}, file=$(tr '\n' '|' < "$FA_DIR/child-1/ask.request" 2>/dev/null | head -c 200))" "$CHECK_RC"
+grep -q 'PROMPT_DROPPED child-1' "$FA_DIR/supervisor.log" 2>/dev/null && ! ls "$FA_DIR"/child-*.prompt >/dev/null 2>&1 && ! grep -q 'PASSIVE: no prompt given' "$FA_DIR/supervisor.log" 2>/dev/null; CHECK_RC=$?
+check "frozen adopt: an ADOPT start given --prompt logs the prompt dropped and writes no prompt file (log=$(grep -c 'PROMPT_DROPPED child-1' "$FA_DIR/supervisor.log" 2>/dev/null), files=$(ls "$FA_DIR"/child-*.prompt 2>/dev/null | tr '\n' ' '))" "$CHECK_RC"
+[ ! -e "$TMP/stub/launched" ] && ! grep -q 'LAUNCH child-' "$FA_DIR/supervisor.log" 2>/dev/null; check "frozen adopt: nothing was launched beside the adopted child" "$?"
+
+# --- The prompt reaches the run's first launch whatever its index ---
+# The gate sweeps a handle whose pairs name nothing (the real PowerShell
+# survivor check over 18-digit ticks that match no process), which raises the
+# index so the run's first launch is child-2. With --prompt given, the prompt
+# file is written for that child, named by the index the LAUNCH line carries,
+# and the LAUNCH line's prompt=set is true. The stub claude exits 1 at once,
+# so the run ends at the crash limit as the launch control does.
+P2_DIR=$(mktemp -d "$TMP/rd-prompt2.XXXXXX"); mkdir -p "$P2_DIR/child-1"
+printf '{"sessionId":"s","holderPid":"41180","holderWinPid":"35088","holderTicks":"639012345678901180","childPid":"41236","childWinPid":"35124","childTicks":"639012345678901237","supervisorWinPid":"34870","supervisorTicks":"639012345678900011","launchedAt":1000,"childIndex":1}' > "$P2_DIR/child-1/handle.json"
+rm -f "$TMP/stub/launched"
+OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home-free" supervisorCrashLimit=1 supervisorPollMs=1000 timeout 120 bash "$SCRIPT" "$TMP/wd-launch" modelprobe default --rundir "$P2_DIR" --no-channel --prompt "the goal for the first launch" 2>&1)
+RC=$?
+P2_IDX=$(sed -n 's/.*LAUNCH child-\([0-9]*\) (start_ts=.*/\1/p' "$P2_DIR/supervisor.log" 2>/dev/null | head -1)
+[ "$RC" -eq 3 ] && [ -e "$TMP/stub/launched" ] && grep -q 'SWEEP_RELAUNCH: child-1 read gone at the gate' "$P2_DIR/supervisor.log" && [ "${P2_IDX:-1}" -ge 2 ] && grep -q "LAUNCH child-$P2_IDX (start_ts=[0-9]*, prompt=set)" "$P2_DIR/supervisor.log"; CHECK_RC=$?
+check "first launch child-2 control: the sweep raised the index, the first launch is child-${P2_IDX:-?} with prompt=set, and the run ends at the crash limit (rc=$RC)" "$CHECK_RC"
+[ -n "$P2_IDX" ] && [ "$(cat "$P2_DIR/child-$P2_IDX.prompt" 2>/dev/null)" = "the goal for the first launch" ]; CHECK_RC=$?
+check "first launch child-2: the prompt file is written for the child the LAUNCH line names, child-${P2_IDX:-?}, with the prompt's text (files: $(ls "$P2_DIR"/child-*.prompt 2>/dev/null | tr '\n' ' '))" "$CHECK_RC"
+
+# --- A shutdown the child records while a restart_passive stop is stopping it
+# --- is honored at the loop head, before any launch ---
+# The real bin/supervise.sh launches a stub claude that writes one user
+# record to its stream and then sleeps, so the child reads busy. A
+# restart.request written after the launch takes restart_passive on the next
+# poll, and its stop enters the patient wait, capped at three seconds here.
+# During that wait the persona store gains a shutdown_requested newer than
+# the child's start, which no poll can see because no poll runs inside a
+# stop. The loop head reads it and ends the run at exit 0 with no second
+# launch. The leftover pids are killed by the pid files the launch wrote,
+# never by name.
+mkdir -p "$TMP/stub-hold" "$TMP/wd-hold"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "{\\"type\\":\\"user\\",\\"message\\":{\\"role\\":\\"user\\",\\"content\\":[{\\"type\\":\\"text\\",\\"text\\":\\"work\\"}]}}"\nexec sleep 40\n' > "$TMP/stub-hold/claude"
+chmod +x "$TMP/stub-hold/claude"
+RP_DIR=$(mktemp -d "$TMP/rd-passive.XXXXXX")
+env -i PATH="$TMP/stub-hold:$PATH" HOME="$TMP/home-free" supervisorPollMs=1000 supervisorStopGraceMs=1000 supervisorStopBusyCapMs=3000 supervisorCrashLimit=1 supervisorGateWaitS=3 \
+  bash "$SCRIPT" "$TMP/wd-hold" modelprobe default --rundir "$RP_DIR" --no-channel > "$RP_DIR/drive.out" 2>&1 &
+RP_SUP=$!
+wait_for_line "$RP_DIR/supervisor.log" 'LAUNCH child-1' 600; RP_LAUNCHED=$?
+printf '{"at":%s,"by":"suite","reason":"restart"}' "$(node -e "console.log(Date.now())")" > "$RP_DIR/restart.request"
+wait_for_line "$RP_DIR/supervisor.log" 'STOP\[restart_passive\]: the child is inside a turn' 600; RP_WAITING=$?
+printf '{"modelprobe":{"decisions":[{"action":"shutdown_requested","timestamp":%s,"detail":"the child banked its state during the stop"}]}}' "$(node -e "console.log(Date.now())")" > "$TMP/wd-hold/.agentic-personas.json"
+wait_for_exit "$RP_SUP" 900; RP_ENDED=$?
+if [ "$RP_ENDED" -ne 0 ]; then kill -TERM "$RP_SUP" 2>/dev/null; fi
+wait "$RP_SUP" 2>/dev/null; RP_RC=$?
+for f in "$RP_DIR"/child-*/child.pid "$RP_DIR"/child-*/holder.pid; do
+  [ -f "$f" ] && kill -9 "$(cat "$f" 2>/dev/null)" 2>/dev/null
+done
+[ "$RP_LAUNCHED" -eq 0 ] && [ "$RP_WAITING" -eq 0 ] && grep -q 'RESTART_PASSIVE: restart_requested at' "$RP_DIR/supervisor.log" && grep -q 'wait_ended=cap' "$RP_DIR/supervisor.log"; CHECK_RC=$?
+check "loop-head shutdown control: the request took restart_passive and its stop ran the patient wait to the cap while the store gained the shutdown (launched=$RP_LAUNCHED waiting=$RP_WAITING, log=$(tr '\n' '|' < "$RP_DIR/supervisor.log" 2>/dev/null | tail -c 1500))" "$CHECK_RC"
+RP_RESTART_LINE=$(grep -n 'RESTART_PASSIVE: restart_requested' "$RP_DIR/supervisor.log" 2>/dev/null | head -1 | cut -d: -f1)
+RP_STOP_LINE=$(grep -n 'STOP_COMPLETE: shutdown_requested at' "$RP_DIR/supervisor.log" 2>/dev/null | head -1 | cut -d: -f1)
+[ "$RP_ENDED" -eq 0 ] && [ "$RP_RC" -eq 0 ] && [ -n "$RP_RESTART_LINE" ] && [ -n "$RP_STOP_LINE" ] && [ "$RP_RESTART_LINE" -lt "$RP_STOP_LINE" ] && [ "$(grep -c 'LAUNCH child-' "$RP_DIR/supervisor.log" 2>/dev/null)" -eq 1 ]; CHECK_RC=$?
+check "loop-head shutdown: a shutdown_requested recorded during a restart_passive stop is honored at the loop head, exit 0 with STOP_COMPLETE after RESTART_PASSIVE and no second launch (ended=$RP_ENDED rc=$RP_RC launches=$(grep -c 'LAUNCH child-' "$RP_DIR/supervisor.log" 2>/dev/null))" "$CHECK_RC"
+
 echo
 if [ "$failed" = "0" ]; then
   echo "All tests passed"

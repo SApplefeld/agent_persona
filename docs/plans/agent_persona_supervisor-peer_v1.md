@@ -117,7 +117,18 @@ Model: sonnet
 
 Acceptance: each edited README paragraph names the function or option it describes, the section's fresh-context reviewer pair reads each against that code and returns no finding against any of them, and the Chapter records which paragraphs they read; the exit-code table is byte-identical to its state at this plan's base commit; the four backlog edits exist.
 
-Files in scope: `README.md` whole, with the exit-code table pinned unchanged, `docs/README.md`, `docs/backlog.md` (including the entry whose recovery reasoning cites the retired hung check in `bin/supervise-decide.mjs`), `docs/architecture.md` (its sentence on the hung check corroborating a stale heartbeat against the transcript's modification time, which Section 2 retired).
+Files in scope: `README.md` whole, with the exit-code table pinned unchanged, `docs/README.md`, `docs/backlog.md` (including the entry whose recovery reasoning cites the retired hung check in `bin/supervise-decide.mjs`), `docs/architecture.md` (its sentence on the hung check corroborating a stale heartbeat against the transcript's modification time, which Section 2 retired), `docs/security-model.md` (its takeover-file list, declared into scope at dispatch).
+
+### 7. Defects the documentation review found
+Model: fable
+
+Section 6's second review round read the README against the code and found four behaviors the code gets wrong. Each is fixed here, test first. First, a child the pre-launch gate adopts while it reads `frozen` never receives its final ask: the ADOPT branch copies the gate poll's ask time into `FINAL_ASK_AT` through `note_liveness_poll`, and only the poll loop's `final_ask` case writes `ask.request`, so the window runs and the child is restarted unasked. Adopting a frozen child writes the ask exactly as that case does. Second, an operator's `--prompt` reaches the child only where the launch's index is 1, and `next_child_index` and `gate_keep_swept_index` can make a run's first launch child-2 or later, after which `PROMPT` is cleared unsent while the LAUNCH line logs `prompt=set`. The prompt goes to the run's first launch whatever its index, and an ADOPT start that clears it unsent logs that it did. Third and fourth are the two supervisor-gaps findings `## Related` names as this plan's and no earlier section built: a shutdown request written during a `restart_passive` wait dropped behind the next child's start, and a same-poll restart request taking the patient wait for a child that first reads hung. Each is re-read against the liveness verdict as built. One the code still shows is fixed. One the verdict has made unreachable is retired with the code line that shows it.
+
+Acceptance: `.kit/supervisor-model-test.sh` carries a pin for each fixed behavior, each watched red on the code before its fix: the gate's ADOPT of a frozen child writes `ask.request` once and logs `FINAL_ASK`; a run whose first launch is child-2 writes the prompt file for that child; an ADOPT start with a prompt logs the prompt dropped; and, where the third finding is fixed, a shutdown request present at the loop head after a `restart_passive` stop is honored before any launch. The targeted lane passes against the Chapter 5 baseline. A finding retired rather than fixed names the code line that makes it unreachable in this section's Chapter, and its `docs/backlog.md` entry is removed or restated by Section 6's last fix round.
+
+Files in scope: `bin/supervise.sh`, `.kit/supervisor-model-test.sh`, `.kit/supervisor-fn-extract.sh` where the model driver must see a moved function.
+
+Tests: lock the four behaviors above at the lowest level the Standing Brief Amendment allows, stubbing only PowerShell and kill leaves, because the silent failure is a supervisor that looks correct in its log and never sends what it logged.
 
 ## Out of Scope
 
