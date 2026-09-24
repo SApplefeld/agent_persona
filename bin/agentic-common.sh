@@ -63,7 +63,8 @@ esac
 #          and architectPersona (from ARCHITECT_PERSONA, which has no default:
 #          the key is omitted where the variable is unset or empty),
 #          and fleetRoster (from FLEET_ROSTER, which has no default either
-#          and is omitted the same way).
+#          and is omitted the same way); and, outside the plugin options, the
+#          harness's own autoContinue, always false.
 # Exports COORDINATOR_PERSONA and ARCHITECT_PERSONA to the values it wrote, so
 # a caller can compare its own persona against the same names without parsing
 # the settings file. This is the emit branch's half of those exports; the
@@ -219,8 +220,13 @@ emit_settings_json() {
   # ignored without an error, so the same options are written under both.
   # .kit/settings-plugin-key-test.sh pins both ids against the two manifests.
   local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$self_review_opts$cost_opts$jev_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"$architect_opt$roster_opt}"
+  # autoContinue is the harness's own setting, at the top level rather than
+  # under a plugin id. Off, a child that trips a usage limit ends its turn and
+  # sits idle rather than parking until the limit resets, and the supervisor's
+  # liveness verdict reads that child alive for as long as the limit is its
+  # newest word. Interactive sessions never read this file.
   cat > "$out" <<EOF
-{"pluginConfigs":{"$AGENTIC_PLUGIN_DEV_ID":{"options":$options},"$AGENTIC_PLUGIN_INSTALLED_ID":{"options":$options}}}
+{"autoContinue":false,"pluginConfigs":{"$AGENTIC_PLUGIN_DEV_ID":{"options":$options},"$AGENTIC_PLUGIN_INSTALLED_ID":{"options":$options}}}
 EOF
 }
 
@@ -277,10 +283,13 @@ try {
 # exactly "owner", the function refuses and exits 1 without writing: a
 # supervisor launch always drives a goal tree as an owner, so a settings
 # file naming another tier is a mistake to refuse rather than a value to
-# honor. The file is replaced by rename, same as ensure_settings_plugin_ids,
-# so an interrupted write never leaves it truncated. Returns 1 on the same
-# conditions that function does, with the same error-line shape, plus the
-# arming refusal above; exits 0 when nothing needed changing.
+# honor. The same pass sets the harness's top-level autoContinue to false
+# where the file omits it, as emit_settings_json writes it, and leaves a value
+# the caller wrote as written. The file is replaced by rename, same as
+# ensure_settings_plugin_ids, so an interrupted write never leaves it
+# truncated. Returns 1 on the same conditions that function does, with the
+# same error-line shape, plus the arming refusal above; exits 0 when nothing
+# needed changing.
 ensure_settings_arming() {
   node -e '
 const fs = require("fs");
@@ -303,6 +312,7 @@ for (const id of [devId, installedId]) {
   if (opts.arming === undefined) { opts.arming = "owner"; changed = true; }
   else if (opts.arming !== "owner") fail("carries arming '"'"'" + opts.arming + "'"'"' under " + id + "; a supervisor launch is always owner");
 }
+if (s.autoContinue === undefined) { s.autoContinue = false; changed = true; }
 if (!changed) process.exit(0);
 const tmp = file + ".tmp-" + process.pid;
 try {

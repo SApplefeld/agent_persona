@@ -203,6 +203,17 @@ SUPERVISOR_MIN_RUN_MS="${supervisorMinRunMs:-120000}"
 SUPERVISOR_CRASH_LIMIT="${supervisorCrashLimit:-3}"
 SUPERVISOR_MAX_RESTARTS_PER_HOUR="${supervisorMaxRestartsPerHour:-6}"
 SUPERVISOR_POLL_MS="${supervisorPollMs:-10000}"
+# The liveness verdict's three bounds, read by bin/supervise-liveness.mjs
+# through the poll and never written to the plugin's options. The silence
+# bound is how long the transcript and the output stream may be silent, and
+# the startup grace: fifteen minutes, the harness's ten-minute tool-call cap
+# plus a margin. The probe interval is the least time between two probes of a
+# child whose heartbeat is stale. The final ask's window is how long a frozen
+# child has to move any signal after the one status prompt, the tool-call cap
+# plus a minute.
+SUPERVISOR_SILENCE_BOUND_MS="${supervisorSilenceBoundMs:-900000}"
+SUPERVISOR_PROBE_MS="${supervisorProbeMs:-120000}"
+SUPERVISOR_FINAL_ASK_MS="${supervisorFinalAskMs:-660000}"
 # v2 spec Section 0 item 3 Part B (operator decision, DISCUSSION.md Round
 # 136 addendum): the worker's own main thread - where PR #17's kill path
 # was actually written - defaults to opus at medium effort, not sonnet.
@@ -302,6 +313,18 @@ if ! positive_number "$SUPERVISOR_POLL_MS" 1000; then
   echo "ERROR: supervisorPollMs '$SUPERVISOR_POLL_MS' is not a whole number of milliseconds of at least 1000, written with digits only, no leading zero and at most 9 digits. The poll interval is divided by 1000, so anything smaller polls with no wait at all." >&2
   exit 1
 fi
+if ! positive_number "$SUPERVISOR_SILENCE_BOUND_MS"; then
+  echo "ERROR: supervisorSilenceBoundMs '$SUPERVISOR_SILENCE_BOUND_MS' is not a whole number of milliseconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
+  exit 1
+fi
+if ! positive_number "$SUPERVISOR_PROBE_MS"; then
+  echo "ERROR: supervisorProbeMs '$SUPERVISOR_PROBE_MS' is not a whole number of milliseconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
+  exit 1
+fi
+if ! positive_number "$SUPERVISOR_FINAL_ASK_MS"; then
+  echo "ERROR: supervisorFinalAskMs '$SUPERVISOR_FINAL_ASK_MS' is not a whole number of milliseconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
+  exit 1
+fi
 
 # --- Plugin values (single-sourced, emitted to settings JSON) ---
 HEARTBEAT_MS="${heartbeatMs:-30000}"
@@ -329,6 +352,13 @@ fi
 
 LOG="$RUNDIR/supervisor.log"
 SETTINGS_FILE="$RUNDIR/settings.json"
+# The heartbeat file only this run's child writes, and the mailbox pair: the
+# supervisor's own records, and the plugin's acknowledgements of them. One of
+# each per run directory rather than per child, and both mailbox files are
+# truncated at each launch.
+CHILD_HEARTBEAT="$RUNDIR/heartbeat.json"
+MAILBOX_FILE="$RUNDIR/mailbox.jsonl"
+MAILBOX_ACK_FILE="$RUNDIR/mailbox.ack.jsonl"
 
 # --- Source the shared helper ---
 _COMMON="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agentic-common.sh"
@@ -342,6 +372,18 @@ TICK_MS="${controllerTickMs:-10000}"
 NUDGE_IDLE_MS="${nudgeIdleMs:-45000}"
 NUDGE_FLOOR_MS="${nudgeFloorMs:-5000}"
 GIT_PROBE_MS="${gitProbeMs:-30000}"
+# The controller tick is emitted for the plugin and also read here, since a
+# probe's window is two ticks plus the poll interval, so it takes the same
+# check the settings the script reads for itself take. The emitter's own rule
+# is skipped whenever the rundir already holds a settings file.
+if ! positive_number "$TICK_MS"; then
+  echo "ERROR: controllerTickMs '$TICK_MS' is not a whole number of milliseconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
+  exit 1
+fi
+# How long a probe waits for the plugin's ack before it reads silent: an idle
+# child's tick acknowledges within one tick, and the second tick and the poll
+# interval are the margin for the tick and the poll landing out of step.
+PROBE_WINDOW_MS=$(( 2 * TICK_MS + SUPERVISOR_POLL_MS ))
 
 # --- Emit settings JSON (only if not already provided) ---
 # A provided file keeps its options, and gains whichever plugin id it lacks,
@@ -1303,6 +1345,11 @@ walk_msys_process_tree() {
 # completes.
 refresh_child_tree() {
   local pid="${CHILD_LAUNCH_PID:-}"
+  # What this call's walk found, for the liveness verdict: live where it
+  # completed and named a live process, none where it completed and found
+  # every process gone, failed where it did not complete. Set to failed first,
+  # so every return that is not a completed walk reads as one.
+  CHILD_TREE_POLL_WALK="failed"
   if [ -z "$pid" ]; then
     return 0
   fi
@@ -1410,10 +1457,12 @@ refresh_child_tree() {
     # nothing about the processes under it, and a live one that did not resolve
     # is a survivor nothing here can name. An MSYS pid reused by an unrelated
     # process reads as running too, which keeps this a failed read.
+    CHILD_TREE_POLL_WALK="none"
     if [ -n "$msys_pids" ]; then
       for one in $msys_pids; do
         if kill -0 "$one" 2>/dev/null; then
           CHILD_TREE_READ_FAILED=1
+          CHILD_TREE_POLL_WALK="failed"
           break
         fi
       done
@@ -1432,6 +1481,7 @@ refresh_child_tree() {
     # settled child takes on every poll, and it launches nothing.
     printf -v CHILD_TREE_CONFIRMED_AT '%(%s)T' -1
     CHILD_TREE_FAILED_CONFIRMS=0
+    CHILD_TREE_POLL_WALK="live"
     return 0
   fi
   # A closure member that exited inside its own walk is left out of this poll
@@ -1482,6 +1532,7 @@ refresh_child_tree() {
     # the pid set seen under the child both stand as they were.
     log "CHILDTREE: every process in child-$CHILD_INDEX's closure exited inside its own walk on this poll, so this poll records nothing"
     CHILD_TREE_FAILED_CONFIRMS=$(( ${CHILD_TREE_FAILED_CONFIRMS:-0} + 1 ))
+    CHILD_TREE_POLL_WALK="none"
     return 0
   fi
   # `snapshot_process_tree` refuses this supervisor's own Windows pid inside
@@ -1497,6 +1548,7 @@ refresh_child_tree() {
   CHILD_TREE_WALKED=1
   CHILD_TREE_CONFIRMED_AT=$(date +%s)
   CHILD_TREE_FAILED_CONFIRMS=0
+  CHILD_TREE_POLL_WALK="live"
   # Whether any walk has yet named a Windows process other than the one the
   # child's own launch pid runs as. The first refresh runs in the instant
   # after the coproc starts, before the agent process under it exists, so a
@@ -2577,57 +2629,6 @@ process.exit(1);
 " "$out_file" 2>> "$RUNDIR/supervisor.err"
 }
 
-# --- Helper: where the harness keeps the transcripts of sessions launched
-# from a directory ---
-# Prints the directory, or nothing where the profile is unknown. The poll loop
-# resolves it once per child and hands it to the poll reader, which adds the
-# session id, since the launch directory does not move under a live child.
-# The layout is described under read_transcript_mtime_ms below.
-# Usage: transcript_dir_for <workdir>
-transcript_dir_for() {
-  local workdir="$1"
-  local profile="${USERPROFILE:-${HOME:-}}"
-  [ -n "$profile" ] || return 0
-  local profile_u workdir_w key
-  profile_u="$(cygpath -u "$profile" 2>/dev/null || echo "$profile")"
-  workdir_w="$(cygpath -w "$workdir" 2>/dev/null || echo "$workdir")"
-  key="${workdir_w//[^A-Za-z0-9]/-}"
-  printf '%s\n' "$profile_u/.claude/projects/$key"
-}
-
-# --- Helper: when the harness last wrote a session's transcript ---
-# The harness appends to its transcript for a session on every turn, so that
-# file's modification time is a liveness instrument the child itself does not
-# write. It is the second reading the hung check needs, because the heartbeat
-# sidecar is written relative to the child's own working directory while this
-# script reads it under WORKDIR, and a child working out of a subdirectory
-# stamps a file nothing here watches.
-#
-# The transcript sits at <profile>/.claude/projects/<key>/<session id>.jsonl.
-# The key is the launch directory in Windows form with every character outside
-# A-Za-z0-9 replaced by a hyphen, and it is fixed at launch rather than
-# following the child's working directory, which is what makes it the
-# independent reading.
-#
-# Prints the modification time in epoch milliseconds, or nothing where the
-# session id, the profile or the file itself cannot be read. Nothing is the
-# fail-safe answer: the decide unit then runs its hung check on the heartbeat
-# alone, exactly as it did before this reading existed.
-read_transcript_mtime_ms() {
-  local session_id="$2" transcript_dir transcript
-  [ -n "$session_id" ] || return 0
-  transcript_dir=$(transcript_dir_for "$1")
-  [ -n "$transcript_dir" ] || return 0
-  transcript="$transcript_dir/$session_id.jsonl"
-  [ -f "$transcript" ] || return 0
-  node -e "
-const fs = require('fs');
-try {
-  console.log(Math.floor(fs.statSync(process.argv[1]).mtimeMs));
-} catch (e) { /* unreadable reads as no corroboration */ }
-" "$transcript" 2>> "$RUNDIR/supervisor.err"
-}
-
 # --- Helper: count a relaunch against the rolling-hour restart budget ---
 # Each relaunch is stamped, stamps older than an hour are dropped, and
 # RESTART_COUNT is what is left. Every relaunch whose trigger sits outside the
@@ -2653,6 +2654,22 @@ CHILD_INDEX=0
 RESTART_COUNT=0
 CRASH_COUNT=0
 RESTART_TIMES=()  # array of timestamps for rolling-hour budget
+
+# This supervisor's start time, which prefixes every probe id it writes, so
+# ids stay unique across supervisors sharing a run directory.
+SUPERVISOR_START_MS=$(node -e "console.log(Date.now())")
+
+# Where the harness keeps its transcripts, and the launch directory that names
+# the child's project under it. The poll derives the transcript from these and
+# the child's session id. The profile is USERPROFILE, falling back to HOME, and
+# both are handed over in Windows form, which is the form the harness's
+# project key is taken from. An unknown profile leaves the transcript
+# unreadable, which the liveness verdict reads as alive.
+PROFILE_ROOT="${USERPROFILE:-${HOME:-}}"
+if [ -n "$PROFILE_ROOT" ]; then
+  PROFILE_ROOT="$(cygpath -w "$PROFILE_ROOT" 2>/dev/null || echo "$PROFILE_ROOT")"
+fi
+WORKDIR_WINDOWS="$(cygpath -w "$WORKDIR" 2>/dev/null || echo "$WORKDIR")"
 
 # Whether the FIRST child got no --prompt at all (passive start, plan item 1).
 # Captured before the loop, since PROMPT is cleared after it is sent to
@@ -2698,6 +2715,10 @@ while true; do
   
   # AD5: Truncate supervisor.err once at launch; append everywhere after.
   : > "$RUNDIR/supervisor.err"
+  # The mailbox pair starts empty for each child, so a probe an earlier child
+  # never acknowledged cannot read as this child's silence.
+  : > "$MAILBOX_FILE"
+  : > "$MAILBOX_ACK_FILE"
 
   # Write the prompt to a file if child 1 and PROMPT is set.
   PROMPT_FILE=""
@@ -3173,24 +3194,27 @@ while true; do
 
   # --- Poll loop ---
   STORE="$WORKDIR/.agentic-personas.json"
-  HEARTBEAT="$WORKDIR/.agentic-heartbeat.json"
   CHILD_SESSION_ID=""
-  # Where the harness keeps this child's transcript, resolved here once: it
-  # turns on the launch directory alone, which does not move while the child
-  # lives. Empty where the profile is unknown, which leaves the hung check
-  # running on the heartbeat alone.
-  TRANSCRIPT_DIR=$(transcript_dir_for "$WORKDIR")
   POLL_COUNT=0
   # The end of the wait this child is parked on, and the value the log last
   # named. Both belong to one child: a fresh child's stream is its own.
   RATE_LIMIT_LOGGED=""
   RATE_LIMIT_RESET=""
   RATE_LIMIT_RESET_ISO=""
-  # Whether the log already carries this child's current run of polls where the
-  # transcript contradicted a stale heartbeat. A child working out of another
-  # directory holds that state for as long as it works there, so the line is
-  # written once per run of such polls rather than on every one of them.
-  HUNG_CORROBORATED_LOGGED=""
+  # The liveness state this child's polls carry from one to the next, since
+  # the poll process is fresh every poll: the stream's size as last seen and
+  # the moment it last changed, on this supervisor's clock, and the time of
+  # the final ask for the current silence. All three start empty for each
+  # child, so the first poll ages the stream from the file's own modification
+  # time.
+  STREAM_SEEN_SIZE=""
+  STREAM_CHANGED_AT=""
+  FINAL_ASK_AT=""
+  # The liveness reason the log last named, so the line is written when the
+  # reason changes rather than on every poll, and whether this child's missing
+  # heartbeat file has been named.
+  LIVENESS_LOGGED=""
+  HEARTBEAT_ABSENT_LOGGED=""
 
   if [ -z "$CHILD_LAUNCH_PID" ]; then
     log "ERROR: CHILD_LAUNCH_PID not set after coproc launch"
@@ -3220,35 +3244,67 @@ while true; do
     # and nothing can name it once its wrapper exits.
     refresh_child_tree
 
-    # Every reading this poll takes, and the decision on them, in one process.
-    # The clock and the heartbeat are read together inside it: the staleness the
-    # decide unit computes is the gap between the two. The store is read once,
+    # Every reading this poll takes, and the decision on them, in one process:
+    # the store, the child's own heartbeat file, the stream, the transcript and
+    # the mailbox pair, with the walk above handed in. The store is read once,
     # so every fact off it describes the same moment. A process launch costs
     # tenths of a second on a loaded box, and a poll that launches one per
-    # reading runs longer than the interval it sleeps.
-    #
-    # The transcript's modification time is read after the clock it is compared
-    # against. A transcript written in between carries a time ahead of that
-    # clock, which still corroborates while the gap is shorter than the
-    # staleness bound.
+    # reading runs longer than the interval it sleeps. The same process writes
+    # a probe to the mailbox where the heartbeat is stale.
     POLL_RESULT=$(node "$PLUGIN_DIR/bin/supervise-poll.mjs" \
-      "$HEARTBEAT" "$STORE" "$PERSONA" "$OUT" "${TRANSCRIPT_DIR:-}" "${CHILD_SESSION_ID:-}" \
+      "$CHILD_HEARTBEAT" "$STORE" "$PERSONA" "$OUT" "$PROFILE_ROOT" "${CHILD_SESSION_ID:-}" \
       "$CHILD_START_TS" "$LAUNCHED_AT" "$STALE_AFTER_MS" "$SUPERVISOR_MIN_RUN_MS" \
       "$SUPERVISOR_MAX_RESTARTS_PER_HOUR" "$CRASH_COUNT" "$RESTART_COUNT" "$SUPERVISOR_CRASH_LIMIT" \
       "$RUNDIR" \
+      "$WORKDIR_WINDOWS" "${CHILD_TREE_POLL_WALK:-failed}" "$STREAM_SEEN_SIZE" "$STREAM_CHANGED_AT" \
+      "$SUPERVISOR_SILENCE_BOUND_MS" "$SUPERVISOR_PROBE_MS" "$PROBE_WINDOW_MS" \
+      "$SUPERVISOR_FINAL_ASK_MS" "$FINAL_ASK_AT" "$SUPERVISOR_START_MS" \
+      "$MAILBOX_FILE" "$MAILBOX_ACK_FILE" \
       2>> "$RUNDIR/supervisor.err")
     DECIDE_ERR=$?
     DECIDE_ACTION=""; DECIDE_REASON=""; POLL_RATE_LIMIT=""; POLL_SESSION_ID=""
+    POLL_LIVENESS=""; POLL_STREAM_SIZE=""; POLL_STREAM_CHANGED_AT=""; POLL_FINAL_ASK_AT=""; POLL_HEARTBEAT_NOTE=""
     {
       IFS= read -r DECIDE_ACTION
       IFS= read -r DECIDE_REASON
       IFS= read -r POLL_RATE_LIMIT
       IFS= read -r POLL_SESSION_ID
+      IFS= read -r POLL_LIVENESS
+      IFS= read -r POLL_STREAM_SIZE
+      IFS= read -r POLL_STREAM_CHANGED_AT
+      IFS= read -r POLL_FINAL_ASK_AT
+      IFS= read -r POLL_HEARTBEAT_NOTE
     } <<< "$POLL_RESULT"
     DECIDE_ACTION="${DECIDE_ACTION%$'\r'}"
     DECIDE_REASON="${DECIDE_REASON%$'\r'}"
     POLL_RATE_LIMIT="${POLL_RATE_LIMIT%$'\r'}"
     POLL_SESSION_ID="${POLL_SESSION_ID%$'\r'}"
+    POLL_LIVENESS="${POLL_LIVENESS%$'\r'}"
+    POLL_STREAM_SIZE="${POLL_STREAM_SIZE%$'\r'}"
+    POLL_STREAM_CHANGED_AT="${POLL_STREAM_CHANGED_AT%$'\r'}"
+    POLL_FINAL_ASK_AT="${POLL_FINAL_ASK_AT%$'\r'}"
+    POLL_HEARTBEAT_NOTE="${POLL_HEARTBEAT_NOTE%$'\r'}"
+
+    # The liveness state carried to the next poll, taken only from a poll that
+    # ran: a failed one says nothing about the stream or the ask, so the last
+    # reading of each stands. The ask's time is cleared by any alive reading,
+    # and a cleared ask is named, since it is a frozen child that answered.
+    if [ -n "$DECIDE_ACTION" ] && [ $DECIDE_ERR -eq 0 ]; then
+      STREAM_SEEN_SIZE="$POLL_STREAM_SIZE"
+      STREAM_CHANGED_AT="$POLL_STREAM_CHANGED_AT"
+      if [ -n "$FINAL_ASK_AT" ] && [ -z "$POLL_FINAL_ASK_AT" ]; then
+        log "FINAL_ASK_CLEARED child-$CHILD_INDEX: a signal moved inside the final ask's window (liveness: $POLL_LIVENESS)"
+      fi
+      FINAL_ASK_AT="$POLL_FINAL_ASK_AT"
+      if [ "$POLL_HEARTBEAT_NOTE" = "HEARTBEAT_ABSENT" ] && [ -z "$HEARTBEAT_ABSENT_LOGGED" ]; then
+        log "HEARTBEAT_ABSENT child-$CHILD_INDEX: $CHILD_HEARTBEAT has not been written past the startup grace, so the heartbeat reads as not silent for this child"
+        HEARTBEAT_ABSENT_LOGGED=1
+      fi
+      if [ -n "$POLL_LIVENESS" ] && [ "$POLL_LIVENESS" != "$LIVENESS_LOGGED" ]; then
+        log "LIVENESS child-$CHILD_INDEX: $POLL_LIVENESS"
+        LIVENESS_LOGGED="$POLL_LIVENESS"
+      fi
+    fi
 
     # The child's session id, off the init line of its stream.
     if [ -z "$CHILD_SESSION_ID" ] && [ -n "$POLL_SESSION_ID" ]; then
@@ -3449,24 +3505,58 @@ while true; do
         fi
         continue 2  # break out of the poll loop and go to the next child
         ;;
+      final_ask)
+        # Every signal is silent and the child's process is live. The poll has
+        # already handed back the ask's time, so the window runs from this poll
+        # and the next frozen reading waits inside it rather than asking again.
+        # Nothing is written to the child's input here, so the window is a
+        # wait for any signal to move, and one that closes silent restarts.
+        log "FINAL_ASK child-$CHILD_INDEX: $DECIDE_REASON"
+        ;;
+      sweep_relaunch)
+        # Every signal is silent and the walk found no live process. The tree
+        # the child was last recorded as is swept, and the relaunch is
+        # accounted exactly as a restart is, so the restart budget still bounds
+        # a persona that keeps dying. A sweep that cannot clear the tree ends
+        # the run at exit 5, as every relaunch path does, since a relaunch
+        # beside a survivor puts two children on one persona claim.
+        log "SWEEP_RELAUNCH: $DECIDE_REASON"
+        sweep_child_tree "sweep_relaunch"
+        SWEEP_RC=$?
+        if [ "$SWEEP_RC" -eq 1 ]; then
+          if [ -n "$LAST_STOP_SNAPSHOT" ]; then
+            retry_stop_escalation "sweep_relaunch" "$SWEEP_RC"
+            SWEEP_RC=$?
+          fi
+          if [ "$SWEEP_RC" -ne 0 ]; then
+            log "EXIT child-$CHILD_INDEX: a process from this child is alive or unverifiable after every sweep retry"
+            exit 5
+          fi
+        fi
+        wait "$CHILD_LAUNCH_PID"; EXIT_CODE=$?
+        CHILD_LAUNCH_PID=""
+        echo "$EXIT_CODE" > "$EXIT_MARKER"
+        log "EXIT child-$CHILD_INDEX code=$EXIT_CODE (sweep_relaunch)"
+
+        CHILD_RUN_MS=$(( ( $(node -e "console.log(Date.now())") - LAUNCHED_AT ) ))
+        if [ $EXIT_CODE -ne 0 ] && [ $CHILD_RUN_MS -lt $SUPERVISOR_MIN_RUN_MS ]; then
+          CRASH_COUNT=$((CRASH_COUNT + 1))
+        else
+          CRASH_COUNT=0
+        fi
+        record_restart_in_hour
+
+        if [ $RESTART_COUNT -ge $SUPERVISOR_MAX_RESTARTS_PER_HOUR ]; then
+          log "STOP_BUDGET: $RESTART_COUNT/$SUPERVISOR_MAX_RESTARTS_PER_HOUR restarts in the hour"
+          exit 4
+        fi
+        if [ $CRASH_COUNT -ge $SUPERVISOR_CRASH_LIMIT ]; then
+          log "STOP_CRASH_LOOP: $CRASH_COUNT crashes within $SUPERVISOR_MIN_RUN_MS ms"
+          exit 3
+        fi
+        continue 2  # break out of the poll loop and go to the next child
+        ;;
       continue)
-        # One continue is worth a log line: the one where a stale heartbeat
-        # would have killed the child and the transcript said it was alive.
-        # Without it the operator sees a session that went on running with no
-        # record of the kill that did not happen. Named once per run of such
-        # polls, the way a rate-limit park is, since the heartbeat stays stale
-        # for as long as the child works out of another directory.
-        case "$DECIDE_REASON" in
-          hung_corroborated:*)
-            if [ -z "$HUNG_CORROBORATED_LOGGED" ]; then
-              log "HUNG_CORROBORATED: $DECIDE_REASON"
-              HUNG_CORROBORATED_LOGGED=1
-            fi
-            ;;
-          *)
-            HUNG_CORROBORATED_LOGGED=""
-            ;;
-        esac
         ;;
     esac
   done

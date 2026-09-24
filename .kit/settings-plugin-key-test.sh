@@ -33,6 +33,11 @@ try { s = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) { console.log("
 const pc = s.pluginConfigs || {};
 const dev = pc[name] && pc[name].options;
 const inst = pc[name + "@" + market] && pc[name + "@" + market].options;
+// autoContinue is a top-level key the harness itself reads, so it is read off the file
+// itself and never off the options under an id, where the harness would not see it.
+// JSON.stringify keeps false, absent and a string apart.
+console.log("AUTO_CONTINUE=" + JSON.stringify(s.autoContinue) + ";");
+console.log("AUTO_CONTINUE_IN_OPTIONS=" + ((dev && dev.autoContinue !== undefined) || (inst && inst.autoContinue !== undefined) ? 1 : 0) + ";");
 console.log("DEV_KEY=" + (dev ? 1 : 0));
 console.log("INSTALLED_KEY=" + (inst ? 1 : 0));
 console.log("SAME_OPTIONS=" + (dev && inst && JSON.stringify(dev) === JSON.stringify(inst) ? 1 : 0));
@@ -90,6 +95,11 @@ case "$R" in *"ARCH_DEV_PRESENT=0;"*"ARCH_INSTALLED_PRESENT=0;"*) check "emitted
 # value assertions below pass against a file emitting "jevMode":"", which is a
 # present non-shadow string and so disables the seam everywhere.
 case "$R" in *"JEV_DEV_PRESENT=0;"*"JEV_INSTALLED_PRESENT=0;"*) check "emitted: JEV_MODE unset leaves jevMode out of both ids" 0 ;; *) check "emitted: JEV_MODE unset leaves jevMode out of both ids (out=$R)" 1 ;; esac
+# The supervisor-peer plan's Section 2: a supervised child runs with the
+# harness's usage-limit pause off, at the top level where the harness reads
+# it, so a child that trips a limit ends its turn rather than parking for
+# hours. The liveness verdict's usage-limit reading lands beside it.
+case "$R" in *"AUTO_CONTINUE=false;"*"AUTO_CONTINUE_IN_OPTIONS=0;"*) check "emitted: autoContinue false at the top level, not under a plugin id" 0 ;; *) check "emitted: autoContinue false at the top level, not under a plugin id (out=$R)" 1 ;; esac
 
 # --- Section 4: emit_settings_json writes JEV_MODE=off under both ids ---
 run_lib PERSONA="keyprobe" JEV_MODE="off" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevoff.json"
@@ -226,6 +236,24 @@ run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_plugin_ids
 check "ensure_settings_arming exits 0 on a file with no arming key" "$?"
 R=$(inspect "$TMP/noarm.json")
 case "$R" in *"PERSONA_DEV=noarm;"*"ARMING_DEV=owner;"*"ARMING_INSTALLED=owner;"*"TICK_DEV=11;"*) check "a missing arming key gains owner under both ids, other options unchanged" 0 ;; *) check "a missing arming key gains owner under both ids, other options unchanged (out=$R)" 1 ;; esac
+# A provided file is what every relaunched persona runs on, so the pause
+# setting is ensured there in the same pass that ensures the arming key.
+case "$R" in *"AUTO_CONTINUE=false;"*"AUTO_CONTINUE_IN_OPTIONS=0;"*) check "provided: a file with no autoContinue gains false at the top level" 0 ;; *) check "provided: a file with no autoContinue gains false at the top level (out=$R)" 1 ;; esac
+
+# A provided file that already carries arming owner under both ids, and no
+# autoContinue, still gains the setting: the key alone is a change to write.
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"arming":"owner"}},"agentic-plugin@agent-persona":{"options":{"arming":"owner"}}}}' > "$TMP/armed-noauto.json"
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_arming "$2"' _ "$ROOT" "$TMP/armed-noauto.json"
+check "ensure_settings_arming exits 0 on an armed file with no autoContinue" "$?"
+R=$(inspect "$TMP/armed-noauto.json")
+case "$R" in *"AUTO_CONTINUE=false;"*) check "provided: an already-armed file gains autoContinue false" 0 ;; *) check "provided: an already-armed file gains autoContinue false (out=$R)" 1 ;; esac
+
+# A value the caller wrote is left as written, as every other option is.
+printf '%s' '{"autoContinue":true,"pluginConfigs":{"agentic-plugin":{"options":{"arming":"owner"}},"agentic-plugin@agent-persona":{"options":{"arming":"owner"}}}}' > "$TMP/auto-true.json"
+BEFORE=$(cat "$TMP/auto-true.json")
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_arming "$2"' _ "$ROOT" "$TMP/auto-true.json"
+check "ensure_settings_arming exits 0 on a file that carries autoContinue" "$?"
+[ "$(cat "$TMP/auto-true.json")" = "$BEFORE" ]; check "provided: an autoContinue the caller wrote is left byte for byte" "$?"
 
 # A provided arming value naming another tier is refused, not honored: a
 # supervisor launch always drives a goal tree as an owner.

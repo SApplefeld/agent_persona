@@ -1277,6 +1277,27 @@ wait_for_log_line() {  # <grep pattern> <bound seconds>
   done
   return 0
 }
+# The heartbeat file only this child writes, <rundir>/heartbeat.json, stamped
+# once at the moment it is written. Stamped once and never again, it goes
+# stale after staleAfterMs, which is what earns a probe in the mailbox.
+write_child_heartbeat() {
+  node -e '
+const fs = require("fs");
+fs.writeFileSync(process.argv[1], JSON.stringify({ sessionId: "stub-sess-1", lastSeen: Date.now(), turnStartedAt: null }));
+' "\$CASE_DIR/rd/heartbeat.json"
+}
+# Blocks until the supervisor has written a probe to the mailbox, which it
+# does only once it reads this child's heartbeat as stale. Bounded, so a
+# supervisor that never probes still lets the case end and fail.
+wait_for_probe() {  # <bound seconds>
+  local waited=0
+  until grep -q '"kind":"probe"' "\$CASE_DIR/rd/mailbox.jsonl" 2>/dev/null; do
+    [ "\$waited" -ge "\$1" ] && return 1
+    sleep 1
+    waited=\$((waited + 1))
+  done
+  return 0
+}
 # Ends this child's heartbeat writer and waits for it to exit.
 stop_heartbeat() {
   : > "\$CASE_DIR/heartbeat-stop"
@@ -1404,35 +1425,34 @@ case "\$action" in
   # Parked on a rate limit: the newest record this child writes is the engine's
   # own 429 retry, and it writes nothing after it. Held until the liveness
   # cadence has reported on the sixth poll, which is the line the case reads.
-  # These two cases run under a five-second staleness bound, so the heartbeat
-  # has to keep moving for as long as the supervisor takes to reach that poll
-  # or the park reads as a hung child. The writer stops on this child's own
-  # signal, so the write count is a ceiling rather than a schedule, and it sits
-  # past the bound the whole run is capped at: a loaded box that takes minutes
-  # over six polls ends the park on the supervisor's line, as the case means
-  # it to, rather than on the writer running out.
+  # The shared sidecar heartbeat these two keep moving is read by nothing in
+  # the poll; the silence bound is left at its default, so no liveness verdict
+  # can end either run.
   rate_limited) IFS= read -r _; emit_init; write_heartbeat_repeatedly 200 3; emit_rate_limit 600000; wait_for_poll_line 6 300; stop_heartbeat; record shutdown_requested ""; exit 0 ;;
   # Control: the same park with the child's own work written after it, which is
   # how a park ends. The newest record is that work, not the retry.
   rate_limited_worked_past) IFS= read -r _; emit_init; write_heartbeat_repeatedly 200 3; emit_rate_limit 600000; emit_work; wait_for_poll_line 6 300; stop_heartbeat; record shutdown_requested ""; exit 0 ;;
-  # A park held across several polls with the heartbeat moving on its own
-  # timer, which is what a held session keeps doing while the child itself
-  # writes nothing.
-  rate_limited_quiet) IFS= read -r _; emit_init; write_heartbeat_repeatedly 8 3; emit_rate_limit 600000; sleep 26; record shutdown_requested ""; exit 0 ;;
-  # A heartbeat stamped once and then never again, which is what the supervisor
-  # sees when the writer follows the child into another directory: the child
-  # keeps stamping, into a file this supervisor does not read. The child holds
-  # until the supervisor's own line says the transcript corroborated it, then
-  # ends the run itself, since a corroborated child is never stopped from
-  # outside. A supervisor that restarts it instead closes this stdin first, so
-  # the case ends either way.
-  hung_corroborated) IFS= read -r _; emit_init; write_heartbeat; wait_for_log_line "HUNG_CORROBORATED" 180; record shutdown_requested ""; exit 0 ;;
-  # The same stamped-once heartbeat with nothing alive to corroborate it. The
-  # child blocks until the supervisor's hung restart closes its stdin.
-  hung_quiet) IFS= read -r _; emit_init; write_heartbeat; while IFS= read -r _; do :; done; exit 0 ;;
-  # The same stamped-once heartbeat, with the child exiting non-zero when its
-  # stdin closes, so the decide path's hung restart counts as a crash.
-  hung_quiet7) IFS= read -r _; emit_init; write_heartbeat; while IFS= read -r _; do :; done; exit 7 ;;
+  # A park with every other signal silent: the child's own heartbeat stamped
+  # once and gone stale, its transcript an hour old, and nothing written after
+  # the retry. The child holds until the supervisor has probed it and taken
+  # eighteen polls past that, far past the probe's window and the silence
+  # bound, then ends the run itself.
+  rate_limited_quiet) IFS= read -r _; emit_init; write_child_heartbeat; emit_rate_limit 600000; wait_for_probe 180; wait_for_poll_line 18 300; record shutdown_requested ""; exit 0 ;;
+  # The child's own heartbeat stamped once and never again, while the case
+  # keeps its transcript moving. The child holds until the supervisor has
+  # probed it and taken eighteen polls past that, then ends the run itself. A
+  # supervisor that restarts it instead closes this stdin first, so the case
+  # ends either way.
+  alive_transcript) IFS= read -r _; emit_init; write_child_heartbeat; wait_for_probe 180; wait_for_poll_line 18 300; record shutdown_requested ""; exit 0 ;;
+  # The same stamped-once heartbeat with a stream that grows once the final ask
+  # is logged. The child holds until the ask is cleared, then ends the run.
+  frozen_answers) IFS= read -r _; emit_init; write_child_heartbeat; wait_for_log_line "FINAL_ASK child-1:" 180; emit_work; wait_for_log_line "FINAL_ASK_CLEARED child-1" 120; record shutdown_requested ""; exit 0 ;;
+  # The same stamped-once heartbeat with every other signal silent too. The
+  # child blocks until the supervisor's frozen restart closes its stdin.
+  hung_quiet) IFS= read -r _; emit_init; write_child_heartbeat; while IFS= read -r _; do :; done; exit 0 ;;
+  # The same, with the child exiting non-zero when its stdin closes, so the
+  # decide path's frozen restart counts as a crash.
+  hung_quiet7) IFS= read -r _; emit_init; write_child_heartbeat; while IFS= read -r _; do :; done; exit 7 ;;
   *) exit 1 ;;
 esac
 EOF
@@ -1687,38 +1707,82 @@ if [ "$R" -eq 0 ]; then
   [ "$H_RC" -eq 0 ] && [ -z "$H_ALIVE" ]; check "(h) the survivor, matched by pid and start ticks, is dead after the run" "$?"
 fi
 
+# The harness transcript path for a case, derived here from the rule the
+# harness itself uses: the launch directory in Windows form with every
+# character outside A-Za-z0-9 replaced by a hyphen. Derived independently of
+# the supervisor rather than read back from it, so a supervisor that resolves
+# the key any other way finds no file and the cases below say so.
+transcript_path() {  # <workdir> <profile dir> <session id>
+  local key
+  key=$(node -e 'console.log(process.argv[1].replace(/[^A-Za-z0-9]/g, "-"))' "$(cygpath -w "$1")")
+  printf '%s\n' "$2/.claude/projects/$key/$3.jsonl"
+}
+# Appends one turn record to a transcript, its timestamp the given number of
+# seconds ago. The liveness verdict reads the record's own timestamp and
+# never the file's modification time, so this is how a case sets the
+# transcript's age.
+write_turn_aged() {  # <path> <age seconds>
+  mkdir -p "$(dirname "$1")"
+  node -e '
+const fs = require("fs");
+const [file, age] = process.argv.slice(1);
+fs.appendFileSync(file, JSON.stringify({ type: "assistant", timestamp: new Date(Date.now() - Number(age) * 1000).toISOString() }) + "\n");
+' "$1" "$2"
+}
+# The bounds every liveness case runs under: a five-second silence bound and
+# heartbeat bound, a one-second controller tick so a probe's window is three
+# seconds at the one-second poll, a two-second probe interval, and a
+# three-second final ask. A case that needs the ask's window longer sets its
+# own. Each case adds its own USERPROFILE.
+LIVENESS_ENV=(staleAfterMs=5000 supervisorSilenceBoundMs=5000 supervisorProbeMs=2000 supervisorFinalAskMs=3000 controllerTickMs=1000)
+# How many FINAL_ASK lines for child-1 sit ahead of the first line matching
+# the pattern, so a case can assert the ask was written once before its end.
+asks_before() {  # <grep pattern>
+  local stop
+  stop=$(grep -n "$1" "$LOG" | head -n 1 | cut -d: -f1)
+  [ -n "$stop" ] || { echo 0; return; }
+  head -n "$stop" "$LOG" | grep -c 'FINAL_ASK child-1:'
+}
+
 # --- (i) the decide path's restart stops at the restart budget ---
-# A hung child takes the decide path's restart branch: its heartbeat is
-# stamped once and never again, under a five-second staleness bound and a
-# USERPROFILE holding no transcript to corroborate it. The budget is 1, so
-# this restart reaches it. The discriminating assertion is the launch count: a
-# run that relaunches first and stops at the next child's first poll exits 4 as
-# well, one child later.
+# A frozen child takes the decide path's restart branch: its own heartbeat is
+# stamped once and never again, its transcript's newest turn record is an
+# hour old, its stream is silent after the init line, the probe the stale
+# heartbeat earns goes unacknowledged, and the walk finds its process live.
+# That reads frozen, the final ask is written once, and the ask's window
+# closes silent. The budget is 1, so this restart reaches it. The
+# discriminating assertion is the launch count: a run that relaunches first
+# and stops at the next child's first poll exits 4 as well, one child later.
 # The stopped child exits on its own stdin closing, so nothing counts as a
 # crash. The limit is raised for symmetry with (j), where the raise can decide
 # the case. Here it cannot: the decide path reads the restart budget before
 # the crash limit, and the budget is 1, so no crash count reaches its own
 # check ahead of the exit 4 this case asserts.
 mkdir -p "$TMP/i/wd" "$TMP/i/profile"
+write_turn_aged "$(transcript_path "$TMP/i/wd" "$TMP/i/profile" "stub-sess-1")" 3600
 DRIVE_CRASH_LIMIT=2
-DRIVE_ENV=(staleAfterMs=5000 USERPROFILE="$TMP/i/profile")
+DRIVE_ENV=("${LIVENESS_ENV[@]}" USERPROFILE="$TMP/i/profile")
 drive i "hung_quiet,shutdown" 1
 DRIVE_ENV=()
 DRIVE_CRASH_LIMIT=1
 [ "$RC" -eq 4 ]; check "(i) supervisor exits 4 at the restart budget (rc=$RC)" "$?"
-grep -q 'RESTART: hung' "$LOG"; check "(i) the decide path took the restart branch" "$?"
+grep -q '"kind":"probe"' "$TMP/i/rd/mailbox.jsonl"; check "(i) setup: the stale heartbeat earned a probe in the mailbox" "$?"
+grep -q 'RESTART: frozen: the final ask at [0-9]* went unanswered' "$LOG"; check "(i) the decide path took the restart branch on a final ask that went unanswered" "$?"
+I_ASKS=$(asks_before 'RESTART: frozen')
+[ "$I_ASKS" -eq 1 ]; check "(i) the final ask was written once before the restart (asks=$I_ASKS)" "$?"
 grep -q 'STOP_BUDGET: 1/1 restarts in the hour' "$LOG"; check "(i) the budget line names the limit it stopped at" "$?"
 ! grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 1 ]; check "(i) no second child launches (stub launches=$LAUNCHES)" "$?"
 
 # --- (j) control: one below the budget, the decide path still relaunches ---
 mkdir -p "$TMP/j/wd" "$TMP/j/profile"
+write_turn_aged "$(transcript_path "$TMP/j/wd" "$TMP/j/profile" "stub-sess-1")" 3600
 DRIVE_CRASH_LIMIT=2
-DRIVE_ENV=(staleAfterMs=5000 USERPROFILE="$TMP/j/profile")
+DRIVE_ENV=("${LIVENESS_ENV[@]}" USERPROFILE="$TMP/j/profile")
 drive j "hung_quiet,shutdown" 2
 DRIVE_ENV=()
 DRIVE_CRASH_LIMIT=1
 [ "$RC" -eq 0 ]; check "(j) supervisor exits 0 on the second child's shutdown_requested (rc=$RC)" "$?"
-grep -q 'RESTART: hung' "$LOG"; check "(j) the decide path took the restart branch" "$?"
+grep -q 'RESTART: frozen' "$LOG"; check "(j) the decide path took the restart branch" "$?"
 ! grep -q 'STOP_BUDGET' "$LOG"; check "(j) no STOP_BUDGET line one below the budget" "$?"
 grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 2 ]; check "(j) a second child launches (stub launches=$LAUNCHES)" "$?"
 
@@ -1726,7 +1790,8 @@ grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 2 ]; check "(j) a second ch
 # The same decide-path restart, with the child exiting 7 when its stdin
 # closes, so the stop counts as a crash against a limit of 1.
 mkdir -p "$TMP/k/wd" "$TMP/k/profile"
-DRIVE_ENV=(staleAfterMs=5000 USERPROFILE="$TMP/k/profile")
+write_turn_aged "$(transcript_path "$TMP/k/wd" "$TMP/k/profile" "stub-sess-1")" 3600
+DRIVE_ENV=("${LIVENESS_ENV[@]}" USERPROFILE="$TMP/k/profile")
 drive k "hung_quiet7,shutdown" 6
 DRIVE_ENV=()
 [ "$RC" -eq 3 ]; check "(k) supervisor exits 3 at the crash limit (rc=$RC)" "$?"
@@ -1764,111 +1829,87 @@ grep -q 'WAITING: child-1 alive' "$LOG"; check "(p) the log reads a child that h
 ! grep -q 'RATE_LIMITED' "$LOG"; check "(p) no RATE_LIMITED line for a retry the child has already worked past" "$?"
 [ "$LAUNCHES" -eq 1 ]; check "(p) no second child launches (stub launches=$LAUNCHES)" "$?"
 
-# --- (t) a parked child is not read as hung ---
-# The heartbeat is stamped on a timer for as long as the session is held, so it
-# keeps moving while the child itself writes nothing. That is why a park never
-# reaches the hung branch, and this case holds one across several polls with
-# the hung check live to show it.
-DRIVE_ENV=(staleAfterMs=5000)
+# --- (t) a parked child is not read as frozen ---
+# A usage limit is read ahead of every other signal. This child's newest
+# stream record is the engine's 429 retry, and every other signal is silent:
+# its own heartbeat stamped once and gone stale, its transcript an hour old,
+# the probe the stale heartbeat earns unacknowledged, and the walk finding its
+# process live. That reads alive with the reason usage_limit and never
+# reaches the final ask, however many polls it holds for.
+mkdir -p "$TMP/t/wd" "$TMP/t/profile"
+write_turn_aged "$(transcript_path "$TMP/t/wd" "$TMP/t/profile" "stub-sess-1")" 3600
+DRIVE_ENV=("${LIVENESS_ENV[@]}" USERPROFILE="$TMP/t/profile")
 drive t "rate_limited_quiet" 6
 DRIVE_ENV=()
 grep -q '"subtype":"api_retry"' "$TMP/t/rd/child-1/stdout.jsonl"; check "(t) setup: the stub's retry record reached the child's stream" "$?"
-T_HB=$(wc -l < "$TMP/t/heartbeat-writes" 2>/dev/null || echo 0)
-[ "$T_HB" -ge 3 ]; check "(t) setup: the heartbeat moved $T_HB times while the child ran" "$?"
 T_RECORDS=$(grep -cv '"subtype":"api_retry"' "$TMP/t/rd/child-1/stdout.jsonl" 2>/dev/null); T_RECORDS=${T_RECORDS:-0}
 [ "$T_RECORDS" -eq 1 ]; check "(t) setup: the only record the child wrote after the retry is the init line before it (other records=$T_RECORDS)" "$?"
+grep -q '"kind":"probe"' "$TMP/t/rd/mailbox.jsonl"; check "(t) setup: the stale heartbeat earned a probe, so every signal but the stream's newest record was silent" "$?"
 [ "$RC" -eq 0 ]; check "(t) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"
 grep -q 'RATE_LIMITED until [0-9][0-9]*-[0-9][0-9]-[0-9][0-9]T' "$LOG"; check "(t) the log names the park and when the wait ends" "$?"
-! grep -q 'RESTART: hung' "$LOG"; check "(t) the parked child is not read as hung while its heartbeat keeps moving" "$?"
+grep -q 'LIVENESS child-1: alive usage_limit' "$LOG"; check "(t) the liveness verdict names the usage limit as what holds the child alive" "$?"
+! grep -q 'FINAL_ASK' "$LOG"; check "(t) a parked child never reaches the final ask" "$?"
+! grep -q 'RESTART:' "$LOG"; check "(t) a parked child is not restarted" "$?"
 [ "$LAUNCHES" -eq 1 ]; check "(t) no second child launches (stub launches=$LAUNCHES)" "$?"
 
-# The harness transcript path for a case, derived here from the rule the
-# harness itself uses: the launch directory in Windows form with every
-# character outside A-Za-z0-9 replaced by a hyphen. Derived independently of
-# bin/supervise.sh rather than read back from it, so a supervisor that resolves
-# the key any other way finds no file and the cases below say so.
-transcript_path() {  # <workdir> <profile dir> <session id>
-  local key
-  key=$(node -e 'console.log(process.argv[1].replace(/[^A-Za-z0-9]/g, "-"))' "$(cygpath -w "$1")")
-  printf '%s\n' "$2/.claude/projects/$key/$3.jsonl"
-}
-# Writes a transcript at that path, stamped the given number of seconds ago, so
-# a case sets its age rather than inheriting whatever the setup happened to
-# take.
-write_transcript_aged() {  # <path> <age seconds>
-  mkdir -p "$(dirname "$1")"
-  node -e '
-const fs = require("fs");
-const [file, age] = process.argv.slice(1);
-fs.writeFileSync(file, "");
-const t = new Date(Date.now() - Number(age) * 1000);
-fs.utimesSync(file, t, t);
-' "$1" "$2"
-}
-
-# --- (aa) a stale heartbeat the harness transcript contradicts ---
-# The heartbeat sidecar is written relative to the child's own working
-# directory, so a child that moves into a subdirectory goes on stamping a file
-# the supervisor does not read while the watched one goes still. The harness
-# transcript is the instrument the child does not write: it sits under the
-# launch directory's own project key and the harness appends to it every turn.
-# This case stamps the heartbeat once and then keeps only the transcript
-# moving, which is that child as the supervisor sees it.
+# --- (aa) a stale heartbeat beside a moving transcript stays alive ---
+# The child's own heartbeat is stamped once and goes stale, so the supervisor
+# probes it and the probe goes unacknowledged, and its stream is silent after
+# the init line. The case keeps appending a fresh turn record to its
+# transcript, which is the one signal still moving, and that holds the child
+# alive through eighteen polls past the probe.
 mkdir -p "$TMP/aa/wd" "$TMP/aa/profile"
 AA_TRANSCRIPT=$(transcript_path "$TMP/aa/wd" "$TMP/aa/profile" "stub-sess-1")
-write_transcript_aged "$AA_TRANSCRIPT" 0
-( until [ -f "$TMP/aa/touch-stop" ]; do touch "$AA_TRANSCRIPT"; sleep 1; done ) &
+write_turn_aged "$AA_TRANSCRIPT" 0
+( until [ -f "$TMP/aa/touch-stop" ]; do write_turn_aged "$AA_TRANSCRIPT" 0; sleep 1; done ) &
 AA_TOUCHER=$!
-DRIVE_ENV=(staleAfterMs=5000 USERPROFILE="$TMP/aa/profile")
-drive aa "hung_corroborated" 6
+DRIVE_ENV=("${LIVENESS_ENV[@]}" USERPROFILE="$TMP/aa/profile")
+drive aa "alive_transcript" 6
 : > "$TMP/aa/touch-stop"
 wait "$AA_TOUCHER" 2>/dev/null
 DRIVE_ENV=()
 [ -f "$AA_TRANSCRIPT" ]; check "(aa) setup: a transcript sits under the launch directory's own project key" "$?"
-grep -q 'HUNG_CORROBORATED: hung_corroborated: heartbeat lastSeen [0-9][0-9]* is older than 5000ms, but the harness transcript was last written at [0-9][0-9]*, inside 5000ms of the clock this poll read at [0-9][0-9]*' "$LOG"
-check "(aa) the log names the transcript reading that withheld the restart" "$?"
-! grep -q 'RESTART: hung' "$LOG"; check "(aa) a child whose transcript is moving is not restarted on its still heartbeat" "$?"
+grep -q '"kind":"probe"' "$TMP/aa/rd/mailbox.jsonl"; check "(aa) setup: the stale heartbeat earned a probe in the mailbox" "$?"
+grep -q 'LIVENESS child-1: alive signal' "$LOG"; check "(aa) the liveness verdict reads the child alive on a moving signal" "$?"
+! grep -q 'FINAL_ASK' "$LOG"; check "(aa) a child whose transcript is moving is never asked" "$?"
+! grep -q 'RESTART:' "$LOG"; check "(aa) a child whose transcript is moving is not restarted on its still heartbeat" "$?"
 [ "$RC" -eq 0 ]; check "(aa) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"
 [ "$LAUNCHES" -eq 1 ]; check "(aa) no second child launches (stub launches=$LAUNCHES)" "$?"
-AA_LINES=$(grep -c 'HUNG_CORROBORATED:' "$LOG" 2>/dev/null); AA_LINES=${AA_LINES:-0}
-[ "$AA_LINES" -eq 1 ]; check "(aa) the corroboration is named once rather than on every poll (lines=$AA_LINES)" "$?"
 
-# --- (ab) control: a transcript as still as the heartbeat ---
-# The same shape with the transcript written an hour ago and never touched
-# again. Two still instruments are not evidence of life, so this is the
-# direction that decides whether the supervisor reads the modification time at
-# all rather than the file merely being there.
+# --- (ab) a frozen child that answers inside the final ask's window ---
+# Every signal silent reads frozen and the final ask is written. The stub then
+# writes one record to its stream, which is a signal moving inside the
+# window, so the next poll reads alive and clears the ask, and the child is
+# never restarted. The window is a minute here, so the answer lands inside
+# it however slowly this box polls.
 mkdir -p "$TMP/ab/wd" "$TMP/ab/profile"
-AB_TRANSCRIPT=$(transcript_path "$TMP/ab/wd" "$TMP/ab/profile" "stub-sess-1")
-write_transcript_aged "$AB_TRANSCRIPT" 3600
-# The stopped child exits on its own stdin closing, so nothing counts as a
-# crash. The limit is raised anyway, so a kill that reports a signal code does
-# not end this case under a crash loop instead of the restart it is about.
-DRIVE_CRASH_LIMIT=2
-DRIVE_ENV=(staleAfterMs=5000 USERPROFILE="$TMP/ab/profile")
-drive ab "hung_quiet,shutdown" 6
+write_turn_aged "$(transcript_path "$TMP/ab/wd" "$TMP/ab/profile" "stub-sess-1")" 3600
+DRIVE_ENV=("${LIVENESS_ENV[@]}" supervisorFinalAskMs=60000 USERPROFILE="$TMP/ab/profile")
+drive ab "frozen_answers" 6
 DRIVE_ENV=()
-DRIVE_CRASH_LIMIT=1
-[ -f "$AB_TRANSCRIPT" ]; check "(ab) setup: the transcript exists at the derived path and was never written again" "$?"
-grep -q 'RESTART: hung' "$LOG"; check "(ab) a transcript as still as the heartbeat corroborates nothing, so the hung restart runs" "$?"
-! grep -q 'HUNG_CORROBORATED' "$LOG"; check "(ab) no corroboration line for a transcript that is not moving" "$?"
-[ "$LAUNCHES" -eq 2 ]; check "(ab) a second child launches (stub launches=$LAUNCHES)" "$?"
+grep -q 'FINAL_ASK child-1: frozen: every signal is silent and the walk found a live process' "$LOG"; check "(ab) every signal silent with a live process reads frozen and takes the final ask" "$?"
+AB_ASKS=$(asks_before 'FINAL_ASK_CLEARED child-1')
+[ "$AB_ASKS" -eq 1 ]; check "(ab) the final ask is written once, not on every frozen poll inside the window (asks=$AB_ASKS)" "$?"
+grep -q 'FINAL_ASK_CLEARED child-1: a signal moved inside the final ask' "$LOG"; check "(ab) the stream moving inside the window returns the child to alive and clears the ask" "$?"
+! grep -q 'RESTART:' "$LOG"; check "(ab) a frozen child that answered inside the window is not restarted" "$?"
+[ "$RC" -eq 0 ]; check "(ab) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"
+[ "$LAUNCHES" -eq 1 ]; check "(ab) no second child launches (stub launches=$LAUNCHES)" "$?"
 
-# --- (ac) fail safe: no transcript to read at all ---
-# An unreadable transcript is the state a wedged child and a profile the
-# supervisor cannot resolve both produce, so reading it as life would leave a
-# genuinely wedged child running forever. The corroboration only ever withholds
-# a restart on positive evidence, and this case is what holds it to that.
+# --- (ac) fail closed: no transcript to read at all ---
+# A transcript the supervisor cannot read is the state a profile it cannot
+# resolve and a project key it derives wrong both produce, and reading either
+# as silence would kill working children. So an unreadable transcript reads
+# alive, whatever the other signals say.
 mkdir -p "$TMP/ac/wd" "$TMP/ac/profile"
-DRIVE_CRASH_LIMIT=2
-DRIVE_ENV=(staleAfterMs=5000 USERPROFILE="$TMP/ac/profile")
-drive ac "hung_quiet,shutdown" 6
+DRIVE_ENV=("${LIVENESS_ENV[@]}" USERPROFILE="$TMP/ac/profile")
+drive ac "alive_transcript" 6
 DRIVE_ENV=()
-DRIVE_CRASH_LIMIT=1
 [ ! -e "$TMP/ac/profile/.claude/projects" ]; check "(ac) setup: no transcript exists anywhere under this case's USERPROFILE" "$?"
-grep -q 'RESTART: hung' "$LOG"; check "(ac) a child with no readable transcript is restarted on its stale heartbeat exactly as before" "$?"
-! grep -q 'HUNG_CORROBORATED' "$LOG"; check "(ac) no corroboration line where there is nothing to corroborate with" "$?"
-[ "$LAUNCHES" -eq 2 ]; check "(ac) a second child launches (stub launches=$LAUNCHES)" "$?"
+grep -q '"kind":"probe"' "$TMP/ac/rd/mailbox.jsonl"; check "(ac) setup: the stale heartbeat earned a probe in the mailbox" "$?"
+grep -q 'LIVENESS child-1: alive transcript_unreadable' "$LOG"; check "(ac) the verdict names the unreadable transcript as what holds the child alive" "$?"
+! grep -q -e 'FINAL_ASK' -e 'RESTART:' "$LOG"; check "(ac) a child with no readable transcript is neither asked nor restarted" "$?"
+[ "$RC" -eq 0 ]; check "(ac) supervisor exits 0 on the child's own shutdown_requested (rc=$RC)" "$?"
+[ "$LAUNCHES" -eq 1 ]; check "(ac) no second child launches (stub launches=$LAUNCHES)" "$?"
 
 # --- (r) a survivor that cannot be killed stops the run instead of relaunching ---
 # The stub leaves the same native Windows process behind that case (h) uses,
@@ -2024,12 +2065,13 @@ if [ "$CHECK_ANCHORS" -eq 1 ]; then
   # of that branch's own limit checks so a survivor is reported as one rather
   # than under a budget or crash-limit code.
   mkdir -p "$TMP/x/wd" "$TMP/x/profile"
+  write_turn_aged "$(transcript_path "$TMP/x/wd" "$TMP/x/profile" "stub-sess-1")" 3600
   SUP_OVERRIDE="$TMP/injectsurvivor/bin/supervise.sh"
-  DRIVE_ENV=(staleAfterMs=5000 USERPROFILE="$TMP/x/profile")
+  DRIVE_ENV=("${LIVENESS_ENV[@]}" USERPROFILE="$TMP/x/profile")
   drive x "hung_quiet,shutdown" 6
   DRIVE_ENV=()
   SUP_OVERRIDE=""
-  grep -q 'RESTART: hung' "$LOG"; check "(x) the decide path took the accounted restart branch" "$?"
+  grep -q 'RESTART: frozen' "$LOG"; check "(x) the decide path took the accounted restart branch" "$?"
   [ "$RC" -eq 5 ]; check "(x) the supervisor exits 5 rather than relaunching beside a survivor (rc=$RC)" "$?"
   ! grep -q 'LAUNCH child-2' "$LOG" && [ "$LAUNCHES" -eq 1 ]; check "(x) no second child launches (stub launches=$LAUNCHES)" "$?"
 

@@ -164,6 +164,21 @@ refused_by "supervisorCrashLimit 'abc' is refused at its own call site" "ERROR: 
 refused_by "supervisorStopGraceMs '500' is refused by the 1000 minimum" "ERROR: supervisorStopGraceMs '500'" supervisorStopGraceMs=500
 refused_by "supervisorStopBusyCapMs '500' is refused by the 1000 minimum" "ERROR: supervisorStopBusyCapMs '500'" supervisorStopBusyCapMs=500
 refused_by "supervisorPollMs '500' is refused by the 1000 minimum" "ERROR: supervisorPollMs '500'" supervisorPollMs=500
+# The liveness verdict's three bounds, each read from the supervisor's own
+# environment and refused at its own call site, and the controller tick the
+# probe's window is computed from, which the supervisor now reads for itself.
+refused_by "supervisorSilenceBoundMs 'abc' is refused at its own call site" "ERROR: supervisorSilenceBoundMs 'abc'" supervisorSilenceBoundMs=abc
+refused_by "supervisorProbeMs '0' is refused at its own call site" "ERROR: supervisorProbeMs '0'" supervisorProbeMs=0
+refused_by "supervisorFinalAskMs '0660000' is refused at its own call site" "ERROR: supervisorFinalAskMs '0660000'" supervisorFinalAskMs=0660000
+refused_by "controllerTickMs 'abc' is refused at its own call site" "ERROR: controllerTickMs 'abc'" controllerTickMs=abc
+# The three defaults, read out of the assignments themselves: fifteen minutes,
+# two minutes and eleven minutes. A changed default reds here rather than
+# passing every startup check.
+for pair in SUPERVISOR_SILENCE_BOUND_MS:supervisorSilenceBoundMs:900000 SUPERVISOR_PROBE_MS:supervisorProbeMs:120000 SUPERVISOR_FINAL_ASK_MS:supervisorFinalAskMs:660000; do
+  IFS=: read -r var setting want <<< "$pair"
+  grep -q "^$var=\"\\\${$setting:-$want}\"" "$SCRIPT"
+  check "$setting defaults to $want in its assignment to $var" "$?"
+done
 
 # supervisorPsBoundS is the one setting on this rule that falls back to 30
 # rather than refusing, so its resolution is read by running the script's own
