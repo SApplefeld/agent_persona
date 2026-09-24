@@ -130,6 +130,17 @@ Files in scope: `bin/supervise.sh`, `.kit/supervisor-model-test.sh`, `.kit/super
 
 Tests: lock the four behaviors above at the lowest level the Standing Brief Amendment allows, stubbing only PowerShell and kill leaves, because the silent failure is a supervisor that looks correct in its log and never sends what it logged.
 
+### 8. A relaunched child inherits the last child's liveness reading
+Model: fable
+
+Section 6's fifth review round found that a signal can stop a freshly launched child the Goal says it detaches from. `POLL_LIVENESS` is reset only inside `gate_read_handle`, and that runs only where `newest_handle` finds a handle. After `sweep_gone_child` clears the handle and the loop continues, the next child launches still carrying the previous child's `gone` reading. A TERM before that child's first poll reaches `cleanup`, which routes STOP on `gone`. The launch block resets the liveness reading beside `LAST_STOP_SNAPSHOT`, so a new child starts with no reading and its signal detaches as the Stop Phases state.
+
+Acceptance: `.kit/supervisor-model-test.sh` carries a pin, watched red on the code before the fix, that drives a gone sweep, then a launch, then a TERM before the new child's first poll, and asserts `DETACH` with the child left running. The targeted lane passes against Chapter 7's baseline.
+
+Files in scope: `bin/supervise.sh`, `.kit/supervisor-model-test.sh`, `.kit/supervisor-fn-extract.sh` where the model driver must see a moved function.
+
+Tests: stub only PowerShell and kill leaves, per the Standing Brief Amendment, because the silent failure is a child stopped where the log reads as a clean signal.
+
 ## Out of Scope
 
 - The recovery nudge, the supervisor writing a prompt into a session that stopped mid-effort, and the predicate for whether work should still be happening. The mailbox this plan builds is where such a nudge would ride, and the backlog entry keeps the direction.
@@ -545,3 +556,13 @@ Stamps: adjudicated 14, stamped 0. Every line of `memq unstamped --since 12h` is
 Gate: targeted lane, 2026-09-24 on this box with the live persona fleet running and, for the close run, the Section 6 implementer's two doc suites overlapping it (no shared files), each exit code read from its own run: `bash .kit/supervisor-model-test.sh` 249 OK 0 FAIL, exit 0, on the close-pass tree (`.kit/scratch/supervisor-peer/s7v/model-close.exit`; baseline 240 OK at Chapter 5, and 249 OK exit 0 on the first-green tree 03cc123, `s7v/model.exit`); `bash .kit/channel-reply-instruction-test.sh` 172 OK, exit 0; `bash .kit/supervisor-holder-test.sh` 31 OK, exit 0; `node .kit/injection-duplicate-test.mjs` exit 0; `node .kit/injection-ledger.mjs` exit 0; `bash -n` exit 0 on `bin/supervise.sh` and `bin/supervise-holder.sh`. Reported by the implementer on the first-green tree, not rerun after the close pass, which touched none of their files: unit 99/0, poll-unit 79/0, turnstate 43/0, tree walk 19 OK, controller tick 3365 OK, each exit 0. No regression against the Chapter 5 baseline on this lane. Test delta: four pins added, each watched red first (`s7-red.log`): `frozen adopt` (an adopted frozen child is asked once), `frozen adopt ... --prompt` (an adopting start names the prompt dropped), `first launch child-2 or later` (the prompt reaches the first launch whatever its index), `loop-head shutdown` (a shutdown recorded during a stop ends the run before any launch); five controls beside them; none retired; one literal edited to stay green (`STEER_ARCH_UNTAKEN_CADENCE_CONTROL`, pinning the holder's cadence clause without the removed number). The three drives spawn real processes (a real `sleep`, a stub `claude`, the real PowerShell walk), about +38 s on the model suite.
 Next: 6. Documentation and the backlog, then finishing-work
 Commit Model: Branch-and-PR
+
+### Interim board 12 - 2026-09-24
+
+Written at Section 6's review-round backstop, with Sections 1 to 5 and 7 shipped and Section 6's docs delta uncommitted in the worktree.
+
+- **Section 6 hit the backstop at round 5.** Its acceptance asks the reviewer pair to return no finding against any edited paragraph. Round 5 left 3 Majors and about 17 Minors. The phase analysis is at `.kit/scratch/supervisor-peer/s6-backstop-analysis.md`, and the outcome is logged under `kit.review.cap`.
+- **Round 5 found a code defect through the docs review.** `POLL_LIVENESS` is reset only inside `gate_read_handle`, which runs only when a handle is found. After a gone sweep clears the handle, the next child launches still carrying the old `gone` reading. A signal before that child's first poll therefore routes STOP rather than DETACH. The fix is one line in the launch block plus a pin watched red first. It lies outside Section 6's files.
+- **Two round-5 Majors were introduced by the orchestrator's round-4 fix brief.** README's stuck-handle recovery names `<rundir>/handle.json`, where the handle lives at `<rundir>/child-<n>/handle.json`. It also names `handle_gate_route` and WAIT, where `gate_read_handle` routes HOLD.
+- **A consult ruled on the backstop, and the ruling is adopted.** Round 5 is judged at class under the claim-class rule. Five rounds had treated every claim finding as owed on the reasoning that the acceptance asks for a zero-finding read, and that reasoning turned each claim error into a Major. Under the rule, the `<rundir>/handle.json` pointer stays owed, and the `handle_gate_route` finding rates Minor. The POLL_LIVENESS defect becomes Section 8, an approval drift named to the operator as Section 7 was. The probe-window mismatch goes to `docs/backlog.md`: the keeper hands the roster's `controllerTickMs` to both the supervisor's environment and the settings file, so the gap opens only where the roster changes after the file is emitted.
+- **One decision waits on the operator.** Should Section 6 close at the kit's terminal condition, no Critical and no owed Major, with Minors fixed in the close pass? Or should it keep the literal zero-finding bar? Section 8 runs meanwhile, because its files are disjoint from Section 6's.
