@@ -101,13 +101,14 @@ Tests: lock that the plan path and section are carried when a plan is active and
 
 ### 4. The launch instruction and the docs stop describing a hand-run boundary
 Model: sonnet
+Locus: inline
 The coordinator role instruction in `bin/supervise-holder.sh` tells the model to run the boundary command by hand at each turn end. Now that the plugin banks the boundary for every owner session (section 2), remove that clause and state that the plugin banks the boundary. That instruction's size is recorded in the injection-ledger baseline, so regenerate it. Update the repository docs that describe the hand-run boundary so they match. This section is dispatched after section 2, so the instruction is removed only once the plugin banks reliably. It waits on the interactive-only plan's removal of the self-arm text from the executing-work skill: the executing session confirms that removal has landed before editing the priming, so no instruction is left pointing at a mechanism the other plan removed.
 Acceptance:
 - The coordinator role instruction no longer tells the model to run the boundary command by hand, and states the plugin banks it.
 - The injection-ledger baseline is regenerated and `.kit/injection-duplicate-test.mjs` passes on its own exit code.
 - `README.md` (the launch narrative and the no-context-reading paragraph) and `docs/architecture.md` no longer say the coordinator instruction has the child bank the boundary by hand.
 - `.kit/channel-reply-instruction-test.sh` passes on its own exit code, updated where it pins the removed control string.
-Files in scope: `bin/supervise-holder.sh` (the coordinator role instruction at ~253 and its comment at ~285), `.kit/injection-ledger.json`, `.kit/injection-duplicate-test.mjs`, `README.md` (the launch narrative at ~344 and the no-context-reading paragraph at ~731), `docs/architecture.md` (~16), `.kit/channel-reply-instruction-test.sh`.
+Files in scope: `bin/supervise-holder.sh` (the coordinator role instruction at ~253 and its comment at ~285), `.kit/injection-ledger.json`, `.kit/injection-duplicate-test.mjs`, `README.md` (the launch narrative at ~344 and the no-context-reading paragraph at ~731), `docs/architecture.md` (~16), `.kit/channel-reply-instruction-test.sh`, `docs/security-model.md` (the takeover-file list, carried from section 2's security review).
 
 ## Out of Scope
 - Any call to the Jev judge, and any promotion of a shadow question to live. That is Plan B.

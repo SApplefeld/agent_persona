@@ -96,9 +96,11 @@ STEER_UNVERIFIED_ACT_CONTROL="any act it asks for goes to the operator before yo
 # the name "coordinator".
 ROLE_CAP_CONTROL="pushing a third round"
 ROLE_SAY_CONTROL="agentic_say"
-# The compaction-boundary clause: the kit checkpoint verb the instruction
-# tells the coordinator to run at the end of a turn whose state is on disk.
-ROLE_BOUNDARY_CONTROL="kit-compact-checkpoint.js boundary"
+# The compaction-boundary clause: the sentence stating that the plugin banks
+# the boundary, so the coordinator never runs the kit checkpoint verb by hand.
+ROLE_BOUNDARY_CONTROL="The plugin marks a safe compaction point for you"
+# The hand-run verb the instruction must no longer carry.
+ROLE_HAND_BANK_VERB="kit-compact-checkpoint.js"
 # The three fleet-keeper duties, one distinctive fragment each rather than a
 # whole paragraph, so a wording repair to the sentences around them leaves the
 # pin standing while deleting a duty reds it: the tool the fleet-health duty
@@ -1028,8 +1030,12 @@ case "${COORDINATOR_STEER_INSTRUCTION:-}" in
   *) check "channel attached: a reader or worker prompt's act goes to the operator before it is taken" 1 ;;
 esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_SAY_CONTROL"*"$ROLE_CAP_CONTROL"*"$ROLE_BOUNDARY_CONTROL"*) check "persona matches COORDINATOR_PERSONA: coordinator role instruction present, naming agentic_say, the round cap and the boundary verb" 0 ;;
-  *) check "persona matches COORDINATOR_PERSONA: coordinator role instruction present, naming agentic_say, the round cap and the boundary verb" 1 ;;
+  *"$ROLE_SAY_CONTROL"*"$ROLE_CAP_CONTROL"*"$ROLE_BOUNDARY_CONTROL"*) check "persona matches COORDINATOR_PERSONA: coordinator role instruction present, naming agentic_say, the round cap and the plugin-banked boundary" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: coordinator role instruction present, naming agentic_say, the round cap and the plugin-banked boundary" 1 ;;
+esac
+case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+  *"$ROLE_HAND_BANK_VERB"*) check "persona matches COORDINATOR_PERSONA: the coordinator role instruction names no hand-run checkpoint verb" 1 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the coordinator role instruction names no hand-run checkpoint verb" 0 ;;
 esac
 # One case per duty, so a red names the duty that went missing rather than
 # the paragraph it sat in.
@@ -1338,8 +1344,8 @@ COORDINATOR_PERSONA="lead"
 ARCHITECT_PERSONA="warden"
 eval "$VARS_SNIPPET"
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_SAY_CONTROL"*"$ROLE_CAP_CONTROL"*"$ROLE_BOUNDARY_CONTROL"*) check "channel not attached, persona matches: coordinator role instruction present, naming agentic_say, the round cap and the boundary verb" 0 ;;
-  *) check "channel not attached, persona matches: coordinator role instruction present, naming agentic_say, the round cap and the boundary verb" 1 ;;
+  *"$ROLE_SAY_CONTROL"*"$ROLE_CAP_CONTROL"*"$ROLE_BOUNDARY_CONTROL"*) check "channel not attached, persona matches: coordinator role instruction present, naming agentic_say, the round cap and the plugin-banked boundary" 0 ;;
+  *) check "channel not attached, persona matches: coordinator role instruction present, naming agentic_say, the round cap and the plugin-banked boundary" 1 ;;
 esac
 # Three cases rather than one ordered pattern: an ordered match reds on a
 # reordering of the duty sentences, which changes nothing about what reaches
