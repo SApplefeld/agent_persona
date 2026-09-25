@@ -14343,8 +14343,8 @@ async function lead3Harness(caseName, treeOpts = {}, extraOpts = {}) {
 // One completed turn whose closing text is `answer`. `workTool` adds a Bash
 // call, `reply` a reply-tool call, and `channel` opens the turn from a
 // channel message. The scorer's classify answers drift, an ordinary scored
-// turn that leaves the nudge counter where it stands (on-goal would reset
-// it), and the idle labels answer nudge.
+// turn that leaves the nudge counter where it stands, and the idle labels
+// answer nudge.
 async function lead3Turn(h, turnId, answer, { workTool = false, reply = false, channel = false } = {}) {
   h.setClassifyValue((prompt, labels) => {
     if (!Array.isArray(labels)) return "discard";
@@ -15124,8 +15124,8 @@ async function caseHold_theCostCapAskLeavesTheEntryActiveAndTheRefusalHoldsPastI
   await h.handlers["prompt.submit"](h.fake, { text: "keep going", origin: { kind: "channel" } }, async () => ({}));
   state = getState(h);
   check("hold cost cap: the answer closed the ask and left g-plan active", state.pendingAskId === undefined && h.storeMap.get(`ask:default:${askId}`)?.status === "answered" && plan()?.status === "active", { slot: state.pendingAskId });
-  // One on-goal turn resets the per-session consecutive count, so the two
-  // nudges after the roll below reach the cost cap and not the nudge cap.
+  // The channel-origin answer turn above reset the per-session count, so the
+  // two nudges after the roll below reach the cost cap and not the nudge cap.
   h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("on-goal")) ? "on-goal" : (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard");
   // The answer's own turn is channel-origin and scored for nothing; the
   // completed turn after it is the one the scorer reads.
@@ -15531,6 +15531,22 @@ async function caseCount_activationAndTheAskCloseReset(clock) {
     const after = await countReading(h, clock);
     check("count activate inside a nudged turn: the unlined answer after goal_done leaves the count 0 on the new entry", after === 0, after);
   }
+  clock.set(T0);
+  {
+    const h = await countHarness("count_resume_inside_nudged_turn");
+    const paused = await callTool(h, { tool: "mcp__agentic-plugin__goal_edit", nodeId: "task-2", action: "pause", reason: "held back" });
+    await primeCountToTwo(h, clock);
+    const before = await countReading(h, clock);
+    check("count resume inside a nudged turn setup: task-2 paused, the count reads 2 and a nudge is queued",
+      !paused?.deny && before === 2 && h.queuedTurnTexts.some(t => t.startsWith("[GOAL]")), { paused, before });
+    const ok = async () => ({ result: "ok" });
+    await h.handlers["turn.start"](h.fake, { turnId: "t-resume" }, ok);
+    const resumed = await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__goal_resume", nodeId: "task-2", turnId: "t-resume" }, async () => ({ result: "passthrough" }));
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-resume", answer: "Resumed it.", reason: "completed" }, ok);
+    check("count resume inside a nudged turn setup: goal_resume activated task-2", !resumed?.deny && getState(h).activeGoalId === "task-2", { resumed, active: getState(h).activeGoalId });
+    const after = await countReading(h, clock);
+    check("count resume inside a nudged turn: the unlined answer after goal_resume leaves the count 0 on the resumed entry", after === 0, after);
+  }
   for (const close of ["expiry", "answer"]) {
     clock.set(T0);
     const h = await createTickHarness({ ...OPTS, costMaxNudgesPerHour: 30, askOperatorWaitMs: 60_000, caseName: `count_ask_close_${close}`,
@@ -15538,8 +15554,8 @@ async function caseCount_activationAndTheAskCloseReset(clock) {
     await primeCountToTwo(h, clock);
     await countReading(h, clock);
     await countTurn(h, "t-third", "Still looking.");
-    const askId = getState(h).pendingAskId;
     check(`count ask close (${close}) setup: the cap opened its ask`, (await countReading(h, clock)) === "cap" && typeof getState(h).pendingAskId === "string");
+    const askId = getState(h).pendingAskId;
     if (close === "expiry") {
       clock.advance(61_000);
       await tickAndSettle(h, clock, 50);
@@ -15547,10 +15563,11 @@ async function caseCount_activationAndTheAskCloseReset(clock) {
       await h.handlers["prompt.submit"](h.fake, { text: "Yes, carry on.", origin: { kind: "channel" } }, async () => ({}));
     }
     const closedAs = close === "expiry" ? "expired" : "answered";
-    const rec = h.storeMap.get(`ask:default:${getState(h).pendingAskId ?? askId}`);
+    const rec = h.storeMap.get(`ask:default:${askId}`);
     check(`count ask close (${close}) setup: the slot cleared`, getState(h).pendingAskId === undefined, getState(h).pendingAskId);
     const after = await countReading(h, clock);
-    check(`count ask close (${close}): the tick after the close reads the count 0 and nudges`, after === 0 && countAction(getDecisions(h), "nudge_cap_reached") === 1, { after, closedAs, rec });
+    check(`count ask close (${close}) setup: the ask record closed as ${closedAs}`, rec?.status === closedAs, rec);
+    check(`count ask close (${close}): the tick after the close reads the count 0 and nudges`, after === 0 && countAction(getDecisions(h), "nudge_cap_reached") === 1, { after });
   }
 }
 
@@ -15591,6 +15608,11 @@ async function caseCount_workingLineClearsAWaitingLeadAndSetsNone(clock) {
 // an ask-operator verdict converts to.
 async function caseCount_bothNudgeTextsNameTheThreeLines(clock) {
   console.log("\n=== Count: both nudge texts ask for one of the three status lines ===");
+  // The hold sentence is read from source, so a reword keeps the task-entry
+  // leg asserting its absence rather than the absence of a retired wording.
+  const holdSrc = readFileSync(fileURLToPath(new URL("../hooks/index.ts", import.meta.url)), "utf8");
+  const holdText = /const NUDGE_LEAD_HOLD_TEXT = "([^\n"]*)";/.exec(holdSrc)?.[1] ?? "";
+  check("count nudge text setup: NUDGE_LEAD_HOLD_TEXT read from hooks/index.ts", holdText.length > 0, holdText);
   for (const verdict of ["nudge", "ask-operator"]) {
     clock.set(T0);
     const h = await countHarness(`count_nudge_text_${verdict.replace("-", "_")}`);
@@ -15603,7 +15625,7 @@ async function caseCount_bothNudgeTextsNameTheThreeLines(clock) {
       text.startsWith("[GOAL]") && (verdict === "nudge" ? text.includes("of idle time") : text.includes("idle gap")), text);
     check(`count nudge text (${arm}): it asks for a status line and names WORKING:, WAITING: and BLOCKED:`,
       text.includes("Open your closing text with one status line:") && text.includes("WORKING:") && text.includes("WAITING:") && text.includes("BLOCKED:"), text);
-    check(`count nudge text (${arm}): on a task entry, whose leads are not read, it names no hold`, !text.includes("holds the controller's nudges"), text);
+    check(`count nudge text (${arm}): on a task entry, whose leads are not read, it names no hold`, holdText.length > 0 && !text.includes(holdText), text);
   }
   // A plan entry's nudge adds the hold sentence, since its leads are read.
   clock.set(T0);
@@ -15613,7 +15635,7 @@ async function caseCount_bothNudgeTextsNameTheThreeLines(clock) {
     const text = (h.promptSubmits || []).filter(p => p.startsWith("[GOAL]")).pop() ?? "";
     check("count nudge text (plan entry): the nudge went out and names the three lines", tick.nudged && text.includes("Open your closing text with one status line:"), text);
     check("count nudge text (plan entry): it adds that a WAITING: or BLOCKED: line holds the controller's nudges",
-      text.includes("On this entry a WAITING: or BLOCKED: line holds the controller's nudges."), text);
+      holdText.length > 0 && text.includes(holdText), text);
   }
 }
 

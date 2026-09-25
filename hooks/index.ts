@@ -2557,10 +2557,9 @@ export const register: Register = async (on, options) => {
   // entry is a nudge and cleared by the completion carrying that same id.
   // The nudge count reads a nudged answer from that completion alone, so a
   // background subagent's completion inside the nudged turn neither spends
-  // the reading nor is read as the answer. That such a completion carries an
-  // id other than the nudged turn's is inferred from the harness type, which
-  // states a completion carries its own turn.start's id; the turn id log
-  // lines at turn start and completion are what confirm it.
+  // the reading nor is read as the answer, where it carries another id. The
+  // harness type states a completion carries its own turn.start's id and
+  // states nothing of a background subagent's completion.
   // Null where no nudged turn is open, and where the nudged turn's start
   // carried no id, whose completion then moves the count by nothing.
   let nudgedTurnId: string | null = null;
@@ -3889,7 +3888,8 @@ export const register: Register = async (on, options) => {
     // R1 order: owner check → in-flight check → planning gate →
     //   "no active leaf, return" → idle gate → classify.
     // Eligibility in code. The model decides WHAT, never WHETHER.
-    // Cap counts *sent* nudges only, resets only on on-goal or complete.
+    // Cap counts nudged answers with no status line, reset on the five closed
+    // events the turn.complete count block names.
     // Section 6: a reader session never runs this tick at all - it owns no
     // goal tree to classify or actuate against, and the tick's own owner
     // check would return immediately anyway, so the timer itself is skipped.
