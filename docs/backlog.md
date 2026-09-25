@@ -1,5 +1,9 @@
 # Backlog
 
+## A subagent's own reply-tool call suppresses the persona's reply backfill (found 2026-09-25)
+
+`replyCalledThisTurn` in `hooks/index.ts` is set by any reply-tool call, with no `inSubagent` check at the set, while the backstop it suppresses fires only at the persona's own turn end. So a background subagent that calls the reply tool inside the persona's channel turn stops the persona's own forgotten reply from being backfilled, although the persona never replied. The operator does receive the subagent's message, which is why this may be acceptable as it stands. Remedy if it is not: set the flag only where `!inSubagent`, one condition and one tick case. Raised by the blind and security reviews of the backstop-turn-guard plan and left there, since it adds a guard that plan's clauses do not name.
+
 ## The persisted nudge budget still carries a count nothing reads (found 2026-09-25)
 
 `NudgeBudget.consecutiveNudgesWithoutOnGoal` in `hooks/agent-state.ts` is still declared, and four sites fill it with zero: `createDefaultState`, the v2 migration, and the v3 and v4 load branches where the store carries no `nudge` object. `.kit/tick-harness.mjs` seeds it too. The nudge-state plan moved the count to the controller's own per-session reading, so no production code reads the persisted field. It costs a few bytes per store and misleads a reader into thinking the count survives a relaunch. Remedy: drop the field from the type, the four fills and the harness seed, and let the parser ignore it in an older store. Proof: `tsc --noEmit` exits 0 and the tick suite's counts are unchanged. Raised by the nudge-state plan's section 3 security review.

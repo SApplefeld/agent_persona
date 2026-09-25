@@ -4675,8 +4675,10 @@ async function caseChannelBackstop_skipsKeyboardOrigin(clock) {
 // channel-origin flag set. The persona's own completion after it is the
 // expensive direction: it still backfills its own answer, once. A keyboard
 // turn after that is never backfilled. Three completion shapes are driven:
-// the engine's (an agentId, with a turn id no turn.start opened, and with the
-// open turn's own id) and a turn id no turn.start opened with no agentId.
+// the one the harness type documents for a subagent (an agentId, with a turn
+// id no turn.start opened; TurnCompleteFields in .claude/types/claude-code.d.ts),
+// the same with the open turn's own id, and a turn id no turn.start opened
+// with no agentId. The last two are guarded though the type does not produce them.
 async function caseChannelBackstop_onlyThePersonasOwnTurnEndBackfills(clock) {
   console.log("\n=== Channel backstop: a subagent's completion inside a channel turn is never backfilled ===");
   const shapes = [

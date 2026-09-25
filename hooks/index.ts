@@ -2819,8 +2819,9 @@ export const register: Register = async (on, options) => {
   // The nudge count reads a nudged answer from that completion alone, so a
   // background subagent's completion inside the nudged turn neither spends
   // the reading nor is read as the answer, where it carries another id. The
-  // harness type states a completion carries its own turn.start's id and
-  // states nothing of a background subagent's completion.
+  // harness type states a completion carries its own turn.start's id, that a
+  // subagent's run raises no turn.start, and that its completion carries the
+  // subagent's agentId (TurnCompleteFields in .claude/types/claude-code.d.ts).
   // Null where no nudged turn is open, and where the nudged turn's start
   // carried no id, whose completion then moves the count by nothing.
   let nudgedTurnId: string | null = null;
@@ -7231,8 +7232,10 @@ export const register: Register = async (on, options) => {
     // exact text, only if the direct call itself fails.
     // Only the persona's own turn end is backfilled (completesGateTurn). A
     // background subagent's completion arrives while the persona's channel
-    // turn is still open and carries the subagent's report as e.answer, so
-    // backfilling it would post that report to the operator's thread.
+    // turn is still open and carries the subagent's report as e.answer (the
+    // harness type: a subagent's answer is its own turn.complete, carrying
+    // its agentId), so backfilling it would post that report to the
+    // operator's thread.
     if (!skipped && sess.isOwner && completesGateTurn && currentTurnIsChannelOrigin && !replyCalledThisTurn && !isPrimingTurn && !wasNudged) {
       try {
         await $.tool.call({ tool: "mcp__plugin_relay_channel-relay__reply", message: e.answer } as any);
