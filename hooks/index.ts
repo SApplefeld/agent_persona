@@ -2819,8 +2819,9 @@ export const register: Register = async (on, options) => {
   // The nudge count reads a nudged answer from that completion alone, so a
   // background subagent's completion inside the nudged turn neither spends
   // the reading nor is read as the answer, where it carries another id. The
-  // harness type states a completion carries its own turn.start's id and
-  // states nothing of a background subagent's completion.
+  // harness type states a completion carries its own turn.start's id, that a
+  // subagent's run raises no turn.start, and that its completion carries the
+  // subagent's agentId (TurnCompleteFields in .claude/types/claude-code.d.ts).
   // Null where no nudged turn is open, and where the nudged turn's start
   // carried no id, whose completion then moves the count by nothing.
   let nudgedTurnId: string | null = null;
@@ -7128,7 +7129,7 @@ export const register: Register = async (on, options) => {
     // The harness measures the turn itself and carries the figure whatever the
     // turn's reason, so where it arrives the record needs no hook-side clock
     // and no open-turn entry, and still counts a turn whose start this session
-    // never saw, which is most of them on a session the harness under-reports.
+    // never saw.
     // The map entry is kept as a defensive fallback against a contract this
     // plugin has never exercised: the field is declared required, and no other
     // line here reads it, so an absent one would switch this record off with
@@ -7229,7 +7230,16 @@ export const register: Register = async (on, options) => {
     // reply tool rather than trusting a second instruction to work where
     // the first already didn't; falls back to one re-prompt, carrying the
     // exact text, only if the direct call itself fails.
-    if (!skipped && sess.isOwner && currentTurnIsChannelOrigin && !replyCalledThisTurn && !isPrimingTurn && !wasNudged) {
+    // Only the persona's own turn end is backfilled (completesGateTurn). A
+    // background subagent's completion arrives while the persona's channel
+    // turn is still open and carries the subagent's report as e.answer (the
+    // harness type: a subagent's answer is its own turn.complete, carrying
+    // its agentId), so backfilling it would post that report to the
+    // operator's thread. A nudged turn is excluded by its id as well as its
+    // kind: the kind is reset by every completion, a subagent's included,
+    // while the channel flag survives one, so a turn that is both a nudge and
+    // channel-origin would otherwise post the nudge's answer.
+    if (!skipped && sess.isOwner && completesGateTurn && currentTurnIsChannelOrigin && !replyCalledThisTurn && !isPrimingTurn && !wasNudged && !completesNudgedTurn) {
       try {
         await $.tool.call({ tool: "mcp__plugin_relay_channel-relay__reply", message: e.answer } as any);
         sess.state.decisions.push({
@@ -7256,7 +7266,10 @@ export const register: Register = async (on, options) => {
     // Section 4 (plan-health-from-the-record): captured beside wasNudged,
     // before this same reset clears it for the next turn.
     const wasChannelOrigin = currentTurnIsChannelOrigin;
-    currentTurnIsChannelOrigin = false;
+    // The flag clears only on the persona's own turn end, so a subagent's
+    // completion inside the channel turn leaves it set and the persona's own
+    // completion afterwards is still backfilled.
+    if (completesGateTurn) currentTurnIsChannelOrigin = false;
 
     // Item 2 sub-bullet (f016b69): a turn that did real work with no open
     // root logs one `untracked_work` decision and leaves the goal tree

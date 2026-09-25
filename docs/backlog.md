@@ -1,5 +1,13 @@
 # Backlog
 
+## Three other turn-end readers still take a subagent's answer as the persona's (found 2026-09-25)
+
+The reply backstop in `hooks/index.ts` now reads `e.answer` only at the persona's own turn end, but three other readers in the same `turn.complete` handler still read it on any completion. The `ASK:` marker match opens an operator ask from the answer's text. `readStatusLine(e.answer)` sets a plan entry's `BLOCKED:` or `WAITING:` lead. The inbox reply filer writes the answer as the reply to each delivered record stamped with `e.turnId`. So a background subagent whose report opens with `ASK:` or `BLOCKED:` can open an ask or set a lead the persona never wrote. The filer is narrower: a subagent's completion carries its own turn id, so it matches a record only if that id was ever stamped on one. Remedy: gate each reader on `completesGateTurn`, the backstop's own test, with one tick case per reader. Raised as advisory findings by the backstop-turn-guard plan's finishing security review and deferred there, since that plan keeps the other per-turn readers out of scope.
+
+## A subagent's own reply-tool call suppresses the persona's reply backfill (found 2026-09-25)
+
+`replyCalledThisTurn` in `hooks/index.ts` is set by any reply-tool call, with no `inSubagent` check at the set, while the backstop it suppresses fires only at the persona's own turn end. So a background subagent that calls the reply tool inside the persona's channel turn stops the persona's own forgotten reply from being backfilled, although the persona never replied. The operator does receive the subagent's message, which is why this may be acceptable as it stands. Remedy if it is not: set the flag only where `!inSubagent`, one condition and one tick case. Raised by the blind and security reviews of the backstop-turn-guard plan and left there, since it adds a guard that plan's clauses do not name.
+
 ## The persisted nudge budget still carries a count nothing reads (found 2026-09-25)
 
 `NudgeBudget.consecutiveNudgesWithoutOnGoal` in `hooks/agent-state.ts` is still declared, and four sites fill it with zero: `createDefaultState`, the v2 migration, and the v3 and v4 load branches where the store carries no `nudge` object. `.kit/tick-harness.mjs` seeds it too. The nudge-state plan moved the count to the controller's own per-session reading, so no production code reads the persisted field. It costs a few bytes per store and misleads a reader into thinking the count survives a relaunch. Remedy: drop the field from the type, the four fills and the harness seed, and let the parser ignore it in an older store. Proof: `tsc --noEmit` exits 0 and the tick suite's counts are unchanged. Raised by the nudge-state plan's section 3 security review.
@@ -75,6 +83,10 @@ At the head of each main-loop pass, `bin/supervise.sh` sets `HANDLE_NOTES="$RUND
 ## A session giving way on a commons claim writes a store slot naming itself (found 2026-09-23)
 
 `persist` in `hooks/index.ts`, on its commons give-way branch, sets `sess.isOwner = false` and then writes `sess.state` back into the store under the persona. That state still carries the giving-way session as `activeSessionId`, so the store names a session that is no longer the owner. The live owner then reads that slot at its next heartbeat and gives way too, since `shouldYield` sees a different session id, and the persona has no owner until a sidecar entry goes stale, about 90 seconds. The path predates the supervisor-peer plan: it sits under the comment "Persist the yield decision to disk before returning" on the trunk. The supervisor-peer plan's Section 3 review found it while tracing a two-session start race, and kept its own changes from reaching it. Remedy: on that branch, write the yield decision without the session's own holder fields, or merge only its decisions into the slot already on disk. Proof: a tick-harness case where one session gives way on commons while another owns the persona, asserting the store still names the owner afterwards.
+
+## Operator check owed by the backstop-turn-guard plan (parked 2026-09-25)
+
+One live check only the operator can run, once the backstop-turn-guard pull request merges. The plan is at `docs/archive/agent_persona_backstop-turn-guard_spec_v1.md`, under its Operator Verification. Update the installed agentic-plugin copy and relaunch the supervisors. Then send a persona a Discord message that makes it dispatch a background subagent before it replies, and let the subagent finish while the turn runs. The subagent's report must not appear on the thread, and the plugin's `.agentic-channel.jsonl` must carry no `channel_reply_backfilled` for the subagent's turn id. What reopens the work: a subagent's report on the thread, or a persona channel turn ending unreplied with no backfill.
 
 ## Operator check owed by the boundary-compaction plan (parked 2026-09-25)
 
