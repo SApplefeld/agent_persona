@@ -925,10 +925,11 @@ async function caseS3_no_walk_while_open(clock) {
     claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
   });
 
-  // Seed persona store: active goal + pending goal + open ask
+  // Seed persona store: active goal with an open ask on it + pending goal.
+  // The ask leaves its entry active, so the open ask alone is the hold.
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
-    { id: "node-001", kind: "leaf", title: "Goal 1", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-001", kind: "leaf", title: "Goal 1", objective: "Goal 1", status: "active", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
     { id: "node-002", kind: "leaf", title: "Goal 2", objective: "Goal 2", status: "pending", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 9000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
@@ -975,8 +976,9 @@ async function caseS3_no_walk_while_open(clock) {
   // Check: node-002 should still be pending (not activated)
   const node2 = state.goals.find(g => g.id === "node-002");
   check("S3 no-walk: node-002 still pending after 3 ticks", node2 && node2.status === "pending");
+  check("S3 no-walk: node-001 stays active under the ask hold", state.goals.find(g => g.id === "node-001")?.status === "active");
 
-  // Check: classify was never called
+  // Check: classify was never called (the ask hold refused the idle branch)
   check("S3 no-walk: classify not called", h.classifyCalls.length === 0);
 
   // Check: ask_waiting appears at least once in decisions
@@ -986,10 +988,10 @@ async function caseS3_no_walk_while_open(clock) {
 }
 
 // ============================================================
-// S3: AZ2 - answer reactivates the paused goal
+// S3: AZ2 - an inbox answer closes the ask and moves no status
 // ============================================================
-async function caseS3_answer_reactivates(clock) {
-  console.log("\n=== S3: answer reactivates paused goal ===");
+async function caseS3_answer_lifts_the_hold(clock) {
+  console.log("\n=== S3: an inbox answer closes the ask, the entry stays active ===");
   clock.set(T0);
 
   const mySid = SESSION_ID;
@@ -997,7 +999,7 @@ async function caseS3_answer_reactivates(clock) {
 
   const h = await createTickHarness({
     ...OPTS,
-    caseName: "s3_answer_reactivates",
+    caseName: "s3_answer_lifts",
   });
 
   h.storeMap.set(`commons:${mySid}`, {
@@ -1006,10 +1008,10 @@ async function caseS3_answer_reactivates(clock) {
     claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
   });
 
-  // Seed persona store: paused goal + open ask
+  // Seed persona store: active goal + open ask on it
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
-    { id: "node-001", kind: "leaf", title: "Goal 1", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-001", kind: "leaf", title: "Goal 1", objective: "Goal 1", status: "active", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
   personaState.pendingAskId = "ask-answer-1";
@@ -1061,15 +1063,17 @@ async function caseS3_answer_reactivates(clock) {
 
   h.resetPromptSubmits();
 
-  // Fire tick - should detect the answer, close the ask, and reactivate
+  // Fire tick - should detect the answer and close the ask
   clock.advance(65_000);
   await tickAndSettle(h, clock, 50);
 
   const state = getState(h);
 
-  // Check: the goal should be reactivated (paused -> active)
+  // Check: the entry never left active, and the close moved no status
   const node1 = state.goals.find(g => g.id === "node-001");
-  check("S3 answer-react: goal reactivated to active", node1 && node1.status === "active");
+  check("S3 answer-react: the entry stays active and activeGoalId still names it", node1 && node1.status === "active" && state.activeGoalId === "node-001");
+  check("S3 answer-react: the close wrote no activated or paused_by_reply decision",
+    !(state.decisions || []).some(d => d.action === "activated" || d.action === "paused_by_reply"), (state.decisions || []).map(d => d.action));
 
   // Check: pendingAskId cleared
   check("S3 answer-react: pendingAskId cleared", !state.pendingAskId);
@@ -1104,10 +1108,10 @@ async function caseS3_say_leaves_ask_open(clock) {
     claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
   });
 
-  // Seed persona store: paused goal + open ask
+  // Seed persona store: active goal + open ask on it
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
-    { id: "node-001", kind: "leaf", title: "Goal 1", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-001", kind: "leaf", title: "Goal 1", objective: "Goal 1", status: "active", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
   personaState.pendingAskId = "ask-say-1";
@@ -1165,16 +1169,17 @@ async function caseS3_say_leaves_ask_open(clock) {
   // Check: pendingAskId still set
   check("S3 say-leaves: pendingAskId still set", state.pendingAskId === "ask-say-1");
 
-  // Check: the goal is still paused
+  // Check: the goal is still active, held by the ask that is still open
   const node1 = state.goals.find(g => g.id === "node-001");
-  check("S3 say-leaves: goal still paused", node1 && node1.status === "paused");
+  check("S3 say-leaves: goal still active", node1 && node1.status === "active");
 }
 
 // ============================================================
-// S3: AZ2 - timeout walks on (ask expires, next goal activated)
+// S3: AZ2 - timeout lifts the hold and walks nowhere (ask expires, the
+// asked entry stays active, the pending goal stays pending)
 // ============================================================
-async function caseS3_timeout_walks_on(clock) {
-  console.log("\n=== S3: timeout expires ask and walks on ===");
+async function caseS3_timeout_lifts_the_hold_and_walks_nowhere(clock) {
+  console.log("\n=== S3: timeout expires the ask, lifts the hold and activates nothing ===");
   clock.set(T0);
 
   const mySid = SESSION_ID;
@@ -1184,7 +1189,7 @@ async function caseS3_timeout_walks_on(clock) {
   const h = await createTickHarness({
     ...OPTS,
     askOperatorWaitMs: 60_000,
-    caseName: "s3_timeout_walks_on",
+    caseName: "s3_timeout_walks_nowhere",
   });
 
   h.storeMap.set(`commons:${mySid}`, {
@@ -1193,11 +1198,11 @@ async function caseS3_timeout_walks_on(clock) {
     claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
   });
 
-  // Seed persona store: root + paused goal + pending goal + open ask
+  // Seed persona store: root + active goal with an open ask + pending goal
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
-    { id: "root", kind: "goal", parentId: null, title: "Root plan", objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], notes: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001", "node-002"] },
-    { id: "node-001", kind: "leaf", parentId: "root", title: "Goal 1", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "root", kind: "goal", parentId: null, title: "Root plan", objective: "Root plan", status: "pending", completedRounds: 0, maxRounds: 10, scores: [], notes: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001", "node-002"] },
+    { id: "node-001", kind: "leaf", parentId: "root", title: "Goal 1", objective: "Goal 1", status: "active", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
     { id: "node-002", kind: "leaf", parentId: "root", title: "Goal 2", objective: "Goal 2", status: "pending", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 9000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
@@ -1246,19 +1251,25 @@ async function caseS3_timeout_walks_on(clock) {
   const decisions = state.decisions || [];
   check("S3 timeout: ask_timeout action present", decisions.some(d => d.action === "ask_timeout"));
 
-  // Check: node-002 activated (walked on)
+  // Check: the expiry lifted the hold and walked nowhere. node-001 stays
+  // active and node-002 pending, refused by the expiry branch writing no
+  // status and calling no activation; no activated decision anywhere.
+  const node1 = state.goals.find(g => g.id === "node-001");
   const node2 = state.goals.find(g => g.id === "node-002");
-  check("S3 timeout: node-002 activated", node2 && node2.status === "active");
+  check("S3 timeout: node-001 stays active and activeGoalId still names it", node1 && node1.status === "active" && state.activeGoalId === "node-001", { status: node1?.status, activeGoalId: state.activeGoalId });
+  check("S3 timeout: node-002 stays pending", node2 && node2.status === "pending", node2?.status);
+  check("S3 timeout: no activated decision", !decisions.some(d => d.action === "activated"), decisions.map(d => d.action));
 }
 
 // S3: askOperatorWaitMs default fires with no option set (Round 34). Whether
 // the harness engine fills plugin.json's userConfig default into `cfg` is
 // not established anywhere in this repo, so the code fallback must resolve
-// an absent option to a real wait on its own. Mirrors caseS3_timeout_walks_on
-// exactly (that case is this one's control: option set to a small value
-// fires there), but OPTS carries no askOperatorWaitMs, and the clock
-// advances past the 60-minute code default instead of a configured 60s.
-async function caseS3_timeout_walks_on_default(clock) {
+// an absent option to a real wait on its own. Mirrors
+// caseS3_timeout_lifts_the_hold_and_walks_nowhere exactly (that case is
+// this one's control: option set to a small value fires there), but OPTS
+// carries no askOperatorWaitMs, and the clock advances past the 60-minute
+// code default instead of a configured 60s.
+async function caseS3_timeout_expires_at_the_default_wait(clock) {
   console.log("\n=== S3: timeout expires ask at the no-option-set default ===");
   clock.set(T0);
 
@@ -1267,7 +1278,7 @@ async function caseS3_timeout_walks_on_default(clock) {
 
   const h = await createTickHarness({
     ...OPTS,
-    caseName: "s3_timeout_walks_on_default",
+    caseName: "s3_timeout_default",
   });
 
   h.storeMap.set(`commons:${mySid}`, {
@@ -1278,8 +1289,8 @@ async function caseS3_timeout_walks_on_default(clock) {
 
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
-    { id: "root", kind: "goal", parentId: null, title: "Root plan", objective: "Root plan", status: "active", completedRounds: 0, maxRounds: 10, scores: [], notes: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001", "node-002"] },
-    { id: "node-001", kind: "leaf", parentId: "root", title: "Goal 1", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "root", kind: "goal", parentId: null, title: "Root plan", objective: "Root plan", status: "pending", completedRounds: 0, maxRounds: 10, scores: [], notes: [], createdAt: now - 11000, updatedAt: now - 5000, children: ["node-001", "node-002"] },
+    { id: "node-001", kind: "leaf", parentId: "root", title: "Goal 1", objective: "Goal 1", status: "active", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
     { id: "node-002", kind: "leaf", parentId: "root", title: "Goal 2", objective: "Goal 2", status: "pending", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 9000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
@@ -1513,8 +1524,10 @@ async function caseItem8p2_worker_states_fork_opens_ask(clock) {
 
   check("item8p2b: pendingAskId is set", !!state.pendingAskId);
 
+  // The open ask is the hold, so the entry keeps its status and no reason.
   const node1 = state.goals.find(g => g.id === "node-001");
-  check("item8p2b: active goal paused", node1 && node1.status === "paused");
+  check("item8p2b: the active goal stays active with no reason written on it",
+    node1 && node1.status === "active" && node1.blockedReason === undefined && !state.decisions.some(d => d.action === "paused_by_controller"), node1);
 }
 
 // Item 8.2 (Round 39): a marker match that still carries the literal
@@ -2506,11 +2519,12 @@ async function caseS9_cost_cap_opens_ask(clock) {
 
   check("S9: pendingAskId set", store.default?.pendingAskId !== undefined && store.default?.pendingAskId !== null);
 
-  // BG1: the active goal should be paused, not blocked
+  // The open ask is the hold: the active goal stays active, neither paused
+  // nor blocked, with no reason written on it.
   const activeGoal = store.default?.goals?.find(g => g.id === store.default?.activeGoalId);
-  check("S9 BG1: active goal status is paused", activeGoal && activeGoal.status === "paused");
+  check("S9: the active goal stays active with no reason", activeGoal && activeGoal.status === "active" && activeGoal.blockedReason === undefined, activeGoal);
   check("S9 BG1: no block decision", !decisions.some(d => d.action === "block"));
-  check("S9 BG1: paused_by_controller decision present", decisions.some(d => d.action === "paused_by_controller"));
+  check("S9: no paused_by_controller decision", !decisions.some(d => d.action === "paused_by_controller"));
 
   // BG1: no other node should have changed status (no activateNext, no activate)
   const otherGoals = store.default?.goals?.filter(g => g.id !== store.default?.activeGoalId) || [];
@@ -3038,10 +3052,10 @@ async function main() {
     await caseS2_reply_turnid(clock);
     await caseS2_reply_unrelated(clock);
     await caseS3_no_walk_while_open(clock);
-    await caseS3_answer_reactivates(clock);
+    await caseS3_answer_lifts_the_hold(clock);
     await caseS3_say_leaves_ask_open(clock);
-    await caseS3_timeout_walks_on(clock);
-    await caseS3_timeout_walks_on_default(clock);
+    await caseS3_timeout_lifts_the_hold_and_walks_nowhere(clock);
+    await caseS3_timeout_expires_at_the_default_wait(clock);
     await caseD5b_replyClosesAsk(clock);
     await caseD5b_reaskSuppressed(clock);
     await caseD5b_reraiseOnce(clock);
@@ -3074,7 +3088,7 @@ async function main() {
     await caseSection10_competingOlderPendingLeafLoses(clock);
     await caseSection10_openAskBlocksActivation(clock);
     await caseSection10FixRound_unrelatedPausedNodeDoesNotBlock(clock);
-    await caseSection10FixRound_nudgeCapPauseBlocksActivation(clock);
+    await caseSection10FixRound_capPausedStoreIsRepairedAndGoalAddHoldsOnNoCapState(clock);
     await caseSection10FixRound_droppedPlanParentNotActivated(clock);
     await caseSection10FixRound_secondPlanAddLandsUnderRoot(clock);
     await caseSection10FixRound_taskUnderPendingPlanActivated(clock);
@@ -3148,6 +3162,11 @@ async function main() {
     await caseLead3_taskEntrySetsNoLead(clock);
     await caseLead3_theOperatorsAnswerToTheAskLiftsABlockedLead(clock);
     await caseLead3_goalResumeLiftsABlockedLead(clock);
+    await caseHold_holdOfReadsTheAskThenTheLead(clock);
+    await caseHold_theCapAskLiftsOnExpiryAndOnAnswer(clock);
+    await caseHold_theCostCapAskLeavesTheEntryActiveAndTheRefusalHoldsPastIt(clock);
+    await caseHold_theWorkerAskLineLeavesTheEntryActiveAndAnExpiryIsNamedOnce(clock);
+    await caseHold_theLoadRepairsCapPausedEntries(clock);
     await caseLead3_anInboxAnswerToTheAskLiftsABlockedLead(clock);
     await caseLead3_aBlockedLeadSetAfterTheAskClosedStillHolds(clock);
     await caseLead3_goalResumeOfAnotherEntryKeepsTheLead(clock);
@@ -3171,8 +3190,8 @@ async function main() {
     await caseNudgeGuard_sentBetweenTurns_control(clock);
     await caseR58f3_nudgeInsideOpenTurnNotSent(clock);
     await caseOpenTurn_turnIdLoggedAtStartAndCompletion(clock);
-    await caseR58f3_capPausesWithNoAsk(clock);
-    await caseR60f3b_reactivationAfterCapPause(clock);
+    await caseR58f3_capOpensAnAskAndPausesNothing(clock);
+    await caseR60f3b_workUnderTheCapAskMovesNoStatus(clock);
     await caseR117a_concurrentTicksNudgeOnce(clock);
     await caseR117b_openTurnsCloseByIdOnly(clock);
     await caseR118_bookkeepingLandsThoughATurnOpenedUnderTheSubmit(clock);
@@ -3300,8 +3319,8 @@ async function main() {
     await caseS13_errorStreak_noActiveNode_reFireAfterHandled_stillOpensNoAsk(clock);
     await caseAbk1_errorStreakKeepsTheOpenAsk(clock);
     await caseAbk1_goalCreateClosesTheOpenAsk(clock);
-    await caseAbk1_threadReplySetsThePointer(clock);
-    await caseAbk2_answerRecordSetsThePointer(clock);
+    await caseAbk1_threadReplyMovesNoStatus(clock);
+    await caseAbk2_answerRecordMovesNoStatus(clock);
     await caseS13_gitProbe_dirtyCountSampledOnCadence(clock);
     await caseS13_health_redThenGreenAndTheRedReachesTheTurn(clock);
     await caseS13_stall_pendingPlanActivatesFirstAndNothingActivatesAfterRootComplete(clock);
@@ -3560,7 +3579,7 @@ async function caseD5b_replyClosesAsk(clock) {
 
   const personaState = buildPersonaState(mySid, now);
   personaState.goals = [
-    { id: "node-001", kind: "leaf", title: "Goal 1", objective: "Goal 1", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-001", kind: "leaf", title: "Goal 1", objective: "Goal 1", status: "active", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-001";
   personaState.pendingAskId = "ask-reply-1";
@@ -3586,7 +3605,7 @@ async function caseD5b_replyClosesAsk(clock) {
   check("D5b reply: ask record closed (status answered)", askRecord && askRecord.status === "answered");
   check("D5b reply: pendingAskId cleared", !state.pendingAskId);
   const node1 = state.goals.find(g => g.id === "node-001");
-  check("D5b reply: node reactivated", node1 && node1.status === "active");
+  check("D5b reply: the node stays active and the close moved no status", node1 && node1.status === "active" && !(state.decisions || []).some(d => d.action === "activated" || d.action === "paused_by_reply"));
   check("D5b reply: lastAskQuestion recorded on the node", node1 && node1.lastAskQuestion === "Which branch should I use?");
   const decisions = state.decisions || [];
   check("D5b reply: ask_answered_by_reply logged", decisions.some(d => d.action === "ask_answered_by_reply"));
@@ -5186,7 +5205,7 @@ async function caseSection12_G3_failedAskAnswerSubmitLeavesTheAskClosed(clock) {
   });
   const personaState = buildPersonaState(SESSION_ID, now);
   personaState.goals = [
-    { id: "node-g3", kind: "leaf", title: "Goal", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-g3", kind: "leaf", title: "Goal", objective: "Goal", status: "active", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-g3";
   personaState.pendingAskId = "ask-g3-1";
@@ -6028,7 +6047,7 @@ async function caseSection3_workerAnswerReachesTheCoordinatorsAsk(clock) {
   const personaState = buildPersonaState(SESSION_ID, now);
   personaState.persona = "coordinator";
   personaState.goals = [
-    { id: "node-c1", kind: "leaf", title: "Goal", objective: "Goal", status: "paused", blockedReason: "operator input needed", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
+    { id: "node-c1", kind: "leaf", title: "Goal", objective: "Goal", status: "active", completedRounds: 0, maxRounds: 3, scores: [], notes: [], createdAt: now - 10000, updatedAt: now - 5000, children: [] },
   ];
   personaState.activeGoalId = "node-c1";
   personaState.pendingAskId = "ask-c1-1";
@@ -12461,12 +12480,13 @@ async function caseSection10FixRound_unrelatedPausedNodeDoesNotBlock(clock) {
     state.goals.find(g => g.id === "plan-unrelated-paused").status === "paused");
 }
 
-// Section 10 fix round (item 3): a nudge-cap pause is the one paused shape
-// that must still block activation - the same hold turn.complete's own
-// worker-tool-call path (Round 60 finding 3b) restores on the worker's next
-// completed turn, never on a goal_add call.
-async function caseSection10FixRound_nudgeCapPauseBlocksActivation(clock) {
-  console.log("\n=== Section 10 fix round: a nudge-cap pause blocks activation ===");
+// A store still carrying an entry the nudge cap paused (`pausedByNudgeCap`
+// true, no active entry) is repaired at load: the entry comes back active,
+// the field is dropped and one cap_pause_repaired decision names it. goal_add
+// then holds on no cap state: the new plan is added pending because an
+// entry is active, the one rule that branch reads beside an open ask.
+async function caseSection10FixRound_capPausedStoreIsRepairedAndGoalAddHoldsOnNoCapState(clock) {
+  console.log("\n=== Section 10 fix round: a cap-paused store is repaired at load, and goal_add reads no cap state ===");
   clock.set(T0);
 
   const rootGoal = makeGoalNode({ id: "root-1", kind: "root", status: "pending" });
@@ -12475,6 +12495,7 @@ async function caseSection10FixRound_nudgeCapPauseBlocksActivation(clock) {
     parentId: "root-1",
     kind: "plan",
     status: "paused",
+    blockedReason: "Nudged 3 times without on-goal; escalating",
     pausedByNudgeCap: true,
     createdAt: T0 - 10_000,
     updatedAt: T0 - 5_000,
@@ -12482,29 +12503,40 @@ async function caseSection10FixRound_nudgeCapPauseBlocksActivation(clock) {
 
   const h = await createTickHarness({
     ...OPTS,
-    caseName: "section10_nudgecap_pause_blocks",
+    caseName: "section10_nudgecap_store_repaired",
     stateOpts: { now: T0, goals: [rootGoal, nudgeCapPaused], activeGoalId: null },
   });
   await openPromptTurn(h);
+
+  const loaded = getState(h);
+  const repaired = loaded.goals.find(g => g.id === "plan-nudgecap-paused");
+  check("section10 cap store: the load repaired the cap-paused entry to active with its reason cleared and activeGoalId naming it",
+    repaired?.status === "active" && repaired.blockedReason === undefined && loaded.activeGoalId === "plan-nudgecap-paused", repaired);
+  check("section10 cap store: the persisted store carries no pausedByNudgeCap key on any entry",
+    !h.fsMap.get(PERSONA_STORE_FILE).includes("pausedByNudgeCap"));
+  check("section10 cap store: one cap_pause_repaired decision names the entry",
+    loaded.decisions.filter(d => d.action === "cap_pause_repaired").length === 1 && loaded.decisions.find(d => d.action === "cap_pause_repaired").detail.startsWith("plan-nudgecap-paused:"),
+    loaded.decisions.filter(d => d.action === "cap_pause_repaired"));
 
   const decisionsBefore = getDecisions(h).length;
   const toolCallH = h.handlers["tool.call"];
   const result = await toolCallH(h.fake, {
     tool: "mcp__agentic-plugin__goal_add",
     kind: "plan",
-    title: "New plan while a nudge-cap pause holds",
-    objective: "Should not activate",
+    title: "New plan while the repaired entry runs",
+    objective: "Should be added pending",
   }, async () => ({ result: "passthrough" }));
 
-  check("section10 nudgecap-pause: not denied", result.deny === undefined);
+  check("section10 cap store: goal_add not denied", result.deny === undefined);
 
   const state = getState(h);
-  check("section10 nudgecap-pause: no node in the tree is active",
-    !state.goals.some(g => g.status === "active"));
-  check("section10 nudgecap-pause: activeGoalId is null", state.activeGoalId === null);
+  const added = state.goals.find(g => g.title === "New plan while the repaired entry runs");
+  check("section10 cap store: the new plan is pending, refused activation by the active entry rule, and the repaired entry stays active",
+    added?.status === "pending" && state.goals.find(g => g.id === "plan-nudgecap-paused")?.status === "active" && state.activeGoalId === "plan-nudgecap-paused",
+    state.goals.map(g => [g.id, g.status]));
 
   const newDecisions = getDecisions(h).slice(decisionsBefore);
-  check("section10 nudgecap-pause: no 'activated' decision was pushed by this call",
+  check("section10 cap store: no 'activated' decision was pushed by the goal_add call",
     !newDecisions.some(d => d.action === "activated"));
 }
 
@@ -14517,8 +14549,8 @@ async function caseLead3_leadSurvivesARestart(clock) {
 }
 
 // A turn carrying both a BLOCKED: first line and a valid ASK: line opens the
-// ask as today (ask_opened, pendingAskId, the node paused with the question)
-// and sets the lead.
+// ask (ask_opened, pendingAskId, the node left active with no reason) and
+// sets the lead.
 async function caseLead3_blockedWithAnAskOpensTheAskAndSetsTheLead(clock) {
   console.log("\n=== Section 3 lead: BLOCKED: first line plus an ASK: line opens the ask and sets the lead ===");
   clock.set(T0);
@@ -14527,8 +14559,8 @@ async function caseLead3_blockedWithAnAskOpensTheAskAndSetsTheLead(clock) {
   const state = getState(h);
   const plan1 = state.goals.find(g => g.id === "plan-1");
   const decisions = getDecisions(h);
-  check("lead3 with ask: the ask opened as today", decisions.some(d => d.action === "ask_opened" && d.detail.includes("Which base branch?")) && typeof state.pendingAskId === "string", decisions.filter(d => d.action === "ask_opened"));
-  check("lead3 with ask: the node is paused with the question, as today", plan1.status === "paused" && plan1.blockedReason === "Which base branch? Recommend: main", plan1);
+  check("lead3 with ask: the ask opened", decisions.some(d => d.action === "ask_opened" && d.detail.includes("Which base branch?")) && typeof state.pendingAskId === "string", decisions.filter(d => d.action === "ask_opened"));
+  check("lead3 with ask: the node stays active with no reason, the open ask being the hold", plan1.status === "active" && plan1.blockedReason === undefined, plan1);
   check("lead3 with ask: the lead is blocked with the first line's reason", plan1.lead && plan1.lead.state === "blocked" && plan1.lead.reason === "the fork below", plan1.lead);
 }
 
@@ -14586,11 +14618,11 @@ async function caseLead3_controllerCompleteIsIgnoredOnAPlanEntry(clock) {
 
 // A plan entry whose closing text reads finished while its document stays In
 // Progress is not left idle: every nudge window whose classifier answers
-// complete logs complete_ignored and sends a nudge, and the three-nudge
-// stall pause is what bounds the repeats. The nudge cost cap is raised so
-// the stall pause, not the hourly cap, is the bound read here.
+// complete logs complete_ignored and sends a nudge, and the three-nudge cap's
+// ask is what bounds the repeats. The nudge cost cap is raised so the
+// nudge cap, not the hourly cap, is the bound read here.
 async function caseLead3_ignoredCompleteNudgesEachWindowUntilTheStallPause(clock) {
-  console.log("\n=== Section 3 lead: an ignored complete nudges each window until the stall pause ===");
+  console.log("\n=== Section 3 lead: an ignored complete nudges each window until the nudge cap's ask ===");
   clock.set(T0);
   const h = await lead3Harness("lead3_complete_repeats", {}, { costMaxNudgesPerHour: 10 });
   h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("complete")) ? "complete" : "discard");
@@ -14610,10 +14642,11 @@ async function caseLead3_ignoredCompleteNudgesEachWindowUntilTheStallPause(clock
   await tickAndSettle(h, clock, 50);
   const decisions = getDecisions(h);
   const plan1 = getState(h).goals.find(g => g.id === "plan-1");
-  check("lead3 complete repeats: the fourth window reaches the stall pause, no fourth nudge",
+  check("lead3 complete repeats: the fourth window reaches the nudge cap, no fourth nudge",
     decisions.some(d => d.action === "nudge_cap_reached") && decisions.filter(d => d.action === "nudge_sent").length === 3, decisions.slice(-4));
-  check("lead3 complete repeats: the stall pause pauses plan-1 and completes nothing",
-    plan1.status === "paused" && plan1.pausedByNudgeCap === true && !decisions.some(d => d.action === "completed_by_controller"), plan1);
+  check("lead3 complete repeats: the cap opens an ask, leaves plan-1 active and completes nothing",
+    plan1.status === "active" && typeof getState(h).pendingAskId === "string" && decisions.some(d => d.action === "ask_opened" && d.detail.includes("nudge-cap"))
+      && !decisions.some(d => d.action === "completed_by_controller" || d.action === "paused_by_controller"), plan1);
 }
 
 // A task entry carrying a stale blocked lead is not held: the hold reads a
@@ -14666,8 +14699,8 @@ async function caseLead3_theOperatorsAnswerToTheAskLiftsABlockedLead(clock) {
   const h = await lead3Harness("lead3_ask_answer_lifts");
   await lead3Turn(h, "t-ask", "BLOCKED: need the operator's fork\nASK: Which DB? Recommend: X", { workTool: true });
   const askId = getState(h).pendingAskId;
-  check("lead3 ask answer lifts setup: the ask is open, plan-1 paused, the lead blocked",
-    typeof askId === "string" && getState(h).goals.find(g => g.id === "plan-1").status === "paused" && lead3Of(h, "plan-1")?.state === "blocked",
+  check("lead3 ask answer lifts setup: the ask is open, plan-1 still active, the lead blocked",
+    typeof askId === "string" && getState(h).goals.find(g => g.id === "plan-1").status === "active" && lead3Of(h, "plan-1")?.state === "blocked",
     { askId, lead: lead3Of(h, "plan-1") });
 
   clock.advance(1_000);
@@ -14675,7 +14708,7 @@ async function caseLead3_theOperatorsAnswerToTheAskLiftsABlockedLead(clock) {
   await lead3Turn(h, "t-answer", "Going with X.", { reply: true });
   const state = getState(h);
   const plan1 = state.goals.find(g => g.id === "plan-1");
-  check("lead3 ask answer lifts: the answer closed the ask and reactivated plan-1", !state.pendingAskId && plan1.status === "active", { pendingAskId: state.pendingAskId, status: plan1.status });
+  check("lead3 ask answer lifts: the answer closed the ask and left plan-1 active", !state.pendingAskId && plan1.status === "active", { pendingAskId: state.pendingAskId, status: plan1.status });
   check("lead3 ask answer lifts: the answer and the reply-only turn leave the lead in place for the tick",
     plan1.lead?.state === "blocked" && !getDecisions(h).some(d => d.action === "lead_cleared"), plan1.lead);
   const tick = await lead3IdleTick(h, clock);
@@ -14908,6 +14941,226 @@ async function caseLead3_goalResumeLiftsABlockedLead(clock) {
   check("lead3 resume lifts: the idle tick past the nudge threshold runs the idle branch", tick.classified || tick.nudged, tick);
 }
 
+// --- The hold: holdOf, and the controller writing no status for it ---
+
+// holdOf reads the ask slot first, then the active entry's lead: ask while an
+// ask is open (over a blocked lead too), blocked for a blocked lead, waiting
+// inside LEAD_WAITING_HOLD_MS of the lead's read and null past it, and null
+// on a plain active entry. A lead on a task entry, on an entry that is not
+// the active one, or with no active entry at all, is no hold. Both
+// directions of each reason are read here, since a hold that never lifts is
+// the frozen tree and one that never holds is a nudge into an open ask.
+async function caseHold_holdOfReadsTheAskThenTheLead(clock) {
+  console.log("\n=== Hold: holdOf returns ask, then blocked, then waiting inside its window, and null otherwise ===");
+  clock.set(T0);
+  const holdOf = AgentState.holdOf;
+  const stateWith = (lead, extra = {}) => {
+    const t = plan2Goals({ chapterCount: 1 });
+    if (lead !== undefined) t.goals.find(g => g.id === "plan-1").lead = lead;
+    return { ...makeState({ now: T0, goals: t.goals, activeGoalId: t.activeGoalId }), ...extra };
+  };
+  const blocked = { state: "blocked", reason: "the fork", at: T0 - 1000 };
+  const waiting = { state: "waiting", reason: "the suite", at: T0 };
+  check("holdOf: null on a plain active entry", holdOf(stateWith(undefined), T0) === null);
+  check("holdOf: ask while an ask is open", holdOf(stateWith(undefined, { pendingAskId: "ask-x" }), T0) === "ask");
+  check("holdOf: blocked for a blocked lead", holdOf(stateWith(blocked), T0) === "blocked");
+  check("holdOf: ask outranks a blocked lead", holdOf(stateWith(blocked, { pendingAskId: "ask-x" }), T0) === "ask");
+  check("holdOf: waiting inside the window (59 minutes after the read)", holdOf(stateWith(waiting), T0 + LEAD3_HOLD_MS - 60_000) === "waiting");
+  check("holdOf: null at the window's edge", holdOf(stateWith(waiting), T0 + LEAD3_HOLD_MS) === null);
+  check("holdOf: null past the window (61 minutes after the read)", holdOf(stateWith(waiting), T0 + LEAD3_HOLD_MS + 60_000) === null);
+  check("holdOf: ask outranks a waiting lead inside its window", holdOf(stateWith(waiting, { pendingAskId: "ask-x" }), T0) === "ask");
+  const taskTree = [
+    makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" }),
+    makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", maxRounds: 10, lead: blocked }),
+  ];
+  check("holdOf: null for a blocked lead on a task entry, refused by the plan-entry rule", holdOf(makeState({ now: T0, goals: taskTree, activeGoalId: "task-1" }), T0) === null);
+  const otherLead = plan2Goals({ chapterCount: 1 });
+  otherLead.goals.find(g => g.id === "plan-2").lead = blocked;
+  check("holdOf: null for a blocked lead on an entry that is not the active one", holdOf(makeState({ now: T0, goals: otherLead.goals, activeGoalId: "plan-1" }), T0) === null);
+  const noActive = plan2Goals({ chapterCount: 1 });
+  noActive.goals.find(g => g.id === "plan-1").status = "pending";
+  noActive.goals.find(g => g.id === "plan-1").lead = blocked;
+  check("holdOf: null with no active entry and no ask", holdOf(makeState({ now: T0, goals: noActive.goals, activeGoalId: null }), T0) === null);
+}
+
+// The nudge cap's ask is the hold, and its close is the lift, by expiry and
+// by an answer alike. The entry stays active throughout and nothing is
+// activated. The lift is read from the tick after the close running the
+// branch past the hold: the count still stands at the cap, so that tick
+// reaches the cap check and logs a second nudge_cap_reached, where a held
+// tick logs nothing.
+async function caseHold_theCapAskLiftsOnExpiryAndOnAnswer(clock) {
+  console.log("\n=== Hold: the nudge cap's ask lifts on expiry and on an answer, the entry active throughout ===");
+  for (const lift of ["expiry", "answer"]) {
+    clock.set(T0);
+    const h = await createTickHarness({ ...OPTS, costMaxNudgesPerHour: 20, askOperatorWaitMs: 60_000, caseName: `hold_cap_ask_${lift}` });
+    h.setClassifyValue("nudge");
+    await fireTurn(h);
+    await new Promise(r => setTimeout(r, 20));
+    for (let i = 0; i < 4; i++) {
+      clock.advance(130_000);
+      await tickAndSettle(h, clock);
+    }
+    const label = `hold cap ask (${lift})`;
+    const opened = getState(h);
+    const askId = opened.pendingAskId;
+    check(`${label} setup: the cap opened an ask and g-plan is active`, typeof askId === "string" && opened.goals.find(g => g.id === "g-plan")?.status === "active", opened.goals.map(g => [g.id, g.status]));
+    if (lift === "expiry") {
+      clock.advance(61_000);
+      await tickAndSettle(h, clock);
+    } else {
+      await h.handlers["prompt.submit"](h.fake, { text: "carry on as planned", origin: { kind: "channel" } }, async () => ({}));
+    }
+    const state = getState(h);
+    const rec = h.storeMap.get(`ask:default:${askId}`);
+    const closedAs = lift === "expiry" ? "expired" : "answered";
+    check(`${label}: the ask closed as ${closedAs} and the slot cleared`, rec?.status === closedAs && state.pendingAskId === undefined, { rec, slot: state.pendingAskId });
+    const plan = state.goals.find(g => g.id === "g-plan");
+    check(`${label}: g-plan stays active with no reason, and no activated or paused_by_controller decision`,
+      plan?.status === "active" && plan.blockedReason === undefined && !state.decisions.some(d => d.action === "activated" || d.action === "paused_by_controller"), state.goals.map(g => [g.id, g.status]));
+    const capBefore = countAction(getDecisions(h), "nudge_cap_reached");
+    clock.advance(130_000);
+    await tickAndSettle(h, clock);
+    check(`${label}: the next idle tick runs past the hold (a second nudge_cap_reached is logged)`, countAction(getDecisions(h), "nudge_cap_reached") === capBefore + 1, getDecisions(h).slice(-3).map(d => d.action));
+    check(`${label}: g-plan is still active`, getState(h).goals.find(g => g.id === "g-plan")?.status === "active");
+  }
+}
+
+// The cost cap's ask leaves the entry active. Its close lifts the hold, and
+// the hourly refusal before classify still holds past it until the window
+// rolls: the refused tick sends no nudge and, with no ask open, opens the
+// cost-cap ask again. Once the window rolls a nudge goes out, and it names
+// the ask that expired unanswered.
+async function caseHold_theCostCapAskLeavesTheEntryActiveAndTheRefusalHoldsPastIt(clock) {
+  console.log("\n=== Hold: the cost cap's ask leaves the entry active, and the hourly refusal holds past its close until the window rolls ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, askOperatorWaitMs: 60_000, caseName: "hold_cost_cap_ask" });
+  h.setClassifyValue("nudge");
+  const plan = () => getState(h).goals.find(g => g.id === "g-plan");
+  for (let i = 0; i < 3; i++) {
+    clock.advance(130_000);
+    await tickAndSettle(h, clock, 50);
+  }
+  let state = getState(h);
+  const askId = state.pendingAskId;
+  check("hold cost cap setup: two nudges, then the cap opened an ask naming cost-cap and g-plan is active",
+    countAction(state.decisions, "nudge_sent") === 2 && typeof askId === "string" && state.decisions.some(d => d.action === "ask_opened" && d.detail.includes("cost-cap")) && plan()?.status === "active",
+    state.decisions.map(d => d.action));
+  check("hold cost cap: no paused_by_controller and no reason on the entry", !state.decisions.some(d => d.action === "paused_by_controller") && plan()?.blockedReason === undefined, plan());
+  await h.handlers["prompt.submit"](h.fake, { text: "keep going", origin: { kind: "channel" } }, async () => ({}));
+  state = getState(h);
+  check("hold cost cap: the answer closed the ask and left g-plan active", state.pendingAskId === undefined && h.storeMap.get(`ask:default:${askId}`)?.status === "answered" && plan()?.status === "active", { slot: state.pendingAskId });
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  state = getState(h);
+  check("hold cost cap: inside the window the next tick still refuses the nudge (nudge_sent stays 2) and g-plan stays active",
+    countAction(state.decisions, "nudge_sent") === 2 && plan()?.status === "active", state.decisions.slice(-3).map(d => d.action));
+  check("hold cost cap: the refused tick opened the cost-cap ask again, with no status written",
+    countAction(state.decisions, "ask_opened") === 2 && typeof state.pendingAskId === "string" && !state.decisions.some(d => d.action === "paused_by_controller"), state.decisions.filter(d => d.action === "ask_opened"));
+  clock.advance(3_600_000);
+  await tickAndSettle(h, clock, 50);
+  state = getState(h);
+  check("hold cost cap: past the window the reopened ask expires and the slot clears", state.decisions.some(d => d.action === "ask_timeout") && state.pendingAskId === undefined, state.decisions.slice(-3).map(d => d.action));
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  state = getState(h);
+  const lastPrompt = (h.promptSubmits || [])[(h.promptSubmits || []).length - 1] ?? "";
+  check("hold cost cap: once the window rolls a nudge goes out (nudge_sent 3) and g-plan is active", countAction(state.decisions, "nudge_sent") === 3 && plan()?.status === "active", state.decisions.slice(-3).map(d => d.action));
+  check("hold cost cap: that nudge names the expired cost-cap question", lastPrompt.startsWith("[GOAL]") && lastPrompt.includes('Your earlier question, "cost-cap: nudge budget spent') && lastPrompt.includes("expired unanswered"), lastPrompt);
+}
+
+// A worker ASK: line leaves the entry active with the ask as the hold. The
+// idle tick under the open ask is held; past the wait the ask expires,
+// which lifts the hold, leaves the entry active and activates nothing; the
+// next nudge names the expired question once, and the nudge after it names
+// nothing. The control answers the ask instead, and the next nudge names no
+// expired question.
+async function caseHold_theWorkerAskLineLeavesTheEntryActiveAndAnExpiryIsNamedOnce(clock) {
+  console.log("\n=== Hold: a worker ASK: line leaves the entry active; its expiry lifts the hold, activates nothing, and the next nudge names it once ===");
+  clock.set(T0);
+  const question = "Which DB should the fixture use? Recommend: sqlite";
+  // The wait is longer than one idle tick's 130 s and shorter than two, so
+  // the first idle tick is held and the second expires the ask.
+  const h = await lead3Harness("hold_worker_ask_expiry", {}, { askOperatorWaitMs: 200_000 });
+  await lead3Turn(h, "t-ask", `Working through it.\nASK: ${question}`, { workTool: true });
+  let state = getState(h);
+  const askId = state.pendingAskId;
+  check("hold worker ask setup: the ask is open and plan-1 stays active with no reason",
+    typeof askId === "string" && state.goals.find(g => g.id === "plan-1")?.status === "active" && state.goals.find(g => g.id === "plan-1")?.blockedReason === undefined, state.goals.map(g => [g.id, g.status]));
+  const held = await lead3IdleTick(h, clock);
+  check("hold worker ask: the idle tick under the open ask is held by the ask (no classifier call, no nudge) and ask_waiting is logged",
+    !held.classified && !held.nudged && getDecisions(h).some(d => d.action === "ask_waiting"), held);
+  const expired = await lead3IdleTick(h, clock);
+  state = getState(h);
+  check("hold worker ask: past the wait the ask expires, the slot clears, and that tick sends no nudge",
+    h.storeMap.get(`ask:default:${askId}`)?.status === "expired" && state.pendingAskId === undefined && !expired.nudged && !expired.classified, { rec: h.storeMap.get(`ask:default:${askId}`), expired });
+  check("hold worker ask: the expiry leaves plan-1 active, plan-2 pending, and activates nothing",
+    state.goals.find(g => g.id === "plan-1")?.status === "active" && state.activeGoalId === "plan-1" && state.goals.find(g => g.id === "plan-2")?.status === "pending" && !state.decisions.some(d => d.action === "activated"),
+    state.goals.map(g => [g.id, g.status]));
+  const named = await lead3IdleTick(h, clock);
+  const namedText = (h.promptSubmits || [])[(h.promptSubmits || []).length - 1] ?? "";
+  check("hold worker ask: the next idle tick nudges", named.classified && named.nudged, named);
+  check("hold worker ask: that nudge names the expired question in one sentence",
+    namedText.startsWith("[GOAL]") && namedText.includes(`Your earlier question, "${question}", expired unanswered after its wait, so nudging resumes.`), namedText);
+  const again = await lead3IdleTick(h, clock);
+  const againText = (h.promptSubmits || [])[(h.promptSubmits || []).length - 1] ?? "";
+  check("hold worker ask: the nudge after it names nothing", again.nudged && againText.startsWith("[GOAL]") && !againText.includes("expired unanswered"), againText);
+
+  // Control: an answered ask is not named by the next nudge.
+  clock.set(T0);
+  const c = await lead3Harness("hold_worker_ask_answered", {}, { askOperatorWaitMs: 200_000 });
+  await lead3Turn(c, "t-ask", `ASK: ${question}`, { workTool: true });
+  clock.advance(1_000);
+  await c.handlers["prompt.submit"](c.fake, { text: "sqlite", origin: { kind: "channel" } }, async () => ({}));
+  await lead3Turn(c, "t-answer", "Going with sqlite.", { reply: true });
+  const cState = getState(c);
+  check("hold worker ask control: the answer closed the ask and plan-1 stays active with no status moved",
+    cState.pendingAskId === undefined && cState.goals.find(g => g.id === "plan-1")?.status === "active" && !cState.decisions.some(d => d.action === "activated" || d.action === "paused_by_reply"),
+    cState.decisions.map(d => d.action));
+  const cTick = await lead3IdleTick(c, clock);
+  const cText = (c.promptSubmits || [])[(c.promptSubmits || []).length - 1] ?? "";
+  check("hold worker ask control: the next nudge names no expired question", cTick.nudged && cText.startsWith("[GOAL]") && !cText.includes("expired unanswered"), cText);
+}
+
+// The load repair, on the dev-persona shape: two entries paused with
+// pausedByNudgeCap true and no active entry load with the later-updated one
+// active and the other pending, the cap's reason cleared, the field gone
+// from both, one decision per repair, and activeGoalId set by the invariant
+// pass. With an active entry both become pending. A second load repairs
+// nothing more. The controls: a paused entry without the field stays as it
+// is, and a false field on a pending entry is dropped with no decision.
+async function caseHold_theLoadRepairsCapPausedEntries(clock) {
+  console.log("\n=== Hold: a store carrying cap-paused entries is repaired at load ===");
+  clock.set(T0);
+  const capReason = "Nudged 3 times without on-goal; escalating";
+  const capped = (id, updatedAt) => makeGoalNode({ id, parentId: "root-1", kind: "plan", status: "paused", blockedReason: capReason, pausedByNudgeCap: true, createdAt: T0 - 50000, updatedAt });
+  const root = () => makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending" });
+  const byId = (s, id) => s.goals.find(g => g.id === id);
+  const idle = makeState({ now: T0, goals: [root(), capped("plan-a", T0 - 20000), capped("plan-b", T0 - 10000)], activeGoalId: null });
+  const loaded = parseState(JSON.stringify(idle));
+  check("load repair (no active): the later-updated entry is active and the other pending", byId(loaded, "plan-b").status === "active" && byId(loaded, "plan-a").status === "pending", loaded.goals.map(g => [g.id, g.status]));
+  check("load repair (no active): the cap's reason is cleared from both", byId(loaded, "plan-a").blockedReason === undefined && byId(loaded, "plan-b").blockedReason === undefined);
+  check("load repair (no active): the field is gone from both", !("pausedByNudgeCap" in byId(loaded, "plan-a")) && !("pausedByNudgeCap" in byId(loaded, "plan-b")));
+  check("load repair (no active): enforceInvariants finds the active entry and activeGoalId names it", loaded.activeGoalId === "plan-b", loaded.activeGoalId);
+  const repairs = loaded.decisions.filter(d => d.action === "cap_pause_repaired");
+  check("load repair (no active): one decision per entry repaired, naming each and its new status",
+    repairs.length === 2 && repairs.some(d => d.detail.startsWith("plan-b:") && d.detail.endsWith("now active")) && repairs.some(d => d.detail.startsWith("plan-a:") && d.detail.endsWith("now pending")), repairs);
+  const again = parseState(JSON.stringify(loaded));
+  check("load repair: a second load over the repaired store repairs nothing more",
+    again.decisions.filter(d => d.action === "cap_pause_repaired").length === 2 && JSON.stringify(again.goals.map(g => [g.id, g.status])) === JSON.stringify(loaded.goals.map(g => [g.id, g.status])));
+  const active = makeGoalNode({ id: "plan-c", parentId: "root-1", kind: "plan", status: "active", createdAt: T0 - 5000, updatedAt: T0 - 5000 });
+  const busy = makeState({ now: T0, goals: [root(), capped("plan-a", T0 - 20000), capped("plan-b", T0 - 10000), active], activeGoalId: "plan-c" });
+  const loadedBusy = parseState(JSON.stringify(busy));
+  check("load repair (an active entry): both cap-paused entries become pending and the active entry keeps the slot",
+    byId(loadedBusy, "plan-a").status === "pending" && byId(loadedBusy, "plan-b").status === "pending" && byId(loadedBusy, "plan-c").status === "active" && loadedBusy.activeGoalId === "plan-c", loadedBusy.goals.map(g => [g.id, g.status]));
+  check("load repair (an active entry): two decisions, both naming pending", loadedBusy.decisions.filter(d => d.action === "cap_pause_repaired" && d.detail.endsWith("now pending")).length === 2, loadedBusy.decisions);
+  const plain = makeGoalNode({ id: "plan-p", parentId: "root-1", kind: "plan", status: "paused", blockedReason: "operator pause", createdAt: T0 - 5000, updatedAt: T0 });
+  const stale = makeGoalNode({ id: "plan-s", parentId: "root-1", kind: "plan", status: "pending", pausedByNudgeCap: false, createdAt: T0 - 5000, updatedAt: T0 });
+  const ctl = parseState(JSON.stringify(makeState({ now: T0, goals: [root(), plain, stale], activeGoalId: null })));
+  check("load repair control: a paused entry with no cap field stays paused with its reason", byId(ctl, "plan-p").status === "paused" && byId(ctl, "plan-p").blockedReason === "operator pause", byId(ctl, "plan-p"));
+  check("load repair control: a false field on a pending entry is dropped with no decision", !("pausedByNudgeCap" in byId(ctl, "plan-s")) && ctl.decisions.filter(d => d.action === "cap_pause_repaired").length === 0, byId(ctl, "plan-s"));
+}
+
 // --- Section 4 (plan-health-from-the-record): which turns are scored ---
 
 // The goal tree for a Section 4 shape: plan2Goals's plan/task-under-plan
@@ -15137,10 +15390,10 @@ async function caseSection4_threeNudgedCompleteTurnsTripTheStallPause(clock) {
   await tickAndSettle(h, clock, 50);
   const decisions = getDecisions(h);
   const plan1 = getState(h).goals.find(g => g.id === "plan-1");
-  check("section4 stall pause (complete): the fourth window reaches the stall pause, no fourth nudge",
+  check("section4 stall pause (complete): the fourth window reaches the nudge cap, no fourth nudge",
     decisions.some(d => d.action === "nudge_cap_reached") && decisions.filter(d => d.action === "nudge_sent").length === 3, decisions.slice(-4));
-  check("section4 stall pause (complete): the stall pause pauses plan-1 without completing it",
-    plan1.status === "paused" && plan1.pausedByNudgeCap === true && !decisions.some(d => d.action === "complete"), plan1);
+  check("section4 stall pause (complete): the cap opens an ask and leaves plan-1 active without completing it",
+    plan1.status === "active" && typeof getState(h).pendingAskId === "string" && !decisions.some(d => d.action === "complete" || d.action === "paused_by_controller"), plan1);
 }
 
 // Bullet 2's control: a task entry's nudged complete verdict completes it
@@ -15223,10 +15476,10 @@ async function caseSection4_threeNudgedDriftTurnsTripTheStallPause(clock) {
   await tickAndSettle(h, clock, 50);
   const decisions = getDecisions(h);
   const plan1 = getState(h).goals.find(g => g.id === "plan-1");
-  check("section4 stall pause: the fourth window reaches the stall pause, no fourth nudge",
+  check("section4 stall pause: the fourth window reaches the nudge cap, no fourth nudge",
     decisions.some(d => d.action === "nudge_cap_reached") && decisions.filter(d => d.action === "nudge_sent").length === 3, decisions.slice(-4));
-  check("section4 stall pause: the stall pause pauses plan-1 without completing it",
-    plan1.status === "paused" && plan1.pausedByNudgeCap === true && !decisions.some(d => d.action === "complete"), plan1);
+  check("section4 stall pause: the cap opens an ask and leaves plan-1 active without completing it",
+    plan1.status === "active" && typeof getState(h).pendingAskId === "string" && !decisions.some(d => d.action === "complete" || d.action === "paused_by_controller"), plan1);
 }
 
 // Item 8.1 / Round 58 finding 4: goal_edit's drop action refused a blocked node outright, which is
@@ -15484,11 +15737,12 @@ async function caseOpenTurn_turnIdLoggedAtStartAndCompletion(clock) {
   check("open turn log: no line carries a square bracket", idLines.every(l => !l.includes("[") && !l.includes("]")), idLines);
 }
 
-// Round 58 finding 3, part (b): the nudge cap, reached through completed-turn nudges (real idle
-// time, no turn ever open), pauses the node and opens no ask - the same shape item 8.2 already
-// gave the classifier's ask-operator and pause verdicts, reached here through a third path.
-async function caseR58f3_capPausesWithNoAsk(clock) {
-  console.log("\n=== Round 58 finding 3b: the nudge cap pauses the node and opens no ask ===");
+// The nudge cap, reached through completed-turn nudges (real idle time, no turn ever open),
+// opens one ask and pauses nothing: the entry stays active with no reason on it, the ask
+// record and pendingAskId carry the hold, and a further tick under the open ask opens no
+// second ask (the one-ask slot guard) and calls no classifier (the ask hold).
+async function caseR58f3_capOpensAnAskAndPausesNothing(clock) {
+  console.log("\n=== Round 58 finding 3b: the nudge cap opens an ask and pauses nothing ===");
   clock.set(T0);
 
   const h = await createTickHarness({
@@ -15496,7 +15750,7 @@ async function caseR58f3_capPausesWithNoAsk(clock) {
     // Same reason as 3a: keep the unrelated per-hour nudge-budget cap out of the way of the
     // consecutive-nudge cap this case actually exercises.
     costMaxNudgesPerHour: 20,
-    caseName: "r58f3_cap_no_ask",
+    caseName: "r58f3_cap_opens_ask",
   });
   h.setClassifyValue("nudge");
 
@@ -15513,30 +15767,44 @@ async function caseR58f3_capPausesWithNoAsk(clock) {
   const state = getState(h);
   const decisions = state.decisions;
   check("r58f3b: nudge_cap_reached present", decisions.some(d => d.action === "nudge_cap_reached"));
-  check("r58f3b: paused_by_controller present", decisions.some(d => d.action === "paused_by_controller"));
-  check("r58f3b: no ask_opened", !decisions.some(d => d.action === "ask_opened"));
+  check("r58f3b: no paused_by_controller", !decisions.some(d => d.action === "paused_by_controller"));
+  check("r58f3b: one ask_opened naming the nudge cap", decisions.filter(d => d.action === "ask_opened").length === 1 && decisions.find(d => d.action === "ask_opened").detail.includes("nudge-cap"), decisions.filter(d => d.action === "ask_opened"));
   const askKeys = [...h.storeMap.keys()].filter(k => k.startsWith("ask:"));
-  check("r58f3b: no ask record in the store", askKeys.length === 0);
-  check("r58f3b: pendingAskId not set", state.pendingAskId === null || state.pendingAskId === undefined);
+  check("r58f3b: one open ask record in the store, on g-plan", askKeys.length === 1 && h.storeMap.get(askKeys[0])?.status === "open" && h.storeMap.get(askKeys[0])?.nodeId === "g-plan", askKeys);
+  check("r58f3b: pendingAskId names it", typeof state.pendingAskId === "string" && askKeys[0] === `ask:default:${state.pendingAskId}`, state.pendingAskId);
   const plan = state.goals.find(g => g.id === "g-plan");
-  check("r58f3b: the node is paused, not active", plan && plan.status === "paused");
+  check("r58f3b: the node stays active with no reason", plan && plan.status === "active" && plan.blockedReason === undefined, plan);
+  check("r58f3b: three nudges were sent before the cap", decisions.filter(d => d.action === "nudge_sent").length === 3);
+
+  // A further tick under the open ask: held by the ask, no classify, no second ask.
+  h.resetClassifyCalls();
+  clock.advance(130_000);
+  await tickAndSettle(h, clock);
+  const after = getState(h);
+  check("r58f3b: the next tick is held by the ask (no classifier call, ask_waiting logged)",
+    h.classifyCalls.length === 0 && after.decisions.some(d => d.action === "ask_waiting"), after.decisions.slice(-3).map(d => d.action));
+  check("r58f3b: no second ask is opened while one is open", after.decisions.filter(d => d.action === "ask_opened").length === 1 && [...h.storeMap.keys()].filter(k => k.startsWith("ask:")).length === 1);
+  check("r58f3b: the node is still active", after.goals.find(g => g.id === "g-plan")?.status === "active");
 }
 
-// Round 60 finding 3(b): a cap pause opens no ask (finding 3a/b above), so nothing but a
-// completed turn that calls a real work tool, or goal_resume, ever reactivates the node in a
-// headless child. Three cases: (i) a work-tool turn.complete reactivates a cap-paused node;
-// (ii) control - a turn.complete with no work tool leaves it paused; (iii) control - a node
-// paused by goal_edit pause (not the cap) is never reactivated by work.
-async function caseR60f3b_reactivationAfterCapPause(clock) {
-  console.log("\n=== Round 60 finding 3b: turn.complete reactivates a cap-paused node on real work ===");
+// The cap's ask is the hold, and a completed turn that calls a work tool while it is open
+// moves no status: the entry was never paused, so there is nothing to reactivate, no
+// reactivated_by_work is logged, and the ask stays open until an answer or the expiry
+// closes it. (iii) a node paused by goal_edit pause is left paused by a work turn, as it
+// always was.
+async function caseR60f3b_workUnderTheCapAskMovesNoStatus(clock) {
+  console.log("\n=== Round 60 finding 3b: a work turn under the cap's open ask moves no status ===");
 
-  // (i) work-tool turn.complete reactivates.
+  // (i) a work-tool turn.complete under the cap's ask. The entry is active,
+  // so the turn is scored and burns a round; the tree carries a round budget
+  // the one round stays inside.
   {
     clock.set(T0);
     const h = await createTickHarness({
       ...OPTS,
       costMaxNudgesPerHour: 20,
-      caseName: "r60f3b_reactivate",
+      caseName: "r60f3b_work_under_ask",
+      stateOpts: { now: T0, goals: rootWithActivePlan(T0), activeGoalId: "g-plan" },
     });
     h.setClassifyValue("nudge");
     await fireTurn(h);
@@ -15547,7 +15815,8 @@ async function caseR60f3b_reactivationAfterCapPause(clock) {
     }
     let state = getState(h);
     let plan = state.goals.find(g => g.id === "g-plan");
-    check("r60f3b(i): cap pause landed first", plan && plan.status === "paused" && plan.pausedByNudgeCap === true);
+    const askId = state.pendingAskId;
+    check("r60f3b(i): the cap's ask landed first and the node is active", typeof askId === "string" && plan && plan.status === "active", { askId, status: plan?.status });
 
     const startH = h.handlers["turn.start"];
     const toolCallH = h.handlers["tool.call"];
@@ -15559,45 +15828,9 @@ async function caseR60f3b_reactivationAfterCapPause(clock) {
     state = getState(h);
     const decisions = state.decisions;
     plan = state.goals.find(g => g.id === "g-plan");
-    check("r60f3b(i): reactivated_by_work present", decisions.some(d => d.action === "reactivated_by_work"));
-    check("r60f3b(i): the node is active again", plan && plan.status === "active");
-    check("r60f3b(i): blockedReason cleared", plan && !plan.blockedReason);
-    // consecutiveNudgesWithoutOnGoal lives on sess (in-memory), not sess.state; a fresh
-    // nudge_cap_reached this soon would only happen if the reset in the fix didn't take,
-    // so absence of a second cap hit on the very next tick is the reachable proxy for it.
-    clock.advance(130_000);
-    await tickAndSettle(h, clock);
-    const afterState = getState(h);
-    check("r60f3b(i): no immediate re-trip of the cap (counter was reset)",
-      afterState.decisions.filter(d => d.action === "nudge_cap_reached").length === 1);
-  }
-
-  // (ii) control: a turn.complete with no work tool leaves the node paused.
-  {
-    clock.set(T0);
-    const h = await createTickHarness({
-      ...OPTS,
-      costMaxNudgesPerHour: 20,
-      caseName: "r60f3b_control_no_work_tool",
-    });
-    h.setClassifyValue("nudge");
-    await fireTurn(h);
-    await new Promise(r => setTimeout(r, 20));
-    for (let i = 0; i < 4; i++) {
-      clock.advance(130_000);
-      await tickAndSettle(h, clock);
-    }
-    const startH = h.handlers["turn.start"];
-    const completeH = h.handlers["turn.complete"];
-    await startH(h.fake, { turnId: "no-work-turn" }, () => {});
-    // No tool.call fired this turn: toolCallsThisTurn stays 0.
-    await completeH(h.fake, { turnId: "no-work-turn", aborted: false, reason: "stop", answer: "Just talked, did nothing." }, () => {});
-
-    const state = getState(h);
-    const decisions = state.decisions;
-    const plan = state.goals.find(g => g.id === "g-plan");
-    check("r60f3b(ii): no reactivated_by_work", !decisions.some(d => d.action === "reactivated_by_work"));
-    check("r60f3b(ii): the node stays paused", plan && plan.status === "paused");
+    check("r60f3b(i): no reactivated_by_work and no status decision from the turn", !decisions.some(d => d.action === "reactivated_by_work" || d.action === "activated" || d.action === "paused_by_controller"), decisions.slice(-4).map(d => d.action));
+    check("r60f3b(i): the node is still active with no reason", plan && plan.status === "active" && plan.blockedReason === undefined, plan);
+    check("r60f3b(i): the ask is still open and pendingAskId still names it", state.pendingAskId === askId && h.storeMap.get(`ask:default:${askId}`)?.status === "open", { pendingAskId: state.pendingAskId, rec: h.storeMap.get(`ask:default:${askId}`) });
   }
 
   // (iii) control: a node paused by goal_edit pause (not the cap) is not reactivated by work.
@@ -15954,8 +16187,8 @@ async function caseR119_noRoundMetReachesTheCap_control(clock) {
   check("r119 control: three rounds nudged and the fourth did not", nudgedRounds === 3);
   check("r119 control: three nudge_sent decisions", countAction(getDecisions(h), "nudge_sent") === 3);
   check("r119 control: the cap was reached", countAction(getDecisions(h), "nudge_cap_reached") >= 1);
-  check("r119 control: the node was paused by the cap",
-    getState(h).goals.some(g => g.status === "paused" && g.pausedByNudgeCap === true));
+  check("r119 control: the cap opened an ask and the node stays active",
+    typeof getState(h).pendingAskId === "string" && getState(h).goals.every(g => g.status !== "paused"), getState(h).goals.map(g => [g.id, g.status]));
 }
 
 // ============================================================
@@ -16247,9 +16480,10 @@ async function caseS13_score_completedTurnRecordsRound(clock) {
 
 // Error streak: a root objective saying "no bash" denies Bash in
 // tool.call, three denied turns reach the C3 streak on the next tick, and the
-// streak opens an ask and pauses the plan rather than blocking it.
+// streak opens an ask and leaves the plan active rather than blocking or
+// pausing it; the open ask is the hold.
 async function caseS13_errorStreak_threeDeniedTurnsOpenAnAsk(clock) {
-  console.log("\n=== S13 errorstreak: three denied turns escalate to an ask, not a block ===");
+  console.log("\n=== S13 errorstreak: three denied turns escalate to an ask, not a block or a pause ===");
   clock.set(T0);
   const h = await createTickHarness({
     ...OPTS,
@@ -16270,12 +16504,17 @@ async function caseS13_errorStreak_threeDeniedTurnsOpenAnAsk(clock) {
   check("s13 errorstreak: the root constraint denied Bash on every turn", denied === 3, denied);
   clock.advance(10_000);
   await tickAndSettle(h, clock, 20);
-  clock.advance(10_000);
+  // The entry stays active, so the open ask is read by the idle branch,
+  // which runs only past the idle gate: the second tick sits past it.
+  clock.advance(65_000);
   await tickAndSettle(h, clock, 20);
   const decisions = getDecisions(h);
-  const expected = ["deny", "deny", "deny", "error_streak", "ask_opened", "paused_by_controller", "ask_waiting"];
-  check("s13 errorstreak: deny x3, error_streak, ask_opened, paused_by_controller, ask_waiting in order", matchedInOrder(decisions, expected) === expected.length, decisions.map((d) => d.action));
+  const expected = ["deny", "deny", "deny", "error_streak", "ask_opened", "ask_waiting"];
+  check("s13 errorstreak: deny x3, error_streak, ask_opened, ask_waiting in order", matchedInOrder(decisions, expected) === expected.length, decisions.map((d) => d.action));
   check("s13 errorstreak: no block (the streak asks, it does not block)", !decisions.some((d) => d.action === "block"));
+  const plan = getState(h).goals.find((g) => g.id === "g-plan");
+  check("s13 errorstreak: no paused_by_controller, the plan stays active with no reason and the ask is the hold",
+    !decisions.some((d) => d.action === "paused_by_controller") && plan?.status === "active" && plan.blockedReason === undefined && typeof getState(h).pendingAskId === "string", plan);
 }
 
 // Error streak, no active node: three error turns on a persona with no
@@ -16408,8 +16647,9 @@ async function caseS13_errorStreak_noActiveNode_reFireAfterHandled_stillOpensNoA
 }
 
 // Ask bookkeeping 1: a tree with an active plan and a second plan paused on
-// an open ask, the state the ASK-marker path leaves since it pauses only the
-// node it names.
+// an open ask, the shape a store written by a controller that paused on an
+// ask still carries. The ask paths leave their entry active now, so this
+// tree is the pre-repair shape the close must leave alone.
 function abkTreeActiveAndAsked(now) {
   return [
     makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 10, createdAt: now, updatedAt: now }),
@@ -16466,9 +16706,9 @@ async function caseAbk1_errorStreakKeepsTheOpenAsk(clock) {
   await abkDriveStreak(c, clock, "t-abk1c");
   const cDecisions = getDecisions(c);
   const cAskKeys = [...c.storeMap.keys()].filter((k) => k.startsWith("ask:"));
-  check("abk1 streak control: with no ask open the streak opens one ask and pauses the leaf",
+  check("abk1 streak control: with no ask open the streak opens one ask and leaves the leaf active",
     cAskKeys.length === 1 && cDecisions.some((d) => d.action === "ask_opened") &&
-    getState(c).goals.find((g) => g.id === "g-active")?.status === "paused", { keys: cAskKeys, actions: cDecisions.map((d) => d.action) });
+    getState(c).goals.find((g) => g.id === "g-active")?.status === "active", { keys: cAskKeys, actions: cDecisions.map((d) => d.action) });
 }
 
 // Ask bookkeeping 1, goal_create: a refused call leaves the open ask alone; a
@@ -16533,44 +16773,49 @@ async function caseAbk1_goalCreateClosesTheOpenAsk(clock) {
     { res: ansRes, slot: ansState.pendingAskId, rec: a.storeMap.get(ansKey) });
 }
 
-// Ask bookkeeping 1, the thread reply: a reply closing an ask on a paused
-// entry reactivates it and points activeGoalId at it, read from the store the
-// handler wrote with no reload. Where another entry was active, that entry is
-// paused first with the reply named as the reason.
-async function caseAbk1_threadReplySetsThePointer(clock) {
-  console.log("\n=== Ask bookkeeping 1: a thread reply that closes an ask points activeGoalId at the entry it reactivates ===");
+// Ask bookkeeping 1, the thread reply: a reply closing an ask moves no
+// status. On the pre-repair shape (the asked entry paused, another active)
+// the close leaves both as they were, demotes nothing, logs no
+// paused_by_reply and leaves activeGoalId on the active entry; a store the
+// controller wrote after it stopped pausing on an ask has the asked entry
+// active, and there the close leaves it active with the pointer on it and
+// clears a stale reason an older store left on it.
+async function caseAbk1_threadReplyMovesNoStatus(clock) {
+  console.log("\n=== Ask bookkeeping 1: a thread reply that closes an ask moves no status ===");
   clock.set(T0);
   const h = await gtc3Harness("abk1_reply_other_active", abkTreeActiveAndAsked(T0), { pendingAsk: { askId: "ask-abk1-r", nodeId: "g-asked" } });
   await h.handlers["prompt.submit"](h.fake, { text: "use the passive-supervisor branch" }, async () => ({}));
   const state = getState(h);
   const asked = state.goals.find((g) => g.id === "g-asked");
   const other = state.goals.find((g) => g.id === "g-active");
-  check("abk1 reply: the asked entry is active and activeGoalId names it",
-    asked?.status === "active" && state.activeGoalId === "g-asked", { goals: state.goals.map((g) => [g.id, g.status]), active: state.activeGoalId });
-  check("abk1 reply: the other active entry is paused with the reply named as the reason",
-    other?.status === "paused" && other.blockedReason === "Paused by thread reply to ask ask-abk1-r", other);
-  const paused = state.decisions.filter((d) => d.action === "paused_by_reply");
-  check("abk1 reply: one paused_by_reply decision naming the other entry and the ask",
-    paused.length === 1 && paused[0].detail === "g-active paused (thread reply to ask ask-abk1-r)", paused.map((d) => d.detail));
+  check("abk1 reply: the ask is closed and the slot cleared", h.storeMap.get("ask:default:ask-abk1-r")?.status === "answered" && state.pendingAskId === undefined, state.pendingAskId);
+  check("abk1 reply: the asked entry keeps its status and reason, and activeGoalId stays on the active entry",
+    asked?.status === "paused" && asked.blockedReason === "operator input needed" && state.activeGoalId === "g-active", { goals: state.goals.map((g) => [g.id, g.status]), active: state.activeGoalId });
+  check("abk1 reply: the other active entry stays active with no reason", other?.status === "active" && other.blockedReason === undefined, other);
+  check("abk1 reply: no paused_by_reply or activated decision",
+    !state.decisions.some((d) => d.action === "paused_by_reply" || d.action === "activated"), state.decisions.map((d) => d.action));
 
-  // With no other entry active, the pointer that session.start left null is
-  // set to the reactivated entry.
+  // The asked entry active, carrying a reason an older store left on it: the
+  // close clears the reason and nothing else.
   clock.set(T0);
-  const lone = abkTreeActiveAndAsked(T0).filter((g) => g.id !== "g-active");
-  const l = await gtc3Harness("abk1_reply_lone", lone, { pendingAsk: { askId: "ask-abk1-l", nodeId: "g-asked" } });
-  check("abk1 reply lone: activeGoalId starts null", getState(l).activeGoalId === null, getState(l).activeGoalId);
-  await l.handlers["prompt.submit"](l.fake, { text: "go ahead" }, async () => ({}));
-  const lState = getState(l);
-  check("abk1 reply lone: the asked entry is active and activeGoalId names it",
-    lState.goals.find((g) => g.id === "g-asked")?.status === "active" && lState.activeGoalId === "g-asked", { active: lState.activeGoalId });
-  check("abk1 reply lone: no paused_by_reply decision", !lState.decisions.some((d) => d.action === "paused_by_reply"), lState.decisions.map((d) => d.action));
+  const activeAsked = gtc4Tree("pending", [
+    { id: "g-asked", parentId: "root-1", kind: "plan", status: "active", blockedReason: "operator input needed", title: "Asked", maxRounds: 5 },
+  ]);
+  const a = await gtc3Harness("abk1_reply_active_asked", activeAsked, { pendingAsk: { askId: "ask-abk1-a", nodeId: "g-asked" } });
+  check("abk1 reply active setup: the asked entry is active with the stale reason", getState(a).goals.find((g) => g.id === "g-asked")?.blockedReason === "operator input needed" && getState(a).activeGoalId === "g-asked");
+  await a.handlers["prompt.submit"](a.fake, { text: "go ahead" }, async () => ({}));
+  const aState = getState(a);
+  const aAsked = aState.goals.find((g) => g.id === "g-asked");
+  check("abk1 reply active: the entry stays active with the stale reason cleared and the pointer on it",
+    aAsked?.status === "active" && aAsked.blockedReason === undefined && aState.activeGoalId === "g-asked" && aState.pendingAskId === undefined, aAsked);
+  check("abk1 reply active: no paused_by_reply or activated decision", !aState.decisions.some((d) => d.action === "paused_by_reply" || d.action === "activated"), aState.decisions.map((d) => d.action));
 }
 
 // An answer record drained at the tick closes the ask the same way a thread
-// reply does: other active entries are paused and activeGoalId names the
-// reactivated entry, read from the in-memory state before any reload.
-async function caseAbk2_answerRecordSetsThePointer(clock) {
-  console.log("\n=== Ask bookkeeping 2: an answer record that closes an ask points activeGoalId at the entry it reactivates ===");
+// reply does: no status moves, nothing is demoted and activeGoalId stays
+// where it was, read from the in-memory state before any reload.
+async function caseAbk2_answerRecordMovesNoStatus(clock) {
+  console.log("\n=== Ask bookkeeping 2: an answer record that closes an ask moves no status ===");
   clock.set(T0);
   const h = await gtc3Harness("abk2_answer", abkTreeActiveAndAsked(T0), { pendingAsk: { askId: "ask-abk2-a", nodeId: "g-asked" } });
   const writer = "abk2-answer-writer";
@@ -16583,13 +16828,11 @@ async function caseAbk2_answerRecordSetsThePointer(clock) {
   const asked = state.goals.find((g) => g.id === "g-asked");
   const other = state.goals.find((g) => g.id === "g-active");
   check("abk2 answer: the ask record is answered", h.storeMap.get("ask:default:ask-abk2-a")?.status === "answered", h.storeMap.get("ask:default:ask-abk2-a"));
-  check("abk2 answer: the asked entry is active and activeGoalId names it",
-    asked?.status === "active" && state.activeGoalId === "g-asked", { goals: state.goals.map((g) => [g.id, g.status]), active: state.activeGoalId });
-  check("abk2 answer: the other active entry is paused with the answer named as the reason",
-    other?.status === "paused" && other.blockedReason === "Paused by answer default-abk2-answer-writer-1 to ask ask-abk2-a", other);
-  const paused = state.decisions.filter((d) => d.action === "paused_by_reply");
-  check("abk2 answer: one paused_by_reply decision naming the other entry, the answer and the ask",
-    paused.length === 1 && paused[0].detail === "g-active paused (answer default-abk2-answer-writer-1 to ask ask-abk2-a)", paused.map((d) => d.detail));
+  check("abk2 answer: the asked entry keeps its status and reason, and activeGoalId stays on the active entry",
+    asked?.status === "paused" && asked.blockedReason === "operator input needed" && state.activeGoalId === "g-active", { goals: state.goals.map((g) => [g.id, g.status]), active: state.activeGoalId });
+  check("abk2 answer: the other active entry stays active with no reason", other?.status === "active" && other.blockedReason === undefined, other);
+  check("abk2 answer: no paused_by_reply or activated decision",
+    !state.decisions.some((d) => d.action === "paused_by_reply" || d.action === "activated"), state.decisions.map((d) => d.action));
 }
 
 // Git probe: the git probe runs on its cadence, counts the porcelain
@@ -17930,7 +18173,7 @@ async function caseGtc3_completingByNameNeverMovesTheActiveEntry(clock) {
       JSON.stringify(out.nodes["plan-p"].scores) === JSON.stringify([{ round: 1, result: "drift" }]) && out.nodes["plan-p"].completedRounds === 2, out.nodes["plan-p"]);
     check(`${label}: task-1's credit is untouched`, out.nodes["task-1"].scores.length === 0 && out.nodes["task-1"].completedRounds === 0, out.nodes["task-1"]);
     const stored = getState(h).goals.find((g) => g.id === "plan-p");
-    check(`${label}: plan-p's blockedReason and pausedByNudgeCap are cleared`, stored.blockedReason === undefined && !stored.pausedByNudgeCap, stored);
+    check(`${label}: plan-p's blockedReason is cleared`, stored.blockedReason === undefined, stored);
   }
 
   // Control: the workaround on the same tree pauses the live entry, and the
@@ -17944,25 +18187,24 @@ async function caseGtc3_completingByNameNeverMovesTheActiveEntry(clock) {
     controlState.decisions.some((d) => d.action === "paused_by_resume") && controlState.goals.find((g) => g.id === "task-1").status === "paused",
     controlState.decisions.map((d) => d.action));
 
-  // task-1 reactivated by an operator reply to an open ask. The reply sets
-  // the asked entry active and points activeGoalId at it (session.start left
-  // the pointer null for the paused entry), so completing plan-p by name
-  // leaves task-1 active, activates nothing, and names it.
+  // task-1 active with an open ask on it, the shape the ASK: path leaves. An
+  // operator reply closes the ask and moves no status, so completing plan-p
+  // by name afterwards leaves task-1 active, activates nothing, and names it.
   clock.set(T0);
   const stale = await gtc3Harness("gtc3_by_name_keeps_active_after_reply",
-    gtc3Tree({ "task-1": { status: "paused", blockedReason: "operator input needed" } }, extra),
+    gtc3Tree({}, extra),
     { pendingAsk: { askId: "ask-1", nodeId: "task-1" } });
   await stale.handlers["prompt.submit"](stale.fake, { text: "go with the first option" }, async () => ({}));
-  check("gtc3 by name keeps active (after a reply reactivation) setup: the reply set task-1 active, pointed activeGoalId at it and closed the ask",
+  check("gtc3 by name keeps active (after a reply) setup: the reply closed the ask and left task-1 active with activeGoalId on it",
     getState(stale).activeGoalId === "task-1" && getState(stale).goals.find((g) => g.id === "task-1").status === "active" && !getState(stale).pendingAskId,
     { activeGoalId: getState(stale).activeGoalId, pendingAskId: getState(stale).pendingAskId });
   const staleOut = await gtc3Done(stale, { nodeId: "plan-p" });
-  check("gtc3 by name keeps active (after a reply reactivation): plan-p reads complete", staleOut.nodes["plan-p"].status === "complete", staleOut.nodes);
-  check("gtc3 by name keeps active (after a reply reactivation): task-1 is still active, task-2 still pending, and nothing was activated",
+  check("gtc3 by name keeps active (after a reply): plan-p reads complete", staleOut.nodes["plan-p"].status === "complete", staleOut.nodes);
+  check("gtc3 by name keeps active (after a reply): task-1 is still active, task-2 still pending, and nothing was activated",
     staleOut.nodes["task-1"].status === "active" && staleOut.nodes["task-2"].status === "pending" &&
     !staleOut.actions.includes("activated") && !staleOut.actions.includes("activate_none"),
     { nodes: staleOut.nodes, actions: staleOut.actions });
-  check("gtc3 by name keeps active (after a reply reactivation): the result says task-1 is still active",
+  check("gtc3 by name keeps active (after a reply): the result says task-1 is still active",
     String(staleOut.res?.result).includes("task-1") && String(staleOut.res?.result).includes("is still active"), staleOut.res);
 }
 
@@ -18164,29 +18406,28 @@ async function caseGtc3_anOpenAskOnAPlanTheWalkCompletesIsClosed(clock) {
 }
 
 // With no entry active, completing by name activates the next entry unless
-// an open ask or a nudge cap pause holds the tree. The completed entry's own
-// ask and its own cap flag are not holds, since both clear with it.
+// an open ask holds the tree, the one hold goal_done reads. The completed
+// entry's own ask is not a hold, since it closes with it, and a paused
+// entry beside it is not one either, whatever paused it.
 async function caseGtc3_noActiveEntryActivatesNextUnlessHeld(clock) {
   console.log("\n=== Goal tree curation 3: with no active entry, the next one activates unless a hold applies ===");
   const noActive = (extraOverrides = {}, extra = []) =>
     gtc3Tree({ "task-1": { status: "paused", blockedReason: "held", ...extraOverrides } }, extra);
   const arms = [
     { label: "no hold", goals: noActive(), ask: null, activated: true },
-    { label: "the completed entry's own cap flag", goals: noActive({ pausedByNudgeCap: true }), ask: null, activated: true },
     { label: "the completed entry's own open ask", goals: noActive(), ask: { askId: "ask-1", nodeId: "task-1" }, activated: true },
+    {
+      label: "another entry paused with no ask",
+      goals: noActive({}, [{ id: "task-3", parentId: "root-1", kind: "task", status: "paused", title: "Held back", blockedReason: "operator pause", createdAt: T0 - 20000 }]),
+      ask: null,
+      activated: true,
+    },
     {
       label: "an open ask on another entry",
       goals: noActive({}, [{ id: "task-3", parentId: "root-1", kind: "task", status: "paused", title: "Asked about", createdAt: T0 - 20000 }]),
       ask: { askId: "ask-3", nodeId: "task-3" },
       activated: false,
       heldText: "an operator ask is open",
-    },
-    {
-      label: "another entry paused by the nudge cap",
-      goals: noActive({}, [{ id: "task-3", parentId: "root-1", kind: "task", status: "paused", title: "Capped", pausedByNudgeCap: true, createdAt: T0 - 20000 }]),
-      ask: null,
-      activated: false,
-      heldText: "an entry is paused by the nudge cap",
     },
   ];
   let i = 0;

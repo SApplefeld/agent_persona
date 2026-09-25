@@ -884,26 +884,33 @@ function extractShutdownFrame(src) {
 // `${idleDisplay}` as the only interpolations, both per-goal data and
 // excluded.
 //
-// The idle-gap arm splices `architectLine` whole, the architect sentence
-// built only where the plugin holds an architect name. Its value is a ternary
-// declared just above the frame: a template literal, or an empty string. The
-// row pins the larger shape, as the [GOAL TREE] block's roundText does, so
-// that arm's literal is read from the declaration and sized with the frame.
-// The declaration is matched only where the nudgeText ternary follows it
-// directly, and its arm must be a single template literal, so a declaration
-// moved away from the frame, or an arm that is not one, refuses.
+// Both arms splice `expiredAskLine` whole, the one sentence naming an ask on
+// the entry that timed out unnamed, and the idle-gap arm splices
+// `architectLine` whole as well, the architect sentence built only where the
+// plugin holds an architect name. Each value is a ternary declared just
+// above the frame: a template literal, or an empty string. The expired-ask
+// sentence interpolates the question, store data, and that interpolation is
+// excluded like the others. The rows pin the larger shape, as the [GOAL
+// TREE] block's roundText does, so each arm's literal is read from its
+// declaration and sized with the frame. The two declarations are matched
+// only in their fixed order directly above the nudgeText ternary, with the
+// comment block and the question read between them, and each arm must be a
+// single template literal, so a declaration moved away from the frame, or
+// an arm that is not one, refuses.
 function extractNudgeFrames(src) {
   const m = /const nudgeText = idleGapConverted\s*\n\s*\?\s*([\s\S]*?)\n\s*:\s*([\s\S]*?);\n/.exec(src);
   if (!m) throw new Error("nudgeText ternary not found in hooks/index.ts");
-  const a = /const architectLine = [^\n]*\n\s*\?\s*(`[^`]*`)\s*\n\s*:\s*"";\n\s*const nudgeText = idleGapConverted\b/.exec(src);
-  if (!a) throw new Error("the idle-gap nudge's architectLine ternary was not found in hooks/index.ts in the shape this rule reads");
-  // The idle-gap arm declares architectLine and nothing else, and the other
-  // arm splices no whole variable, so any other operand that is not a
-  // template literal refuses.
+  const a = /const architectLine = [^\n]*\n\s*\?\s*(`[^`]*`)\s*\n\s*:\s*"";\n(?:\s*\/\/[^\n]*\n)*\s*const expiredAskQuestion = [^\n]*\n\s*const expiredAskLine = [^\n]*\n\s*\?\s*(`[^`]*`)\s*\n\s*:\s*"";\n\s*const nudgeText = idleGapConverted\b/.exec(src);
+  if (!a) throw new Error("the idle-gap nudge's architectLine and expiredAskLine ternaries were not found in hooks/index.ts in the shape this rule reads");
+  // The idle-gap arm declares architectLine and expiredAskLine and nothing
+  // else, the other arm declares expiredAskLine alone, so any other operand
+  // that is not a template literal refuses.
   return [
-    record("NUDGE_TEXT_idle_gap_converted", "hooks/index.ts", literalOfTemplateChain(m[1], "NUDGE_TEXT_idle_gap_converted", ["architectLine"])
-      + literalOfTemplateChain(a[1], "NUDGE_TEXT_idle_gap_converted architectLine")),
-    record("NUDGE_TEXT_idle_timeout", "hooks/index.ts", literalOfTemplateChain(m[2], "NUDGE_TEXT_idle_timeout")),
+    record("NUDGE_TEXT_idle_gap_converted", "hooks/index.ts", literalOfTemplateChain(m[1], "NUDGE_TEXT_idle_gap_converted", ["architectLine", "expiredAskLine"])
+      + literalOfTemplateChain(a[1], "NUDGE_TEXT_idle_gap_converted architectLine")
+      + literalOfTemplateChain(a[2], "NUDGE_TEXT_idle_gap_converted expiredAskLine")),
+    record("NUDGE_TEXT_idle_timeout", "hooks/index.ts", literalOfTemplateChain(m[2], "NUDGE_TEXT_idle_timeout", ["expiredAskLine"])
+      + literalOfTemplateChain(a[2], "NUDGE_TEXT_idle_timeout expiredAskLine")),
   ];
 }
 

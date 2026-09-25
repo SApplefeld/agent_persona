@@ -46,6 +46,7 @@ import {
   planHolderOf,
   openGoals,
   hasStartableWork,
+  holdOf,
   LONG_TERM_GOAL_CAP,
 } from "./agent-state";
 import { readPlanRecord } from "./plan-record";
@@ -519,7 +520,8 @@ async function submitExpectedTurn(dp: any, expectedTurns: ExpectedTurn[], entry:
 /**
  * D5: handle an open ask during a tick.
  * Returns "waiting" if the ask is still open (persist and return),
- * "expired" if the wait elapsed (persist, activateNext, return),
+ * "expired" if the wait elapsed (the ask closes, the slot clears, no
+ * status moves and nothing is activated; persist, return),
  * "none" if no ask or the ask is not open (caller proceeds normally).
  */
 async function tickOpenAsk(
@@ -595,20 +597,19 @@ async function tickOpenAsk(
       });
       askRecord.status = "expired";
       await store.set(askKey(persona, state.pendingAskId), askRecord);
-      // D5b (bullet 4): the controller's nudges resume rather than waiting
-      // forever - activateNext already walks to the next pending plan/task,
-      // which is what "nudges resume on a plan" means when this node itself
-      // has nothing left runnable without the answer.
+      // The expiry lifts the hold and nothing else: the asked entry keeps
+      // its status and no other entry is activated, so the controller's
+      // nudges resume on the entry that asked rather than the slot moving
+      // to the next pending one with nobody having decided that. The
+      // ask_timeout decision above and lastAskClosedAt share this clock,
+      // which is how the next nudge on the entry finds the question it
+      // names as expired.
       const askedNode = state.goals.find((n) => n.id === askRecord.nodeId);
       if (askedNode) {
         askedNode.lastAskQuestion = askRecord.question;
         askedNode.lastAskClosedAt = now;
       }
       state.pendingAskId = undefined;
-      const nextId = activateNext(state);
-      if (nextId) {
-        activate(dp, nextId, "ask timeout, walking on");
-      }
       await persist(dp);
       return "expired";
     }
@@ -633,6 +634,25 @@ function shouldSuppressReask(
 ): boolean {
   if (!node || !node.lastAskQuestion || node.lastAskClosedAt === undefined) return false;
   return node.lastAskQuestion === question && now - node.lastAskClosedAt < suppressMs;
+}
+
+/**
+ * The question of the last ask on `node` where that ask timed out and no
+ * nudge on the entry has gone out since, or null. Read from state the ask
+ * close already writes: the node's lastAskQuestion and lastAskClosedAt, and
+ * the ask_timeout decision tickOpenAsk logs at the same clock as the close,
+ * which is what tells a timeout from an answer. A nudge_sent decision on the
+ * entry after that clock means a nudge already named it. The decision ring
+ * is capped, so a timeout pushed past DECISIONS_MAX entries before the next
+ * nudge is not named, which costs one sentence and nothing else.
+ */
+function unnamedExpiredAskQuestion(state: AgentState, node: GoalNode): string | null {
+  if (typeof node.lastAskQuestion !== "string" || typeof node.lastAskClosedAt !== "number") return null;
+  const closedAt = node.lastAskClosedAt;
+  const timedOut = state.decisions.some((d) => d.action === "ask_timeout" && d.timestamp === closedAt);
+  if (!timedOut) return null;
+  const named = state.decisions.some((d) => d.action === "nudge_sent" && d.timestamp > closedAt && d.detail.startsWith(`${node.id}: `));
+  return named ? null : node.lastAskQuestion;
 }
 
 /**
@@ -2322,33 +2342,19 @@ const closeAskOnNode = async (dp: any, nodeId: string, closedBy: string): Promis
   return true;
 };
 
-// Reactivates the paused entry an answered ask named. Every other entry whose
-// status is active is paused first, read by status rather than by
-// activeGoalId, since a stale pointer is the state this must not leave behind;
-// then activeGoalId names the entry. `closedBy` reads "thread reply to ask
-// <id>" or "answer <recordId> to ask <id>" and lands in the reason and details.
-const reactivateAskedEntry = (askedNode: GoalNode, closedBy: string): void => {
-  for (const other of sess.state.goals) {
-    if (other.id === askedNode.id || other.status !== "active") continue;
-    other.status = "paused";
-    other.blockedReason = `Paused by ${closedBy}`;
-    other.updatedAt = Date.now();
-    sess.state.decisions.push({
-      timestamp: Date.now(),
-      loop: "goal",
-      action: "paused_by_reply",
-      detail: `${other.id} paused (${closedBy})`,
-    });
+// The entry an answered ask named, at the ask's close. An ask leaves its
+// entry active, so the close moves no status, demotes no other entry and
+// points activeGoalId nowhere: the open ask was the hold, and clearing the
+// slot is the lift. What it does clear is a blockedReason left on an active
+// entry, which only a store written by a controller that paused on an ask
+// carries, since an active entry has no reason to be blocked. A paused
+// entry keeps its reason, which the operator or a plan switch wrote and
+// goal_resume reads back.
+const reactivateAskedEntry = (askedNode: GoalNode): void => {
+  if (askedNode.status === "active" && askedNode.blockedReason !== undefined) {
+    askedNode.blockedReason = undefined;
+    askedNode.updatedAt = Date.now();
   }
-  askedNode.status = "active";
-  sess.state.activeGoalId = askedNode.id;
-  askedNode.updatedAt = Date.now();
-  sess.state.decisions.push({
-    timestamp: Date.now(),
-    loop: "goal",
-    action: "activated",
-    detail: `${askedNode.id}: reactivated (${closedBy})`,
-  });
 };
 
 // completeLeaf's walk marks a plan parent blocked with the reason "Child task
@@ -2411,11 +2417,10 @@ const isPlanEntry = (state: AgentState, g: GoalNode): boolean =>
 // cannot continue without someone else, and with `WAITING:` when background
 // work will wake it. The controller holds its idle branch for a blocked lead
 // until a working turn clears it, goal_resume lifts it, or an ask on the
-// entry closes after it was set, and for a waiting lead until this long
-// after the lead was read. The line is read at turn end, below the ASK:
-// marker parse; the hold sits in the controller tick beside the open-ask
-// skip. The value is the plan's 60-minute rule for a waiting lead.
-const LEAD_WAITING_HOLD_MS = 60 * 60_000;
+// entry closes after it was set, and for a waiting lead until
+// LEAD_WAITING_HOLD_MS after the lead was read. The line is read at turn
+// end, below the ASK: marker parse; the hold is holdOf's read in the
+// controller tick.
 
 // The bound on a lead's reason, which is text from the worker's own closing
 // line written into the store.
@@ -4670,8 +4675,9 @@ export const register: Register = async (on, options) => {
                 // Clear the pendingAskId
                 sess.state.pendingAskId = undefined;
                 // Deliver the answer as a labelled prompt.
-                // Look up the goal by the ask record's nodeId (more reliable than activeGoalId,
-                // which enforceInvariants may have cleared for a paused goal).
+                // The entry is the one the ask record names, or the active
+                // entry where the record names none. The close moves no
+                // status; see reactivateAskedEntry.
                 const askRecord2 = askRecord; // from outer scope
                 const targetNode = askRecord2?.nodeId
                   ? sess.state.goals.find((g) => g.id === askRecord2.nodeId)
@@ -4679,7 +4685,7 @@ export const register: Register = async (on, options) => {
                 const activeNode = targetNode || (sess.state.activeGoalId
                   ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
                   : null);
-                if (activeNode && activeNode.status === "paused") reactivateAskedEntry(activeNode, `answer ${answer.id} to ask ${askId}`);
+                if (activeNode) reactivateAskedEntry(activeNode);
                 sess.state.decisions.push({
                   timestamp: Date.now(),
                   loop: "monitor",
@@ -4922,16 +4928,8 @@ export const register: Register = async (on, options) => {
             detail: `${nodeId}: error-streak: ${streakReason} (ask ${askId})`,
           });
           try { $.ui.toast(`Agentic: ${streakReason}`); } catch { /* non-fatal */ }
-          activeForStreak.status = "paused";
-          activeForStreak.blockedReason = streakReason;
-          activeForStreak.updatedAt = streakTs;
-          sess.state.decisions.push({
-            timestamp: streakTs,
-            loop: "goal",
-            action: "paused_by_controller",
-            detail: `${nodeId}: ${streakReason}`,
-          });
-          try { $.ui.status(""); } catch { /* non-fatal */ }
+          // The open ask is the hold: the leaf stays active with no reason
+          // written on it, and the idle branch reads the ask through holdOf.
           sess.state.updatedAt = streakTs;
           await persist($);
         }
@@ -5753,31 +5751,12 @@ export const register: Register = async (on, options) => {
       const eligible = idleMs >= nudgeIdleMs;
       if (!eligible) return;
 
-      // D5: skip nudge and classify if an ask is open; record ask_waiting once per minute.
-      if (sess.state.pendingAskId) {
-        const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, g.id, expectedTurns);
-        if (askResult === "waiting") return;
-        if (askResult === "expired") return;
-        // Ask was closed by an answer; clear the flag.
-        sess.state.pendingAskId = undefined;
-      }
-
-      // Section 3 (plan-health-from-the-record): the worker's own lead holds
-      // the whole idle branch for this entry, no classifier call and no
-      // nudge. A blocked lead holds until a working turn clears it at turn
-      // end, goal_resume lifts it, or an ask on the entry closes after it
-      // was set; a waiting lead holds until LEAD_WAITING_HOLD_MS after it
-      // was read, and then the branch runs as usual with the lead left on
-      // the entry. Nothing is logged per held tick.
-      // Only a plan entry is held, since only a plan entry's turns write or
-      // clear a lead.
-      const heldLead = g.lead && isPlanEntry(sess.state, g) ? g.lead : null;
-      // An ask on the entry that closed after the lead was set, answered by
-      // the operator or the coordinator, settled what the block waited on,
-      // so the lead is cleared here and the branch runs. A timed-out ask
-      // leaves its entry paused, and that entry stays paused until
-      // goal_resume lifts its lead.
-      if (heldLead && heldLead.state === "blocked" && typeof g.lastAskClosedAt === "number" && g.lastAskClosedAt > heldLead.at) {
+      // A blocked lead on a plan entry whose ask closed after the lead was
+      // set, answered by the operator or the coordinator or expired, is
+      // cleared before the hold is read: the ask settled what the block
+      // waited on, so an answered ask on a BLOCKED: worker lifts the hold.
+      if (g.lead && g.lead.state === "blocked" && isPlanEntry(sess.state, g)
+        && typeof g.lastAskClosedAt === "number" && g.lastAskClosedAt > g.lead.at) {
         g.lead = null;
         g.updatedAt = now;
         sess.state.decisions.push({
@@ -5787,8 +5766,24 @@ export const register: Register = async (on, options) => {
           detail: `${g.id}: blocked lead cleared by an ask closed after it was set`,
         });
         if (!(await persist($))) return;
-      } else if (heldLead && heldLead.state === "blocked") return;
-      if (heldLead && heldLead.state === "waiting" && now - heldLead.at < LEAD_WAITING_HOLD_MS) return;
+      }
+
+      // The hold: one read of holdOf decides whether this branch nudges. An
+      // open ask, a blocked lead or a waiting lead inside its window holds
+      // the whole branch, no classifier call and no nudge, and nothing is
+      // logged per held tick. An ask hold still runs tickOpenAsk, which
+      // records ask_waiting once a minute, re-raises the question once, and
+      // closes the ask on expiry; an ask the slot names whose record is no
+      // longer open clears the slot here, and the hold is read again since
+      // a lead can still hold once it is gone.
+      let hold = holdOf(sess.state, now);
+      if (hold === "ask") {
+        const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, g.id, expectedTurns);
+        if (askResult !== "none") return;
+        sess.state.pendingAskId = undefined;
+        hold = holdOf(sess.state, now);
+      }
+      if (hold !== null) return;
 
       // L6: print seconds below one minute, minutes otherwise
       const idleDisplay = idleMs < 60_000 ? `${Math.floor(idleMs / 1000)}s` : `${Math.floor(idleMs / 60_000)}min`;
@@ -5856,28 +5851,22 @@ export const register: Register = async (on, options) => {
               action: "nudge_cap_reached",
               detail: `${g.id}: ${capReason}`,
             });
-            // Round 58 finding 3: this used to write an ask record from controller prose here - the
-            // same class of defect item 8.2 removed from the classifier's ask-operator and pause
-            // verdicts, just reached through a third path. The nudge cap has no concrete question to
-            // ask, only an idle reading, exactly like the classifier paths: it pauses the node with
-            // the cap reason and opens nothing. Round 60 finding 3(b): turn.complete reactivates it
-            // on the worker's next completed turn that calls a real work tool (pausedByNudgeCap
-            // below is the marker it reads), or goal_resume reactivates it explicitly; no ask, no
-            // pendingAskId, nothing waiting on an operator answer that was never asked for.
             try { $.ui.toast(`Agentic: ${capReason}`); } catch { /* non-fatal */ }
-            if (g.status === "active") {
-              // BG1: nudge cap → paused + no activate (tree stays put, no ask open on it).
-              g.status = "paused";
-              g.blockedReason = capReason;
-              g.pausedByNudgeCap = true;
-              g.updatedAt = capTs;
+            // The cap holds by opening an ask, the same way the cost cap
+            // below does: the entry stays active with no reason written on
+            // it, holdOf reads the open ask as the hold, and the ask's
+            // close, by an answer or by expiry, is the lift. The slot holds
+            // one ask, so a cap reached while one is open opens no second.
+            if (!sess.state.pendingAskId) {
+              const askId = `ask-${g.id}-${capTs}`;
+              await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, capReason, sess.mySessionId);
+              sess.state.pendingAskId = askId;
               sess.state.decisions.push({
                 timestamp: capTs,
-                loop: "goal",
-                action: "paused_by_controller",
-                detail: `${g.id}: ${capReason}`,
+                loop: "monitor",
+                action: "ask_opened",
+                detail: `${g.id}: nudge-cap: ${capReason} (ask ${askId})`,
               });
-              try { $.ui.status(""); } catch { /* non-fatal */ }
             }
             sess.state.updatedAt = capTs;
             await persist($);
@@ -5935,19 +5924,9 @@ export const register: Register = async (on, options) => {
                 detail: `${g.id}: ${capReason} (ask ${askId})`,
               });
               try { $.ui.toast(`Agentic: ${capReason}`); } catch { /* non-fatal */ }
-              if (g.status === "active") {
-                // BG1: cost cap → paused + no activate (ask is open, tree stays put).
-                g.status = "paused";
-                g.blockedReason = capReason;
-                g.updatedAt = tickTs;
-                sess.state.decisions.push({
-                  timestamp: tickTs,
-                  loop: "goal",
-                  action: "paused_by_controller",
-                  detail: `${g.id}: ${capReason}`,
-                });
-                try { $.ui.status(""); } catch { /* non-fatal */ }
-              }
+              // The open ask is the hold; the entry stays active with no
+              // reason written on it. Once the ask closes this check still
+              // refuses the nudge until the window rolls.
             }
             sess.state.updatedAt = tickTs;
             await persist($);
@@ -6231,8 +6210,20 @@ export const register: Register = async (on, options) => {
               const architectLine = architectPersona !== "" && sess.persona !== "default" && sess.persona !== architectPersona && sess.persona !== coordinatorPersona
                 ? `A design question the plan doesn't cover (a spec gap, an approach fork, a plan review or a consult) can go to the architect instead: send it with agentic_say, persona set to ${architectPersona}.\n`
                 : "";
+              // An ask on this entry that timed out with no nudge since is
+              // named once, in one sentence, so the worker knows its
+              // question went unanswered rather than reading the silence as
+              // an answer. The question is store data on a line-structured
+              // prompt, so its continuation lines are quoted the way the
+              // re-raise quotes them; the sentence's own first line stays
+              // the plugin's.
+              const expiredAskQuestion = unnamedExpiredAskQuestion(sess.state, g);
+              const expiredAskLine = expiredAskQuestion !== null
+                ? `Your earlier question, "${quoteContinuationLines(expiredAskQuestion)}", expired unanswered after its wait, so nudging resumes.\n`
+                : "";
               const nudgeText = idleGapConverted
                 ? `[GOAL] The active goal is: ${g.objective}\n` +
+                  expiredAskLine +
                   `The controller read this as an idle gap, not a real fork: no concrete blocking question. ` +
                   `Re-read the plan doc and DISCUSSION.md before continuing - the next concrete step should already be there.\n` +
                   `If you genuinely hold a fork the plan doesn't resolve, state it in this turn as a line: ASK: <question>? Recommend: <choice>\n` +
@@ -6240,6 +6231,7 @@ export const register: Register = async (on, options) => {
                   `The controller reads a first-line BLOCKED: or WAITING: in your closing text and holds its nudges.\n` +
                   `Otherwise take the next concrete step and mark it finished with goal_done.`
                 : `[GOAL] The active goal is: ${g.objective}\n` +
+                  expiredAskLine +
                   `The Controller detected ${idleDisplay} of idle time. ` +
                   `Re-read the objective and take the next concrete step toward it, then report that step done with goal_done.`;
               // The floor is spent here, before the submit, so that the test
@@ -6266,7 +6258,7 @@ export const register: Register = async (on, options) => {
               // The escalation counter would land after the reset an on-goal
               // score performs, so a nudge the worker met would not clear its
               // own count, and two unmet nudges after a met one would reach the
-              // cap that pauses the node, a round earlier than the worker
+              // cap that opens the ask, a round earlier than the worker
               // earned. The nudge's expected-turn entry would be queued after
               // its own turn.start had looked for it, so that turn would open
               // unaccounted and be scored without the nudge-aware label set. The prompt text
@@ -6805,17 +6797,9 @@ export const register: Register = async (on, options) => {
               detail: `${nodeId}: worker-stated fork: ${question} (ask ${askId})`,
             });
             try { $.ui.toast(`Agentic: ${question}`); } catch { /* non-fatal */ }
-            if (askedNode && askedNode.status === "active") {
-              askedNode.status = "paused";
-              askedNode.blockedReason = question;
-              askedNode.updatedAt = Date.now();
-              sess.state.decisions.push({
-                timestamp: Date.now(),
-                loop: "goal",
-                action: "paused_by_controller",
-                detail: `${nodeId}: ${question}`,
-              });
-            }
+            // The open ask is itself the hold on the idle branch, so the
+            // entry keeps its status and carries no reason; the ask record
+            // carries the question.
           }
         }
       }
@@ -7029,26 +7013,6 @@ export const register: Register = async (on, options) => {
           }
           turnLeafId = null;
         }
-      } else if (turnLeaf.status === "paused" && turnLeaf.pausedByNudgeCap && toolCallsThisTurn > 0) {
-        // Round 60 finding 3(b): the cap pause (above) opens no ask, so nothing but this
-        // check ever reactivates it in a headless child - goal_resume is a tool call the
-        // worker has to think to make, and a paused node otherwise never gets nudged again.
-        // A completed turn that called a real work tool while this node sits paused for
-        // the cap reason (never for a goal_edit pause, which never sets the flag) means
-        // the worker resumed the work on its own; reactivate rather than leave it stalled.
-        const cappedReason = turnLeaf.blockedReason || "nudge cap";
-        turnLeaf.status = "active";
-        turnLeaf.blockedReason = undefined;
-        turnLeaf.pausedByNudgeCap = false;
-        turnLeaf.updatedAt = Date.now();
-        sess.consecutiveNudgesWithoutOnGoal = 0;
-        sess.state.decisions.push({
-          timestamp: Date.now(),
-          loop: "goal",
-          action: "reactivated_by_work",
-          detail: `${turnLeaf.id}: work tool called while paused (${cappedReason}), reactivating`,
-        });
-        turnLeafId = null;
       } else {
         // H2: node is paused, blocked, or switched: skip scoring.
         sess.state.decisions.push({
@@ -7894,17 +7858,14 @@ export const register: Register = async (on, options) => {
       // same way activateNext's DFS would refuse it - this branch never
       // activates into a closed subtree.
       //
-      // The hold check beside it is exactly two things: an open ask
-      // (pendingAskId) is the operator's own open question, and a
-      // pausedByNudgeCap node is the nudge cap's own hold, restored only by
-      // turn.complete's own worker-tool-call path. A plain paused node -
-      // dropped by an operator pause, or left over from a plan switch - is
-      // neither of those and must not disable this branch for the rest of
-      // the session.
+      // The hold check beside it is one thing: an open ask (pendingAskId)
+      // is the operator's own open question, whatever opened it, and the
+      // controller keeps no other hold. A paused node, dropped by an
+      // operator pause or left over from a plan switch, is not a hold and
+      // must not disable this branch for the rest of the session.
       if (
         !sess.state.goals.some((g) => g.status === "active") &&
         !sess.state.pendingAskId &&
-        !sess.state.goals.some((g) => g.pausedByNudgeCap === true) &&
         isActivationEligible(sess.state, newNode)
       ) {
         newNode.status = "active";
@@ -8184,7 +8145,6 @@ export const register: Register = async (on, options) => {
       completeLeaf(sess.state, completedId, note || "goal_done");
       if (byNameId) {
         target.blockedReason = undefined;
-        target.pausedByNudgeCap = false;
         target.lead = null;
       }
       // E2: health run at completeLeaf site (goal_done).
@@ -8229,9 +8189,8 @@ export const register: Register = async (on, options) => {
 
       // The completed entry was active: activate the next one, as the call
       // with no nodeId always does. Another entry is active: it stays so.
-      // None is active: activate the next one unless an open ask or a nudge
-      // cap pause holds the tree, the two holds goal_add's no-active-leaf
-      // branch honors.
+      // None is active: activate the next one unless an open ask holds the
+      // tree, the one hold goal_add's no-active-leaf branch honors.
       let nextId: string | null = null;
       let heldBy = "";
       if (wasActive) {
@@ -8240,8 +8199,6 @@ export const register: Register = async (on, options) => {
       } else if (!otherActive) {
         if (sess.state.pendingAskId) {
           heldBy = "an operator ask is open";
-        } else if (sess.state.goals.some((g) => g.pausedByNudgeCap === true)) {
-          heldBy = "an entry is paused by the nudge cap";
         } else {
           nextId = activateNext(sess.state, completedId);
           activate($, nextId, `${completedId} done by name`);
@@ -8426,7 +8383,6 @@ export const register: Register = async (on, options) => {
       // M10: clear blockedReason on resume.
       const pausedReason = target.blockedReason || "unknown";
       target.blockedReason = undefined;
-      target.pausedByNudgeCap = false;
       target.status = "active";
       // A resume lifts a blocked lead whatever paused the entry, since the
       // lead would otherwise hold the idle branch until a working turn that
@@ -9040,7 +8996,8 @@ export const register: Register = async (on, options) => {
     // handler, per the expected-turns comment above. So any turn that reaches
     // here while an ask is open is the operator answering it, whether it
     // came from the keyboard or a Discord thread reply, and whether or not
-    // it carries the ask id: close the ask and reactivate the paused node.
+    // it carries the ask id: close the ask, which lifts the hold on the
+    // entry it named; the entry keeps its status.
     // A [SUPERVISOR-ASK prompt is the one external turn that is not the
     // operator, so it leaves an open ask open.
     if (sess.isOwner && sess.state.pendingAskId && !supervisorAskTurn) {
@@ -9055,7 +9012,7 @@ export const register: Register = async (on, options) => {
         if (askedNode) {
           askedNode.lastAskQuestion = askRecord.question;
           askedNode.lastAskClosedAt = Date.now();
-          if (askedNode.status === "paused") reactivateAskedEntry(askedNode, `thread reply to ask ${askId}`);
+          reactivateAskedEntry(askedNode);
         }
         sess.state.decisions.push({
           timestamp: Date.now(),
