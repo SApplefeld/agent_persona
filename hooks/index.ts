@@ -2477,7 +2477,7 @@ const isPlanEntry = (state: AgentState, g: GoalNode): boolean =>
 // work will wake it. The controller holds its idle branch for a blocked lead
 // until a working turn clears it, goal_resume lifts it, or an ask on the
 // entry closes after it was set, and for a waiting lead until
-// LEAD_WAITING_HOLD_MS after the lead was read or until a turn clears it,
+// LEAD_WAITING_HOLD_MS (hooks/agent-state.ts) after the lead was read or until a turn clears it,
 // a `WORKING:` first line among them. The line is read at turn
 // end, below the ASK: marker parse; the hold is holdOf's read in the
 // controller tick.

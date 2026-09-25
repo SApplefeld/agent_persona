@@ -207,7 +207,7 @@ Two checks only the operator can run, carried out of `docs/archive/agent_persona
 
 ## A converted-complete nudge does not tell the worker its plan document is not Complete (found 2026-09-21)
 
-When the idle classifier reads a plan entry as finished while its plan document does not read `Status: Complete`, the plugin logs the verdict ignored and sends the generic idle nudge (`hooks/index.ts`, the idle-gap text near the controller's verdict conversions). That text never says what the worker needs to hear, that its document is what decides done. A worker that believes it has finished answers "already done" and is nudged again until the three-nudge stall pause holds it. A one-line variant of the nudge naming the document would end most of those loops at the first nudge. It is an injected string, so the change carries an injection-ledger regeneration. Found by the plan-health plan's Section 4 consult, outside that section's scope.
+When the idle classifier reads a plan entry as finished while its plan document does not read `Status: Complete`, the plugin logs the verdict ignored and sends the generic idle nudge (`hooks/index.ts`, the idle-gap text near the controller's verdict conversions). That text never says what the worker needs to hear, that its document is what decides done. A worker that believes it has finished answers "already done" and is nudged again until the nudge cap opens its ask. A one-line variant of the nudge naming the document would end most of those loops at the first nudge. It is an injected string, so the change carries an injection-ledger regeneration. Found by the plan-health plan's Section 4 consult, outside that section's scope.
 
 ## The load-time round-budget recovery writes no decision record (found 2026-09-21)
 

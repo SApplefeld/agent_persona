@@ -202,6 +202,18 @@ merges, so the worker finds each site by the symbol named beside it.
 
 - `turn.start` is the only event that opens the open-turn reading; `prompt.submit` and `tool.call`
   open nothing (the architect's ruling of 2026-09-25 under Intent).
+- The count also resets at every `session.start`, at a persona's state load through
+  `agentic_identity`, and at a reader's promotion to owner.
+- A nudged answer is read from the completion whose turn id equals the id recorded at the nudged
+  turn's start, so a subagent's completion under another id is not read as the answer.
+- A tool call from a subagent loop does not count as the nudged turn's work.
+- A rise in the plan document's Chapter count and a `goal_done` completed turn no longer reset the
+  count.
+- An asked entry's answer clears a `blockedReason` a pre-plan store left on an active entry, and
+  nothing else.
+- `docs/backlog.md` records the unread persisted `NudgeBudget` count, the `openTurns` comment's
+  reason, and `wasNudged` beside the turn-kind entry.
+- `docs/README.md`'s row for this plan states the shipped behavior.
 
 ## Sections of Work
 
@@ -298,8 +310,9 @@ Acceptance:
   is written at most once per call.
 - The decisions and every state field are invariant across the answer's extremes, as
   `casePlanHealth_decisionsAreInvariantAcrossEveryJevExtreme` locks for the three today, and a
-  request that hangs or rejects delays the turn's end by nothing and writes no outcome, as
-  `casePlanHealth_hungRequestCannotDelayTheTurnEnd` locks.
+  request that hangs or rejects delays the turn's end by nothing, as
+  `casePlanHealth_hungRequestCannotDelayTheTurnEnd` locks. The outcome joiners still write against
+  the call's stamp id, as `lead_blocked` does.
 
 Files in scope: `hooks/question-catalog.ts`, `hooks/decision-journal.ts`, `hooks/index.ts`,
 `.kit/controller-tick-test.mjs`, `.kit/question-catalog-unit-test.mjs` (its set-count pin and
