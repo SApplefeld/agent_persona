@@ -15590,26 +15590,33 @@ async function caseCount_activationAndTheAskCloseReset(clock) {
   }
   // A session that yielded its persona and is later promoted back loads the
   // stored tree afresh, and the count it held before the yield stays behind.
-  clock.set(T0);
-  {
-    const h = await countHarness("count_reader_promotion");
+  // The heartbeat runs with a turn open, so the second leg promotes inside a
+  // nudged turn begun before the yield, whose unlined answer adds nothing.
+  for (const midTurn of [false, true]) {
+    const leg = midTurn ? "inside a nudged turn" : "between turns";
+    clock.set(T0);
+    const h = await countHarness(`count_reader_promotion_${midTurn ? "mid_turn" : "between_turns"}`);
     await primeCountToTwo(h, clock);
     const before = await countReading(h, clock);
+    const ok = async () => ({ result: "ok" });
+    if (midTurn) await h.handlers["turn.start"](h.fake, { turnId: "t-across" }, ok);
     const store = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE));
     const takeoverEpoch = (store.default.epoch ?? 0) + 5;
     store.default.activeSessionId = "other-owner";
     store.default.epoch = takeoverEpoch;
     h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify(store));
     h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: "other-owner", epoch: takeoverEpoch, lastSeen: Date.now() } }));
+    const logBefore = h.fsMap.get(YIELD_LOG_FILE) ?? "";
     await fireHeartbeat(h);
-    const yielded = getState(h).activeSessionId === "other-owner";
+    const yielded = !logBefore.includes("other-owner") && (h.fsMap.get(YIELD_LOG_FILE) ?? "").includes("other-owner");
     clock.advance(120_000);
     await fireHeartbeat(h);
     const promoted = getState(h).decisions.some(d => d.action === "reader_promoted");
-    check("count reader promotion setup: the count read 2, the session yielded, then was promoted back",
+    if (midTurn) await h.handlers["turn.complete"](h.fake, { turnId: "t-across", answer: "Still looking.", reason: "completed" }, ok);
+    check(`count reader promotion (${leg}) setup: the count read 2, the yield log names the new owner, then the session was promoted back`,
       before === 2 && yielded && promoted, { before, yielded, promoted, actions: getState(h).decisions.slice(-4).map(d => d.action) });
     const after = await countReading(h, clock);
-    check("count reader promotion: the count reads 0 on the promoted session", after === 0, after);
+    check(`count reader promotion (${leg}): the count reads 0 on the promoted session`, after === 0, after);
   }
   for (const close of ["expiry", "answer"]) {
     clock.set(T0);

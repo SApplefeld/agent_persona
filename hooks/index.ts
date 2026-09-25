@@ -3866,7 +3866,10 @@ export const register: Register = async (on, options) => {
             }
             // The count this session held before it yielded counted answers
             // on a tree it no longer holds, so it does not carry into this one.
+            // The heartbeat runs with a turn open, so a nudged turn begun
+            // before the yield is not added to this tree's count either.
             sess.nudgedAnswersWithoutStatus = 0;
+            countResetThisTurn = true;
             sess.state.activeSessionId = sess.mySessionId;
             sess.state.epoch += 1;
             sess.myEpoch = sess.state.epoch;
