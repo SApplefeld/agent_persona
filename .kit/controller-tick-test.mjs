@@ -15039,9 +15039,8 @@ async function caseHold_theCapAskLiftsOnExpiryAndOnAnswer(clock) {
 
   // A store write that throws as the cap opens its ask: the count stays at
   // the cap and no ask_opened is logged, the persisted slot names nothing,
-  // and on the next tick the slot the tick took in memory is found naming
-  // no record and cleared, after which the cap fires again and, with the
-  // store accepting, opens its ask. The seam is the fake store's own set.
+  // and the tick takes no slot, after which the next tick's cap fires again
+  // and, with the store accepting, opens its ask. The seam is the fake store's own set.
   {
     clock.set(T0);
     const h = await createTickHarness({ ...OPTS, costMaxNudgesPerHour: 20, askOperatorWaitMs: 60_000, caseName: "hold_cap_ask_write_throws" });
@@ -15063,11 +15062,17 @@ async function caseHold_theCapAskLiftsOnExpiryAndOnAnswer(clock) {
     check("hold cap ask (throwing write): no ask record exists, no ask_opened is persisted, the persisted slot names nothing, and no fourth nudge went out",
       countAction(state.decisions, "ask_opened") === 0 && ![...h.storeMap.keys()].some(k => k.startsWith("ask:")) && state.pendingAskId === undefined && countAction(state.decisions, "nudge_sent") === 3,
       state.decisions.map(d => d.action));
+    // The tick that threw took no slot in memory either: a turn's persist
+    // after the throw writes no slot naming a record that does not exist.
+    await fireTurn(h);
+    await new Promise(r => setTimeout(r, 20));
+    check("hold cap ask (throwing write): a persist after the throw writes no ask slot, since the throwing tick took none",
+      getState(h).pendingAskId === undefined, getState(h).pendingAskId);
     h.fake.store.set = realSet;
     clock.advance(130_000);
     await tickAndSettle(h, clock);
     state = getState(h);
-    check("hold cap ask (throwing write): the next tick clears the recordless slot, the cap fires again (the count was left at the cap) and the ask opens, with no fourth nudge",
+    check("hold cap ask (throwing write): the next tick's cap fires again (the count was left at the cap) and the ask opens, with no fourth nudge",
       countAction(state.decisions, "nudge_cap_reached") === 2 && countAction(state.decisions, "ask_opened") === 1 && typeof state.pendingAskId === "string" && h.storeMap.get(`ask:default:${state.pendingAskId}`)?.status === "open" && countAction(state.decisions, "nudge_sent") === 3,
       state.decisions.slice(-4).map(d => d.action));
   }

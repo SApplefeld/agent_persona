@@ -251,7 +251,8 @@ Acceptance:
 Files in scope: `hooks/index.ts`, `hooks/agent-state.ts`, `.kit/controller-tick-test.mjs`,
 `.kit/injection-ledger.json` and `.kit/injection-ledger.mjs` (regenerated where the nudge
 sentence naming an expired ask changes an injected text; the `[GOAL QUEUE]` block at `8202-8207`
-keeps its two close texts), `README.md` (the "Cap" bullet at 151, 628-632).
+keeps its two close texts), `README.md` (the "Cap" bullet at 151, 628-632), `hooks/self-review.ts`
+(one comment naming the removed pause, folded in during section 2).
 Tests: lock both directions of every hold reason, since a hold that never lifts is the frozen
 tree of 2026-09-23 and one that never holds is a nudge into an open ask. Lock the load repair
 against a store with two cap-paused entries and no active one, the dev-persona shape.

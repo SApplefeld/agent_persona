@@ -5866,18 +5866,16 @@ export const register: Register = async (on, options) => {
             // close in place of the nudge the lift promises. The floor is
             // left alone, since the last nudge's spacing still applies.
             //
-            // The slot is taken before the record is written, so a tick
-            // that runs during the write reads the ask hold, and the count
+            // The record is written before the slot names it, and the count
             // is reset only once the write returns: a write that throws
-            // leaves the count at the cap, so the cap fires again on a later
-            // tick, after tickOpenAsk has cleared the slot whose record is
-            // absent. Defensive guard: holdOf returned null for this tick
-            // to reach here, so the slot is empty; the guard keeps the
-            // one-ask rule legible at the site that opens one.
+            // leaves no slot and the count at the cap, so the cap fires
+            // again on a later tick. Defensive guard: holdOf returned null
+            // for this tick to reach here, so the slot is empty; the guard
+            // keeps the one-ask rule legible at the site that opens one.
             if (!sess.state.pendingAskId) {
               const askId = `ask-${g.id}-${capTs}`;
-              sess.state.pendingAskId = askId;
               await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, capReason, sess.mySessionId);
+              sess.state.pendingAskId = askId;
               sess.consecutiveNudgesWithoutOnGoal = 0;
               sess.state.decisions.push({
                 timestamp: capTs,
