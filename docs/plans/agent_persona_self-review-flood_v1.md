@@ -168,3 +168,13 @@ in one hour reopens the work.
 None.
 
 ## Chapters
+
+### Interim board 1 - 2026-09-24
+
+Section 1 is at step 4, after review round 1 and its fix round. Commits on branch `self-review-flood`: e7da6cd (first green) and 08b2ebc (round 1 fixes), both pushed. No dispatch is in flight.
+
+Held: the adversarial lens found acceptance bullet 2 contradicts the Approach. Clearing `pendingPeriodic` on a failed attempt brings the retry back at `selfReviewEveryTurns` (20 by default), not after the 5-turn debounce the bullet and the "retried after five turns" sentence state. The question went to the architect persona with a lean to keep the mechanism and amend the bullet. The test `caseCatchStampsAttempt_retriedOnceDebounceAdmits` still sets `selfReviewEveryTurns` to 5 and changes with the ruling.
+
+Gate baseline at 08b2ebc, clean worktree: controller tick suite 3383 OK, 0 failures, exit 0 (3365 at 60df823 before the section); self-review unit suite all passed, exit 0; tsc --noEmit exit 0.
+
+Next: apply the architect's ruling to bullet 2, the Approach sentence and the retry test, then run the round 2 review (one adversarial lens), then the close pass, the Chapter and finishing-work.
