@@ -9270,7 +9270,7 @@ export const register: Register = async (on, options) => {
         addedAt: now,
       };
       sess.state.tasks.push(task);
-      const writeOk = await persist($, () => { sess.state.tasks.pop(); });
+      const writeOk = await persistOrRollBack($, () => { sess.state.tasks.pop(); });
       if (writeOk) {
         return { result: `Task added: ${task.id} "${task.text}" under ${active.id}.` };
       }
@@ -9310,7 +9310,7 @@ export const register: Register = async (on, options) => {
       task.done = true;
       task.doneAt = now;
       const allDone = sess.state.tasks.filter((t) => t.goalId === active.id).every((t) => t.done);
-      const writeOk = await persist($, () => {
+      const writeOk = await persistOrRollBack($, () => {
         task.done = false;
         if (priorDoneAt === undefined) delete task.doneAt;
         else task.doneAt = priorDoneAt;
@@ -9345,7 +9345,7 @@ export const register: Register = async (on, options) => {
       const priorTasks = sess.state.tasks;
       sess.state.tasks = sess.state.tasks.filter((t) => t.goalId !== active.id);
       const removed = priorTasks.length - sess.state.tasks.length;
-      const writeOk = await persist($, () => { sess.state.tasks = priorTasks; });
+      const writeOk = await persistOrRollBack($, () => { sess.state.tasks = priorTasks; });
       if (writeOk) {
         return { result: `Cleared ${removed} task(s) from ${active.id}.` };
       }
