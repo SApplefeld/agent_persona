@@ -579,6 +579,17 @@ function extractNudgeStatusLineText(src) {
   return record("NUDGE_STATUS_LINE_TEXT", "hooks/index.ts", m[1]);
 }
 
+// The hold sentence a nudge on a plan entry adds after the status-line
+// request: NUDGE_LEAD_HOLD_TEXT, a single-line double-quoted constant. Both
+// frames splice it through leadHoldLine, a name extractNudgeFrames declares,
+// whose value is this constant behind one space or an empty string, so it is
+// sized once here. The one space is not sized.
+function extractNudgeLeadHoldText(src) {
+  const m = /const NUDGE_LEAD_HOLD_TEXT = "([^\n"]*)";/.exec(src);
+  if (!m) throw new Error("NUDGE_LEAD_HOLD_TEXT not found in hooks/index.ts as a single-line double-quoted constant");
+  return record("NUDGE_LEAD_HOLD_TEXT", "hooks/index.ts", m[1]);
+}
+
 // The nudge cap's ask: the question nudgeCapAskText returns, which the ask
 // record stores and the still-waiting re-raise and the expired-ask sentence
 // later carry into the worker's context. The persona, the quoted title and
@@ -924,9 +935,10 @@ function extractShutdownFrame(src) {
 // single template literal, so a declaration moved away from the frame, or
 // an arm that is not one, refuses.
 //
-// Both arms also close with NUDGE_STATUS_LINE_TEXT, spliced by name. It is
-// sized by extractNudgeStatusLineText as an entry of its own, so it is
-// declared here and not added to either arm's size.
+// Both arms also close with NUDGE_STATUS_LINE_TEXT and leadHoldLine, spliced
+// by name. They are sized by extractNudgeStatusLineText and
+// extractNudgeLeadHoldText as entries of their own, so both are declared here
+// and not added to either arm's size.
 function extractNudgeFrames(src) {
   const m = /const nudgeText = idleGapConverted\s*\n\s*\?\s*([\s\S]*?)\n\s*:\s*([\s\S]*?);\n/.exec(src);
   if (!m) throw new Error("nudgeText ternary not found in hooks/index.ts");
@@ -936,9 +948,9 @@ function extractNudgeFrames(src) {
   // else, the other arm declares expiredAskLine alone, so any other operand
   // that is not a template literal refuses.
   return [
-    record("NUDGE_TEXT_idle_gap_converted", "hooks/index.ts", literalOfTemplateChain(m[1], "NUDGE_TEXT_idle_gap_converted", ["architectLine", "expiredAskLine", "NUDGE_STATUS_LINE_TEXT"])
+    record("NUDGE_TEXT_idle_gap_converted", "hooks/index.ts", literalOfTemplateChain(m[1], "NUDGE_TEXT_idle_gap_converted", ["architectLine", "expiredAskLine", "NUDGE_STATUS_LINE_TEXT", "leadHoldLine"])
       + literalOfTemplateChain(a[1], "NUDGE_TEXT_idle_gap_converted architectLine")),
-    record("NUDGE_TEXT_idle_timeout", "hooks/index.ts", literalOfTemplateChain(m[2], "NUDGE_TEXT_idle_timeout", ["expiredAskLine", "NUDGE_STATUS_LINE_TEXT"])),
+    record("NUDGE_TEXT_idle_timeout", "hooks/index.ts", literalOfTemplateChain(m[2], "NUDGE_TEXT_idle_timeout", ["expiredAskLine", "NUDGE_STATUS_LINE_TEXT", "leadHoldLine"])),
     record("NUDGE_EXPIRED_ASK_LINE", "hooks/index.ts", literalOfTemplateChain(a[2], "NUDGE_EXPIRED_ASK_LINE")),
   ];
 }
@@ -1396,6 +1408,7 @@ function buildLedgerFrom(shSrc, holderSrc, tsSrc) {
     ...extractSupervisorAskTexts(shSrc),
     extractReconcileText(tsSrc),
     extractNudgeStatusLineText(tsSrc),
+    extractNudgeLeadHoldText(tsSrc),
     extractNudgeCapAskText(tsSrc),
     extractStillWaitingReraise(tsSrc),
     extractFleetPromptFrame(tsSrc),

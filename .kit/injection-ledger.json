@@ -88,8 +88,14 @@
     {
       "name": "NUDGE_STATUS_LINE_TEXT",
       "file": "hooks/index.ts",
-      "chars": 218,
-      "words": 38
+      "chars": 159,
+      "words": 29
+    },
+    {
+      "name": "NUDGE_LEAD_HOLD_TEXT",
+      "file": "hooks/index.ts",
+      "chars": 72,
+      "words": 12
     },
     {
       "name": "NUDGE_CAP_ASK_TEXT",

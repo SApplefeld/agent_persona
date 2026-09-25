@@ -370,6 +370,10 @@ the Chapter records as drift.
   minute receives no nudge inside that turn. A nudge landing inside a live turn reopens Section 1.
 - The dev-persona persona's two entries paused by the cap read `active` or `pending` after its
   next load, with no hand `goal_resume`.
+- After the fleet relaunches on this, section 1's turn start and turn complete log lines show a
+  background subagent completing inside a turn with a turn id different from that turn's own.
+  The nudge count reads a nudged answer from the completion carrying the nudged turn's id, so
+  matching ids would count the subagent's text and skip the worker's.
 - After seven days, the journal's `work-continues` answers agree with `continued_unprompted` at
   the bar or the question is reworded before any plan wires it.
 

@@ -930,6 +930,12 @@ let toolCallsThisTurn = 0;
 // the calls that make a turn a working turn for the nudge count's reset.
 let nudgeCountWorkThisTurn = 0;
 
+// Whether this turn activated an entry or replaced the tree, reset at
+// turn.start beside nudgeCountWorkThisTurn. The count resets on every such
+// act, and a nudged answer the same turn closes with no status line resets it
+// rather than adding one, so the entry the turn activated starts at zero.
+let countResetThisTurn = false;
+
 // Health run helper (E2).
 async function runHealth(dp: any, forNodeId: string | null): Promise<void> {
   const healthPath = ".agentic-health";
@@ -2114,7 +2120,12 @@ const RECONCILE_TEXT = "[RECONCILE] Run the kit Coordinator seat's reconciliatio
 // the ones readStatusLine reads off the closing text's first line, and a
 // nudged turn that opens with none of them, and does no work, is what the
 // nudge count counts.
-const NUDGE_STATUS_LINE_TEXT = "Open your closing text with one status line: WORKING: and what you are doing, WAITING: and what will wake you, or BLOCKED: and what you need from someone else. A WAITING: or BLOCKED: line holds the controller's nudges.";
+const NUDGE_STATUS_LINE_TEXT = "Open your closing text with one status line: WORKING: and what you are doing, WAITING: and what will wake you, or BLOCKED: and what you need from someone else.";
+
+// The sentence a nudge on a plan entry adds after the status-line request.
+// Leads are read on plan entries alone, so the hold it names exists only
+// there, and a nudge on a task entry does not carry it.
+const NUDGE_LEAD_HOLD_TEXT = "On this entry a WAITING: or BLOCKED: line holds the controller's nudges.";
 
 // The question the nudge cap's ask puts to the operator once the count
 // reaches its cap. The entry's title is operator- or worker-supplied text, so
@@ -2310,6 +2321,7 @@ const dropDecision = (entry: AgentState["decisions"][number]): void => {
 // "activated" entry that says "No node to activate".
 export const activate = (dp: any, nextId: string | null, reason: string): void => {
   sess.nudgedAnswersWithoutStatus = 0;
+  countResetThisTurn = true;
   sess.lastNudgeAt = 0;
   if (nextId) {
     sess.state.decisions.push({
@@ -2544,8 +2556,11 @@ export const register: Register = async (on, options) => {
   // The id of the turn a nudge opened, set at turn.start when the matched
   // entry is a nudge and cleared by the completion carrying that same id.
   // The nudge count reads a nudged answer from that completion alone, so a
-  // background subagent's completion inside the nudged turn, which carries
-  // an id of its own, neither spends the reading nor is read as the answer.
+  // background subagent's completion inside the nudged turn neither spends
+  // the reading nor is read as the answer. That such a completion carries an
+  // id other than the nudged turn's is inferred from the harness type, which
+  // states a completion carries its own turn.start's id; the turn id log
+  // lines at turn start and completion are what confirm it.
   // Null where no nudged turn is open, and where the nudged turn's start
   // carried no id, whose completion then moves the count by nothing.
   let nudgedTurnId: string | null = null;
@@ -5906,12 +5921,14 @@ export const register: Register = async (on, options) => {
             // entry for the operator. The count is reset as the ask opens,
             // which serves as the reset at the ask's close: the count rises
             // only at a nudged turn's end, and while the ask is open holdOf
-            // holds every nudge, so no new nudge is sent in between. A nudged
-            // turn already under way can still complete while the ask is open
-            // and move the count, so the close can find it above zero. A
-            // count left at the cap would reopen the ask on the tick after
-            // the close in place of the nudge the lift promises. The floor is
-            // left alone, since the last nudge's spacing still applies.
+            // holds every nudge, so no nudge is sent in between. Nor is a
+            // nudged turn under way as the ask opens: this branch runs only
+            // with no turn open, and the count moves only at the completion
+            // of a turn whose start recorded a nudged id. So the close finds
+            // the count at zero. A count left at the cap would reopen the ask
+            // on the tick after the close in place of the nudge the lift
+            // promises. The floor is left alone, since the last nudge's
+            // spacing still applies.
             //
             // The record is written before the slot names it, and the count
             // is reset only once the write returns: a write that throws
@@ -6124,8 +6141,8 @@ export const register: Register = async (on, options) => {
           // complete verdict completes nothing here. It is recorded as
           // ignored and becomes a nudge, the same way the verdicts above do:
           // a worker whose closing text reads finished while its document
-          // does not is woken rather than left idle. The three-nudge stall
-          // pause bounds the repeats.
+          // does not is woken rather than left idle. The nudge floor bounds
+          // the repeats.
           if (finalDecision === "complete" && g.status === "active" && isPlanEntry(sess.state, g)) {
             finalDecision = "nudge";
             sess.state.decisions.push({
@@ -6261,9 +6278,13 @@ export const register: Register = async (on, options) => {
               if (nudgeCapped) {
                 return;
               }
+              // The hold sentence rides on a plan entry's nudge alone, the
+              // one kind of entry whose leads are read.
+              const leadHoldLine = isPlanEntry(sess.state, g) ? " " + NUDGE_LEAD_HOLD_TEXT : "";
               // R8: nudge text appends goal_done instruction, and both arms
               // close with NUDGE_STATUS_LINE_TEXT, the status line the
-              // nudge count reads at the nudged turn's end. Item 8.2
+              // nudge count reads at the nudged turn's end, followed on a
+              // plan entry by leadHoldLine. Item 8.2
               // (Round 36): a converted ask-operator gets its own text -
               // re-read the plan and the discussion file, and only state a
               // fork as a literal marker line if one truly exists, since
@@ -6298,12 +6319,14 @@ export const register: Register = async (on, options) => {
                   `If you genuinely hold a fork the plan doesn't resolve, state it in this turn as a line: ASK: <question>? Recommend: <choice>\n` +
                   architectLine +
                   `Otherwise take the next concrete step and mark it finished with goal_done.\n` +
-                  NUDGE_STATUS_LINE_TEXT
+                  NUDGE_STATUS_LINE_TEXT +
+                  leadHoldLine
                 : `[GOAL] The active goal is: ${g.objective}\n` +
                   expiredAskLine +
                   `The Controller detected ${idleDisplay} of idle time. ` +
                   `Re-read the objective and take the next concrete step toward it, then report that step done with goal_done.\n` +
-                  NUDGE_STATUS_LINE_TEXT;
+                  NUDGE_STATUS_LINE_TEXT +
+                  leadHoldLine;
               // The floor is spent here, before the submit, so that the test
               // above and this write are one synchronous step. $.prompt.submit
               // does not resolve until the session is next idle, so during a
@@ -6488,6 +6511,7 @@ export const register: Register = async (on, options) => {
     // Item 2 sub-bullet: reset the tool-call counter for this turn.
     toolCallsThisTurn = 0;
     nudgeCountWorkThisTurn = 0;
+    countResetThisTurn = false;
     // Steer 68/69: capture whether this turn opened from a channel message,
     // then clear the handoff flag so an unrelated later turn never inherits
     // it. Reset the reply-tracking flag for the turn now starting.
@@ -6952,18 +6976,22 @@ export const register: Register = async (on, options) => {
     // status line and adds one when it opens with none. Every other
     // completion moves nothing: an unaccounted turn, so a nudge whose turn
     // cannot be placed never counts toward the cap; a subagent's completion
-    // inside the nudged turn, whose id is its own; and an aborted, errored
-    // or refused turn, or one with no answer, which is no answer to read.
-    // Only the owner session keeps the count. The other resets are activation,
-    // which activate() and the switch and goal_resume sites perform, a new
-    // tree from goal_create, the root's completion, and the cap's own ask,
-    // which resets the count as it opens.
+    // inside the nudged turn, whose id is inferred to be its own; and an
+    // aborted, errored or refused turn. A nudged completion with no answer
+    // opens with none of the three lines, so it adds one. Where the same turn
+    // activated an entry or replaced the tree, its nudged answer resets the
+    // count rather than adding one, so the reset that activation performs is
+    // not undone by the answer that follows it. Only the owner session keeps
+    // the count. The other resets are activation, which activate() and the
+    // switch and goal_resume sites perform, a new tree from goal_create, the
+    // root's completion, and the cap's own ask, which resets the count as it
+    // opens.
     if (!sess.isOwner) {
       // A reader session never nudges, so it keeps no count.
     } else if (nudgeCountWorkThisTurn > 0 || wasChannelOrigin) {
       sess.nudgedAnswersWithoutStatus = 0;
-    } else if (completesNudgedTurn && !skipped) {
-      if (statusLine !== null) sess.nudgedAnswersWithoutStatus = 0;
+    } else if (completesNudgedTurn && !(e.aborted || e.reason === "aborted" || e.reason === "error" || e.reason === "refusal")) {
+      if (statusLine !== null || countResetThisTurn) sess.nudgedAnswersWithoutStatus = 0;
       else sess.nudgedAnswersWithoutStatus += 1;
     }
 
@@ -7770,6 +7798,7 @@ export const register: Register = async (on, options) => {
       });
       // H2b: a new goal inherits a clean nudge budget.
       sess.nudgedAnswersWithoutStatus = 0;
+      countResetThisTurn = true;
       sess.lastNudgeAt = 0;
 
       const writeOk = await persist($);
@@ -8507,6 +8536,7 @@ export const register: Register = async (on, options) => {
       target.updatedAt = Date.now();
       sess.state.activeGoalId = target.id;
       sess.nudgedAnswersWithoutStatus = 0;
+      countResetThisTurn = true;
       sess.lastNudgeAt = 0;
       sess.state.decisions.push({
         timestamp: Date.now(),
