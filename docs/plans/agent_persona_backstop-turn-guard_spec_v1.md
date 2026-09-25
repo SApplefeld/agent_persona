@@ -19,7 +19,7 @@ Alternatives refused: gating the broker's answer surface, which was the abandone
 Provenance: DEV-DISCORD pinned the cause on 2026-09-25 with the `.agentic-channel.jsonl` `channel_reply_backfilled` evidence and supplied the fix shape; the operator picked the persona-plugin home on the ARCHITECT relay thread; the fix shape is confirmed against the code at 11cd7ea.
 
 ## Approach
-The reply backstop in the `turn.complete` handler of `hooks/index.ts` posts `e.answer` through `mcp__plugin_relay_channel-relay__reply` when `currentTurnIsChannelOrigin && !replyCalledThisTurn` and the other gates hold, but never checks that the completing turn is the persona's own. A background subagent's completion reaches `turn.complete` while the persona's channel turn is still open (the comment near the `currentGateTurnId` block says so), so it fires the backstop with the subagent's report.
+The reply backstop in the `turn.complete` handler of `hooks/index.ts` posts `e.answer` through `mcp__plugin_relay_channel-relay__reply` when `currentTurnIsChannelOrigin && !replyCalledThisTurn` and the other gates hold, but never checks that the completing turn is the persona's own. A background subagent's completion reaches `turn.complete` while the persona's channel turn is still open (the comment near the `currentGateTurnId` block says so), so it fires the backstop with the subagent's report. DEV-DISCORD confirmed this in the plugin's own `.agentic-channel.jsonl`: a `channel_reply_backfilled` decision for a turn id that no `turn.start` line ever opened, timed 8 seconds after a subagent's completion, and a controlled capture on claude 2.1.281 showing a subagent's finish fires `SubagentStop`, never `Stop`, so no broker hook carries the report.
 
 There are two sites, because a subagent's completion also clears the channel-origin flag unconditionally, which would drop the persona's own backfill even after the backstop is guarded:
 1. The backstop condition (near `hooks/index.ts:6689` at 11cd7ea): add the own-turn guard.
@@ -40,14 +40,17 @@ Tests: lock both directions. A subagent's mid-turn completion (a foreign turn id
 ## Out of Scope
 - Any broker or discord-channels change; that repo's spec `channels_subagent-thread-flood_spec_v1.md` is abandoned and retired in place.
 - The scoring of a subagent's completion beyond the channel-origin flag, unless the guard requires touching `wasChannelOrigin`.
-- The other resets and scoring paths in the `turn.complete` handler.
+- The other per-turn resets in the same handler (`currentTurnKind`, `toolErrorsThisTurn`, `wasNudged`) that a foreign completion also clobbers. DEV-DISCORD flagged them as the same shape, not needed to stop the flood; a follow-up if they cause misattribution.
 
 ## Assumptions
 - assumed 2026-09-25 (default): the guard is `isOwnTurn = e.turnId === currentGateTurnId` captured before the reset, matching boundary-compaction's true-boundary pattern; reversal: `turnIsOpen()`-false after the `openTurns.delete`, the recorded alternative, if the id capture proves awkward.
 - assumed 2026-09-25 (brainstorming 1-2 section allowance): this one-section fix with a precise, code-confirmed shape skips the blind read, the gating litmus and the plan review; the executing worker's own section reviewers stand in.
 
+## Operator Verification
+- Live reproduction on the fleet after the fix ships and the plugin updates: an operator Discord message opens a persona turn, a background subagent is dispatched before any reply-tool call, and it finishes while the turn runs. Before the fix, a `channel_reply_backfilled` decision is written and the subagent's report appears on the thread as a reply; after it, neither. This is the cross-process behavior the unit tests cannot see.
+
 ## Open Questions
-None. The fix shape is confirmed against the code and the operator picked the home.
+- Still inferred, to confirm in the live check above by logging the `turn.start` and `turn.complete` ids and `e.answer.length` beside the backfill decision: that a subagent's completion carries an id no `turn.start` opened (the alternative is that it carries the parent's id, which would make the id guard inert and put the fault upstream), and that `e.answer` on that completion is the subagent's report. DEV-DISCORD's evidence supports both: the `channel_reply_backfilled` for turn 0e2d64f0 appears on no `turn.start` line, and its timing sits 8 seconds after a subagent's completion. The controlled run settles them.
 
 ## Chapters
 (Appended by executing-work as sections complete. Leave empty at creation.)
