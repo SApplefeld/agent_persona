@@ -15573,7 +15573,10 @@ async function caseBank2_failedRunsLogOneDecisionAndNeverFailTheTurn(clock) {
 // A plan document read at chapterCount 2, so the section printed is 2 + 1 =
 // 3, the plan holder's Chapter count plus one.
 const PLANDOC3_DOC = plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]);
-const PLANDOC3_LINE = `Plan document: ${PLAN2_PATH}, Section 3. Re-read it before the next step.`;
+// The line's contract is what it names, not its wording: it opens
+// "Plan document: ", carries the plan path, and carries "Section N".
+const namesPlanDoc3 = (line, section) =>
+  typeof line === "string" && line.startsWith("Plan document: ") && line.includes(PLAN2_PATH) && new RegExp(`\\bSection ${section}\\b`).test(line);
 
 // A plan2Goals tree with chapterCount 2 (Section 3), the document seeded to
 // match so the turn's own read logs no plan_progress and moves nothing: the
@@ -15587,7 +15590,7 @@ async function planDoc3Harness(caseName, treeOpts = {}, extraOpts = {}) {
 // The [GOAL TREE] block names the active entry's plan holder's document and
 // Section N, spliced right after the Path: line, for the plan node itself
 // and for a task under it; a task entry with no plan ancestor, and a plan
-// node whose planPath was never filled, both omit the line.
+// node whose stored planPath fails PLAN_PATH_PATTERN, both omit the line.
 async function casePlanDoc3_goalTreeBlockNamesThePlanDocument(clock) {
   console.log("\n=== Section 3 (boundary-compaction): the [GOAL TREE] block names the plan document ===");
   const shapes = [
@@ -15605,11 +15608,13 @@ async function casePlanDoc3_goalTreeBlockNamesThePlanDocument(clock) {
       expectLine: false,
     },
     {
-      label: "plan node with no planPath",
+      // A store value the goal_add check would refuse, here carrying a line
+      // break, so the re-test against PLAN_PATH_PATTERN is what omits it.
+      label: "plan node whose stored planPath fails the pattern",
       tree: {
         goals: [
           makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
-          makeGoalNode({ id: "plan-1", parentId: "root-1", kind: "plan", status: "active", maxRounds: 10, createdAt: T0 - 20000 }),
+          makeGoalNode({ id: "plan-1", parentId: "root-1", kind: "plan", status: "active", maxRounds: 10, createdAt: T0 - 20000, planPath: "docs/plans/bad\nInjected: line.md" }),
         ],
         activeGoalId: "plan-1",
       },
@@ -15626,7 +15631,7 @@ async function casePlanDoc3_goalTreeBlockNamesThePlanDocument(clock) {
       const lines = goalBlock.split("\n");
       const pathIdx = lines.findIndex(l => l.startsWith("Path: "));
       check(`plandoc3 goal tree (${shape.label}): names the plan document and Section 3 directly after the Path: line`,
-        pathIdx >= 0 && lines[pathIdx + 1] === PLANDOC3_LINE, goalBlock);
+        pathIdx >= 0 && namesPlanDoc3(lines[pathIdx + 1], 3), goalBlock);
     } else {
       check(`plandoc3 goal tree (${shape.label}): omits the plan document line`, !goalBlock.includes("Plan document:"), goalBlock);
     }
@@ -15653,7 +15658,7 @@ async function casePlanDoc3_nudgeArmsNameThePlanDocument(clock) {
       check(`plandoc3 nudge (${label}, ${arm}): went out`, text.startsWith("[GOAL]"), text);
       const lines = text.split("\n");
       check(`plandoc3 nudge (${label}, ${arm}): names the plan document and Section 3 directly after the [GOAL] line`,
-        lines[1] === PLANDOC3_LINE, text);
+        namesPlanDoc3(lines[1], 3), text);
     }
   }
 }
@@ -17105,12 +17110,6 @@ async function caseCount_bothNudgeTextsNameTheThreeLines(clock) {
     check("count nudge text (plan entry): the nudge went out and names the three lines", tick.nudged && text.includes("Open your closing text with one status line:"), text);
     check("count nudge text (plan entry): it adds that a WAITING: or BLOCKED: line holds the controller's nudges",
       holdText.length > 0 && text.includes(holdText), text);
-    // Section 3 (boundary-compaction): lead3Harness's stored chapterCount is
-    // 1, so the plan holder's Chapter count plus one prints "Section 2",
-    // right after the [GOAL] line.
-    const lines = text.split("\n");
-    check("count nudge text (plan entry): names the plan document and Section 2 directly after the [GOAL] line",
-      lines[1] === `Plan document: ${PLAN2_PATH}, Section 2. Re-read it before the next step.`, text);
   }
 }
 

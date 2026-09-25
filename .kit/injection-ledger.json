@@ -154,8 +154,8 @@
     {
       "name": "PLAN_DOCUMENT_LINE",
       "file": "hooks/index.ts",
-      "chars": 60,
-      "words": 11
+      "chars": 27,
+      "words": 5
     },
     {
       "name": "NUDGE_TEXT_idle_gap_converted",

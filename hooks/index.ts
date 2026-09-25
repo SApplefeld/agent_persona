@@ -693,13 +693,16 @@ function unnamedExpiredAskQuestion(state: AgentState, node: GoalNode): string | 
 // with a planPath, so a task a worker added under a plan node names that
 // plan's document too). The section printed is the holder's Chapter count
 // plus one, since no stored field names a section (spec Approach,
-// "Naming the plan document..."). An entry with no plan holder, and a plan
-// holder whose planPath is still empty, both give "", so the nudge and the
-// block omit the line rather than splice an empty sentence into the chain.
+// "Naming the plan document..."). The stored planPath is re-tested against
+// PLAN_PATH_PATTERN before it reaches the prompt, as every reader of it owes
+// (agent-state.ts, above PLAN_PATH_PATTERN), so a hand-edited or
+// foreign-written store value cannot add lines of its own to the block. An
+// entry with no plan holder, and a holder whose planPath fails the pattern,
+// both give "", so the nudge and the block omit the line.
 function planDocumentLine(state: AgentState, entry: GoalNode): string {
   const holder = planHolderOf(state, entry);
-  if (!holder || !holder.planPath) return "";
-  return `Plan document: ${holder.planPath}, Section ${(holder.chapterCount ?? 0) + 1}. Re-read it before the next step.\n`;
+  if (!holder?.planPath || !PLAN_PATH_PATTERN.test(holder.planPath)) return "";
+  return `Plan document: ${holder.planPath}, Section ${(holder.chapterCount ?? 0) + 1}.\n`;
 }
 
 /**

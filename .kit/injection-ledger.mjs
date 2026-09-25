@@ -926,7 +926,7 @@ function extractShutdownFrame(src) {
 // than sizing a truncated or wrong copy.
 function extractPlanDocumentLine(src) {
   const body = functionBody(src, "planDocumentLine");
-  const m = /^\s*const holder = planHolderOf\(state, entry\);\s*\n\s*if \(!holder \|\| !holder\.planPath\) return "";\s*\n\s*return (`[^`]*`);\s*$/.exec(body);
+  const m = /^\s*const holder = planHolderOf\(state, entry\);\s*\n\s*if \(!holder\?\.planPath \|\| !PLAN_PATH_PATTERN\.test\(holder\.planPath\)\) return "";\s*\n\s*return (`[^`]*`);\s*$/.exec(body);
   if (!m) throw new Error("[chain-shape] PLAN_DOCUMENT_LINE: planDocumentLine's body is not the guard-then-template-return shape this rule reads");
   return record("PLAN_DOCUMENT_LINE", "hooks/index.ts", literalOfTemplateChain(m[1], "PLAN_DOCUMENT_LINE"));
 }
