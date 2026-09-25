@@ -1634,6 +1634,280 @@ async function caseItem8p2_memory_quality_self_scoring_vs_proof_backed(clock) {
   check("item8p2c: proof-backed lesson NOT refused", !keptDecisions.some(d => d.action === "memory_lesson_refused"));
 }
 
+// The self-review flood fix (spec: the catch stamps the attempt and names
+// the error). A throw from the model.complete call inside the 2a2 block must
+// leave the same five-field stamp a success would, so the next tick reads an
+// attempt already spent rather than the pristine state that let the flood
+// retry every ten seconds. The root goal alone, no seeded decisions, is the
+// caseItem8p2c shape: reviewOwnRecord finds nothing, so the model path runs.
+function catchStampsAttemptRootGoal() {
+  return {
+    id: "root-goal", parentId: null, kind: "root", title: "Test goal", objective: "Test goal",
+    status: "pending", source: "controller", maxRounds: 10, completedRounds: 0, scores: [], notes: [],
+    planningRounds: 0, consecutiveBlockedPlannings: 0, consecutivePlanningFailures: 0, planningRound: 0,
+    createdAt: T0 - 10000, updatedAt: T0 - 5000,
+  };
+}
+
+async function caseCatchStampsAttempt_notRetriedNextTick(clock) {
+  console.log("\n=== The catch stamps the attempt: one throw is not retried on the next tick ===");
+  clock.set(T0);
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "catch_stamp_not_retried",
+    stateOpts: {
+      now: T0,
+      goals: [catchStampsAttemptRootGoal()],
+      activeGoalId: null,
+      selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: true, lastInjectAt: 0 },
+    },
+    classifyValue: "NONE",
+  });
+  h.fake.model.complete = async () => { throw new Error("boom: connection reset"); };
+  await tickAndSettle(h, clock, 100);
+
+  const afterFirst = getDecisions(h).filter(d => d.action === "self-review");
+  check("catch stamp: one self-review decision after the throw", afterFirst.length === 1, afterFirst);
+  check("catch stamp: its detail ends with the thrown message",
+    afterFirst[0]?.detail.endsWith("error: boom: connection reset"), afterFirst[0]?.detail);
+  check("catch stamp: count, windowStart, lastAt and turnsSince are stamped as a success would leave them",
+    getState(h).monitor.selfReview.count === 1 && getState(h).monitor.selfReview.lastAt === T0
+      && getState(h).monitor.selfReview.turnsSince === 0
+      && getState(h).monitor.selfReview.windowStart === T0, getState(h).monitor.selfReview);
+  check("catch stamp: the goal_done request the failed attempt did not serve stays set",
+    getState(h).monitor.selfReview.pendingPeriodic === true, getState(h).monitor.selfReview);
+
+  // A second tick under the same clock: lastAt is now T0 and turnsSince (0)
+  // is under the default selfReviewDebounceTurns (5), so the debounce refuses
+  // the review before any trigger is read, and the attempt is not retried.
+  await tickAndSettle(h, clock, 100);
+  const afterSecond = getDecisions(h).filter(d => d.action === "self-review");
+  check("catch stamp: a second tick under the same clock adds no self-review decision",
+    afterSecond.length === 1, afterSecond);
+}
+
+async function caseCatchStampsAttempt_retriedOnceDebounceAdmits(clock) {
+  console.log("\n=== The catch stamps the attempt: a throw is retried once the debounce admits it ===");
+  clock.set(T0);
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "catch_stamp_retried_after_debounce",
+    // The defaults, everyTurns 20 and debounce 5: a retry at the fifth
+    // completed turn is possible only because the failed attempt left its
+    // goal_done request set, since turnsSince 5 is under everyTurns.
+    stateOpts: {
+      now: T0,
+      goals: [catchStampsAttemptRootGoal()],
+      activeGoalId: null,
+      selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: true, lastInjectAt: 0 },
+    },
+    classifyValue: "NONE",
+  });
+  h.fake.model.complete = async () => { throw new Error("boom: connection reset"); };
+  await tickAndSettle(h, clock, 100);
+  check("retry-after-debounce: the throw stamped one error decision",
+    getDecisions(h).filter(d => d.action === "self-review").length === 1, getDecisions(h));
+
+  // A tick with no completed turns in between: pendingPeriodic is set, but
+  // lastAt is stamped and turnsSince is 0, so the debounce refuses first.
+  await tickAndSettle(h, clock, 100);
+  check("retry-after-debounce: no completed turns yet, so the debounce still holds it",
+    getDecisions(h).filter(d => d.action === "self-review").length === 1, getDecisions(h));
+
+  for (let i = 0; i < 5; i++) await fireTurn(h);
+
+  h.fake.model.complete = async () => "NONE";
+  await tickAndSettle(h, clock, 100);
+  const reviews = getDecisions(h).filter(d => d.action === "self-review");
+  check("retry-after-debounce: the review ran again once the debounce admitted it",
+    reviews.length === 2, reviews);
+  check("retry-after-debounce: the second decision is the periodic NONE path",
+    reviews[1]?.detail.startsWith("periodic:") && reviews[1]?.detail.endsWith(": NONE"), reviews[1]?.detail);
+}
+
+async function caseCatchStampsAttempt_capBoundsRepeatedThrows(clock) {
+  console.log("\n=== The catch stamps the attempt: the hourly cap bounds a review that always throws ===");
+  clock.set(T0);
+  // 3 rather than the default 2, so the case also proves the option is read.
+  const maxPerHour = 3;
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "catch_stamp_cap_bounds_throws",
+    // Debounce and everyTurns both at 0 isolates the cap: every tick is
+    // otherwise eligible (no debounce wait, turnsSince 0 >= everyTurns 0
+    // always holds), so only selfReviewMaxPerHour is left to bound the
+    // retries, however many ticks run.
+    selfReviewEveryTurns: 0,
+    selfReviewDebounceTurns: 0,
+    selfReviewMaxPerHour: maxPerHour,
+    stateOpts: {
+      now: T0,
+      goals: [catchStampsAttemptRootGoal()],
+      activeGoalId: null,
+      selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: true, lastInjectAt: 0 },
+    },
+    classifyValue: "NONE",
+  });
+  h.fake.model.complete = async () => { throw new Error("always fails"); };
+  for (let i = 0; i < 6; i++) await tickAndSettle(h, clock, 100);
+
+  const errors = getDecisions(h).filter(d => d.action === "self-review" && d.detail.includes(": error:"));
+  check(`cap bounds throws: exactly ${maxPerHour} error decisions after 6 ticks inside one hour`,
+    errors.length === maxPerHour, errors);
+}
+
+async function caseCatchStampsAttempt_reactiveOnlySetsNothing(clock) {
+  console.log("\n=== The catch stamps the attempt: a failed reactive-only review leaves pendingPeriodic unset ===");
+  clock.set(T0);
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "catch_stamp_reactive_only",
+    stateOpts: {
+      now: T0,
+      goals: [catchStampsAttemptRootGoal()],
+      activeGoalId: null,
+      selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: false, lastInjectAt: 0 },
+    },
+    classifyValue: "NONE",
+  });
+  // Three turns that end in an error build the streak that makes this attempt
+  // reactive; three turns stay under selfReviewEveryTurns, so it is not periodic.
+  for (let i = 0; i < 3; i++) {
+    const turnId = `reactive-error-turn-${i}`;
+    await h.handlers["turn.start"](h.fake, { turnId }, () => {});
+    await h.handlers["turn.complete"](h.fake, { turnId, reason: "error" }, async () => ({ result: "ok" }));
+  }
+  check("reactive only: three error turns build the streak",
+    getState(h).monitor.env.errors.consecutiveErrorTurns === 3, getState(h).monitor.env.errors);
+  h.fake.model.complete = async () => { throw new Error("reactive boom"); };
+  await tickAndSettle(h, clock, 100);
+
+  const errors = getDecisions(h).filter(d => d.action === "self-review" && d.detail.includes(": error:"));
+  check("reactive only: one error decision", errors.length === 1, errors);
+  check("reactive only: the decision names the reactive trigger",
+    errors[0]?.detail.startsWith("reactive: streak"), errors[0]?.detail);
+  check("reactive only: the failed attempt leaves pendingPeriodic unset",
+    getState(h).monitor.selfReview.pendingPeriodic === false, getState(h).monitor.selfReview);
+}
+
+async function caseCatchStampsAttempt_fallbacksNameTheFailure(clock) {
+  console.log("\n=== The catch stamps the attempt: an empty or unprintable error still writes a decision ===");
+  const throws = [
+    { label: "an Error with an empty message", value: new Error(""), expected: "error: Error" },
+    { label: "a value whose conversion throws", value: { toString() { throw new Error("no"); } }, expected: "error: unprintable error" },
+  ];
+  for (const t of throws) {
+    clock.set(T0);
+    const h = await createTickHarness({
+      ...OPTS,
+      caseName: "catch_stamp_fallbacks",
+      stateOpts: {
+        now: T0,
+        goals: [catchStampsAttemptRootGoal()],
+        activeGoalId: null,
+        selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: true, lastInjectAt: 0 },
+      },
+      classifyValue: "NONE",
+    });
+    h.fake.model.complete = async () => { throw t.value; };
+    await tickAndSettle(h, clock, 100);
+    const decisions = getDecisions(h).filter(d => d.action === "self-review");
+    check(`fallbacks: ${t.label} writes one decision`, decisions.length === 1, decisions);
+    check(`fallbacks: ${t.label} ends "${t.expected}"`,
+      decisions[0]?.detail.endsWith(t.expected), decisions[0]?.detail);
+  }
+}
+
+async function caseCatchStampsAttempt_messageFoldedAndCut(clock) {
+  console.log("\n=== The catch stamps the attempt: a long, multi-line message is folded and cut ===");
+  clock.set(T0);
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "catch_stamp_message_folded_cut",
+    stateOpts: {
+      now: T0,
+      goals: [catchStampsAttemptRootGoal()],
+      activeGoalId: null,
+      selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: true, lastInjectAt: 0 },
+    },
+    classifyValue: "NONE",
+  });
+  // CR LF, a run of LF, U+2028 and U+0085 each break a line for some reader.
+  const rawMessage = "line one\r\nline two\n\n\u2028line three,\u0085then a long run: " + "x".repeat(220);
+  h.fake.model.complete = async () => { throw new Error(rawMessage); };
+  await tickAndSettle(h, clock, 100);
+
+  const prefix = "periodic: pendingPeriodic (goal_done): error: ";
+  const reviews = getDecisions(h).filter(d => d.action === "self-review");
+  const detail = reviews[0]?.detail ?? "";
+  check("message folded and cut: one self-review decision", reviews.length === 1, reviews);
+  check("message folded and cut: the detail names the thrown message after its trigger",
+    detail.startsWith(prefix + "line one line two"), detail);
+  check("message folded and cut: no line break of any kind survives in the detail",
+    !/[\r\n\u2028\u2029\u0085]/.test(detail), detail);
+  check("message folded and cut: the message portion the code wrote is exactly 200 characters",
+    detail.startsWith(prefix) && detail.slice(prefix.length).length === 200, detail.length);
+}
+
+async function caseCatchStampsAttempt_overlappingTickDoesNotRelaunch(clock) {
+  console.log("\n=== The attempt is stamped before its first await: an overlapping tick does not start a second review ===");
+  clock.set(T0);
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "catch_stamp_overlapping_tick",
+    stateOpts: {
+      now: T0,
+      goals: [catchStampsAttemptRootGoal()],
+      activeGoalId: null,
+      selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: true, lastInjectAt: 0 },
+    },
+    classifyValue: "NONE",
+  });
+  // The first review's model call stays open until the test fails it, the
+  // shape of a model call that hangs past controllerTickMs. Every other model
+  // call the tick makes answers at once, so only the review is held.
+  let calls = 0;
+  const held = [];
+  h.fake.model.complete = async ({ prompt }) => {
+    if (!String(prompt).startsWith("Review the following worker activity")) return "NONE";
+    calls += 1;
+    return new Promise((_, reject) => { held.push(reject); });
+  };
+  // The git probe (block 2b) runs after the self-review block, so a process
+  // run during the second tick shows that tick passed block 2a2 rather than
+  // throwing before it. The first tick is held inside 2a2 and cannot reach it.
+  let processRuns = 0;
+  const realRun = h.fake.process.run;
+  h.fake.process.run = (...args) => { processRuns += 1; return realRun(...args); };
+  const first = fireTick(h);
+  const reached = await waitUntil(() => calls === 1);
+  check("overlapping tick: the first tick reached its review's model call", reached, calls);
+
+  // $.clock.every does not await the tick, so a second tick can run while the
+  // first review is still out. It must read the attempt as already spent. The
+  // race keeps a second tick that blocks from ending the process silently.
+  const second = await Promise.race([
+    fireTick(h).then(() => "settled"),
+    new Promise(r => setTimeout(() => r("blocked"), 2000)),
+  ]);
+  check("overlapping tick: the second tick settled while the first review was out", second === "settled", second);
+  check("overlapping tick: the second tick ran past the self-review block to the git probe",
+    processRuns >= 1, processRuns);
+  check("overlapping tick: the second tick started no second review", calls === 1, calls);
+
+  // Fail every held call, so a regression that started a second review still
+  // lets both ticks finish rather than ending the process silently.
+  for (const reject of held) reject(new Error("timed out"));
+  const firstDone = await Promise.race([
+    first.then(() => "settled"),
+    new Promise(r => setTimeout(() => r("blocked"), 2000)),
+  ]);
+  check("overlapping tick: the first tick settled once its review failed", firstDone === "settled", firstDone);
+  const reviews = getDecisions(h).filter(d => d.action === "self-review");
+  check("overlapping tick: one error decision once the first review fails", reviews.length === 1
+    && reviews[0].detail.endsWith("error: timed out"), reviews);
+}
+
 // Round 32/36 point 4: a dead writer's pending inbox record is marked
 // skipped once, not re-logged every tick forever.
 async function caseItem8p2_dead_writer_record_skipped_once(clock) {
@@ -3077,6 +3351,13 @@ async function main() {
     await caseItem8p2_worker_states_fork_opens_ask(clock);
     await caseItem8p2_placeholder_marker_refused(clock);
     await caseItem8p2_memory_quality_self_scoring_vs_proof_backed(clock);
+    await caseCatchStampsAttempt_notRetriedNextTick(clock);
+    await caseCatchStampsAttempt_retriedOnceDebounceAdmits(clock);
+    await caseCatchStampsAttempt_capBoundsRepeatedThrows(clock);
+    await caseCatchStampsAttempt_reactiveOnlySetsNothing(clock);
+    await caseCatchStampsAttempt_fallbacksNameTheFailure(clock);
+    await caseCatchStampsAttempt_messageFoldedAndCut(clock);
+    await caseCatchStampsAttempt_overlappingTickDoesNotRelaunch(clock);
     await caseItem8p2_dead_writer_record_skipped_once(clock);
     await caseItem5_channelWindowRollsOverflow(clock);
     await caseItem5_channelWindowNoDeleteOnAppendFailure();
