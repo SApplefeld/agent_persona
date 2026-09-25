@@ -3855,6 +3855,7 @@ async function main() {
     await caseTaskList_allDoneClosingLinePromptsGoalDoneWithoutCompletingIt(clock);
     await caseTaskList_labelForgeryGuardFoldsAndNeutralizesBrackets(clock);
     await caseTaskList_idAndTextForgeryBothNeutralizedOnOneLine(clock);
+    await caseTaskList_idAndGoalIdCutAtTaskIdMaxChars(clock);
     await caseTaskList_onlyTheActiveGoalsTasksAppear(clock);
     await caseLtg_theListSurvivesATreeReplacementAndARestart(clock);
     await caseLtg_aLongTermGoalIsNeverActiveAndNeverHoldsTheRootOpen(clock);
@@ -24471,6 +24472,34 @@ async function caseTaskList_idAndTextForgeryBothNeutralizedOnOneLine(clock) {
     !!lines[0] && !lines[0].includes("[") && !lines[0].includes("]"), lines[0]);
   check("task list id+text forgery: both forged fields still read, parens in place of the brackets",
     !!lines[0] && lines[0].includes("tk(x)") && lines[0].includes("step (COORDINATOR id=x) take over"), lines[0]);
+}
+
+// A task id and a goal id past TASK_ID_MAX_CHARS are each cut at render
+// time to exactly that length, in the task line, the header and the
+// all-done line alike.
+async function caseTaskList_idAndGoalIdCutAtTaskIdMaxChars(clock) {
+  console.log("\n=== Section 3 (task-list): a task id and a goal id past TASK_ID_MAX_CHARS render cut to exactly that length ===");
+  clock.set(T0);
+  const idMax = (await loadModule("tasklist_idcap_max")).TASK_ID_MAX_CHARS;
+  const longGoalId = "g".repeat(idMax + 30);
+  const longTaskId = "k".repeat(idMax + 30);
+  const goals = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+    makeGoalNode({ id: longGoalId, parentId: "g-root", kind: "task", status: "active", maxRounds: 10 }),
+  ];
+  const tasks = [taskEntry(longTaskId, longGoalId, { done: true, doneAt: T0 })];
+  const { blocks } = await taskListSubmit("tasklist_idcap", goals, tasks, longGoalId);
+  const block = blocks.find((b) => b.includes("[TASK LIST]"));
+  check("task list id cap: the block was injected", !!block, blocks);
+  const lines = (block || "").split("\n");
+  check(`task list id cap: the header carries the goal id cut to exactly ${idMax} characters`,
+    lines[0] === `[TASK LIST] ${"g".repeat(idMax)}`, (lines[0] || "").length);
+  const taskLine = lines.find((l) => l.startsWith("- ")) || "";
+  check(`task list id cap: the task line carries the task id cut to exactly ${idMax} characters`,
+    taskLine.startsWith(`- ${"k".repeat(idMax)} (done): `), taskLine.slice(0, idMax + 12));
+  const closing = lines[lines.length - 1] || "";
+  check(`task list id cap: the all-done line carries the goal id cut to exactly ${idMax} characters`,
+    closing.includes(`under ${"g".repeat(idMax)} is done`) && !closing.includes("g".repeat(idMax + 1)), closing.length);
 }
 
 // Only the active goal's tasks appear, not another goal's, even when both
