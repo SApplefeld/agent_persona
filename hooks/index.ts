@@ -2904,13 +2904,18 @@ export const register: Register = async (on, options) => {
   // end (not whichever node is active then, which may have been activated
   // mid-turn by goal_done / scorer complete).
   let turnLeafId: string | null = null;
-  // The compaction boundary owed by the persona's last turn: set at a
-  // turn.complete that ended at a durable point, carrying what opened that
-  // turn for the record, and taken and cleared by the next turn.start, which
-  // runs the kit's boundary command. The bank waits for the next turn because
-  // the kit lapses a declared marker on the inbound line that opens every
-  // turn, so one recorded at turn end is never honored. It is held in memory
-  // only: a restart is a new session id, whose marker would be another key.
+  // The compaction boundary owed by the persona's last turn: recomputed at
+  // every completion of the persona's own turn, set where that turn ended at
+  // a durable point (carrying what opened it, for the record) and cleared
+  // where it did not, and taken and cleared by the first main-loop tool.call
+  // after it, which runs the kit's boundary command. The bank waits for the
+  // next turn because the kit lapses a declared marker on the inbound line
+  // that opens every turn, so one recorded at turn end is never honored. It
+  // waits past turn.start for the first tool call because turn.start can
+  // fire before the turn's opening prompt line reaches the transcript file,
+  // and a marker positioned ahead of that line lapses on it. It is held in
+  // memory only: a restart is a new session id, whose marker would be
+  // another key.
   let pendingCompactionBank: { turnKind: string } | null = null;
 
   // Section 2 (plan-health-from-the-record): the plan holders whose document
@@ -6868,24 +6873,6 @@ export const register: Register = async (on, options) => {
       detail: `Turn ${sess.state.monitor.turnCount} leaf ${turnLeafId || "none"} id ${e.turnId}`,
     });
 
-    // The compaction boundary the persona's last turn owed, if any. Every
-    // turn.start here is the persona's own: its event carries no agent id,
-    // and a subagent's start is not delivered to this hook. The owed bank is
-    // taken and cleared before the command runs, so it clears whatever the
-    // exit, and runs only while this session is still the owner, since
-    // ownership lost between the two events leaves nothing this session
-    // should bank. The lines that open this turn (the queue's enqueue and
-    // dequeue records and the prompt line) are already in the transcript
-    // here, so the marker records a position after them and holds for this
-    // turn's work until a new message arrives. bankCompactionBoundary never throws, and its one
-    // decision is saved the way the stamp lines below are.
-    const owedBank = pendingCompactionBank;
-    pendingCompactionBank = null;
-    if (owedBank !== null && sess.isOwner) {
-      await bankCompactionBoundary($, owedBank.turnKind);
-      try { await persist($); } catch { /* persist could not read or write the store; the decision waits in memory */ }
-    }
-
     // AS3: which turn is this? The text it begins with says: e.text is
     // matched against the queued entries, on the text the entry submitted
     // or on the settled text its resolved submit reported, and the match is
@@ -7916,14 +7903,17 @@ export const register: Register = async (on, options) => {
       }
     }
 
-    // The compaction boundary: at the persona's own turn end, when that turn
-    // stopped at a durable point, a bank is owed, and the persona's next
-    // turn.start runs the kit's boundary command, which records the marker
-    // its compaction gate honors. The persona's own turn end is this
-    // completion carrying the id turn.start carried with no turn left open
-    // after its delete, so a background subagent's completion inside the open
-    // turn, or one for a turn this session never saw start, owes nothing.
-    // Only the owner owes a bank, and a skipped turn owes none. A durable point
+    // The compaction boundary: every completion of the persona's own turn,
+    // the one carrying the id turn.start carried, recomputes the owed bank.
+    // Where that turn stopped at a durable point a bank is owed, and the first
+    // main-loop tool call of a later turn runs the kit's boundary command,
+    // which records the marker its compaction gate honors. Anywhere else the
+    // owed bank is cleared, so a turn that made no tool call never carries a
+    // stale one into a later turn that ended mid-work or on a lead. A
+    // background subagent's completion inside the open turn, or one for a
+    // turn this session never saw start, is not the persona's own and leaves
+    // the owed bank as it is. A turn still open after this completion's
+    // delete, a reader session and a skipped turn each owe none. A durable point
     // is read from fixed signals: the closing text opens with no BLOCKED: or
     // WAITING: line, whatever the entry's kind, and the entry active at turn
     // start either has no plan holder (a task entry, or no entry at all) or
@@ -7931,12 +7921,11 @@ export const register: Register = async (on, options) => {
     // turn. A plan holder that did neither is mid-section and owes nothing,
     // since a marker there would license compaction mid-work. It runs after
     // the plan-record read, which settles the Chapter signal.
-    if (completesGateTurn && !turnIsOpen() && sess.isOwner && !skipped) {
+    if (completesGateTurn) {
       const endedOnLead = statusLine !== null && statusLine.state !== "working";
       const midSection = planHolder !== undefined && !planChapterAdvanced && !planCompletedByDocument;
-      if (!endedOnLead && !midSection) {
-        pendingCompactionBank = { turnKind: turnKindAtStart };
-      }
+      const durable = !turnIsOpen() && sess.isOwner && !skipped && !endedOnLead && !midSection;
+      pendingCompactionBank = durable ? { turnKind: turnKindAtStart } : null;
     }
 
     // M7: single guarded-write path (shared helper).
@@ -7967,6 +7956,25 @@ export const register: Register = async (on, options) => {
     // channel-reply backstop at turn.complete has nothing to backfill.
     if (typeof e.tool === "string" && (e.tool.includes("__reply") || e.tool.endsWith("_reply"))) {
       replyCalledThisTurn = true;
+    }
+
+    // The compaction boundary the persona's last own turn owed, taken at the
+    // first main-loop tool call after it, before this tool is served or
+    // passed on, so the marker records a position before the tool's work. By
+    // this point the turn's opening prompt line is on disk, which turn.start
+    // cannot guarantee. A subagent's call neither runs nor clears it. The
+    // owed bank is cleared before the command runs, so it clears whatever
+    // the exit, and runs only while this session is still the owner, since
+    // ownership lost between the two events leaves nothing this session
+    // should bank. bankCompactionBoundary never throws, and its one decision
+    // is saved the way this handler's other bookkeeping lines are.
+    if (!inSubagent && pendingCompactionBank !== null) {
+      const owedBank = pendingCompactionBank;
+      pendingCompactionBank = null;
+      if (sess.isOwner) {
+        await bankCompactionBoundary($, owedBank.turnKind);
+        try { await persist($); } catch { /* persist could not read or write the store; the decision waits in memory */ }
+      }
     }
 
     // Serve agentic_identity (F9: single arbiter = commons; epoch is only the

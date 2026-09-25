@@ -3435,11 +3435,13 @@ async function main() {
     await caseLive1_readFailureDegradesToNotComplete(clock);
 
     // Section 2 (boundary-compaction): a durable turn end owes the kit's
-    // compaction boundary, and the persona's next turn start banks it.
+    // compaction boundary, and the next turn's first main-loop tool call
+    // banks it.
     await caseBank2_durableTurnsBankOnce(clock);
     await caseBank2_nonDurableTurnsBankNothing(clock);
     await caseBank2_onlyThePersonasOwnTurnEndBanks(clock);
-    await caseBank2_theOwedBankIsTakenOnlyByAPersonaTurnStart(clock);
+    await caseBank2_theOwedBankIsTakenOnlyByAMainLoopToolCall(clock);
+    await caseBank2_everyPersonaTurnEndRecomputesTheOwedBank(clock);
     await caseBank2_greatestLastUpdatedRecordIsRun(clock);
     await caseBank2_installRecordMissesSkipWithOneDecision(clock);
     await caseBank2_failedRunsLogOneDecisionAndNeverFailTheTurn(clock);
@@ -14798,7 +14800,7 @@ async function caseLive1_readFailureDegradesToNotComplete(clock) {
   }
 }
 
-// --- Section 2 (boundary-compaction): the compaction boundary owed at a durable turn end, banked at the next persona turn start ---
+// --- Section 2 (boundary-compaction): the compaction boundary owed at a durable turn end, banked at the next turn's first main-loop tool call ---
 
 // The kit install the seeded installed_plugins.json names, and the script the
 // plugin must run under it.
@@ -14892,8 +14894,29 @@ async function bank2Start(h, turnId) {
   return { nextCalls, thrown };
 }
 
+// One tool call through the real tool.call handler: a work tool the engine
+// passes on, from the main loop unless `agentId` names a subagent's loop.
+// Records whether it settled or threw, how often it handed the event on to
+// next, and whether it returned next's own result unchanged.
+async function bank2Call(h, turnId, { agentId } = {}) {
+  let nextCalls = 0;
+  let thrown = null;
+  let returned;
+  const nextResult = { result: "the tool ran" };
+  const e = { tool: "Write", turnId, ...(agentId === undefined ? {} : { agentId }) };
+  try {
+    returned = await h.handlers["tool.call"](h.fake, e, async () => { nextCalls += 1; return nextResult; });
+  } catch (err) {
+    thrown = err;
+  }
+  return { nextCalls, thrown, returnedUnchanged: returned === nextResult };
+}
+
 function bank2CheckSettled(label, outcome) {
   check(`${label}: the handler settled and handed on to next once`, outcome.thrown === null && outcome.nextCalls === 1, { thrown: outcome.thrown && String(outcome.thrown), nextCalls: outcome.nextCalls });
+  if (outcome.returnedUnchanged !== undefined) {
+    check(`${label}: the tool call returned next's result unchanged`, outcome.returnedUnchanged === true);
+  }
 }
 
 // A durable turn end owes the bank and runs nothing itself: the kit lapses a
@@ -14904,14 +14927,28 @@ function bank2CheckOwedOnly(label, h, runs, endOutcome) {
   check(`${label} (turn end): no compaction_boundary decision yet`, bank2Decisions(h).length === 0, bank2Decisions(h));
 }
 
-// The banking assertions at the persona's next turn.start: it settled with
-// one next call, the boundary command ran once as node
-// <install>/hooks/kit-compact-checkpoint.js boundary, with env carrying
-// CLAUDE_CODE_SESSION_ID equal to the session id and no cwd, and one
-// compaction_boundary_banked decision carries the exit code and the child's
-// first stderr line.
-function bank2CheckBanked(label, h, runs, startOutcome, { script = BANK2_SCRIPT, stderrFirst = null, stderrLater = null } = {}) {
-  bank2CheckSettled(`${label} (next turn start)`, startOutcome);
+// Opens the persona's next turn and makes its first main-loop tool call. The
+// turn.start alone runs nothing and logs nothing, whether or not a bank is
+// owed: turn.start can fire before the turn's opening line is on disk. The
+// tool call's outcome is returned for the case to judge.
+async function bank2NextTurnCall(label, h, runs, turnId) {
+  const runsBefore = runs.length;
+  const decisionsBefore = bank2Decisions(h).length;
+  const start = await bank2Start(h, turnId);
+  bank2CheckSettled(`${label} (next turn start)`, start);
+  check(`${label} (next turn start): the turn start alone ran nothing`, runs.length === runsBefore, runs);
+  check(`${label} (next turn start): the turn start alone logged no compaction_boundary decision`, bank2Decisions(h).length === decisionsBefore, bank2Decisions(h));
+  return bank2Call(h, turnId);
+}
+
+// The banking assertions at the first main-loop tool call of the persona's
+// next turn: it settled with one next call and next's result returned, the
+// boundary command ran once as node <install>/hooks/kit-compact-checkpoint.js
+// boundary, with env carrying CLAUDE_CODE_SESSION_ID equal to the session id
+// and no cwd, and one compaction_boundary_banked decision carries the exit
+// code and the child's first stderr line.
+function bank2CheckBanked(label, h, runs, callOutcome, { script = BANK2_SCRIPT, stderrFirst = null, stderrLater = null } = {}) {
+  bank2CheckSettled(`${label} (first main-loop tool call)`, callOutcome);
   check(`${label}: the boundary command ran exactly once`, runs.length === 1, runs);
   const run = runs[0];
   check(`${label}: argv is node, the kit checkpoint script under the install path, boundary`,
@@ -14930,18 +14967,18 @@ function bank2CheckBanked(label, h, runs, startOutcome, { script = BANK2_SCRIPT,
   }
 }
 
-// After the bank lands, the turn it landed in ends without owing another
-// (aborted) and a further persona turn.start runs nothing more: the start
-// that banked cleared the owed bank.
+// After the bank lands, a second main-loop tool call in the same turn runs
+// nothing more: the call that banked cleared the owed bank. The turn is then
+// closed, aborted, so it owes nothing and leaves no turn open.
 async function bank2CheckNoSecondBank(label, h, runs, openTurnId) {
   const runsBefore = runs.length;
   const decisionsBefore = bank2Decisions(h).length;
+  const second = await bank2Call(h, openTurnId);
+  bank2CheckSettled(`${label} (second tool call)`, second);
+  check(`${label}: a second tool call ran nothing more`, runs.length === runsBefore, runs);
+  check(`${label}: a second tool call logged no further compaction_boundary decision`, bank2Decisions(h).length === decisionsBefore, bank2Decisions(h));
   const end = await bank2Complete(h, openTurnId, "Partial.", { aborted: true, reason: "aborted" });
-  const start = await bank2Start(h, `${openTurnId}-again`);
-  bank2CheckSettled(`${label} (second turn end)`, end);
-  bank2CheckSettled(`${label} (second turn start)`, start);
-  check(`${label}: a second turn start ran nothing more`, runs.length === runsBefore, runs);
-  check(`${label}: a second turn start logged no further compaction_boundary decision`, bank2Decisions(h).length === decisionsBefore, bank2Decisions(h));
+  bank2CheckSettled(`${label} (the banking turn's end)`, end);
 }
 
 // The non-banking assertions. The recorder is live in every case that calls
@@ -14954,12 +14991,13 @@ function bank2CheckNothing(label, h, runs, outcome) {
 }
 
 // A delivered no-goal turn, a task-entry turn, a Chapter-banking turn and a
-// turn whose plan document reads Complete each owe the bank at their end, and
-// the persona's next turn.start runs it exactly once; a second turn start
-// runs nothing more. The plan document is read under the live directory,
-// here HARNESS_CWD, which the harness's session.cwd answers.
+// turn whose plan document reads Complete each owe the bank at their end.
+// The next turn's turn.start runs nothing, its first main-loop tool call runs
+// the command exactly once, and a second tool call runs nothing more. The
+// plan document is read under the live directory, here HARNESS_CWD, which
+// the harness's session.cwd answers.
 async function caseBank2_durableTurnsBankOnce(clock) {
-  console.log("\n=== boundary-compaction Section 2: a durable turn end banks once, at the next persona turn start ===");
+  console.log("\n=== boundary-compaction Section 2: a durable turn end banks once, at the next turn's first main-loop tool call ===");
 
   clock.set(T0);
   {
@@ -14969,8 +15007,8 @@ async function caseBank2_durableTurnsBankOnce(clock) {
     check("bank2 no-goal setup: no goal is active", getState(h).goals.length === 0 && getState(h).activeGoalId === null, getState(h).goals);
     const end = await bank2Turn(h, "t-nogoal", "Here is the answer.");
     bank2CheckOwedOnly("bank2 no-goal turn", h, runs, end);
-    const start = await bank2Start(h, "t-after");
-    bank2CheckBanked("bank2 no-goal turn", h, runs, start, { stderrFirst: "boundary marker written without a transcript position", stderrLater: "second stderr line" });
+    const call = await bank2NextTurnCall("bank2 no-goal turn", h, runs, "t-after");
+    bank2CheckBanked("bank2 no-goal turn", h, runs, call, { stderrFirst: "boundary marker written without a transcript position", stderrLater: "second stderr line" });
     await bank2CheckNoSecondBank("bank2 no-goal turn", h, runs, "t-after");
   }
 
@@ -14983,8 +15021,8 @@ async function caseBank2_durableTurnsBankOnce(clock) {
       getState(h).activeGoalId === "task-1" && !getState(h).goals.some(g => g.planPath), getState(h).goals.map(g => `${g.id}|${g.status}|${g.planPath}`));
     const end = await bank2Turn(h, "t-task", "Did the next step of the task.");
     bank2CheckOwedOnly("bank2 task-entry turn", h, runs, end);
-    const start = await bank2Start(h, "t-after");
-    bank2CheckBanked("bank2 task-entry turn", h, runs, start);
+    const call = await bank2NextTurnCall("bank2 task-entry turn", h, runs, "t-after");
+    bank2CheckBanked("bank2 task-entry turn", h, runs, call);
     await bank2CheckNoSecondBank("bank2 task-entry turn", h, runs, "t-after");
   }
 
@@ -14999,8 +15037,8 @@ async function caseBank2_durableTurnsBankOnce(clock) {
     const end = await bank2Turn(h, "t-chapter", "Chapter 2 is written.");
     check("bank2 chapter-banking turn: the read advanced the Chapter count", getDecisions(h).some(d => d.action === "plan_progress" && d.detail.includes("1 -> 2")), getDecisions(h).map(d => d.action));
     bank2CheckOwedOnly("bank2 chapter-banking turn", h, runs, end);
-    const start = await bank2Start(h, "t-after");
-    bank2CheckBanked("bank2 chapter-banking turn", h, runs, start);
+    const call = await bank2NextTurnCall("bank2 chapter-banking turn", h, runs, "t-after");
+    bank2CheckBanked("bank2 chapter-banking turn", h, runs, call);
     await bank2CheckNoSecondBank("bank2 chapter-banking turn", h, runs, "t-after");
   }
 
@@ -15014,8 +15052,8 @@ async function caseBank2_durableTurnsBankOnce(clock) {
     check("bank2 plan-complete turn: the document completed plan-1 with no Chapter advance",
       getState(h).goals.find(g => g.id === "plan-1").status === "complete" && !getDecisions(h).some(d => d.action === "plan_progress"), getDecisions(h).map(d => d.action));
     bank2CheckOwedOnly("bank2 plan-complete turn", h, runs, end);
-    const start = await bank2Start(h, "t-after");
-    bank2CheckBanked("bank2 plan-complete turn", h, runs, start);
+    const call = await bank2NextTurnCall("bank2 plan-complete turn", h, runs, "t-after");
+    bank2CheckBanked("bank2 plan-complete turn", h, runs, call);
     await bank2CheckNoSecondBank("bank2 plan-complete turn", h, runs, "t-after");
   }
 }
@@ -15026,9 +15064,10 @@ async function caseBank2_durableTurnsBankOnce(clock) {
 // WAITING: line whatever the entry's kind, and a plan holder that advanced no
 // Chapter and was not completed (including a task under a plan node, and a
 // plan record that could not be read) each owe nothing, so neither the turn
-// end nor the persona's next turn.start runs the command.
+// end, the next turn.start nor that turn's first main-loop tool call runs
+// the command.
 async function caseBank2_nonDurableTurnsBankNothing(clock) {
-  console.log("\n=== boundary-compaction Section 2: a skipped, lead-ended or mid-section turn banks nothing, at its end or the next start ===");
+  console.log("\n=== boundary-compaction Section 2: a skipped, lead-ended or mid-section turn banks nothing, at its end or the next turn's first tool call ===");
   const cases = [
     { label: "skipped: aborted", build: bank2NoGoalHarness, answer: "Partial.", opts: { aborted: true, reason: "aborted" } },
     { label: "skipped: errored", build: bank2NoGoalHarness, answer: "Partial.", opts: { reason: "error" } },
@@ -15074,16 +15113,16 @@ async function caseBank2_nonDurableTurnsBankNothing(clock) {
     const end = await bank2Turn(h, "t-none", c.answer, c.opts);
     bank2CheckNothing(`bank2 ${c.label} (turn end)`, h, runs, end);
     if (c.expectAction) check(`bank2 ${c.label}: the turn logged ${c.expectAction}`, getDecisions(h).some(d => d.action === c.expectAction), getDecisions(h).map(d => d.action));
-    const start = await bank2Start(h, "t-after");
-    bank2CheckNothing(`bank2 ${c.label} (next turn start)`, h, runs, start);
+    const call = await bank2NextTurnCall(`bank2 ${c.label}`, h, runs, "t-after");
+    bank2CheckNothing(`bank2 ${c.label} (next turn's first tool call)`, h, runs, call);
   }
 }
 
 // Only the completion of the persona's own turn, with no turn left open,
 // owes the bank. A background subagent's completion inside the open turn and
 // a completion for a turn this session never saw start owe nothing, so the
-// persona's next turn.start runs nothing; the persona's own durable end in
-// the same harness afterwards banks once at the start after it, which is the
+// next turn's first tool call runs nothing; the persona's own durable end in
+// the same harness afterwards banks once at the call after it, which is the
 // control that the recorder records there. A completion carrying the turn's
 // id while an earlier turn is still open owes nothing either.
 async function caseBank2_onlyThePersonasOwnTurnEndBanks(clock) {
@@ -15099,8 +15138,8 @@ async function caseBank2_onlyThePersonasOwnTurnEndBanks(clock) {
     bank2CheckNothing("bank2 subagent completion inside the open turn", h, runs, sub);
     const own = await bank2Complete(h, "t-main", "The persona's own answer.");
     bank2CheckOwedOnly("bank2 the persona's own completion after it (control)", h, runs, own);
-    const start = await bank2Start(h, "t-after");
-    bank2CheckBanked("bank2 the persona's own completion after it (control)", h, runs, start);
+    const call = await bank2NextTurnCall("bank2 the persona's own completion after it (control)", h, runs, "t-after");
+    bank2CheckBanked("bank2 the persona's own completion after it (control)", h, runs, call);
   }
 
   clock.set(T0);
@@ -15110,10 +15149,12 @@ async function caseBank2_onlyThePersonasOwnTurnEndBanks(clock) {
     const runs = bank2Recorder(h);
     const ghost = await bank2Turn(h, "t-never-started", "An answer for a turn never seen.", { open: false });
     bank2CheckNothing("bank2 completion for a turn never seen to start", h, runs, ghost);
-    const own = await bank2Turn(h, "t-seen", "An answer for a turn seen to start.");
-    bank2CheckNothing("bank2 completion for a turn never seen to start (the next turn start ran nothing)", h, runs, own);
-    const start = await bank2Start(h, "t-after");
-    bank2CheckBanked("bank2 a seen turn's durable end in the same session afterwards (control)", h, runs, start);
+    const firstCall = await bank2NextTurnCall("bank2 completion for a turn never seen to start", h, runs, "t-seen");
+    bank2CheckNothing("bank2 completion for a turn never seen to start (the next turn's first tool call ran nothing)", h, runs, firstCall);
+    const own = await bank2Complete(h, "t-seen", "An answer for a turn seen to start.");
+    bank2CheckOwedOnly("bank2 a seen turn's durable end in the same session afterwards (control)", h, runs, own);
+    const call = await bank2NextTurnCall("bank2 a seen turn's durable end in the same session afterwards (control)", h, runs, "t-after");
+    bank2CheckBanked("bank2 a seen turn's durable end in the same session afterwards (control)", h, runs, call);
   }
 
   clock.set(T0);
@@ -15125,29 +15166,41 @@ async function caseBank2_onlyThePersonasOwnTurnEndBanks(clock) {
     await h.handlers["turn.start"](h.fake, { turnId: "t-second" }, async () => ({ result: "ok" }));
     const outcome = await bank2Complete(h, "t-second", "The later turn's answer.");
     bank2CheckNothing("bank2 the gate turn's completion while another turn is still open", h, runs, outcome);
-    const start = await bank2Start(h, "t-third");
-    bank2CheckNothing("bank2 the gate turn's completion while another turn is still open (next turn start)", h, runs, start);
+    const call = await bank2NextTurnCall("bank2 the gate turn's completion while another turn is still open", h, runs, "t-third");
+    bank2CheckNothing("bank2 the gate turn's completion while another turn is still open (next turn's first tool call)", h, runs, call);
   }
 }
 
-// A turn.start with no owed bank runs nothing. The engine raises no
-// turn.start for a subagent (.claude/types/claude-code.d.ts, TurnStartInput),
-// so a subagent reaches this hook only as a completion. A subagent-shaped completion
-// (an id this session never saw start, arriving with no turn open, closing
-// on a durable-looking answer) neither owes a bank nor takes one already
-// owed: with a bank owed by the persona's durable end, such a completion in
-// between leaves it owed, and the persona's next turn.start still banks it
-// exactly once.
-async function caseBank2_theOwedBankIsTakenOnlyByAPersonaTurnStart(clock) {
-  console.log("\n=== boundary-compaction Section 2: a start with nothing owed runs nothing, and a subagent completion takes no owed bank ===");
+// Only a main-loop tool call takes an owed bank. A tool call with no owed
+// bank runs nothing. A subagent's tool call (one carrying an agentId) runs
+// nothing and leaves the owed bank for the main loop's call after it, which
+// banks it once. A subagent-shaped completion (an id this session never saw
+// start, arriving with no turn open, closing on a durable-looking answer)
+// neither owes a bank nor takes one already owed.
+async function caseBank2_theOwedBankIsTakenOnlyByAMainLoopToolCall(clock) {
+  console.log("\n=== boundary-compaction Section 2: only a main-loop tool call takes an owed bank ===");
 
   clock.set(T0);
   {
     const h = await bank2NoGoalHarness("bank2_noflag");
     await bank2SeedInstalled(h, bank2Installed());
     const runs = bank2Recorder(h);
-    const start = await bank2Start(h, "t-first");
-    bank2CheckNothing("bank2 a turn start with no owed bank", h, runs, start);
+    const call = await bank2NextTurnCall("bank2 a tool call with no owed bank", h, runs, "t-first");
+    bank2CheckNothing("bank2 a tool call with no owed bank", h, runs, call);
+  }
+
+  clock.set(T0);
+  {
+    const h = await bank2NoGoalHarness("bank2_subagent_call");
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    const end = await bank2Turn(h, "t-durable", "Here is the answer.");
+    bank2CheckOwedOnly("bank2 an owed bank with a subagent's tool call first", h, runs, end);
+    await bank2Start(h, "t-after");
+    const sub = await bank2Call(h, "t-after", { agentId: "agent-1" });
+    bank2CheckNothing("bank2 a subagent's tool call with a bank owed", h, runs, sub);
+    const main = await bank2Call(h, "t-after");
+    bank2CheckBanked("bank2 the main loop's tool call after it banks the owed bank once", h, runs, main);
   }
 
   clock.set(T0);
@@ -15159,8 +15212,64 @@ async function caseBank2_theOwedBankIsTakenOnlyByAPersonaTurnStart(clock) {
     bank2CheckOwedOnly("bank2 an owed bank with a subagent completion after it", h, runs, end);
     const sub = await bank2Complete(h, "t-subagent", "The subagent's report.");
     bank2CheckNothing("bank2 a subagent-shaped completion after the owed bank takes nothing", h, runs, sub);
-    const start = await bank2Start(h, "t-after");
-    bank2CheckBanked("bank2 the persona's next turn start still banks the owed bank once", h, runs, start);
+    const call = await bank2NextTurnCall("bank2 the persona's next turn still banks the owed bank once", h, runs, "t-after");
+    bank2CheckBanked("bank2 the persona's next turn still banks the owed bank once", h, runs, call);
+  }
+}
+
+// Every completion of the persona's own turn recomputes the owed bank. A
+// durable end followed by a turn that made no tool call and ended on a lead,
+// or mid-section, leaves nothing owed, so the first tool call of the turn
+// after runs nothing. A durable end followed by a turn that made no tool call
+// and was itself durable still owes exactly one bank, which that first tool
+// call runs once: the positive control for the two clearing cases.
+async function caseBank2_everyPersonaTurnEndRecomputesTheOwedBank(clock) {
+  console.log("\n=== boundary-compaction Section 2: every persona turn end recomputes the owed bank ===");
+  const variants = [
+    {
+      label: "then a lead-ended turn",
+      build: bank2NoGoalHarness,
+      seed: () => {},
+      first: "Here is the answer.",
+      second: "WAITING: on the operator's reply.",
+      banks: false,
+    },
+    {
+      label: "then a mid-section turn",
+      build: bank2PlanHarness,
+      seed: (h) => h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"])),
+      first: "Chapter 2 is written.",
+      second: "Made progress on the next section.",
+      banks: false,
+    },
+    {
+      label: "then another durable turn",
+      build: bank2NoGoalHarness,
+      seed: () => {},
+      first: "Here is the answer.",
+      second: "Here is another answer.",
+      banks: true,
+    },
+  ];
+  for (const v of variants) {
+    clock.set(T0);
+    const h = await v.build(`bank2_recompute_${variants.indexOf(v)}`);
+    v.seed(h);
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    const first = await bank2Turn(h, "t-durable", v.first);
+    bank2CheckOwedOnly(`bank2 a durable end ${v.label}`, h, runs, first);
+    // The second turn makes no tool call, so nothing takes the owed bank
+    // before its own end recomputes it.
+    const second = await bank2Turn(h, "t-no-tool", v.second);
+    bank2CheckSettled(`bank2 a durable end ${v.label} (second turn end)`, second);
+    check(`bank2 a durable end ${v.label}: the second turn, with no tool call, ran nothing`, runs.length === 0, runs);
+    const call = await bank2NextTurnCall(`bank2 a durable end ${v.label}`, h, runs, "t-after");
+    if (v.banks) {
+      bank2CheckBanked(`bank2 a durable end ${v.label}: the next first tool call banks once`, h, runs, call);
+    } else {
+      bank2CheckNothing(`bank2 a durable end ${v.label}: the next first tool call`, h, runs, call);
+    }
   }
 }
 
@@ -15187,13 +15296,13 @@ async function caseBank2_greatestLastUpdatedRecordIsRun(clock) {
   const runs = bank2Recorder(h);
   const end = await bank2Turn(h, "t-select", "Here is the answer.");
   bank2CheckOwedOnly("bank2 three install records", h, runs, end);
-  const start = await bank2Start(h, "t-after");
-  bank2CheckBanked("bank2 three install records", h, runs, start);
+  const call = await bank2NextTurnCall("bank2 three install records", h, runs, "t-after");
+  bank2CheckBanked("bank2 three install records", h, runs, call);
 }
 
 // Each way the install record can be missing logs one skipped decision
-// naming why at the turn start that takes the owed bank, runs nothing and
-// never throws; the owed bank is cleared, so the start after it logs nothing.
+// naming why at the tool call that takes the owed bank, runs nothing and
+// never throws; the owed bank is cleared, so a second tool call logs nothing.
 async function caseBank2_installRecordMissesSkipWithOneDecision(clock) {
   console.log("\n=== boundary-compaction Section 2: a missing install record skips the run with one decision ===");
   const misses = [
@@ -15210,9 +15319,9 @@ async function caseBank2_installRecordMissesSkipWithOneDecision(clock) {
     const runs = bank2Recorder(h);
     const end = await bank2Turn(h, "t-miss", "Here is the answer.");
     bank2CheckOwedOnly(`bank2 ${m.label}`, h, runs, end);
-    const start = await bank2Start(h, "t-after");
+    const call = await bank2NextTurnCall(`bank2 ${m.label}`, h, runs, "t-after");
     const decisions = bank2Decisions(h);
-    bank2CheckSettled(`bank2 ${m.label} (next turn start)`, start);
+    bank2CheckSettled(`bank2 ${m.label} (first main-loop tool call)`, call);
     check(`bank2 ${m.label}: no child process ran`, runs.length === 0, runs);
     check(`bank2 ${m.label}: exactly one compaction_boundary_skipped decision naming the reason`,
       decisions.length === 1 && decisions[0].action === "compaction_boundary_skipped" && decisions[0].detail.includes(m.token), decisions);
@@ -15222,11 +15331,12 @@ async function caseBank2_installRecordMissesSkipWithOneDecision(clock) {
 
 // A run that exits non-zero, and a run that rejects (the host's timeout
 // kill among the ways), each log one failed decision carrying what the run
-// said, and turn.start still settles and calls next once. The owed bank is
-// cleared whatever the exit: the next turn start runs nothing, and only
-// another durable end owes the bank again, which the start after it runs.
+// said, and the tool call still settles, calls next once and returns its
+// result. The owed bank is cleared whatever the exit: a second tool call runs
+// nothing, and only another durable end owes the bank again, which the next
+// turn's first tool call runs.
 async function caseBank2_failedRunsLogOneDecisionAndNeverFailTheTurn(clock) {
-  console.log("\n=== boundary-compaction Section 2: a failed run logs one decision, clears the owed bank and never fails the turn ===");
+  console.log("\n=== boundary-compaction Section 2: a failed run logs one decision, clears the owed bank and never fails the tool call ===");
   const failures = [
     { label: "non-zero exit", answer: () => ({ exitCode: 3, stdout: "", stderr: "kit-compact-checkpoint: no transcript found\nstack line\n" }), tokens: ["exit 3", "kit-compact-checkpoint: no transcript found"], absent: "stack line" },
     { label: "rejected run", answer: () => { throw new Error("the child outlived timeoutMs and was killed"); }, tokens: ["the child outlived timeoutMs"], absent: null },
@@ -15238,23 +15348,21 @@ async function caseBank2_failedRunsLogOneDecisionAndNeverFailTheTurn(clock) {
     const runs = bank2Recorder(h, f.answer);
     const end = await bank2Turn(h, "t-fail", "Here is the answer.");
     bank2CheckOwedOnly(`bank2 ${f.label}`, h, runs, end);
-    const start = await bank2Start(h, "t-after");
+    const call = await bank2NextTurnCall(`bank2 ${f.label}`, h, runs, "t-after");
     const decisions = bank2Decisions(h);
-    bank2CheckSettled(`bank2 ${f.label} (next turn start)`, start);
+    bank2CheckSettled(`bank2 ${f.label} (first main-loop tool call)`, call);
     check(`bank2 ${f.label}: the command was attempted once`, runs.length === 1, runs);
     check(`bank2 ${f.label}: exactly one compaction_boundary_failed decision carrying what the run said`,
       decisions.length === 1 && decisions[0].action === "compaction_boundary_failed" && f.tokens.every(t => decisions[0].detail.includes(t))
         && (f.absent === null || !decisions[0].detail.includes(f.absent)), decisions);
     await bank2CheckNoSecondBank(`bank2 ${f.label}`, h, runs, "t-after");
-    // Another durable end owes the bank again, and the start after it runs.
-    // The turn the no-second-bank check left open is closed first, aborted,
-    // so the durable end below completes with no turn left open.
-    await bank2Complete(h, "t-after-again", "Partial.", { aborted: true, reason: "aborted" });
+    // Another durable end owes the bank again, and the next turn's first
+    // tool call attempts it.
     const again = await bank2Turn(h, "t-durable-again", "Here is another answer.");
     bank2CheckSettled(`bank2 ${f.label} (another durable end)`, again);
-    const startAgain = await bank2Start(h, "t-after-durable");
-    bank2CheckSettled(`bank2 ${f.label} (the start after it)`, startAgain);
-    check(`bank2 ${f.label}: another durable end owes the bank again, and the next start attempts it`, runs.length === 2, runs);
+    const callAgain = await bank2NextTurnCall(`bank2 ${f.label} (the turn after it)`, h, runs, "t-after-durable");
+    bank2CheckSettled(`bank2 ${f.label} (the first tool call after it)`, callAgain);
+    check(`bank2 ${f.label}: another durable end owes the bank again, and the next first tool call attempts it`, runs.length === 2, runs);
   }
 }
 
