@@ -7229,7 +7229,11 @@ export const register: Register = async (on, options) => {
     // reply tool rather than trusting a second instruction to work where
     // the first already didn't; falls back to one re-prompt, carrying the
     // exact text, only if the direct call itself fails.
-    if (!skipped && sess.isOwner && currentTurnIsChannelOrigin && !replyCalledThisTurn && !isPrimingTurn && !wasNudged) {
+    // Only the persona's own turn end is backfilled (completesGateTurn). A
+    // background subagent's completion arrives while the persona's channel
+    // turn is still open and carries the subagent's report as e.answer, so
+    // backfilling it would post that report to the operator's thread.
+    if (!skipped && sess.isOwner && completesGateTurn && currentTurnIsChannelOrigin && !replyCalledThisTurn && !isPrimingTurn && !wasNudged) {
       try {
         await $.tool.call({ tool: "mcp__plugin_relay_channel-relay__reply", message: e.answer } as any);
         sess.state.decisions.push({
@@ -7256,7 +7260,10 @@ export const register: Register = async (on, options) => {
     // Section 4 (plan-health-from-the-record): captured beside wasNudged,
     // before this same reset clears it for the next turn.
     const wasChannelOrigin = currentTurnIsChannelOrigin;
-    currentTurnIsChannelOrigin = false;
+    // The flag clears only on the persona's own turn end, so a subagent's
+    // completion inside the channel turn leaves it set and the persona's own
+    // completion afterwards is still backfilled.
+    if (completesGateTurn) currentTurnIsChannelOrigin = false;
 
     // Item 2 sub-bullet (f016b69): a turn that did real work with no open
     // root logs one `untracked_work` decision and leaves the goal tree

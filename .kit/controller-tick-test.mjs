@@ -3446,6 +3446,7 @@ async function main() {
     await caseItem2_untrackedWorkSkipsNudgeTurn(clock);
     await caseChannelBackstop_firesOnChannelOriginNoReply(clock);
     await caseChannelBackstop_skipsKeyboardOrigin(clock);
+    await caseChannelBackstop_onlyThePersonasOwnTurnEndBackfills(clock);
     await caseItem2_untrackedWorkKeepsLivePlanUnderCompleteRoot(clock);
     await caseItem2_untrackedWorkCollapsesToOneLine(clock);
     await caseItem2_untrackedWorkCarriesCountPastCap(clock);
@@ -4666,6 +4667,61 @@ async function caseChannelBackstop_skipsKeyboardOrigin(clock) {
   check("channel backstop control: no reply tool.call recorded", h.toolCalls.length === 0);
   check("channel backstop control: no channel_reply_backfilled decision logged",
     decisions.filter(d => d.action === "channel_reply_backfilled").length === 0);
+}
+
+// Only the persona's own channel-opened turn end is backfilled. A subagent's
+// completion arrives while that turn is still open and carries the subagent's
+// report as its answer, so it must post nothing and must leave the
+// channel-origin flag set. The persona's own completion after it is the
+// expensive direction: it still backfills its own answer, once. A keyboard
+// turn after that is never backfilled. Three completion shapes are driven:
+// the engine's (an agentId, with a turn id no turn.start opened, and with the
+// open turn's own id) and a turn id no turn.start opened with no agentId.
+async function caseChannelBackstop_onlyThePersonasOwnTurnEndBackfills(clock) {
+  console.log("\n=== Channel backstop: a subagent's completion inside a channel turn is never backfilled ===");
+  const shapes = [
+    { label: "subagent with a turn id no turn.start opened", sub: { turnId: "t-subagent", agentId: "sub-1" } },
+    { label: "subagent carrying the open turn's own id", sub: { turnId: "t-main", agentId: "sub-1" } },
+    { label: "completion with a turn id no turn.start opened and no agentId", sub: { turnId: "t-subagent" } },
+  ];
+  for (const s of shapes) {
+    clock.set(T0);
+    const mySid = SESSION_ID;
+    const h = await createTickHarness({ ...OPTS, caseName: `channel_backstop_own_turn_${shapes.indexOf(s)}` });
+    h.storeMap.set(`commons:${mySid}`, {
+      sessionId: mySid,
+      lastSeen: T0,
+      claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+    });
+    const backfills = () => getDecisions(h).filter(d => d.action === "channel_reply_backfilled");
+
+    await h.handlers["prompt.submit"](h.fake, { text: "Run the review and tell me what it found.", origin: { kind: "channel" } }, async (core) => ({ text: core.text, context: core.context }));
+    await h.handlers["turn.start"](h.fake, { turnId: "t-main" }, async () => ({ result: "ok" }));
+
+    await h.handlers["turn.complete"](h.fake, { ...s.sub, answer: "The subagent's full report.", reason: "completed" }, async () => ({ result: "ok" }));
+    check(`channel backstop own turn (${s.label}): the subagent's completion calls no tool`,
+      h.toolCalls.length === 0, h.toolCalls);
+    check(`channel backstop own turn (${s.label}): the subagent's completion logs no channel_reply_backfilled`,
+      backfills().length === 0, backfills());
+
+    clock.advance(5_000);
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-main", answer: "The persona's own answer.", reason: "completed" }, async () => ({ result: "ok" }));
+    check(`channel backstop own turn (${s.label}): the persona's own completion afterwards makes exactly one tool call`,
+      h.toolCalls.length === 1, h.toolCalls);
+    check(`channel backstop own turn (${s.label}): that call is the reply tool carrying the persona's own answer`,
+      h.toolCalls[0]?.tool === "mcp__plugin_relay_channel-relay__reply" && h.toolCalls[0]?.message === "The persona's own answer.", h.toolCalls[0]);
+    check(`channel backstop own turn (${s.label}): one channel_reply_backfilled, naming the persona's own turn`,
+      backfills().length === 1 && /\bturn t-main\b/.test(backfills()[0]?.detail ?? ""), backfills());
+
+    clock.advance(5_000);
+    await h.handlers["prompt.submit"](h.fake, { text: "Carry on.", origin: { kind: "keyboard" } }, async (core) => ({ text: core.text, context: core.context }));
+    await h.handlers["turn.start"](h.fake, { turnId: "t-next" }, async () => ({ result: "ok" }));
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-next", answer: "Carried on.", reason: "completed" }, async () => ({ result: "ok" }));
+    check(`channel backstop own turn (${s.label}): a keyboard turn after it makes no further tool call`,
+      h.toolCalls.length === 1, h.toolCalls);
+    check(`channel backstop own turn (${s.label}): a keyboard turn after it logs no further channel_reply_backfilled`,
+      backfills().length === 1, backfills());
+  }
 }
 
 // ============================================================
