@@ -15498,6 +15498,29 @@ async function caseCount_workAndChannelTurnsResetAndOtherTurnsMoveNothing(clock)
     const after = await countReading(h, clock);
     check(`count scenario (subagent completion inside the nudged turn, worker answers ${JSON.stringify(answer)}): the count reads ${expected} after both completions`, after === expected, after);
   }
+  // The harness opens no turn.start inside a persona turn, so the only
+  // overlap is a foreign completion. It neither erases the nudged turn's work
+  // call nor stops a channel-origin turn's reset.
+  for (const shape of ["nudged turn with a work call", "channel-origin turn"]) {
+    clock.set(T0);
+    const h = await countHarness(`count_foreign_completion_${shape === "channel-origin turn" ? "channel" : "work"}`);
+    await primeCountToTwo(h, clock);
+    const before = await countReading(h, clock);
+    const ok = async () => ({ result: "ok" });
+    const own = shape === "channel-origin turn" ? "t-chan" : "t-nudged";
+    if (shape === "channel-origin turn") {
+      await h.handlers["prompt.submit"](h.fake, { text: "How is it going?", origin: { kind: "channel" } }, async () => ({}));
+      await h.handlers["turn.start"](h.fake, { turnId: own, text: "How is it going?" }, ok);
+    } else {
+      await h.handlers["turn.start"](h.fake, { turnId: own }, ok);
+      await h.handlers["tool.call"](h.fake, { tool: "Bash", command: "npm test" }, async () => ({ result: "passthrough" }));
+    }
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-subagent", answer: "Scout report: nothing found.", reason: "completed" }, ok);
+    await h.handlers["turn.complete"](h.fake, { turnId: own, answer: "Still looking.", reason: "completed" }, ok);
+    check(`count scenario (foreign completion inside a ${shape}) setup: the count read 2`, before === 2, before);
+    const after = await countReading(h, clock);
+    check(`count scenario (foreign completion inside a ${shape}): the count reads 0 after both completions`, after === 0, after);
+  }
 }
 
 // The activation reset and the fixed ask's close. goal_done completing the

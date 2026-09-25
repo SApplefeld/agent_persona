@@ -931,9 +931,9 @@ let toolCallsThisTurn = 0;
 let nudgeCountWorkThisTurn = 0;
 
 // Whether the count was reset, by an activation, a new tree or a loaded
-// state, since the open nudged reading began. It is cleared where that
-// reading opens and where it is spent, not at every turn.start, so a turn
-// starting beside the nudged one cannot clear it. A nudged answer with no
+// state, since the open nudged reading began. It is cleared where a nudged
+// reading opens and at session.start, and read only by the completion that
+// spends that reading. A nudged answer with no
 // status line then resets the count rather than adding one, so the entry
 // activated or loaded under it starts at zero.
 let countResetSinceNudgeOpened = false;
