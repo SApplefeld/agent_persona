@@ -50,6 +50,7 @@ import {
   LONG_TERM_GOAL_CAP,
   reapCompletedGoalTasks,
   MAX_TASKS_PER_GOAL,
+  TASK_LIST_MAX_LINES,
   newTaskId,
 } from "./agent-state";
 import { readPlanRecord, resolvePlanDir } from "./plan-record";
@@ -507,6 +508,49 @@ const EFFORT_REFUSED_TEXT =
 // same way goal_add cuts an objective to 500: at write, with .slice, not by
 // refusing a long call.
 export const TASK_TEXT_MAX_CHARS = 200;
+
+// The [TASK LIST] block: the active goal's task_add/task_done/task_clear
+// scratch pad, injected in prompt.submit right after [GOAL TREE] whenever
+// the active goal is not a plan-holder and holds at least one task. Pure,
+// so a test can call it directly: `tasks` is already filtered to the one
+// goal this block is for, and this function decides only how to render it,
+// never mutating a task or completing the goal.
+//
+// Each task's id and text are read back out of the persona's store file, so
+// both pass through the same per-line guard proposeFrame applies to a
+// long-term goal's title and objective: fold line terminators to one line,
+// cut text to TASK_TEXT_MAX_CHARS (already true of a stored task's text,
+// but reapplied here as the render-time guard rather than trusted from
+// write time), then bracketSafeText, so a stored '[' cannot forge a
+// delivery label such as [COORDINATOR id=x] once spliced into this prompt.
+export function taskListBlock(tasks: TaskItem[], goalId: string): string | null {
+  if (tasks.length === 0) return null;
+  const oneLine = (text: string) => text.split(LINE_TERMINATOR).join(" ");
+  const guard = (text: string) => bracketSafeText(oneLine(text).slice(0, TASK_TEXT_MAX_CHARS));
+  const open = tasks.filter((t) => !t.done).sort((a, b) => a.addedAt - b.addedAt);
+  const done = tasks.filter((t) => t.done).sort((a, b) => a.addedAt - b.addedAt);
+  const ordered = [...open, ...done];
+  const shown = ordered.slice(0, TASK_LIST_MAX_LINES);
+  const taskLines = shown
+    .map((t) => {
+      const id = bracketSafeText(oneLine(t.id));
+      const text = guard(t.text);
+      return t.done ? `- ${id}: ~~${text}~~ (done)` : `- ${id}: ${text}`;
+    })
+    .join("\n");
+  const tailLine = ordered.length > shown.length ? `\n...and ${ordered.length - shown.length} more` : "";
+  const closeLine = open.length === 0
+    ? `\nEvery task under ${goalId} is done; consider closing the goal with goal_done.`
+    : "";
+  return (
+    `[TASK LIST] ${goalId}\n` +
+    taskLines +
+    tailLine +
+    `\n` +
+    `Drive this list with task_add, task_done <id> and task_clear.` +
+    closeLine
+  );
+}
 
 type SubmitOutcome = { ok: true } | { ok: false; how: "failed" | "dropped"; reason: string };
 
@@ -10205,6 +10249,19 @@ export const register: Register = async (on, options) => {
       contextBlocks.push(goalBlock);
       // L17: log each injected block.
       try { $.ui.log(`Agentic: [GOAL TREE] injected for ${activeNode.id}`); } catch { /* non-fatal */ }
+
+      // [TASK LIST]: the active goal's scratch pad, shown only where no plan
+      // document already tracks this goal. planHolderOf is the same test
+      // task_add's own gate uses, so the list and the verb that fills it
+      // agree on when a plan node's chapters are the goal's tracker instead.
+      if (!planHolderOf(sess.state, activeNode)) {
+        const activeTasks = sess.state.tasks.filter((t) => t.goalId === activeNode.id);
+        const taskListText = taskListBlock(activeTasks, activeNode.id);
+        if (taskListText) {
+          contextBlocks.push(taskListText);
+          try { $.ui.log(`Agentic: [TASK LIST] injected for ${activeNode.id}`); } catch { /* non-fatal */ }
+        }
+      }
     } else {
       // With no active entry, the [GOAL QUEUE] block lists every open entry
       // in openGoals order with its status, so the model reads the whole
