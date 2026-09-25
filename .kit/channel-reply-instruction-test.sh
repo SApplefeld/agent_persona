@@ -98,8 +98,10 @@ ROLE_CAP_CONTROL="pushing a third round"
 ROLE_SAY_CONTROL="agentic_say"
 # The compaction-boundary clause: the sentence stating that the plugin banks
 # the boundary, so the coordinator never runs the kit checkpoint verb by hand.
-ROLE_BOUNDARY_CONTROL="The plugin marks a safe compaction point for you"
-# The hand-run verb the instruction must no longer carry.
+ROLE_BOUNDARY_CONTROL="the plugin marks a safe compaction point for you"
+# The hand-run form the instruction must no longer carry: an order to run
+# node on the kit checkpoint script, not a mention of what the plugin runs.
+ROLE_HAND_BANK_RUN="run node"
 ROLE_HAND_BANK_VERB="kit-compact-checkpoint.js"
 # The three fleet-keeper duties, one distinctive fragment each rather than a
 # whole paragraph, so a wording repair to the sentences around them leaves the
@@ -1034,7 +1036,7 @@ case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *) check "persona matches COORDINATOR_PERSONA: coordinator role instruction present, naming agentic_say, the round cap and the plugin-banked boundary" 1 ;;
 esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_HAND_BANK_VERB"*) check "persona matches COORDINATOR_PERSONA: the coordinator role instruction names no hand-run checkpoint verb" 1 ;;
+  *"$ROLE_HAND_BANK_RUN"*"$ROLE_HAND_BANK_VERB"*) check "persona matches COORDINATOR_PERSONA: the coordinator role instruction names no hand-run checkpoint verb" 1 ;;
   *) check "persona matches COORDINATOR_PERSONA: the coordinator role instruction names no hand-run checkpoint verb" 0 ;;
 esac
 # One case per duty, so a red names the duty that went missing rather than

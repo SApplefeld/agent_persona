@@ -22,8 +22,8 @@
     {
       "name": "COORDINATOR_ROLE_INSTRUCTION",
       "file": "bin/supervise-holder.sh",
-      "chars": 7443,
-      "words": 1313
+      "chars": 7550,
+      "words": 1333
     },
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
