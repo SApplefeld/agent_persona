@@ -3534,6 +3534,40 @@ async function main() {
     await casePlanRecord2_blockedHolderCompletesWithNoReason(clock);
     await casePlanRecord2_unreadableRearmsAfterARead(clock);
 
+    // Section 1 (boundary-compaction): the plan document is read from the
+    // directory the session runs in, not the launch checkout.
+    await caseLive1_completeUnderLiveDirCompletesTheHolder(clock);
+    await caseLive1_chapterUnderLiveDirLogsProgress(clock);
+    await caseLive1_readFailureDegradesToNotComplete(clock);
+    await caseLive1_subdirectoryReadsTheNearestAncestor(clock);
+    await caseLive1_outsideAnyCheckoutStaysUnreadable(clock);
+    await caseLive1_walkStopsAtTheWorktreeRoot(clock);
+
+    // Section 2 (boundary-compaction): a durable turn end owes the kit's
+    // compaction boundary, and the next turn's first main-loop tool call
+    // banks it.
+    await caseBank2_durableTurnsBankOnce(clock);
+    await caseBank2_nonDurableTurnsBankNothing(clock);
+    await caseBank2_onlyThePersonasOwnTurnEndBanks(clock);
+    await caseBank2_theOwedBankIsTakenOnlyByAMainLoopToolCall(clock);
+    await caseBank2_everyPersonaTurnEndRecomputesTheOwedBank(clock);
+    await caseBank2_onlyAModelMadeCallTakesTheOwedBank(clock);
+    await caseBank2_theReplyBackfillTakesNoOwedBank(clock);
+    await caseBank2_aNextTurnStartingMidCompletionLeavesNothingOwed(clock);
+    await caseBank2_aLateSettlingEndClearsAStaleOwedBank(clock);
+    await caseBank2_aLateSettlingEndNeverBanksMidTurn(clock);
+    await caseBank2_greatestLastUpdatedRecordIsRun(clock);
+    await caseBank2_installRecordMissesSkipWithOneDecision(clock);
+    await caseBank2_failedRunsLogOneDecisionAndNeverFailTheTurn(clock);
+    await caseBank2_aThrowingMidSectionEndStillClearsTheOwedBank(clock);
+    await caseBank2_aPlanAddedInANoGoalTurnIsMidSection(clock);
+    await caseBank2_aPlanActivatedByGoalDoneIsMidSection(clock);
+
+    // Section 3 (boundary-compaction): the nudge and the [GOAL TREE] block
+    // name the active entry's plan document.
+    await casePlanDoc3_goalTreeBlockNamesThePlanDocument(clock);
+    await casePlanDoc3_nudgeArmsNameThePlanDocument(clock);
+
     // Section 3 (plan-health-from-the-record): the worker's BLOCKED and
     // WAITING leads, the hold they put on the idle branch, and the
     // controller's complete verdict ignored on a plan entry.
@@ -14722,6 +14756,1264 @@ async function casePlanRecord2_unreadableRearmsAfterARead(clock) {
   check("plan2 unreadable re-arm: plan-1 is still active throughout", getState(h).goals.find(g => g.id === "plan-1").status === "active");
 }
 
+// --- Section 1 (boundary-compaction): the plan document is read from the live directory ---
+
+// The directory the session runs in once the persona has moved into its plan
+// worktree, distinct from HARNESS_CWD, the launch checkout the plugin captured
+// at session.start as sess.workdir.
+const LIVE1_DIR = `${HARNESS_CWD}/.claude/worktrees/plan-wt`;
+const LIVE1_FILE = `${LIVE1_DIR}/${PLAN2_PATH}`;
+
+// One scored turn through the real turn.start and turn.complete handlers,
+// recording whether the completion settled or threw and whether it handed
+// the event on to next, so a case can pin that a read failure never escapes
+// the handler.
+async function live1ScoredTurn(h, turnId, label) {
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes(label)) ? label : "discard");
+  await h.handlers["turn.start"](h.fake, { turnId }, async () => ({ result: "ok" }));
+  let nextCalls = 0;
+  let thrown = null;
+  try {
+    await h.handlers["turn.complete"](h.fake, { turnId, answer: "Working on it.", reason: "completed" }, async () => { nextCalls += 1; return { result: "ok" }; });
+  } catch (err) {
+    thrown = err;
+  }
+  return { nextCalls, thrown };
+}
+
+// A Complete document present only under the live directory completes the
+// holder through the turn.complete caller. The launch checkout holds either
+// the stale In Progress copy or no copy at all, and each variant is red
+// against a caller that reads sess.workdir. The launch anchor is pinned
+// unchanged by the persona store still being written under HARNESS_CWD and
+// nothing at all being written under the live directory.
+async function caseLive1_completeUnderLiveDirCompletesTheHolder(clock) {
+  console.log("\n=== boundary-compaction Section 1: a Complete document only under the live directory completes the holder ===");
+  const variants = [
+    { label: "launch copy reads In Progress", seedLaunch: (h) => h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"])) },
+    { label: "no launch copy", seedLaunch: () => {} },
+  ];
+  for (const v of variants) {
+    clock.set(T0);
+    const h = await plan2Harness(`live1_complete_${variants.indexOf(v)}`, { chapterCount: 1 });
+    v.seedLaunch(h);
+    h.fsMap.set(LIVE1_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+    h.fsMap.set(".agentic-health", "true");
+    h.fake.session.cwd = () => Promise.resolve(LIVE1_DIR);
+
+    // The setup the act rests on, asserted before it.
+    const before = getState(h).goals.find(g => g.id === "plan-1");
+    check(`live1 complete (${v.label}) setup: plan-1 is active before the turn`, before && before.status === "active", before && before.status);
+    check(`live1 complete (${v.label}) setup: the launch checkout holds no Complete copy`,
+      !h.fsMap.has(PLAN2_FILE) || !/^Status: Complete$/m.test(h.fsMap.get(PLAN2_FILE)), h.fsMap.get(PLAN2_FILE));
+    h.resetFsWrites();
+
+    const { nextCalls, thrown } = await live1ScoredTurn(h, "t-live-complete", "on-goal");
+    const state = getState(h);
+    const plan1 = state.goals.find(g => g.id === "plan-1");
+    const plan2 = state.goals.find(g => g.id === "plan-2");
+    const decisions = getDecisions(h);
+    const completeDecision = decisions.find(d => d.action === "complete" && d.detail.startsWith("plan-1:"));
+    check(`live1 complete (${v.label}): the turn settled and handed on to next`, thrown === null && nextCalls === 1, { thrown: thrown && String(thrown), nextCalls });
+    check(`live1 complete (${v.label}): plan-1 is complete`, plan1 && plan1.status === "complete", plan1 && plan1.status);
+    check(`live1 complete (${v.label}): the complete decision names the document read as Status: Complete`,
+      completeDecision && completeDecision.detail.includes(PLAN2_PATH) && /status: complete/i.test(completeDecision.detail), completeDecision);
+    check(`live1 complete (${v.label}): the next entry is activated`, plan2 && plan2.status === "active" && state.activeGoalId === "plan-2", plan2 && plan2.status);
+    check(`live1 complete (${v.label}): no plan_record_unreadable (the live copy was read)`, !decisions.some(d => d.action === "plan_record_unreadable"), decisions.filter(d => d.action === "plan_record_unreadable"));
+    check(`live1 complete (${v.label}): the persona store is still written under the launch checkout (sess.workdir unchanged)`,
+      h.fsWrites.some(w => w.path === PERSONA_STORE_FILE), h.fsWrites.map(w => w.path));
+    check(`live1 complete (${v.label}): nothing was written under the live directory`,
+      !h.fsWrites.some(w => w.path.startsWith(LIVE1_DIR)), h.fsWrites.map(w => w.path));
+  }
+}
+
+// A Chapter banked under the live directory is a Chapter-count advance the
+// same turn, while the launch copy still carries the stored count.
+async function caseLive1_chapterUnderLiveDirLogsProgress(clock) {
+  console.log("\n=== boundary-compaction Section 1: a Chapter banked under the live directory logs plan_progress the same turn ===");
+  clock.set(T0);
+  const h = await plan2Harness("live1_progress", { chapterCount: 1 });
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"]));
+  h.fsMap.set(LIVE1_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+  h.fake.session.cwd = () => Promise.resolve(LIVE1_DIR);
+  const before = getState(h).goals.find(g => g.id === "plan-1");
+  check("live1 progress setup: the stored chapterCount is 1", before && before.chapterCount === 1, before && before.chapterCount);
+
+  const { nextCalls, thrown } = await live1ScoredTurn(h, "t-live-progress", "on-goal");
+  const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+  const progress = getDecisions(h).filter(d => d.action === "plan_progress");
+  check("live1 progress: the turn settled and handed on to next", thrown === null && nextCalls === 1, { thrown: thrown && String(thrown), nextCalls });
+  check("live1 progress: chapterCount is now 2", plan1 && plan1.chapterCount === 2, plan1 && plan1.chapterCount);
+  check("live1 progress: one plan_progress decision names the document and 1 -> 2",
+    progress.length === 1 && progress[0].detail.startsWith("plan-1:") && progress[0].detail.includes(PLAN2_PATH) && progress[0].detail.includes("1 -> 2"), progress);
+  check("live1 progress: plan-1 is still active (progress is not completion)", plan1 && plan1.status === "active", plan1 && plan1.status);
+}
+
+// A read that fails degrades to not-complete with a logged reason, and never
+// throws out of turn.complete. Two failures under the live directory (no
+// document there, and a document whose read rejects) each log
+// plan_record_unreadable with the reader's reason and leave plan-1 active,
+// though the launch checkout holds a Complete copy: reading that copy is the
+// defect this section removes, so both are red against the old caller. The
+// launch copy's Complete is the control throughout: a caller reading it would
+// complete plan-1.
+async function caseLive1_readFailureDegradesToNotComplete(clock) {
+  console.log("\n=== boundary-compaction Section 1: a read failure degrades to not-complete rather than a throw ===");
+  const failures = [
+    { label: "no document under the live directory", reason: "no file at planPath", seedLive: () => {} },
+    {
+      label: "the live document's read rejects",
+      reason: "read failed",
+      seedLive: (h) => {
+        h.fsMap.set(LIVE1_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+        const realRead = h.fake.fs.read;
+        h.fake.fs.read = (p) => p === LIVE1_FILE ? Promise.reject(new Error("EIO: " + p)) : realRead(p);
+      },
+    },
+  ];
+  for (const f of failures) {
+    clock.set(T0);
+    const h = await plan2Harness(`live1_fail_${failures.indexOf(f)}`, { chapterCount: 1 });
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+    // The live directory is a worktree's root, which carries a .git file, so
+    // the plan-document walk ends there and never reaches the launch copy.
+    h.fsMap.set(`${LIVE1_DIR}/.git`, "gitdir: D:/harness-root/.git/worktrees/plan-wt\n");
+    f.seedLive(h);
+    h.fake.session.cwd = () => Promise.resolve(LIVE1_DIR);
+    const { nextCalls, thrown } = await live1ScoredTurn(h, "t-live-fail", "on-goal");
+    const state = getState(h);
+    const plan1 = state.goals.find(g => g.id === "plan-1");
+    const decisions = getDecisions(h);
+    const unreadable = decisions.filter(d => d.action === "plan_record_unreadable");
+    check(`live1 read failure (${f.label}): the turn settled and handed on to next`, thrown === null && nextCalls === 1, { thrown: thrown && String(thrown), nextCalls });
+    check(`live1 read failure (${f.label}): plan-1 stays active and is not complete`,
+      plan1 && plan1.status === "active" && state.activeGoalId === "plan-1", plan1 && plan1.status);
+    check(`live1 read failure (${f.label}): a plan_record_unreadable names plan-1 and the reason "${f.reason}"`,
+      unreadable.some(d => d.detail.startsWith("plan-1:") && d.detail.includes(f.reason)), unreadable);
+    check(`live1 read failure (${f.label}): no complete, plan_progress or plan_record_failed decision`,
+      !decisions.some(d => d.action === "complete" || d.action === "plan_progress" || d.action === "plan_record_failed"), decisions.map(d => d.action));
+  }
+
+  // Four ways $.session.cwd() can fail to name a directory. Each is a read
+  // failure in its own right: nothing is read under the launch checkout, so
+  // its Complete copy completes nothing, and one plan_record_unreadable names
+  // the live directory as unavailable. A thrown or rejected call's reason
+  // carries the error's text as well.
+  const cwdFailures = [
+    { label: "$.session.cwd() throws", cwd: () => { throw new Error("session cwd unavailable"); }, errorText: "session cwd unavailable" },
+    { label: "$.session.cwd() rejects", cwd: () => Promise.reject(new Error("session cwd unavailable")), errorText: "session cwd unavailable" },
+    { label: "$.session.cwd() answers an empty string", cwd: () => Promise.resolve("") },
+    { label: "$.session.cwd() answers a non-string", cwd: () => Promise.resolve(undefined) },
+  ];
+  for (const c of cwdFailures) {
+    clock.set(T0);
+    const h = await plan2Harness(`live1_cwdfail_${cwdFailures.indexOf(c)}`, { chapterCount: 1 });
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+    h.fake.session.cwd = c.cwd;
+    const { nextCalls, thrown } = await live1ScoredTurn(h, "t-cwd-fail", "on-goal");
+    const state = getState(h);
+    const plan1 = state.goals.find(g => g.id === "plan-1");
+    const decisions = getDecisions(h);
+    const unreadable = decisions.filter(d => d.action === "plan_record_unreadable");
+    check(`live1 cwd unavailable (${c.label}): the turn settled and handed on to next`, thrown === null && nextCalls === 1, { thrown: thrown && String(thrown), nextCalls });
+    check(`live1 cwd unavailable (${c.label}): plan-1 stays active though the launch copy reads Complete`,
+      plan1 && plan1.status === "active" && state.activeGoalId === "plan-1", plan1 && plan1.status);
+    check(`live1 cwd unavailable (${c.label}): exactly one plan_record_unreadable names plan-1 and the unavailable live directory`,
+      unreadable.length === 1 && unreadable[0].detail.startsWith("plan-1:") && unreadable[0].detail.includes("live directory unavailable")
+        && (c.errorText === undefined || unreadable[0].detail.includes(c.errorText)), unreadable);
+    check(`live1 cwd unavailable (${c.label}): no complete decision`, !decisions.some(d => d.action === "complete"), decisions.map(d => d.action));
+  }
+}
+
+// A session whose shell moved into a subdirectory of its checkout reads the
+// plan document from the nearest ancestor holding it. $.session.cwd() answers
+// <worktree>/hooks while the Complete document sits at
+// <worktree>/docs/plans/<plan>, so the holder completes, and one
+// plan_record_dir_resolved decision names both directories. Over two turns
+// that each bank a Chapter from the subdirectory, that decision is logged
+// once, not once per turn.
+async function caseLive1_subdirectoryReadsTheNearestAncestor(clock) {
+  console.log("\n=== boundary-compaction Section 1: a live directory below the checkout reads the nearest ancestor's document ===");
+  const SUBDIR = `${LIVE1_DIR}/hooks`;
+  clock.set(T0);
+  {
+    const h = await plan2Harness("live1_subdir_complete", { chapterCount: 1 });
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"]));
+    h.fsMap.set(LIVE1_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+    h.fsMap.set(`${LIVE1_DIR}/.git`, "gitdir: D:/harness-root/.git/worktrees/plan-wt\n");
+    h.fsMap.set(".agentic-health", "true");
+    h.fake.session.cwd = () => Promise.resolve(SUBDIR);
+    check("live1 subdir setup: nothing sits at the plan path under the live directory itself", !h.fsMap.has(`${SUBDIR}/${PLAN2_PATH}`));
+    const { nextCalls, thrown } = await live1ScoredTurn(h, "t-subdir", "on-goal");
+    const state = getState(h);
+    const plan1 = state.goals.find(g => g.id === "plan-1");
+    const decisions = getDecisions(h);
+    const resolved = decisions.filter(d => d.action === "plan_record_dir_resolved");
+    check("live1 subdir: the turn settled and handed on to next", thrown === null && nextCalls === 1, { thrown: thrown && String(thrown), nextCalls });
+    check("live1 subdir: plan-1 is complete from the worktree's Complete document", plan1 && plan1.status === "complete", plan1 && plan1.status);
+    check("live1 subdir: no plan_record_unreadable", !decisions.some(d => d.action === "plan_record_unreadable"), decisions.filter(d => d.action === "plan_record_unreadable"));
+    check("live1 subdir: one plan_record_dir_resolved decision names plan-1, the live directory and the directory read",
+      resolved.length === 1 && resolved[0].loop === "goal" && resolved[0].detail.startsWith("plan-1:")
+        && resolved[0].detail.includes(SUBDIR) && resolved[0].detail.includes(`${LIVE1_DIR} `), resolved);
+  }
+  clock.set(T0);
+  {
+    const h = await plan2Harness("live1_subdir_once", { chapterCount: 1 });
+    h.fsMap.set(LIVE1_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+    h.fake.session.cwd = () => Promise.resolve(SUBDIR);
+    await live1ScoredTurn(h, "t-subdir-1", "on-goal");
+    h.fsMap.set(LIVE1_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2", "### Chapter 3"]));
+    await live1ScoredTurn(h, "t-subdir-2", "on-goal");
+    const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+    const resolved = getDecisions(h).filter(d => d.action === "plan_record_dir_resolved");
+    check("live1 subdir once: both turns read the worktree's document (chapterCount 3)", plan1 && plan1.chapterCount === 3, plan1 && plan1.chapterCount);
+    check("live1 subdir once: plan_record_dir_resolved is logged once over two turns", resolved.length === 1, resolved);
+  }
+}
+
+// A live directory outside any checkout holding the document reads nothing,
+// and the unreadable log is the one it always was: one
+// plan_record_unreadable naming the reader's own reason, and no
+// plan_record_dir_resolved decision.
+async function caseLive1_outsideAnyCheckoutStaysUnreadable(clock) {
+  console.log("\n=== boundary-compaction Section 1: a live directory outside any checkout logs plan_record_unreadable as before ===");
+  clock.set(T0);
+  const h = await plan2Harness("live1_outside", { chapterCount: 1 });
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+  h.fake.session.cwd = () => Promise.resolve("E:/elsewhere/deep");
+  const { nextCalls, thrown } = await live1ScoredTurn(h, "t-outside", "on-goal");
+  const state = getState(h);
+  const plan1 = state.goals.find(g => g.id === "plan-1");
+  const decisions = getDecisions(h);
+  const unreadable = decisions.filter(d => d.action === "plan_record_unreadable");
+  check("live1 outside: the turn settled and handed on to next", thrown === null && nextCalls === 1, { thrown: thrown && String(thrown), nextCalls });
+  check("live1 outside: plan-1 stays active", plan1 && plan1.status === "active", plan1 && plan1.status);
+  check("live1 outside: exactly one plan_record_unreadable carries the reader's own reason",
+    unreadable.length === 1 && unreadable[0].detail === `plan-1: ${PLAN2_PATH}: no file at planPath or at any archive place`, unreadable);
+  check("live1 outside: no plan_record_dir_resolved decision", !decisions.some(d => d.action === "plan_record_dir_resolved"), decisions.map(d => d.action));
+}
+
+// The walk never leaves the checkout the session works in. The worktree sits
+// at <launch>/.claude/worktrees/<name> with a .git file at its root, the
+// session directory is <worktree>/hooks, and the worktree holds no plan
+// document while the launch checkout's copy reads Complete. The walk ends at
+// the worktree's .git with no hit, so the live directory is read: the holder
+// stays active, and the unreadable log carries the reader's own reason.
+async function caseLive1_walkStopsAtTheWorktreeRoot(clock) {
+  console.log("\n=== boundary-compaction Section 1: the walk stops at the worktree's .git and never reads the launch checkout ===");
+  const SUBDIR = `${LIVE1_DIR}/hooks`;
+  clock.set(T0);
+  const h = await plan2Harness("live1_git_stop", { chapterCount: 1 });
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+  h.fsMap.set(`${LIVE1_DIR}/.git`, "gitdir: D:/harness-root/.git/worktrees/plan-wt\n");
+  h.fsMap.set(".agentic-health", "true");
+  h.fake.session.cwd = () => Promise.resolve(SUBDIR);
+  check("live1 git stop setup: the worktree holds no plan document", !h.fsMap.has(LIVE1_FILE));
+  const { nextCalls, thrown } = await live1ScoredTurn(h, "t-git-stop", "on-goal");
+  const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+  const decisions = getDecisions(h);
+  const unreadable = decisions.filter(d => d.action === "plan_record_unreadable");
+  check("live1 git stop: the turn settled and handed on to next", thrown === null && nextCalls === 1, { thrown: thrown && String(thrown), nextCalls });
+  check("live1 git stop: plan-1 stays active though the launch copy reads Complete", plan1 && plan1.status === "active", plan1 && plan1.status);
+  check("live1 git stop: exactly one plan_record_unreadable carries the reader's own reason",
+    unreadable.length === 1 && unreadable[0].detail === `plan-1: ${PLAN2_PATH}: no file at planPath or at any archive place`, unreadable);
+  check("live1 git stop: no complete or plan_record_dir_resolved decision",
+    !decisions.some(d => d.action === "complete" || d.action === "plan_record_dir_resolved"), decisions.map(d => d.action));
+}
+
+// --- Section 2 (boundary-compaction): the compaction boundary owed at a durable turn end, banked at the next turn's first main-loop tool call ---
+
+// The kit install the seeded installed_plugins.json names, and the script the
+// plugin must run under it.
+const BANK2_INSTALL = "C:\\kit-cache\\claude-kit\\build-new";
+const BANK2_SCRIPT = `${BANK2_INSTALL}/hooks/kit-compact-checkpoint.js`;
+
+function bank2Installed(installPath = BANK2_INSTALL) {
+  return { version: 2, plugins: { "claude-kit@applefeld": [{ scope: "user", installPath, version: "b", lastUpdated: "2026-09-25T09:59:04.362Z" }] } };
+}
+
+// Writes installed_plugins.json under the home the fake environment names, a
+// JSON value or raw text as given.
+async function bank2SeedInstalled(h, value) {
+  const home = await h.fake.env.get("USERPROFILE");
+  h.fsMap.set(`${home}/.claude/plugins/installed_plugins.json`, typeof value === "string" ? value : JSON.stringify(value));
+}
+
+// Replaces the harness's fixed-exit process stub with one that records every
+// child's argv and options, so a case asserting the command did not run reads
+// an empty record rather than a stub that answers the same either way.
+// `answer` decides what the run resolves or rejects with.
+function bank2Recorder(h, answer = () => ({ exitCode: 0, stdout: "", stderr: "" })) {
+  const runs = [];
+  h.fake.process.run = (argv, init) => {
+    runs.push({ argv: [...argv], init: init === undefined ? undefined : { ...init, env: init.env ? { ...init.env } : init.env } });
+    return Promise.resolve().then(() => answer(argv, init));
+  };
+  return runs;
+}
+
+// One turn through the real handlers: turn.start under `turnId` unless
+// `open` is false, then turn.complete, recording whether the completion
+// settled or threw and how often it handed the event on to next.
+async function bank2Turn(h, turnId, answer, { reason = "completed", aborted = false, open = true } = {}) {
+  if (open) await h.handlers["turn.start"](h.fake, { turnId }, async () => ({ result: "ok" }));
+  return bank2Complete(h, turnId, answer, { reason, aborted });
+}
+
+async function bank2Complete(h, turnId, answer, { reason = "completed", aborted = false } = {}) {
+  let nextCalls = 0;
+  let thrown = null;
+  const e = { turnId, answer, reason, ...(aborted ? { aborted: true } : {}) };
+  try {
+    await h.handlers["turn.complete"](h.fake, e, async () => { nextCalls += 1; return { result: "ok" }; });
+  } catch (err) {
+    thrown = err;
+  }
+  return { nextCalls, thrown };
+}
+
+function bank2Decisions(h) {
+  return getDecisions(h).filter(d => String(d.action).startsWith("compaction_boundary_"));
+}
+
+// The shapes each entry kind starts from. The scorer's classify answers
+// on-goal when that label is on offer and discard to the memory curator.
+function bank2Scorer(h) {
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("on-goal")) ? "on-goal" : "discard");
+}
+
+async function bank2NoGoalHarness(caseName) {
+  const h = await createTickHarness({ ...OPTS, caseName, stateOpts: { hasActiveLeaf: false } });
+  bank2Scorer(h);
+  return h;
+}
+
+async function bank2TaskHarness(caseName) {
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 20000 });
+  const task = makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", maxRounds: 10, createdAt: T0 - 10000 });
+  const h = await createTickHarness({ ...OPTS, caseName, stateOpts: { now: T0, goals: [root, task], activeGoalId: "task-1" } });
+  bank2Scorer(h);
+  return h;
+}
+
+async function bank2PlanHarness(caseName, treeOpts = { chapterCount: 1 }) {
+  const h = await plan2Harness(caseName, treeOpts);
+  bank2Scorer(h);
+  return h;
+}
+
+// A persona turn.start through the real handler, recording whether it
+// settled or threw and how often it handed the event on to next.
+async function bank2Start(h, turnId) {
+  let nextCalls = 0;
+  let thrown = null;
+  try {
+    await h.handlers["turn.start"](h.fake, { turnId }, async () => { nextCalls += 1; return { result: "ok" }; });
+  } catch (err) {
+    thrown = err;
+  }
+  return { nextCalls, thrown };
+}
+
+// Who raised a dispatch, as the host sets next.origin (the Origin type in
+// .claude/types/claude-code.d.ts): the engine for a call the model made, and
+// a plugin's name for a call that plugin raised through $.tool.call.
+const BANK2_ENGINE_ORIGIN = Object.freeze({ plugin: "engine", tier: "core" });
+const BANK2_PLUGIN_ORIGIN = Object.freeze({ plugin: "agentic-plugin", tier: "user" });
+
+// One tool call through the real tool.call handler: a work tool the engine
+// passes on, from the main loop unless `agentId` names a subagent's loop,
+// raised by the model unless `origin` names a plugin (or is null, for a
+// dispatch carrying no origin at all).
+// Records whether it settled or threw, how often it handed the event on to
+// next, and whether it returned next's own result unchanged.
+async function bank2Call(h, turnId, { agentId, origin = BANK2_ENGINE_ORIGIN } = {}) {
+  let nextCalls = 0;
+  let thrown = null;
+  let returned;
+  const nextResult = { result: "the tool ran" };
+  const e = { tool: "Write", turnId, ...(agentId === undefined ? {} : { agentId }) };
+  const next = async () => { nextCalls += 1; return nextResult; };
+  if (origin !== null) next.origin = origin;
+  try {
+    returned = await h.handlers["tool.call"](h.fake, e, next);
+  } catch (err) {
+    thrown = err;
+  }
+  return { nextCalls, thrown, returnedUnchanged: returned === nextResult };
+}
+
+function bank2CheckSettled(label, outcome) {
+  check(`${label}: the handler settled and handed on to next once`, outcome.thrown === null && outcome.nextCalls === 1, { thrown: outcome.thrown && String(outcome.thrown), nextCalls: outcome.nextCalls });
+  if (outcome.returnedUnchanged !== undefined) {
+    check(`${label}: the tool call returned next's result unchanged`, outcome.returnedUnchanged === true);
+  }
+}
+
+// A turn end runs nothing itself, whether or not it owes the bank: the kit
+// lapses a marker recorded there on the inbound line that opens the next turn.
+function bank2CheckOwedOnly(label, h, runs, endOutcome) {
+  bank2CheckSettled(`${label} (turn end)`, endOutcome);
+  check(`${label} (turn end): the turn end ran no child process by itself`, runs.length === 0, runs);
+  check(`${label} (turn end): no compaction_boundary decision yet`, bank2Decisions(h).length === 0, bank2Decisions(h));
+}
+
+// Opens the persona's next turn and makes its first main-loop tool call. The
+// turn.start alone runs nothing and logs nothing, whether or not a bank is
+// owed: turn.start can fire before the turn's opening line is on disk. The
+// tool call's outcome is returned for the case to judge.
+async function bank2NextTurnCall(label, h, runs, turnId) {
+  const runsBefore = runs.length;
+  const decisionsBefore = bank2Decisions(h).length;
+  const start = await bank2Start(h, turnId);
+  bank2CheckSettled(`${label} (next turn start)`, start);
+  check(`${label} (next turn start): the turn start alone ran nothing`, runs.length === runsBefore, runs);
+  check(`${label} (next turn start): the turn start alone logged no compaction_boundary decision`, bank2Decisions(h).length === decisionsBefore, bank2Decisions(h));
+  return bank2Call(h, turnId);
+}
+
+// The banking assertions at the first main-loop tool call of the persona's
+// next turn: it settled with one next call and next's result returned, the
+// boundary command ran once as node <install>/hooks/kit-compact-checkpoint.js
+// boundary, with env carrying CLAUDE_CODE_SESSION_ID equal to the session id
+// and no cwd, and one compaction_boundary_banked decision carries the exit
+// code and the child's first stderr line.
+function bank2CheckBanked(label, h, runs, callOutcome, { script = BANK2_SCRIPT, stderrFirst = null, stderrLater = null } = {}) {
+  bank2CheckSettled(`${label} (first main-loop tool call)`, callOutcome);
+  check(`${label}: the boundary command ran exactly once`, runs.length === 1, runs);
+  const run = runs[0];
+  check(`${label}: argv is node, the kit checkpoint script under the install path, boundary`,
+    run && run.argv.length === 3 && run.argv[0] === "node" && run.argv[1] === script && run.argv[2] === "boundary", run && run.argv);
+  check(`${label}: env carries CLAUDE_CODE_SESSION_ID equal to the session id`,
+    run && run.init && run.init.env && run.init.env.CLAUDE_CODE_SESSION_ID === SESSION_ID, run && run.init);
+  check(`${label}: no cwd is passed`, run && run.init && !Object.hasOwn(run.init, "cwd"), run && run.init);
+  check(`${label}: a timeout is set`, run && run.init && typeof run.init.timeoutMs === "number" && run.init.timeoutMs > 0, run && run.init);
+  const decisions = bank2Decisions(h);
+  check(`${label}: exactly one compaction_boundary decision, and it is banked`, decisions.length === 1 && decisions[0].action === "compaction_boundary_banked", decisions);
+  const detail = decisions[0] ? decisions[0].detail : "";
+  check(`${label}: the decision carries the exit code`, /\bexit 0\b/.test(detail), detail);
+  if (stderrFirst !== null) {
+    check(`${label}: the decision carries the child's first stderr line and not a later one`,
+      detail.includes(stderrFirst) && (stderrLater === null || !detail.includes(stderrLater)), detail);
+  }
+}
+
+// After the bank lands, a second main-loop tool call in the same turn runs
+// nothing more: the call that banked cleared the owed bank. The turn is then
+// closed, aborted, so it owes nothing and leaves no turn open.
+async function bank2CheckNoSecondBank(label, h, runs, openTurnId) {
+  const runsBefore = runs.length;
+  const decisionsBefore = bank2Decisions(h).length;
+  const second = await bank2Call(h, openTurnId);
+  bank2CheckSettled(`${label} (second tool call)`, second);
+  check(`${label}: a second tool call ran nothing more`, runs.length === runsBefore, runs);
+  check(`${label}: a second tool call logged no further compaction_boundary decision`, bank2Decisions(h).length === decisionsBefore, bank2Decisions(h));
+  const end = await bank2Complete(h, openTurnId, "Partial.", { aborted: true, reason: "aborted" });
+  bank2CheckSettled(`${label} (the banking turn's end)`, end);
+}
+
+// The non-banking assertions. The recorder is live in every case that calls
+// this: each case's banking control, or bank2CheckBanked in the case beside
+// it on the same helpers, shows it recording a run.
+function bank2CheckNothing(label, h, runs, outcome) {
+  bank2CheckSettled(label, outcome);
+  check(`${label}: no child process ran`, runs.length === 0, runs);
+  check(`${label}: no compaction_boundary decision`, bank2Decisions(h).length === 0, bank2Decisions(h));
+}
+
+// A delivered no-goal turn, a task-entry turn, a Chapter-banking turn and a
+// turn whose plan document reads Complete each owe the bank at their end.
+// The next turn's turn.start runs nothing, its first main-loop tool call runs
+// the command exactly once, and a second tool call runs nothing more. The
+// plan document is read under the live directory, here HARNESS_CWD, which
+// the harness's session.cwd answers.
+async function caseBank2_durableTurnsBankOnce(clock) {
+  console.log("\n=== boundary-compaction Section 2: a durable turn end banks once, at the next turn's first main-loop tool call ===");
+
+  clock.set(T0);
+  {
+    const h = await bank2NoGoalHarness("bank2_nogoal");
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h, () => ({ exitCode: 0, stdout: "", stderr: "boundary marker written without a transcript position\nsecond stderr line\n" }));
+    check("bank2 no-goal setup: no goal is active", getState(h).goals.length === 0 && getState(h).activeGoalId === null, getState(h).goals);
+    const end = await bank2Turn(h, "t-nogoal", "Here is the answer.");
+    bank2CheckOwedOnly("bank2 no-goal turn", h, runs, end);
+    const call = await bank2NextTurnCall("bank2 no-goal turn", h, runs, "t-after");
+    bank2CheckBanked("bank2 no-goal turn", h, runs, call, { stderrFirst: "boundary marker written without a transcript position", stderrLater: "second stderr line" });
+    await bank2CheckNoSecondBank("bank2 no-goal turn", h, runs, "t-after");
+  }
+
+  clock.set(T0);
+  {
+    const h = await bank2TaskHarness("bank2_task");
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    check("bank2 task setup: task-1 is the active entry with no plan holder",
+      getState(h).activeGoalId === "task-1" && !getState(h).goals.some(g => g.planPath), getState(h).goals.map(g => `${g.id}|${g.status}|${g.planPath}`));
+    const end = await bank2Turn(h, "t-task", "Did the next step of the task.");
+    bank2CheckOwedOnly("bank2 task-entry turn", h, runs, end);
+    const call = await bank2NextTurnCall("bank2 task-entry turn", h, runs, "t-after");
+    bank2CheckBanked("bank2 task-entry turn", h, runs, call);
+    await bank2CheckNoSecondBank("bank2 task-entry turn", h, runs, "t-after");
+  }
+
+  clock.set(T0);
+  {
+    const h = await bank2PlanHarness("bank2_chapter");
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    const before = getState(h).goals.find(g => g.id === "plan-1");
+    check("bank2 chapter setup: plan-1 is active with chapterCount 1", before && before.status === "active" && before.chapterCount === 1, before);
+    const end = await bank2Turn(h, "t-chapter", "Chapter 2 is written.");
+    check("bank2 chapter-banking turn: the read advanced the Chapter count", getDecisions(h).some(d => d.action === "plan_progress" && d.detail.includes("1 -> 2")), getDecisions(h).map(d => d.action));
+    bank2CheckOwedOnly("bank2 chapter-banking turn", h, runs, end);
+    const call = await bank2NextTurnCall("bank2 chapter-banking turn", h, runs, "t-after");
+    bank2CheckBanked("bank2 chapter-banking turn", h, runs, call);
+    await bank2CheckNoSecondBank("bank2 chapter-banking turn", h, runs, "t-after");
+  }
+
+  clock.set(T0);
+  {
+    const h = await bank2PlanHarness("bank2_complete");
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    const end = await bank2Turn(h, "t-complete", "The plan is complete.");
+    check("bank2 plan-complete turn: the document completed plan-1 with no Chapter advance",
+      getState(h).goals.find(g => g.id === "plan-1").status === "complete" && !getDecisions(h).some(d => d.action === "plan_progress"), getDecisions(h).map(d => d.action));
+    bank2CheckOwedOnly("bank2 plan-complete turn", h, runs, end);
+    const call = await bank2NextTurnCall("bank2 plan-complete turn", h, runs, "t-after");
+    bank2CheckBanked("bank2 plan-complete turn", h, runs, call);
+    await bank2CheckNoSecondBank("bank2 plan-complete turn", h, runs, "t-after");
+  }
+}
+
+// Each turn below has installed_plugins.json seeded and the recorder live, so
+// the one thing between it and a run is the durable-boundary gate. A skipped
+// turn (aborted, errored, or with no answer), a turn ending on a BLOCKED: or
+// WAITING: line whatever the entry's kind, and a plan holder that advanced no
+// Chapter and was not completed (including a task under a plan node, and a
+// plan record that could not be read) each owe nothing, so neither the turn
+// end, the next turn.start nor that turn's first main-loop tool call runs
+// the command.
+async function caseBank2_nonDurableTurnsBankNothing(clock) {
+  console.log("\n=== boundary-compaction Section 2: a skipped, lead-ended or mid-section turn banks nothing, at its end or the next turn's first tool call ===");
+  const cases = [
+    { label: "skipped: aborted", build: bank2NoGoalHarness, answer: "Partial.", opts: { aborted: true, reason: "aborted" } },
+    { label: "skipped: errored", build: bank2NoGoalHarness, answer: "Partial.", opts: { reason: "error" } },
+    { label: "skipped: no answer", build: bank2NoGoalHarness, answer: "", opts: {} },
+    { label: "lead-ended: no-goal turn on WAITING:", build: bank2NoGoalHarness, answer: "WAITING: on the operator's reply.", opts: {} },
+    { label: "lead-ended: task-entry turn on BLOCKED:", build: bank2TaskHarness, answer: "BLOCKED: the credentials are missing.", opts: {} },
+    {
+      label: "lead-ended: plan turn on BLOCKED: though a Chapter advanced",
+      build: bank2PlanHarness,
+      seed: (h) => h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"])),
+      answer: "BLOCKED: review is pending.",
+      opts: {},
+    },
+    {
+      label: "mid-section: plan holder with no Chapter advance",
+      build: bank2PlanHarness,
+      seed: (h) => h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"])),
+      answer: "Made progress on the section.",
+      opts: {},
+    },
+    {
+      label: "mid-section: task under a plan node with no Chapter advance",
+      build: (name) => bank2PlanHarness(name, { taskUnderPlan: true, chapterCount: 1 }),
+      seed: (h) => h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"])),
+      answer: "Made progress on the task.",
+      opts: {},
+    },
+    {
+      label: "mid-section: plan record unreadable",
+      build: bank2PlanHarness,
+      seed: () => {},
+      answer: "Made progress on the section.",
+      opts: {},
+      expectAction: "plan_record_unreadable",
+    },
+  ];
+  for (const c of cases) {
+    clock.set(T0);
+    const h = await c.build(`bank2_none_${cases.indexOf(c)}`);
+    if (c.seed) c.seed(h);
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    const end = await bank2Turn(h, "t-none", c.answer, c.opts);
+    bank2CheckNothing(`bank2 ${c.label} (turn end)`, h, runs, end);
+    if (c.expectAction) check(`bank2 ${c.label}: the turn logged ${c.expectAction}`, getDecisions(h).some(d => d.action === c.expectAction), getDecisions(h).map(d => d.action));
+    const call = await bank2NextTurnCall(`bank2 ${c.label}`, h, runs, "t-after");
+    bank2CheckNothing(`bank2 ${c.label} (next turn's first tool call)`, h, runs, call);
+  }
+}
+
+// Only the completion of the persona's own turn, with no turn left open,
+// owes the bank. A background subagent's completion inside the open turn and
+// a completion for a turn this session never saw start owe nothing, so the
+// next turn's first tool call runs nothing; the persona's own durable end in
+// the same harness afterwards banks once at the call after it, which is the
+// control that the recorder records there. A completion carrying the turn's
+// id while an earlier turn is still open owes nothing either.
+async function caseBank2_onlyThePersonasOwnTurnEndBanks(clock) {
+  console.log("\n=== boundary-compaction Section 2: only the persona's own turn end owes the bank ===");
+
+  clock.set(T0);
+  {
+    const h = await bank2NoGoalHarness("bank2_subagent");
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    await h.handlers["turn.start"](h.fake, { turnId: "t-main" }, async () => ({ result: "ok" }));
+    const sub = await bank2Complete(h, "t-subagent", "The subagent's report.");
+    bank2CheckNothing("bank2 subagent completion inside the open turn", h, runs, sub);
+    const own = await bank2Complete(h, "t-main", "The persona's own answer.");
+    bank2CheckOwedOnly("bank2 the persona's own completion after it (control)", h, runs, own);
+    const call = await bank2NextTurnCall("bank2 the persona's own completion after it (control)", h, runs, "t-after");
+    bank2CheckBanked("bank2 the persona's own completion after it (control)", h, runs, call);
+  }
+
+  // A completion naming a subagent loop is never the persona's own turn end,
+  // even where it carries the main turn's id, so it neither owes nor clears.
+  clock.set(T0);
+  {
+    const h = await bank2NoGoalHarness("bank2_subagent_sameid");
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    await h.handlers["turn.start"](h.fake, { turnId: "t-main" }, async () => ({ result: "ok" }));
+    let nextCalls = 0;
+    let thrown = null;
+    try {
+      await h.handlers["turn.complete"](h.fake, { turnId: "t-main", agentId: "sub-1", answer: "The subagent's report.", reason: "completed" }, async () => { nextCalls += 1; return { result: "ok" }; });
+    } catch (err) {
+      thrown = err;
+    }
+    bank2CheckNothing("bank2 subagent completion carrying the main turn's id", h, runs, { nextCalls, thrown });
+    const own = await bank2Complete(h, "t-main", "The persona's own answer.");
+    bank2CheckOwedOnly("bank2 the persona's own completion after a same-id subagent completion", h, runs, own);
+    const call = await bank2NextTurnCall("bank2 the persona's own completion after a same-id subagent completion", h, runs, "t-after");
+    bank2CheckBanked("bank2 the persona's own completion after a same-id subagent completion", h, runs, call);
+  }
+
+  clock.set(T0);
+  {
+    const h = await bank2NoGoalHarness("bank2_unseen");
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    const ghost = await bank2Turn(h, "t-never-started", "An answer for a turn never seen.", { open: false });
+    bank2CheckNothing("bank2 completion for a turn never seen to start", h, runs, ghost);
+    const firstCall = await bank2NextTurnCall("bank2 completion for a turn never seen to start", h, runs, "t-seen");
+    bank2CheckNothing("bank2 completion for a turn never seen to start (the next turn's first tool call ran nothing)", h, runs, firstCall);
+    const own = await bank2Complete(h, "t-seen", "An answer for a turn seen to start.");
+    bank2CheckOwedOnly("bank2 a seen turn's durable end in the same session afterwards (control)", h, runs, own);
+    const call = await bank2NextTurnCall("bank2 a seen turn's durable end in the same session afterwards (control)", h, runs, "t-after");
+    bank2CheckBanked("bank2 a seen turn's durable end in the same session afterwards (control)", h, runs, call);
+  }
+
+  clock.set(T0);
+  {
+    const h = await bank2NoGoalHarness("bank2_overlap");
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    await h.handlers["turn.start"](h.fake, { turnId: "t-first" }, async () => ({ result: "ok" }));
+    await h.handlers["turn.start"](h.fake, { turnId: "t-second" }, async () => ({ result: "ok" }));
+    const outcome = await bank2Complete(h, "t-second", "The later turn's answer.");
+    bank2CheckNothing("bank2 the gate turn's completion while another turn is still open", h, runs, outcome);
+    const call = await bank2NextTurnCall("bank2 the gate turn's completion while another turn is still open", h, runs, "t-third");
+    bank2CheckNothing("bank2 the gate turn's completion while another turn is still open (next turn's first tool call)", h, runs, call);
+  }
+}
+
+// Only a main-loop tool call takes an owed bank. A tool call with no owed
+// bank runs nothing. A subagent's tool call (one carrying an agentId) runs
+// nothing and leaves the owed bank for the main loop's call after it, which
+// banks it once. A subagent-shaped completion (an id this session never saw
+// start, arriving with no turn open, closing on a durable-looking answer)
+// neither owes a bank nor takes one already owed.
+async function caseBank2_theOwedBankIsTakenOnlyByAMainLoopToolCall(clock) {
+  console.log("\n=== boundary-compaction Section 2: only a main-loop tool call takes an owed bank ===");
+
+  clock.set(T0);
+  {
+    const h = await bank2NoGoalHarness("bank2_noflag");
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    const call = await bank2NextTurnCall("bank2 a tool call with no owed bank", h, runs, "t-first");
+    bank2CheckNothing("bank2 a tool call with no owed bank", h, runs, call);
+  }
+
+  clock.set(T0);
+  {
+    const h = await bank2NoGoalHarness("bank2_subagent_call");
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    const end = await bank2Turn(h, "t-durable", "Here is the answer.");
+    bank2CheckOwedOnly("bank2 an owed bank with a subagent's tool call first", h, runs, end);
+    await bank2Start(h, "t-after");
+    const sub = await bank2Call(h, "t-after", { agentId: "agent-1" });
+    bank2CheckNothing("bank2 a subagent's tool call with a bank owed", h, runs, sub);
+    const main = await bank2Call(h, "t-after");
+    bank2CheckBanked("bank2 the main loop's tool call after it banks the owed bank once", h, runs, main);
+  }
+
+  clock.set(T0);
+  {
+    const h = await bank2NoGoalHarness("bank2_subagent_between");
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    const end = await bank2Turn(h, "t-durable", "Here is the answer.");
+    bank2CheckOwedOnly("bank2 an owed bank with a subagent completion after it", h, runs, end);
+    const sub = await bank2Complete(h, "t-subagent", "The subagent's report.");
+    bank2CheckNothing("bank2 a subagent-shaped completion after the owed bank takes nothing", h, runs, sub);
+    const call = await bank2NextTurnCall("bank2 the persona's next turn still banks the owed bank once", h, runs, "t-after");
+    bank2CheckBanked("bank2 the persona's next turn still banks the owed bank once", h, runs, call);
+  }
+}
+
+// Every completion of the persona's own turn recomputes the owed bank. A
+// durable end followed by a turn that made no tool call and ended on a lead,
+// or mid-section, leaves nothing owed, so the first tool call of the turn
+// after runs nothing. A durable end followed by a turn that made no tool call
+// and was itself durable still owes exactly one bank, which that first tool
+// call runs once: the positive control for the two clearing cases.
+async function caseBank2_everyPersonaTurnEndRecomputesTheOwedBank(clock) {
+  console.log("\n=== boundary-compaction Section 2: every persona turn end recomputes the owed bank ===");
+  const variants = [
+    {
+      label: "then a lead-ended turn",
+      build: bank2NoGoalHarness,
+      seed: () => {},
+      first: "Here is the answer.",
+      second: "WAITING: on the operator's reply.",
+      banks: false,
+    },
+    {
+      label: "then a mid-section turn",
+      build: bank2PlanHarness,
+      seed: (h) => h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"])),
+      first: "Chapter 2 is written.",
+      second: "Made progress on the next section.",
+      banks: false,
+    },
+    {
+      label: "then another durable turn",
+      build: bank2NoGoalHarness,
+      seed: () => {},
+      first: "Here is the answer.",
+      second: "Here is another answer.",
+      banks: true,
+    },
+  ];
+  for (const v of variants) {
+    clock.set(T0);
+    const h = await v.build(`bank2_recompute_${variants.indexOf(v)}`);
+    v.seed(h);
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    const first = await bank2Turn(h, "t-durable", v.first);
+    bank2CheckOwedOnly(`bank2 a durable end ${v.label}`, h, runs, first);
+    // The second turn makes no tool call, so nothing takes the owed bank
+    // before its own end recomputes it.
+    const second = await bank2Turn(h, "t-no-tool", v.second);
+    bank2CheckSettled(`bank2 a durable end ${v.label} (second turn end)`, second);
+    check(`bank2 a durable end ${v.label}: the second turn, with no tool call, ran nothing`, runs.length === 0, runs);
+    const call = await bank2NextTurnCall(`bank2 a durable end ${v.label}`, h, runs, "t-after");
+    if (v.banks) {
+      bank2CheckBanked(`bank2 a durable end ${v.label}: the next first tool call banks once`, h, runs, call);
+    } else {
+      bank2CheckNothing(`bank2 a durable end ${v.label}: the next first tool call`, h, runs, call);
+    }
+  }
+}
+
+// Only a call the model made takes the owed bank. A tool call a plugin raised
+// through $.tool.call reaches the plugin's own tool.call hook with no agentId,
+// so next.origin is what tells it apart: a call whose origin names a plugin,
+// and one carrying no origin at all, run nothing and leave the owed bank for
+// the model's own call after them, which banks it once.
+async function caseBank2_onlyAModelMadeCallTakesTheOwedBank(clock) {
+  console.log("\n=== boundary-compaction Section 2: only a model-made tool call takes the owed bank ===");
+  clock.set(T0);
+  const h = await bank2NoGoalHarness("bank2_origin");
+  await bank2SeedInstalled(h, bank2Installed());
+  const runs = bank2Recorder(h);
+  const end = await bank2Turn(h, "t-durable", "Here is the answer.");
+  bank2CheckOwedOnly("bank2 an owed bank with non-model calls first", h, runs, end);
+  await bank2Start(h, "t-after");
+  const pluginCall = await bank2Call(h, "t-after", { origin: BANK2_PLUGIN_ORIGIN });
+  bank2CheckNothing("bank2 a tool call a plugin raised, with a bank owed", h, runs, pluginCall);
+  const noOriginCall = await bank2Call(h, "t-after", { origin: null });
+  bank2CheckNothing("bank2 a tool call carrying no origin, with a bank owed", h, runs, noOriginCall);
+  const modelCall = await bank2Call(h, "t-after");
+  bank2CheckBanked("bank2 the model's own call after them banks the owed bank once", h, runs, modelCall);
+}
+
+// The plugin's own reply backfill runs inside turn.complete, where a marker
+// is never honored, and reaches this same tool.call hook through $.tool.call.
+// Here the fake $.tool.call routes into the plugin's real tool.call handler
+// with a plugin origin, as the host dispatches it. With a bank owed by a
+// durable end, a channel-opened turn that made no tool call and sent no reply
+// fires the backfill at its end: nothing runs there. That turn's own end is
+// durable, so the model's first call of the next turn banks once.
+async function caseBank2_theReplyBackfillTakesNoOwedBank(clock) {
+  console.log("\n=== boundary-compaction Section 2: the plugin's reply backfill at a turn end takes no owed bank ===");
+  clock.set(T0);
+  const h = await bank2NoGoalHarness("bank2_backfill");
+  await bank2SeedInstalled(h, bank2Installed());
+  const runs = bank2Recorder(h);
+  const routed = [];
+  h.fake.tool.call = (args) => {
+    routed.push(args);
+    const next = async () => ({ result: "sent" });
+    next.origin = BANK2_PLUGIN_ORIGIN;
+    return h.handlers["tool.call"](h.fake, args, next);
+  };
+  const end = await bank2Turn(h, "t-durable", "Here is the answer.");
+  bank2CheckOwedOnly("bank2 an owed bank before a channel turn's backfill", h, runs, end);
+
+  await h.handlers["prompt.submit"](h.fake, { text: "What's the status?", origin: { kind: "channel" } }, async (core) => ({ text: core.text, context: core.context }));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-channel" }, async () => ({ result: "ok" }));
+  const channelEnd = await bank2Complete(h, "t-channel", "All green.");
+  bank2CheckSettled("bank2 the channel turn's end", channelEnd);
+  check("bank2 the channel turn's end fired the reply backfill through the plugin's tool.call hook",
+    routed.length === 1 && routed[0].tool === "mcp__plugin_relay_channel-relay__reply"
+      && getDecisions(h).some(d => d.action === "channel_reply_backfilled"), { routed, actions: getDecisions(h).map(d => d.action) });
+  check("bank2 the reply backfill at the turn end ran nothing", runs.length === 0, runs);
+  check("bank2 the reply backfill at the turn end logged no compaction_boundary decision", bank2Decisions(h).length === 0, bank2Decisions(h));
+
+  const call = await bank2NextTurnCall("bank2 the model's first call after the backfilled turn", h, runs, "t-after");
+  bank2CheckBanked("bank2 the model's first call after the backfilled turn banks once", h, runs, call);
+}
+
+// Parks the next memory-curation classify the handlers make: it returns a
+// promise the case resolves through the returned release, and every classify
+// after it answers discard at once. The harness's classify stub already takes
+// a function, so this adds nothing to the harness.
+function bank2ParkNextClassify(h) {
+  const park = { release: null };
+  h.setClassifyValue(() => {
+    if (park.release !== null) return "discard";
+    return new Promise((resolve) => { park.release = () => resolve("discard"); });
+  });
+  return park;
+}
+
+// Parks the next write of the heartbeat file, which a completion makes at
+// its owner heartbeat before any other await, so a turn.start can run whole
+// inside that window. Later writes land at once; the parked one lands on
+// release.
+function bank2ParkNextHeartbeatWrite(h) {
+  const park = { release: null };
+  const realWrite = h.fake.fs.write;
+  h.fake.fs.write = (p, content) => {
+    if (p !== HEARTBEAT_FILE || park.release !== null) return realWrite(p, content);
+    return new Promise((resolve, reject) => {
+      park.release = () => { realWrite(p, content).then(resolve, reject); };
+    });
+  };
+  return park;
+}
+
+async function bank2UntilParked(park) {
+  for (let i = 0; i < 1000 && park.release === null; i++) await new Promise((r) => setImmediate(r));
+  return park.release !== null;
+}
+
+// A durable end whose completion is still settling (parked in its
+// memory-curation classify) when the next turn starts owes nothing once it
+// settles: that turn's first tool call may already have run, so a bank set
+// now could only land mid-turn. The next turn's first and later model calls
+// run nothing. That turn's own durable end, with nothing interleaved, owes
+// the bank again, and the turn after it banks once: the control that the
+// recorder records here.
+async function caseBank2_aNextTurnStartingMidCompletionLeavesNothingOwed(clock) {
+  console.log("\n=== boundary-compaction Section 2: a turn start during a durable completion leaves nothing owed ===");
+  clock.set(T0);
+  const h = await bank2NoGoalHarness("bank2_mid_completion");
+  await bank2SeedInstalled(h, bank2Installed());
+  const runs = bank2Recorder(h);
+  const park = bank2ParkNextClassify(h);
+  await h.handlers["turn.start"](h.fake, { turnId: "t-durable" }, async () => ({ result: "ok" }));
+  const settling = bank2Complete(h, "t-durable", "Here is the answer.");
+  check("bank2 mid-completion setup: the completion is parked in its classify", await bank2UntilParked(park));
+  const start = await bank2Start(h, "t-next");
+  bank2CheckSettled("bank2 the next turn start while the completion settles", start);
+  park.release();
+  const end = await settling;
+  bank2CheckOwedOnly("bank2 a durable end that settled after the next turn started", h, runs, end);
+  const first = await bank2Call(h, "t-next");
+  bank2CheckNothing("bank2 the next turn's first model call after a late-settling durable end", h, runs, first);
+  const later = await bank2Call(h, "t-next");
+  bank2CheckNothing("bank2 the next turn's later model call after a late-settling durable end", h, runs, later);
+  const nextEnd = await bank2Complete(h, "t-next", "Here is the next answer.");
+  bank2CheckSettled("bank2 the next turn's own durable end", nextEnd);
+  const call = await bank2NextTurnCall("bank2 the turn after an uninterleaved durable end (control)", h, runs, "t-after");
+  bank2CheckBanked("bank2 the turn after an uninterleaved durable end (control)", h, runs, call);
+}
+
+// The stale-bank order. Turn A ends durable, so the bank is owed. Turn B
+// makes no model tool call and ends on WAITING:, and its completion is parked
+// at its owner heartbeat write, before any other await, while turn C starts.
+// B's boundary facts were read at its delete, so B is still the persona's own
+// turn ending when it settles, and a newer turn having started clears the
+// owed bank. C's model calls run nothing.
+async function caseBank2_aLateSettlingEndClearsAStaleOwedBank(clock) {
+  console.log("\n=== boundary-compaction Section 2: a late-settling turn end clears a stale owed bank ===");
+  clock.set(T0);
+  const h = await bank2NoGoalHarness("bank2_stale_owed");
+  await bank2SeedInstalled(h, bank2Installed());
+  const runs = bank2Recorder(h);
+  const endA = await bank2Turn(h, "t-a", "Here is the answer.");
+  bank2CheckOwedOnly("bank2 turn A's durable end", h, runs, endA);
+  await h.handlers["turn.start"](h.fake, { turnId: "t-b" }, async () => ({ result: "ok" }));
+  const park = bank2ParkNextHeartbeatWrite(h);
+  const settlingB = bank2Complete(h, "t-b", "WAITING: on the operator's reply.");
+  check("bank2 stale-owed setup: turn B's completion is parked at its heartbeat write", await bank2UntilParked(park));
+  const startC = await bank2Start(h, "t-c");
+  bank2CheckSettled("bank2 turn C's start while B's completion settles", startC);
+  park.release();
+  const endB = await settlingB;
+  bank2CheckSettled("bank2 turn B's lead-ended end, settled after C started", endB);
+  check("bank2 turn B's settling ran nothing", runs.length === 0, runs);
+  const first = await bank2Call(h, "t-c");
+  bank2CheckNothing("bank2 turn C's first model call after B cleared the stale bank", h, runs, first);
+  const later = await bank2Call(h, "t-c");
+  bank2CheckNothing("bank2 turn C's later model call after B cleared the stale bank", h, runs, later);
+}
+
+// The mid-turn order. A durable end is parked in its classify, the next turn
+// starts, and that turn's first model call arrives while the completion is
+// still parked, which runs nothing since no bank is owed yet. When the
+// completion then settles it owes nothing, so a second model call in that
+// same turn runs nothing: a bank there would land mid-turn.
+async function caseBank2_aLateSettlingEndNeverBanksMidTurn(clock) {
+  console.log("\n=== boundary-compaction Section 2: a durable end settling after the next turn's first call never banks mid-turn ===");
+  clock.set(T0);
+  const h = await bank2NoGoalHarness("bank2_mid_turn");
+  await bank2SeedInstalled(h, bank2Installed());
+  const runs = bank2Recorder(h);
+  const park = bank2ParkNextClassify(h);
+  await h.handlers["turn.start"](h.fake, { turnId: "t-durable" }, async () => ({ result: "ok" }));
+  const settling = bank2Complete(h, "t-durable", "Here is the answer.");
+  check("bank2 mid-turn setup: the completion is parked in its classify", await bank2UntilParked(park));
+  const start = await bank2Start(h, "t-next");
+  bank2CheckSettled("bank2 the next turn start while the completion settles", start);
+  const first = await bank2Call(h, "t-next");
+  bank2CheckNothing("bank2 the next turn's first model call while the completion is parked", h, runs, first);
+  park.release();
+  const end = await settling;
+  bank2CheckSettled("bank2 the durable end, settled after the next turn's first call", end);
+  const second = await bank2Call(h, "t-next");
+  bank2CheckNothing("bank2 a second model call in that turn after the completion settled", h, runs, second);
+}
+
+// The run takes the install record with the greatest lastUpdated, placed
+// neither first nor last so neither end of the array is what is read. A
+// record with no installPath, dated after every other, and one whose
+// lastUpdated does not parse are passed over rather than ending the scan.
+async function caseBank2_greatestLastUpdatedRecordIsRun(clock) {
+  console.log("\n=== boundary-compaction Section 2: the greatest-lastUpdated install record is the one run ===");
+  clock.set(T0);
+  const h = await bank2NoGoalHarness("bank2_select");
+  await bank2SeedInstalled(h, {
+    version: 2,
+    plugins: {
+      "claude-kit@applefeld": [
+        { scope: "user", installPath: "C:\\kit-cache\\claude-kit\\build-old", lastUpdated: "2026-09-01T00:00:00.000Z" },
+        { scope: "user", installPath: BANK2_INSTALL, lastUpdated: "2026-09-25T09:59:04.362Z" },
+        { scope: "user", installPath: "C:\\kit-cache\\claude-kit\\build-mid", lastUpdated: "2026-09-20T00:00:00.000Z" },
+        { scope: "user", lastUpdated: "2026-09-30T00:00:00.000Z" },
+        { scope: "user", installPath: "C:\\kit-cache\\claude-kit\\build-undated", lastUpdated: "not a date" },
+      ],
+    },
+  });
+  const runs = bank2Recorder(h);
+  const end = await bank2Turn(h, "t-select", "Here is the answer.");
+  bank2CheckOwedOnly("bank2 three install records", h, runs, end);
+  const call = await bank2NextTurnCall("bank2 three install records", h, runs, "t-after");
+  bank2CheckBanked("bank2 three install records", h, runs, call);
+}
+
+// Each way the install record can be missing logs one skipped decision
+// naming why at the tool call that takes the owed bank, runs nothing and
+// never throws; the owed bank is cleared, so a second tool call logs nothing.
+async function caseBank2_installRecordMissesSkipWithOneDecision(clock) {
+  console.log("\n=== boundary-compaction Section 2: a missing install record skips the run with one decision ===");
+  const misses = [
+    { label: "absent file", seed: null, token: "absent" },
+    { label: "missing key", seed: { version: 2, plugins: { "other@market": [{ installPath: "C:\\other", lastUpdated: "2026-09-25T00:00:00.000Z" }] } }, token: "no claude-kit@applefeld key" },
+    { label: "empty array", seed: { version: 2, plugins: { "claude-kit@applefeld": [] } }, token: "no install record" },
+    { label: "unparseable JSON", seed: "{ \"version\": 2, \"plugins\": ", token: "not JSON" },
+    { label: "no usable record", seed: { version: 2, plugins: { "claude-kit@applefeld": [{ scope: "user", lastUpdated: "2026-09-25T00:00:00.000Z" }, { scope: "user", installPath: "C:\\kit", lastUpdated: "never" }] } }, token: "no claude-kit@applefeld record has an installPath" },
+  ];
+  for (const m of misses) {
+    clock.set(T0);
+    const h = await bank2NoGoalHarness(`bank2_miss_${misses.indexOf(m)}`);
+    if (m.seed !== null) await bank2SeedInstalled(h, m.seed);
+    const runs = bank2Recorder(h);
+    const end = await bank2Turn(h, "t-miss", "Here is the answer.");
+    bank2CheckOwedOnly(`bank2 ${m.label}`, h, runs, end);
+    const call = await bank2NextTurnCall(`bank2 ${m.label}`, h, runs, "t-after");
+    const decisions = bank2Decisions(h);
+    bank2CheckSettled(`bank2 ${m.label} (first main-loop tool call)`, call);
+    check(`bank2 ${m.label}: no child process ran`, runs.length === 0, runs);
+    check(`bank2 ${m.label}: exactly one compaction_boundary_skipped decision naming the reason`,
+      decisions.length === 1 && decisions[0].action === "compaction_boundary_skipped" && decisions[0].detail.includes(m.token), decisions);
+    await bank2CheckNoSecondBank(`bank2 ${m.label}`, h, runs, "t-after");
+  }
+}
+
+// A run that exits non-zero, and a run that rejects (the host's timeout
+// kill among the ways), each log one failed decision carrying what the run
+// said, and the tool call still settles, calls next once and returns its
+// result. The owed bank is cleared whatever the exit: a second tool call runs
+// nothing, and only another durable end owes the bank again, which the next
+// turn's first tool call runs.
+async function caseBank2_failedRunsLogOneDecisionAndNeverFailTheTurn(clock) {
+  console.log("\n=== boundary-compaction Section 2: a failed run logs one decision, clears the owed bank and never fails the tool call ===");
+  const failures = [
+    { label: "non-zero exit", answer: () => ({ exitCode: 3, stdout: "", stderr: "kit-compact-checkpoint: no transcript found\nstack line\n" }), tokens: ["exit 3", "kit-compact-checkpoint: no transcript found"], absent: "stack line" },
+    { label: "rejected run", answer: () => { throw new Error("the child outlived timeoutMs and was killed"); }, tokens: ["the child outlived timeoutMs"], absent: null },
+  ];
+  for (const f of failures) {
+    clock.set(T0);
+    const h = await bank2NoGoalHarness(`bank2_fail_${failures.indexOf(f)}`);
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h, f.answer);
+    const end = await bank2Turn(h, "t-fail", "Here is the answer.");
+    bank2CheckOwedOnly(`bank2 ${f.label}`, h, runs, end);
+    const call = await bank2NextTurnCall(`bank2 ${f.label}`, h, runs, "t-after");
+    const decisions = bank2Decisions(h);
+    bank2CheckSettled(`bank2 ${f.label} (first main-loop tool call)`, call);
+    check(`bank2 ${f.label}: the command was attempted once`, runs.length === 1, runs);
+    check(`bank2 ${f.label}: exactly one compaction_boundary_failed decision carrying what the run said`,
+      decisions.length === 1 && decisions[0].action === "compaction_boundary_failed" && f.tokens.every(t => decisions[0].detail.includes(t))
+        && (f.absent === null || !decisions[0].detail.includes(f.absent)), decisions);
+    await bank2CheckNoSecondBank(`bank2 ${f.label}`, h, runs, "t-after");
+    // Another durable end owes the bank again, and the next turn's first
+    // tool call attempts it.
+    const again = await bank2Turn(h, "t-durable-again", "Here is another answer.");
+    bank2CheckSettled(`bank2 ${f.label} (another durable end)`, again);
+    const callAgain = await bank2NextTurnCall(`bank2 ${f.label} (the turn after it)`, h, runs, "t-after-durable");
+    bank2CheckSettled(`bank2 ${f.label} (the first tool call after it)`, callAgain);
+    check(`bank2 ${f.label}: another durable end owes the bank again, and the next first tool call attempts it`, runs.length === 2, runs);
+  }
+}
+
+// A persona turn end that is not durable clears the bank an earlier durable
+// end owed, even where a read on the completion's path throws before the
+// predicate is computed. Here the commons store's key listing rejects during
+// the mid-section turn's completion, which throws out of the reply filing's
+// unguarded inbox read. The owed bank must already be gone, so the next
+// turn's first main-loop tool call runs nothing: a missed bank is the safe
+// failure, and a bank taken there would license compaction mid-section.
+async function caseBank2_aThrowingMidSectionEndStillClearsTheOwedBank(clock) {
+  console.log("\n=== boundary-compaction Section 2: a mid-section end whose completion throws still clears the owed bank ===");
+  clock.set(T0);
+  const h = await bank2PlanHarness("bank2_throwing_mid");
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+  await bank2SeedInstalled(h, bank2Installed());
+  const runs = bank2Recorder(h);
+  const first = await bank2Turn(h, "t-durable", "Chapter 2 is written.");
+  bank2CheckOwedOnly("bank2 a durable end before a throwing mid-section end", h, runs, first);
+
+  await bank2Start(h, "t-mid");
+  const realKeys = h.fake.store.keys;
+  let keysCalls = 0;
+  h.fake.store.keys = () => { keysCalls += 1; return Promise.reject(new Error("commons store unreadable")); };
+  const second = await bank2Complete(h, "t-mid", "Made progress on the next section.");
+  h.fake.store.keys = realKeys;
+  check("bank2 throwing mid-section end setup: the store's key listing was read and rejected on the completion's path", keysCalls > 0, keysCalls);
+  check("bank2 throwing mid-section end setup: the rejection escaped turn.complete, so the recompute below the read never ran",
+    second.thrown !== null && /commons store unreadable/.test(String(second.thrown)), { thrown: second.thrown && String(second.thrown), nextCalls: second.nextCalls });
+  check("bank2 throwing mid-section end: the turn ran nothing by itself", runs.length === 0, runs);
+
+  const call = await bank2NextTurnCall("bank2 throwing mid-section end", h, runs, "t-after");
+  bank2CheckNothing("bank2 throwing mid-section end (the next turn's first tool call)", h, runs, call);
+}
+
+// The entry the turn leaves active decides durability where no entry was
+// active at turn start. A turn opened with no active entry that adds a plan
+// through goal_add leaves that plan active and mid-section, since a freshly
+// added plan has banked no Chapter and is not complete, so it owes nothing.
+// The control is the same fixture with no goal_add: that turn ends with no
+// active entry and banks once at the next turn's first main-loop tool call.
+async function caseBank2_aPlanAddedInANoGoalTurnIsMidSection(clock) {
+  console.log("\n=== boundary-compaction Section 2: a no-goal turn that adds and activates a plan owes nothing ===");
+  const variants = [
+    { label: "adds a plan", add: true, banks: false },
+    { label: "adds nothing (control)", add: false, banks: true },
+  ];
+  for (const v of variants) {
+    clock.set(T0);
+    const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "complete", createdAt: T0 - 20000 });
+    const h = await createTickHarness({ ...OPTS, caseName: `bank2_added_${variants.indexOf(v)}`, stateOpts: { now: T0, goals: [root], activeGoalId: null } });
+    bank2Scorer(h);
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress"));
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    check(`bank2 added plan (${v.label}) setup: no entry is active at turn start`, getState(h).activeGoalId === null, getState(h).activeGoalId);
+    await openPromptTurn(h, { turnId: "t-add" });
+    if (v.add) {
+      const added = await callTool(h, { tool: "mcp__agentic-plugin__goal_add", kind: "plan", title: "A new plan", objective: "A new plan done", planPath: PLAN2_PATH });
+      const state = getState(h);
+      const plan = state.goals.find(g => g.kind === "plan");
+      check(`bank2 added plan (${v.label}) setup: goal_add activated the new plan in this turn`,
+        added && added.deny === undefined && plan && plan.status === "active" && state.activeGoalId === plan.id && plan.planPath === PLAN2_PATH, { added, goals: state.goals.map(g => [g.id, g.status]) });
+    }
+    const end = await bank2Complete(h, "t-add", "Started on the work.");
+    bank2CheckSettled(`bank2 added plan (${v.label}) (turn end)`, end);
+    check(`bank2 added plan (${v.label}) (turn end): the turn end ran nothing by itself`, runs.length === 0, runs);
+    const call = await bank2NextTurnCall(`bank2 added plan (${v.label})`, h, runs, "t-after");
+    if (v.banks) {
+      bank2CheckBanked(`bank2 added plan (${v.label})`, h, runs, call);
+    } else {
+      bank2CheckNothing(`bank2 added plan (${v.label}) (the next turn's first tool call)`, h, runs, call);
+    }
+  }
+}
+
+// A turn that starts on a task directly under the root, which has no plan
+// holder, and completes it through goal_done leaves the next entry active.
+// Where that is a pending plan, the turn leaves a plan mid-section with no
+// Chapter banked, so it owes nothing. The control is the same fixture with no
+// plan beside the task: goal_done leaves no plan active and the turn banks.
+async function caseBank2_aPlanActivatedByGoalDoneIsMidSection(clock) {
+  console.log("\n=== boundary-compaction Section 2: a root-task turn whose goal_done activates a plan owes nothing ===");
+  const variants = [
+    { label: "goal_done activates a pending plan", withPlan: true, banks: false },
+    { label: "goal_done activates no plan (control)", withPlan: false, banks: true },
+  ];
+  for (const v of variants) {
+    clock.set(T0);
+    const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 });
+    const task = makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", maxRounds: 10, createdAt: T0 - 20000 });
+    const goals = [root, task];
+    if (v.withPlan) goals.push(makeGoalNode({ id: "plan-1", parentId: "root-1", kind: "plan", status: "pending", planPath: PLAN2_PATH, createdAt: T0 - 10000 }));
+    const h = await createTickHarness({ ...OPTS, caseName: `bank2_done_${variants.indexOf(v)}`, stateOpts: { now: T0, goals, activeGoalId: "task-1" } });
+    bank2Scorer(h);
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress"));
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    check(`bank2 goal_done (${v.label}) setup: task-1 under the root is active at turn start`, getState(h).activeGoalId === "task-1", getState(h).activeGoalId);
+    await bank2Start(h, "t-done");
+    const done = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", note: "done" });
+    const state = getState(h);
+    check(`bank2 goal_done (${v.label}) setup: goal_done completed task-1`,
+      done && done.deny === undefined && state.goals.find(g => g.id === "task-1").status === "complete", { done, goals: state.goals.map(g => [g.id, g.status]) });
+    if (v.withPlan) {
+      check(`bank2 goal_done (${v.label}) setup: plan-1 is now the active entry`, state.activeGoalId === "plan-1" && state.goals.find(g => g.id === "plan-1").status === "active", state.activeGoalId);
+    } else {
+      check(`bank2 goal_done (${v.label}) setup: no plan is active`, !state.goals.some(g => g.kind === "plan" && g.status === "active"), state.activeGoalId);
+    }
+    const end = await bank2Complete(h, "t-done", "Finished the task.");
+    bank2CheckSettled(`bank2 goal_done (${v.label}) (turn end)`, end);
+    check(`bank2 goal_done (${v.label}) (turn end): the turn end ran nothing by itself`, runs.length === 0, runs);
+    const call = await bank2NextTurnCall(`bank2 goal_done (${v.label})`, h, runs, "t-after");
+    if (v.banks) {
+      bank2CheckBanked(`bank2 goal_done (${v.label})`, h, runs, call);
+    } else {
+      bank2CheckNothing(`bank2 goal_done (${v.label}) (the next turn's first tool call)`, h, runs, call);
+    }
+  }
+}
+
+// --- Section 3 (boundary-compaction): the nudge and the [GOAL TREE] block
+// name the active entry's plan document ---
+
+// A plan document read at chapterCount 2, so the section printed is 2 + 1 =
+// 3, the plan holder's Chapter count plus one.
+const PLANDOC3_DOC = plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]);
+// The line's contract is what it names, not its wording: it opens
+// "Plan document: ", carries the plan path, and carries "Section N".
+const namesPlanDoc3 = (line, section) =>
+  typeof line === "string" && line.startsWith("Plan document: ") && line.includes(PLAN2_PATH) && new RegExp(`\\bSection ${section}\\b`).test(line);
+
+// A plan2Goals tree with chapterCount 2 (Section 3), the document seeded to
+// match so the turn's own read logs no plan_progress and moves nothing: the
+// plan line is the only thing a case here reads.
+async function planDoc3Harness(caseName, treeOpts = {}, extraOpts = {}) {
+  const h = await plan2Harness(caseName, { chapterCount: 2, ...treeOpts }, { costMaxNudgesPerHour: 30, ...extraOpts });
+  h.fsMap.set(PLAN2_FILE, PLANDOC3_DOC);
+  return h;
+}
+
+// The [GOAL TREE] block names the active entry's plan holder's document and
+// Section N, spliced right after the Path: line, for the plan node itself
+// and for a task under it; a task entry with no plan ancestor, and a plan
+// node whose stored planPath fails PLAN_PATH_PATTERN, both omit the line.
+async function casePlanDoc3_goalTreeBlockNamesThePlanDocument(clock) {
+  console.log("\n=== Section 3 (boundary-compaction): the [GOAL TREE] block names the plan document ===");
+  const shapes = [
+    { label: "plan node", tree: plan2Goals({ chapterCount: 2 }), expectLine: true },
+    { label: "task under a plan node", tree: plan2Goals({ taskUnderPlan: true, chapterCount: 2 }), expectLine: true },
+    {
+      label: "task entry, no plan ancestor (control)",
+      tree: {
+        goals: [
+          makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+          makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", maxRounds: 10, createdAt: T0 - 20000 }),
+        ],
+        activeGoalId: "task-1",
+      },
+      expectLine: false,
+    },
+    {
+      // A store value the goal_add check would refuse, here carrying a line
+      // break, so the re-test against PLAN_PATH_PATTERN is what omits it.
+      label: "plan node whose stored planPath fails the pattern",
+      tree: {
+        goals: [
+          makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+          makeGoalNode({ id: "plan-1", parentId: "root-1", kind: "plan", status: "active", maxRounds: 10, createdAt: T0 - 20000, planPath: "docs/plans/bad\nInjected: line.md" }),
+        ],
+        activeGoalId: "plan-1",
+      },
+      expectLine: false,
+    },
+  ];
+  for (const shape of shapes) {
+    clock.set(T0);
+    const h = await createTickHarness({ ...OPTS, caseName: `plandoc3_goaltree_${shapes.indexOf(shape)}`, stateOpts: { now: T0, goals: shape.tree.goals, activeGoalId: shape.tree.activeGoalId } });
+    const r = await h.handlers["prompt.submit"](h.fake, { text: "keep going" }, async (core) => ({ text: core.text, context: core.context }));
+    const goalBlock = (r.context || []).find(b => b.includes("[GOAL TREE]")) || "";
+    check(`plandoc3 goal tree (${shape.label}): the [GOAL TREE] block was injected`, goalBlock.includes("Active: "), goalBlock);
+    if (shape.expectLine) {
+      const lines = goalBlock.split("\n");
+      const pathIdx = lines.findIndex(l => l.startsWith("Path: "));
+      check(`plandoc3 goal tree (${shape.label}): names the plan document and Section 3 directly after the Path: line`,
+        pathIdx >= 0 && namesPlanDoc3(lines[pathIdx + 1], 3), goalBlock);
+    } else {
+      check(`plandoc3 goal tree (${shape.label}): omits the plan document line`, !goalBlock.includes("Plan document:"), goalBlock);
+    }
+  }
+}
+
+// Both nudge arms name the active entry's plan document, right after the
+// [GOAL] line, for the plan node itself and for a task under it. A task
+// entry with no plan ancestor is the control: the reader gets the countHarness
+// tree that caseCount_bothNudgeTextsNameTheThreeLines already exercises, so
+// this case reads the plan-holder side of the same fork.
+async function casePlanDoc3_nudgeArmsNameThePlanDocument(clock) {
+  console.log("\n=== Section 3 (boundary-compaction): both nudge arms name the plan document ===");
+  for (const taskUnderPlan of [false, true]) {
+    for (const verdict of ["nudge", "ask-operator"]) {
+      clock.set(T0);
+      const h = await planDoc3Harness(`plandoc3_nudge_${taskUnderPlan}_${verdict.replace("-", "_")}`, { taskUnderPlan });
+      h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge") && !labels.includes("on-goal")) ? verdict : "discard");
+      clock.advance(130_000);
+      await tickAndSettle(h, clock, 50);
+      const text = (h.promptSubmits || []).filter(p => p.startsWith("[GOAL]")).pop() ?? "";
+      const label = taskUnderPlan ? "task under a plan node" : "plan node";
+      const arm = verdict === "nudge" ? "idle nudge" : "converted ask-operator nudge";
+      check(`plandoc3 nudge (${label}, ${arm}): went out`, text.startsWith("[GOAL]"), text);
+      const lines = text.split("\n");
+      check(`plandoc3 nudge (${label}, ${arm}): names the plan document and Section 3 directly after the [GOAL] line`,
+        namesPlanDoc3(lines[1], 3), text);
+    }
+  }
+}
+
 // --- Section 3 (plan-health-from-the-record): the worker's BLOCKED and WAITING leads ---
 
 // The hold on a waiting lead, in fake-clock milliseconds: the value
@@ -16155,6 +17447,10 @@ async function caseCount_bothNudgeTextsNameTheThreeLines(clock) {
     check(`count nudge text (${arm}): it asks for a status line and names WORKING:, WAITING: and BLOCKED:`,
       text.includes("Open your closing text with one status line:") && text.includes("WORKING:") && text.includes("WAITING:") && text.includes("BLOCKED:"), text);
     check(`count nudge text (${arm}): on a task entry, whose leads are not read, it names no hold`, holdText.length > 0 && !text.includes(holdText), text);
+    // Section 3 (boundary-compaction): a task entry with no plan ancestor
+    // has no plan holder, so planDocumentLine gives "" and neither arm
+    // names a plan document.
+    check(`count nudge text (${arm}): a task entry with no plan ancestor names no plan document`, !text.includes("Plan document:"), text);
   }
   // A plan entry's nudge adds the hold sentence, since its leads are read.
   clock.set(T0);

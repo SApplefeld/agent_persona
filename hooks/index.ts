@@ -49,7 +49,7 @@ import {
   holdOf,
   LONG_TERM_GOAL_CAP,
 } from "./agent-state";
-import { readPlanRecord } from "./plan-record";
+import { readPlanRecord, resolvePlanDir } from "./plan-record";
 import type { AgentState, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding } from "./agent-state";
 import {
   claimResource,
@@ -687,6 +687,24 @@ function unnamedExpiredAskQuestion(state: AgentState, node: GoalNode): string | 
   return named ? null : node.lastAskQuestion;
 }
 
+// Section 3 (boundary-compaction): the plan document a nudge or the
+// [GOAL TREE] block names, from the active entry's plan holder
+// (planHolderOf(state, entry): the entry itself, or its nearest ancestor
+// with a planPath, so a task a worker added under a plan node names that
+// plan's document too). The section printed is the holder's Chapter count
+// plus one, since no stored field names a section (spec Approach,
+// "Naming the plan document..."). The stored planPath is re-tested against
+// PLAN_PATH_PATTERN before it reaches the prompt, as every reader of it owes
+// (agent-state.ts, above PLAN_PATH_PATTERN), so a hand-edited or
+// foreign-written store value cannot add lines of its own to the block. An
+// entry with no plan holder, and a holder whose planPath fails the pattern,
+// both give "", so the nudge and the block omit the line.
+function planDocumentLine(state: AgentState, entry: GoalNode): string {
+  const holder = planHolderOf(state, entry);
+  if (!holder?.planPath || !PLAN_PATH_PATTERN.test(holder.planPath)) return "";
+  return `Plan document: ${holder.planPath}, Section ${(holder.chapterCount ?? 0) + 1}.\n`;
+}
+
 /**
  * Item 2 backstop (Round 28): whether a tool call counts as "did real
  * work" for the turn.complete backstop, which logs an `untracked_work`
@@ -1027,6 +1045,118 @@ async function runHealth(dp: any, forNodeId: string | null): Promise<void> {
       loop: "monitor",
       action: "health_red",
       detail: `health_red error ${(err as Error).message} for ${forNodeId || "no-node"}`,
+    });
+  }
+}
+
+// The kit plugin's key in the engine's installed_plugins.json, and how long
+// its boundary command may run before $.process.run kills it and rejects.
+const KIT_PLUGIN_KEY = "claude-kit@applefeld";
+const KIT_BOUNDARY_TIMEOUT_MS = 15_000;
+
+// Where the kit plugin is installed: <home>/.claude/plugins/installed_plugins.json
+// holds { plugins: { "claude-kit@applefeld": [{ installPath, lastUpdated }, ...] } },
+// and the record with the greatest lastUpdated is the build in use. The file is
+// the engine's, so every shape miss (no home, no file, a read that fails, text
+// that is not JSON, no plugins object, no key, a value that is not an array, an
+// empty array, no record with a string installPath and a readable
+// lastUpdated) returns a reason rather than throwing.
+async function kitInstallPathOf(dp: any): Promise<{ installPath: string } | { skip: string }> {
+  let home: unknown;
+  try {
+    home = await hostOf(dp).getHome();
+  } catch {
+    home = undefined;
+  }
+  if (typeof home !== "string" || home.trim().length === 0) return { skip: "no home directory" };
+  const file = `${home.trim().replace(/[/\\]+$/, "")}/.claude/plugins/installed_plugins.json`;
+  let text: unknown;
+  try {
+    if (!(await dp.fs.exists(file))) return { skip: "installed_plugins.json is absent" };
+    text = await dp.fs.read(file);
+  } catch (err) {
+    return { skip: `installed_plugins.json could not be read: ${String(err).slice(0, 150)}` };
+  }
+  if (typeof text !== "string") return { skip: "installed_plugins.json is not text" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripBom(text));
+  } catch {
+    return { skip: "installed_plugins.json is not JSON" };
+  }
+  const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  const plugins = isObject(parsed) ? parsed.plugins : undefined;
+  if (!isObject(plugins)) return { skip: "installed_plugins.json has no plugins object" };
+  if (!Object.hasOwn(plugins, KIT_PLUGIN_KEY)) return { skip: `installed_plugins.json has no ${KIT_PLUGIN_KEY} key` };
+  const records = plugins[KIT_PLUGIN_KEY];
+  if (!Array.isArray(records)) return { skip: `${KIT_PLUGIN_KEY} is not an array` };
+  if (records.length === 0) return { skip: `${KIT_PLUGIN_KEY} has no install record` };
+  // A record without a string installPath or a readable lastUpdated is passed
+  // over, so a stale or partial entry beside a good one still leaves the good
+  // one to run; the run is skipped only when no record qualifies.
+  let best: { installPath: string; at: number } | null = null;
+  for (const record of records) {
+    if (!isObject(record) || typeof record.installPath !== "string" || record.installPath.trim().length === 0) continue;
+    const at = typeof record.lastUpdated === "string" ? Date.parse(record.lastUpdated) : NaN;
+    if (Number.isNaN(at)) continue;
+    if (best === null || at > best.at) best = { installPath: record.installPath.trim(), at };
+  }
+  if (best === null) return { skip: `no ${KIT_PLUGIN_KEY} record has an installPath and a readable lastUpdated` };
+  return { installPath: best.installPath };
+}
+
+// Runs the kit's checkpoint command with its boundary verb for this session,
+// which records the compaction marker the kit's own gate honors. The marker is
+// keyed by session id under ~/.kit, so the child takes the session id in its
+// environment and is handed no working directory. It still inherits the
+// session's directory, where the kit may create its gitignored .kit/ scratch
+// directory. Best-effort: every outcome is one
+// decision and nothing throws. The decision carries the exit code and the
+// first line the child wrote to stderr, because the command exits zero on a
+// marker it could not position and says so only there. turnKind is what
+// opened the turn that owed the bank, for the record only.
+async function bankCompactionBoundary(dp: any, turnKind: string): Promise<void> {
+  const sessionId = sess.mySessionId;
+  if (typeof sessionId !== "string" || sessionId.length === 0 || sessionId === "pending") {
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "monitor",
+      action: "compaction_boundary_skipped",
+      detail: `no session id; turn ${turnKind}`,
+    });
+    return;
+  }
+  const located = await kitInstallPathOf(dp);
+  if ("skip" in located) {
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "monitor",
+      action: "compaction_boundary_skipped",
+      detail: `${located.skip}; turn ${turnKind}`,
+    });
+    return;
+  }
+  const script = `${located.installPath.replace(/[/\\]+$/, "")}/hooks/kit-compact-checkpoint.js`;
+  try {
+    const res = await dp.process.run(["node", script, "boundary"], {
+      env: { CLAUDE_CODE_SESSION_ID: sessionId },
+      timeoutMs: KIT_BOUNDARY_TIMEOUT_MS,
+    });
+    const exitCode = res && typeof res.exitCode === "number" ? res.exitCode : null;
+    const stderr = res && typeof res.stderr === "string" ? res.stderr : "";
+    const firstStderr = (stderr.split(LINE_TERMINATOR).find((line: string) => line.trim() !== "") ?? "").trim().slice(0, 150);
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "monitor",
+      action: exitCode === 0 ? "compaction_boundary_banked" : "compaction_boundary_failed",
+      detail: `exit ${exitCode === null ? "unknown" : exitCode}; stderr: ${firstStderr || "none"}; turn ${turnKind}; ${script.slice(0, 150)}`,
+    });
+  } catch (err) {
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "monitor",
+      action: "compaction_boundary_failed",
+      detail: `run failed: ${String(err).slice(0, 150)}; turn ${turnKind}; ${script.slice(0, 150)}`,
     });
   }
 }
@@ -2833,12 +2963,41 @@ export const register: Register = async (on, options) => {
   // end (not whichever node is active then, which may have been activated
   // mid-turn by goal_done / scorer complete).
   let turnLeafId: string | null = null;
+  // The compaction boundary owed by the persona's last turn: cleared at every
+  // completion of the persona's own turn, before that handler's first await,
+  // and set again late in the same handler where that turn ended at a durable
+  // point (carrying what opened it, for the record), and taken and cleared
+  // by the first main-loop tool.call after it, which runs the kit's boundary
+  // command. The bank waits for the
+  // next turn because the kit lapses a declared marker on the inbound line
+  // that opens every turn, so one recorded at turn end is never honored. It
+  // waits past turn.start for the first tool call because turn.start can
+  // fire before the turn's opening prompt line reaches the transcript file,
+  // and a marker positioned ahead of that line lapses on it. A completion
+  // that settles after a newer turn has started clears it rather than set
+  // it: that turn's first tool call may already have run, and a bank taken
+  // at a later call would land mid-turn. The engine waits for the whole
+  // turn.complete chain before it starts the next turn, so this clear is a
+  // guard that does not fire in normal running; where it does, the bank is
+  // missed rather than misplaced. It is held in memory only: a restart is a new session
+  // id, whose marker would be another key.
+  let pendingCompactionBank: { turnKind: string } | null = null;
+  // Every turn.start this module has seen, counted up and never reset, so a
+  // completion can tell whether a newer turn started while it settled.
+  // sess.state.monitor.turnCount is not that count: a state load or a new
+  // tree resets it.
+  let turnStartSeq = 0;
 
   // Section 2 (plan-health-from-the-record): the plan holders whose document
   // have logged plan_record_unreadable since their document last read, so an
   // unreadable document logs once per entry rather than once per turn, and
   // once more if it becomes unreadable again after a successful read.
   const planRecordUnreadableLogged = new Set<string>();
+  // The plan holders whose document was last read under an ancestor of the
+  // live directory rather than the live directory itself, each having logged
+  // one plan_record_dir_resolved decision. A read under the live directory
+  // itself re-arms the entry, so a later move below the checkout logs again.
+  const planRecordDirResolvedLogged = new Set<string>();
 
   // M8: planning reentrancy guard.
   let planningInFlight = false;
@@ -6507,6 +6666,14 @@ export const register: Register = async (on, options) => {
               // The hold sentence rides on a plan entry's nudge alone, the
               // one kind of entry whose leads are read.
               const leadHoldLine = isPlanEntry(sess.state, g) ? " " + NUDGE_LEAD_HOLD_TEXT : "";
+              // Section 3 (boundary-compaction): the active entry's plan
+              // document and section, spliced into both arms right after
+              // the [GOAL] line so a nudged worker knows which document to
+              // re-read. Declared here, above architectLine, so it sits
+              // outside extractNudgeFrames' fixed-order match on the
+              // architectLine/expiredAskLine declarations directly above
+              // nudgeText.
+              const planLine = planDocumentLine(sess.state, g);
               // R8: nudge text appends goal_done instruction, and both arms
               // close with NUDGE_STATUS_LINE_TEXT, the status line the
               // nudge count reads at the nudged turn's end, followed on a
@@ -6539,6 +6706,7 @@ export const register: Register = async (on, options) => {
                 : "";
               const nudgeText = idleGapConverted
                 ? `[GOAL] The active goal is: ${g.objective}\n` +
+                  planLine +
                   expiredAskLine +
                   `The controller read this as an idle gap, not a real fork: no concrete blocking question. ` +
                   `Re-read the plan doc and DISCUSSION.md before continuing - the next concrete step should already be there.\n` +
@@ -6548,6 +6716,7 @@ export const register: Register = async (on, options) => {
                   NUDGE_STATUS_LINE_TEXT +
                   leadHoldLine
                 : `[GOAL] The active goal is: ${g.objective}\n` +
+                  planLine +
                   expiredAskLine +
                   `The Controller detected ${idleDisplay} of idle time. ` +
                   `Re-read the objective and take the next concrete step toward it, then report that step done with goal_done.\n` +
@@ -6742,6 +6911,7 @@ export const register: Register = async (on, options) => {
   // --- turn.start: track turn ---
   on("turn.start", async ($, e, next) => {
     sess.state.monitor.turnCount += 1;
+    turnStartSeq += 1;
     sess.state.monitor.lastTurnId = e.turnId;
     // The turn is open from here until a completion carrying this same id.
     openTurns.set(e.turnId, Date.now());
@@ -6927,6 +7097,30 @@ export const register: Register = async (on, options) => {
     // Closing by id: a completion for a turn this session never saw start
     // removes nothing, so it cannot clear a different turn that is still open.
     openTurns.delete(e.turnId);
+    // The compaction boundary step's facts, read together here at the delete
+    // and before any await, because the awaits below can let the next
+    // turn.start in and that start rewrites every one of them: whether this
+    // completion is the persona's own turn ending (by the id its turn.start
+    // carried), what opened that turn (for the step's decision), whether a
+    // turn is still open once this completion's own entry is gone, and how
+    // many turns have started so far. The step compares that last count with
+    // the live one: a newer turn started in between means this completion
+    // settled too late to owe a bank. The entry active now, as the turn left
+    // it, is read here too, for a turn that opened with none active.
+    // A completion naming a subagent loop (e.agentId set) is never the
+    // persona's own turn end, whatever turn id it carries.
+    const completesGateTurn = currentGateTurnId !== null && e.turnId === currentGateTurnId
+      && !(typeof e.agentId === "string" && e.agentId.length > 0);
+    const turnKindAtStart: string = currentTurnKind;
+    const turnOpenAfterDelete = turnIsOpen();
+    const turnStartSeqAtDelete = turnStartSeq;
+    const activeIdAtDelete = sess.state.activeGoalId;
+    // The persona's own turn end clears any owed bank here, before any await,
+    // and the step below sets it again only where this turn ended durable. A
+    // throw on the way there leaves nothing owed: a missed bank costs one
+    // compaction point, while a bank an earlier turn owed and this mid-work
+    // turn failed to clear would license compaction mid-work.
+    if (completesGateTurn) pendingCompactionBank = null;
     try { $.ui.log(`Agentic: turn complete ${kaizenLine(String(e.turnId ?? "none"))}`); } catch { /* non-fatal */ }
     // Plan item 8.4: a turn that ran past an hour is one of the weaknesses
     // the own-record pass counts, so record it as a decision here, the only
@@ -7002,7 +7196,7 @@ export const register: Register = async (on, options) => {
     const completesNudgedTurn = nudgedTurnId !== null && e.turnId === nudgedTurnId;
     if (completesNudgedTurn) nudgedTurnId = null;
     currentTurnKind = "unaccounted";
-    if (e.turnId === currentGateTurnId) {
+    if (e.turnId === currentGateTurnId && !(typeof e.agentId === "string" && e.agentId.length > 0)) {
       currentTurnOriginKind = "unclassified";
       currentTurnIsPriming = false;
       currentTurnEntry = null;
@@ -7448,16 +7642,64 @@ export const register: Register = async (on, options) => {
     // would spawn a health run for nothing.
     // The reader never throws on a document it cannot read; the try/catch
     // here covers the completion steps, as the scorer's does.
+    // The document is read under the directory the session runs in now, from
+    // $.session.cwd(), because a persona works its plan in a linked worktree
+    // while sess.workdir stays the launch checkout, whose copy gains no
+    // Chapter and no Complete status until the plan's branch merges.
+    // sess.workdir remains the anchor the persona store and the workdir files
+    // resolve against, and no document is ever read under it. Where the call
+    // throws or answers with no directory, the reading is unreadable with the
+    // live directory named as unavailable, and it takes the same once-per-
+    // holder plan_record_unreadable log as a document the reader cannot read.
+    // A shell that moved into a subdirectory of its checkout leaves the live
+    // directory below the document, so resolvePlanDir walks up from it to the
+    // nearest directory holding the document at planPath or an archive place.
+    // The walk stops at the checkout's root, the first folder holding a .git
+    // entry, so it never reaches the launch checkout a worktree sits inside.
+    // A read under such an ancestor logs one plan_record_dir_resolved decision
+    // per holder naming both directories. Where the walk ends with no hit, the
+    // live directory is read and the reader names its own reason.
     const planHolder = turnLeaf ? planHolderOf(sess.state, turnLeaf) : undefined;
     const planPath = planHolder?.planPath;
+    // Whether this turn's read found a Chapter above the stored count, or
+    // found the document Complete or archived and completed the holder. The
+    // compaction boundary step below reads a plan holder as mid-work unless
+    // one of the two is true; an unreadable document sets neither.
+    let planChapterAdvanced = false;
+    let planCompletedByDocument = false;
     if (sess.isOwner && planHolder && planPath) {
       const holder = planHolder;
+      let liveDir: string | null = null;
+      let liveDirReason = "";
       try {
-        const reading = await readPlanRecord(
-          { exists: (p: string) => $.fs.exists(p), read: (p: string) => $.fs.read(p) },
-          sess.workdir,
-          planPath,
-        );
+        const cwd = await $.session.cwd();
+        if (typeof cwd === "string" && cwd.length > 0) {
+          liveDir = cwd;
+        } else {
+          liveDirReason = `live directory unavailable: $.session.cwd() answered ${typeof cwd === "string" ? "an empty string" : typeof cwd}`;
+        }
+      } catch (err) {
+        liveDirReason = `live directory unavailable: ${String(err).slice(0, 150)}`;
+      }
+      try {
+        const planFs = { exists: (p: string) => $.fs.exists(p), read: (p: string) => $.fs.read(p) };
+        const planDir = liveDir === null ? null : await resolvePlanDir(planFs, liveDir, planPath);
+        if (liveDir !== null && planDir !== null && planDir !== liveDir) {
+          if (!planRecordDirResolvedLogged.has(holder.id)) {
+            planRecordDirResolvedLogged.add(holder.id);
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "plan_record_dir_resolved",
+              detail: `${holder.id}: ${planPath.slice(0, 150)}: resolved to ${planDir.slice(0, 200)} for live directory ${liveDir.slice(0, 200)}`,
+            });
+          }
+        } else if (planDir !== null) {
+          planRecordDirResolvedLogged.delete(holder.id);
+        }
+        const reading = planDir === null
+          ? { kind: "unreadable" as const, reason: liveDirReason }
+          : await readPlanRecord(planFs, planDir, planPath);
         if (reading.kind === "unreadable") {
           if (!planRecordUnreadableLogged.has(holder.id)) {
             planRecordUnreadableLogged.add(holder.id);
@@ -7476,6 +7718,7 @@ export const register: Register = async (on, options) => {
             const previous = holder.chapterCount ?? 0;
             holder.chapterCount = reading.chapters;
             holder.updatedAt = Date.now();
+            planChapterAdvanced = true;
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "goal",
@@ -7520,6 +7763,7 @@ export const register: Register = async (on, options) => {
               });
             }
             completeLeaf(sess.state, completedId, "plan document complete");
+            planCompletedByDocument = true;
             // A holder blocked over a child ("Child task blocked") ends
             // complete with no live reason and no lead left on it.
             holder.blockedReason = undefined;
@@ -7784,6 +8028,56 @@ export const register: Register = async (on, options) => {
       }
     }
 
+    // The compaction boundary: every completion of the persona's own turn,
+    // the one carrying the id turn.start carried, recomputes the owed bank.
+    // The owed bank was cleared at the delete, so here it is only set, where
+    // that turn stopped at a durable point, and the first main-loop tool call
+    // of a later turn runs the kit's boundary command, which records the
+    // marker its compaction gate honors. A turn that made no tool call
+    // therefore never carries a stale bank into a later turn that ended
+    // mid-work or on a lead, even where this handler throws before reaching
+    // this step. A background subagent's completion inside the open turn, or
+    // one for a turn this session never saw start, is not the persona's own
+    // and leaves the owed bank as it is. A turn still open after this
+    // completion's delete, a reader session and a skipped turn each owe none.
+    // A durable point is read from fixed signals: the closing text opens with
+    // no BLOCKED: or WAITING: line, whatever the entry's kind, and the entry
+    // active at turn start either has no plan holder (a task entry) or its
+    // holder's document gained a Chapter or completed the holder this turn.
+    // A plan holder that did neither is mid-section and owes nothing, since a
+    // marker there would license compaction mid-work. Where the entry the
+    // turn left active differs from the one active at turn start (goal_add
+    // activating a plan in a turn that opened with none, or goal_done moving
+    // on to a pending plan), that end entry is read too: a plan holder of its
+    // own, not complete or abandoned and not the turn-start holder, is
+    // mid-section, since no plan-record read ran for it this turn and a plan
+    // the turn only reached has banked no Chapter. An end entry under the
+    // turn-start holder changes nothing. The end entry is the one the turn
+    // itself left active, read at the delete, before this handler's own
+    // scorer or document-complete step activates the next entry. An entry
+    // this handler activates got no work in the turn, so the point between
+    // plans stays durable. It runs after the plan-record read,
+    // which settles the Chapter signal. Its boundary facts were read at the
+    // delete. Where a newer turn has started since, this completion settled
+    // too late: that turn's first tool call may have run already, so a bank
+    // set now could only land mid-turn, and nothing is set or logged.
+    if (completesGateTurn) {
+      if (turnStartSeq !== turnStartSeqAtDelete) {
+        pendingCompactionBank = null;
+      } else {
+        const endedOnLead = statusLine !== null && statusLine.state !== "working";
+        const endLeaf = activeIdAtDelete === null || activeIdAtDelete === turnLeaf?.id
+          ? undefined
+          : sess.state.goals.find((g) => g.id === activeIdAtDelete);
+        const endHolder = endLeaf ? planHolderOf(sess.state, endLeaf) : undefined;
+        const endHolderOpen = endHolder !== undefined && endHolder !== planHolder
+          && endHolder.status !== "complete" && endHolder.status !== "abandoned";
+        const midSection = (planHolder !== undefined && !planChapterAdvanced && !planCompletedByDocument) || endHolderOpen;
+        const durable = !turnOpenAfterDelete && sess.isOwner && !skipped && !endedOnLead && !midSection;
+        pendingCompactionBank = durable ? { turnKind: turnKindAtStart } : null;
+      }
+    }
+
     // M7: single guarded-write path (shared helper).
     // Attempted rather than depended on. A throw from here would skip the
     // next(e) below and leave the turn hook chain unfinished for every hook
@@ -7812,6 +8106,33 @@ export const register: Register = async (on, options) => {
     // channel-reply backstop at turn.complete has nothing to backfill.
     if (typeof e.tool === "string" && (e.tool.includes("__reply") || e.tool.endsWith("_reply"))) {
       replyCalledThisTurn = true;
+    }
+
+    // The compaction boundary the persona's last own turn owed, taken at the
+    // first main-loop tool call after it, before this call's tool is served
+    // or passed on, so the marker records a position before that tool's
+    // work. A sibling call from the same assistant message is not held back
+    // while the bank runs, so its work may land after the marker. By
+    // this point the turn's opening prompt line is on disk, which turn.start
+    // cannot guarantee. Only a call the model made takes it: next.origin
+    // names "engine" there. A call a plugin raised through $.tool.call
+    // reaches this hook too, this plugin's own reply backfill among them,
+    // which runs inside turn.complete, the one moment a marker is never
+    // honored. So a call whose origin names a plugin, or carries no origin,
+    // neither runs nor clears the owed bank, and neither does a subagent's
+    // call. The owed bank is cleared before the command runs, so it clears
+    // whatever the exit, and runs only while this session is still the
+    // owner, since ownership lost between the two events leaves nothing this
+    // session should bank. bankCompactionBoundary never throws, and its one
+    // decision is saved the way this handler's other bookkeeping lines are.
+    const modelMadeCall = next.origin?.plugin === "engine";
+    if (modelMadeCall && !inSubagent && pendingCompactionBank !== null) {
+      const owedBank = pendingCompactionBank;
+      pendingCompactionBank = null;
+      if (sess.isOwner) {
+        await bankCompactionBoundary($, owedBank.turnKind);
+        try { await persist($); } catch { /* persist could not read or write the store; the decision waits in memory */ }
+      }
     }
 
     // Serve agentic_identity (F9: single arbiter = commons; epoch is only the
@@ -9564,10 +9885,14 @@ export const register: Register = async (on, options) => {
       const roundText = isPlanEntry(sess.state, activeNode)
         ? ""
         : ` | round ${activeNode.completedRounds + 1}/${activeNode.maxRounds}`;
+      // Section 3 (boundary-compaction): the active entry's plan document
+      // and section, spliced right after the Path: line.
+      const planLine = planDocumentLine(sess.state, activeNode);
       const goalBlock =
         `[GOAL TREE]\n` +
         `Active: ${activeNode.kind} ${activeNode.id}${roundText} | ${activeNode.objective}\n` +
         `Path: ${path}\n` +
+        planLine +
         siblingLine +
         lastNote +
         `Keep working toward this objective. If the user's current request conflicts with it, follow the user.\n` +

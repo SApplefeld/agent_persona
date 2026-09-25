@@ -481,6 +481,11 @@ function fail(name) {
   // which is what Section 3's one-owner-and-a-pointer rewrite tempts.
   expectRefusal("a goal-tree piece replaced by a bare identifier", "[chain-shape]", ["GOAL_TREE_BLOCK", "pathLine"], () =>
     buildLedgerFrom(shSrc, holderSrc, mutated(tsSrc, "`Path: ${path}\\n` +", "pathLine +", "goal tree piece hoisted")));
+  // The plan document line's rule reads one function body in one shape, so
+  // a statement added ahead of its return must refuse rather than size
+  // whatever template the widened body happens to end on.
+  expectRefusal("a plan-document-line body given a second statement", "[chain-shape]", ["PLAN_DOCUMENT_LINE"], () =>
+    buildLedgerFrom(shSrc, holderSrc, mutated(tsSrc, "  return `Plan document: ", "  const note = holder.id;\n  return `Plan document: ", "plan document line widened")));
   // The same class on the tool-description chain Section 4 rewrites:
   // parseStringLiteralChain stops at the first operand that is not a quoted
   // literal, so a hoisted sentence truncates the entry with no throw.

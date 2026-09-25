@@ -22,8 +22,8 @@
     {
       "name": "COORDINATOR_ROLE_INSTRUCTION",
       "file": "bin/supervise-holder.sh",
-      "chars": 7605,
-      "words": 1337
+      "chars": 7550,
+      "words": 1333
     },
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
@@ -150,6 +150,12 @@
       "file": "hooks/index.ts",
       "chars": 17,
       "words": 2
+    },
+    {
+      "name": "PLAN_DOCUMENT_LINE",
+      "file": "hooks/index.ts",
+      "chars": 27,
+      "words": 5
     },
     {
       "name": "NUDGE_TEXT_idle_gap_converted",
