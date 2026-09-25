@@ -7129,7 +7129,7 @@ export const register: Register = async (on, options) => {
     // The harness measures the turn itself and carries the figure whatever the
     // turn's reason, so where it arrives the record needs no hook-side clock
     // and no open-turn entry, and still counts a turn whose start this session
-    // never saw, such as a subagent's run, which raises no turn.start.
+    // never saw.
     // The map entry is kept as a defensive fallback against a contract this
     // plugin has never exercised: the field is declared required, and no other
     // line here reads it, so an absent one would switch this record off with

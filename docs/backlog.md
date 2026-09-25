@@ -1,5 +1,9 @@
 # Backlog
 
+## Three other turn-end readers still take a subagent's answer as the persona's (found 2026-09-25)
+
+The reply backstop in `hooks/index.ts` now reads `e.answer` only at the persona's own turn end, but three other readers in the same `turn.complete` handler still read it on any completion. The `ASK:` marker match opens an operator ask from the answer's text. `readStatusLine(e.answer)` sets a plan entry's `BLOCKED:` or `WAITING:` lead. The inbox reply filer writes the answer as the reply to each delivered record stamped with `e.turnId`. So a background subagent whose report opens with `ASK:` or `BLOCKED:` can open an ask or set a lead the persona never wrote. The filer is narrower: a subagent's completion carries its own turn id, so it matches a record only if that id was ever stamped on one. Remedy: gate each reader on `completesGateTurn`, the backstop's own test, with one tick case per reader. Raised as advisory findings by the backstop-turn-guard plan's finishing security review and deferred there, since that plan keeps the other per-turn readers out of scope.
+
 ## A subagent's own reply-tool call suppresses the persona's reply backfill (found 2026-09-25)
 
 `replyCalledThisTurn` in `hooks/index.ts` is set by any reply-tool call, with no `inSubagent` check at the set, while the backstop it suppresses fires only at the persona's own turn end. So a background subagent that calls the reply tool inside the persona's channel turn stops the persona's own forgotten reply from being backfilled, although the persona never replied. The operator does receive the subagent's message, which is why this may be acceptable as it stands. Remedy if it is not: set the flag only where `!inSubagent`, one condition and one tick case. Raised by the blind and security reviews of the backstop-turn-guard plan and left there, since it adds a guard that plan's clauses do not name.
