@@ -7010,6 +7010,11 @@ export const register: Register = async (on, options) => {
     // Closing by id: a completion for a turn this session never saw start
     // removes nothing, so it cannot clear a different turn that is still open.
     openTurns.delete(e.turnId);
+    // Whether a turn is still open once this completion's own entry is gone,
+    // read here rather than later: the awaits below can let the next
+    // turn.start in, and a turn opened after this one ended must not decide
+    // whether this one ended at a boundary.
+    const turnOpenAfterDelete = turnIsOpen();
     try { $.ui.log(`Agentic: turn complete ${kaizenLine(String(e.turnId ?? "none"))}`); } catch { /* non-fatal */ }
     // Plan item 8.4: a turn that ran past an hour is one of the weaknesses
     // the own-record pass counts, so record it as a decision here, the only
@@ -7924,7 +7929,7 @@ export const register: Register = async (on, options) => {
     if (completesGateTurn) {
       const endedOnLead = statusLine !== null && statusLine.state !== "working";
       const midSection = planHolder !== undefined && !planChapterAdvanced && !planCompletedByDocument;
-      const durable = !turnIsOpen() && sess.isOwner && !skipped && !endedOnLead && !midSection;
+      const durable = !turnOpenAfterDelete && sess.isOwner && !skipped && !endedOnLead && !midSection;
       pendingCompactionBank = durable ? { turnKind: turnKindAtStart } : null;
     }
 
@@ -7962,13 +7967,19 @@ export const register: Register = async (on, options) => {
     // first main-loop tool call after it, before this tool is served or
     // passed on, so the marker records a position before the tool's work. By
     // this point the turn's opening prompt line is on disk, which turn.start
-    // cannot guarantee. A subagent's call neither runs nor clears it. The
-    // owed bank is cleared before the command runs, so it clears whatever
-    // the exit, and runs only while this session is still the owner, since
-    // ownership lost between the two events leaves nothing this session
-    // should bank. bankCompactionBoundary never throws, and its one decision
-    // is saved the way this handler's other bookkeeping lines are.
-    if (!inSubagent && pendingCompactionBank !== null) {
+    // cannot guarantee. Only a call the model made takes it: next.origin
+    // names "engine" there. A call a plugin raised through $.tool.call
+    // reaches this hook too, this plugin's own reply backfill among them,
+    // which runs inside turn.complete, the one moment a marker is never
+    // honored. So a call whose origin names a plugin, or carries no origin,
+    // neither runs nor clears the owed bank, and neither does a subagent's
+    // call. The owed bank is cleared before the command runs, so it clears
+    // whatever the exit, and runs only while this session is still the
+    // owner, since ownership lost between the two events leaves nothing this
+    // session should bank. bankCompactionBoundary never throws, and its one
+    // decision is saved the way this handler's other bookkeeping lines are.
+    const modelMadeCall = (next as any).origin?.plugin === "engine";
+    if (modelMadeCall && !inSubagent && pendingCompactionBank !== null) {
       const owedBank = pendingCompactionBank;
       pendingCompactionBank = null;
       if (sess.isOwner) {

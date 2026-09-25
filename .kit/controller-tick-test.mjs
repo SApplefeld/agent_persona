@@ -3442,6 +3442,9 @@ async function main() {
     await caseBank2_onlyThePersonasOwnTurnEndBanks(clock);
     await caseBank2_theOwedBankIsTakenOnlyByAMainLoopToolCall(clock);
     await caseBank2_everyPersonaTurnEndRecomputesTheOwedBank(clock);
+    await caseBank2_onlyAModelMadeCallTakesTheOwedBank(clock);
+    await caseBank2_theReplyBackfillTakesNoOwedBank(clock);
+    await caseBank2_aNextTurnStartingMidCompletionKeepsTheOwedBank(clock);
     await caseBank2_greatestLastUpdatedRecordIsRun(clock);
     await caseBank2_installRecordMissesSkipWithOneDecision(clock);
     await caseBank2_failedRunsLogOneDecisionAndNeverFailTheTurn(clock);
@@ -14894,18 +14897,28 @@ async function bank2Start(h, turnId) {
   return { nextCalls, thrown };
 }
 
+// Who raised a dispatch, as the host sets next.origin (the Origin type in
+// .claude/types/claude-code.d.ts): the engine for a call the model made, and
+// a plugin's name for a call that plugin raised through $.tool.call.
+const BANK2_ENGINE_ORIGIN = Object.freeze({ plugin: "engine", tier: "core" });
+const BANK2_PLUGIN_ORIGIN = Object.freeze({ plugin: "agentic-plugin", tier: "user" });
+
 // One tool call through the real tool.call handler: a work tool the engine
-// passes on, from the main loop unless `agentId` names a subagent's loop.
+// passes on, from the main loop unless `agentId` names a subagent's loop,
+// raised by the model unless `origin` names a plugin (or is null, for a
+// dispatch carrying no origin at all).
 // Records whether it settled or threw, how often it handed the event on to
 // next, and whether it returned next's own result unchanged.
-async function bank2Call(h, turnId, { agentId } = {}) {
+async function bank2Call(h, turnId, { agentId, origin = BANK2_ENGINE_ORIGIN } = {}) {
   let nextCalls = 0;
   let thrown = null;
   let returned;
   const nextResult = { result: "the tool ran" };
   const e = { tool: "Write", turnId, ...(agentId === undefined ? {} : { agentId }) };
+  const next = async () => { nextCalls += 1; return nextResult; };
+  if (origin !== null) next.origin = origin;
   try {
-    returned = await h.handlers["tool.call"](h.fake, e, async () => { nextCalls += 1; return nextResult; });
+    returned = await h.handlers["tool.call"](h.fake, e, next);
   } catch (err) {
     thrown = err;
   }
@@ -15271,6 +15284,96 @@ async function caseBank2_everyPersonaTurnEndRecomputesTheOwedBank(clock) {
       bank2CheckNothing(`bank2 a durable end ${v.label}: the next first tool call`, h, runs, call);
     }
   }
+}
+
+// Only a call the model made takes the owed bank. A tool call a plugin raised
+// through $.tool.call reaches the plugin's own tool.call hook with no agentId,
+// so next.origin is what tells it apart: a call whose origin names a plugin,
+// and one carrying no origin at all, run nothing and leave the owed bank for
+// the model's own call after them, which banks it once.
+async function caseBank2_onlyAModelMadeCallTakesTheOwedBank(clock) {
+  console.log("\n=== boundary-compaction Section 2: only a model-made tool call takes the owed bank ===");
+  clock.set(T0);
+  const h = await bank2NoGoalHarness("bank2_origin");
+  await bank2SeedInstalled(h, bank2Installed());
+  const runs = bank2Recorder(h);
+  const end = await bank2Turn(h, "t-durable", "Here is the answer.");
+  bank2CheckOwedOnly("bank2 an owed bank with non-model calls first", h, runs, end);
+  await bank2Start(h, "t-after");
+  const pluginCall = await bank2Call(h, "t-after", { origin: BANK2_PLUGIN_ORIGIN });
+  bank2CheckNothing("bank2 a tool call a plugin raised, with a bank owed", h, runs, pluginCall);
+  const noOriginCall = await bank2Call(h, "t-after", { origin: null });
+  bank2CheckNothing("bank2 a tool call carrying no origin, with a bank owed", h, runs, noOriginCall);
+  const modelCall = await bank2Call(h, "t-after");
+  bank2CheckBanked("bank2 the model's own call after them banks the owed bank once", h, runs, modelCall);
+}
+
+// The plugin's own reply backfill runs inside turn.complete, where a marker
+// is never honored, and reaches this same tool.call hook through $.tool.call.
+// Here the fake $.tool.call routes into the plugin's real tool.call handler
+// with a plugin origin, as the host dispatches it. With a bank owed by a
+// durable end, a channel-opened turn that made no tool call and sent no reply
+// fires the backfill at its end: nothing runs there. That turn's own end is
+// durable, so the model's first call of the next turn banks once.
+async function caseBank2_theReplyBackfillTakesNoOwedBank(clock) {
+  console.log("\n=== boundary-compaction Section 2: the plugin's reply backfill at a turn end takes no owed bank ===");
+  clock.set(T0);
+  const h = await bank2NoGoalHarness("bank2_backfill");
+  await bank2SeedInstalled(h, bank2Installed());
+  const runs = bank2Recorder(h);
+  const routed = [];
+  h.fake.tool.call = (args) => {
+    routed.push(args);
+    const next = async () => ({ result: "sent" });
+    next.origin = BANK2_PLUGIN_ORIGIN;
+    return h.handlers["tool.call"](h.fake, args, next);
+  };
+  const end = await bank2Turn(h, "t-durable", "Here is the answer.");
+  bank2CheckOwedOnly("bank2 an owed bank before a channel turn's backfill", h, runs, end);
+
+  await h.handlers["prompt.submit"](h.fake, { text: "What's the status?", origin: { kind: "channel" } }, async (core) => ({ text: core.text, context: core.context }));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-channel" }, async () => ({ result: "ok" }));
+  const channelEnd = await bank2Complete(h, "t-channel", "All green.");
+  bank2CheckSettled("bank2 the channel turn's end", channelEnd);
+  check("bank2 the channel turn's end fired the reply backfill through the plugin's tool.call hook",
+    routed.length === 1 && routed[0].tool === "mcp__plugin_relay_channel-relay__reply"
+      && getDecisions(h).some(d => d.action === "channel_reply_backfilled"), { routed, actions: getDecisions(h).map(d => d.action) });
+  check("bank2 the reply backfill at the turn end ran nothing", runs.length === 0, runs);
+  check("bank2 the reply backfill at the turn end logged no compaction_boundary decision", bank2Decisions(h).length === 0, bank2Decisions(h));
+
+  const call = await bank2NextTurnCall("bank2 the model's first call after the backfilled turn", h, runs, "t-after");
+  bank2CheckBanked("bank2 the model's first call after the backfilled turn banks once", h, runs, call);
+}
+
+// Whether a turn is still open is read at this completion's own delete. A
+// completion that is still settling when the next turn.start fires (here its
+// memory-curation classify is held until that start has run) still owes the
+// bank for a durable end, and the model's first call of that next turn banks
+// it once.
+async function caseBank2_aNextTurnStartingMidCompletionKeepsTheOwedBank(clock) {
+  console.log("\n=== boundary-compaction Section 2: a turn start during a durable completion leaves the bank owed ===");
+  clock.set(T0);
+  const h = await bank2NoGoalHarness("bank2_mid_completion");
+  await bank2SeedInstalled(h, bank2Installed());
+  const runs = bank2Recorder(h);
+  let releaseClassify = null;
+  let classifyHeld = false;
+  h.setClassifyValue(() => {
+    if (classifyHeld) return "discard";
+    classifyHeld = true;
+    return new Promise((resolve) => { releaseClassify = () => resolve("discard"); });
+  });
+  await h.handlers["turn.start"](h.fake, { turnId: "t-durable" }, async () => ({ result: "ok" }));
+  const settling = bank2Complete(h, "t-durable", "Here is the answer.");
+  for (let i = 0; i < 1000 && releaseClassify === null; i++) await new Promise((r) => setImmediate(r));
+  check("bank2 mid-completion setup: the completion is parked in its classify", releaseClassify !== null);
+  const start = await bank2Start(h, "t-next");
+  bank2CheckSettled("bank2 the next turn start while the completion settles", start);
+  if (releaseClassify) releaseClassify();
+  const end = await settling;
+  bank2CheckOwedOnly("bank2 a durable end that settled after the next turn started", h, runs, end);
+  const call = await bank2Call(h, "t-next");
+  bank2CheckBanked("bank2 the next turn's first model call banks the owed bank once", h, runs, call);
 }
 
 // The run takes the install record with the greatest lastUpdated, placed
