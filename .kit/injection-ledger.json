@@ -86,6 +86,18 @@
       "words": 26
     },
     {
+      "name": "NUDGE_STATUS_LINE_TEXT",
+      "file": "hooks/index.ts",
+      "chars": 218,
+      "words": 38
+    },
+    {
+      "name": "NUDGE_CAP_ASK_TEXT",
+      "file": "hooks/index.ts",
+      "chars": 111,
+      "words": 20
+    },
+    {
       "name": "STILL_WAITING_RERAISE_TEXT",
       "file": "hooks/index.ts",
       "chars": 116,
@@ -136,14 +148,20 @@
     {
       "name": "NUDGE_TEXT_idle_gap_converted",
       "file": "hooks/index.ts",
-      "chars": 778,
-      "words": 134
+      "chars": 600,
+      "words": 105
     },
     {
       "name": "NUDGE_TEXT_idle_timeout",
       "file": "hooks/index.ts",
-      "chars": 255,
-      "words": 42
+      "chars": 175,
+      "words": 29
+    },
+    {
+      "name": "NUDGE_EXPIRED_ASK_LINE",
+      "file": "hooks/index.ts",
+      "chars": 81,
+      "words": 14
     },
     {
       "name": "GOAL_TREE_BLOCK",
