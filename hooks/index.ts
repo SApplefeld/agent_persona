@@ -46,6 +46,7 @@ import {
   planHolderOf,
   openGoals,
   hasStartableWork,
+  holdOf,
   LONG_TERM_GOAL_CAP,
 } from "./agent-state";
 import { readPlanRecord } from "./plan-record";
@@ -126,13 +127,14 @@ import {
   ROUNDS_CONVERGING,
   BLOCK_OWNER,
   BLOCK_OWNER_OPTIONS,
+  WORK_CONTINUES,
   PLAN_HEALTH_SET_IDS,
   PLAN_HEALTH_STATE_CLOSING,
   PLAN_HEALTH_STATE_RECENT,
   resolverOf,
 } from "./question-catalog";
 // The decision seam, which puts the same closed question to Jev that the four
-// Haiku-paired sites below put to Haiku, and also carries the three plan
+// Haiku-paired sites below put to Haiku, and also carries the four plan
 // health questions no classifier asks, plus the journal that records every
 // answer.
 import { ask, askAll, type JevAnswer, type QuestionAsk, type SeamResult, type SeamSetResult } from "./decision-seam";
@@ -273,7 +275,7 @@ function shadowAsk(
   return stampId;
 }
 
-// Section 5 (plan-health-from-the-record): the three plan health questions.
+// Section 5 (plan-health-from-the-record): the four plan health questions.
 // The journal site their call line carries.
 const PLAN_HEALTH_SITE = "plan-health";
 // How many of an entry's closing texts the request's state carries, and the
@@ -299,11 +301,11 @@ function journalValuesOf(answer: JevAnswer): { value: string; probabilities: Rec
 }
 
 /**
- * Start the three plan health measurements at the end of a turn on a plan
+ * Start the four plan health measurements at the end of a turn on a plan
  * entry, in one request over one state, and journal them once it settles:
  * one call line and one answer line per question. Returns the stamp id its
  * lines carry, or null where the kill switch is off, which is also what the
- * three outcome joiners read as having no call to cite.
+ * four outcome joiners read as having no call to cite.
  *
  * Not awaited by the caller, for the reason shadowAsk is not: a slow,
  * failing or hung Jev cannot delay the turn's end. Nothing it produces
@@ -327,8 +329,9 @@ function shadowAskPlanHealth(
     { questionSetId: WORKER_BLOCKED, primitive: "noul" },
     { questionSetId: ROUNDS_CONVERGING, primitive: "score" },
     { questionSetId: BLOCK_OWNER, primitive: "choice", optionIds: BLOCK_OWNER_OPTIONS },
+    { questionSetId: WORK_CONTINUES, primitive: "noul" },
   ];
-  // The one state the request carries, whose two fields the three questions
+  // The one state the request carries, whose two fields the four questions
   // name by their field names.
   const state = {
     [PLAN_HEALTH_STATE_CLOSING]: closingText,
@@ -549,7 +552,8 @@ async function submitExpectedTurn(dp: any, expectedTurns: ExpectedTurn[], entry:
 /**
  * D5: handle an open ask during a tick.
  * Returns "waiting" if the ask is still open (persist and return),
- * "expired" if the wait elapsed (persist, activateNext, return),
+ * "expired" if the wait elapsed (the ask closes, the slot clears, no
+ * status moves and nothing is activated; persist, return),
  * "none" if no ask or the ask is not open (caller proceeds normally).
  */
 async function tickOpenAsk(
@@ -625,20 +629,19 @@ async function tickOpenAsk(
       });
       askRecord.status = "expired";
       await store.set(askKey(persona, state.pendingAskId), askRecord);
-      // D5b (bullet 4): the controller's nudges resume rather than waiting
-      // forever - activateNext already walks to the next pending plan/task,
-      // which is what "nudges resume on a plan" means when this node itself
-      // has nothing left runnable without the answer.
+      // The expiry lifts the hold and nothing else: the asked entry keeps
+      // its status and no other entry is activated, so the controller's
+      // nudges resume on the entry that asked rather than the slot moving
+      // to the next pending one with nobody having decided that. The
+      // ask_timeout decision above and lastAskClosedAt share this clock,
+      // which is how the next nudge on the entry finds the question it
+      // names as expired.
       const askedNode = state.goals.find((n) => n.id === askRecord.nodeId);
       if (askedNode) {
         askedNode.lastAskQuestion = askRecord.question;
         askedNode.lastAskClosedAt = now;
       }
       state.pendingAskId = undefined;
-      const nextId = activateNext(state);
-      if (nextId) {
-        activate(dp, nextId, "ask timeout, walking on");
-      }
       await persist(dp);
       return "expired";
     }
@@ -666,6 +669,25 @@ function shouldSuppressReask(
 }
 
 /**
+ * The question of the last ask on `node` where that ask timed out and no
+ * nudge on the entry has gone out since, or null. Read from state the ask
+ * close already writes: the node's lastAskQuestion and lastAskClosedAt, and
+ * the ask_timeout decision tickOpenAsk logs at the same clock as the close,
+ * which is what tells a timeout from an answer. A nudge_sent decision on the
+ * entry after that clock means a nudge already named it. The decision ring
+ * is capped, so a timeout pushed past DECISIONS_MAX entries before the next
+ * nudge is not named, which costs one sentence and nothing else.
+ */
+function unnamedExpiredAskQuestion(state: AgentState, node: GoalNode): string | null {
+  if (typeof node.lastAskQuestion !== "string" || typeof node.lastAskClosedAt !== "number") return null;
+  const closedAt = node.lastAskClosedAt;
+  const timedOut = state.decisions.some((d) => d.action === "ask_timeout" && d.timestamp === closedAt);
+  if (!timedOut) return null;
+  const named = state.decisions.some((d) => d.action === "nudge_sent" && d.timestamp > closedAt && d.detail.startsWith(`${node.id}: `));
+  return named ? null : node.lastAskQuestion;
+}
+
+/**
  * Item 2 backstop (Round 28): whether a tool call counts as "did real
  * work" for the turn.complete backstop, which logs an `untracked_work`
  * decision for a turn that did work with no open root. Built-in file/shell
@@ -685,6 +707,16 @@ function isWorkTool(toolName: string): boolean {
   if (toolName.includes("__reply") || toolName.endsWith("_reply")) return false;
   return true;
 }
+
+/**
+ * Whether a tool call is work for the nudge count's reset: isWorkTool's set,
+ * plus an agent dispatch. A dispatched agent works on the worker's behalf, so
+ * a turn that dispatched one is a working turn for the count alone; the
+ * untracked-work backstop and the lead clear keep reading isWorkTool.
+ */
+function isNudgeCountWork(toolName: string): boolean {
+  return isWorkTool(toolName) || toolName === "Agent";
+}
 // One persona's entry in the heartbeat sidecar. turnStartedAt is the owner's
 // clock at turn.start while a turn runs and null between turns (plan item
 // 8.3): a reader session in the same work directory reads it to tell a
@@ -700,7 +732,10 @@ const sess: {
   storePath: string;
   yieldLogPath: string;
   lastNudgeAt: number;
-  consecutiveNudgesWithoutOnGoal: number;
+  // Nudged turns in a row that closed with no status line and did no work,
+  // one count per session. turn.complete moves it; reaching
+  // MAX_CONSECUTIVE_NUDGES opens the nudge cap's ask.
+  nudgedAnswersWithoutStatus: number;
   options: { healthTimeoutMs?: number; gitProbeMs?: number };
   controllerTickCount: number; // D4: in-session tick counter for backoff and cost_summary
   staleAfterMs: number; // F9a: single-source the staleness threshold
@@ -744,7 +779,7 @@ const sess: {
   // process made, and a restart's first tick mints a new one.
   jevScoreOutcomeStampId: string | null;
   jevAskMarkerOutcomeStampId: string | null;
-  // Section 5 (plan-health-from-the-record): what the three plan health
+  // Section 5 (plan-health-from-the-record): what the four plan health
   // questions are still waiting on, per plan entry. `closingTexts` is the
   // entry's last few closing texts, oldest first, which the next request's
   // state carries. `chapterWithin` is every stamp id whose chapter_within
@@ -759,6 +794,17 @@ const sess: {
   // The stamp id of the latest plan health call, awaiting the next turn's
   // origin for its next_speaker outcome. Null where none is held.
   jevNextSpeakerStampId: string | null;
+  // The latest plan-health call still awaiting its continued_unprompted
+  // outcome, held as its stamp id and the entry the call was asked about.
+  // Settled true at the next completed turn, whatever entry that turn was
+  // on, where that turn opened unaccounted (nothing the plugin queued
+  // matched it) and not from a channel message, since only then did nobody
+  // and nothing the plugin tracks act first. Settled false the moment a
+  // nudge goes out for this record's own entry, at the nudge-sending site; a
+  // nudge for a different entry leaves the record held for the completion
+  // site to settle. Null where none is held, including once either site has
+  // settled it.
+  jevWorkContinuesStampId: { stampId: string; entryId: string } | null;
   // Why this session's persona state is not loaded, or null once it is. It
   // starts as the start-up cause, because a session whose session.start
   // never finished holds the built-in default state below and nothing else.
@@ -792,7 +838,7 @@ const sess: {
   storePath: ".agentic-personas.json",
   yieldLogPath: ".agentic-yields.log",
   lastNudgeAt: 0,
-  consecutiveNudgesWithoutOnGoal: 0,
+  nudgedAnswersWithoutStatus: 0,
   options: {},
   controllerTickCount: 0,
   staleAfterMs: 90_000,
@@ -804,6 +850,7 @@ const sess: {
   jevAskMarkerOutcomeStampId: null,
   jevPlanHealth: new Map(),
   jevNextSpeakerStampId: null,
+  jevWorkContinuesStampId: null,
   stateNotLoaded: "plugin start-up did not finish, and the debug log's `session.start hook skipped` line names why",
   untrackedWorkAt: null,
   untrackedWorkCount: 0,
@@ -922,6 +969,18 @@ let toolErrorsThisTurn = 0;
 // whether real tool work happened this turn regardless of what the model
 // chose to call.
 let toolCallsThisTurn = 0;
+
+// The same count taken over isNudgeCountWork, reset at turn.start beside it:
+// the calls that make a turn a working turn for the nudge count's reset.
+let nudgeCountWorkThisTurn = 0;
+
+// Whether the count was reset, by an activation, a new tree or a loaded
+// state, since the open nudged reading began. It is cleared where a nudged
+// reading opens and at session.start, and read only by the completion that
+// spends that reading. A nudged answer with no
+// status line then resets the count rather than adding one, so the entry
+// activated or loaded under it starts at zero.
+let countResetSinceNudgeOpened = false;
 
 // Health run helper (E2).
 async function runHealth(dp: any, forNodeId: string | null): Promise<void> {
@@ -2134,6 +2193,25 @@ function fleetPromptText(changed: FleetChange[], notes: FleetLine[], movedKeys: 
 // than listing its steps.
 const RECONCILE_TEXT = "[RECONCILE] Run the kit Coordinator seat's reconciliation pass now, as the kit's coordinator skill states it. This prompt is its only trigger. Then continue your work.";
 
+// The status-line request both idle-nudge texts carry. The three markers are
+// the ones readStatusLine reads off the closing text's first line, and a
+// nudged turn that opens with none of them, and does no work, is what the
+// nudge count counts.
+const NUDGE_STATUS_LINE_TEXT = "Open your closing text with one status line: WORKING: and what you are doing, WAITING: and what will wake you, or BLOCKED: and what you need from someone else.";
+
+// The sentence a nudge on a plan entry adds after the status-line request.
+// Leads are read on plan entries alone, so the hold it names exists only
+// there, and a nudge on a task entry does not carry it.
+const NUDGE_LEAD_HOLD_TEXT = "On this entry a WAITING: or BLOCKED: line holds the controller's nudges.";
+
+// The question the nudge cap's ask puts to the operator once the count
+// reaches its cap. The entry's title is operator- or worker-supplied text, so
+// its continuation lines are quoted the way the expired-ask sentence quotes a
+// stored question; the persona name has passed personaNameProblem.
+function nudgeCapAskText(persona: string, title: string, nudges: number): string {
+  return `The ${persona} persona answered ${nudges} nudges on "${quoteContinuationLines(title)}" with no status line. Is it still on that entry? Any answer resumes nudging.`;
+}
+
 // M7: single guarded-write path shared by every store write site.
 // Closes over sess so all write sites share one yield + write path.
 // `rollBackOnYield` is for a caller that advanced a value for the write it is
@@ -2319,7 +2397,8 @@ const dropDecision = (entry: AgentState["decisions"][number]): void => {
 // L25: a null target is a distinct decision (activate_none), never an
 // "activated" entry that says "No node to activate".
 export const activate = (dp: any, nextId: string | null, reason: string): void => {
-  sess.consecutiveNudgesWithoutOnGoal = 0;
+  sess.nudgedAnswersWithoutStatus = 0;
+  countResetSinceNudgeOpened = true;
   sess.lastNudgeAt = 0;
   if (nextId) {
     sess.state.decisions.push({
@@ -2370,7 +2449,7 @@ const completeRoot = async (dp: any, rootId: string, detail: string): Promise<vo
     detail,
   });
   try { await dp.audio.speak("Goal complete"); } catch { /* no audio */ }
-  sess.consecutiveNudgesWithoutOnGoal = 0;
+  sess.nudgedAnswersWithoutStatus = 0;
   sess.lastNudgeAt = 0;
   try { dp.ui.status(""); } catch { /* non-fatal */ }
 };
@@ -2396,33 +2475,19 @@ const closeAskOnNode = async (dp: any, nodeId: string, closedBy: string): Promis
   return true;
 };
 
-// Reactivates the paused entry an answered ask named. Every other entry whose
-// status is active is paused first, read by status rather than by
-// activeGoalId, since a stale pointer is the state this must not leave behind;
-// then activeGoalId names the entry. `closedBy` reads "thread reply to ask
-// <id>" or "answer <recordId> to ask <id>" and lands in the reason and details.
-const reactivateAskedEntry = (askedNode: GoalNode, closedBy: string): void => {
-  for (const other of sess.state.goals) {
-    if (other.id === askedNode.id || other.status !== "active") continue;
-    other.status = "paused";
-    other.blockedReason = `Paused by ${closedBy}`;
-    other.updatedAt = Date.now();
-    sess.state.decisions.push({
-      timestamp: Date.now(),
-      loop: "goal",
-      action: "paused_by_reply",
-      detail: `${other.id} paused (${closedBy})`,
-    });
+// The entry an answered ask named, at the ask's close. An ask leaves its
+// entry active, so the close moves no status, demotes no other entry and
+// points activeGoalId nowhere: the open ask was the hold, and clearing the
+// slot is the lift. What it does clear is a blockedReason left on an active
+// entry, which only a store written by a controller that paused on an ask
+// carries, since an active entry has no reason to be blocked. A paused
+// entry keeps its reason, which the operator or a plan switch wrote and
+// goal_resume reads back.
+const reactivateAskedEntry = (askedNode: GoalNode): void => {
+  if (askedNode.status === "active" && askedNode.blockedReason !== undefined) {
+    askedNode.blockedReason = undefined;
+    askedNode.updatedAt = Date.now();
   }
-  askedNode.status = "active";
-  sess.state.activeGoalId = askedNode.id;
-  askedNode.updatedAt = Date.now();
-  sess.state.decisions.push({
-    timestamp: Date.now(),
-    loop: "goal",
-    action: "activated",
-    detail: `${askedNode.id}: reactivated (${closedBy})`,
-  });
 };
 
 // completeLeaf's walk marks a plan parent blocked with the reason "Child task
@@ -2485,30 +2550,34 @@ const isPlanEntry = (state: AgentState, g: GoalNode): boolean =>
 // cannot continue without someone else, and with `WAITING:` when background
 // work will wake it. The controller holds its idle branch for a blocked lead
 // until a working turn clears it, goal_resume lifts it, or an ask on the
-// entry closes after it was set, and for a waiting lead until this long
-// after the lead was read. The line is read at turn end, below the ASK:
-// marker parse; the hold sits in the controller tick beside the open-ask
-// skip. The value is the plan's 60-minute rule for a waiting lead.
-const LEAD_WAITING_HOLD_MS = 60 * 60_000;
+// entry closes after it was set, and for a waiting lead until
+// LEAD_WAITING_HOLD_MS (hooks/agent-state.ts) after the lead was read or until a turn clears it,
+// a `WORKING:` first line among them. The line is read at turn
+// end, below the ASK: marker parse; the hold is holdOf's read in the
+// controller tick.
 
 // The bound on a lead's reason, which is text from the worker's own closing
 // line written into the store.
 const LEAD_REASON_MAX = 300;
 
-// The lead a closing text states, read from its first non-blank line: the
-// literal uppercase marker at the start of that line, with the rest of the
-// line as the reason. `Blocked:`, `BLOCKED x`, the marker on a later line and
-// the word inside a sentence all read as no lead. Never throws: a text that
-// is not a string reads as no lead.
-function readLeadLine(text: unknown): { state: "blocked" | "waiting"; reason: string } | null {
+// The status line a closing text states, read from its first non-blank line:
+// one of the literal uppercase markers `WORKING:`, `WAITING:` or `BLOCKED:`
+// at the start of that line, with the rest of the line as the reason.
+// `Working:`, `BLOCKED x`, the marker on a later line and the word inside a
+// sentence all read as no status line. Never throws: a text that is not a
+// string reads as none. The nudge asks for this line, the nudge count reads
+// its presence on a nudged turn, and a `BLOCKED:` or `WAITING:` line on a
+// plan entry is the worker's lead.
+function readStatusLine(text: unknown): { state: "working" | "blocked" | "waiting"; reason: string } | null {
   if (typeof text !== "string") return null;
   const found = text.split(/\r?\n/).find((line) => line.trim() !== "");
   if (found === undefined) return null;
   // One stray carriage return left by a \r\r\n ending is not reason text.
   const firstLine = found.endsWith("\r") ? found.slice(0, -1) : found;
-  const m = /^(BLOCKED|WAITING):(.*)$/.exec(firstLine);
+  const m = /^(WORKING|BLOCKED|WAITING):(.*)$/.exec(firstLine);
   if (!m) return null;
-  return { state: m[1] === "BLOCKED" ? "blocked" : "waiting", reason: m[2].trim().slice(0, LEAD_REASON_MAX) };
+  const state = m[1] === "WORKING" ? "working" : m[1] === "BLOCKED" ? "blocked" : "waiting";
+  return { state, reason: m[2].trim().slice(0, LEAD_REASON_MAX) };
 }
 
 // The round text the controller's idle summary and its skip-hash subset
@@ -2574,6 +2643,16 @@ export const register: Register = async (on, options) => {
   // its text matched ("unaccounted" for one that matched none, whether
   // external, a continuation or unknown) and read at turn.complete.
   let currentTurnKind: ExpectedTurn["kind"] | "unaccounted" = "unaccounted";
+  // The id of the turn a nudge opened, set at turn.start when the matched
+  // entry is a nudge and cleared by the completion carrying that same id.
+  // The nudge count reads a nudged answer from that completion alone, so a
+  // background subagent's completion inside the nudged turn neither spends
+  // the reading nor is read as the answer, where it carries another id. The
+  // harness type states a completion carries its own turn.start's id and
+  // states nothing of a background subagent's completion.
+  // Null where no nudged turn is open, and where the nudged turn's start
+  // carried no id, whose completion then moves the count by nothing.
+  let nudgedTurnId: string | null = null;
   // A delivery whose $.prompt.submit rejected or was dropped: its entry has
   // left the list and the refusal is recorded, and nothing else. The record
   // stays as the delivery wrote it and ages out under the TTL; no delivery
@@ -2927,6 +3006,11 @@ export const register: Register = async (on, options) => {
       $.ui.log(`Agentic: arming off, no persona tools or claims in this session${suffix}`);
       return next(e);
     }
+    // session.start fires again on a plugin reload, and sess outlives the
+    // register that holds the nudged reading, so a count carried from before
+    // the reload is dropped with the state this start loads afresh.
+    sess.nudgedAnswersWithoutStatus = 0;
+    countResetSinceNudgeOpened = false;
     try {
       sess.mySessionId = String(await $.session.id());
     } catch {
@@ -3876,6 +3960,12 @@ export const register: Register = async (on, options) => {
             } else {
               sess.state = createDefaultState(sess.persona, sess.mySessionId);
             }
+            // The count this session held before it yielded counted answers
+            // on a tree it no longer holds, so it does not carry into this one.
+            // The heartbeat runs with a turn open, so a nudged turn begun
+            // before the yield is not added to this tree's count either.
+            sess.nudgedAnswersWithoutStatus = 0;
+            countResetSinceNudgeOpened = true;
             sess.state.activeSessionId = sess.mySessionId;
             sess.state.epoch += 1;
             sess.myEpoch = sess.state.epoch;
@@ -3900,7 +3990,8 @@ export const register: Register = async (on, options) => {
     // R1 order: owner check → in-flight check → planning gate →
     //   "no active leaf, return" → idle gate → classify.
     // Eligibility in code. The model decides WHAT, never WHETHER.
-    // Cap counts *sent* nudges only, resets only on on-goal or complete.
+    // Cap counts nudged answers with no status line, reset on the events the
+    // turn.complete count block names.
     // Section 6: a reader session never runs this tick at all - it owns no
     // goal tree to classify or actuate against, and the tick's own owner
     // check would return immediately anyway, so the timer itself is skipped.
@@ -4745,8 +4836,9 @@ export const register: Register = async (on, options) => {
                 // Clear the pendingAskId
                 sess.state.pendingAskId = undefined;
                 // Deliver the answer as a labelled prompt.
-                // Look up the goal by the ask record's nodeId (more reliable than activeGoalId,
-                // which enforceInvariants may have cleared for a paused goal).
+                // The entry is the one the ask record names, or the active
+                // entry where the record names none. The close moves no
+                // status; see reactivateAskedEntry.
                 const askRecord2 = askRecord; // from outer scope
                 const targetNode = askRecord2?.nodeId
                   ? sess.state.goals.find((g) => g.id === askRecord2.nodeId)
@@ -4754,7 +4846,7 @@ export const register: Register = async (on, options) => {
                 const activeNode = targetNode || (sess.state.activeGoalId
                   ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
                   : null);
-                if (activeNode && activeNode.status === "paused") reactivateAskedEntry(activeNode, `answer ${answer.id} to ask ${askId}`);
+                if (activeNode) reactivateAskedEntry(activeNode);
                 sess.state.decisions.push({
                   timestamp: Date.now(),
                   loop: "monitor",
@@ -4997,16 +5089,8 @@ export const register: Register = async (on, options) => {
             detail: `${nodeId}: error-streak: ${streakReason} (ask ${askId})`,
           });
           try { $.ui.toast(`Agentic: ${streakReason}`); } catch { /* non-fatal */ }
-          activeForStreak.status = "paused";
-          activeForStreak.blockedReason = streakReason;
-          activeForStreak.updatedAt = streakTs;
-          sess.state.decisions.push({
-            timestamp: streakTs,
-            loop: "goal",
-            action: "paused_by_controller",
-            detail: `${nodeId}: ${streakReason}`,
-          });
-          try { $.ui.status(""); } catch { /* non-fatal */ }
+          // The open ask is the hold: the leaf stays active with no reason
+          // written on it, and the idle branch reads the ask through holdOf.
           sess.state.updatedAt = streakTs;
           await persist($);
         }
@@ -5900,31 +5984,12 @@ export const register: Register = async (on, options) => {
       const eligible = idleMs >= nudgeIdleMs;
       if (!eligible) return;
 
-      // D5: skip nudge and classify if an ask is open; record ask_waiting once per minute.
-      if (sess.state.pendingAskId) {
-        const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, g.id, expectedTurns);
-        if (askResult === "waiting") return;
-        if (askResult === "expired") return;
-        // Ask was closed by an answer; clear the flag.
-        sess.state.pendingAskId = undefined;
-      }
-
-      // Section 3 (plan-health-from-the-record): the worker's own lead holds
-      // the whole idle branch for this entry, no classifier call and no
-      // nudge. A blocked lead holds until a working turn clears it at turn
-      // end, goal_resume lifts it, or an ask on the entry closes after it
-      // was set; a waiting lead holds until LEAD_WAITING_HOLD_MS after it
-      // was read, and then the branch runs as usual with the lead left on
-      // the entry. Nothing is logged per held tick.
-      // Only a plan entry is held, since only a plan entry's turns write or
-      // clear a lead.
-      const heldLead = g.lead && isPlanEntry(sess.state, g) ? g.lead : null;
-      // An ask on the entry that closed after the lead was set, answered by
-      // the operator or the coordinator, settled what the block waited on,
-      // so the lead is cleared here and the branch runs. A timed-out ask
-      // leaves its entry paused, and that entry stays paused until
-      // goal_resume lifts its lead.
-      if (heldLead && heldLead.state === "blocked" && typeof g.lastAskClosedAt === "number" && g.lastAskClosedAt > heldLead.at) {
+      // A blocked lead on a plan entry whose ask closed after the lead was
+      // set, answered by the operator or the coordinator or expired, is
+      // cleared before the hold is read: the ask settled what the block
+      // waited on, so an answered ask on a BLOCKED: worker lifts the hold.
+      if (g.lead && g.lead.state === "blocked" && isPlanEntry(sess.state, g)
+        && typeof g.lastAskClosedAt === "number" && g.lastAskClosedAt > g.lead.at) {
         g.lead = null;
         g.updatedAt = now;
         sess.state.decisions.push({
@@ -5934,8 +5999,26 @@ export const register: Register = async (on, options) => {
           detail: `${g.id}: blocked lead cleared by an ask closed after it was set`,
         });
         if (!(await persist($))) return;
-      } else if (heldLead && heldLead.state === "blocked") return;
-      if (heldLead && heldLead.state === "waiting" && now - heldLead.at < LEAD_WAITING_HOLD_MS) return;
+      }
+
+      // The hold: one read of holdOf decides whether this branch nudges. An
+      // open ask, a blocked lead or a waiting lead inside its window holds
+      // the whole branch, no classifier call and no nudge, and nothing is
+      // logged per held tick. An ask hold still runs tickOpenAsk, which
+      // records ask_waiting once a minute, re-raises the question once, and
+      // closes the ask on expiry; an ask the slot names whose record is no
+      // longer open clears the slot here, persisted at once so the cleared
+      // slot reaches disk whatever the lead then says, and the hold is read
+      // again since a lead can still hold once the ask is gone.
+      let hold = holdOf(sess.state, now);
+      if (hold === "ask") {
+        const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, g.id, expectedTurns);
+        if (askResult !== "none") return;
+        sess.state.pendingAskId = undefined;
+        if (!(await persist($))) return;
+        hold = holdOf(sess.state, now);
+      }
+      if (hold !== null) return;
 
       // L6: print seconds below one minute, minutes otherwise
       const idleDisplay = idleMs < 60_000 ? `${Math.floor(idleMs / 1000)}s` : `${Math.floor(idleMs / 60_000)}min`;
@@ -5967,7 +6050,7 @@ export const register: Register = async (on, options) => {
         `Last 5 scores: ${last5}\n` +
         `On-goal count: ${onGoalCount} of ${g.scores.length}\n` +
         `Idle time: ${idleDisplay}\n` +
-        `Consecutive nudges sent: ${sess.consecutiveNudgesWithoutOnGoal}\n` +
+        `Nudged answers with no status line: ${sess.nudgedAnswersWithoutStatus}\n` +
         `Decisions tail: ${sess.state.decisions.slice(-5).map((d) => `${d.loop}:${d.action}`).join(", ")}\n` +
         `Memory: ${sess.state.memory.length} entries (self-review lessons: ${sess.state.memory.filter((m) => m.source === "self-review").length})\n` +
         (() => {
@@ -5994,37 +6077,51 @@ export const register: Register = async (on, options) => {
       Promise.resolve().then(async () => {
         try {
           // Cap check before spending a classify call.
-          if (sess.consecutiveNudgesWithoutOnGoal >= MAX_CONSECUTIVE_NUDGES) {
+          if (sess.nudgedAnswersWithoutStatus >= MAX_CONSECUTIVE_NUDGES) {
             const capTs = Date.now();
-            const capReason = `Nudged ${sess.consecutiveNudgesWithoutOnGoal} times without on-goal; escalating`;
+            const capReason = `${sess.nudgedAnswersWithoutStatus} nudged answers carried no status line`;
             sess.state.decisions.push({
               timestamp: capTs,
               loop: "monitor",
               action: "nudge_cap_reached",
               detail: `${g.id}: ${capReason}`,
             });
-            // Round 58 finding 3: this used to write an ask record from controller prose here - the
-            // same class of defect item 8.2 removed from the classifier's ask-operator and pause
-            // verdicts, just reached through a third path. The nudge cap has no concrete question to
-            // ask, only an idle reading, exactly like the classifier paths: it pauses the node with
-            // the cap reason and opens nothing. Round 60 finding 3(b): turn.complete reactivates it
-            // on the worker's next completed turn that calls a real work tool (pausedByNudgeCap
-            // below is the marker it reads), or goal_resume reactivates it explicitly; no ask, no
-            // pendingAskId, nothing waiting on an operator answer that was never asked for.
             try { $.ui.toast(`Agentic: ${capReason}`); } catch { /* non-fatal */ }
-            if (g.status === "active") {
-              // BG1: nudge cap → paused + no activate (tree stays put, no ask open on it).
-              g.status = "paused";
-              g.blockedReason = capReason;
-              g.pausedByNudgeCap = true;
-              g.updatedAt = capTs;
+            // The cap holds by opening an ask, the same way the cost cap
+            // below does: the entry stays active with no reason written on
+            // it, holdOf reads the open ask as the hold, and the ask's
+            // close, by an answer or by expiry, is the lift. The ask's
+            // question is nudgeCapAskText, which names the persona and the
+            // entry for the operator. The count is reset as the ask opens,
+            // which serves as the reset at the ask's close: the count rises
+            // only at a nudged turn's end, and while the ask is open holdOf
+            // holds every nudge, so no nudge is sent in between. Nor is a
+            // nudged turn under way as the ask opens: this branch runs only
+            // with no turn open, and the count moves only at the completion
+            // of a turn whose start recorded a nudged id. So the close finds
+            // the count at zero. A count left at the cap would reopen the ask
+            // on the tick after the close in place of the nudge the lift
+            // promises. The floor is left alone, since the last nudge's
+            // spacing still applies.
+            //
+            // The record is written before the slot names it, and the count
+            // is reset only once the write returns: a write that throws
+            // leaves no slot and the count at the cap, so the cap fires
+            // again on a later tick. Defensive guard: holdOf returned null
+            // for this tick to reach here, so the slot is empty; the guard
+            // keeps the one-ask rule legible at the site that opens one.
+            if (!sess.state.pendingAskId) {
+              const askId = `ask-${g.id}-${capTs}`;
+              const askQuestion = nudgeCapAskText(sess.persona, g.title, sess.nudgedAnswersWithoutStatus);
+              await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, askQuestion, sess.mySessionId);
+              sess.state.pendingAskId = askId;
+              sess.nudgedAnswersWithoutStatus = 0;
               sess.state.decisions.push({
                 timestamp: capTs,
-                loop: "goal",
-                action: "paused_by_controller",
-                detail: `${g.id}: ${capReason}`,
+                loop: "monitor",
+                action: "ask_opened",
+                detail: `${g.id}: nudge-cap: ${capReason} (ask ${askId})`,
               });
-              try { $.ui.status(""); } catch { /* non-fatal */ }
             }
             sess.state.updatedAt = capTs;
             await persist($);
@@ -6056,7 +6153,14 @@ export const register: Register = async (on, options) => {
 
           // AH5: Nudge cap check before classify. If the nudge cap is latched, skip classify entirely.
           // AK2: emit cost_cap_reached once per window (latched by capNoticeWindowStart).
-          // BF2: when the nudge cost cap refuses a nudge and pendingAskId is unset, open an ask.
+          // The cost-cap ask opens once per nudge window, under the same
+          // latch as the notice: the entry stays active with no reason
+          // written on it and the open ask is the hold. Once that ask
+          // closes inside the window the refusal alone holds, no nudge and
+          // no second ask, and a new window that reaches the cap latches
+          // afresh and opens one again. The slot guard inside is defensive:
+          // holdOf returned null for this tick to reach here, so no ask is
+          // open, and the guard keeps the one-ask rule legible at the site.
           const nudgeCapped = costEnabled && costMaxNudgesPerHour > 0 &&
             effectiveWindowCount(sess.state.monitor.cost.nudgeWindow, now) >= costMaxNudgesPerHour;
           if (nudgeCapped) {
@@ -6068,32 +6172,18 @@ export const register: Register = async (on, options) => {
                 detail: `${g.id}: nudge cap reached (${effectiveWindowCount(sess.state.monitor.cost.nudgeWindow, now)}/${costMaxNudgesPerHour} per hour), refusing nudge`,
               });
               sess.state.monitor.cost.capNoticeWindowStart = sess.state.monitor.cost.nudgeWindow.start;
-            }
-            // BF2: open an ask if none is pending
-            if (!sess.state.pendingAskId) {
-              const askId = `ask-${g.id}-${tickTs}`;
-              const capReason = `cost-cap: nudge budget spent (${effectiveWindowCount(sess.state.monitor.cost.nudgeWindow, now)}/${costMaxNudgesPerHour} per hour)`;
-              await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, capReason, sess.mySessionId);
-              sess.state.pendingAskId = askId;
-              sess.state.decisions.push({
-                timestamp: tickTs,
-                loop: "monitor",
-                action: "ask_opened",
-                detail: `${g.id}: ${capReason} (ask ${askId})`,
-              });
-              try { $.ui.toast(`Agentic: ${capReason}`); } catch { /* non-fatal */ }
-              if (g.status === "active") {
-                // BG1: cost cap → paused + no activate (ask is open, tree stays put).
-                g.status = "paused";
-                g.blockedReason = capReason;
-                g.updatedAt = tickTs;
+              if (!sess.state.pendingAskId) {
+                const askId = `ask-${g.id}-${tickTs}`;
+                const capReason = `cost-cap: nudge budget spent (${effectiveWindowCount(sess.state.monitor.cost.nudgeWindow, now)}/${costMaxNudgesPerHour} per hour)`;
+                await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, capReason, sess.mySessionId);
+                sess.state.pendingAskId = askId;
                 sess.state.decisions.push({
                   timestamp: tickTs,
-                  loop: "goal",
-                  action: "paused_by_controller",
-                  detail: `${g.id}: ${capReason}`,
+                  loop: "monitor",
+                  action: "ask_opened",
+                  detail: `${g.id}: ${capReason} (ask ${askId})`,
                 });
-                try { $.ui.status(""); } catch { /* non-fatal */ }
+                try { $.ui.toast(`Agentic: ${capReason}`); } catch { /* non-fatal */ }
               }
             }
             sess.state.updatedAt = tickTs;
@@ -6225,8 +6315,8 @@ export const register: Register = async (on, options) => {
           // complete verdict completes nothing here. It is recorded as
           // ignored and becomes a nudge, the same way the verdicts above do:
           // a worker whose closing text reads finished while its document
-          // does not is woken rather than left idle. The three-nudge stall
-          // pause bounds the repeats.
+          // does not is woken rather than left idle. The nudge floor bounds
+          // the repeats.
           if (finalDecision === "complete" && g.status === "active" && isPlanEntry(sess.state, g)) {
             finalDecision = "nudge";
             sess.state.decisions.push({
@@ -6285,7 +6375,7 @@ export const register: Register = async (on, options) => {
                 target.status = "active";
                 target.updatedAt = Date.now();
                 sess.state.activeGoalId = target.id;
-                sess.consecutiveNudgesWithoutOnGoal = 0;
+                sess.nudgedAnswersWithoutStatus = 0;
                 sess.lastNudgeAt = 0;
                 sess.state.decisions.push({
                   timestamp: Date.now(),
@@ -6372,7 +6462,13 @@ export const register: Register = async (on, options) => {
               if (nudgeCapped) {
                 return;
               }
-              // R8: nudge text appends goal_done instruction. Item 8.2
+              // The hold sentence rides on a plan entry's nudge alone, the
+              // one kind of entry whose leads are read.
+              const leadHoldLine = isPlanEntry(sess.state, g) ? " " + NUDGE_LEAD_HOLD_TEXT : "";
+              // R8: nudge text appends goal_done instruction, and both arms
+              // close with NUDGE_STATUS_LINE_TEXT, the status line the
+              // nudge count reads at the nudged turn's end, followed on a
+              // plan entry by leadHoldLine. Item 8.2
               // (Round 36): a converted ask-operator gets its own text -
               // re-read the plan and the discussion file, and only state a
               // fork as a literal marker line if one truly exists, since
@@ -6388,17 +6484,33 @@ export const register: Register = async (on, options) => {
               const architectLine = architectPersona !== "" && sess.persona !== "default" && sess.persona !== architectPersona && sess.persona !== coordinatorPersona
                 ? `A design question the plan doesn't cover (a spec gap, an approach fork, a plan review or a consult) can go to the architect instead: send it with agentic_say, persona set to ${architectPersona}.\n`
                 : "";
+              // An ask on this entry that timed out with no nudge since is
+              // named once, in one sentence, so the worker knows its
+              // question went unanswered rather than reading the silence as
+              // an answer. The question is store data on a line-structured
+              // prompt, so its continuation lines are quoted the way the
+              // re-raise quotes them; the sentence's own first line stays
+              // the plugin's.
+              const expiredAskQuestion = unnamedExpiredAskQuestion(sess.state, g);
+              const expiredAskLine = expiredAskQuestion !== null
+                ? `An ask on this entry, "${quoteContinuationLines(expiredAskQuestion)}", expired unanswered after its wait, so nudging resumes.\n`
+                : "";
               const nudgeText = idleGapConverted
                 ? `[GOAL] The active goal is: ${g.objective}\n` +
+                  expiredAskLine +
                   `The controller read this as an idle gap, not a real fork: no concrete blocking question. ` +
                   `Re-read the plan doc and DISCUSSION.md before continuing - the next concrete step should already be there.\n` +
                   `If you genuinely hold a fork the plan doesn't resolve, state it in this turn as a line: ASK: <question>? Recommend: <choice>\n` +
                   architectLine +
-                  `The controller reads a first-line BLOCKED: or WAITING: in your closing text and holds its nudges.\n` +
-                  `Otherwise take the next concrete step and mark it finished with goal_done.`
+                  `Otherwise take the next concrete step and mark it finished with goal_done.\n` +
+                  NUDGE_STATUS_LINE_TEXT +
+                  leadHoldLine
                 : `[GOAL] The active goal is: ${g.objective}\n` +
+                  expiredAskLine +
                   `The Controller detected ${idleDisplay} of idle time. ` +
-                  `Re-read the objective and take the next concrete step toward it, then report that step done with goal_done.`;
+                  `Re-read the objective and take the next concrete step toward it, then report that step done with goal_done.\n` +
+                  NUDGE_STATUS_LINE_TEXT +
+                  leadHoldLine;
               // The floor is spent here, before the submit, so that the test
               // above and this write are one synchronous step. $.prompt.submit
               // does not resolve until the session is next idle, so during a
@@ -6413,30 +6525,45 @@ export const register: Register = async (on, options) => {
               // which was taken before the classify call: classify latency
               // would otherwise come out of the floor and shorten it.
               sess.lastNudgeAt = Date.now();
+              // Section 4 (plan-health-from-the-record): captured here,
+              // still in the synchronous region, and cleared from the field
+              // only where it is this nudge's own entry. $.prompt.submit
+              // below does not resolve until the session is next idle, so a
+              // whole nudged turn can open and complete before this tick
+              // resumes; were the field read fresh after that await, it
+              // could by then hold the stamp that same completion just
+              // armed for its own next plan-health call, and writing false
+              // against it would wrongly settle a call this nudge never
+              // touched. Capturing now and clearing the field takes that
+              // call out of play for the rest of this region, so the
+              // completion joiner that runs during the await finds nothing
+              // held and neither double-settles this record nor loses its
+              // own. A held call on a different entry is left in the field
+              // untouched: this nudge says nothing about it, and the
+              // completion joiner settles it in the ordinary way.
+              const heldWorkContinues = sess.jevWorkContinuesStampId;
+              const workContinuesIsThisEntry = heldWorkContinues !== null && heldWorkContinues.entryId === g.id;
+              if (workContinuesIsThisEntry) sess.jevWorkContinuesStampId = null;
               // The rest of this nudge's own bookkeeping is spent here for the
               // same reason as the floor. The region from the open-turn check
-              // above to this point is synchronous, so all three writes are made
+              // above to this point is synchronous, so both writes are made
               // for a nudge that is going out between turns; on the far side of
               // the submit a whole worker turn may have run and been scored, and
-              // each of the three then lands too late for the turn it is about.
+              // each of the two then lands too late for the turn it is about.
               //
-              // The escalation counter would land after the reset an on-goal
-              // score performs, so a nudge the worker met would not clear its
-              // own count, and two unmet nudges after a met one would reach the
-              // cap that pauses the node, a round earlier than the worker
-              // earned. The nudge's expected-turn entry would be queued after
-              // its own turn.start had looked for it, so that turn would open
-              // unaccounted and be scored without the nudge-aware label set. The prompt text
-              // would land after the scorer had already judged the answer
-              // against the previous turn's prompt.
+              // The nudge's expected-turn entry would be queued after its own
+              // turn.start had looked for it, so that turn would open
+              // unaccounted: it would be scored without the nudge-aware label
+              // set, and its answer would move the nudge count neither way.
+              // The prompt text would land after the scorer had already judged
+              // the answer against the previous turn's prompt.
               currentPrompt = nudgeText;
               const expectedNudgeTurn = expectTurn({ kind: "nudge", text: nudgeText });
-              sess.consecutiveNudgesWithoutOnGoal += 1;
-              // What this nudge made the count, read here rather than after
-              // the submit, so the record names the count this nudge reached
-              // rather than whatever a turn completing in the meantime left
-              // behind.
-              const nudgeNumber = sess.consecutiveNudgesWithoutOnGoal;
+              // The count as this nudge goes out, read here rather than after
+              // the submit, so the record names the count the nudge was sent
+              // at rather than whatever its own turn's end left behind. The
+              // count itself moves at a nudged turn's end, never here.
+              const unlinedAnswers = sess.nudgedAnswersWithoutStatus;
               // Only the submit's own outcome is read here, so a throw from
               // the ledger writes below is not recorded as a submit failure.
               const nudgeOutcome = await submitExpectedTurn($, expectedTurns, expectedNudgeTurn);
@@ -6453,6 +6580,12 @@ export const register: Register = async (on, options) => {
                   action: "nudge_failed",
                   detail: `${g.id}: submit ${nudgeOutcome.how}, floor already spent: ${nudgeOutcome.reason}`.slice(0, 200),
                 });
+                // No nudge went out, so the captured record is restored,
+                // unless the await let a fresh call arm itself for this same
+                // entry meanwhile, which must not be overwritten.
+                if (workContinuesIsThisEntry && sess.jevWorkContinuesStampId === null) {
+                  sess.jevWorkContinuesStampId = heldWorkContinues;
+                }
               }
               if (nudgeOutcome.ok) {
                 // D1: increment nudge ledger (count only, no token estimate)
@@ -6463,8 +6596,17 @@ export const register: Register = async (on, options) => {
                   timestamp: tickTs,
                   loop: "monitor",
                   action: "nudge_sent",
-                  detail: `${g.id}: idle ${idleDisplay}, nudge #${nudgeNumber}`,
+                  detail: `${g.id}: idle ${idleDisplay}, nudged answers without a status line: ${unlinedAnswers}`,
                 });
+                // A nudge going out settles this entry's own pending
+                // continued_unprompted outcome as false: work did not
+                // continue on its own, since this session had to prompt it.
+                // Whichever of this write and the completion joiner's read
+                // fires first is the one that lands; the other finds
+                // nothing held for this record.
+                if (jevMode === "shadow" && workContinuesIsThisEntry) {
+                  shadowOutcome(hostOf($), heldWorkContinues!.stampId, "continued_unprompted", "false");
+                }
               }
             } else {
               // The decider said nudge and the floor held. This is the ordinary
@@ -6561,6 +6703,10 @@ export const register: Register = async (on, options) => {
     sess.state.monitor.lastTurnId = e.turnId;
     // The turn is open from here until a completion carrying this same id.
     openTurns.set(e.turnId, Date.now());
+    // The id goes to the plugin's log line rather than the decision ring,
+    // which DECISIONS_MAX caps and a per-turn record would crowd. It is
+    // event-supplied text, so it is folded to one line and bracket-safe.
+    try { $.ui.log(`Agentic: turn start ${kaizenLine(String(e.turnId))}`); } catch { /* non-fatal */ }
     // Plan item 8.3: publish a start so a reader session can report how long a
     // pending record has waited. The value names the earliest turn still open,
     // which on an overlap is not this one. Derived through the helper so this
@@ -6582,6 +6728,7 @@ export const register: Register = async (on, options) => {
     toolErrorsThisTurn = 0;
     // Item 2 sub-bullet: reset the tool-call counter for this turn.
     toolCallsThisTurn = 0;
+    nudgeCountWorkThisTurn = 0;
     // Steer 68/69: capture whether this turn opened from a channel message,
     // then clear the handoff flag so an unrelated later turn never inherits
     // it. Reset the reply-tracking flag for the turn now starting.
@@ -6638,6 +6785,10 @@ export const register: Register = async (on, options) => {
       unexpectTurn(matched);
       currentTurnKind = matched.kind;
       if (matched.kind === "delivery") stampRecordId = matched.recordId;
+      if (matched.kind === "nudge") {
+        nudgedTurnId = e.turnId ? e.turnId : null;
+        countResetSinceNudgeOpened = false;
+      }
     } else {
       currentTurnKind = "unaccounted";
       // A delivery entry outlives its record when no turn opens with a
@@ -6734,6 +6885,7 @@ export const register: Register = async (on, options) => {
     // Closing by id: a completion for a turn this session never saw start
     // removes nothing, so it cannot clear a different turn that is still open.
     openTurns.delete(e.turnId);
+    try { $.ui.log(`Agentic: turn complete ${kaizenLine(String(e.turnId ?? "none"))}`); } catch { /* non-fatal */ }
     // Plan item 8.4: a turn that ran past an hour is one of the weaknesses
     // the own-record pass counts, so record it as a decision here, the only
     // point that knows both ends of the turn.
@@ -6786,6 +6938,13 @@ export const register: Register = async (on, options) => {
     // list itself is not touched here: its entries leave it at turn.start,
     // one per turn the plugin opened.
     const wasNudged = currentTurnKind === "nudge";
+    // Section 4 (plan-health-from-the-record): captured before the reset
+    // below clears it, for continued_unprompted's true rule: unaccounted is
+    // what a turn reads when nothing the plugin queued (no nudge, delivery,
+    // proposal or plugin prompt) matched it, which combined with the
+    // channel-origin read below is "opened by nothing the plugin tracks and
+    // no channel message" - work continuing with nobody else acting first.
+    const wasUnaccounted = currentTurnKind === "unaccounted";
     // Section 4 (plan-health-from-the-record): captured before the resets
     // below clear both facts, so the scorer can read what this turn opened
     // as. A channel message or a delivered record carries no worker
@@ -6794,6 +6953,12 @@ export const register: Register = async (on, options) => {
     // The idle proposal's turn asks for a proposal rather than work on a
     // node, so it is scored against none and spends no round.
     const wasProposal = currentTurnKind === "proposal";
+    // Whether this completion is the nudged turn's own, read by id rather
+    // than from currentTurnKind, which the first completion to arrive resets
+    // whatever turn it belongs to. The id is spent here, so the nudged turn
+    // is read once.
+    const completesNudgedTurn = nudgedTurnId !== null && e.turnId === nudgedTurnId;
+    if (completesNudgedTurn) nudgedTurnId = null;
     currentTurnKind = "unaccounted";
     if (e.turnId === currentGateTurnId) {
       currentTurnOriginKind = "unclassified";
@@ -6961,17 +7126,9 @@ export const register: Register = async (on, options) => {
               detail: `${nodeId}: worker-stated fork: ${question} (ask ${askId})`,
             });
             try { $.ui.toast(`Agentic: ${question}`); } catch { /* non-fatal */ }
-            if (askedNode && askedNode.status === "active") {
-              askedNode.status = "paused";
-              askedNode.blockedReason = question;
-              askedNode.updatedAt = Date.now();
-              sess.state.decisions.push({
-                timestamp: Date.now(),
-                loop: "goal",
-                action: "paused_by_controller",
-                detail: `${nodeId}: ${question}`,
-              });
-            }
+            // The open ask is itself the hold on the idle branch, so the
+            // entry keeps its status and carries no reason; the ask record
+            // carries the question.
           }
         }
       }
@@ -6989,17 +7146,23 @@ export const register: Register = async (on, options) => {
     // active at turn start, when it is a plan entry, at the end of every
     // turn whatever opened it. A BLOCKED: or WAITING: line writes the lead
     // fresh (state, reason, and the clock now, which is what the waiting
-    // hold measures from); any other first line clears it when the turn made
-    // at least one work tool call, the count isWorkTool keeps, so a reply to
-    // the operator clears nothing. lead_set and lead_cleared are logged once
+    // hold measures from). A WORKING: line sets no lead and clears a waiting
+    // one. Any other first line clears a lead when the turn made at least one
+    // work tool call, the count isWorkTool keeps, so a reply to the operator
+    // clears nothing. lead_set and lead_cleared are logged once
     // per change: a turn re-reading the same state and reason logs nothing.
-    // The entry's status, the nudge counter and the active entry are not
+    // The entry's status, the nudge count and the active entry are not
     // touched here, and a task entry's closing text sets no lead. An entry
     // already complete or abandoned at turn end (goal_done in the same turn)
     // takes no lead. The ASK: marker above is handled as it is whether or
     // not this line is present.
+    // The closing text's status line, read once here: the lead below, the
+    // WORKING: clear, the nudge count and the lead_blocked outcome all take
+    // it from this one reading.
+    const statusLine = readStatusLine(e.answer);
     if (!skipped && sess.isOwner && turnLeaf && isPlanEntry(sess.state, turnLeaf)) {
-      const leadLine = readLeadLine(e.answer);
+      const leadLine = statusLine !== null && statusLine.state !== "working" ? { state: statusLine.state, reason: statusLine.reason } : null;
+      const workingLine = statusLine !== null && statusLine.state === "working";
       const previous = turnLeaf.lead ?? null;
       const entryOver = turnLeaf.status === "complete" || turnLeaf.status === "abandoned";
       if (leadLine && !entryOver) {
@@ -7014,6 +7177,15 @@ export const register: Register = async (on, options) => {
             detail: `${turnLeaf.id}: ${leadLine.state}: ${leadLine.reason.slice(0, 150)}`,
           });
         }
+      } else if (workingLine && previous && previous.state === "waiting") {
+        turnLeaf.lead = null;
+        turnLeaf.updatedAt = Date.now();
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "goal",
+          action: "lead_cleared",
+          detail: `${turnLeaf.id}: waiting lead cleared by a WORKING: line`,
+        });
       } else if (!leadLine && previous && toolCallsThisTurn > 0) {
         turnLeaf.lead = null;
         turnLeaf.updatedAt = Date.now();
@@ -7026,6 +7198,36 @@ export const register: Register = async (on, options) => {
       }
     }
 
+    // The nudge count, one per session whatever entry the turn ran under. A
+    // turn that called a work tool or dispatched an agent, the calls
+    // isNudgeCountWork keeps, resets it, and so does a turn opened from a
+    // channel message, each whatever else the turn carried. Otherwise a
+    // nudged turn's own completion, the one carrying the id nudgedTurnId
+    // recorded at turn.start, resets it when its closing text opens with a
+    // status line and adds one when it opens with none. Every other
+    // completion moves nothing: an unaccounted turn, so a nudge whose turn
+    // cannot be placed never counts toward the cap; a subagent's completion
+    // under an id other than the nudged turn's; and an aborted, errored or
+    // refused turn. A nudged completion with no answer
+    // opens with none of the three lines, so it adds one. Where an entry was
+    // activated, the tree replaced or the state loaded while the nudged turn
+    // was open, its answer resets the count rather than adding one, so the
+    // reset that act performs is
+    // not undone by the answer that follows it. Only the owner session keeps
+    // the count. The other resets are activation, which activate() and the
+    // switch and goal_resume sites perform, a new tree from goal_create, the
+    // root's completion, a persona's state loading at agentic_identity or at
+    // a reader's promotion, and the cap's own ask, which resets the count as
+    // it opens.
+    if (!sess.isOwner) {
+      // A reader session never nudges, so it keeps no count.
+    } else if (nudgeCountWorkThisTurn > 0 || wasChannelOrigin) {
+      sess.nudgedAnswersWithoutStatus = 0;
+    } else if (completesNudgedTurn && !(e.isAborted === true || (e as { aborted?: boolean }).aborted === true || e.reason === "aborted" || e.reason === "error" || e.reason === "refusal")) {
+      if (statusLine !== null || countResetSinceNudgeOpened) sess.nudgedAnswersWithoutStatus = 0;
+      else sess.nudgedAnswersWithoutStatus += 1;
+    }
+
     if (!skipped && turnLeaf) {
       if (turnLeaf.status === "complete") {
         // M11: goal_done ran during this turn, the credit is already in the
@@ -7036,7 +7238,6 @@ export const register: Register = async (on, options) => {
           action: "score_skipped",
           detail: `${turnLeaf.id} already complete (goal_done)`,
         });
-        sess.consecutiveNudgesWithoutOnGoal = 0;
         turnLeafId = null;
       } else if (turnLeaf.status === "active") {
         const g = turnLeaf;
@@ -7120,15 +7321,9 @@ export const register: Register = async (on, options) => {
               detail: `${g.id} Round ${g.scores.length}: ${label}`,
             });
 
-            // Reset consecutive nudges when on-goal. A plan entry's
-            // complete verdict at the scorer moves nothing, the counter
-            // included: the idle branch's own converted complete still
-            // counts toward the three-nudge stall pause, which is what
-            // bounds it.
-            if (label === "on-goal") {
-              sess.consecutiveNudgesWithoutOnGoal = 0;
-            }
-
+            // No label moves the nudge count, which reads the closing
+            // text's status line and the turn's work instead. A plan
+            // entry's complete verdict at the scorer moves nothing.
             if (label === "complete" && !planEntry) {
               // R3: use completeLeaf + activateNext. Never for a plan
               // entry: done is read from the plan document (Section 2),
@@ -7185,26 +7380,6 @@ export const register: Register = async (on, options) => {
           }
           turnLeafId = null;
         }
-      } else if (turnLeaf.status === "paused" && turnLeaf.pausedByNudgeCap && toolCallsThisTurn > 0) {
-        // Round 60 finding 3(b): the cap pause (above) opens no ask, so nothing but this
-        // check ever reactivates it in a headless child - goal_resume is a tool call the
-        // worker has to think to make, and a paused node otherwise never gets nudged again.
-        // A completed turn that called a real work tool while this node sits paused for
-        // the cap reason (never for a goal_edit pause, which never sets the flag) means
-        // the worker resumed the work on its own; reactivate rather than leave it stalled.
-        const cappedReason = turnLeaf.blockedReason || "nudge cap";
-        turnLeaf.status = "active";
-        turnLeaf.blockedReason = undefined;
-        turnLeaf.pausedByNudgeCap = false;
-        turnLeaf.updatedAt = Date.now();
-        sess.consecutiveNudgesWithoutOnGoal = 0;
-        sess.state.decisions.push({
-          timestamp: Date.now(),
-          loop: "goal",
-          action: "reactivated_by_work",
-          detail: `${turnLeaf.id}: work tool called while paused (${cappedReason}), reactivating`,
-        });
-        turnLeafId = null;
       } else {
         // H2: node is paused, blocked, or switched: skip scoring.
         sess.state.decisions.push({
@@ -7224,7 +7399,7 @@ export const register: Register = async (on, options) => {
     // completes the holder with the same steps the scorer's complete label
     // runs: completeLeaf, runHealth, a complete decision naming the document,
     // activateNext, activate. A Chapter count above the stored one stores the
-    // new count, resets the nudge counter and logs plan_progress; an
+    // new count and logs plan_progress; an
     // unchanged count logs nothing. An unreadable document changes nothing
     // and logs one plan_record_unreadable decision per holder per session.
     // Only the owner reads: a reader's state is never saved, and completion
@@ -7259,7 +7434,6 @@ export const register: Register = async (on, options) => {
             const previous = holder.chapterCount ?? 0;
             holder.chapterCount = reading.chapters;
             holder.updatedAt = Date.now();
-            sess.consecutiveNudgesWithoutOnGoal = 0;
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "goal",
@@ -7331,30 +7505,43 @@ export const register: Register = async (on, options) => {
       }
     }
 
-    // Section 5 (plan-health-from-the-record): the three shadow questions
+    // Section 5 (plan-health-from-the-record): the four shadow questions
     // and their outcome joiners. Everything here writes journal lines and
     // session memory and nothing else: no branch above or below reads a
     // value from it, and the one decision it can push is the journal's own
     // write-failure line.
     //
-    // Three joiners, in the order their facts are known. The origin of this
+    // Four joiners, in the order their facts are known. The origin of this
     // turn settles the next_speaker outcome of the previous plan health call,
-    // whatever entry that call was on. Every record held for an entry that
-    // has completed, been abandoned or left the tree is dropped, whichever
-    // entry this turn was on: no outcome it awaited is written, which the
-    // journal's readers tolerate. Then, for the entry this turn was on, each
-    // chapter_within outcome still held is settled true where the plan
-    // holder's Chapter count now stands above the count at its call, which
-    // covers a rise read on a sibling entry's turn, and false at the fifth
-    // turn on the entry without one. Last, on a completed turn on a plan
-    // entry, the three questions are asked over this turn's closing text and
-    // the entry's last few, and the lead_blocked outcome is written at once
-    // from the same first-line read Section 3 makes.
+    // whatever entry that call was on, and this same turn settles the
+    // continued_unprompted outcome of whichever call is still held, whatever
+    // entry that one was on too, true only where this turn opened
+    // unaccounted and not from a channel message - nothing the plugin
+    // tracks and no channel message acted first - and false on every other
+    // completed turn (a nudge, a delivery, a proposal, a plugin prompt or a
+    // channel message), where a nudge sent for the held record's own entry
+    // has not already settled it false first at the nudge-sending site.
+    // Every record held for an entry that has completed, been abandoned or
+    // left the tree is dropped, whichever entry this turn was on: no
+    // outcome it awaited is written, which the journal's readers tolerate.
+    // Then, for the entry this turn was on, each chapter_within outcome
+    // still held is settled true where the plan holder's Chapter count now
+    // stands above the count at its call, which covers a rise read on a
+    // sibling entry's turn, and false at the fifth turn on the entry
+    // without one. Last, on a completed turn on a plan entry, the four
+    // questions are asked over this turn's closing text and the entry's
+    // last few, and the lead_blocked outcome is written at once from the
+    // same first-line read Section 3 makes.
     if (jevMode === "shadow") {
       const nextSpeakerStampId = sess.jevNextSpeakerStampId;
       if (nextSpeakerStampId !== null) {
         sess.jevNextSpeakerStampId = null;
         shadowOutcome(hostOf($), nextSpeakerStampId, "next_speaker", wasChannelOrigin ? "channel" : wasDelivery ? "delivery" : "neither");
+      }
+      const workContinuesHeld = sess.jevWorkContinuesStampId;
+      if (workContinuesHeld !== null) {
+        sess.jevWorkContinuesStampId = null;
+        shadowOutcome(hostOf($), workContinuesHeld.stampId, "continued_unprompted", wasUnaccounted && !wasChannelOrigin ? "true" : "false");
       }
       for (const heldId of [...sess.jevPlanHealth.keys()]) {
         const heldEntry = sess.state.goals.find((g) => g.id === heldId);
@@ -7396,8 +7583,8 @@ export const register: Register = async (on, options) => {
           if (stampId !== null) {
             record.chapterWithin.push({ stampId, turns: 0, chapterCount: chaptersNow });
             sess.jevNextSpeakerStampId = stampId;
-            const lead = readLeadLine(e.answer);
-            shadowOutcome(hostOf($), stampId, "lead_blocked", lead !== null && lead.state === "blocked" ? "true" : "false");
+            sess.jevWorkContinuesStampId = { stampId, entryId };
+            shadowOutcome(hostOf($), stampId, "lead_blocked", statusLine !== null && statusLine.state === "blocked" ? "true" : "false");
           }
         }
       }
@@ -7570,6 +7757,15 @@ export const register: Register = async (on, options) => {
   on("tool.call", async ($, e, next) => {
     sess.state.monitor.totalToolCalls += 1;
     if (isWorkTool(e.tool)) toolCallsThisTurn += 1;
+    // Whether this call comes from a loop other than the main one: e.agentId,
+    // the loop's id, is non-empty on a dispatched subagent's, a teammate's, a
+    // workflow agent's or an engine fork's calls and absent on the main
+    // loop's. The break-in check below reads it too.
+    const inSubagent = typeof e.agentId === "string" && e.agentId.length > 0;
+    // A subagent's own calls do not count as the main loop's work for the
+    // nudge count: an agent dispatched in an earlier turn can still be
+    // running, and its calls say nothing about whether the worker answered.
+    if (!inSubagent && isNudgeCountWork(e.tool)) nudgeCountWorkThisTurn += 1;
     // Steer 68/69: the reply tool ran somewhere in this turn, so the
     // channel-reply backstop at turn.complete has nothing to backfill.
     if (typeof e.tool === "string" && (e.tool.includes("__reply") || e.tool.endsWith("_reply"))) {
@@ -7655,6 +7851,11 @@ export const register: Register = async (on, options) => {
       } else {
         sess.state = createDefaultState(name, sess.mySessionId);
       }
+      // The nudge count is the loaded persona's from here, so answers given
+      // under the previous persona neither carry into it nor are added by
+      // the answer closing this turn.
+      sess.nudgedAnswersWithoutStatus = 0;
+      countResetSinceNudgeOpened = true;
       // F9: commons is the single arbiter. Claim first, then check if a live
       // earlier holder exists. Only the commons winner takes ownership.
       const resource = `persona:${sess.persona}`;
@@ -7852,7 +8053,8 @@ export const register: Register = async (on, options) => {
         detail: `Root ${rootId} "${objective.slice(0, 80)}" created (max ${maxRounds} rounds)`,
       });
       // H2b: a new goal inherits a clean nudge budget.
-      sess.consecutiveNudgesWithoutOnGoal = 0;
+      sess.nudgedAnswersWithoutStatus = 0;
+      countResetSinceNudgeOpened = true;
       sess.lastNudgeAt = 0;
 
       const writeOk = await persist($);
@@ -8054,17 +8256,14 @@ export const register: Register = async (on, options) => {
       // same way activateNext's DFS would refuse it - this branch never
       // activates into a closed subtree.
       //
-      // The hold check beside it is exactly two things: an open ask
-      // (pendingAskId) is the operator's own open question, and a
-      // pausedByNudgeCap node is the nudge cap's own hold, restored only by
-      // turn.complete's own worker-tool-call path. A plain paused node -
-      // dropped by an operator pause, or left over from a plan switch - is
-      // neither of those and must not disable this branch for the rest of
-      // the session.
+      // The hold check beside it is one thing: an open ask (pendingAskId)
+      // is the operator's own open question, whatever opened it, and the
+      // controller keeps no other hold. A paused node, dropped by an
+      // operator pause or left over from a plan switch, is not a hold and
+      // must not disable this branch for the rest of the session.
       if (
         !sess.state.goals.some((g) => g.status === "active") &&
         !sess.state.pendingAskId &&
-        !sess.state.goals.some((g) => g.pausedByNudgeCap === true) &&
         isActivationEligible(sess.state, newNode)
       ) {
         newNode.status = "active";
@@ -8345,7 +8544,6 @@ export const register: Register = async (on, options) => {
             return { deny: `Cannot complete ${byNameId} right now: a planner call is in flight for it. Retry in a few seconds.` };
           }
           named.blockedReason = undefined;
-          named.pausedByNudgeCap = false;
           named.lead = null;
           await completeRoot($, named.id, note ? `Root ${named.id} marked complete by goal_done: ${note.slice(0, 200)}` : `Root ${named.id} marked complete by goal_done`);
           const rootWriteOk = await persist($);
@@ -8388,7 +8586,6 @@ export const register: Register = async (on, options) => {
       completeLeaf(sess.state, completedId, note || "goal_done");
       if (byNameId) {
         target.blockedReason = undefined;
-        target.pausedByNudgeCap = false;
         target.lead = null;
       }
       // E2: health run at completeLeaf site (goal_done).
@@ -8433,9 +8630,8 @@ export const register: Register = async (on, options) => {
 
       // The completed entry was active: activate the next one, as the call
       // with no nodeId always does. Another entry is active: it stays so.
-      // None is active: activate the next one unless an open ask or a nudge
-      // cap pause holds the tree, the two holds goal_add's no-active-leaf
-      // branch honors.
+      // None is active: activate the next one unless an open ask holds the
+      // tree, the one hold goal_add's no-active-leaf branch honors.
       let nextId: string | null = null;
       let heldBy = "";
       if (wasActive) {
@@ -8444,8 +8640,6 @@ export const register: Register = async (on, options) => {
       } else if (!otherActive) {
         if (sess.state.pendingAskId) {
           heldBy = "an operator ask is open";
-        } else if (sess.state.goals.some((g) => g.pausedByNudgeCap === true)) {
-          heldBy = "an entry is paused by the nudge cap";
         } else {
           nextId = activateNext(sess.state, completedId);
           activate($, nextId, `${completedId} done by name`);
@@ -8630,7 +8824,6 @@ export const register: Register = async (on, options) => {
       // M10: clear blockedReason on resume.
       const pausedReason = target.blockedReason || "unknown";
       target.blockedReason = undefined;
-      target.pausedByNudgeCap = false;
       target.status = "active";
       // A resume lifts a blocked lead whatever paused the entry, since the
       // lead would otherwise hold the idle branch until a working turn that
@@ -8641,7 +8834,8 @@ export const register: Register = async (on, options) => {
       if (liftedLead) target.lead = null;
       target.updatedAt = Date.now();
       sess.state.activeGoalId = target.id;
-      sess.consecutiveNudgesWithoutOnGoal = 0;
+      sess.nudgedAnswersWithoutStatus = 0;
+      countResetSinceNudgeOpened = true;
       sess.lastNudgeAt = 0;
       sess.state.decisions.push({
         timestamp: Date.now(),
@@ -9107,8 +9301,7 @@ export const register: Register = async (on, options) => {
     // subagent's tool result reaches a loop that cannot verify it and never
     // reaches the owner, so such a call neither reads nor advances the
     // throttle, and the record stays pending for the tick or for the
-    // owner's own next call.
-    const inSubagent = typeof e.agentId === "string" && e.agentId.length > 0;
+    // owner's own next call. inSubagent is read at the top of this handler.
     if (!inSubagent && sess.isOwner && r.deny === undefined && Date.now() - lastBreakInCheckAt >= urgentCheckMinMs) {
       // One clock reading for the whole scan, so every record in it is
       // judged against the same instant.
@@ -9244,7 +9437,8 @@ export const register: Register = async (on, options) => {
     // handler, per the expected-turns comment above. So any turn that reaches
     // here while an ask is open is the operator answering it, whether it
     // came from the keyboard or a Discord thread reply, and whether or not
-    // it carries the ask id: close the ask and reactivate the paused node.
+    // it carries the ask id: close the ask, which lifts the hold on the
+    // entry it named; the entry keeps its status.
     // A [SUPERVISOR-ASK prompt is the one external turn that is not the
     // operator, so it leaves an open ask open.
     if (sess.isOwner && sess.state.pendingAskId && !supervisorAskTurn) {
@@ -9259,7 +9453,7 @@ export const register: Register = async (on, options) => {
         if (askedNode) {
           askedNode.lastAskQuestion = askRecord.question;
           askedNode.lastAskClosedAt = Date.now();
-          if (askedNode.status === "paused") reactivateAskedEntry(askedNode, `thread reply to ask ${askId}`);
+          reactivateAskedEntry(askedNode);
         }
         sess.state.decisions.push({
           timestamp: Date.now(),

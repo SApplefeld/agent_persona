@@ -64,10 +64,6 @@ export interface GoalNode {
                              // recently closed ask on this node, so the classifier
                              // does not reopen the identical question right away.
   lastAskClosedAt?: number; // when that ask closed (answered, by-reply, or timed out).
-  pausedByNudgeCap?: boolean; // Round 60 finding 3(b): set when the nudge cap pauses this
-                              // node, so turn.complete can reactivate it on the worker's
-                              // next completed turn that calls a real work tool, without
-                              // reactivating a node paused for any other reason.
   kaizenSignal?: string; // plan item 8.4: set on a plan an earlier self-review loop
                          // raised from the worker's own record, naming the weakness
                          // signal. The loop writes no such node; the tick sends
@@ -85,7 +81,8 @@ export interface GoalNode {
                       // entry's closing text; a blocked lead is also lifted by
                       // goal_resume and by the idle tick once an ask on the entry
                       // closes after it, and completion by the plan document
-                      // clears it. Unset by the v2-v4 migration.
+                      // clears it. Unset by the v2-v4 migration. holdOf reads it
+                      // as the controller's hold; the status is never written for it.
   chapterCount?: number; // Section 2: the number of "### Chapter N" headings the
                       // plan document held at the last read. Written by the
                       // document read at turn end. Unset by the v2-v4 migration.
@@ -428,6 +425,38 @@ export const PLAN_PATH_REQUIRED_FORM =
   "no leading slash, no drive letter, no further path segments, and a name " +
   "starting with a letter or digit and using only letters, digits, \".\", \"_\" or \"-\".";
 
+// How long a waiting lead holds the controller's idle branch, measured from
+// the clock the lead was read at. Past it the branch runs as usual with the
+// lead left on the entry.
+export const LEAD_WAITING_HOLD_MS = 60 * 60_000;
+
+// The one reason the controller's idle branch must not nudge, or null. The
+// set is closed at three, read in this order with the first that holds
+// returned: an open ask, whatever opened it, since the nudge cap, the cost cap,
+// the error streak and the worker's own ASK: line each hold by opening one;
+// a blocked lead on the active entry; and a waiting lead on the active entry
+// inside LEAD_WAITING_HOLD_MS of its read. The hold is computed here from the
+// ask slot and the lead and stored nowhere, so nothing can drift from it, and
+// no goal status takes part: an entry the controller holds stays active.
+//
+// The active entry is the one activeGoalId names, the same read the tick
+// makes, and its lead is read only where the entry is a plan entry by
+// resolvePlanPath's ancestor rule, since only a plan entry's turns write or
+// clear a lead and a stale lead on a task entry would otherwise hold forever.
+// A blocked lead an ask has since settled is the caller's to clear before
+// this read (the tick logs lead_cleared for it).
+export type HoldReason = "ask" | "blocked" | "waiting";
+
+export function holdOf(state: AgentState, now: number): HoldReason | null {
+  if (state.pendingAskId) return "ask";
+  const active = state.activeGoalId ? state.goals.find((g) => g.id === state.activeGoalId) : undefined;
+  if (!active || active.status !== "active" || !active.lead) return null;
+  if (resolvePlanPath(state, active) === undefined) return null;
+  if (active.lead.state === "blocked") return "blocked";
+  if (active.lead.state === "waiting" && now - active.lead.at < LEAD_WAITING_HOLD_MS) return "waiting";
+  return null;
+}
+
 // Default state (per persona)
 export function createDefaultState(persona: string, sessionId: string): AgentState {
   const now = Date.now();
@@ -630,6 +659,57 @@ function applyPlanRecordOnLoad(state: AgentState): void {
   }
 }
 
+// The nudge cap holds by opening an ask and writes no status, so an entry
+// paused with `pausedByNudgeCap` true comes only from a store an older
+// controller wrote, and nothing lifts it: the field has no reader, the
+// entry is out of activateNext's walk, and the cap's ask was never opened.
+// This repairs such entries at load. Where no entry is active, the one with
+// the latest updatedAt among those the controller could activate becomes
+// active and the rest pending, so the controller resumes where the cap
+// stopped it; where one is active, or none of them is activatable, all
+// become pending, since assignment of the active slot is the tree's. Which
+// entries could be activated is isActivationEligible's own rule, the one
+// activateNext's walk and goal_add read, asked of the entry as it will be
+// once pending: a leaf under an all-pending ancestor chain. An entry under a
+// complete, abandoned, blocked or paused plan is out of that walk, and
+// making it active would seat the controller on work its tree has closed.
+// The cap's reason is cleared with the status, as an active entry carries
+// none, and updatedAt moves on the entry made active alone. One decision
+// names each entry repaired. The field is then dropped from every entry on
+// every load, whatever its value, so the store written back carries no key
+// the node shape lacks; a later load finds no paused entry carrying it and
+// repairs nothing. GoalNode does not declare the field, so it is read
+// through a cast rather than typed.
+function repairCapPausedEntriesOnLoad(state: AgentState): void {
+  const carried = (g: GoalNode): boolean => (g as { pausedByNudgeCap?: unknown }).pausedByNudgeCap === true;
+  const capped = state.goals.filter((g) => g.status === "paused" && carried(g));
+  if (capped.length > 0) {
+    const anyActive = state.goals.some((g) => g.status === "active");
+    const eligible = anyActive
+      ? []
+      : capped.filter((g) => isActivationEligible(state, { ...g, status: "pending" }));
+    const latest = eligible.length === 0
+      ? undefined
+      : eligible.reduce((best, g) => (g.updatedAt > best.updatedAt ? g : best));
+    const now = Date.now();
+    for (const g of capped) {
+      const status: GoalNode["status"] = g === latest ? "active" : "pending";
+      g.status = status;
+      g.blockedReason = undefined;
+      if (g === latest) g.updatedAt = now;
+      state.decisions.push({
+        timestamp: now,
+        loop: "goal",
+        action: "cap_pause_repaired",
+        detail: `${g.id}: left paused by the nudge cap, now ${status}`,
+      });
+    }
+  }
+  for (const g of state.goals) {
+    delete (g as { pausedByNudgeCap?: unknown }).pausedByNudgeCap;
+  }
+}
+
 // The idle-proposal record, filled at every load site that fills the
 // long-term goal list, for a store written before it existed, with no
 // version bump. An askedAt that is not a finite number reads as never asked,
@@ -798,6 +878,10 @@ export function parseState(json: string): AgentState {
   if (!state.nudge) {
     state.nudge = { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 };
   }
+
+  // Entries a nudge cap paused, repaired at the E11 site before the
+  // invariant pass below reads the active entry; see the function.
+  repairCapPausedEntriesOnLoad(state);
 
   // E11: fill env with defaults whenever it is absent, whatever the version.
   if (!state.monitor.env) {

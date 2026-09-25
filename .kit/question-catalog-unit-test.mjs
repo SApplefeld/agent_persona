@@ -49,6 +49,7 @@ const {
   ROUNDS_CONVERGING,
   BLOCK_OWNER,
   BLOCK_OWNER_OPTIONS,
+  WORK_CONTINUES,
   PLAN_HEALTH_SET_IDS,
   FIXED_LEVEL_SETS,
   OVERRIDE_DIR,
@@ -163,11 +164,11 @@ const VALID_CONTROLLER_OVERRIDE = {
 
 // --- Test 2: the option-id pin, the check a drifting catalog fails ---
 {
-  check("Test 2a: the seven question set ids are the ones the catalog exports",
-    sameSet(QUESTION_SET_IDS, [CONTROLLER_DECISION, PLAN_SWITCH, TURN_SCORE, MEMORY_KIND, WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER])
-      && QUESTION_SET_IDS.length === 7, QUESTION_SET_IDS);
-  check("Test 2a: the three plan health sets are the noul, the score and the choice, in the request's order",
-    JSON.stringify(PLAN_HEALTH_SET_IDS) === JSON.stringify([WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER]), PLAN_HEALTH_SET_IDS);
+  check("Test 2a: the eight question set ids are the ones the catalog exports",
+    sameSet(QUESTION_SET_IDS, [CONTROLLER_DECISION, PLAN_SWITCH, TURN_SCORE, MEMORY_KIND, WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER, WORK_CONTINUES])
+      && QUESTION_SET_IDS.length === 8, QUESTION_SET_IDS);
+  check("Test 2a: the four plan health sets are the noul, the score, the choice and the second noul, in the request's order",
+    JSON.stringify(PLAN_HEALTH_SET_IDS) === JSON.stringify([WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER, WORK_CONTINUES]), PLAN_HEALTH_SET_IDS);
   check("Test 2b: every question set id has a shipped default",
     QUESTION_SET_IDS.every((id) => SHIPPED_QUESTIONS[id] !== undefined), Object.keys(SHIPPED_QUESTIONS));
   check("Test 2c: no shipped default exists that no id names",
@@ -196,7 +197,7 @@ const VALID_CONTROLLER_OVERRIDE = {
     const q = SHIPPED_QUESTIONS[id];
     check(`Test 2h: ${id} ships the shape the seam validates`,
       q.id === id && q.version === SHIPPED_VERSION && q.overrideRefused === null
-        && q.primitive === (id === WORKER_BLOCKED ? "noul" : id === ROUNDS_CONVERGING ? "score" : "choice")
+        && q.primitive === (id === WORKER_BLOCKED || id === WORK_CONTINUES ? "noul" : id === ROUNDS_CONVERGING ? "score" : "choice")
         && typeof q.instructions === "string" && q.instructions.trim().length > 0, id);
   }
   check("Test 2i: the upper option bound is the vendor's and the lower is this catalog's",

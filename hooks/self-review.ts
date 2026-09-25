@@ -75,7 +75,7 @@ export function buildSelfReviewInput(
   streak: number;
 } {
   // Noise actions: internal bookkeeping with no worker-facing signal (T5).
-  // Kept OUT of the window: deny, block, score, error_streak, paused_by_controller, done, activated.
+  // Kept OUT of the window: deny, block, score, error_streak, done, activated.
   // The nudge actuator's routine records are here: each one is the controller
   // reporting on its own bookkeeping, and a lesson drawn from the worker's
   // behaviour has nothing to take from any of them. Two stay in the window.

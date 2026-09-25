@@ -64,7 +64,7 @@
 // share the answer line's columns. A Score's `value` is its position on the
 // levels and its probabilities are keyed by level number; a Noul's `value` is
 // the probability of yes, with no distribution and no confidence beside it.
-// The three questions asked of a plan entry have no Haiku counterpart, so
+// The four questions asked of a plan entry have no Haiku counterpart, so
 // their `haikuValue` is null and their `agrees` is null with it: there is no
 // agreement to record, and their measurement is the outcome lines instead.
 
@@ -104,15 +104,21 @@ export const SEGMENT_MAX = 64;
 // call: a `next_score` is the first turn scored after one, and an
 // `ask_marker` the first worker ASK: line matched after one.
 //
-// The other three belong to the three plan health questions, each recording
+// The other four belong to the four plan health questions, each recording
 // something the plugin observed for itself after the call. A `lead_blocked`
 // is whether the same turn's closing text opened with the worker's own
 // BLOCKED: lead. A `chapter_within` is whether the entry's plan document
 // gained a Chapter within the next few turns on that entry. A `next_speaker`
 // is what opened the next turn: a channel message, a delivered record, or
-// neither.
-export type OutcomeKind = "next_score" | "ask_marker" | "lead_blocked" | "chapter_within" | "next_speaker";
-export const OUTCOME_KINDS: readonly OutcomeKind[] = ["next_score", "ask_marker", "lead_blocked", "chapter_within", "next_speaker"];
+// neither. A `continued_unprompted` is whether work continued on its own
+// with nobody else acting first: written true where the next completed
+// turn, whatever entry it ran under, opened unaccounted and not from a
+// channel message, false on every other completed turn, and false the
+// moment a nudge is sent for the held record's own entry, whichever of the
+// two happens first.
+export type OutcomeKind = "next_score" | "ask_marker" | "lead_blocked" | "chapter_within" | "next_speaker" | "continued_unprompted";
+export const OUTCOME_KINDS: readonly OutcomeKind[] =
+  ["next_score", "ask_marker", "lead_blocked", "chapter_within", "next_speaker", "continued_unprompted"];
 
 // The value every `ask_marker` outcome line carries, whatever the caller passes.
 // What matched is a line the worker wrote, and a journal line records that the
