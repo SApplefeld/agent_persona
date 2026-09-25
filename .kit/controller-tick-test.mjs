@@ -1715,7 +1715,8 @@ async function caseCatchStampsAttempt_retriedOnceDebounceAdmits(clock) {
 async function caseCatchStampsAttempt_capBoundsRepeatedThrows(clock) {
   console.log("\n=== The catch stamps the attempt: the hourly cap bounds a review that always throws ===");
   clock.set(T0);
-  const maxPerHour = 2;
+  // 3 rather than the default 2, so the case also proves the option is read.
+  const maxPerHour = 3;
   const h = await createTickHarness({
     ...OPTS,
     caseName: "catch_stamp_cap_bounds_throws",
@@ -1740,6 +1741,40 @@ async function caseCatchStampsAttempt_capBoundsRepeatedThrows(clock) {
   const errors = getDecisions(h).filter(d => d.action === "self-review" && d.detail.includes(": error:"));
   check(`cap bounds throws: exactly ${maxPerHour} error decisions after 6 ticks inside one hour`,
     errors.length === maxPerHour, errors);
+}
+
+async function caseCatchStampsAttempt_reactiveOnlySetsNothing(clock) {
+  console.log("\n=== The catch stamps the attempt: a failed reactive-only review leaves pendingPeriodic unset ===");
+  clock.set(T0);
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "catch_stamp_reactive_only",
+    stateOpts: {
+      now: T0,
+      goals: [catchStampsAttemptRootGoal()],
+      activeGoalId: null,
+      selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: false, lastInjectAt: 0 },
+    },
+    classifyValue: "NONE",
+  });
+  // Three turns that end in an error build the streak that makes this attempt
+  // reactive; three turns stay under selfReviewEveryTurns, so it is not periodic.
+  for (let i = 0; i < 3; i++) {
+    const turnId = `reactive-error-turn-${i}`;
+    await h.handlers["turn.start"](h.fake, { turnId }, () => {});
+    await h.handlers["turn.complete"](h.fake, { turnId, reason: "error" }, async () => ({ result: "ok" }));
+  }
+  check("reactive only: three error turns build the streak",
+    getState(h).monitor.env.errors.consecutiveErrorTurns === 3, getState(h).monitor.env.errors);
+  h.fake.model.complete = async () => { throw new Error("reactive boom"); };
+  await tickAndSettle(h, clock, 100);
+
+  const errors = getDecisions(h).filter(d => d.action === "self-review" && d.detail.includes(": error:"));
+  check("reactive only: one error decision", errors.length === 1, errors);
+  check("reactive only: the decision names the reactive trigger",
+    errors[0]?.detail.startsWith("reactive: streak"), errors[0]?.detail);
+  check("reactive only: the failed attempt leaves pendingPeriodic unset",
+    getState(h).monitor.selfReview.pendingPeriodic === false, getState(h).monitor.selfReview);
 }
 
 async function caseCatchStampsAttempt_messageFoldedAndCut(clock) {
@@ -3277,6 +3312,7 @@ async function main() {
     await caseCatchStampsAttempt_notRetriedNextTick(clock);
     await caseCatchStampsAttempt_retriedOnceDebounceAdmits(clock);
     await caseCatchStampsAttempt_capBoundsRepeatedThrows(clock);
+    await caseCatchStampsAttempt_reactiveOnlySetsNothing(clock);
     await caseCatchStampsAttempt_messageFoldedAndCut(clock);
     await caseCatchStampsAttempt_overlappingTickDoesNotRelaunch(clock);
     await caseItem8p2_dead_writer_record_skipped_once(clock);

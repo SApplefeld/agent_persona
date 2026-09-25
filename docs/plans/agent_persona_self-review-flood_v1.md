@@ -80,7 +80,7 @@ await, so a failed attempt is spent exactly as a successful one. `pendingPeriodi
 overlapping tick reads the attempt as spent, and the catch sets it again where the attempt was
 owed to a `goal_done`, so the debounce and the cap are what bound the retry. Under the defaults,
 debounce 5 turns and cap 2 an hour, a review that always throws writes at most two decisions in
-each hourly window, and a review that throws once is retried after five turns.
+each hourly window, and a review owed to a `goal_done` that throws once is retried after five turns.
 
 **The decision names the error.** The detail reads `<trigger>: error: <message>`, where the
 message is the thrown value's text as the file's `safeErrorText` reads it, the error's name where
@@ -162,7 +162,7 @@ References: `.kit/controller-tick-test.mjs`, the `runSelfReview` harness inside
 
 - assumed 2026-09-24 (the backlog entry's remedy): a failed attempt counts against the hourly cap exactly as a successful one does, so a review that always throws is bounded to `selfReviewMaxPerHour` attempts an hour; reversal: exempt failures from the count and accept a failing review retrying every debounce interval instead.
 - assumed 2026-09-24 (default): the error message is cut at 200 characters and folded to one line, because the decision ring is read one line at a time; reversal: a different bound, one constant.
-- assumed 2026-09-24 (default): the stamp lives in a local function inside the block rather than an export of `self-review.ts`, because it mutates session state and that module is pure; reversal: export it and pass the state in, one more test file in scope.
+- assumed 2026-09-24 (default): the stamp is written inline in the block rather than as an export of `self-review.ts`, because it mutates session state and that module is pure; reversal: export it and pass the state in, one more test file in scope.
 - assumed 2026-09-24 (brainstorming's one-section allowance): this spec skipped the blind read, the gating litmus and the plan review, since it is one section over one block with the tests named; reversal: run the three-part review before arming.
 
 ## Operator Verification
@@ -206,3 +206,20 @@ Stamps: adjudicated 6, stamped 0; none of the six operator-tier reads in the win
 Gate: targeted lane over the section: `.kit/controller-tick-test.mjs` 3385 OK, 0 failures, exit 0 (baseline 3365 OK, 0 failures, exit 0 at 60df823 on a clean worktree, 77 s); `.kit/self-review-unit-test.mjs` all passed, exit 0 (baseline the same); `tsc --noEmit` exit 0. Measured at cae0062, clean worktree D:/agent_persona-flood, 2026-09-24, no foreign test runner in the node process list. Test delta: 5 cases added, 20 checks, none retired or edited: `caseCatchStampsAttempt_notRetriedNextTick` pins bullet 1 and the owed goal_done request; `caseCatchStampsAttempt_retriedOnceDebounceAdmits` pins bullet 2 on the default settings; `caseCatchStampsAttempt_capBoundsRepeatedThrows` pins bullet 3; `caseCatchStampsAttempt_messageFoldedAndCut` pins the message folded to one line and cut at 200; `caseCatchStampsAttempt_overlappingTickDoesNotRelaunch` pins the stamp before the first await. None spawns a process.
 Next: finishing-work
 Commit Model: Branch-and-PR
+
+### Interim board 2 - 2026-09-24
+
+Finishing pass, base ref 60df823 (merge-base of `self-review-flood` with `main`). Step 1 QA passed at ae5dad7 on a clean tree: 28 lanes ran, 27 exit 0; `plan-record-unit-test.mjs` exited 127 on the Node teardown assertion the backlog already tracks, after `PASS: 0 failure(s)`, and exited 0 on two standalone reruns; the file is outside this changeset. Acceptance bullets 1 to 5 passed; bullet 6 is the close's. This repo defines no contention lane.
+
+Steps 2 and 3 ran as one folded adversarial dispatch at fable, effort high, through Workflow; the resolved model was claude-fable-5-1 on 34 of 34 turns. Verdict approved with concerns. Tree unchanged across the round.
+
+- Major (spec-traceable, the Standing Brief Amendments line): no case pinned a failed reactive-only attempt leaving `pendingPeriodic` unset. Fixed by `caseCatchStampsAttempt_reactiveOnlySetsNothing`, which builds the streak with three error turns; red with the catch re-setting the flag unconditionally, green on the real code.
+- Minor: the cap case used the default cap of 2, so it could not tell a configured cap from the default. Fixed by setting 3.
+- Minor: `err.name` was read outside the guard, so a throwing `name` getter escaped the block. Fixed by moving the fallback inside the try, bracket-neutralized.
+- Minor: two stale plan sentences (the stamp as a local function; the five-turn retry stated without the goal_done qualifier). Fixed.
+- Security advisory Minor: C0 control characters other than line terminators survive into the decision detail. Refused: the tick's outer catch already logs the same text raw, so the detail adds no channel, and no bullet names control-character stripping.
+- Performance advisory: clear.
+
+Gate after the fixes, clean worktree apart from these edits: `.kit/controller-tick-test.mjs` 3389 OK, 0 failures, exit 0; `.kit/self-review-unit-test.mjs` exit 0; `tsc --noEmit` exit 0.
+
+Next: the fix delta's one-lens review and the step 4 goal read, then the Minor pass, docs curation, the close and the pull request.

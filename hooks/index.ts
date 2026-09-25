@@ -5241,10 +5241,10 @@ export const register: Register = async (on, options) => {
             let message = "";
             try {
               message = safeErrorText(err);
+              if (message === "" && err instanceof Error) message = bracketSafeText(String(err.name));
             } catch {
-              // A thrown value whose conversion itself throws.
+              // A thrown value whose conversion or name itself throws.
             }
-            if (message === "" && err instanceof Error) message = err.name;
             const foldedMessage = message.split(LINE_TERMINATOR).join(" ").slice(0, 200) || "unprintable error";
             sess.state.decisions.push({
               timestamp: Date.now(),
