@@ -194,3 +194,29 @@ Delta: measured 2026-09-25T23:21:09Z on SCOTT-CLAUDE in this worktree; exit 2
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Chapter 4 - 2026-09-25
+Completed: 4. Document the task-list tier
+Implemented By: the main session (draft and both fix rounds)
+Metrics: review rounds 2, closed on verified sentence-level fixes; provenance 5 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: Section 4 open: adds a task-list section to README.md and docs/architecture.md and names the list in docs/security-model.md's persona store sentence; serves Section 4's acceptance and the Goal's three-tier model; adds no mechanism; size about 30 lines of prose; not writing it leaves a developer to find the tier in the code alone.
+- Section 4 is tier-marked sonnet and was written in the main session instead. Chapter 1 records a kit guard refusing an implementer's write under docs/, and two of this section's three files are there.
+- The README section sits after "Changing the goal tree". It opens with what the list is, separates a list item from a goal tree's task-kind leaf, catalogs the three verbs and their refusals, then states the scope, the reap, the one-way completion authority, which turns carry the block, its format, and the plan-entry seam. It names its own tests there. The architecture section sits before "Injected text and its guard" and carries the store field, the migration, the reap's two call sites and the block's single producer.
+- Both documents use "plan entry", the README's defined term, for a goal whose node or ancestor carries a planPath.
+- docs/architecture.md's injected-text figures were behind the committed ledger before this plan (46 entries against 51 at the base commit, and worker and coordinator rows from an older holder). They now read from the live ledger: 55 entries totalling 42,828 characters, nineteen tool descriptions at 15,715, worker 4,775 and coordinator 12,325.
+- Round 1 Major (adversarial, trace Section 4 "when it is injected and when it is suppressed"): the README said the block rides every prompt. The plugin's own $.prompt.submit calls bypass the prompt.submit hook (hooks/index.ts:2924), so a nudge, re-raise or delivery turn carries none; both documents now say so.
+- Round 2 Major (prose, trace Section 4 acceptance): a failed store write does not reach the verb's "not saved" text. persistOrRollBack rolls back and re-throws (hooks/index.ts:2628-2635), so the error leaves the tool call; the README now separates the yield and throw paths.
+- The review closes on round 2's four sentence edits without a third round, each checked against the code it describes.
+Assumptions:
+- assumed 2026-09-25 (default, section 4): the task-list tests are named in the README's task-list section and in the re-gate rule's suite list, not in the cost section's coverage line; reversal: move the line.
+Review Findings: review: adversarial and prose at opus, Workflow (round 1); review: prose at sonnet, Workflow (round 2).
+- Round 1: prose Critical, the worker and coordinator table rows contradicted the ledger (fixed). Majors fixed: "every prompt" (above); "plan run" used where the README defines "plan entry"; architecture.md missing the plan-document tracker and the leaf distinction. Minors fixed: migration versions named 2 to 4; the no-active-goal refusal for task_done and task_clear; the absent-goal reap; "next persist write" in place of "next store write"; the README's opening, its one-rule sentences and its parenthetical; the completer of a task-kind leaf; the unclear rollback sentence; the security-model list read as closed; Chapters capitalized; the tests named in the section. Minor cut: the sentence saying no task verb touches Chapters.
+- Round 2: three Majors fixed (architecture.md's no-active-goal refusal, "turn-origin gate" undefined in the README, the throw path) and one Minor fixed (the Remote Control origin).
+Stamps: adjudicated 7, stamped 0; none of the unstamped records read in the window changed what this section wrote.
+Gate: prose-only section, no code changed since Chapter 3's gate at e510169; the doc figures were checked against .kit/injection-ledger.json by the reviewers' own ledger runs and by the main session.
+Next: Finishing pass
+Commit Model: Branch-and-PR
+Delta: measured 2026-09-25T23:36:23Z on SCOTT-CLAUDE in this worktree; exit 2
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```

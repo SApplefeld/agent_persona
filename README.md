@@ -197,13 +197,13 @@ The task list is a short checklist of working items a persona keeps under whiche
 
 A task-list item differs from a goal tree's task-kind leaf. A leaf is an entry the controller activates and scores, and the persona or the controller completes it. A task-list item is a note the persona keeps while it works one goal. Nothing in the plugin activates, scores or schedules it.
 
-Three verbs drive the list. None of them is gated on whose turn it is. The persona drives its own list, so the turn-origin gate the goal-creation acts carry does not apply.
+Three verbs drive the list. None of them is gated on whose turn it is. The persona drives its own list, so `turnMayStartEffort`, the check that limits `goal_create` and the other effort-starting acts to a turn the operator or the coordinator persona opened, does not apply. "Findings, proposals and long-term goals" below states that check.
 
 - `task_add` adds one item to the active goal's list. It refuses when no goal is active, when the active goal is a plan entry, when the text is empty, and when the goal already holds `MAX_TASKS_PER_GOAL` (20) items. Done items count toward that cap. It folds line breaks in the text to spaces and cuts it at `TASK_TEXT_MAX_CHARS` (200).
 - `task_done` marks one item done by the id `task_add` returned. It refuses an id not under the active goal as unknown. An item already done is left as it was.
 - `task_clear` removes every item of the active goal's list. Other goals' lists are left alone.
 
-`task_done` and `task_clear` also refuse when no goal is active. All three refuse on a store that has not loaded, and in a session that does not hold the persona. A reader session does not register them. Each writes the store through `persistOrRollBack`. A write that fails or yields is undone in memory, and the verb reports that it was not saved.
+`task_done` and `task_clear` also refuse when no goal is active. All three refuse on a store that has not loaded, and in a session that does not hold the persona. A reader session does not register them. Each writes the store through `persistOrRollBack`, which undoes the change in memory when the write does not land. Where the session has yielded the persona, the verb reports that the write was not saved. Where the write throws, the error propagates out of the tool call.
 
 The list is scoped to one goal. Each item names the goal it was added under, and the verbs and the injected block see only the active goal's items. An item under an open goal that is not active waits until that goal is active again.
 
@@ -211,7 +211,7 @@ Completing a goal clears its list. An item is dropped once its goal is complete,
 
 The completion authority runs one way. A goal's completion clears its tasks. Finishing every task never completes the goal. When the last open item is marked done, `task_done`'s result and the injected block both suggest `goal_done`. The goal stays active until the persona or the controller completes it.
 
-When a goal is active, is not a plan entry, and holds at least one item, the `prompt.submit` hook injects a `[TASK LIST]` block right after `[GOAL TREE]`. That hook runs for a prompt from outside the plugin: the operator's keyboard, a channel message or an SDK caller. The plugin's own submitted turns, a nudge, an ask re-raise or an inbox delivery, bypass the hook and carry no block. A reader session injects nothing.
+When a goal is active, is not a plan entry, and holds at least one item, the `prompt.submit` hook injects a `[TASK LIST]` block right after `[GOAL TREE]`. That hook runs for a prompt from outside the plugin, such as the operator's keyboard, a channel message, Remote Control or an SDK caller. The plugin's own submitted turns, a nudge, an ask re-raise or an inbox delivery, bypass the hook and carry no block. A reader session injects nothing.
 
 The block names the goal and lists open items before done ones, each group in the order it was added. An open item reads `- <id>: <text>`, and a done one reads `- <id> (done): ~~<text>~~`. It shows at most `TASK_LIST_MAX_LINES` (12) items. Past that, one line reads `...and N more`, followed by `(M open)` when any hidden item is still open. Every id and text is cut to its cap, folded to one line and passed through `bracketSafeText`, so text read back from the store cannot forge a delivery label.
 

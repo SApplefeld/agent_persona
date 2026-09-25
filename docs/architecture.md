@@ -204,7 +204,7 @@ The task list is the lightest of a persona's three tracking tiers. It sits below
 
 It is the persona store's `tasks` field, an array of `TaskItem` records (`hooks/agent-state.ts`). Each record carries an id from `newTaskId`, the `goalId` it was added under, its text, `done` and `addedAt`. A done record also carries `doneAt`. A store at version 2 to 4 loads at version 5, seeded with an empty list where it held none. A malformed entry is dropped whole at load.
 
-The list is per goal. The three verbs `task_add`, `task_done` and `task_clear` in `hooks/index.ts` act only on the entries whose `goalId` is the active goal. A reader session does not register them. None of them passes through `turnMayStartEffort`, because the list is the persona's own.
+The list is per goal. The three verbs `task_add`, `task_done` and `task_clear` in `hooks/index.ts` act only on the entries whose `goalId` is the active goal, and each refuses when no goal is active. A reader session does not register them. None of them passes through `turnMayStartEffort`, because the list is the persona's own.
 
 A plan entry keeps its own tracker. Where the active goal or an ancestor carries a `planPath`, the plan document's Chapters are the task list. `task_add` refuses there, and the block is not injected, both by the same `planHolderOf` test.
 
