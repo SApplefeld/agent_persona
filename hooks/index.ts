@@ -5241,9 +5241,15 @@ export const register: Register = async (on, options) => {
             let message = "";
             try {
               message = safeErrorText(err);
-              if (message === "" && err instanceof Error) message = bracketSafeText(String(err.name));
             } catch {
-              // A thrown value whose conversion or name itself throws.
+              // A thrown value whose conversion itself throws.
+            }
+            if (message === "" && err instanceof Error) {
+              try {
+                message = bracketSafeText(String(err.name));
+              } catch {
+                // An Error whose name itself throws.
+              }
             }
             const foldedMessage = message.split(LINE_TERMINATOR).join(" ").slice(0, 200) || "unprintable error";
             sess.state.decisions.push({

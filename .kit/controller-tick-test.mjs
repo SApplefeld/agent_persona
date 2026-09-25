@@ -1777,6 +1777,34 @@ async function caseCatchStampsAttempt_reactiveOnlySetsNothing(clock) {
     getState(h).monitor.selfReview.pendingPeriodic === false, getState(h).monitor.selfReview);
 }
 
+async function caseCatchStampsAttempt_fallbacksNameTheFailure(clock) {
+  console.log("\n=== The catch stamps the attempt: an empty or unprintable error still writes a decision ===");
+  const throws = [
+    { label: "an Error with an empty message", value: new Error(""), expected: "error: Error" },
+    { label: "a value whose conversion throws", value: { toString() { throw new Error("no"); } }, expected: "error: unprintable error" },
+  ];
+  for (const t of throws) {
+    clock.set(T0);
+    const h = await createTickHarness({
+      ...OPTS,
+      caseName: "catch_stamp_fallbacks",
+      stateOpts: {
+        now: T0,
+        goals: [catchStampsAttemptRootGoal()],
+        activeGoalId: null,
+        selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: true, lastInjectAt: 0 },
+      },
+      classifyValue: "NONE",
+    });
+    h.fake.model.complete = async () => { throw t.value; };
+    await tickAndSettle(h, clock, 100);
+    const decisions = getDecisions(h).filter(d => d.action === "self-review");
+    check(`fallbacks: ${t.label} writes one decision`, decisions.length === 1, decisions);
+    check(`fallbacks: ${t.label} ends "${t.expected}"`,
+      decisions[0]?.detail.endsWith(t.expected), decisions[0]?.detail);
+  }
+}
+
 async function caseCatchStampsAttempt_messageFoldedAndCut(clock) {
   console.log("\n=== The catch stamps the attempt: a long, multi-line message is folded and cut ===");
   clock.set(T0);
@@ -3313,6 +3341,7 @@ async function main() {
     await caseCatchStampsAttempt_retriedOnceDebounceAdmits(clock);
     await caseCatchStampsAttempt_capBoundsRepeatedThrows(clock);
     await caseCatchStampsAttempt_reactiveOnlySetsNothing(clock);
+    await caseCatchStampsAttempt_fallbacksNameTheFailure(clock);
     await caseCatchStampsAttempt_messageFoldedAndCut(clock);
     await caseCatchStampsAttempt_overlappingTickDoesNotRelaunch(clock);
     await caseItem8p2_dead_writer_record_skipped_once(clock);
