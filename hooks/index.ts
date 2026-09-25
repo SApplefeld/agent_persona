@@ -1163,12 +1163,25 @@ async function bankCompactionBoundary(dp: any, turnKind: string): Promise<void> 
 
 // Item 5 (Bounded store): the one append-only rollover log every capped
 // store writes to when something falls off its window - the commons
-// store's closed inbox/reply records (enforceChannelWindow) and the
-// persona file's own decision log and memory cap (persist(), below). Same
-// one-JSON-object-per-line rule as the yield log, appended rather than
-// rewritten, so the file that grows without bound is this one, by design,
-// not the store the plugin reads and rewrites whole on every tick.
-const CHANNEL_LOG_PATH = ".agentic-channel.jsonl";
+// store's closed inbox/reply records (enforceChannelWindow and
+// sweepExpiredRecords) and the persona file's own decision log and memory
+// cap (persist(), below). Same one-JSON-object-per-line rule as the yield
+// log. The engine offers no append, so an append reads the file whole and
+// writes it back whole, and the engine refuses a read or a write over
+// 4,194,304 bytes: the typings state the read bound, and the write bound is
+// the refusal `$.fs.write` returns. So the log is a series of segments,
+// `.agentic-channel.0001.jsonl` and up: an append lands in the
+// highest-numbered one until that file plus the batch would pass
+// CHANNEL_SEGMENT_MAX_BYTES, and then opens the next number. The bound sits
+// far under the engine's cap because each append rewrites its whole segment.
+// A work directory can hold a `.agentic-channel.jsonl` from before the
+// segments; its name carries no number, so the pattern never selects it and
+// nothing writes it again.
+const CHANNEL_SEGMENT_PREFIX = ".agentic-channel.";
+const CHANNEL_SEGMENT_SUFFIX = ".jsonl";
+const CHANNEL_SEGMENT_PATTERN = /^\.agentic-channel\.(\d{4,})\.jsonl$/;
+const CHANNEL_SEGMENT_MAX_BYTES = 1_048_576;
+const channelSegmentPath = (n: number): string => `${CHANNEL_SEGMENT_PREFIX}${String(n).padStart(4, "0")}${CHANNEL_SEGMENT_SUFFIX}`;
 // The bound on one piece of free text this plugin carries between a file or a
 // caller and a model: the note agentic_resolve writes into the shared commons
 // store, which is refused when it runs longer, and the hold reason and the
@@ -1270,8 +1283,36 @@ const appendLines = async (dp: any, path: string, lines: string[]): Promise<void
   await dp.fs.write(path, existing + sep + body);
 };
 
-// The channel log's own path, bound once for the callers that roll records into it.
-const appendToChannelLog = async (dp: any, lines: string[]): Promise<void> => appendLines(dp, CHANNEL_LOG_PATH, lines);
+// The channel log's append: the highest segment takes the batch while it fits
+// under CHANNEL_SEGMENT_MAX_BYTES, else the next segment opens with the batch
+// alone. The size read is the listing's, and one separator byte is allowed
+// for, so the file written is never larger than the bound plus the batch.
+// Returns the path the batch landed in. A listing or write that throws
+// propagates, as appendLines's write does, so a caller that deletes on
+// success still sees the failure.
+const appendToChannelLog = async (dp: any, lines: string[]): Promise<string> => {
+  if (lines.length === 0) return "";
+  const entries: { name: string; kind: string; size: number }[] = await dp.fs.list();
+  let highest = 0;
+  let highestSize = 0;
+  for (const entry of entries) {
+    if (entry.kind !== "file") continue;
+    const m = CHANNEL_SEGMENT_PATTERN.exec(entry.name);
+    if (!m) continue;
+    const n = Number(m[1]);
+    if (n > highest) { highest = n; highestSize = entry.size; }
+  }
+  const body = lines.map((line) => (line.endsWith("\n") ? line : line + "\n")).join("");
+  const bodyBytes = new TextEncoder().encode(body).length;
+  if (highest === 0 || highestSize + 1 + bodyBytes > CHANNEL_SEGMENT_MAX_BYTES) {
+    const next = channelSegmentPath(highest + 1);
+    await dp.fs.write(next, body);
+    return next;
+  }
+  const current = channelSegmentPath(highest);
+  await appendLines(dp, current, lines);
+  return current;
+};
 
 // L26: the yield action (log the decision, drop ownership, append a single
 // well-formed line to the yield log) is one code path shared by every site
@@ -2369,7 +2410,7 @@ export const persist = async (dp: any, rollBackOnYield?: () => void): Promise<bo
     // overflow with no record anywhere. Only drop the in-memory entries
     // once the log actually holds them.
     try {
-      await appendToChannelLog(dp, overflow.map((d) => JSON.stringify({ persona: sess.persona, kind: "decision", rolledAt: Date.now(), record: d, logPath: CHANNEL_LOG_PATH })));
+      await appendToChannelLog(dp, overflow.map((d) => JSON.stringify({ persona: sess.persona, kind: "decision", rolledAt: Date.now(), record: d })));
       sess.state.decisions = sess.state.decisions.slice(-DECISIONS_MAX);
     } catch (err) {
       // Round 50 point 3: name the refusal instead of staying silent - the
@@ -2393,7 +2434,7 @@ export const persist = async (dp: any, rollBackOnYield?: () => void): Promise<bo
       const overflow = unpinned.slice(0, overflowCount);
       const kept = unpinned.slice(overflowCount);
       try {
-        await appendToChannelLog(dp, overflow.map((m) => JSON.stringify({ persona: sess.persona, kind: "memory", rolledAt: Date.now(), record: m, logPath: CHANNEL_LOG_PATH })));
+        await appendToChannelLog(dp, overflow.map((m) => JSON.stringify({ persona: sess.persona, kind: "memory", rolledAt: Date.now(), record: m })));
         // Restore original relative order (createdAt) across pinned + kept.
         sess.state.memory = [...pinned, ...kept].sort((a, b) => a.createdAt - b.createdAt);
       } catch (err) {
@@ -5135,7 +5176,7 @@ export const register: Register = async (on, options) => {
             const swept = await sweepExpiredRecords(
               commonsStoreOf($),
               sess.persona,
-              (lines) => appendToChannelLog($, lines),
+              async (lines) => { await appendToChannelLog($, lines); },
               ttlMs,
             );
             if (swept > 0) {
@@ -5169,18 +5210,19 @@ export const register: Register = async (on, options) => {
           // read as two different decisions - the next gate can tell them
           // apart instead of seeing the store quietly stop shrinking.
           try {
+            let rolledTo = "";
             const rolled = await enforceChannelWindow(
               commonsStoreOf($),
               sess.persona,
               channelWindowSize,
-              (lines) => appendToChannelLog($, lines),
+              async (lines) => { rolledTo = await appendToChannelLog($, lines); },
             );
             if (rolled > 0) {
               sess.state.decisions.push({
                 timestamp: Date.now(),
                 loop: "worker",
                 action: "channel_window_rolled",
-                detail: `rolled ${rolled} closed inbox/reply records to ${CHANNEL_LOG_PATH} (persona: ${sess.persona})`,
+                detail: `rolled ${rolled} closed inbox/reply records to ${rolledTo} (persona: ${sess.persona})`,
               });
             }
           } catch (err) {

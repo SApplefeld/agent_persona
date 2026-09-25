@@ -502,7 +502,9 @@ done
 [ -f "$SUITE_DIR/reader/.agentic-personas.json" ] && cp -f "$SUITE_DIR/reader/.agentic-personas.json" "$RUNS_DIR/reader-personas.json" 2>/dev/null
 # Retain the owner's channel-rollover log so a post-mortem read can see what
 # left the store and why.
-[ -f "$SUITE_DIR/owner/.agentic-channel.jsonl" ] && cp -f "$SUITE_DIR/owner/.agentic-channel.jsonl" "$RUNS_DIR/owner-channel.jsonl" 2>/dev/null
+for channel_seg in "$SUITE_DIR"/owner/.agentic-channel*.jsonl; do
+  [ -f "$channel_seg" ] && cp -f "$channel_seg" "$RUNS_DIR/owner-$(basename "$channel_seg")" 2>/dev/null
+done
 if [ -n "$STORE_FILE_LAUNCH" ] && [ -f "$STORE_FILE_LAUNCH" ]; then
   cp -f "$STORE_FILE_LAUNCH" "$RUNS_DIR/global-store-snapshot.json" 2>/dev/null
 fi

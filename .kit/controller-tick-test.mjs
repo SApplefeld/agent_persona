@@ -88,6 +88,21 @@ function getDecisions(h) {
   return getState(h).decisions;
 }
 
+// Helper: the channel log's segment paths in the fake fs, in number order.
+// The log is `.agentic-channel.<nnnn>.jsonl` and up; a `.agentic-channel.jsonl`
+// with no number is the frozen pre-segment file and is never a segment.
+const CHANNEL_SEGMENT_RE = /^\.agentic-channel\.(\d{4,})\.jsonl$/;
+function channelSegments(h) {
+  return [...h.fsMap.keys()]
+    .filter((k) => CHANNEL_SEGMENT_RE.test(k))
+    .sort((a, b) => Number(CHANNEL_SEGMENT_RE.exec(a)[1]) - Number(CHANNEL_SEGMENT_RE.exec(b)[1]));
+}
+
+// Helper: every non-empty line across the channel log's segments, in order.
+function channelLogLines(h) {
+  return channelSegments(h).flatMap((p) => (h.fsMap.get(p) || "").split("\n").filter((l) => l.trim().length > 0));
+}
+
 // Helper: read state for an arbitrary persona key (item 6: the persona
 // option means the store's top-level key is no longer always "default").
 function getStateForPersona(h, persona) {
@@ -2027,10 +2042,101 @@ async function caseItem5_channelWindowRollsOverflow(clock) {
   const decisions = getDecisions(h);
   check("item5 channel window: channel_window_rolled decision present", decisions.some(d => d.action === "channel_window_rolled"));
 
-  const logRaw = h.fsMap.get(".agentic-channel.jsonl") || "";
-  const logLines = logRaw.split("\n").filter(l => l.trim().length > 0);
+  const logLines = channelLogLines(h);
   check("item5 channel window: log holds the rolled records", logLines.length === 3);
   check("item5 channel window: log entries are valid JSON with kind=inbox", logLines.every(l => { try { return JSON.parse(l).kind === "inbox"; } catch { return false; } }));
+  check("item5 channel window: the rolled records landed in the first segment", channelSegments(h).length === 1 && channelSegments(h)[0] === ".agentic-channel.0001.jsonl", channelSegments(h));
+  check("item5 channel window: the rolled decision names the segment written",
+    decisions.some(d => d.action === "channel_window_rolled" && d.detail.includes(".agentic-channel.0001.jsonl")));
+}
+
+// Six resolved records over a window of 3, the same seed the window case
+// above uses, so a roll of three records is what each segment case drives.
+async function seedChannelWindowOverflow(caseName, now) {
+  const h = await createTickHarness({ ...OPTS, caseName, channelRecordWindow: 3 });
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: now,
+    claims: [{ resource: "persona:default", claimedAt: now - 2000 }],
+  });
+  for (let i = 0; i < 6; i++) {
+    const key = `inbox:default:writer-${i}:1`;
+    h.storeMap.set(key, {
+      id: `default-writer-${i}-1`, key, from: `writer-${i}`, at: now - (6 - i) * 1000, text: `message ${i}`,
+      kind: "say", status: "resolved", resolvedAt: now - (6 - i) * 1000 + 500, outcome: "done", note: "",
+    });
+  }
+  const startH = h.handlers["session.start"];
+  if (startH) await startH(h.fake, {}, () => {});
+  return h;
+}
+
+// The channel log is written in segments: an append lands in the
+// highest-numbered segment until that file plus the batch would pass the
+// 1 MiB bound, and then opens the next number. Segment 0002 is seeded within
+// 200 bytes of the bound, so the three rolled lines cannot fit and 0003
+// opens; 0001 is seeded too, so the writer is shown to pick the highest
+// number rather than the first. Both seeded segments are byte-for-byte as
+// seeded after the roll.
+async function caseChannelLog_segmentOpensPastTheBound(clock) {
+  console.log("\n=== Channel log: an append that would pass the segment bound opens the next segment ===");
+  clock.set(T0);
+  const h = await seedChannelWindowOverflow("channel_log_segment_bound", T0);
+  const seg1 = JSON.stringify({ persona: "default", kind: "inbox", key: "inbox:default:seeded:1", rolledAt: T0 - 10_000, record: { id: "seeded-1" } }) + "\n";
+  // The pad text is ASCII, so a pad line's byte count is its fixed overhead
+  // plus the text length, and the last line is sized to land the segment on
+  // the target exactly. The three rolled lines run about 300 bytes each, so
+  // 200 bytes of room cannot take them.
+  const padLine = (n) => JSON.stringify({ persona: "default", kind: "inbox", key: "inbox:default:pad:1", rolledAt: T0 - 5000, record: { id: "pad", text: "x".repeat(n) } }) + "\n";
+  const line = padLine(900);
+  const lineBytes = new TextEncoder().encode(line).length;
+  const overhead = new TextEncoder().encode(padLine(0)).length;
+  const target = 1_048_576 - 200;
+  let fullLines = Math.floor(target / lineBytes);
+  let remainder = target - fullLines * lineBytes;
+  if (remainder < overhead) { fullLines -= 1; remainder += lineBytes; }
+  const seg2 = line.repeat(fullLines) + padLine(remainder - overhead);
+  h.fsMap.set(".agentic-channel.0001.jsonl", seg1);
+  h.fsMap.set(".agentic-channel.0002.jsonl", seg2);
+  const seg2Bytes = new TextEncoder().encode(seg2).length;
+  check("channel log segment bound: segment 0002 is seeded exactly 200 bytes under the bound (setup sanity)", seg2Bytes === target, seg2Bytes);
+
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+
+  check("channel log segment bound: the roll happened (setup sanity)", getDecisions(h).some((d) => d.action === "channel_window_rolled"));
+  check("channel log segment bound: segment 0003 opened", h.fsMap.has(".agentic-channel.0003.jsonl"), channelSegments(h));
+  const seg3Lines = (h.fsMap.get(".agentic-channel.0003.jsonl") || "").split("\n").filter((l) => l.trim().length > 0);
+  check("channel log segment bound: segment 0003 holds exactly the three rolled records",
+    seg3Lines.length === 3 && seg3Lines.every((l) => { try { return JSON.parse(l).kind === "inbox" && JSON.parse(l).key.startsWith("inbox:default:writer-"); } catch { return false; } }), seg3Lines);
+  check("channel log segment bound: segment 0002 is byte-for-byte as seeded", h.fsMap.get(".agentic-channel.0002.jsonl") === seg2);
+  check("channel log segment bound: segment 0001 is byte-for-byte as seeded", h.fsMap.get(".agentic-channel.0001.jsonl") === seg1);
+  check("channel log segment bound: no segment past 0003", channelSegments(h).length === 3, channelSegments(h));
+  check("channel log segment bound: the rolled decision names segment 0003",
+    getDecisions(h).some((d) => d.action === "channel_window_rolled" && d.detail.includes(".agentic-channel.0003.jsonl")));
+}
+
+// A work directory from before the segments holds `.agentic-channel.jsonl`,
+// which can sit at the harness's 4 MiB cap. Its name carries no number, so
+// the writer never selects it: the roll opens 0001 and the legacy file is
+// byte-for-byte as it was.
+async function caseChannelLog_legacyFileIsFrozen(clock) {
+  console.log("\n=== Channel log: the pre-segment .agentic-channel.jsonl is never written again ===");
+  clock.set(T0);
+  const h = await seedChannelWindowOverflow("channel_log_legacy_frozen", T0);
+  const legacy = JSON.stringify({ persona: "default", kind: "decision", rolledAt: T0 - 10_000, record: { action: "old" } }) + "\n";
+  h.fsMap.set(".agentic-channel.jsonl", legacy);
+
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+  clock.advance(60_000);
+  await tickAndSettle(h, clock, 50);
+
+  check("channel log legacy: the roll happened (setup sanity)", getDecisions(h).some((d) => d.action === "channel_window_rolled"));
+  check("channel log legacy: the legacy file is byte-for-byte as seeded", h.fsMap.get(".agentic-channel.jsonl") === legacy);
+  check("channel log legacy: segment 0001 opened with the rolled records", channelSegments(h).length === 1 && channelSegments(h)[0] === ".agentic-channel.0001.jsonl" && channelLogLines(h).length === 3, channelSegments(h));
 }
 
 // Item 5 / Round 47 finding 1: a failed append must not lose records - the
@@ -2141,8 +2247,7 @@ async function caseItem5_decisionLogCappedAtPush(clock) {
   const state = getState(h);
   check("item5 decision cap: decisions capped at DECISIONS_MAX", state.decisions.length === DECISIONS_MAX);
 
-  const logRaw = h.fsMap.get(".agentic-channel.jsonl") || "";
-  const logLines = logRaw.split("\n").filter(l => l.trim().length > 0);
+  const logLines = channelLogLines(h);
   const decisionLines = logLines.filter(l => { try { return JSON.parse(l).kind === "decision"; } catch { return false; } });
   check("item5 decision cap: overflow rolled to the log", decisionLines.length >= 1);
 
@@ -2202,8 +2307,7 @@ async function caseItem5_memoryCappedAtPush(clock) {
   check("item5 memory cap: newest unpinned entry survives", state.memory.some(m => m.id === `mem-${MEMORY_MAX - 1}`));
   check("item5 memory cap: oldest unpinned entry rolled off", !state.memory.some(m => m.id === "mem-0"));
 
-  const logRaw = h.fsMap.get(".agentic-channel.jsonl") || "";
-  const logLines = logRaw.split("\n").filter(l => l.trim().length > 0);
+  const logLines = channelLogLines(h);
   const memoryLines = logLines.filter(l => { try { return JSON.parse(l).kind === "memory"; } catch { return false; } });
   check("item5 memory cap: overflow rolled to the log", memoryLines.length >= 1);
 }
@@ -3360,6 +3464,8 @@ async function main() {
     await caseCatchStampsAttempt_overlappingTickDoesNotRelaunch(clock);
     await caseItem8p2_dead_writer_record_skipped_once(clock);
     await caseItem5_channelWindowRollsOverflow(clock);
+    await caseChannelLog_segmentOpensPastTheBound(clock);
+    await caseChannelLog_legacyFileIsFrozen(clock);
     await caseItem5_channelWindowNoDeleteOnAppendFailure();
     await caseItem5_decisionLogCappedAtPush(clock);
     await caseItem5_memoryCappedAtPush(clock);
@@ -5141,7 +5247,7 @@ async function caseSection12_4_sweepLogsBeforeDeleteAndKeepsOnRefusedAppend(cloc
   const realWrite = h.fake.fs.write;
   let refused = 0;
   h.fake.fs.write = (p, content) => {
-    if (p === ".agentic-channel.jsonl" && refused === 0) {
+    if (CHANNEL_SEGMENT_RE.test(p) && refused === 0) {
       refused++;
       return Promise.reject(new Error("log write refused"));
     }
@@ -5166,7 +5272,7 @@ async function caseSection12_4_sweepLogsBeforeDeleteAndKeepsOnRefusedAppend(cloc
   check("section12.4: sweep_expired_records_failed decision names the refusal",
     decisions.some((d) => d.action === "sweep_expired_records_failed" && d.detail.includes("log write refused")));
   check("section12.4: no sweep_expired_records decision on the refused cadence", !decisions.some((d) => d.action === "sweep_expired_records"));
-  check("section12.4: nothing in the channel log yet", !h.fsMap.has(".agentic-channel.jsonl"));
+  check("section12.4: nothing in the channel log yet", channelSegments(h).length === 0);
 
   // Next cadence: the append lands, then the delete.
   clock.advance(60_000);
@@ -5178,7 +5284,7 @@ async function caseSection12_4_sweepLogsBeforeDeleteAndKeepsOnRefusedAppend(cloc
   check("section12.4 control: inbox record removed after the append landed", !h.storeMap.has(key));
   check("section12.4 control: reply record removed after the append landed", !h.storeMap.has(replyKey));
   check("section12.4 control: ask record removed after the append landed", !h.storeMap.has(askKey));
-  const logLines = (h.fsMap.get(".agentic-channel.jsonl") || "").split("\n").filter((l) => l.trim().length > 0);
+  const logLines = channelLogLines(h);
   const parsed = logLines.map((l) => { try { return JSON.parse(l); } catch { return null; } });
   check("section12.4 control: the log holds one line per swept record, each with sweptAt and its key",
     parsed.length === 3 && parsed.every((l) => l && typeof l.sweptAt === "number") &&
@@ -5224,7 +5330,7 @@ async function caseSection12_5_windowRollKeepsUnresolvedRecords(clock) {
   check("section12.5 control: the two oldest resolved records rolled", !h.storeMap.has(resolvedKeys[0]) && !h.storeMap.has(resolvedKeys[1]));
   check("section12.5 control: the newer resolved records and the skipped record stay within the window",
     h.storeMap.has(resolvedKeys[2]) && h.storeMap.has(resolvedKeys[3]) && h.storeMap.has(skippedKey));
-  const logLines = (h.fsMap.get(".agentic-channel.jsonl") || "").split("\n").filter((l) => l.trim().length > 0);
+  const logLines = channelLogLines(h);
   check("section12.5 control: the log holds the two rolled records", logLines.length === 2 && logLines.every((l) => { try { return JSON.parse(l).kind === "inbox"; } catch { return false; } }), logLines);
   check("section12.5 control: channel_window_rolled counts two", getDecisions(h).some((d) => d.action === "channel_window_rolled" && d.detail.includes("rolled 2")));
 }
@@ -5417,7 +5523,7 @@ async function caseSection12_F2_windowRollKeepsAnOpenSteersReply(clock) {
   check("section12.F2 control: the rolled resolved record's reply rolled with it", !h.storeMap.has(resolvedKey) && !h.storeMap.has(resolvedReplyKey));
   check("section12.F2 control: the orphan reply and the newest rollable records sit within the window",
     !h.storeMap.has(resolved2Key) && h.storeMap.has(orphanReplyKey) && h.storeMap.has(skippedKey));
-  const logLines = (h.fsMap.get(".agentic-channel.jsonl") || "").split("\n").filter((l) => l.trim().length > 0);
+  const logLines = channelLogLines(h);
   check("section12.F2 control: the log holds the three rolled records", logLines.length === 3, logLines);
 
   const hr = await seedReaderHarness("section12_f2_inbox", clock.get(), "owner-f2", {}, { turnStartedAt: null, workdir: HARNESS_CWD });
@@ -6155,7 +6261,7 @@ async function caseSection12_close_sweepDeleteFailureAfterTheAppendIsNamedApart(
 
   check("section12.close sweep: the ask's delete was refused, the inbox record's landed (setup sanity)", deletes === 1 && !h.storeMap.has(key) && h.storeMap.has(askKey));
   check("section12.close sweep: the log holds both records (setup sanity)",
-    (h.fsMap.get(".agentic-channel.jsonl") || "").split("\n").filter((l) => l.trim().length > 0).length === 2);
+    channelLogLines(h).length === 2);
   const failed = getDecisions(h).filter((d) => d.action === "sweep_expired_records_failed");
   check("section12.close sweep: the decision names the partial removal after the logged append",
     failed.length === 1 && failed[0].detail.includes("every record logged") && failed[0].detail.includes("1 of 2 removed") && failed[0].detail.includes("delete refused") && !failed[0].detail.includes("left in store"), failed);
