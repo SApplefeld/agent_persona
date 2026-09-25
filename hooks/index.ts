@@ -48,6 +48,7 @@ import {
   hasStartableWork,
   holdOf,
   LONG_TERM_GOAL_CAP,
+  reapCompletedGoalTasks,
 } from "./agent-state";
 import { readPlanRecord, resolvePlanDir } from "./plan-record";
 import type { AgentState, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding } from "./agent-state";
@@ -2407,6 +2408,11 @@ function nudgeCapAskText(persona: string, title: string, nudges: number): string
 export const persist = async (dp: any, rollBackOnYield?: () => void): Promise<boolean> => {
   if (!sess.isOwner) { rollBackOnYield?.(); return false; }
   sess.state.updatedAt = Date.now();
+
+  // A goal completed or abandoned since the last write loses its tasks here,
+  // at the write, rather than at the next load: a long-lived session never
+  // reloads, and its closed goal's tasks would otherwise stay in its state.
+  reapCompletedGoalTasks(sess.state);
 
   // Item 5 (Bounded store): cap the decision log and memory at push time,
   // not only when the file happens to be parsed at a session load - a

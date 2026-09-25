@@ -3835,6 +3835,7 @@ async function main() {
     await caseLtg_longTextIsCutAndAMalformedEntryStillPrints(clock);
     await caseLtg_aNonOwnerIsRefused(clock);
     await caseLtg_aStoreWrittenBeforeTheListLoadsEmpty();
+    await caseTasks_aGoalCompletedMidSessionLosesItsTasksAtTheWrite(clock);
     await caseLtg_theListSurvivesATreeReplacementAndARestart(clock);
     await caseLtg_aLongTermGoalIsNeverActiveAndNeverHoldsTheRootOpen(clock);
     await caseLtg_theToolRegistersForAnOwnerAndNeverForAReader(clock);
@@ -23780,7 +23781,7 @@ async function caseLtg_aNonOwnerIsRefused(clock) {
 }
 
 // The Acceptance's second bullet, first half: a store written before the
-// list existed loads with an empty list and stays at version 4. That holds
+// list existed loads with an empty list at the current version, 5. That holds
 // for a v4 store, a v3 store, both committed v4 fixtures, and a stored value
 // that is not a list. A held list loads as it was, and a new state starts
 // empty.
@@ -23789,14 +23790,14 @@ async function caseLtg_aStoreWrittenBeforeTheListLoadsEmpty() {
   const v4 = makeState({ now: T0 });
   check("ltg load: the seeded v4 state carries no list (the instrument)", !("longTermGoals" in v4), Object.keys(v4));
   const fromV4 = parseState(JSON.stringify(v4));
-  check("ltg load, v4: an empty list and version 4", Array.isArray(fromV4.longTermGoals) && fromV4.longTermGoals.length === 0 && fromV4.version === 4, { list: fromV4.longTermGoals, version: fromV4.version });
+  check("ltg load, v4: an empty list and version 5", Array.isArray(fromV4.longTermGoals) && fromV4.longTermGoals.length === 0 && fromV4.version === 5, { list: fromV4.longTermGoals, version: fromV4.version });
   const fromV3 = parseState(JSON.stringify({ ...makeState({ now: T0 }), version: 3 }));
-  check("ltg load, v3: an empty list and version 4", Array.isArray(fromV3.longTermGoals) && fromV3.longTermGoals.length === 0 && fromV3.version === 4, { list: fromV3.longTermGoals, version: fromV3.version });
+  check("ltg load, v3: an empty list and version 5", Array.isArray(fromV3.longTermGoals) && fromV3.longTermGoals.length === 0 && fromV3.version === 5, { list: fromV3.longTermGoals, version: fromV3.version });
   for (const name of ["state-v4-no-cost.json", "state-v4-cost-no-hash.json"]) {
     const text = readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
     const parsed = parseState(text);
-    check(`ltg load, fixture ${name}: an empty list and version 4`,
-      !text.includes("longTermGoals") && Array.isArray(parsed.longTermGoals) && parsed.longTermGoals.length === 0 && parsed.version === 4, { list: parsed.longTermGoals, version: parsed.version });
+    check(`ltg load, fixture ${name}: an empty list and version 5`,
+      !text.includes("longTermGoals") && Array.isArray(parsed.longTermGoals) && parsed.longTermGoals.length === 0 && parsed.version === 5, { list: parsed.longTermGoals, version: parsed.version });
   }
   const fromNull = parseState(JSON.stringify({ ...makeState({ now: T0 }), longTermGoals: null }));
   check("ltg load: a stored value that is not a list reads as an empty list", Array.isArray(fromNull.longTermGoals) && fromNull.longTermGoals.length === 0, fromNull.longTermGoals);
@@ -23805,6 +23806,48 @@ async function caseLtg_aStoreWrittenBeforeTheListLoadsEmpty() {
   check("ltg load: a held list loads as it was", JSON.stringify(fromHeld.longTermGoals) === JSON.stringify(two), fromHeld.longTermGoals);
   const fresh = AgentState.createDefaultState("someone", "s-1");
   check("ltg load: a new state starts with an empty list", Array.isArray(fresh.longTermGoals) && fresh.longTermGoals.length === 0, fresh.longTermGoals);
+}
+
+// The task reap runs on the persist path. goal_done in a live session
+// completes the active goal, and the store write that call makes holds none
+// of that goal's tasks, with no load in between. A reap that ran only at a
+// load would leave them in the session's state, and in every write it made,
+// until the next launch. A paused goal's task in the same store is kept by
+// the same write.
+async function caseTasks_aGoalCompletedMidSessionLosesItsTasksAtTheWrite(clock) {
+  console.log("\n=== Task list: a goal completed mid-session loses its tasks at the write ===");
+  clock.set(T0);
+  const goals = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+    makeGoalNode({ id: "g-done", parentId: "g-root", kind: "task", status: "active", maxRounds: 10 }),
+    makeGoalNode({ id: "g-paused", parentId: "g-root", kind: "task", status: "paused", maxRounds: 10 }),
+  ];
+  const task = (id, goalId) => ({ id, goalId, text: `work ${id}`, done: false, addedAt: T0 });
+  const tasks = [task("tk-a", "g-done"), task("tk-b", "g-done"), task("tk-p", "g-paused")];
+  const h = await createTickHarness({ ...OPTS, caseName: "tasks_reap_on_persist", skipSessionStart: true });
+  seedPersonaStore(h, { ...makeState({ now: T0, goals, activeGoalId: "g-done" }), version: 5, tasks });
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+  });
+  await h.handlers["session.start"](h.fake, {}, () => {});
+  const before = getState(h);
+  check("tasks reap on persist: the session starts holding all three tasks (the instrument)",
+    JSON.stringify((before.tasks ?? []).map((t) => t.id)) === JSON.stringify(["tk-a", "tk-b", "tk-p"]) && before.activeGoalId === "g-done",
+    { tasks: before.tasks, active: before.activeGoalId });
+
+  h.resetFsWrites();
+  const done = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", note: "done" });
+  const storeWrites = h.fsWrites.filter((w) => w.path === PERSONA_STORE_FILE);
+  const written = storeWrites.length > 0 ? JSON.parse(storeWrites[storeWrites.length - 1].content).default : null;
+  check("tasks reap on persist: goal_done is served and its own write completes the goal",
+    done?.deny === undefined && written !== null && written.goals.find((g) => g.id === "g-done")?.status === "complete",
+    { done, writes: storeWrites.length });
+  check("tasks reap on persist: that write holds none of the completed goal's tasks",
+    written !== null && !written.tasks.some((t) => t.goalId === "g-done"), written && written.tasks);
+  check("tasks reap on persist: that write keeps the paused goal's task",
+    written !== null && written.tasks.length === 1 && written.tasks[0].id === "tk-p", written && written.tasks);
 }
 
 // The Tests line: the list survives a tree replacement. goal_create leaves
@@ -24862,7 +24905,7 @@ async function caseGl5_theFrameNeutralizesStoredGoalText(clock) {
 }
 
 // A store written before the proposal record existed loads with askedAt 0 and
-// sent null, at version 4, on the v4 and v3 paths and for a malformed value.
+// sent null, at version 5, on the v4 and v3 paths and for a malformed value.
 async function caseGl5_theProposalRecordBackfills() {
   console.log("\n=== Goal levels 5: the proposal record is filled on load ===");
   const v4 = makeState({ now: T0 });
@@ -24875,8 +24918,8 @@ async function caseGl5_theProposalRecordBackfills() {
     ["a malformed value", malformed],
   ]) {
     const parsed = parseState(JSON.stringify(stored));
-    check(`gl5 backfill (${label}): askedAt 0, sent null, version 4`,
-      JSON.stringify(parsed.monitor.proposal) === JSON.stringify({ askedAt: 0, sent: null }) && parsed.version === 4, parsed.monitor.proposal);
+    check(`gl5 backfill (${label}): askedAt 0, sent null, version 5`,
+      JSON.stringify(parsed.monitor.proposal) === JSON.stringify({ askedAt: 0, sent: null }) && parsed.version === 5, parsed.monitor.proposal);
   }
   // A stored entry is kept only where every field has its type; any other
   // object reads as nothing sent, and askedAt is kept.
