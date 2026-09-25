@@ -177,6 +177,12 @@ backstop as the only submitter outside the tick, which this plan amends; and the
 drains immediately" flag as redundant with the drain running at the top of each tick, a different
 question from this plan's.
 
+## Standing Brief Amendments
+
+- A turn's completion drains whatever the reason it ended with. The Goal's "the moment the turn
+  that carried it completes" covers an answered, aborted, refused or errored turn alike. The only
+  tick-pace case the Goal draws is a session whose turns the harness never reports open.
+
 ## Sections of Work
 
 ### 1. The drain runs at a turn's completion
@@ -211,8 +217,10 @@ Acceptance:
   and the direct reply call throws, so the handler submits the reply backstop, delivers nothing at
   that completion, and the next tick delivers the record.
 - A case where the fake `prompt.submit` rejects on the scheduled drain leaves one
-  `operator_delivery_error` decision, leaves the record's status as the block wrote it before the
-  submit, and completes the handler's `next(e)` before the rejection.
+  `operator_delivery_failed` decision, as the block records a refused submit, and leaves the
+  record's status as the block wrote it before the submit. A case where a throw leaves the
+  scheduled drain leaves one `operator_delivery_error` decision. A case holding the submit
+  shows the handler completing `next(e)` before the submit settles.
 - A pending record whose writer holds no live claim is skipped with `operator_skipped_no_claim`
   from the completion path exactly as from the tick.
 - Every existing case in `.kit/controller-tick-test.mjs`, `.kit/injection-ledger.mjs` and
@@ -225,7 +233,8 @@ Acceptance:
   "before the worker's next delivery, at a quiet tick or a turn's end".
 
 Files in scope: `hooks/index.ts`, `.kit/controller-tick-test.mjs`, `README.md`,
-`docs/architecture.md`, `docs/backlog.md`.
+`docs/architecture.md`, `docs/backlog.md`, `bin/supervise-holder.sh`,
+`.kit/channel-reply-instruction-test.sh`, `.kit/injection-ledger.json`.
 
 Tests: at minimum, lock the chain in both directions, a seen completion that drains and an unseen
 completion that does not with `openTurns` empty in both, since the expensive failure is a record
@@ -290,3 +299,42 @@ None.
   proven.
 
 ## Chapters
+
+### Chapter 1 - 2026-09-25
+Completed: 1. The drain runs at a turn's completion
+Implemented By: main session (opus, Locus: inline)
+Metrics: review rounds 1, closed major-closed; provenance 7 spec-traceable, 0 fix-introduced, 1 new-requirement, rulings (1 refused, 0 declared, 0 asked); advisory: 1 findings, 0 fixed, 0 deferred, 1 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+- section 1 open: moves the D3 inbox block of the controller tick into a registration-scope async drainInbox($) (it cannot stay tick-local, since controllerTick lives inside the session.start hook and the turn.complete handler cannot reach it) and schedules one unawaited call from the turn.complete handler when this completion closed its own openTurns entry, the session owns the persona, no turn is left open and the handler did not submit the reply backstop; adds one reentrancy flag, drainInFlight, mirroring fleetBlockInFlight, so a tick and a completion cannot both list and deliver the same oldest record; serves the Goal sentence "the moment the turn that carried it completes the controller delivers the next, with no tick between them" and the acceptance bullet "Each record is marked delivered in the store once"; the flag is a guard no clause names, routed at intake as a declared default; size about 40 changed lines of code, 1 flag, about 7 tick cases; not building it leaves a burst of records draining one per tick, 11 to 15 minutes behind on the measured coordinator burst.
+- Mid-work (inline): drainInFlight, a shared in-flight drain promise a second caller waits on, re-draining where the running drain delivered nothing; serves the acceptance bullet "Each record is marked delivered in the store once, with its own operator_delivered decision naming its id" and the Intent's "the tick path itself is unchanged"; adds a mechanism (a guard) traced to that bullet, so no design stop; about 8 lines, one state; not building it lets an overlapping tick and completion each read the same pending record and submit it twice.
+- Round 1 fix (blind Major, subagent completion): the completion drain's condition refuses a completion carrying an agentId, as completesGateTurn does; serves the Approach's "A background subagent's completion ... does not schedule the drain" and the acceptance bullet on an unseen completion delivering nothing; no new mechanism, one clause on the existing guard; 1 line; not building it lets a subagent completion carrying the parent turn's id drain into the running turn.
+- Round 1 fix (blind Major, turn opened during the drain's reads): the drain reads turnIsOpen() again just before it marks a record delivered, on both the ask-answer and the general path; serves the block's own open-turn rule and the acceptance bullet on a completion with another turn open delivering nothing; no new mechanism, the existing check read at the write; about 4 lines; not building it lets a turn the engine dequeues at a turn's end take a delivered stamp beside it.
+- Round 1 fix (Minors, three lenses): a waiter on a rejected running drain catches the rejection and runs its own drain, so one fault is reported by its own drain's caller; the completion's save reads the decision ring by identity as well as length; no new mechanism; 2 lines; not building it logs one fault twice and can leave a skip unsaved after a trim.
+- Round 1 fix (adversarial Major, acceptance bullet 6): the bullet is amended to name operator_delivery_failed for a rejected submit, keeping the throw case for operator_delivery_error, per the plan's own Approach; prose only; not building it leaves a bullet no code can meet.
+- The Status header was set to In Progress at start; it read Ready.
+- The loader rule R3 (`.kit/check-loader-rule.mjs`) refuses a `$`-taking function declared inside `register()`, so `drainInbox` is a no-parameter closure beside the controller tick inside the session.start hook, published to the completion handler through `drainInboxNow`. The section-open line above names the registration-scope shape this replaced. A control run with a `$` parameter planted on the nested closure made R3 fire.
+- A first in-flight form returned the running drain's answer to a second caller. It made the Section 12 H1 (B) case miss a record seeded just after a completion, because the joined drain had read the inbox before the seed. A caller that meets a drain which delivered nothing now drains itself.
+- Scope widened: `bin/supervise-holder.sh`'s worker steer, its pin in `.kit/channel-reply-instruction-test.sh`, `README.md` and `docs/architecture.md` said a live architect takes one record per controller tick, untrue once a queue drains per turn. The plan's sweep grepped `per tick` and missed `per controller tick`. `.kit/injection-ledger.json`'s two sizes were refreshed for the grown texts. The section's `Files in scope:` line now names the three files. That line and acceptance bullet 6 sit above `## Chapters`, so both edits are approval drift, made deliberately here.
+- Acceptance bullet 6 was amended. It named `operator_delivery_error` for a rejected submit, while the plan's own Approach and the code record a refused submit as `operator_delivery_failed`. The bullet now names that, keeps a throw case for `operator_delivery_error`, and a held-submit case for the handler returning first.
+- A `## Standing Brief Amendments` block was created above `## Sections of Work`, carrying the scope ruling below as a rule. It is approval drift, recorded here.
+- Found and routed out: a tick-suite case that hangs on a never-settled promise ends the Node process with exit 0 part-way through, which a gate reading only the exit code takes as green. Entered in `docs/backlog.md`.
+Assumptions:
+- assumed 2026-09-25 (intake, section 1): the branch is stacked on the backstop-turn-guard branch rather than cut from origin/main, since that branch edits the same completion handler; reversal: rebase onto main once PR 107 merges.
+- assumed 2026-09-25 (intake, section 1): `turn.start` is still the only opener of `openTurns` after the nudge-state plan landed (the one `openTurns.set` in `hooks/index.ts`), so the plan's declared tick-pace case for an under-reporting session stands as written; reversal: none needed.
+- assumed 2026-09-25 (intake, section 1): the completion drain skips on the reply-backstop submit attempt, whatever its outcome; reversal: skip only on an accepted re-prompt.
+- assumed 2026-09-25 (intake, section 1): the other-open case pins delivery at the last open turn's end rather than at the next tick, since a tick with a turn open skips the drain by its own rule; reversal: none, the bullet is met in substance.
+Review Findings:
+- review: code pair at fable, Agent tool; security and performance at fable, Agent tool; scope adjudicator at fable, Agent tool. Tree unchanged across the round.
+- Refuted at adjudication, one premise under a correctness Critical (adversarial) and an advisory Critical (performance): that `drainInFlight` holds across a submit settling only after the delivered turn completes, so the completion drain inherits the last delivery's answer. The harness contract says a submit resolves once its turn started or it was queued, not when the turn ends (`.claude/types/claude-code.d.ts:7770-7773`). The adversarial Major that a tick meeting a parked drain skips its body rests on the same premise and falls with it. The drain's comment now states the contract, and a case holding the submit until its turn starts proves the chain still fires.
+- Fixed: a subagent completion carrying the running turn's id no longer drains (blind Major, orchestrator-made trace to the Approach's subagent sentence; red with the clause removed, green with it); acceptance bullet 6 amended (adversarial Major); the missing held-submit cover added (adversarial Major).
+- Held and ruled: the blind Major that error, refusal and aborted completions should not drain, new-requirement, ruled REFUSE by the scope adjudicator on the Goal sentence "the moment the turn that carried it completes" and the Intent's refused alternative "Draining only after a delivery turn". The ground is recorded in the Standing Brief Amendments block.
+- Justified-not-fixed: the blind Major that a turn opening during the drain's store reads leaves a delivered stamp nobody reads. The existing Section 12 M1 (A) case pins the designed behaviour: a delivery queued under an opening turn keeps its entry, and its own turn stamps it. The Intent keeps the tick path unchanged. A re-check written for it broke that case and was reverted.
+- Minors: 6 fixed in the close pass (the moved comment's "two blocks above"; one fault reported twice by a waiter; the save missing a skip after a trim; the three-record case now opens its turns on their own text and pins the stamps; the README wait sentence; the backlog's submitter count); 0 upgraded; 4 left with the reason (a submit that never settles parks later drains, and the harness contract settles every submit; `drainInFlight` is module-level as `fleetBlockInFlight` is; an external prompt queued during a turn can merge with a delivery, which the deferred live gate observes; the adversarial claim that `drainInboxNow` is set on a reader session is refuted, since the assignment sits inside `if (arming !== "reader")`).
+Stamps: adjudicated 6, stamped 3 (an-undelivered-inbox-record-is-normal-for-a-live-idle-owner, updated to the new cadence in the same turn; tick-harness-state-is-loaded-at-creation-drive-handlers-to-change-it; a-chapters-claim-about-its-own-commit-is-unverified-until-diffed), 3 skipped as read without shaping this section.
+Gate: targeted lane, measured 2026-09-25 about 15:40 on SCOTT-CLAUDE in this worktree with the fix round uncommitted over a8f0ea4, no foreign-runner poll taken. `.kit/controller-tick-test.mjs` 4432 pass / 0 fail, exit 0, against a baseline of 4407 / 0 recorded on this lane at affdb45. `npx tsc --noEmit` exit 0. `npx tsc -p tsconfig.json` exit 0 at a8f0ea4. `.kit/injection-duplicate-test.mjs` exit 0. `.kit/injection-ledger.mjs` exit 0. `.kit/check-loader-rule.mjs` exit 0. `.kit/tool-description-length-test.mjs` exit 0. `.kit/channel-reply-instruction-test.sh` 173 OK, exit 0 at a8f0ea4, its files unchanged since. Test delta: 11 cases added, 0 retired, 0 existing cases edited. Added: three records drain one per delivery turn, each stamped by its own turn (Goal, bullet 1); a submit settling at its turn's start still chains (Goal); a subagent completion carrying the turn id delivers nothing (Approach); a record arriving mid-turn delivers at its end (bullet 2); an unseen completion delivers nothing (bullet 3); another turn open delivers nothing (bullet 4); the backstop completion delivers nothing (bullet 5); the handler returns before a parked submit settles, a rejected submit is one failed-delivery record, and a throw is one delivery-error record (bullet 6); a dead writer is skipped from the completion (bullet 7). None spawns a process. Wall clock not captured.
+Next: finishing-work
+Commit Model: Branch-and-PR
+Delta: measured 2026-09-25 15:43 on SCOTT-CLAUDE in this worktree; exit 2
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```

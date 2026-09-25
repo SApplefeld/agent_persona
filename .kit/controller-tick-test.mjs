@@ -3697,6 +3697,8 @@ async function main() {
     await caseSection4_continuationLinesAreQuoted(clock);
     await caseSection4_subagentLeftRecordIsDrainedOnTheNextTick(clock);
     await caseInboxDrain_threeRecordsDrainAtTurnPace(clock);
+    await caseInboxDrain_heldSubmitSettlingAtTurnStartStillChains(clock);
+    await caseInboxDrain_subagentCompletionCarryingTheTurnIdDeliversNothing(clock);
     await caseInboxDrain_recordArrivingDuringASeenTurnIsDeliveredAtItsEnd(clock);
     await caseInboxDrain_unseenCompletionDeliversNothing(clock);
     await caseInboxDrain_completionWithAnotherTurnOpenDeliversNothing(clock);
@@ -7388,23 +7390,29 @@ async function caseInboxDrain_threeRecordsDrainAtTurnPace(clock) {
   const keys = [1, 2, 3].map((seq) => seedRecordFor(h, "dev", "rev-001", seq, { at: now - 6000 + seq * 1000, text: `Record ${seq}.` }));
   const status = () => keys.map((k) => readStoreRecord(h, k)?.status);
 
+  // Each delivery turn opens with the text its drain submitted, as the engine
+  // opens it, so the matcher stamps the record with that turn.
+  const openDelivery = (turnId, n) => h.handlers["turn.start"](h.fake, { turnId, text: h.promptSubmits[n] }, () => {});
+
   await tickAndSettle(h, clock, 50);
   check("inbox drain three: one tick delivers the oldest and no other",
     JSON.stringify(status()) === JSON.stringify(["delivered", "pending", "pending"]) && JSON.stringify(h.promptSubmits) === JSON.stringify([readerDevText(1, "Record 1.")]), { status: status(), submits: h.promptSubmits });
 
-  await openQueuedTurn(h, "d1");
+  await openDelivery("d1", 0);
   await closeTurn(h, "d1");
   const second = await waitUntil(() => readStoreRecord(h, keys[1])?.status === "delivered");
   check("inbox drain three: the first delivery turn's end delivers the second with no tick",
     second && readStoreRecord(h, keys[2])?.status === "pending" && h.promptSubmits.length === 2 && h.promptSubmits[1] === readerDevText(2, "Record 2."), { status: status(), submits: h.promptSubmits });
 
-  await openQueuedTurn(h, "d2");
+  await openDelivery("d2", 1);
   await closeTurn(h, "d2");
   const third = await waitUntil(() => readStoreRecord(h, keys[2])?.status === "delivered");
   check("inbox drain three: the second delivery turn's end delivers the third",
     third && h.promptSubmits.length === 3 && h.promptSubmits[2] === readerDevText(3, "Record 3."), { status: status(), submits: h.promptSubmits });
 
-  await openQueuedTurn(h, "d3");
+  await openDelivery("d3", 2);
+  check("inbox drain three: each record is stamped with the delivery turn that opened on its own text",
+    ["d1", "d2", "d3"].every((t, i) => readStoreRecord(h, keys[i])?.turnId === t), keys.map((k) => readStoreRecord(h, k)?.turnId));
   await closeTurn(h, "d3");
   await settleDrain();
   const delivered = drainDecisions(h, "operator_delivered");
@@ -7412,6 +7420,48 @@ async function caseInboxDrain_threeRecordsDrainAtTurnPace(clock) {
     h.promptSubmits.length === 3 && delivered.length === 3, { submits: h.promptSubmits, delivered });
   check("inbox drain three: each record has exactly one operator_delivered decision naming its id",
     [1, 2, 3].every((seq) => delivered.filter((d) => d.detail.includes(`dev-rev-001-${seq} `)).length === 1), delivered);
+}
+
+// The live submit's shape: it settles when the turn it submitted starts, not
+// when the tick calls it. The tick's drain stays in flight until then, and
+// the delivery turn's completion still delivers the next record, because
+// the drain it would wait on has settled by the time that turn can end.
+async function caseInboxDrain_heldSubmitSettlingAtTurnStartStillChains(clock) {
+  console.log("\n=== Inbox drain: a submit that settles only at its turn's start still chains the next record ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("inbox_drain_held_chain", now, "dev", "coordinator");
+  seedForeignClaims(h, "rev-001", now, ["reader:dev"]);
+  const k1 = seedRecordFor(h, "dev", "rev-001", 1, { at: now - 5000, text: "First held." });
+  const k2 = seedRecordFor(h, "dev", "rev-001", 2, { at: now - 4000, text: "Second held." });
+  h.holdPromptSubmits();
+  const tick = fireTick(h);
+  const parked = await waitUntil(() => h.promptSubmits.includes(readerDevText(1, "First held.")));
+  check("inbox drain held chain: the tick's delivery submit is parked (setup sanity)", parked && readStoreRecord(h, k1)?.status === "delivered", h.promptSubmits);
+  await h.handlers["turn.start"](h.fake, { turnId: "d1", text: h.promptSubmits[0] }, () => {});
+  h.releasePromptSubmits();
+  await tick;
+  await closeTurn(h, "d1");
+  const second = await waitUntil(() => readStoreRecord(h, k2)?.status === "delivered");
+  check("inbox drain held chain: the delivery turn's end delivers the second record",
+    second && h.promptSubmits.includes(readerDevText(2, "Second held.")), { status: readStoreRecord(h, k2)?.status, submits: h.promptSubmits });
+}
+
+// A subagent's completion carrying the running turn's own id removes that
+// turn's entry, but it is not the persona's turn ending, so it drains
+// nothing; the tick takes the record as it does today.
+async function caseInboxDrain_subagentCompletionCarryingTheTurnIdDeliversNothing(clock) {
+  console.log("\n=== Inbox drain: a subagent completion carrying the turn's id delivers nothing ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("inbox_drain_subagent_id", now, "dev", "coordinator");
+  seedForeignClaims(h, "rev-001", now, ["reader:dev"]);
+  await openQueuedTurn(h, "main-1");
+  const key = seedRecordFor(h, "dev", "rev-001", 1, { at: now - 1000, text: "Not into the running turn." });
+  await h.handlers["turn.complete"](h.fake, { turnId: "main-1", agentId: "sub-1", answer: "Subagent report.", reason: "answer" }, () => {});
+  await settleDrain();
+  check("inbox drain subagent id: the subagent's completion delivers nothing",
+    readStoreRecord(h, key)?.status === "pending" && h.promptSubmits.length === 0, { status: readStoreRecord(h, key)?.status, submits: h.promptSubmits });
 }
 
 // A record that arrives while a working turn runs is delivered when that

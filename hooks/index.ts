@@ -4214,29 +4214,21 @@ export const register: Register = async (on, options) => {
     // goal tree to classify or actuate against, and the tick's own owner
     // check would return immediately anyway, so the timer itself is skipped.
     if (arming !== "reader") {
-    // The tick's body, held in a name so that the registration below can run
-    // it inside a catch. Every write this body makes reads the persona store
-    // first, the store is a file inside a persona's own working directory,
-    // and a roster can give one directory to more than one persona: a
-    // watched persona that leaves the file unparseable makes some write of
-    // every tick throw, and which write it is depends on where the tick got
-    // to. The fleet and reconciliation blocks answer that store failure
-    // themselves, each submitting its prompt and carrying its own line, so
-    // what is left for the catch is the tick ending where it stood rather
-    // than ending in a rejection nobody receives: $.clock.every takes a
-    // callback it does not await, so an exception out of this body reaches no
-    // caller and becomes an unhandled rejection whose consequence is the host
-    // process's own to decide. The actuator at the foot of the body already
-    // runs inside a catch of exactly this shape.
     // The inbox drain, the controller tick's D3 block held in a name so a
     // turn's completion can run it too: the turn.complete handler calls it
     // through drainInboxNow once a turn this session saw start has closed and
     // no other is open, so a burst of records drains at turn pace rather than
     // one per tick. It returns true where it submitted a record, or where a
-    // drain already running when it was called submitted one.
+    // drain already running when it was called submitted one. A running
+    // drain holds its place until its submit settles, which the harness
+    // states is when the submitted turn starts or is queued, never when it
+    // ends. So the hold keeps a second drain from submitting beside a prompt
+    // not yet entered, and is gone before the delivered turn can complete.
     const drainInbox = async (): Promise<boolean> => {
       while (drainInFlight !== null) {
-        if (await drainInFlight) return true;
+        // A running drain that throws is reported by its own caller, so a
+        // waiter reads the throw as nothing delivered and drains itself.
+        try { if (await drainInFlight) return true; } catch { /* reported by the drain's own caller */ }
       }
       drainInFlight = drainInboxOnce().finally(() => { drainInFlight = null; });
       return drainInFlight;
@@ -4252,10 +4244,10 @@ export const register: Register = async (on, options) => {
       // opening with the provenance label that same read produced.
       // D5: if a pending record answers the open ask, close the ask first
       // (ask_answered path) before the general drain.
-      // The open-turn reading is taken again here rather than trusted from the
-      // top of the tick. The two blocks above submit, and a submit does not
-      // resolve until the session is next idle, so a turn can have opened
-      // underneath either of them by the time this line runs. This drain marks
+      // The open-turn reading is taken here rather than trusted from the
+      // caller. The tick's blocks before this call submit, and a submit does
+      // not resolve until the session is next idle, so a turn can have opened
+      // underneath them by the time this line runs. This drain marks
       // a record delivered and then submits it, and a submit into an open turn
       // is queued rather than answered, so the record would carry a delivered
       // stamp with no turn that ever read it. Skipping leaves it pending and
@@ -4442,6 +4434,20 @@ export const register: Register = async (on, options) => {
     };
     drainInboxNow = drainInbox;
 
+    // The tick's body, held in a name so that the registration below can run
+    // it inside a catch. Every write this body makes reads the persona store
+    // first, the store is a file inside a persona's own working directory,
+    // and a roster can give one directory to more than one persona: a
+    // watched persona that leaves the file unparseable makes some write of
+    // every tick throw, and which write it is depends on where the tick got
+    // to. The fleet and reconciliation blocks answer that store failure
+    // themselves, each submitting its prompt and carrying its own line, so
+    // what is left for the catch is the tick ending where it stood rather
+    // than ending in a rejection nobody receives: $.clock.every takes a
+    // callback it does not await, so an exception out of this body reaches no
+    // caller and becomes an unhandled rejection whose consequence is the host
+    // process's own to decide. The actuator at the foot of the body already
+    // runs inside a catch of exactly this shape.
     const controllerTick = async () => {
       // 1. Owner check.
       if (!sess.isOwner) return;
@@ -8153,11 +8159,17 @@ export const register: Register = async (on, options) => {
     // throw out of it is caught here into one decision, and skips it wrote
     // are saved, since no tick save follows this path.
     const drain = drainInboxNow;
-    if (removedOwnEntry && sess.isOwner && !turnOpenAfterDelete && !submittedReplyBackstop && drain !== null) {
+    // A completion naming a subagent loop is never the persona's own turn
+    // end, whatever turn id it carries, as at completesGateTurn above.
+    const completesSubagent = typeof e.agentId === "string" && e.agentId.length > 0;
+    if (removedOwnEntry && !completesSubagent && sess.isOwner && !turnOpenAfterDelete && !submittedReplyBackstop && drain !== null) {
       void Promise.resolve().then(async () => {
-        const logged = sess.state.decisions.length;
+        // The ring is read by identity as well as length, since a save
+        // that trims it swaps the array for a shorter one.
+        const ring = sess.state.decisions;
+        const logged = ring.length;
         try {
-          if (!(await drain()) && sess.state.decisions.length !== logged) await persist($);
+          if (!(await drain()) && (sess.state.decisions !== ring || sess.state.decisions.length !== logged)) await persist($);
         } catch (err) {
           sess.state.decisions.push({
             timestamp: Date.now(),
