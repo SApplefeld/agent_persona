@@ -3696,6 +3696,15 @@ async function main() {
     await caseSection4_startPersonaNameIsCheckedAtRegister(clock);
     await caseSection4_continuationLinesAreQuoted(clock);
     await caseSection4_subagentLeftRecordIsDrainedOnTheNextTick(clock);
+    await caseInboxDrain_threeRecordsDrainAtTurnPace(clock);
+    await caseInboxDrain_recordArrivingDuringASeenTurnIsDeliveredAtItsEnd(clock);
+    await caseInboxDrain_unseenCompletionDeliversNothing(clock);
+    await caseInboxDrain_completionWithAnotherTurnOpenDeliversNothing(clock);
+    await caseInboxDrain_replyBackstopCompletionDeliversNothing(clock);
+    await caseInboxDrain_handlerReturnsBeforeTheSubmitSettles(clock);
+    await caseInboxDrain_rejectedSubmitIsRecordedAsAFailedDelivery(clock);
+    await caseInboxDrain_throwOutOfTheDrainIsOneDeliveryError(clock);
+    await caseInboxDrain_deadWriterIsSkippedFromTheCompletion(clock);
     await caseSection4_nonStringTextIsRefusedBeforeDelivery(clock);
     await caseSection4_badNameAtTheAskStepAndTheUrgentSite(clock);
     await caseSection4_quotingCoversTheQuestionAndEveryTerminator(clock);
@@ -7354,6 +7363,214 @@ async function caseSection4_subagentLeftRecordIsDrainedOnTheNextTick(clock) {
   await tickAndSettle(h, clock, 50);
   check("section4 subagent tick: the next tick delivers it as [READER:dev id=<record id>] with its text",
     readStoreRecord(h, key)?.status === "delivered" && (h.promptSubmits || []).includes("[READER:dev id=dev-rev-001-1] Stop: wrong branch."), h.promptSubmits);
+}
+
+// The completion drain. A turn's end that closes the last turn this session
+// saw open delivers the next waiting record with no tick, so a burst drains
+// at turn pace. The drain is scheduled after the handler rather than awaited
+// by it, so the cases below wait on the condition the drain sets, and a case
+// asserting that nothing was delivered waits the same fixed settle a tick
+// case does: the drain runs on promise continuations alone, well inside it.
+const DRAIN_SETTLE_MS = 50;
+const settleDrain = () => new Promise((r) => setTimeout(r, DRAIN_SETTLE_MS));
+const readerDevText = (seq, text) => `[READER:dev id=dev-rev-001-${seq}] ${text}`;
+const drainDecisions = (h, action) => (getStateForPersona(h, "dev")?.decisions || []).filter((d) => d.action === action);
+
+// A tick delivers the oldest of three and no other; each delivery turn's
+// completion delivers the next; a completion with the inbox empty delivers
+// nothing. Each record is delivered once, under its own decision.
+async function caseInboxDrain_threeRecordsDrainAtTurnPace(clock) {
+  console.log("\n=== Inbox drain: three records drain at turn pace, one per delivery turn ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("inbox_drain_three", now, "dev", "coordinator");
+  seedForeignClaims(h, "rev-001", now, ["reader:dev"]);
+  const keys = [1, 2, 3].map((seq) => seedRecordFor(h, "dev", "rev-001", seq, { at: now - 6000 + seq * 1000, text: `Record ${seq}.` }));
+  const status = () => keys.map((k) => readStoreRecord(h, k)?.status);
+
+  await tickAndSettle(h, clock, 50);
+  check("inbox drain three: one tick delivers the oldest and no other",
+    JSON.stringify(status()) === JSON.stringify(["delivered", "pending", "pending"]) && JSON.stringify(h.promptSubmits) === JSON.stringify([readerDevText(1, "Record 1.")]), { status: status(), submits: h.promptSubmits });
+
+  await openQueuedTurn(h, "d1");
+  await closeTurn(h, "d1");
+  const second = await waitUntil(() => readStoreRecord(h, keys[1])?.status === "delivered");
+  check("inbox drain three: the first delivery turn's end delivers the second with no tick",
+    second && readStoreRecord(h, keys[2])?.status === "pending" && h.promptSubmits.length === 2 && h.promptSubmits[1] === readerDevText(2, "Record 2."), { status: status(), submits: h.promptSubmits });
+
+  await openQueuedTurn(h, "d2");
+  await closeTurn(h, "d2");
+  const third = await waitUntil(() => readStoreRecord(h, keys[2])?.status === "delivered");
+  check("inbox drain three: the second delivery turn's end delivers the third",
+    third && h.promptSubmits.length === 3 && h.promptSubmits[2] === readerDevText(3, "Record 3."), { status: status(), submits: h.promptSubmits });
+
+  await openQueuedTurn(h, "d3");
+  await closeTurn(h, "d3");
+  await settleDrain();
+  const delivered = drainDecisions(h, "operator_delivered");
+  check("inbox drain three: a completion with the inbox empty submits nothing and pushes no delivery decision",
+    h.promptSubmits.length === 3 && delivered.length === 3, { submits: h.promptSubmits, delivered });
+  check("inbox drain three: each record has exactly one operator_delivered decision naming its id",
+    [1, 2, 3].every((seq) => delivered.filter((d) => d.detail.includes(`dev-rev-001-${seq} `)).length === 1), delivered);
+}
+
+// A record that arrives while a working turn runs is delivered when that
+// turn ends, not at the next tick.
+async function caseInboxDrain_recordArrivingDuringASeenTurnIsDeliveredAtItsEnd(clock) {
+  console.log("\n=== Inbox drain: a record arriving during a seen turn is delivered at its end ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("inbox_drain_arrives_mid_turn", now, "dev", "coordinator");
+  seedForeignClaims(h, "rev-001", now, ["reader:dev"]);
+  await openPromptTurn(h, { turnId: "work-1" });
+  const key = seedRecordFor(h, "dev", "rev-001", 1, { at: now - 1000, text: "Arrived mid-turn." });
+  await closeTurn(h, "work-1");
+  const delivered = await waitUntil(() => readStoreRecord(h, key)?.status === "delivered");
+  check("inbox drain mid-turn: the record is delivered at the turn's end, with no tick fired",
+    delivered && h.promptSubmits.includes(readerDevText(1, "Arrived mid-turn.")), { status: readStoreRecord(h, key)?.status, submits: h.promptSubmits });
+}
+
+// A completion carrying an id no turn.start recorded removes nothing and
+// drains nothing, even with no turn open; the next tick delivers.
+async function caseInboxDrain_unseenCompletionDeliversNothing(clock) {
+  console.log("\n=== Inbox drain: a completion this session never saw start delivers nothing ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("inbox_drain_unseen", now, "dev", "coordinator");
+  seedForeignClaims(h, "rev-001", now, ["reader:dev"]);
+  const key = seedRecordFor(h, "dev", "rev-001", 1, { at: now - 1000, text: "Waiting." });
+  await closeTurn(h, "never-started");
+  await settleDrain();
+  check("inbox drain unseen: the completion delivers nothing", readStoreRecord(h, key)?.status === "pending" && h.promptSubmits.length === 0, { status: readStoreRecord(h, key)?.status, submits: h.promptSubmits });
+  await tickAndSettle(h, clock, 50);
+  check("inbox drain unseen: the next tick delivers the record", readStoreRecord(h, key)?.status === "delivered" && h.promptSubmits.includes(readerDevText(1, "Waiting.")), h.promptSubmits);
+}
+
+// A seen completion with a second seen turn still open delivers nothing; the
+// record is taken when no turn remains open, here at the second turn's end,
+// since a tick with that turn open skips the drain by the tick's own rule.
+async function caseInboxDrain_completionWithAnotherTurnOpenDeliversNothing(clock) {
+  console.log("\n=== Inbox drain: a completion with another turn still open delivers nothing ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("inbox_drain_other_open", now, "dev", "coordinator");
+  seedForeignClaims(h, "rev-001", now, ["reader:dev"]);
+  await openQueuedTurn(h, "a");
+  await openQueuedTurn(h, "b");
+  const key = seedRecordFor(h, "dev", "rev-001", 1, { at: now - 1000, text: "Hold until free." });
+  await closeTurn(h, "a");
+  await settleDrain();
+  check("inbox drain other open: the first completion delivers nothing while the second turn is open",
+    readStoreRecord(h, key)?.status === "pending" && h.promptSubmits.length === 0, { status: readStoreRecord(h, key)?.status, submits: h.promptSubmits });
+  await tickAndSettle(h, clock, 50);
+  check("inbox drain other open: a tick with the second turn open delivers nothing", readStoreRecord(h, key)?.status === "pending", h.promptSubmits);
+  await closeTurn(h, "b");
+  const delivered = await waitUntil(() => readStoreRecord(h, key)?.status === "delivered");
+  check("inbox drain other open: the last open turn's end delivers the record", delivered && h.promptSubmits.includes(readerDevText(1, "Hold until free.")), h.promptSubmits);
+}
+
+// A channel-origin turn whose answer went through no reply-tool call, and
+// whose direct reply call throws, submits the reply backstop. That completion
+// delivers nothing beside it; the next tick delivers the record.
+async function caseInboxDrain_replyBackstopCompletionDeliversNothing(clock) {
+  console.log("\n=== Inbox drain: a completion that submitted the reply backstop delivers nothing ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("inbox_drain_backstop", now, "dev", "coordinator");
+  seedForeignClaims(h, "rev-001", now, ["reader:dev"]);
+  const text = "What is the state of the branch?";
+  await h.handlers["prompt.submit"](h.fake, { text, origin: { kind: "channel" } }, async (core) => ({ text: core.text, context: core.context }));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-channel", text }, async () => ({ result: "ok" }));
+  const key = seedRecordFor(h, "dev", "rev-001", 1, { at: now - 1000, text: "Behind the backstop." });
+  h.fake.tool.call = () => Promise.reject(new Error("relay unreachable"));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-channel", answer: "The branch is green.", reason: "completed" }, async () => ({ result: "ok" }));
+  await settleDrain();
+  const backstop = h.promptSubmits.filter((p) => p.startsWith("[REPLY BACKSTOP]"));
+  check("inbox drain backstop: the handler submitted the reply backstop (setup sanity)", backstop.length === 1, h.promptSubmits);
+  check("inbox drain backstop: that completion delivers nothing beside it",
+    readStoreRecord(h, key)?.status === "pending" && h.promptSubmits.length === 1, { status: readStoreRecord(h, key)?.status, submits: h.promptSubmits });
+  await tickAndSettle(h, clock, 50);
+  check("inbox drain backstop: the next tick delivers the record", readStoreRecord(h, key)?.status === "delivered" && h.promptSubmits.includes(readerDevText(1, "Behind the backstop.")), h.promptSubmits);
+}
+
+// The handler returns while the drain's submit is still parked, the shape a
+// live submit takes until the session is next idle, so the hook chain closes
+// on time. A handler that awaited the drain would not return here.
+async function caseInboxDrain_handlerReturnsBeforeTheSubmitSettles(clock) {
+  console.log("\n=== Inbox drain: the completion handler returns before the drain's submit settles ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("inbox_drain_returns_first", now, "dev", "coordinator");
+  seedForeignClaims(h, "rev-001", now, ["reader:dev"]);
+  await openQueuedTurn(h, "w");
+  seedRecordFor(h, "dev", "rev-001", 1, { at: now - 1000, text: "Parked submit." });
+  h.holdPromptSubmits();
+  let nextCalled = false;
+  const handler = h.handlers["turn.complete"](h.fake, { turnId: "w", aborted: true, reason: "aborted" }, async () => { nextCalled = true; return { result: "ok" }; });
+  const outcome = await Promise.race([handler.then(() => "returned"), new Promise((r) => setTimeout(() => r("held"), 500))]);
+  const attempted = await waitUntil(() => h.promptSubmits.includes(readerDevText(1, "Parked submit.")));
+  check("inbox drain returns first: the handler returned and called next while the drain's submit is parked",
+    outcome === "returned" && nextCalled && attempted, { outcome, nextCalled, submits: h.promptSubmits });
+  h.releasePromptSubmits();
+  await settleDrain();
+}
+
+// A rejected submit on the scheduled drain goes through the block's own
+// failed-delivery record and leaves the record as the block wrote it.
+async function caseInboxDrain_rejectedSubmitIsRecordedAsAFailedDelivery(clock) {
+  console.log("\n=== Inbox drain: a rejected submit on the completion drain is one failed-delivery record ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("inbox_drain_rejected", now, "dev", "coordinator");
+  seedForeignClaims(h, "rev-001", now, ["reader:dev"]);
+  await openQueuedTurn(h, "w");
+  const key = seedRecordFor(h, "dev", "rev-001", 1, { at: now - 1000, text: "Refused submit." });
+  h.failPromptSubmits(new Error("engine refused the prompt"));
+  await closeTurn(h, "w");
+  const recorded = await waitUntil(() => drainDecisions(h, "operator_delivery_failed").length > 0);
+  const failed = drainDecisions(h, "operator_delivery_failed");
+  check("inbox drain rejected: one operator_delivery_failed naming the record and the reason, and no delivery error",
+    recorded && failed.length === 1 && failed[0].detail.includes("dev-rev-001-1") && failed[0].detail.includes("engine refused the prompt") && drainDecisions(h, "operator_delivery_error").length === 0, failed);
+  check("inbox drain rejected: the record stays as the block wrote it before the submit", readStoreRecord(h, key)?.status === "delivered", readStoreRecord(h, key));
+}
+
+// A throw out of the scheduled drain, here the store refusing the record's
+// delivered write, is caught and written as one operator_delivery_error
+// naming it. The write is the instrument because the completion handler
+// itself lists and reads the inbox, while it writes only records stamped with
+// the completing turn, which this pending record is not.
+async function caseInboxDrain_throwOutOfTheDrainIsOneDeliveryError(clock) {
+  console.log("\n=== Inbox drain: a throw out of the completion drain is one delivery-error decision ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("inbox_drain_throw", now, "dev", "coordinator");
+  seedForeignClaims(h, "rev-001", now, ["reader:dev"]);
+  await openQueuedTurn(h, "w");
+  const key = seedRecordFor(h, "dev", "rev-001", 1, { at: now - 1000, text: "Unreadable." });
+  const realSet = h.fake.store.set;
+  h.fake.store.set = (k, v) => (k === key ? Promise.reject(new Error("store write refused")) : realSet(k, v));
+  await closeTurn(h, "w");
+  const recorded = await waitUntil(() => drainDecisions(h, "operator_delivery_error").length > 0);
+  const errors = drainDecisions(h, "operator_delivery_error");
+  h.fake.store.set = realSet;
+  check("inbox drain throw: one operator_delivery_error naming the message", recorded && errors.length === 1 && errors[0].detail.includes("store write refused"), errors);
+  check("inbox drain throw: nothing was submitted", h.promptSubmits.length === 0, h.promptSubmits);
+}
+
+// A record whose writer holds no live claim is skipped from the completion
+// path exactly as from the tick, and the skip is persisted.
+async function caseInboxDrain_deadWriterIsSkippedFromTheCompletion(clock) {
+  console.log("\n=== Inbox drain: a dead writer's record is skipped from the completion path ===");
+  clock.set(T0);
+  const now = T0;
+  const h = await seedNamedOwnerHarness("inbox_drain_dead_writer", now, "dev", "coordinator");
+  await openQueuedTurn(h, "w");
+  const key = seedRecordFor(h, "dev", "gone-001", 1, { at: now - 1000, text: "From a dead writer." });
+  await closeTurn(h, "w");
+  const skipped = await waitUntil(() => drainDecisions(h, "operator_skipped_no_claim").length > 0);
+  check("inbox drain dead writer: the record is marked skipped under one persisted operator_skipped_no_claim",
+    skipped && readStoreRecord(h, key)?.status === "skipped" && drainDecisions(h, "operator_skipped_no_claim").length === 1 && drainDecisions(h, "operator_skipped_no_claim")[0].detail.includes("dev-gone-001-1"), drainDecisions(h, "operator_skipped_no_claim"));
+  check("inbox drain dead writer: nothing was submitted", h.promptSubmits.length === 0, h.promptSubmits);
 }
 
 // A record whose text is not a string fails the record rule before the

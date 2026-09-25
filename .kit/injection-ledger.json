@@ -10,8 +10,8 @@
     {
       "name": "COORDINATOR_STEER_INSTRUCTION",
       "file": "bin/supervise-holder.sh",
-      "chars": 3673,
-      "words": 627
+      "chars": 3721,
+      "words": 637
     },
     {
       "name": "CHANNEL_REPLY_INSTRUCTION",
@@ -280,8 +280,8 @@
     {
       "name": "agentic_say_description",
       "file": "hooks/index.ts",
-      "chars": 1526,
-      "words": 249
+      "chars": 1628,
+      "words": 266
     },
     {
       "name": "agentic_inbox_description",
