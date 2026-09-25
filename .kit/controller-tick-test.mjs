@@ -3434,6 +3434,15 @@ async function main() {
     await caseLive1_chapterUnderLiveDirLogsProgress(clock);
     await caseLive1_readFailureDegradesToNotComplete(clock);
 
+    // Section 2 (boundary-compaction): the plugin banks the kit's compaction
+    // boundary at a durable turn end, and nowhere else.
+    await caseBank2_durableTurnsBankOnce(clock);
+    await caseBank2_nonDurableTurnsBankNothing(clock);
+    await caseBank2_onlyThePersonasOwnTurnEndBanks(clock);
+    await caseBank2_greatestLastUpdatedRecordIsRun(clock);
+    await caseBank2_installRecordMissesSkipWithOneDecision(clock);
+    await caseBank2_failedRunsLogOneDecisionAndNeverFailTheTurn(clock);
+
     // Section 3 (plan-health-from-the-record): the worker's BLOCKED and
     // WAITING leads, the hold they put on the idle branch, and the
     // controller's complete verdict ignored on a plan entry.
@@ -4123,6 +4132,15 @@ function untrackedLines(h) {
   return getDecisions(h).filter(d => d.action === "untracked_work");
 }
 
+// The last decision written before the turn's own compaction-boundary step.
+// A durable turn end logs one compaction_boundary_* decision after every
+// other decision the turn wrote, so "re-pushed at the tail" means the tail of
+// the log with that one step's entry set aside: an in-place splice would
+// still leave the turn_start and cost_summary lines behind the untracked one.
+function tailBeforeBoundaryStep(h) {
+  return getDecisions(h).filter(d => !String(d.action).startsWith("compaction_boundary_")).at(-1);
+}
+
 async function caseItem2_untrackedWorkLogsLineAndBuildsNoRoot(clock) {
   console.log("\n=== Item 2: a working turn with no tree logs untracked_work and builds no root ===");
   clock.set(T0);
@@ -4345,7 +4363,7 @@ async function caseItem2_untrackedWorkCollapsesToOneLine(clock) {
 
   const decisions = getDecisions(h);
   const lines = untrackedLines(h);
-  const last = decisions[decisions.length - 1];
+  const last = tailBeforeBoundaryStep(h);
   check("item2 collapse: exactly one untracked_work line after three firings", lines.length === 1, lines);
   check("item2 collapse: the line is the tail of the log", last?.action === "untracked_work", last);
   check("item2 collapse: its detail opens x3: and carries the newest excerpt", last?.detail === "x3: third request", last?.detail);
@@ -4378,7 +4396,7 @@ async function caseItem2_untrackedWorkCollapsesToOneLine(clock) {
   clock.advance(10_000);
   await untrackedWorkTurn(h2, "t-f2", "fresh again");
   fresh = untrackedLines(h2);
-  const tail = getDecisions(h2).at(-1);
+  const tail = tailBeforeBoundaryStep(h2);
   check("item2 collapse fresh: a second firing removes only this session's own line", fresh.length === 2 && fresh[0]?.detail === "x3: third request" && fresh[1]?.detail === "x2: fresh again", fresh);
   check("item2 collapse fresh: this session's line is the tail", tail?.action === "untracked_work" && tail?.detail === "x2: fresh again", tail);
 }
@@ -4418,7 +4436,7 @@ async function caseItem2_untrackedWorkCarriesCountPastCap(clock) {
   const lines = untrackedLines(h);
   check("item2 cap: the next firing pushes one line", lines.length === 1, lines);
   check("item2 cap: the count carries on from the dropped line", lines[0]?.detail === "x2: after the cap", lines[0]?.detail);
-  check("item2 cap: the line is the tail of the log", getDecisions(h).at(-1)?.action === "untracked_work");
+  check("item2 cap: the line is the tail of the log", tailBeforeBoundaryStep(h)?.action === "untracked_work");
 }
 
 // The held line lives in one persona's log. agentic_identity switching the
@@ -14785,6 +14803,342 @@ async function caseLive1_readFailureDegradesToNotComplete(clock) {
       unreadable.length === 1 && unreadable[0].detail.startsWith("plan-1:") && unreadable[0].detail.includes("live directory unavailable")
         && (c.errorText === undefined || unreadable[0].detail.includes(c.errorText)), unreadable);
     check(`live1 cwd unavailable (${c.label}): no complete decision`, !decisions.some(d => d.action === "complete"), decisions.map(d => d.action));
+  }
+}
+
+// --- Section 2 (boundary-compaction): the compaction boundary banked at a durable turn end ---
+
+// The kit install the seeded installed_plugins.json names, and the script the
+// plugin must run under it.
+const BANK2_INSTALL = "C:\\kit-cache\\claude-kit\\build-new";
+const BANK2_SCRIPT = `${BANK2_INSTALL}/hooks/kit-compact-checkpoint.js`;
+
+function bank2Installed(installPath = BANK2_INSTALL) {
+  return { version: 2, plugins: { "claude-kit@applefeld": [{ scope: "user", installPath, version: "b", lastUpdated: "2026-09-25T09:59:04.362Z" }] } };
+}
+
+// Writes installed_plugins.json under the home the fake environment names, a
+// JSON value or raw text as given.
+async function bank2SeedInstalled(h, value) {
+  const home = await h.fake.env.get("USERPROFILE");
+  h.fsMap.set(`${home}/.claude/plugins/installed_plugins.json`, typeof value === "string" ? value : JSON.stringify(value));
+}
+
+// Replaces the harness's fixed-exit process stub with one that records every
+// child's argv and options, so a case asserting the command did not run reads
+// an empty record rather than a stub that answers the same either way.
+// `answer` decides what the run resolves or rejects with.
+function bank2Recorder(h, answer = () => ({ exitCode: 0, stdout: "", stderr: "" })) {
+  const runs = [];
+  h.fake.process.run = (argv, init) => {
+    runs.push({ argv: [...argv], init: init === undefined ? undefined : { ...init, env: init.env ? { ...init.env } : init.env } });
+    return Promise.resolve().then(() => answer(argv, init));
+  };
+  return runs;
+}
+
+// One turn through the real handlers: turn.start under `turnId` unless
+// `open` is false, then turn.complete, recording whether the completion
+// settled or threw and how often it handed the event on to next.
+async function bank2Turn(h, turnId, answer, { reason = "completed", aborted = false, open = true } = {}) {
+  if (open) await h.handlers["turn.start"](h.fake, { turnId }, async () => ({ result: "ok" }));
+  return bank2Complete(h, turnId, answer, { reason, aborted });
+}
+
+async function bank2Complete(h, turnId, answer, { reason = "completed", aborted = false } = {}) {
+  let nextCalls = 0;
+  let thrown = null;
+  const e = { turnId, answer, reason, ...(aborted ? { aborted: true } : {}) };
+  try {
+    await h.handlers["turn.complete"](h.fake, e, async () => { nextCalls += 1; return { result: "ok" }; });
+  } catch (err) {
+    thrown = err;
+  }
+  return { nextCalls, thrown };
+}
+
+function bank2Decisions(h) {
+  return getDecisions(h).filter(d => String(d.action).startsWith("compaction_boundary_"));
+}
+
+// The shapes each entry kind starts from. The scorer's classify answers
+// on-goal when that label is on offer and discard to the memory curator.
+function bank2Scorer(h) {
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("on-goal")) ? "on-goal" : "discard");
+}
+
+async function bank2NoGoalHarness(caseName) {
+  const h = await createTickHarness({ ...OPTS, caseName, stateOpts: { hasActiveLeaf: false } });
+  bank2Scorer(h);
+  return h;
+}
+
+async function bank2TaskHarness(caseName) {
+  const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 20000 });
+  const task = makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", maxRounds: 10, createdAt: T0 - 10000 });
+  const h = await createTickHarness({ ...OPTS, caseName, stateOpts: { now: T0, goals: [root, task], activeGoalId: "task-1" } });
+  bank2Scorer(h);
+  return h;
+}
+
+async function bank2PlanHarness(caseName, treeOpts = { chapterCount: 1 }) {
+  const h = await plan2Harness(caseName, treeOpts);
+  bank2Scorer(h);
+  return h;
+}
+
+// The banking-case assertions: the turn settled with one next call, the
+// boundary command ran once as node <install>/hooks/kit-compact-checkpoint.js
+// boundary, with an env carrying only CLAUDE_CODE_SESSION_ID set to the
+// session id and no cwd, and one compaction_boundary_banked decision carries
+// the exit code and the child's first stderr line.
+function bank2CheckBanked(label, h, runs, outcome, { script = BANK2_SCRIPT, stderrFirst = null, stderrLater = null } = {}) {
+  check(`${label}: the turn settled and handed on to next once`, outcome.thrown === null && outcome.nextCalls === 1, { thrown: outcome.thrown && String(outcome.thrown), nextCalls: outcome.nextCalls });
+  check(`${label}: the boundary command ran exactly once`, runs.length === 1, runs);
+  const run = runs[0];
+  check(`${label}: argv is node, the kit checkpoint script under the install path, boundary`,
+    run && run.argv.length === 3 && run.argv[0] === "node" && run.argv[1] === script && run.argv[2] === "boundary", run && run.argv);
+  check(`${label}: env carries CLAUDE_CODE_SESSION_ID equal to the session id and nothing else`,
+    run && run.init && run.init.env && JSON.stringify(Object.keys(run.init.env)) === '["CLAUDE_CODE_SESSION_ID"]' && run.init.env.CLAUDE_CODE_SESSION_ID === SESSION_ID, run && run.init);
+  check(`${label}: no cwd is passed`, run && run.init && !Object.hasOwn(run.init, "cwd"), run && run.init);
+  check(`${label}: a timeout is set`, run && run.init && typeof run.init.timeoutMs === "number" && run.init.timeoutMs > 0, run && run.init);
+  const decisions = bank2Decisions(h);
+  check(`${label}: exactly one compaction_boundary decision, and it is banked`, decisions.length === 1 && decisions[0].action === "compaction_boundary_banked", decisions);
+  const detail = decisions[0] ? decisions[0].detail : "";
+  check(`${label}: the decision carries the exit code`, /\bexit 0\b/.test(detail), detail);
+  if (stderrFirst !== null) {
+    check(`${label}: the decision carries the child's first stderr line and not a later one`,
+      detail.includes(stderrFirst) && (stderrLater === null || !detail.includes(stderrLater)), detail);
+  }
+}
+
+// The non-banking assertions. The recorder is live in every case that calls
+// this: each case's banking control, or bank2CheckBanked in the case beside
+// it on the same helpers, shows it recording a run.
+function bank2CheckNothing(label, h, runs, outcome) {
+  check(`${label}: the turn settled and handed on to next once`, outcome.thrown === null && outcome.nextCalls === 1, { thrown: outcome.thrown && String(outcome.thrown), nextCalls: outcome.nextCalls });
+  check(`${label}: no child process ran`, runs.length === 0, runs);
+  check(`${label}: no compaction_boundary decision`, bank2Decisions(h).length === 0, bank2Decisions(h));
+}
+
+// A delivered no-goal turn, a task-entry turn, a Chapter-banking turn and a
+// turn whose plan document reads Complete each bank exactly once. The plan
+// document is read under the live directory, here HARNESS_CWD, which the
+// harness's session.cwd answers.
+async function caseBank2_durableTurnsBankOnce(clock) {
+  console.log("\n=== boundary-compaction Section 2: a durable turn end banks the boundary exactly once ===");
+
+  clock.set(T0);
+  {
+    const h = await bank2NoGoalHarness("bank2_nogoal");
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h, () => ({ exitCode: 0, stdout: "", stderr: "boundary marker written without a transcript position\nsecond stderr line\n" }));
+    check("bank2 no-goal setup: no goal is active", getState(h).goals.length === 0 && getState(h).activeGoalId === null, getState(h).goals);
+    const outcome = await bank2Turn(h, "t-nogoal", "Here is the answer.");
+    bank2CheckBanked("bank2 no-goal turn", h, runs, outcome, { stderrFirst: "boundary marker written without a transcript position", stderrLater: "second stderr line" });
+  }
+
+  clock.set(T0);
+  {
+    const h = await bank2TaskHarness("bank2_task");
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    check("bank2 task setup: task-1 is the active entry with no plan holder",
+      getState(h).activeGoalId === "task-1" && !getState(h).goals.some(g => g.planPath), getState(h).goals.map(g => `${g.id}|${g.status}|${g.planPath}`));
+    const outcome = await bank2Turn(h, "t-task", "Did the next step of the task.");
+    bank2CheckBanked("bank2 task-entry turn", h, runs, outcome);
+  }
+
+  clock.set(T0);
+  {
+    const h = await bank2PlanHarness("bank2_chapter");
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    const before = getState(h).goals.find(g => g.id === "plan-1");
+    check("bank2 chapter setup: plan-1 is active with chapterCount 1", before && before.status === "active" && before.chapterCount === 1, before);
+    const outcome = await bank2Turn(h, "t-chapter", "Chapter 2 is written.");
+    check("bank2 chapter-banking turn: the read advanced the Chapter count", getDecisions(h).some(d => d.action === "plan_progress" && d.detail.includes("1 -> 2")), getDecisions(h).map(d => d.action));
+    bank2CheckBanked("bank2 chapter-banking turn", h, runs, outcome);
+  }
+
+  clock.set(T0);
+  {
+    const h = await bank2PlanHarness("bank2_complete");
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    const outcome = await bank2Turn(h, "t-complete", "The plan is complete.");
+    check("bank2 plan-complete turn: the document completed plan-1 with no Chapter advance",
+      getState(h).goals.find(g => g.id === "plan-1").status === "complete" && !getDecisions(h).some(d => d.action === "plan_progress"), getDecisions(h).map(d => d.action));
+    bank2CheckBanked("bank2 plan-complete turn", h, runs, outcome);
+  }
+}
+
+// Each turn below has installed_plugins.json seeded and the recorder live, so
+// the one thing between it and a run is the durable-boundary gate. A skipped
+// turn (aborted, errored, or with no answer), a turn ending on a BLOCKED: or
+// WAITING: line whatever the entry's kind, and a plan holder that advanced no
+// Chapter and was not completed (including a task under a plan node, and a
+// plan record that could not be read) each bank nothing.
+async function caseBank2_nonDurableTurnsBankNothing(clock) {
+  console.log("\n=== boundary-compaction Section 2: a skipped, lead-ended or mid-section turn banks nothing ===");
+  const cases = [
+    { label: "skipped: aborted", build: bank2NoGoalHarness, answer: "Partial.", opts: { aborted: true, reason: "aborted" } },
+    { label: "skipped: errored", build: bank2NoGoalHarness, answer: "Partial.", opts: { reason: "error" } },
+    { label: "skipped: no answer", build: bank2NoGoalHarness, answer: "", opts: {} },
+    { label: "lead-ended: no-goal turn on WAITING:", build: bank2NoGoalHarness, answer: "WAITING: on the operator's reply.", opts: {} },
+    { label: "lead-ended: task-entry turn on BLOCKED:", build: bank2TaskHarness, answer: "BLOCKED: the credentials are missing.", opts: {} },
+    {
+      label: "lead-ended: plan turn on BLOCKED: though a Chapter advanced",
+      build: bank2PlanHarness,
+      seed: (h) => h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"])),
+      answer: "BLOCKED: review is pending.",
+      opts: {},
+    },
+    {
+      label: "mid-section: plan holder with no Chapter advance",
+      build: bank2PlanHarness,
+      seed: (h) => h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"])),
+      answer: "Made progress on the section.",
+      opts: {},
+    },
+    {
+      label: "mid-section: task under a plan node with no Chapter advance",
+      build: (name) => bank2PlanHarness(name, { taskUnderPlan: true, chapterCount: 1 }),
+      seed: (h) => h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"])),
+      answer: "Made progress on the task.",
+      opts: {},
+    },
+    {
+      label: "mid-section: plan record unreadable",
+      build: bank2PlanHarness,
+      seed: () => {},
+      answer: "Made progress on the section.",
+      opts: {},
+    },
+  ];
+  for (const c of cases) {
+    clock.set(T0);
+    const h = await c.build(`bank2_none_${cases.indexOf(c)}`);
+    if (c.seed) c.seed(h);
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    const outcome = await bank2Turn(h, "t-none", c.answer, c.opts);
+    bank2CheckNothing(`bank2 ${c.label}`, h, runs, outcome);
+  }
+}
+
+// Only the completion of the persona's own turn, with no turn left open,
+// banks. A background subagent's completion inside the open turn and a
+// completion for a turn this session never saw start bank nothing; the
+// persona's own completion in the same harness afterwards banks once, which
+// is the control that the recorder records there. A completion carrying the
+// turn's id while an earlier turn is still open banks nothing either.
+async function caseBank2_onlyThePersonasOwnTurnEndBanks(clock) {
+  console.log("\n=== boundary-compaction Section 2: only the persona's own turn end banks ===");
+
+  clock.set(T0);
+  {
+    const h = await bank2NoGoalHarness("bank2_subagent");
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    await h.handlers["turn.start"](h.fake, { turnId: "t-main" }, async () => ({ result: "ok" }));
+    const sub = await bank2Complete(h, "t-subagent", "The subagent's report.");
+    bank2CheckNothing("bank2 subagent completion inside the open turn", h, runs, sub);
+    const own = await bank2Complete(h, "t-main", "The persona's own answer.");
+    bank2CheckBanked("bank2 the persona's own completion after it (control)", h, runs, own);
+  }
+
+  clock.set(T0);
+  {
+    const h = await bank2NoGoalHarness("bank2_unseen");
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    const ghost = await bank2Turn(h, "t-never-started", "An answer for a turn never seen.", { open: false });
+    bank2CheckNothing("bank2 completion for a turn never seen to start", h, runs, ghost);
+    const own = await bank2Turn(h, "t-seen", "An answer for a turn seen to start.");
+    bank2CheckBanked("bank2 a seen turn in the same session afterwards (control)", h, runs, own);
+  }
+
+  clock.set(T0);
+  {
+    const h = await bank2NoGoalHarness("bank2_overlap");
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    await h.handlers["turn.start"](h.fake, { turnId: "t-first" }, async () => ({ result: "ok" }));
+    await h.handlers["turn.start"](h.fake, { turnId: "t-second" }, async () => ({ result: "ok" }));
+    const outcome = await bank2Complete(h, "t-second", "The later turn's answer.");
+    bank2CheckNothing("bank2 the gate turn's completion while another turn is still open", h, runs, outcome);
+  }
+}
+
+// The run takes the install record with the greatest lastUpdated, placed
+// neither first nor last so neither end of the array is what is read.
+async function caseBank2_greatestLastUpdatedRecordIsRun(clock) {
+  console.log("\n=== boundary-compaction Section 2: the greatest-lastUpdated install record is the one run ===");
+  clock.set(T0);
+  const h = await bank2NoGoalHarness("bank2_select");
+  await bank2SeedInstalled(h, {
+    version: 2,
+    plugins: {
+      "claude-kit@applefeld": [
+        { scope: "user", installPath: "C:\\kit-cache\\claude-kit\\build-old", lastUpdated: "2026-09-01T00:00:00.000Z" },
+        { scope: "user", installPath: BANK2_INSTALL, lastUpdated: "2026-09-25T09:59:04.362Z" },
+        { scope: "user", installPath: "C:\\kit-cache\\claude-kit\\build-mid", lastUpdated: "2026-09-20T00:00:00.000Z" },
+      ],
+    },
+  });
+  const runs = bank2Recorder(h);
+  const outcome = await bank2Turn(h, "t-select", "Here is the answer.");
+  bank2CheckBanked("bank2 three install records", h, runs, outcome);
+}
+
+// Each way the install record can be missing logs one skipped decision
+// naming why, runs nothing and never throws out of turn.complete.
+async function caseBank2_installRecordMissesSkipWithOneDecision(clock) {
+  console.log("\n=== boundary-compaction Section 2: a missing install record skips the run with one decision ===");
+  const misses = [
+    { label: "absent file", seed: null, token: "absent" },
+    { label: "missing key", seed: { version: 2, plugins: { "other@market": [{ installPath: "C:\\other", lastUpdated: "2026-09-25T00:00:00.000Z" }] } }, token: "no claude-kit@applefeld key" },
+    { label: "empty array", seed: { version: 2, plugins: { "claude-kit@applefeld": [] } }, token: "no install record" },
+    { label: "unparseable JSON", seed: "{ \"version\": 2, \"plugins\": ", token: "not JSON" },
+  ];
+  for (const m of misses) {
+    clock.set(T0);
+    const h = await bank2NoGoalHarness(`bank2_miss_${misses.indexOf(m)}`);
+    if (m.seed !== null) await bank2SeedInstalled(h, m.seed);
+    const runs = bank2Recorder(h);
+    const outcome = await bank2Turn(h, "t-miss", "Here is the answer.");
+    const decisions = bank2Decisions(h);
+    check(`bank2 ${m.label}: the turn settled and handed on to next once`, outcome.thrown === null && outcome.nextCalls === 1, { thrown: outcome.thrown && String(outcome.thrown), nextCalls: outcome.nextCalls });
+    check(`bank2 ${m.label}: no child process ran`, runs.length === 0, runs);
+    check(`bank2 ${m.label}: exactly one compaction_boundary_skipped decision naming the reason`,
+      decisions.length === 1 && decisions[0].action === "compaction_boundary_skipped" && decisions[0].detail.includes(m.token), decisions);
+  }
+}
+
+// A run that exits non-zero, and a run that rejects (the host's timeout
+// kill among the ways), each log one failed decision carrying what the run
+// said, and turn.complete still settles and calls next once.
+async function caseBank2_failedRunsLogOneDecisionAndNeverFailTheTurn(clock) {
+  console.log("\n=== boundary-compaction Section 2: a failed run logs one decision and never fails the turn ===");
+  const failures = [
+    { label: "non-zero exit", answer: () => ({ exitCode: 3, stdout: "", stderr: "kit-compact-checkpoint: no transcript found\nstack line\n" }), tokens: ["exit 3", "kit-compact-checkpoint: no transcript found"], absent: "stack line" },
+    { label: "rejected run", answer: () => { throw new Error("the child outlived timeoutMs and was killed"); }, tokens: ["the child outlived timeoutMs"], absent: null },
+  ];
+  for (const f of failures) {
+    clock.set(T0);
+    const h = await bank2NoGoalHarness(`bank2_fail_${failures.indexOf(f)}`);
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h, f.answer);
+    const outcome = await bank2Turn(h, "t-fail", "Here is the answer.");
+    const decisions = bank2Decisions(h);
+    check(`bank2 ${f.label}: the turn settled and handed on to next once`, outcome.thrown === null && outcome.nextCalls === 1, { thrown: outcome.thrown && String(outcome.thrown), nextCalls: outcome.nextCalls });
+    check(`bank2 ${f.label}: the command was attempted once`, runs.length === 1, runs);
+    check(`bank2 ${f.label}: exactly one compaction_boundary_failed decision carrying what the run said`,
+      decisions.length === 1 && decisions[0].action === "compaction_boundary_failed" && f.tokens.every(t => decisions[0].detail.includes(t))
+        && (f.absent === null || !decisions[0].detail.includes(f.absent)), decisions);
   }
 }
 

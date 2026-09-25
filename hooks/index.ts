@@ -1031,6 +1031,114 @@ async function runHealth(dp: any, forNodeId: string | null): Promise<void> {
   }
 }
 
+// The kit plugin's key in the engine's installed_plugins.json, and how long
+// its boundary command may run before $.process.run kills it and rejects.
+const KIT_PLUGIN_KEY = "claude-kit@applefeld";
+const KIT_BOUNDARY_TIMEOUT_MS = 15_000;
+
+// Where the kit plugin is installed: <home>/.claude/plugins/installed_plugins.json
+// holds { plugins: { "claude-kit@applefeld": [{ installPath, lastUpdated }, ...] } },
+// and the record with the greatest lastUpdated is the build in use. The file is
+// the engine's, so every shape miss (no home, no file, a read that fails, text
+// that is not JSON, no plugins object, no key, a value that is not an array, an
+// empty array, a record without a string installPath or a readable
+// lastUpdated) returns a reason rather than throwing.
+async function kitInstallPathOf(dp: any): Promise<{ installPath: string } | { skip: string }> {
+  let home: unknown;
+  try {
+    home = await hostOf(dp).getHome();
+  } catch {
+    home = undefined;
+  }
+  if (typeof home !== "string" || home.trim().length === 0) return { skip: "no home directory" };
+  const file = `${home.trim().replace(/[/\\]+$/, "")}/.claude/plugins/installed_plugins.json`;
+  let text: unknown;
+  try {
+    if (!(await dp.fs.exists(file))) return { skip: "installed_plugins.json is absent" };
+    text = await dp.fs.read(file);
+  } catch (err) {
+    return { skip: `installed_plugins.json could not be read: ${String(err).slice(0, 150)}` };
+  }
+  if (typeof text !== "string") return { skip: "installed_plugins.json is not text" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripBom(text));
+  } catch {
+    return { skip: "installed_plugins.json is not JSON" };
+  }
+  const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  const plugins = isObject(parsed) ? parsed.plugins : undefined;
+  if (!isObject(plugins)) return { skip: "installed_plugins.json has no plugins object" };
+  if (!Object.hasOwn(plugins, KIT_PLUGIN_KEY)) return { skip: `installed_plugins.json has no ${KIT_PLUGIN_KEY} key` };
+  const records = plugins[KIT_PLUGIN_KEY];
+  if (!Array.isArray(records)) return { skip: `${KIT_PLUGIN_KEY} is not an array` };
+  if (records.length === 0) return { skip: `${KIT_PLUGIN_KEY} has no install record` };
+  let best: { installPath: string; at: number } | null = null;
+  for (const record of records) {
+    if (!isObject(record) || typeof record.installPath !== "string" || record.installPath.trim().length === 0) {
+      return { skip: `a ${KIT_PLUGIN_KEY} record has no installPath` };
+    }
+    const at = typeof record.lastUpdated === "string" ? Date.parse(record.lastUpdated) : NaN;
+    if (Number.isNaN(at)) return { skip: `a ${KIT_PLUGIN_KEY} record has no readable lastUpdated` };
+    if (best === null || at > best.at) best = { installPath: record.installPath.trim(), at };
+  }
+  return { installPath: best!.installPath };
+}
+
+// Runs the kit's checkpoint command with its boundary verb for this session,
+// which records the compaction marker the kit's own gate honors. The marker is
+// keyed by session id under ~/.kit, so the child takes the session id in its
+// environment and no working directory. Best-effort: every outcome is one
+// decision and nothing throws. The decision carries the exit code and the
+// first line the child wrote to stderr, because the command exits zero on a
+// marker it could not position and says so only there. turnKind is what
+// opened the turn, for the record only.
+async function bankCompactionBoundary(dp: any, turnKind: string): Promise<void> {
+  const sessionId = sess.mySessionId;
+  if (typeof sessionId !== "string" || sessionId.length === 0 || sessionId === "pending") {
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "monitor",
+      action: "compaction_boundary_skipped",
+      detail: `no session id; turn ${turnKind}`,
+    });
+    return;
+  }
+  const located = await kitInstallPathOf(dp);
+  if ("skip" in located) {
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "monitor",
+      action: "compaction_boundary_skipped",
+      detail: `${located.skip}; turn ${turnKind}`,
+    });
+    return;
+  }
+  const script = `${located.installPath.replace(/[/\\]+$/, "")}/hooks/kit-compact-checkpoint.js`;
+  try {
+    const res = await dp.process.run(["node", script, "boundary"], {
+      env: { CLAUDE_CODE_SESSION_ID: sessionId },
+      timeoutMs: KIT_BOUNDARY_TIMEOUT_MS,
+    });
+    const exitCode = res && typeof res.exitCode === "number" ? res.exitCode : null;
+    const stderr = res && typeof res.stderr === "string" ? res.stderr : "";
+    const firstStderr = (stderr.split(LINE_TERMINATOR).find((line: string) => line.trim() !== "") ?? "").trim().slice(0, 150);
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "monitor",
+      action: exitCode === 0 ? "compaction_boundary_banked" : "compaction_boundary_failed",
+      detail: `exit ${exitCode === null ? "unknown" : exitCode}; stderr: ${firstStderr || "none"}; turn ${turnKind}; ${script.slice(0, 150)}`,
+    });
+  } catch (err) {
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "monitor",
+      action: "compaction_boundary_failed",
+      detail: `run failed: ${String(err).slice(0, 150)}; turn ${turnKind}; ${script.slice(0, 150)}`,
+    });
+  }
+}
+
 // Item 5 (Bounded store): the one append-only rollover log every capped
 // store writes to when something falls off its window - the commons
 // store's closed inbox/reply records (enforceChannelWindow) and the
@@ -6959,6 +7067,11 @@ export const register: Register = async (on, options) => {
     // is read once.
     const completesNudgedTurn = nudgedTurnId !== null && e.turnId === nudgedTurnId;
     if (completesNudgedTurn) nudgedTurnId = null;
+    // Read before the resets below, for the compaction boundary step: whether
+    // this completion is the persona's own turn ending, by the id turn.start
+    // carried, and what opened that turn, which the step's decision records.
+    const completesGateTurn = currentGateTurnId !== null && e.turnId === currentGateTurnId;
+    const turnKindAtStart: string = currentTurnKind;
     currentTurnKind = "unaccounted";
     if (e.turnId === currentGateTurnId) {
       currentTurnOriginKind = "unclassified";
@@ -7417,6 +7530,12 @@ export const register: Register = async (on, options) => {
     // holder plan_record_unreadable log as a document the reader cannot read.
     const planHolder = turnLeaf ? planHolderOf(sess.state, turnLeaf) : undefined;
     const planPath = planHolder?.planPath;
+    // Whether this turn's read found a Chapter above the stored count, or
+    // found the document Complete or archived and completed the holder. The
+    // compaction boundary step below reads a plan holder as mid-work unless
+    // one of the two is true; an unreadable document sets neither.
+    let planChapterAdvanced = false;
+    let planCompletedByDocument = false;
     if (sess.isOwner && planHolder && planPath) {
       const holder = planHolder;
       let liveDir: string | null = null;
@@ -7457,6 +7576,7 @@ export const register: Register = async (on, options) => {
             const previous = holder.chapterCount ?? 0;
             holder.chapterCount = reading.chapters;
             holder.updatedAt = Date.now();
+            planChapterAdvanced = true;
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "goal",
@@ -7501,6 +7621,7 @@ export const register: Register = async (on, options) => {
               });
             }
             completeLeaf(sess.state, completedId, "plan document complete");
+            planCompletedByDocument = true;
             // A holder blocked over a child ("Child task blocked") ends
             // complete with no live reason and no lead left on it.
             holder.blockedReason = undefined;
@@ -7762,6 +7883,29 @@ export const register: Register = async (on, options) => {
             detail: `record ${record.id} reply refused, left ${record.status}: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200),
           });
         }
+      }
+    }
+
+    // The compaction boundary: at the persona's own turn end, when that turn
+    // stopped at a durable point, the kit's boundary command records the
+    // marker its compaction gate honors. The persona's own turn end is this
+    // completion carrying the id turn.start carried with no turn left open
+    // after its delete, so a background subagent's completion inside the open
+    // turn, or one for a turn this session never saw start, banks nothing.
+    // Only the owner banks, and a skipped turn banks nothing. A durable point
+    // is read from fixed signals: the closing text opens with no BLOCKED: or
+    // WAITING: line, whatever the entry's kind, and the entry active at turn
+    // start either has no plan holder (a task entry, or no entry at all) or
+    // its holder's document gained a Chapter or completed the holder this
+    // turn. A plan holder that did neither is mid-section and banks nothing,
+    // since a marker there would license compaction mid-work. It runs after
+    // the plan-record read, which settles the Chapter signal, and before the
+    // persist, which saves its decision.
+    if (completesGateTurn && !turnIsOpen() && sess.isOwner && !skipped) {
+      const endedOnLead = statusLine !== null && statusLine.state !== "working";
+      const midSection = planHolder !== undefined && !planChapterAdvanced && !planCompletedByDocument;
+      if (!endedOnLead && !midSection) {
+        await bankCompactionBoundary($, turnKindAtStart);
       }
     }
 
