@@ -5774,13 +5774,15 @@ export const register: Register = async (on, options) => {
       // logged per held tick. An ask hold still runs tickOpenAsk, which
       // records ask_waiting once a minute, re-raises the question once, and
       // closes the ask on expiry; an ask the slot names whose record is no
-      // longer open clears the slot here, and the hold is read again since
-      // a lead can still hold once it is gone.
+      // longer open clears the slot here, persisted at once so the cleared
+      // slot reaches disk whatever the lead then says, and the hold is read
+      // again since a lead can still hold once the ask is gone.
       let hold = holdOf(sess.state, now);
       if (hold === "ask") {
         const askResult = await tickOpenAsk($, sess.state, sess.persona, cfg, g.id, expectedTurns);
         if (askResult !== "none") return;
         sess.state.pendingAskId = undefined;
+        if (!(await persist($))) return;
         hold = holdOf(sess.state, now);
       }
       if (hold !== null) return;
@@ -5855,8 +5857,18 @@ export const register: Register = async (on, options) => {
             // The cap holds by opening an ask, the same way the cost cap
             // below does: the entry stays active with no reason written on
             // it, holdOf reads the open ask as the hold, and the ask's
-            // close, by an answer or by expiry, is the lift. The slot holds
-            // one ask, so a cap reached while one is open opens no second.
+            // close, by an answer or by expiry, is the lift. The count is
+            // reset here, as the ask opens, rather than at the close: while
+            // the ask is open holdOf holds every nudge, so nothing raises
+            // the count in between (the only increment is the nudge send
+            // past the hold, and the other writers all reset it), and a
+            // count left at the cap would reopen the ask on the tick after
+            // the close in place of the nudge the lift promises. The floor
+            // is left alone, since the last nudge's spacing still applies.
+            sess.consecutiveNudgesWithoutOnGoal = 0;
+            // Defensive: holdOf returned null for this tick to reach here,
+            // so the slot is empty. The guard keeps the one-ask rule legible
+            // at the site that opens one, as the cost cap's guard below does.
             if (!sess.state.pendingAskId) {
               const askId = `ask-${g.id}-${capTs}`;
               await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, capReason, sess.mySessionId);
@@ -6219,7 +6231,7 @@ export const register: Register = async (on, options) => {
               // the plugin's.
               const expiredAskQuestion = unnamedExpiredAskQuestion(sess.state, g);
               const expiredAskLine = expiredAskQuestion !== null
-                ? `Your earlier question, "${quoteContinuationLines(expiredAskQuestion)}", expired unanswered after its wait, so nudging resumes.\n`
+                ? `An ask on this entry, "${quoteContinuationLines(expiredAskQuestion)}", expired unanswered after its wait, so nudging resumes.\n`
                 : "";
               const nudgeText = idleGapConverted
                 ? `[GOAL] The active goal is: ${g.objective}\n` +
@@ -6951,8 +6963,7 @@ export const register: Register = async (on, options) => {
             // Reset consecutive nudges when on-goal. A plan entry's
             // complete verdict at the scorer moves nothing, the counter
             // included: the idle branch's own converted complete still
-            // counts toward the three-nudge stall pause, which is what
-            // bounds it.
+            // counts toward the nudge cap, whose ask is what bounds it.
             if (label === "on-goal") {
               sess.consecutiveNudgesWithoutOnGoal = 0;
             }

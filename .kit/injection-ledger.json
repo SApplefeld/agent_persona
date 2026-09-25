@@ -136,14 +136,14 @@
     {
       "name": "NUDGE_TEXT_idle_gap_converted",
       "file": "hooks/index.ts",
-      "chars": 779,
-      "words": 132
+      "chars": 778,
+      "words": 134
     },
     {
       "name": "NUDGE_TEXT_idle_timeout",
       "file": "hooks/index.ts",
-      "chars": 256,
-      "words": 40
+      "chars": 255,
+      "words": 42
     },
     {
       "name": "GOAL_TREE_BLOCK",

@@ -663,30 +663,40 @@ function applyPlanRecordOnLoad(state: AgentState): void {
 // paused with `pausedByNudgeCap` true comes only from a store an older
 // controller wrote, and nothing lifts it: the field has no reader, the
 // entry is out of activateNext's walk, and the cap's ask was never opened.
-// This repairs such entries once, at load. Where no entry is active, the one
-// with the latest updatedAt becomes active and the rest pending, so the
-// controller resumes where the cap stopped it; where one is active, all
-// become pending, since assignment of the active slot is the tree's. The
-// cap's reason is cleared with the status, as an active entry carries none.
-// One decision names each entry repaired. The field is then dropped from
-// every entry, whatever its value, so the store written back carries no
-// key the node shape lacks. A second load over the repaired store finds no
-// such entry and changes nothing. GoalNode does not declare the field, so
-// it is read through a cast rather than typed.
+// This repairs such entries at load. Where no entry is active, the one with
+// the latest updatedAt among those the controller could activate becomes
+// active and the rest pending, so the controller resumes where the cap
+// stopped it; where one is active, or none of them is activatable, all
+// become pending, since assignment of the active slot is the tree's. Which
+// entries could be activated is isActivationEligible's own rule, the one
+// activateNext's walk and goal_add read, asked of the entry as it will be
+// once pending: a leaf under an all-pending ancestor chain. An entry under a
+// complete, abandoned, blocked or paused plan is out of that walk, and
+// making it active would seat the controller on work its tree has closed.
+// The cap's reason is cleared with the status, as an active entry carries
+// none, and updatedAt moves on the entry made active alone. One decision
+// names each entry repaired. The field is then dropped from every entry on
+// every load, whatever its value, so the store written back carries no key
+// the node shape lacks; a later load finds no paused entry carrying it and
+// repairs nothing. GoalNode does not declare the field, so it is read
+// through a cast rather than typed.
 function repairCapPausedEntriesOnLoad(state: AgentState): void {
   const carried = (g: GoalNode): boolean => (g as { pausedByNudgeCap?: unknown }).pausedByNudgeCap === true;
   const capped = state.goals.filter((g) => g.status === "paused" && carried(g));
   if (capped.length > 0) {
     const anyActive = state.goals.some((g) => g.status === "active");
-    const latest = anyActive
+    const eligible = anyActive
+      ? []
+      : capped.filter((g) => isActivationEligible(state, { ...g, status: "pending" }));
+    const latest = eligible.length === 0
       ? undefined
-      : capped.reduce((best, g) => (g.updatedAt > best.updatedAt ? g : best));
+      : eligible.reduce((best, g) => (g.updatedAt > best.updatedAt ? g : best));
     const now = Date.now();
     for (const g of capped) {
       const status: GoalNode["status"] = g === latest ? "active" : "pending";
       g.status = status;
       g.blockedReason = undefined;
-      g.updatedAt = now;
+      if (g === latest) g.updatedAt = now;
       state.decisions.push({
         timestamp: now,
         loop: "goal",
