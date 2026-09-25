@@ -152,6 +152,12 @@
       "words": 2
     },
     {
+      "name": "PLAN_DOCUMENT_LINE",
+      "file": "hooks/index.ts",
+      "chars": 60,
+      "words": 11
+    },
+    {
       "name": "NUDGE_TEXT_idle_gap_converted",
       "file": "hooks/index.ts",
       "chars": 600,

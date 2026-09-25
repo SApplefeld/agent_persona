@@ -914,6 +914,23 @@ function extractShutdownFrame(src) {
   return record("SUPERVISOR_SHUTDOWN_FRAME", "hooks/index.ts", literalOfTemplateChain(m[1], "SUPERVISOR_SHUTDOWN_FRAME"));
 }
 
+// Section 3 (boundary-compaction): the plan document line planDocumentLine
+// returns, spliced by name (as `planLine`) into both nudge arms and the
+// [GOAL TREE] block, so it is sized once here rather than once per splice
+// site. `${holder.planPath}` and `${(holder.chapterCount ?? 0) + 1}` are
+// per-plan data and are stripped as interpolation. The function's body must
+// be exactly the guard-then-return shape it is written in today: a lookup,
+// an empty-string early return, then one `return` of one template literal;
+// any other shape (the guard rewritten, a second sentence added before the
+// return, the return no longer a single template literal) refuses rather
+// than sizing a truncated or wrong copy.
+function extractPlanDocumentLine(src) {
+  const body = functionBody(src, "planDocumentLine");
+  const m = /^\s*const holder = planHolderOf\(state, entry\);\s*\n\s*if \(!holder \|\| !holder\.planPath\) return "";\s*\n\s*return (`[^`]*`);\s*$/.exec(body);
+  if (!m) throw new Error("[chain-shape] PLAN_DOCUMENT_LINE: planDocumentLine's body is not the guard-then-template-return shape this rule reads");
+  return record("PLAN_DOCUMENT_LINE", "hooks/index.ts", literalOfTemplateChain(m[1], "PLAN_DOCUMENT_LINE"));
+}
+
 // The two idle-nudge frames (nudgeText's ternary): each is a chain of plain
 // template-literal pieces joined by `+`, with `${g.objective}` and
 // `${idleDisplay}` as the only interpolations, both per-goal data and
@@ -939,6 +956,13 @@ function extractShutdownFrame(src) {
 // by name. They are sized by extractNudgeStatusLineText and
 // extractNudgeLeadHoldText as entries of their own, so both are declared here
 // and not added to either arm's size.
+//
+// Section 3 (boundary-compaction): both arms also splice `planLine` whole,
+// right after the `${g.objective}` piece, the active entry's plan document
+// and section. It is declared above architectLine, outside the fixed-order
+// match `a` reads below, and is sized once as its own entry,
+// PLAN_DOCUMENT_LINE, by extractPlanDocumentLine, so it is declared here and
+// not added to either arm's size, the way NUDGE_STATUS_LINE_TEXT is.
 function extractNudgeFrames(src) {
   const m = /const nudgeText = idleGapConverted\s*\n\s*\?\s*([\s\S]*?)\n\s*:\s*([\s\S]*?);\n/.exec(src);
   if (!m) throw new Error("nudgeText ternary not found in hooks/index.ts");
@@ -948,9 +972,9 @@ function extractNudgeFrames(src) {
   // else, the other arm declares expiredAskLine alone, so any other operand
   // that is not a template literal refuses.
   return [
-    record("NUDGE_TEXT_idle_gap_converted", "hooks/index.ts", literalOfTemplateChain(m[1], "NUDGE_TEXT_idle_gap_converted", ["architectLine", "expiredAskLine", "NUDGE_STATUS_LINE_TEXT", "leadHoldLine"])
+    record("NUDGE_TEXT_idle_gap_converted", "hooks/index.ts", literalOfTemplateChain(m[1], "NUDGE_TEXT_idle_gap_converted", ["planLine", "architectLine", "expiredAskLine", "NUDGE_STATUS_LINE_TEXT", "leadHoldLine"])
       + literalOfTemplateChain(a[1], "NUDGE_TEXT_idle_gap_converted architectLine")),
-    record("NUDGE_TEXT_idle_timeout", "hooks/index.ts", literalOfTemplateChain(m[2], "NUDGE_TEXT_idle_timeout", ["expiredAskLine", "NUDGE_STATUS_LINE_TEXT", "leadHoldLine"])),
+    record("NUDGE_TEXT_idle_timeout", "hooks/index.ts", literalOfTemplateChain(m[2], "NUDGE_TEXT_idle_timeout", ["planLine", "expiredAskLine", "NUDGE_STATUS_LINE_TEXT", "leadHoldLine"])),
     record("NUDGE_EXPIRED_ASK_LINE", "hooks/index.ts", literalOfTemplateChain(a[2], "NUDGE_EXPIRED_ASK_LINE")),
   ];
 }
@@ -961,6 +985,11 @@ function extractNudgeFrames(src) {
 // here. Their own fixed openers (`Pending siblings: `, `Last note: `) and the
 // `root > ` of `path` are therefore not sized by this rule. Declaring them is
 // what lets any other bare identifier refuse rather than vanish.
+//
+// Section 3 (boundary-compaction): `planLine`, spliced right after the
+// `Path: ${path}` piece, is the active entry's plan document and section,
+// declared here on the same terms as siblingLine and lastNote and sized
+// once as its own entry, PLAN_DOCUMENT_LINE, by extractPlanDocumentLine.
 //
 // The Active line's round text is the `${roundText}` interpolation, whose
 // value is a ternary declared just above the block: an empty string for a
@@ -973,7 +1002,7 @@ function extractGoalTreeBlock(src) {
   if (!m) throw new Error("goalBlock not found in hooks/index.ts");
   const r = /const roundText = isPlanEntry\(sess\.state, activeNode\)\s*\n\s*\?\s*""\s*\n\s*:\s*(`[^`]*`);\n/.exec(src);
   if (!r) throw new Error("the [GOAL TREE] roundText ternary was not found in hooks/index.ts in the shape this rule reads");
-  const literal = literalOfTemplateChain(m[1], "GOAL_TREE_BLOCK", ["siblingLine", "lastNote"])
+  const literal = literalOfTemplateChain(m[1], "GOAL_TREE_BLOCK", ["planLine", "siblingLine", "lastNote"])
     + literalOfTemplateChain(r[1], "GOAL_TREE_BLOCK roundText");
   return record("GOAL_TREE_BLOCK", "hooks/index.ts", literal);
 }
@@ -1418,6 +1447,7 @@ function buildLedgerFrom(shSrc, holderSrc, tsSrc) {
     extractProposeFrame(tsSrc),
     extractBackstopFrame(tsSrc),
     extractShutdownFrame(tsSrc),
+    extractPlanDocumentLine(tsSrc),
     ...extractNudgeFrames(tsSrc),
     extractGoalTreeBlock(tsSrc),
     extractGoalQueueBlock(tsSrc),

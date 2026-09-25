@@ -687,6 +687,21 @@ function unnamedExpiredAskQuestion(state: AgentState, node: GoalNode): string | 
   return named ? null : node.lastAskQuestion;
 }
 
+// Section 3 (boundary-compaction): the plan document a nudge or the
+// [GOAL TREE] block names, from the active entry's plan holder
+// (planHolderOf(state, entry): the entry itself, or its nearest ancestor
+// with a planPath, so a task a worker added under a plan node names that
+// plan's document too). The section printed is the holder's Chapter count
+// plus one, since no stored field names a section (spec Approach,
+// "Naming the plan document..."). An entry with no plan holder, and a plan
+// holder whose planPath is still empty, both give "", so the nudge and the
+// block omit the line rather than splice an empty sentence into the chain.
+function planDocumentLine(state: AgentState, entry: GoalNode): string {
+  const holder = planHolderOf(state, entry);
+  if (!holder || !holder.planPath) return "";
+  return `Plan document: ${holder.planPath}, Section ${(holder.chapterCount ?? 0) + 1}. Re-read it before the next step.\n`;
+}
+
 /**
  * Item 2 backstop (Round 28): whether a tool call counts as "did real
  * work" for the turn.complete backstop, which logs an `untracked_work`
@@ -6600,6 +6615,14 @@ export const register: Register = async (on, options) => {
               // The hold sentence rides on a plan entry's nudge alone, the
               // one kind of entry whose leads are read.
               const leadHoldLine = isPlanEntry(sess.state, g) ? " " + NUDGE_LEAD_HOLD_TEXT : "";
+              // Section 3 (boundary-compaction): the active entry's plan
+              // document and section, spliced into both arms right after
+              // the [GOAL] line so a nudged worker knows which document to
+              // re-read. Declared here, above architectLine, so it sits
+              // outside extractNudgeFrames' fixed-order match on the
+              // architectLine/expiredAskLine declarations directly above
+              // nudgeText.
+              const planLine = planDocumentLine(sess.state, g);
               // R8: nudge text appends goal_done instruction, and both arms
               // close with NUDGE_STATUS_LINE_TEXT, the status line the
               // nudge count reads at the nudged turn's end, followed on a
@@ -6632,6 +6655,7 @@ export const register: Register = async (on, options) => {
                 : "";
               const nudgeText = idleGapConverted
                 ? `[GOAL] The active goal is: ${g.objective}\n` +
+                  planLine +
                   expiredAskLine +
                   `The controller read this as an idle gap, not a real fork: no concrete blocking question. ` +
                   `Re-read the plan doc and DISCUSSION.md before continuing - the next concrete step should already be there.\n` +
@@ -6641,6 +6665,7 @@ export const register: Register = async (on, options) => {
                   NUDGE_STATUS_LINE_TEXT +
                   leadHoldLine
                 : `[GOAL] The active goal is: ${g.objective}\n` +
+                  planLine +
                   expiredAskLine +
                   `The Controller detected ${idleDisplay} of idle time. ` +
                   `Re-read the objective and take the next concrete step toward it, then report that step done with goal_done.\n` +
@@ -9762,10 +9787,14 @@ export const register: Register = async (on, options) => {
       const roundText = isPlanEntry(sess.state, activeNode)
         ? ""
         : ` | round ${activeNode.completedRounds + 1}/${activeNode.maxRounds}`;
+      // Section 3 (boundary-compaction): the active entry's plan document
+      // and section, spliced right after the Path: line.
+      const planLine = planDocumentLine(sess.state, activeNode);
       const goalBlock =
         `[GOAL TREE]\n` +
         `Active: ${activeNode.kind} ${activeNode.id}${roundText} | ${activeNode.objective}\n` +
         `Path: ${path}\n` +
+        planLine +
         siblingLine +
         lastNote +
         `Keep working toward this objective. If the user's current request conflicts with it, follow the user.\n` +

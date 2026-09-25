@@ -3451,6 +3451,11 @@ async function main() {
     await caseBank2_installRecordMissesSkipWithOneDecision(clock);
     await caseBank2_failedRunsLogOneDecisionAndNeverFailTheTurn(clock);
 
+    // Section 3 (boundary-compaction): the nudge and the [GOAL TREE] block
+    // name the active entry's plan document.
+    await casePlanDoc3_goalTreeBlockNamesThePlanDocument(clock);
+    await casePlanDoc3_nudgeArmsNameThePlanDocument(clock);
+
     // Section 3 (plan-health-from-the-record): the worker's BLOCKED and
     // WAITING leads, the hold they put on the idle branch, and the
     // controller's complete verdict ignored on a plan entry.
@@ -15562,6 +15567,97 @@ async function caseBank2_failedRunsLogOneDecisionAndNeverFailTheTurn(clock) {
   }
 }
 
+// --- Section 3 (boundary-compaction): the nudge and the [GOAL TREE] block
+// name the active entry's plan document ---
+
+// A plan document read at chapterCount 2, so the section printed is 2 + 1 =
+// 3, the plan holder's Chapter count plus one.
+const PLANDOC3_DOC = plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]);
+const PLANDOC3_LINE = `Plan document: ${PLAN2_PATH}, Section 3. Re-read it before the next step.`;
+
+// A plan2Goals tree with chapterCount 2 (Section 3), the document seeded to
+// match so the turn's own read logs no plan_progress and moves nothing: the
+// plan line is the only thing a case here reads.
+async function planDoc3Harness(caseName, treeOpts = {}, extraOpts = {}) {
+  const h = await plan2Harness(caseName, { chapterCount: 2, ...treeOpts }, { costMaxNudgesPerHour: 30, ...extraOpts });
+  h.fsMap.set(PLAN2_FILE, PLANDOC3_DOC);
+  return h;
+}
+
+// The [GOAL TREE] block names the active entry's plan holder's document and
+// Section N, spliced right after the Path: line, for the plan node itself
+// and for a task under it; a task entry with no plan ancestor, and a plan
+// node whose planPath was never filled, both omit the line.
+async function casePlanDoc3_goalTreeBlockNamesThePlanDocument(clock) {
+  console.log("\n=== Section 3 (boundary-compaction): the [GOAL TREE] block names the plan document ===");
+  const shapes = [
+    { label: "plan node", tree: plan2Goals({ chapterCount: 2 }), expectLine: true },
+    { label: "task under a plan node", tree: plan2Goals({ taskUnderPlan: true, chapterCount: 2 }), expectLine: true },
+    {
+      label: "task entry, no plan ancestor (control)",
+      tree: {
+        goals: [
+          makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+          makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", maxRounds: 10, createdAt: T0 - 20000 }),
+        ],
+        activeGoalId: "task-1",
+      },
+      expectLine: false,
+    },
+    {
+      label: "plan node with no planPath",
+      tree: {
+        goals: [
+          makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+          makeGoalNode({ id: "plan-1", parentId: "root-1", kind: "plan", status: "active", maxRounds: 10, createdAt: T0 - 20000 }),
+        ],
+        activeGoalId: "plan-1",
+      },
+      expectLine: false,
+    },
+  ];
+  for (const shape of shapes) {
+    clock.set(T0);
+    const h = await createTickHarness({ ...OPTS, caseName: `plandoc3_goaltree_${shapes.indexOf(shape)}`, stateOpts: { now: T0, goals: shape.tree.goals, activeGoalId: shape.tree.activeGoalId } });
+    const r = await h.handlers["prompt.submit"](h.fake, { text: "keep going" }, async (core) => ({ text: core.text, context: core.context }));
+    const goalBlock = (r.context || []).find(b => b.includes("[GOAL TREE]")) || "";
+    check(`plandoc3 goal tree (${shape.label}): the [GOAL TREE] block was injected`, goalBlock.includes("Active: "), goalBlock);
+    if (shape.expectLine) {
+      const lines = goalBlock.split("\n");
+      const pathIdx = lines.findIndex(l => l.startsWith("Path: "));
+      check(`plandoc3 goal tree (${shape.label}): names the plan document and Section 3 directly after the Path: line`,
+        pathIdx >= 0 && lines[pathIdx + 1] === PLANDOC3_LINE, goalBlock);
+    } else {
+      check(`plandoc3 goal tree (${shape.label}): omits the plan document line`, !goalBlock.includes("Plan document:"), goalBlock);
+    }
+  }
+}
+
+// Both nudge arms name the active entry's plan document, right after the
+// [GOAL] line, for the plan node itself and for a task under it. A task
+// entry with no plan ancestor is the control: the reader gets the countHarness
+// tree that caseCount_bothNudgeTextsNameTheThreeLines already exercises, so
+// this case reads the plan-holder side of the same fork.
+async function casePlanDoc3_nudgeArmsNameThePlanDocument(clock) {
+  console.log("\n=== Section 3 (boundary-compaction): both nudge arms name the plan document ===");
+  for (const taskUnderPlan of [false, true]) {
+    for (const verdict of ["nudge", "ask-operator"]) {
+      clock.set(T0);
+      const h = await planDoc3Harness(`plandoc3_nudge_${taskUnderPlan}_${verdict.replace("-", "_")}`, { taskUnderPlan });
+      h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge") && !labels.includes("on-goal")) ? verdict : "discard");
+      clock.advance(130_000);
+      await tickAndSettle(h, clock, 50);
+      const text = (h.promptSubmits || []).filter(p => p.startsWith("[GOAL]")).pop() ?? "";
+      const label = taskUnderPlan ? "task under a plan node" : "plan node";
+      const arm = verdict === "nudge" ? "idle nudge" : "converted ask-operator nudge";
+      check(`plandoc3 nudge (${label}, ${arm}): went out`, text.startsWith("[GOAL]"), text);
+      const lines = text.split("\n");
+      check(`plandoc3 nudge (${label}, ${arm}): names the plan document and Section 3 directly after the [GOAL] line`,
+        lines[1] === PLANDOC3_LINE, text);
+    }
+  }
+}
+
 // --- Section 3 (plan-health-from-the-record): the worker's BLOCKED and WAITING leads ---
 
 // The hold on a waiting lead, in fake-clock milliseconds: the value
@@ -16995,6 +17091,10 @@ async function caseCount_bothNudgeTextsNameTheThreeLines(clock) {
     check(`count nudge text (${arm}): it asks for a status line and names WORKING:, WAITING: and BLOCKED:`,
       text.includes("Open your closing text with one status line:") && text.includes("WORKING:") && text.includes("WAITING:") && text.includes("BLOCKED:"), text);
     check(`count nudge text (${arm}): on a task entry, whose leads are not read, it names no hold`, holdText.length > 0 && !text.includes(holdText), text);
+    // Section 3 (boundary-compaction): a task entry with no plan ancestor
+    // has no plan holder, so planDocumentLine gives "" and neither arm
+    // names a plan document.
+    check(`count nudge text (${arm}): a task entry with no plan ancestor names no plan document`, !text.includes("Plan document:"), text);
   }
   // A plan entry's nudge adds the hold sentence, since its leads are read.
   clock.set(T0);
@@ -17005,6 +17105,12 @@ async function caseCount_bothNudgeTextsNameTheThreeLines(clock) {
     check("count nudge text (plan entry): the nudge went out and names the three lines", tick.nudged && text.includes("Open your closing text with one status line:"), text);
     check("count nudge text (plan entry): it adds that a WAITING: or BLOCKED: line holds the controller's nudges",
       holdText.length > 0 && text.includes(holdText), text);
+    // Section 3 (boundary-compaction): lead3Harness's stored chapterCount is
+    // 1, so the plan holder's Chapter count plus one prints "Section 2",
+    // right after the [GOAL] line.
+    const lines = text.split("\n");
+    check("count nudge text (plan entry): names the plan document and Section 2 directly after the [GOAL] line",
+      lines[1] === `Plan document: ${PLAN2_PATH}, Section 2. Re-read it before the next step.`, text);
   }
 }
 
