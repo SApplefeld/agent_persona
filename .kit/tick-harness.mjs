@@ -253,6 +253,23 @@ function createFake$(opts = {}) {
         if (!fsMap.has(p)) return Promise.reject(new Error("ENOENT: " + p));
         return Promise.resolve(fsMap.get(p));
       },
+      // The engine's listing, over the map: no path or "." is the working
+      // directory, whose entries are the keys with no separator; a path lists
+      // the keys directly under it. Each entry carries the shape the typings
+      // declare, with `size` the UTF-8 byte count, which is what the channel
+      // log's segment writer reads to choose a segment.
+      list(p) {
+        const dir = p === undefined || p === "" || p === "." ? "" : p.replace(/[\\/]+$/, "") + "/";
+        const entries = [];
+        for (const [key, text] of fsMap) {
+          if (!key.startsWith(dir)) continue;
+          const rest = key.slice(dir.length);
+          if (rest.length === 0 || /[\\/]/.test(rest)) continue;
+          entries.push({ name: rest, kind: "file", size: new TextEncoder().encode(String(text)).length, isLink: false });
+        }
+        entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        return Promise.resolve(entries);
+      },
       write(p, content) {
         // A case can refuse a write by path, which is the only way to drive
         // the journal's once-a-day failure latch and the one decision the
