@@ -420,6 +420,36 @@ function targetPersonaOf(arg: unknown, own: string): { persona: string } | { den
 // handler ledger the proposal the persona sends inside it.
 type ExpectedTurn = { text: string; settledText?: string } & ({ kind: "delivery"; recordId: string; ground: string; seatLead: boolean } | { kind: "nudge" } | { kind: "plugin" } | { kind: "proposal" });
 
+// Whether a turn's opening text is the text an entry was submitted with, on
+// either of the entry's two keys. An empty turn text (a continuation) and an
+// empty key match nothing, since an empty string is inside every text.
+//
+// Two rules. Equality is the first, and the one the origin readings the
+// prompt.submit hook keeps take alone, since the engine never frames an
+// external prompt. Framed containment is the second, for the expected-turn
+// list only: from Claude Code 2.1.280 the engine opens a plugin-submitted
+// turn with the submitted text inside its own frame ("The <plugin> plugin
+// sent a message:", a line break, the text, a blank line, then a sentence
+// saying how the prompt reached the model), so the turn's text holds the
+// key as whole lines rather than equalling it. The key is matched between
+// line breaks, so a key that is a prefix of another entry's key, or a word
+// that happens to appear in the frame's own sentence, matches nothing.
+// findExpectedTurn prefers an exact match over the list before any framed
+// one, so a foreign turn that quotes a queued entry's text whole takes it
+// only where no entry equals the turn's text.
+function turnTextEquals(turnText: string, entry: { text: string; settledText?: string }): boolean {
+  if (turnText === "") return false;
+  return turnText === entry.text || (entry.settledText !== undefined && entry.settledText !== "" && turnText === entry.settledText);
+}
+function turnTextFrames(turnText: string, entry: { text: string; settledText?: string }): boolean {
+  if (turnText === "") return false;
+  const keys = entry.settledText !== undefined ? [entry.text, entry.settledText] : [entry.text];
+  return keys.some((key) => key !== "" && turnText.includes(`\n${key}\n`));
+}
+function findExpectedTurn(list: ExpectedTurn[], turnText: string): ExpectedTurn | undefined {
+  return list.find((entry) => turnTextEquals(turnText, entry)) ?? list.find((entry) => turnTextFrames(turnText, entry));
+}
+
 // How long an idle persona holding a long-term goal waits between two
 // [PROPOSE] turns, counted from monitor.proposal.askedAt.
 export const PROPOSAL_EVERY_MS = 24 * 3_600_000;
@@ -1029,6 +1059,37 @@ const GOAL_QUEUE_MAX_LINES = 12;
 // where it enters a note rather than where the note is finished.
 function safeErrorText(err: unknown): string {
   return bracketSafeText(err instanceof Error ? err.message : String(err));
+}
+
+// The one reader of a `$.model.complete` result. On Claude Code 2.1.280 and
+// later the call resolves to a ModelCompleteResult: `{ isAnswered: true,
+// text, usage }` where the model answered, else `{ isAnswered: false,
+// reason }` with `api-error`, `empty-reply` or `aborted`. Earlier engines
+// resolved to the reply's text as a string, and the typings copied on
+// 2026-09-09 still said so. Both shapes read here: the string is the text, an
+// object carrying a string `text` gives that text, and anything else is null,
+// which each site takes as its own failure. A null is never thrown through,
+// since the throw is what let the planner burn a call every tick without
+// counting one failure.
+function completionText(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (value !== null && typeof value === "object") {
+    const text = (value as { text?: unknown }).text;
+    if (typeof text === "string") return text;
+  }
+  return null;
+}
+
+// The shape of a completion result that carried no text, for the failure
+// detail: `(object, keys: isAnswered,reason,status,error,usage, reason:
+// api-error)`, `(number, keys: none)`, `(object, keys: none)` for null. The
+// keys reveal where the text sits when the engine moves it again, and the
+// reason, where the result names one, says why the model gave none.
+function completionShape(value: unknown): string {
+  const keys = value !== null && typeof value === "object" ? Object.keys(value as object) : [];
+  const reason = value !== null && typeof value === "object" ? (value as { reason?: unknown }).reason : undefined;
+  const reasonText = typeof reason === "string" ? `, reason: ${bracketSafeText(reason).slice(0, 40)}` : "";
+  return `(${typeof value}, keys: ${keys.length > 0 ? keys.slice(0, 12).map((k) => bracketSafeText(k)).join(",") : "none"}${reasonText})`;
 }
 
 // Free text held to FREE_TEXT_MAX, for a lane that cuts rather than refuses:
@@ -2362,6 +2423,19 @@ export const activate = (dp: any, nextId: string | null, reason: string): void =
 // only in the root_complete detail each passes. bin/supervise-poll.mjs reads
 // that decision's timestamp as the supervisor's goal-complete fact. The caller
 // persists.
+// One decision naming the shape of a completion result that carried no text,
+// at a site whose own failure path logs nothing else. It says where the
+// engine put the text, which is what settles the reader when the engine
+// moves it again; the site then takes the path an empty reply takes.
+const noteCompletionShape = (site: string, value: unknown): void => {
+  sess.state.decisions.push({
+    timestamp: Date.now(),
+    loop: "monitor",
+    action: "completion_no_text",
+    detail: `${site}: completion returned no text ${completionShape(value)}`,
+  });
+};
+
 const completeRoot = async (dp: any, rootId: string, detail: string): Promise<void> => {
   const rootNow = sess.state.goals.find((g) => g.id === rootId);
   if (rootNow && rootNow.status !== "complete" && rootNow.status !== "abandoned") {
@@ -3090,6 +3164,7 @@ export const register: Register = async (on, options) => {
         "A plan left only with a check someone else runs later, such as a validation after release, is complete: finish it with goal_done, name the check in the note, and hand it off, never holding the plan open for it. " +
         "The result names the goal that became active where there is one, and that goal is the one to carry on with. " +
         "nodeId completes a named entry instead, once every child it has is complete or abandoned, and leaves any other active entry active. " +
+        "The root's own nodeId completes the root once every entry under it is complete or abandoned with at least one complete, in a turn the operator or the coordinator persona opened; that is how a root the planner has planned is closed. " +
         "Finished work on an entry that is not active is recorded with goal_done and its nodeId, never with a drop.",
       inputSchema: {
         type: "object",
@@ -5260,7 +5335,15 @@ export const register: Register = async (on, options) => {
               // D1: increment self-review ledger
               sess.state.monitor.cost.selfReview.count += 1;
               sess.state.monitor.cost.selfReview.estTokens += estimateTokens(input.prompt.length, 80);
-              const lesson = raw.trim();
+              const lessonText = completionText(raw);
+              if (lessonText === null) {
+                // The result carried no text: the catch below writes the
+                // site's own error decision naming the shape, and no lesson
+                // is written. The attempt is already stamped, so the debounce
+                // bounds the retry as it does for any other throw here.
+                throw new Error(`review returned no text ${completionShape(raw)}`);
+              }
+              const lesson = lessonText.trim();
               if (lesson.length > 0 && lesson.toUpperCase() !== "NONE") {
                 // Item 8.2: a memory entry comes from a proof passing or an
                 // operator correction, never from the classifier scoring its
@@ -5444,6 +5527,47 @@ export const register: Register = async (on, options) => {
       // M8: reentrancy guard: a planner call slower than one tick must not fire twice.
       if (isPlanningDue(sess.state) && !planningInFlight) {
         planningInFlight = true;
+        // M13: a failing planner is capped. Each call, shape or parse failure,
+        // and any throw inside the gate, increments the root counter and
+        // persists; at 3 the root is blocked so the planner is not retried
+        // every tick. A successful planning round (created or complete) resets
+        // it. Declared above the gate's try so its catch can reach it: a
+        // register the catch could not call was how a throw after the model
+        // call looped one Haiku call per tick without ever counting.
+        // planningSettled is set once this attempt has counted, one way or
+        // the other: a failure registered, a round created or completed, or
+        // a reply discarded. The gate's catch registers a throw only where it
+        // is still false, so a persist that throws after the count neither
+        // counts the attempt twice nor turns a created round into a failure.
+        let planningSettled = false;
+        const registerPlanningFailure = async (rootId: string, detail: string): Promise<void> => {
+          planningSettled = true;
+          const rootNow = sess.state.goals.find((g) => g.id === rootId);
+          if (rootNow) {
+            rootNow.consecutivePlanningFailures = (rootNow.consecutivePlanningFailures || 0) + 1;
+          }
+          const failCount = rootNow?.consecutivePlanningFailures || 0;
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "goal",
+            action: "planning_failed",
+            detail,
+          });
+          if (rootNow && failCount >= 3 && rootNow.status !== "blocked") {
+            rootNow.status = "blocked";
+            rootNow.blockedReason = `Planner failing: ${detail}`;
+            rootNow.updatedAt = Date.now();
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "block",
+              detail: `Root ${rootNow.id}: Planner failing after ${failCount} consecutive failures`,
+            });
+            try { $.ui.toast(`Agentic: root blocked: planner failing`); } catch { /* non-fatal */ }
+            try { $.ui.status(""); } catch { /* non-fatal */ }
+          }
+          await persist($);
+        };
         try {
           const planTs = Date.now();
           sess.state.decisions.push({
@@ -5534,42 +5658,10 @@ export const register: Register = async (on, options) => {
           let fault = false;
           try { if (await $.fs.exists(".agentic-planner-fault")) { fault = true; } } catch { /* non-fatal */ }
 
-          // M13: a failing planner is capped. Each call/parse failure increments
-          // the root counter and persists; at 3 the root is blocked so the
-          // planner is not retried every tick. A successful planning round
-          // (created or complete) resets it.
-          const registerPlanningFailure = async (detail: string): Promise<void> => {
-            const rootNow = sess.state.goals.find((g) => g.id === root!.id);
-            if (rootNow) {
-              rootNow.consecutivePlanningFailures = (rootNow.consecutivePlanningFailures || 0) + 1;
-            }
-            const failCount = rootNow?.consecutivePlanningFailures || 0;
-            sess.state.decisions.push({
-              timestamp: Date.now(),
-              loop: "goal",
-              action: "planning_failed",
-              detail,
-            });
-            if (rootNow && failCount >= 3 && rootNow.status !== "blocked") {
-              rootNow.status = "blocked";
-              rootNow.blockedReason = `Planner failing: ${detail}`;
-              rootNow.updatedAt = Date.now();
-              sess.state.decisions.push({
-                timestamp: Date.now(),
-                loop: "goal",
-                action: "block",
-                detail: `Root ${rootNow.id}: Planner failing after ${failCount} consecutive failures`,
-              });
-              try { $.ui.toast(`Agentic: root blocked: planner failing`); } catch { /* non-fatal */ }
-              try { $.ui.status(""); } catch { /* non-fatal */ }
-            }
-            await persist($);
-          };
-
           // H4: AGENTIC_PLANNER_FAULT file flag replaces the raw response with "not json".
-          let raw: string;
+          let rawResult: unknown;
           try {
-            raw = await $.model.complete({
+            rawResult = await $.model.complete({
               model: "haiku",
               prompt: planPrompt,
               maxTokens: 1500,
@@ -5578,9 +5670,35 @@ export const register: Register = async (on, options) => {
             sess.state.monitor.cost.planner.count += 1;
             sess.state.monitor.cost.planner.estTokens += estimateTokens(planPrompt.length, 1500);
           } catch (e) {
-            await registerPlanningFailure(`Planner call failed: ${String(e).slice(0, 150)}`);
+            await registerPlanningFailure(root!.id, `Planner call failed: ${String(e).slice(0, 150)}`);
             return;
           }
+          // The root may have closed while the call was out: goal_done on the
+          // root, in an operator turn, completes exactly the tree the planner
+          // is due for. A round for a root no longer open is dropped whole,
+          // so no plan node lands under a complete root.
+          const rootAfterCall = sess.state.goals.find((g) => g.id === root!.id);
+          if (!rootAfterCall || rootAfterCall.status === "complete" || rootAfterCall.status === "abandoned") {
+            planningSettled = true;
+            sess.state.decisions.push({
+              timestamp: Date.now(),
+              loop: "goal",
+              action: "planning_discarded",
+              detail: `Root ${root!.id} is ${rootAfterCall ? rootAfterCall.status : "gone"} since the planner call went out; its reply is dropped`,
+            });
+            await persist($);
+            return;
+          }
+          // The result is read through the one reader before any parse. A
+          // result with no text is a failure the counter sees, named by its
+          // shape, so an engine that changes the result's shape again blocks
+          // the root after three ticks rather than looping on every one.
+          const rawText = completionText(rawResult);
+          if (rawText === null) {
+            await registerPlanningFailure(root!.id, `Planner returned no text ${completionShape(rawResult)}`);
+            return;
+          }
+          let raw: string = rawText;
           if (fault) {
             raw = "not json";
           }
@@ -5601,7 +5719,7 @@ export const register: Register = async (on, options) => {
 
           if (!parsedOk) {
             // H4: parse failure is not "objective met".
-            await registerPlanningFailure(`Planner parse failure: ${raw.slice(0, 100)}`);
+            await registerPlanningFailure(root!.id, `Planner parse failure: ${raw.slice(0, 100)}`);
             return;
           }
 
@@ -5610,6 +5728,7 @@ export const register: Register = async (on, options) => {
             const rootNow = sess.state.goals.find((g) => g.id === root!.id);
             // M13: a successful planning round clears the failure streak.
             if (rootNow) rootNow.consecutivePlanningFailures = 0;
+            planningSettled = true;
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "goal",
@@ -5650,6 +5769,7 @@ export const register: Register = async (on, options) => {
             root!.planningRounds = (root!.planningRounds || 0) + 1;
             // M13: a successful planning round clears the failure streak.
             root!.consecutivePlanningFailures = 0;
+            planningSettled = true;
 
             sess.state.decisions.push({
               timestamp: Date.now(),
@@ -5684,8 +5804,16 @@ export const register: Register = async (on, options) => {
           }
 
           await persist($);
-        } catch {
-          // Planning failed; non-fatal.
+        } catch (err) {
+          // A throw anywhere in the gate before the attempt has counted is a
+          // planning failure the counter sees, so three block the root. No
+          // second wrap: a register whose own persist throws has nothing left
+          // to write, and the throw reaches the tick's own catch as any other
+          // does. A throw after the count (a persist failing) is not counted
+          // again.
+          if (!planningSettled) {
+            await registerPlanningFailure(root!.id, `Planner threw: ${safeErrorText(err)}`);
+          }
         } finally {
           planningInFlight = false;
         }
@@ -6211,7 +6339,12 @@ export const register: Register = async (on, options) => {
                 prompt: switchPrompt,
                 maxTokens: 50,
               });
-              const switchId = switchRaw.trim().split(/\s/)[0];
+              // A result with no text reads as an empty reply, which matches
+              // no plan id and logs switch_failed below, after one line
+              // naming the shape the engine handed back.
+              const switchText = completionText(switchRaw);
+              if (switchText === null) noteCompletionShape("plan-switch", switchRaw);
+              const switchId = (switchText ?? "").trim().split(/\s/)[0];
               const target = pendingPlans.find((p) => p.id === switchId);
               // The decision seam, in shadow. This one site answers in free
               // text rather than from a label array, so the options in force
@@ -6286,7 +6419,12 @@ export const register: Register = async (on, options) => {
               sess.state.monitor.cost.reason.estTokens += estimateTokens(summary.length, 30);
               // D3: update call window (count the reason call)
               sess.state.monitor.cost.callWindow = bumpWindow(sess.state.monitor.cost.callWindow, Date.now());
-              fullReason = reason.trim().replace(/\*{1,2}/g, "");
+              // A result with no text leaves the reason empty, and the tick's
+              // decision reads "no reason" as it does when the call throws,
+              // after one line naming the shape the engine handed back.
+              const reasonText = completionText(reason);
+              if (reasonText === null) noteCompletionShape("controller-reason", reason);
+              fullReason = (reasonText ?? "").trim().replace(/\*{1,2}/g, "");
               finalReason = fullReason.slice(0, 100);
             } catch { /* reason call failed; non-fatal */ }
           }
@@ -6626,7 +6764,7 @@ export const register: Register = async (on, options) => {
     // (channel-origin, external) or unaccounted, and the delivery keeps its
     // entry for the turn that opens with its text. The external flag never
     // decides the match; it only names the reason.
-    const matched = expectedTurns.find((entry) => e.text !== "" && (entry.text === e.text || entry.settledText === e.text));
+    const matched = findExpectedTurn(expectedTurns, e.text);
     let stampRecordId: string | null = null;
     // The effort gate reads the matched entry. An unmatched turn instead
     // takes the origin reading whose prompt text it opens with, and reads
@@ -6636,7 +6774,7 @@ export const register: Register = async (on, options) => {
     currentTurnOriginKind = "unclassified";
     currentTurnIsPriming = false;
     if (!matched) {
-      const reading = originReadings.find((r) => e.text !== "" && (r.text === e.text || r.settledText === e.text));
+      const reading = originReadings.find((r) => turnTextEquals(e.text, r));
       if (reading) {
         originReadings.splice(originReadings.indexOf(reading), 1);
         currentTurnOriginKind = reading.kind;
@@ -6837,8 +6975,12 @@ export const register: Register = async (on, options) => {
       { reason: e.reason || "unknown", toolErrors },
     );
 
-    // Skip scoring on aborted or errored turns (no answer to judge).
-    const skipped = e.aborted || e.reason === "aborted" || e.reason === "error" || e.reason === "refusal" || !e.answer;
+    // Skip scoring on aborted or errored turns (no answer to judge). The
+    // engine names the interruption flag `isAborted` from 2.1.280; earlier
+    // engines named it `aborted`, and the reason covers both.
+    const skipped = (e as { isAborted?: boolean; aborted?: boolean }).isAborted === true
+      || (e as { aborted?: boolean }).aborted === true
+      || e.reason === "aborted" || e.reason === "error" || e.reason === "refusal" || !e.answer;
 
     // Steer 68/69: a Discord message opened this turn and the turn ended
     // with an answer but no reply-tool call - exactly the shape that left
@@ -7081,7 +7223,7 @@ export const register: Register = async (on, options) => {
       // A reader session never nudges, so it keeps no count.
     } else if (nudgeCountWorkThisTurn > 0 || wasChannelOrigin) {
       sess.nudgedAnswersWithoutStatus = 0;
-    } else if (completesNudgedTurn && !(e.aborted || e.reason === "aborted" || e.reason === "error" || e.reason === "refusal")) {
+    } else if (completesNudgedTurn && !(e.isAborted === true || (e as { aborted?: boolean }).aborted === true || e.reason === "aborted" || e.reason === "error" || e.reason === "refusal")) {
       if (statusLine !== null || countResetSinceNudgeOpened) sess.nudgedAnswersWithoutStatus = 0;
       else sess.nudgedAnswersWithoutStatus += 1;
     }
@@ -7484,7 +7626,11 @@ export const register: Register = async (on, options) => {
               `User asked: ${currentPrompt.slice(0, 300)}\nWorker answered: ${e.answer.slice(0, 500)}`,
             maxTokens: 50,
           });
-          const distilled = rawDistilled.trim();
+          // A result with no text distills nothing, as an empty reply does,
+          // after one line naming the shape the engine handed back.
+          const distilledText = completionText(rawDistilled);
+          if (distilledText === null) noteCompletionShape("memory-distill", rawDistilled);
+          const distilled = (distilledText ?? "").trim();
           if (distilled.length > 0 && distilled.toUpperCase() !== "NONE") {
             const normalized = distilled.toLowerCase().trim();
             const isDupe = sess.state.memory.some(
@@ -8361,8 +8507,51 @@ export const register: Register = async (on, options) => {
           return { deny: `nodeId "${byNameId.slice(0, 50)}" not found in goal tree.` };
         }
         if (named.parentId === null) {
-          toolErrorsThisTurn++;
-          return { deny: `Cannot complete ${byNameId}: it is the root, status "${named.status}". goal_done completes entries under the root, never the root itself.` };
+          // The root completes by name on one admission: every descendant
+          // is complete or abandoned with at least one complete, in a turn
+          // the operator or the coordinator persona opened. That is the
+          // operator's word that a breakdown the planner made is done, which
+          // isRootFinished cannot read on its own (a planned root stays the
+          // planner's there). The tool's note is the root_complete detail,
+          // so the supervisor reads it as it reads the controller's own
+          // completion, and none of the leaf follow-on below runs.
+          if (named.status === "complete" || named.status === "abandoned") {
+            toolErrorsThisTurn++;
+            return { deny: `Cannot complete ${byNameId}: status is already "${named.status}".` };
+          }
+          const descendants = sess.state.goals.filter((g) => g.parentId !== null);
+          const openDescendant = descendants.find((g) => g.status !== "complete" && g.status !== "abandoned");
+          if (openDescendant) {
+            toolErrorsThisTurn++;
+            return { deny: `Cannot complete ${byNameId}: it is the root, status "${named.status}", and its descendant ${openDescendant.id} is "${openDescendant.status}". The root completes by name only once every entry under it is complete or abandoned; complete or drop ${openDescendant.id} first.` };
+          }
+          if (!descendants.some((g) => g.status === "complete")) {
+            toolErrorsThisTurn++;
+            return { deny: `Cannot complete ${byNameId}: it is the root, status "${named.status}", and no entry under it is complete. A root with nothing done under it is not finished; drop it with goal_create replace: true or add the work.` };
+          }
+          if (!turnMayStartEffort()) {
+            toolErrorsThisTurn++;
+            return { deny: `Cannot complete ${byNameId}: it is the root, and the root closes only on the operator's or the coordinator persona's word, in a turn one of them opened. Retry in such a turn; this turn was not one.` };
+          }
+          // A finished root is exactly the state the planner is due in, so a
+          // planner call the last tick started can still be out. The tick's
+          // own finished-root path refuses under an in-flight call for the
+          // same reason: a call that resolves after the root closed would add
+          // plan nodes under a complete root. The planner also re-reads the
+          // root after its call, so the two guards cover both orders.
+          if (planningInFlight) {
+            toolErrorsThisTurn++;
+            return { deny: `Cannot complete ${byNameId} right now: a planner call is in flight for it. Retry in a few seconds.` };
+          }
+          named.blockedReason = undefined;
+          named.lead = null;
+          await completeRoot($, named.id, note ? `Root ${named.id} marked complete by goal_done: ${note.slice(0, 200)}` : `Root ${named.id} marked complete by goal_done`);
+          const rootWriteOk = await persist($);
+          if (!rootWriteOk) {
+            toolErrorsThisTurn++;
+            return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+          }
+          return { result: `Complete: "${named.title}" (the root). Every entry under it was complete or abandoned; the goal tree is finished.` };
         }
         if (named.status === "complete" || named.status === "abandoned") {
           toolErrorsThisTurn++;
@@ -9276,26 +9465,36 @@ export const register: Register = async (on, options) => {
       }
     }
 
-    const r = await next(e);
-    if (r.drop !== undefined) {
-      // A dropped prompt opens no turn, so the one-shot flags set above
-      // must not survive to the next turn.start.
-      lastPromptWasChannelOrigin = false;
-      lastPromptWasExternal = false;
-      const i = originReadings.indexOf(originReading);
-      if (i >= 0) originReadings.splice(i, 1);
+    // The prompt enters the chain once, below, after the context blocks are
+    // built: from Claude Code 2.1.280 the engine attaches only the context a
+    // hook passes down through next, and logs a block put on the result
+    // after next resolved as not attached. So every block is built first and
+    // rides down in the call. The bookkeeping each block does (the env and
+    // lesson decisions, the lesson stamp, the memory access counts) therefore
+    // runs before the chain answers, and stands where a hook beneath drops
+    // the prompt, which is rare and costs one line or one stamp.
+    const settleSubmit = (r: PromptSubmitResult): PromptSubmitResult => {
+      if (r.drop !== undefined) {
+        // A dropped prompt opens no turn, so the one-shot flags set above
+        // must not survive to the next turn.start.
+        lastPromptWasChannelOrigin = false;
+        lastPromptWasExternal = false;
+        const i = originReadings.indexOf(originReading);
+        if (i >= 0) originReadings.splice(i, 1);
+        return r;
+      }
+      if (typeof r.text === "string") originReading.settledText = r.text;
       return r;
-    }
-    if (typeof r.text === "string") originReading.settledText = r.text;
+    };
 
     if (arming === "reader") {
       // Section 6: a reader session owns no goal tree, so no [GOAL TREE],
       // [GOAL QUEUE], [NO GOAL], [ENV], [LESSON] or [MEMORY] block is appended -
       // the prompt reaches the model exactly as the harness delivered it.
-      return r;
+      return settleSubmit(await next(e));
     }
 
-    const contextBlocks: string[] = [...(r.context ?? [])];
+    const contextBlocks: string[] = [];
 
     // --- Active goal injection (M5: [GOAL TREE] shape per plan lines 349-354) ---
     const activeNode = sess.state.activeGoalId
@@ -9461,10 +9660,13 @@ export const register: Register = async (on, options) => {
       try { $.ui.log(`Agentic: [MEMORY] injected (${entries.length} entries)`); } catch { /* non-fatal */ }
     }
 
-    return {
-      ...r,
-      context: contextBlocks as readonly string[],
-    };
+    // The blocks ride down with the prompt, after any context a hook above
+    // attached. The result is core's, carrying the context that arrived, and
+    // is returned as it came so nothing is put on it after the fact.
+    return settleSubmit(await next({
+      ...e,
+      context: [...(e.context ?? []), ...contextBlocks] as readonly string[],
+    }));
   });
 
 };

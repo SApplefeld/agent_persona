@@ -1,6 +1,6 @@
 # A planner attempt that throws counts as a planning failure, and a completion result is read through one reader, so a due root cannot burn a Haiku call every tick without end
 
-Status: Ready
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-09-25
 
@@ -96,3 +96,37 @@ Tests: lock the admission in both directions and the turn gate; a root closed fr
 - `docs/archive/agent_persona_goal-tree-curation_v1.md`: `goal_done` by name, which this plan extends to a finished root.
 
 ## Chapters
+
+### Chapter 1: sections 1 to 3, shipped together as an emergency fix (2026-09-25)
+
+The operator asked the ARCHITECT on its channel to implement this plan inline, in one session, while DEV-PERSONA finished nudge-state. The three sections shipped as one changeset on branch `planner-catch`, cut from `fb753eb`, together with the harness-282 plan (`agent_persona_harness-282_spec_v1.md`), which reads the same engine change at the turn-matching and context sites. Commit model Branch-and-PR, one pull request for both plans.
+
+What shipped. `completionText` and `completionShape` sit beside `safeErrorText` in `hooks/index.ts`. The reader accepts the string earlier engines resolved and the object 2.1.280 and later resolve, which the engine's own 2.1.282 typings declare as `ModelCompleteResult`: `{ isAnswered: true, text, usage }` or `{ isAnswered: false, reason, ... }`. That typing was read from the file the engine's `/plugin-types` command wrote on 2.1.282, so the key is confirmed rather than assumed, and the first assumption under Assumptions is discharged. All five sites read through it. The planner registers `Planner returned no text (<type>, keys: <keys>)`, with `, reason: <reason>` appended where the result names one, a small addition to the form the Approach fixed so an unanswered result says why. The self-review site throws the shape into its own catch, which writes its existing `<trigger>: error: ...` decision. The plan switch, reason and distill sites read a null as an empty reply and take the path an empty reply already took: `switch_failed`, "no reason", nothing distilled. Those three sites log no new decision, since their catches logged none before. `registerPlanningFailure` is hoisted above the gate's `try` and takes the root's id; the bare catch now registers `Planner threw: <message>`. `goal_done` with the root's `nodeId` completes a finished root through `completeRoot` in a turn `turnMayStartEffort` admits, with the three refusals the spec names, and the tool description, `README.md`, `docs/architecture.md` and the `completeLeaf` comment say so. The injection ledger was refreshed for the longer `goal_done` description.
+
+Tests. Seven cases were added to `.kit/controller-tick-test.mjs` beside the S13 planner cases: the no-text regression pin, the object-text parse with a string control and an unanswered shape, the late throw inside the gate, the self-review mirror, and the three harness-282 cases. Red run on `fb753eb` (the trunk `hooks/index.ts` swapped in for one run, then restored and compared byte-for-byte to the pre-probe copy): exit 22, 22 failures, every one in the new cases, 3411 OK. Green run on the changeset: exit 0, 3433 OK, 0 failures, against the baseline of 3393 OK at exit 0 recorded on the untouched worktree. `tsc --noEmit` exit 0 against the 2.1.282 typings. `.kit/tool-description-length-test.mjs` exit 0. `.kit/injection-duplicate-test.mjs` exit 0 after the ledger refresh.
+
+Surprises. The engine's 2.1.282 typings also renamed `turn.complete`'s `aborted` to `isAborted` and moved context attachment to the way down through `next`; both are the harness-282 plan's. The regenerated `claude-code-mcp.d.ts` lists the tools of the session that ran the command rather than this plugin's, so the repository keeps its own copy of that file.
+
+Reviews. The adversarial and blind reviewers were dispatched over the whole changeset; their findings and dispositions are recorded in Chapter 2.
+
+### Chapter 2: the review round (2026-09-25)
+
+Both reviewers read the changeset before this chapter's fixes. The adversarial reviewer returned CHANGES_REQUIRED on two majors, the blind reviewer APPROVED_WITH_CONCERNS on two. Dispositions, each checked against the code before it was taken:
+
+- Accepted, both reviewers: `goal_done` on the root raced an in-flight planner call, since a finished root is the tree the planner is due for. Two guards: the tool refuses while `planningInFlight` is true, mirroring the tick's own finished-root path, and the planner re-reads its root after the model call and drops the reply whole with a `planning_discarded` decision where the root is gone or closed. Pinned by the in-flight refusal case and the discard case, the latter driving `goal_create` with `replace: true` under a parked call.
+- Accepted, adversarial: the root arm discarded `persist`'s result. It now denies as the leaf arm does. Pinned with the harness's write refusal.
+- Accepted, both: a planner-blocked root completed by name kept its blocked reason. The root arm clears `blockedReason`, `pausedByNudgeCap` and `lead`, and completing a blocked root on the operator's word is kept, since that is the DEV-DISCORD case after the three-strike block trips. Pinned.
+- Accepted, blind: the outer catch could count a failure twice when the register's own persist threw, and could count a created round as a failure when the trailing persist threw. `planningSettled` marks the attempt counted; the catch registers only where it is unset.
+- Accepted, blind, with the adversarial minor: bare containment let a stale short origin reading match a framed turn, and a foreign turn quoting a queued entry could steal it. The expected-turn find now prefers equality and falls back to the key found between line breaks; the origin readings take equality alone. The harness-282 Approach was amended. Pinned by the inline-quote case.
+- Accepted, adversarial: no case drove the switch, reason and distill sites. Three cases now drive each with the object shape and a no-text shape.
+- Accepted, adversarial: those three sites logged nothing on a no-text shape, against the Approach. Each now writes one `completion_no_text` decision naming the site and the shape through `noteCompletionShape`, then takes the empty-reply path; the Approach's "the decision their own catch logs today" is read as this line, since those catches logged nothing.
+- Accepted, adversarial: the self-review pin matched a free prose prefix; it now pins the `: error: ` lead and the shape.
+- Accepted, adversarial: `docs/architecture.md` gained the dropped-prompt bookkeeping clause and rows for `completion_no_text` and `planning_discarded`.
+- Discarded, adversarial major on empty Chapters: the Chapters were written after the reviewers were dispatched, in the same changeset; the finding was true at the reviewers' read and moot at the commit.
+- Declined, blind minor asking for a test that pins the dropped-prompt bookkeeping: that tolerance is declared, not wanted, and a test pinning it would hold the wrong behaviour in place.
+
+Gate after the round: `tsc --noEmit` exit 0; the tick suite exit 0, 3457 OK, 0 failures, with the `PASS: 0 failure(s)` line read from the log; `.kit/tool-description-length-test.mjs` exit 0; `.kit/injection-duplicate-test.mjs` exit 0. Two runs before that one were not results. The first exited 0 with no summary line and 1546 OK: the in-flight case parked the planner's promise while the harness's tick driver awaited it, so the process ran out of work and Node exited clean, which reads exactly like a pass to anyone who trusts the exit code alone. The tick is now fired without being awaited in the two parked-call cases. The second exited 1 on a thrown fs refusal, since the harness's write refusal throws where `persist` returns false only for a persona another session took on disk; the case now takes that shape.
+
+Both plans are Complete and archived under `docs/archive/` in this same changeset.
+
+Next: the pull request, then the operator-verification step under Operator Verification for the DEV-DISCORD root.

@@ -1014,8 +1014,9 @@ function enforceInvariants(state: AgentState): void {
 
 // Mark a leaf complete, walk up completing plan-parents whose children are all
 // complete. A plan with any blocked child becomes blocked (H3).
-// The root is never touched (H3): the controller tick completes it, through
-// isRootFinished or the planner.
+// The root is never touched here (H3): the controller tick completes it,
+// through isRootFinished or the planner, and goal_done with the root's own id
+// completes a finished root on the operator's or the coordinator's word.
 export function completeLeaf(state: AgentState, id: string, note: string): void {
   const node = state.goals.find((g) => g.id === id);
   if (!node) return;
