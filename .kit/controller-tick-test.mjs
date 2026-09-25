@@ -3843,9 +3843,12 @@ async function main() {
     await caseTaskAdd_emptyRefusedOverLongCut(clock);
     await caseTaskClear_emptiesActiveGoalLeavesOthers(clock);
     await caseTaskDone_allDoneSuggestsGoalDoneButNeverCompletesIt(clock);
+    await caseTaskDone_alreadyDoneKeepsDoneAtAndWritesNothing(clock);
     await caseTaskVerbs_aNonOwnerIsRefused(clock);
     await caseTaskVerbs_registerAndAreNeverTurnOriginGated(clock);
     await caseTaskVerbs_eachAcceptedCallReachesTheStoreWrite(clock);
+    await caseTaskAdd_foldsLineTerminatorsToOneLine(clock);
+    await caseTaskAdd_commonsYieldRollsBackThePushedTask(clock);
     await caseLtg_theListSurvivesATreeReplacementAndARestart(clock);
     await caseLtg_aLongTermGoalIsNeverActiveAndNeverHoldsTheRootOpen(clock);
     await caseLtg_theToolRegistersForAnOwnerAndNeverForAReader(clock);
@@ -23802,6 +23805,7 @@ async function caseLtg_aStoreWrittenBeforeTheListLoadsEmpty() {
   console.log("\n=== Goal levels 3: a store written before the list loads with an empty list ===");
   const v4 = makeState({ now: T0, version: 4 });
   check("ltg load: the seeded v4 state carries no list (the instrument)", !("longTermGoals" in v4), Object.keys(v4));
+  check("ltg load: the seeded v4 state carries no tasks key (the instrument)", !("tasks" in v4), Object.keys(v4));
   const fromV4 = parseState(JSON.stringify(v4));
   check("ltg load, v4: an empty list and version 5", Array.isArray(fromV4.longTermGoals) && fromV4.longTermGoals.length === 0 && fromV4.version === 5, { list: fromV4.longTermGoals, version: fromV4.version });
   check("ltg load, v4: the task list also loads at 5, empty", Array.isArray(fromV4.tasks) && fromV4.tasks.length === 0, fromV4.tasks);
@@ -23967,14 +23971,16 @@ async function caseTaskDone_refusesAnIdOutsideTheActiveGoal(clock) {
 
   const hForeign = await tasksHarness("task_done_foreign_goal", goals, tasks);
   const foreignRes = await callTool(hForeign, { tool: "mcp__agentic-plugin__task_done", id: "tk-theirs" });
-  check("task_done cross-goal: a task under a different goal is refused as unknown",
-    typeof foreignRes?.deny === "string" && foreignRes.deny.includes("tk-theirs") && foreignRes.deny.includes("not a task under the active goal"), foreignRes);
+  check("task_done cross-goal: a task under a different goal is refused, naming the id and 'unknown'",
+    typeof foreignRes?.deny === "string" && foreignRes.deny.includes("tk-theirs") && foreignRes.deny.includes("unknown"), foreignRes);
+  check("task_done cross-goal: the refusal is not the no-active-goal text", !foreignRes.deny.includes("no active goal"), foreignRes);
   check("task_done cross-goal: the refusal writes nothing", writtenTasks(hForeign) === null, hForeign.fsWrites.map((w) => w.path));
 
   const hMissing = await tasksHarness("task_done_missing_id", goals, tasks);
   const missingRes = await callTool(hMissing, { tool: "mcp__agentic-plugin__task_done", id: "tk-nonexistent" });
-  check("task_done unknown id: an id naming no task at all is refused as unknown",
-    typeof missingRes?.deny === "string" && missingRes.deny.includes("tk-nonexistent") && missingRes.deny.includes("not a task under the active goal"), missingRes);
+  check("task_done unknown id: an id naming no task at all is refused, naming the id and 'unknown'",
+    typeof missingRes?.deny === "string" && missingRes.deny.includes("tk-nonexistent") && missingRes.deny.includes("unknown"), missingRes);
+  check("task_done unknown id: the refusal is not the no-active-goal text", !missingRes.deny.includes("no active goal"), missingRes);
 
   const hOwn = await tasksHarness("task_done_own_goal_control", goals, tasks);
   const ownRes = await callTool(hOwn, { tool: "mcp__agentic-plugin__task_done", id: "tk-mine" });
@@ -24004,7 +24010,9 @@ async function caseTaskVerbs_noActiveGoalRefusesAllThree(clock) {
 }
 
 // The cap: task_add refuses the 21st task under a goal that already holds
-// MAX_TASKS_PER_GOAL (20).
+// MAX_TASKS_PER_GOAL (20). Half the seeded tasks are already done, proving
+// the cap counts every task under the goal, done or not, since a done task
+// cannot free a slot on its own.
 async function caseTaskAdd_refusesAtTheCap(clock) {
   console.log("\n=== Task verbs: task_add refuses at the per-goal cap ===");
   clock.set(T0);
@@ -24013,18 +24021,21 @@ async function caseTaskAdd_refusesAtTheCap(clock) {
     makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
     makeGoalNode({ id: "g-full", parentId: "g-root", kind: "task", status: "active", maxRounds: 10 }),
   ];
-  const tasks = Array.from({ length: cap }, (_, i) => taskEntry(`tk-${i}`, "g-full"));
+  const tasks = Array.from({ length: cap }, (_, i) =>
+    taskEntry(`tk-${i}`, "g-full", i % 2 === 0 ? { done: true, doneAt: T0 } : {}));
   const h = await tasksHarness("task_add_at_cap", goals, tasks);
   const res = await callTool(h, { tool: "mcp__agentic-plugin__task_add", text: "One too many" });
   check(`task_add cap: refused at ${cap} tasks, naming the cap`,
     typeof res?.deny === "string" && res.deny.includes(String(cap)), res);
+  check("task_add cap: advises task_clear rather than finishing tasks",
+    res.deny.includes("task_clear") && !res.deny.includes("or finish"), res);
   check("task_add cap: the refusal writes nothing", writtenTasks(h) === null, h.fsWrites.map((w) => w.path));
 }
 
 // Empty text is refused; over-long text is accepted and cut at store time
-// (hooks/index.ts's TASK_TEXT_MAX_CHARS, 200), the same way goal_add cuts an
-// objective at 500 - a refusal here would be the wrong rule for a bound that
-// exists to keep the store bounded, not to police caller input.
+// (hooks/index.ts's exported TASK_TEXT_MAX_CHARS), the same way goal_add cuts
+// an objective at 500 - a refusal here would be the wrong rule for a bound
+// that exists to keep the store bounded, not to police caller input.
 async function caseTaskAdd_emptyRefusedOverLongCut(clock) {
   console.log("\n=== Task verbs: task_add refuses empty text and cuts over-long text ===");
   clock.set(T0);
@@ -24039,12 +24050,13 @@ async function caseTaskAdd_emptyRefusedOverLongCut(clock) {
   check("task_add empty text: the refusal writes nothing", writtenTasks(hEmpty) === null, hEmpty.fsWrites.map((w) => w.path));
 
   const hLong = await tasksHarness("task_add_long_text", goals);
-  const longText = "x".repeat(250);
+  const maxChars = (await loadModule("task_add_long_text_max")).TASK_TEXT_MAX_CHARS;
+  const longText = "x".repeat(maxChars + 50);
   const longRes = await callTool(hLong, { tool: "mcp__agentic-plugin__task_add", text: longText });
   check("task_add over-long text: accepted, not refused", longRes?.deny === undefined, longRes);
   const longWritten = writtenTasks(hLong);
-  check("task_add over-long text: the stored text is cut to 200 characters",
-    longWritten?.[0]?.text === "x".repeat(200) && longWritten[0].text.length === 200, longWritten?.[0]?.text?.length);
+  check(`task_add over-long text: the stored text is cut to ${maxChars} characters`,
+    longWritten?.[0]?.text === "x".repeat(maxChars) && longWritten[0].text.length === maxChars, longWritten?.[0]?.text?.length);
 }
 
 // task_clear empties the active goal's tasks and leaves another goal's
@@ -24088,6 +24100,31 @@ async function caseTaskDone_allDoneSuggestsGoalDoneButNeverCompletesIt(clock) {
     state.tasks.every((t) => t.done === true), state.tasks);
 }
 
+// task_done on a task already done neither overwrites doneAt nor writes the
+// store: the result says so instead. A doneAt bump here would misreport when
+// the task actually finished, and a write here would be a no-op write on
+// every retry of an already-applied call.
+async function caseTaskDone_alreadyDoneKeepsDoneAtAndWritesNothing(clock) {
+  console.log("\n=== Task verbs: task_done on an already-done task keeps doneAt and writes nothing ===");
+  clock.set(T0);
+  const goals = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+    makeGoalNode({ id: "g-active", parentId: "g-root", kind: "task", status: "active", maxRounds: 10 }),
+  ];
+  const originalDoneAt = T0 - 5_000;
+  const tasks = [taskEntry("tk-1", "g-active", { done: true, doneAt: originalDoneAt })];
+  const h = await tasksHarness("task_done_already_done", goals, tasks);
+  const storeBefore = h.fsMap.get(PERSONA_STORE_FILE);
+  clock.advance(60_000);
+  const res = await callTool(h, { tool: "mcp__agentic-plugin__task_done", id: "tk-1" });
+  check("task_done already done: no deny, the result says it was already done",
+    res?.deny === undefined && String(res?.result ?? "").includes("already done"), res);
+  check("task_done already done: nothing was written", writtenTasks(h) === null, h.fsWrites.map((w) => w.path));
+  check("task_done already done: the store file is byte-identical", h.fsMap.get(PERSONA_STORE_FILE) === storeBefore);
+  const state = getState(h);
+  check("task_done already done: doneAt is unchanged", state.tasks.find((t) => t.id === "tk-1")?.doneAt === originalDoneAt, state.tasks);
+}
+
 // A non-owner session (a passive reader join, another live session holding
 // the persona) is refused the same held-by-a-live-session text every other
 // gated tool gives, before any argument or active-goal reading runs.
@@ -24111,9 +24148,14 @@ async function caseTaskVerbs_aNonOwnerIsRefused(clock) {
   }
 }
 
-// The Tests line: the three tools register beside goal_longterm and none is
-// gated to an operator or coordinator turn - a nudge or subagent turn still
-// reaches the store.
+// Not-gated is the implementation's own reading of the Goal ("a persona
+// working through a series of turns on a goal maintains a scratch pad"; the
+// persona drives its own list), not a Tests-line requirement, since the
+// section text names only the store-write acceptance below. The control
+// proves the turn itself is one the gate refuses: a sibling tool that is
+// gated (goal_longterm) is refused in the same turn where task_add is
+// served, so the accept is the gate's own reading of task_add rather than a
+// turn this harness accidentally made ungated.
 async function caseTaskVerbs_registerAndAreNeverTurnOriginGated(clock) {
   console.log("\n=== Task verbs: the three tools register and are never turn-origin gated ===");
   clock.set(T0);
@@ -24126,16 +24168,23 @@ async function caseTaskVerbs_registerAndAreNeverTurnOriginGated(clock) {
     check(`task verbs register: ${name} is registered`, h.toolRegisters.some((t) => t.name === name), h.toolRegisters.map((t) => t.name));
   }
   // A turn no origin classified (originKind null) is exactly the shape
-  // EFFORT_REFUSED_TEXT would gate a new-effort tool under; task_add still
-  // reaches the store, unlike goal_create or goal_longterm in the same turn.
+  // EFFORT_REFUSED_TEXT (hooks/index.ts) gates a new-effort tool under;
+  // task_add still reaches the store, unlike goal_create or goal_longterm in
+  // the same turn.
   await gl4Start(h, "unclassified-turn");
   const res = await callTool(h, { tool: "mcp__agentic-plugin__task_add", text: "From an unclassified turn" });
   check("task verbs register: task_add is served in a turn with no origin classification", res?.deny === undefined, res);
+  // Control, same turn: goal_longterm's add is a new-effort tool and is
+  // refused with EFFORT_REFUSED_TEXT here, proving the turn itself is one the
+  // gate refuses rather than one no gate in this harness ever reaches.
+  const ltRes = await callTool(h, { tool: "mcp__agentic-plugin__goal_longterm", action: "add", title: "Control", objective: "Prove the gate refuses this turn" });
+  check("task verbs register control: goal_longterm add is refused in the same turn",
+    typeof ltRes?.deny === "string" && ltRes.deny.includes("a new effort starts only in a turn"), ltRes);
 }
 
-// The Tests line and the section's own accept path: each accepted verb
-// reaches the store write, read from the write itself rather than inferred
-// from the tool's own result text.
+// Section 2's acceptance bullet ("each verb persists through the normal
+// store write"): each accepted verb reaches the store write, read from the
+// write itself rather than inferred from the tool's own result text.
 async function caseTaskVerbs_eachAcceptedCallReachesTheStoreWrite(clock) {
   console.log("\n=== Task verbs: each accepted call reaches the store write ===");
   clock.set(T0);
@@ -24158,6 +24207,55 @@ async function caseTaskVerbs_eachAcceptedCallReachesTheStoreWrite(clock) {
   await callTool(hClear, { tool: "mcp__agentic-plugin__task_clear" });
   const clearWritten = writtenTasks(hClear);
   check("task_clear reaches the write: the written store holds no task for the goal", clearWritten?.length === 0, clearWritten);
+}
+
+// task_add folds a newline in the caller's text to a space before it stores
+// or slices, the same fold kaizenLine applies to stored text elsewhere: a
+// multi-line task would otherwise break the injected [TASK LIST] block's
+// one-line-per-task layout in Section 3.
+async function caseTaskAdd_foldsLineTerminatorsToOneLine(clock) {
+  console.log("\n=== Task verbs: task_add folds a newline in the text to one line ===");
+  clock.set(T0);
+  const goals = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+    makeGoalNode({ id: "g-active", parentId: "g-root", kind: "task", status: "active", maxRounds: 10 }),
+  ];
+  const h = await tasksHarness("task_add_folds_newline", goals);
+  const res = await callTool(h, { tool: "mcp__agentic-plugin__task_add", text: "First line\nSecond line\r\nThird line" });
+  check("task_add newline fold: accepted", res?.deny === undefined, res);
+  const written = writtenTasks(h);
+  check("task_add newline fold: the stored text carries no line terminator",
+    written?.[0]?.text === "First line Second line Third line", written?.[0]?.text);
+}
+
+// F4: a commons yield mid-persist rolls the pushed task back before the
+// yield's own write reaches disk, reusing the same rival-claim technique the
+// yield-log-bytes cases drive a commons yield with. Watched red first: with
+// the rollback callback removed from task_add's persist call, this case
+// failed, the written store carrying the pushed task even though the tool's
+// own deny said the write was not saved.
+async function caseTaskAdd_commonsYieldRollsBackThePushedTask(clock) {
+  console.log("\n=== Task verbs: a commons yield during task_add rolls back the pushed task ===");
+  clock.set(T0);
+  const goals = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+    makeGoalNode({ id: "g-active", parentId: "g-root", kind: "task", status: "active", maxRounds: 10 }),
+  ];
+  const h = await tasksHarness("task_add_commons_yield", goals);
+  // A live rival whose claim on this persona is older than this session's
+  // own claim (tasksHarness seeds it at T0 - 2000), so commons arbitration
+  // hands the persona to the rival at the next persisted write.
+  h.storeMap.set("commons:rival-steward", {
+    sessionId: "rival-steward",
+    lastSeen: T0,
+    claims: [{ resource: "persona:default", claimedAt: T0 - 600_000 }],
+  });
+  const res = await callTool(h, { tool: "mcp__agentic-plugin__task_add", text: "Yielded before it lands" });
+  check("task_add commons yield: refused, the write was not saved",
+    typeof res?.deny === "string" && res.deny.includes("this write was not saved"), res);
+  const written = writtenTasks(h);
+  check("task_add commons yield: the yield's own write holds no task at all (rolled back)",
+    Array.isArray(written) && written.length === 0, written);
 }
 
 // The Tests line: the list survives a tree replacement. goal_create leaves

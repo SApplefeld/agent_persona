@@ -506,7 +506,7 @@ const EFFORT_REFUSED_TEXT =
 // The longest a task's text is kept at store time. task_add cuts here the
 // same way goal_add cuts an objective to 500: at write, with .slice, not by
 // refusing a long call.
-const TASK_TEXT_MAX_CHARS = 200;
+export const TASK_TEXT_MAX_CHARS = 200;
 
 type SubmitOutcome = { ok: true } | { ok: false; how: "failed" | "dropped"; reason: string };
 
@@ -9249,10 +9249,14 @@ export const register: Register = async (on, options) => {
       if (existing.length >= MAX_TASKS_PER_GOAL) {
         toolErrorsThisTurn++;
         return {
-          deny: `task_add refused: ${active.id} already holds ${existing.length} tasks, the cap (${MAX_TASKS_PER_GOAL}). Clear or finish some first.`,
+          deny: `task_add refused: ${active.id} already holds ${existing.length} tasks, the cap (${MAX_TASKS_PER_GOAL}). Clear the list with task_clear first.`,
         };
       }
-      const rawText = String((e as any).text || "").trim();
+      // Folded the same way kaizenLine folds stored text: a newline in the
+      // caller's text would otherwise ride into the store and, later, into
+      // the injected [TASK LIST] block as a line break that is not this
+      // task's own.
+      const rawText = String((e as any).text || "").split(LINE_TERMINATOR).join(" ").trim();
       if (!rawText) {
         toolErrorsThisTurn++;
         return { deny: "task_add requires non-empty 'text'." };
@@ -9266,7 +9270,7 @@ export const register: Register = async (on, options) => {
         addedAt: now,
       };
       sess.state.tasks.push(task);
-      const writeOk = await persist($);
+      const writeOk = await persist($, () => { sess.state.tasks.pop(); });
       if (writeOk) {
         return { result: `Task added: ${task.id} "${task.text}" under ${active.id}.` };
       }
@@ -9295,14 +9299,22 @@ export const register: Register = async (on, options) => {
       if (!task) {
         toolErrorsThisTurn++;
         return {
-          deny: `task_done: "${id.slice(0, 50)}" is not a task under the active goal ${active.id}.`,
+          deny: `task_done refused: "${id.slice(0, 50)}" is unknown under the active goal ${active.id}.`,
         };
       }
+      if (task.done) {
+        return { result: `Task already done: ${task.id} "${task.text}".` };
+      }
+      const priorDoneAt = task.doneAt;
       const now = Date.now();
       task.done = true;
       task.doneAt = now;
       const allDone = sess.state.tasks.filter((t) => t.goalId === active.id).every((t) => t.done);
-      const writeOk = await persist($);
+      const writeOk = await persist($, () => {
+        task.done = false;
+        if (priorDoneAt === undefined) delete task.doneAt;
+        else task.doneAt = priorDoneAt;
+      });
       if (writeOk) {
         return {
           result: allDone
@@ -9330,10 +9342,10 @@ export const register: Register = async (on, options) => {
         toolErrorsThisTurn++;
         return { deny: "task_clear refused: no active goal to clear tasks under." };
       }
-      const before = sess.state.tasks.length;
+      const priorTasks = sess.state.tasks;
       sess.state.tasks = sess.state.tasks.filter((t) => t.goalId !== active.id);
-      const removed = before - sess.state.tasks.length;
-      const writeOk = await persist($);
+      const removed = priorTasks.length - sess.state.tasks.length;
+      const writeOk = await persist($, () => { sess.state.tasks = priorTasks; });
       if (writeOk) {
         return { result: `Cleared ${removed} task(s) from ${active.id}.` };
       }
