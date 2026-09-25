@@ -7411,25 +7411,34 @@ export const register: Register = async (on, options) => {
     // while sess.workdir stays the launch checkout, whose copy gains no
     // Chapter and no Complete status until the plan's branch merges.
     // sess.workdir remains the anchor the persona store and the workdir files
-    // resolve against. Where the call throws or answers with no directory,
-    // the launch checkout is read instead.
+    // resolve against, and no document is ever read under it. Where the call
+    // throws or answers with no directory, the reading is unreadable with the
+    // live directory named as unavailable, and it takes the same once-per-
+    // holder plan_record_unreadable log as a document the reader cannot read.
     const planHolder = turnLeaf ? planHolderOf(sess.state, turnLeaf) : undefined;
     const planPath = planHolder?.planPath;
     if (sess.isOwner && planHolder && planPath) {
       const holder = planHolder;
-      let planDir = sess.workdir;
+      let liveDir: string | null = null;
+      let liveDirReason = "";
       try {
-        const liveDir = await $.session.cwd();
-        if (typeof liveDir === "string" && liveDir.length > 0) planDir = liveDir;
-      } catch {
-        // cwd unavailable; the launch checkout is read
+        const cwd = await $.session.cwd();
+        if (typeof cwd === "string" && cwd.length > 0) {
+          liveDir = cwd;
+        } else {
+          liveDirReason = `live directory unavailable: $.session.cwd() answered ${typeof cwd === "string" ? "an empty string" : typeof cwd}`;
+        }
+      } catch (err) {
+        liveDirReason = `live directory unavailable: ${String(err).slice(0, 150)}`;
       }
       try {
-        const reading = await readPlanRecord(
-          { exists: (p: string) => $.fs.exists(p), read: (p: string) => $.fs.read(p) },
-          planDir,
-          planPath,
-        );
+        const reading = liveDir === null
+          ? { kind: "unreadable" as const, reason: liveDirReason }
+          : await readPlanRecord(
+            { exists: (p: string) => $.fs.exists(p), read: (p: string) => $.fs.read(p) },
+            liveDir,
+            planPath,
+          );
         if (reading.kind === "unreadable") {
           if (!planRecordUnreadableLogged.has(holder.id)) {
             planRecordUnreadableLogged.add(holder.id);

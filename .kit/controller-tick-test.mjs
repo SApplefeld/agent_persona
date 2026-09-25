@@ -14720,10 +14720,9 @@ async function caseLive1_chapterUnderLiveDirLogsProgress(clock) {
 // document there, and a document whose read rejects) each log
 // plan_record_unreadable with the reader's reason and leave plan-1 active,
 // though the launch checkout holds a Complete copy: reading that copy is the
-// defect this section removes, so both are red against the old caller. Three
-// ways $.session.cwd() can fail to name a directory (it throws, answers "",
-// answers a non-string) each fall back to the launch checkout, whose
-// In Progress copy is read without a plan_record decision of any kind.
+// defect this section removes, so both are red against the old caller. The
+// launch copy's Complete is the control throughout: a caller reading it would
+// complete plan-1.
 async function caseLive1_readFailureDegradesToNotComplete(clock) {
   console.log("\n=== boundary-compaction Section 1: a read failure degrades to not-complete rather than a throw ===");
   const failures = [
@@ -14752,44 +14751,40 @@ async function caseLive1_readFailureDegradesToNotComplete(clock) {
     check(`live1 read failure (${f.label}): the turn settled and handed on to next`, thrown === null && nextCalls === 1, { thrown: thrown && String(thrown), nextCalls });
     check(`live1 read failure (${f.label}): plan-1 stays active and is not complete`,
       plan1 && plan1.status === "active" && state.activeGoalId === "plan-1", plan1 && plan1.status);
-    check(`live1 read failure (${f.label}): one plan_record_unreadable names plan-1 and the reason "${f.reason}"`,
-      unreadable.length === 1 && unreadable[0].detail.startsWith("plan-1:") && unreadable[0].detail.includes(f.reason), unreadable);
+    check(`live1 read failure (${f.label}): a plan_record_unreadable names plan-1 and the reason "${f.reason}"`,
+      unreadable.some(d => d.detail.startsWith("plan-1:") && d.detail.includes(f.reason)), unreadable);
     check(`live1 read failure (${f.label}): no complete, plan_progress or plan_record_failed decision`,
       !decisions.some(d => d.action === "complete" || d.action === "plan_progress" || d.action === "plan_record_failed"), decisions.map(d => d.action));
   }
 
+  // Four ways $.session.cwd() can fail to name a directory. Each is a read
+  // failure in its own right: nothing is read under the launch checkout, so
+  // its Complete copy completes nothing, and one plan_record_unreadable names
+  // the live directory as unavailable. A thrown or rejected call's reason
+  // carries the error's text as well.
   const cwdFailures = [
-    { label: "$.session.cwd() throws", cwd: () => { throw new Error("session cwd unavailable"); } },
-    { label: "$.session.cwd() rejects", cwd: () => Promise.reject(new Error("session cwd unavailable")) },
+    { label: "$.session.cwd() throws", cwd: () => { throw new Error("session cwd unavailable"); }, errorText: "session cwd unavailable" },
+    { label: "$.session.cwd() rejects", cwd: () => Promise.reject(new Error("session cwd unavailable")), errorText: "session cwd unavailable" },
     { label: "$.session.cwd() answers an empty string", cwd: () => Promise.resolve("") },
     { label: "$.session.cwd() answers a non-string", cwd: () => Promise.resolve(undefined) },
   ];
   for (const c of cwdFailures) {
     clock.set(T0);
     const h = await plan2Harness(`live1_cwdfail_${cwdFailures.indexOf(c)}`, { chapterCount: 1 });
-    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"]));
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
     h.fake.session.cwd = c.cwd;
     const { nextCalls, thrown } = await live1ScoredTurn(h, "t-cwd-fail", "on-goal");
     const state = getState(h);
     const plan1 = state.goals.find(g => g.id === "plan-1");
     const decisions = getDecisions(h);
-    check(`live1 cwd fallback (${c.label}): the turn settled and handed on to next`, thrown === null && nextCalls === 1, { thrown: thrown && String(thrown), nextCalls });
-    check(`live1 cwd fallback (${c.label}): plan-1 stays active and is not complete`, plan1 && plan1.status === "active", plan1 && plan1.status);
-    check(`live1 cwd fallback (${c.label}): the launch copy was read (no plan_ decision of any kind)`,
-      !decisions.some(d => typeof d.action === "string" && d.action.startsWith("plan_")), decisions.filter(d => typeof d.action === "string" && d.action.startsWith("plan_")));
-  }
-  // Control for the fallback: the same failures with a Complete launch copy
-  // complete the holder, so the silence above is the launch copy being read
-  // rather than no read at all.
-  for (const c of cwdFailures) {
-    clock.set(T0);
-    const h = await plan2Harness(`live1_cwdfail_control_${cwdFailures.indexOf(c)}`, { chapterCount: 1 });
-    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
-    h.fake.session.cwd = c.cwd;
-    const { nextCalls, thrown } = await live1ScoredTurn(h, "t-cwd-fail-control", "on-goal");
-    const plan1 = getState(h).goals.find(g => g.id === "plan-1");
-    check(`live1 cwd fallback control (${c.label}): the launch copy's Complete completes plan-1`,
-      thrown === null && nextCalls === 1 && plan1 && plan1.status === "complete", { thrown: thrown && String(thrown), nextCalls, status: plan1 && plan1.status });
+    const unreadable = decisions.filter(d => d.action === "plan_record_unreadable");
+    check(`live1 cwd unavailable (${c.label}): the turn settled and handed on to next`, thrown === null && nextCalls === 1, { thrown: thrown && String(thrown), nextCalls });
+    check(`live1 cwd unavailable (${c.label}): plan-1 stays active though the launch copy reads Complete`,
+      plan1 && plan1.status === "active" && state.activeGoalId === "plan-1", plan1 && plan1.status);
+    check(`live1 cwd unavailable (${c.label}): exactly one plan_record_unreadable names plan-1 and the unavailable live directory`,
+      unreadable.length === 1 && unreadable[0].detail.startsWith("plan-1:") && unreadable[0].detail.includes("live directory unavailable")
+        && (c.errorText === undefined || unreadable[0].detail.includes(c.errorText)), unreadable);
+    check(`live1 cwd unavailable (${c.label}): no complete decision`, !decisions.some(d => d.action === "complete"), decisions.map(d => d.action));
   }
 }
 
