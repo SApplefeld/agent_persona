@@ -74,9 +74,9 @@ export const PLAN_SWITCH = "plan-switch";
 export const TURN_SCORE = "turn-score";
 export const MEMORY_KIND = "memory-kind";
 
-// --- The three plan health sets ---
+// --- The four plan health sets ---
 //
-// These three are asked together, in one request, at the end of every turn on
+// These four are asked together, in one request, at the end of every turn on
 // an entry that carries a plan document. They have no Haiku counterpart: no
 // classify call asks them, and nothing branches on an answer. What each one is
 // measured against is an outcome the plugin observes for itself afterwards,
@@ -84,6 +84,11 @@ export const MEMORY_KIND = "memory-kind";
 export const WORKER_BLOCKED = "worker-blocked";
 export const ROUNDS_CONVERGING = "rounds-converging";
 export const BLOCK_OWNER = "block-owner";
+// The shadow question: whether work should continue on its own after this
+// message, with nobody else acting first. Its outcome, continued_unprompted,
+// is written by the controller from what actually happens next; nothing here
+// reads the answer, and it reaches no branch, state field or nudge text.
+export const WORK_CONTINUES = "work-continues";
 
 // The block owner's options, which are this catalog's own. The caller names
 // them at request time, the way it names a label array for the Haiku-paired
@@ -107,12 +112,12 @@ export const PLAN_SWITCH_NO_MATCH = "no_match";
 
 export const QUESTION_SET_IDS: readonly string[] = Object.freeze([
   CONTROLLER_DECISION, PLAN_SWITCH, TURN_SCORE, MEMORY_KIND,
-  WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER,
+  WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER, WORK_CONTINUES,
 ]);
 
-// The three asked together at a plan entry's turn end, in the order the
+// The four asked together at a plan entry's turn end, in the order the
 // request carries them.
-export const PLAN_HEALTH_SET_IDS: readonly string[] = Object.freeze([WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER]);
+export const PLAN_HEALTH_SET_IDS: readonly string[] = Object.freeze([WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER, WORK_CONTINUES]);
 
 // The version label a shipped default carries into the journal. An override
 // carries its own label instead.
@@ -237,6 +242,13 @@ export const SHIPPED_QUESTIONS: Readonly<Record<string, ResolvedQuestion>> = {
       "self-resolving": "Nobody: something already running will finish on its own, such as a background job, a suite or a timer.",
       "none": "Nobody: the worker is not waiting on anything and is carrying on.",
     },
+  },
+  [WORK_CONTINUES]: {
+    id: WORK_CONTINUES,
+    version: SHIPPED_VERSION,
+    overrideRefused: null,
+    primitive: "noul",
+    instructions: "`closingText` is how an autonomous worker session ended its last turn. Should work continue on its own after this message, with nobody else acting first?",
   },
 };
 

@@ -3504,9 +3504,15 @@ async function main() {
     await caseSeamSkippedTickAndOffModeWriteNothing(clock);
     await caseSeamAnUnwritableJournalPushesOneDecisionADay(clock);
 
-    // Section 5 (plan-health-from-the-record): the three shadow questions.
-    await casePlanHealth_oneCallAndThreeAnswersPerPlanEntryTurn(clock);
+    // Section 5 (plan-health-from-the-record): the four shadow questions.
+    await casePlanHealth_oneCallAndFourAnswersPerPlanEntryTurn(clock);
     await casePlanHealth_nextSpeakerRecordsChannelDeliveryOrNeither(clock);
+    await casePlanHealth_continuedUnpromptedTrueUnnudgedFalseNudged(clock);
+    await casePlanHealth_continuedUnpromptedSettlesTheCallItWasArmedForAcrossAParkedSubmit(clock);
+    await casePlanHealth_continuedUnpromptedFalseOnChannelAndDeliveryNextTurns(clock);
+    await casePlanHealth_continuedUnpromptedNudgeForAnotherEntryLeavesTheHeldCallUnwritten(clock);
+    await casePlanHealth_continuedUnpromptedAtMostOnceAcrossFurtherTurns(clock);
+    await casePlanHealth_continuedUnpromptedRestoresOnAFailedSubmitThenSettlesTrue(clock);
     await casePlanHealth_chapterWithinTrueOnARiseAndFalseAtTheFifthTurn(clock);
     await casePlanHealth_chapterWithinSeesARiseReadOnASiblingsTurn(clock);
     await casePlanHealth_abandonedEntryDropsItsRecordOnASiblingsTurn(clock);
@@ -20332,26 +20338,26 @@ async function caseSeamSkippedTickAndOffModeWriteNothing(clock) {
 }
 
 // ============================================================
-// Section 5 (plan-health-from-the-record): the three shadow questions asked
-// at the end of every turn on a plan entry, journaled with three outcomes,
+// Section 5 (plan-health-from-the-record): the four shadow questions asked
+// at the end of every turn on a plan entry, journaled with four outcomes,
 // and never read by a branch.
 //
 // The invariance cases read the plan's central constraint the way the
 // decision seam's own cases do: a run with the questions on, against a Jev
 // answering at each extreme, failing, or never answering, produces the same
 // decisions and the same goal tree as a run with the kill switch off. The
-// rest pin the lines: one call and three answers per plan-entry turn, the
-// three primitives by name, each outcome kind landing once against the right
+// rest pin the lines: one call and four answers per plan-entry turn, the
+// four primitives by name, each outcome kind landing once against the right
 // stamp id, a completing entry dropping what it held, a task entry asking
 // none, and a hung request delaying no turn's end.
 // ============================================================
 
 const PLAN_HEALTH_SITE = "plan-health";
-const PLAN_HEALTH_KINDS = ["lead_blocked", "chapter_within", "next_speaker"];
-const PLAN_HEALTH_QUESTION_SET = "worker-blocked,rounds-converging,block-owner";
+const PLAN_HEALTH_KINDS = ["lead_blocked", "chapter_within", "next_speaker", "continued_unprompted"];
+const PLAN_HEALTH_QUESTION_SET = "worker-blocked,rounds-converging,block-owner,work-continues";
 
 // The lines the plan health request wrote: its call lines, the answer lines
-// joined to them, and the outcome lines of its three kinds.
+// joined to them, and the outcome lines of its four kinds.
 function planHealthLines(h) {
   const calls = journalLinesOfKind(h, "call").filter((c) => c.site === PLAN_HEALTH_SITE);
   const answers = journalLinesOfKind(h, "answer").filter((a) => calls.some((c) => c.stampId === a.callStampId));
@@ -20359,12 +20365,12 @@ function planHealthLines(h) {
   return { calls, answers, outcomes };
 }
 
-// The request bodies that carried the three questions, read off the fake's
+// The request bodies that carried the four questions, read off the fake's
 // own record of every fetch rather than a path the case names.
 function planHealthRequests(h) {
   return h.httpCalls
     .map((c) => { try { return JSON.parse(c.init.body); } catch { return null; } })
-    .filter((b) => b && b.questions && Object.keys(b.questions).length === 3);
+    .filter((b) => b && b.questions && Object.keys(b.questions).length === 4);
 }
 
 // A Jev answering every question from the request body it was handed, with
@@ -20413,11 +20419,11 @@ async function planHealthDeliveryTurn(h, clock, turnId, seq, answer) {
   await new Promise((r) => setTimeout(r, 60));
 }
 
-// Bullet 3: one call line and three answer lines per plan-entry turn, the
-// three primitives recorded by name, and the request carrying the state the
+// Bullet 3: one call line and four answer lines per plan-entry turn, the
+// four primitives recorded by name, and the request carrying the state the
 // plan states, for the plan node and for a task under it.
-async function casePlanHealth_oneCallAndThreeAnswersPerPlanEntryTurn(clock) {
-  console.log("\n=== Section 5 plan health: one call and three answers per plan-entry turn ===");
+async function casePlanHealth_oneCallAndFourAnswersPerPlanEntryTurn(clock) {
+  console.log("\n=== Section 5 plan health: one call and four answers per plan-entry turn ===");
   for (const shape of [{ key: "plan", taskUnderPlan: false, leafId: "plan-1" }, { key: "taskunderplan", taskUnderPlan: true, leafId: "task-1" }]) {
     const h = await planHealthHarness(`s5_lines_${shape.key}`, clock, { taskUnderPlan: shape.taskUnderPlan });
     h.setHttpResponse(jevPicking());
@@ -20425,43 +20431,47 @@ async function casePlanHealth_oneCallAndThreeAnswersPerPlanEntryTurn(clock) {
     const label = `s5 lines (${shape.key})`;
 
     const { calls, answers, outcomes } = planHealthLines(h);
-    check(`${label}: one plan-health call line, ok, naming the three sets`,
+    check(`${label}: one plan-health call line, ok, naming the four sets`,
       calls.length === 1 && calls[0].result === "ok" && calls[0].questionSet === PLAN_HEALTH_QUESTION_SET && calls[0].mode === "shadow", calls);
     check(`${label}: the call line's state is the object with this turn's closing text and the one recent text`,
       calls.length === 1 && calls[0].state === JSON.stringify({ closingText: "Working on it.", recentClosingTexts: ["Working on it."] }), calls[0] && calls[0].state);
-    check(`${label}: three answer lines joined to that call, the primitives by name in the request's order`,
-      answers.length === 3 && answers.every((a) => a.callStampId === calls[0].stampId)
-        && answers.map((a) => a.primitive).join(",") === "noul,score,choice"
+    check(`${label}: four answer lines joined to that call, the primitives by name in the request's order`,
+      answers.length === 4 && answers.every((a) => a.callStampId === calls[0].stampId)
+        && answers.map((a) => a.primitive).join(",") === "noul,score,choice,noul"
         && answers.map((a) => a.questionId).join(",") === PLAN_HEALTH_QUESTION_SET, answers);
-    check(`${label}: the Noul line carries its probability, the Score its level, the Choice its option, with no Haiku value`,
-      answers.length === 3 && answers[0].value === "0.2" && answers[0].confidence === null
+    check(`${label}: the Noul lines carry their probability, the Score its level, the Choice its option, with no Haiku value`,
+      answers.length === 4 && answers[0].value === "0.2" && answers[0].confidence === null
         && answers[1].value === "1" && answers[1].probabilities["1"] === 1
-        && answers[2].value === "operator" && answers.every((a) => a.haikuValue === null && a.agrees === null), answers);
+        && answers[2].value === "operator"
+        && answers[3].value === "0.2" && answers[3].confidence === null
+        && answers.every((a) => a.haikuValue === null && a.agrees === null), answers);
 
     const requests = planHealthRequests(h);
-    check(`${label}: exactly one request carried three questions`, requests.length === 1, h.httpCalls.length);
+    check(`${label}: exactly one request carried four questions`, requests.length === 1, h.httpCalls.length);
     const q = requests.length === 1 ? requests[0].questions : {};
-    check(`${label}: the request's three questions are the noul, the score and the choice under their set ids`,
+    check(`${label}: the request's four questions are the noul, the score, the choice and the second noul under their set ids`,
       Object.keys(q).join(",") === PLAN_HEALTH_QUESTION_SET
-        && q["worker-blocked"].type === "noul" && q["rounds-converging"].type === "score" && q["block-owner"].type === "choice", q);
+        && q["worker-blocked"].type === "noul" && q["rounds-converging"].type === "score" && q["block-owner"].type === "choice"
+        && q["work-continues"].type === "noul", q);
     check(`${label}: the Score carries three levels and the Choice the five owner ids`,
       Array.isArray(q["rounds-converging"].criteria) && q["rounds-converging"].criteria.length === 3
         && Object.keys(q["block-owner"].criteria).join(",") === "operator,coordinator,another-plan,self-resolving,none", q);
     check(`${label}: the request's state is an object whose two fields the instructions name`,
       requests.length === 1 && typeof requests[0].state === "object" && requests[0].state.closingText === "Working on it."
         && q["worker-blocked"].instructions.includes("`closingText`") && q["rounds-converging"].instructions.includes("`recentClosingTexts`")
-        && q["block-owner"].instructions.includes("`closingText`"), requests[0] && requests[0].state);
+        && q["block-owner"].instructions.includes("`closingText`") && q["work-continues"].instructions.includes("`closingText`"), requests[0] && requests[0].state);
     check(`${label}: one lead_blocked outcome, false, against the call's own stamp id, and no other outcome yet`,
       outcomes.length === 1 && outcomes[0].kind === "lead_blocked" && outcomes[0].value === "false" && outcomes[0].callStampId === calls[0].stampId, outcomes);
 
     // A second turn, whose closing text opens with the worker's BLOCKED:
-    // lead: its own lead_blocked is true, the first call's next_speaker
-    // lands now, and the state carries both closing texts oldest first.
+    // lead: its own lead_blocked is true, the first call's next_speaker and
+    // continued_unprompted both land now (the turn being no nudge), and the
+    // state carries both closing texts oldest first.
     clock.advance(1000);
     await planHealthTurn(h, "t-ph-2", "BLOCKED: waiting on the operator's fork");
     const after = planHealthLines(h);
-    check(`${label}: the second turn wrote its own call and three more answers`,
-      after.calls.length === 2 && after.answers.length === 6, { calls: after.calls.length, answers: after.answers.length });
+    check(`${label}: the second turn wrote its own call and four more answers`,
+      after.calls.length === 2 && after.answers.length === 8, { calls: after.calls.length, answers: after.answers.length });
     check(`${label}: the second call's state carries both closing texts, oldest first`,
       after.calls[1].state === JSON.stringify({ closingText: "BLOCKED: waiting on the operator's fork", recentClosingTexts: ["Working on it.", "BLOCKED: waiting on the operator's fork"] }),
       after.calls[1].state);
@@ -20472,6 +20482,8 @@ async function casePlanHealth_oneCallAndThreeAnswersPerPlanEntryTurn(clock) {
         && byKind("lead_blocked")[1].callStampId === after.calls[1].stampId && byKind("lead_blocked")[1].value === "true", byKind("lead_blocked"));
     check(`${label}: next_speaker landed once, neither, against the first call's stamp id`,
       byKind("next_speaker").length === 1 && byKind("next_speaker")[0].value === "neither" && byKind("next_speaker")[0].callStampId === after.calls[0].stampId, byKind("next_speaker"));
+    check(`${label}: continued_unprompted landed once, true, against the first call's stamp id, the second turn being no nudge`,
+      byKind("continued_unprompted").length === 1 && byKind("continued_unprompted")[0].value === "true" && byKind("continued_unprompted")[0].callStampId === after.calls[0].stampId, byKind("continued_unprompted"));
     check(`${label}: no chapter_within yet, the Chapter count not having risen`, byKind("chapter_within").length === 0, byKind("chapter_within"));
     check(`${label}: the lead itself was still set by Section 3's read`,
       getState(h).goals.find((g) => g.id === shape.leafId).lead?.state === "blocked", getState(h).goals.find((g) => g.id === shape.leafId).lead);
@@ -20525,6 +20537,220 @@ async function casePlanHealth_nextSpeakerRecordsChannelDeliveryOrNeither(clock) 
     getDecisions(h).filter((d) => d.action === "score_skipped" && d.detail.includes("channel message")).length === 1
       && getDecisions(h).filter((d) => d.action === "score_skipped" && d.detail.includes("delivered record")).length === 1,
     getDecisions(h).filter((d) => d.action === "score_skipped").map((d) => d.detail));
+}
+
+// The continued_unprompted outcome, section 4's acceptance: true where the
+// entry's next completed turn was not itself a nudge, false the moment a
+// nudge goes out for the entry meanwhile, and never both for the same call.
+async function casePlanHealth_continuedUnpromptedTrueUnnudgedFalseNudged(clock) {
+  console.log("\n=== Section 5 plan health: continued_unprompted is true un-nudged, false on a nudge, and lands once per call ===");
+
+  // The un-nudged direction: an ordinary second turn is not a nudge, so it
+  // settles the first call's continued_unprompted true.
+  const trueRun = await planHealthHarness("s5_cu_true", clock);
+  trueRun.setHttpResponse(jevPicking());
+  await planHealthTurn(trueRun, "t-cu-true-1", "Working on it.");
+  clock.advance(1000);
+  await planHealthTurn(trueRun, "t-cu-true-2", "Carrying on.");
+  const trueLines = planHealthLines(trueRun);
+  const trueOutcomes = trueLines.outcomes.filter((o) => o.kind === "continued_unprompted");
+  check("s5 continued_unprompted: true on an un-nudged next turn, against the first call's stamp id, landed once",
+    trueOutcomes.length === 1 && trueOutcomes[0].value === "true" && trueOutcomes[0].callStampId === trueLines.calls[0].stampId, trueOutcomes);
+
+  // The nudged direction: the entry going idle and getting nudged settles
+  // the pending call false at once, before any further turn completes.
+  const falseRun = await planHealthHarness("s5_cu_false", clock);
+  falseRun.setHttpResponse(jevPicking());
+  await planHealthTurn(falseRun, "t-cu-false-1", "Working on it.");
+  const firstCall = planHealthLines(falseRun).calls[0];
+  const idle = await lead3IdleTick(falseRun, clock);
+  check("s5 continued_unprompted control: the idle tick nudged the entry", idle.nudged === true, idle);
+  await new Promise((r) => setTimeout(r, 60));
+  const afterNudge = planHealthLines(falseRun).outcomes.filter((o) => o.kind === "continued_unprompted");
+  check("s5 continued_unprompted: false the moment a nudge is sent, against the pending call's stamp id",
+    afterNudge.length === 1 && afterNudge[0].value === "false" && afterNudge[0].callStampId === firstCall.stampId, afterNudge);
+
+  // The nudged turn itself then completes: the second site, which would
+  // otherwise read this turn's own origin, finds nothing held and writes no
+  // second outcome for the same call.
+  await openQueuedTurn(falseRun, "t-cu-nudged");
+  await falseRun.handlers["turn.complete"](falseRun.fake, { turnId: "t-cu-nudged", answer: "Working on it.", reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+  const afterNudgedTurn = planHealthLines(falseRun).outcomes.filter((o) => o.kind === "continued_unprompted" && o.callStampId === firstCall.stampId);
+  check("s5 continued_unprompted: the nudged turn's own completion writes no second outcome for the same call",
+    afterNudgedTurn.length === 1, afterNudgedTurn);
+}
+
+// Fix round 1, F1: the nudge site captures the call it is settling before
+// $.prompt.submit parks, and settles that captured call rather than
+// whatever the field holds once the submit resolves. A whole nudged turn
+// can open and complete, arming a fresh call for the same entry, while the
+// nudge's own submit is still parked; the fix keeps the false write on the
+// call the nudge was actually about.
+async function casePlanHealth_continuedUnpromptedSettlesTheCallItWasArmedForAcrossAParkedSubmit(clock) {
+  console.log("\n=== Section 5 plan health (fix round 1, F1): a nudge settles the call it was armed for, not one armed while its submit parked ===");
+  const h = await planHealthHarness("s5_cu_parked", clock);
+  h.setHttpResponse(jevPicking());
+  await planHealthTurn(h, "t-cu-parked-1", "Working on it.");
+  const firstCall = planHealthLines(h).calls[0];
+
+  h.setClassifyValue((prompt, labels) => {
+    if (!Array.isArray(labels)) return "discard";
+    if (labels.includes("drift")) return "drift";
+    if (labels.includes("nudge")) return "nudge";
+    return "discard";
+  });
+  h.holdPromptSubmits();
+  clock.advance(130_000);
+  await fireTick(h);
+  const queued = await waitUntil(() => goalPrompts(h).length >= 1);
+  check("s5 continued_unprompted parked control: the nudge reached the actuator and parked", queued, goalPrompts(h));
+
+  // The nudged turn opens and completes entirely while the nudge's own
+  // submit is still parked: a fresh call is armed for the same entry
+  // before this tick resumes.
+  await openQueuedTurn(h, "t-cu-parked-nudged");
+  await h.handlers["tool.call"](h.fake, { tool: "Bash", turnId: "t-cu-parked-nudged" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-cu-parked-nudged", answer: "Still working, parked.", reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+  const midway = planHealthLines(h);
+  check("s5 continued_unprompted parked control: the nudged turn's own completion armed a second call and settled no outcome for the first",
+    midway.calls.length === 2 && midway.calls[0].stampId === firstCall.stampId
+      && !midway.outcomes.some((o) => o.kind === "continued_unprompted"), midway);
+
+  h.releasePromptSubmits();
+  const settled = await waitUntil(() => getDecisions(h).some((d) => d.action === "nudge_sent"));
+  check("s5 continued_unprompted parked control: the nudge's own submit resolved", settled, getDecisions(h).map((d) => d.action));
+  await new Promise((r) => setTimeout(r, 80));
+
+  const after = planHealthLines(h);
+  const cu = after.outcomes.filter((o) => o.kind === "continued_unprompted");
+  check("s5 continued_unprompted: settles the call it was armed for, false, exactly once",
+    cu.length === 1 && cu[0].value === "false" && cu[0].callStampId === firstCall.stampId, cu);
+  check("s5 continued_unprompted: the second call, armed during the parked window, carries no outcome yet",
+    !after.outcomes.some((o) => o.kind === "continued_unprompted" && o.callStampId === after.calls[1].stampId), after.outcomes);
+}
+
+// Fix round 1, F3: the true rule is unaccounted-and-not-channel, not merely
+// "not a nudge". A channel message and a delivered record are each somebody
+// or something else acting first, so the next completed turn opening from
+// either writes false.
+async function casePlanHealth_continuedUnpromptedFalseOnChannelAndDeliveryNextTurns(clock) {
+  console.log("\n=== Section 5 plan health (fix round 1, F3): continued_unprompted is false where the next completed turn was a channel message or a delivery ===");
+  const channelRun = await planHealthHarness("s5_cu_channel", clock);
+  channelRun.setHttpResponse(jevPicking());
+  await planHealthTurn(channelRun, "t-cu-ch-1", "Working on it.");
+  const channelFirstCall = planHealthLines(channelRun).calls[0];
+  clock.advance(1000);
+  await planHealthTurn(channelRun, "t-cu-ch-2", "Answering the operator.", { channel: true });
+  const channelOutcomes = planHealthLines(channelRun).outcomes.filter((o) => o.kind === "continued_unprompted");
+  check("s5 continued_unprompted: false where the next completed turn opened from a channel message",
+    channelOutcomes.length === 1 && channelOutcomes[0].value === "false" && channelOutcomes[0].callStampId === channelFirstCall.stampId, channelOutcomes);
+
+  const deliveryRun = await planHealthHarness("s5_cu_delivery", clock);
+  deliveryRun.setHttpResponse(jevPicking());
+  await planHealthTurn(deliveryRun, "t-cu-dl-1", "Working on it.");
+  const deliveryFirstCall = planHealthLines(deliveryRun).calls[0];
+  clock.advance(1000);
+  await planHealthDeliveryTurn(deliveryRun, clock, "t-cu-dl-2", 1, "Handled the record.");
+  const deliveryOutcomes = planHealthLines(deliveryRun).outcomes.filter((o) => o.kind === "continued_unprompted");
+  check("s5 continued_unprompted: false where the next completed turn was a delivery",
+    deliveryOutcomes.length === 1 && deliveryOutcomes[0].value === "false" && deliveryOutcomes[0].callStampId === deliveryFirstCall.stampId, deliveryOutcomes);
+}
+
+// Fix round 1, F2: a nudge for a different entry leaves the held call
+// unwritten at the nudge site, since that nudge says nothing about it.
+async function casePlanHealth_continuedUnpromptedNudgeForAnotherEntryLeavesTheHeldCallUnwritten(clock) {
+  console.log("\n=== Section 5 plan health (fix round 1, F2): a nudge for a different entry leaves the held call unwritten ===");
+  const h = await planHealthSiblingsHarness("s5_cu_entry_scope", clock);
+  await planHealthTurn(h, "t-es-1", "Working on A.");
+  const firstCall = planHealthLines(h).calls[0];
+
+  await planHealthSwitchTo(h, "task-2");
+  const idle = await lead3IdleTick(h, clock);
+  check("s5 continued_unprompted entry-scope control: the idle tick nudged the now-active sibling", idle.nudged === true, idle);
+  await new Promise((r) => setTimeout(r, 60));
+
+  const outcomes = planHealthLines(h).outcomes.filter((o) => o.kind === "continued_unprompted" && o.callStampId === firstCall.stampId);
+  check("s5 continued_unprompted: a nudge for a different entry writes no outcome for the first entry's held call",
+    outcomes.length === 0, outcomes);
+}
+
+// Fix round 1, the Tests line's at-most-once case, driven across an entry
+// that carries no plan document: the first call is settled by the very
+// next completed turn regardless of that turn's entry, and a non-plan-entry
+// turn arms no new call to settle in its place, so a further turn writes
+// nothing more for the first call.
+async function casePlanHealth_continuedUnpromptedAtMostOnceAcrossFurtherTurns(clock) {
+  console.log("\n=== Section 5 plan health (fix round 1): continued_unprompted lands at most once for the first call across further turns ===");
+  clock.set(T0);
+  const tree = plan2Goals({ chapterCount: 1 });
+  tree.goals.push(makeGoalNode({ id: "task-bare", parentId: "root-1", kind: "task", status: "paused", maxRounds: 10, createdAt: T0 - 4000 }));
+  const h = await createTickHarness({
+    ...OPTS,
+    jevMode: "shadow",
+    caseName: "s5_cu_at_most_once",
+    stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId },
+  });
+  h.fsMap.set(PLAN2_FILE, LEAD3_DOC);
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+  });
+  h.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+  h.setHttpResponse(jevPicking());
+
+  await planHealthTurn(h, "t-amo-1", "Working on the plan.");
+  const firstCall = planHealthLines(h).calls[0];
+  check("s5 continued_unprompted at-most-once control: the plan-entry turn armed one call", planHealthLines(h).calls.length === 1, planHealthLines(h).calls);
+
+  await planHealthSwitchTo(h, "task-bare");
+  clock.advance(1000);
+  await planHealthTurn(h, "t-amo-2", "On the bare task now.");
+  const afterFirst = planHealthLines(h);
+  const cuFirst = afterFirst.outcomes.filter((o) => o.kind === "continued_unprompted");
+  check("s5 continued_unprompted at-most-once: the non-plan-entry turn settles the first call true and asks no new plan-health call",
+    afterFirst.calls.length === 1 && cuFirst.length === 1 && cuFirst[0].value === "true" && cuFirst[0].callStampId === firstCall.stampId, afterFirst);
+
+  clock.advance(1000);
+  await planHealthTurn(h, "t-amo-3", "Still on the bare task.");
+  const afterSecond = planHealthLines(h);
+  check("s5 continued_unprompted at-most-once: a further turn writes no second outcome for the first call",
+    afterSecond.outcomes.filter((o) => o.kind === "continued_unprompted").length === 1, afterSecond.outcomes);
+}
+
+// Fix round 1, the Tests line's failed-submit case: a rejected nudge submit
+// restores the held record rather than leaving it lost, and the next
+// un-originated turn then settles it true.
+async function casePlanHealth_continuedUnpromptedRestoresOnAFailedSubmitThenSettlesTrue(clock) {
+  console.log("\n=== Section 5 plan health (fix round 1): a failed nudge submit restores the held record, settled true by the next turn ===");
+  const h = await planHealthHarness("s5_cu_failed_submit", clock);
+  h.setHttpResponse(jevPicking());
+  await planHealthTurn(h, "t-cu-fail-1", "Working on it.");
+  const firstCall = planHealthLines(h).calls[0];
+
+  h.setClassifyValue((prompt, labels) => {
+    if (!Array.isArray(labels)) return "discard";
+    if (labels.includes("drift")) return "drift";
+    if (labels.includes("nudge")) return "nudge";
+    return "discard";
+  });
+  h.failPromptSubmits(new Error("submit boom"));
+  clock.advance(130_000);
+  await fireTick(h);
+  const failed = await waitUntil(() => getDecisions(h).some((d) => d.action === "nudge_failed"));
+  check("s5 continued_unprompted failed-submit control: the nudge attempt failed", failed, getDecisions(h).map((d) => d.action));
+  await new Promise((r) => setTimeout(r, 60));
+  check("s5 continued_unprompted failed-submit: no outcome was written for the restored call",
+    !planHealthLines(h).outcomes.some((o) => o.kind === "continued_unprompted"), planHealthLines(h).outcomes);
+
+  clock.advance(1000);
+  await planHealthTurn(h, "t-cu-fail-2", "Carrying on with no nudge in between.");
+  const after = planHealthLines(h);
+  const cu = after.outcomes.filter((o) => o.kind === "continued_unprompted");
+  check("s5 continued_unprompted: the restored record is settled true by the next un-originated turn",
+    cu.length === 1 && cu[0].value === "true" && cu[0].callStampId === firstCall.stampId, cu);
 }
 
 // The chapter_within outcome is true when the Chapter count rises within the
@@ -20832,8 +21058,8 @@ async function casePlanHealth_decisionsAreInvariantAcrossEveryJevExtreme(clock) 
     shadow.setHttpResponse(jevPicking(pick));
     await planHealthDrive(shadow, clock);
     const { calls, answers } = planHealthLines(shadow);
-    check(`s5 invariance control (${label}): five calls, fifteen answers, every answer carrying the driven value`,
-      calls.length === 5 && answers.length === 15 && holds(answers), answers.map((a) => [a.primitive, a.value]));
+    check(`s5 invariance control (${label}): five calls, twenty answers, every answer carrying the driven value`,
+      calls.length === 5 && answers.length === 20 && holds(answers), answers.map((a) => [a.primitive, a.value]));
     checkPlanHealthInvariant(`s5 invariance (${label})`, shadow, off);
   }
 
