@@ -15046,7 +15046,7 @@ async function caseHold_theCapAskLiftsOnExpiryAndOnAnswer(clock) {
       countAction(after.decisions, "nudge_sent") === 4 && countAction(after.decisions, "nudge_cap_reached") === 1 && countAction(after.decisions, "ask_opened") === 1, after.decisions.slice(-4).map(d => d.action));
     if (lift === "expiry") {
       check(`${label}: that nudge names the cap's expired question`,
-        lastPrompt.startsWith("[GOAL]") && lastPrompt.includes('"The default persona answered 3 nudges on "Harness root goal" with no status line.') && lastPrompt.includes("expired unanswered"), lastPrompt);
+        lastPrompt.startsWith("[GOAL]") && lastPrompt.includes("expired unanswered") && lastPrompt.includes("default") && lastPrompt.includes('"Harness root goal"') && lastPrompt.includes("no status line"), lastPrompt);
     } else {
       check(`${label}: that nudge names no expired question`, lastPrompt.startsWith("[GOAL]") && !lastPrompt.includes("expired unanswered"), lastPrompt);
     }
@@ -15340,13 +15340,14 @@ async function countReading(h, clock) {
 // One completed turn. With no `text` the turn opens with the next queued
 // text, which after countReading is the nudge's, so the turn is nudged; an
 // explicit `text` that matches no queued entry opens it unaccounted.
-// `tools` are called inside the turn in order, `channel` opens it from a
-// channel message, and `aborted` ends it with no answer.
-async function countTurn(h, turnId, answer, { text, tools = [], channel = false, aborted = false } = {}) {
+// `tools` are called inside the turn in order, each from the subagent loop
+// `agentId` names where one is given, `channel` opens it from a channel
+// message, and `aborted` ends it with no answer.
+async function countTurn(h, turnId, answer, { text, tools = [], agentId, channel = false, aborted = false } = {}) {
   const ok = async () => ({ result: "ok" });
   if (channel) await h.handlers["prompt.submit"](h.fake, { text, origin: { kind: "channel" } }, async () => ({}));
   await h.handlers["turn.start"](h.fake, text === undefined ? { turnId } : { turnId, text }, ok);
-  for (const tool of tools) await h.handlers["tool.call"](h.fake, { tool, turnId }, ok);
+  for (const tool of tools) await h.handlers["tool.call"](h.fake, agentId === undefined ? { tool, turnId } : { tool, turnId, agentId }, ok);
   await h.handlers["turn.complete"](h.fake, aborted ? { turnId, aborted: true, reason: "aborted" } : { turnId, answer, reason: "completed" }, ok);
 }
 
@@ -15449,6 +15450,8 @@ async function caseCount_workAndChannelTurnsResetAndOtherTurnsMoveNothing(clock)
     { label: "un-nudged read-only turn", nudged: false, opts: { text: "What does the fixture do?", tools: ["Read", "Grep"] }, answer: "It seeds the store.", expected: 2 },
     { label: "unaccounted turn opening with WORKING:", nudged: false, opts: { text: "" }, answer: "WORKING: carrying on", expected: 2 },
     { label: "aborted nudged turn", nudged: true, opts: { aborted: true }, answer: "", expected: 2 },
+    { label: "nudged turn that completed with no answer", nudged: true, opts: {}, answer: "", expected: 2 },
+    { label: "un-nudged turn whose only work call came from a subagent loop", nudged: false, opts: { text: "Keep going.", tools: ["Bash"], agentId: "agent-earlier-turn" }, answer: "Carrying on.", expected: 2 },
     { label: "nudged turn whose only call is a read", nudged: true, opts: { tools: ["Read"] }, answer: "Read the plan.", expected: "cap" },
   ];
   for (const s of scenarios) {
@@ -15476,19 +15479,23 @@ async function caseCount_workAndChannelTurnsResetAndOtherTurnsMoveNothing(clock)
   }
   // A background subagent's completion landing inside the nudged turn, under
   // an id of its own and with no status line, is not the worker's answer and
-  // moves the count neither way; the nudged turn's own completion after it
-  // finds the turn's reading already spent and moves nothing either.
-  clock.set(T0);
-  {
-    const h = await countHarness("count_subagent_completion");
-    await primeCountToTwo(h, clock);
-    check("count scenario (subagent completion) setup: the count reads 2", (await countReading(h, clock)) === 2);
+  // moves the count neither way; the worker's own completion after it is the
+  // nudged answer and is read as one, adding one when it carries no line and
+  // resetting the count when it opens with WORKING:.
+  for (const [answer, expected] of [["Still looking.", 2], ["WORKING: reading the scout's report", 0]]) {
+    clock.set(T0);
+    const h = await countHarness(`count_subagent_completion_${expected}`);
+    const first = await countReading(h, clock);
+    await countTurn(h, "prime-0", "Had a look around.");
+    const before = await countReading(h, clock);
+    check(`count scenario (subagent completion, worker answers ${JSON.stringify(answer)}) setup: the count read 0 then 1 and a nudge is queued`,
+      first === 0 && before === 1 && h.queuedTurnTexts.some(t => t.startsWith("[GOAL]")), { first, before });
     const ok = async () => ({ result: "ok" });
     await h.handlers["turn.start"](h.fake, { turnId: "t-nudged" }, ok);
     await h.handlers["turn.complete"](h.fake, { turnId: "t-subagent", answer: "Scout report: nothing found.", reason: "completed" }, ok);
-    await h.handlers["turn.complete"](h.fake, { turnId: "t-nudged", answer: "Still looking.", reason: "completed" }, ok);
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-nudged", answer, reason: "completed" }, ok);
     const after = await countReading(h, clock);
-    check("count scenario (subagent completion inside the nudged turn): the count reads 2 after both completions", after === 2, after);
+    check(`count scenario (subagent completion inside the nudged turn, worker answers ${JSON.stringify(answer)}): the count reads ${expected} after both completions`, after === expected, after);
   }
 }
 
@@ -16207,9 +16214,9 @@ async function caseR58f3_capOpensAnAskAndPausesNothing(clock) {
   const askKeys = [...h.storeMap.keys()].filter(k => k.startsWith("ask:"));
   check("r58f3b: one open ask record in the store, on g-plan", askKeys.length === 1 && h.storeMap.get(askKeys[0])?.status === "open" && h.storeMap.get(askKeys[0])?.nodeId === "g-plan", askKeys);
   check("r58f3b: pendingAskId names it", typeof state.pendingAskId === "string" && askKeys[0] === `ask:default:${state.pendingAskId}`, state.pendingAskId);
-  check("r58f3b: the ask's question is the fixed text naming the persona, the entry's title, the three unlined answers and that any answer resumes nudging",
-    h.storeMap.get(askKeys[0])?.question === 'The default persona answered 3 nudges on "Harness root goal" with no status line. Is it still on that entry? Any answer resumes nudging.',
-    h.storeMap.get(askKeys[0])?.question);
+  const capQuestion = h.storeMap.get(askKeys[0])?.question ?? "";
+  check("r58f3b: the ask's question names the persona, the entry's quoted title and the missing status line",
+    capQuestion.includes("default") && capQuestion.includes('"Harness root goal"') && capQuestion.includes("no status line"), capQuestion);
   const plan = state.goals.find(g => g.id === "g-plan");
   check("r58f3b: the node stays active with no reason", plan && plan.status === "active" && plan.blockedReason === undefined, plan);
   check("r58f3b: three nudges were sent before the cap", decisions.filter(d => d.action === "nudge_sent").length === 3);

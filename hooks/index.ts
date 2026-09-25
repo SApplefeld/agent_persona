@@ -2463,8 +2463,9 @@ const LEAD_REASON_MAX = 300;
 // at the start of that line, with the rest of the line as the reason.
 // `Working:`, `BLOCKED x`, the marker on a later line and the word inside a
 // sentence all read as no status line. Never throws: a text that is not a
-// string reads as none. The nudge asks for this line, and the nudge count
-// reads its presence on a nudged turn.
+// string reads as none. The nudge asks for this line, the nudge count reads
+// its presence on a nudged turn, and a `BLOCKED:` or `WAITING:` line on a
+// plan entry is the worker's lead.
 function readStatusLine(text: unknown): { state: "working" | "blocked" | "waiting"; reason: string } | null {
   if (typeof text !== "string") return null;
   const found = text.split(/\r?\n/).find((line) => line.trim() !== "");
@@ -2475,14 +2476,6 @@ function readStatusLine(text: unknown): { state: "working" | "blocked" | "waitin
   if (!m) return null;
   const state = m[1] === "WORKING" ? "working" : m[1] === "BLOCKED" ? "blocked" : "waiting";
   return { state, reason: m[2].trim().slice(0, LEAD_REASON_MAX) };
-}
-
-// The lead a closing text states: its status line when that line is
-// `BLOCKED:` or `WAITING:`. A `WORKING:` line states no lead.
-function readLeadLine(text: unknown): { state: "blocked" | "waiting"; reason: string } | null {
-  const line = readStatusLine(text);
-  if (line === null || line.state === "working") return null;
-  return { state: line.state, reason: line.reason };
 }
 
 // The round text the controller's idle summary and its skip-hash subset
@@ -2548,6 +2541,14 @@ export const register: Register = async (on, options) => {
   // its text matched ("unaccounted" for one that matched none, whether
   // external, a continuation or unknown) and read at turn.complete.
   let currentTurnKind: ExpectedTurn["kind"] | "unaccounted" = "unaccounted";
+  // The id of the turn a nudge opened, set at turn.start when the matched
+  // entry is a nudge and cleared by the completion carrying that same id.
+  // The nudge count reads a nudged answer from that completion alone, so a
+  // background subagent's completion inside the nudged turn, which carries
+  // an id of its own, neither spends the reading nor is read as the answer.
+  // Null where no nudged turn is open, and where the nudged turn's start
+  // carried no id, whose completion then moves the count by nothing.
+  let nudgedTurnId: string | null = null;
   // A delivery whose $.prompt.submit rejected or was dropped: its entry has
   // left the list and the refusal is recorded, and nothing else. The record
   // stays as the delivery wrote it and ages out under the TTL; no delivery
@@ -5905,11 +5906,12 @@ export const register: Register = async (on, options) => {
             // entry for the operator. The count is reset as the ask opens,
             // which serves as the reset at the ask's close: the count rises
             // only at a nudged turn's end, and while the ask is open holdOf
-            // holds every nudge, so no nudge is sent in between,
-            // and a count left at the cap would reopen the ask on the tick
-            // after the close in place of the nudge the lift promises. The
-            // floor is left alone, since the last nudge's spacing still
-            // applies.
+            // holds every nudge, so no new nudge is sent in between. A nudged
+            // turn already under way can still complete while the ask is open
+            // and move the count, so the close can find it above zero. A
+            // count left at the cap would reopen the ask on the tick after
+            // the close in place of the nudge the lift promises. The floor is
+            // left alone, since the last nudge's spacing still applies.
             //
             // The record is written before the slot names it, and the count
             // is reset only once the write returns: a write that throws
@@ -6542,6 +6544,7 @@ export const register: Register = async (on, options) => {
       unexpectTurn(matched);
       currentTurnKind = matched.kind;
       if (matched.kind === "delivery") stampRecordId = matched.recordId;
+      if (matched.kind === "nudge") nudgedTurnId = e.turnId ? e.turnId : null;
     } else {
       currentTurnKind = "unaccounted";
       // A delivery entry outlives its record when no turn opens with a
@@ -6699,11 +6702,12 @@ export const register: Register = async (on, options) => {
     // The idle proposal's turn asks for a proposal rather than work on a
     // node, so it is scored against none and spends no round.
     const wasProposal = currentTurnKind === "proposal";
-    // Whether this completion carries the id of the turn whose start set the
-    // readings above. A background subagent finishing inside an open turn
-    // fires a completion of its own, and the nudge count reads a nudged
-    // answer only from the completion of the nudged turn itself.
-    const completesTheStartedTurn = e.turnId === currentGateTurnId;
+    // Whether this completion is the nudged turn's own, read by id rather
+    // than from currentTurnKind, which the first completion to arrive resets
+    // whatever turn it belongs to. The id is spent here, so the nudged turn
+    // is read once.
+    const completesNudgedTurn = nudgedTurnId !== null && e.turnId === nudgedTurnId;
+    if (completesNudgedTurn) nudgedTurnId = null;
     currentTurnKind = "unaccounted";
     if (e.turnId === currentGateTurnId) {
       currentTurnOriginKind = "unclassified";
@@ -6897,9 +6901,13 @@ export const register: Register = async (on, options) => {
     // already complete or abandoned at turn end (goal_done in the same turn)
     // takes no lead. The ASK: marker above is handled as it is whether or
     // not this line is present.
+    // The closing text's status line, read once here: the lead below, the
+    // WORKING: clear, the nudge count and the lead_blocked outcome all take
+    // it from this one reading.
+    const statusLine = readStatusLine(e.answer);
     if (!skipped && sess.isOwner && turnLeaf && isPlanEntry(sess.state, turnLeaf)) {
-      const leadLine = readLeadLine(e.answer);
-      const workingLine = readStatusLine(e.answer)?.state === "working";
+      const leadLine = statusLine !== null && statusLine.state !== "working" ? { state: statusLine.state, reason: statusLine.reason } : null;
+      const workingLine = statusLine !== null && statusLine.state === "working";
       const previous = turnLeaf.lead ?? null;
       const entryOver = turnLeaf.status === "complete" || turnLeaf.status === "abandoned";
       if (leadLine && !entryOver) {
@@ -6939,21 +6947,23 @@ export const register: Register = async (on, options) => {
     // turn that called a work tool or dispatched an agent, the calls
     // isNudgeCountWork keeps, resets it, and so does a turn opened from a
     // channel message, each whatever else the turn carried. Otherwise a
-    // nudged turn, one whose text matched the nudge's queued entry at
-    // turn.start, resets it when its closing text opens with a status line
-    // and adds one when it opens with none. Every other turn moves nothing,
-    // an unaccounted one included, so a nudge whose turn cannot be placed
-    // never counts toward the cap. An aborted, errored or refused turn is no
-    // answer and moves nothing either, and neither does a completion whose
-    // id is not the nudged turn's own, which is a subagent's closing text
-    // rather than the worker's answer. The other resets are activation,
+    // nudged turn's own completion, the one carrying the id nudgedTurnId
+    // recorded at turn.start, resets it when its closing text opens with a
+    // status line and adds one when it opens with none. Every other
+    // completion moves nothing: an unaccounted turn, so a nudge whose turn
+    // cannot be placed never counts toward the cap; a subagent's completion
+    // inside the nudged turn, whose id is its own; and an aborted, errored
+    // or refused turn, or one with no answer, which is no answer to read.
+    // Only the owner session keeps the count. The other resets are activation,
     // which activate() and the switch and goal_resume sites perform, a new
     // tree from goal_create, the root's completion, and the cap's own ask,
     // which resets the count as it opens.
-    if (nudgeCountWorkThisTurn > 0 || wasChannelOrigin) {
+    if (!sess.isOwner) {
+      // A reader session never nudges, so it keeps no count.
+    } else if (nudgeCountWorkThisTurn > 0 || wasChannelOrigin) {
       sess.nudgedAnswersWithoutStatus = 0;
-    } else if (wasNudged && completesTheStartedTurn && !(e.aborted || e.reason === "aborted" || e.reason === "error" || e.reason === "refusal")) {
-      if (readStatusLine(e.answer) !== null) sess.nudgedAnswersWithoutStatus = 0;
+    } else if (completesNudgedTurn && !skipped) {
+      if (statusLine !== null) sess.nudgedAnswersWithoutStatus = 0;
       else sess.nudgedAnswersWithoutStatus += 1;
     }
 
@@ -7299,8 +7309,7 @@ export const register: Register = async (on, options) => {
           if (stampId !== null) {
             record.chapterWithin.push({ stampId, turns: 0, chapterCount: chaptersNow });
             sess.jevNextSpeakerStampId = stampId;
-            const lead = readLeadLine(e.answer);
-            shadowOutcome(hostOf($), stampId, "lead_blocked", lead !== null && lead.state === "blocked" ? "true" : "false");
+            shadowOutcome(hostOf($), stampId, "lead_blocked", statusLine !== null && statusLine.state === "blocked" ? "true" : "false");
           }
         }
       }
@@ -7469,7 +7478,15 @@ export const register: Register = async (on, options) => {
   on("tool.call", async ($, e, next) => {
     sess.state.monitor.totalToolCalls += 1;
     if (isWorkTool(e.tool)) toolCallsThisTurn += 1;
-    if (isNudgeCountWork(e.tool)) nudgeCountWorkThisTurn += 1;
+    // Whether this call comes from a loop other than the main one: e.agentId,
+    // the loop's id, is non-empty on a dispatched subagent's, a teammate's, a
+    // workflow agent's or an engine fork's calls and absent on the main
+    // loop's. The break-in check below reads it too.
+    const inSubagent = typeof e.agentId === "string" && e.agentId.length > 0;
+    // A subagent's own calls do not count as the main loop's work for the
+    // nudge count: an agent dispatched in an earlier turn can still be
+    // running, and its calls say nothing about whether the worker answered.
+    if (!inSubagent && isNudgeCountWork(e.tool)) nudgeCountWorkThisTurn += 1;
     // Steer 68/69: the reply tool ran somewhere in this turn, so the
     // channel-reply backstop at turn.complete has nothing to backfill.
     if (typeof e.tool === "string" && (e.tool.includes("__reply") || e.tool.endsWith("_reply"))) {
@@ -8955,8 +8972,7 @@ export const register: Register = async (on, options) => {
     // subagent's tool result reaches a loop that cannot verify it and never
     // reaches the owner, so such a call neither reads nor advances the
     // throttle, and the record stays pending for the tick or for the
-    // owner's own next call.
-    const inSubagent = typeof e.agentId === "string" && e.agentId.length > 0;
+    // owner's own next call. inSubagent is read at the top of this handler.
     if (!inSubagent && sess.isOwner && r.deny === undefined && Date.now() - lastBreakInCheckAt >= urgentCheckMinMs) {
       // One clock reading for the whole scan, so every record in it is
       // judged against the same instant.
