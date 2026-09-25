@@ -15569,6 +15569,48 @@ async function caseCount_activationAndTheAskCloseReset(clock) {
     const after = await countReading(h, clock);
     check("count persona switch inside a nudged turn: the unlined answer after the switch leaves the count 0 under the new persona", after === 0, after);
   }
+  // The same switch from a turn no nudge opened, where the count block moves
+  // nothing, so the load's own reset is what stops the carry.
+  clock.set(T0);
+  {
+    const h = await countHarness("count_persona_switch_unaccounted_turn");
+    await primeCountToTwo(h, clock);
+    const before = await countReading(h, clock);
+    const store = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE));
+    store.other = { ...JSON.parse(JSON.stringify(store.default)), persona: "other" };
+    h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify(store));
+    const ok = async () => ({ result: "ok" });
+    await h.handlers["turn.start"](h.fake, { turnId: "t-kbd", text: "switch to the other persona" }, ok);
+    const switched = await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__agentic_identity", persona: "other", turnId: "t-kbd" }, async () => ({ result: "passthrough" }));
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-kbd", answer: "Switched.", reason: "completed" }, ok);
+    check("count persona switch in an unaccounted turn setup: the count read 2 and the session owns persona other",
+      before === 2 && String(switched?.result ?? "").includes("owner"), { before, switched });
+    const after = await countReading(h, clock);
+    check("count persona switch in an unaccounted turn: the count reads 0 under the new persona", after === 0, after);
+  }
+  // A session that yielded its persona and is later promoted back loads the
+  // stored tree afresh, and the count it held before the yield stays behind.
+  clock.set(T0);
+  {
+    const h = await countHarness("count_reader_promotion");
+    await primeCountToTwo(h, clock);
+    const before = await countReading(h, clock);
+    const store = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE));
+    const takeoverEpoch = (store.default.epoch ?? 0) + 5;
+    store.default.activeSessionId = "other-owner";
+    store.default.epoch = takeoverEpoch;
+    h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify(store));
+    h.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: "other-owner", epoch: takeoverEpoch, lastSeen: Date.now() } }));
+    await fireHeartbeat(h);
+    const yielded = getState(h).activeSessionId === "other-owner";
+    clock.advance(120_000);
+    await fireHeartbeat(h);
+    const promoted = getState(h).decisions.some(d => d.action === "reader_promoted");
+    check("count reader promotion setup: the count read 2, the session yielded, then was promoted back",
+      before === 2 && yielded && promoted, { before, yielded, promoted, actions: getState(h).decisions.slice(-4).map(d => d.action) });
+    const after = await countReading(h, clock);
+    check("count reader promotion: the count reads 0 on the promoted session", after === 0, after);
+  }
   for (const close of ["expiry", "answer"]) {
     clock.set(T0);
     const h = await createTickHarness({ ...OPTS, costMaxNudgesPerHour: 30, askOperatorWaitMs: 60_000, caseName: `count_ask_close_${close}`,

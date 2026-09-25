@@ -3864,6 +3864,9 @@ export const register: Register = async (on, options) => {
             } else {
               sess.state = createDefaultState(sess.persona, sess.mySessionId);
             }
+            // The count this session held before it yielded counted answers
+            // on a tree it no longer holds, so it does not carry into this one.
+            sess.nudgedAnswersWithoutStatus = 0;
             sess.state.activeSessionId = sess.mySessionId;
             sess.state.epoch += 1;
             sess.myEpoch = sess.state.epoch;
@@ -6984,8 +6987,9 @@ export const register: Register = async (on, options) => {
     // not undone by the answer that follows it. Only the owner session keeps
     // the count. The other resets are activation, which activate() and the
     // switch and goal_resume sites perform, a new tree from goal_create, the
-    // root's completion, a persona's state loading at agentic_identity, and
-    // the cap's own ask, which resets the count as it opens.
+    // root's completion, a persona's state loading at agentic_identity or at
+    // a reader's promotion, and the cap's own ask, which resets the count as
+    // it opens.
     if (!sess.isOwner) {
       // A reader session never nudges, so it keeps no count.
     } else if (nudgeCountWorkThisTurn > 0 || wasChannelOrigin) {
