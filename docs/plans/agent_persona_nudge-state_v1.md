@@ -433,3 +433,11 @@ Delta: SCOTT-CLAUDE, 2026-09-25 02:24
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
 
+### Interim board 1 - 2026-09-25
+- Section 3: fix round 1 committed as e585131 (3520 OK, 0 failures); round 2 review is one adversarial lens at opus, high, through Workflow, running. Adjudication records sit in the gitignored scratch path .kit/scratch/nudge-state/ under the main checkout.
+- Live dispatches: the round 2 reviewer only; the section 3 implementer is idle and resumable for a further fix round.
+- Gate baseline: 3520 OK, 0 failures, tsc exit 0, duplicate test exit 0 (SCOTT-CLAUDE, 2026-09-25, worktree clean at e585131).
+- Rulings since the last boundary: section 3 round 1 took the nudged-turn-id fix over moving the turn-kind reset; the empty-answer assumption is reversed; "Task" as a dispatch tool name refused on .claude/types/claude-code.d.ts:40-45.
+- Held, not armed: docs/plans/agent_persona_backstop-turn-guard_spec_v1.md, sent by the coordinator on 2026-09-25 with the operator's dispatch authorization relayed; it waits on PR #96 merging (the plan is not on main) and on this plan completing, since its fix sits in the same turn.complete block section 3 reshaped. It runs next after this plan, ahead of boundary-compaction.
+- Next: adjudicate section 3 round 2, close section 3, then sections 4 and 5, then finishing-work.
+
