@@ -7129,7 +7129,7 @@ export const register: Register = async (on, options) => {
     // The harness measures the turn itself and carries the figure whatever the
     // turn's reason, so where it arrives the record needs no hook-side clock
     // and no open-turn entry, and still counts a turn whose start this session
-    // never saw, which is most of them on a session the harness under-reports.
+    // never saw, such as a subagent's run, which raises no turn.start.
     // The map entry is kept as a defensive fallback against a contract this
     // plugin has never exercised: the field is declared required, and no other
     // line here reads it, so an absent one would switch this record off with
@@ -7235,8 +7235,11 @@ export const register: Register = async (on, options) => {
     // turn is still open and carries the subagent's report as e.answer (the
     // harness type: a subagent's answer is its own turn.complete, carrying
     // its agentId), so backfilling it would post that report to the
-    // operator's thread.
-    if (!skipped && sess.isOwner && completesGateTurn && currentTurnIsChannelOrigin && !replyCalledThisTurn && !isPrimingTurn && !wasNudged) {
+    // operator's thread. A nudged turn is excluded by its id as well as its
+    // kind: the kind is reset by every completion, a subagent's included,
+    // while the channel flag survives one, so a turn that is both a nudge and
+    // channel-origin would otherwise post the nudge's answer.
+    if (!skipped && sess.isOwner && completesGateTurn && currentTurnIsChannelOrigin && !replyCalledThisTurn && !isPrimingTurn && !wasNudged && !completesNudgedTurn) {
       try {
         await $.tool.call({ tool: "mcp__plugin_relay_channel-relay__reply", message: e.answer } as any);
         sess.state.decisions.push({

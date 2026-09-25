@@ -3614,6 +3614,7 @@ async function main() {
     await caseSection4_threeNudgedCompleteTurnsOpenTheCapAsk(clock);
     await caseSection4_nudgedCompleteStillCompletesATaskEntry_control(clock);
     await caseSection4_channelOriginNudgeIsStillScoredAsANudge(clock);
+    await caseSection4_channelOriginNudgeWithASubagentIsNeverBackfilled(clock);
 
     await caseItem81_goalEditDropAllowsBlocked(clock);
     await caseItem81_goalEditDropStillRefusesActive_control(clock);
@@ -17809,6 +17810,35 @@ async function caseSection4_channelOriginNudgeIsStillScoredAsANudge(clock) {
   check("section4 nudge+channel: no score_skipped for this turn",
     !decisions.some(d => d.action === "score_skipped" && d.detail.startsWith(`${shape.leafId}:`)), decisions.filter(d => d.action === "score_skipped"));
   check("section4 nudge+channel: one score pushed onto the leaf", leaf.scores.length === 1, leaf.scores.length);
+}
+
+// The same nudge-and-channel turn with a subagent finishing inside it. The
+// subagent's completion resets the turn's kind, while the channel flag now
+// survives it, so the nudge test at the persona's own turn end reads the
+// nudged turn's id rather than the kind. The nudge's answer is the persona
+// answering its own controller, and is never backfilled to the operator.
+async function caseSection4_channelOriginNudgeWithASubagentIsNeverBackfilled(clock) {
+  console.log("\n=== Section 4: a nudge turn that is also channel-origin is not backfilled after a subagent finishes inside it ===");
+  clock.set(T0);
+  const shape = SECTION4_SHAPES.find((s) => s.key === "plan");
+  const h = await section4Harness("section4_nudge_channel_subagent", shape);
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  const nudgeText = h.queuedTurnTexts[h.queuedTurnTexts.length - 1];
+  check("section4 nudge+channel+subagent setup: a nudge text is queued", typeof nudgeText === "string" && nudgeText.length > 0, nudgeText);
+
+  h.setClassifyValue(section4Classify("on-goal"));
+  const replies = () => h.toolCalls.filter(c => c.tool === "mcp__plugin_relay_channel-relay__reply");
+  const backfills = () => getDecisions(h).filter(d => d.action === "channel_reply_backfilled");
+  await h.handlers["prompt.submit"](h.fake, { text: nudgeText, origin: { kind: "channel" } }, async (core) => ({ text: core.text, context: core.context }));
+  await h.handlers["turn.start"](h.fake, { turnId: "t-both", text: nudgeText }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-sub", agentId: "sub-1", answer: "The subagent's full report.", reason: "completed" }, async () => ({ result: "ok" }));
+  clock.advance(5_000);
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-both", answer: "WORKING: on the plan.", reason: "completed" }, async () => ({ result: "ok" }));
+
+  check("section4 nudge+channel+subagent: no reply tool call", replies().length === 0, replies());
+  check("section4 nudge+channel+subagent: no channel_reply_backfilled", backfills().length === 0, backfills());
 }
 
 // Bullet 3: three nudged turns labelled drift on a plan entry trip the
