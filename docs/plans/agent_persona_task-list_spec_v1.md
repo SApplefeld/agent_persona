@@ -71,7 +71,7 @@ Register three MCP verbs beside the `goal_*` registrations (hooks/index.ts near 
 The plan-holder refusal is the gating rule: `task_add` accepts exactly when `planHolderOf(sess.state, activeLeaf)` returns no node carrying a `planPath`, and refuses otherwise (alongside the no-active-goal and cap refusals). There is no third admission case.
 
 Acceptance: `task_add` under a non-plan active goal adds a task; `task_add` under a plan-holder active goal refuses with the chapters message, whether the active leaf is itself the plan-holder or sits under one; `task_add` with no active goal refuses; `task_add` at the cap refuses; `task_done` marks the named task done and refuses an id not under the active goal; `task_clear` empties the active goal's tasks and leaves other goals' tasks untouched; each verb persists through the normal store write.
-Files in scope: hooks/index.ts, .kit/controller-tick-test.mjs, .kit/tick-harness.mjs.
+Files in scope: hooks/index.ts, .kit/controller-tick-test.mjs, .kit/tick-harness.mjs, .claude/types/claude-code-mcp.d.ts.
 Tests: at minimum, lock both directions of the plan-holder gate (a non-plan goal accepts, a plan goal refuses, including the leaf-is-itself-the-holder case) and lock that `task_done` refuses an id outside the active goal; a silent accept under a plan run, creating a second tracker beside the chapters, is the expensive failure.
 
 ### 3. Injected [TASK LIST] block

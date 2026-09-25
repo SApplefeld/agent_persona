@@ -679,13 +679,14 @@ function makeState(opts = {}) {
     activeGoalId = "g-plan";
   }
   const state = {
-    version: 4,
+    version: opts.version || 5,
     persona: "default",
     activeSessionId: SESSION_ID,
     epoch: 1,
     memory: [],
     goals,
     activeGoalId,
+    tasks: opts.tasks || [],
     monitor: {
       sessionStart: now,
       turnCount: 0,

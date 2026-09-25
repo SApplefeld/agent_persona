@@ -3836,6 +3836,16 @@ async function main() {
     await caseLtg_aNonOwnerIsRefused(clock);
     await caseLtg_aStoreWrittenBeforeTheListLoadsEmpty();
     await caseTasks_aGoalCompletedMidSessionLosesItsTasksAtTheWrite(clock);
+    await caseTaskAdd_thePlanHolderGateBothDirections(clock);
+    await caseTaskDone_refusesAnIdOutsideTheActiveGoal(clock);
+    await caseTaskVerbs_noActiveGoalRefusesAllThree(clock);
+    await caseTaskAdd_refusesAtTheCap(clock);
+    await caseTaskAdd_emptyRefusedOverLongCut(clock);
+    await caseTaskClear_emptiesActiveGoalLeavesOthers(clock);
+    await caseTaskDone_allDoneSuggestsGoalDoneButNeverCompletesIt(clock);
+    await caseTaskVerbs_aNonOwnerIsRefused(clock);
+    await caseTaskVerbs_registerAndAreNeverTurnOriginGated(clock);
+    await caseTaskVerbs_eachAcceptedCallReachesTheStoreWrite(clock);
     await caseLtg_theListSurvivesATreeReplacementAndARestart(clock);
     await caseLtg_aLongTermGoalIsNeverActiveAndNeverHoldsTheRootOpen(clock);
     await caseLtg_theToolRegistersForAnOwnerAndNeverForAReader(clock);
@@ -20258,7 +20268,7 @@ async function caseSection6_owner_matchesTheFullExistingShape(clock) {
   console.log("\n=== Section 6 owner control: every tool and both clock timers still register, matching today ===");
   clock.set(T0);
   const h = await createTickHarness({ ...OPTS, arming: "owner", caseName: "s6_owner_control" });
-  check("s6 owner: sixteen tools registered", h.toolRegisters.length === 16, h.toolRegisters.map((t) => t.name));
+  check("s6 owner: nineteen tools registered", h.toolRegisters.length === 19, h.toolRegisters.map((t) => t.name));
   check("s6 owner: two clock callbacks (heartbeat, controller tick)", h.clockEveryCallbacks.length === 2, h.clockEveryCallbacks.length);
   const entry = h.storeMap.get(`commons:${SESSION_ID}`);
   check("s6 owner: commons entry holds persona:default (ownership taken)", !!entry && entry.claims.some((c) => c.resource === "persona:default"), entry);
@@ -23784,13 +23794,17 @@ async function caseLtg_aNonOwnerIsRefused(clock) {
 // list existed loads with an empty list at the current version, 5. That holds
 // for a v4 store, a v3 store, both committed v4 fixtures, and a stored value
 // that is not a list. A held list loads as it was, and a new state starts
-// empty.
+// empty. Section 2 (task verbs): this is also the suite's one explicit v4
+// seed once makeState defaults to a native v5 store, so it doubles as the
+// tick-harness-level check that a v4 store's task list also loads at 5,
+// empty, through the same call.
 async function caseLtg_aStoreWrittenBeforeTheListLoadsEmpty() {
   console.log("\n=== Goal levels 3: a store written before the list loads with an empty list ===");
-  const v4 = makeState({ now: T0 });
+  const v4 = makeState({ now: T0, version: 4 });
   check("ltg load: the seeded v4 state carries no list (the instrument)", !("longTermGoals" in v4), Object.keys(v4));
   const fromV4 = parseState(JSON.stringify(v4));
   check("ltg load, v4: an empty list and version 5", Array.isArray(fromV4.longTermGoals) && fromV4.longTermGoals.length === 0 && fromV4.version === 5, { list: fromV4.longTermGoals, version: fromV4.version });
+  check("ltg load, v4: the task list also loads at 5, empty", Array.isArray(fromV4.tasks) && fromV4.tasks.length === 0, fromV4.tasks);
   const fromV3 = parseState(JSON.stringify({ ...makeState({ now: T0 }), version: 3 }));
   check("ltg load, v3: an empty list and version 5", Array.isArray(fromV3.longTermGoals) && fromV3.longTermGoals.length === 0 && fromV3.version === 5, { list: fromV3.longTermGoals, version: fromV3.version });
   for (const name of ["state-v4-no-cost.json", "state-v4-cost-no-hash.json"]) {
@@ -23848,6 +23862,302 @@ async function caseTasks_aGoalCompletedMidSessionLosesItsTasksAtTheWrite(clock) 
     written !== null && !written.tasks.some((t) => t.goalId === "g-done"), written && written.tasks);
   check("tasks reap on persist: that write keeps the paused goal's task",
     written !== null && written.tasks.length === 1 && written.tasks[0].id === "tk-p", written && written.tasks);
+}
+
+// ============================================================
+// Task verbs: task_add, task_done, task_clear
+// ============================================================
+
+function taskEntry(id, goalId, overrides = {}) {
+  return { id, goalId, text: `work ${id}`, done: false, addedAt: T0, ...overrides };
+}
+
+// A started owner session over `goals` and `tasks`, activeGoalId defaulting
+// to the tree's one active node - the same shape ltgHarness gives the
+// long-term goal cases, so a real session load runs under every call here
+// too. fsWrites is reset once session.start's own load has settled, so a
+// case's own write is the only one its assertions read.
+async function tasksHarness(caseName, goals, tasks = []) {
+  const h = await createTickHarness({ ...OPTS, caseName, skipSessionStart: true });
+  const state = makeState({
+    now: T0,
+    goals,
+    activeGoalId: goals.find((g) => g.status === "active")?.id ?? null,
+    tasks,
+  });
+  seedPersonaStore(h, state);
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+  });
+  await h.handlers["session.start"](h.fake, {}, () => {});
+  h.resetFsWrites();
+  return h;
+}
+
+// The tasks array a call's own write holds, read from the fake fs write
+// itself rather than from getState, which would also read a later call's
+// write. null where nothing was written.
+function writtenTasks(h) {
+  const writes = h.fsWrites.filter((w) => w.path === PERSONA_STORE_FILE);
+  if (writes.length === 0) return null;
+  return JSON.parse(writes[writes.length - 1].content).default.tasks;
+}
+
+// The Tests line: both directions of the plan-holder gate, including the
+// leaf-is-itself-the-holder case. A silent accept under a plan run would
+// create a second tracker beside the plan document's own chapters - the
+// expensive failure the Tests line names.
+async function caseTaskAdd_thePlanHolderGateBothDirections(clock) {
+  console.log("\n=== Task verbs: task_add's plan-holder gate, both directions ===");
+  clock.set(T0);
+
+  // (a) A non-plan active goal: task_add accepts. The refused rule never
+  // fires (planHolderOf finds no ancestor with a planPath), so this is the
+  // plan-holder rule's own accept path, not a not-loaded or non-owner deny.
+  const plain = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+    makeGoalNode({ id: "g-task", parentId: "g-root", kind: "task", status: "active", maxRounds: 10 }),
+  ];
+  const hPlain = await tasksHarness("task_add_plain", plain);
+  const acceptRes = await callTool(hPlain, { tool: "mcp__agentic-plugin__task_add", text: "Write the thing" });
+  check("task_add plan-holder gate: a non-plan active goal accepts", acceptRes?.deny === undefined && typeof acceptRes?.result === "string", acceptRes);
+  const acceptedTasks = writtenTasks(hPlain);
+  check("task_add plan-holder gate: the task lands under the active goal", acceptedTasks?.length === 1 && acceptedTasks[0].goalId === "g-task", acceptedTasks);
+
+  // (b) The active leaf is itself the plan-holder (planHolderOf returns the
+  // node itself): task_add refuses, naming the plan document and "chapters".
+  const leafIsHolder = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+    makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "plan", status: "active", maxRounds: 0, planPath: "docs/plans/example.md" }),
+  ];
+  const hLeaf = await tasksHarness("task_add_leaf_holder", leafIsHolder);
+  const leafRes = await callTool(hLeaf, { tool: "mcp__agentic-plugin__task_add", text: "Write the thing" });
+  check("task_add plan-holder gate: the active leaf itself carrying planPath refuses, naming the plan and chapters",
+    typeof leafRes?.deny === "string" && leafRes.deny.includes("docs/plans/example.md") && leafRes.deny.includes("chapters"), leafRes);
+  check("task_add plan-holder gate: the leaf-holder refusal writes nothing", writtenTasks(hLeaf) === null, hLeaf.fsWrites.map((w) => w.path));
+
+  // (c) The active leaf's ancestor is the plan-holder (planHolderOf walks up
+  // to the plan): task_add refuses the same way.
+  const ancestorIsHolder = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+    makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "plan", status: "pending", maxRounds: 0, planPath: "docs/plans/example.md" }),
+    makeGoalNode({ id: "g-task", parentId: "g-plan", kind: "task", status: "active", maxRounds: 10 }),
+  ];
+  const hAncestor = await tasksHarness("task_add_ancestor_holder", ancestorIsHolder);
+  const ancestorRes = await callTool(hAncestor, { tool: "mcp__agentic-plugin__task_add", text: "Write the thing" });
+  check("task_add plan-holder gate: an ancestor carrying planPath refuses, naming the plan and chapters",
+    typeof ancestorRes?.deny === "string" && ancestorRes.deny.includes("docs/plans/example.md") && ancestorRes.deny.includes("chapters"), ancestorRes);
+  check("task_add plan-holder gate: the ancestor-holder refusal writes nothing", writtenTasks(hAncestor) === null, hAncestor.fsWrites.map((w) => w.path));
+}
+
+// The Tests line: task_done refuses an id outside the active goal, both an
+// id that names no task at all and one that names a task under a different
+// goal - the expensive failure is a silent cross-goal completion.
+async function caseTaskDone_refusesAnIdOutsideTheActiveGoal(clock) {
+  console.log("\n=== Task verbs: task_done refuses an id outside the active goal ===");
+  clock.set(T0);
+  const goals = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+    makeGoalNode({ id: "g-active", parentId: "g-root", kind: "task", status: "active", maxRounds: 10 }),
+    makeGoalNode({ id: "g-other", parentId: "g-root", kind: "task", status: "paused", maxRounds: 10 }),
+  ];
+  const tasks = [taskEntry("tk-mine", "g-active"), taskEntry("tk-theirs", "g-other")];
+
+  const hForeign = await tasksHarness("task_done_foreign_goal", goals, tasks);
+  const foreignRes = await callTool(hForeign, { tool: "mcp__agentic-plugin__task_done", id: "tk-theirs" });
+  check("task_done cross-goal: a task under a different goal is refused as unknown",
+    typeof foreignRes?.deny === "string" && foreignRes.deny.includes("tk-theirs") && foreignRes.deny.includes("not a task under the active goal"), foreignRes);
+  check("task_done cross-goal: the refusal writes nothing", writtenTasks(hForeign) === null, hForeign.fsWrites.map((w) => w.path));
+
+  const hMissing = await tasksHarness("task_done_missing_id", goals, tasks);
+  const missingRes = await callTool(hMissing, { tool: "mcp__agentic-plugin__task_done", id: "tk-nonexistent" });
+  check("task_done unknown id: an id naming no task at all is refused as unknown",
+    typeof missingRes?.deny === "string" && missingRes.deny.includes("tk-nonexistent") && missingRes.deny.includes("not a task under the active goal"), missingRes);
+
+  const hOwn = await tasksHarness("task_done_own_goal_control", goals, tasks);
+  const ownRes = await callTool(hOwn, { tool: "mcp__agentic-plugin__task_done", id: "tk-mine" });
+  check("task_done control: a task under the active goal is accepted", ownRes?.deny === undefined && typeof ownRes?.result === "string", ownRes);
+  const ownWritten = writtenTasks(hOwn);
+  check("task_done control: the write marks it done", ownWritten?.find((t) => t.id === "tk-mine")?.done === true, ownWritten);
+}
+
+// No active goal refuses all three verbs, each naming its own rule rather
+// than a shared generic text.
+async function caseTaskVerbs_noActiveGoalRefusesAllThree(clock) {
+  console.log("\n=== Task verbs: no active goal refuses task_add, task_done and task_clear ===");
+  clock.set(T0);
+  const goals = [makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" })];
+
+  const hAdd = await tasksHarness("task_add_no_active", goals);
+  const addRes = await callTool(hAdd, { tool: "mcp__agentic-plugin__task_add", text: "Anything" });
+  check("no active goal: task_add refuses", typeof addRes?.deny === "string" && addRes.deny.includes("no active goal"), addRes);
+
+  const hDone = await tasksHarness("task_done_no_active", goals);
+  const doneRes = await callTool(hDone, { tool: "mcp__agentic-plugin__task_done", id: "tk-anything" });
+  check("no active goal: task_done refuses", typeof doneRes?.deny === "string" && doneRes.deny.includes("no active goal"), doneRes);
+
+  const hClear = await tasksHarness("task_clear_no_active", goals);
+  const clearRes = await callTool(hClear, { tool: "mcp__agentic-plugin__task_clear" });
+  check("no active goal: task_clear refuses", typeof clearRes?.deny === "string" && clearRes.deny.includes("no active goal"), clearRes);
+}
+
+// The cap: task_add refuses the 21st task under a goal that already holds
+// MAX_TASKS_PER_GOAL (20).
+async function caseTaskAdd_refusesAtTheCap(clock) {
+  console.log("\n=== Task verbs: task_add refuses at the per-goal cap ===");
+  clock.set(T0);
+  const cap = AgentState.MAX_TASKS_PER_GOAL;
+  const goals = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+    makeGoalNode({ id: "g-full", parentId: "g-root", kind: "task", status: "active", maxRounds: 10 }),
+  ];
+  const tasks = Array.from({ length: cap }, (_, i) => taskEntry(`tk-${i}`, "g-full"));
+  const h = await tasksHarness("task_add_at_cap", goals, tasks);
+  const res = await callTool(h, { tool: "mcp__agentic-plugin__task_add", text: "One too many" });
+  check(`task_add cap: refused at ${cap} tasks, naming the cap`,
+    typeof res?.deny === "string" && res.deny.includes(String(cap)), res);
+  check("task_add cap: the refusal writes nothing", writtenTasks(h) === null, h.fsWrites.map((w) => w.path));
+}
+
+// Empty text is refused; over-long text is accepted and cut at store time
+// (hooks/index.ts's TASK_TEXT_MAX_CHARS, 200), the same way goal_add cuts an
+// objective at 500 - a refusal here would be the wrong rule for a bound that
+// exists to keep the store bounded, not to police caller input.
+async function caseTaskAdd_emptyRefusedOverLongCut(clock) {
+  console.log("\n=== Task verbs: task_add refuses empty text and cuts over-long text ===");
+  clock.set(T0);
+  const goals = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+    makeGoalNode({ id: "g-task", parentId: "g-root", kind: "task", status: "active", maxRounds: 10 }),
+  ];
+
+  const hEmpty = await tasksHarness("task_add_empty_text", goals);
+  const emptyRes = await callTool(hEmpty, { tool: "mcp__agentic-plugin__task_add", text: "   " });
+  check("task_add empty text: refused as empty", typeof emptyRes?.deny === "string" && emptyRes.deny.includes("non-empty"), emptyRes);
+  check("task_add empty text: the refusal writes nothing", writtenTasks(hEmpty) === null, hEmpty.fsWrites.map((w) => w.path));
+
+  const hLong = await tasksHarness("task_add_long_text", goals);
+  const longText = "x".repeat(250);
+  const longRes = await callTool(hLong, { tool: "mcp__agentic-plugin__task_add", text: longText });
+  check("task_add over-long text: accepted, not refused", longRes?.deny === undefined, longRes);
+  const longWritten = writtenTasks(hLong);
+  check("task_add over-long text: the stored text is cut to 200 characters",
+    longWritten?.[0]?.text === "x".repeat(200) && longWritten[0].text.length === 200, longWritten?.[0]?.text?.length);
+}
+
+// task_clear empties the active goal's tasks and leaves another goal's
+// tasks untouched; with no active goal it refuses.
+async function caseTaskClear_emptiesActiveGoalLeavesOthers(clock) {
+  console.log("\n=== Task verbs: task_clear empties the active goal and leaves others ===");
+  clock.set(T0);
+  const goals = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+    makeGoalNode({ id: "g-active", parentId: "g-root", kind: "task", status: "active", maxRounds: 10 }),
+    makeGoalNode({ id: "g-other", parentId: "g-root", kind: "task", status: "paused", maxRounds: 10 }),
+  ];
+  const tasks = [taskEntry("tk-a1", "g-active"), taskEntry("tk-a2", "g-active"), taskEntry("tk-o1", "g-other")];
+  const h = await tasksHarness("task_clear_mixed", goals, tasks);
+  const res = await callTool(h, { tool: "mcp__agentic-plugin__task_clear" });
+  check("task_clear: accepted and names the count removed", res?.deny === undefined && String(res?.result ?? "").includes("2"), res);
+  const written = writtenTasks(h);
+  check("task_clear: the active goal's tasks are gone", written !== null && !written.some((t) => t.goalId === "g-active"), written);
+  check("task_clear: the other goal's task survives untouched",
+    written !== null && written.length === 1 && written[0].id === "tk-o1" && written[0].done === false, written);
+}
+
+// The all-done suggestion: once task_done makes every task of the active
+// goal done, the result suggests goal_done, and the goal itself stays
+// active - the completion authority runs from the goal to the tasks only.
+async function caseTaskDone_allDoneSuggestsGoalDoneButNeverCompletesIt(clock) {
+  console.log("\n=== Task verbs: task_done's all-done suggestion never completes the goal ===");
+  clock.set(T0);
+  const goals = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+    makeGoalNode({ id: "g-active", parentId: "g-root", kind: "task", status: "active", maxRounds: 10 }),
+  ];
+  const tasks = [taskEntry("tk-1", "g-active", { done: true, doneAt: T0 }), taskEntry("tk-2", "g-active")];
+  const h = await tasksHarness("task_done_all_done", goals, tasks);
+  const res = await callTool(h, { tool: "mcp__agentic-plugin__task_done", id: "tk-2" });
+  check("task_done all-done: the result suggests goal_done", res?.deny === undefined && String(res?.result ?? "").includes("goal_done"), res);
+  const state = getState(h);
+  check("task_done all-done: the goal itself stays active, not completed",
+    state.goals.find((g) => g.id === "g-active")?.status === "active", state.goals.find((g) => g.id === "g-active")?.status);
+  check("task_done all-done: both tasks read done in the store",
+    state.tasks.every((t) => t.done === true), state.tasks);
+}
+
+// A non-owner session (a passive reader join, another live session holding
+// the persona) is refused the same held-by-a-live-session text every other
+// gated tool gives, before any argument or active-goal reading runs.
+async function caseTaskVerbs_aNonOwnerIsRefused(clock) {
+  console.log("\n=== Task verbs: from a non-owner, all three verbs are refused ===");
+  for (const args of [
+    { tool: "mcp__agentic-plugin__task_add", text: "Anything" },
+    { tool: "mcp__agentic-plugin__task_done", id: "tk-anything" },
+    { tool: "mcp__agentic-plugin__task_clear" },
+  ]) {
+    clock.set(T0);
+    const h = await seedReaderHarness(`task_reader_${args.tool.split("__").pop()}`, T0, "owner-tasks", {}, { turnStartedAt: null, workdir: HARNESS_CWD });
+    await openPromptTurn(h);
+    const storeBefore = h.fsMap.get(PERSONA_STORE_FILE);
+    h.fsWrites.length = 0;
+    const res = await callTool(h, args);
+    const tag = `task non-owner (${args.tool})`;
+    check(`${tag}: refused with the held deny text`, res?.deny === SHUTDOWN_HELD_DENY && res?.result === undefined, res);
+    check(`${tag}: no write reached any file`, h.fsWrites.length === 0, h.fsWrites.map((w) => w.path));
+    check(`${tag}: the store file is byte-identical`, h.fsMap.get(PERSONA_STORE_FILE) === storeBefore);
+  }
+}
+
+// The Tests line: the three tools register beside goal_longterm and none is
+// gated to an operator or coordinator turn - a nudge or subagent turn still
+// reaches the store.
+async function caseTaskVerbs_registerAndAreNeverTurnOriginGated(clock) {
+  console.log("\n=== Task verbs: the three tools register and are never turn-origin gated ===");
+  clock.set(T0);
+  const goals = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+    makeGoalNode({ id: "g-active", parentId: "g-root", kind: "task", status: "active", maxRounds: 10 }),
+  ];
+  const h = await tasksHarness("task_verbs_register", goals);
+  for (const name of ["task_add", "task_done", "task_clear"]) {
+    check(`task verbs register: ${name} is registered`, h.toolRegisters.some((t) => t.name === name), h.toolRegisters.map((t) => t.name));
+  }
+  // A turn no origin classified (originKind null) is exactly the shape
+  // EFFORT_REFUSED_TEXT would gate a new-effort tool under; task_add still
+  // reaches the store, unlike goal_create or goal_longterm in the same turn.
+  await gl4Start(h, "unclassified-turn");
+  const res = await callTool(h, { tool: "mcp__agentic-plugin__task_add", text: "From an unclassified turn" });
+  check("task verbs register: task_add is served in a turn with no origin classification", res?.deny === undefined, res);
+}
+
+// The Tests line and the section's own accept path: each accepted verb
+// reaches the store write, read from the write itself rather than inferred
+// from the tool's own result text.
+async function caseTaskVerbs_eachAcceptedCallReachesTheStoreWrite(clock) {
+  console.log("\n=== Task verbs: each accepted call reaches the store write ===");
+  clock.set(T0);
+  const goals = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+    makeGoalNode({ id: "g-active", parentId: "g-root", kind: "task", status: "active", maxRounds: 10 }),
+  ];
+
+  const hAdd = await tasksHarness("task_add_reaches_write", goals);
+  await callTool(hAdd, { tool: "mcp__agentic-plugin__task_add", text: "Reaches the write" });
+  const addWritten = writtenTasks(hAdd);
+  check("task_add reaches the write: the task is in the written store", addWritten?.length === 1 && addWritten[0].text === "Reaches the write", addWritten);
+
+  const hDone = await tasksHarness("task_done_reaches_write", goals, [taskEntry("tk-w", "g-active")]);
+  await callTool(hDone, { tool: "mcp__agentic-plugin__task_done", id: "tk-w" });
+  const doneWritten = writtenTasks(hDone);
+  check("task_done reaches the write: done is true in the written store", doneWritten?.find((t) => t.id === "tk-w")?.done === true, doneWritten);
+
+  const hClear = await tasksHarness("task_clear_reaches_write", goals, [taskEntry("tk-c", "g-active")]);
+  await callTool(hClear, { tool: "mcp__agentic-plugin__task_clear" });
+  const clearWritten = writtenTasks(hClear);
+  check("task_clear reaches the write: the written store holds no task for the goal", clearWritten?.length === 0, clearWritten);
 }
 
 // The Tests line: the list survives a tree replacement. goal_create leaves
@@ -24908,12 +25218,17 @@ async function caseGl5_theFrameNeutralizesStoredGoalText(clock) {
 // sent null, at version 5, on the v4 and v3 paths and for a malformed value.
 async function caseGl5_theProposalRecordBackfills() {
   console.log("\n=== Goal levels 5: the proposal record is filled on load ===");
-  const v4 = makeState({ now: T0 });
-  check("gl5 backfill: the seeded state carries no proposal record (the instrument)", !("proposal" in v4.monitor), Object.keys(v4.monitor));
+  // Section 2 (task verbs): makeState now seeds a native v5 store by default,
+  // so this base is a v5 store missing the record, not a v4 one; the fill
+  // this case pins runs at every load exit regardless of version (fillProposal,
+  // agent-state.ts), and caseLtg_aStoreWrittenBeforeTheListLoadsEmpty is the
+  // suite's one remaining explicit v4 seed.
+  const unfilled = makeState({ now: T0 });
+  check("gl5 backfill: the seeded state carries no proposal record (the instrument)", !("proposal" in unfilled.monitor), Object.keys(unfilled.monitor));
   const malformed = makeState({ now: T0 });
   malformed.monitor.proposal = "x";
   for (const [label, stored] of [
-    ["v4", v4],
+    ["no record", unfilled],
     ["v3", { ...makeState({ now: T0 }), version: 3 }],
     ["a malformed value", malformed],
   ]) {

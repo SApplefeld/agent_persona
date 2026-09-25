@@ -49,9 +49,11 @@ import {
   holdOf,
   LONG_TERM_GOAL_CAP,
   reapCompletedGoalTasks,
+  MAX_TASKS_PER_GOAL,
+  newTaskId,
 } from "./agent-state";
 import { readPlanRecord, resolvePlanDir } from "./plan-record";
-import type { AgentState, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding } from "./agent-state";
+import type { AgentState, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding, TaskItem } from "./agent-state";
 import {
   claimResource,
   readAllClaims,
@@ -500,6 +502,11 @@ const EFFORT_REFUSED_TEXT =
   "Refused: a new effort starts only in a turn the operator or the coordinator persona started, and this turn is neither. " +
   "An act the operator or the coordinator persona directed is retried in a turn one of them opens, not proposed. " +
   "Send any other idea to the coordinator persona with agentic_say, opening the text with [PROPOSAL].";
+
+// The longest a task's text is kept at store time. task_add cuts here the
+// same way goal_add cuts an objective to 500: at write, with .slice, not by
+// refusing a long call.
+const TASK_TEXT_MAX_CHARS = 200;
 
 type SubmitOutcome = { ok: true } | { ok: false; how: "failed" | "dropped"; reason: string };
 
@@ -3529,6 +3536,59 @@ export const register: Register = async (on, options) => {
           },
         },
         required: ["action"],
+      },
+    }));
+
+    // The per-goal working list, one tier below the goal tree: add, done and
+    // clear, scoped to whichever goal is active right now. Never gated to an
+    // operator or coordinator turn, since the persona drives its own list
+    // through a turn of any origin, unlike the goal tree's own creation acts.
+    await registerTool("task_add", () => $.tool.register({
+      name: "task_add",
+      description:
+        "Add a working item to the active goal's task list, a lighter tier below the goal tree, scoped to whichever " +
+        "goal is active right now. Refused with no active goal, at the per-goal cap, or under a plan run, where the " +
+        "plan document's own chapters are already the task list. Completing the goal clears its tasks; finishing " +
+        "every task never completes the goal by itself.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          text: {
+            type: "string",
+            description: "text is the working item, one line.",
+          },
+        },
+        required: ["text"],
+      },
+    }));
+
+    await registerTool("task_done", () => $.tool.register({
+      name: "task_done",
+      description:
+        "Mark one task of the active goal's task list done, by id. An id not under the active goal is refused as " +
+        "unknown. Once every task of the active goal is done, the result suggests goal_done, but never completes " +
+        "the goal by itself.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "id names the task to complete, as task_add returned it.",
+          },
+        },
+        required: ["id"],
+      },
+    }));
+
+    await registerTool("task_clear", () => $.tool.register({
+      name: "task_clear",
+      description:
+        "Remove every task of the active goal's task list, whether done or not. Other goals' tasks are untouched. " +
+        "Refused with no active goal. The goal itself is not touched: completing it clears its tasks automatically, " +
+        "so this is for dropping a list mid-goal rather than for closing the goal.",
+      inputSchema: {
+        type: "object",
+        properties: {},
       },
     }));
 
@@ -9146,6 +9206,136 @@ export const register: Register = async (on, options) => {
           return { result: `Complete: "${completedTitle}". Nothing was activated: ${heldBy}.${healthText}` };
         }
         return { result: `Complete: "${completedTitle}". No pending goals; planning runs at the next tick.${healthText}` };
+      }
+      toolErrorsThisTurn++;
+      return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+    }
+
+    // Serve task_add, task_done and task_clear: the per-goal working list.
+    // The active goal is activeGoalId's node, read the same way goal_done
+    // reads it, and only where its own status is "active" - the same test
+    // the [GOAL TREE] injection uses to decide it has an active leaf at all.
+    // None of the three checks turnMayStartEffort: the list is the persona's
+    // own scratch pad on the goal it already holds, not a new effort.
+    if (e.tool === "mcp__agentic-plugin__task_add") {
+      if (sess.stateNotLoaded !== null) {
+        toolErrorsThisTurn++;
+        return { deny: stateNotLoadedText(sess.stateNotLoaded) };
+      }
+      if (!sess.isOwner) {
+        toolErrorsThisTurn++;
+        return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+      }
+      const active = sess.state.activeGoalId
+        ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
+        : null;
+      if (!active || active.status !== "active") {
+        toolErrorsThisTurn++;
+        return { deny: "task_add refused: no active goal to add a task under." };
+      }
+      // planHolderOf returns the active leaf itself, or its nearest ancestor,
+      // only when that node carries a planPath - so a defined result always
+      // means a plan tracks this goal already, whichever node holds it.
+      const holder = planHolderOf(sess.state, active);
+      if (holder) {
+        toolErrorsThisTurn++;
+        return {
+          deny:
+            `task_add refused: ${active.id} is tracked by the plan document ${holder.planPath}, whose own chapters ` +
+            `are already its task list. Track this work there instead of in a second list.`,
+        };
+      }
+      const existing = sess.state.tasks.filter((t) => t.goalId === active.id);
+      if (existing.length >= MAX_TASKS_PER_GOAL) {
+        toolErrorsThisTurn++;
+        return {
+          deny: `task_add refused: ${active.id} already holds ${existing.length} tasks, the cap (${MAX_TASKS_PER_GOAL}). Clear or finish some first.`,
+        };
+      }
+      const rawText = String((e as any).text || "").trim();
+      if (!rawText) {
+        toolErrorsThisTurn++;
+        return { deny: "task_add requires non-empty 'text'." };
+      }
+      const now = Date.now();
+      const task: TaskItem = {
+        id: newTaskId(now),
+        goalId: active.id,
+        text: rawText.slice(0, TASK_TEXT_MAX_CHARS),
+        done: false,
+        addedAt: now,
+      };
+      sess.state.tasks.push(task);
+      const writeOk = await persist($);
+      if (writeOk) {
+        return { result: `Task added: ${task.id} "${task.text}" under ${active.id}.` };
+      }
+      toolErrorsThisTurn++;
+      return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+    }
+
+    if (e.tool === "mcp__agentic-plugin__task_done") {
+      if (sess.stateNotLoaded !== null) {
+        toolErrorsThisTurn++;
+        return { deny: stateNotLoadedText(sess.stateNotLoaded) };
+      }
+      if (!sess.isOwner) {
+        toolErrorsThisTurn++;
+        return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+      }
+      const active = sess.state.activeGoalId
+        ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
+        : null;
+      if (!active || active.status !== "active") {
+        toolErrorsThisTurn++;
+        return { deny: "task_done refused: no active goal to complete a task under." };
+      }
+      const id = String((e as any).id || "").trim();
+      const task = sess.state.tasks.find((t) => t.id === id && t.goalId === active.id);
+      if (!task) {
+        toolErrorsThisTurn++;
+        return {
+          deny: `task_done: "${id.slice(0, 50)}" is not a task under the active goal ${active.id}.`,
+        };
+      }
+      const now = Date.now();
+      task.done = true;
+      task.doneAt = now;
+      const allDone = sess.state.tasks.filter((t) => t.goalId === active.id).every((t) => t.done);
+      const writeOk = await persist($);
+      if (writeOk) {
+        return {
+          result: allDone
+            ? `Task done: ${task.id} "${task.text}". Every task under ${active.id} is done; consider goal_done.`
+            : `Task done: ${task.id} "${task.text}".`,
+        };
+      }
+      toolErrorsThisTurn++;
+      return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+    }
+
+    if (e.tool === "mcp__agentic-plugin__task_clear") {
+      if (sess.stateNotLoaded !== null) {
+        toolErrorsThisTurn++;
+        return { deny: stateNotLoadedText(sess.stateNotLoaded) };
+      }
+      if (!sess.isOwner) {
+        toolErrorsThisTurn++;
+        return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+      }
+      const active = sess.state.activeGoalId
+        ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
+        : null;
+      if (!active || active.status !== "active") {
+        toolErrorsThisTurn++;
+        return { deny: "task_clear refused: no active goal to clear tasks under." };
+      }
+      const before = sess.state.tasks.length;
+      sess.state.tasks = sess.state.tasks.filter((t) => t.goalId !== active.id);
+      const removed = before - sess.state.tasks.length;
+      const writeOk = await persist($);
+      if (writeOk) {
+        return { result: `Cleared ${removed} task(s) from ${active.id}.` };
       }
       toolErrorsThisTurn++;
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
