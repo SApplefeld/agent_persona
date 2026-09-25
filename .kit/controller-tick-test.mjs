@@ -15124,8 +15124,9 @@ async function caseHold_theCostCapAskLeavesTheEntryActiveAndTheRefusalHoldsPastI
   await h.handlers["prompt.submit"](h.fake, { text: "keep going", origin: { kind: "channel" } }, async () => ({}));
   state = getState(h);
   check("hold cost cap: the answer closed the ask and left g-plan active", state.pendingAskId === undefined && h.storeMap.get(`ask:default:${askId}`)?.status === "answered" && plan()?.status === "active", { slot: state.pendingAskId });
-  // The channel-origin answer turn above reset the per-session count, so the
-  // two nudges after the roll below reach the cost cap and not the nudge cap.
+  // At most one unlined nudged answer completes from here, the on-goal turn
+  // below, so the two nudges after the roll reach the cost cap and not the
+  // nudge cap.
   h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("on-goal")) ? "on-goal" : (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard");
   // The answer's own turn is channel-origin and scored for nothing; the
   // completed turn after it is the one the scorer reads.
@@ -15546,6 +15547,27 @@ async function caseCount_activationAndTheAskCloseReset(clock) {
     check("count resume inside a nudged turn setup: goal_resume activated task-2", !resumed?.deny && getState(h).activeGoalId === "task-2", { resumed, active: getState(h).activeGoalId });
     const after = await countReading(h, clock);
     check("count resume inside a nudged turn: the unlined answer after goal_resume leaves the count 0 on the resumed entry", after === 0, after);
+  }
+  // A persona switch loads another tree with an active entry and performs no
+  // activation, so the count is reset where the persona's state loads.
+  clock.set(T0);
+  {
+    const h = await countHarness("count_persona_switch_inside_nudged_turn");
+    await primeCountToTwo(h, clock);
+    const before = await countReading(h, clock);
+    const store = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE));
+    store.other = { ...JSON.parse(JSON.stringify(store.default)), persona: "other" };
+    h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify(store));
+    check("count persona switch inside a nudged turn setup: the count reads 2 and a nudge is queued", before === 2 && h.queuedTurnTexts.some(t => t.startsWith("[GOAL]")), before);
+    const ok = async () => ({ result: "ok" });
+    await h.handlers["turn.start"](h.fake, { turnId: "t-switch" }, ok);
+    const switched = await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__agentic_identity", persona: "other", turnId: "t-switch" }, async () => ({ result: "passthrough" }));
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-switch", answer: "Switched.", reason: "completed" }, ok);
+    const other = getStateForPersona(h, "other");
+    check("count persona switch inside a nudged turn setup: the session owns persona other with task-1 active",
+      String(switched?.result ?? "").includes("owner") && other?.activeGoalId === "task-1", { switched, active: other?.activeGoalId });
+    const after = await countReading(h, clock);
+    check("count persona switch inside a nudged turn: the unlined answer after the switch leaves the count 0 under the new persona", after === 0, after);
   }
   for (const close of ["expiry", "answer"]) {
     clock.set(T0);

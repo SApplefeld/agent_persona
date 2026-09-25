@@ -3888,8 +3888,8 @@ export const register: Register = async (on, options) => {
     // R1 order: owner check → in-flight check → planning gate →
     //   "no active leaf, return" → idle gate → classify.
     // Eligibility in code. The model decides WHAT, never WHETHER.
-    // Cap counts nudged answers with no status line, reset on the five closed
-    // events the turn.complete count block names.
+    // Cap counts nudged answers with no status line, reset on the events the
+    // turn.complete count block names.
     // Section 6: a reader session never runs this tick at all - it owns no
     // goal tree to classify or actuate against, and the tick's own owner
     // check would return immediately anyway, so the timer itself is skipped.
@@ -6976,16 +6976,16 @@ export const register: Register = async (on, options) => {
     // status line and adds one when it opens with none. Every other
     // completion moves nothing: an unaccounted turn, so a nudge whose turn
     // cannot be placed never counts toward the cap; a subagent's completion
-    // inside the nudged turn, whose id is inferred to be its own; and an
-    // aborted, errored or refused turn. A nudged completion with no answer
+    // under an id other than the nudged turn's; and an aborted, errored or
+    // refused turn. A nudged completion with no answer
     // opens with none of the three lines, so it adds one. Where the same turn
     // activated an entry or replaced the tree, its nudged answer resets the
     // count rather than adding one, so the reset that activation performs is
     // not undone by the answer that follows it. Only the owner session keeps
     // the count. The other resets are activation, which activate() and the
     // switch and goal_resume sites perform, a new tree from goal_create, the
-    // root's completion, and the cap's own ask, which resets the count as it
-    // opens.
+    // root's completion, a persona's state loading at agentic_identity, and
+    // the cap's own ask, which resets the count as it opens.
     if (!sess.isOwner) {
       // A reader session never nudges, so it keeps no count.
     } else if (nudgeCountWorkThisTurn > 0 || wasChannelOrigin) {
@@ -7600,6 +7600,11 @@ export const register: Register = async (on, options) => {
       } else {
         sess.state = createDefaultState(name, sess.mySessionId);
       }
+      // The nudge count is the loaded persona's from here, so answers given
+      // under the previous persona neither carry into it nor are added by
+      // the answer closing this turn.
+      sess.nudgedAnswersWithoutStatus = 0;
+      countResetThisTurn = true;
       // F9: commons is the single arbiter. Claim first, then check if a live
       // earlier holder exists. Only the commons winner takes ownership.
       const resource = `persona:${sess.persona}`;
