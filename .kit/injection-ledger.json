@@ -214,8 +214,8 @@
     {
       "name": "TASK_LIST_BLOCK",
       "file": "hooks/index.ts",
-      "chars": 186,
-      "words": 30
+      "chars": 195,
+      "words": 31
     },
     {
       "name": "agentic_identity_description",

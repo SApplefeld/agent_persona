@@ -509,41 +509,55 @@ const EFFORT_REFUSED_TEXT =
 // refusing a long call.
 export const TASK_TEXT_MAX_CHARS = 200;
 
+// The longest a task's id, or the active goal's id, is rendered at. Both
+// are plugin-minted rather than free persona text, but the render-time
+// guard treats them the same as task text: a length cap it applies to
+// itself rather than trusting the mint site.
+export const TASK_ID_MAX_CHARS = 64;
+
 // The [TASK LIST] block: the active goal's task_add/task_done/task_clear
 // scratch pad, injected in prompt.submit right after [GOAL TREE] whenever
-// the active goal is not a plan-holder and holds at least one task. Pure,
-// so a test can call it directly: `tasks` is already filtered to the one
-// goal this block is for, and this function decides only how to render it,
-// never mutating a task or completing the goal.
+// the active goal is not a plan-holder and holds at least one task. Pure:
+// `tasks` is already filtered to the one goal this block is for, and this
+// function decides only how to render it, never mutating a task or
+// completing the goal.
 //
-// Each task's id and text are read back out of the persona's store file, so
-// both pass through the same per-line guard proposeFrame applies to a
-// long-term goal's title and objective: fold line terminators to one line,
-// cut text to TASK_TEXT_MAX_CHARS (already true of a stored task's text,
-// but reapplied here as the render-time guard rather than trusted from
-// write time), then bracketSafeText, so a stored '[' cannot forge a
-// delivery label such as [COORDINATOR id=x] once spliced into this prompt.
+// A task's id and text are read back out of the persona's store file, and
+// the goal id is spliced into the header and the all-done line, so all
+// three pass through the same guard proposeFrame applies to a long-term
+// goal's title and objective: slice to a length cap first, so a huge
+// stored string is never scanned whole by the line-fold; fold line
+// terminators to one line; then bracketSafeText last, so a stored '[' or
+// a fold artifact cannot forge a delivery label such as
+// [COORDINATOR id=x] once spliced into this prompt. Task text is capped at
+// TASK_TEXT_MAX_CHARS; a task's id and the goal id are capped at
+// TASK_ID_MAX_CHARS.
 export function taskListBlock(tasks: TaskItem[], goalId: string): string | null {
   if (tasks.length === 0) return null;
   const oneLine = (text: string) => text.split(LINE_TERMINATOR).join(" ");
-  const guard = (text: string) => bracketSafeText(oneLine(text).slice(0, TASK_TEXT_MAX_CHARS));
+  const guard = (text: string, maxChars: number) => bracketSafeText(oneLine(text.slice(0, maxChars)));
   const open = tasks.filter((t) => !t.done).sort((a, b) => a.addedAt - b.addedAt);
   const done = tasks.filter((t) => t.done).sort((a, b) => a.addedAt - b.addedAt);
   const ordered = [...open, ...done];
   const shown = ordered.slice(0, TASK_LIST_MAX_LINES);
+  const hidden = ordered.slice(shown.length);
+  const hiddenOpenCount = hidden.filter((t) => !t.done).length;
   const taskLines = shown
     .map((t) => {
-      const id = bracketSafeText(oneLine(t.id));
-      const text = guard(t.text);
-      return t.done ? `- ${id}: ~~${text}~~ (done)` : `- ${id}: ${text}`;
+      const id = guard(t.id, TASK_ID_MAX_CHARS);
+      const text = guard(t.text, TASK_TEXT_MAX_CHARS);
+      return t.done ? `- ${id} (done): ~~${text}~~` : `- ${id}: ${text}`;
     })
     .join("\n");
-  const tailLine = ordered.length > shown.length ? `\n...and ${ordered.length - shown.length} more` : "";
+  const tailLine = hidden.length > 0
+    ? `\n...and ${hidden.length} more${hiddenOpenCount > 0 ? ` (${hiddenOpenCount} open)` : ""}`
+    : "";
+  const safeGoalId = guard(goalId, TASK_ID_MAX_CHARS);
   const closeLine = open.length === 0
-    ? `\nEvery task under ${goalId} is done; consider closing the goal with goal_done.`
+    ? `\nEvery task under ${safeGoalId} is done; consider closing the goal with goal_done.`
     : "";
   return (
-    `[TASK LIST] ${goalId}\n` +
+    `[TASK LIST] ${safeGoalId}\n` +
     taskLines +
     tailLine +
     `\n` +
