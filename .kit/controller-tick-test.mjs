@@ -3433,6 +3433,9 @@ async function main() {
     await caseLive1_completeUnderLiveDirCompletesTheHolder(clock);
     await caseLive1_chapterUnderLiveDirLogsProgress(clock);
     await caseLive1_readFailureDegradesToNotComplete(clock);
+    await caseLive1_subdirectoryReadsTheNearestAncestor(clock);
+    await caseLive1_outsideAnyCheckoutStaysUnreadable(clock);
+    await caseLive1_walkStopsAtTheWorktreeRoot(clock);
 
     // Section 2 (boundary-compaction): a durable turn end owes the kit's
     // compaction boundary, and the next turn's first main-loop tool call
@@ -3450,6 +3453,9 @@ async function main() {
     await caseBank2_greatestLastUpdatedRecordIsRun(clock);
     await caseBank2_installRecordMissesSkipWithOneDecision(clock);
     await caseBank2_failedRunsLogOneDecisionAndNeverFailTheTurn(clock);
+    await caseBank2_aThrowingMidSectionEndStillClearsTheOwedBank(clock);
+    await caseBank2_aPlanAddedInANoGoalTurnIsMidSection(clock);
+    await caseBank2_aPlanActivatedByGoalDoneIsMidSection(clock);
 
     // Section 3 (boundary-compaction): the nudge and the [GOAL TREE] block
     // name the active entry's plan document.
@@ -14763,6 +14769,9 @@ async function caseLive1_readFailureDegradesToNotComplete(clock) {
     clock.set(T0);
     const h = await plan2Harness(`live1_fail_${failures.indexOf(f)}`, { chapterCount: 1 });
     h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+    // The live directory is a worktree's root, which carries a .git file, so
+    // the plan-document walk ends there and never reaches the launch copy.
+    h.fsMap.set(`${LIVE1_DIR}/.git`, "gitdir: D:/harness-root/.git/worktrees/plan-wt\n");
     f.seedLive(h);
     h.fake.session.cwd = () => Promise.resolve(LIVE1_DIR);
     const { nextCalls, thrown } = await live1ScoredTurn(h, "t-live-fail", "on-goal");
@@ -14808,6 +14817,102 @@ async function caseLive1_readFailureDegradesToNotComplete(clock) {
         && (c.errorText === undefined || unreadable[0].detail.includes(c.errorText)), unreadable);
     check(`live1 cwd unavailable (${c.label}): no complete decision`, !decisions.some(d => d.action === "complete"), decisions.map(d => d.action));
   }
+}
+
+// A session whose shell moved into a subdirectory of its checkout reads the
+// plan document from the nearest ancestor holding it. $.session.cwd() answers
+// <worktree>/hooks while the Complete document sits at
+// <worktree>/docs/plans/<plan>, so the holder completes, and one
+// plan_record_dir_resolved decision names both directories. Over two turns
+// that each bank a Chapter from the subdirectory, that decision is logged
+// once, not once per turn.
+async function caseLive1_subdirectoryReadsTheNearestAncestor(clock) {
+  console.log("\n=== boundary-compaction Section 1: a live directory below the checkout reads the nearest ancestor's document ===");
+  const SUBDIR = `${LIVE1_DIR}/hooks`;
+  clock.set(T0);
+  {
+    const h = await plan2Harness("live1_subdir_complete", { chapterCount: 1 });
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"]));
+    h.fsMap.set(LIVE1_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+    h.fsMap.set(`${LIVE1_DIR}/.git`, "gitdir: D:/harness-root/.git/worktrees/plan-wt\n");
+    h.fsMap.set(".agentic-health", "true");
+    h.fake.session.cwd = () => Promise.resolve(SUBDIR);
+    check("live1 subdir setup: nothing sits at the plan path under the live directory itself", !h.fsMap.has(`${SUBDIR}/${PLAN2_PATH}`));
+    const { nextCalls, thrown } = await live1ScoredTurn(h, "t-subdir", "on-goal");
+    const state = getState(h);
+    const plan1 = state.goals.find(g => g.id === "plan-1");
+    const decisions = getDecisions(h);
+    const resolved = decisions.filter(d => d.action === "plan_record_dir_resolved");
+    check("live1 subdir: the turn settled and handed on to next", thrown === null && nextCalls === 1, { thrown: thrown && String(thrown), nextCalls });
+    check("live1 subdir: plan-1 is complete from the worktree's Complete document", plan1 && plan1.status === "complete", plan1 && plan1.status);
+    check("live1 subdir: no plan_record_unreadable", !decisions.some(d => d.action === "plan_record_unreadable"), decisions.filter(d => d.action === "plan_record_unreadable"));
+    check("live1 subdir: one plan_record_dir_resolved decision names plan-1, the live directory and the directory read",
+      resolved.length === 1 && resolved[0].loop === "goal" && resolved[0].detail.startsWith("plan-1:")
+        && resolved[0].detail.includes(SUBDIR) && resolved[0].detail.includes(`${LIVE1_DIR} `), resolved);
+  }
+  clock.set(T0);
+  {
+    const h = await plan2Harness("live1_subdir_once", { chapterCount: 1 });
+    h.fsMap.set(LIVE1_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+    h.fake.session.cwd = () => Promise.resolve(SUBDIR);
+    await live1ScoredTurn(h, "t-subdir-1", "on-goal");
+    h.fsMap.set(LIVE1_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2", "### Chapter 3"]));
+    await live1ScoredTurn(h, "t-subdir-2", "on-goal");
+    const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+    const resolved = getDecisions(h).filter(d => d.action === "plan_record_dir_resolved");
+    check("live1 subdir once: both turns read the worktree's document (chapterCount 3)", plan1 && plan1.chapterCount === 3, plan1 && plan1.chapterCount);
+    check("live1 subdir once: plan_record_dir_resolved is logged once over two turns", resolved.length === 1, resolved);
+  }
+}
+
+// A live directory outside any checkout holding the document reads nothing,
+// and the unreadable log is the one it always was: one
+// plan_record_unreadable naming the reader's own reason, and no
+// plan_record_dir_resolved decision.
+async function caseLive1_outsideAnyCheckoutStaysUnreadable(clock) {
+  console.log("\n=== boundary-compaction Section 1: a live directory outside any checkout logs plan_record_unreadable as before ===");
+  clock.set(T0);
+  const h = await plan2Harness("live1_outside", { chapterCount: 1 });
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+  h.fake.session.cwd = () => Promise.resolve("E:/elsewhere/deep");
+  const { nextCalls, thrown } = await live1ScoredTurn(h, "t-outside", "on-goal");
+  const state = getState(h);
+  const plan1 = state.goals.find(g => g.id === "plan-1");
+  const decisions = getDecisions(h);
+  const unreadable = decisions.filter(d => d.action === "plan_record_unreadable");
+  check("live1 outside: the turn settled and handed on to next", thrown === null && nextCalls === 1, { thrown: thrown && String(thrown), nextCalls });
+  check("live1 outside: plan-1 stays active", plan1 && plan1.status === "active", plan1 && plan1.status);
+  check("live1 outside: exactly one plan_record_unreadable carries the reader's own reason",
+    unreadable.length === 1 && unreadable[0].detail === `plan-1: ${PLAN2_PATH}: no file at planPath or at any archive place`, unreadable);
+  check("live1 outside: no plan_record_dir_resolved decision", !decisions.some(d => d.action === "plan_record_dir_resolved"), decisions.map(d => d.action));
+}
+
+// The walk never leaves the checkout the session works in. The worktree sits
+// at <launch>/.claude/worktrees/<name> with a .git file at its root, the
+// session directory is <worktree>/hooks, and the worktree holds no plan
+// document while the launch checkout's copy reads Complete. The walk ends at
+// the worktree's .git with no hit, so the live directory is read: the holder
+// stays active, and the unreadable log carries the reader's own reason.
+async function caseLive1_walkStopsAtTheWorktreeRoot(clock) {
+  console.log("\n=== boundary-compaction Section 1: the walk stops at the worktree's .git and never reads the launch checkout ===");
+  const SUBDIR = `${LIVE1_DIR}/hooks`;
+  clock.set(T0);
+  const h = await plan2Harness("live1_git_stop", { chapterCount: 1 });
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+  h.fsMap.set(`${LIVE1_DIR}/.git`, "gitdir: D:/harness-root/.git/worktrees/plan-wt\n");
+  h.fsMap.set(".agentic-health", "true");
+  h.fake.session.cwd = () => Promise.resolve(SUBDIR);
+  check("live1 git stop setup: the worktree holds no plan document", !h.fsMap.has(LIVE1_FILE));
+  const { nextCalls, thrown } = await live1ScoredTurn(h, "t-git-stop", "on-goal");
+  const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+  const decisions = getDecisions(h);
+  const unreadable = decisions.filter(d => d.action === "plan_record_unreadable");
+  check("live1 git stop: the turn settled and handed on to next", thrown === null && nextCalls === 1, { thrown: thrown && String(thrown), nextCalls });
+  check("live1 git stop: plan-1 stays active though the launch copy reads Complete", plan1 && plan1.status === "active", plan1 && plan1.status);
+  check("live1 git stop: exactly one plan_record_unreadable carries the reader's own reason",
+    unreadable.length === 1 && unreadable[0].detail === `plan-1: ${PLAN2_PATH}: no file at planPath or at any archive place`, unreadable);
+  check("live1 git stop: no complete or plan_record_dir_resolved decision",
+    !decisions.some(d => d.action === "complete" || d.action === "plan_record_dir_resolved"), decisions.map(d => d.action));
 }
 
 // --- Section 2 (boundary-compaction): the compaction boundary owed at a durable turn end, banked at the next turn's first main-loop tool call ---
@@ -15160,6 +15265,28 @@ async function caseBank2_onlyThePersonasOwnTurnEndBanks(clock) {
     bank2CheckOwedOnly("bank2 the persona's own completion after it (control)", h, runs, own);
     const call = await bank2NextTurnCall("bank2 the persona's own completion after it (control)", h, runs, "t-after");
     bank2CheckBanked("bank2 the persona's own completion after it (control)", h, runs, call);
+  }
+
+  // A completion naming a subagent loop is never the persona's own turn end,
+  // even where it carries the main turn's id, so it neither owes nor clears.
+  clock.set(T0);
+  {
+    const h = await bank2NoGoalHarness("bank2_subagent_sameid");
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    await h.handlers["turn.start"](h.fake, { turnId: "t-main" }, async () => ({ result: "ok" }));
+    let nextCalls = 0;
+    let thrown = null;
+    try {
+      await h.handlers["turn.complete"](h.fake, { turnId: "t-main", agentId: "sub-1", answer: "The subagent's report.", reason: "completed" }, async () => { nextCalls += 1; return { result: "ok" }; });
+    } catch (err) {
+      thrown = err;
+    }
+    bank2CheckNothing("bank2 subagent completion carrying the main turn's id", h, runs, { nextCalls, thrown });
+    const own = await bank2Complete(h, "t-main", "The persona's own answer.");
+    bank2CheckOwedOnly("bank2 the persona's own completion after a same-id subagent completion", h, runs, own);
+    const call = await bank2NextTurnCall("bank2 the persona's own completion after a same-id subagent completion", h, runs, "t-after");
+    bank2CheckBanked("bank2 the persona's own completion after a same-id subagent completion", h, runs, call);
   }
 
   clock.set(T0);
@@ -15564,6 +15691,124 @@ async function caseBank2_failedRunsLogOneDecisionAndNeverFailTheTurn(clock) {
     const callAgain = await bank2NextTurnCall(`bank2 ${f.label} (the turn after it)`, h, runs, "t-after-durable");
     bank2CheckSettled(`bank2 ${f.label} (the first tool call after it)`, callAgain);
     check(`bank2 ${f.label}: another durable end owes the bank again, and the next first tool call attempts it`, runs.length === 2, runs);
+  }
+}
+
+// A persona turn end that is not durable clears the bank an earlier durable
+// end owed, even where a read on the completion's path throws before the
+// predicate is computed. Here the commons store's key listing rejects during
+// the mid-section turn's completion, which throws out of the reply filing's
+// unguarded inbox read. The owed bank must already be gone, so the next
+// turn's first main-loop tool call runs nothing: a missed bank is the safe
+// failure, and a bank taken there would license compaction mid-section.
+async function caseBank2_aThrowingMidSectionEndStillClearsTheOwedBank(clock) {
+  console.log("\n=== boundary-compaction Section 2: a mid-section end whose completion throws still clears the owed bank ===");
+  clock.set(T0);
+  const h = await bank2PlanHarness("bank2_throwing_mid");
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+  await bank2SeedInstalled(h, bank2Installed());
+  const runs = bank2Recorder(h);
+  const first = await bank2Turn(h, "t-durable", "Chapter 2 is written.");
+  bank2CheckOwedOnly("bank2 a durable end before a throwing mid-section end", h, runs, first);
+
+  await bank2Start(h, "t-mid");
+  const realKeys = h.fake.store.keys;
+  let keysCalls = 0;
+  h.fake.store.keys = () => { keysCalls += 1; return Promise.reject(new Error("commons store unreadable")); };
+  const second = await bank2Complete(h, "t-mid", "Made progress on the next section.");
+  h.fake.store.keys = realKeys;
+  check("bank2 throwing mid-section end setup: the store's key listing was read and rejected on the completion's path", keysCalls > 0, keysCalls);
+  check("bank2 throwing mid-section end setup: the rejection escaped turn.complete, so the recompute below the read never ran",
+    second.thrown !== null && /commons store unreadable/.test(String(second.thrown)), { thrown: second.thrown && String(second.thrown), nextCalls: second.nextCalls });
+  check("bank2 throwing mid-section end: the turn ran nothing by itself", runs.length === 0, runs);
+
+  const call = await bank2NextTurnCall("bank2 throwing mid-section end", h, runs, "t-after");
+  bank2CheckNothing("bank2 throwing mid-section end (the next turn's first tool call)", h, runs, call);
+}
+
+// The entry the turn leaves active decides durability where no entry was
+// active at turn start. A turn opened with no active entry that adds a plan
+// through goal_add leaves that plan active and mid-section, since a freshly
+// added plan has banked no Chapter and is not complete, so it owes nothing.
+// The control is the same fixture with no goal_add: that turn ends with no
+// active entry and banks once at the next turn's first main-loop tool call.
+async function caseBank2_aPlanAddedInANoGoalTurnIsMidSection(clock) {
+  console.log("\n=== boundary-compaction Section 2: a no-goal turn that adds and activates a plan owes nothing ===");
+  const variants = [
+    { label: "adds a plan", add: true, banks: false },
+    { label: "adds nothing (control)", add: false, banks: true },
+  ];
+  for (const v of variants) {
+    clock.set(T0);
+    const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "complete", createdAt: T0 - 20000 });
+    const h = await createTickHarness({ ...OPTS, caseName: `bank2_added_${variants.indexOf(v)}`, stateOpts: { now: T0, goals: [root], activeGoalId: null } });
+    bank2Scorer(h);
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress"));
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    check(`bank2 added plan (${v.label}) setup: no entry is active at turn start`, getState(h).activeGoalId === null, getState(h).activeGoalId);
+    await openPromptTurn(h, { turnId: "t-add" });
+    if (v.add) {
+      const added = await callTool(h, { tool: "mcp__agentic-plugin__goal_add", kind: "plan", title: "A new plan", objective: "A new plan done", planPath: PLAN2_PATH });
+      const state = getState(h);
+      const plan = state.goals.find(g => g.kind === "plan");
+      check(`bank2 added plan (${v.label}) setup: goal_add activated the new plan in this turn`,
+        added && added.deny === undefined && plan && plan.status === "active" && state.activeGoalId === plan.id && plan.planPath === PLAN2_PATH, { added, goals: state.goals.map(g => [g.id, g.status]) });
+    }
+    const end = await bank2Complete(h, "t-add", "Started on the work.");
+    bank2CheckSettled(`bank2 added plan (${v.label}) (turn end)`, end);
+    check(`bank2 added plan (${v.label}) (turn end): the turn end ran nothing by itself`, runs.length === 0, runs);
+    const call = await bank2NextTurnCall(`bank2 added plan (${v.label})`, h, runs, "t-after");
+    if (v.banks) {
+      bank2CheckBanked(`bank2 added plan (${v.label})`, h, runs, call);
+    } else {
+      bank2CheckNothing(`bank2 added plan (${v.label}) (the next turn's first tool call)`, h, runs, call);
+    }
+  }
+}
+
+// A turn that starts on a task directly under the root, which has no plan
+// holder, and completes it through goal_done leaves the next entry active.
+// Where that is a pending plan, the turn leaves a plan mid-section with no
+// Chapter banked, so it owes nothing. The control is the same fixture with no
+// plan beside the task: goal_done leaves no plan active and the turn banks.
+async function caseBank2_aPlanActivatedByGoalDoneIsMidSection(clock) {
+  console.log("\n=== boundary-compaction Section 2: a root-task turn whose goal_done activates a plan owes nothing ===");
+  const variants = [
+    { label: "goal_done activates a pending plan", withPlan: true, banks: false },
+    { label: "goal_done activates no plan (control)", withPlan: false, banks: true },
+  ];
+  for (const v of variants) {
+    clock.set(T0);
+    const root = makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 });
+    const task = makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", maxRounds: 10, createdAt: T0 - 20000 });
+    const goals = [root, task];
+    if (v.withPlan) goals.push(makeGoalNode({ id: "plan-1", parentId: "root-1", kind: "plan", status: "pending", planPath: PLAN2_PATH, createdAt: T0 - 10000 }));
+    const h = await createTickHarness({ ...OPTS, caseName: `bank2_done_${variants.indexOf(v)}`, stateOpts: { now: T0, goals, activeGoalId: "task-1" } });
+    bank2Scorer(h);
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress"));
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    check(`bank2 goal_done (${v.label}) setup: task-1 under the root is active at turn start`, getState(h).activeGoalId === "task-1", getState(h).activeGoalId);
+    await bank2Start(h, "t-done");
+    const done = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", note: "done" });
+    const state = getState(h);
+    check(`bank2 goal_done (${v.label}) setup: goal_done completed task-1`,
+      done && done.deny === undefined && state.goals.find(g => g.id === "task-1").status === "complete", { done, goals: state.goals.map(g => [g.id, g.status]) });
+    if (v.withPlan) {
+      check(`bank2 goal_done (${v.label}) setup: plan-1 is now the active entry`, state.activeGoalId === "plan-1" && state.goals.find(g => g.id === "plan-1").status === "active", state.activeGoalId);
+    } else {
+      check(`bank2 goal_done (${v.label}) setup: no plan is active`, !state.goals.some(g => g.kind === "plan" && g.status === "active"), state.activeGoalId);
+    }
+    const end = await bank2Complete(h, "t-done", "Finished the task.");
+    bank2CheckSettled(`bank2 goal_done (${v.label}) (turn end)`, end);
+    check(`bank2 goal_done (${v.label}) (turn end): the turn end ran nothing by itself`, runs.length === 0, runs);
+    const call = await bank2NextTurnCall(`bank2 goal_done (${v.label})`, h, runs, "t-after");
+    if (v.banks) {
+      bank2CheckBanked(`bank2 goal_done (${v.label})`, h, runs, call);
+    } else {
+      bank2CheckNothing(`bank2 goal_done (${v.label}) (the next turn's first tool call)`, h, runs, call);
+    }
   }
 }
 

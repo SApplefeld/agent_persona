@@ -13,6 +13,8 @@ await import("./tick-harness.mjs");
 const {
   parsePlanRecord,
   readPlanRecord,
+  parentDir,
+  resolvePlanDir,
   PLAN_RECORD_MAX_BYTES,
   PLAN_ARCHIVE_DIRS,
 } = await import("../hooks/plan-record.ts");
@@ -179,6 +181,110 @@ for (const bad of badPaths) {
   const fs = { exists: () => { asked++; return Promise.resolve(false); }, read: () => Promise.resolve(""), reads: [] };
   await readPlanRecord(fs, WD, PATH);
   check("re-test control: a well-formed planPath does reach the host", asked > 0);
+}
+
+// --- The parent walk ---
+console.log("\n=== parentDir: one level up, by string, stopping at a root ===");
+const parentCases = [
+  ["D:\\work\\repo\\hooks", "D:\\work\\repo"],
+  ["D:/work/repo/hooks", "D:/work/repo"],
+  ["D:/work/repo/hooks/", "D:/work/repo"],
+  ["D:\\work/repo\\hooks", "D:\\work/repo"],
+  ["D:\\work", "D:\\"],
+  ["D:/work", "D:/"],
+  ["D:\\", "D:\\"],
+  ["D:/", "D:/"],
+  ["D:", "D:"],
+  ["/home/p/repo/hooks", "/home/p/repo"],
+  ["/home", "/"],
+  ["/", "/"],
+  ["repo", "repo"],
+  ["\\\\server\\share\\work", "\\\\server\\share"],
+  ["\\\\server\\share", "\\\\server\\share"],
+  ["//server/share/", "//server/share/"],
+];
+for (const [dir, expected] of parentCases) {
+  const got = parentDir(dir);
+  check(`parentDir(${JSON.stringify(dir)}) is ${JSON.stringify(expected)}`, got === expected, got);
+}
+for (const start of ["D:\\a\\b\\c\\d", "D:/a/b/c/d", "/a/b/c/d"]) {
+  const seen = [start];
+  let dir = start;
+  while (parentDir(dir) !== dir && seen.length < 20) { dir = parentDir(dir); seen.push(dir); }
+  check(`the walk from ${JSON.stringify(start)} ends at a root in five steps`, seen.length === 5 && parentDir(dir) === dir, seen);
+}
+
+// --- The directory resolver ---
+console.log("\n=== resolvePlanDir: the live directory or its nearest ancestor holding the document ===");
+{
+  const fs = fakeFs({ [`${WD}/${PATH}`]: doc("Status: Complete") });
+  check("a document under the live directory resolves to the live directory", await resolvePlanDir(fs, WD, PATH) === WD);
+  check("a document two levels up resolves to that ancestor", await resolvePlanDir(fs, `${WD}/hooks/sub`, PATH) === WD);
+}
+{
+  // The fake keys on the exact joined string, and a backslash directory joins
+  // as "D:\work/docs/plans/...", which the host's own file API accepts.
+  const fs = fakeFs({ [`D:\\work/${PATH}`]: doc("Status: Complete") });
+  const got = await resolvePlanDir(fs, "D:\\work\\hooks", PATH);
+  check("a backslash live directory resolves to its ancestor", got === "D:\\work", got);
+}
+for (const dir of PLAN_ARCHIVE_DIRS) {
+  const fs = fakeFs({ [`${WD}/${dir}/a_v1.md`]: doc("Status: In Progress") });
+  check(`an archived copy at ${dir} under an ancestor resolves to that ancestor`, await resolvePlanDir(fs, `${WD}/hooks`, PATH) === WD);
+}
+{
+  const fs = fakeFs({ [`${WD}/${PATH}`]: doc("Status: In Progress"), [`${WD}/inner/${PATH}`]: doc("Status: Complete") });
+  check("the first hit wins: the nearer ancestor, not a farther one", await resolvePlanDir(fs, `${WD}/inner/hooks`, PATH) === `${WD}/inner`);
+}
+{
+  const fs = fakeFs({ [`D:/${PATH}`]: doc("Status: Complete") });
+  check("a Windows drive root is tested and can be the hit", await resolvePlanDir(fs, "D:/work/hooks", PATH) === "D:/");
+}
+{
+  const fs = fakeFs({ [`/${PATH}`]: doc("Status: Complete") });
+  check("the POSIX root is tested and can be the hit", await resolvePlanDir(fs, "/home/p/hooks", PATH) === "/");
+}
+{
+  const asked = [];
+  const fs = { exists: (p) => { asked.push(p); return Promise.resolve(false); } };
+  const got = await resolvePlanDir(fs, "D:\\work\\hooks", PATH);
+  check("no ancestor holding it returns the live directory itself", got === "D:\\work\\hooks", got);
+  check("the walk tested every level up to and including the drive root, and stopped there",
+    asked.some(p => p === `D:/${PATH}`) && asked.filter(p => p.endsWith(`/${PATH}`)).length === 3, asked);
+}
+{
+  const asked = [];
+  const fs = { exists: (p) => { asked.push(p); return Promise.resolve(false); } };
+  const got = await resolvePlanDir(fs, "/home/p", PATH);
+  check("no ancestor holding it on POSIX returns the live directory, having tested the root", got === "/home/p" && asked.includes(`/${PATH}`), asked);
+}
+{
+  // A .git entry between the live directory and an ancestor holding the
+  // document ends the walk at that folder with no hit, so the live directory
+  // is returned and the ancestor is never asked about.
+  const fs = fakeFs({ [`${WD}/${PATH}`]: doc("Status: Complete"), [`${WD}/wt/.git`]: "gitdir: D:/work/.git/worktrees/wt\n" });
+  const asked = [];
+  const realExists = fs.exists;
+  fs.exists = (p) => { asked.push(p); return realExists(p); };
+  const got = await resolvePlanDir(fs, `${WD}/wt/hooks`, PATH);
+  check("a .git entry between the live directory and the document's ancestor stops the walk with no hit", got === `${WD}/wt/hooks`, got);
+  check("the walk tested the .git folder and asked nothing above it",
+    asked.includes(`${WD}/wt/.git`) && !asked.some(p => p.startsWith(`${WD}/docs/`)), asked);
+}
+{
+  // The document and a .git entry in the same folder: the document is the hit.
+  const fs = fakeFs({ [`${WD}/${PATH}`]: doc("Status: Complete"), [`${WD}/.git`]: "gitdir: x\n" });
+  check("a folder holding both the document and .git resolves to that folder", await resolvePlanDir(fs, `${WD}/hooks`, PATH) === WD);
+}
+{
+  const fs = { exists: () => { throw new Error("boom"); } };
+  check("a throwing exists returns the live directory, not a throw", await resolvePlanDir(fs, `${WD}/hooks`, PATH) === `${WD}/hooks`);
+}
+{
+  let asked = 0;
+  const fs = { exists: () => { asked++; return Promise.resolve(true); } };
+  const got = await resolvePlanDir(fs, `${WD}/hooks`, "../x.md");
+  check("a planPath failing the re-test returns the live directory and asks the host nothing", got === `${WD}/hooks` && asked === 0, { got, asked });
 }
 
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"}: ${failed} failure(s)`);

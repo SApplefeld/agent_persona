@@ -1,13 +1,16 @@
 // plan-record.ts: done and progress read from a plan document.
 //
 // A queue entry that carries a planPath is judged from the plan document it
-// names rather than from a count of turns. This module holds the two halves
+// names rather than from a count of turns. This module holds the three parts
 // of that read. parsePlanRecord is a pure parser over the document's text,
-// with no I/O, so its rules are testable on a string alone. readPlanRecord
-// joins a stored planPath onto the persona's working directory, looks for the
+// with no I/O, so its rules are testable on a string alone. resolvePlanDir
+// chooses the directory to read under: the session's live directory, or the
+// nearest ancestor of it inside the same checkout that holds the document.
+// readPlanRecord joins a stored planPath onto that directory, looks for the
 // document in the four places a plan can sit, and hands the text to the
-// parser. hooks/index.ts calls the reader at the end of each turn for the
-// entry that was active when the turn started, when that entry has a plan.
+// parser. hooks/index.ts calls the resolver and the reader at the end of each
+// turn for the entry that was active when the turn started, when that entry
+// has a plan.
 
 import { PLAN_PATH_PATTERN } from "./agent-state";
 
@@ -104,7 +107,7 @@ export async function readPlanRecord(
   if (typeof planPath !== "string" || !PLAN_PATH_PATTERN.test(planPath)) {
     return { kind: "unreadable", reason: "planPath fails the shape goal_add enforces" };
   }
-  const root = workdir ? `${workdir.replace(/[/\\]+$/, "")}/` : "";
+  const root = rootOf(workdir);
   const name = planPath.slice(PLAN_DIR_PREFIX.length);
 
   try {
@@ -125,5 +128,76 @@ export async function readPlanRecord(
     return { kind: "unreadable", reason: "no file at planPath or at any archive place" };
   } catch (err) {
     return { kind: "unreadable", reason: `read failed: ${String(err).slice(0, 150)}` };
+  }
+}
+
+// The prefix a directory contributes to a joined path: the directory with its
+// trailing separators cut and one "/" added, or nothing for an empty one. The
+// reader and the directory resolver below join through this one rule, so a
+// directory the resolver finds a document under is the directory the reader
+// then reads it from.
+function rootOf(workdir: string): string {
+  return workdir ? `${workdir.replace(/[/\\]+$/, "")}/` : "";
+}
+
+// The directory one level above `dir`, by string alone, since the plugin
+// loader offers no path API. Both "/" and "\" separate, and trailing
+// separators are ignored. A root is its own parent: a POSIX "/", a drive root
+// such as "D:\" or "D:/" (or a bare "D:"), and a relative path with no
+// separator left. The parent of a directory directly under a drive root keeps
+// the drive's separator ("D:\work" gives "D:\"), and one directly under the
+// POSIX root gives "/". A network path, one opening with two separators, is
+// rooted at its share: "\\server\share" is its own parent, so a walk never
+// climbs to the server name or to the current drive's root.
+export function parentDir(dir: string): string {
+  const trimmed = dir.replace(/[/\\]+$/, "");
+  if (trimmed === "" || /^[A-Za-z]:$/.test(trimmed)) return dir;
+  if (/^[/\\]{2}[^/\\]*([/\\][^/\\]*)?$/.test(trimmed)) return dir;
+  const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  if (cut < 0) return dir;
+  const head = trimmed.slice(0, cut);
+  if (head === "") return trimmed.charAt(0);
+  if (/^[A-Za-z]:$/.test(head)) return head + trimmed.charAt(cut);
+  return head;
+}
+
+// The directory the plan document is read under: the live directory, or the
+// nearest ancestor of it that holds the document, so a session whose shell
+// moved into a subdirectory of its checkout still reads that checkout's copy.
+// The walk never leaves the checkout the session works in. A persona's
+// worktree sits inside the launch checkout, whose copy of the document is
+// stale until the plan's branch merges, so the walk stops at the checkout's
+// root, the first folder holding a .git entry (a worktree's .git file or a
+// checkout's .git directory), and never tests a folder above it.
+// At each directory, starting at the live one, the document is looked for at
+// planPath and at each archive place, under the same join and the same
+// exists the reader uses. The first directory holding it is returned. A
+// directory holding no document but a .git entry ends the walk with no hit.
+// The filesystem root, where the parent is the directory itself, ends it
+// too. Where the walk ends with no hit, or planPath fails the re-test, or an
+// exists call fails, the live directory itself is returned, so the reader
+// reports its own reason for it. Nothing is cached: each call walks afresh.
+export async function resolvePlanDir(
+  fs: { exists: (path: string) => Promise<boolean> },
+  liveDir: string,
+  planPath: string,
+): Promise<string> {
+  if (typeof planPath !== "string" || !PLAN_PATH_PATTERN.test(planPath)) return liveDir;
+  const name = planPath.slice(PLAN_DIR_PREFIX.length);
+  const places = [planPath, ...PLAN_ARCHIVE_DIRS.map((dir) => `${dir}/${name}`)];
+  try {
+    let dir = liveDir;
+    for (;;) {
+      const root = rootOf(dir);
+      for (const place of places) {
+        if (await fs.exists(root + place)) return dir;
+      }
+      if (await fs.exists(`${root}.git`)) return liveDir;
+      const parent = parentDir(dir);
+      if (parent === dir) return liveDir;
+      dir = parent;
+    }
+  } catch {
+    return liveDir;
   }
 }
