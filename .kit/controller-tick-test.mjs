@@ -3174,6 +3174,9 @@ async function main() {
     await caseOpenTurn_idlePromptWithNoStartHoldsTheNudge(clock);
     await caseOpenTurn_deliveredPromptOpensUnderItsTurnId(clock);
     await caseOpenTurn_turnIdLoggedAtStartAndCompletion(clock);
+    await caseOpenTurn_toolCallBeforeTheTickHoldsItAtTheTop(clock);
+    await caseOpenTurn_droppedPromptLeavesTheReadingClosed(clock);
+    await caseOpenTurn_promptWhoseChainThrowsLeavesTheReadingClosed(clock);
     await caseR58f3_capPausesWithNoAsk(clock);
     await caseR60f3b_reactivationAfterCapPause(clock);
     await caseR117a_concurrentTicksNudgeOnce(clock);
@@ -8197,13 +8200,13 @@ function setFleetRoster(h, names) {
 // The rows the fleet_status tool reads over the same fixture the tick reads.
 // A case asserting the tick stayed silent calls this first: the silence is
 // only evidence once the reading it is silent about is proven to have
-// produced rows at all.
-async function fleetRowsVia(h) {
+// produced rows at all. The call is made as a turn: a tool call opens the
+// open-turn reading, and the real one is always followed by its turn's
+// completion, which closes it, so by default the completion is delivered too
+// and the next tick reads the session as between turns.
+async function fleetRowsVia(h, { completeTurn = true } = {}) {
   const result = await callTool(h, { tool: "mcp__agentic-plugin__fleet_status" });
-  // A tool call opens the open-turn reading, and the real one is always
-  // followed by its turn's completion, which closes it. The completion is
-  // delivered here so the next tick reads the session as between turns.
-  await closeTurn(h, "fleet-status-read");
+  if (completeTurn) await closeTurn(h, "fleet-status-read");
   if (typeof result?.result !== "string") return { rows: [], raw: result };
   try { return { ...JSON.parse(result.result), raw: result }; } catch { return { rows: [], raw: result }; }
 }
@@ -15595,6 +15598,90 @@ async function caseOpenTurn_deliveredPromptOpensUnderItsTurnId(clock) {
   });
   check("open turn delivered prompt: a completion under another id leaves the delivered turn open", unrelatedCloseHeld === true);
   checkOpenTurnEventDrive("open turn delivered prompt", result);
+}
+
+// A tick that finds the reading open before it starts returns at its
+// top-of-tick in-flight check, which logs nothing by design, so the silence is
+// read off the submitted prompts and the tick's own persisted decision. Both
+// ticks below are identical but for the completion between them.
+async function tickFromIdle(h, clock) {
+  const before = countPersistedTicks(h);
+  clock.advance(130_000);
+  await fireTick(h);
+  // A tick held at the top persists nothing, so on a held leg this poll is
+  // expected to run out; its answer is the assertion.
+  await waitUntil(() => countPersistedTicks(h) > before, 40);
+  await waitUntil(() => goalPrompts(h).length > 0, 40);
+  return { reached: countPersistedTicks(h) > before, goalPrompts: goalPrompts(h).length };
+}
+
+// The plain path: a tool call made before the tick starts holds the whole
+// tick at its top, and the turn's completion lets the next tick nudge.
+async function caseOpenTurn_toolCallBeforeTheTickHoldsItAtTheTop(clock) {
+  console.log("\n=== Open turn: a tool call before the tick holds it at the top, and the completion releases it ===");
+  clock.set(T0);
+
+  const h = await seedNudgeRaceHarness("open_turn_tool_call_plain");
+  await h.handlers["tool.call"](h.fake, { tool: "Bash", command: "echo hi" }, async () => ({ result: "ok" }));
+  const held = await tickFromIdle(h, clock);
+  check("open turn plain: the held tick persisted no decision", !held.reached);
+  check("open turn plain: the held tick submitted no nudge", held.goalPrompts === 0);
+  check("open turn plain: and wrote no nudge_sent", countAction(getDecisions(h), "nudge_sent") === 0);
+
+  await closeTurn(h, "turn-seen-only-by-its-tools");
+  const released = await tickFromIdle(h, clock);
+  check("open turn plain: after the completion the tick runs", released.reached);
+  check("open turn plain: and submits one nudge", released.goalPrompts === 1 && countAction(getDecisions(h), "nudge_sent") === 1);
+}
+
+// A prompt a hook beneath drops opens no turn, so no completion will close
+// the key it opened; the handler removes that key itself. The control is the
+// same idle prompt not dropped, which holds the tick.
+async function caseOpenTurn_droppedPromptLeavesTheReadingClosed(clock) {
+  console.log("\n=== Open turn: an idle prompt dropped beneath leaves the reading closed ===");
+  clock.set(T0);
+
+  const c = await seedNudgeRaceHarness("open_turn_prompt_kept_control");
+  await c.handlers["prompt.submit"](c.fake, { text: "Typed at the keyboard.", origin: { kind: "composer" } }, async () => ({}));
+  const held = await tickFromIdle(c, clock);
+  check("open turn drop control: a prompt not dropped holds the tick", !held.reached && held.goalPrompts === 0);
+
+  clock.set(T0);
+  const h = await seedNudgeRaceHarness("open_turn_prompt_dropped");
+  const dropped = await h.handlers["prompt.submit"](h.fake, { text: "Typed at the keyboard.", origin: { kind: "composer" } }, async () => ({ drop: "refused beneath" }));
+  check("open turn drop: the handler passes the drop through", dropped?.drop === "refused beneath", dropped);
+  const ran = await tickFromIdle(h, clock);
+  check("open turn drop: the tick after a dropped prompt runs", ran.reached);
+  check("open turn drop: and submits one nudge", ran.goalPrompts === 1 && countAction(getDecisions(h), "nudge_sent") === 1);
+
+  // A drop removes only the key its own call opened: a prompt delivered into
+  // a turn already open under that id leaves the turn open when dropped.
+  clock.set(T0);
+  const d = await seedNudgeRaceHarness("open_turn_prompt_dropped_into_open_turn");
+  await d.handlers["turn.start"](d.fake, { turnId: "turn-running" }, () => {});
+  await d.handlers["prompt.submit"](d.fake, { text: "A peer's message.", turnId: "turn-running", origin: { kind: "composer" } }, async () => ({ drop: "refused beneath" }));
+  const still = await tickFromIdle(d, clock);
+  check("open turn drop: a dropped prompt leaves a turn it did not open still open", !still.reached && still.goalPrompts === 0);
+}
+
+// A prompt whose chain beneath rejects opens no turn either. The handler
+// removes the key it opened and rejects with the same error.
+async function caseOpenTurn_promptWhoseChainThrowsLeavesTheReadingClosed(clock) {
+  console.log("\n=== Open turn: an idle prompt whose chain rejects leaves the reading closed ===");
+  clock.set(T0);
+
+  const h = await seedNudgeRaceHarness("open_turn_prompt_throws");
+  const failure = new Error("the chain beneath failed");
+  let caught = null;
+  try {
+    await h.handlers["prompt.submit"](h.fake, { text: "Typed at the keyboard.", origin: { kind: "composer" } }, async () => { throw failure; });
+  } catch (err) {
+    caught = err;
+  }
+  check("open turn throw: the handler rejects with the chain's own error", caught === failure, caught);
+  const ran = await tickFromIdle(h, clock);
+  check("open turn throw: the tick after the rejected prompt runs", ran.reached);
+  check("open turn throw: and submits one nudge", ran.goalPrompts === 1 && countAction(getDecisions(h), "nudge_sent") === 1);
 }
 
 // Both turn events write the turn id to the plugin's own log line, and the
