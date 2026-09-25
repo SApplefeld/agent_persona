@@ -198,20 +198,30 @@ Any finding spends the review. The tick sends each finding to the coordinator pe
 
 Four acts, from three tools, start a new effort: `goal_create`, `goal_add` where the resolved kind is `plan`, and `goal_longterm`'s `add` and `drop`. A fifth act ends one: `goal_done` with the root's own `nodeId`, which completes a finished root. Every other goal tool works inside what the persona already holds and is never gated. One helper, `turnMayStartEffort` in `hooks/index.ts`, decides whether the turn now running may call one of the five. A priming turn is refused outright. A turn that matched an expected turn is admitted only where that entry is a delivery under the `COORDINATOR` ground whose record opens with neither `[FINDING]` nor `[PROPOSAL]`. Any other turn is admitted only where its prompt's origin kind is one of `composer`, `bridge`, `channel` or `sdk`. The refusal text tells the caller to retry an act the operator or the coordinator persona directed in a turn one of them opens. Any other idea goes to the coordinator persona with `agentic_say`, the text opening with `[PROPOSAL]`.
 
+## The task list
+
+The task list is the lightest of a persona's three tracking tiers. It sits below the goal tree, and the long-term goals sit beside the tree. It is a field of the persona store, `tasks`, an array of `TaskItem` records (`hooks/agent-state.ts`), each carrying an id from `newTaskId`, the `goalId` it was added under, its text, `done`, `addedAt` and, once done, `doneAt`. A store written at version 4 or earlier loads at version 5 with an empty list, and a malformed entry is dropped whole at load.
+
+The list is per goal. The three verbs `task_add`, `task_done` and `task_clear` in `hooks/index.ts` act only on the entries whose `goalId` is the active goal. A reader session does not register them, and none of them passes through `turnMayStartEffort`, since the list is the persona's own. `task_add` refuses under a plan run by the same `planHolderOf` test the injection uses.
+
+A goal's completion reaps its tasks. `reapCompletedGoalTasks` drops every entry whose goal is complete, abandoned or absent from the tree. `persist` calls it before each store write and `enforceInvariants` on each load, so every path that closes a goal clears that goal's list without the path knowing the list exists. The authority does not run the other way: all tasks done produces a suggestion to call `goal_done` and never a completion.
+
+`taskListBlock` in `hooks/index.ts` is the one producer of the `[TASK LIST]` block. The `prompt.submit` handler pushes it into `contextBlocks` right after `[GOAL TREE]`, inside the same active-node branch, when `planHolderOf` finds no `planPath` on the active goal or an ancestor and the goal holds at least one entry. The reader guard returns before `contextBlocks` exists, so a reader session never builds it. Every id and text is sliced to `TASK_ID_MAX_CHARS` or `TASK_TEXT_MAX_CHARS`, folded to one line, then passed through `bracketSafeText`, the guard the `[PROPOSE]` frame applies to a long-term goal's text. The injection ledger sizes the block as `TASK_LIST_BLOCK`, reading every literal in `taskListBlock`'s body.
+
 ## Injected text and its guard
 
 Three files write text into a child session that nobody typed: `bin/supervise-holder.sh` at priming, `bin/supervise.sh` for the final ask it relays through the holder and the shutdown ask it writes to the mailbox instead (`writeShutdownAskIfDue` in `bin/supervise-poll.mjs`, delivered by the plugin's own controller tick rather than by the holder), and `hooks/index.ts` on every recurring prompt and at every tool registration. Each such string carries the meaning of the label at its head, the one thing to do with that prompt, and a pointer to the surface that owns the rest. The owners are `CLAUDE.md` for writing and channel conduct, the kit's skills for a seat's duties, and a tool's own description for that tool's contract. A sentence with an owner does not ride a second copy in a prompt, and the guard below is what keeps it that way rather than an eye.
 
 ### What is injected, and how large
 
-`.kit/injection-ledger.json` is the committed size baseline, 46 entries totalling 40,984 characters. Eleven entries come from `bin/supervise-holder.sh` and total 20,968, two come from `bin/supervise.sh` and total 292, and thirty-three come from `hooks/index.ts` and total 19,724, of which the sixteen registered tool descriptions are 14,413.
+`.kit/injection-ledger.json` is the committed size baseline, 55 entries totalling 42,828 characters. Eleven entries come from `bin/supervise-holder.sh` and total 20,961, two come from `bin/supervise.sh` and total 292, and forty-two come from `hooks/index.ts` and total 21,575, of which the nineteen registered tool descriptions are 15,715.
 
 | What a launch reads | Characters |
 |---|---|
 | A worker with a channel: skill-load, coordinator steer, reply-tool | 4,727 |
 | The coordinator: those three plus the coordinator role instruction | 12,332 |
 | The architect: reply-tool plus its charter, the other two cleared | 7,988 |
-| The sixteen tool descriptions an owner-tier session registers | 14,413 |
+| The nineteen tool descriptions an owner-tier session registers | 15,715 |
 
 The worker and coordinator rows are upper bounds. They sum each instruction variable whole, while a launch takes only the clauses its persona's guards admit: the coordinator's launch reads none of the steer instruction's worker-only clauses, and a worker reads the architect sentences only where its own settings file names an architect. None of the four rows counts `SUPERVISOR_MAILBOX_INSTRUCTION` (459 characters), which every launch's priming turn carries regardless of persona or `--no-channel`.
 
@@ -219,7 +229,7 @@ The worker and coordinator rows are upper bounds. They sum each instruction vari
 
 The startup message is assembled at one `node -e` call in `bin/supervise-holder.sh`, the one that writes the `[SUPERVISOR-PRIMING]` line, from `SKILL_LOAD_INSTRUCTION`, `COORDINATOR_STEER_INSTRUCTION`, `COORDINATOR_ROLE_INSTRUCTION`, `ARCHITECT_ROLE_INSTRUCTION`, `SUPERVISOR_MAILBOX_INSTRUCTION`, `CHANNEL_REPLY_INSTRUCTION` and the priming body. Each is empty for the launch shapes it does not apply to. The reply-tool instruction is built only with a channel attached, and it states the operator-writing rules inline rather than by pointer alone: four of the five persona launch directories hold no `CLAUDE.md`, so a pointer at that file reaches one persona of five. Its closing sentence points there for the rules the kit doctrine carries, where the child's own working directory holds the file.
 
-On the plugin side there is no shared prefix. Each recurring frame (`[FLEET]`, `[RECONCILE]`, `[KAIZEN]`, `[PROPOSE]`, `[STILL WAITING]`, the reply backstop, the idle nudges and the goal-tree blocks) carries its own label, its own instruction, and names the reply tool in its own words where its text is for the operator. The `goal_done` clause sits once, in that tool's description, and the prompts that deliver a reading point at it.
+On the plugin side there is no shared prefix. Each recurring frame (`[FLEET]`, `[RECONCILE]`, `[KAIZEN]`, `[PROPOSE]`, `[STILL WAITING]`, the reply backstop, the idle nudges, the goal-tree blocks and `[TASK LIST]`) carries its own label, its own instruction, and names the reply tool in its own words where its text is for the operator. The `goal_done` clause sits once, in that tool's description, and the prompts that deliver a reading point at it.
 
 ### The ledger and the duplicate test
 
