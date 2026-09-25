@@ -5240,13 +5240,12 @@ export const register: Register = async (on, options) => {
             // names the error on one line, so the next failure says what threw.
             let message = "";
             try {
-              message = typeof err === "object" && err !== null && typeof (err as { message?: unknown }).message === "string"
-                ? (err as { message: string }).message
-                : String(err);
+              message = safeErrorText(err);
             } catch {
               // A thrown value whose conversion itself throws.
             }
-            const foldedMessage = message.replace(/[\s\u0085]+/g, " ").trim().slice(0, 200) || "unprintable error";
+            if (message === "" && err instanceof Error) message = err.name;
+            const foldedMessage = message.split(LINE_TERMINATOR).join(" ").slice(0, 200) || "unprintable error";
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "monitor",

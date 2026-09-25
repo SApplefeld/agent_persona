@@ -73,25 +73,25 @@ throw leaves the state exactly as it was before the attempt, `shouldSelfReview` 
 again on the next tick, and the loop runs until an attempt succeeds. The store on 2026-09-23 read
 `count` 0, `turnsSince` 423, `pendingPeriodic` true, which is that state.
 
-**The fix is the catch writing what the success paths write.** After the decision, the catch
-stamps `count += 1`, `windowStart` where zero, `lastAt = now`, `turnsSince = 0` and
-`pendingPeriodic = false`, the same five writes. `pendingPeriodic` is cleared by the stamp so an
+**The fix is every attempt stamping what the success paths stamped.** The attempt stamps
+`count += 1`, `windowStart` where zero, `lastAt = now`, `turnsSince = 0` and
+`pendingPeriodic = false` once, right after the eligibility check and before the block's first
+await, so a failed attempt is spent exactly as a successful one. `pendingPeriodic` is cleared by the stamp so an
 overlapping tick reads the attempt as spent, and the catch sets it again where the attempt was
 owed to a `goal_done`, so the debounce and the cap are what bound the retry. Under the defaults,
-debounce 5 turns and cap 2 an hour, a review that always throws writes at most two decisions an
-hour, and a review that throws once is retried after five turns.
+debounce 5 turns and cap 2 an hour, a review that always throws writes at most two decisions in
+each hourly window, and a review that throws once is retried after five turns.
 
 **The decision names the error.** The detail reads `<trigger>: error: <message>`, where the
-message is the thrown value's `message` where it has one and its string form otherwise, folded to
-one line and cut at 200 characters, since the decision ring is read by `goal_status` and the
+message is the thrown value's text as the file's `safeErrorText` reads it, the error's name where
+that is empty, folded to one line on `LINE_TERMINATOR` and cut at 200 characters, since the decision ring is read by `goal_status` and the
 fleet board one line at a time. The reason the message was never recorded is the bare `catch`,
 and the fix binds the error and reads it.
 
-**Single-sourcing the stamp.** The five writes appear twice today and this plan adds a third
-site. They move into one local function inside the block, `stampAttempt(now)`, that the three
-paths call, so the next path added cannot forget one field. It is a local function rather than an
-export of `self-review.ts` because it mutates `sess.state`, which that module does not touch, and
-`shouldSelfReview` stays pure.
+**Single-sourcing the stamp.** The five writes appeared on both success paths. They move to one
+site at the start of the attempt, so no path, the catch included, can skip a field. They stay in
+the block rather than in `self-review.ts` because they mutate `sess.state`, which that module does
+not touch, and `shouldSelfReview` stays pure.
 
 **Sweep for surfaces that speak the contract this plan changes**, run at authoring from trunk
 `a62aadc`: `git grep -n 'selfReview\|self-review\|pendingPeriodic'` over `hooks/`, `.kit/`,
@@ -113,10 +113,10 @@ failure rule is stated. `docs/backlog.md` carries the entry this plan retires.
 ### 1. The catch stamps the attempt and names the error
 Model: sonnet
 
-In the `2a2` block of `hooks/index.ts`, the five state writes the two success paths share move
-into one local function the block declares before its `try`, and the catch binds its error, writes
-the decision `<trigger>: error: <message>` with the message folded to one line and cut at 200
-characters, and calls the same function. The `sess.state.updatedAt = now` and `await persist($)`
+In the `2a2` block of `hooks/index.ts`, the five state writes the two success paths share move to
+one stamp before the block's first await, and the catch binds its error, writes the decision
+`<trigger>: error: <message>` with the message folded to one line and cut at 200 characters, and
+sets `pendingPeriodic` again where the attempt was owed to a `goal_done`. The `sess.state.updatedAt = now` and `await persist($)`
 that follow the try already run on the failure path and stay where they are.
 
 Acceptance:
