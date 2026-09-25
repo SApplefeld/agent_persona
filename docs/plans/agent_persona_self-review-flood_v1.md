@@ -49,7 +49,12 @@ adds state and two knobs where the existing debounce and cap already bound the r
 error and clearing `pendingPeriodic` without stamping the rest, refused because the `turnsSince`
 trigger would still fire the review again within the hour on a busy worker.
 
-**Rulings after the spec shipped.** None yet.
+**Rulings after the spec shipped.** 2026-09-24, consultant ruling in section 1: a failed attempt
+that was owed to a `goal_done` leaves `pendingPeriodic` set, so it is retried once the debounce
+admits it, as acceptance bullet 2, the Intent and the backlog remedy state. The Approach's earlier
+clause clearing the flag for good was the mis-derived half of a contradiction the first review
+round found, and is replaced. The stamp also moves before the block's first await, because the
+tick timer does not await the tick and an overlapping tick must read the attempt as spent.
 
 Provenance: distilled from the backlog entry of 2026-09-23 and the architect persona's 2026-09-24
 read of `hooks/index.ts` block `2a2` and `hooks/self-review.ts` at trunk `a62aadc`.
@@ -70,9 +75,9 @@ again on the next tick, and the loop runs until an attempt succeeds. The store o
 
 **The fix is the catch writing what the success paths write.** After the decision, the catch
 stamps `count += 1`, `windowStart` where zero, `lastAt = now`, `turnsSince = 0` and
-`pendingPeriodic = false`, the same five writes. `pendingPeriodic` is cleared because the attempt
-consumed the `goal_done` trigger, and the periodic path's other trigger, `turnsSince` reaching
-`selfReviewEveryTurns`, brings the review back on its ordinary cadence. Under the defaults,
+`pendingPeriodic = false`, the same five writes. `pendingPeriodic` is cleared by the stamp so an
+overlapping tick reads the attempt as spent, and the catch sets it again where the attempt was
+owed to a `goal_done`, so the debounce and the cap are what bound the retry. Under the defaults,
 debounce 5 turns and cap 2 an hour, a review that always throws writes at most two decisions an
 hour, and a review that throws once is retried after five turns.
 
@@ -98,6 +103,10 @@ with a stubbed `model.complete` and a `selfReview` state override, in the case
 `caseItem8p2_memory_quality_self_scoring_vs_proof_backed` and the `BO1-pin` cases; and
 `docs/architecture.md`, whose self-review paragraph names the debounce and cap and is where the
 failure rule is stated. `docs/backlog.md` carries the entry this plan retires.
+
+## Standing Brief Amendments
+
+- A self-review attempt is stamped once, before the block's first await. A failed attempt that was owed to a `goal_done` leaves `pendingPeriodic` set; a failed reactive-only attempt sets nothing.
 
 ## Sections of Work
 

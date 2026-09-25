@@ -1657,10 +1657,12 @@ async function caseCatchStampsAttempt_notRetriedNextTick(clock) {
   check("catch stamp: one self-review decision after the throw", afterFirst.length === 1, afterFirst);
   check("catch stamp: its detail ends with the thrown message",
     afterFirst[0]?.detail.endsWith("error: boom: connection reset"), afterFirst[0]?.detail);
-  check("catch stamp: the five fields are stamped as a success would leave them",
+  check("catch stamp: count, windowStart, lastAt and turnsSince are stamped as a success would leave them",
     getState(h).monitor.selfReview.count === 1 && getState(h).monitor.selfReview.lastAt === T0
-      && getState(h).monitor.selfReview.turnsSince === 0 && getState(h).monitor.selfReview.pendingPeriodic === false
+      && getState(h).monitor.selfReview.turnsSince === 0
       && getState(h).monitor.selfReview.windowStart === T0, getState(h).monitor.selfReview);
+  check("catch stamp: the goal_done request the failed attempt did not serve stays set",
+    getState(h).monitor.selfReview.pendingPeriodic === true, getState(h).monitor.selfReview);
 
   // A second tick under the same clock: lastAt is now T0 and turnsSince (0)
   // is under the default selfReviewDebounceTurns (5), so the debounce refuses
@@ -1677,14 +1679,9 @@ async function caseCatchStampsAttempt_retriedOnceDebounceAdmits(clock) {
   const h = await createTickHarness({
     ...OPTS,
     caseName: "catch_stamp_retried_after_debounce",
-    // Both turned to 5 turns: selfReviewEveryTurns equal to
-    // selfReviewDebounceTurns so the periodic trigger (turnsSince reaching
-    // everyTurns) fires at the same completed turn the debounce admits,
-    // since a failed attempt clears pendingPeriodic exactly as a success
-    // does and the ordinary turnsSince cadence is what brings the review
-    // back.
-    selfReviewEveryTurns: 5,
-    selfReviewDebounceTurns: 5,
+    // The defaults, everyTurns 20 and debounce 5: a retry at the fifth
+    // completed turn is possible only because the failed attempt left its
+    // goal_done request set, since turnsSince 5 is under everyTurns.
     stateOpts: {
       now: T0,
       goals: [catchStampsAttemptRootGoal()],
@@ -1698,9 +1695,8 @@ async function caseCatchStampsAttempt_retriedOnceDebounceAdmits(clock) {
   check("retry-after-debounce: the throw stamped one error decision",
     getDecisions(h).filter(d => d.action === "self-review").length === 1, getDecisions(h));
 
-  // A tick with no completed turns in between: the stamp cleared
-  // pendingPeriodic, so an unfixed catch that leaves pendingPeriodic true
-  // would retry here too. The fixed catch must not.
+  // A tick with no completed turns in between: pendingPeriodic is set, but
+  // lastAt is stamped and turnsSince is 0, so the debounce refuses first.
   await tickAndSettle(h, clock, 100);
   check("retry-after-debounce: no completed turns yet, so the debounce still holds it",
     getDecisions(h).filter(d => d.action === "self-review").length === 1, getDecisions(h));

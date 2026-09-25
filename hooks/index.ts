@@ -5123,6 +5123,7 @@ export const register: Register = async (on, options) => {
           // await the tick, so a tick that overlaps a slow review must read it
           // as spent, and a review that throws is spent exactly as one that
           // succeeds: the debounce and the hourly cap bound both.
+          const owedPeriodic = sr.pendingPeriodic;
           sr.count += 1;
           if (sr.windowStart === 0) sr.windowStart = now;
           sr.lastAt = now;
@@ -5234,9 +5235,9 @@ export const register: Register = async (on, options) => {
               }
             }
           } catch (err) {
-            // Self-review failed; non-fatal. The attempt is already stamped.
-            // The decision names the error on one line, so the next failure
-            // says what threw.
+            // Self-review failed; non-fatal. The attempt is already stamped, so
+            // the debounce and the hourly cap bound the retry. The decision
+            // names the error on one line, so the next failure says what threw.
             let message = "";
             try {
               message = typeof err === "object" && err !== null && typeof (err as { message?: unknown }).message === "string"
@@ -5252,6 +5253,10 @@ export const register: Register = async (on, options) => {
               action: "self-review",
               detail: `${trigger}: error: ${foldedMessage}`,
             });
+            // A failed attempt did not serve the goal_done review it was owed,
+            // so that request stays set and is retried once the debounce
+            // admits it. A failed reactive-only review sets nothing.
+            if (owedPeriodic) sr.pendingPeriodic = true;
           }
           sess.state.updatedAt = now;
           await persist($);
