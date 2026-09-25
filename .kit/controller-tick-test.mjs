@@ -3586,6 +3586,16 @@ async function main() {
     await caseS13_health_redThenGreenAndTheRedReachesTheTurn(clock);
     await caseS13_stall_pendingPlanActivatesFirstAndNothingActivatesAfterRootComplete(clock);
     await caseS13_planFail_threeFailuresBlockTheRoot(clock);
+    await casePlannerCatch_noTextResultCountsAsAFailure(clock);
+    await casePlannerCatch_objectTextParsesAndCompletesTheRoot(clock);
+    await casePlannerCatch_lateThrowInsideTheGateCounts(clock);
+    await casePlannerCatch_selfReviewNoTextWritesNoLesson(clock);
+    await caseHarness282_wrappedDeliveryTurnTakesTheStamp(clock);
+    await caseHarness282_contextBlocksRideDownThroughNext(clock);
+    await caseHarness282_goalDoneCompletesAFinishedRootByName(clock);
+    await casePlannerCatch_replyForAClosedRootIsDiscarded(clock);
+    await casePlannerCatch_switchReasonAndDistillSitesReadTheObject(clock);
+    await caseHarness282_quotedEntryTextInsideALineTakesNoStamp(clock);
     await caseS13_identity_takesOverAStaleHolder(clock);
     await caseS13_lessonInject_newestLessonReachesTheNextTurnOnce(clock);
     await caseSection6_off_noToolNoClaimNoTimer(clock);
@@ -3859,7 +3869,7 @@ async function caseD5b_replyClosesAsk(clock) {
   // Simulate a genuine external turn: a reply typed in the thread, carrying
   // no ask id anywhere in its text.
   const submitH = h.handlers["prompt.submit"];
-  await submitH(h.fake, { text: "use the passive-supervisor branch" }, async () => ({}));
+  await submitH(h.fake, { text: "use the passive-supervisor branch" }, async (core) => ({ text: core.text, context: core.context }));
 
   const state = getState(h);
   const askRecord = h.storeMap.get(askKey);
@@ -4010,7 +4020,7 @@ async function caseItem2_noGoalReminderPushesOnSize(clock) {
 
   // No goals at all - the exact state the goalconvo suite hit live.
   const submitH = h.handlers["prompt.submit"];
-  const result = await submitH(h.fake, { text: "Write a haiku to ocean.txt." }, async () => ({}));
+  const result = await submitH(h.fake, { text: "Write a haiku to ocean.txt." }, async (core) => ({ text: core.text, context: core.context }));
 
   const blocks = result.context || [];
   const noGoalBlock = blocks.find(b => b.includes("No goal is active"));
@@ -4047,7 +4057,7 @@ async function caseItem2_noGoalReminder_control(clock) {
   if (startH) await startH(h.fake, {}, () => {});
 
   const submitH = h.handlers["prompt.submit"];
-  const result = await submitH(h.fake, { text: "keep going" }, async () => ({}));
+  const result = await submitH(h.fake, { text: "keep going" }, async (core) => ({ text: core.text, context: core.context }));
 
   const blocks = result.context || [];
   check("item2 control: no [NO GOAL] block when a goal is active", !blocks.some(b => b.includes("No goal is active")));
@@ -4063,7 +4073,7 @@ async function caseItem2_noGoalReminder_control(clock) {
 
 // One working turn: a prompt, a turn, one Write call, a completed answer.
 async function untrackedWorkTurn(h, turnId, text) {
-  await h.handlers["prompt.submit"](h.fake, { text }, async () => ({}));
+  await h.handlers["prompt.submit"](h.fake, { text }, async (core) => ({ text: core.text, context: core.context }));
   await h.handlers["turn.start"](h.fake, { turnId }, async () => ({ result: "ok" }));
   await h.handlers["tool.call"](h.fake, { tool: "Write", turnId }, async () => ({ result: "ok" }));
   await h.handlers["turn.complete"](h.fake, { turnId, answer: "Done.", reason: "completed" }, async () => ({ result: "ok" }));
@@ -4136,7 +4146,7 @@ async function caseItem2_untrackedWorkNotOnNoToolTurn(clock) {
   });
 
   const submitH = h.handlers["prompt.submit"];
-  await submitH(h.fake, { text: "What's your favorite color?" }, async () => ({}));
+  await submitH(h.fake, { text: "What's your favorite color?" }, async (core) => ({ text: core.text, context: core.context }));
 
   const turnStartH = h.handlers["turn.start"];
   await turnStartH(h.fake, { turnId: "t-nochat" }, async () => ({ result: "ok" }));
@@ -4167,7 +4177,7 @@ async function caseItem2_untrackedWorkSkipsPrimingTurn(clock) {
   });
 
   const submitH = h.handlers["prompt.submit"];
-  await submitH(h.fake, { text: "[SUPERVISOR-PRIMING] You are the passive supervisor, waiting for a goal or a steering message from the operator. Reply now with one short line acknowledging you are ready, then wait." }, async () => ({}));
+  await submitH(h.fake, { text: "[SUPERVISOR-PRIMING] You are the passive supervisor, waiting for a goal or a steering message from the operator. Reply now with one short line acknowledging you are ready, then wait." }, async (core) => ({ text: core.text, context: core.context }));
 
   const turnStartH = h.handlers["turn.start"];
   await turnStartH(h.fake, { turnId: "t-priming" }, async () => ({ result: "ok" }));
@@ -4433,7 +4443,7 @@ async function caseChannelBackstop_firesOnChannelOriginNoReply(clock) {
   });
 
   const submitH = h.handlers["prompt.submit"];
-  await submitH(h.fake, { text: "What's the status?", origin: { kind: "channel" } }, async () => ({}));
+  await submitH(h.fake, { text: "What's the status?", origin: { kind: "channel" } }, async (core) => ({ text: core.text, context: core.context }));
 
   const turnStartH = h.handlers["turn.start"];
   await turnStartH(h.fake, { turnId: "t-channel-noreply" }, async () => ({ result: "ok" }));
@@ -4469,7 +4479,7 @@ async function caseChannelBackstop_skipsKeyboardOrigin(clock) {
   });
 
   const submitH = h.handlers["prompt.submit"];
-  await submitH(h.fake, { text: "What's the status?", origin: { kind: "keyboard" } }, async () => ({}));
+  await submitH(h.fake, { text: "What's the status?", origin: { kind: "keyboard" } }, async (core) => ({ text: core.text, context: core.context }));
 
   const turnStartH = h.handlers["turn.start"];
   await turnStartH(h.fake, { turnId: "t-keyboard-noreply" }, async () => ({ result: "ok" }));
@@ -5164,7 +5174,7 @@ async function caseSection12_6_foreignTurnDoesNotTakeTheStamp(clock) {
   const { h, key, id } = await seedOwnerWithPendingRecord("section12_6_channel", now, "writer-c");
   await tickAndSettle(h, clock, 50);
   check("section12.6 channel: record delivered (setup sanity)", readStoreRecord(h, key)?.status === "delivered");
-  await h.handlers["prompt.submit"](h.fake, { text: "What's the status?", origin: { kind: "channel" } }, async () => ({}));
+  await h.handlers["prompt.submit"](h.fake, { text: "What's the status?", origin: { kind: "channel" } }, async (core) => ({ text: core.text, context: core.context }));
   await h.handlers["turn.start"](h.fake, { turnId: "t-channel", text: "What's the status?" }, async () => ({ result: "ok" }));
   const afterStart = readStoreRecord(h, key);
   check("section12.6 channel: record not stamped with the channel turn", afterStart?.turnId === undefined, afterStart);
@@ -5211,7 +5221,7 @@ async function caseSection12_6_foreignTurnDoesNotTakeTheStamp(clock) {
   const k = await seedOwnerWithPendingRecord("section12_6_keyboard", now, "writer-k");
   await tickAndSettle(k.h, clock, 50);
   check("section12.6 keyboard: record delivered (setup sanity)", readStoreRecord(k.h, k.key)?.status === "delivered");
-  await k.h.handlers["prompt.submit"](k.h.fake, { text: "Typed at the keyboard.", origin: { kind: "composer" } }, async () => ({}));
+  await k.h.handlers["prompt.submit"](k.h.fake, { text: "Typed at the keyboard.", origin: { kind: "composer" } }, async (core) => ({ text: core.text, context: core.context }));
   await k.h.handlers["turn.start"](k.h.fake, { turnId: "t-keyboard", text: "Typed at the keyboard." }, async () => ({ result: "ok" }));
   const afterKeyboardStart = readStoreRecord(k.h, k.key);
   check("section12.6 keyboard: record not stamped with the keyboard turn", afterKeyboardStart?.turnId === undefined, afterKeyboardStart);
@@ -5563,7 +5573,7 @@ async function caseSection12_H1_deliveryTurnOpensAheadOfAQueuedBackstop(clock) {
   // A channel turn runs to completion with no reply call; the direct reply
   // call fails, so the backstop submits a re-prompt, which parks too.
   h.fake.tool.call = () => Promise.reject(new Error("no live channel"));
-  await h.handlers["prompt.submit"](h.fake, { text: "status?", origin: { kind: "channel" } }, async () => ({}));
+  await h.handlers["prompt.submit"](h.fake, { text: "status?", origin: { kind: "channel" } }, async (core) => ({ text: core.text, context: core.context }));
   await h.handlers["turn.start"](h.fake, { turnId: "t-channel-h1a", text: "status?" }, async () => ({ result: "ok" }));
   const completeChannel = h.handlers["turn.complete"](h.fake, { turnId: "t-channel-h1a", answer: "All green.", reason: "completed" }, async () => ({ result: "ok" }));
   const backstopQueued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.includes("[REPLY BACKSTOP]")));
@@ -5620,7 +5630,7 @@ async function caseSection12_H1_parkedPluginTurnAfterAnExternalTurnTakesNoStamp(
   const reraiseTick = fireTick(h);
   const reraiseQueued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.includes("[STILL WAITING]")));
   check("section12.H1b: the re-raise submit is parked (setup sanity)", reraiseQueued);
-  await h.handlers["prompt.submit"](h.fake, { text: "typed", origin: { kind: "composer" } }, async () => ({}));
+  await h.handlers["prompt.submit"](h.fake, { text: "typed", origin: { kind: "composer" } }, async (core) => ({ text: core.text, context: core.context }));
   await h.handlers["turn.start"](h.fake, { turnId: "t-external-h1b", text: "typed" }, async () => ({ result: "ok" }));
   await h.handlers["turn.complete"](h.fake, { turnId: "t-external-h1b", answer: "typed answer", reason: "completed" }, async () => ({ result: "ok" }));
 
@@ -5663,7 +5673,7 @@ async function caseSection12_J1_unmatchedTurnTextTakesNoStamp(clock) {
   check("section12.J1a: the delivery's submit is parked (setup sanity)", queued);
 
   // An external turn opens and completes.
-  await h.handlers["prompt.submit"](h.fake, { text: "first typed", origin: { kind: "composer" } }, async () => ({}));
+  await h.handlers["prompt.submit"](h.fake, { text: "first typed", origin: { kind: "composer" } }, async (core) => ({ text: core.text, context: core.context }));
   await h.handlers["turn.start"](h.fake, { turnId: "t-x-j1a", text: "first typed" }, async () => ({ result: "ok" }));
   await h.handlers["turn.complete"](h.fake, { turnId: "t-x-j1a", answer: "first answer", reason: "completed" }, async () => ({ result: "ok" }));
 
@@ -7264,8 +7274,8 @@ async function caseSection4_channelOriginPromptCarriesNoLabel(clock) {
   const r = await h.handlers["prompt.submit"](h.fake, { text: "Ship it on main.", origin: { kind: "channel" } }, async (e) => { seen = e; return {}; });
   check("section4 channel control: the text passed beneath the plugin is the operator's own, unprefixed", seen?.text === "Ship it on main.", seen);
   check("section4 channel control: the plugin rewrites no text on the return", r.text === undefined && r.drop === undefined, r);
-  const labelled = (r.context || []).filter((c) => /^\[(COORDINATOR|READER:|WORKER:|OPERATOR)/.test(c));
-  check("section4 channel control: no injected context block opens with a provenance label", labelled.length === 0, r.context);
+  const labelled = (seen?.context || []).filter((c) => /^\[(COORDINATOR|READER:|WORKER:|OPERATOR)/.test(c));
+  check("section4 channel control: no injected context block passed beneath opens with a provenance label", labelled.length === 0, seen?.context);
 }
 
 // agentic_say(urgent: true) writes urgent onto the record; a plain say does not.
@@ -14391,7 +14401,7 @@ async function casePlanRecord2_roundTextAtTheFourSites(clock) {
     h.fake.ui.status = (s) => { statuses.push(String(s)); };
 
     // Site 1: the worker prompt's [GOAL TREE] block.
-    const r = await h.handlers["prompt.submit"](h.fake, { text: "keep going" }, async () => ({}));
+    const r = await h.handlers["prompt.submit"](h.fake, { text: "keep going" }, async (core) => ({ text: core.text, context: core.context }));
     const goalBlock = (r.context || []).find(b => b.includes("[GOAL TREE]")) || "";
     // Sites 3 and 4: the idle summary handed to the classifier, and the
     // skip-hash subset, whose text is read through the status-line-free
@@ -14591,7 +14601,7 @@ async function lead3Turn(h, turnId, answer, { workTool = false, reply = false, c
     if (labels.includes("nudge")) return "nudge";
     return "discard";
   });
-  if (channel) await h.handlers["prompt.submit"](h.fake, { text: "How is it going?", origin: { kind: "channel" } }, async () => ({}));
+  if (channel) await h.handlers["prompt.submit"](h.fake, { text: "How is it going?", origin: { kind: "channel" } }, async (core) => ({ text: core.text, context: core.context }));
   await h.handlers["turn.start"](h.fake, { turnId }, async () => ({ result: "ok" }));
   if (workTool) await h.handlers["tool.call"](h.fake, { tool: "Bash", turnId }, async () => ({ result: "ok" }));
   if (reply) await h.handlers["tool.call"](h.fake, { tool: "mcp__plugin_relay_channel-relay__reply", turnId, message: answer }, async () => ({ result: "ok" }));
@@ -14951,7 +14961,7 @@ async function caseLead3_theOperatorsAnswerToTheAskLiftsABlockedLead(clock) {
     { askId, lead: lead3Of(h, "plan-1") });
 
   clock.advance(1_000);
-  await h.handlers["prompt.submit"](h.fake, { text: "Use X.", origin: { kind: "channel" } }, async () => ({}));
+  await h.handlers["prompt.submit"](h.fake, { text: "Use X.", origin: { kind: "channel" } }, async (core) => ({ text: core.text, context: core.context }));
   await lead3Turn(h, "t-answer", "Going with X.", { reply: true });
   const state = getState(h);
   const plan1 = state.goals.find(g => g.id === "plan-1");
@@ -15007,7 +15017,7 @@ async function caseLead3_aBlockedLeadSetAfterTheAskClosedStillHolds(clock) {
   const h = await lead3Harness("lead3_lead_after_ask_holds");
   await lead3Turn(h, "t-ask", "BLOCKED: need the operator's fork\nASK: Which DB? Recommend: X", { workTool: true });
   clock.advance(1_000);
-  await h.handlers["prompt.submit"](h.fake, { text: "Use X.", origin: { kind: "channel" } }, async () => ({}));
+  await h.handlers["prompt.submit"](h.fake, { text: "Use X.", origin: { kind: "channel" } }, async (core) => ({ text: core.text, context: core.context }));
   clock.advance(1_000);
   await lead3Turn(h, "t-blocked-again", "BLOCKED: the migration needs a DBA", { workTool: true });
   const plan1 = getState(h).goals.find(g => g.id === "plan-1");
@@ -15067,7 +15077,7 @@ async function caseLead3_anAskClosedAfterAWaitingLeadKeepsTheHold(clock) {
     typeof askId === "string" && lead3Of(h, "plan-1")?.state === "waiting" && lead3Of(h, "plan-1").at === T0, { askId, lead: lead3Of(h, "plan-1") });
 
   clock.advance(1_000);
-  await h.handlers["prompt.submit"](h.fake, { text: "Use X.", origin: { kind: "channel" } }, async () => ({}));
+  await h.handlers["prompt.submit"](h.fake, { text: "Use X.", origin: { kind: "channel" } }, async (core) => ({ text: core.text, context: core.context }));
   await lead3Turn(h, "t-answer", "Going with X.", { reply: true });
   const plan1 = getState(h).goals.find(g => g.id === "plan-1");
   check("lead3 waiting ask closed setup: the ask closed after the lead was set and plan-1 is active",
@@ -15268,7 +15278,7 @@ async function caseSection4_channelAndDeliveryTurnsSkipTheScorer(clock) {
       // a drift stub would leave the counter looking untouched either way.
       h.setClassifyValue(section4Classify("on-goal"));
       if (origin === "channel") {
-        await h.handlers["prompt.submit"](h.fake, { text: "Status update?", origin: { kind: "channel" } }, async () => ({}));
+        await h.handlers["prompt.submit"](h.fake, { text: "Status update?", origin: { kind: "channel" } }, async (core) => ({ text: core.text, context: core.context }));
         await h.handlers["turn.start"](h.fake, { turnId: "t-origin", text: "Status update?" }, async () => ({ result: "ok" }));
         await h.handlers["turn.complete"](h.fake, { turnId: "t-origin", answer: "All good.", reason: "completed" }, async () => ({ result: "ok" }));
       } else {
@@ -15462,7 +15472,7 @@ async function caseSection4_channelOriginNudgeIsStillScoredAsANudge(clock) {
   check("section4 nudge+channel setup: a nudge text is queued", typeof nudgeText === "string" && nudgeText.length > 0, nudgeText);
 
   h.setClassifyValue(section4Classify("on-goal"));
-  await h.handlers["prompt.submit"](h.fake, { text: nudgeText, origin: { kind: "channel" } }, async () => ({}));
+  await h.handlers["prompt.submit"](h.fake, { text: nudgeText, origin: { kind: "channel" } }, async (core) => ({ text: core.text, context: core.context }));
   await h.handlers["turn.start"](h.fake, { turnId: "t-both", text: nudgeText }, async () => ({ result: "ok" }));
   await h.handlers["turn.complete"](h.fake, { turnId: "t-both", answer: "Working on it.", reason: "completed" }, async () => ({ result: "ok" }));
 
@@ -16790,7 +16800,7 @@ async function caseAbk1_threadReplySetsThePointer(clock) {
   console.log("\n=== Ask bookkeeping 1: a thread reply that closes an ask points activeGoalId at the entry it reactivates ===");
   clock.set(T0);
   const h = await gtc3Harness("abk1_reply_other_active", abkTreeActiveAndAsked(T0), { pendingAsk: { askId: "ask-abk1-r", nodeId: "g-asked" } });
-  await h.handlers["prompt.submit"](h.fake, { text: "use the passive-supervisor branch" }, async () => ({}));
+  await h.handlers["prompt.submit"](h.fake, { text: "use the passive-supervisor branch" }, async (core) => ({ text: core.text, context: core.context }));
   const state = getState(h);
   const asked = state.goals.find((g) => g.id === "g-asked");
   const other = state.goals.find((g) => g.id === "g-active");
@@ -16808,7 +16818,7 @@ async function caseAbk1_threadReplySetsThePointer(clock) {
   const lone = abkTreeActiveAndAsked(T0).filter((g) => g.id !== "g-active");
   const l = await gtc3Harness("abk1_reply_lone", lone, { pendingAsk: { askId: "ask-abk1-l", nodeId: "g-asked" } });
   check("abk1 reply lone: activeGoalId starts null", getState(l).activeGoalId === null, getState(l).activeGoalId);
-  await l.handlers["prompt.submit"](l.fake, { text: "go ahead" }, async () => ({}));
+  await l.handlers["prompt.submit"](l.fake, { text: "go ahead" }, async (core) => ({ text: core.text, context: core.context }));
   const lState = getState(l);
   check("abk1 reply lone: the asked entry is active and activeGoalId names it",
     lState.goals.find((g) => g.id === "g-asked")?.status === "active" && lState.activeGoalId === "g-asked", { active: lState.activeGoalId });
@@ -16894,7 +16904,7 @@ async function caseS13_health_redThenGreenAndTheRedReachesTheTurn(clock) {
   const toolH = h.handlers["tool.call"];
   const submitH = h.handlers["prompt.submit"];
   await toolH(h.fake, { tool: "mcp__agentic-plugin__goal_done", note: "first" }, async () => ({ result: "ok" }));
-  const injected = await submitH(h.fake, { text: "next step" }, async () => ({}));
+  const injected = await submitH(h.fake, { text: "next step" }, async (core) => ({ text: core.text, context: core.context }));
   await toolH(h.fake, { tool: "mcp__agentic-plugin__goal_done", note: "second" }, async () => ({ result: "ok" }));
   const decisions = getDecisions(h);
   const expected = ["activated", "health_red", "env_inject", "health_green"];
@@ -16968,6 +16978,429 @@ async function caseS13_planFail_threeFailuresBlockTheRoot(clock) {
   check("s13 planfail: no planning_created (the fault flag took effect)", countAction(decisions, "planning_created") === 0);
 }
 
+// --- planner-catch: a completion result with no text, and a throw inside the gate, both count ---
+
+// A root the planner has planned once, with every child finished, so the
+// planner is due and isRootFinished defers to it.
+function plannerCatchTree() {
+  return [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 10, planningRounds: 1 }),
+    makeGoalNode({ id: "plan-done", parentId: "g-root", kind: "plan", status: "complete", planningRound: 0 }),
+    makeGoalNode({ id: "plan-dropped", parentId: "g-root", kind: "plan", status: "abandoned", planningRound: 0 }),
+  ];
+}
+
+// The text the engine opens a plugin-submitted turn with from Claude Code
+// 2.1.280: the submitted text inside the engine's own frame. The frame is
+// the one read from a live transcript on 2026-09-25, and the plugin matches
+// on the submitted text being inside the turn's text, not on the frame.
+function wrapPluginPrompt(text) {
+  return `The agentic-plugin plugin sent a message:\n${text}\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. Address the message above.`;
+}
+
+// Regression pin: a completion result carrying no text (the engine's object
+// with the text elsewhere, or none) is a planning failure the counter sees.
+// On the trunk before planner-catch, raw.trim threw inside the parse try and
+// raw.slice threw in the parse-failure branch, before registerPlanningFailure
+// ran, so every tick logged planning_fired and nothing else, without end.
+async function casePlannerCatch_noTextResultCountsAsAFailure(clock) {
+  console.log("\n=== planner-catch: a completion result with no text counts as a planning failure and three block the root ===");
+  clock.set(T0);
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "planner_catch_no_text",
+    completeValue: {},
+    stateOpts: { now: T0, goals: plannerCatchTree(), activeGoalId: null },
+  });
+  for (let i = 0; i < 4; i++) {
+    clock.advance(10_000);
+    await tickAndSettle(h, clock, 20);
+  }
+  const state = getState(h);
+  const decisions = state.decisions;
+  const rootNow = state.goals.find((g) => g.parentId === null);
+  check("planner-catch no-text: exactly three planning_failed", countAction(decisions, "planning_failed") === 3, decisions.map((d) => d.action));
+  check("planner-catch no-text: each failure names the shape",
+    decisions.filter((d) => d.action === "planning_failed").every((d) => d.detail === "Planner returned no text (object, keys: none)"),
+    decisions.filter((d) => d.action === "planning_failed").map((d) => d.detail));
+  check("planner-catch no-text: the root is blocked with the planner reason", !!rootNow && rootNow.status === "blocked" && /Planner failing/.test(rootNow.blockedReason || ""), rootNow && [rootNow.status, rootNow.blockedReason]);
+  const blockIdx = decisions.findIndex((d) => d.action === "block");
+  const afterBlock = decisions.slice(blockIdx + 1).map((d) => d.action);
+  check("planner-catch no-text: no planning_fired or planning_failed after the block", blockIdx !== -1 && !afterBlock.includes("planning_fired") && !afterBlock.includes("planning_failed"), afterBlock);
+  check("planner-catch no-text: three planning_fired in all (one per attempt, none after)", countAction(decisions, "planning_fired") === 3, countAction(decisions, "planning_fired"));
+  check("planner-catch no-text: no planning_complete and no planning_created", countAction(decisions, "planning_complete") === 0 && countAction(decisions, "planning_created") === 0);
+}
+
+// The engine's answered shape: the text is read out of the object and parsed
+// as the string was, so an empty plan list completes the root in one tick.
+async function casePlannerCatch_objectTextParsesAndCompletesTheRoot(clock) {
+  console.log("\n=== planner-catch: a completion result carrying its text in an object parses and completes the root ===");
+  clock.set(T0);
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "planner_catch_object_text",
+    completeValue: { isAnswered: true, text: "[]", usage: { input_tokens: 1, output_tokens: 1 } },
+    stateOpts: { now: T0, goals: plannerCatchTree(), activeGoalId: null },
+  });
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  const state = getState(h);
+  const decisions = state.decisions;
+  const rootNow = state.goals.find((g) => g.parentId === null);
+  check("planner-catch object: one planning_complete", countAction(decisions, "planning_complete") === 1, decisions.map((d) => d.action));
+  check("planner-catch object: one root_complete and the root is complete", countAction(decisions, "root_complete") === 1 && rootNow?.status === "complete", rootNow?.status);
+  check("planner-catch object: no planning_failed", countAction(decisions, "planning_failed") === 0);
+
+  // Control: the string shape earlier engines resolved still parses the same way.
+  clock.set(T0);
+  const s = await createTickHarness({
+    ...OPTS,
+    caseName: "planner_catch_string_text",
+    completeValue: "[]",
+    stateOpts: { now: T0, goals: plannerCatchTree(), activeGoalId: null },
+  });
+  clock.advance(10_000);
+  await tickAndSettle(s, clock, 20);
+  check("planner-catch string control: the string shape completes the root the same way",
+    countAction(getDecisions(s), "root_complete") === 1 && getState(s).goals.find((g) => g.parentId === null)?.status === "complete");
+
+  // The unanswered shape names its reason in the failure detail.
+  clock.set(T0);
+  const u = await createTickHarness({
+    ...OPTS,
+    caseName: "planner_catch_unanswered",
+    completeValue: { isAnswered: false, reason: "api-error", status: 529, error: "overloaded", usage: {} },
+    stateOpts: { now: T0, goals: plannerCatchTree(), activeGoalId: null },
+  });
+  clock.advance(10_000);
+  await tickAndSettle(u, clock, 20);
+  const unansweredFail = getDecisions(u).find((d) => d.action === "planning_failed");
+  check("planner-catch unanswered: the failure names the keys and the reason",
+    unansweredFail?.detail === "Planner returned no text (object, keys: isAnswered,reason,status,error,usage, reason: api-error)", unansweredFail?.detail);
+}
+
+// A throw inside the gate that no inner try catches reaches the gate's own
+// catch, which now registers it. The injection is a result whose text getter
+// throws: the reader reads it outside every inner try.
+async function casePlannerCatch_lateThrowInsideTheGateCounts(clock) {
+  console.log("\n=== planner-catch: a throw inside the planning gate registers a failure and three block the root ===");
+  clock.set(T0);
+  const throwing = {};
+  Object.defineProperty(throwing, "text", { get() { throw new Error("late throw after the call"); }, enumerable: true });
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "planner_catch_late_throw",
+    completeValue: throwing,
+    stateOpts: { now: T0, goals: plannerCatchTree(), activeGoalId: null },
+  });
+  for (let i = 0; i < 4; i++) {
+    clock.advance(10_000);
+    await tickAndSettle(h, clock, 20);
+  }
+  const decisions = getDecisions(h);
+  const rootNow = getState(h).goals.find((g) => g.parentId === null);
+  check("planner-catch throw: exactly three planning_failed", countAction(decisions, "planning_failed") === 3, decisions.map((d) => d.action));
+  check("planner-catch throw: each names the thrown message under Planner threw",
+    decisions.filter((d) => d.action === "planning_failed").every((d) => d.detail === "Planner threw: late throw after the call"),
+    decisions.filter((d) => d.action === "planning_failed").map((d) => d.detail));
+  check("planner-catch throw: the root is blocked", rootNow?.status === "blocked", rootNow?.status);
+  const blockIdx = decisions.findIndex((d) => d.action === "block");
+  check("planner-catch throw: no planning_fired after the block", blockIdx !== -1 && !decisions.slice(blockIdx + 1).some((d) => d.action === "planning_fired"));
+}
+
+// The self-review site reads the same call: a result with no text writes the
+// site's own error decision naming the shape and no lesson, and the stamped
+// attempt is not retried on the next tick, as the throw case pins.
+async function casePlannerCatch_selfReviewNoTextWritesNoLesson(clock) {
+  console.log("\n=== planner-catch: the self-review's completion with no text logs its shape and writes no lesson ===");
+  clock.set(T0);
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "planner_catch_self_review_no_text",
+    stateOpts: {
+      now: T0,
+      goals: [catchStampsAttemptRootGoal()],
+      activeGoalId: null,
+      selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: true, lastInjectAt: 0 },
+    },
+    classifyValue: "NONE",
+  });
+  h.fake.model.complete = async () => ({ isAnswered: false, reason: "empty-reply", usage: {} });
+  await tickAndSettle(h, clock, 100);
+  const reviews = getDecisions(h).filter((d) => d.action === "self-review");
+  check("planner-catch self-review: one self-review decision", reviews.length === 1, reviews);
+  check("planner-catch self-review: its detail is the site's error line naming the shape",
+    reviews[0]?.detail.includes(": error: ") && reviews[0]?.detail.includes("(object, keys: isAnswered,reason,usage, reason: empty-reply)"), reviews[0]?.detail);
+  check("planner-catch self-review: no lesson was written", !getState(h).memory.some((m) => m.source === "self-review"), getState(h).memory);
+  check("planner-catch self-review: the attempt is stamped", getState(h).monitor.selfReview.count === 1 && getState(h).monitor.selfReview.lastAt === T0, getState(h).monitor.selfReview);
+  await tickAndSettle(h, clock, 100);
+  check("planner-catch self-review: a second tick under the same clock retries nothing", getDecisions(h).filter((d) => d.action === "self-review").length === 1);
+}
+
+// --- harness 2.1.282: the wrapped plugin turn, the context passed down, the root by name ---
+
+// A delivery turn opening with the engine's frame around the submitted text
+// takes the stamp: the submitted text is inside the turn's text. Before this
+// rule every delivery turn on 2.1.280+ read unaccounted, its record was never
+// stamped, and no reply was filed.
+async function caseHarness282_wrappedDeliveryTurnTakesTheStamp(clock) {
+  console.log("\n=== harness 2.1.282: a delivery turn opening with the engine's frame around the submitted text takes the stamp ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("harness282_wrapped_delivery", now, "writer-wrap");
+  await tickAndSettle(h, clock, 50);
+  const submitted = h.queuedTurnTexts.shift();
+  check("harness282 wrapped: the delivery was submitted with its own text (setup sanity)", submitted === `${readerLabel(id)} message 1`, submitted);
+  await h.handlers["turn.start"](h.fake, { turnId: "t-wrapped", text: wrapPluginPrompt(submitted) }, async () => ({ result: "ok" }));
+  check("harness282 wrapped: the turn takes the stamp", readStoreRecord(h, key)?.turnId === "t-wrapped", readStoreRecord(h, key));
+  check("harness282 wrapped: no operator_stamp_withheld", !getDecisions(h).some((d) => d.action === "operator_stamp_withheld"), getDecisions(h).filter((d) => d.action === "operator_stamp_withheld"));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-wrapped", answer: "Answered inside the frame.", reason: "answer" }, async () => ({ result: "ok" }));
+  check("harness282 wrapped: the reply is filed", readStoreRecord(h, `reply:default:${id}`)?.text === "Answered inside the frame.");
+
+  // Control: the frame around another record's text matches nothing, so the
+  // rule is containment of the whole submitted text, not of the frame.
+  clock.set(T0);
+  const c = await seedOwnerWithPendingRecord("harness282_wrapped_control", now, "writer-wrap-c");
+  await tickAndSettle(c.h, clock, 50);
+  c.h.queuedTurnTexts.shift();
+  await c.h.handlers["turn.start"](c.h.fake, { turnId: "t-other", text: wrapPluginPrompt("[COORDINATOR id=default-someone-else-9] message 1") }, async () => ({ result: "ok" }));
+  check("harness282 wrapped control: another record's framed text takes no stamp", readStoreRecord(c.h, c.key)?.turnId === undefined);
+  check("harness282 wrapped control: the withheld line reads unaccounted",
+    getDecisions(c.h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes(c.id) && d.detail.includes("unaccounted")));
+}
+
+// The context blocks ride down through next: the engine attaches only what
+// a hook passes down, and logs a block put on the result afterwards as not
+// attached. The case reads what reached the hook beneath, which is the
+// contract, and that the result is returned as it came.
+async function caseHarness282_contextBlocksRideDownThroughNext(clock) {
+  console.log("\n=== harness 2.1.282: the injected context blocks are passed down through next, not put on the result ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, caseName: "harness282_context_down", stateOpts: { now: T0 } });
+  let seen = null;
+  const echoed = ["a block a hook above attached"];
+  const r = await h.handlers["prompt.submit"](h.fake, { text: "Carry on with the plan.", origin: { kind: "composer" }, context: echoed }, async (core) => {
+    seen = core;
+    return { text: core.text, context: core.context };
+  });
+  const down = Array.isArray(seen?.context) ? seen.context : [];
+  check("harness282 context: the hook beneath received the [GOAL TREE] block", down.some((b) => b.startsWith("[GOAL TREE]")), down.map((b) => b.slice(0, 30)));
+  check("harness282 context: the block a hook above attached stays first", down[0] === "a block a hook above attached", down[0]);
+  check("harness282 context: the result carries the context that arrived beneath, unchanged", r.context === seen.context, r);
+  check("harness282 context: the text passed beneath is the operator's own", seen?.text === "Carry on with the plan.", seen?.text);
+}
+
+// goal_done on the root: admitted in an operator turn on a finished tree,
+// refused naming the open descendant, refused in a turn the effort gate does
+// not admit, and the root_complete detail carries the note.
+async function caseHarness282_goalDoneCompletesAFinishedRootByName(clock) {
+  console.log("\n=== harness 2.1.282: goal_done completes a finished root by name on the operator's word ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, caseName: "harness282_root_done", stateOpts: { now: T0, goals: plannerCatchTree(), activeGoalId: null } });
+  await openPromptTurn(h, { originKind: "composer", text: "Close the goal.", turnId: "t-op-root" });
+  const done = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", nodeId: "g-root", note: "the plan is archived Complete" });
+  check("harness282 root done: the call is accepted", done?.deny === undefined && typeof done?.result === "string" && done.result.includes("the root"), done);
+  const root = getState(h).goals.find((g) => g.parentId === null);
+  check("harness282 root done: the root is complete", root?.status === "complete", root?.status);
+  const rc = getDecisions(h).find((d) => d.action === "root_complete");
+  check("harness282 root done: root_complete is logged with the note", rc?.detail === "Root g-root marked complete by goal_done: the plan is archived Complete", rc?.detail);
+  check("harness282 root done: no done line, no score and no activation (the leaf follow-on did not run)",
+    !getDecisions(h).some((d) => d.action === "done" || d.action === "score" || d.action === "activate"), getDecisions(h).map((d) => d.action));
+  const again = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", nodeId: "g-root" });
+  check("harness282 root done: a second call refuses, the root already complete", typeof again?.deny === "string" && again.deny.includes('already "complete"'), again);
+  await closeTurn(h, "t-op-root");
+
+  // Refused: an open descendant is named.
+  clock.set(T0);
+  const openTree = plannerCatchTree();
+  openTree.push(makeGoalNode({ id: "plan-open", parentId: "g-root", kind: "plan", status: "pending", planningRound: 1 }));
+  const o = await createTickHarness({ ...OPTS, caseName: "harness282_root_open", stateOpts: { now: T0, goals: openTree, activeGoalId: null } });
+  await openPromptTurn(o, { originKind: "composer", text: "Close the goal.", turnId: "t-op-open" });
+  const refusedOpen = await callTool(o, { tool: "mcp__agentic-plugin__goal_done", nodeId: "g-root" });
+  check("harness282 root open: refused naming the open descendant", typeof refusedOpen?.deny === "string" && refusedOpen.deny.includes("plan-open") && refusedOpen.deny.includes('"pending"'), refusedOpen);
+  check("harness282 root open: the root stays pending", getState(o).goals.find((g) => g.parentId === null)?.status === "pending");
+  await closeTurn(o, "t-op-open");
+
+  // Refused: nothing complete under the root.
+  clock.set(T0);
+  const bare = [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 10, planningRounds: 1 }),
+    makeGoalNode({ id: "plan-dropped", parentId: "g-root", kind: "plan", status: "abandoned", planningRound: 0 }),
+  ];
+  const b = await createTickHarness({ ...OPTS, caseName: "harness282_root_bare", stateOpts: { now: T0, goals: bare, activeGoalId: null } });
+  await openPromptTurn(b, { originKind: "composer", text: "Close the goal.", turnId: "t-op-bare" });
+  const refusedBare = await callTool(b, { tool: "mcp__agentic-plugin__goal_done", nodeId: "g-root" });
+  check("harness282 root bare: refused, nothing under it complete", typeof refusedBare?.deny === "string" && refusedBare.deny.includes("no entry under it is complete"), refusedBare);
+  await closeTurn(b, "t-op-bare");
+
+  // Refused: a turn the effort gate does not admit (an origin that is not
+  // the operator's), and the root stays as it was.
+  clock.set(T0);
+  const n = await createTickHarness({ ...OPTS, caseName: "harness282_root_other_turn", stateOpts: { now: T0, goals: plannerCatchTree(), activeGoalId: null } });
+  await openPromptTurn(n, { originKind: "notification", text: "Close the goal.", turnId: "t-notif" });
+  const refusedTurn = await callTool(n, { tool: "mcp__agentic-plugin__goal_done", nodeId: "g-root" });
+  check("harness282 root other turn: refused, the root closes only on the operator's or the coordinator's word",
+    typeof refusedTurn?.deny === "string" && refusedTurn.deny.includes("operator's or the coordinator persona's word"), refusedTurn);
+  check("harness282 root other turn: the root stays pending and no root_complete is logged",
+    getState(n).goals.find((g) => g.parentId === null)?.status === "pending" && !getDecisions(n).some((d) => d.action === "root_complete"));
+  await closeTurn(n, "t-notif");
+
+  // Refused while a planner call is out, and the root stays pending; once
+  // the call lands the same tree is completable. A blocked root (the planner
+  // tripped its cap) completes and loses its blocked reason.
+  clock.set(T0);
+  let releasePlanner = null;
+  const f = await createTickHarness({ ...OPTS, caseName: "harness282_root_in_flight", stateOpts: { now: T0, goals: plannerCatchTree(), activeGoalId: null } });
+  f.fake.model.complete = () => new Promise((resolve) => { releasePlanner = () => resolve({ isAnswered: true, text: "[]", usage: {} }); });
+  clock.advance(10_000);
+  // The tick is not awaited: it parks on the planner call, as a live tick
+  // does while the model answers, and the tool call below lands under it.
+  const parkedTick = fireTick(f);
+  await new Promise((r) => setTimeout(r, 20));
+  check("harness282 root in flight setup: the planner call is out", typeof releasePlanner === "function");
+  await openPromptTurn(f, { originKind: "composer", text: "Close the goal.", turnId: "t-op-flight" });
+  const refusedFlight = await callTool(f, { tool: "mcp__agentic-plugin__goal_done", nodeId: "g-root" });
+  check("harness282 root in flight: refused naming the in-flight planner call", typeof refusedFlight?.deny === "string" && refusedFlight.deny.includes("planner call is in flight"), refusedFlight);
+  check("harness282 root in flight: the root stays pending", getState(f).goals.find((g) => g.parentId === null)?.status === "pending");
+  releasePlanner();
+  await parkedTick;
+  await new Promise((r) => setTimeout(r, 30));
+  check("harness282 root in flight: the landed call completed the root itself (control)", countAction(getDecisions(f), "root_complete") === 1);
+  await closeTurn(f, "t-op-flight");
+
+  clock.set(T0);
+  const blockedTree = plannerCatchTree();
+  blockedTree[0].status = "blocked";
+  blockedTree[0].blockedReason = "Planner failing: Planner returned no text (object, keys: none)";
+  const k = await createTickHarness({ ...OPTS, caseName: "harness282_root_blocked", stateOpts: { now: T0, goals: blockedTree, activeGoalId: null } });
+  await openPromptTurn(k, { originKind: "composer", text: "Close the goal.", turnId: "t-op-blocked" });
+  const doneBlocked = await callTool(k, { tool: "mcp__agentic-plugin__goal_done", nodeId: "g-root", note: "closed after the planner block" });
+  const rootBlocked = getState(k).goals.find((g) => g.parentId === null);
+  check("harness282 root blocked: a planner-blocked root completes on the operator's word", doneBlocked?.deny === undefined && rootBlocked?.status === "complete", doneBlocked);
+  check("harness282 root blocked: the blocked reason is cleared", rootBlocked?.blockedReason === undefined, rootBlocked?.blockedReason);
+  await closeTurn(k, "t-op-blocked");
+
+  // A persist that yields, because another session took the persona on
+  // disk, denies rather than reporting the root complete.
+  clock.set(T0);
+  const w = await createTickHarness({ ...OPTS, caseName: "harness282_root_write_refused", stateOpts: { now: T0, goals: plannerCatchTree(), activeGoalId: null } });
+  await openPromptTurn(w, { originKind: "composer", text: "Close the goal.", turnId: "t-op-write" });
+  const takenStore = JSON.parse(w.fsMap.get(PERSONA_STORE_FILE));
+  takenStore.default.activeSessionId = "taker-root";
+  takenStore.default.epoch = (takenStore.default.epoch ?? 1) + 1;
+  w.fsMap.set(PERSONA_STORE_FILE, JSON.stringify(takenStore));
+  const refusedWrite = await callTool(w, { tool: "mcp__agentic-plugin__goal_done", nodeId: "g-root" });
+  check("harness282 root write refused: the call denies saying the write was not saved", typeof refusedWrite?.deny === "string" && refusedWrite.deny.includes("was not saved") && refusedWrite.result === undefined, refusedWrite);
+  check("harness282 root write refused: the stored root is untouched", JSON.parse(w.fsMap.get(PERSONA_STORE_FILE)).default.goals.find((g) => g.parentId === null)?.status === "pending");
+  await closeTurn(w, "t-op-write");
+}
+
+// A planner reply that lands after its root left the tree is dropped whole:
+// no plan node is created under a root that is gone or closed.
+async function casePlannerCatch_replyForAClosedRootIsDiscarded(clock) {
+  console.log("\n=== planner-catch: a planner reply landing after its root was replaced is discarded ===");
+  clock.set(T0);
+  let releasePlanner = null;
+  const h = await createTickHarness({ ...OPTS, caseName: "planner_catch_discard", stateOpts: { now: T0, goals: plannerCatchTree(), activeGoalId: null } });
+  h.fake.model.complete = () => new Promise((resolve) => {
+    releasePlanner = () => resolve(JSON.stringify([{ title: "Invented", objective: "Invented by the planner", maxRounds: 5 }]));
+  });
+  clock.advance(10_000);
+  const parkedTick = fireTick(h);
+  await new Promise((r) => setTimeout(r, 20));
+  check("planner-catch discard setup: the planner call is out", typeof releasePlanner === "function");
+  await openPromptTurn(h, { originKind: "composer", text: "Start over.", turnId: "t-op-replace" });
+  const replaced = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "A new objective", replace: true });
+  check("planner-catch discard setup: the tree was replaced under the in-flight call", replaced?.deny === undefined, replaced);
+  releasePlanner();
+  await parkedTick;
+  await new Promise((r) => setTimeout(r, 30));
+  const decisions = getDecisions(h);
+  check("planner-catch discard: one planning_discarded names the old root as gone", decisions.some((d) => d.action === "planning_discarded" && d.detail.includes("g-root") && d.detail.includes("gone")), decisions.map((d) => d.action));
+  check("planner-catch discard: no planning_created and no plan node under the new root", countAction(decisions, "planning_created") === 0 && !getState(h).goals.some((g) => g.title === "Invented"), getState(h).goals.map((g) => [g.id, g.title]));
+  check("planner-catch discard: no planning_failed either", countAction(decisions, "planning_failed") === 0);
+  await closeTurn(h, "t-op-replace");
+}
+
+// The three sites with no failure decision of their own: the object shape
+// reads as the string did, and a shape with no text takes the empty-reply
+// path after one completion_no_text line naming the shape.
+async function casePlannerCatch_switchReasonAndDistillSitesReadTheObject(clock) {
+  console.log("\n=== planner-catch: the switch, reason and distill sites read the object shape and name a no-text shape ===");
+  // Switch: an active plan beside a pending one, the controller choosing
+  // switch, and the switch call answering the pending plan's id as an object.
+  const switchTree = () => [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+    makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "plan", status: "active" }),
+    makeGoalNode({ id: "g-plan-2", parentId: "g-root", kind: "plan", status: "pending", title: "The other plan" }),
+  ];
+  clock.set(T0);
+  const s = await createTickHarness({ ...OPTS, caseName: "planner_catch_switch_object", classifyValue: "switch", completeValue: { isAnswered: true, text: "g-plan-2", usage: {} }, stateOpts: { now: T0, goals: switchTree(), activeGoalId: "g-plan" } });
+  clock.advance(130_000);
+  await tickAndSettle(s, clock, 50);
+  check("planner-catch switch object: the object's text is read as the plan id and the switch lands", getDecisions(s).some((d) => d.action === "switch_to" && d.detail.includes("g-plan-2")), getDecisions(s).map((d) => d.action));
+  clock.set(T0);
+  const s2 = await createTickHarness({ ...OPTS, caseName: "planner_catch_switch_no_text", classifyValue: "switch", completeValue: 42, stateOpts: { now: T0, goals: switchTree(), activeGoalId: "g-plan" } });
+  clock.advance(130_000);
+  await tickAndSettle(s2, clock, 50);
+  check("planner-catch switch no-text: one completion_no_text names the site and the shape", getDecisions(s2).some((d) => d.action === "completion_no_text" && d.detail === "plan-switch: completion returned no text (number, keys: none)"), getDecisions(s2).filter((d) => d.action === "completion_no_text"));
+  check("planner-catch switch no-text: the switch fails as on an empty reply and nothing throws past the tick", getDecisions(s2).some((d) => d.action === "switch_failed") && !getDecisions(s2).some((d) => d.action === "switch_to"), getDecisions(s2).map((d) => d.action));
+
+  // Reason: the controller choosing switch with no pending plan, so no switch
+  // call runs and the reason call is the one completion.
+  const reasonTree = () => [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+    makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "plan", status: "active" }),
+  ];
+  clock.set(T0);
+  const r = await createTickHarness({ ...OPTS, caseName: "planner_catch_reason_object", classifyValue: "switch", completeValue: { isAnswered: true, text: "Because the plan is done.", usage: {} }, stateOpts: { now: T0, goals: reasonTree(), activeGoalId: "g-plan" } });
+  clock.advance(130_000);
+  await tickAndSettle(r, clock, 50);
+  const tickLine = getDecisions(r).find((d) => d.action === "controller_tick");
+  check("planner-catch reason object: the tick's decision carries the object's text as its reason", typeof tickLine?.detail === "string" && tickLine.detail.includes("Because the plan is done."), tickLine?.detail);
+  clock.set(T0);
+  const r2 = await createTickHarness({ ...OPTS, caseName: "planner_catch_reason_no_text", classifyValue: "switch", completeValue: {}, stateOpts: { now: T0, goals: reasonTree(), activeGoalId: "g-plan" } });
+  clock.advance(130_000);
+  await tickAndSettle(r2, clock, 50);
+  const tickLine2 = getDecisions(r2).find((d) => d.action === "controller_tick");
+  check("planner-catch reason no-text: the tick reads no reason", typeof tickLine2?.detail === "string" && tickLine2.detail.includes("no reason"), tickLine2?.detail);
+  check("planner-catch reason no-text: one completion_no_text names the site", getDecisions(r2).some((d) => d.action === "completion_no_text" && d.detail === "controller-reason: completion returned no text (object, keys: none)"), getDecisions(r2).filter((d) => d.action === "completion_no_text"));
+
+  // Distill: a completed worker turn whose memory-kind classification is a
+  // fact, so the distill call is the one completion in the turn.
+  const factClassify = (_state, labels) => (Array.isArray(labels) && labels.includes("fact") ? "fact" : "on-goal");
+  clock.set(T0);
+  const d = await createTickHarness({ ...OPTS, caseName: "planner_catch_distill_object", classifyValue: factClassify, completeValue: { isAnswered: true, text: "The user drinks tea.", usage: {} }, stateOpts: { now: T0 } });
+  await openPromptTurn(d, { originKind: "composer", text: "I drink tea, not coffee.", turnId: "t-distill" });
+  await d.handlers["turn.complete"](d.fake, { turnId: "t-distill", answer: "Noted: tea.", reason: "answer" }, async () => ({ result: "ok" }));
+  await new Promise((res) => setTimeout(res, 30));
+  check("planner-catch distill object: the object's text is remembered", getState(d).memory.some((m) => m.text === "The user drinks tea."), getState(d).memory.map((m) => m.text));
+  clock.set(T0);
+  const d2 = await createTickHarness({ ...OPTS, caseName: "planner_catch_distill_no_text", classifyValue: factClassify, completeValue: { isAnswered: false, reason: "aborted", usage: {} }, stateOpts: { now: T0 } });
+  await openPromptTurn(d2, { originKind: "composer", text: "I drink tea, not coffee.", turnId: "t-distill-2" });
+  await d2.handlers["turn.complete"](d2.fake, { turnId: "t-distill-2", answer: "Noted: tea.", reason: "answer" }, async () => ({ result: "ok" }));
+  await new Promise((res) => setTimeout(res, 30));
+  check("planner-catch distill no-text: nothing is remembered and one completion_no_text names the site", !getDecisions(d2).some((dd) => dd.action === "remember") && getDecisions(d2).some((dd) => dd.action === "completion_no_text" && dd.detail === "memory-distill: completion returned no text (object, keys: isAnswered,reason,usage, reason: aborted)"), getDecisions(d2).filter((dd) => dd.action === "completion_no_text" || dd.action === "remember"));
+}
+
+// The framed match is between line breaks and second to equality: a turn
+// that merely quotes a queued entry's text inside a line takes no stamp.
+async function caseHarness282_quotedEntryTextInsideALineTakesNoStamp(clock) {
+  console.log("\n=== harness 2.1.282: a turn quoting a queued entry's text inside a line takes no stamp ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("harness282_quoted_inline", now, "writer-quote");
+  await tickAndSettle(h, clock, 50);
+  const submitted = h.queuedTurnTexts.shift();
+  await openPromptTurn(h, { originKind: "channel", text: `What is this about: ${submitted} ?`, turnId: "t-quote" });
+  check("harness282 quoted: the operator's turn quoting the record inline takes no stamp", readStoreRecord(h, key)?.turnId === undefined, readStoreRecord(h, key));
+  check("harness282 quoted: the withheld line reads channel-origin", getDecisions(h).some((d) => d.action === "operator_stamp_withheld" && d.detail.includes(id) && d.detail.includes("channel-origin")), getDecisions(h).filter((d) => d.action === "operator_stamp_withheld"));
+  await closeTurn(h, "t-quote");
+  // The framed form of the same text, on its own lines, still takes it.
+  await h.handlers["turn.start"](h.fake, { turnId: "t-framed-after", text: wrapPluginPrompt(submitted) }, async () => ({ result: "ok" }));
+  check("harness282 quoted control: the framed turn afterwards takes the stamp", readStoreRecord(h, key)?.turnId === "t-framed-after");
+}
+
 // Stale-holder takeover: a session that joined as reader behind a live holder
 // takes the persona over through agentic_identity once that holder's commons
 // entry is older than staleAfterMs. caseS5_identity_joins_live_owner is the
@@ -17023,13 +17456,13 @@ async function caseS13_lessonInject_newestLessonReachesTheNextTurnOnce(clock) {
   h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: state }));
   await h.handlers["session.start"](h.fake, {}, () => {});
   const submitH = h.handlers["prompt.submit"];
-  const first = await submitH(h.fake, { text: "continue" }, async () => ({}));
+  const first = await submitH(h.fake, { text: "continue" }, async (core) => ({ text: core.text, context: core.context }));
   const lessonBlock = (first.context || []).find((b) => b.startsWith("[LESSON]"));
   check("s13 lesson_inject: the [LESSON] block carries the newest self-review lesson", !!lessonBlock && lessonBlock.includes("Run the tests before claiming done."), first.context);
   await fireTurn(h, "t-lesson-1");
   const injects = getDecisions(h).filter((d) => d.action === "lesson_inject");
   check("s13 lesson_inject: one lesson_inject decision names that lesson", injects.length === 1 && injects[0].detail.includes("Run the tests before claiming done."), injects);
-  const second = await submitH(h.fake, { text: "continue again" }, async () => ({}));
+  const second = await submitH(h.fake, { text: "continue again" }, async (core) => ({ text: core.text, context: core.context }));
   check("s13 lesson_inject: the same lesson is not injected again on the next prompt", !(second.context || []).some((b) => b.startsWith("[LESSON]")), second.context);
 }
 
@@ -17111,7 +17544,7 @@ async function caseSection6_reader_promptSubmitAppendsNoContext(clock) {
   clock.set(T0);
   const h = await createTickHarness({ ...OPTS, arming: "reader", caseName: "s6_reader_prompt" });
   const submitH = h.handlers["prompt.submit"];
-  const r = await submitH(h.fake, { text: "hello" }, async () => ({}));
+  const r = await submitH(h.fake, { text: "hello" }, async (core) => ({ text: core.text, context: core.context }));
   check("s6 reader prompt: no context blocks appended", r.context === undefined, r);
 }
 
@@ -18201,7 +18634,7 @@ async function caseGtc3_completingByNameNeverMovesTheActiveEntry(clock) {
   const stale = await gtc3Harness("gtc3_by_name_keeps_active_after_reply",
     gtc3Tree({ "task-1": { status: "paused", blockedReason: "operator input needed" } }, extra),
     { pendingAsk: { askId: "ask-1", nodeId: "task-1" } });
-  await stale.handlers["prompt.submit"](stale.fake, { text: "go with the first option" }, async () => ({}));
+  await stale.handlers["prompt.submit"](stale.fake, { text: "go with the first option" }, async (core) => ({ text: core.text, context: core.context }));
   check("gtc3 by name keeps active (after a reply reactivation) setup: the reply set task-1 active, pointed activeGoalId at it and closed the ask",
     getState(stale).activeGoalId === "task-1" && getState(stale).goals.find((g) => g.id === "task-1").status === "active" && !getState(stale).pendingAskId,
     { activeGoalId: getState(stale).activeGoalId, pendingAskId: getState(stale).pendingAskId });
@@ -18953,7 +19386,7 @@ const IQ_IDLE_LINE = "Nothing here starts by itself: every open entry is paused,
 
 // The context blocks one external prompt carries.
 async function iqPromptBlocks(h) {
-  const out = await h.handlers["prompt.submit"](h.fake, { text: "hello" }, async () => ({}));
+  const out = await h.handlers["prompt.submit"](h.fake, { text: "hello" }, async (core) => ({ text: core.text, context: core.context }));
   return (out?.context ?? []).map(String);
 }
 
@@ -20809,7 +21242,7 @@ async function caseGl4_edgesRefuse(clock) {
   const c = await gl4Harness("gl4_edge_nudge_after_channel");
   c.setClassifyValue("nudge");
   clock.advance(130_000);
-  await c.handlers["prompt.submit"](c.fake, { text: "How is it going?", origin: { kind: "channel" } }, async () => ({}));
+  await c.handlers["prompt.submit"](c.fake, { text: "How is it going?", origin: { kind: "channel" } }, async (core) => ({ text: core.text, context: core.context }));
   await tickAndSettle(c, clock, 50);
   check("gl4 nudge-after-channel setup: the tick sent a nudge", getState(c).decisions.some((d) => d.action === "nudge_sent"), getState(c).decisions.map((d) => d.action));
   await openQueuedTurn(c, "t-nudge-ch");
@@ -22178,7 +22611,7 @@ async function caseSupervisorAskLeavesAnOpenAskOpen(clock) {
     await h.handlers["session.start"](h.fake, {}, () => {});
     const askKey = "ask:default:ask-sv-1";
     h.storeMap.set(askKey, { id: "ask-sv-1", key: askKey, persona: "default", askId: "ask-sv-1", at: now, nodeId: "node-001", question: "Which branch?", status: "open" });
-    await h.handlers["prompt.submit"](h.fake, { text, origin: { kind: originKind } }, async () => ({}));
+    await h.handlers["prompt.submit"](h.fake, { text, origin: { kind: originKind } }, async (core) => ({ text: core.text, context: core.context }));
     await h.handlers["turn.start"](h.fake, { turnId: "t-ask", text }, async () => ({}));
     await h.handlers["tool.call"](h.fake, { tool: "Write", turnId: "t-ask" }, async () => ({ result: "ok" }));
     await h.handlers["turn.complete"](h.fake, { turnId: "t-ask", answer: "Idle, waiting on the operator.", reason: "completed" }, async () => ({}));
