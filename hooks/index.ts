@@ -7406,14 +7406,28 @@ export const register: Register = async (on, options) => {
     // would spawn a health run for nothing.
     // The reader never throws on a document it cannot read; the try/catch
     // here covers the completion steps, as the scorer's does.
+    // The document is read under the directory the session runs in now, from
+    // $.session.cwd(), because a persona works its plan in a linked worktree
+    // while sess.workdir stays the launch checkout, whose copy gains no
+    // Chapter and no Complete status until the plan's branch merges.
+    // sess.workdir remains the anchor the persona store and the workdir files
+    // resolve against. Where the call throws or answers with no directory,
+    // the launch checkout is read instead.
     const planHolder = turnLeaf ? planHolderOf(sess.state, turnLeaf) : undefined;
     const planPath = planHolder?.planPath;
     if (sess.isOwner && planHolder && planPath) {
       const holder = planHolder;
+      let planDir = sess.workdir;
+      try {
+        const liveDir = await $.session.cwd();
+        if (typeof liveDir === "string" && liveDir.length > 0) planDir = liveDir;
+      } catch {
+        // cwd unavailable; the launch checkout is read
+      }
       try {
         const reading = await readPlanRecord(
           { exists: (p: string) => $.fs.exists(p), read: (p: string) => $.fs.read(p) },
-          sess.workdir,
+          planDir,
           planPath,
         );
         if (reading.kind === "unreadable") {

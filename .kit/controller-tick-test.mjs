@@ -3428,6 +3428,12 @@ async function main() {
     await casePlanRecord2_blockedHolderCompletesWithNoReason(clock);
     await casePlanRecord2_unreadableRearmsAfterARead(clock);
 
+    // Section 1 (boundary-compaction): the plan document is read from the
+    // directory the session runs in, not the launch checkout.
+    await caseLive1_completeUnderLiveDirCompletesTheHolder(clock);
+    await caseLive1_chapterUnderLiveDirLogsProgress(clock);
+    await caseLive1_readFailureDegradesToNotComplete(clock);
+
     // Section 3 (plan-health-from-the-record): the worker's BLOCKED and
     // WAITING leads, the hold they put on the idle branch, and the
     // controller's complete verdict ignored on a plan entry.
@@ -14614,6 +14620,177 @@ async function casePlanRecord2_unreadableRearmsAfterARead(clock) {
     check(`plan2 unreadable re-arm: after "${label}" the plan_record_unreadable count is ${expected}`, count === expected, count);
   }
   check("plan2 unreadable re-arm: plan-1 is still active throughout", getState(h).goals.find(g => g.id === "plan-1").status === "active");
+}
+
+// --- Section 1 (boundary-compaction): the plan document is read from the live directory ---
+
+// The directory the session runs in once the persona has moved into its plan
+// worktree, distinct from HARNESS_CWD, the launch checkout the plugin captured
+// at session.start as sess.workdir.
+const LIVE1_DIR = `${HARNESS_CWD}/.claude/worktrees/plan-wt`;
+const LIVE1_FILE = `${LIVE1_DIR}/${PLAN2_PATH}`;
+
+// One scored turn through the real turn.start and turn.complete handlers,
+// recording whether the completion settled or threw and whether it handed
+// the event on to next, so a case can pin that a read failure never escapes
+// the handler.
+async function live1ScoredTurn(h, turnId, label) {
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes(label)) ? label : "discard");
+  await h.handlers["turn.start"](h.fake, { turnId }, async () => ({ result: "ok" }));
+  let nextCalls = 0;
+  let thrown = null;
+  try {
+    await h.handlers["turn.complete"](h.fake, { turnId, answer: "Working on it.", reason: "completed" }, async () => { nextCalls += 1; return { result: "ok" }; });
+  } catch (err) {
+    thrown = err;
+  }
+  return { nextCalls, thrown };
+}
+
+// A Complete document present only under the live directory completes the
+// holder through the turn.complete caller. The launch checkout holds either
+// the stale In Progress copy or no copy at all, and each variant is red
+// against a caller that reads sess.workdir. The launch anchor is pinned
+// unchanged by the persona store still being written under HARNESS_CWD and
+// nothing at all being written under the live directory.
+async function caseLive1_completeUnderLiveDirCompletesTheHolder(clock) {
+  console.log("\n=== boundary-compaction Section 1: a Complete document only under the live directory completes the holder ===");
+  const variants = [
+    { label: "launch copy reads In Progress", seedLaunch: (h) => h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"])) },
+    { label: "no launch copy", seedLaunch: () => {} },
+  ];
+  for (const v of variants) {
+    clock.set(T0);
+    const h = await plan2Harness(`live1_complete_${variants.indexOf(v)}`, { chapterCount: 1 });
+    v.seedLaunch(h);
+    h.fsMap.set(LIVE1_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+    h.fsMap.set(".agentic-health", "true");
+    h.fake.session.cwd = () => Promise.resolve(LIVE1_DIR);
+
+    // The setup the act rests on, asserted before it.
+    const before = getState(h).goals.find(g => g.id === "plan-1");
+    check(`live1 complete (${v.label}) setup: plan-1 is active before the turn`, before && before.status === "active", before && before.status);
+    check(`live1 complete (${v.label}) setup: the launch checkout holds no Complete copy`,
+      !h.fsMap.has(PLAN2_FILE) || !/^Status: Complete$/m.test(h.fsMap.get(PLAN2_FILE)), h.fsMap.get(PLAN2_FILE));
+    h.resetFsWrites();
+
+    const { nextCalls, thrown } = await live1ScoredTurn(h, "t-live-complete", "on-goal");
+    const state = getState(h);
+    const plan1 = state.goals.find(g => g.id === "plan-1");
+    const plan2 = state.goals.find(g => g.id === "plan-2");
+    const decisions = getDecisions(h);
+    const completeDecision = decisions.find(d => d.action === "complete" && d.detail.startsWith("plan-1:"));
+    check(`live1 complete (${v.label}): the turn settled and handed on to next`, thrown === null && nextCalls === 1, { thrown: thrown && String(thrown), nextCalls });
+    check(`live1 complete (${v.label}): plan-1 is complete`, plan1 && plan1.status === "complete", plan1 && plan1.status);
+    check(`live1 complete (${v.label}): the complete decision names the document read as Status: Complete`,
+      completeDecision && completeDecision.detail.includes(PLAN2_PATH) && /status: complete/i.test(completeDecision.detail), completeDecision);
+    check(`live1 complete (${v.label}): the next entry is activated`, plan2 && plan2.status === "active" && state.activeGoalId === "plan-2", plan2 && plan2.status);
+    check(`live1 complete (${v.label}): no plan_record_unreadable (the live copy was read)`, !decisions.some(d => d.action === "plan_record_unreadable"), decisions.filter(d => d.action === "plan_record_unreadable"));
+    check(`live1 complete (${v.label}): the persona store is still written under the launch checkout (sess.workdir unchanged)`,
+      h.fsWrites.some(w => w.path === PERSONA_STORE_FILE), h.fsWrites.map(w => w.path));
+    check(`live1 complete (${v.label}): nothing was written under the live directory`,
+      !h.fsWrites.some(w => w.path.startsWith(LIVE1_DIR)), h.fsWrites.map(w => w.path));
+  }
+}
+
+// A Chapter banked under the live directory is a Chapter-count advance the
+// same turn, while the launch copy still carries the stored count.
+async function caseLive1_chapterUnderLiveDirLogsProgress(clock) {
+  console.log("\n=== boundary-compaction Section 1: a Chapter banked under the live directory logs plan_progress the same turn ===");
+  clock.set(T0);
+  const h = await plan2Harness("live1_progress", { chapterCount: 1 });
+  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"]));
+  h.fsMap.set(LIVE1_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+  h.fake.session.cwd = () => Promise.resolve(LIVE1_DIR);
+  const before = getState(h).goals.find(g => g.id === "plan-1");
+  check("live1 progress setup: the stored chapterCount is 1", before && before.chapterCount === 1, before && before.chapterCount);
+
+  const { nextCalls, thrown } = await live1ScoredTurn(h, "t-live-progress", "on-goal");
+  const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+  const progress = getDecisions(h).filter(d => d.action === "plan_progress");
+  check("live1 progress: the turn settled and handed on to next", thrown === null && nextCalls === 1, { thrown: thrown && String(thrown), nextCalls });
+  check("live1 progress: chapterCount is now 2", plan1 && plan1.chapterCount === 2, plan1 && plan1.chapterCount);
+  check("live1 progress: one plan_progress decision names the document and 1 -> 2",
+    progress.length === 1 && progress[0].detail.startsWith("plan-1:") && progress[0].detail.includes(PLAN2_PATH) && progress[0].detail.includes("1 -> 2"), progress);
+  check("live1 progress: plan-1 is still active (progress is not completion)", plan1 && plan1.status === "active", plan1 && plan1.status);
+}
+
+// A read that fails degrades to not-complete with a logged reason, and never
+// throws out of turn.complete. Two failures under the live directory (no
+// document there, and a document whose read rejects) each log
+// plan_record_unreadable with the reader's reason and leave plan-1 active,
+// though the launch checkout holds a Complete copy: reading that copy is the
+// defect this section removes, so both are red against the old caller. Three
+// ways $.session.cwd() can fail to name a directory (it throws, answers "",
+// answers a non-string) each fall back to the launch checkout, whose
+// In Progress copy is read without a plan_record decision of any kind.
+async function caseLive1_readFailureDegradesToNotComplete(clock) {
+  console.log("\n=== boundary-compaction Section 1: a read failure degrades to not-complete rather than a throw ===");
+  const failures = [
+    { label: "no document under the live directory", reason: "no file at planPath", seedLive: () => {} },
+    {
+      label: "the live document's read rejects",
+      reason: "read failed",
+      seedLive: (h) => {
+        h.fsMap.set(LIVE1_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+        const realRead = h.fake.fs.read;
+        h.fake.fs.read = (p) => p === LIVE1_FILE ? Promise.reject(new Error("EIO: " + p)) : realRead(p);
+      },
+    },
+  ];
+  for (const f of failures) {
+    clock.set(T0);
+    const h = await plan2Harness(`live1_fail_${failures.indexOf(f)}`, { chapterCount: 1 });
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+    f.seedLive(h);
+    h.fake.session.cwd = () => Promise.resolve(LIVE1_DIR);
+    const { nextCalls, thrown } = await live1ScoredTurn(h, "t-live-fail", "on-goal");
+    const state = getState(h);
+    const plan1 = state.goals.find(g => g.id === "plan-1");
+    const decisions = getDecisions(h);
+    const unreadable = decisions.filter(d => d.action === "plan_record_unreadable");
+    check(`live1 read failure (${f.label}): the turn settled and handed on to next`, thrown === null && nextCalls === 1, { thrown: thrown && String(thrown), nextCalls });
+    check(`live1 read failure (${f.label}): plan-1 stays active and is not complete`,
+      plan1 && plan1.status === "active" && state.activeGoalId === "plan-1", plan1 && plan1.status);
+    check(`live1 read failure (${f.label}): one plan_record_unreadable names plan-1 and the reason "${f.reason}"`,
+      unreadable.length === 1 && unreadable[0].detail.startsWith("plan-1:") && unreadable[0].detail.includes(f.reason), unreadable);
+    check(`live1 read failure (${f.label}): no complete, plan_progress or plan_record_failed decision`,
+      !decisions.some(d => d.action === "complete" || d.action === "plan_progress" || d.action === "plan_record_failed"), decisions.map(d => d.action));
+  }
+
+  const cwdFailures = [
+    { label: "$.session.cwd() throws", cwd: () => { throw new Error("session cwd unavailable"); } },
+    { label: "$.session.cwd() rejects", cwd: () => Promise.reject(new Error("session cwd unavailable")) },
+    { label: "$.session.cwd() answers an empty string", cwd: () => Promise.resolve("") },
+    { label: "$.session.cwd() answers a non-string", cwd: () => Promise.resolve(undefined) },
+  ];
+  for (const c of cwdFailures) {
+    clock.set(T0);
+    const h = await plan2Harness(`live1_cwdfail_${cwdFailures.indexOf(c)}`, { chapterCount: 1 });
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1"]));
+    h.fake.session.cwd = c.cwd;
+    const { nextCalls, thrown } = await live1ScoredTurn(h, "t-cwd-fail", "on-goal");
+    const state = getState(h);
+    const plan1 = state.goals.find(g => g.id === "plan-1");
+    const decisions = getDecisions(h);
+    check(`live1 cwd fallback (${c.label}): the turn settled and handed on to next`, thrown === null && nextCalls === 1, { thrown: thrown && String(thrown), nextCalls });
+    check(`live1 cwd fallback (${c.label}): plan-1 stays active and is not complete`, plan1 && plan1.status === "active", plan1 && plan1.status);
+    check(`live1 cwd fallback (${c.label}): the launch copy was read (no plan_ decision of any kind)`,
+      !decisions.some(d => typeof d.action === "string" && d.action.startsWith("plan_")), decisions.filter(d => typeof d.action === "string" && d.action.startsWith("plan_")));
+  }
+  // Control for the fallback: the same failures with a Complete launch copy
+  // complete the holder, so the silence above is the launch copy being read
+  // rather than no read at all.
+  for (const c of cwdFailures) {
+    clock.set(T0);
+    const h = await plan2Harness(`live1_cwdfail_control_${cwdFailures.indexOf(c)}`, { chapterCount: 1 });
+    h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1"]));
+    h.fake.session.cwd = c.cwd;
+    const { nextCalls, thrown } = await live1ScoredTurn(h, "t-cwd-fail-control", "on-goal");
+    const plan1 = getState(h).goals.find(g => g.id === "plan-1");
+    check(`live1 cwd fallback control (${c.label}): the launch copy's Complete completes plan-1`,
+      thrown === null && nextCalls === 1 && plan1 && plan1.status === "complete", { thrown: thrown && String(thrown), nextCalls, status: plan1 && plan1.status });
+  }
 }
 
 // --- Section 3 (plan-health-from-the-record): the worker's BLOCKED and WAITING leads ---

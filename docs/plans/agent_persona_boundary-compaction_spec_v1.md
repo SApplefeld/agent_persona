@@ -1,6 +1,6 @@
 # The plugin banks a compaction boundary at each turn's end, so an unleashed persona compacts on its own
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-24
 
